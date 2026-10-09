@@ -1,0 +1,11 @@
+[toolchain]
+# Pinned date so every worker and local build resolves the SAME nightly.
+# Mirrors the frankengraphdb and asupersync pins (checked 2026-10-09): the
+# foundation crates are consumed at exact revisions, and a floating "nightly"
+# makes -D warnings gates nondeterministic across workers as std deprecations
+# roll through the fleet. Bump deliberately, together with the frankengraphdb /
+# asupersync / fnx foundation pins, and together with any std-API migration the
+# new nightly requires. fastmcp_rust currently pins nightly-2026-08-25; the
+# fa-mcp posture is built on this pin and that drift is a registered risk row.
+channel = "nightly-2026-08-31"
+components = ["rustfmt", "clippy", "miri", "rust-src", "llvm-tools-preview"]
