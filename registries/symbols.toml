@@ -109,6 +109,16 @@ name = "SupplementalEvidence"
 id = 35
 name = "ReversalSchedule"
 
+# fa-txf (Docket slice 2): custody events. Event 0 is the ImportReceipt every
+# intake writes; later events are CustodyTransfers.
+[[label]]
+id = 36
+name = "ImportReceipt"
+
+[[label]]
+id = 37
+name = "CustodyTransfer"
+
 # ---- property keys --------------------------------------------------------
 [[property]]
 id = 1
@@ -279,6 +289,11 @@ name = "dimension_id"
 id = 65
 name = "dimension_kind"
 
+# fa-txf: the number of custody events a Document has (moved by CAS).
+[[property]]
+id = 66
+name = "custody_len"
+
 # ---- relations ------------------------------------------------------------
 [[relation]]
 id = 1
@@ -370,3 +385,12 @@ name = "UNSETTLES"
 [[relation]]
 id = 30
 name = "SUPPLEMENTS"
+
+# fa-txf: a custody event -> its Document; an ImportReceipt -> its ImportRun.
+[[relation]]
+id = 31
+name = "CUSTODY_OF"
+
+[[relation]]
+id = 32
+name = "IMPORTED_BY"

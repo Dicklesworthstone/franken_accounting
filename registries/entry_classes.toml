@@ -144,6 +144,14 @@ name = "ScheduleControl"
 kind = "control"
 supersession = "none"
 
+# An import run's receipt (plan §9.3; fa-txf): book-scoped and undated, like
+# PolicyControl; its payload is ControlPayload::ImportRun.
+[[class]]
+tag = 23
+name = "ImportControl"
+kind = "control"
+supersession = "none"
+
 # ---- Control kinds (fa-g23) ---------------------------------------------------
 # `EntryOrigin::Control.control_kind`: the act that minted a control record. It
 # is durable in every control record's origin, so it is registered here rather
@@ -188,10 +196,11 @@ name = "schedule_cancel"
 class = "ScheduleControl"
 minted_by = "fa-journal schedule::cancellation"
 
-[[reserved_control_kind]]
+[[control_kind]]
 id = 6
 name = "import_run"
-holder = "fa-txf part A: ImportControl (TopazOsprey; CobaltGull 3360)"
+class = "ImportControl"
+minted_by = "fa-journal import::import_run"
 
 [[reserved_control_kind]]
 id = 7

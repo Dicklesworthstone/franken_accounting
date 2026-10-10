@@ -12,9 +12,13 @@
 //!
 //! The posting law, in the order the kernel applies it:
 //! 1. every citation's role is a registered role (else `STRUCTURE`);
-//! 2. every cited document is held (else `EVIDENCE_UNKNOWN`), and the
-//!    citation's commitment is the document's (else `EVIDENCE_COMMIT`),
-//!    checked for every citation, in citation order;
+//! 2. every cited document is held (else `EVIDENCE_UNKNOWN`), the
+//!    citation's commitment is the document's (else `EVIDENCE_COMMIT`), and
+//!    the document's chain of custody is complete (else
+//!    `CUSTODY_INCOMPLETE`): `len` events are present, the first a receipt
+//!    from a registered source whose digest is the document's, each later
+//!    one a transfer chained to its predecessor by its holder — checked for
+//!    every citation, in citation order;
 //! 3. a class whose row requires documents needs at least `min_documents`
 //!    distinct cited documents of an admissible kind that count. A document
 //!    counts when its grade is not self-sourced, or when it is (`AgentUpload`,
@@ -38,6 +42,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fa_registry::RegistryError;
 use fa_registry::evidence_policy::{EvidencePolicy, KindSet, Requirement};
+use fa_registry::intake_sources::IntakeSources;
 use fa_registry::reason_codes::ReasonCodes;
 
 pub const STRUCTURE: &str = "FA-REF-100";
@@ -48,12 +53,17 @@ pub const SELF_SOURCED: &str = "FA-REF-086";
 pub const ATTESTATION_SUBJECT: &str = "FA-REF-110";
 pub const SELF_REVIEW: &str = "FA-REF-111";
 pub const REASON_CODE: &str = "FA-REF-112";
+pub const DOCUMENT_INTAKE: &str = "FA-REF-083";
+pub const CUSTODY_INCOMPLETE: &str = "FA-REF-114";
+pub const RECEIPT_MISMATCH: &str = "FA-REF-115";
+pub const NOT_CUSTODIAN: &str = "FA-REF-119";
 
 /// The registry rows the oracle reads.
 #[derive(Clone, Debug)]
 pub struct Law {
     pub policy: EvidencePolicy,
     pub reasons: ReasonCodes,
+    pub intake: IntakeSources,
 }
 
 impl Law {
@@ -61,6 +71,53 @@ impl Law {
         Ok(Self {
             policy: EvidencePolicy::embedded()?,
             reasons: ReasonCodes::embedded()?,
+            intake: IntakeSources::embedded()?,
+        })
+    }
+
+    /// Whether a receipt from `source` opens a complete chain.
+    #[must_use]
+    pub fn source_registered(&self, source: &Source) -> bool {
+        let text =
+            |t: &str| !t.is_empty() && t.len() <= fa_registry::intake_sources::MAX_TEXT_BYTES;
+        match source {
+            Source::Upload => self.intake.kinds.contains("Upload"),
+            Source::Email { message_id } => text(message_id) && self.intake.kinds.contains("Email"),
+            Source::Connector { name, version } => {
+                self.intake.kinds.contains("Connector")
+                    && self
+                        .intake
+                        .connectors
+                        .contains(&(name.clone(), version.clone()))
+            }
+            Source::Scan { device } => {
+                self.intake.kinds.contains("Scan") && self.intake.devices.contains(device)
+            }
+        }
+    }
+
+    /// The chain is complete (module docs, step 2).
+    #[must_use]
+    pub fn custody_complete(&self, custody: &Custody) -> bool {
+        if custody.len == 0 {
+            return false;
+        }
+        (0..custody.len).all(|i| match (i, custody.events.get(&i)) {
+            (
+                0,
+                Some(Event::Receipt {
+                    source,
+                    digest_matches,
+                }),
+            ) => *digest_matches && self.source_registered(source),
+            (
+                1..,
+                Some(Event::Transfer {
+                    chained,
+                    from_holder,
+                }),
+            ) => *chained && *from_holder,
+            _ => false,
         })
     }
 
@@ -90,6 +147,58 @@ pub struct Doc {
     pub commit: [u8; 32],
     /// The principal that uploaded it.
     pub uploader: u64,
+    /// Its chain of custody.
+    pub custody: Custody,
+}
+
+/// Where a document entered the book, as the oracle records it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Source {
+    Upload,
+    Connector { name: String, version: String },
+    Email { message_id: String },
+    Scan { device: String },
+}
+
+/// One custody event, as the oracle records it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Event {
+    /// Event 0: the receipt's source, and whether its digest is the
+    /// document's commitment.
+    Receipt {
+        source: Source,
+        digest_matches: bool,
+    },
+    /// A later event: whether it chains to its predecessor, and whether it
+    /// was made by the principal that held the document.
+    Transfer { chained: bool, from_holder: bool },
+}
+
+/// A document's chain of custody: the length its mirror states and the
+/// events present, by index (an absent index is a missing link).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Custody {
+    pub len: u32,
+    pub events: BTreeMap<u32, Event>,
+}
+
+impl Custody {
+    /// The chain `fa document add` writes: one receipt from an upload.
+    #[must_use]
+    pub fn uploaded() -> Self {
+        Self {
+            len: 1,
+            events: [(
+                0,
+                Event::Receipt {
+                    source: Source::Upload,
+                    digest_matches: true,
+                },
+            )]
+            .into_iter()
+            .collect(),
+        }
+    }
 }
 
 /// One citation, in the order the entry carries them.
@@ -138,13 +247,17 @@ pub fn verdict(
     {
         return Some(STRUCTURE);
     }
-    // 2. Every citation names a held document under its commitment.
+    // 2. Every citation names a held document under its commitment, with a
+    //    complete chain of custody.
     for c in citations {
         let Some(doc) = docs.get(&c.doc) else {
             return Some(EVIDENCE_UNKNOWN);
         };
         if doc.commit != c.commit {
             return Some(EVIDENCE_COMMIT);
+        }
+        if !law.custody_complete(&doc.custody) {
+            return Some(CUSTODY_INCOMPLETE);
         }
     }
     // 3. The class's minimum over distinct documents that count.
@@ -219,6 +332,29 @@ pub fn review_verdict(
     None
 }
 
+/// The oracle's verdict on bringing a document in from `source`.
+#[must_use]
+pub fn intake_verdict(law: &Law, source: &Source) -> Option<&'static str> {
+    (!law.source_registered(source)).then_some(DOCUMENT_INTAKE)
+}
+
+/// The oracle's verdict on `from` handing on a document `holder` holds.
+#[must_use]
+pub fn transfer_verdict(holder: u64, from: u64) -> Option<&'static str> {
+    (holder != from).then_some(NOT_CUSTODIAN)
+}
+
+/// The oracle's verdict on presenting `presented` as the oids of a run that
+/// recorded `recorded`: exactly the recorded set, in ascending order.
+#[must_use]
+pub fn receipt_verdict(
+    recorded: &BTreeSet<[u8; 32]>,
+    presented: &[[u8; 32]],
+) -> Option<&'static str> {
+    let canonical: Vec<[u8; 32]> = recorded.iter().copied().collect();
+    (canonical.as_slice() != presented).then_some(RECEIPT_MISMATCH)
+}
+
 /// The oracle's verdict on the preparer recording an assertion with
 /// `reason` over a proposal of `class`: `None` records it.
 #[must_use]
@@ -242,6 +378,7 @@ mod tests {
             grade: grade.into(),
             commit: [commit; 32],
             uploader,
+            custody: Custody::uploaded(),
         }
     }
 

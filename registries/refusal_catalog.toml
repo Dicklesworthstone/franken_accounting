@@ -544,6 +544,30 @@ exit = "verification"
 cite = "FA-INV-04 (a mirror is never more authoritative than the payload), FA-INV-05 (the closure verifies)"
 fix = "preserve the store and report the drift; nothing that relies on this attestation is admitted until it is explained"
 
+[[refusal]]
+code = "FA-REF-114"
+name = "CUSTODY_INCOMPLETE"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §9.3 (a document is evidence only through a complete chain of custody from a registered intake source); registries/intake_sources.toml"
+fix = "cite a document recorded with `fa document add <file> --json` (its receipt is written with it); a document whose chain is broken stays uncitable until the break is explained"
+
+[[refusal]]
+code = "FA-REF-115"
+name = "RECEIPT_MISMATCH"
+owners = ["fa-journal"]
+exit = "verification"
+cite = "plan §9.3 (an import receipt binds exactly the documents imported)"
+fix = "present the run's oids exactly as imported, in ascending order; a list that does not recompute the receipt is not the run's"
+
+[[refusal]]
+code = "FA-REF-119"
+name = "NOT_CUSTODIAN"
+owners = ["fa-journal"]
+exit = "safety"
+cite = "plan §9.3 (only the current custodian hands a document on)"
+fix = "have the current custodian record the transfer"
+
 # ---- Notary (120–125) ----------------------------------------------------
 [[refusal]]
 code = "FA-REF-120"

@@ -38,7 +38,8 @@
 
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    DecodeError, EntryPayload, EntryRef, EvidenceRef, Id128, Oid, Reader, Writer, domain_digest,
+    DecodeError, EntryPayload, EntryRef, EvidenceRef, Id128, IntakeSource, Oid, Reader, Writer,
+    domain_digest,
 };
 use fa_registry::evidence_policy::{EvidencePolicy, Requirement};
 use fa_registry::reason_codes::ReasonCodes;
@@ -361,19 +362,16 @@ fn added_from_row(
     }))
 }
 
-/// Record a document in the book: one `Document` vertex carrying the
-/// canonical payload and its mirrors (`_fa_digest` = `doc_commit`, `code` =
-/// the kind's registered name, `book_id`), in one commit. The same bytes of
-/// the same kind are the recorded outcome, never a second vertex.
-pub async fn add_document<V: asupersync::fs::Vfs + Clone>(
-    db: &mut Database<V>,
-    ctx: &PurposeContexts,
+/// The intake laws every document meets before it is written (plan §9.1):
+/// this book's, non-empty, inline-bounded, a printable mime, a registered
+/// kind, and a grade the uploader may declare. Returns the kind's name.
+pub(crate) fn intake_check(
+    policy: &EvidencePolicy,
     book: &BookContext,
     doc: &Document,
-) -> Outcome<DocumentAdded> {
-    let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
+) -> Result<String, Refusal> {
     if doc.book_id != book.book_id {
-        return Ok(Err(Refusal::new(
+        return Err(Refusal::new(
             code::COORDINATE,
             exit::USAGE,
             format!(
@@ -383,38 +381,38 @@ pub async fn add_document<V: asupersync::fs::Vfs + Clone>(
             ),
             "plan §2.2 (an object belongs to exactly one book)",
             "set book_id to this book's id (fa book info --json)",
-        )));
+        ));
     }
     if doc.bytes.is_empty() {
-        return Ok(Err(intake_refusal(
+        return Err(intake_refusal(
             "the document is empty; zero bytes are not evidence",
             "add the file that records the transaction",
-        )));
+        ));
     }
     if len_u64(doc.bytes.len()) > policy.max_document_bytes {
-        return Ok(Err(intake_refusal(
+        return Err(intake_refusal(
             format!(
                 "the document is {} bytes; inline documents are bounded at {}",
                 doc.bytes.len(),
                 policy.max_document_bytes
             ),
             "split the document, or wait for External storage (plan §9.1)",
-        )));
+        ));
     }
     let mime_ok = !doc.mime.is_empty()
         && doc.mime.len() <= policy.max_mime_bytes
         && doc.mime.bytes().all(|b| b.is_ascii_graphic());
     if !mime_ok {
-        return Ok(Err(intake_refusal(
+        return Err(intake_refusal(
             format!(
                 "mime `{}` must be 1..={} printable ASCII bytes with no spaces",
                 doc.mime, policy.max_mime_bytes
             ),
             "pass --mime type/subtype, e.g. application/pdf",
-        )));
+        ));
     }
     let Some(kind) = policy.kind_by_tag(doc.kind) else {
-        return Ok(Err(intake_refusal(
+        return Err(intake_refusal(
             format!("document kind {} is not registered", doc.kind),
             format!(
                 "use a registered kind: {}",
@@ -425,16 +423,16 @@ pub async fn add_document<V: asupersync::fs::Vfs + Clone>(
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-        )));
+        ));
     };
     let Some(grade) = policy.grade_by_tag(doc.grade) else {
-        return Ok(Err(intake_refusal(
+        return Err(intake_refusal(
             format!("provenance grade {} is not registered", doc.grade),
             "declare HumanUpload or AgentUpload",
-        )));
+        ));
     };
     if !grade.intake {
-        return Ok(Err(Refusal::new(
+        return Err(Refusal::new(
             code::GRADE_UNVERIFIED,
             exit::REFUSAL,
             format!(
@@ -446,15 +444,20 @@ pub async fn add_document<V: asupersync::fs::Vfs + Clone>(
                 grade.name
             ),
             "declare the upload honestly: HumanUpload when a person supplied the bytes, AgentUpload when an agent did",
-        )));
+        ));
     }
+    Ok(kind.name.clone())
+}
 
+/// Stage a new Document vertex with its payload, mirrors and `custody_len`
+/// of 1 (its receipt is staged beside it).
+pub(crate) fn stage_document(
+    batch: &mut WriteBatch,
+    book: &BookContext,
+    doc: &Document,
+    kind_name: &str,
+) -> Result<(), KernelError> {
     let commit = doc.doc_commit();
-    let oid = document_oid(book.book_id, &commit);
-    let vid = document_vid(&oid);
-    if let Some(row) = db.vertex(vid)? {
-        return added_from_row(&row, &policy, &oid, true);
-    }
     let mut props = vec![
         (
             property::FA_PAYLOAD,
@@ -468,11 +471,46 @@ pub async fn add_document<V: asupersync::fs::Vfs + Clone>(
             property::BOOK_ID,
             scalar_bytes("book_id", book.book_id.0.to_vec())?,
         ),
-        (property::CODE, scalar_text("code", &kind.name)?),
+        (property::CODE, scalar_text("code", kind_name)?),
+        (property::CUSTODY_LEN, CanonicalScalar::Int(1)),
     ];
     props.sort_by_key(|(k, _)| k.0);
-    let mut batch = WriteBatch::new(relation::EVIDENCED_BY);
-    batch.create_vertex(vid, vec![label::DOCUMENT], props);
+    batch.create_vertex(document_vid(&doc.oid()), vec![label::DOCUMENT], props);
+    Ok(())
+}
+
+/// Record a document in the book (plan §9.1, §9.3): one `Document` vertex
+/// carrying the canonical payload and its mirrors (`_fa_digest` =
+/// `doc_commit`, `code` = the kind's registered name, `book_id`,
+/// `custody_len`), and its `ImportReceipt` — custody event 0, source
+/// `Upload(retrieved_by)` — in one commit. The same bytes of the same kind
+/// are the recorded outcome, never a second vertex or a second receipt.
+pub async fn add_document<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    doc: &Document,
+) -> Outcome<DocumentAdded> {
+    let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    let kind_name = match intake_check(&policy, book, doc) {
+        Ok(name) => name,
+        Err(r) => return Ok(Err(r)),
+    };
+    let source = IntakeSource::Upload {
+        principal: doc.retrieved_by,
+    };
+    if let Err(r) = crate::custody::admit_source(&source) {
+        return Ok(Err(r));
+    }
+    let commit = doc.doc_commit();
+    let oid = document_oid(book.book_id, &commit);
+    let vid = document_vid(&oid);
+    if let Some(row) = db.vertex(vid)? {
+        return added_from_row(&row, &policy, &oid, true);
+    }
+    let mut batch = WriteBatch::new(relation::CUSTODY_OF);
+    stage_document(&mut batch, book, doc, &kind_name)?;
+    crate::custody::stage_receipt(&mut batch, book, doc, source, doc.retrieved_by, None)?;
     match db.write(&ctx.commit(), batch).await {
         Ok(seq) => Ok(Ok(DocumentAdded {
             oid,
@@ -737,6 +775,9 @@ pub fn resolve_documents<V: asupersync::fs::Vfs + Clone>(
         let (false, Some(doc)) = (repeat, resolved) else {
             continue;
         };
+        if let Err(r) = crate::custody::witness_custody(txn, db, policy, &e.document_oid)? {
+            return Ok(Err(r));
+        }
         last = Some((e.document_oid, stored));
         cited.push(doc);
     }

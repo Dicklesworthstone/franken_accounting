@@ -61,6 +61,8 @@ symbols!(
         (ACCUMULATOR_STATE, "AccumulatorState", 31),
         (SUPPLEMENTAL_EVIDENCE, "SupplementalEvidence", 34),
         (REVERSAL_SCHEDULE, "ReversalSchedule", 35),
+        (IMPORT_RECEIPT, "ImportReceipt", 36),
+        (CUSTODY_TRANSFER, "CustodyTransfer", 37),
     ]
 );
 
@@ -124,6 +126,7 @@ symbols!(
         (SCHEDULE_CURSOR, "schedule_cursor", 63),
         (DIMENSION_ID, "dimension_id", 64),
         (DIMENSION_KIND, "dimension_kind", 65),
+        (CUSTODY_LEN, "custody_len", 66),
     ]
 );
 
@@ -161,6 +164,8 @@ symbols!(
         (IN_BOOK, "IN_BOOK", 28),
         (UNSETTLES, "UNSETTLES", 29),
         (SUPPLEMENTS, "SUPPLEMENTS", 30),
+        (CUSTODY_OF, "CUSTODY_OF", 31),
+        (IMPORTED_BY, "IMPORTED_BY", 32),
     ]
 );
 
