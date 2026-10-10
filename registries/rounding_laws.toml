@@ -1,0 +1,53 @@
+# rounding_laws.toml — the registered rounding laws (plan §6.2). Ids are
+# stable and match fa_money::RoundingLaw::id(); a new law is a new row,
+# never a renumbering.
+#
+# Consumer: fa-money (id round trip), certificates (law ids), fa-cli
+# `fa law list`. Gate: ids unique; every fa_money::RoundingLaw variant has a row.
+
+schema_version = 1
+
+[[law]]
+id = 1
+name = "HalfUp"
+definition = "Round half toward positive infinity."
+
+[[law]]
+id = 2
+name = "HalfDown"
+definition = "Round half toward negative infinity."
+
+[[law]]
+id = 3
+name = "HalfEven"
+definition = "Banker's rounding: ties to the even neighbour (sign-symmetric)."
+
+[[law]]
+id = 4
+name = "HalfAwayFromZero"
+definition = "Ties away from zero (commercial rounding)."
+
+[[law]]
+id = 5
+name = "HalfTowardZero"
+definition = "Ties toward zero."
+
+[[law]]
+id = 6
+name = "Ceiling"
+definition = "Toward positive infinity."
+
+[[law]]
+id = 7
+name = "Floor"
+definition = "Toward negative infinity."
+
+[[law]]
+id = 8
+name = "TowardZero"
+definition = "Truncate toward zero."
+
+[[law]]
+id = 9
+name = "AwayFromZero"
+definition = "Away from zero."

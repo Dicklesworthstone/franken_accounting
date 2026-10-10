@@ -1,0 +1,97 @@
+# Dependency policy for the complete workspace graph (plan §18.4). This file
+# does not choose versions: Cargo.toml and Cargo.lock remain the authorities for
+# exact foundation revisions and transitive resolution.
+
+[graph]
+all-features = true
+
+[licenses]
+include-dev = true
+unused-allowed-license = "deny"
+confidence-threshold = 0.8
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-1-Clause",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "MIT",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]
+exceptions = [
+  { crate = "asupersync", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fgdb", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fgdb-types", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fgdb-delta-types", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fgdb-gql", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fgdb-crypto", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fgdb-bigint", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fgdb-chronicle", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fgdb-strata", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fgdb-beacon", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fgdb-prism", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fgdb-warden", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fgdb-policy", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fgdb-codec", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fgdb-collections", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fgdb-claim", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fgdb-evidence", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fgdb-resource", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fgdb-sketch", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fgdb-calibrate", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fgdb-order", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fgdb-unsafe-arena", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fgdb-unsafe-simd", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fgdb-unsafe-vfs", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fnx-algorithms", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fnx-classes", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fnx-cgse", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fnx-runtime", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "franken-decision", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "franken-evidence", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "franken-kernel", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+]
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+deny = [
+  # Runtimes other than asupersync.
+  { name = "tokio" },
+  { name = "async-std" },
+  { name = "smol" },
+  # Storage engines other than the substrate.
+  { name = "rusqlite" },
+  { name = "sqlx" },
+  { name = "rocksdb" },
+  { name = "fsqlite" },
+  # Time, decimal, and big-integer crates: fa-time and fa-money are built in-house
+  # over std and fgdb-bigint (plan §1 constraint 1).
+  { name = "chrono" },
+  { name = "time" },
+  { name = "rust_decimal" },
+  { name = "bigdecimal" },
+  { name = "num-bigint" },
+  # Columnar/dataframe/graph/search stacks banned by the substrate's closure.
+  { name = "arrow" },
+  { name = "polars" },
+  { name = "petgraph" },
+  { name = "tantivy" },
+  { name = "hnsw" },
+  # HTTP stacks other than asupersync's.
+  { name = "hyper" },
+  { name = "axum" },
+  { name = "reqwest" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+required-git-spec = "rev"
+allow-git = [
+  "https://github.com/Dicklesworthstone/asupersync",
+  "https://github.com/Dicklesworthstone/frankengraphdb",
+  "https://github.com/Dicklesworthstone/franken_networkx",
+]

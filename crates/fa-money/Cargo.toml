@@ -1,0 +1,13 @@
+[package]
+name = "fa-money"
+version = "0.0.1"
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "Abacus: FrankenAccounting's exact money algebra (plan §6). Units with immutable scale, amounts as unit-scaled i128 mantissas, exact rational rates, registered rounding laws, largest-remainder allocation, and functional-currency valuation with the residual absorbed by a designated leg. No float ever touches an amount. std-only; bead fa-3hr."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]

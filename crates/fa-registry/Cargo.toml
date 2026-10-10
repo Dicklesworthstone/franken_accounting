@@ -1,0 +1,15 @@
+[package]
+name = "fa-registry"
+version = "0.0.1"
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "The registries FrankenAccounting code branches on (plan §18.2), embedded at compile time from `registries/*.toml` and read by a std-only TOML-subset parser: exit codes, entry classes, the admissibility matrix, unit versions, rounding laws, and the frozen symbol table. No serde, no toml crate. Bead fa-2xh."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+fa-money = { path = "../fa-money" }
+fa-time = { path = "../fa-time" }

@@ -1,0 +1,94 @@
+# units.toml — unit versions with immutable scale (plan §4.4). A precision
+# change is a NEW row (same code, version + 1) with a scale-conversion law;
+# an existing row never changes. Mantissas are stored at `scale` forever.
+#
+# Consumer: fa-money UnitRegistry (loaded by fa-registry), fa-cli amount
+# parsing and rendering. Gate: duplicate (code, version) fails the check.
+
+schema_version = 1
+
+[[unit]]
+code = "USD"
+version = 0
+scale = 2
+kind = "currency"
+iso4217 = 840
+
+[[unit]]
+code = "EUR"
+version = 0
+scale = 2
+kind = "currency"
+iso4217 = 978
+
+[[unit]]
+code = "GBP"
+version = 0
+scale = 2
+kind = "currency"
+iso4217 = 826
+
+[[unit]]
+code = "JPY"
+version = 0
+scale = 0
+kind = "currency"
+iso4217 = 392
+
+[[unit]]
+code = "CHF"
+version = 0
+scale = 2
+kind = "currency"
+iso4217 = 756
+
+[[unit]]
+code = "CAD"
+version = 0
+scale = 2
+kind = "currency"
+iso4217 = 124
+
+[[unit]]
+code = "AUD"
+version = 0
+scale = 2
+kind = "currency"
+iso4217 = 36
+
+[[unit]]
+code = "KWD"
+version = 0
+scale = 3
+kind = "currency"
+iso4217 = 414
+
+[[unit]]
+code = "BTC"
+version = 0
+scale = 8
+kind = "commodity"
+
+[[unit]]
+code = "ETH"
+version = 0
+scale = 18
+kind = "commodity"
+
+[[unit]]
+code = "SHARE"
+version = 0
+scale = 6
+kind = "share"
+
+[[unit]]
+code = "HOUR"
+version = 0
+scale = 2
+kind = "time"
+
+[[unit]]
+code = "EACH"
+version = 0
+scale = 0
+kind = "count"

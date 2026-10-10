@@ -1,0 +1,55 @@
+# exit_codes.toml — the `fa` CLI exit-code dictionary (plan §15.3, Appendix D;
+# §0.4 decision 8). A strict superset of `fgdb`'s (success 0, usage 2, query 3,
+# open 4, io 5) so an agent that uses both tools learns one table. `1` is
+# never emitted. Empty results exit 0.
+#
+# Consumer: fa-cli (every exit), fa robot-docs exit-codes, the refusal catalog
+# (one exit per refusal). Gate: a refusal whose exit is not in this table fails
+# the registry check. Retire: never (it is the contract).
+
+schema_version = 1
+
+[[exit_code]]
+code = 0
+name = "success"
+meaning = "The command completed; empty results are still success."
+fgdb_equivalent = "success"
+
+[[exit_code]]
+code = 2
+name = "usage"
+meaning = "Usage or input error: bad flag, malformed intent, unknown code. The refusal names the exact fix."
+fgdb_equivalent = "usage"
+
+[[exit_code]]
+code = 3
+name = "refusal"
+meaning = "Accounting-law or query refusal: unbalanced, unit mismatch, missing required dimension, a query the profile rejects. The law and the cell are cited."
+fgdb_equivalent = "query"
+
+[[exit_code]]
+code = 4
+name = "environment"
+meaning = "Environment or open failure: no book, daemon unreachable, key file missing or wrong permissions, toolchain."
+fgdb_equivalent = "open"
+
+[[exit_code]]
+code = 5
+name = "foundation"
+meaning = "Foundation or I/O failure: substrate error, corruption detected, recovery required. Fail closed, never partial; fa doctor guidance attached."
+fgdb_equivalent = "io"
+
+[[exit_code]]
+code = 6
+name = "conflict"
+meaning = "Conflict: witness-validation abort after the configured retries, idempotency conflict, plan invalidated. A fresh plan or the recorded outcome is attached."
+
+[[exit_code]]
+code = 7
+name = "safety"
+meaning = "Safety block: period law (inadmissible class for the period's state), segregation of duties, capability, confirm_plan missing, destructive without --yes. The policy row and the safe alternative are named."
+
+[[exit_code]]
+code = 8
+name = "verification"
+meaning = "Verification failure: a proof, bundle, register fold, or certificate replay did not verify."

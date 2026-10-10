@@ -1,0 +1,297 @@
+# symbols.toml — the frozen symbol table for the substrate's host-interned
+# ids (plan §4.1 "Symbols", Appendix H R-SYM). Additive-only: a released id is
+# never renumbered or reused. The same table is journaled into every book at
+# creation and `fa doctor` fails when the binary's table and the book's differ.
+#
+# Consumer: fa-model (constants + GraphSymbolResolver), fa-journal writes,
+# every GQL statement fa-query emits. Gate: duplicate ids or names fail.
+
+schema_version = 1
+
+# ---- labels ---------------------------------------------------------------
+[[label]]
+id = 1
+name = "Book"
+[[label]]
+id = 2
+name = "LegalEntity"
+[[label]]
+id = 3
+name = "Account"
+[[label]]
+id = 4
+name = "Dimension"
+[[label]]
+id = 5
+name = "DimensionValue"
+[[label]]
+id = 6
+name = "Unit"
+[[label]]
+id = 7
+name = "FiscalCalendar"
+[[label]]
+id = 8
+name = "Period"
+[[label]]
+id = 9
+name = "Entry"
+[[label]]
+id = 10
+name = "Leg"
+[[label]]
+id = 11
+name = "Register"
+[[label]]
+id = 12
+name = "Party"
+[[label]]
+id = 13
+name = "Instrument"
+[[label]]
+id = 14
+name = "Event"
+[[label]]
+id = 15
+name = "Subledger"
+[[label]]
+id = 16
+name = "Document"
+[[label]]
+id = 17
+name = "Attestation"
+[[label]]
+id = 18
+name = "Approval"
+[[label]]
+id = 19
+name = "Principal"
+[[label]]
+id = 20
+name = "ExternalId"
+[[label]]
+id = 21
+name = "RestatementCase"
+[[label]]
+id = 22
+name = "DraftSet"
+[[label]]
+id = 23
+name = "CloseRun"
+[[label]]
+id = 24
+name = "Finding"
+[[label]]
+id = 25
+name = "Certificate"
+[[label]]
+id = 26
+name = "TimeEvidence"
+[[label]]
+id = 27
+name = "LimitCell"
+[[label]]
+id = 28
+name = "MigrationRun"
+[[label]]
+id = 29
+name = "StatementIssuance"
+[[label]]
+id = 30
+name = "Engagement"
+
+# ---- property keys --------------------------------------------------------
+[[property]]
+id = 1
+name = "_fa_payload"
+[[property]]
+id = 2
+name = "_fa_digest"
+[[property]]
+id = 3
+name = "_fa_graph"
+[[property]]
+id = 4
+name = "_fa_effective_day"
+[[property]]
+id = 5
+name = "book_id"
+[[property]]
+id = 6
+name = "class"
+[[property]]
+id = 7
+name = "idempotency_key"
+[[property]]
+id = 8
+name = "code"
+[[property]]
+id = 9
+name = "name"
+[[property]]
+id = 10
+name = "account_type"
+[[property]]
+id = 11
+name = "normal_balance"
+[[property]]
+id = 12
+name = "posting"
+[[property]]
+id = 13
+name = "unit_policy"
+[[property]]
+id = 14
+name = "side"
+[[property]]
+id = 15
+name = "account_ref"
+[[property]]
+id = 16
+name = "unit_id"
+[[property]]
+id = 17
+name = "amount"
+[[property]]
+id = 18
+name = "amount_bytes"
+[[property]]
+id = 19
+name = "ordinal"
+[[property]]
+id = 20
+name = "state"
+[[property]]
+id = 21
+name = "fiscal_year"
+[[property]]
+id = 22
+name = "period_start"
+[[property]]
+id = 23
+name = "period_end"
+[[property]]
+id = 24
+name = "period_kind"
+[[property]]
+id = 25
+name = "scale"
+[[property]]
+id = 26
+name = "version"
+[[property]]
+id = 27
+name = "_fa_fold_digest"
+[[property]]
+id = 28
+name = "watermark"
+[[property]]
+id = 29
+name = "debits_posted"
+[[property]]
+id = 30
+name = "credits_posted"
+[[property]]
+id = 31
+name = "entry_count"
+[[property]]
+id = 32
+name = "symbols_digest"
+[[property]]
+id = 33
+name = "base_unit"
+[[property]]
+id = 34
+name = "calendar_id"
+[[property]]
+id = 35
+name = "effective_period"
+[[property]]
+id = 36
+name = "proposal_digest"
+
+# ---- relations ------------------------------------------------------------
+[[relation]]
+id = 1
+name = "HAS_LEG"
+[[relation]]
+id = 2
+name = "POSTS_TO"
+[[relation]]
+id = 3
+name = "FOR"
+[[relation]]
+id = 4
+name = "IN_UNIT"
+[[relation]]
+id = 5
+name = "CHILD_OF"
+[[relation]]
+id = 6
+name = "SUPERSEDES"
+[[relation]]
+id = 7
+name = "RESOLVES"
+[[relation]]
+id = 8
+name = "DERIVED_FROM"
+[[relation]]
+id = 9
+name = "GENERATED_BY"
+[[relation]]
+id = 10
+name = "EVIDENCED_BY"
+[[relation]]
+id = 11
+name = "PREPARED_BY"
+[[relation]]
+id = 12
+name = "APPROVED_BY"
+[[relation]]
+id = 13
+name = "REVIEWED_BY"
+[[relation]]
+id = 14
+name = "ATTESTS"
+[[relation]]
+id = 15
+name = "SETTLES"
+[[relation]]
+id = 16
+name = "MATCHES"
+[[relation]]
+id = 17
+name = "OWNS"
+[[relation]]
+id = 18
+name = "CONTROLS"
+[[relation]]
+id = 19
+name = "RELATED_TO"
+[[relation]]
+id = 20
+name = "HELD_AT"
+[[relation]]
+id = 21
+name = "MIRRORS"
+[[relation]]
+id = 22
+name = "INTERCOMPANY_WITH"
+[[relation]]
+id = 23
+name = "CITES"
+[[relation]]
+id = 24
+name = "IN_CASE"
+[[relation]]
+id = 25
+name = "READ"
+[[relation]]
+id = 26
+name = "REPRESENTS"
+[[relation]]
+id = 27
+name = "IN_PERIOD"
+[[relation]]
+id = 28
+name = "IN_BOOK"

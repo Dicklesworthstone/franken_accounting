@@ -1,0 +1,79 @@
+# limits.toml — the per-kind maximum sizes every decoder enforces before it
+# allocates (plan Appendix A encoding laws; §4.2 `max_entry_bytes`). Raising a
+# limit is an additive-minor change; lowering one is breaking-major.
+#
+# Consumer: fa-model decoders (compiled constants cross-checked by the
+# `code_limits_match_registry` test), fa-journal refusals that cite the bound.
+# Gate: a name here with no constant in fa-model, or vice versa, fails CI.
+
+schema_version = 1
+
+[[limit]]
+name = "max_entry_bytes"
+value = 8388608
+[[limit]]
+name = "max_legs_per_entry"
+value = 4096
+[[limit]]
+name = "max_description_bytes"
+value = 1024
+[[limit]]
+name = "max_memo_bytes"
+value = 512
+[[limit]]
+name = "max_idempotency_key_bytes"
+value = 64
+[[limit]]
+name = "max_system_bytes"
+value = 64
+[[limit]]
+name = "max_external_id_bytes"
+value = 256
+[[limit]]
+name = "max_external_ids"
+value = 256
+[[limit]]
+name = "max_tag_key_bytes"
+value = 64
+[[limit]]
+name = "max_tag_text_bytes"
+value = 256
+[[limit]]
+name = "max_tag_bytes_value"
+value = 1024
+[[limit]]
+name = "max_tags"
+value = 32
+[[limit]]
+name = "max_tags_bytes"
+value = 4096
+[[limit]]
+name = "max_period_ref_bytes"
+value = 32
+[[limit]]
+name = "max_evidence_per_entry"
+value = 1024
+[[limit]]
+name = "max_supersession_per_entry"
+value = 1024
+[[limit]]
+name = "max_settles_per_leg"
+value = 1024
+[[limit]]
+name = "max_dimensions_per_leg"
+value = 64
+[[limit]]
+name = "max_rate_docs"
+value = 64
+[[limit]]
+name = "max_approvals"
+value = 256
+[[limit]]
+name = "max_proof_refs"
+value = 256
+[[limit]]
+name = "max_field_digests"
+value = 4096
+[[limit]]
+name = "max_schema_change_bytes"
+value = 1048576

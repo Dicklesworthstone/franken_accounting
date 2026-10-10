@@ -1,0 +1,353 @@
+# admissibility.toml — the entry-class × period-state matrix (plan Appendix C).
+# One row per (class, state). Decision is one of:
+#   "admit"                      any principal holding `post`
+#   "with:<op>[,<approvals>]"    the named capability op and approval count
+#   "refuse"                     never
+# Qualifiers ("case" = inside an approved RestatementCase; "run" = inside an
+# open MigrationRun; "voids_expires" = only Voids/Expires dispositions;
+# "posts_only_with" = Posts needs the op, Voids/Expires admit) are recorded in
+# `note` and enforced by the kernel's class-specific checks.
+#
+# Consumer: fa-journal laws step; the exhaustive generated test in fa-registry
+# (every posting class × every state must be decided exactly once).
+# Gate: an undecided cell fails CI. Control classes are not period-scoped.
+
+schema_version = 1
+
+# ---- Original -------------------------------------------------------------
+[[cell]]
+class = "Original"
+state = "Future"
+decision = "refuse"
+[[cell]]
+class = "Original"
+state = "Open"
+decision = "admit"
+[[cell]]
+class = "Original"
+state = "SoftClosed"
+decision = "with:post_softclosed"
+[[cell]]
+class = "Original"
+state = "Closed"
+decision = "refuse"
+[[cell]]
+class = "Original"
+state = "Locked"
+decision = "refuse"
+
+# ---- Pending --------------------------------------------------------------
+[[cell]]
+class = "Pending"
+state = "Future"
+decision = "refuse"
+[[cell]]
+class = "Pending"
+state = "Open"
+decision = "admit"
+[[cell]]
+class = "Pending"
+state = "SoftClosed"
+decision = "with:post_softclosed"
+[[cell]]
+class = "Pending"
+state = "Closed"
+decision = "refuse"
+[[cell]]
+class = "Pending"
+state = "Locked"
+decision = "refuse"
+
+# ---- Resolution -----------------------------------------------------------
+[[cell]]
+class = "Resolution"
+state = "Future"
+decision = "refuse"
+[[cell]]
+class = "Resolution"
+state = "Open"
+decision = "admit"
+[[cell]]
+class = "Resolution"
+state = "SoftClosed"
+decision = "admit"
+[[cell]]
+class = "Resolution"
+state = "Closed"
+decision = "with:post_closed"
+note = "posts_only_with: Voids/Expires admit (the sweep's intrinsic post_closed)"
+[[cell]]
+class = "Resolution"
+state = "Locked"
+decision = "admit"
+note = "voids_expires: Posts refused"
+
+# ---- Reversal -------------------------------------------------------------
+[[cell]]
+class = "Reversal"
+state = "Future"
+decision = "refuse"
+[[cell]]
+class = "Reversal"
+state = "Open"
+decision = "admit"
+[[cell]]
+class = "Reversal"
+state = "SoftClosed"
+decision = "admit"
+[[cell]]
+class = "Reversal"
+state = "Closed"
+decision = "with:post_closed"
+[[cell]]
+class = "Reversal"
+state = "Locked"
+decision = "refuse"
+note = "reverse in the next open period instead; the refusal says so"
+
+# ---- Replacement ----------------------------------------------------------
+[[cell]]
+class = "Replacement"
+state = "Future"
+decision = "refuse"
+[[cell]]
+class = "Replacement"
+state = "Open"
+decision = "admit"
+[[cell]]
+class = "Replacement"
+state = "SoftClosed"
+decision = "admit"
+[[cell]]
+class = "Replacement"
+state = "Closed"
+decision = "with:post_closed,1"
+[[cell]]
+class = "Replacement"
+state = "Locked"
+decision = "refuse"
+
+# ---- Reclassification -----------------------------------------------------
+[[cell]]
+class = "Reclassification"
+state = "Future"
+decision = "refuse"
+[[cell]]
+class = "Reclassification"
+state = "Open"
+decision = "admit"
+[[cell]]
+class = "Reclassification"
+state = "SoftClosed"
+decision = "admit"
+[[cell]]
+class = "Reclassification"
+state = "Closed"
+decision = "with:post_closed,1"
+[[cell]]
+class = "Reclassification"
+state = "Locked"
+decision = "refuse"
+
+# ---- Adjusting ------------------------------------------------------------
+[[cell]]
+class = "Adjusting"
+state = "Future"
+decision = "refuse"
+[[cell]]
+class = "Adjusting"
+state = "Open"
+decision = "admit"
+[[cell]]
+class = "Adjusting"
+state = "SoftClosed"
+decision = "admit"
+[[cell]]
+class = "Adjusting"
+state = "Closed"
+decision = "with:post_closed,1"
+[[cell]]
+class = "Adjusting"
+state = "Locked"
+decision = "refuse"
+
+# ---- Closing (incremental, §7.5) -----------------------------------------
+[[cell]]
+class = "Closing"
+state = "Future"
+decision = "refuse"
+[[cell]]
+class = "Closing"
+state = "Open"
+decision = "with:close"
+[[cell]]
+class = "Closing"
+state = "SoftClosed"
+decision = "with:close"
+[[cell]]
+class = "Closing"
+state = "Closed"
+decision = "with:close,1"
+[[cell]]
+class = "Closing"
+state = "Locked"
+decision = "with:restate,2"
+note = "case"
+
+# ---- Allocation / Revaluation / Elimination (rule-driven) ----------------
+[[cell]]
+class = "Allocation"
+state = "Future"
+decision = "refuse"
+[[cell]]
+class = "Allocation"
+state = "Open"
+decision = "admit"
+[[cell]]
+class = "Allocation"
+state = "SoftClosed"
+decision = "admit"
+[[cell]]
+class = "Allocation"
+state = "Closed"
+decision = "with:post_closed,1"
+[[cell]]
+class = "Allocation"
+state = "Locked"
+decision = "refuse"
+
+[[cell]]
+class = "Revaluation"
+state = "Future"
+decision = "refuse"
+[[cell]]
+class = "Revaluation"
+state = "Open"
+decision = "admit"
+[[cell]]
+class = "Revaluation"
+state = "SoftClosed"
+decision = "admit"
+[[cell]]
+class = "Revaluation"
+state = "Closed"
+decision = "with:post_closed,1"
+[[cell]]
+class = "Revaluation"
+state = "Locked"
+decision = "refuse"
+
+[[cell]]
+class = "Elimination"
+state = "Future"
+decision = "refuse"
+[[cell]]
+class = "Elimination"
+state = "Open"
+decision = "admit"
+[[cell]]
+class = "Elimination"
+state = "SoftClosed"
+decision = "admit"
+[[cell]]
+class = "Elimination"
+state = "Closed"
+decision = "with:post_closed,1"
+[[cell]]
+class = "Elimination"
+state = "Locked"
+decision = "refuse"
+
+# ---- Migration (Opening and Historical periods only, inside a run) -------
+[[cell]]
+class = "Migration"
+state = "Future"
+decision = "refuse"
+[[cell]]
+class = "Migration"
+state = "Open"
+decision = "refuse"
+[[cell]]
+class = "Migration"
+state = "SoftClosed"
+decision = "refuse"
+[[cell]]
+class = "Migration"
+state = "Closed"
+decision = "refuse"
+[[cell]]
+class = "Migration"
+state = "Locked"
+decision = "with:migrate,2"
+note = "run: Opening and Historical periods only, inside an open MigrationRun"
+
+# ---- Revision / Restatement (case-bound) ---------------------------------
+[[cell]]
+class = "Revision"
+state = "Future"
+decision = "refuse"
+[[cell]]
+class = "Revision"
+state = "Open"
+decision = "refuse"
+[[cell]]
+class = "Revision"
+state = "SoftClosed"
+decision = "refuse"
+[[cell]]
+class = "Revision"
+state = "Closed"
+decision = "with:restate,1"
+note = "case"
+[[cell]]
+class = "Revision"
+state = "Locked"
+decision = "with:restate,2"
+note = "case"
+
+[[cell]]
+class = "Restatement"
+state = "Future"
+decision = "refuse"
+[[cell]]
+class = "Restatement"
+state = "Open"
+decision = "refuse"
+[[cell]]
+class = "Restatement"
+state = "SoftClosed"
+decision = "refuse"
+[[cell]]
+class = "Restatement"
+state = "Closed"
+decision = "with:restate,2"
+note = "case"
+[[cell]]
+class = "Restatement"
+state = "Locked"
+decision = "with:restate,2"
+note = "case"
+
+# ---- PriorPeriodAdjustment (posts in the current open period) ------------
+[[cell]]
+class = "PriorPeriodAdjustment"
+state = "Future"
+decision = "refuse"
+[[cell]]
+class = "PriorPeriodAdjustment"
+state = "Open"
+decision = "with:restate,2"
+note = "case"
+[[cell]]
+class = "PriorPeriodAdjustment"
+state = "SoftClosed"
+decision = "with:restate,2"
+note = "case"
+[[cell]]
+class = "PriorPeriodAdjustment"
+state = "Closed"
+decision = "refuse"
+[[cell]]
+class = "PriorPeriodAdjustment"
+state = "Locked"
+decision = "refuse"

@@ -1,0 +1,62 @@
+# FrankenAccounting workspace root.
+#
+# Constitutional context (AGENTS.md doctrine, plan §18):
+#   - `fa-*` crates appear only with their first real slice of a final
+#     abstraction. No empty prototype crates.
+#   - Workspace-level `unsafe_code = "forbid"`. There are no unsafe islands in
+#     this repository and there will be none; a raw-pointer need is routed
+#     upstream to the substrate's ledgered boundary crates.
+#   - The dependency universe is closed (plan §1 constraint 1, §18.4): std, the
+#     pinned nightly, asupersync (git rev), frankengraphdb (git rev,
+#     unpublished), franken_networkx (git rev, the one fgdb-prism pins), and
+#     fastmcp-rust (crates.io, `fa-mcp` posture only). `deny.toml` enforces it.
+
+[workspace]
+resolver = "3"
+members = [
+    "crates/fa",
+    "crates/fa-money",
+    "crates/fa-time",
+    "crates/fa-registry",
+]
+
+[workspace.package]
+edition = "2024"
+license-file = "LICENSE"
+repository = "https://github.com/Dicklesworthstone/franken_accounting"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+# Every public type a caller can receive, it can also name and document.
+unnameable_types = "deny"
+
+[workspace.dependencies]
+# asupersync at exactly the revision frankengraphdb pins (plan §18.4). With
+# default features off the embedded posture pulls no TLS/network stack.
+asupersync = { git = "https://github.com/Dicklesworthstone/asupersync", rev = "78b64636e99fea4ea2d868096576021dd3b8e519", version = "=0.5.0", default-features = false }
+
+# The substrate (unpublished; git rev recorded in franken-stack.lock). Bumping
+# this rev is a deliberate, single-commit event that re-runs the substrate
+# behavior suite (plan §16.3).
+fgdb = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf" }
+fgdb-types = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf" }
+fgdb-delta-types = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf" }
+fgdb-gql = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf" }
+fgdb-crypto = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf" }
+fgdb-bigint = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf" }
+
+# Disk-frugal profiles (the substrate's precedent: full DWARF on its test
+# build filled a 300G worker). Backtraces keep file:line.
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.test]
+debug = "line-tables-only"
+incremental = false
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"

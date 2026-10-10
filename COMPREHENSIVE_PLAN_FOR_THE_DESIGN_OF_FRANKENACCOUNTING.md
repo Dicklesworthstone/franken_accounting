@@ -475,7 +475,7 @@ Folio holds the book's `Database` (a single-writer handle, `&mut self`) and the 
 
 ### 6.1 Representation and arithmetic
 
-`Amount { unit, mantissa: i128 }` at the unit's registered scale (§4.4). Addition, subtraction, negation, comparison, and summation are checked `i128` operations; a unit mismatch is a type error at the API boundary (`Amount` arithmetic is only defined between equal units; conversion is always explicit under a law). Multiplication by a rational factor (a tax rate, an allocation share, an FX rate) and division (a per-unit cost, a pro-rata share) are **wide**: the product `mantissa × numerator` is computed in `fgdb_bigint::BigInt` (limb-limited, checked), divided by `denominator × 10^(scale adjustments)` with an exact quotient and remainder, and then *rounded under a named law* back to the target scale — never a floating-point step, never an intermediate at the wrong scale. `CanonicalDecimal` (scale 18, add/sub/neg only) is the interchange type for rates and factors, with `Rate { numerator: BigInt, denominator: BigInt }` as the exact internal form; a rate document (§6.4) states its decimal digits and is parsed to an exact rational. Percentages, basis points, and per-mille are `Rate`s with a declared denominator. Nothing in `fa-money` imports a float.
+`Amount { unit, mantissa: i128 }` at the unit's registered scale (§4.4). Addition, subtraction, negation, comparison, and summation are checked `i128` operations; a unit mismatch is a type error at the API boundary (`Amount` arithmetic is only defined between equal units; conversion is always explicit under a law). Multiplication by a rational factor (a tax rate, an allocation share, an FX rate) and division (a per-unit cost, a pro-rata share) are **wide**: the product `mantissa × numerator` is computed in `fa-money`'s own exact 256-bit routines (`wide::U256`: checked multiply by `u128`, exact divide-by-`u128` with remainder — a few hundred audited lines over `std`, so the money crate stays in the Foundation layer with no substrate dependency), divided by `denominator × 10^(scale adjustments)` with an exact quotient and remainder, and then *rounded under a named law* back to the target scale — never a floating-point step, never an intermediate at the wrong scale. `fgdb-bigint` is a differential oracle for those routines in tests, not a dependency of the arithmetic. `CanonicalDecimal` (scale 18, add/sub/neg only) is the interchange type for rates and factors, with `Rate { numerator: BigInt, denominator: BigInt }` as the exact internal form; a rate document (§6.4) states its decimal digits and is parsed to an exact rational. Percentages, basis points, and per-mille are `Rate`s with a declared denominator. Nothing in `fa-money` imports a float.
 
 ### 6.2 Rounding laws
 
@@ -1222,7 +1222,7 @@ Entry (schema fa:entry:v1)                                                // §4
     supersession: [{ target: EntryRef, kind: SupersessionKind(u8), reason_code: u16 }],
     pending: Option<{ timeout_ns: Option<u64>, resolution_of: Option<EntryRef>, disposition: Option<Disposition> }>,
     external_ids: sorted [{ system: String(≤64), id: Erasable<String(≤256)> }],
-    tags: sorted Map<String(≤64), Erasable<CanonicalPropertyValue>> (≤ 32 entries, ≤ 4 KiB),
+    tags: sorted Map<String(≤64), Erasable<TagValue>> (≤ 32 entries, ≤ 4 KiB),   // TagValue = Null | Bool | Int(i64) | Text(≤256) | Bytes(≤1024): the storable scalar subset under FrankenAccounting's own codec, so the durable format never tracks the substrate's scalar encoding
     entry_digest: BLAKE3("fa:entry:v1" ‖ proposal_digest ‖ canonical(approvals)) }   // the committed envelope
 
 ControlPayload (closed union; legs are empty)
@@ -1238,7 +1238,7 @@ ControlPayload (closed union; legs are empty)
   | ErasureCut         { subject_ref: VId128, field_digests: sorted [[u8;32]] }
   | MigrationControl   { run_ref: VId128, kind: Open | Finalize | Abandon, tie_out_digest }
 
-Erasable<T>           { field_digest: [u8;32] = BLAKE3("fa:field:v1" ‖ canonical(T)), subject_ref: Option<VId128>, bytes: AEAD under the subject key (or the book key when subject_ref is None) }   // payload digests cover field_digest only
+Erasable<T>           { field_digest: [u8;32] = BLAKE3("fa:field:v1" ‖ salt ‖ canonical(T)), subject_ref: Option<VId128>, nonce: [u8;24], sealed: AEAD(key, nonce, aad = "fa:erasable:v1" ‖ field_digest, salt: [u8;32] ‖ canonical(T)) under the subject key (or the book key when subject_ref is None) }   // payload digests cover field_digest only; the salt lives only inside the ciphertext, so an erased low-entropy field (a name, a short memo) cannot be recovered by hashing guesses against the digest
 
 LegPayload (wire type, inline)
   { side: u8 (0 = Debit, 1 = Credit),

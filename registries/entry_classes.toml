@@ -1,0 +1,117 @@
+# entry_classes.toml — the closed registry of entry classes (plan §8.1).
+# Every entry carries exactly one class; the class decides admissibility
+# (admissibility.toml), whether legs are required (posting classes) or
+# forbidden (control classes), and the supersession it must declare.
+#
+# Consumer: fa-journal (laws step), fa-registry admissibility check, fa-cli.
+# Gate: an entry whose class tag is not here is unencodable.
+
+schema_version = 1
+
+[[class]]
+tag = 1
+name = "Original"
+kind = "posting"
+supersession = "none"
+
+[[class]]
+tag = 2
+name = "Pending"
+kind = "posting"
+supersession = "none"
+
+[[class]]
+tag = 3
+name = "Resolution"
+kind = "posting"
+supersession = "resolves"
+
+[[class]]
+tag = 4
+name = "Reversal"
+kind = "posting"
+supersession = "reverses"
+
+[[class]]
+tag = 5
+name = "Replacement"
+kind = "posting"
+supersession = "replaces"
+
+[[class]]
+tag = 6
+name = "Reclassification"
+kind = "posting"
+supersession = "reclassifies"
+
+[[class]]
+tag = 7
+name = "Adjusting"
+kind = "posting"
+supersession = "optional"
+
+[[class]]
+tag = 8
+name = "Closing"
+kind = "posting"
+supersession = "none"
+
+[[class]]
+tag = 9
+name = "Allocation"
+kind = "posting"
+supersession = "none"
+
+[[class]]
+tag = 10
+name = "Revaluation"
+kind = "posting"
+supersession = "none"
+
+[[class]]
+tag = 11
+name = "Elimination"
+kind = "posting"
+supersession = "none"
+
+[[class]]
+tag = 12
+name = "Migration"
+kind = "posting"
+supersession = "none"
+
+[[class]]
+tag = 13
+name = "Revision"
+kind = "posting"
+supersession = "revises"
+
+[[class]]
+tag = 14
+name = "Restatement"
+kind = "posting"
+supersession = "restates"
+
+[[class]]
+tag = 15
+name = "PriorPeriodAdjustment"
+kind = "posting"
+supersession = "none"
+
+[[class]]
+tag = 16
+name = "PeriodControl"
+kind = "control"
+supersession = "none"
+
+[[class]]
+tag = 17
+name = "SchemaControl"
+kind = "control"
+supersession = "none"
+
+[[class]]
+tag = 18
+name = "PolicyControl"
+kind = "control"
+supersession = "none"

@@ -1,0 +1,44 @@
+# franken-stack.lock — source provenance of every foundation this workspace links
+# (plan §18.4; the eidetic_engine_cli / frankengit convention). Cargo.lock holds
+# the resolution; this file holds the *why*: which upstream commit each pin is,
+# when it was taken, and what re-verification a bump owes.
+#
+# A bump of one is a bump of all (asupersync is pinned transitively through
+# frankengraphdb, and franken_networkx through fgdb-prism). Bumping re-runs the
+# substrate behavior suite (plan §16.3) before the new lock lands.
+
+schema_version = 1
+taken_on = "2026-10-10"
+
+[[foundation]]
+name = "asupersync"
+source = "git+https://github.com/Dicklesworthstone/asupersync"
+rev = "78b64636e99fea4ea2d868096576021dd3b8e519"
+version = "0.5.0"
+features = "default-features = false"
+role = "runtime: Cx, regions, lab runtime, RaptorQ, macaroons"
+pinned_by = "frankengraphdb crates/fgdb/Cargo.toml (same rev)"
+
+[[foundation]]
+name = "frankengraphdb"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb"
+rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+version = "0.0.1 (unpublished, publish = false)"
+crates = ["fgdb", "fgdb-types", "fgdb-delta-types", "fgdb-gql", "fgdb-crypto", "fgdb-bigint"]
+role = "substrate: Chronicle commit stream, bounded WriteTxn with point-read witnesses, native GQL, certified reads"
+status_checked = "2026-10-09 (plan Appendix H rows)"
+
+[[foundation]]
+name = "franken_networkx"
+source = "git+https://github.com/Dicklesworthstone/franken_networkx"
+rev = "9d710b1c33e99412c94de7fa4de2f7ce4954110f"
+version = "0.2.0 at that rev"
+crates = ["fnx-classes", "fnx-algorithms"]
+role = "forensic graph algorithms (Lantern); not yet linked — enters with fa-lantern"
+pinned_by = "frankengraphdb crates/fgdb-prism/Cargo.toml (same rev)"
+
+[[foundation]]
+name = "fastmcp-rust"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+version = "=0.12.0"
+role = "MCP framework; fa-mcp posture only; not yet linked — enters with fa-mcp, together with [patch.crates-io] asupersync to the rev above"
