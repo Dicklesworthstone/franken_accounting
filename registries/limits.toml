@@ -77,3 +77,9 @@ value = 4096
 [[limit]]
 name = "max_schema_change_bytes"
 value = 1048576
+[[limit]]
+name = "max_extensions"
+value = 64
+[[limit]]
+name = "max_extension_bytes"
+value = 65536

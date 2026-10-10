@@ -27,6 +27,9 @@ pub const MAX_APPROVALS: usize = 256;
 pub const MAX_PROOF_REFS: usize = 256;
 pub const MAX_FIELD_DIGESTS: usize = 4096;
 pub const MAX_SCHEMA_CHANGE_BYTES: usize = 1024 * 1024;
+/// Additive-minor extension entries per entry, and bytes per entry.
+pub const MAX_EXTENSIONS: usize = 64;
+pub const MAX_EXTENSION_BYTES: usize = 64 * 1024;
 
 /// Every limit as `(name, value)`, in registry order.
 pub const ALL: &[(&str, u64)] = &[
@@ -59,6 +62,8 @@ pub const ALL: &[(&str, u64)] = &[
     ("max_proof_refs", MAX_PROOF_REFS as u64),
     ("max_field_digests", MAX_FIELD_DIGESTS as u64),
     ("max_schema_change_bytes", MAX_SCHEMA_CHANGE_BYTES as u64),
+    ("max_extensions", MAX_EXTENSIONS as u64),
+    ("max_extension_bytes", MAX_EXTENSION_BYTES as u64),
 ];
 
 #[cfg(test)]
