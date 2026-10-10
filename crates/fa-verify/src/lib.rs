@@ -12,6 +12,9 @@
 //! - a list of leaf envelopes is the *complete* prefix the checkpoint
 //!   commits, so a scope predicate over it is complete for that prefix
 //!   ([`verify_prefix`], scope `seq_range_complete`);
+//! - an account's posted debits and credits in one unit, through a cutoff,
+//!   are the fold of exactly the authenticated in-scope entries
+//!   ([`verify_balance`], scope `recomputation`);
 //! - a document's bytes and kind produce the public `doc_commit` an
 //!   entry's evidence cites ([`document::doc_commit`]).
 //!
@@ -30,6 +33,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod balance;
 pub mod blake3;
 pub mod codec;
 pub mod document;
@@ -38,6 +42,7 @@ pub mod proof;
 pub mod state;
 pub mod tree;
 
+pub use balance::{Balance, BalanceClaim, verify_balance};
 pub use codec::DecodeError;
 pub use envelope::{LeafEnvelope, RecordError};
 pub use proof::{

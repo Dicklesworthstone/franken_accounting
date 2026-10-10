@@ -4,14 +4,14 @@ version = "0.0.1"
 edition.workspace = true
 license-file.workspace = true
 repository.workspace = true
-description = "Notary (plan §13.2): the journal accumulator — a Merkle Mountain Range over domain-separated leaf envelopes of every committed entry in commit order, maintained off the posting path — journaled AccumulatorState objects chained by prev_state_oid under a CAS guard, recomputation of every state from the journal prefix (FA-INV-14), and inclusion, consistency, and complete-prefix proofs in the formats fa-verify checks. Bead fa-l3c."
+description = "Notary (plan §13.2): the journal accumulator — a Merkle Mountain Range over domain-separated leaf envelopes of every committed entry in commit order, maintained off the posting path — journaled AccumulatorState objects chained by prev_state_oid under a CAS guard, recomputation of every state from the journal prefix (FA-INV-14), and inclusion, consistency, complete-prefix, and balance-recomputation proofs in the formats fa-verify checks. Bead fa-l3c."
 publish = false
 
 [lints]
 workspace = true
 
 [dependencies]
-fa-time = { path = "../fa-time", version = "=0.0.1" }
+fa-money = { path = "../fa-money", version = "=0.0.1" }
 fa-model = { path = "../fa-model", version = "=0.0.1" }
 fa-journal = { path = "../fa-journal", version = "=0.0.1" }
 asupersync = { workspace = true }
@@ -23,4 +23,6 @@ fgdb-crypto = { workspace = true }
 # The independent verifier is the producer's differential oracle (plan
 # §13.3): it shares no hashing, codec, or tree code with this crate.
 fa-verify = { path = "../fa-verify", version = "=0.0.1" }
-fa-money = { path = "../fa-money", version = "=0.0.1" }
+# The register folds are the in-book oracle for the balance proof.
+fa-registers = { path = "../fa-registers", version = "=0.0.1" }
+fa-time = { path = "../fa-time", version = "=0.0.1" }

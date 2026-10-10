@@ -32,8 +32,8 @@ use fgdb_types::CommitSeq;
 pub use journal::{Journal, Leaf, LeafEnvelope};
 pub use state::{
     AccumulatorState, AccumulatorVerification, Checkpointed, StateCheck, StoredState, chain,
-    checkpoint, latest, prove_consistency, prove_inclusion, prove_prefix, state_oid, state_vid,
-    verify_accumulator,
+    checkpoint, latest, prove_balance, prove_consistency, prove_inclusion, prove_prefix, state_oid,
+    state_vid, verify_accumulator,
 };
 
 /// Refusal codes the notary issues (`FA-REF-12x`).

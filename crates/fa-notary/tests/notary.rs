@@ -13,13 +13,13 @@ use fa_journal::rows::book_root;
 use fa_journal::*;
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    EntryClass, EntryOrigin, EntryPayload, Erasable, EvidenceRef, Id128, LegPayload, Oid, SealKey,
-    SymbolTable, Writer, account_vid,
+    EntryClass, EntryOrigin, EntryPayload, Erasable, EvidenceRef, Id128, LegPayload, Oid, Pending,
+    SealKey, SymbolTable, Writer, account_vid,
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_notary::{
-    AccumulatorState, Journal, StoredState, chain, checkpoint, code, latest, prove_consistency,
-    prove_inclusion, prove_prefix, state_oid, state_vid, verify_accumulator,
+    AccumulatorState, Journal, StoredState, chain, checkpoint, code, latest, prove_balance,
+    prove_consistency, prove_inclusion, prove_prefix, state_oid, state_vid, verify_accumulator,
 };
 use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodTransition};
 use fa_verify::{RecordCheck, VerifyError};
@@ -50,6 +50,19 @@ impl Harness {
     }
 
     fn post(&mut self, expense: VId, cents: i128, key: &[u8]) -> VId {
+        self.post_on(expense, cents, key, 15, EntryClass::ORIGINAL)
+    }
+
+    /// Post `Dr expense / Cr cash` effective March `day`; the `Pending`
+    /// class posts a hold, which reserves and never posts.
+    fn post_on(
+        &mut self,
+        expense: VId,
+        cents: i128,
+        key: &[u8],
+        day: u8,
+        class: EntryClass,
+    ) -> VId {
         let legs = vec![
             LegPayload::simple(Side::Debit, expense, Amount::new(self.usd, cents)),
             LegPayload::simple(Side::Credit, self.cash, Amount::new(self.usd, cents)),
@@ -58,8 +71,8 @@ impl Harness {
             schema_minor: fa_model::entry::SCHEMA_MINOR,
             book_id: self.book.book_id,
             branch_id: Id128::TRUNK,
-            class: EntryClass::ORIGINAL,
-            effective_date: DateDay::from_ymd(2026, 3, 15).unwrap(),
+            class,
+            effective_date: DateDay::from_ymd(2026, 3, day).unwrap(),
             document_date: None,
             description: Erasable::seal(
                 &"expense".to_string(),
@@ -82,7 +95,11 @@ impl Harness {
             session_ref: None,
             evidence: self.evidence.clone(),
             supersession: Vec::new(),
-            pending: None,
+            pending: (class == EntryClass::PENDING).then_some(Pending {
+                timeout_ns: None,
+                resolution_of: None,
+                disposition: None,
+            }),
             external_ids: Vec::new(),
             extensions: Vec::new(),
             tags: Vec::new(),
@@ -820,5 +837,171 @@ fn checkpoint_refuses_a_predecessor_that_claims_its_own_recording_commit() {
     assert!(
         refused.message.contains("claims a prefix through"),
         "{refused:?}"
+    );
+}
+
+/// Re-encode a balance proof from its parts, so a test can plant one fault.
+#[allow(clippy::too_many_arguments)]
+fn balance_bytes(
+    statement: &fa_notary::Statement,
+    account: VId,
+    unit: u32,
+    through: Option<i32>,
+    debits: i128,
+    credits: i128,
+    envelopes: &[Vec<u8>],
+    records: &[(u64, u32, Vec<u8>)],
+) -> Vec<u8> {
+    let mut w = Writer::new();
+    w.bytes(b"fa:acc-balance-proof:v1");
+    statement.encode(&mut w);
+    w.u128(account.0)
+        .u32(unit)
+        .opt(through.as_ref(), |w, d| {
+            w.i32(*d);
+        })
+        .i128(debits)
+        .i128(credits)
+        .list(envelopes, |w, e| {
+            w.bytes(e);
+        })
+        .list(records, |w, (i, len, payload)| {
+            w.u64(*i).u32(*len).bytes(payload);
+        });
+    w.finish().unwrap()
+}
+
+/// The balance-recomputation proof (§13.3): for every (account, unit) the
+/// outsider's refold from exactly the authenticated in-scope entries equals
+/// the register fold at the same known-at and cutoff — holds excluded — and
+/// an omitted, extra, or altered record or a wrong claim is refused.
+#[test]
+fn balance_proofs_refold_exactly_the_register_balances_and_refuse_tampering() {
+    let mut h = harness();
+    h.post_on(h.rent, 1_000, b"m10", 10, EntryClass::ORIGINAL);
+    h.post_on(h.utilities, 250, b"m12", 12, EntryClass::ORIGINAL);
+    h.post_on(h.rent, 333, b"m20", 20, EntryClass::ORIGINAL);
+    h.post_on(h.utilities, 7_000, b"hold", 11, EntryClass::PENDING);
+    let a = h.checkpoint();
+    let trusted = outsider_checkpoint(&a);
+    let mid = DateDay::from_ymd(2026, 3, 15).unwrap();
+    let late = DateDay::from_ymd(2026, 3, 31).unwrap();
+
+    for cutoff in [mid, late] {
+        let tb = fa_registers::balance_as_of(&h.db, &h.book, cutoff, Some(a.state.through_seq))
+            .expect("register fold");
+        for account in [h.cash, h.rent, h.utilities] {
+            let proof = prove_balance(&h.db, &h.book, &a.state, account, h.usd.0, Some(cutoff.0))
+                .unwrap()
+                .unwrap();
+            let report = fa_verify::verify_balance(&proof, &trusted).expect("refold matches");
+            let expected = tb
+                .rows
+                .iter()
+                .find(|r| r.account == account && r.unit_id == h.usd.0)
+                .map_or((0, 0), |r| (r.debits, r.credits));
+            assert_eq!((report.claim.debits, report.claim.credits), expected);
+            assert_eq!(report.scope, "recomputation");
+        }
+    }
+    // The hold reserved 7,000 against cash and utilities but posted nothing.
+    let cash_all = fa_verify::verify_balance(
+        &prove_balance(&h.db, &h.book, &a.state, h.cash, h.usd.0, None)
+            .unwrap()
+            .unwrap(),
+        &trusted,
+    )
+    .unwrap();
+    assert_eq!((cash_all.claim.debits, cash_all.claim.credits), (0, 1_583));
+    assert_eq!(cash_all.contributing.len(), 3);
+
+    // Plant one fault at a time into the honest parts.
+    let journal = Journal::read(&h.db, &h.book, Some(a.state.through_seq))
+        .unwrap()
+        .unwrap();
+    let statement = a.state.statement();
+    let envelopes: Vec<Vec<u8>> = journal
+        .leaves
+        .iter()
+        .map(|l| l.envelope_bytes.clone())
+        .collect();
+    let record = |i: usize| {
+        let l = &journal.leaves[i];
+        (
+            i as u64,
+            u32::try_from(l.proposal_len).unwrap(),
+            l.payload.clone(),
+        )
+    };
+    let rent = |l: &fa_notary::Leaf| {
+        l.envelope.class == EntryClass::ORIGINAL && l.envelope.account_vids.contains(&h.rent)
+    };
+    let in_scope: Vec<usize> = (0..journal.leaves.len())
+        .filter(|i| rent(&journal.leaves[*i]))
+        .collect();
+    assert_eq!(in_scope.len(), 2);
+    let honest: Vec<_> = in_scope.iter().map(|i| record(*i)).collect();
+    let make = |debits, credits, records: &[(u64, u32, Vec<u8>)]| {
+        balance_bytes(
+            &statement, h.rent, h.usd.0, None, debits, credits, &envelopes, records,
+        )
+    };
+    assert_eq!(
+        make(1_333, 0, &honest),
+        prove_balance(&h.db, &h.book, &a.state, h.rent, h.usd.0, None)
+            .unwrap()
+            .unwrap(),
+        "the test encoder is the producer's format"
+    );
+    assert!(fa_verify::verify_balance(&make(1_333, 0, &honest), &trusted).is_ok());
+    assert_eq!(
+        fa_verify::verify_balance(&make(1_000, 0, &honest[..1]), &trusted),
+        Err(VerifyError::RecordSet {
+            index: in_scope[1] as u64
+        }),
+        "an omitted in-scope record"
+    );
+    let hold_index = journal
+        .leaves
+        .iter()
+        .position(|l| l.envelope.class == EntryClass::PENDING)
+        .unwrap();
+    let mut with_hold = honest.clone();
+    with_hold.push(record(hold_index));
+    with_hold.sort_by_key(|r| r.0);
+    assert!(
+        matches!(
+            fa_verify::verify_balance(&make(1_333, 0, &with_hold), &trusted),
+            Err(VerifyError::RecordSet { .. })
+        ),
+        "an extra record (a hold) is not admitted"
+    );
+    assert_eq!(
+        fa_verify::verify_balance(&make(1_334, 0, &honest), &trusted),
+        Err(VerifyError::Claim {
+            debits: 1_333,
+            credits: 0
+        }),
+        "a wrong claim is refused with the refold"
+    );
+    let mut altered = honest.clone();
+    let n = altered[0].2.len();
+    altered[0].2[n / 3] ^= 1;
+    assert!(
+        matches!(
+            fa_verify::verify_balance(&make(1_333, 0, &altered), &trusted),
+            Err(VerifyError::Record(_))
+        ),
+        "an altered record"
+    );
+    let mut swapped = honest.clone();
+    swapped[0].2 = record(hold_index).2;
+    swapped[0].1 = record(hold_index).1;
+    assert!(
+        matches!(
+            fa_verify::verify_balance(&make(1_333, 0, &swapped), &trusted),
+            Err(VerifyError::Record(_))
+        ),
+        "another entry's record under an in-scope index"
     );
 }

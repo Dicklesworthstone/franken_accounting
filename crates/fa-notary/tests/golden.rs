@@ -181,6 +181,10 @@ fn accumulator_formats_equal_the_pinned_vectors() {
             hex(&full.consistency_proof(&early.statement()).unwrap().unwrap()),
         ),
         ("prefix", hex(&full.prefix_proof().unwrap())),
+        (
+            "balance",
+            hex(&full.balance_proof(VId(0x30), 1, None).unwrap()),
+        ),
     ];
     let mut drift = Vec::new();
     for (name, bytes) in &actual {

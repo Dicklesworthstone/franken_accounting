@@ -161,6 +161,16 @@ pub enum RecordError {
     Envelope,
 }
 
+/// One leg of an `fa:entry:v1` proposal, as a fold reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Leg {
+    pub debit: bool,
+    pub account: u128,
+    pub unit: u32,
+    /// Non-negative in a valid entry; the fold checks rather than assumes.
+    pub mantissa: i128,
+}
+
 /// The selection fields an `fa:entry:v1` proposal determines, read from the
 /// front of the proposal through its legs. Every byte after the legs is
 /// covered by the digests and does not feed an envelope field.
@@ -169,8 +179,23 @@ struct ProposalPrefix {
     branch_id: [u8; 16],
     class: u16,
     effective_date: i32,
-    account_vids: Vec<u128>,
-    unit_ids: Vec<u32>,
+    legs: Vec<Leg>,
+}
+
+impl ProposalPrefix {
+    fn account_vids(&self) -> Vec<u128> {
+        let mut v: Vec<u128> = self.legs.iter().map(|l| l.account).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
+    fn unit_ids(&self) -> Vec<u32> {
+        let mut v: Vec<u32> = self.legs.iter().map(|l| l.unit).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
 }
 
 /// The `fa:entry:v1` erasable field: digest, optional subject, nonce, sealed
@@ -185,10 +210,8 @@ fn skip_erasable(r: &mut Reader<'_>, what: &'static str) -> Result<(), DecodeErr
     Ok(())
 }
 
-fn skip_amount(r: &mut Reader<'_>, what: &'static str) -> Result<u32, DecodeError> {
-    let unit = r.u32(what)?;
-    r.i128(what)?;
-    Ok(unit)
+fn amount(r: &mut Reader<'_>, what: &'static str) -> Result<(u32, i128), DecodeError> {
+    Ok((r.u32(what)?, r.i128(what)?))
 }
 
 fn proposal_prefix(proposal: &[u8]) -> Result<ProposalPrefix, DecodeError> {
@@ -212,14 +235,23 @@ fn proposal_prefix(proposal: &[u8]) -> Result<ProposalPrefix, DecodeError> {
     }
     // side u8, account u128, amount (u32, i128), option tag, two counts, memo tag.
     let legs = r.count(MAX_ENVELOPE_LIST, 1 + 16 + 20 + 1 + 4 + 1 + 4, "entry.legs")?;
-    let mut account_vids = Vec::with_capacity(legs);
-    let mut unit_ids = Vec::with_capacity(legs);
+    let mut parsed = Vec::with_capacity(legs);
     for _ in 0..legs {
-        r.u8("leg.side")?;
-        account_vids.push(r.u128("leg.account_ref")?);
-        unit_ids.push(skip_amount(&mut r, "leg.amount")?);
+        let debit = match r.u8("leg.side")? {
+            0 => true,
+            1 => false,
+            t => return Err(r.error("leg.side", Reason::BadTag(t))),
+        };
+        let account = r.u128("leg.account_ref")?;
+        let (unit, mantissa) = amount(&mut r, "leg.amount")?;
+        parsed.push(Leg {
+            debit,
+            account,
+            unit,
+            mantissa,
+        });
         if r.present("leg.base_amount")? {
-            skip_amount(&mut r, "leg.base_amount")?;
+            amount(&mut r, "leg.base_amount")?;
         }
         let dims = r.count(MAX_ENVELOPE_LIST, 20, "leg.dimension_set")?;
         for _ in 0..dims {
@@ -234,20 +266,15 @@ fn proposal_prefix(proposal: &[u8]) -> Result<ProposalPrefix, DecodeError> {
             r.u128("settles.target.vid")?;
             r.fixed::<32>("settles.target.entry_digest")?;
             r.u16("settles.ordinal")?;
-            skip_amount(&mut r, "settles.amount")?;
+            amount(&mut r, "settles.amount")?;
         }
     }
-    account_vids.sort_unstable();
-    account_vids.dedup();
-    unit_ids.sort_unstable();
-    unit_ids.dedup();
     Ok(ProposalPrefix {
         book_id,
         branch_id,
         class,
         effective_date,
-        account_vids,
-        unit_ids,
+        legs: parsed,
     })
 }
 
@@ -285,9 +312,20 @@ pub fn envelope_of_entry(
     commit_seq: u64,
     within_commit_ordinal: u32,
 ) -> Result<LeafEnvelope, RecordError> {
+    record_of_entry(payload, proposal_len, commit_seq, within_commit_ordinal).map(|(e, _)| e)
+}
+
+/// The envelope and the legs of an `fa:entry:v1` payload at a journal
+/// position.
+fn record_of_entry(
+    payload: &[u8],
+    proposal_len: usize,
+    commit_seq: u64,
+    within_commit_ordinal: u32,
+) -> Result<(LeafEnvelope, Vec<Leg>), RecordError> {
     let record_digest = entry_record_digest(payload, proposal_len)?;
     let p = proposal_prefix(&payload[..proposal_len]).map_err(RecordError::Decode)?;
-    Ok(LeafEnvelope {
+    let envelope = LeafEnvelope {
         kind: KIND_ENTRY,
         book_id: p.book_id,
         branch_id: p.branch_id,
@@ -296,18 +334,20 @@ pub fn envelope_of_entry(
         record_digest,
         class: p.class,
         effective_day: (!UNDATED_CLASSES.contains(&p.class)).then_some(p.effective_date),
-        account_vids: p.account_vids,
-        unit_ids: p.unit_ids,
-    })
+        account_vids: p.account_vids(),
+        unit_ids: p.unit_ids(),
+    };
+    Ok((envelope, p.legs))
 }
 
-/// Check that `envelope` is exactly the envelope its record determines.
+/// Check that `envelope` is exactly the envelope its record determines, and
+/// return the record's legs.
 pub fn check_record(
     envelope: &LeafEnvelope,
     payload: &[u8],
     proposal_len: usize,
-) -> Result<(), RecordError> {
-    let rebuilt = envelope_of_entry(
+) -> Result<Vec<Leg>, RecordError> {
+    let (rebuilt, legs) = record_of_entry(
         payload,
         proposal_len,
         envelope.commit_seq,
@@ -316,7 +356,7 @@ pub fn check_record(
     if rebuilt != *envelope {
         return Err(RecordError::Envelope);
     }
-    Ok(())
+    Ok(legs)
 }
 
 #[cfg(test)]

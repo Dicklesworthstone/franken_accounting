@@ -29,6 +29,7 @@ use fa_journal::refusal::{Outcome, Refusal, exit};
 use fa_journal::rows::bytes;
 use fa_model::symbols::{label, property};
 use fa_model::{EncodeError, Entry, EntryClass, Id128, Writer};
+use fa_money::Side;
 use fgdb::Database;
 use fgdb_types::{CommitSeq, VId};
 
@@ -40,6 +41,7 @@ pub const KIND_ENTRY: u8 = 1;
 pub const INCLUSION_FORMAT: &[u8] = b"fa:acc-inclusion-proof:v1";
 pub const CONSISTENCY_FORMAT: &[u8] = b"fa:acc-consistency-proof:v1";
 pub const PREFIX_FORMAT: &[u8] = b"fa:acc-prefix-proof:v1";
+pub const BALANCE_FORMAT: &[u8] = b"fa:acc-balance-proof:v1";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LeafEnvelope {
@@ -344,6 +346,98 @@ impl Journal {
         self.statement().encode(&mut w);
         w.list(&self.leaves, |w, l| {
             w.bytes(&l.envelope_bytes);
+        });
+        w.finish().map_err(encode_failed)
+    }
+
+    /// Whether leaf `l` contributes posted legs to (account, unit) by the
+    /// cutoff: the envelope names both, the class is not `Pending`, and the
+    /// effective day is at or before the cutoff when one is given.
+    fn contributes(l: &Leaf, account: VId, unit: u32, through: Option<i32>) -> bool {
+        let e = &l.envelope;
+        e.class != EntryClass::PENDING
+            && e.account_vids.binary_search(&account).is_ok()
+            && e.unit_ids.binary_search(&unit).is_ok()
+            && through.is_none_or(|cutoff| e.effective_day.is_some_and(|d| d <= cutoff))
+    }
+
+    /// The posted (debits, credits) of (account, unit) through the cutoff,
+    /// folded from the entry payloads with checked arithmetic.
+    pub fn posted_balance(
+        &self,
+        account: VId,
+        unit: u32,
+        through: Option<i32>,
+    ) -> Result<(i128, i128), KernelError> {
+        let (mut debits, mut credits) = (0i128, 0i128);
+        for leaf in self
+            .leaves
+            .iter()
+            .filter(|l| Self::contributes(l, account, unit, through))
+        {
+            let entry = Entry::decode(&leaf.payload)?;
+            for leg in entry
+                .proposal
+                .legs
+                .iter()
+                .filter(|g| g.account_ref == account && g.amount.unit.0 == unit)
+            {
+                let slot = match leg.side {
+                    Side::Debit => &mut debits,
+                    Side::Credit => &mut credits,
+                };
+                *slot = slot
+                    .checked_add(leg.amount.mantissa)
+                    .ok_or_else(|| corrupt("a posted balance overflowed i128"))?;
+            }
+        }
+        Ok((debits, credits))
+    }
+
+    /// The balance-recomputation proof of (account, unit) through the cutoff
+    /// against this prefix's statement: the claim, every leaf envelope, and
+    /// the payload of exactly the contributing leaves.
+    pub fn balance_proof(
+        &self,
+        account: VId,
+        unit: u32,
+        through: Option<i32>,
+    ) -> Result<Vec<u8>, KernelError> {
+        let (debits, credits) = self.posted_balance(account, unit, through)?;
+        let contributing: Vec<(u64, &Leaf)> = self
+            .leaves
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| Self::contributes(l, account, unit, through))
+            .map(|(i, l)| (i as u64, l))
+            .collect();
+        let mut w = Writer::with_capacity(256 + 160 * self.leaves.len());
+        w.bytes(BALANCE_FORMAT);
+        self.statement().encode(&mut w);
+        w.u128(account.0)
+            .u32(unit)
+            .opt(through.as_ref(), |w, d| {
+                w.i32(*d);
+            })
+            .i128(debits)
+            .i128(credits)
+            .list(&self.leaves, |w, l| {
+                w.bytes(&l.envelope_bytes);
+            });
+        let mut lens = Vec::with_capacity(contributing.len());
+        for (_, leaf) in &contributing {
+            lens.push(
+                u32::try_from(leaf.proposal_len)
+                    .map_err(|_| corrupt("proposal longer than u32::MAX bytes"))?,
+            );
+        }
+        let records: Vec<(u64, u32, &[u8])> = contributing
+            .iter()
+            .zip(lens)
+            .map(|((i, leaf), len)| (*i, len, leaf.payload.as_slice()))
+            .collect();
+        w.list(&records, |w, (i, len, payload)| {
+            w.u64(*i).u32(*len).bytes(payload);
         });
         w.finish().map_err(encode_failed)
     }

@@ -662,3 +662,24 @@ pub fn prove_prefix<V: asupersync::fs::Vfs + Clone>(
         Err(r) => Ok(Err(r)),
     }
 }
+
+/// The balance-recomputation proof of (account, unit) — posted debits and
+/// credits through the inclusive civil-day cutoff, or every effective day —
+/// against the journaled `state`.
+pub fn prove_balance<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    state: &AccumulatorState,
+    account: VId,
+    unit: u32,
+    effective_through: Option<i32>,
+) -> Outcome<Vec<u8>> {
+    match supported(db, book, state)? {
+        Ok(journal) => Ok(Ok(journal.balance_proof(
+            account,
+            unit,
+            effective_through,
+        )?)),
+        Err(r) => Ok(Err(r)),
+    }
+}

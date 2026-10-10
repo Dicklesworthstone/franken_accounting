@@ -79,7 +79,7 @@ pub struct Checkpoint {
 impl Checkpoint {
     pub const ENCODED_LEN: usize = 16 + 16 + 8 + 8 + 32;
 
-    fn read(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+    pub(crate) fn read(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
         Ok(Self {
             book_id: r.fixed("checkpoint.book_id")?,
             branch_id: r.fixed("checkpoint.branch_id")?,
@@ -162,6 +162,18 @@ pub enum VerifyError {
     Root,
     /// The supplied record does not support the envelope.
     Record(RecordError),
+    /// A balance proof's records are not exactly the in-scope leaves: the
+    /// first leaf index that is missing or should not be there.
+    RecordSet {
+        index: u64,
+    },
+    /// A leg amount is negative or a sum overflowed `i128`.
+    Arithmetic,
+    /// The refold differs from the claim; these are the refolded sums.
+    Claim {
+        debits: i128,
+        credits: i128,
+    },
 }
 
 impl fmt::Display for VerifyError {
@@ -228,6 +240,15 @@ impl fmt::Display for VerifyError {
                     "record: the envelope differs from the one its record determines"
                 )
             }
+            Self::RecordSet { index } => write!(
+                f,
+                "the records are not exactly the in-scope leaves (leaf {index} is missing or extra)"
+            ),
+            Self::Arithmetic => write!(f, "a leg amount is negative or a sum overflowed"),
+            Self::Claim { debits, credits } => write!(
+                f,
+                "the journal refolds to debits {debits}, credits {credits}, not the claimed amounts"
+            ),
         }
     }
 }
@@ -275,7 +296,7 @@ pub struct Prefix {
     pub envelopes: Vec<LeafEnvelope>,
 }
 
-fn open<'a>(bytes: &'a [u8], format: &'static [u8]) -> Result<Reader<'a>, VerifyError> {
+pub(crate) fn open<'a>(bytes: &'a [u8], format: &'static [u8]) -> Result<Reader<'a>, VerifyError> {
     let mut r = Reader::new(bytes);
     let tag = r.bytes(64, "proof.format")?;
     if tag != format {
@@ -284,7 +305,7 @@ fn open<'a>(bytes: &'a [u8], format: &'static [u8]) -> Result<Reader<'a>, Verify
     Ok(r)
 }
 
-fn trusted(proof: Checkpoint, trusted: &Checkpoint) -> Result<Checkpoint, VerifyError> {
+pub(crate) fn trusted(proof: Checkpoint, trusted: &Checkpoint) -> Result<Checkpoint, VerifyError> {
     if proof != *trusted {
         return Err(VerifyError::NotTrusted {
             proof: Box::new(proof),
@@ -406,12 +427,34 @@ pub fn verify_consistency(
 pub fn verify_prefix(proof: &[u8], trusted_checkpoint: &Checkpoint) -> Result<Prefix, VerifyError> {
     let mut r = open(proof, PREFIX_FORMAT)?;
     let checkpoint = trusted(Checkpoint::read(&mut r)?, trusted_checkpoint)?;
+    let raw = read_envelopes(&mut r)?;
+    r.finish("prefix proof")?;
+    let envelopes = complete_prefix(&raw, &checkpoint)?;
+    Ok(Prefix {
+        scope: SCOPE_SEQ_RANGE_COMPLETE,
+        checkpoint,
+        envelopes,
+    })
+}
+
+/// A list of encoded leaf envelopes.
+pub(crate) fn read_envelopes<'a>(r: &mut Reader<'a>) -> Result<Vec<&'a [u8]>, DecodeError> {
     let n = r.count(MAX_PREFIX_LEAVES, 4, "proof.envelopes")?;
     let mut raw = Vec::with_capacity(n);
     for _ in 0..n {
         raw.push(r.bytes(MAX_ENVELOPE_BYTES, "proof.envelope")?);
     }
-    r.finish("prefix proof")?;
+    Ok(raw)
+}
+
+/// Check that `raw` is every leaf of `checkpoint`'s prefix, in journal
+/// order, on its book and branch, hashing to its root; return the decoded
+/// envelopes.
+pub(crate) fn complete_prefix(
+    raw: &[&[u8]],
+    checkpoint: &Checkpoint,
+) -> Result<Vec<LeafEnvelope>, VerifyError> {
+    let n = raw.len();
     let listed = u64::try_from(n).unwrap_or(u64::MAX);
     if listed != checkpoint.leaf_count {
         return Err(VerifyError::LeafCount {
@@ -423,7 +466,7 @@ pub fn verify_prefix(proof: &[u8], trusted_checkpoint: &Checkpoint) -> Result<Pr
     let mut leaves = Vec::with_capacity(n);
     for (i, bytes) in raw.iter().enumerate() {
         let envelope = LeafEnvelope::decode(bytes)?;
-        within(&envelope, &checkpoint)?;
+        within(&envelope, checkpoint)?;
         if let Some(prev) = envelopes.last().map(LeafEnvelope::position)
             && prev >= envelope.position()
         {
@@ -437,9 +480,5 @@ pub fn verify_prefix(proof: &[u8], trusted_checkpoint: &Checkpoint) -> Result<Pr
     if root_of(&leaves) != checkpoint.root {
         return Err(VerifyError::Root);
     }
-    Ok(Prefix {
-        scope: SCOPE_SEQ_RANGE_COMPLETE,
-        checkpoint,
-        envelopes,
-    })
+    Ok(envelopes)
 }

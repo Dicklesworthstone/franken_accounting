@@ -8,8 +8,8 @@
 //! verifier must accept them — and refuse every one of them once altered.
 
 use fa_verify::{
-    Checkpoint, RecordCheck, VerifyError, verify_consistency, verify_inclusion, verify_prefix,
-    verify_state,
+    Checkpoint, RecordCheck, VerifyError, verify_balance, verify_consistency, verify_inclusion,
+    verify_prefix, verify_state,
 };
 
 const FIXTURE: &str = include_str!("fixtures/accumulator_v1.txt");
@@ -122,7 +122,7 @@ fn every_pinned_vector_refuses_every_flipped_bit() {
     let (old, new) = (old_state.checkpoint, new_state.checkpoint);
     let s3 = verify_state(&vector("state_3")).unwrap();
     let s5 = verify_state(&vector("state_5")).unwrap();
-    let checks: [(&str, Accepts<'_>); 8] = [
+    let checks: [(&str, Accepts<'_>); 9] = [
         ("old_state", &|b| {
             verify_state(b).is_ok_and(|s| s.oid == old_state.oid)
         }),
@@ -134,6 +134,7 @@ fn every_pinned_vector_refuses_every_flipped_bit() {
             verify_consistency(b, &old, &new).is_ok()
         }),
         ("prefix", &|b| verify_prefix(b, &new).is_ok()),
+        ("balance", &|b| verify_balance(b, &new).is_ok()),
         ("state_3", &|b| {
             verify_state(b).is_ok_and(|s| s.oid == s3.oid)
         }),
@@ -204,4 +205,19 @@ fn the_pinned_odd_sized_consistency_proof_verifies() {
         verify_consistency(&proof, &old.checkpoint, &s5.checkpoint),
         Err(VerifyError::NotTrusted { .. })
     ));
+}
+
+/// Cash (0x30) in unit 1 through every day: the rent posting credits
+/// 120000 and the two-unit posting credits 550 (its EUR legs and the fx
+/// account's USD debit are other cells), refolded from exactly leaves 2, 3.
+#[test]
+fn the_pinned_balance_proof_refolds_cash() {
+    let state = verify_state(&vector("state")).unwrap();
+    let report = verify_balance(&vector("balance"), &state.checkpoint).expect("refolds");
+    assert_eq!(report.scope, "recomputation");
+    assert_eq!(report.claim.account, 0x30);
+    assert_eq!(report.claim.unit, 1);
+    assert_eq!(report.claim.effective_through, None);
+    assert_eq!((report.claim.debits, report.claim.credits), (0, 120_550));
+    assert_eq!(report.contributing, vec![2, 3]);
 }

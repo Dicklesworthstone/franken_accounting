@@ -596,6 +596,7 @@ dependencies = [
  "fa-journal",
  "fa-model",
  "fa-money",
+ "fa-registers",
  "fa-time",
  "fa-verify",
  "fgdb",
