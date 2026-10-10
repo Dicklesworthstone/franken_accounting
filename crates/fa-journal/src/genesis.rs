@@ -526,34 +526,47 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
             );
         }
     }
-    match db.write(&ctx.commit(), batch).await {
+    // Every account is IN_BOOK so the chart can be listed from the root; a
+    // second relation means a second batch, staged in order in one commit.
+    let mut in_book = WriteBatch::new(relation::IN_BOOK);
+    let root = book_root();
+    for a in accounts {
+        let avid = account_vid(book.book_id, &a.code);
+        in_book.add_edge(edge_id(relation::IN_BOOK, avid, root), avid, root, vec![]);
+    }
+    let txn_cx = ctx.txn();
+    let mut txn = db.begin(&txn_cx)?;
+    if let Err(e) = txn.write_ordered(db, vec![batch, in_book]) {
+        txn.abort();
+        return Err(e.into());
+    }
+    match txn.commit(db, &ctx.commit()).await {
         Ok(seq) => Ok(Ok(ChartInstalled {
             recorded_at: seq,
             control_entry: evid,
             accounts: accounts.len(),
         })),
-        Err(fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. }) => {
-            Ok(Err(Refusal::new(
-                code::STRUCTURE,
-                exit::USAGE,
-                "an account or control entry with this identity already exists",
-                "plan §4.9 (identities are derived; a duplicate is a point conflict)",
-                "use a fresh idempotency key and omit accounts already installed",
-            )))
-        }
+        Err(fgdb::WriteTxnError::Write(
+            fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
+        )) => Ok(Err(Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            "an account or control entry with this identity already exists",
+            "plan §4.9 (identities are derived; a duplicate is a point conflict)",
+            "use a fresh idempotency key and omit accounts already installed",
+        ))),
         Err(e) => Err(e.into()),
     }
 }
 
-/// The named accounts of the chart, sorted by code (unknown codes are skipped).
+/// Every account of the chart, sorted by code.
 pub fn list_accounts<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
-    book: &BookContext,
-    codes: &[String],
 ) -> Result<Vec<crate::rows::AccountRow>, KernelError> {
     let mut out = Vec::new();
-    for code in codes {
-        if let Some(row) = db.vertex(account_vid(book.book_id, code))? {
+    for vid in db.in_neighbours(book_root(), relation::IN_BOOK)? {
+        let Some(row) = db.vertex(vid)? else { continue };
+        if row.labels.contains(&label::ACCOUNT) {
             out.push(crate::rows::AccountRow::decode(&row)?);
         }
     }

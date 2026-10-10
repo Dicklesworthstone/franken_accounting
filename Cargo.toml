@@ -22,6 +22,7 @@ members = [
     "crates/fa-journal",
     "crates/fa-registers",
     "crates/fa-reference",
+    "crates/fa-cli",
 ]
 
 [workspace.package]

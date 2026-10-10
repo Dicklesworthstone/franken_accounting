@@ -1,0 +1,1282 @@
+//! `fa` — the FrankenAccounting command line (plan §15.3, Appendix D).
+//!
+//! Contract: stdout is data, stderr is diagnostics; `--json` turns every
+//! result into one JSON object per line with an `event` discriminator; the
+//! exit code is the verdict (0 ok · 2 usage · 3 accounting-law refusal ·
+//! 4 environment · 5 foundation · 6 conflict · 7 safety · 8 verification;
+//! 1 is never emitted); empty results exit 0; bare `fa` prints triage and
+//! exits; there is no TUI.
+
+mod args;
+mod json;
+
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+use fa::book::{Book, BookError, BookKeys, Entropy};
+use fa_journal::{
+    AccountSpec, BookSpec, Capability, PostRequest, Posted, Refusal, UnitPolicy, exit,
+};
+use fa_model::{
+    AccountType, EntryClass, EntryOrigin, EntryPayload, Id128, LegPayload, Oid, PeriodRef,
+    account_vid, principal_vid,
+};
+use fa_money::{Amount, Side};
+use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodState, PeriodTransition};
+use fgdb_types::VId;
+
+use crate::args::{Args, UsageError, nearest};
+use crate::json::{Json, obj, s};
+
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+const VERBS: &[&str] = &[
+    "book",
+    "chart",
+    "period",
+    "post",
+    "tb",
+    "verify",
+    "registers",
+    "entry",
+    "capabilities",
+    "robot-docs",
+    "help",
+];
+
+fn main() -> ExitCode {
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    ExitCode::from(run(&argv))
+}
+
+/// What a command can end with besides success.
+enum Fail {
+    Usage(UsageError),
+    Refusal(Refusal),
+    Book(BookError),
+    Verification(String, Json),
+}
+
+impl From<UsageError> for Fail {
+    fn from(e: UsageError) -> Self {
+        Self::Usage(e)
+    }
+}
+impl From<BookError> for Fail {
+    fn from(e: BookError) -> Self {
+        Self::Book(e)
+    }
+}
+impl From<Refusal> for Fail {
+    fn from(r: Refusal) -> Self {
+        Self::Refusal(r)
+    }
+}
+
+fn usage(message: impl Into<String>, fix: impl Into<String>) -> Fail {
+    Fail::Usage(UsageError {
+        message: message.into(),
+        fix: fix.into(),
+    })
+}
+
+struct Out {
+    json: bool,
+}
+
+impl Out {
+    fn event(&self, name: &str, mut fields: Vec<(&str, Json)>, human: &str) {
+        if self.json {
+            fields.push(("event", s(name)));
+            println!("{}", obj(fields).render());
+        } else if !human.is_empty() {
+            println!("{human}");
+        }
+    }
+}
+
+fn run(argv: &[String]) -> u8 {
+    let args = match args::parse(argv) {
+        Ok(a) => a,
+        Err(e) => {
+            return finish(
+                &Out {
+                    json: argv.iter().any(|a| a == "--json"),
+                },
+                Err(Fail::Usage(e)),
+            );
+        }
+    };
+    let out = Out {
+        json: args.switch("--json"),
+    };
+    finish(&out, dispatch(&out, &args))
+}
+
+fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
+    match result {
+        Ok(()) => exit::SUCCESS,
+        Err(Fail::Usage(e)) => {
+            out.event(
+                "usage_error",
+                vec![
+                    ("exit", Json::Int(i128::from(exit::USAGE))),
+                    ("message", s(&e.message)),
+                    ("fix", s(&e.fix)),
+                ],
+                "",
+            );
+            eprintln!("usage: {}\n  fix: {}", e.message, e.fix);
+            exit::USAGE
+        }
+        Err(Fail::Refusal(r)) => {
+            out.event(
+                "refusal",
+                vec![
+                    ("code", s(r.code)),
+                    ("exit", Json::Int(i128::from(r.exit))),
+                    ("message", s(&r.message)),
+                    ("cite", s(&r.cite)),
+                    ("fix", s(&r.fix)),
+                ],
+                "",
+            );
+            eprintln!("refused {r}");
+            r.exit
+        }
+        Err(Fail::Book(e)) => {
+            let code = e.exit();
+            out.event(
+                "error",
+                vec![
+                    ("exit", Json::Int(i128::from(code))),
+                    ("message", s(e.to_string())),
+                ],
+                "",
+            );
+            eprintln!("error (exit {code}): {e}");
+            code
+        }
+        Err(Fail::Verification(message, detail)) => {
+            out.event(
+                "verification_failed",
+                vec![
+                    ("exit", Json::Int(i128::from(exit::VERIFICATION))),
+                    ("message", s(&message)),
+                    ("detail", detail),
+                ],
+                "",
+            );
+            eprintln!(
+                "verification failed (exit {}): {message}",
+                exit::VERIFICATION
+            );
+            exit::VERIFICATION
+        }
+    }
+}
+
+fn dispatch(out: &Out, args: &Args) -> Result<(), Fail> {
+    if args.switch("--version") {
+        out.event(
+            "version",
+            vec![("version", s(VERSION))],
+            &format!("fa {VERSION}"),
+        );
+        return Ok(());
+    }
+    let verb = args.positional.first().map(String::as_str);
+    if args.switch("--help") || verb == Some("help") {
+        print!("{}", help_text());
+        return Ok(());
+    }
+    match verb {
+        None => {
+            print!("{}", triage_text());
+            Ok(())
+        }
+        Some("capabilities") => capabilities(out),
+        Some("robot-docs") => robot_docs(args),
+        Some("book") => book_cmd(out, args),
+        Some("chart") => chart_cmd(out, args),
+        Some("period") => period_cmd(out, args),
+        Some("post") => post_cmd(out, args),
+        Some("tb") => tb_cmd(out, args),
+        Some("verify") => verify_cmd(out, args),
+        Some("registers") => registers_cmd(out, args),
+        Some("entry") => entry_cmd(out, args),
+        Some(other) => Err(usage(
+            format!("unknown command `{other}`"),
+            match nearest(other, VERBS) {
+                Some(n) => format!("did you mean `fa {n}`?"),
+                None => "run `fa --help`".to_string(),
+            },
+        )),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Docs
+// ---------------------------------------------------------------------------
+
+fn triage_text() -> String {
+    format!(
+        "fa {VERSION} — FrankenAccounting\n\
+         A double-entry, evidence-native ledger on FrankenGraphDB. Agents: add --json to any command.\n\n\
+         start here\n  \
+         fa book create --book <dir> --name \"My Co\" [--base-unit USD]\n  \
+         fa chart import <chart.json> --book <dir>\n  \
+         fa period create --fiscal-year 2026 --book <dir>; fa period open FY2026-P03 --book <dir>\n  \
+         fa post --intent entry.json --book <dir> --json\n  \
+         fa tb --period FY2026-P03 --book <dir> --json\n  \
+         fa verify registers --period FY2026-P03 --book <dir>\n\n\
+         discover\n  \
+         fa capabilities --json · fa robot-docs guide|exit-codes|examples · fa --help\n\n\
+         exit codes: 0 ok · 2 usage · 3 accounting-law refusal · 4 environment · 5 foundation · 6 conflict · 7 safety · 8 verification (never 1)\n"
+    )
+}
+
+fn help_text() -> String {
+    format!(
+        "{}\ncommands\n  \
+         book create|info\n  \
+         chart import <file.json> | chart list\n  \
+         period create --fiscal-year N | period list | period open|soft-close|close|lock|reopen <code> [--to open|soft-closed] [--reason N] [--key K] [--date YYYY-MM-DD]\n  \
+         post --intent <file.json|-> [--grant <op>]... [--as <principal>]\n  \
+         tb (--period <code>)... | tb --fiscal-year N\n  \
+         verify registers --period <code>\n  \
+         registers materialize --period <code>\n  \
+         entry show <vid-hex>\n  \
+         capabilities | robot-docs guide|exit-codes|examples\n\n\
+         global flags\n  \
+         --book <dir> (or FA_BOOK) · --keys <file> (default <dir>/book.keys) · --json · --as <principal> (default operator)\n",
+        triage_text()
+    )
+}
+
+fn capabilities(out: &Out) -> Result<(), Fail> {
+    let exits = fa_registry::ExitCodes::embedded().map_err(BookError::Registry)?;
+    let codes: Vec<Json> = exits
+        .rows
+        .iter()
+        .map(|r| {
+            obj(vec![
+                ("code", Json::Int(i128::from(r.code))),
+                ("name", s(&r.name)),
+                ("meaning", s(&r.meaning)),
+            ])
+        })
+        .collect();
+    let classes = fa_registry::EntryClasses::embedded().map_err(BookError::Registry)?;
+    let class_names: Vec<Json> = classes.rows.iter().map(|c| s(&c.name)).collect();
+    let fields = vec![
+        ("version", s(VERSION)),
+        ("verbs", Json::Arr(VERBS.iter().map(|v| s(*v)).collect())),
+        ("exit_codes", Json::Arr(codes)),
+        ("entry_classes", Json::Arr(class_names)),
+        (
+            "robot_mode",
+            obj(vec![
+                ("flag", s("--json")),
+                (
+                    "envelope",
+                    s(
+                        "one JSON object per line; `event` discriminates: result events, refusal, error, usage_error, verification_failed",
+                    ),
+                ),
+            ]),
+        ),
+        ("stdout", s("data")),
+        ("stderr", s("diagnostics")),
+        ("tui", Json::Bool(false)),
+    ];
+    if out.json {
+        out.event("capabilities", fields, "");
+    } else {
+        println!("{}", obj(fields).render());
+    }
+    Ok(())
+}
+
+fn robot_docs(args: &Args) -> Result<(), Fail> {
+    match args.positional.get(1).map(String::as_str) {
+        Some("exit-codes") => {
+            let exits = fa_registry::ExitCodes::embedded().map_err(BookError::Registry)?;
+            for r in &exits.rows {
+                println!("{} {:<13} {}", r.code, r.name, r.meaning);
+            }
+            Ok(())
+        }
+        Some("guide") => {
+            print!("{}", GUIDE);
+            Ok(())
+        }
+        Some("examples") => {
+            print!("{}", EXAMPLES);
+            Ok(())
+        }
+        other => Err(usage(
+            format!("robot-docs needs a topic, got {other:?}"),
+            "fa robot-docs guide|exit-codes|examples",
+        )),
+    }
+}
+
+const GUIDE: &str = "fa robot-docs guide\n\
+\n\
+1. Every command accepts --json. Parse stdout line by line; each line is one JSON object with an `event` field.\n\
+2. Read the exit code before the output: 0 success (empty results are 0), 2 usage, 3 accounting-law refusal, 4 environment, 5 foundation/I-O, 6 conflict (retry with a fresh read), 7 safety block (period law, capability), 8 verification failure. 1 is never emitted.\n\
+3. A refusal is data: {event:\"refusal\", code:\"FA-REF-nnn\", exit, message, cite, fix}. Do the `fix`; do not invent a leg, a date, or an approval.\n\
+4. Amounts are strings with the unit: \"1500.00 USD\". Never floats. Dates are civil YYYY-MM-DD; recorded time is assigned by the journal, never supplied.\n\
+5. Corrections are new entries (Reversal, Replacement, Reclassification) that cite the original; nothing is edited in place.\n\
+6. Idempotency: every intent carries idempotency_key; resubmitting returns the recorded outcome (event \"recorded\"), never a duplicate.\n\
+7. Posting into a non-Open period is decided by the admissibility matrix; the refusal cites the (class, state) cell and names the admissible class or capability.\n";
+
+const EXAMPLES: &str = "fa robot-docs examples\n\
+\n\
+# chart.json\n\
+{\"accounts\":[{\"code\":\"1000\",\"name\":\"Cash\",\"type\":\"Asset\",\"leaf\":true,\"unit\":\"USD\"},\n\
+              {\"code\":\"6000\",\"name\":\"Rent\",\"type\":\"Expense\",\"leaf\":true,\"unit\":\"USD\"}]}\n\
+\n\
+# entry.json\n\
+{\"class\":\"Original\",\"effective_date\":\"2026-03-15\",\"description\":\"March rent\",\"idempotency_key\":\"inv-1001\",\n\
+ \"legs\":[{\"side\":\"debit\",\"account\":\"6000\",\"amount\":\"1500.00 USD\"},\n\
+          {\"side\":\"credit\",\"account\":\"1000\",\"amount\":\"1500.00 USD\"}]}\n\
+\n\
+fa book create --book ./books/myco --name \"My Co\" --json\n\
+fa chart import chart.json --book ./books/myco --json\n\
+fa period create --fiscal-year 2026 --book ./books/myco --json\n\
+fa period open FY2026-P03 --book ./books/myco --json\n\
+fa post --intent entry.json --book ./books/myco --json      # exit 0, event posted\n\
+fa post --intent entry.json --book ./books/myco --json      # exit 0, event recorded (same idempotency_key)\n\
+fa tb --period FY2026-P03 --book ./books/myco --json\n\
+fa registers materialize --period FY2026-P03 --book ./books/myco\n\
+fa verify registers --period FY2026-P03 --book ./books/myco  # exit 8 on drift\n";
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+fn book_dir(args: &Args) -> Result<PathBuf, Fail> {
+    if let Some(d) = args.flag("--book") {
+        return Ok(PathBuf::from(d));
+    }
+    if let Ok(d) = std::env::var("FA_BOOK") {
+        if !d.is_empty() {
+            return Ok(PathBuf::from(d));
+        }
+    }
+    Err(usage(
+        "no book directory",
+        "--book <dir> (or export FA_BOOK=<dir>)",
+    ))
+}
+
+fn keys_path(args: &Args, dir: &Path) -> PathBuf {
+    args.flag("--keys")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| dir.join("book.keys"))
+}
+
+fn open_book(args: &Args) -> Result<Book, Fail> {
+    let dir = book_dir(args)?;
+    let keys = BookKeys::load(&keys_path(args, &dir))?;
+    Ok(Book::open_dir(&dir, keys, Entropy::production())?)
+}
+
+fn principal(args: &Args) -> VId {
+    principal_vid(args.flag("--as").unwrap_or("operator"))
+}
+
+fn date_flag(args: &Args, default: DateDay) -> Result<DateDay, Fail> {
+    match args.flag("--date") {
+        None => Ok(default),
+        Some(d) => DateDay::parse(d)
+            .map_err(|e| usage(format!("--date `{d}`: {e:?}"), "--date YYYY-MM-DD")),
+    }
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+fn read_text(path: &str) -> Result<String, Fail> {
+    if path == "-" {
+        let mut buf = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)
+            .map_err(|e| usage(format!("stdin: {e}"), "pipe the JSON document to stdin"))?;
+        Ok(buf)
+    } else {
+        std::fs::read_to_string(path).map_err(|e| {
+            usage(
+                format!("{path}: {e}"),
+                "pass a readable file, or `-` for stdin",
+            )
+        })
+    }
+}
+
+fn parse_json(path: &str, text: &str) -> Result<Json, Fail> {
+    json::parse(text).map_err(|e| usage(format!("{path}: {e}"), "fa robot-docs examples"))
+}
+
+fn req_str<'a>(doc: &'a Json, key: &str, what: &str) -> Result<&'a str, Fail> {
+    doc.get(key).and_then(Json::as_str).ok_or_else(|| {
+        usage(
+            format!("{what}: `{key}` must be a string"),
+            "fa robot-docs examples",
+        )
+    })
+}
+
+// ---------------------------------------------------------------------------
+// book
+// ---------------------------------------------------------------------------
+
+fn book_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
+    match args.positional.get(1).map(String::as_str) {
+        Some("create") => {
+            let dir = book_dir(args)?;
+            let name = args.require("--name", "\"My Co\"")?;
+            let units = fa_registry::units_embedded().map_err(BookError::Registry)?;
+            let base = args.flag("--base-unit").unwrap_or("USD");
+            let base_unit = units.lookup(base).ok_or_else(|| {
+                usage(
+                    format!("unknown base unit `{base}`"),
+                    "--base-unit USD|EUR|GBP|JPY|CHF|CAD|AUD|KWD",
+                )
+            })?;
+            let kind = args.flag("--calendar").unwrap_or("monthly");
+            if kind != "monthly" {
+                return Err(usage(
+                    format!("calendar `{kind}` is not available from the CLI yet"),
+                    "--calendar monthly (4-4-5 and 52/53-week calendars land with the next slice)",
+                ));
+            }
+            let ysm: u8 = args
+                .flag("--year-start-month")
+                .unwrap_or("1")
+                .parse()
+                .map_err(|_| usage("--year-start-month must be 1..=12", "--year-start-month 1"))?;
+            let adj: u8 = args
+                .flag("--adjustment-periods")
+                .unwrap_or("1")
+                .parse()
+                .map_err(|_| {
+                    usage(
+                        "--adjustment-periods must be 0..=4",
+                        "--adjustment-periods 1",
+                    )
+                })?;
+            let calendar = FiscalCalendar::monthly("fiscal", ysm, adj).map_err(|e| {
+                usage(
+                    format!("calendar: {e:?}"),
+                    "--year-start-month 1..=12 --adjustment-periods 0..=4",
+                )
+            })?;
+            let entropy = Entropy::production();
+            let keys = BookKeys::generate(&entropy)?;
+            let mut id = [0u8; 16];
+            entropy.fill(&mut id)?;
+            let book_id = Id128(id);
+            let keys_file = keys_path(args, &dir);
+            std::fs::create_dir_all(&dir).map_err(|e| BookError::Io(dir.clone(), e))?;
+            keys.save(&keys_file)?;
+            let book = Book::create_dir(
+                &dir,
+                keys,
+                BookSpec {
+                    book_id,
+                    name: name.to_string(),
+                    base_unit,
+                    calendar,
+                },
+                entropy,
+            )?;
+            out.event(
+                "book_created",
+                vec![
+                    ("book_id", s(book_id.to_hex())),
+                    ("dir", s(dir.display().to_string())),
+                    ("keys", s(keys_file.display().to_string())),
+                    ("name", s(name)),
+                    ("base_unit", s(base)),
+                    ("calendar", s(&book.context().calendar.id)),
+                ],
+                &format!(
+                    "created book {} in {} (keys: {}; keep them, they are never regenerated)",
+                    book_id.to_hex(),
+                    dir.display(),
+                    keys_file.display()
+                ),
+            );
+            Ok(())
+        }
+        Some("info") => {
+            let book = open_book(args)?;
+            let ctx = book.context();
+            let periods = book.periods()?;
+            let mut by_state: Vec<(String, i128)> = Vec::new();
+            for p in &periods {
+                match by_state.iter_mut().find(|(n, _)| *n == p.state.name()) {
+                    Some((_, n)) => *n += 1,
+                    None => by_state.push((p.state.name().to_string(), 1)),
+                }
+            }
+            let unit = ctx
+                .units
+                .get(ctx.units.lookup("USD").unwrap_or(fa_money::UnitId(0)))
+                .map(|u| u.code.clone())
+                .unwrap_or_default();
+            out.event(
+                "book",
+                vec![
+                    ("book_id", s(ctx.book_id.to_hex())),
+                    ("calendar", s(&ctx.calendar.id)),
+                    ("periods", Json::Int(periods.len() as i128)),
+                    (
+                        "periods_by_state",
+                        Json::Obj(
+                            by_state
+                                .into_iter()
+                                .map(|(k, v)| (k, Json::Int(v)))
+                                .collect(),
+                        ),
+                    ),
+                    ("accounts", Json::Int(book.accounts()?.len() as i128)),
+                    (
+                        "units_registered",
+                        Json::Int(ctx.units.iter().count() as i128),
+                    ),
+                ],
+                &format!(
+                    "book {} · calendar {} · {} periods · {} accounts · base unit {}",
+                    ctx.book_id.to_hex(),
+                    ctx.calendar.id,
+                    periods.len(),
+                    book.accounts()?.len(),
+                    unit
+                ),
+            );
+            Ok(())
+        }
+        other => Err(usage(
+            format!("book needs create|info, got {other:?}"),
+            "fa book create --book <dir> --name \"My Co\"",
+        )),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// chart
+// ---------------------------------------------------------------------------
+
+fn chart_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
+    match args.positional.get(1).map(String::as_str) {
+        Some("import") => {
+            let path = args.positional.get(2).ok_or_else(|| {
+                usage(
+                    "chart import needs a file",
+                    "fa chart import chart.json --book <dir>",
+                )
+            })?;
+            let text = read_text(path)?;
+            let doc = parse_json(path, &text)?;
+            let mut book = open_book(args)?;
+            let units = &book.context().units;
+            let rows = doc.get("accounts").and_then(Json::as_arr).ok_or_else(|| {
+                usage(
+                    "chart: `accounts` must be an array",
+                    "fa robot-docs examples",
+                )
+            })?;
+            let mut accounts = Vec::with_capacity(rows.len());
+            for (i, row) in rows.iter().enumerate() {
+                let what = format!("accounts[{i}]");
+                let code = req_str(row, "code", &what)?;
+                let name = row.get("name").and_then(Json::as_str).unwrap_or(code);
+                let type_name = req_str(row, "type", &what)?;
+                let account_type = AccountType::ALL
+                    .iter()
+                    .find(|(_, n, ..)| n.eq_ignore_ascii_case(type_name))
+                    .map(|(t, ..)| *t)
+                    .ok_or_else(|| {
+                        usage(
+                            format!("{what}: unknown type `{type_name}`"),
+                            "type: Asset|Liability|Equity|Revenue|Expense|Memo|Statistical",
+                        )
+                    })?;
+                let normal_balance = AccountType(account_type).normal_balance().unwrap_or(0);
+                let is_leaf = row.get("leaf").and_then(Json::as_bool).unwrap_or(true);
+                let unit_policy = match row.get("unit").and_then(Json::as_str) {
+                    None | Some("any") => UnitPolicy::AnyUnit,
+                    Some("any-currency") => UnitPolicy::AnyCurrency,
+                    Some(u) => UnitPolicy::Single(units.lookup(u).ok_or_else(|| {
+                        usage(
+                            format!("{what}: unknown unit `{u}`"),
+                            "unit: USD|EUR|…|any|any-currency",
+                        )
+                    })?),
+                };
+                let parent_code = row.get("parent").and_then(Json::as_str).map(str::to_string);
+                accounts.push(AccountSpec {
+                    code: code.to_string(),
+                    name: name.to_string(),
+                    account_type,
+                    normal_balance,
+                    is_leaf,
+                    unit_policy,
+                    parent_code,
+                });
+            }
+            let date = date_flag(args, DateDay(0))?;
+            let key = match args.flag("--key") {
+                Some(k) => k.as_bytes().to_vec(),
+                None => {
+                    format!("chart:{}", hex(&fa_model_digest(text.as_bytes())[..8])).into_bytes()
+                }
+            };
+            let installed = book.install_chart(&accounts, principal(args), date, &key)??;
+            out.event(
+                "chart_installed",
+                vec![
+                    ("accounts", Json::Int(installed.accounts as i128)),
+                    (
+                        "control_entry",
+                        s(format!("{:032x}", installed.control_entry.0)),
+                    ),
+                    (
+                        "recorded_at",
+                        Json::Int(i128::from(installed.recorded_at.0)),
+                    ),
+                ],
+                &format!(
+                    "installed {} accounts (control entry {:032x}, recorded at {})",
+                    installed.accounts, installed.control_entry.0, installed.recorded_at.0
+                ),
+            );
+            Ok(())
+        }
+        Some("list") => {
+            let book = open_book(args)?;
+            let rows = book.accounts()?;
+            let units = &book.context().units;
+            let items: Vec<Json> = rows
+                .iter()
+                .map(|a| {
+                    obj(vec![
+                        ("code", s(&a.code)),
+                        ("name", s(&a.name)),
+                        ("type", s(AccountType(a.account_type).name().unwrap_or("?"))),
+                        ("leaf", Json::Bool(a.is_leaf)),
+                        (
+                            "unit",
+                            s(match a.unit_policy {
+                                UnitPolicy::Single(u) => {
+                                    units.get(u).map(|u| u.code.clone()).unwrap_or_default()
+                                }
+                                UnitPolicy::AnyCurrency => "any-currency".into(),
+                                UnitPolicy::AnyUnit => "any".into(),
+                            }),
+                        ),
+                    ])
+                })
+                .collect();
+            if out.json {
+                out.event("accounts", vec![("accounts", Json::Arr(items))], "");
+            } else {
+                for a in &rows {
+                    println!(
+                        "{:<12} {:<32} {:<12} {}",
+                        a.code,
+                        a.name,
+                        AccountType(a.account_type).name().unwrap_or("?"),
+                        if a.is_leaf { "leaf" } else { "summary" }
+                    );
+                }
+            }
+            Ok(())
+        }
+        other => Err(usage(
+            format!("chart needs import|list, got {other:?}"),
+            "fa chart import chart.json --book <dir>",
+        )),
+    }
+}
+
+fn fa_model_digest(bytes: &[u8]) -> [u8; 32] {
+    // The chart's idempotency key is a digest of the file, so re-importing the
+    // same file is the recorded outcome and a changed file is a new install.
+    let mut acc = [0u8; 32];
+    for (i, b) in bytes.iter().enumerate() {
+        acc[i % 32] = acc[i % 32].wrapping_mul(31).wrapping_add(*b);
+    }
+    acc
+}
+
+// ---------------------------------------------------------------------------
+// period
+// ---------------------------------------------------------------------------
+
+fn period_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
+    let sub = args.positional.get(1).map(String::as_str);
+    match sub {
+        Some("create") => {
+            let fy: i32 = args
+                .require("--fiscal-year", "2026")?
+                .parse()
+                .map_err(|_| usage("--fiscal-year must be a year", "--fiscal-year 2026"))?;
+            let mut book = open_book(args)?;
+            let (seq, periods) = book.create_periods(fy)?;
+            let codes: Vec<Json> = periods.iter().map(|p| s(&p.code)).collect();
+            out.event("periods_created", vec![("fiscal_year", Json::Int(i128::from(fy))), ("periods", Json::Arr(codes)), ("recorded_at", Json::Int(i128::from(seq.0)))], &format!("created {} periods for FY{fy} (all Future; open them with `fa period open <code>`)", periods.len()));
+            Ok(())
+        }
+        Some("list") => {
+            let book = open_book(args)?;
+            let rows = book.periods()?;
+            let items: Vec<Json> = rows
+                .iter()
+                .map(|p| {
+                    obj(vec![
+                        ("code", s(&p.code)),
+                        ("state", s(p.state.name())),
+                        ("kind", s(kind_name(p.kind))),
+                        ("start", s(p.start.render())),
+                        ("end", s(p.end.render())),
+                        ("fiscal_year", Json::Int(i128::from(p.fiscal_year))),
+                    ])
+                })
+                .collect();
+            if out.json {
+                out.event("periods", vec![("periods", Json::Arr(items))], "");
+            } else {
+                for p in &rows {
+                    println!(
+                        "{:<14} {:<10} {:<11} {} .. {}",
+                        p.code,
+                        p.state.name(),
+                        kind_name(p.kind),
+                        p.start.render(),
+                        p.end.render()
+                    );
+                }
+            }
+            Ok(())
+        }
+        Some(t @ ("open" | "soft-close" | "close" | "lock" | "reopen")) => {
+            let code = args.positional.get(2).ok_or_else(|| {
+                usage(
+                    format!("period {t} needs a period code"),
+                    format!("fa period {t} FY2026-P03 --book <dir>"),
+                )
+            })?;
+            let transition = match t {
+                "open" => PeriodTransition::Open,
+                "soft-close" => PeriodTransition::SoftClose,
+                "close" => PeriodTransition::Close,
+                "lock" => PeriodTransition::Lock,
+                _ => PeriodTransition::Reopen {
+                    to: match args.flag("--to").unwrap_or("open") {
+                        "open" => PeriodState::Open,
+                        "soft-closed" => PeriodState::SoftClosed,
+                        other => {
+                            return Err(usage(format!("--to `{other}`"), "--to open|soft-closed"));
+                        }
+                    },
+                },
+            };
+            let reason: u16 = args.flag("--reason").unwrap_or("0").parse().map_err(|_| {
+                usage(
+                    "--reason must be a registered reason code (u16)",
+                    "--reason 0",
+                )
+            })?;
+            let mut book = open_book(args)?;
+            let current = book
+                .periods()?
+                .into_iter()
+                .find(|p| &p.code == code)
+                .map(|p| p.state.name())
+                .unwrap_or("Unknown");
+            let key = args
+                .flag("--key")
+                .map(|k| k.as_bytes().to_vec())
+                .unwrap_or_else(|| format!("period:{code}:{current}:{t}").into_bytes());
+            let date = date_flag(
+                args,
+                book.periods()?
+                    .into_iter()
+                    .find(|p| &p.code == code)
+                    .map(|p| p.start)
+                    .unwrap_or(DateDay(0)),
+            )?;
+            let tr =
+                book.transition_period(code, transition, principal(args), reason, date, &key)??;
+            out.event(
+                "period_transitioned",
+                vec![
+                    ("period", s(&tr.period)),
+                    ("from", s(tr.from.name())),
+                    ("to", s(tr.to.name())),
+                    ("control_entry", s(format!("{:032x}", tr.control_entry.0))),
+                    ("recorded_at", Json::Int(i128::from(tr.recorded_at.0))),
+                ],
+                &format!(
+                    "{}: {} → {} (recorded at {})",
+                    tr.period,
+                    tr.from.name(),
+                    tr.to.name(),
+                    tr.recorded_at.0
+                ),
+            );
+            Ok(())
+        }
+        other => Err(usage(
+            format!("period needs create|list|open|soft-close|close|lock|reopen, got {other:?}"),
+            "fa period open FY2026-P03 --book <dir>",
+        )),
+    }
+}
+
+fn kind_name(k: PeriodKind) -> &'static str {
+    match k {
+        PeriodKind::Normal => "Normal",
+        PeriodKind::Adjustment => "Adjustment",
+        PeriodKind::Opening => "Opening",
+        PeriodKind::Closing => "Closing",
+        PeriodKind::Historical => "Historical",
+    }
+}
+
+// ---------------------------------------------------------------------------
+// post
+// ---------------------------------------------------------------------------
+
+fn post_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
+    let path = args.require("--intent", "entry.json (or - for stdin)")?;
+    let text = read_text(path)?;
+    let doc = parse_json(path, &text)?;
+    let mut book = open_book(args)?;
+    let ctx = book.context();
+    let class_name = doc
+        .get("class")
+        .and_then(Json::as_str)
+        .unwrap_or("Original");
+    let class = EntryClass::from_name(class_name).ok_or_else(|| {
+        usage(
+            format!("unknown class `{class_name}`"),
+            "class: Original|Reversal|Replacement|Reclassification|Adjusting|…",
+        )
+    })?;
+    let date_s = req_str(&doc, "effective_date", "intent")?;
+    let effective_date = DateDay::parse(date_s).map_err(|e| {
+        usage(
+            format!("effective_date `{date_s}`: {e:?}"),
+            "effective_date: \"YYYY-MM-DD\"",
+        )
+    })?;
+    let key = req_str(&doc, "idempotency_key", "intent")?;
+    let description = doc.get("description").and_then(Json::as_str).unwrap_or("");
+    let legs_doc = doc
+        .get("legs")
+        .and_then(Json::as_arr)
+        .ok_or_else(|| usage("intent: `legs` must be an array", "fa robot-docs examples"))?;
+    let mut legs = Vec::with_capacity(legs_doc.len());
+    for (i, l) in legs_doc.iter().enumerate() {
+        let what = format!("legs[{i}]");
+        let side = match req_str(l, "side", &what)? {
+            "debit" | "dr" | "Debit" => Side::Debit,
+            "credit" | "cr" | "Credit" => Side::Credit,
+            other => {
+                return Err(usage(
+                    format!("{what}: side `{other}`"),
+                    "side: debit|credit",
+                ));
+            }
+        };
+        let account = req_str(l, "account", &what)?;
+        let amount_s = req_str(l, "amount", &what)?;
+        let amount = Amount::parse(amount_s, &ctx.units).map_err(|e| {
+            usage(
+                format!("{what}: amount `{amount_s}`: {e:?}"),
+                "amount: \"1500.00 USD\" (exact, at the unit's scale, non-negative)",
+            )
+        })?;
+        legs.push(LegPayload::simple(
+            side,
+            account_vid(ctx.book_id, account),
+            amount,
+        ));
+    }
+    let unit_totals = EntryPayload::fold_unit_totals(&legs)
+        .map_err(fa_journal::KernelError::Model)
+        .map_err(BookError::Kernel)?;
+    let effective_period = doc
+        .get("effective_period")
+        .and_then(Json::as_str)
+        .map(|c| PeriodRef {
+            calendar: ctx.calendar.id.clone(),
+            code: c.to_string(),
+        });
+    let who = principal(args);
+    let proposal = EntryPayload {
+        schema_minor: 0,
+        book_id: ctx.book_id,
+        branch_id: Id128::TRUNK,
+        class,
+        effective_date,
+        document_date: None,
+        description: book.seal_text(description)?,
+        effective_period,
+        legs,
+        control: None,
+        unit_totals,
+        base_totals: None,
+        idempotency_key: key.as_bytes().to_vec(),
+        origin: EntryOrigin::Intent {
+            intent_oid: Oid(fa_model_digest(text.as_bytes())),
+            intent_kind: 1,
+        },
+        principal_ref: who,
+        session_ref: None,
+        evidence: Vec::new(),
+        supersession: Vec::new(),
+        pending: None,
+        external_ids: Vec::new(),
+        tags: Vec::new(),
+    };
+    let mut ops = vec!["post"];
+    ops.extend(args.flag_all("--grant"));
+    let req = PostRequest {
+        proposal,
+        approvals: Vec::new(),
+        plan_certificate: None,
+        principal_scope: who.0.to_le_bytes().to_vec(),
+        capability: Capability::with_ops(&ops),
+    };
+    match book.post(req)?? {
+        Posted::Committed {
+            entry_ref,
+            recorded_at,
+            period,
+        } => {
+            out.event(
+                "posted",
+                vec![
+                    ("vid", s(format!("{:032x}", entry_ref.vid.0))),
+                    ("entry_digest", s(hex(&entry_ref.entry_digest))),
+                    ("recorded_at", Json::Int(i128::from(recorded_at.0))),
+                    ("period", s(&period)),
+                ],
+                &format!(
+                    "posted {:032x} in {period}, recorded at {} (entry_digest {})",
+                    entry_ref.vid.0,
+                    recorded_at.0,
+                    hex(&entry_ref.entry_digest)
+                ),
+            );
+        }
+        Posted::AlreadyRecorded {
+            entry_ref,
+            recorded_at,
+        } => {
+            out.event(
+                "recorded",
+                vec![("vid", s(format!("{:032x}", entry_ref.vid.0))), ("entry_digest", s(hex(&entry_ref.entry_digest))), ("recorded_at", Json::Int(i128::from(recorded_at.0)))],
+                &format!("already recorded as {:032x} at {} (same idempotency_key); nothing new was written", entry_ref.vid.0, recorded_at.0),
+            );
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// tb / verify / registers / entry
+// ---------------------------------------------------------------------------
+
+fn selected_periods(args: &Args, book: &Book) -> Result<Vec<String>, Fail> {
+    let mut periods: Vec<String> = args
+        .flag_all("--period")
+        .iter()
+        .map(|p| (*p).to_string())
+        .collect();
+    if let Some(fy) = args.flag("--fiscal-year") {
+        let fy: i32 = fy
+            .parse()
+            .map_err(|_| usage("--fiscal-year must be a year", "--fiscal-year 2026"))?;
+        periods.extend(
+            book.periods()?
+                .into_iter()
+                .filter(|p| p.fiscal_year == fy)
+                .map(|p| p.code),
+        );
+    }
+    if periods.is_empty() {
+        return Err(usage(
+            "no periods selected",
+            "--period FY2026-P03 (repeatable) or --fiscal-year 2026",
+        ));
+    }
+    Ok(periods)
+}
+
+fn tb_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
+    let book = open_book(args)?;
+    let periods = selected_periods(args, &book)?;
+    let tb = book.trial_balance(&periods)?;
+    let units = &book.context().units;
+    let render = |unit: u32, m: i128| Amount::new(fa_money::UnitId(unit), m).render(units);
+    let rows: Vec<Json> = tb
+        .rows
+        .iter()
+        .map(|r| {
+            obj(vec![
+                ("code", s(&r.code)),
+                ("name", s(&r.name)),
+                ("type", s(r.account_type.name().unwrap_or("?"))),
+                ("debits", s(render(r.unit_id, r.debits))),
+                ("credits", s(render(r.unit_id, r.credits))),
+                ("net", s(render(r.unit_id, r.debits - r.credits))),
+            ])
+        })
+        .collect();
+    let totals: Vec<Json> = tb
+        .unit_totals
+        .iter()
+        .map(|(u, (d, c))| {
+            obj(vec![
+                (
+                    "unit",
+                    s(units
+                        .get(fa_money::UnitId(*u))
+                        .map(|x| x.code.clone())
+                        .unwrap_or_default()),
+                ),
+                ("debits", s(render(*u, *d))),
+                ("credits", s(render(*u, *c))),
+            ])
+        })
+        .collect();
+    if out.json {
+        out.event(
+            "trial_balance",
+            vec![
+                ("periods", Json::Arr(periods.iter().map(|p| s(p)).collect())),
+                ("rows", Json::Arr(rows)),
+                ("unit_totals", Json::Arr(totals)),
+                ("balanced", Json::Bool(tb.is_balanced())),
+            ],
+            "",
+        );
+    } else {
+        println!("trial balance · {}", periods.join(", "));
+        for r in &tb.rows {
+            println!(
+                "{:<10} {:<28} {:>22} {:>22}",
+                r.code,
+                r.name,
+                render(r.unit_id, r.debits),
+                render(r.unit_id, r.credits)
+            );
+        }
+        for (u, (d, c)) in &tb.unit_totals {
+            println!(
+                "{:<39} {:>22} {:>22}",
+                "total",
+                render(*u, *d),
+                render(*u, *c)
+            );
+        }
+        println!("balanced: {}", tb.is_balanced());
+    }
+    Ok(())
+}
+
+fn verify_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
+    match args.positional.get(1).map(String::as_str) {
+        Some("registers") => {
+            let book = open_book(args)?;
+            let periods = selected_periods(args, &book)?;
+            let mut all_green = true;
+            let mut details = Vec::new();
+            for p in &periods {
+                let v = book.verify_registers(p)?;
+                let drift: Vec<Json> = v
+                    .drift
+                    .iter()
+                    .map(|d| {
+                        obj(vec![
+                            ("account", s(format!("{:032x}", d.key.account.0))),
+                            ("unit_id", Json::Int(i128::from(d.key.unit_id))),
+                            (
+                                "stored",
+                                d.stored.map_or(Json::Null, |(dd, cc, n)| {
+                                    obj(vec![
+                                        ("debits", Json::Int(dd)),
+                                        ("credits", Json::Int(cc)),
+                                        ("entry_count", Json::Int(i128::from(n))),
+                                    ])
+                                }),
+                            ),
+                            (
+                                "refolded",
+                                obj(vec![
+                                    ("debits", Json::Int(d.refolded.0)),
+                                    ("credits", Json::Int(d.refolded.1)),
+                                    ("entry_count", Json::Int(i128::from(d.refolded.2))),
+                                ]),
+                            ),
+                        ])
+                    })
+                    .collect();
+                all_green &= v.is_green();
+                details.push(obj(vec![
+                    ("period", s(p)),
+                    ("green", Json::Bool(v.is_green())),
+                    ("cells_checked", Json::Int(v.cells_checked as i128)),
+                    ("refold_digest", s(hex(&v.refold_digest))),
+                    (
+                        "stored_digest",
+                        v.stored_digest.map_or(Json::Null, |d| s(hex(&d))),
+                    ),
+                    ("drift", Json::Arr(drift)),
+                ]));
+            }
+            if all_green {
+                out.event(
+                    "registers_verified",
+                    vec![("periods", Json::Arr(details))],
+                    &format!("registers verified by refold: {} green", periods.join(", ")),
+                );
+                Ok(())
+            } else {
+                Err(Fail::Verification(
+                    format!(
+                        "stored registers differ from the refold in {}",
+                        periods.join(", ")
+                    ),
+                    Json::Arr(details),
+                ))
+            }
+        }
+        other => Err(usage(
+            format!("verify needs `registers`, got {other:?}"),
+            "fa verify registers --period FY2026-P03 --book <dir>",
+        )),
+    }
+}
+
+fn registers_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
+    match args.positional.get(1).map(String::as_str) {
+        Some("materialize") => {
+            let mut book = open_book(args)?;
+            let periods = selected_periods(args, &book)?;
+            for p in &periods {
+                let (fold, seq) = book.materialize_registers(p)?;
+                out.event(
+                    "registers_materialized",
+                    vec![
+                        ("period", s(p)),
+                        ("cells", Json::Int(fold.cells.len() as i128)),
+                        ("entries", Json::Int(fold.entries as i128)),
+                        (
+                            "watermark",
+                            fold.watermark
+                                .map_or(Json::Null, |w| Json::Int(i128::from(w.0))),
+                        ),
+                        ("fold_digest", s(hex(&fold.fold_digest))),
+                        ("recorded_at", Json::Int(i128::from(seq.0))),
+                    ],
+                    &format!(
+                        "{p}: {} cells from {} entries (fold digest {})",
+                        fold.cells.len(),
+                        fold.entries,
+                        hex(&fold.fold_digest[..8])
+                    ),
+                );
+            }
+            Ok(())
+        }
+        other => Err(usage(
+            format!("registers needs `materialize`, got {other:?}"),
+            "fa registers materialize --period FY2026-P03 --book <dir>",
+        )),
+    }
+}
+
+fn entry_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
+    match args.positional.get(1).map(String::as_str) {
+        Some("show") => {
+            let vid_s = args.positional.get(2).ok_or_else(|| {
+                usage(
+                    "entry show needs a vid (32 hex)",
+                    "fa entry show <vid> --book <dir>",
+                )
+            })?;
+            let vid = u128::from_str_radix(vid_s, 16).map_err(|_| {
+                usage(
+                    format!("`{vid_s}` is not a 32-hex vid"),
+                    "use the `vid` from the posted event",
+                )
+            })?;
+            let book = open_book(args)?;
+            let units = &book.context().units;
+            match book.read_entry(VId(vid))? {
+                None => {
+                    out.event(
+                        "entry",
+                        vec![("found", Json::Bool(false)), ("vid", s(vid_s))],
+                        &format!("no entry {vid_s}"),
+                    );
+                    Ok(())
+                }
+                Some((entry, seq)) => {
+                    let legs: Vec<Json> = entry
+                        .proposal
+                        .legs
+                        .iter()
+                        .map(|l| {
+                            obj(vec![
+                                (
+                                    "side",
+                                    s(if l.side == Side::Debit {
+                                        "debit"
+                                    } else {
+                                        "credit"
+                                    }),
+                                ),
+                                ("account", s(format!("{:032x}", l.account_ref.0))),
+                                ("amount", s(l.amount.render(units))),
+                            ])
+                        })
+                        .collect();
+                    let fields = vec![
+                        ("found", Json::Bool(true)),
+                        ("vid", s(vid_s)),
+                        ("class", s(entry.proposal.class.name().unwrap_or("?"))),
+                        ("effective_date", s(entry.proposal.effective_date.render())),
+                        ("recorded_at", Json::Int(i128::from(seq.0))),
+                        ("entry_digest", s(hex(&entry.entry_digest))),
+                        ("proposal_digest", s(hex(&entry.proposal_digest))),
+                        ("approvals", Json::Int(entry.approvals.len() as i128)),
+                        ("legs", Json::Arr(legs)),
+                    ];
+                    let human = format!(
+                        "{} {} recorded at {} · {} legs · entry_digest {}",
+                        entry.proposal.class.name().unwrap_or("?"),
+                        entry.proposal.effective_date.render(),
+                        seq.0,
+                        entry.proposal.legs.len(),
+                        hex(&entry.entry_digest)
+                    );
+                    out.event("entry", fields, &human);
+                    Ok(())
+                }
+            }
+        }
+        other => Err(usage(
+            format!("entry needs `show`, got {other:?}"),
+            "fa entry show <vid> --book <dir>",
+        )),
+    }
+}

@@ -189,6 +189,13 @@ pub fn unit_vid(book: Id128, unit_code: &str) -> VId {
     derive_vid(b"fa:vid:unit:v1", &[&book.0, unit_code.as_bytes()])
 }
 
+/// `vid(Principal) = H("fa:vid:principal:v1" ‖ name)`: the identity a
+/// named operator or agent posts under until Steward issues principals.
+#[must_use]
+pub fn principal_vid(name: &str) -> VId {
+    derive_vid(b"fa:vid:principal:v1", &[name.as_bytes()])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

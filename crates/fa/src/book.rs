@@ -188,7 +188,7 @@ impl Entropy {
         Self::Deterministic(CryptoCx::new(DeterministicEntropy::for_test(seed)))
     }
 
-    fn fill(&self, dest: &mut [u8]) -> Result<(), EntropyError> {
+    pub fn fill(&self, dest: &mut [u8]) -> Result<(), EntropyError> {
         match self {
             Self::Production(c) => c.fill_secret(dest),
             Self::Deterministic(c) => c.fill_secret(dest),
@@ -510,11 +510,9 @@ impl Book {
         Ok(with_store!(&self.store, db => fa_journal::genesis::list_periods(db))?)
     }
 
-    /// The named accounts of the chart (unknown codes are skipped).
-    pub fn accounts(&self, codes: &[String]) -> Result<Vec<AccountRow>, BookError> {
-        Ok(
-            with_store!(&self.store, db => fa_journal::genesis::list_accounts(db, &self.ctx, codes))?,
-        )
+    /// Every account of the chart, sorted by code.
+    pub fn accounts(&self) -> Result<Vec<AccountRow>, BookError> {
+        Ok(with_store!(&self.store, db => fa_journal::genesis::list_accounts(db))?)
     }
 
     /// The register fold of one period (plan §5.3).
@@ -750,10 +748,12 @@ mod tests {
         let tb = book.trial_balance(&[march]).unwrap();
         assert!(tb.is_balanced());
         assert_eq!(
-            book.accounts(&["1000".into(), "6000".into(), "nope".into()])
+            book.accounts()
                 .unwrap()
-                .len(),
-            2
+                .iter()
+                .map(|a| a.code.as_str())
+                .collect::<Vec<_>>(),
+            vec!["1000", "6000"]
         );
     }
 

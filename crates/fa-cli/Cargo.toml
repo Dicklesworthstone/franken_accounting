@@ -1,0 +1,25 @@
+[package]
+name = "fa-cli"
+version = "0.0.1"
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "The `fa` command line (plan §15.3, Appendix D): robot mode with the event-discriminated envelope, the exit-code dictionary 0/2/3/4/5/6/7/8 (never 1), refusal objects that name the law and the fix, Levenshtein-1 verb and flag correction, no TUI. Bead fa-9xt."
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "fa"
+path = "src/main.rs"
+
+[dependencies]
+fa = { path = "../fa" }
+fa-journal = { path = "../fa-journal" }
+fa-model = { path = "../fa-model" }
+fa-money = { path = "../fa-money" }
+fa-registry = { path = "../fa-registry" }
+fa-registers = { path = "../fa-registers" }
+fa-time = { path = "../fa-time" }
+fgdb-types = { workspace = true }
