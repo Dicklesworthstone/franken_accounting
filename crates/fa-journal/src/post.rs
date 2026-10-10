@@ -41,12 +41,14 @@ use fa_model::{
     entry_mirrors, entry_vid, leg_mirrors, period_vid,
 };
 use fa_money::Side;
+use fa_registry::evidence_policy::EvidencePolicy;
 use fa_registry::{Admissibility, Decision, EntryClasses};
 use fa_time::resolve_period;
 use fgdb::{Database, VertexRow, WriteBatch, WriteMismatchPolicy, WriteTxnError};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
+use crate::evidence::{evidenced_by, resolve_evidence};
 use crate::genesis::{BookContext, UnitPolicy};
 use crate::limit::{self, LimitCell, Movement, limit_cell_vid};
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
@@ -474,27 +476,42 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     };
 
     // 2. Balance law per unit (FA-INV-01). The suggested residual is text.
+    //    Amounts are rendered at the unit's registered scale ("0.01 USD"), so
+    //    the fix names an amount the caller can post as written.
     for t in &proposal.unit_totals {
         if t.debits != t.credits {
-            let diff = t.debits - t.credits;
-            let unit = book
-                .units
-                .get(fa_money::UnitId(t.unit_id))
-                .map_or_else(|| format!("unit {}", t.unit_id), |u| u.code.clone());
-            let side = if diff > 0 { "credit" } else { "debit" };
+            let (side, gap) = if t.debits > t.credits {
+                ("credit", t.debits.checked_sub(t.credits))
+            } else {
+                ("debit", t.credits.checked_sub(t.debits))
+            };
+            let gap = gap.ok_or_else(|| {
+                KernelError::Corrupt(format!(
+                    "unit {} totals outside the validated domain",
+                    t.unit_id
+                ))
+            })?;
+            let unit = fa_money::UnitId(t.unit_id);
+            let show = |m: i128| {
+                if book.units.get(unit).is_some() {
+                    fa_money::Amount::new(unit, m).render(&book.units)
+                } else {
+                    format!("{m} (mantissa of unregistered unit {})", t.unit_id)
+                }
+            };
             return Ok(Err(Refusal::new(
                 code::UNBALANCED,
                 exit::REFUSAL,
                 format!(
-                    "{unit}: debits {} ≠ credits {} (difference {})",
-                    t.debits,
-                    t.credits,
-                    diff.abs()
+                    "debits {} ≠ credits {} (difference {})",
+                    show(t.debits),
+                    show(t.credits),
+                    show(gap)
                 ),
                 "FA-INV-01 per-unit balance law",
                 format!(
-                    "add a {side} leg of {} {unit} to the account that explains it; the kernel never invents one",
-                    diff.abs()
+                    "add a {side} leg of {} to the account that explains it; the kernel never invents one",
+                    show(gap)
                 ),
             )));
         }
@@ -629,6 +646,20 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
             )));
         }
     }
+
+    // 5b. Evidence minimum (plan §9.2, FA-INV-05 `evidence-minimum`): every
+    //     citation names a document this book holds under its exact
+    //     commitment, read as a witness of this transaction, and the class's
+    //     registered minimum holds. Nothing posts without a why.
+    let evidence_policy =
+        EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    let documents = match resolve_evidence(&txn, db, &evidence_policy, proposal)? {
+        Ok(d) => d,
+        Err(r) => {
+            txn.abort();
+            return Ok(Err(r));
+        }
+    };
 
     // 6. Accounts: exist, leaf-only, unit policy (plan §4.3).
     let mut accounts: Vec<AccountRow> = Vec::with_capacity(proposal.legs.len());
@@ -1362,6 +1393,9 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
         }
         batches.push(settles);
         batches.push(unsettles);
+    }
+    if let Some(edges) = evidenced_by(evid, &documents) {
+        batches.push(edges);
     }
     batches.retain(|b| !b.is_empty());
     txn.write_ordered(db, batches)?;
