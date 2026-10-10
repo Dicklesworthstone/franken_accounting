@@ -1238,3 +1238,131 @@ fn chart_limits_are_structural_and_breaches_name_the_admissible_amount() {
         (100, 80)
     );
 }
+
+/// Review 3063: a LimitCell's `account_ref` is part of the witness. Two
+/// limited accounts post and verify green (positive control); rebinding only
+/// one cell's `account_ref` to the other account makes the verifier name both
+/// accounts and the kernel refuse every post on the rebound account (fail
+/// closed, as for the `applied` mirror), while the other limited account and
+/// unlimited accounts keep posting. An absent `account_ref` is the same.
+#[test]
+fn a_limit_cell_rebound_to_another_account_fails_closed_and_verify_names_both() {
+    let mut h = harness();
+    let usd = h.usd;
+    let floor = Some(BalanceLimit {
+        lower: Some(0),
+        upper: None,
+    });
+    let spec = |code: &str| AccountSpec {
+        code: code.into(),
+        name: code.into(),
+        account_type: 1,
+        normal_balance: 0,
+        is_leaf: true,
+        unit_policy: UnitPolicy::Single(usd),
+        parent_code: None,
+        limit: floor,
+    };
+    let chart = [spec("1100"), spec("1110")];
+    {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        let day = DateDay::from_ymd(2026, 1, 1).unwrap();
+        let description =
+            Erasable::seal(&"chart".to_string(), None, &book.seal_key, [5; 32], [6; 24]);
+        h.runtime
+            .block_on(async move {
+                install_chart(
+                    db,
+                    &ctx,
+                    book,
+                    &chart,
+                    PRINCIPAL,
+                    day,
+                    b"two-limited",
+                    description,
+                )
+                .await
+            })
+            .expect("kernel")
+            .expect("installs");
+    }
+    let a = account_vid(h.book.book_id, "1100");
+    let b = account_vid(h.book.book_id, "1110");
+    let cash = h.cash;
+    let post_raw = |h: &mut Harness, dr: VId, cr: VId, cents: i128, key: &[u8]| {
+        let legs = vec![
+            LegPayload::simple(Side::Debit, dr, Amount::new(h.usd, cents)),
+            LegPayload::simple(Side::Credit, cr, Amount::new(h.usd, cents)),
+        ];
+        let req = PostRequest {
+            proposal: h.proposal(legs, key, EntryClass::ORIGINAL),
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: Capability::with_ops(&["post"]),
+        };
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        h.runtime
+            .block_on(async move { post(db, &ctx, book, req).await })
+    };
+    // Positive control: both cells intact and bound; both accounts post.
+    for (account, key) in [(a, b"fund-a" as &[u8]), (b, b"fund-b")] {
+        assert!(matches!(
+            post_raw(&mut h, account, cash, 100, key),
+            Ok(Ok(Posted::Committed { .. }))
+        ));
+    }
+    let intact = fa_registers::verify_availability(&h.db, &h.book, None).unwrap();
+    assert!(intact.is_green(), "{intact:?}");
+    assert_eq!(intact.accounts_checked, 2);
+
+    // Rebind only 1100's cell to 1110: the sums stay exactly right.
+    let cell_a = limit_cell_vid(a);
+    let mut batch = WriteBatch::new(relation::IN_BOOK);
+    batch.set_vertex_property(
+        cell_a,
+        property::ACCOUNT_REF,
+        Some(scalar_bytes(b.0.to_le_bytes().to_vec())),
+    );
+    h.write_derived(batch);
+    let rebound = fa_registers::verify_availability(&h.db, &h.book, None).unwrap();
+    assert!(!rebound.is_green());
+    assert_eq!(rebound.drift.len(), 1, "{rebound:?}");
+    let d = &rebound.drift[0];
+    assert_eq!((d.account, d.code.as_str()), (a, "1100"));
+    assert_eq!(d.stored_account, Some(b));
+    assert_eq!(d.stored_account_code.as_deref(), Some("1110"));
+    assert_eq!(d.stored, Some(d.refolded), "only the binding was changed");
+    let refused = post_raw(&mut h, a, cash, 1, b"fund-a-again");
+    let other_hex = format!("{:032x}", b.0);
+    assert!(
+        matches!(&refused, Err(KernelError::Corrupt(m))
+            if m.contains(&other_hex) && m.contains("fa verify availability")),
+        "a rebound cell must fail closed: {refused:?}"
+    );
+    assert!(matches!(
+        post_raw(&mut h, b, cash, 1, b"fund-b-again"),
+        Ok(Ok(Posted::Committed { .. }))
+    ));
+    h.post_rent(5, b"unlimited-still-posts");
+
+    // An absent binding is the same failure.
+    let mut batch = WriteBatch::new(relation::IN_BOOK);
+    batch.set_vertex_property(cell_a, property::ACCOUNT_REF, None);
+    h.write_derived(batch);
+    let unbound = fa_registers::verify_availability(&h.db, &h.book, None).unwrap();
+    assert!(
+        unbound
+            .drift
+            .iter()
+            .any(|d| d.account == a && d.stored_account.is_none() && d.stored.is_some()),
+        "{unbound:?}"
+    );
+    assert!(matches!(
+        post_raw(&mut h, a, cash, 1, b"fund-a-unbound"),
+        Err(KernelError::Corrupt(_))
+    ));
+}

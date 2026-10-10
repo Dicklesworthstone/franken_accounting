@@ -6,13 +6,21 @@
 //! the cell from the immutable payloads alone — posted legs of posting
 //! classes, reserved legs of unresolved holds, the full original legs of a
 //! resolved hold released — and compares it with the stored cell, generation
-//! included. A cell is a witness, never truth: drift is a finding for `fa
-//! verify availability` (exit 8), never a correction applied to the journal.
+//! included, and checks that the stored cell is bound to its account (its
+//! `account_ref`). A cell is a witness, never truth: drift is a finding for
+//! `fa verify availability` (exit 8), never a correction applied to the
+//! journal.
+//!
+//! **Scope.** Verification covers the expected cell of each limited account:
+//! the vertex at `limit_cell_vid(account)`. `LimitCell` vertices that no
+//! limited account's identity references are outside this check and are not
+//! reported; a green result does not claim every stored `LimitCell` vertex
+//! was examined.
 
 use std::collections::BTreeMap;
 
 use fa_journal::genesis::BookContext;
-use fa_journal::limit::{BalanceLimit, LimitCell, Movement, limit_cell_vid};
+use fa_journal::limit::{BalanceLimit, LimitCell, Movement, cell_account, limit_cell_vid};
 use fa_journal::rows::AccountRow;
 use fa_model::symbols::label;
 use fa_model::{Entry, EntryClass};
@@ -44,6 +52,12 @@ pub struct AvailabilityDrift {
     pub code: String,
     pub stored: Option<LimitCell>,
     pub refolded: LimitCell,
+    /// The account the stored cell claims (`account_ref`); `None` when the
+    /// cell is missing or its reference is absent or malformed. Anything but
+    /// `Some(account)` is drift even when the sums agree.
+    pub stored_account: Option<VId>,
+    /// That account's code, when it names an account of this book.
+    pub stored_account_code: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -162,7 +176,9 @@ fn fold_entry(
 }
 
 /// Refold every limited account's cell at `known_at` (head when `None`) and
-/// compare it with the stored `LimitCell`.
+/// compare it with the stored `LimitCell` at the account's derived identity:
+/// sums, generation, and the `account_ref` binding. Only those expected cells
+/// are examined (see the module's scope note).
 pub fn verify_availability<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
@@ -170,12 +186,15 @@ pub fn verify_availability<V: asupersync::fs::Vfs + Clone>(
 ) -> Result<AvailabilityVerification, RegisterError> {
     let seq = resolve_known_at(db, known_at)?;
     let mut limited: BTreeMap<VId, (AccountRow, BalanceLimit)> = BTreeMap::new();
+    let mut codes: BTreeMap<VId, String> = BTreeMap::new();
     for row in db.vertices_at(seq)? {
         if !row.labels.contains(&label::ACCOUNT) {
             continue;
         }
+        let account = AccountRow::decode(&row)?;
+        codes.insert(row.vid, account.code.clone());
         if let Some(limit) = BalanceLimit::decode(&row)? {
-            limited.insert(row.vid, (AccountRow::decode(&row)?, limit));
+            limited.insert(row.vid, (account, limit));
         }
     }
     let mut cells: BTreeMap<VId, LimitCell> =
@@ -199,16 +218,19 @@ pub fn verify_availability<V: asupersync::fs::Vfs + Clone>(
         } else {
             Side::Credit
         };
-        let stored = db
+        let row = db
             .vertex_at(limit_cell_vid(*vid), seq)?
-            .filter(|row| row.labels.contains(&label::LIMIT_CELL))
-            .and_then(|row| LimitCell::decode(&row).ok());
-        if stored != Some(refolded) {
+            .filter(|row| row.labels.contains(&label::LIMIT_CELL));
+        let stored = row.as_ref().and_then(|r| LimitCell::decode(r).ok());
+        let stored_account = row.as_ref().and_then(|r| cell_account(r).ok().flatten());
+        if stored != Some(refolded) || stored_account != Some(*vid) {
             drift.push(AvailabilityDrift {
                 account: *vid,
                 code: account.code.clone(),
                 stored,
                 refolded,
+                stored_account,
+                stored_account_code: stored_account.and_then(|a| codes.get(&a).cloned()),
             });
         }
         let (net, pending_out, pending_in) = refolded.availability(normal)?;

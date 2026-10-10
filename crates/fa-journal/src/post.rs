@@ -1232,7 +1232,9 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
                     account.code
                 ))
             })?;
-        let before = LimitCell::decode(&row)?;
+        // The cell must be bound to this account (its `account_ref`), not
+        // merely found at the derived identity.
+        let before = LimitCell::decode_for(&row, *account_vid)?;
         let normal = if account.normal_balance == 0 {
             Side::Debit
         } else {

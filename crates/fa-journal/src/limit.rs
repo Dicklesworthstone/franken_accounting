@@ -127,8 +127,49 @@ pub struct LimitCell {
     pub generation: i64,
 }
 
+/// The account a stored cell claims (its `account_ref`); `None` when the
+/// property is absent. A wrong type or width is corruption.
+pub fn cell_account(row: &VertexRow) -> Result<Option<VId>, KernelError> {
+    match prop(row, property::ACCOUNT_REF) {
+        None => Ok(None),
+        Some(CanonicalScalar::Bytes(b)) => {
+            let raw: [u8; 16] = b.as_slice().try_into().map_err(|_| {
+                KernelError::Corrupt(format!(
+                    "limit cell {:032x}: account_ref width; `fa verify availability` names it",
+                    row.vid.0
+                ))
+            })?;
+            Ok(Some(VId(u128::from_le_bytes(raw))))
+        }
+        other => Err(KernelError::Corrupt(format!(
+            "limit cell {:032x}: account_ref {other:?}; `fa verify availability` names it",
+            row.vid.0
+        ))),
+    }
+}
+
 impl LimitCell {
-    /// Decode a stored cell. A missing field, a negative sum, or a wrong
+    /// Decode the cell of `account` as the kernel witnesses it: the stored
+    /// `account_ref` must be present and name `account` (the cell's identity
+    /// is derived from it), then the sums decode as [`Self::decode`]. A cell
+    /// bound to another account, or to none, is corruption: nothing is
+    /// admitted on the account until `fa verify availability` is green again.
+    pub fn decode_for(row: &VertexRow, account: VId) -> Result<Self, KernelError> {
+        match cell_account(row)? {
+            Some(a) if a == account => Self::decode(row),
+            Some(a) => Err(KernelError::Corrupt(format!(
+                "limit cell {:032x} of account {:032x} names account {:032x}; `fa verify availability` names it; nothing is admitted on the account",
+                row.vid.0, account.0, a.0
+            ))),
+            None => Err(KernelError::Corrupt(format!(
+                "limit cell {:032x} of account {:032x} has no account_ref; `fa verify availability` names it; nothing is admitted on the account",
+                row.vid.0, account.0
+            ))),
+        }
+    }
+
+    /// Decode a stored cell's sums and generation (not its account binding:
+    /// see [`Self::decode_for`]). A missing field, a negative sum, or a wrong
     /// width is corruption: the kernel admits nothing against such a cell
     /// and `fa verify availability` names it.
     pub fn decode(row: &VertexRow) -> Result<Self, KernelError> {
