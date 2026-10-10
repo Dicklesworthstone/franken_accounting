@@ -36,8 +36,9 @@ pub mod code {
     /// An `ApprovalRef` names no recorded approval of this book.
     pub const UNKNOWN_APPROVAL: &str = "FA-REF-017";
     /// The approval was recorded under a security policy epoch that is no
-    /// longer current.
-    pub const STALE_APPROVAL: &str = "FA-REF-018";
+    /// longer current. (FA-REF-018 is plan Appendix D's "daemon holds the
+    /// writer lease"; this code moved off it, review D-I1.)
+    pub const STALE_APPROVAL: &str = "FA-REF-022";
     /// A policy activation names policy content this build does not embed,
     /// so it could journal rules the kernel would not enforce.
     pub const UNSUPPORTED_POLICY: &str = "FA-REF-019";

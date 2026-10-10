@@ -516,7 +516,7 @@ fn a_post_reads_the_current_epoch_so_an_earlier_approval_is_stale() {
     let before = h.approve(ALICE, digest).unwrap().approval();
     h.activate_with_dual_control(b"policy-1");
     let r = h.post(adj.clone(), cap.clone(), vec![before]).unwrap_err();
-    assert_eq!((r.code, r.exit), ("FA-REF-018", exit::CONFLICT));
+    assert_eq!((r.code, r.exit), ("FA-REF-022", exit::CONFLICT));
     assert!(
         r.message.contains("epoch 0") && r.message.contains("epoch 1"),
         "{}",
@@ -744,7 +744,7 @@ fn an_approval_recorded_before_an_activation_is_stale_after_it() {
     let r = h
         .activate(next.clone(), controller(), vec![bob, carol])
         .unwrap_err();
-    assert_eq!((r.code, r.exit), ("FA-REF-018", exit::CONFLICT));
+    assert_eq!((r.code, r.exit), ("FA-REF-022", exit::CONFLICT));
     assert!(
         r.message.contains("epoch 0") && r.message.contains("epoch 1"),
         "{}",

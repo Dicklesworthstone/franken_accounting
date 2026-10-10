@@ -205,6 +205,6 @@ mod tests {
         let stale = a
             .check_binding(0, &[7; 32], &[7; 32], Id128([4; 16]), 4)
             .unwrap_err();
-        assert_eq!((stale.code(), stale.exit()), ("FA-REF-018", 6));
+        assert_eq!((stale.code(), stale.exit()), ("FA-REF-022", 6));
     }
 }
