@@ -160,6 +160,7 @@ fn documents_are_recorded_once_and_entries_must_cite_them() -> std::io::Result<(
     );
     assert_eq!(field(&out, "grade"), Some("AgentUpload"), "{out}");
     assert_eq!(field(&out, "self_sourced"), Some("true"), "{out}");
+    let memo_oid = field(&out, "oid").unwrap().to_string();
 
     // A grade only a verified receipt chain confers is refused at intake.
     refused(
@@ -205,6 +206,14 @@ fn documents_are_recorded_once_and_entries_must_cite_them() -> std::io::Result<(
     );
     assert!(out.contains("evidence_policy.toml"), "{out}");
     assert!(out.contains("fa document add"), "{out}");
+    // An agent's own upload does not meet the minimum until reviewed (fa-g21).
+    let out = refused(
+        &book,
+        &["post", "--intent", &bare, "--evidence", &memo_oid, "--json"],
+        "FA-REF-086",
+        3,
+    );
+    assert!(out.contains("fa-g21"), "{out}");
     // A citation of a document the book does not hold.
     let unknown = "ab".repeat(32);
     refused(

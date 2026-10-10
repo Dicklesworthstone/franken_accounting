@@ -10,7 +10,10 @@
 
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
-use fa_journal::evidence::{Document, DocumentAdded, add_document, document_vid, read_document};
+use fa_journal::evidence::{
+    Document, DocumentAdded, EvidenceAttached, SupplementalEvidence, add_document, attach_evidence,
+    document_vid, read_document, supplements_of,
+};
 use fa_journal::post::read_entry;
 use fa_journal::rows::{applied, book_root, edge_id, leg_vid, resolution_vid, reversal_vid};
 use fa_journal::*;
@@ -1769,4 +1772,307 @@ fn target_classes_rest_on_their_target_while_a_hold_needs_its_own_document() {
     adj.evidence.clear();
     let r = h.post(h.request(adj, &["post"])).unwrap_err();
     assert_eq!((r.code, r.exit), ("FA-REF-080", exit::REFUSAL), "{r}");
+}
+
+// ---------------------------------------------------------------------------
+// Evidence: a Document's mirrors never outrank its payload (fa-lp6, review
+// WhiteCreek 3097)
+// ---------------------------------------------------------------------------
+
+impl Harness {
+    /// A raw substrate write outside every kernel law: the corruption an
+    /// insider or a storage fault could leave behind.
+    fn write_raw(&mut self, batch: fgdb::WriteBatch) {
+        let ctx = self.ctx();
+        let db = &mut self.db;
+        self.runtime
+            .block_on(async move { db.write(&ctx.commit(), batch).await })
+            .expect("raw write");
+    }
+
+    fn post_citing(&mut self, doc: &Document, key: &[u8]) -> Result<Posted, Refusal> {
+        let mut p = self.proposal(self.rent_legs(7_000), key, EntryClass::ORIGINAL);
+        p.evidence = vec![doc.evidence_ref(ROLE_SOURCE)];
+        let req = self.request(p, &["post"]);
+        self.post(req)
+    }
+}
+
+#[test]
+fn a_document_whose_mirrors_drift_from_its_payload_is_refused_and_an_untouched_one_posts() {
+    let mut h = harness();
+    let kind_drift = h.document(
+        INVOICE,
+        HUMAN_UPLOAD,
+        b"INVOICE 501 (kind mirror rewritten)",
+    );
+    let commit_drift = h.document(
+        INVOICE,
+        HUMAN_UPLOAD,
+        b"INVOICE 502 (commitment mirror rewritten)",
+    );
+    let intact = h.document(INVOICE, HUMAN_UPLOAD, b"INVOICE 503 (untouched)");
+    for d in [&kind_drift, &commit_drift, &intact] {
+        h.add_document(d).expect("admitted");
+    }
+    // Rewrite one mirror on each of two documents, outside every law: the
+    // kind mirror says Rate (an Invoice payload), the commitment mirror is
+    // zeroed. The payloads are untouched.
+    let mut batch = fgdb::WriteBatch::new(relation::EVIDENCED_BY);
+    batch.set_vertex_property(
+        document_vid(&kind_drift.oid()),
+        property::CODE,
+        Some(CanonicalScalar::ucs_basic_text("Rate").unwrap()),
+    );
+    batch.set_vertex_property(
+        document_vid(&commit_drift.oid()),
+        property::FA_DIGEST,
+        Some(CanonicalScalar::bytes(vec![0; 32]).unwrap()),
+    );
+    h.write_raw(batch);
+
+    for (doc, key) in [
+        (&kind_drift, b"drift-kind" as &[u8]),
+        (&commit_drift, b"drift-commit"),
+    ] {
+        // A post citing it is refused with exit 8; nothing is written.
+        let r = h.post_citing(doc, key).unwrap_err();
+        assert_eq!((r.code, r.exit), ("FA-REF-085", exit::VERIFICATION), "{r}");
+        let evid = entry_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), key);
+        assert!(h.db.vertex(evid).unwrap().is_none());
+        // Reading it back, or re-adding the same bytes, never vouches for it.
+        assert!(
+            matches!(read_document(&h.db, &doc.oid()), Err(KernelError::Corrupt(ref why)) if why.contains("FA-REF-085")),
+            "{:?}",
+            read_document(&h.db, &doc.oid())
+        );
+        let again = h.add_document(doc).unwrap_err();
+        assert_eq!((again.code, again.exit), ("FA-REF-085", exit::VERIFICATION));
+    }
+    // The refusal names the payload's kind, the authority, not the mirror's.
+    let r = h.post_citing(&kind_drift, b"drift-kind-2").unwrap_err();
+    assert!(r.message.contains("`Invoice`"), "{}", r.message);
+    // The untouched document still posts and reads back verified.
+    assert!(matches!(
+        h.post_citing(&intact, b"intact").expect("admitted"),
+        Posted::Committed { .. }
+    ));
+    assert_eq!(
+        read_document(&h.db, &intact.oid()).unwrap(),
+        Some(intact.clone())
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Evidence attached after commit is a new object (fa-lp6, plan §9.2)
+// ---------------------------------------------------------------------------
+
+impl Harness {
+    fn attach(
+        &mut self,
+        s: &SupplementalEvidence,
+        ops: &[&str],
+    ) -> Result<EvidenceAttached, Refusal> {
+        let ctx = self.ctx();
+        let db = &mut self.db;
+        let book = &self.book;
+        // The capability is the attacher's own (fa-llx).
+        let cap = Capability::embedded(s.attached_by, ops).expect("registered ops");
+        self.runtime
+            .block_on(async move { attach_evidence(db, &ctx, book, &cap, s).await })
+            .expect("kernel")
+    }
+}
+
+#[test]
+fn evidence_attached_after_commit_is_a_new_object_and_the_entry_never_changes() {
+    let mut h = harness();
+    let posted = h
+        .post(h.request(
+            h.proposal(h.rent_legs(9_000), b"supp-target", EntryClass::ORIGINAL),
+            &["post"],
+        ))
+        .expect("admitted");
+    let target = posted.entry_ref();
+    let (before, _) = read_entry(&h.db, target.vid).unwrap().expect("entry row");
+    let receipt = h.document(RECEIPT, HUMAN_UPLOAD, b"bank receipt for supp-target");
+    h.add_document(&receipt).expect("admitted");
+    let mut docs = vec![receipt.evidence_ref(2), h.evidence[0]];
+    docs.sort();
+    let supp = SupplementalEvidence {
+        book_id: h.book.book_id,
+        entry_ref: target,
+        documents: docs.clone(),
+        attached_by: PRINCIPAL,
+    };
+    let attached = h.attach(&supp, &["post"]).expect("attached");
+    assert!(!attached.already_recorded);
+    assert!(attached.recorded_at > posted.recorded_at());
+
+    // The entry is byte-for-byte what it was: its own evidence list is the
+    // original one, and its digests still verify.
+    let (after, _) = read_entry(&h.db, target.vid).unwrap().expect("entry row");
+    assert_eq!(after, before);
+    assert_eq!(after.proposal.evidence, h.evidence);
+    // SUPPLEMENTS -> the entry; EVIDENCED_BY -> each distinct document.
+    assert!(
+        h.db.edge(edge_id(relation::SUPPLEMENTS, attached.vid, target.vid))
+            .unwrap()
+            .is_some()
+    );
+    for d in [
+        document_vid(&receipt.oid()),
+        document_vid(&h.evidence[0].document_oid),
+    ] {
+        assert!(
+            h.db.edge(edge_id(relation::EVIDENCED_BY, attached.vid, d))
+                .unwrap()
+                .is_some()
+        );
+    }
+    // It reads back verified, recorded at its own commit.
+    assert_eq!(
+        supplements_of(&h.db, &h.book, target.vid).unwrap(),
+        vec![(supp.clone(), attached.recorded_at)]
+    );
+    // The same attachment again is the recorded outcome.
+    let again = h.attach(&supp, &["post"]).expect("recorded");
+    assert!(again.already_recorded);
+    assert_eq!(
+        (again.vid, again.recorded_at),
+        (attached.vid, attached.recorded_at)
+    );
+
+    // Refusals write nothing.
+    let with = |documents: Vec<fa_model::EvidenceRef>, entry_ref: EntryRef| SupplementalEvidence {
+        book_id: h.book.book_id,
+        entry_ref,
+        documents,
+        attached_by: VId(8),
+    };
+    let ghost = h.document(INVOICE, HUMAN_UPLOAD, b"never recorded");
+    let mut wrong_commit = receipt.evidence_ref(2);
+    wrong_commit.doc_commit = [0; 32];
+    let mut wrong_digest = target;
+    wrong_digest.entry_digest[0] ^= 1;
+    let not_an_entry = EntryRef {
+        vid: document_vid(&receipt.oid()),
+        entry_digest: [0; 32],
+    };
+    let mut unsorted = docs.clone();
+    unsorted.reverse();
+    let post: &[&str] = &["post"];
+    let none: &[&str] = &[];
+    let cases: Vec<(&str, SupplementalEvidence, &[&str], &str, u8)> = vec![
+        (
+            "no post capability",
+            with(docs.clone(), target),
+            none,
+            "FA-REF-011",
+            exit::SAFETY,
+        ),
+        (
+            "wrong entry digest",
+            with(docs.clone(), wrong_digest),
+            post,
+            "FA-REF-087",
+            exit::REFUSAL,
+        ),
+        (
+            "unknown entry",
+            with(
+                docs.clone(),
+                EntryRef {
+                    vid: VId(0xdead),
+                    entry_digest: [0; 32],
+                },
+            ),
+            post,
+            "FA-REF-087",
+            exit::REFUSAL,
+        ),
+        (
+            "a document is not an entry",
+            with(docs.clone(), not_an_entry),
+            post,
+            "FA-REF-087",
+            exit::REFUSAL,
+        ),
+        (
+            "unknown document",
+            with(vec![ghost.evidence_ref(1)], target),
+            post,
+            "FA-REF-081",
+            exit::REFUSAL,
+        ),
+        (
+            "wrong commitment",
+            with(vec![wrong_commit], target),
+            post,
+            "FA-REF-082",
+            exit::REFUSAL,
+        ),
+        (
+            "no documents",
+            with(Vec::new(), target),
+            post,
+            "FA-REF-100",
+            exit::USAGE,
+        ),
+        (
+            "unsorted documents",
+            with(unsorted, target),
+            post,
+            "FA-REF-100",
+            exit::USAGE,
+        ),
+    ];
+    for (what, s, ops, code, exit_class) in cases {
+        let r = h.attach(&s, ops).unwrap_err();
+        assert_eq!((r.code, r.exit), (code, exit_class), "{what}: {r}");
+    }
+    assert_eq!(
+        supplements_of(&h.db, &h.book, target.vid).unwrap().len(),
+        1,
+        "refused attachments wrote nothing"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Self-sourced evidence does not meet the minimum until reviewed (fa-lp6,
+// plan §9.3; the Reviewed attestation is bead fa-g21)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn self_sourced_documents_do_not_meet_the_minimum_until_reviewed() {
+    let mut h = harness();
+    let agents = h.document(INVOICE, AGENT_UPLOAD, b"an invoice an agent uploaded");
+    h.add_document(&agents).expect("admitted");
+
+    // Only the agent's document: refused, naming fa-g21; nothing written.
+    let r = h.post_citing(&agents, b"self-only").unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-086", exit::REFUSAL), "{r}");
+    assert!(r.cite.contains("fa-g21"), "{}", r.cite);
+    assert!(r.fix.contains("--grade HumanUpload"), "{}", r.fix);
+    let evid = entry_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), b"self-only");
+    assert!(h.db.vertex(evid).unwrap().is_none());
+
+    // Alongside a document a person supplied: admitted.
+    let mut p = h.proposal(h.rent_legs(7_000), b"self-plus-human", EntryClass::ORIGINAL);
+    let mut cites = vec![agents.evidence_ref(ROLE_SOURCE), h.evidence[0]];
+    cites.sort();
+    p.evidence = cites;
+    let req = h.request(p, &["post"]);
+    assert!(h.post(req).is_ok());
+
+    // A reversal rests on its target, whatever it cites.
+    let target = h
+        .post(h.request(h.invoice(500, b"self-target"), &["post"]))
+        .expect("admitted")
+        .entry_ref();
+    let mut rev = h.reversal_of_entry(target, b"self-rev");
+    rev.evidence = vec![agents.evidence_ref(ROLE_SOURCE)];
+    let req = h.request(rev, &["post"]);
+    let r = h.post(req);
+    assert!(r.is_ok(), "{r:?}");
 }

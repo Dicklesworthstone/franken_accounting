@@ -33,7 +33,9 @@
 //!   never exempted.
 
 use fa_model::symbols::{label, property, relation};
-use fa_model::{DecodeError, EntryPayload, EvidenceRef, Id128, Oid, Reader, Writer, domain_digest};
+use fa_model::{
+    DecodeError, EntryPayload, EntryRef, EvidenceRef, Id128, Oid, Reader, Writer, domain_digest,
+};
 use fa_registry::evidence_policy::{EvidencePolicy, Requirement};
 use fgdb::{Database, VertexRow, WriteBatch, WriteTxn};
 use fgdb_crypto::Hasher;
@@ -42,7 +44,7 @@ use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
 use crate::genesis::BookContext;
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
-use crate::rows::{bytes, edge_id, scalar_bytes, scalar_text};
+use crate::rows::{edge_id, prop, scalar_bytes, scalar_text};
 
 /// The fixed chunk size of the commitment's Merkle tree (plan §9.1).
 pub const CHUNK_BYTES: usize = 4096;
@@ -267,9 +269,78 @@ fn intake_refusal(message: impl Into<String>, fix: impl Into<String>) -> Refusal
     )
 }
 
-fn added_from_row(row: &VertexRow, already_recorded: bool) -> Result<DocumentAdded, KernelError> {
-    let doc = Document::decode(&bytes(row, property::FA_PAYLOAD, "document._fa_payload")?)?;
-    Ok(DocumentAdded {
+/// Check a stored Document row against itself: the payload decodes and its
+/// bytes reproduce the stored size and commitment, the vertex is the one the
+/// payload's identity derives, and every mirror the kernel or a query might
+/// read (`_fa_digest`, `code`, `book_id`, the label) equals what the payload
+/// says. The payload is the authority; a mirror is never more authoritative
+/// than it (FA-INV-04), so any disagreement is drift, named here.
+fn verify_row(row: &VertexRow, policy: &EvidencePolicy) -> Result<Document, String> {
+    if !row.labels.contains(&label::DOCUMENT) {
+        return Err("the vertex is not labeled Document".into());
+    }
+    let Some(CanonicalScalar::Bytes(payload)) = prop(row, property::FA_PAYLOAD) else {
+        return Err("the vertex carries no document payload".into());
+    };
+    let doc = Document::decode(payload.as_slice())
+        .map_err(|e| format!("the payload does not verify: {e}"))?;
+    if document_vid(&doc.oid()) != row.vid {
+        return Err("the payload is not the document this vertex's identity names".into());
+    }
+    let commit = doc.doc_commit();
+    match prop(row, property::FA_DIGEST) {
+        Some(CanonicalScalar::Bytes(b)) if b.as_slice() == commit.as_slice() => {}
+        _ => return Err("the commitment mirror differs from the payload's commitment".into()),
+    }
+    let kind = policy
+        .kind_by_tag(doc.kind)
+        .ok_or_else(|| format!("the payload's kind {} is not registered", doc.kind))?;
+    if policy.grade_by_tag(doc.grade).is_none() {
+        return Err(format!(
+            "the payload's grade {} is not registered",
+            doc.grade
+        ));
+    }
+    match prop(row, property::CODE) {
+        Some(CanonicalScalar::Text(t)) if t.as_bytes() == kind.name.as_bytes() => {}
+        _ => {
+            return Err(format!(
+                "the kind mirror differs from the payload's kind `{}`",
+                kind.name
+            ));
+        }
+    }
+    match prop(row, property::BOOK_ID) {
+        Some(CanonicalScalar::Bytes(b)) if b.as_slice() == doc.book_id.0.as_slice() => {}
+        _ => return Err("the book_id mirror differs from the payload's book".into()),
+    }
+    Ok(doc)
+}
+
+/// The refusal for a Document whose stored row does not verify (exit 8).
+fn drift(oid: &Oid, why: &str) -> Refusal {
+    Refusal::new(
+        code::DOCUMENT_DRIFT,
+        exit::VERIFICATION,
+        format!("document {}: {why}", hex(&oid.0)),
+        "FA-INV-04 (a mirror is never more authoritative than the payload), FA-INV-05 (the closure verifies)",
+        "preserve the store and report the drift; nothing that cites this document is admitted until it is explained",
+    )
+}
+
+/// The intake outcome a stored row reports, after it verifies (a repeat
+/// intake never vouches for a drifted row).
+fn added_from_row(
+    row: &VertexRow,
+    policy: &EvidencePolicy,
+    oid: &Oid,
+    already_recorded: bool,
+) -> Outcome<DocumentAdded> {
+    let doc = match verify_row(row, policy) {
+        Ok(doc) => doc,
+        Err(why) => return Ok(Err(drift(oid, &why))),
+    };
+    Ok(Ok(DocumentAdded {
         oid: doc.oid(),
         doc_commit: doc.doc_commit(),
         vid: row.vid,
@@ -278,7 +349,7 @@ fn added_from_row(row: &VertexRow, already_recorded: bool) -> Result<DocumentAdd
         size: len_u64(doc.bytes.len()),
         recorded_at: row.created_at,
         already_recorded,
-    })
+    }))
 }
 
 /// Record a document in the book: one `Document` vertex carrying the
@@ -373,7 +444,7 @@ pub async fn add_document<V: asupersync::fs::Vfs + Clone>(
     let oid = document_oid(book.book_id, &commit);
     let vid = document_vid(&oid);
     if let Some(row) = db.vertex(vid)? {
-        return added_from_row(&row, true).map(Ok);
+        return added_from_row(&row, &policy, &oid, true);
     }
     let mut props = vec![
         (
@@ -406,7 +477,7 @@ pub async fn add_document<V: asupersync::fs::Vfs + Clone>(
         })),
         // A concurrent intake of the same bytes won: that is the outcome.
         Err(fgdb::WriteError::AlreadyLive { .. }) => match db.vertex(vid)? {
-            Some(row) => added_from_row(&row, true).map(Ok),
+            Some(row) => added_from_row(&row, &policy, &oid, true),
             None => Err(KernelError::Corrupt(format!(
                 "document {} reported live but is absent",
                 hex(&commit)
@@ -425,23 +496,33 @@ pub fn read_document<V: asupersync::fs::Vfs + Clone>(
     let Some(row) = db.vertex(document_vid(oid))? else {
         return Ok(None);
     };
-    let doc = Document::decode(&bytes(&row, property::FA_PAYLOAD, "document._fa_payload")?)?;
-    let mirror = bytes(&row, property::FA_DIGEST, "document._fa_digest")?;
-    if mirror.as_slice() != doc.doc_commit().as_slice() || doc.oid() != *oid {
-        return Err(KernelError::Corrupt(format!(
-            "document {}: mirrors disagree with the payload",
+    let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    match verify_row(&row, &policy) {
+        Ok(doc) if doc.oid() == *oid => Ok(Some(doc)),
+        Ok(_) => Err(KernelError::Corrupt(format!(
+            "{} document {}: the vertex holds another document",
+            code::DOCUMENT_DRIFT,
             hex(&oid.0)
-        )));
+        ))),
+        Err(why) => Err(KernelError::Corrupt(format!(
+            "{} document {}: {why}",
+            code::DOCUMENT_DRIFT,
+            hex(&oid.0)
+        ))),
     }
-    Ok(Some(doc))
 }
 
-/// The class's evidence minimum over the distinct cited documents' kinds
-/// (pure; the posting transaction supplies the witnessed kinds).
+/// The class's evidence minimum over the distinct cited documents (pure; the
+/// posting transaction supplies them, verified). A self-sourced document
+/// (`AgentUpload`, `Generated`: plan §9.3) does not count toward the minimum:
+/// the plan admits it only once a reviewer attests it (`Reviewed`, bead
+/// fa-g21), and that attestation does not exist yet, so an entry that meets
+/// its minimum only by counting self-sourced documents is refused with
+/// FA-REF-086 — stricter than the plan, never an exemption.
 pub fn check_minimum(
     policy: &EvidencePolicy,
     class_name: &str,
-    cited_kinds: &[u8],
+    cited: &[CitedDocument],
 ) -> Result<(), Refusal> {
     let Some(min) = policy.minimum(class_name) else {
         // The registry is total over the classes; a gap is unsupported, never exempt.
@@ -456,12 +537,32 @@ pub fn check_minimum(
     if min.requirement != Requirement::Documents {
         return Ok(());
     }
-    let admissible = cited_kinds.iter().filter(|k| min.kinds.admits(**k)).count();
-    if admissible >= usize::from(min.min_documents) {
+    let needed = usize::from(min.min_documents);
+    let admissible: Vec<&CitedDocument> =
+        cited.iter().filter(|c| min.kinds.admits(c.kind)).collect();
+    let counted = admissible
+        .iter()
+        .filter(|c| !self_sourced(policy, c.grade))
+        .count();
+    if counted >= needed {
         return Ok(());
     }
+    if admissible.len() >= needed {
+        return Err(Refusal::new(
+            code::SELF_SOURCED,
+            exit::REFUSAL,
+            format!(
+                "`{class_name}` requires at least {needed} document(s); the entry's admissible documents are self-sourced ({} of {}), and a self-sourced document counts only once a reviewer attests it",
+                admissible.len() - counted,
+                admissible.len()
+            ),
+            "plan §9.3 (self-sourced evidence: AgentUpload, Generated); bead fa-g21 (the Reviewed attestation, not yet implemented)",
+            "cite a document a person or third party supplied, recorded with `fa document add <file> --grade HumanUpload --json` by the person who supplied it; never re-declare an agent's upload as a person's",
+        ));
+    }
     let kinds = policy.kind_names(&min.kinds).join(", ");
-    let message = if cited_kinds.is_empty() {
+    let admissible = admissible.len();
+    let message = if cited.is_empty() {
         format!(
             "`{class_name}` requires at least {} document(s) ({kinds}); the entry cites none",
             min.min_documents
@@ -470,7 +571,7 @@ pub fn check_minimum(
         format!(
             "`{class_name}` requires at least {} document(s) of kind {kinds}; the entry cites {} document(s), {admissible} admissible",
             min.min_documents,
-            cited_kinds.len()
+            cited.len()
         )
     };
     Err(Refusal::new(
@@ -484,18 +585,26 @@ pub fn check_minimum(
     ))
 }
 
-/// Step 5b of `post`: every citation names a registered role and a document
-/// this book holds under exactly the cited commitment — each read as a point
-/// witness of `txn` — and the distinct documents meet the class's minimum.
-/// Returns the distinct documents' vertices, ascending, for `EVIDENCED_BY`.
-pub fn resolve_evidence<V: asupersync::fs::Vfs + Clone>(
+/// One distinct cited document, as its verified payload states it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CitedDocument {
+    pub vid: VId,
+    pub kind: u8,
+    pub grade: u8,
+}
+
+/// Resolve `citations` — strictly ascending by `(oid, commit, role)`, as
+/// every payload that carries them is — inside `txn`: each names a
+/// registered role and a document this book holds, read as a witness and
+/// verified against its own payload, under exactly the cited commitment.
+/// Returns the distinct documents in citation order.
+pub fn resolve_documents<V: asupersync::fs::Vfs + Clone>(
     txn: &WriteTxn,
     db: &Database<V>,
     policy: &EvidencePolicy,
-    proposal: &EntryPayload,
-) -> Outcome<Vec<VId>> {
-    let class_name = proposal.class.name().unwrap_or("?");
-    for (i, e) in proposal.evidence.iter().enumerate() {
+    citations: &[EvidenceRef],
+) -> Outcome<Vec<CitedDocument>> {
+    for (i, e) in citations.iter().enumerate() {
         if policy.role_by_tag(e.role).is_none() {
             return Ok(Err(Refusal::new(
                 code::STRUCTURE,
@@ -514,22 +623,23 @@ pub fn resolve_evidence<V: asupersync::fs::Vfs + Clone>(
             )));
         }
     }
-    let mut documents: Vec<VId> = Vec::new();
-    let mut kinds: Vec<u8> = Vec::new();
+    let mut cited: Vec<CitedDocument> = Vec::new();
     // `evidence` is strictly ascending by (oid, commit, role): citations of
     // one document are adjacent. The document is read once and counts once;
     // every citation's commitment is still checked against it.
-    let mut last: Option<(Oid, Vec<u8>)> = None;
-    for (i, e) in proposal.evidence.iter().enumerate() {
+    let mut last: Option<(Oid, [u8; 32])> = None;
+    for (i, e) in citations.iter().enumerate() {
         let cached = match &last {
-            Some((oid, commit)) if *oid == e.document_oid => Some(commit.clone()),
+            Some((oid, commit)) if *oid == e.document_oid => Some(*commit),
             _ => None,
         };
         let repeat = cached.is_some();
         let dvid = document_vid(&e.document_oid);
-        let stored = match cached {
-            Some(commit) => commit,
-            None => match txn.vertex_property(db, dvid, property::FA_DIGEST)? {
+        // The whole row is the witness: the kind and commitment the law
+        // reads come from the verified payload, never from a mirror alone.
+        let (stored, resolved) = match cached {
+            Some(commit) => (commit, None),
+            None => match txn.vertex(db, dvid)? {
                 None => {
                     return Ok(Err(Refusal::new(
                         code::EVIDENCE_UNKNOWN,
@@ -542,13 +652,23 @@ pub fn resolve_evidence<V: asupersync::fs::Vfs + Clone>(
                         "record it first with `fa document add <file> --json` and cite the oid it prints",
                     )));
                 }
-                Some(CanonicalScalar::Bytes(b)) => b.as_slice().to_vec(),
-                Some(other) => {
-                    return Err(KernelError::Corrupt(format!(
-                        "document {} commitment mirror: {other:?}",
-                        hex(&e.document_oid.0)
-                    )));
-                }
+                Some(row) => match verify_row(&row, policy) {
+                    Ok(doc) if doc.oid() == e.document_oid => (
+                        doc.doc_commit(),
+                        Some(CitedDocument {
+                            vid: dvid,
+                            kind: doc.kind,
+                            grade: doc.grade,
+                        }),
+                    ),
+                    Ok(_) => {
+                        return Ok(Err(drift(
+                            &e.document_oid,
+                            "the vertex holds another document",
+                        )));
+                    }
+                    Err(why) => return Ok(Err(drift(&e.document_oid, &why))),
+                },
             },
         };
         if stored.as_slice() != e.doc_commit.as_slice() {
@@ -565,29 +685,33 @@ pub fn resolve_evidence<V: asupersync::fs::Vfs + Clone>(
                 "cite the doc_commit `fa document add` printed for this document",
             )));
         }
-        if repeat {
+        let (false, Some(doc)) = (repeat, resolved) else {
             continue;
-        }
+        };
         last = Some((e.document_oid, stored));
-        let kind = match txn.vertex_property(db, dvid, property::CODE)? {
-            Some(CanonicalScalar::Text(t)) => core::str::from_utf8(t.as_bytes())
-                .ok()
-                .and_then(|name| policy.kind_by_name(name))
-                .map(|k| k.tag),
-            _ => None,
-        }
-        .ok_or_else(|| {
-            KernelError::Corrupt(format!(
-                "document {} kind mirror is missing or unregistered",
-                hex(&e.document_oid.0)
-            ))
-        })?;
-        documents.push(dvid);
-        kinds.push(kind);
+        cited.push(doc);
     }
-    if let Err(r) = check_minimum(policy, class_name, &kinds) {
+    Ok(Ok(cited))
+}
+
+/// Step 5b of `post`: every citation resolves ([`resolve_documents`]) and
+/// the distinct documents meet the class's minimum. Returns the distinct
+/// documents' vertices, ascending, for `EVIDENCED_BY`.
+pub fn resolve_evidence<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    policy: &EvidencePolicy,
+    proposal: &EntryPayload,
+) -> Outcome<Vec<VId>> {
+    let class_name = proposal.class.name().unwrap_or("?");
+    let cited = match resolve_documents(txn, db, policy, &proposal.evidence)? {
+        Ok(cited) => cited,
+        Err(r) => return Ok(Err(r)),
+    };
+    if let Err(r) = check_minimum(policy, class_name, &cited) {
         return Ok(Err(r));
     }
+    let mut documents: Vec<VId> = cited.iter().map(|c| c.vid).collect();
     documents.sort_unstable();
     documents.dedup();
     Ok(Ok(documents))
@@ -616,6 +740,397 @@ pub fn evidenced_by(entry: VId, documents: &[VId]) -> Option<WriteBatch> {
 #[must_use]
 pub fn self_sourced(policy: &EvidencePolicy, grade: u8) -> bool {
     policy.grade_by_tag(grade).is_some_and(|g| g.self_sourced)
+}
+
+// ---------------------------------------------------------------------------
+// Supplemental evidence (plan §9.2: evidence attached after commit is a new
+// object; Appendix A `SupplementalEvidence`)
+// ---------------------------------------------------------------------------
+
+/// Domain of a supplement's `body_digest`.
+pub const SUPPLEMENTAL_DOMAIN: &[u8] = b"fa:supplemental-evidence:v1";
+
+/// Documents attached to a committed entry after its commit: an immutable,
+/// content-addressed payload object. The entry's own evidence list never
+/// changes; the recorded sequence of a supplement is the commit that created
+/// it, so a certificate can name the closure it used (original only, or
+/// original plus the supplements known at its known-at).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SupplementalEvidence {
+    pub book_id: Id128,
+    /// The committed entry the documents support.
+    pub entry_ref: EntryRef,
+    /// Strictly ascending by `(document_oid, doc_commit, role)`.
+    pub documents: Vec<EvidenceRef>,
+    /// The principal that attached them.
+    pub attached_by: VId,
+}
+
+impl SupplementalEvidence {
+    fn body(&self) -> Result<Vec<u8>, KernelError> {
+        let mut w = Writer::new();
+        w.u16(1).fixed(&self.book_id.0);
+        self.entry_ref.encode(&mut w);
+        w.list(&self.documents, |w, e| {
+            w.fixed(&e.document_oid.0).fixed(&e.doc_commit).u8(e.role);
+        })
+        .u128(self.attached_by.0);
+        w.finish().map_err(|e| KernelError::Model(e.into()))
+    }
+
+    /// `BLAKE3("fa:supplemental-evidence:v1" ‖ body)`.
+    pub fn body_digest(&self) -> Result<[u8; 32], KernelError> {
+        Ok(domain_digest(SUPPLEMENTAL_DOMAIN, &[&self.body()?]))
+    }
+
+    /// `body ‖ body_digest`: the stored payload.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, KernelError> {
+        let mut bytes = self.body()?;
+        bytes.extend_from_slice(&self.body_digest()?);
+        Ok(bytes)
+    }
+
+    /// Decode and verify: the trailing digest is the body's.
+    pub fn decode(bytes: &[u8]) -> Result<Self, KernelError> {
+        let mut r = Reader::new(bytes);
+        let s = (|| -> Result<(Self, [u8; 32]), DecodeError> {
+            if r.u16("supplement.version")? != 1 {
+                return Err(r.invalid("supplement.version"));
+            }
+            let book_id = Id128(r.fixed("supplement.book_id")?);
+            let entry_ref = EntryRef::decode(&mut r)?;
+            let documents = r.list(
+                fa_model::limits::MAX_EVIDENCE_PER_ENTRY,
+                "supplement.documents",
+                |r| {
+                    Ok(EvidenceRef {
+                        document_oid: Oid(r.fixed("supplement.document_oid")?),
+                        doc_commit: r.fixed("supplement.doc_commit")?,
+                        role: r.u8("supplement.role")?,
+                    })
+                },
+            )?;
+            let attached_by = VId(r.u128("supplement.attached_by")?);
+            let digest: [u8; 32] = r.fixed("supplement.body_digest")?;
+            r.finish()?;
+            Ok((
+                Self {
+                    book_id,
+                    entry_ref,
+                    documents,
+                    attached_by,
+                },
+                digest,
+            ))
+        })()
+        .map_err(|e| KernelError::Model(e.into()))?;
+        let (supplement, digest) = s;
+        if supplement.body_digest()? != digest {
+            return Err(KernelError::Corrupt(
+                "a supplemental evidence payload does not hash to its body_digest".into(),
+            ));
+        }
+        Ok(supplement)
+    }
+}
+
+/// `vid(SupplementalEvidence) = H("fa:vid:supplemental:v1" ‖ book ‖
+/// body_digest)`: the same attachment is the same vertex.
+#[must_use]
+pub fn supplemental_vid(book: Id128, body_digest: &[u8; 32]) -> VId {
+    let d = domain_digest(b"fa:vid:supplemental:v1", &[&book.0, body_digest]);
+    let mut lo = [0u8; 16];
+    lo.copy_from_slice(&d[..16]);
+    VId(u128::from_le_bytes(lo))
+}
+
+/// The outcome of an attachment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvidenceAttached {
+    pub vid: VId,
+    pub body_digest: [u8; 32],
+    pub recorded_at: CommitSeq,
+    /// The same attachment was already recorded; nothing was written.
+    pub already_recorded: bool,
+}
+
+fn supplement_target(message: String) -> Refusal {
+    Refusal::new(
+        code::SUPPLEMENT_TARGET,
+        exit::REFUSAL,
+        message,
+        "plan §9.2 (evidence attached after commit supports a committed entry, named by its EntryRef)",
+        "name the entry by the vid and entry_digest `fa post --json` printed",
+    )
+}
+
+/// `AttachEvidence` (plan Appendix B): record `supplement` — after checking
+/// its structure, its coordinate, the `post` capability (before any read),
+/// the target entry (a witnessed, committed `Entry` with exactly that
+/// digest), and every document ([`resolve_documents`]) — as one
+/// `SupplementalEvidence` vertex with `SUPPLEMENTS → Entry` and
+/// `EVIDENCED_BY → Document` edges, in one transaction. The target entry
+/// and its own evidence list are never modified.
+pub async fn attach_evidence<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capability: &crate::post::Capability,
+    supplement: &SupplementalEvidence,
+) -> Outcome<EvidenceAttached> {
+    let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    let docs = &supplement.documents;
+    if docs.is_empty()
+        || docs.len() > fa_model::limits::MAX_EVIDENCE_PER_ENTRY
+        || !docs.windows(2).all(|w| w[0] < w[1])
+    {
+        return Ok(Err(Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            "a supplement attaches 1..=max_evidence_per_entry documents, strictly ascending by (oid, commit, role)",
+            "Appendix A SupplementalEvidence.documents",
+            "list each citation once, sorted",
+        )));
+    }
+    if supplement.book_id != book.book_id {
+        return Ok(Err(Refusal::new(
+            code::COORDINATE,
+            exit::USAGE,
+            format!(
+                "the supplement names book {} but this book is {}",
+                supplement.book_id.to_hex(),
+                book.book_id.to_hex()
+            ),
+            "plan §2.2 (an object belongs to exactly one book)",
+            "set book_id to this book's id (fa book info --json)",
+        )));
+    }
+    // Authorization precedes observation (doctrine 8): the admission a post
+    // gets — the capability is the attacher's own, an Agent never writes
+    // trunk, `post` is held — decided from the request alone.
+    if let Err(d) = fa_policy::admit(
+        capability,
+        &fa_policy::Intent {
+            principal: supplement.attached_by,
+            trunk: true,
+            op: fa_policy::Op::Post,
+            legs: &[],
+        },
+    ) {
+        return Ok(Err(crate::policy::refusal(&d)));
+    }
+    let body_digest = supplement.body_digest()?;
+    let svid = supplemental_vid(book.book_id, &body_digest);
+    let payload = supplement.canonical_bytes()?;
+    // The capability is current at the admission point (plan §14.2).
+    if let Err(d) = fa_policy::current(capability, db.frontier()?) {
+        return Ok(Err(crate::policy::refusal(&d)));
+    }
+
+    let txn_cx = ctx.txn();
+    let mut txn = db.begin(&txn_cx)?;
+    if let Some(row) = txn.vertex(db, svid)? {
+        txn.abort();
+        return recorded_supplement(&row, svid, &body_digest).map(Ok);
+    }
+    let target = supplement.entry_ref;
+    let Some(row) = txn.vertex(db, target.vid)? else {
+        txn.abort();
+        return Ok(Err(supplement_target(format!(
+            "entry {:032x} is not in this book",
+            target.vid.0
+        ))));
+    };
+    if !row.labels.contains(&label::ENTRY) {
+        txn.abort();
+        return Ok(Err(supplement_target(format!(
+            "vertex {:032x} is not an entry",
+            target.vid.0
+        ))));
+    }
+    let Some(CanonicalScalar::Bytes(entry_bytes)) = prop(&row, property::FA_PAYLOAD) else {
+        txn.abort();
+        return Err(KernelError::Corrupt(format!(
+            "entry {:032x} carries no payload",
+            target.vid.0
+        )));
+    };
+    let entry = fa_model::Entry::decode(entry_bytes.as_slice())?;
+    if entry.entry_digest != target.entry_digest || entry.proposal.book_id != book.book_id {
+        txn.abort();
+        return Ok(Err(supplement_target(format!(
+            "entry {:032x} has digest {}, not the {} the supplement names",
+            target.vid.0,
+            hex(&entry.entry_digest),
+            hex(&target.entry_digest)
+        ))));
+    }
+    let cited = match resolve_documents(&txn, db, &policy, docs)? {
+        Ok(cited) => cited,
+        Err(r) => {
+            txn.abort();
+            return Ok(Err(r));
+        }
+    };
+    let mut documents: Vec<VId> = cited.iter().map(|c| c.vid).collect();
+    documents.sort_unstable();
+    documents.dedup();
+
+    let mut props = vec![
+        (property::FA_PAYLOAD, scalar_bytes("_fa_payload", payload)?),
+        (
+            property::FA_DIGEST,
+            scalar_bytes("_fa_digest", body_digest.to_vec())?,
+        ),
+        (
+            property::BOOK_ID,
+            scalar_bytes("book_id", book.book_id.0.to_vec())?,
+        ),
+    ];
+    props.sort_by_key(|(k, _)| k.0);
+    let mut supplements = WriteBatch::new(relation::SUPPLEMENTS);
+    supplements.create_vertex(svid, vec![label::SUPPLEMENTAL_EVIDENCE], props);
+    supplements.add_edge(
+        edge_id(relation::SUPPLEMENTS, svid, target.vid),
+        svid,
+        target.vid,
+        vec![],
+    );
+    let mut batches = vec![supplements];
+    if let Some(edges) = evidenced_by(svid, &documents) {
+        batches.push(edges);
+    }
+    if let Err(e) = txn.write_ordered(db, batches) {
+        txn.abort();
+        return Err(e.into());
+    }
+    match txn.commit(db, &ctx.commit()).await {
+        Ok(seq) => Ok(Ok(EvidenceAttached {
+            vid: svid,
+            body_digest,
+            recorded_at: seq,
+            already_recorded: false,
+        })),
+        Err(fgdb::WriteTxnError::Write(fgdb::WriteError::AlreadyLive { .. })) => {
+            match db.vertex(svid)? {
+                Some(row) => recorded_supplement(&row, svid, &body_digest).map(Ok),
+                None => Err(KernelError::Corrupt(
+                    "a supplement reported live is absent".into(),
+                )),
+            }
+        }
+        Err(fgdb::WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins {
+            detail, ..
+        })) => Ok(Err(Refusal::new(
+            code::CONFLICT,
+            exit::CONFLICT,
+            format!("a concurrent commit invalidated a witness this attachment read: {detail}"),
+            "FG-LAW-FCW-01 (first committer wins)",
+            "retry the attachment",
+        ))),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// A stored supplement row, verified: label, payload digest, identity.
+fn stored_supplement(
+    row: &VertexRow,
+    book: Option<Id128>,
+) -> Result<SupplementalEvidence, KernelError> {
+    if !row.labels.contains(&label::SUPPLEMENTAL_EVIDENCE) {
+        return Err(KernelError::Corrupt(format!(
+            "vertex {:032x} is not a SupplementalEvidence",
+            row.vid.0
+        )));
+    }
+    let Some(CanonicalScalar::Bytes(payload)) = prop(row, property::FA_PAYLOAD) else {
+        return Err(KernelError::Corrupt(format!(
+            "supplement {:032x} carries no payload",
+            row.vid.0
+        )));
+    };
+    let s = SupplementalEvidence::decode(payload.as_slice())?;
+    let digest = s.body_digest()?;
+    if supplemental_vid(s.book_id, &digest) != row.vid || book.is_some_and(|b| b != s.book_id) {
+        return Err(KernelError::Corrupt(format!(
+            "supplement {:032x} is not the object its identity names",
+            row.vid.0
+        )));
+    }
+    Ok(s)
+}
+
+fn recorded_supplement(
+    row: &VertexRow,
+    svid: VId,
+    body_digest: &[u8; 32],
+) -> Result<EvidenceAttached, KernelError> {
+    let s = stored_supplement(row, None)?;
+    if s.body_digest()? != *body_digest {
+        return Err(KernelError::Corrupt(format!(
+            "supplement {:032x} holds another body",
+            svid.0
+        )));
+    }
+    Ok(EvidenceAttached {
+        vid: svid,
+        body_digest: *body_digest,
+        recorded_at: row.created_at,
+        already_recorded: true,
+    })
+}
+
+/// Every supplement attached to the entry `entry`, verified, oldest first,
+/// with the sequence that recorded it. A certificate selects its closure by
+/// keeping those recorded at or before its known-at.
+pub fn supplements_of<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    entry: VId,
+) -> Result<Vec<(SupplementalEvidence, CommitSeq)>, KernelError> {
+    let mut out = Vec::new();
+    for svid in db.in_neighbours(entry, relation::SUPPLEMENTS)? {
+        let Some(row) = db.vertex(svid)? else {
+            continue;
+        };
+        let s = stored_supplement(&row, Some(book.book_id))?;
+        if s.entry_ref.vid != entry {
+            return Err(KernelError::Corrupt(format!(
+                "supplement {:032x} is linked to entry {:032x} but names {:032x}",
+                svid.0, entry.0, s.entry_ref.vid.0
+            )));
+        }
+        out.push((s, row.created_at));
+    }
+    out.sort_by_key(|(s, seq)| (*seq, s.documents.clone()));
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Erasure (plan §8.5): a registered absence in this build
+// ---------------------------------------------------------------------------
+
+/// `ErasureCut`, a lawful erasure request for `subject`'s data: not available
+/// in this build, and refused before any read or write. The substrate's
+/// erasure tombstones are not live (Appendix H R-ERASE), so an append-only
+/// store cannot crypto-erase, and a FrankenAccounting-level tombstone that
+/// left the plaintext reachable would be a prohibited shortcut (§8.5).
+/// Per-Party subject keys are bead fa-v74; until then every erasable field is
+/// sealed under the book key. What an erasure must preserve — it never
+/// changes an amount, date, account, unit, or lineage — is proven on the real
+/// substrate today by fa-registers' `tests/erasure.rs`.
+#[must_use]
+pub fn erasure_cut(subject: VId) -> Refusal {
+    Refusal::new(
+        code::ERASURE_ABSENT,
+        exit::REFUSAL,
+        format!(
+            "erasure of subject {:032x} is not available in this build",
+            subject.0
+        ),
+        "plan §8.5; Appendix H R-ERASE (the substrate's erasure tombstones are not live); per-Party subject keys: bead fa-v74",
+        "nothing to run: erasure is not available in this build; every erasable field is sealed under the book key and stays unopenable to anyone without it",
+    )
 }
 
 #[cfg(test)]
@@ -677,10 +1192,48 @@ mod tests {
     }
 
     #[test]
+    fn a_supplement_round_trips_and_its_digest_binds_every_field() {
+        let s = SupplementalEvidence {
+            book_id: Id128([5; 16]),
+            entry_ref: EntryRef {
+                vid: VId(77),
+                entry_digest: [9; 32],
+            },
+            documents: vec![EvidenceRef {
+                document_oid: Oid([1; 32]),
+                doc_commit: [2; 32],
+                role: 2,
+            }],
+            attached_by: VId(3),
+        };
+        let bytes = s.canonical_bytes().unwrap();
+        assert_eq!(SupplementalEvidence::decode(&bytes).unwrap(), s);
+        // Any byte of the body changed: the trailing digest no longer binds it.
+        for i in 0..bytes.len() - 32 {
+            let mut t = bytes.clone();
+            t[i] ^= 0x01;
+            assert!(SupplementalEvidence::decode(&t).is_err(), "byte {i}");
+        }
+        let mut other = s.clone();
+        other.attached_by = VId(4);
+        assert_ne!(
+            supplemental_vid(s.book_id, &s.body_digest().unwrap()),
+            supplemental_vid(other.book_id, &other.body_digest().unwrap())
+        );
+    }
+
+    #[test]
     fn minimum_counts_admissible_kinds_and_names_the_row() {
         let p = EvidencePolicy::embedded().unwrap();
-        let invoice = p.kind_by_name("Invoice").unwrap().tag;
-        let rate = p.kind_by_name("Rate").unwrap().tag;
+        let human = p.grade_by_name("HumanUpload").unwrap().tag;
+        let agent = p.grade_by_name("AgentUpload").unwrap().tag;
+        let doc = |kind: &str, grade: u8| CitedDocument {
+            vid: VId(1),
+            kind: p.kind_by_name(kind).unwrap().tag,
+            grade,
+        };
+        let invoice = doc("Invoice", human);
+        let rate = doc("Rate", human);
         assert!(check_minimum(&p, "Original", &[invoice]).is_ok());
         let none = check_minimum(&p, "Original", &[]).unwrap_err();
         assert_eq!(none.code, code::EVIDENCE_MINIMUM);
@@ -696,5 +1249,25 @@ mod tests {
         assert!(check_minimum(&p, "Resolution", &[]).is_ok());
         assert!(check_minimum(&p, "Pending", &[]).is_err());
         assert!(check_minimum(&p, "NoSuchClass", &[invoice]).is_err());
+        // A self-sourced document does not count (fa-g21); a person's does.
+        let agents = check_minimum(&p, "Original", &[doc("Invoice", agent)]).unwrap_err();
+        assert_eq!(
+            (agents.code, agents.exit),
+            (code::SELF_SOURCED, exit::REFUSAL)
+        );
+        assert!(agents.cite.contains("fa-g21"), "{}", agents.cite);
+        assert!(check_minimum(&p, "Original", &[doc("Invoice", agent), invoice]).is_ok());
+        // Self-sourced but inadmissible is the plain minimum refusal.
+        let wrong_kind =
+            check_minimum(&p, "Revaluation", &[doc("Rate", agent), invoice]).unwrap_err();
+        assert_eq!(wrong_kind.code, code::SELF_SOURCED);
+        assert_eq!(
+            check_minimum(&p, "Revaluation", &[doc("Invoice", agent)])
+                .unwrap_err()
+                .code,
+            code::EVIDENCE_MINIMUM
+        );
+        // Target classes rest on their target, whatever they cite.
+        assert!(check_minimum(&p, "Reversal", &[doc("Memo", agent)]).is_ok());
     }
 }

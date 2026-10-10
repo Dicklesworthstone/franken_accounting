@@ -123,7 +123,16 @@ fn checkpoints_and_verification_survive_reopen_and_include_later_postings() {
     );
     let document = parsed(&ok(
         &book,
-        &["document", "add", &source, "--kind", "Receipt", "--json"],
+        &[
+            "document",
+            "add",
+            &source,
+            "--kind",
+            "Receipt",
+            "--grade",
+            "HumanUpload",
+            "--json",
+        ],
     ));
     let intent = write(
         &dir,

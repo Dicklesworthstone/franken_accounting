@@ -58,6 +58,9 @@ struct Kernel {
     /// it (FA-INV-05 evidence-minimum). The oracle does not model evidence, so
     /// every generated intent satisfies the minimum by construction.
     evidence: Vec<EvidenceRef>,
+    /// An AgentUpload document recorded at setup: cited alone it is
+    /// self-sourced, so the planted evidence negatives reach FA-REF-086.
+    agent_evidence: EvidenceRef,
 }
 
 impl Kernel {
@@ -169,6 +172,19 @@ fn setup_with(rows: &[ChartRow]) -> (Kernel, Oracle, Vec<String>) {
         .expect("kernel")
         .expect("the fixture document is admitted");
     let evidence = vec![source.evidence_ref(1)];
+    let agent_upload = Document {
+        book_id: book.book_id,
+        kind: 1,
+        mime: "text/plain".into(),
+        grade: 4,
+        retrieved_by: PRINCIPAL,
+        bytes: b"INVOICE (agent upload, differential fixture)".to_vec(),
+    };
+    runtime
+        .block_on(async { add_document(&mut db, &ctx, &book, &agent_upload).await })
+        .expect("kernel")
+        .expect("the agent's document is admitted");
+    let agent_evidence = agent_upload.evidence_ref(1);
 
     let mut oracle = Oracle::new(calendar);
     for (code, _, leaf, normal, limit) in rows {
@@ -201,6 +217,7 @@ fn setup_with(rows: &[ChartRow]) -> (Kernel, Oracle, Vec<String>) {
             db,
             book,
             evidence,
+            agent_evidence,
         },
         oracle,
         normal,
@@ -230,6 +247,21 @@ fn kernel_post(
     refs: &[EntryRef],
 ) -> Result<Posted, Refusal> {
     kernel_post_raw(k, intent, usd, refs).expect("kernel")
+}
+
+/// `kernel_post` with the intent citing `evidence` instead of the fixture
+/// document (the planted evidence negatives, fa-lp6).
+fn kernel_post_citing(
+    k: &mut Kernel,
+    intent: &Intent,
+    usd: UnitId,
+    refs: &[EntryRef],
+    evidence: Vec<EvidenceRef>,
+) -> Result<Posted, Refusal> {
+    let saved = std::mem::replace(&mut k.evidence, evidence);
+    let out = kernel_post(k, intent, usd, refs);
+    k.evidence = saved;
+    out
 }
 
 fn kernel_post_raw(
@@ -458,6 +490,36 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
     let mut posted = 0u32;
     let mut recorded = 0u32;
     let mut refused: BTreeMap<&'static str, u32> = BTreeMap::new();
+    // Planted evidence negatives (fa-lp6): the documents the evidence oracle
+    // holds are the kernel's two fixtures; `ghost` was never recorded.
+    let evidence_policy = fa_reference::evidence::embedded_policy().expect("evidence_policy.toml");
+    let held: BTreeMap<u64, fa_reference::evidence::Doc> = [
+        (1u64, k.evidence[0], "HumanUpload"),
+        (2u64, k.agent_evidence, "AgentUpload"),
+    ]
+    .into_iter()
+    .map(|(id, e, grade)| {
+        (
+            id,
+            fa_reference::evidence::Doc {
+                kind: "Invoice".into(),
+                grade: grade.into(),
+                commit: e.doc_commit,
+            },
+        )
+    })
+    .collect();
+    let ghost = Document {
+        book_id: k.book.book_id,
+        kind: 1,
+        mime: "text/plain".into(),
+        grade: 3,
+        retrieved_by: PRINCIPAL,
+        bytes: b"an invoice nobody recorded".to_vec(),
+    }
+    .evidence_ref(1);
+    let mut evidence_refused: BTreeMap<&'static str, u32> = BTreeMap::new();
+    let mut evidence_plants = 0u32;
 
     for step in 0..640u64 {
         if rng.chance(15) {
@@ -947,6 +1009,59 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                 "step {step}: disagreement on {intent:?}"
             ),
         }
+        // Planted evidence negatives (fa-lp6): a committed Original, Adjusting
+        // or Pending without applications, copied under a fresh key and
+        // citing nothing, only the agent's upload, a document never recorded,
+        // or the source under a wrong commitment, reaches the evidence law
+        // (step 5b follows the period law the original just passed) and is
+        // refused with exactly the evidence oracle's code. Nothing is written,
+        // so the history stays in step with the oracle.
+        if matches!(
+            (&kernel, &model),
+            (Ok(Posted::Committed { .. }), Verdict::Posted { .. })
+        ) && matches!(intent.class.as_str(), "Original" | "Adjusting" | "Pending")
+            && intent.settles.is_empty()
+        {
+            let mut copy = intent.clone();
+            copy.key.extend_from_slice(b"-ev");
+            let mut wrong = k.evidence[0];
+            wrong.doc_commit = [0; 32];
+            let cite = |doc: u64, commit: [u8; 32]| fa_reference::evidence::Citation {
+                doc,
+                commit,
+                role: 1,
+            };
+            let (evidence, citations) = match evidence_plants % 4 {
+                0 => (Vec::new(), Vec::new()),
+                1 => (
+                    vec![k.agent_evidence],
+                    vec![cite(2, k.agent_evidence.doc_commit)],
+                ),
+                2 => (vec![ghost], vec![cite(99, ghost.doc_commit)]),
+                _ => (vec![wrong], vec![cite(1, [0; 32])]),
+            };
+            let expected =
+                fa_reference::evidence::verdict(&evidence_policy, &copy.class, &held, &citations)
+                    .expect("the evidence oracle refuses every plant");
+            let r = kernel_post_citing(&mut k, &copy, usd, &refs, evidence)
+                .expect_err("an evidence plant was admitted");
+            assert_eq!(
+                r.code,
+                expected,
+                "step {step}: evidence plant {} for {copy:?}",
+                evidence_plants % 4
+            );
+            *evidence_refused.entry(expected).or_insert(0) += 1;
+            evidence_plants += 1;
+        }
+    }
+
+    // Every evidence refusal the plants aim at was produced, on every seed.
+    for code in ["FA-REF-080", "FA-REF-081", "FA-REF-082", "FA-REF-086"] {
+        assert!(
+            evidence_refused.get(code).copied().unwrap_or(0) >= 3,
+            "evidence plant {code}: {evidence_refused:?}"
+        );
     }
 
     // The history exercised every outcome kind, so agreement is not vacuous.

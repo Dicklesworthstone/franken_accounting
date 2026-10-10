@@ -1,0 +1,479 @@
+# refusal_catalog.toml — every typed refusal the system can issue (plan
+# §15.3, Appendix D "every refusal names what failed, where, the law or
+# policy row, and the exact command to run instead"; one exit per refusal).
+#
+# One row per FA-REF code: the constant's `name` (the same name in every
+# crate that declares the code), the crates that declare it (`owners`;
+# fa-reference's oracle mirrors are not owners), the single exit class
+# (a name from exit_codes.toml), the law or policy row the refusal cites, and
+# the fix template the refusal's text follows ({...} are runtime values).
+#
+# Consumer: fa-registry `refusal_catalog` (parser), its workspace gate test.
+# Gate (three ways + exits): every FA-REF constant declared in crates/*/src
+# has a row with its code and name, and every owner declares it; every row is
+# declared by exactly its owners; each code is declared under exactly one
+# name across the workspace (a collision fails, e.g. two meanings for 018);
+# every literal `code::NAME, exit::CLASS` call site uses the row's exit.
+# A `[[reserved]]` code is held for a named owner and must not be declared
+# until its row replaces the reservation.
+#
+# Additive: a released code is never renumbered or reused for a new meaning.
+
+schema_version = 1
+
+[[reserved]]
+code = "FA-REF-018"
+holder = "fad daemon writer lease (Appendix D; JadePeak, fad); STALE_APPROVAL moved to 022 (D-I1, 4d2d3ad)"
+
+# ---- Folio: balance law, chart, units (001–004) -------------------------
+[[refusal]]
+code = "FA-REF-001"
+name = "UNBALANCED"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "FA-INV-01 per-unit balance law"
+fix = "add a {side} leg of {gap} to the account that explains it; the kernel never invents one"
+
+[[refusal]]
+code = "FA-REF-002"
+name = "NOT_A_LEAF"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §4.3 (only leaves accept legs)"
+fix = "post to a leaf under `{account}`"
+
+[[refusal]]
+code = "FA-REF-003"
+name = "UNIT_POLICY"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §4.3 unit_policy"
+fix = "post in the account's unit or choose an account whose policy admits it"
+
+[[refusal]]
+code = "FA-REF-004"
+name = "UNKNOWN_ACCOUNT"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §4.3"
+fix = "fa chart list --json to find the account, or fa chart import to add it"
+
+# ---- Steward: authority, SoD, approvals (008–019) ------------------------
+[[refusal]]
+code = "FA-REF-008"
+name = "SOD"
+owners = ["fa-policy"]
+exit = "safety"
+cite = "sod_policy.toml#{rule}"
+fix = "collect the approval from a different, admissible principal over the same proposal digest"
+
+[[refusal]]
+code = "FA-REF-010"
+name = "PERIOD_LAW"
+owners = ["fa-journal"]
+exit = "safety"
+cite = "admissibility.toml ({class}, {state})"
+fix = "post in an Open period, or use the class and capability the cell admits"
+
+[[refusal]]
+code = "FA-REF-011"
+name = "CAPABILITY"
+owners = ["fa-journal", "fa-policy"]
+exit = "safety"
+cite = "plan §14.2 (capability caveats precede observation)"
+fix = "obtain `{op}` from the book's steward (embedded posture: --grant {op})"
+
+[[refusal]]
+code = "FA-REF-012"
+name = "APPROVALS"
+owners = ["fa-journal", "fa-policy"]
+exit = "safety"
+cite = "sod_policy.toml#{rule} / admissibility.toml cell"
+fix = "record the approvals over this proposal digest, one per distinct approver, and resubmit citing them"
+
+[[refusal]]
+code = "FA-REF-013"
+name = "AGENT_TRUNK"
+owners = ["fa-policy"]
+exit = "safety"
+cite = "plan §14.4 Agent profile (branch-confined); drafts and promotion: fa-s7x"
+fix = "ask a Human principal to post this intent, or post it under a Human-profile capability"
+
+[[refusal]]
+code = "FA-REF-014"
+name = "EXPIRED"
+owners = ["fa-policy"]
+exit = "safety"
+cite = "plan §14.2 (authority is evaluated against current policy)"
+fix = "obtain a fresh capability; an expired token is never extended"
+
+[[refusal]]
+code = "FA-REF-015"
+name = "CEILING"
+owners = ["fa-policy"]
+exit = "safety"
+cite = "plan §14.2 (`amount ≤ A` bounds every leg's mantissa in its unit)"
+fix = "split the work under the ceiling, or have a principal with a higher ceiling post it"
+
+[[refusal]]
+code = "FA-REF-016"
+name = "APPROVAL_BINDING"
+owners = ["fa-policy"]
+exit = "safety"
+cite = "FA-INV-10 approval-binds-proposal"
+fix = "re-approve the exact proposal digest being posted"
+
+[[refusal]]
+code = "FA-REF-017"
+name = "UNKNOWN_APPROVAL"
+owners = ["fa-policy"]
+exit = "safety"
+cite = "FA-INV-10 approval-binds-proposal"
+fix = "cite approvals recorded in this book"
+
+[[refusal]]
+code = "FA-REF-019"
+name = "UNSUPPORTED_POLICY"
+owners = ["fa-policy"]
+exit = "safety"
+cite = "plan §14.2; a journaled activation must name the rules the kernel enforces"
+fix = "activate only the embedded, registered policy"
+
+# ---- Period resolution (020–021) -----------------------------------------
+[[refusal]]
+code = "FA-REF-020"
+name = "PERIOD_RESOLVE"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §7.3 (effective_period discriminator)"
+fix = "name the period with effective_period when the date is shared with an adjustment, opening, or closing period"
+
+[[refusal]]
+code = "FA-REF-021"
+name = "PERIOD_UNKNOWN"
+owners = ["fa-journal"]
+exit = "safety"
+cite = "plan §7.3 (periods are created per fiscal year)"
+fix = "fa period create --fiscal-year <FY>, then transition the period"
+
+# ---- Policy currency (022) -----------------------------------------------
+[[refusal]]
+code = "FA-REF-022"
+name = "STALE_APPROVAL"
+owners = ["fa-policy"]
+exit = "conflict"
+cite = "FA-INV-10 current-policy"
+fix = "re-approve under the current policy epoch"
+
+# ---- Concurrency and identity (030–033) ----------------------------------
+[[refusal]]
+code = "FA-REF-030"
+name = "CONFLICT"
+owners = ["fa-journal"]
+exit = "conflict"
+cite = "FG-LAW-FCW-01 (first committer wins)"
+fix = "re-plan and retry; if a close won, the period law refusal will say so"
+
+[[refusal]]
+code = "FA-REF-031"
+name = "PERIOD_MOVED"
+owners = ["fa-journal"]
+exit = "conflict"
+cite = "plan §7.3 (state changes are serialized through the period vertex)"
+fix = "re-read the period state and choose the transition again"
+
+[[refusal]]
+code = "FA-REF-032"
+name = "IDEMPOTENCY_CONFLICT"
+owners = ["fa-journal"]
+exit = "conflict"
+cite = "plan §4.9, FA-INV-09 (one identity, one content)"
+fix = "use a fresh idempotency key, or resubmit the recorded content exactly"
+
+[[refusal]]
+code = "FA-REF-033"
+name = "EQUIVALENCE_UNVERIFIABLE"
+owners = ["fa-journal"]
+exit = "conflict"
+cite = "plan §8.5 (no plaintext equivalence over destroyed secrets)"
+fix = "resubmit the exact prepared bytes to get the recorded outcome, or use a new idempotency key"
+
+# ---- Period transitions (040) --------------------------------------------
+[[refusal]]
+code = "FA-REF-040"
+name = "TRANSITION"
+owners = ["fa-journal"]
+exit = "safety"
+cite = "plan §7.3 period state machine"
+fix = "pick a legal transition: Future→Open, Open→SoftClose, SoftClosed→Close|Reopen, Closed→Lock|Reopen"
+
+# ---- Supersession (050–052) ----------------------------------------------
+[[refusal]]
+code = "FA-REF-050"
+name = "REVERSAL_TARGET"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §4.4 (a reversal is a side swap of one entry)"
+fix = "set supersession = [{ target: <EntryRef of the original>, kind: Reverses }]"
+
+[[refusal]]
+code = "FA-REF-051"
+name = "REVERSAL_SHAPE"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §4.4 (a side swap with the same mantissa, never a signed storno)"
+fix = "post the same accounts and amounts in the same order with debit and credit exchanged"
+
+[[refusal]]
+code = "FA-REF-052"
+name = "ALREADY_REVERSED"
+owners = ["fa-journal"]
+exit = "conflict"
+cite = "plan §4.9 (one reversal per target, by identity)"
+fix = "cite the existing reversal instead of posting another"
+
+# ---- Two-phase (060–062) -------------------------------------------------
+[[refusal]]
+code = "FA-REF-060"
+name = "RESOLUTION_TARGET"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §5.4"
+fix = "fa entry show <vid> to find the pending entry to resolve"
+
+[[refusal]]
+code = "FA-REF-061"
+name = "RESOLUTION_SHAPE"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §5.4 (source_ordinals index the pending entry's legs)"
+fix = "fa entry show <pending vid> and map each posted leg to one of its legs"
+
+[[refusal]]
+code = "FA-REF-062"
+name = "ALREADY_RESOLVED"
+owners = ["fa-journal"]
+exit = "conflict"
+cite = "plan §5.4 (one resolution per pending entry, by identity)"
+fix = "read the existing resolution with `fa entry show`; a pending entry is resolved exactly once"
+
+# ---- Application (070–073) -----------------------------------------------
+[[refusal]]
+code = "FA-REF-070"
+name = "SETTLE_TARGET"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §5.7"
+fix = "fa open-items --account <code> lists the open items to apply to"
+
+[[refusal]]
+code = "FA-REF-071"
+name = "SETTLE_SHAPE"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §5.7"
+fix = "apply a positive amount in the leg's unit, once per target leg, within the leg"
+
+[[refusal]]
+code = "FA-REF-072"
+name = "OVER_APPLICATION"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §5.7 (over-application is refused with the open amount)"
+fix = "apply at most {open}; the remainder is a new open item or an unapplied receipt"
+
+[[refusal]]
+code = "FA-REF-073"
+name = "LIVE_APPLICATIONS"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §5.7 (reversing an open item with live applications would strand them)"
+fix = "reverse the applying entries first (fa open-items --account <code> lists them), then reverse this entry"
+
+# ---- Docket: evidence (080–088) ------------------------------------------
+[[refusal]]
+code = "FA-REF-080"
+name = "EVIDENCE_MINIMUM"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "registries/evidence_policy.toml [[minimum]] class = \"{class}\" (FA-INV-05 evidence-minimum)"
+fix = "record the source document with `fa document add <file> --kind <Kind> --json` and cite it in the intent's `evidence` (or --evidence <oid>)"
+
+[[refusal]]
+code = "FA-REF-081"
+name = "EVIDENCE_UNKNOWN"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "FA-INV-05 (an entry whose evidence references an unknown object is refused)"
+fix = "record it first with `fa document add <file> --json` and cite the oid it prints"
+
+[[refusal]]
+code = "FA-REF-082"
+name = "EVIDENCE_COMMIT"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §9.1 (every citation carries the public commitment)"
+fix = "cite the doc_commit `fa document add` printed for this document"
+
+[[refusal]]
+code = "FA-REF-083"
+name = "DOCUMENT_INTAKE"
+owners = ["fa-journal"]
+exit = "usage"
+cite = "registries/evidence_policy.toml; plan §9.1 Document"
+fix = "add a non-empty file within max_document_bytes, with a registered --kind and a type/subtype --mime"
+
+[[refusal]]
+code = "FA-REF-084"
+name = "GRADE_UNVERIFIED"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "registries/evidence_policy.toml [[grade]] (intake = false); plan §9.3"
+fix = "declare the upload honestly: --grade HumanUpload when a person supplied the bytes, AgentUpload when an agent did"
+
+[[refusal]]
+code = "FA-REF-085"
+name = "DOCUMENT_DRIFT"
+owners = ["fa-journal"]
+exit = "verification"
+cite = "FA-INV-04 (a mirror is never more authoritative than the payload), FA-INV-05 (the closure verifies)"
+fix = "preserve the store and report the drift; nothing that cites this document is admitted until it is explained"
+
+[[refusal]]
+code = "FA-REF-086"
+name = "SELF_SOURCED"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §9.3 (self-sourced evidence: AgentUpload, Generated); bead fa-g21 (the Reviewed attestation, not yet implemented)"
+fix = "cite a document a person or third party supplied, recorded with `fa document add <file> --grade HumanUpload --json` by that person"
+
+[[refusal]]
+code = "FA-REF-087"
+name = "SUPPLEMENT_TARGET"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §9.2 (evidence attached after commit supports a committed entry, named by its EntryRef)"
+fix = "name the entry by the vid and entry_digest `fa post --json` printed"
+
+[[refusal]]
+code = "FA-REF-088"
+name = "ERASURE_ABSENT"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §8.5; Appendix H R-ERASE (the substrate's erasure tombstones are not live); per-Party subject keys: bead fa-v74"
+fix = "nothing to run: erasure is not available in this build; every erasable field is sealed under the book key and stays unopenable to anyone without it"
+
+# ---- Reserved availability and balancing (090–093) ----------------------
+[[refusal]]
+code = "FA-REF-090"
+name = "AVAILABILITY_LOWER"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §5.4 reserved availability (net − pending_out − x ≥ lower_bound; FA-INV-15 availability)"
+fix = "move at most {admissible} out of `{account}`, or release a reservation first"
+
+[[refusal]]
+code = "FA-REF-091"
+name = "AVAILABILITY_UPPER"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §5.4 reserved availability (net + pending_in + x ≤ upper_bound; FA-INV-15 availability)"
+fix = "move at most {admissible} into `{account}`, or release a reservation first"
+
+[[refusal]]
+code = "FA-REF-092"
+name = "LIMIT_CEILING"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §6.1 (checked exact arithmetic; the register ceiling)"
+fix = "split `{account}`'s activity across accounts; no total beyond the ceiling is representable"
+
+[[refusal]]
+code = "FA-REF-093"
+name = "BALANCING_SHAPE"
+owners = ["fa-journal"]
+exit = "usage"
+cite = "plan §5.5 (Balancing leg: the two-leg TigerBeetle option)"
+fix = "post two legs of one unit and one positive amount (a debit and a credit on different accounts), class Original/Adjusting/Pending, and name leg 0 or 1 as balancing; an N-leg entry states its amounts"
+
+# ---- Structure and coordinate (100–103) ----------------------------------
+[[refusal]]
+code = "FA-REF-100"
+name = "STRUCTURE"
+owners = ["fa-journal"]
+exit = "usage"
+cite = "Appendix A (the object's structural rules)"
+fix = "fix the named field and resubmit"
+
+[[refusal]]
+code = "FA-REF-101"
+name = "CONTROL_VIA_POST"
+owners = ["fa-journal"]
+exit = "usage"
+cite = "plan §8.1"
+fix = "use `fa period <transition>` or `fa chart import`; control records are not posted"
+
+[[refusal]]
+code = "FA-REF-102"
+name = "CLASS_NOT_IMPLEMENTED"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §18.1 (a slice is a subset of the final abstraction, never a substitute)"
+fix = "use Original, Adjusting, Reversal, Pending, or Resolution(Posts|Voids) for now"
+
+[[refusal]]
+code = "FA-REF-103"
+name = "COORDINATE"
+owners = ["fa-journal"]
+exit = "usage"
+cite = "plan §2.2 (an object belongs to exactly one book)"
+fix = "set book_id to this book's id (fa book info --json) or open the book the intent names"
+
+# ---- Notary (120–125) ----------------------------------------------------
+[[refusal]]
+code = "FA-REF-120"
+name = "NOT_IN_PREFIX"
+owners = ["fa-notary"]
+exit = "refusal"
+cite = "plan §13.1 (inclusion is proved only within an authenticated prefix)"
+fix = "checkpoint after the entry was recorded and prove against that state, with a consistency proof from the one you trust"
+
+[[refusal]]
+code = "FA-REF-121"
+name = "ACCUMULATOR_DRIFT"
+owners = ["fa-notary"]
+exit = "verification"
+cite = "FA-INV-14 (each AccumulatorState extends the previous)"
+fix = "run `fa verify accumulator` and preserve the store for investigation; do not checkpoint over it"
+
+[[refusal]]
+code = "FA-REF-122"
+name = "HEAD_MOVED"
+owners = ["fa-notary"]
+exit = "conflict"
+cite = "plan §13.2 (prev_state_oid moves under a compare-and-set)"
+fix = "checkpoint again; the new state will extend the winner"
+
+[[refusal]]
+code = "FA-REF-123"
+name = "BASIS_MOVED"
+owners = ["fa-notary"]
+exit = "conflict"
+cite = "plan §5.10 (an aggregate basis must equal the head at publication)"
+fix = "checkpoint again"
+
+[[refusal]]
+code = "FA-REF-124"
+name = "NOT_EXTENDED"
+owners = ["fa-notary"]
+exit = "verification"
+cite = "FA-INV-14 (each AccumulatorState extends the previous)"
+fix = "order the states by through_seq, and run `fa verify accumulator`"
+
+[[refusal]]
+code = "FA-REF-125"
+name = "BEYOND_HEAD"
+owners = ["fa-notary"]
+exit = "usage"
+cite = "plan §13.1 (a prefix cannot extend past the head)"
+fix = "select a sequence at or before the head"

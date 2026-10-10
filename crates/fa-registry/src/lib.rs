@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 pub mod evidence_policy;
+pub mod refusal_catalog;
 pub mod sod_policy;
 pub mod toml;
 

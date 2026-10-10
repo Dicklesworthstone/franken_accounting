@@ -102,6 +102,9 @@ name = "Engagement"
 [[label]]
 id = 31
 name = "AccumulatorState"
+[[label]]
+id = 34
+name = "SupplementalEvidence"
 
 # ---- property keys --------------------------------------------------------
 [[property]]
@@ -334,3 +337,6 @@ name = "IN_BOOK"
 [[relation]]
 id = 29
 name = "UNSETTLES"
+[[relation]]
+id = 30
+name = "SUPPLEMENTS"

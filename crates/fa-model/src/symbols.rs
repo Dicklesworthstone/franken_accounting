@@ -59,6 +59,7 @@ symbols!(
         (STATEMENT_ISSUANCE, "StatementIssuance", 29),
         (ENGAGEMENT, "Engagement", 30),
         (ACCUMULATOR_STATE, "AccumulatorState", 31),
+        (SUPPLEMENTAL_EVIDENCE, "SupplementalEvidence", 34),
     ]
 );
 
@@ -149,6 +150,7 @@ symbols!(
         (IN_PERIOD, "IN_PERIOD", 27),
         (IN_BOOK, "IN_BOOK", 28),
         (UNSETTLES, "UNSETTLES", 29),
+        (SUPPLEMENTS, "SUPPLEMENTS", 30),
     ]
 );
 

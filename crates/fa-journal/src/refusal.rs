@@ -134,6 +134,14 @@ pub mod code {
     pub const DOCUMENT_INTAKE: &str = "FA-REF-083";
     /// The declared provenance grade is one only a verified receipt chain may confer.
     pub const GRADE_UNVERIFIED: &str = "FA-REF-084";
+    /// A stored Document's mirrors disagree with its payload, or its payload does not verify.
+    pub const DOCUMENT_DRIFT: &str = "FA-REF-085";
+    /// The minimum is met only by counting self-sourced documents, which count once reviewed (fa-g21).
+    pub const SELF_SOURCED: &str = "FA-REF-086";
+    /// Supplemental evidence names an entry that is missing, not an Entry, or whose digest mismatches.
+    pub const SUPPLEMENT_TARGET: &str = "FA-REF-087";
+    /// `ErasureCut` is a registered absence: the substrate's erasure tombstones are not live (R-ERASE).
+    pub const ERASURE_ABSENT: &str = "FA-REF-088";
     /// The entry moves value out of a limited account below its lower bound
     /// (`net − pending_out − x < lower_bound`, plan §5.4).
     pub const AVAILABILITY_LOWER: &str = "FA-REF-090";
