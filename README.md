@@ -21,7 +21,7 @@
 
 ## TL;DR
 
-**The problem.** Every system that holds books today fossilized around a decision made decades ago. ERP general ledgers (SAP's Universal Journal, Oracle, NetSuite) store balances as mutable rows and bolt an audit log beside them; small-business tools edit entries in place; TigerBeetle got the primitive exactly right — immutable transfers, 128-bit integers, two-phase holds, deterministic simulation — and is, by design, a two-leg balance engine with no journal entry, no periods, no close, no restatements, no documents, no "the books as of", no relationships; fintech ledger APIs stop at balances and transactions and hold your system of record in their SaaS; plain-text accounting got immutability and reproducibility right and is single-user with filename-grade evidence; audit and forensic tooling begins with "export the GL to CSV". The field solved every hard subproblem in isolation — REA, bitemporal time, event sourcing, Fowler's reversal/replacement adjustments, the AICPA Audit Data Standards, AS 2401's journal-entry tests, Certificate Transparency — and **no shipping system ever composed them.**
+**The problem.** Every system that holds books today fossilized around a decision made decades ago. ERP general ledgers (SAP's Universal Journal, Oracle, NetSuite) keep posted journals immutable but store balances in mutable summary tables, model periods as flags, re-key reversals, and keep the audit trail in a separate change-document table with no "as known at" selector; small-business tools edit entries in place; TigerBeetle got the primitive exactly right — immutable transfers, 128-bit integers, two-phase holds, deterministic simulation — and is, by design, a two-leg balance engine with no journal entry, no periods, no close, no restatements, no documents, no "the books as of", no relationships; fintech ledger APIs stop at balances and transactions and hold your system of record in their SaaS; plain-text accounting got immutability and reproducibility right and is single-user with filename-grade evidence; audit and forensic tooling begins with "export the GL to CSV". The field solved every hard subproblem in isolation — REA, bitemporal time, event sourcing, Fowler's reversal/replacement adjustments, the AICPA Audit Data Standards, AS 2401's journal-entry tests, Certificate Transparency — and **no shipping system ever composed them.**
 
 **The solution.** `franken_accounting` composes them, on a substrate that already has the hard parts: FrankenGraphDB's immutable content-addressed commit stream (our system time), bitemporal property graph (our REA model and effective dates), git-style branches (our drafts and but-for scenarios), incremental views (our registers), capability security (our segregation of duties), and deterministic replay (our certificates). One codebase, three postures: an embedded library (`fa`), a CLI (`fa`) whose robot mode is the agent contract, and an MCP server (`fa-mcp`) hosted by the `fad` daemon.
 
@@ -36,7 +36,7 @@
 | Graph | Accounts, entities, parties, instruments, documents, periods, findings are vertices; legs, approvals, ownership, settlement, intercompany pairs, supersession are edges. Tracing (LIBR/FIFO/pro rata as code), related-party exposure, layering, kiting, Ponzi motifs, structuring: graph procedures in the database, certified. |
 | Determinism | Same closure ⇒ byte-identical output, with a certificate. A damages schedule computed in 2026 replays in 2029. |
 | Agents | Typed intents with dry-run plans; refusals that name the law and the exact fix; drafts that cannot touch trunk without authorized promotion; `fa triage` in one call; robot-mode NDJSON; an MCP server with the same verbs. |
-| Safety | `unsafe_code = "forbid"` everywhere, zero unsafe islands. Closed dependency universe: `std` + the pinned nightly + asupersync + FrankenGraphDB + `fnx` + fastmcp_rust (MCP posture only). No serde, no tokio, no chrono, no decimal crates, no arrow, no sqlite. |
+| Safety | `unsafe_code = "forbid"` everywhere, zero unsafe islands. Closed dependency universe: `std` + the pinned nightly + asupersync + FrankenGraphDB + `fnx` + fastmcp_rust (MCP posture only). No serde, no tokio, no chrono, no decimal crates, no arrow, no sqlite, no TUI crate. |
 
 ---
 
@@ -141,8 +141,9 @@ RETURN p.name, sum(open) AS exposure ORDER BY exposure DESC;
                                      ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  FRANKENGRAPHDB   Chronicle (immutable commit stream = system time) ·    │
-│  Block-MVCC + Graph-SSI · valid time · branches · Ripple · Beacon ·      │
-│  Prism/fnx · Warden · certificates · lab runtime (asupersync)            │
+│  optimistic WriteTxn + point-read witnesses (SSI planned) · certificates │
+│  Prism/fnx · lab runtime (asupersync) · valid time / branches / Ripple / │
+│  Beacon / Warden as they land (plan Appendix H interim postures)         │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -191,7 +192,7 @@ What it is **not**: an ERP, a payments processor, a UI, a tax engine or GAAP int
 
 | | `franken_accounting` | TigerBeetle | ERP GL (SAP/Oracle/NetSuite) | Fintech ledger APIs | Plain-text accounting |
 |---|---|---|---|---|---|
-| Primitive | N-leg immutable entry, balanced per unit | 2-leg immutable transfer | Mutable journal rows | 2-leg or N-leg postings | Text transactions |
+| Primitive | N-leg immutable entry, balanced per unit | 2-leg immutable transfer | Immutable posted journal; mutable balance tables | 2-leg or N-leg postings | Text transactions |
 | Balances | Certified folds, never authoritative | Four balance fields per account | Mutable balance tables | Balances per account | Recomputed from text |
 | Journal entry as object | ✓ | ✗ (encode in `user_data`) | ✓ | partial | ✓ |
 | Periods / close / lock | ✓ journaled, enforced at commit | ✗ | flags | ✗ | ✗ |
@@ -232,11 +233,11 @@ AGENTS.md                                                   operating rules for 
 registries/        constitution, invariants, evidence, slo, units, laws, entry classes,
                    admissibility, intents, procedures, caveats, SoD, verbs, exit codes,
                    refusal catalog, formats, robot schemas, operation costs, foundation deps
-crates/            fa-types fa-money fa-time fa-registry fa-model fa-journal fa-registers
-                   fa-escrow fa-palimpsest fa-docket fa-notary fa-canon fa-intents
-                   fa-statements fa-concordat fa-lantern fa-steward fa-formats fa-verbs
-                   fa fa-cli fad fa-mcp fa-reference fa-sim fa-oracles fa-gen fa-bench
-                   fa-conformance fa-fuzz fa-verify
+crates/            fa-types fa-money fa-time fa-registry fa-claim fa-sim-harness fa-model
+                   fa-canon fa-policy fa-intents fa-journal fa-registers fa-escrow fa-palimpsest
+                   fa-docket fa-notary fa-statements fa-concordat fa-lantern fa-query fa-steward
+                   fa-formats fa-verbs fa fa-demo fa-cli fad fa-mcp fa-reference fa-sim
+                   fa-oracles fa-gen fa-bench fa-conformance fa-fuzz fa-verify
 tools/registry-check   std-only validator of the registries (G0)
 scripts/check.sh       the one gate (verdict contract: exit code is the verdict)
 docs/                  negative evidence, ADRs, threat & trust model
