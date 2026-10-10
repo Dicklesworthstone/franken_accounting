@@ -5,7 +5,8 @@
 //! shared arithmetic bug in `fa-money` cannot make the differential green.
 //! The oracle mirrors the kernel's law order exactly — structure, control,
 //! supported subset, balance, period resolution, identity (recorded outcome
-//! or conflict), period law, accounts, reversal shape — and returns the same
+//! or conflict), period law, accounts, reversal shape, resolution shape — and
+//! returns the same
 //! refusal codes as independent string constants, so a renumbering on either
 //! side is a differential failure, never a silent agreement.
 //!
@@ -213,6 +214,17 @@ pub struct Intent {
     pub approvals: usize,
     /// For a Reversal: the journal index of the entry it reverses.
     pub reverses: Option<usize>,
+    /// For a Resolution: the pending entry it resolves and its disposition.
+    pub resolves: Option<Resolve>,
+}
+
+/// A Resolution's target and disposition (plan §5.4): `posts = Some(ordinals)`
+/// posts `Intent.legs` as a sub-vector drawn from those pending legs;
+/// `posts = None` voids (releases) the whole hold.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Resolve {
+    pub target: usize,
+    pub posts: Option<Vec<u16>>,
 }
 
 /// Refusal codes, as independent constants (see the module docs).
@@ -231,6 +243,9 @@ pub mod code {
     pub const REVERSAL_TARGET: &str = "FA-REF-050";
     pub const REVERSAL_SHAPE: &str = "FA-REF-051";
     pub const ALREADY_REVERSED: &str = "FA-REF-052";
+    pub const RESOLUTION_TARGET: &str = "FA-REF-060";
+    pub const RESOLUTION_SHAPE: &str = "FA-REF-061";
+    pub const ALREADY_RESOLVED: &str = "FA-REF-062";
     pub const STRUCTURE: &str = "FA-REF-100";
     pub const CONTROL_VIA_POST: &str = "FA-REF-101";
     pub const CLASS_NOT_IMPLEMENTED: &str = "FA-REF-102";
@@ -255,10 +270,13 @@ pub enum Verdict {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
     pub class: String,
+    pub date: DateDay,
     pub period: String,
     pub legs: Vec<Leg>,
     pub key: Vec<u8>,
     pub reverses: Option<usize>,
+    /// For a Resolution: the journal index of the pending entry it resolves.
+    pub resolves: Option<usize>,
 }
 
 /// The semantic content an identity binds (what the kernel's
@@ -270,6 +288,7 @@ struct Content {
     discriminator: Option<String>,
     legs: Vec<Leg>,
     reverses: Option<usize>,
+    resolves: Option<Resolve>,
     key: Vec<u8>,
 }
 
@@ -281,6 +300,7 @@ impl Content {
             discriminator: i.discriminator.clone(),
             legs: i.legs.clone(),
             reverses: i.reverses,
+            resolves: i.resolves.clone(),
             key: i.key.clone(),
         }
     }
@@ -304,6 +324,8 @@ pub struct Oracle {
     keys: BTreeMap<Vec<u8>, (usize, Content)>,
     /// Reversed target index → (reversal index, content).
     reversed: BTreeMap<usize, (usize, Content)>,
+    /// Resolved pending index → (resolution index, content).
+    resolved: BTreeMap<usize, (usize, Content)>,
     classes: EntryClasses,
     matrix: Admissibility,
 }
@@ -319,6 +341,7 @@ impl Oracle {
             journal: Vec::new(),
             keys: BTreeMap::new(),
             reversed: BTreeMap::new(),
+            resolved: BTreeMap::new(),
             classes,
             matrix,
         }
@@ -365,7 +388,20 @@ impl Oracle {
                 code: code::STRUCTURE,
             };
         };
-        if intent.legs.len() < 2
+        let is_resolution = intent.class == "Resolution";
+        let is_release =
+            is_resolution && intent.resolves.as_ref().is_some_and(|r| r.posts.is_none());
+        let shape_ok = match (&intent.resolves, is_resolution) {
+            (None, false) => intent.legs.len() >= 2,
+            (None, true) | (Some(_), false) => false,
+            (Some(Resolve { posts: None, .. }), true) => intent.legs.is_empty(),
+            (Some(Resolve { posts: Some(o), .. }), true) => {
+                intent.legs.len() >= 2
+                    && o.len() == intent.legs.len()
+                    && o.windows(2).all(|w| w[0] < w[1])
+            }
+        };
+        if !shape_ok
             || intent.key.is_empty()
             || intent.key.len() > 64
             || intent.legs.iter().any(|l| l.mantissa < 0)
@@ -381,7 +417,10 @@ impl Oracle {
         }
         // 1b. The supported subset, and a Reversal's target presence.
         let is_reversal = intent.class == "Reversal";
-        if !matches!(intent.class.as_str(), "Original" | "Adjusting" | "Reversal") {
+        if !matches!(
+            intent.class.as_str(),
+            "Original" | "Adjusting" | "Reversal" | "Pending" | "Resolution"
+        ) {
             return Verdict::Refused {
                 code: code::CLASS_NOT_IMPLEMENTED,
             };
@@ -431,9 +470,10 @@ impl Oracle {
         // 4. Identity: the recorded outcome when the content is the same,
         //    a conflict when it is not — before any law is re-checked.
         let content = Content::of(intent);
-        let existing = match intent.reverses {
-            Some(target) => self.reversed.get(&target),
-            None => self.keys.get(&intent.key),
+        let existing = match (intent.reverses, &intent.resolves) {
+            (Some(target), _) => self.reversed.get(&target),
+            (None, Some(r)) => self.resolved.get(&r.target),
+            (None, None) => self.keys.get(&intent.key),
         };
         if let Some((index, recorded)) = existing {
             return if *recorded == content {
@@ -441,6 +481,10 @@ impl Oracle {
             } else if is_reversal {
                 Verdict::Refused {
                     code: code::ALREADY_REVERSED,
+                }
+            } else if is_resolution {
+                Verdict::Refused {
+                    code: code::ALREADY_RESOLVED,
                 }
             } else {
                 Verdict::Refused {
@@ -450,15 +494,18 @@ impl Oracle {
         }
         // 5. Period law against the period's current state (Future when never created).
         let state = self.period_state(&period).unwrap_or(PeriodState::Future);
-        match self.matrix.decide(&intent.class, state) {
+        match self
+            .matrix
+            .decide_disposition(&intent.class, state, is_release)
+        {
             Some(Decision::Admit) => {}
             Some(Decision::With { op, approvals }) => {
-                if !intent.ops.iter().any(|o| o == op) {
+                if !intent.ops.contains(&op) {
                     return Verdict::Refused {
                         code: code::CAPABILITY,
                     };
                 }
-                if intent.approvals < usize::from(*approvals) {
+                if intent.approvals < usize::from(approvals) {
                     return Verdict::Refused {
                         code: code::APPROVALS,
                     };
@@ -495,6 +542,17 @@ impl Oracle {
                     code: code::REVERSAL_TARGET,
                 };
             };
+            // Only a posted entry is reversible (plan §8.2): a hold and a
+            // release posted nothing; a Resolution(Posts) did.
+            let reversible = matches!(
+                original.class.as_str(),
+                "Original" | "Adjusting" | "Reversal"
+            ) || (original.class == "Resolution" && !original.legs.is_empty());
+            if !reversible {
+                return Verdict::Refused {
+                    code: code::REVERSAL_TARGET,
+                };
+            }
             let swapped = original.legs.len() == intent.legs.len()
                 && original.legs.iter().zip(&intent.legs).all(|(o, r)| {
                     o.account == r.account
@@ -508,19 +566,58 @@ impl Oracle {
                 };
             }
         }
+        // 7b. Resolution law: the target is a pending entry; a Posts
+        //     sub-vector is drawn leg by leg (same account, unit, side;
+        //     0 < posted ≤ reserved).
+        if let Some(r) = &intent.resolves {
+            let Some(target) = self.journal.get(r.target) else {
+                return Verdict::Refused {
+                    code: code::RESOLUTION_TARGET,
+                };
+            };
+            if target.class != "Pending" {
+                return Verdict::Refused {
+                    code: code::RESOLUTION_TARGET,
+                };
+            }
+            if let Some(ordinals) = &r.posts {
+                for (leg, o) in intent.legs.iter().zip(ordinals) {
+                    let Some(src) = target.legs.get(usize::from(*o)) else {
+                        return Verdict::Refused {
+                            code: code::RESOLUTION_SHAPE,
+                        };
+                    };
+                    if src.account != leg.account
+                        || src.unit != leg.unit
+                        || src.side != leg.side
+                        || leg.mantissa <= 0
+                        || leg.mantissa > src.mantissa
+                    {
+                        return Verdict::Refused {
+                            code: code::RESOLUTION_SHAPE,
+                        };
+                    }
+                }
+            }
+        }
         let index = self.journal.len();
         self.journal.push(Entry {
             class: intent.class.clone(),
+            date: intent.date,
             period: period.clone(),
             legs: intent.legs.clone(),
             key: intent.key.clone(),
             reverses: intent.reverses,
+            resolves: intent.resolves.as_ref().map(|r| r.target),
         });
-        match intent.reverses {
-            Some(target) => {
+        match (intent.reverses, &intent.resolves) {
+            (Some(target), _) => {
                 self.reversed.insert(target, (index, content));
             }
-            None => {
+            (None, Some(r)) => {
+                self.resolved.insert(r.target, (index, content));
+            }
+            (None, None) => {
                 self.keys.insert(intent.key.clone(), (index, content));
             }
         }
@@ -530,8 +627,47 @@ impl Oracle {
     /// The literal fold of one period: `(account, unit) → cell`.
     #[must_use]
     pub fn fold(&self, period: &str) -> BTreeMap<(String, u32), Cell> {
+        self.activity_at(&[period], self.journal.len())
+    }
+
+    /// Stock from inception through an inclusive effective day, as known after
+    /// `accepted_prefix` accepted monetary entries. This is an oracle journal
+    /// count, not a substrate commit sequence: controls and metadata do not
+    /// advance it. Tests must record the correspondence at each observation.
+    ///
+    /// Panics if the requested prefix extends beyond the oracle's journal.
+    #[must_use]
+    pub fn stock_at(&self, day: DateDay, accepted_prefix: usize) -> BTreeMap<(String, u32), Cell> {
+        Self::fold_entries(
+            self.journal[..accepted_prefix]
+                .iter()
+                .filter(|entry| entry.date <= day),
+        )
+    }
+
+    /// Flow through the same independent journal prefix, restricted to the
+    /// named period identities. A repeated period selects no additional rows;
+    /// periods sharing one civil date remain separate activity buckets.
+    ///
+    /// Panics if the requested prefix extends beyond the oracle's journal.
+    #[must_use]
+    pub fn activity_at(
+        &self,
+        periods: &[&str],
+        accepted_prefix: usize,
+    ) -> BTreeMap<(String, u32), Cell> {
+        Self::fold_entries(
+            self.journal[..accepted_prefix]
+                .iter()
+                .filter(|entry| periods.contains(&entry.period.as_str())),
+        )
+    }
+
+    fn fold_entries<'a>(entries: impl Iterator<Item = &'a Entry>) -> BTreeMap<(String, u32), Cell> {
         let mut cells: BTreeMap<(String, u32), Cell> = BTreeMap::new();
-        for e in self.journal.iter().filter(|e| e.period == period) {
+        // A Pending reserves and never posts (plan §5.4); its legs live in
+        // the pending fold, not here.
+        for e in entries.filter(|e| e.class != "Pending") {
             let mut touched: Vec<(String, u32)> = Vec::new();
             for l in &e.legs {
                 let key = (l.account.clone(), l.unit);
@@ -556,6 +692,45 @@ impl Oracle {
             }
         }
         cells
+    }
+
+    /// The pending fold of one period: the legs of every `Pending` entry in
+    /// that period that has no resolution in the first `accepted_prefix`
+    /// entries. A resolution releases the full original pending amount
+    /// exactly once, whatever its own period.
+    #[must_use]
+    pub fn pending_at(
+        &self,
+        period: &str,
+        accepted_prefix: usize,
+    ) -> BTreeMap<(String, u32), Cell> {
+        Self::fold_entries(
+            self.journal[..accepted_prefix]
+                .iter()
+                .enumerate()
+                .filter(|(i, e)| {
+                    e.class == "Pending"
+                        && e.period == period
+                        && !self
+                            .resolved
+                            .get(i)
+                            .is_some_and(|(r, _)| *r < accepted_prefix)
+                })
+                .map(|(_, e)| e)
+                // fold_entries skips Pending; present them as what they are
+                // here: reserved legs.
+                .map(|e| Entry {
+                    class: "Reserved".into(),
+                    ..e.clone()
+                })
+                .collect::<Vec<_>>()
+                .iter(),
+        )
+    }
+
+    #[must_use]
+    pub fn pending_fold(&self, period: &str) -> BTreeMap<(String, u32), Cell> {
+        self.pending_at(period, self.journal.len())
     }
 
     #[must_use]
@@ -655,6 +830,7 @@ mod tests {
             ops: vec!["post".into()],
             approvals: 0,
             reverses,
+            resolves: None,
         };
         assert_eq!(
             o.post(&intent("Original", legs(5, 5), b"a", None)),
@@ -747,6 +923,13 @@ mod tests {
         assert_eq!(f[&("1000".to_string(), 1)].credits, Int::from_i128(5));
         assert_eq!(f[&("1000".to_string(), 1)].debits, Int::from_i128(5));
         assert_eq!(f[&("6000".to_string(), 1)].entry_count, 2);
+        assert_eq!(o.entry(0).unwrap().date, day);
+        assert!(o.stock_at(day.pred().unwrap(), o.journal_len()).is_empty());
+        let original = o.stock_at(day, 1);
+        assert_eq!(original[&("6000".to_string(), 1)].debits, Int::from_i128(5));
+        assert_eq!(original[&("6000".to_string(), 1)].credits, Int::zero());
+        assert_eq!(o.stock_at(day, 2), f);
+        assert_eq!(o.activity_at(&[&march, &march], 1), original);
         assert_eq!(
             o.transition(&march, PeriodTransition::Lock),
             Err(code::TRANSITION)

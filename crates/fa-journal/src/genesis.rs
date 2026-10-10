@@ -468,6 +468,7 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
         supersession: Vec::new(),
         pending: None,
         external_ids: Vec::new(),
+        extensions: Vec::new(),
         tags: Vec::new(),
     };
     let entry: Entry = proposal.seal(Vec::new(), None)?;

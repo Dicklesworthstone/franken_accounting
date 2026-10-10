@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use fa::book::{Book, BookError, BookKeys, Entropy};
+use fa_journal::BookContext;
 use fa_journal::{
     AccountSpec, BookSpec, Capability, PostRequest, Posted, Refusal, UnitPolicy, exit,
 };
@@ -21,9 +22,10 @@ use fa_model::{
     AccountType, EntryClass, EntryOrigin, EntryPayload, Id128, LegPayload, Oid, PeriodRef,
     account_vid, principal_vid,
 };
+use fa_model::{ControlPayload, Disposition, Pending};
 use fa_money::{Amount, Side};
 use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodState, PeriodTransition};
-use fgdb_types::VId;
+use fgdb_types::{CommitSeq, VId};
 
 use crate::args::{Args, UsageError, nearest};
 use crate::json::{Json, obj, s};
@@ -34,6 +36,8 @@ const VERBS: &[&str] = &[
     "chart",
     "period",
     "post",
+    "reserve",
+    "resolve",
     "tb",
     "verify",
     "registers",
@@ -189,6 +193,16 @@ fn dispatch(out: &Out, args: &Args) -> Result<(), Fail> {
         print!("{}", help_text());
         return Ok(());
     }
+    if verb != Some("tb")
+        && (args.flag("--as-of").is_some()
+            || args.flag("--as-known-at").is_some()
+            || args.switch("--activity"))
+    {
+        return Err(usage(
+            "--as-of, --as-known-at and --activity are supported only by `fa tb`",
+            "fa tb --as-of 2026-03-15 --as-known-at HEAD --book <dir>",
+        ));
+    }
     match verb {
         None => {
             print!("{}", triage_text());
@@ -199,7 +213,9 @@ fn dispatch(out: &Out, args: &Args) -> Result<(), Fail> {
         Some("book") => book_cmd(out, args),
         Some("chart") => chart_cmd(out, args),
         Some("period") => period_cmd(out, args),
-        Some("post") => post_cmd(out, args),
+        Some("post") => post_cmd(out, args, None),
+        Some("reserve") => post_cmd(out, args, Some(EntryClass::PENDING)),
+        Some("resolve") => post_cmd(out, args, Some(EntryClass::RESOLUTION)),
         Some("tb") => tb_cmd(out, args),
         Some("verify") => verify_cmd(out, args),
         Some("registers") => registers_cmd(out, args),
@@ -227,6 +243,7 @@ fn triage_text() -> String {
          fa chart import <chart.json> --book <dir>\n  \
          fa period create --fiscal-year 2026 --book <dir>; fa period open FY2026-P03 --book <dir>\n  \
          fa post --intent entry.json --book <dir> --json\n  \
+         fa reserve --intent hold.json --book <dir> --json; fa resolve --intent res.json --book <dir> --json\n  \
          fa tb --period FY2026-P03 --book <dir> --json\n  \
          fa verify registers --period FY2026-P03 --book <dir>\n\n\
          discover\n  \
@@ -242,7 +259,11 @@ fn help_text() -> String {
          chart import <file.json> | chart list\n  \
          period create --fiscal-year N | period list | period open|soft-close|close|lock|reopen <code> [--to open|soft-closed] [--reason N] [--key K] [--date YYYY-MM-DD]\n  \
          post --intent <file.json|-> [--grant <op>]... [--as <principal>]\n  \
-         tb (--period <code>)... | tb --fiscal-year N\n  \
+         reserve --intent <hold.json> (a Pending: amounts reserved, nothing posted)\n  \
+         resolve --intent <res.json> (resolves <hold vid>; disposition posts (legs drawn from the hold) | voids)\n  \
+         tb ((--period <code>)... | --fiscal-year N) [--activity] [--as-known-at HEAD|<seq>]\n  \
+         tb --as-of YYYY-MM-DD [--as-known-at HEAD|<seq>]\n  \
+         Stock balances include opening history; --activity is selected-period movement. Instants are unsupported.\n  \
          verify registers --period <code>\n  \
          registers materialize --period <code>\n  \
          entry show <vid-hex>\n  \
@@ -329,7 +350,8 @@ const GUIDE: &str = "fa robot-docs guide\n\
 4. Amounts are strings with the unit: \"1500.00 USD\". Never floats. Dates are civil YYYY-MM-DD; recorded time is assigned by the journal, never supplied.\n\
 5. Corrections are new entries (Reversal, Replacement, Reclassification) that cite the original; nothing is edited in place.\n\
 6. Idempotency: every intent carries idempotency_key; resubmitting returns the recorded outcome (event \"recorded\"), never a duplicate.\n\
-7. Posting into a non-Open period is decided by the admissibility matrix; the refusal cites the (class, state) cell and names the admissible class or capability.\n";
+7. Posting into a non-Open period is decided by the admissibility matrix; the refusal cites the (class, state) cell and names the admissible class or capability.\n\
+8. Two-phase: `fa reserve` posts a Pending (amounts in the pending columns, never posted); `fa resolve` names it with `resolves` and either posts a sub-vector (`legs`, each drawn from one hold leg — same account and side, at most the reserved amount; add `source_ordinal` when the hold has several such legs) or voids it (`disposition: \"voids\"`). The rest of the hold is released either way. One resolution per hold: a second is exit 6 (FA-REF-062); resolving a non-hold is FA-REF-060.\n";
 
 const EXAMPLES: &str = "fa robot-docs examples\n\
 \n\
@@ -349,8 +371,22 @@ fa period open FY2026-P03 --book ./books/myco --json\n\
 fa post --intent entry.json --book ./books/myco --json      # exit 0, event posted\n\
 fa post --intent entry.json --book ./books/myco --json      # exit 0, event recorded (same idempotency_key)\n\
 fa tb --period FY2026-P03 --book ./books/myco --json\n\
+fa tb --as-of 2026-03-15 --as-known-at HEAD --book ./books/myco --json\n\
+fa tb --period FY2026-P03 --activity --book ./books/myco --json\n\
 fa registers materialize --period FY2026-P03 --book ./books/myco\n\
-fa verify registers --period FY2026-P03 --book ./books/myco  # exit 8 on drift\n";
+fa verify registers --period FY2026-P03 --book ./books/myco  # exit 8 on drift\n\
+\n\
+# hold.json (a Pending: 80.00 reserved, nothing posted)\n\
+{\"effective_date\":\"2026-03-10\",\"description\":\"PO 77 hold\",\"idempotency_key\":\"hold-77\",\n\
+ \"legs\":[{\"side\":\"debit\",\"account\":\"6000\",\"amount\":\"80.00 USD\"},{\"side\":\"credit\",\"account\":\"1000\",\"amount\":\"80.00 USD\"}]}\n\
+# res.json (posts 60.00 of the hold; the other 20.00 is released)\n\
+{\"resolves\":\"<vid from the reserve event>\",\"effective_date\":\"2026-03-20\",\"idempotency_key\":\"res-77\",\n\
+ \"legs\":[{\"side\":\"debit\",\"account\":\"6000\",\"amount\":\"60.00 USD\"},{\"side\":\"credit\",\"account\":\"1000\",\"amount\":\"60.00 USD\"}]}\n\
+# void.json (releases the whole hold)\n\
+{\"resolves\":\"<vid>\",\"disposition\":\"voids\",\"effective_date\":\"2026-03-21\",\"idempotency_key\":\"void-77\"}\n\
+fa reserve --intent hold.json --book ./books/myco --json      # exit 0, event posted, class Pending\n\
+fa resolve --intent res.json --book ./books/myco --json       # exit 0, event posted, class Resolution\n\
+fa resolve --intent void.json --book ./books/myco --json      # exit 6, FA-REF-062: the hold is already resolved\n";
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -844,7 +880,73 @@ fn kind_name(k: PeriodKind) -> &'static str {
 // post
 // ---------------------------------------------------------------------------
 
-fn post_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
+/// A 32-hex entry identity from an intent field.
+fn parse_vid(text: &str, what: &str) -> Result<VId, Fail> {
+    u128::from_str_radix(text, 16).map(VId).map_err(|_| {
+        usage(
+            format!("{what} `{text}` is not a 32-hex vid"),
+            format!("{what}: the `vid` from the posted event"),
+        )
+    })
+}
+
+/// The `legs` array of an intent: each leg with its optional `source_ordinal`
+/// (meaningful only for a Resolution(Posts)).
+fn parse_legs(doc: &Json, ctx: &BookContext) -> Result<Vec<(LegPayload, Option<u16>)>, Fail> {
+    let legs_doc = doc.get("legs").and_then(Json::as_arr).ok_or_else(|| {
+        usage(
+            "intent: `legs` must be an array (or `reverses` a vid)",
+            "fa robot-docs examples",
+        )
+    })?;
+    let mut legs = Vec::with_capacity(legs_doc.len());
+    for (i, l) in legs_doc.iter().enumerate() {
+        let what = format!("legs[{i}]");
+        let side = match req_str(l, "side", &what)? {
+            "debit" | "dr" | "Debit" => Side::Debit,
+            "credit" | "cr" | "Credit" => Side::Credit,
+            other => {
+                return Err(usage(
+                    format!("{what}: side `{other}`"),
+                    "side: debit|credit",
+                ));
+            }
+        };
+        let account = req_str(l, "account", &what)?;
+        let amount_s = req_str(l, "amount", &what)?;
+        let amount = Amount::parse(amount_s, &ctx.units).map_err(|e| {
+            usage(
+                format!("{what}: amount `{amount_s}`: {e:?}"),
+                "amount: \"1500.00 USD\" (exact, at the unit's scale, non-negative)",
+            )
+        })?;
+        let ordinal = match l.get("source_ordinal") {
+            None => None,
+            Some(Json::Int(n)) => Some(u16::try_from(*n).map_err(|_| {
+                usage(
+                    format!("{what}: source_ordinal {n} is out of range"),
+                    "source_ordinal: the 0-based index of the hold leg this leg draws from",
+                )
+            })?),
+            Some(other) => match other.as_str().and_then(|t| t.parse::<u16>().ok()) {
+                Some(n) => Some(n),
+                None => {
+                    return Err(usage(
+                        format!("{what}: source_ordinal must be a small non-negative integer"),
+                        "source_ordinal: the 0-based index of the hold leg this leg draws from",
+                    ));
+                }
+            },
+        };
+        legs.push((
+            LegPayload::simple(side, account_vid(ctx.book_id, account), amount),
+            ordinal,
+        ));
+    }
+    Ok(legs)
+}
+
+fn post_cmd(out: &Out, args: &Args, forced: Option<EntryClass>) -> Result<(), Fail> {
     let path = args.require("--intent", "entry.json (or - for stdin)")?;
     let text = read_text(path)?;
     let doc = parse_json(path, &text)?;
@@ -853,13 +955,41 @@ fn post_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
     let class_name = doc
         .get("class")
         .and_then(Json::as_str)
-        .unwrap_or("Original");
+        .unwrap_or(match forced {
+            Some(EntryClass::PENDING) => "Pending",
+            Some(EntryClass::RESOLUTION) => "Resolution",
+            _ => "Original",
+        });
     let class = EntryClass::from_name(class_name).ok_or_else(|| {
         usage(
             format!("unknown class `{class_name}`"),
-            "class: Original|Reversal|Replacement|Reclassification|Adjusting|…",
+            "class: Original|Adjusting|Reversal|Pending|Resolution|…",
         )
     })?;
+    for key in ["timeout_ns", "timeout", "expires", "expiry", "expires_at"] {
+        if doc.get(key).is_some() {
+            return Err(usage(
+                format!(
+                    "`{key}`: timed holds are not available yet, and a timed reservation is never silently made permanent"
+                ),
+                "remove the field to reserve without a timeout, or wait for the TimeEvidence tick and expiry-sweep slice (plan §5.4)",
+            ));
+        }
+    }
+    if forced.is_some_and(|f| f != class) {
+        return Err(usage(
+            format!(
+                "`fa {}` posts a {} but the intent says class `{class_name}`",
+                if forced == Some(EntryClass::PENDING) {
+                    "reserve"
+                } else {
+                    "resolve"
+                },
+                forced.and_then(EntryClass::name).unwrap_or("?")
+            ),
+            "remove `class` from the intent, or use `fa post`",
+        ));
+    }
     let date_s = req_str(&doc, "effective_date", "intent")?;
     let effective_date = DateDay::parse(date_s).map_err(|e| {
         usage(
@@ -870,77 +1000,169 @@ fn post_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
     let key = req_str(&doc, "idempotency_key", "intent")?;
     let description = doc.get("description").and_then(Json::as_str).unwrap_or("");
     // A Reversal names its target; its legs are the exact side-swap of the
-    // target's, derived here so an agent never has to retype amounts.
+    // target's, derived here so an agent never has to retype amounts. A
+    // Resolution names the hold it resolves and either posts a sub-vector
+    // drawn leg by leg from it or voids it (plan §5.4).
     let mut supersession = Vec::new();
+    let mut pending = None;
+    let mut control = None;
     let legs: Vec<LegPayload> = if let Some(target_s) = doc.get("reverses").and_then(Json::as_str) {
-        let vid = u128::from_str_radix(target_s, 16).map_err(|_| {
-            usage(
-                format!("reverses `{target_s}` is not a 32-hex vid"),
-                "reverses: the `vid` from the posted event",
-            )
-        })?;
-        let Some((target, _)) = book.read_entry(VId(vid))? else {
+        let vid = parse_vid(target_s, "reverses")?;
+        let Some((target, _)) = book.read_entry(vid)? else {
             return Err(usage(
                 format!("reverses: no entry {target_s} in this book"),
                 "fa entry show <vid> to check the identity",
             ));
         };
         supersession.push(fa_model::Supersession {
-            target: target.entry_ref(VId(vid)),
+            target: target.entry_ref(vid),
             kind: fa_model::SupersessionKind::Reverses,
             reason_code: 0,
         });
+        if doc.get("legs").is_some() {
+            return Err(usage(
+                "a Reversal's legs are derived from the target; do not supply `legs`",
+                "remove `legs`; a different correction is a Replacement",
+            ));
+        }
         target
             .proposal
             .legs
             .iter()
             .map(|l| {
-                LegPayload::simple(
-                    if l.side == Side::Debit {
-                        Side::Credit
-                    } else {
-                        Side::Debit
-                    },
-                    l.account_ref,
-                    l.amount,
-                )
+                let mut swapped = l.clone();
+                swapped.side = if l.side == Side::Debit {
+                    Side::Credit
+                } else {
+                    Side::Debit
+                };
+                swapped
             })
             .collect()
-    } else {
-        let legs_doc = doc.get("legs").and_then(Json::as_arr).ok_or_else(|| {
+    } else if class == EntryClass::RESOLUTION {
+        let target_s = doc.get("resolves").and_then(Json::as_str).ok_or_else(|| {
             usage(
-                "intent: `legs` must be an array (or `reverses` a vid)",
-                "fa robot-docs examples",
+                "a Resolution names the hold it resolves: `resolves` (vid)",
+                "resolves: the `vid` from the reserve event; disposition: \"posts\" with legs, or \"voids\"",
             )
         })?;
-        let mut legs = Vec::with_capacity(legs_doc.len());
-        for (i, l) in legs_doc.iter().enumerate() {
-            let what = format!("legs[{i}]");
-            let side = match req_str(l, "side", &what)? {
-                "debit" | "dr" | "Debit" => Side::Debit,
-                "credit" | "cr" | "Credit" => Side::Credit,
-                other => {
+        let vid = parse_vid(target_s, "resolves")?;
+        let Some((hold, _)) = book.read_entry(vid)? else {
+            return Err(usage(
+                format!("resolves: no entry {target_s} in this book"),
+                "fa entry show <vid> to check the identity",
+            ));
+        };
+        let resolution_of = Some(hold.entry_ref(vid));
+        let disposition =
+            doc.get("disposition")
+                .and_then(Json::as_str)
+                .unwrap_or(if doc.get("legs").is_some() {
+                    "posts"
+                } else {
+                    "voids"
+                });
+        match disposition {
+            "voids" | "void" | "release" => {
+                if doc.get("legs").is_some() {
                     return Err(usage(
-                        format!("{what}: side `{other}`"),
-                        "side: debit|credit",
+                        "a Voids resolution carries no legs",
+                        "remove `legs`, or set disposition to \"posts\"",
                     ));
                 }
-            };
-            let account = req_str(l, "account", &what)?;
-            let amount_s = req_str(l, "amount", &what)?;
-            let amount = Amount::parse(amount_s, &ctx.units).map_err(|e| {
-                usage(
-                    format!("{what}: amount `{amount_s}`: {e:?}"),
-                    "amount: \"1500.00 USD\" (exact, at the unit's scale, non-negative)",
-                )
-            })?;
-            legs.push(LegPayload::simple(
-                side,
-                account_vid(ctx.book_id, account),
-                amount,
+                control = Some(ControlPayload::ReservationRelease);
+                pending = Some(Pending {
+                    timeout_ns: None,
+                    resolution_of,
+                    disposition: Some(Disposition::Voids),
+                });
+                Vec::new()
+            }
+            "posts" | "post" => {
+                let mut pairs: Vec<(u16, LegPayload)> = Vec::new();
+                for (i, (leg, explicit)) in parse_legs(&doc, &ctx)?.into_iter().enumerate() {
+                    let ordinal = match explicit {
+                        Some(o) => o,
+                        None => {
+                            let candidates: Vec<usize> = hold
+                                .proposal
+                                .legs
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, t)| {
+                                    t.account_ref == leg.account_ref && t.side == leg.side
+                                })
+                                .map(|(o, _)| o)
+                                .collect();
+                            match candidates.as_slice() {
+                                [one] => u16::try_from(*one).map_err(|_| {
+                                    usage("the hold has more than u16 legs", "fa entry show <vid>")
+                                })?,
+                                [] => {
+                                    return Err(usage(
+                                        format!(
+                                            "legs[{i}]: the hold has no {} leg on that account",
+                                            if leg.side == Side::Debit {
+                                                "debit"
+                                            } else {
+                                                "credit"
+                                            }
+                                        ),
+                                        "post only accounts and sides the hold reserved (fa entry show <hold vid>); anything else is a Voids plus a new Original",
+                                    ));
+                                }
+                                many => {
+                                    return Err(usage(
+                                        format!(
+                                            "legs[{i}]: the hold has several matching legs (ordinals {many:?})"
+                                        ),
+                                        "add \"source_ordinal\" to the leg",
+                                    ));
+                                }
+                            }
+                        }
+                    };
+                    if pairs.iter().any(|(o, _)| *o == ordinal) {
+                        return Err(usage(
+                            format!("legs[{i}]: source_ordinal {ordinal} is used twice"),
+                            "one posted leg per hold leg",
+                        ));
+                    }
+                    pairs.push((ordinal, leg));
+                }
+                pairs.sort_by_key(|(o, _)| *o);
+                pending = Some(Pending {
+                    timeout_ns: None,
+                    resolution_of,
+                    disposition: Some(Disposition::Posts {
+                        source_ordinals: pairs.iter().map(|(o, _)| *o).collect(),
+                    }),
+                });
+                pairs.into_iter().map(|(_, l)| l).collect()
+            }
+            other => {
+                return Err(usage(
+                    format!("disposition `{other}`"),
+                    "disposition: posts|voids",
+                ));
+            }
+        }
+    } else {
+        if class == EntryClass::PENDING {
+            pending = Some(Pending {
+                timeout_ns: None,
+                resolution_of: None,
+                disposition: None,
+            });
+        }
+        let parsed = parse_legs(&doc, &ctx)?;
+        if let Some(i) = parsed.iter().position(|(_, o)| o.is_some()) {
+            return Err(usage(
+                format!("legs[{i}]: `source_ordinal` belongs to a Resolution(Posts) only"),
+                "remove it, or set resolves/disposition to post a sub-vector of a hold",
             ));
         }
-        legs
+        parsed.into_iter().map(|(l, _)| l).collect()
     };
     let unit_totals = EntryPayload::fold_unit_totals(&legs)
         .map_err(fa_journal::KernelError::Model)
@@ -963,7 +1185,7 @@ fn post_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
         description: book.seal_text(description)?,
         effective_period,
         legs,
-        control: None,
+        control,
         unit_totals,
         base_totals: None,
         idempotency_key: key.as_bytes().to_vec(),
@@ -978,8 +1200,9 @@ fn post_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
         session_ref: None,
         evidence: Vec::new(),
         supersession,
-        pending: None,
+        pending,
         external_ids: Vec::new(),
+        extensions: Vec::new(),
         tags: Vec::new(),
     };
     let mut ops = vec!["post"];
@@ -999,6 +1222,7 @@ fn post_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
             out.event(
                 "posted",
                 vec![
+                    ("class", s(class_name)),
                     ("vid", s(format!("{:032x}", entry_ref.vid.0))),
                     ("entry_digest", s(hex(&entry_ref.entry_digest))),
                     ("recorded_at", Json::Int(i128::from(recorded_at.0))),
@@ -1031,6 +1255,14 @@ fn post_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
 // ---------------------------------------------------------------------------
 
 fn selected_periods(args: &Args, book: &Book) -> Result<Vec<String>, Fail> {
+    if args.flag_all("--fiscal-year").len() > 1
+        || (args.flag("--fiscal-year").is_some() && args.flag("--period").is_some())
+    {
+        return Err(usage(
+            "select repeated --period values or one --fiscal-year, not both",
+            "--period FY2026-P03 (repeatable) or --fiscal-year 2026",
+        ));
+    }
     let mut periods: Vec<String> = args
         .flag_all("--period")
         .iter()
@@ -1053,13 +1285,70 @@ fn selected_periods(args: &Args, book: &Book) -> Result<Vec<String>, Fail> {
             "--period FY2026-P03 (repeatable) or --fiscal-year 2026",
         ));
     }
+    periods.sort();
+    periods.dedup();
     Ok(periods)
 }
 
 fn tb_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
     let book = open_book(args)?;
-    let periods = selected_periods(args, &book)?;
-    let tb = book.trial_balance(&periods)?;
+    if args.positional.len() != 1 {
+        return Err(usage("unexpected trial-balance argument", "fa tb --help"));
+    }
+    if args.flag("--date").is_some() {
+        return Err(usage(
+            "--date is a period-transition flag, not a balance selector",
+            "fa tb --as-of YYYY-MM-DD for a stock position on a day, or --period <code>",
+        ));
+    }
+    for flag in ["--as-of", "--as-known-at"] {
+        if args.flag_all(flag).len() > 1 {
+            return Err(usage(
+                format!("{flag} may be supplied only once"),
+                "fa tb --help",
+            ));
+        }
+    }
+    let known_at = match args.flag("--as-known-at") {
+        None | Some("HEAD") => None,
+        Some(value) => {
+            let sequence = if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
+                value.parse::<u64>().ok()
+            } else {
+                None
+            };
+            Some(CommitSeq(sequence.ok_or_else(|| usage(
+                "--as-known-at requires HEAD or an unsigned CommitSeq; instant selectors are unsupported",
+                "--as-known-at HEAD or --as-known-at <u64 commit sequence>",
+            ))?))
+        }
+    };
+    let (periods, tb) = if let Some(date) = args.flag("--as-of") {
+        if args.flag("--period").is_some()
+            || args.flag("--fiscal-year").is_some()
+            || args.switch("--activity")
+        {
+            return Err(usage(
+                "--as-of cannot be combined with --period, --fiscal-year or --activity",
+                "fa tb --as-of 2026-03-15 --book <dir>",
+            ));
+        }
+        let day = DateDay::parse(date).map_err(|e| {
+            usage(
+                format!("{e}; --as-of requires a civil date; instant selectors are unsupported"),
+                "--as-of YYYY-MM-DD",
+            )
+        })?;
+        (Vec::new(), book.balance_as_of(day, known_at)?)
+    } else {
+        let periods = selected_periods(args, &book)?;
+        let tb = if args.switch("--activity") {
+            book.period_activity(&periods, known_at)?
+        } else {
+            book.trial_balance_at(&periods, known_at)?
+        };
+        (periods, tb)
+    };
     let units = &book.context().units;
     let render = |unit: u32, m: i128| Amount::new(fa_money::UnitId(unit), m).render(units);
     let rows: Vec<Json> = tb
@@ -1073,6 +1362,25 @@ fn tb_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
                 ("debits", s(render(r.unit_id, r.debits))),
                 ("credits", s(render(r.unit_id, r.credits))),
                 ("net", s(render(r.unit_id, r.debits - r.credits))),
+                ("debits_pending", s(render(r.unit_id, r.debits_pending))),
+                ("credits_pending", s(render(r.unit_id, r.credits_pending))),
+            ])
+        })
+        .collect();
+    let pending_totals: Vec<Json> = tb
+        .pending_unit_totals
+        .iter()
+        .map(|(u, (d, c))| {
+            obj(vec![
+                (
+                    "unit",
+                    s(units
+                        .get(fa_money::UnitId(*u))
+                        .map(|x| x.code.clone())
+                        .unwrap_or_default()),
+                ),
+                ("debits_pending", s(render(*u, *d))),
+                ("credits_pending", s(render(*u, *c))),
             ])
         })
         .collect();
@@ -1098,34 +1406,101 @@ fn tb_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
             "trial_balance",
             vec![
                 ("periods", Json::Arr(periods.iter().map(s).collect())),
+                ("known_at", Json::Int(i128::from(tb.known_at.0))),
+                (
+                    "effective_through",
+                    tb.effective_through.map_or(Json::Null, |d| s(d.render())),
+                ),
+                ("activity", Json::Bool(tb.activity)),
+                ("mode", s(if tb.activity { "activity" } else { "stock" })),
                 ("rows", Json::Arr(rows)),
                 ("unit_totals", Json::Arr(totals)),
+                ("pending_unit_totals", Json::Arr(pending_totals)),
                 ("balanced", Json::Bool(tb.is_balanced())),
             ],
             "",
         );
     } else {
-        println!("trial balance · {}", periods.join(", "));
+        if let Some(day) = tb.effective_through {
+            println!("trial balance through {day} · known at {}", tb.known_at.0);
+        } else {
+            println!(
+                "period activity · {} · known at {}",
+                periods.join(", "),
+                tb.known_at.0
+            );
+        }
+        println!(
+            "{:<10} {:<28} {:>22} {:>22} {:>22} {:>22}",
+            "code",
+            "account",
+            "posted debits",
+            "posted credits",
+            "pending debits",
+            "pending credits"
+        );
         for r in &tb.rows {
             println!(
-                "{:<10} {:<28} {:>22} {:>22}",
+                "{:<10} {:<28} {:>22} {:>22} {:>22} {:>22}",
                 r.code,
                 r.name,
                 render(r.unit_id, r.debits),
-                render(r.unit_id, r.credits)
+                render(r.unit_id, r.credits),
+                render(r.unit_id, r.debits_pending),
+                render(r.unit_id, r.credits_pending)
             );
         }
-        for (u, (d, c)) in &tb.unit_totals {
+        let total_units: std::collections::BTreeSet<_> = tb
+            .unit_totals
+            .keys()
+            .chain(tb.pending_unit_totals.keys())
+            .copied()
+            .collect();
+        for u in total_units {
+            let (d, c) = tb.unit_totals.get(&u).copied().unwrap_or_default();
+            let (pd, pc) = tb.pending_unit_totals.get(&u).copied().unwrap_or_default();
             println!(
-                "{:<39} {:>22} {:>22}",
+                "{:<39} {:>22} {:>22} {:>22} {:>22}",
                 "total",
-                render(*u, *d),
-                render(*u, *c)
+                render(u, d),
+                render(u, c),
+                render(u, pd),
+                render(u, pc)
             );
         }
         println!("balanced: {}", tb.is_balanced());
     }
     Ok(())
+}
+
+fn drift_json(drifts: &[fa_registers::Drift]) -> Vec<Json> {
+    drifts
+        .iter()
+        .map(|d| {
+            obj(vec![
+                ("account", s(format!("{:032x}", d.key.account.0))),
+                ("unit_id", Json::Int(i128::from(d.key.unit_id))),
+                (
+                    "stored",
+                    d.stored.map_or(Json::Null, |(dd, cc, n)| {
+                        obj(vec![
+                            ("debits", Json::Int(dd)),
+                            ("credits", Json::Int(cc)),
+                            ("entry_count", Json::Int(i128::from(n))),
+                        ])
+                    }),
+                ),
+                (
+                    "refolded",
+                    obj(vec![
+                        ("debits", Json::Int(d.refolded.0)),
+                        ("credits", Json::Int(d.refolded.1)),
+                        ("entry_count", Json::Int(i128::from(d.refolded.2))),
+                    ]),
+                ),
+            ])
+        })
+        .collect()
 }
 
 fn verify_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
@@ -1135,36 +1510,19 @@ fn verify_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
             let periods = selected_periods(args, &book)?;
             let mut all_green = true;
             let mut details = Vec::new();
+            let mut diagnostics = Vec::new();
             for p in &periods {
                 let v = book.verify_registers(p)?;
-                let drift: Vec<Json> = v
-                    .drift
-                    .iter()
-                    .map(|d| {
-                        obj(vec![
-                            ("account", s(format!("{:032x}", d.key.account.0))),
-                            ("unit_id", Json::Int(i128::from(d.key.unit_id))),
-                            (
-                                "stored",
-                                d.stored.map_or(Json::Null, |(dd, cc, n)| {
-                                    obj(vec![
-                                        ("debits", Json::Int(dd)),
-                                        ("credits", Json::Int(cc)),
-                                        ("entry_count", Json::Int(i128::from(n))),
-                                    ])
-                                }),
-                            ),
-                            (
-                                "refolded",
-                                obj(vec![
-                                    ("debits", Json::Int(d.refolded.0)),
-                                    ("credits", Json::Int(d.refolded.1)),
-                                    ("entry_count", Json::Int(i128::from(d.refolded.2))),
-                                ]),
-                            ),
-                        ])
-                    })
-                    .collect();
+                diagnostics.extend(v.projection_errors.iter().map(|e| format!("{p}: {e}")));
+                if !v.drift.is_empty() {
+                    diagnostics.push(format!("{p}: {} posted cells differ", v.drift.len()));
+                }
+                if !v.pending_drift.is_empty() {
+                    diagnostics.push(format!(
+                        "{p}: {} pending cells differ",
+                        v.pending_drift.len()
+                    ));
+                }
                 all_green &= v.is_green();
                 details.push(obj(vec![
                     ("period", s(p)),
@@ -1175,7 +1533,12 @@ fn verify_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
                         "stored_digest",
                         v.stored_digest.map_or(Json::Null, |d| s(hex(&d))),
                     ),
-                    ("drift", Json::Arr(drift)),
+                    ("drift", Json::Arr(drift_json(&v.drift))),
+                    ("pending_drift", Json::Arr(drift_json(&v.pending_drift))),
+                    (
+                        "projection_errors",
+                        Json::Arr(v.projection_errors.iter().map(s).collect()),
+                    ),
                 ]));
             }
             if all_green {
@@ -1188,8 +1551,13 @@ fn verify_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
             } else {
                 Err(Fail::Verification(
                     format!(
-                        "stored registers differ from the refold in {}",
-                        periods.join(", ")
+                        "stored registers differ from the refold in {}{}",
+                        periods.join(", "),
+                        if diagnostics.is_empty() {
+                            String::new()
+                        } else {
+                            format!("; {}", diagnostics.join("; "))
+                        }
                     ),
                     Json::Arr(details),
                 ))
@@ -1214,6 +1582,7 @@ fn registers_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
                     vec![
                         ("period", s(p)),
                         ("cells", Json::Int(fold.cells.len() as i128)),
+                        ("pending_cells", Json::Int(fold.pending.len() as i128)),
                         ("entries", Json::Int(fold.entries as i128)),
                         (
                             "watermark",
@@ -1224,9 +1593,10 @@ fn registers_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
                         ("recorded_at", Json::Int(i128::from(seq.0))),
                     ],
                     &format!(
-                        "{p}: {} cells from {} entries (fold digest {})",
+                        "{p}: {} posted cells from {} posting entries, {} pending cells (fold digest {})",
                         fold.cells.len(),
                         fold.entries,
+                        fold.pending.len(),
                         hex(&fold.fold_digest[..8])
                     ),
                 );

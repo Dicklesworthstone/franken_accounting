@@ -8,19 +8,26 @@
 //! into a closed period.
 //!
 //! Supported subset (plan §18.1 rule: a subset of the final abstraction,
-//! never a substitute): this slice admits `Original`, `Adjusting`, and
-//! `Reversal` — the last with the exact side-swap law against a witnessed
-//! target and an identity derived from the target, so one reversal per
-//! target. Every other registered class is refused with the bead that lands
-//! it; no class passes through a generic two-leg check.
+//! never a substitute): this slice admits `Original`, `Adjusting`,
+//! `Reversal` — with the exact side-swap law against a witnessed target and
+//! an identity derived from the target, so one reversal per target — and the
+//! two-phase pair of plan §5.4: `Pending` (reserves; never posts) and
+//! `Resolution` (`Posts { source_ordinals }` draws a balanced sub-vector leg
+//! by leg from the witnessed pending entry; `Voids` releases everything),
+//! with the identity `H("fa:vid:resolution:v1" ‖ pending_vid)` so a pending
+//! entry has exactly one resolution. Timed pendings and `Expires` need the
+//! TimeEvidence ticks and the sweep and are refused until that slice. Every
+//! other registered class is refused with the bead that lands it; no class
+//! passes through a generic two-leg check.
 
 use std::collections::BTreeSet;
 
+use fa_model::Id128;
 use fa_model::SealKey;
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    ApprovalRef, Entry, EntryClass, EntryPayload, EntryRef, SupersessionKind, entry_mirrors,
-    entry_vid, leg_mirrors, period_vid,
+    ApprovalRef, Disposition, Entry, EntryClass, EntryPayload, EntryRef, Pending, SupersessionKind,
+    entry_mirrors, entry_vid, leg_mirrors, period_vid,
 };
 use fa_money::Side;
 use fa_registry::{Admissibility, Decision, EntryClasses};
@@ -31,7 +38,9 @@ use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
 use crate::genesis::{BookContext, UnitPolicy};
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
-use crate::rows::{AccountRow, edge_id, leg_vid, prop, reversal_vid, state_from_scalar};
+use crate::rows::{
+    AccountRow, edge_id, leg_vid, prop, resolution_vid, reversal_vid, state_from_scalar,
+};
 
 /// The capability ops a principal holds (`post`, `post_softclosed`,
 /// `post_closed`, `close`, `restate`, `migrate`). Steward (plan §14) issues
@@ -107,21 +116,30 @@ impl Posted {
     }
 }
 
+/// How an entry's identity was derived (plan §4.9, §5.4): from the
+/// principal's idempotency key, or from the target it reverses or resolves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Identity {
+    Key,
+    Reversal,
+    Resolution,
+}
+
 /// The existing row at this identity (plan §4.9, FA-INV-09), decided in
 /// this order: (1) exact prepared bytes — the stored `proposal_digest` equals
 /// the new one — is the recorded outcome without opening anything, so a
-/// byte-identical replay works even after erasure; (2) a reversal by a
-/// different principal is a conflict, never a comparison (the target-derived
-/// identity is not principal-scoped, so comparing would let one principal
-/// probe another's sealed content); (3) otherwise a private plaintext
-/// transcript under the book key decides equal (recorded) or different
-/// (conflict); (4) a field that cannot be opened is "cannot verify", never a
-/// claimed equivalence.
+/// byte-identical replay works even after erasure; (2) a target-derived
+/// identity (reversal, resolution) claimed by a different principal is a
+/// conflict, never a comparison (such an identity is not principal-scoped, so
+/// comparing would let one principal probe another's sealed content); (3)
+/// otherwise a private plaintext transcript under the book key decides equal
+/// (recorded) or different (conflict); (4) a field that cannot be opened is
+/// "cannot verify", never a claimed equivalence.
 fn recorded_or_conflict(
     row: &VertexRow,
     proposal: &EntryPayload,
     key: &SealKey,
-    is_reversal: bool,
+    identity: Identity,
 ) -> Result<Result<Posted, Refusal>, KernelError> {
     let stored = match prop(row, property::FA_PAYLOAD) {
         Some(CanonicalScalar::Bytes(b)) => Entry::decode(b.as_slice())?,
@@ -142,16 +160,25 @@ fn recorded_or_conflict(
     if stored.proposal_digest == proposal.proposal_digest()? {
         return Ok(Ok(recorded));
     }
-    let conflict = if is_reversal {
-        Refusal::new(
+    let conflict = match identity {
+        Identity::Reversal => Refusal::new(
             code::ALREADY_REVERSED,
             exit::CONFLICT,
             format!("the target is already reversed by entry {:032x}", row.vid.0),
             "plan §4.9 (one reversal per target, by identity)",
             "cite the existing reversal instead of posting another",
-        )
-    } else {
-        Refusal::new(
+        ),
+        Identity::Resolution => Refusal::new(
+            code::ALREADY_RESOLVED,
+            exit::CONFLICT,
+            format!(
+                "the pending entry is already resolved by entry {:032x}",
+                row.vid.0
+            ),
+            "plan §5.4 (one resolution per pending entry, by identity)",
+            "read the existing resolution with `fa entry show`; a pending entry is resolved exactly once",
+        ),
+        Identity::Key => Refusal::new(
             code::IDEMPOTENCY_CONFLICT,
             exit::CONFLICT,
             format!(
@@ -160,9 +187,9 @@ fn recorded_or_conflict(
             ),
             "plan §4.9 (identity is derived from the key; content is bound by proposal_digest)",
             "resubmit the identical intent to get the recorded outcome, or use a new idempotency key for new content",
-        )
+        ),
     };
-    if is_reversal && stored.proposal.principal_ref != proposal.principal_ref {
+    if identity != Identity::Key && stored.proposal.principal_ref != proposal.principal_ref {
         return Ok(Err(conflict));
     }
     match (
@@ -189,7 +216,12 @@ fn recorded_or_conflict(
 
 fn not_implemented(class_name: &str) -> Refusal {
     let lands_with = match class_name {
-        "Pending" | "Resolution" => "fa-rqe (two-phase reserves)",
+        "Resolution(Expires)" | "timed Pending" => {
+            "the TimeEvidence tick and expiry-sweep slice (plan §5.4, §7.1a)"
+        }
+        "leg.settles" => "fa-omi (settlement application)",
+        "leg.base_amount" => "the FX law slice (fa-p7r)",
+        "leg.dimension_set" => "the dimension registry slice (plan §4.3)",
         "Replacement" | "Reclassification" => "fa-omi (supersession beyond exact reversal)",
         "Revision" | "Restatement" | "PriorPeriodAdjustment" => {
             "the restatement-case slice (fa-azu children)"
@@ -205,7 +237,7 @@ fn not_implemented(class_name: &str) -> Refusal {
         format!("`{class_name}` is registered but this slice does not enforce its semantics"),
         "plan §18.1 (a slice is a subset of the final abstraction, never a substitute)",
         format!(
-            "use Original, Adjusting, or Reversal for now; `{class_name}` lands with {lands_with}"
+            "use Original, Adjusting, Reversal, Pending, or Resolution(Posts|Voids) for now; `{class_name}` lands with {lands_with}"
         ),
     )
 }
@@ -228,6 +260,34 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
             e.to_string(),
             "Appendix A fa:entry:v1",
             "fix the named field and resubmit",
+        )));
+    }
+    // 1'. The coordinate (plan §2.2): this book, trunk. Decided from the
+    //     payload alone, before any storage observation; branches arrive with
+    //     the branch API (Appendix H), not by admitting a foreign branch_id.
+    if proposal.book_id != book.book_id {
+        return Ok(Err(Refusal::new(
+            code::COORDINATE,
+            exit::USAGE,
+            format!(
+                "the intent names book {} but this book is {}",
+                proposal.book_id.to_hex(),
+                book.book_id.to_hex()
+            ),
+            "plan §2.2 (an entry belongs to exactly one book)",
+            "set book_id to this book's id (fa book info --json) or open the book the intent names",
+        )));
+    }
+    if proposal.branch_id != Id128::TRUNK {
+        return Ok(Err(Refusal::new(
+            code::COORDINATE,
+            exit::USAGE,
+            format!(
+                "the intent names branch {}, but only trunk is writable in this slice",
+                proposal.branch_id.to_hex()
+            ),
+            "plan Appendix H (branches: interim posture = intent-log drafts)",
+            "set branch_id to trunk; drafts and scenarios land with the branch slice",
         )));
     }
     let class_name = proposal.class.name().unwrap_or("?");
@@ -255,10 +315,62 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     let is_reversal = proposal.class == EntryClass::REVERSAL;
     if !matches!(
         proposal.class,
-        EntryClass::ORIGINAL | EntryClass::ADJUSTING | EntryClass::REVERSAL
+        EntryClass::ORIGINAL
+            | EntryClass::ADJUSTING
+            | EntryClass::REVERSAL
+            | EntryClass::PENDING
+            | EntryClass::RESOLUTION
     ) {
         return Ok(Err(not_implemented(class_name)));
     }
+    // 1c. Two-phase shape (plan §5.4). `validate` already fixed the arity;
+    //     here the slice declares what it does not yet enforce: timed
+    //     pendings anchor on TimeEvidence ticks, and `Expires` is the sweep's.
+    if proposal.class == EntryClass::PENDING
+        && matches!(
+            proposal.pending,
+            Some(Pending {
+                timeout_ns: Some(_),
+                ..
+            })
+        )
+    {
+        return Ok(Err(not_implemented("timed Pending")));
+    }
+    let resolution: Option<(EntryRef, Disposition)> = match (&proposal.pending, class_name) {
+        (
+            Some(Pending {
+                resolution_of: Some(target),
+                disposition: Some(disposition),
+                ..
+            }),
+            "Resolution",
+        ) => Some((*target, disposition.clone())),
+        (_, "Resolution") => {
+            return Err(KernelError::Corrupt(
+                "a validated Resolution without target or disposition".into(),
+            ));
+        }
+        _ => None,
+    };
+    if matches!(resolution, Some((_, Disposition::Expires { .. }))) {
+        return Ok(Err(not_implemented("Resolution(Expires)")));
+    }
+    // 1d. Rich leg fields this slice does not enforce are refused, never
+    //     admitted unchecked: a leg that settles, converts, or carries
+    //     dimensions waits for the law that reads it.
+    for leg in &proposal.legs {
+        if !leg.settles.is_empty() {
+            return Ok(Err(not_implemented("leg.settles")));
+        }
+        if leg.base_amount.is_some() {
+            return Ok(Err(not_implemented("leg.base_amount")));
+        }
+        if !leg.dimension_set.is_empty() {
+            return Ok(Err(not_implemented("leg.dimension_set")));
+        }
+    }
+    let is_release = matches!(resolution, Some((_, Disposition::Voids)));
     let reversal_target = if is_reversal {
         match proposal.supersession.as_slice() {
             [s] if s.kind == SupersessionKind::Reverses => Some(s.target),
@@ -333,19 +445,24 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
 
-    // 4. Identity (plan §4.9, FA-INV-09): derived from the key, or from the
-    //    reversed target; an existing row is the recorded outcome or a conflict.
-    let evid = match reversal_target {
-        Some(t) => reversal_vid(t.vid),
-        None => entry_vid(
-            book.book_id,
-            &proposal.principal_ref.0.to_le_bytes(),
-            &proposal.idempotency_key,
+    // 4. Identity (plan §4.9, FA-INV-09): derived from the key, from the
+    //    reversed target, or from the resolved pending entry; an existing row
+    //    is the recorded outcome or a conflict.
+    let (evid, identity) = match (reversal_target, &resolution) {
+        (Some(t), _) => (reversal_vid(t.vid), Identity::Reversal),
+        (None, Some((t, _))) => (resolution_vid(t.vid), Identity::Resolution),
+        (None, None) => (
+            entry_vid(
+                book.book_id,
+                &proposal.principal_ref.0.to_le_bytes(),
+                &proposal.idempotency_key,
+            ),
+            Identity::Key,
         ),
     };
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        return recorded_or_conflict(&row, proposal, &book.seal_key, is_reversal);
+        return recorded_or_conflict(&row, proposal, &book.seal_key, identity);
     }
 
     // 5. Period law (Appendix C) against the witnessed state.
@@ -356,10 +473,19 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     let classes = EntryClasses::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
     let matrix =
         Admissibility::embedded(&classes).map_err(|e| KernelError::Corrupt(e.to_string()))?;
-    let cell = format!("admissibility.toml ({class_name}, {})", state.name());
-    match matrix.decide(class_name, state) {
+    let family = match &resolution {
+        Some((_, Disposition::Posts { .. })) => "(Posts)",
+        Some((_, Disposition::Voids)) => "(Voids)",
+        Some((_, Disposition::Expires { .. })) | None => "",
+    };
+    let cell = format!(
+        "admissibility.toml ({class_name}{family}, {})",
+        state.name()
+    );
+    match matrix.decide_disposition(class_name, state, is_release) {
         Some(Decision::Admit) => {}
         Some(Decision::With { op, approvals }) => {
+            let op = op.as_str();
             if !req.capability.ops.contains(op) {
                 txn.abort();
                 return Ok(Err(Refusal::new(
@@ -375,7 +501,7 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
                     ),
                 )));
             }
-            if req.approvals.len() < usize::from(*approvals) {
+            if req.approvals.len() < usize::from(approvals) {
                 txn.abort();
                 return Ok(Err(Refusal::new(
                     code::APPROVALS,
@@ -396,6 +522,11 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
                 format!(
                     "open period `{}` first: fa period open {}",
                     period.code, period.code
+                )
+            } else if matches!(resolution, Some((_, Disposition::Posts { .. }))) {
+                format!(
+                    "a {} period admits only a release: resolve with Voids, or post the sub-vector dated in an Open period",
+                    state.name()
                 )
             } else {
                 format!(
@@ -484,6 +615,16 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
                 "fa entry show <vid> to find the entry to reverse",
             )));
         };
+        if !row.labels.contains(&label::ENTRY) {
+            txn.abort();
+            return Ok(Err(Refusal::new(
+                code::REVERSAL_TARGET,
+                exit::REFUSAL,
+                format!("{:032x} is not an entry", target.vid.0),
+                "plan §4.4 (a reversal cites an entry)",
+                "cite the entry's vid from the posted event or `fa entry show`",
+            )));
+        }
         let original = match prop(&row, property::FA_PAYLOAD) {
             Some(CanonicalScalar::Bytes(b)) => Entry::decode(b.as_slice())?,
             other => {
@@ -505,6 +646,48 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
                 "re-read the entry and cite its current entry_digest",
             )));
         }
+        // Only a posted entry is reversible (plan §8.2): a hold posted
+        // nothing (release it), a release posted nothing (it is final), and
+        // the classes this slice does not post are not reversed through it.
+        let reversible = match original.proposal.class {
+            EntryClass::ORIGINAL | EntryClass::ADJUSTING | EntryClass::REVERSAL => true,
+            EntryClass::RESOLUTION => matches!(
+                original.proposal.pending,
+                Some(Pending {
+                    disposition: Some(Disposition::Posts { .. }),
+                    ..
+                })
+            ),
+            _ => false,
+        };
+        if !reversible {
+            txn.abort();
+            let (why, fix) = match original.proposal.class {
+                EntryClass::PENDING => (
+                    "a Pending reserves and posts nothing, so there is nothing to reverse",
+                    "release the hold with a Resolution(Voids), or resolve it with Posts and reverse that",
+                ),
+                EntryClass::RESOLUTION => (
+                    "a release posted nothing and is final",
+                    "reserve again with a new Pending if the hold is still wanted",
+                ),
+                _ => (
+                    "this class is not reversed through the exact side-swap",
+                    "use the correction class registered for it",
+                ),
+            };
+            return Ok(Err(Refusal::new(
+                code::REVERSAL_TARGET,
+                exit::REFUSAL,
+                format!(
+                    "entry {:032x} is a {}: {why}",
+                    target.vid.0,
+                    original.proposal.class.name().unwrap_or("?")
+                ),
+                "plan §8.2 (a reversal negates posted legs)",
+                fix,
+            )));
+        }
         let swapped = original.proposal.legs.len() == proposal.legs.len()
             && original
                 .proposal
@@ -514,6 +697,7 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
                 .all(|(o, r)| {
                     o.account_ref == r.account_ref
                         && o.amount == r.amount
+                        && o.dimension_set == r.dimension_set
                         && matches!(
                             (o.side, r.side),
                             (Side::Debit, Side::Credit) | (Side::Credit, Side::Debit)
@@ -531,6 +715,114 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
                 "plan §4.4 (a reversal is a side swap with the same mantissa, never a signed storno)",
                 "post the same accounts and amounts in the same order with debit and credit exchanged; a different correction is a Replacement",
             )));
+        }
+    }
+
+    // 7b. Resolution law (plan §5.4): the witnessed target is a Pending whose
+    //     digest matches the handle; a Posts sub-vector is drawn leg by leg
+    //     from it (same account, unit, side, dimensions; 0 < posted ≤
+    //     reserved). Balance per unit was checked in step 2.
+    if let Some((target, disposition)) = &resolution {
+        let Some(row) = txn.vertex(db, target.vid)? else {
+            txn.abort();
+            return Ok(Err(Refusal::new(
+                code::RESOLUTION_TARGET,
+                exit::REFUSAL,
+                format!("no entry {:032x} in this book", target.vid.0),
+                "plan §5.4",
+                "fa entry show <vid> to find the pending entry to resolve",
+            )));
+        };
+        if !row.labels.contains(&label::ENTRY) {
+            txn.abort();
+            return Ok(Err(Refusal::new(
+                code::RESOLUTION_TARGET,
+                exit::REFUSAL,
+                format!("{:032x} is not an entry", target.vid.0),
+                "plan §5.4 (a resolution cites a pending entry)",
+                "cite the hold's vid from the posted event or `fa entry show`",
+            )));
+        }
+        let pending_entry = match prop(&row, property::FA_PAYLOAD) {
+            Some(CanonicalScalar::Bytes(b)) => Entry::decode(b.as_slice())?,
+            other => {
+                return Err(KernelError::Corrupt(format!(
+                    "entry _fa_payload: {other:?}"
+                )));
+            }
+        };
+        if pending_entry.entry_digest != target.entry_digest {
+            txn.abort();
+            return Ok(Err(Refusal::new(
+                code::RESOLUTION_TARGET,
+                exit::REFUSAL,
+                format!(
+                    "the handle's entry_digest does not match entry {:032x}",
+                    target.vid.0
+                ),
+                "plan §4.9 (EntryRef is self-verifying)",
+                "re-read the entry and cite its current entry_digest",
+            )));
+        }
+        if pending_entry.proposal.class != EntryClass::PENDING {
+            txn.abort();
+            return Ok(Err(Refusal::new(
+                code::RESOLUTION_TARGET,
+                exit::REFUSAL,
+                format!(
+                    "entry {:032x} is a {}, not a Pending",
+                    target.vid.0,
+                    pending_entry.proposal.class.name().unwrap_or("?")
+                ),
+                "plan §5.4 (only a pending entry is resolved)",
+                "name the pending entry; a posted entry is corrected with a Reversal",
+            )));
+        }
+        if let Disposition::Posts { source_ordinals } = disposition {
+            for (i, (leg, ordinal)) in proposal.legs.iter().zip(source_ordinals).enumerate() {
+                let Some(src) = pending_entry.proposal.legs.get(usize::from(*ordinal)) else {
+                    txn.abort();
+                    return Ok(Err(Refusal::new(
+                        code::RESOLUTION_SHAPE,
+                        exit::REFUSAL,
+                        format!(
+                            "leg {i} names pending leg {ordinal}, but the pending entry has {} legs",
+                            pending_entry.proposal.legs.len()
+                        ),
+                        "plan §5.4 (source_ordinals index the pending entry's legs)",
+                        "fa entry show <pending vid> and map each posted leg to one of its legs",
+                    )));
+                };
+                if src.account_ref != leg.account_ref
+                    || src.amount.unit != leg.amount.unit
+                    || src.side != leg.side
+                    || src.dimension_set != leg.dimension_set
+                {
+                    txn.abort();
+                    return Ok(Err(Refusal::new(
+                        code::RESOLUTION_SHAPE,
+                        exit::REFUSAL,
+                        format!(
+                            "leg {i} is not drawn from pending leg {ordinal}: a posted leg keeps its source's account, unit, side, and dimensions"
+                        ),
+                        "plan §5.4 (per-leg balanced sub-vector)",
+                        "post the same account, unit, and side as the pending leg; a different posting is a Voids plus a new Original",
+                    )));
+                }
+                if leg.amount.mantissa <= 0 || leg.amount.mantissa > src.amount.mantissa {
+                    txn.abort();
+                    return Ok(Err(Refusal::new(
+                        code::RESOLUTION_SHAPE,
+                        exit::REFUSAL,
+                        format!(
+                            "leg {i} posts {} but pending leg {ordinal} reserved {} (0 < posted ≤ reserved)",
+                            leg.amount.mantissa, src.amount.mantissa
+                        ),
+                        "plan §5.4 (each posted mantissa ≤ its pending mantissa)",
+                        "post at most the reserved amount; the remainder is released automatically",
+                    )));
+                }
+            }
         }
     }
 
@@ -577,6 +869,22 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
         );
         batches.push(supersedes);
     }
+    if let Some((target, disposition)) = &resolution {
+        let tag = match disposition {
+            Disposition::Posts { .. } => 0,
+            Disposition::Voids => 1,
+            Disposition::Expires { .. } => 2,
+        };
+        let mut resolves = WriteBatch::new(relation::RESOLVES);
+        resolves.add_edge(
+            edge_id(relation::RESOLVES, evid, target.vid),
+            evid,
+            target.vid,
+            vec![(property::DISPOSITION, CanonicalScalar::Int(tag))],
+        );
+        batches.push(resolves);
+    }
+    batches.retain(|b| !b.is_empty());
     txn.write_ordered(db, batches)?;
 
     match txn.commit(db, &ctx.commit()).await {
@@ -600,7 +908,7 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
             // Lost the identity race: the recorded outcome if it is the same
             // intent, a conflict if it is not.
             match db.vertex(evid)? {
-                Some(row) => recorded_or_conflict(&row, proposal, &book.seal_key, is_reversal),
+                Some(row) => recorded_or_conflict(&row, proposal, &book.seal_key, identity),
                 None => Err(KernelError::Corrupt(
                     "identity spent but no live row".into(),
                 )),

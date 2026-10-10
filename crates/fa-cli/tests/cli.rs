@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 fn fa(dir: Option<&Path>, args: &[&str]) -> (i32, String, String) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_fa"));
@@ -20,11 +21,22 @@ fn fa(dir: Option<&Path>, args: &[&str]) -> (i32, String, String) {
     )
 }
 
-fn tmp(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("fa-cli-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+fn tmp(name: &str) -> std::io::Result<PathBuf> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    loop {
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let d = std::env::temp_dir().join(format!("fa-cli-{}-{name}-{n}", std::process::id()));
+        match std::fs::create_dir(&d) {
+            Ok(()) => return Ok(d),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(std::io::Error::new(
+                    e.kind(),
+                    format!("create retained CLI fixture {}: {e}", d.display()),
+                ));
+            }
+        }
+    }
 }
 
 fn write(dir: &Path, name: &str, text: &str) -> String {
@@ -42,6 +54,31 @@ fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     } else {
         rest.split([',', '}']).next()
     }
+}
+
+fn report(book: &Path, args: &[&str]) -> String {
+    let (code, out, err) = fa(Some(book), args);
+    assert_eq!(code, 0, "args={args:?}\nstdout={out}\nstderr={err}");
+    assert!(err.is_empty(), "args={args:?}\nstderr={err}");
+    assert_eq!(field(&out, "event"), Some("trial_balance"), "{out}");
+    out
+}
+
+fn assert_cash_credits(out: &str, expected: &str) {
+    let cash = out
+        .split('{')
+        .find(|row| field(row, "code") == Some("1000"))
+        .expect("cash row in trial balance");
+    assert_eq!(field(cash, "debits"), Some("0.00 USD"), "{out}");
+    assert_eq!(field(cash, "credits"), Some(expected), "{out}");
+    assert_eq!(field(cash, "debits_pending"), Some("0.00 USD"), "{out}");
+    assert_eq!(field(cash, "credits_pending"), Some("0.00 USD"), "{out}");
+    assert_eq!(
+        field(cash, "net"),
+        Some(format!("-{expected}").as_str()),
+        "{out}"
+    );
+    assert_eq!(field(out, "balanced"), Some("true"), "{out}");
 }
 
 #[test]
@@ -99,8 +136,8 @@ fn capabilities_and_robot_docs_are_in_tool() {
 }
 
 #[test]
-fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() {
-    let dir = tmp("genesis");
+fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Result<()> {
+    let dir = tmp("genesis")?;
     let book = dir.join("book");
 
     // No book yet: environment error, exit 4.
@@ -201,13 +238,241 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() {
     assert_eq!(code, 2);
     assert!(err.contains("amounts as strings"), "{err}");
 
-    // Trial balance nets to zero; registers verify; then a close makes posting a safety block.
-    let (code, out, _) = fa(Some(&book), &["tb", "--period", march, "--json"]);
-    assert_eq!(code, 0, "{out}");
-    assert!(
-        out.contains("\"balanced\":true") && out.contains("\"code\":\"6000\""),
-        "{out}"
+    // Reopen the persistent book for every command. Stock carries the earlier
+    // period's real posting; no invented opening entry is supplied to the report.
+    let (code, out, err) = fa(Some(&book), &["period", "open", "FY2026-P02", "--json"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let opening = write(
+        &dir,
+        "february.json",
+        r#"{"effective_date":"2026-02-20","idempotency_key":"february-rent","legs":[{"side":"debit","account":"6000","amount":"100.00 USD"},{"side":"credit","account":"1000","amount":"100.00 USD"}]}"#,
     );
+    let (code, out, err) = fa(Some(&book), &["post", "--intent", &opening, "--json"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let future = write(
+        &dir,
+        "future-in-march.json",
+        r#"{"effective_date":"2026-03-25","idempotency_key":"future-in-march","legs":[{"side":"debit","account":"6000","amount":"200.00 USD"},{"side":"credit","account":"1000","amount":"200.00 USD"}]}"#,
+    );
+    let (code, out, err) = fa(Some(&book), &["post", "--intent", &future, "--json"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let before_backdate = field(&out, "recorded_at").unwrap().to_string();
+    let backdate = write(
+        &dir,
+        "late-recorded-backdate.json",
+        r#"{"effective_date":"2026-03-10","idempotency_key":"late-recorded-backdate","legs":[{"side":"debit","account":"6000","amount":"300.00 USD"},{"side":"credit","account":"1000","amount":"300.00 USD"}]}"#,
+    );
+    let (code, out, err) = fa(Some(&book), &["post", "--intent", &backdate, "--json"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let after_backdate = field(&out, "recorded_at").unwrap().to_string();
+    assert!(after_backdate.parse::<u64>().unwrap() > before_backdate.parse::<u64>().unwrap());
+
+    let stock = report(&book, &["tb", "--period", march, "--json"]);
+    assert!(
+        stock.contains("\"pending_unit_totals\":[{\"credits_pending\":\"0.00 USD\",\"debits_pending\":\"0.00 USD\",\"unit\":\"USD\"}]"),
+        "{stock}"
+    );
+    let (code, human, err) = fa(Some(&book), &["tb", "--period", march]);
+    assert_eq!(code, 0, "{human}\n{err}");
+    assert!(err.is_empty(), "{err}");
+    assert!(
+        human.contains("posted debits")
+            && human.contains("posted credits")
+            && human.contains("pending debits")
+            && human.contains("pending credits"),
+        "{human}"
+    );
+    assert_cash_credits(&stock, "2100.00 USD"); // 100 opening + 1500 + 200 + 300.
+    assert_eq!(field(&stock, "mode"), Some("stock"));
+    assert_eq!(field(&stock, "activity"), Some("false"));
+    assert_eq!(field(&stock, "effective_through"), Some("2026-03-31"));
+    assert_eq!(field(&stock, "known_at"), Some(after_backdate.as_str()));
+    let duplicate_stock = report(
+        &book,
+        &["tb", "--period", march, "--period", march, "--json"],
+    );
+    assert_eq!(
+        duplicate_stock, stock,
+        "duplicate selectors must not count twice"
+    );
+
+    let old_stock = report(
+        &book,
+        &[
+            "tb",
+            "--period",
+            march,
+            "--as-known-at",
+            &before_backdate,
+            "--json",
+        ],
+    );
+    assert_cash_credits(&old_stock, "1800.00 USD");
+    assert_eq!(
+        field(&old_stock, "known_at"),
+        Some(before_backdate.as_str())
+    );
+
+    let activity = report(&book, &["tb", "--period", march, "--activity", "--json"]);
+    assert_cash_credits(&activity, "2000.00 USD"); // The February opening is excluded.
+    assert_eq!(field(&activity, "mode"), Some("activity"));
+    assert_eq!(field(&activity, "activity"), Some("true"));
+    assert_eq!(field(&activity, "effective_through"), Some("null"));
+    let duplicate_activity = report(
+        &book,
+        &[
+            "tb",
+            "--period",
+            march,
+            "--period",
+            march,
+            "--activity",
+            "--json",
+        ],
+    );
+    assert_eq!(duplicate_activity, activity);
+
+    let as_of = report(
+        &book,
+        &[
+            "tb",
+            "--as-of",
+            "2026-03-15",
+            "--as-known-at",
+            "HEAD",
+            "--json",
+        ],
+    );
+    assert_cash_credits(&as_of, "1900.00 USD"); // Excludes the March 25 entry.
+    assert_eq!(field(&as_of, "effective_through"), Some("2026-03-15"));
+    assert_eq!(field(&as_of, "known_at"), Some(after_backdate.as_str()));
+    let earlier = report(
+        &book,
+        &[
+            "tb",
+            "--as-of",
+            "2026-03-15",
+            "--as-known-at",
+            &before_backdate,
+            "--json",
+        ],
+    );
+    assert_cash_credits(&earlier, "1600.00 USD"); // Also excludes the late recorded March 10 entry.
+    assert_eq!(field(&earlier, "known_at"), Some(before_backdate.as_str()));
+    let before_march = report(&book, &["tb", "--as-of", "2026-03-09", "--json"]);
+    assert_cash_credits(&before_march, "100.00 USD");
+    let old_activity = report(
+        &book,
+        &[
+            "tb",
+            "--period",
+            march,
+            "--activity",
+            "--as-known-at",
+            &before_backdate,
+            "--json",
+        ],
+    );
+    assert_cash_credits(&old_activity, "1700.00 USD");
+    let fiscal_stock = report(&book, &["tb", "--fiscal-year", "2026", "--json"]);
+    assert_cash_credits(&fiscal_stock, "2100.00 USD");
+    assert_eq!(
+        field(&fiscal_stock, "effective_through"),
+        Some("2026-12-31")
+    );
+    let fiscal_activity = report(
+        &book,
+        &["tb", "--fiscal-year", "2026", "--activity", "--json"],
+    );
+    assert_cash_credits(&fiscal_activity, "2100.00 USD");
+
+    // Every unsupported or ambiguous selector is a usage error, not an empty
+    // success, a HEAD fallback or a silently converted instant.
+    for args in [
+        vec!["tb", "--period", "UNKNOWN", "--json"],
+        vec!["tb", "--period", "UNKNOWN", "--activity", "--json"],
+        vec!["tb", "--period", march, "--as-of", "2026-03-15", "--json"],
+        vec![
+            "tb",
+            "--fiscal-year",
+            "2026",
+            "--as-of",
+            "2026-03-15",
+            "--json",
+        ],
+        vec!["tb", "--as-of", "2026-03-15", "--activity", "--json"],
+        vec!["tb", "--period", march, "--fiscal-year", "2026", "--json"],
+        vec!["tb", "--as-of", "2026-03-15T00:00:00Z", "--json"],
+        vec!["tb", "--as-of", "2026-02-30", "--json"],
+        vec![
+            "tb",
+            "--period",
+            march,
+            "--as-known-at",
+            "2026-03-15T00:00:00Z",
+            "--json",
+        ],
+        vec!["tb", "--period", march, "--as-known-at", "-1", "--json"],
+        vec![
+            "tb",
+            "--period",
+            march,
+            "--as-known-at",
+            "18446744073709551616",
+            "--json",
+        ],
+        vec![
+            "tb",
+            "--period",
+            march,
+            "--as-known-at",
+            "18446744073709551615",
+            "--json",
+        ],
+        vec![
+            "tb",
+            "--period",
+            march,
+            "--as-known-at",
+            "HEAD",
+            "--as-known-at",
+            &before_backdate,
+            "--json",
+        ],
+        vec![
+            "tb",
+            "--as-of",
+            "2026-03-15",
+            "--as-of",
+            "2026-03-16",
+            "--json",
+        ],
+        vec!["book", "info", "--as-known-at", "HEAD", "--json"],
+        vec![
+            "verify",
+            "registers",
+            "--period",
+            march,
+            "--activity",
+            "--json",
+        ],
+    ] {
+        let (code, out, err) = fa(Some(&book), &args);
+        assert_eq!(code, 2, "args={args:?}\nstdout={out}\nstderr={err}");
+        assert!(
+            !err.is_empty(),
+            "refusal diagnostics missing: args={args:?}\n{out}"
+        );
+        assert_ne!(field(&out, "event"), Some("trial_balance"), "{out}");
+        if args
+            .iter()
+            .any(|arg| arg.contains('T') && arg.contains(':'))
+        {
+            assert!(err.contains("instant selectors are unsupported"), "{err}");
+        }
+    }
+
+    // Registers verify; then a close makes posting a safety block.
     let (code, out, _) = fa(
         Some(&book),
         &["registers", "materialize", "--period", march, "--json"],
@@ -219,6 +484,8 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() {
     );
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("\"event\":\"registers_verified\""));
+    assert!(out.contains("\"projection_errors\":[]"), "{out}");
+    assert!(out.contains("\"pending_drift\":[]"), "{out}");
 
     let late = write(
         &dir,
@@ -256,11 +523,12 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() {
         !out.contains("\"event\"") && out.contains("accounts"),
         "{out}"
     );
+    Ok(())
 }
 
 #[test]
-fn reversals_by_target_and_idempotency_conflicts_follow_the_contract() {
-    let dir = tmp("reversal");
+fn reversals_by_target_and_idempotency_conflicts_follow_the_contract() -> std::io::Result<()> {
+    let dir = tmp("reversal")?;
     let book = dir.join("book");
     assert_eq!(
         fa(Some(&book), &["book", "create", "--name", "Rev Co"]).0,
@@ -339,4 +607,187 @@ fn reversals_by_target_and_idempotency_conflicts_follow_the_contract() {
         out.contains("\"balanced\":true") && out.contains("\"net\":\"0.00 USD\""),
         "{out}"
     );
+    Ok(())
+}
+
+#[test]
+fn two_phase_reserve_and_resolve_follow_the_contract() -> std::io::Result<()> {
+    let dir = tmp("two-phase")?;
+    let book = dir.join("book");
+    let (code, out, err) = fa(
+        Some(&book),
+        &["book", "create", "--name", "Hold Co", "--json"],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    let (code, out, err) = fa(Some(&book), &["chart", "import", &chart, "--json"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let (code, _, _) = fa(
+        Some(&book),
+        &["period", "create", "--fiscal-year", "2026", "--json"],
+    );
+    assert_eq!(code, 0);
+    let (code, _, _) = fa(Some(&book), &["period", "open", "FY2026-P03", "--json"]);
+    assert_eq!(code, 0);
+    let row = |out: &str, code: &str| -> String {
+        let found = out
+            .split('{')
+            .find(|r| field(r, "code") == Some(code))
+            .map(str::to_string);
+        assert!(found.is_some(), "row {code} in {out}");
+        found.unwrap_or_default()
+    };
+
+    // Reserve 80.00: the hold is a Pending; the trial balance shows it in the
+    // pending columns and nothing posted.
+    let hold = write(
+        &dir,
+        "hold.json",
+        r#"{"effective_date":"2026-03-10","description":"PO 77 hold","idempotency_key":"hold-77","legs":[{"side":"debit","account":"6000","amount":"80.00 USD"},{"side":"credit","account":"1000","amount":"80.00 USD"}]}"#,
+    );
+    let (code, out, err) = fa(Some(&book), &["reserve", "--intent", &hold, "--json"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert_eq!(field(&out, "event"), Some("posted"), "{out}");
+    assert_eq!(field(&out, "class"), Some("Pending"), "{out}");
+    let hold_vid = field(&out, "vid").unwrap().to_string();
+    let tb = report(&book, &["tb", "--period", "FY2026-P03", "--json"]);
+    let rent = row(&tb, "6000");
+    assert_eq!(field(&rent, "debits"), Some("0.00 USD"), "{tb}");
+    assert_eq!(field(&rent, "debits_pending"), Some("80.00 USD"), "{tb}");
+    // `--date` is a period-transition flag, never a balance selector: tb
+    // refuses it instead of silently reporting the period-end stock.
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "tb",
+            "--period",
+            "FY2026-P03",
+            "--date",
+            "2026-03-09",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("--as-of"), "{out}");
+
+    // A requested timeout is refused, never silently dropped into a
+    // permanent hold; `source_ordinal` outside a Resolution(Posts) is refused.
+    let timed = write(
+        &dir,
+        "timed.json",
+        r#"{"effective_date":"2026-03-10","idempotency_key":"hold-t","timeout_ns":5,"legs":[{"side":"debit","account":"6000","amount":"1.00 USD"},{"side":"credit","account":"1000","amount":"1.00 USD"}]}"#,
+    );
+    let (code, out, _) = fa(Some(&book), &["reserve", "--intent", &timed, "--json"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("timed holds"), "{out}");
+    let stray = write(
+        &dir,
+        "stray.json",
+        r#"{"effective_date":"2026-03-10","idempotency_key":"stray","legs":[{"side":"debit","account":"6000","amount":"1.00 USD","source_ordinal":0},{"side":"credit","account":"1000","amount":"1.00 USD"}]}"#,
+    );
+    let (code, out, _) = fa(Some(&book), &["post", "--intent", &stray, "--json"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("source_ordinal"), "{out}");
+    // `fa reserve` refuses an intent that says it is something else.
+    let not_a_hold = write(
+        &dir,
+        "orig.json",
+        r#"{"class":"Original","effective_date":"2026-03-10","idempotency_key":"o-1","legs":[{"side":"debit","account":"6000","amount":"1.00 USD"},{"side":"credit","account":"1000","amount":"1.00 USD"}]}"#,
+    );
+    let (code, _, _) = fa(Some(&book), &["reserve", "--intent", &not_a_hold, "--json"]);
+    assert_eq!(code, 2);
+
+    // Post 60.00 of the hold (ordinals inferred from account + side): the
+    // posted columns show 60.00 and the whole 80.00 reservation is released.
+    let res = write(
+        &dir,
+        "res.json",
+        &format!(
+            r#"{{"resolves":"{hold_vid}","effective_date":"2026-03-20","description":"invoice 77","idempotency_key":"res-77","legs":[{{"side":"credit","account":"1000","amount":"60.00 USD"}},{{"side":"debit","account":"6000","amount":"60.00 USD"}}]}}"#
+        ),
+    );
+    let (code, out, err) = fa(Some(&book), &["resolve", "--intent", &res, "--json"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert_eq!(field(&out, "class"), Some("Resolution"), "{out}");
+    let res_vid = field(&out, "vid").unwrap().to_string();
+    let tb = report(&book, &["tb", "--period", "FY2026-P03", "--json"]);
+    let rent = row(&tb, "6000");
+    assert_eq!(field(&rent, "debits"), Some("60.00 USD"), "{tb}");
+    assert_eq!(field(&rent, "debits_pending"), Some("0.00 USD"), "{tb}");
+    assert_eq!(field(&tb, "balanced"), Some("true"), "{tb}");
+
+    // One resolution per hold: a void after the post is a conflict (exit 6);
+    // resolving something that is not a hold is a refusal (exit 3).
+    let void = write(
+        &dir,
+        "void.json",
+        &format!(
+            r#"{{"resolves":"{hold_vid}","disposition":"voids","effective_date":"2026-03-21","idempotency_key":"void-77"}}"#
+        ),
+    );
+    let (code, out, _) = fa(Some(&book), &["resolve", "--intent", &void, "--json"]);
+    assert_eq!(code, 6, "{out}");
+    assert_eq!(field(&out, "code"), Some("FA-REF-062"), "{out}");
+    let not_a_hold = write(
+        &dir,
+        "res2.json",
+        &format!(
+            r#"{{"resolves":"{res_vid}","disposition":"voids","effective_date":"2026-03-21","idempotency_key":"void-78"}}"#
+        ),
+    );
+    let (code, out, _) = fa(Some(&book), &["resolve", "--intent", &not_a_hold, "--json"]);
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "code"), Some("FA-REF-060"), "{out}");
+
+    // A second hold, voided: reservation released, nothing posted.
+    let hold_2 = write(
+        &dir,
+        "hold2.json",
+        r#"{"class":"Pending","effective_date":"2026-03-12","idempotency_key":"hold-78","legs":[{"side":"debit","account":"6000","amount":"20.00 USD"},{"side":"credit","account":"1000","amount":"20.00 USD"}]}"#,
+    );
+    let (code, out, _) = fa(Some(&book), &["post", "--intent", &hold_2, "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let hold_2_vid = field(&out, "vid").unwrap().to_string();
+    let tb = report(&book, &["tb", "--period", "FY2026-P03", "--json"]);
+    assert_eq!(
+        field(&row(&tb, "6000"), "debits_pending"),
+        Some("20.00 USD"),
+        "{tb}"
+    );
+    // Materializing a period with holds reports the pending cells honestly.
+    let (code, out, err) = fa(
+        Some(&book),
+        &[
+            "registers",
+            "materialize",
+            "--period",
+            "FY2026-P03",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert_eq!(field(&out, "pending_cells"), Some("2"), "{out}");
+    let (code, out, _) = fa(
+        Some(&book),
+        &["verify", "registers", "--period", "FY2026-P03", "--json"],
+    );
+    assert_eq!(code, 0, "{out}");
+    let void_2 = write(
+        &dir,
+        "void2.json",
+        &format!(
+            r#"{{"resolves":"{hold_2_vid}","disposition":"voids","effective_date":"2026-03-22","idempotency_key":"void-79"}}"#
+        ),
+    );
+    let (code, out, err) = fa(Some(&book), &["resolve", "--intent", &void_2, "--json"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let tb = report(&book, &["tb", "--period", "FY2026-P03", "--json"]);
+    let rent = row(&tb, "6000");
+    assert_eq!(field(&rent, "debits"), Some("60.00 USD"), "{tb}");
+    assert_eq!(field(&rent, "debits_pending"), Some("0.00 USD"), "{tb}");
+    Ok(())
 }

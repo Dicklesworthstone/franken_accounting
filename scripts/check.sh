@@ -47,10 +47,19 @@ mkdir -p "$LOG_DIR"
 gate_init "check.sh"
 
 # run_step <label> <command...>
-# PASS when the command exits 0; UNRUN when it did not execute (the rch shim
-# refused the offload — exit 103 or its marker in the log — or the tool is
-# missing); FAIL otherwise. stdout+stderr of the step go to its log; only the
-# verdict line goes to our stdout.
+# PASS when the command exits 0; UNRUN when it did not execute; FAIL
+# otherwise. stdout+stderr of the step go to its log; only the verdict line
+# goes to our stdout.
+#
+# "Did not execute" is decided conservatively from rch's own signals, never
+# from the mere presence of an `[RCH]` line: a remote run that executed and
+# failed also logs those, and rch passes the remote command's exit status
+# through (observed: `Remote command finished: exit=101` with real rustc
+# diagnostics). So:
+#   exit 103 (rch refused to offload)                                → UNRUN
+#   "[RCH] … refusing local fallback" or exit 100 (network/SSH) with NO
+#   "Remote command finished" line (nothing executed)                → UNRUN
+#   anything else nonzero, including 101/102 after execution         → FAIL
 run_step() {
   local label="$1"; shift
   local log="$LOG_DIR/${label//[^A-Za-z0-9_.-]/_}.log"
@@ -62,8 +71,13 @@ run_step() {
   local rc=$?
   if [ "$rc" -eq 0 ]; then
     gate_pass "$label"
-  elif [ "$rc" -eq 103 ] || grep -q '^\[RCH\]' "$log"; then
-    gate_unrun "$label — the rch offloader did not run the command (refused or lost the worker; retryable, not a product verdict); log: $log"
+    return
+  fi
+  local executed=0
+  grep -q 'Remote command finished' "$log" && executed=1
+  if [ "$rc" -eq 103 ] \
+    || { [ "$executed" -eq 0 ] && { [ "$rc" -eq 100 ] || grep -q '^\[RCH\] .*refusing local fallback' "$log"; }; }; then
+    gate_unrun "$label — the rch offloader did not run the command (exit $rc: refused, no admissible worker, or lost the worker before execution; retryable, not a product verdict); log: $log"
   else
     gate_fail "$label (exit $rc); log: $log"
     gate_diag "---- $label: last 40 lines of $log"
@@ -71,12 +85,28 @@ run_step() {
   fi
 }
 
+# cargo_build <label> <subcommand> <args...>
+# Every compiling cargo step goes through rch explicitly and only through
+# rch (suite rule: builds are offloaded; a bare `cargo` in a non-login shell
+# resolves to rustup's binary and would build on this box). No local lane:
+# without rch the step is UNRUN, never a local build. CHECK_JOBS bounds -j.
+CHECK_JOBS="${CHECK_JOBS:-2}"
+cargo_build() {
+  local label="$1" sub="$2"; shift 2
+  if command -v rch >/dev/null 2>&1; then
+    RCH_REQUIRE_REMOTE=1 RCH_QUEUE_WHEN_BUSY=1 \
+      run_step "$label" rch exec -- cargo "$sub" -j "$CHECK_JOBS" "$@"
+  else
+    gate_unrun "$label — rch is not installed; compiling steps go through rch (AGENTS.md)"
+  fi
+}
+
 # ---- Rust -------------------------------------------------------------------
 run_step "fmt" cargo fmt --all --check
-run_step "check" cargo check --workspace --all-targets
-run_step "clippy" cargo clippy --workspace --all-targets -- -D warnings
+cargo_build "check" check --workspace --all-targets
+cargo_build "clippy" clippy --workspace --all-targets -- -D warnings
 if [ "$QUICK" -eq 0 ]; then
-  run_step "test" cargo test --workspace
+  cargo_build "test" test --workspace
   if cargo deny --version >/dev/null 2>&1; then
     run_step "deny" cargo deny check
   else
@@ -85,19 +115,32 @@ if [ "$QUICK" -eq 0 ]; then
 fi
 
 # ---- Non-Rust gates ----------------------------------------------------------
-# ubs: the bug scanner over every tracked Rust file. ubs exits 0 on "nothing
-# checked", so an empty file list is UNRUN here, not a pass.
-mapfile -t RUST_FILES < <(git ls-files --cached --others --exclude-standard -- '*.rs')
-if [ "${#RUST_FILES[@]}" -eq 0 ]; then
-  gate_unrun "ubs — no tracked Rust files; nothing was checked"
-elif ! command -v ubs >/dev/null 2>&1; then
+# ubs: the bug scanner as a whole-project STATIC scan. It compiles nothing
+# (`--no-cargo`): the compiler, clippy, test and deny verdicts are the
+# explicit steps above, so this step never launches a bare cargo. Scanning
+# the project root (not a file list) keeps the Cargo context, under which
+# the scanner classifies integration-test `panic!` as a warning while a
+# production `panic!` stays critical (verified 2026-10-10, fa-lbh thread:
+# project scan exit 0 / 0 critical; a fixture with a src panic exits 1 / 1
+# critical). The verdict is the exit code AND the critical count, and a
+# positive file count is required, because ubs exits 0 on "nothing checked".
+if ! command -v ubs >/dev/null 2>&1; then
   gate_unrun "ubs — ubs is not installed"
+elif [ -z "$(git ls-files --cached --others --exclude-standard -- '*.rs')" ]; then
+  gate_unrun "ubs — no tracked Rust files; nothing was checked"
 else
   UBS_LOG="$LOG_DIR/ubs.log"
-  if ubs "${RUST_FILES[@]}" >"$UBS_LOG" 2>&1 && ! grep -q 'Critical issues:  *[1-9]' "$UBS_LOG"; then
-    gate_pass "ubs (${#RUST_FILES[@]} files, 0 critical)"
+  UBS_RC=0
+  ubs --only=rust --no-cargo --no-color "$ROOT" >"$UBS_LOG" 2>&1 || UBS_RC=$?
+  # A verdict needs a positive file count AND a numeric critical summary;
+  # "Files scanned: 0" or a missing summary is "nothing was checked".
+  if ! grep -Eq '^[[:space:]]*Files scanned:[[:space:]]*[1-9][0-9]*[[:space:]]*$' "$UBS_LOG" \
+    || ! grep -Eq '^[[:space:]]*Critical issues:[[:space:]]*[0-9]+[[:space:]]*$' "$UBS_LOG"; then
+    gate_unrun "ubs — no positive file count or no critical-issue summary in the scanner output (exit $UBS_RC); nothing was checked; log: $UBS_LOG"
+  elif [ "$UBS_RC" -eq 0 ] && ! grep -Eq '^[[:space:]]*Critical issues:[[:space:]]*[1-9][0-9]*[[:space:]]*$' "$UBS_LOG"; then
+    gate_pass "ubs (static scan of the project, 0 critical; $(grep -m1 'Files scanned:' "$UBS_LOG" | tr -s ' '))"
   else
-    gate_fail "ubs — critical findings or scanner failure; log: $UBS_LOG"
+    gate_fail "ubs — critical findings or scanner failure (exit $UBS_RC); log: $UBS_LOG"
     grep -E 'CRITICAL|Critical issues' "$UBS_LOG" >&2 || true
   fi
 fi
@@ -132,8 +175,11 @@ if ! command -v jq >/dev/null 2>&1; then
   gate_unrun "forbidden-deps — jq is not installed; first-party direct dependencies were not checked"
 else
   DEPS_LOG="$LOG_DIR/forbidden-deps.log"
-  if cargo metadata --no-deps --format-version 1 2>>"$DEPS_LOG" \
-    | jq -r '.packages[] | .name as $p | .dependencies[] | "\($p) \(.name)"' >"$DEPS_LOG.pairs" 2>>"$DEPS_LOG"; then
+  # Two steps, each checked: a failed `cargo metadata` must not become an
+  # empty edge list that jq turns into a green zero-edge verdict.
+  if cargo metadata --no-deps --format-version 1 >"$DEPS_LOG.json" 2>>"$DEPS_LOG" \
+    && jq -r '.packages[] | .name as $p | .dependencies[] | "\($p) \(.name)"' <"$DEPS_LOG.json" >"$DEPS_LOG.pairs" 2>>"$DEPS_LOG" \
+    && [ -s "$DEPS_LOG.pairs" ]; then
     DEP_FAIL=0
     while read -r pkg dep; do
       case "$dep" in
@@ -148,7 +194,7 @@ else
       gate_pass "forbidden-deps — every first-party direct dependency is first-party or a foundation ($(wc -l <"$DEPS_LOG.pairs" | tr -d ' ') edges)"
     fi
   else
-    gate_unrun "forbidden-deps — cargo metadata did not run (offloader or toolchain); log: $DEPS_LOG"
+    gate_unrun "forbidden-deps — cargo metadata or jq did not produce the dependency edges (offloader, toolchain, or empty output); log: $DEPS_LOG"
   fi
 fi
 

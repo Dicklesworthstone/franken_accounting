@@ -209,6 +209,18 @@ name = "effective_period"
 [[property]]
 id = 36
 name = "proposal_digest"
+[[property]]
+id = 37
+name = "debits_pending"
+[[property]]
+id = 38
+name = "credits_pending"
+[[property]]
+id = 39
+name = "pending_count"
+[[property]]
+id = 40
+name = "disposition"
 
 # ---- relations ------------------------------------------------------------
 [[relation]]

@@ -212,9 +212,22 @@ pub enum Decision {
     Refuse,
 }
 
+/// A row's disposition qualifier (Appendix C notes on `Resolution`): the
+/// decision column speaks for `Posts`; releases (`Voids`, `Expires`) follow
+/// the qualifier. Parsed from the note's leading token so the registry, not
+/// the kernel, owns the rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Qualifier {
+    None,
+    /// `posts_only_with`: the `with:` requirement binds `Posts` only; releases admit.
+    ReleasesAdmit,
+    /// `voids_expires`: releases admit; `Posts` is refused.
+    PostsRefused,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Admissibility {
-    cells: BTreeMap<(String, PeriodState), (Decision, Option<String>)>,
+    cells: BTreeMap<(String, PeriodState), (Decision, Option<String>, Qualifier)>,
 }
 
 impl Admissibility {
@@ -235,8 +248,19 @@ impl Admissibility {
                 .ok_or_else(|| invalid(R, format!("unknown state `{state_s}`")))?;
             let decision = parse_decision(R, req_str(R, t, "decision")?)?;
             let note = t.get("note").and_then(Value::as_str).map(str::to_string);
+            let qualifier = match note.as_deref().and_then(|n| n.split(':').next()) {
+                Some("posts_only_with") => Qualifier::ReleasesAdmit,
+                Some("voids_expires") => Qualifier::PostsRefused,
+                _ => Qualifier::None,
+            };
+            if qualifier != Qualifier::None && class != "Resolution" {
+                return Err(invalid(
+                    R,
+                    format!("disposition qualifier on `{class}`, which has no dispositions"),
+                ));
+            }
             if cells
-                .insert((class.clone(), state), (decision, note))
+                .insert((class.clone(), state), (decision, note, qualifier))
                 .is_some()
             {
                 return Err(invalid(
@@ -266,13 +290,30 @@ impl Admissibility {
     }
 
     pub fn decide(&self, class: &str, state: PeriodState) -> Option<&Decision> {
-        self.cells.get(&(class.to_string(), state)).map(|(d, _)| d)
+        self.cells.get(&(class.to_string(), state)).map(|(d, ..)| d)
+    }
+
+    /// The cell's decision for one disposition family (plan §5.4): `release`
+    /// is true for `Voids`/`Expires`, false for `Posts` and for every class
+    /// that has no dispositions (where this equals [`Self::decide`]).
+    pub fn decide_disposition(
+        &self,
+        class: &str,
+        state: PeriodState,
+        release: bool,
+    ) -> Option<Decision> {
+        let (decision, _, qualifier) = self.cells.get(&(class.to_string(), state))?;
+        Some(match (qualifier, release) {
+            (Qualifier::ReleasesAdmit, true) => Decision::Admit,
+            (Qualifier::PostsRefused, false) => Decision::Refuse,
+            _ => decision.clone(),
+        })
     }
 
     pub fn note(&self, class: &str, state: PeriodState) -> Option<&str> {
         self.cells
             .get(&(class.to_string(), state))
-            .and_then(|(_, n)| n.as_deref())
+            .and_then(|(_, n, _)| n.as_deref())
     }
 
     pub fn len(&self) -> usize {
@@ -577,6 +618,39 @@ mod tests {
                 .note("Resolution", PeriodState::Locked)
                 .unwrap()
                 .contains("voids_expires")
+        );
+        for (state, posts, release) in [
+            (PeriodState::Open, Decision::Admit, Decision::Admit),
+            (PeriodState::SoftClosed, Decision::Admit, Decision::Admit),
+            (
+                PeriodState::Closed,
+                Decision::With {
+                    op: "post_closed".into(),
+                    approvals: 0,
+                },
+                Decision::Admit,
+            ),
+            (PeriodState::Locked, Decision::Refuse, Decision::Admit),
+            (PeriodState::Future, Decision::Refuse, Decision::Refuse),
+        ] {
+            assert_eq!(
+                r.admissibility
+                    .decide_disposition("Resolution", state, false),
+                Some(posts),
+                "Resolution(Posts) in {state:?}"
+            );
+            assert_eq!(
+                r.admissibility
+                    .decide_disposition("Resolution", state, true),
+                Some(release),
+                "Resolution(Voids|Expires) in {state:?}"
+            );
+        }
+        // Classes without dispositions ignore the flag.
+        assert_eq!(
+            r.admissibility
+                .decide_disposition("Original", PeriodState::Closed, true),
+            Some(Decision::Refuse)
         );
         // PriorPeriodAdjustment posts in the current open period (fa-xwv).
         assert!(matches!(

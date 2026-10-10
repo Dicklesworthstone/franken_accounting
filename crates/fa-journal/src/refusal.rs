@@ -98,6 +98,8 @@ pub mod code {
     pub const CONTROL_VIA_POST: &str = "FA-REF-101";
     /// The class is registered but its semantics are not enforced by this slice.
     pub const CLASS_NOT_IMPLEMENTED: &str = "FA-REF-102";
+    /// The proposal names a different book, or a branch, than the one being written.
+    pub const COORDINATE: &str = "FA-REF-103";
     /// The idempotency key was reused with different content.
     pub const IDEMPOTENCY_CONFLICT: &str = "FA-REF-032";
     /// A Reversal names no target, a target that does not exist, or a digest that does not match.
@@ -106,6 +108,12 @@ pub mod code {
     pub const REVERSAL_SHAPE: &str = "FA-REF-051";
     /// The target is already reversed by another entry.
     pub const ALREADY_REVERSED: &str = "FA-REF-052";
+    /// The named pending entry is missing, is not a `Pending`, or its handle digest mismatches.
+    pub const RESOLUTION_TARGET: &str = "FA-REF-060";
+    /// The posted sub-vector is not drawn leg-by-leg from the pending entry.
+    pub const RESOLUTION_SHAPE: &str = "FA-REF-061";
+    /// The pending entry already has its one resolution.
+    pub const ALREADY_RESOLVED: &str = "FA-REF-062";
     /// A key collided but equivalence cannot be verified: a sealed field is erased or under a key this book lacks.
     pub const EQUIVALENCE_UNVERIFIABLE: &str = "FA-REF-033";
 }

@@ -5,14 +5,18 @@
 
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
+use fa_journal::rows::edge_id;
 use fa_journal::*;
-use fa_model::symbols::property;
+use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    EntryClass, EntryOrigin, EntryPayload, Erasable, Id128, LegPayload, Oid, SealKey, SymbolTable,
-    account_vid,
+    ControlPayload, Disposition, EntryClass, EntryOrigin, EntryPayload, Erasable, Id128,
+    LegPayload, Oid, Pending, SealKey, SymbolTable, account_vid, period_vid,
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
-use fa_registers::{fold_period, materialize, register_vid, trial_balance, verify_period};
+use fa_registers::{
+    Cell, CellKey, Fold, RegisterError, balance_as_of, fold_period, fold_period_at, materialize,
+    register_vid, trial_balance, trial_balance_at, verify_period,
+};
 use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodTransition};
 use fgdb::{Database, DatabaseKeys, MemVfs, WriteBatch};
 use fgdb_types::context::PurposeContexts;
@@ -37,16 +41,122 @@ impl Harness {
         PurposeContexts::narrow_runtime_root(&self.root)
     }
 
+    fn materialize_march(&mut self) -> Fold {
+        self.materialize_period(&self.march.clone())
+    }
+
+    fn materialize_period(&mut self, period: &str) -> Fold {
+        let fold = fold_period(&self.db, &self.book, period).expect("journal fold");
+        let ctx = self.ctx();
+        self.runtime
+            .block_on(async { materialize(&mut self.db, &ctx, &self.book, &fold).await })
+            .expect("materialize current journal fold");
+        let verified = verify_period(&self.db, &self.book, period).expect("verify repaired cells");
+        assert!(verified.is_green(), "{verified:?}");
+        assert_eq!(verified.refold_digest, fold.fold_digest);
+        assert_eq!(fold_period(&self.db, &self.book, period).unwrap(), fold);
+        fold
+    }
+
+    fn write_derived(&mut self, batch: WriteBatch) {
+        let ctx = self.ctx();
+        self.runtime
+            .block_on(async { self.db.write(&ctx.commit(), batch).await })
+            .expect("plant derived-register corruption in the real substrate");
+    }
+
+    fn assert_not_green(&self, fault: &str) {
+        match verify_period(&self.db, &self.book, &self.march) {
+            Ok(v) => assert!(!v.is_green(), "{fault} was accepted: {v:?}"),
+            Err(RegisterError::Kernel(KernelError::Corrupt(_))) => {}
+            Err(e) => panic!("{fault}: unexpected failure rather than detected corruption: {e}"),
+        }
+    }
+
+    fn plant_zero_phantom(&mut self, fold: &Fold, linked: bool) -> VId {
+        // This account exists in the chart but has no journal contribution.
+        let key = CellKey {
+            account: account_vid(self.book.book_id, "7000"),
+            unit_id: self.usd.0,
+            period: self.march.clone(),
+        };
+        let rvid = register_vid(self.book.book_id, &key);
+        let mut batch = WriteBatch::new(relation::IN_PERIOD);
+        batch.create_vertex(
+            rvid,
+            vec![label::REGISTER],
+            vec![
+                (
+                    property::BOOK_ID,
+                    scalar_bytes(self.book.book_id.0.to_vec()),
+                ),
+                (
+                    property::ACCOUNT_REF,
+                    scalar_bytes(key.account.0.to_le_bytes().to_vec()),
+                ),
+                (
+                    property::UNIT_ID,
+                    CanonicalScalar::Int(i64::from(key.unit_id)),
+                ),
+                (
+                    property::EFFECTIVE_PERIOD,
+                    CanonicalScalar::ucs_basic_text(&self.march).unwrap(),
+                ),
+                (
+                    property::DEBITS_POSTED,
+                    scalar_bytes(0i128.to_le_bytes().to_vec()),
+                ),
+                (
+                    property::CREDITS_POSTED,
+                    scalar_bytes(0i128.to_le_bytes().to_vec()),
+                ),
+                (property::ENTRY_COUNT, CanonicalScalar::Int(0)),
+                (
+                    property::DEBITS_PENDING,
+                    scalar_bytes(0i128.to_le_bytes().to_vec()),
+                ),
+                (
+                    property::CREDITS_PENDING,
+                    scalar_bytes(0i128.to_le_bytes().to_vec()),
+                ),
+                (property::PENDING_COUNT, CanonicalScalar::Int(0)),
+                (
+                    property::WATERMARK,
+                    CanonicalScalar::Int(i64::try_from(fold.watermark.map_or(0, |w| w.0)).unwrap()),
+                ),
+                // Copy the true digest: comparing only this claim is insufficient.
+                (
+                    property::FA_FOLD_DIGEST,
+                    scalar_bytes(fold.fold_digest.to_vec()),
+                ),
+            ],
+        );
+        if linked {
+            let pvid = period_vid(&self.book.calendar.id, &self.march);
+            batch.add_edge(edge_id(relation::IN_PERIOD, rvid, pvid), rvid, pvid, vec![]);
+        }
+        self.write_derived(batch);
+        rvid
+    }
+
     fn post_rent(&mut self, cents: i128, key: &[u8]) -> Posted {
+        self.post_expense(self.rent, cents, key)
+    }
+
+    fn post_expense(&mut self, expense: VId, cents: i128, key: &[u8]) -> Posted {
         let legs = vec![
-            LegPayload::simple(Side::Debit, self.rent, Amount::new(self.usd, cents)),
+            LegPayload::simple(Side::Debit, expense, Amount::new(self.usd, cents)),
             LegPayload::simple(Side::Credit, self.cash, Amount::new(self.usd, cents)),
         ];
-        let proposal = EntryPayload {
+        self.commit(self.proposal(legs, key, EntryClass::ORIGINAL))
+    }
+
+    fn proposal(&self, legs: Vec<LegPayload>, key: &[u8], class: EntryClass) -> EntryPayload {
+        EntryPayload {
             schema_minor: 0,
             book_id: self.book.book_id,
             branch_id: Id128::TRUNK,
-            class: EntryClass::ORIGINAL,
+            class,
             effective_date: DateDay::from_ymd(2026, 3, 15).unwrap(),
             document_date: None,
             description: Erasable::seal(
@@ -72,8 +182,12 @@ impl Harness {
             supersession: Vec::new(),
             pending: None,
             external_ids: Vec::new(),
+            extensions: Vec::new(),
             tags: Vec::new(),
-        };
+        }
+    }
+
+    fn commit(&mut self, proposal: EntryPayload) -> Posted {
         let req = PostRequest {
             proposal,
             approvals: Vec::new(),
@@ -88,6 +202,71 @@ impl Harness {
             .expect("kernel")
             .expect("admitted")
     }
+
+    fn hold(&mut self, legs: Vec<LegPayload>, key: &[u8]) -> Posted {
+        let mut proposal = self.proposal(legs, key, EntryClass::PENDING);
+        proposal.pending = Some(Pending {
+            timeout_ns: None,
+            resolution_of: None,
+            disposition: None,
+        });
+        self.commit(proposal)
+    }
+
+    fn expense_legs(&self, cents: i128) -> Vec<LegPayload> {
+        vec![
+            LegPayload::simple(Side::Debit, self.rent, Amount::new(self.usd, cents)),
+            LegPayload::simple(Side::Credit, self.cash, Amount::new(self.usd, cents)),
+        ]
+    }
+
+    fn open_april(&mut self) -> String {
+        let date = DateDay::from_ymd(2026, 4, 15).unwrap();
+        let april = self
+            .book
+            .calendar
+            .periods_for_year(2026)
+            .unwrap()
+            .into_iter()
+            .find(|p| p.contains(date) && p.kind == PeriodKind::Normal)
+            .unwrap()
+            .code;
+        let ctx = self.ctx();
+        self.runtime
+            .block_on(async {
+                transition_period(
+                    &mut self.db,
+                    &ctx,
+                    &self.book,
+                    &april,
+                    PeriodTransition::Open,
+                    PRINCIPAL,
+                    1,
+                    date,
+                    b"open-april",
+                    Erasable::seal(
+                        &"April".to_string(),
+                        None,
+                        &self.book.seal_key,
+                        [7; 32],
+                        [8; 24],
+                    ),
+                )
+                .await
+            })
+            .expect("kernel")
+            .expect("opens April");
+        april
+    }
+}
+
+fn scalar_bytes(bytes: Vec<u8>) -> CanonicalScalar {
+    CanonicalScalar::bytes(bytes).unwrap()
+}
+
+fn assert_cell(cells: &[Cell], account: VId, expected: (i128, i128, u64)) {
+    let cell = cells.iter().find(|c| c.key.account == account).unwrap();
+    assert_eq!((cell.debits, cell.credits, cell.entry_count), expected);
 }
 
 fn harness() -> Harness {
@@ -136,6 +315,15 @@ fn harness() -> Harness {
         AccountSpec {
             code: "6000".into(),
             name: "Rent".into(),
+            account_type: 5,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(usd),
+            parent_code: None,
+        },
+        AccountSpec {
+            code: "7000".into(),
+            name: "Utilities".into(),
             account_type: 5,
             normal_balance: 0,
             is_leaf: true,
@@ -313,4 +501,559 @@ fn trial_balance_nets_to_zero_per_unit_and_names_accounts() {
         ("6000", 1_250, 0)
     );
     assert!(tb.rows[0].account_type.is_stock() && tb.rows[1].account_type.is_flow());
+}
+
+#[test]
+fn empty_period_verifies_and_rebuild_does_not_invent_cells_or_postings() {
+    let mut h = harness();
+    let before = h.db.frontier().unwrap();
+    let v = verify_period(&h.db, &h.book, &h.march).unwrap();
+    assert!(
+        v.is_green(),
+        "empty journal and empty stored set must agree: {v:?}"
+    );
+    assert_eq!(v.cells_checked, 0);
+    let fold = h.materialize_march();
+    assert!(fold.cells.is_empty());
+    assert_eq!(fold.entries, 0);
+    assert_eq!(fold.watermark, None);
+    assert_eq!(h.db.frontier().unwrap(), before, "no empty rebuild write");
+}
+
+#[test]
+fn zero_phantom_cells_are_detected_and_rebuild_removes_them() {
+    for (with_post, linked) in [(true, true), (true, false), (false, true), (false, false)] {
+        let mut h = harness();
+        if with_post {
+            h.post_rent(1_000, b"real-rent");
+        }
+        let before = h.materialize_march();
+        let phantom = h.plant_zero_phantom(&before, linked);
+        assert!(h.db.vertex(phantom).unwrap().is_some());
+        h.assert_not_green("zero-valued phantom with copied genuine fold digest");
+        assert_eq!(fold_period(&h.db, &h.book, &h.march).unwrap(), before);
+        assert_eq!(
+            h.materialize_march(),
+            before,
+            "recovery preserves journal truth"
+        );
+        let pvid = period_vid(&h.book.calendar.id, &h.march);
+        assert!(
+            !h.db
+                .in_neighbours(pvid, relation::IN_PERIOD)
+                .unwrap()
+                .contains(&phantom)
+        );
+        if let Some(row) = h.db.vertex(phantom).unwrap() {
+            assert!(
+                !row.labels.contains(&label::REGISTER),
+                "phantom still a Register after rebuild"
+            );
+            assert!(
+                fa_journal::rows::prop(&row, property::EFFECTIVE_PERIOD).is_none(),
+                "phantom still attributed to a period"
+            );
+        }
+        // A phantom cannot permanently spend a deterministic cell identity:
+        // a later real posting must be able to materialize this exact key.
+        let utility = account_vid(h.book.book_id, "7000");
+        h.post_expense(utility, 42, b"first-real-utility");
+        let recovered = h.materialize_march();
+        let cell = recovered
+            .cells
+            .iter()
+            .find(|c| c.key.account == utility)
+            .unwrap();
+        assert_eq!((cell.debits, cell.credits, cell.entry_count), (42, 0, 1));
+        assert_eq!(register_vid(h.book.book_id, &cell.key), phantom);
+        let stored = h.db.vertex(phantom).unwrap().unwrap();
+        assert!(stored.labels.contains(&label::REGISTER));
+        assert_eq!(
+            fa_journal::rows::prop(&stored, property::DEBITS_POSTED),
+            Some(&scalar_bytes(42i128.to_le_bytes().to_vec()))
+        );
+        assert_eq!(
+            fa_journal::rows::prop(&stored, property::CREDITS_POSTED),
+            Some(&scalar_bytes(0i128.to_le_bytes().to_vec()))
+        );
+        assert_eq!(
+            fa_journal::rows::prop(&stored, property::ENTRY_COUNT),
+            Some(&CanonicalScalar::Int(1))
+        );
+    }
+}
+
+#[test]
+fn register_metadata_and_watermark_corruption_cannot_verify() {
+    let mut h = harness();
+    let first = h.post_rent(1_000, b"r1");
+    h.post_rent(5, b"r2");
+    let fold = h.materialize_march();
+    let rvid = register_vid(h.book.book_id, &fold.cells[0].key);
+    let cases = [
+        (
+            "wrong book",
+            property::BOOK_ID,
+            Some(scalar_bytes(vec![99; 16])),
+        ),
+        (
+            "wrong account",
+            property::ACCOUNT_REF,
+            Some(scalar_bytes(
+                account_vid(h.book.book_id, "7000").0.to_le_bytes().to_vec(),
+            )),
+        ),
+        (
+            "wrong unit",
+            property::UNIT_ID,
+            Some(CanonicalScalar::Int(i64::from(h.usd.0) + 1)),
+        ),
+        (
+            "wrong period",
+            property::EFFECTIVE_PERIOD,
+            Some(CanonicalScalar::ucs_basic_text("FY2026-P99").unwrap()),
+        ),
+        (
+            "stale watermark",
+            property::WATERMARK,
+            Some(CanonicalScalar::Int(
+                i64::try_from(first.recorded_at().0).unwrap(),
+            )),
+        ),
+        ("missing watermark", property::WATERMARK, None),
+        (
+            "malformed account",
+            property::ACCOUNT_REF,
+            Some(scalar_bytes(vec![1])),
+        ),
+        ("missing account", property::ACCOUNT_REF, None),
+        ("missing digest", property::FA_FOLD_DIGEST, None),
+        (
+            "wrong digest",
+            property::FA_FOLD_DIGEST,
+            Some(scalar_bytes(vec![99; 32])),
+        ),
+    ];
+    for (fault, property, value) in cases {
+        let mut batch = WriteBatch::new(relation::IN_PERIOD);
+        batch.set_vertex_property(rvid, property, value);
+        h.write_derived(batch);
+        h.assert_not_green(fault);
+        assert_eq!(
+            fold_period(&h.db, &h.book, &h.march).unwrap(),
+            fold,
+            "{fault} changed the journal"
+        );
+        assert_eq!(
+            h.materialize_march(),
+            fold,
+            "{fault} rebuild changed the fold"
+        );
+    }
+}
+
+#[test]
+fn missing_register_membership_is_detected_and_repaired() {
+    for remove_label in [false, true] {
+        let mut h = harness();
+        h.post_rent(123, b"rent");
+        // Nonempty journal without its materialization cannot verify green.
+        h.assert_not_green("unmaterialized journal cells");
+        let fold = h.materialize_march();
+        let rvid = register_vid(h.book.book_id, &fold.cells[0].key);
+        let pvid = period_vid(&h.book.calendar.id, &h.march);
+        let mut batch = WriteBatch::new(relation::IN_PERIOD);
+        if remove_label {
+            batch.set_vertex_label(rvid, label::REGISTER, false);
+        } else {
+            let edge =
+                h.db.edges()
+                    .unwrap()
+                    .into_iter()
+                    .find(|e| {
+                        e.entry.src == rvid
+                            && e.entry.dst == pvid
+                            && e.entry.relation == relation::IN_PERIOD
+                    })
+                    .expect("materialized cell has its period membership");
+            batch.delete_edge(edge.entry.eid);
+        }
+        h.write_derived(batch);
+        h.assert_not_green("missing register label or period edge");
+        assert_eq!(h.materialize_march(), fold);
+        assert!(
+            h.db.vertex(rvid)
+                .unwrap()
+                .unwrap()
+                .labels
+                .contains(&label::REGISTER)
+        );
+        assert!(
+            h.db.in_neighbours(pvid, relation::IN_PERIOD)
+                .unwrap()
+                .contains(&rvid)
+        );
+    }
+}
+
+#[test]
+fn materialize_refuses_stale_or_modified_folds_without_writing() {
+    let mut h = harness();
+    h.post_rent(1_000, b"r1");
+    let stale = h.materialize_march();
+    h.post_rent(25, b"r2");
+    let current = fold_period(&h.db, &h.book, &h.march).unwrap();
+    let mut modified = current.clone();
+    modified.cells[0].entry_count += 1;
+    let ctx = h.ctx();
+    for (fault, supplied) in [("stale", stale), ("modified", modified)] {
+        let before = h.db.frontier().unwrap();
+        let result = h
+            .runtime
+            .block_on(async { materialize(&mut h.db, &ctx, &h.book, &supplied).await });
+        assert!(
+            result.is_err(),
+            "{fault} caller-supplied Fold was persisted"
+        );
+        assert_eq!(
+            h.db.frontier().unwrap(),
+            before,
+            "{fault} rejection wrote state"
+        );
+        assert_eq!(fold_period(&h.db, &h.book, &h.march).unwrap(), current);
+    }
+    assert_eq!(h.materialize_march(), current);
+}
+
+#[test]
+fn recovery_refuses_to_rewrite_an_account_forged_as_a_register() {
+    let mut h = harness();
+    h.post_rent(250, b"rent");
+    let fold = h.materialize_march();
+    let rvid = h.cash;
+    let mut batch = WriteBatch::new(relation::IN_PERIOD);
+    batch.set_vertex_label(rvid, label::REGISTER, true);
+    batch.set_vertex_property(
+        rvid,
+        property::EFFECTIVE_PERIOD,
+        Some(CanonicalScalar::ucs_basic_text(&h.march).unwrap()),
+    );
+    h.write_derived(batch);
+    h.assert_not_green("immutable Account forged as a Register");
+    let before = h.db.frontier().unwrap();
+    let row_before = h.db.vertex(rvid).unwrap().unwrap();
+    let ctx = h.ctx();
+    let result = h
+        .runtime
+        .block_on(async { materialize(&mut h.db, &ctx, &h.book, &fold).await });
+    assert!(
+        matches!(result, Err(RegisterError::Kernel(KernelError::Corrupt(_)))),
+        "recovery must refuse ambiguous ownership: {result:?}"
+    );
+    assert_eq!(h.db.frontier().unwrap(), before, "refusal changed storage");
+    let row_after = h.db.vertex(rvid).unwrap().unwrap();
+    assert_eq!(row_after.labels, row_before.labels);
+    assert_eq!(row_after.props, row_before.props);
+    assert_eq!(fold_period(&h.db, &h.book, &h.march).unwrap(), fold);
+}
+
+#[test]
+fn missing_entry_period_projection_does_not_hide_journal_contributions() {
+    let mut h = harness();
+    let posted = h.post_rent(12_345, b"rent");
+    let fold = h.materialize_march();
+    let evid = posted.entry_ref().vid;
+    let row_before = h.db.vertex(evid).unwrap().unwrap();
+    let pvid = period_vid(&h.book.calendar.id, &h.march);
+    let edge = h
+        .db
+        .edges()
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            e.entry.src == evid && e.entry.dst == pvid && e.entry.relation == relation::IN_PERIOD
+        })
+        .expect("posted entry has a period projection");
+    let mut batch = WriteBatch::new(relation::IN_PERIOD);
+    batch.delete_edge(edge.entry.eid);
+    h.write_derived(batch);
+    assert!(
+        !h.db
+            .in_neighbours(pvid, relation::IN_PERIOD)
+            .unwrap()
+            .contains(&evid)
+    );
+    assert_eq!(h.db.vertex(evid).unwrap().unwrap().props, row_before.props);
+    assert_eq!(fold_period(&h.db, &h.book, &h.march).unwrap(), fold);
+    let verification = verify_period(&h.db, &h.book, &h.march).unwrap();
+    assert!(
+        verification.is_green(),
+        "intact materialized cells still match the payload: {verification:?}"
+    );
+    assert_eq!(h.materialize_march(), fold);
+}
+
+#[test]
+fn partial_post_releases_all_march_reservations_and_posts_only_in_april() {
+    let mut h = harness();
+    let april = h.open_april();
+    let utilities = account_vid(h.book.book_id, "7000");
+    let hold = h.hold(
+        vec![
+            LegPayload::simple(Side::Debit, h.rent, Amount::new(h.usd, 6_000)),
+            LegPayload::simple(Side::Debit, utilities, Amount::new(h.usd, 4_000)),
+            LegPayload::simple(Side::Credit, h.cash, Amount::new(h.usd, 10_000)),
+        ],
+        b"three-leg-hold",
+    );
+    let held = h.materialize_march();
+    assert!(held.cells.is_empty(), "a hold posts nothing");
+    assert_eq!(held.entries, 0);
+    assert_eq!(held.watermark, Some(hold.recorded_at()));
+    assert_eq!(held.pending.len(), 3);
+    assert_cell(&held.pending, h.rent, (6_000, 0, 1));
+    assert_cell(&held.pending, utilities, (4_000, 0, 1));
+    assert_cell(&held.pending, h.cash, (0, 10_000, 1));
+    let reserved_report = trial_balance(&h.db, &h.book, &[h.march.clone()]).unwrap();
+    assert!(reserved_report.is_balanced());
+    assert_eq!(reserved_report.unit_totals.get(&h.usd.0), Some(&(0, 0)));
+    assert_eq!(
+        reserved_report.pending_unit_totals.get(&h.usd.0),
+        Some(&(10_000, 10_000))
+    );
+    for cell in &held.pending {
+        let stored =
+            h.db.vertex(register_vid(h.book.book_id, &cell.key))
+                .unwrap()
+                .unwrap();
+        for (property, value) in [
+            (property::DEBITS_POSTED, 0),
+            (property::CREDITS_POSTED, 0),
+            (property::DEBITS_PENDING, cell.debits),
+            (property::CREDITS_PENDING, cell.credits),
+        ] {
+            assert_eq!(
+                fa_journal::rows::prop(&stored, property),
+                Some(&scalar_bytes(value.to_le_bytes().to_vec()))
+            );
+        }
+        assert_eq!(
+            fa_journal::rows::prop(&stored, property::PENDING_COUNT),
+            Some(&CanonicalScalar::Int(1))
+        );
+        assert_eq!(
+            fa_journal::rows::prop(&stored, property::ENTRY_COUNT),
+            Some(&CanonicalScalar::Int(0))
+        );
+    }
+    let original = h.db.vertex(hold.entry_ref().vid).unwrap().unwrap();
+    // Select the Rent leg and Cash leg explicitly; the unposted Utilities
+    // reservation must be released too, not left behind as a 4,000 hold.
+    let mut proposal = h.proposal(
+        h.expense_legs(6_000),
+        b"partial-post-in-april",
+        EntryClass::RESOLUTION,
+    );
+    proposal.effective_date = DateDay::from_ymd(2026, 4, 15).unwrap();
+    proposal.pending = Some(Pending {
+        timeout_ns: None,
+        resolution_of: Some(hold.entry_ref()),
+        disposition: Some(Disposition::Posts {
+            source_ordinals: vec![0, 2],
+        }),
+    });
+    let posted = h.commit(proposal);
+    h.assert_not_green("March projection still claims a resolved hold");
+    let released = h.materialize_march();
+    assert!(released.pending.is_empty());
+    assert!(released.cells.is_empty());
+    assert_eq!(released.entries, 0);
+    assert_eq!(released.watermark, Some(posted.recorded_at()));
+    assert_ne!(released.fold_digest, held.fold_digest);
+    let april_fold = h.materialize_period(&april);
+    assert!(april_fold.pending.is_empty());
+    assert_eq!(april_fold.entries, 1);
+    assert_eq!(april_fold.cells.len(), 2);
+    assert_eq!(april_fold.watermark, Some(posted.recorded_at()));
+    assert_cell(&april_fold.cells, h.rent, (6_000, 0, 1));
+    assert_cell(&april_fold.cells, h.cash, (0, 6_000, 1));
+    assert_eq!(
+        fold_period_at(&h.db, &h.book, &h.march, Some(hold.recorded_at())).unwrap(),
+        held,
+        "historical reservation survives a later resolution and rebuild"
+    );
+    let historical =
+        trial_balance_at(&h.db, &h.book, &[h.march.clone()], Some(hold.recorded_at())).unwrap();
+    assert_eq!(historical.rows, reserved_report.rows);
+    assert_eq!(historical.known_at, hold.recorded_at());
+    let posted_report = trial_balance(&h.db, &h.book, std::slice::from_ref(&april)).unwrap();
+    assert!(posted_report.is_balanced());
+    assert_eq!(
+        posted_report.unit_totals.get(&h.usd.0),
+        Some(&(6_000, 6_000))
+    );
+    assert!(
+        posted_report
+            .pending_unit_totals
+            .values()
+            .all(|amounts| *amounts == (0, 0)),
+        "partial posting releases the whole original reservation"
+    );
+    let march_cutoff = balance_as_of(
+        &h.db,
+        &h.book,
+        DateDay::from_ymd(2026, 3, 31).unwrap(),
+        Some(posted.recorded_at()),
+    )
+    .unwrap();
+    assert_eq!(march_cutoff.known_at, posted.recorded_at());
+    assert!(
+        march_cutoff.rows.is_empty(),
+        "later-known release clears March's hold, but April's posting is after the cutoff"
+    );
+    assert!(march_cutoff.unit_totals.is_empty());
+    assert!(march_cutoff.pending_unit_totals.is_empty());
+
+    // A missing derived edge cannot turn an immutable resolution into an
+    // outstanding hold again. Read HEAD after the actual edge removal.
+    let resolution_edge =
+        h.db.edges()
+            .unwrap()
+            .into_iter()
+            .find(|edge| {
+                edge.entry.src == posted.entry_ref().vid
+                    && edge.entry.dst == hold.entry_ref().vid
+                    && edge.entry.relation == relation::RESOLVES
+            })
+            .expect("resolution has a derived target edge");
+    let mut batch = WriteBatch::new(relation::RESOLVES);
+    batch.delete_edge(resolution_edge.entry.eid);
+    h.write_derived(batch);
+    assert!(
+        !h.db
+            .edges()
+            .unwrap()
+            .iter()
+            .any(|edge| { edge.entry.eid == resolution_edge.entry.eid })
+    );
+    assert_eq!(fold_period(&h.db, &h.book, &h.march).unwrap(), released);
+    assert_eq!(fold_period(&h.db, &h.book, &april).unwrap(), april_fold);
+    let after_edge_loss = trial_balance(&h.db, &h.book, std::slice::from_ref(&april)).unwrap();
+    assert_eq!(after_edge_loss.known_at, h.db.frontier().unwrap());
+    assert_eq!(after_edge_loss.rows, posted_report.rows);
+    assert_eq!(after_edge_loss.unit_totals, posted_report.unit_totals);
+    assert_eq!(
+        after_edge_loss.pending_unit_totals,
+        posted_report.pending_unit_totals
+    );
+    assert!(verify_period(&h.db, &h.book, &h.march).unwrap().is_green());
+    assert!(verify_period(&h.db, &h.book, &april).unwrap().is_green());
+    assert_eq!(
+        h.db.vertex(hold.entry_ref().vid).unwrap().unwrap().props,
+        original.props,
+        "resolving and rebuilding cannot mutate the pending entry"
+    );
+}
+
+#[test]
+fn april_void_releases_only_its_march_hold_and_never_posts() {
+    let mut h = harness();
+    let april = h.open_april();
+    let first = h.hold(h.expense_legs(700), b"hold-to-void");
+    let second = h.hold(h.expense_legs(900), b"hold-to-retain");
+    let held = h.materialize_march();
+    assert!(held.cells.is_empty());
+    assert_eq!(held.entries, 0);
+    assert_cell(&held.pending, h.rent, (1_600, 0, 2));
+    assert_cell(&held.pending, h.cash, (0, 1_600, 2));
+
+    for (target, key, remaining) in [
+        (first.entry_ref(), b"void-first".as_slice(), 900),
+        (second.entry_ref(), b"void-second".as_slice(), 0),
+    ] {
+        let mut proposal = h.proposal(Vec::new(), key, EntryClass::RESOLUTION);
+        proposal.effective_date = DateDay::from_ymd(2026, 4, 15).unwrap();
+        proposal.control = Some(ControlPayload::ReservationRelease);
+        proposal.pending = Some(Pending {
+            timeout_ns: None,
+            resolution_of: Some(target),
+            disposition: Some(Disposition::Voids),
+        });
+        let resolution = h.commit(proposal);
+        h.assert_not_green("March pending totals predate the April void");
+        let march = h.materialize_march();
+        assert!(march.cells.is_empty());
+        assert_eq!(march.entries, 0);
+        assert_eq!(march.watermark, Some(resolution.recorded_at()));
+        if remaining == 0 {
+            assert!(march.pending.is_empty());
+        } else {
+            assert_eq!(march.pending.len(), 2);
+            assert_cell(&march.pending, h.rent, (remaining, 0, 1));
+            assert_cell(&march.pending, h.cash, (0, remaining, 1));
+        }
+        let april_fold = h.materialize_period(&april);
+        assert!(april_fold.cells.is_empty());
+        assert!(april_fold.pending.is_empty());
+        assert_eq!(april_fold.entries, 0, "a void is never a posting");
+        assert_eq!(
+            fold_period_at(&h.db, &h.book, &h.march, Some(second.recorded_at())).unwrap(),
+            held,
+            "known-at before the void retains both original holds"
+        );
+    }
+}
+
+#[test]
+fn pending_column_corruption_is_detected_and_rebuilt_from_the_journal() {
+    let mut h = harness();
+    h.post_rent(123, b"posted-rent");
+    h.hold(h.expense_legs(700), b"rent-hold");
+    let held = h.materialize_march();
+    assert_cell(&held.cells, h.cash, (0, 123, 1));
+    assert_cell(&held.pending, h.cash, (0, 700, 1));
+    let key = held
+        .pending
+        .iter()
+        .find(|cell| cell.key.account == h.cash)
+        .unwrap()
+        .key
+        .clone();
+    let rvid = register_vid(h.book.book_id, &key);
+    for (property, forged) in [
+        (
+            property::DEBITS_PENDING,
+            Some(scalar_bytes(1i128.to_le_bytes().to_vec())),
+        ),
+        (
+            property::CREDITS_PENDING,
+            Some(scalar_bytes(699i128.to_le_bytes().to_vec())),
+        ),
+        (property::PENDING_COUNT, Some(CanonicalScalar::Int(2))),
+        (property::CREDITS_PENDING, None),
+    ] {
+        let mut batch = WriteBatch::new(relation::IN_PERIOD);
+        batch.set_vertex_property(rvid, property, forged);
+        h.write_derived(batch);
+        h.assert_not_green("stored pending column diverges from immutable hold");
+        assert_eq!(fold_period(&h.db, &h.book, &h.march).unwrap(), held);
+        assert_eq!(h.materialize_march(), held);
+        let stored = h.db.vertex(rvid).unwrap().unwrap();
+        assert_eq!(
+            fa_journal::rows::prop(&stored, property::DEBITS_PENDING),
+            Some(&scalar_bytes(0i128.to_le_bytes().to_vec()))
+        );
+        assert_eq!(
+            fa_journal::rows::prop(&stored, property::CREDITS_PENDING),
+            Some(&scalar_bytes(700i128.to_le_bytes().to_vec()))
+        );
+        assert_eq!(
+            fa_journal::rows::prop(&stored, property::PENDING_COUNT),
+            Some(&CanonicalScalar::Int(1))
+        );
+        assert_eq!(
+            fa_journal::rows::prop(&stored, property::CREDITS_POSTED),
+            Some(&scalar_bytes(123i128.to_le_bytes().to_vec()))
+        );
+    }
 }

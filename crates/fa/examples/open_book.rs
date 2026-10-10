@@ -129,6 +129,7 @@ fn run() -> Result<(), BookError> {
         supersession: Vec::new(),
         pending: None,
         external_ids: Vec::new(),
+        extensions: Vec::new(),
         tags: Vec::new(),
     };
     let mut unbalanced = proposal.clone();

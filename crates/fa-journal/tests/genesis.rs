@@ -5,17 +5,19 @@
 //! Reversal under `post_closed` is admitted; an identical retry is the
 //! recorded outcome and a changed one is a conflict (exit 6); a period
 //! transition is a control record with no legs (fa-bvx); unsupported classes
-//! are refused rather than admitted.
+//! are refused rather than admitted; the two-phase pair (fa-rqe, plan §5.4)
+//! reserves, posts a sub-vector or voids, exactly once per pending entry.
 
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
 use fa_journal::post::read_entry;
-use fa_journal::rows::{book_root, edge_id, leg_vid, reversal_vid};
+use fa_journal::rows::{book_root, edge_id, leg_vid, resolution_vid, reversal_vid};
 use fa_journal::*;
 use fa_model::symbols::{property, relation};
 use fa_model::{
-    ControlPayload, EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable, Id128, LegPayload,
-    Oid, SealKey, Supersession, SupersessionKind, SymbolTable, account_vid, period_vid,
+    ControlPayload, Disposition, EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable, Id128,
+    LegPayload, Oid, Pending, SealKey, Supersession, SupersessionKind, SymbolTable, account_vid,
+    period_vid,
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodState, PeriodTransition};
@@ -80,6 +82,7 @@ impl Harness {
             supersession: Vec::new(),
             pending: None,
             external_ids: Vec::new(),
+            extensions: Vec::new(),
             tags: Vec::new(),
         }
     }
@@ -102,6 +105,46 @@ impl Harness {
             kind: SupersessionKind::Reverses,
             reason_code: 1,
         }];
+        p
+    }
+
+    /// A hold: the legs are reserved, never posted (plan §5.4).
+    fn pending(&self, legs: Vec<LegPayload>, key: &[u8]) -> EntryPayload {
+        let mut p = self.proposal(legs, key, EntryClass::PENDING);
+        p.pending = Some(Pending {
+            timeout_ns: None,
+            resolution_of: None,
+            disposition: None,
+        });
+        p
+    }
+
+    /// `Resolution(Posts)`: the posted sub-vector with its source ordinals.
+    fn resolution_posts(
+        &self,
+        target: EntryRef,
+        legs: Vec<LegPayload>,
+        source_ordinals: Vec<u16>,
+        key: &[u8],
+    ) -> EntryPayload {
+        let mut p = self.proposal(legs, key, EntryClass::RESOLUTION);
+        p.pending = Some(Pending {
+            timeout_ns: None,
+            resolution_of: Some(target),
+            disposition: Some(Disposition::Posts { source_ordinals }),
+        });
+        p
+    }
+
+    /// `Resolution(Voids)`: no legs, the `ReservationRelease` control.
+    fn resolution_voids(&self, target: EntryRef, key: &[u8]) -> EntryPayload {
+        let mut p = self.proposal(Vec::new(), key, EntryClass::RESOLUTION);
+        p.control = Some(ControlPayload::ReservationRelease);
+        p.pending = Some(Pending {
+            timeout_ns: None,
+            resolution_of: Some(target),
+            disposition: Some(Disposition::Voids),
+        });
         p
     }
 
@@ -168,6 +211,16 @@ impl Harness {
         )
         .unwrap()
         .state
+    }
+}
+
+/// The handle and period of a fresh commit; `None` for a recorded outcome.
+fn committed(p: &Posted) -> Option<(EntryRef, String)> {
+    match p {
+        Posted::Committed {
+            entry_ref, period, ..
+        } => Some((*entry_ref, period.clone())),
+        Posted::AlreadyRecorded { .. } => None,
     }
 }
 
@@ -608,7 +661,7 @@ fn control_classes_unsupported_classes_and_structure_errors_are_refused_by_kind(
     // A registered class this slice does not enforce is refused, naming its bead.
     for class in [
         EntryClass::REPLACEMENT,
-        EntryClass::PENDING,
+        EntryClass::CLOSING,
         EntryClass::RESTATEMENT,
         EntryClass::MIGRATION,
     ] {
@@ -717,4 +770,359 @@ fn equivalence_is_plaintext_level_and_never_crosses_principals() {
     let req = h.request(foreign, &["post"]);
     let r = h.post(req).unwrap_err();
     assert_eq!((r.code, r.exit), ("FA-REF-052", exit::CONFLICT));
+}
+
+#[test]
+fn a_hold_reserves_and_its_one_resolution_posts_a_sub_vector_drawn_leg_by_leg() {
+    let mut h = harness();
+    // Reserve 80.00: Dr rent / Cr cash. Nothing is posted; the legs exist
+    // as reserved legs with their account edges, in March.
+    let hold = h
+        .post(h.request(h.pending(h.rent_legs(8_000), b"hold-1"), &["post"]))
+        .expect("admitted");
+    let (hold_ref, period) = committed(&hold).expect("a fresh hold commits");
+    assert_eq!(period, h.march);
+    let (stored, _) = read_entry(&h.db, hold_ref.vid).unwrap().expect("hold row");
+    assert_eq!(stored.proposal.class, EntryClass::PENDING);
+    for ordinal in 0..2u16 {
+        assert!(
+            h.db.vertex(leg_vid(hold_ref.vid, ordinal))
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    // The sub-vector law: wrong ordinal, wrong account, more than reserved,
+    // and an unbalanced sub-vector are refused by kind; nothing is written.
+    let sixty = h.rent_legs(6_000);
+    let r = h
+        .post(h.request(
+            h.resolution_posts(hold_ref, sixty.clone(), vec![0, 5], b"res-bad-1"),
+            &["post"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-061", exit::REFUSAL));
+    let swapped_accounts = vec![
+        LegPayload::simple(Side::Debit, h.cash, Amount::new(h.usd, 6_000)),
+        LegPayload::simple(Side::Credit, h.rent, Amount::new(h.usd, 6_000)),
+    ];
+    let r = h
+        .post(h.request(
+            h.resolution_posts(hold_ref, swapped_accounts, vec![0, 1], b"res-bad-2"),
+            &["post"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-061", exit::REFUSAL));
+    let r = h
+        .post(h.request(
+            h.resolution_posts(hold_ref, h.rent_legs(8_001), vec![0, 1], b"res-bad-3"),
+            &["post"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-061", exit::REFUSAL));
+    assert!(
+        r.message.contains("8001") && r.message.contains("8000"),
+        "{}",
+        r.message
+    );
+    let unbalanced = vec![
+        LegPayload::simple(Side::Debit, h.rent, Amount::new(h.usd, 6_000)),
+        LegPayload::simple(Side::Credit, h.cash, Amount::new(h.usd, 5_000)),
+    ];
+    let r = h
+        .post(h.request(
+            h.resolution_posts(hold_ref, unbalanced, vec![0, 1], b"res-bad-4"),
+            &["post"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-001", exit::REFUSAL));
+    assert!(h.db.vertex(resolution_vid(hold_ref.vid)).unwrap().is_none());
+
+    // Only a pending entry is resolved: an Original is FA-REF-060.
+    let original = h
+        .post(h.request(
+            h.proposal(h.rent_legs(100), b"orig", EntryClass::ORIGINAL),
+            &["post"],
+        ))
+        .expect("admitted")
+        .entry_ref();
+    let r = h
+        .post(h.request(
+            h.resolution_posts(original, h.rent_legs(100), vec![0, 1], b"res-bad-5"),
+            &["post"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-060", exit::REFUSAL));
+    let stale = EntryRef {
+        vid: hold_ref.vid,
+        entry_digest: [0; 32],
+    };
+    let r = h
+        .post(h.request(h.resolution_voids(stale, b"res-bad-6"), &["post"]))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-060", exit::REFUSAL));
+
+    // Post 60.00 of the 80.00 hold. The identity is derived from the hold.
+    let posts = h.resolution_posts(hold_ref, sixty, vec![0, 1], b"res-1");
+    let resolved = h
+        .post(h.request(posts.clone(), &["post"]))
+        .expect("admitted");
+    let (res_ref, period) = committed(&resolved).expect("the first resolution commits");
+    assert_eq!(res_ref.vid, resolution_vid(hold_ref.vid));
+    assert_eq!(period, h.march);
+    let edge =
+        h.db.edge(edge_id(relation::RESOLVES, res_ref.vid, hold_ref.vid))
+            .unwrap()
+            .expect("RESOLVES edge");
+    assert!(
+        edge.props
+            .iter()
+            .any(|(k, v)| *k == property::DISPOSITION && *v == CanonicalScalar::Int(0)),
+        "{:?}",
+        edge.props
+    );
+    for ordinal in 0..2u16 {
+        let lvid = leg_vid(res_ref.vid, ordinal);
+        assert!(h.db.vertex(lvid).unwrap().is_some());
+        assert!(
+            h.db.edge(edge_id(relation::HAS_LEG, res_ref.vid, lvid))
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    // Exactly one resolution per hold: the identical retry is the recorded
+    // outcome; a void, a second posting, and another principal's identical
+    // resolution are conflicts (exit 6) that write nothing.
+    let again = h
+        .post(h.request(posts.clone(), &["post"]))
+        .expect("recorded");
+    assert_eq!(again.entry_ref(), res_ref);
+    assert!(matches!(again, Posted::AlreadyRecorded { .. }));
+    let r = h
+        .post(h.request(h.resolution_voids(hold_ref, b"res-2"), &["post"]))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-062", exit::CONFLICT));
+    let r = h
+        .post(h.request(
+            h.resolution_posts(hold_ref, h.rent_legs(2_000), vec![0, 1], b"res-3"),
+            &["post"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-062", exit::CONFLICT));
+    let mut other = posts;
+    other.principal_ref = VId(8);
+    let r = h.post(h.request(other, &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-062", exit::CONFLICT));
+}
+
+#[test]
+fn releases_stay_admissible_after_close_and_lock_while_posts_follow_the_matrix() {
+    let mut h = harness();
+    let hold_a = h
+        .post(h.request(h.pending(h.rent_legs(500), b"hold-a"), &["post"]))
+        .expect("admitted")
+        .entry_ref();
+    let hold_b = h
+        .post(h.request(h.pending(h.rent_legs(700), b"hold-b"), &["post"]))
+        .expect("admitted")
+        .entry_ref();
+    h.transition(&h.march.clone(), PeriodTransition::SoftClose, b"sc")
+        .expect("soft-closes");
+    h.transition(&h.march.clone(), PeriodTransition::Close, b"c")
+        .expect("closes");
+    // Closed: a new hold is refused; Posts needs post_closed; Voids admits.
+    let r = h
+        .post(h.request(h.pending(h.rent_legs(1), b"hold-c"), &["post"]))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-010", exit::SAFETY));
+    let r = h
+        .post(h.request(
+            h.resolution_posts(hold_a, h.rent_legs(500), vec![0, 1], b"ra"),
+            &["post"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-011", exit::SAFETY));
+    assert!(r.cite.contains("Resolution(Posts)"), "{}", r.cite);
+    let posted = h
+        .post(h.request(
+            h.resolution_posts(hold_a, h.rent_legs(500), vec![0, 1], b"ra"),
+            &["post", "post_closed"],
+        ))
+        .expect("admitted with post_closed");
+    assert!(matches!(posted, Posted::Committed { .. }));
+    // Locked: Posts is refused outright and the fix names Voids; Voids admits
+    // without any extra capability (plan §5.4: a hold never becomes
+    // unreleasable because its period closed).
+    h.transition(&h.march.clone(), PeriodTransition::Lock, b"l")
+        .expect("locks");
+    let r = h
+        .post(h.request(
+            h.resolution_posts(hold_b, h.rent_legs(700), vec![0, 1], b"rb"),
+            &["post", "post_closed"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-010", exit::SAFETY));
+    assert!(r.fix.contains("Voids"), "{}", r.fix);
+    let voided = h
+        .post(h.request(h.resolution_voids(hold_b, b"rb"), &["post"]))
+        .expect("a release admits in Locked");
+    let (void_ref, _) = committed(&voided).expect("a release in Locked commits");
+    assert_eq!(void_ref.vid, resolution_vid(hold_b.vid));
+    let (stored, _) = read_entry(&h.db, void_ref.vid).unwrap().expect("void row");
+    assert!(stored.proposal.legs.is_empty());
+    assert_eq!(
+        stored.proposal.control,
+        Some(ControlPayload::ReservationRelease)
+    );
+    let edge =
+        h.db.edge(edge_id(relation::RESOLVES, void_ref.vid, hold_b.vid))
+            .unwrap()
+            .expect("RESOLVES edge");
+    assert!(
+        edge.props
+            .iter()
+            .any(|(k, v)| *k == property::DISPOSITION && *v == CanonicalScalar::Int(1))
+    );
+}
+
+#[test]
+fn timed_holds_and_expiry_are_refused_until_the_tick_and_sweep_slice() {
+    let mut h = harness();
+    let mut timed = h.pending(h.rent_legs(10), b"timed");
+    timed.pending = Some(Pending {
+        timeout_ns: Some(5),
+        resolution_of: None,
+        disposition: None,
+    });
+    let r = h.post(h.request(timed, &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-102", exit::REFUSAL));
+    assert!(r.fix.contains("TimeEvidence"), "{}", r.fix);
+    let hold = h
+        .post(h.request(h.pending(h.rent_legs(10), b"hold"), &["post"]))
+        .expect("admitted")
+        .entry_ref();
+    let mut expires = h.resolution_voids(hold, b"exp");
+    expires.pending = Some(Pending {
+        timeout_ns: None,
+        resolution_of: Some(hold),
+        disposition: Some(Disposition::Expires { at_tick: 9 }),
+    });
+    let r = h.post(h.request(expires, &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-102", exit::REFUSAL));
+    assert!(h.db.vertex(resolution_vid(hold.vid)).unwrap().is_none());
+}
+
+#[test]
+fn a_foreign_book_or_branch_coordinate_is_refused_before_any_read() {
+    let mut h = harness();
+    let frontier = h.db.frontier().unwrap();
+    let mut other_book = h.proposal(h.rent_legs(5), b"ob", EntryClass::ORIGINAL);
+    other_book.book_id = Id128([0xee; 16]);
+    let r = h.post(h.request(other_book, &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-103", exit::USAGE));
+    let mut branch = h.proposal(h.rent_legs(5), b"br", EntryClass::ORIGINAL);
+    branch.branch_id = Id128([1; 16]);
+    let r = h.post(h.request(branch, &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-103", exit::USAGE));
+    assert_eq!(h.db.frontier().unwrap(), frontier, "refusals write nothing");
+    let posted = h
+        .post(h.request(
+            h.proposal(h.rent_legs(5), b"ok", EntryClass::ORIGINAL),
+            &["post"],
+        ))
+        .expect("the right coordinate posts");
+    assert!(matches!(posted, Posted::Committed { .. }));
+}
+
+#[test]
+fn reversal_targets_are_posted_entries_and_non_entries_are_typed_refusals() {
+    let mut h = harness();
+    let hold = h
+        .post(h.request(h.pending(h.rent_legs(900), b"hold"), &["post"]))
+        .expect("admitted")
+        .entry_ref();
+    let frontier = h.db.frontier().unwrap();
+    // A hold posted nothing: reversing it is refused and the fix names Voids.
+    let r = h
+        .post(h.request(h.reversal_of(hold, 900, b"rev-hold"), &["post"]))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-050", exit::REFUSAL));
+    assert!(r.fix.contains("Voids"), "{}", r.fix);
+    // An account vertex is not an entry: typed refusal, never a corruption
+    // error, for both laws.
+    let not_an_entry = EntryRef {
+        vid: h.cash,
+        entry_digest: [7; 32],
+    };
+    let r = h
+        .post(h.request(h.reversal_of(not_an_entry, 1, b"rev-acct"), &["post"]))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-050", exit::REFUSAL));
+    let r = h
+        .post(h.request(h.resolution_voids(not_an_entry, b"res-acct"), &["post"]))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-060", exit::REFUSAL));
+    assert_eq!(h.db.frontier().unwrap(), frontier, "refusals write nothing");
+
+    // Resolution(Posts) is a posted entry: its exact side-swap reverses the
+    // posted sub-vector (and recreates no reservation — a Reversal has no
+    // pending block at all).
+    let posted = h
+        .post(h.request(
+            h.resolution_posts(hold, h.rent_legs(600), vec![0, 1], b"res"),
+            &["post"],
+        ))
+        .expect("admitted")
+        .entry_ref();
+    let reversed = h
+        .post(h.request(h.reversal_of(posted, 600, b"rev-res"), &["post"]))
+        .expect("a posted sub-vector reverses");
+    let (rev_ref, _) = committed(&reversed).expect("commits");
+    let (stored, _) = read_entry(&h.db, rev_ref.vid).unwrap().expect("row");
+    assert!(stored.proposal.pending.is_none());
+    assert_eq!(stored.proposal.legs.len(), 2);
+    // A release posted nothing and is final.
+    let hold_2 = h
+        .post(h.request(h.pending(h.rent_legs(50), b"hold-2"), &["post"]))
+        .expect("admitted")
+        .entry_ref();
+    let void_ref = h
+        .post(h.request(h.resolution_voids(hold_2, b"void-2"), &["post"]))
+        .expect("admitted")
+        .entry_ref();
+    let r = h
+        .post(h.request(h.reversal_of(void_ref, 50, b"rev-void"), &["post"]))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-050", exit::REFUSAL));
+}
+
+#[test]
+fn rich_leg_fields_without_a_law_are_refused_not_admitted() {
+    let mut h = harness();
+    let frontier = h.db.frontier().unwrap();
+    let base = h.proposal(h.rent_legs(10), b"rich", EntryClass::ORIGINAL);
+    let mut settles = base.clone();
+    settles.legs[0].settles = vec![fa_model::Settlement {
+        target: EntryRef {
+            vid: VId(1),
+            entry_digest: [0; 32],
+        },
+        ordinal: 0,
+        amount: Amount::new(h.usd, 10),
+    }];
+    let mut converted = base.clone();
+    converted.legs[0].base_amount = Some(Amount::new(h.usd, 10));
+    let mut dimensioned = base;
+    dimensioned.legs[0].dimension_set = vec![(1, VId(99))];
+    for (what, p) in [
+        ("settles", settles),
+        ("base_amount", converted),
+        ("dimension_set", dimensioned),
+    ] {
+        let r = h.post(h.request(p, &["post"])).unwrap_err();
+        assert_eq!((r.code, r.exit), ("FA-REF-102", exit::REFUSAL), "{what}");
+        assert!(r.message.contains(what), "{what}: {}", r.message);
+    }
+    assert_eq!(h.db.frontier().unwrap(), frontier, "refusals write nothing");
 }

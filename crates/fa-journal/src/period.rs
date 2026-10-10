@@ -116,6 +116,7 @@ pub async fn transition_period<V: asupersync::fs::Vfs + Clone>(
         supersession: Vec::new(),
         pending: None,
         external_ids: Vec::new(),
+        extensions: Vec::new(),
         tags: Vec::new(),
     };
     let entry = proposal.seal(Vec::new(), None)?;

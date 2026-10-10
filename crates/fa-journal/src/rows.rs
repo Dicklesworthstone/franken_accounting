@@ -73,6 +73,17 @@ pub fn reversal_vid(target: VId) -> VId {
     vid_from(h)
 }
 
+/// `vid(Resolution) = H("fa:vid:resolution:v1" ‖ pending_vid)` (plan §5.4):
+/// one resolution per pending entry, so a manual void racing the sweep is a
+/// point conflict on the identity, never a double release.
+#[must_use]
+pub fn resolution_vid(pending: VId) -> VId {
+    let mut h = Hasher::new();
+    h.update(b"fa:vid:resolution:v1");
+    h.update(&pending.0.to_le_bytes());
+    vid_from(h)
+}
+
 /// `vid(Leg) = H("fa:vid:leg:v1" ‖ entry_vid ‖ ordinal)`.
 #[must_use]
 pub fn leg_vid(entry: VId, ordinal: u16) -> VId {

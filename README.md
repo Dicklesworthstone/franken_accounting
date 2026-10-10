@@ -13,9 +13,30 @@
 
 </div>
 
-> **Status (2026-10-09): plan stage.** This repository currently contains the comprehensive design plan, the agent operating rules, and the repository scaffolding. There is no code yet. Implementation begins with Gate G0 (the constitutional registries) per §19 of the plan, after the plan's review rounds reach steady-state and are converted to beads.
+> **Status (2026-10-10): implementation in progress.** The Rust workspace includes the embedded library and persistent CLI, exact money and calendar primitives, chart installation, period transitions, basic posting/reversal, register folds and verification, and an independent arithmetic oracle. Reporting supports stock balances, period activity, civil-date cutoffs and historical commit-sequence snapshots. Gate G0 and the full Genesis acceptance criteria remain open; the daemon/MCP, certified reports, offline bundles and the broader workflows below are design targets.
 
 > **A note on tense.** The rest of this README is written in the **present tense, as if the entire design in [`COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md`](./COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md) is fully realized**: the 1.0 target state. This is deliberate — it describes the *finished* system so it gets trued-up in place as milestones land (§19's gates G1→G4) rather than rewritten later. Where the plan stages something as future work, this README says so plainly.
+
+### Reporting available now
+
+For a book with posted entries, the current CLI supports:
+
+```bash
+# Includes opening history and all postings through the period's last day.
+fa tb --book ./books/acme --period FY2026-P03 --json
+# Movement in exactly this period; repeated period selectors count once.
+fa tb --book ./books/acme --period FY2026-P03 --activity --json
+# Effective dates through March 15, using the journal as it stood at sequence 42.
+fa tb --book ./books/acme --as-of 2026-03-15 --as-known-at 42 --json
+fa verify registers --book ./books/acme --period FY2026-P03 --json
+fa registers materialize --book ./books/acme --period FY2026-P03 --json
+```
+
+Omitting `--as-known-at` selects the current head; the response records the resolved sequence. A later backdated entry appears at head but cannot change a report at an earlier sequence. Instant selectors require TimeEvidence and are currently refused. These reports are exact payload folds; report certificates and independent offline verification are still pending. The [persistent CLI tests](./crates/fa-cli/tests/cli.rs) exercise book creation, chart installation, posting, reporting, refusals and recovery with the actual binary.
+
+Reports show posted and pending amounts separately. A hold reserves its original period; a later partial posting releases the entire hold and posts only the explicitly selected sub-vector in the resolution's period. A void releases the hold without posting. Earlier recorded snapshots still show the unresolved reservation. Timed expiry and account availability limits remain unfinished.
+
+Register verification compares both amount columns, counts, identity, period membership, watermark and fold checksum against the journal payloads. Rebuilding repairs derived rows and retires phantom cells without changing journal entries. Existing register caches from before the pending-column format must be rebuilt; their missing columns are reported as drift rather than assumed to be zero.
 
 ---
 
@@ -209,7 +230,7 @@ What it is **not**: an ERP, a payments processor, a UI, a tax engine or GAAP int
 | Agent-native surface | CLI robot mode + MCP | client libraries | ✗ | REST/GraphQL | ✗ |
 | System of record custody | yours (a directory) | yours | vendor/on-prem | SaaS | yours |
 
-> **Target state.** The `franken_accounting` column is the design target; nothing is implemented yet. Several substrate capabilities it relies on (valid-time contracts, branch fork/merge, Ripple views, escrow, the MMR, the UDF VM) are planned in FrankenGraphDB and have registered interim postures in the plan's Appendix H.
+> **Target state.** The `franken_accounting` column is the complete design target, beyond the implemented subset described above. Several substrate capabilities it relies on (valid-time contracts, branch fork/merge, Ripple views, escrow, the MMR, the UDF VM) are planned in FrankenGraphDB and have registered interim postures in the plan's Appendix H.
 
 ---
 

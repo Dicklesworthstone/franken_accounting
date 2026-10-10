@@ -101,6 +101,10 @@ symbols!(
         (CALENDAR_ID, "calendar_id", 34),
         (EFFECTIVE_PERIOD, "effective_period", 35),
         (PROPOSAL_DIGEST, "proposal_digest", 36),
+        (DEBITS_PENDING, "debits_pending", 37),
+        (CREDITS_PENDING, "credits_pending", 38),
+        (PENDING_COUNT, "pending_count", 39),
+        (DISPOSITION, "disposition", 40),
     ]
 );
 

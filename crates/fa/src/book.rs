@@ -229,6 +229,9 @@ impl BookError {
     #[must_use]
     pub fn exit(&self) -> u8 {
         match self {
+            Self::Registers(fa_registers::RegisterError::InvalidSelection(_)) => {
+                fa_journal::exit::USAGE
+            }
             Self::Runtime(_) | Self::Open(_) | Self::Io(..) | Self::KeyFile(_) | Self::NoBook => {
                 fa_journal::exit::ENVIRONMENT
             }
@@ -541,9 +544,44 @@ impl Book {
         Ok(with_store!(&self.store, db => fa_registers::verify_period(db, &self.ctx, period_code))?)
     }
 
-    /// The trial balance over the named periods.
+    /// Stock balances from inception through the latest selected period's end.
     pub fn trial_balance(&self, periods: &[String]) -> Result<TrialBalance, BookError> {
-        Ok(with_store!(&self.store, db => fa_registers::trial_balance(db, &self.ctx, periods))?)
+        self.trial_balance_at(periods, None)
+    }
+
+    /// Stock balances through the latest selected period, at a recorded frontier.
+    /// `None` selects the current head; the result records the resolved sequence.
+    pub fn trial_balance_at(
+        &self,
+        periods: &[String],
+        known_at: Option<CommitSeq>,
+    ) -> Result<TrialBalance, BookError> {
+        Ok(
+            with_store!(&self.store, db => fa_registers::trial_balance_at(db, &self.ctx, periods, known_at))?,
+        )
+    }
+
+    /// Stock balances through an inclusive civil date, including opening history.
+    pub fn balance_as_of(
+        &self,
+        day: DateDay,
+        known_at: Option<CommitSeq>,
+    ) -> Result<TrialBalance, BookError> {
+        Ok(
+            with_store!(&self.store, db => fa_registers::balance_as_of(db, &self.ctx, day, known_at))?,
+        )
+    }
+
+    /// Literal movements in the selected periods, with each period counted once.
+    /// This does not apply income-statement class exclusions.
+    pub fn period_activity(
+        &self,
+        periods: &[String],
+        known_at: Option<CommitSeq>,
+    ) -> Result<TrialBalance, BookError> {
+        Ok(
+            with_store!(&self.store, db => fa_registers::period_activity(db, &self.ctx, periods, known_at))?,
+        )
     }
 }
 
@@ -649,6 +687,7 @@ mod tests {
             supersession: Vec::new(),
             pending: None,
             external_ids: Vec::new(),
+            extensions: Vec::new(),
             tags: Vec::new(),
         };
         book.post(PostRequest {

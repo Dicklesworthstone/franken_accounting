@@ -40,10 +40,19 @@ use crate::ids::{ApprovalRef, EntryRef, Id128, Oid, PeriodRef, TypedRef};
 use crate::limits::*;
 
 pub const SCHEMA_MAJOR: u16 = 1;
-pub const SCHEMA_MINOR: u16 = 0;
+/// The highest additive minor this reader understands in full. Minor 0 is
+/// the original layout; minor 1 appends the extension block. A writer may
+/// emit any minor ≤ this; bytes at a higher minor decode with their unknown
+/// extension tags preserved and skipped.
+pub const SCHEMA_MINOR: u16 = 1;
+/// The first minor whose layout carries the trailing extension block.
+pub const EXTENSIONS_MINOR: u16 = 1;
 pub const PROPOSAL_DIGEST_DOMAIN: &[u8] = b"fa:entry-proposal:v1";
 pub const ENTRY_DIGEST_DOMAIN: &[u8] = b"fa:entry:v1";
 pub const SEMANTIC_DIGEST_DOMAIN: &[u8] = b"fa:entry-semantic:v1";
+/// Extension tags this reader understands (none yet). A payload at a higher
+/// `schema_minor` may carry others; they are preserved and skipped.
+pub const KNOWN_EXTENSION_TAGS: &[u16] = &[];
 
 // ---------------------------------------------------------------------------
 // Entry classes (registries/entry_classes.toml, compiled)
@@ -609,6 +618,10 @@ pub enum ControlPayload {
         kind: u8,
         tie_out_digest: [u8; 32],
     },
+    /// The control payload of a `Resolution(Voids | Expires)`: the release of
+    /// a Pending's reservations. Target and disposition ride in `pending`
+    /// (plan §5.4). Tag 11; never valid on a control class.
+    ReservationRelease,
 }
 
 impl ControlPayload {
@@ -717,6 +730,9 @@ impl ControlPayload {
             } => {
                 w.u8(10).u128(run_ref.0).u8(*kind).fixed(tie_out_digest);
             }
+            Self::ReservationRelease => {
+                w.u8(11);
+            }
         }
     }
 
@@ -789,6 +805,7 @@ impl ControlPayload {
                 kind: r.u8("control.kind")?,
                 tie_out_digest: r.fixed("control.tie_out_digest")?,
             },
+            11 => Self::ReservationRelease,
             t => return Err(r.bad_tag("control.tag", t)),
         })
     }
@@ -823,9 +840,16 @@ impl ControlPayload {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Disposition {
-    Posts { posted_legs: Vec<LegPayload> },
+    /// The posted sub-vector is `Entry.legs`; `source_ordinals` is parallel to
+    /// it and names, strictly ascending, the original pending leg each posted
+    /// leg draws down (plan §5.4).
+    Posts {
+        source_ordinals: Vec<u16>,
+    },
     Voids,
-    Expires { at_tick: u64 },
+    Expires {
+        at_tick: u64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -965,6 +989,13 @@ pub struct EntryPayload {
     pub external_ids: Vec<ExternalId>,
     /// Sorted strictly by `key`.
     pub tags: Vec<Tag>,
+    /// Additive-minor extensions: `(tag, bytes)` strictly ascending by tag.
+    /// A reader at this crate's minor admits only registered tags
+    /// (`KNOWN_EXTENSION_TAGS`); a payload written at a higher minor may carry
+    /// tags this reader does not know, which it preserves byte-for-byte (the
+    /// digests cover them) and skips in meaning. Fields land here first and
+    /// move into the positional layout only at a major bump.
+    pub extensions: Vec<(u16, Vec<u8>)>,
 }
 
 impl EntryPayload {
@@ -1015,7 +1046,67 @@ impl EntryPayload {
                         "a control class carries a control payload",
                     ));
                 }
+                Some(ControlPayload::ReservationRelease) => {
+                    return Err(invalid(
+                        "control",
+                        "ReservationRelease rides only a Resolution",
+                    ));
+                }
                 Some(c) => c.validate()?,
+            }
+            if self.pending.is_some() {
+                return Err(invalid(
+                    "pending",
+                    "a control class carries no pending block",
+                ));
+            }
+        } else if self.class == EntryClass::RESOLUTION {
+            // Disposition-sensitive arity (plan §5.4).
+            let Some(Pending {
+                timeout_ns: None,
+                resolution_of: Some(_),
+                disposition: Some(disposition),
+            }) = &self.pending
+            else {
+                return Err(invalid(
+                    "pending",
+                    "a Resolution names resolution_of and a disposition, and carries no timeout",
+                ));
+            };
+            match disposition {
+                Disposition::Posts { source_ordinals } => {
+                    if self.control.is_some() {
+                        return Err(invalid(
+                            "control",
+                            "Resolution(Posts) carries no control payload",
+                        ));
+                    }
+                    if self.legs.len() < 2 || self.legs.len() > MAX_LEGS_PER_ENTRY {
+                        return Err(invalid(
+                            "legs",
+                            "Resolution(Posts) posts a balanced sub-vector of at least two legs",
+                        ));
+                    }
+                    if source_ordinals.len() != self.legs.len()
+                        || !strictly_ascending(source_ordinals, |o| *o)
+                    {
+                        return Err(invalid(
+                            "pending.disposition",
+                            "source_ordinals is parallel to legs and strictly ascending",
+                        ));
+                    }
+                }
+                Disposition::Voids | Disposition::Expires { .. } => {
+                    if !self.legs.is_empty() {
+                        return Err(invalid("legs", "Resolution(Voids|Expires) carries no legs"));
+                    }
+                    if self.control != Some(ControlPayload::ReservationRelease) {
+                        return Err(invalid(
+                            "control",
+                            "Resolution(Voids|Expires) carries control = ReservationRelease",
+                        ));
+                    }
+                }
             }
         } else {
             if self.control.is_some() {
@@ -1030,6 +1121,61 @@ impl EntryPayload {
             if self.legs.len() > MAX_LEGS_PER_ENTRY {
                 return Err(invalid("legs", "exceeds max_legs_per_entry"));
             }
+            match (&self.pending, self.class == EntryClass::PENDING) {
+                (None, false) => {}
+                (
+                    Some(Pending {
+                        resolution_of: None,
+                        disposition: None,
+                        ..
+                    }),
+                    true,
+                ) => {}
+                (Some(_), true) => {
+                    return Err(invalid(
+                        "pending",
+                        "a Pending carries neither resolution_of nor a disposition",
+                    ));
+                }
+                (Some(_), false) => {
+                    return Err(invalid(
+                        "pending",
+                        "only Pending and Resolution carry a pending block",
+                    ));
+                }
+                (None, true) => {
+                    return Err(invalid("pending", "a Pending carries a pending block"));
+                }
+            }
+        }
+        if self.extensions.len() > MAX_EXTENSIONS
+            || self
+                .extensions
+                .iter()
+                .any(|(_, b)| b.len() > MAX_EXTENSION_BYTES)
+            || !strictly_ascending(&self.extensions, |(t, _)| *t)
+        {
+            return Err(invalid(
+                "extensions",
+                "must be strictly ascending by tag and within max_extensions / max_extension_bytes",
+            ));
+        }
+        if self.schema_minor < EXTENSIONS_MINOR && !self.extensions.is_empty() {
+            return Err(invalid(
+                "extensions",
+                "a minor-0 payload has no extension block; write schema_minor >= 1",
+            ));
+        }
+        if self.schema_minor <= SCHEMA_MINOR
+            && self
+                .extensions
+                .iter()
+                .any(|(t, _)| !KNOWN_EXTENSION_TAGS.contains(t))
+        {
+            return Err(invalid(
+                "extensions",
+                "an unregistered extension tag at this schema minor",
+            ));
         }
         for leg in &self.legs {
             leg.validate()?;
@@ -1082,18 +1228,6 @@ impl EntryPayload {
                 "supersession",
                 "exceeds max_supersession_per_entry",
             ));
-        }
-        if let Some(Pending {
-            disposition: Some(Disposition::Posts { posted_legs }),
-            ..
-        }) = &self.pending
-        {
-            if posted_legs.len() > MAX_LEGS_PER_ENTRY {
-                return Err(invalid("pending.disposition", "exceeds max_legs_per_entry"));
-            }
-            for leg in posted_legs {
-                leg.validate()?;
-            }
         }
         if self.external_ids.len() > MAX_EXTERNAL_IDS
             || self
@@ -1182,9 +1316,13 @@ impl EntryPayload {
                     None => {
                         w.u8(0);
                     }
-                    Some(Disposition::Posts { posted_legs }) => {
-                        w.u8(1).u8(0);
-                        w.list(posted_legs, |w, l| l.encode(w, sink));
+                    Some(Disposition::Posts { source_ordinals }) => {
+                        // Tag 3: the sub-vector representation of plan §5.4.
+                        // Tag 0 (`posted_legs`) is retired, never reread.
+                        w.u8(1).u8(3);
+                        w.list(source_ordinals, |w, o| {
+                            w.u16(*o);
+                        });
                     }
                     Some(Disposition::Voids) => {
                         w.u8(1).u8(1);
@@ -1203,6 +1341,11 @@ impl EntryPayload {
             w.str(&t.key);
             sink.erasable(w, &t.value, MAX_TAG_BYTES_VALUE + 1);
         });
+        if self.schema_minor >= EXTENSIONS_MINOR {
+            w.list(&self.extensions, |w, (tag, bytes)| {
+                w.u16(*tag).bytes(bytes);
+            });
+        }
     }
 
     fn decode_from(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
@@ -1274,13 +1417,21 @@ impl EntryPayload {
                 resolution_of: r.opt("pending.resolution_of", EntryRef::decode)?,
                 disposition: r.opt("pending.disposition", |r| {
                     Ok(match r.u8("disposition.tag")? {
-                        0 => Disposition::Posts {
-                            posted_legs: r.list(
+                        3 => Disposition::Posts {
+                            source_ordinals: r.list(
                                 MAX_LEGS_PER_ENTRY,
-                                "disposition.posted_legs",
-                                LegPayload::decode,
+                                "disposition.source_ordinals",
+                                |r| r.u16("disposition.source_ordinal"),
                             )?,
                         },
+                        // The retired `posted_legs` representation: no kernel
+                        // ever admitted it, so it is refused rather than read.
+                        0 => {
+                            return Err(r.bad_tag(
+                                "disposition.tag (retired posted_legs representation)",
+                                0,
+                            ));
+                        }
                         1 => Disposition::Voids,
                         2 => Disposition::Expires {
                             at_tick: r.u64("disposition.at_tick")?,
@@ -1302,6 +1453,17 @@ impl EntryPayload {
                 value: Erasable::decode(r, MAX_TAG_BYTES_VALUE + 1)?,
             })
         })?;
+        // Minor 0 bytes end at `tags`; the extension block exists from minor 1.
+        let extensions = if schema_minor >= EXTENSIONS_MINOR {
+            r.list(MAX_EXTENSIONS, "extensions", |r| {
+                Ok((
+                    r.u16("extension.tag")?,
+                    r.bytes(MAX_EXTENSION_BYTES, "extension.bytes")?.to_vec(),
+                ))
+            })?
+        } else {
+            Vec::new()
+        };
         Ok(Self {
             schema_minor,
             book_id,
@@ -1324,6 +1486,7 @@ impl EntryPayload {
             pending,
             external_ids,
             tags,
+            extensions,
         })
     }
 
@@ -1541,6 +1704,7 @@ mod tests {
             supersession: Vec::new(),
             pending: None,
             external_ids: Vec::new(),
+            extensions: Vec::new(),
             tags: vec![Tag {
                 key: "cost_center".into(),
                 value: Erasable::seal(&TagValue::Text("HQ".into()), None, &KEY, [5; 32], [6; 24]),
@@ -1916,13 +2080,13 @@ mod tests {
             [3; 24],
         ));
         p.pending = Some(Pending {
-            timeout_ns: Some(5),
+            timeout_ns: None,
             resolution_of: Some(EntryRef {
                 vid: VId(3),
                 entry_digest: [3; 32],
             }),
             disposition: Some(Disposition::Posts {
-                posted_legs: two_legs(),
+                source_ordinals: vec![0, 1],
             }),
         });
         p.supersession = vec![Supersession {
@@ -1982,12 +2146,151 @@ mod tests {
         }
     }
 
-    /// Golden vector: the digests of a fixed proposal are pinned so a codec
-    /// change that moves bytes fails here before it reaches a book.
+    /// Additive-minor law: an unknown extension tag is refused at this
+    /// reader's minor, preserved byte-for-byte at a higher one, and covered
+    /// by the digests either way.
     #[test]
-    fn digest_golden_vector() {
-        let e = proposal(two_legs()).seal(vec![], None).unwrap();
+    fn extensions_follow_the_additive_minor_law() {
+        let mut p = proposal(two_legs());
+        p.extensions = vec![(7, vec![1, 2, 3])];
+        assert!(matches!(
+            p.validate().unwrap_err(),
+            EntryError::Invalid {
+                what: "extensions",
+                ..
+            }
+        ));
+        p.schema_minor = SCHEMA_MINOR + 1;
+        let e = p.clone().seal(vec![], None).unwrap();
+        let back = Entry::decode(&e.encode().unwrap()).unwrap();
+        assert_eq!(back.proposal.extensions, vec![(7, vec![1, 2, 3])]);
+        let mut q = p.clone();
+        q.extensions = vec![(7, vec![1, 2, 4])];
+        assert_ne!(q.proposal_digest().unwrap(), p.proposal_digest().unwrap());
+        let mut unsorted = p.clone();
+        unsorted.extensions = vec![(9, vec![]), (7, vec![])];
+        assert!(unsorted.validate().is_err());
+    }
+
+    /// Disposition-sensitive arity (plan §5.4): a Pending carries a bare
+    /// pending block; Resolution(Posts) posts a sub-vector with parallel
+    /// ordinals; Resolution(Voids) carries no legs and the ReservationRelease
+    /// control, which no control class may carry.
+    #[test]
+    fn pending_and_resolution_shapes_are_enforced() {
+        let target = EntryRef {
+            vid: VId(3),
+            entry_digest: [3; 32],
+        };
+        let bare = Pending {
+            timeout_ns: None,
+            resolution_of: None,
+            disposition: None,
+        };
+        let mut pending = proposal(two_legs());
+        pending.class = EntryClass::PENDING;
+        assert!(matches!(
+            pending.validate().unwrap_err(),
+            EntryError::Invalid {
+                what: "pending",
+                ..
+            }
+        ));
+        pending.pending = Some(bare.clone());
+        pending.validate().unwrap();
+
+        let mut posts = proposal(two_legs());
+        posts.class = EntryClass::RESOLUTION;
+        posts.pending = Some(Pending {
+            timeout_ns: None,
+            resolution_of: Some(target),
+            disposition: Some(Disposition::Posts {
+                source_ordinals: vec![0, 1],
+            }),
+        });
+        posts.validate().unwrap();
+        let mut timed = posts.clone();
+        timed.pending = Some(Pending {
+            timeout_ns: Some(5),
+            resolution_of: Some(target),
+            disposition: Some(Disposition::Posts {
+                source_ordinals: vec![0, 1],
+            }),
+        });
+        assert!(matches!(
+            timed.validate().unwrap_err(),
+            EntryError::Invalid {
+                what: "pending",
+                ..
+            }
+        ));
+        let mut bad = posts.clone();
+        bad.pending = Some(Pending {
+            timeout_ns: None,
+            resolution_of: Some(target),
+            disposition: Some(Disposition::Posts {
+                source_ordinals: vec![1],
+            }),
+        });
+        assert!(matches!(
+            bad.validate().unwrap_err(),
+            EntryError::Invalid {
+                what: "pending.disposition",
+                ..
+            }
+        ));
+
+        let mut voids = proposal(vec![]);
+        voids.class = EntryClass::RESOLUTION;
+        voids.pending = Some(Pending {
+            timeout_ns: None,
+            resolution_of: Some(target),
+            disposition: Some(Disposition::Voids),
+        });
+        assert!(matches!(
+            voids.validate().unwrap_err(),
+            EntryError::Invalid {
+                what: "control",
+                ..
+            }
+        ));
+        voids.control = Some(ControlPayload::ReservationRelease);
+        voids.validate().unwrap();
+        let e = voids.clone().seal(vec![], None).unwrap();
+        assert_eq!(Entry::decode(&e.encode().unwrap()).unwrap(), e);
+
+        let mut on_control = voids;
+        on_control.class = EntryClass::PERIOD_CONTROL;
+        on_control.pending = None;
+        assert!(matches!(
+            on_control.validate().unwrap_err(),
+            EntryError::Invalid {
+                what: "control",
+                ..
+            }
+        ));
+
+        let mut stray = proposal(two_legs());
+        stray.pending = Some(bare);
+        assert!(matches!(
+            stray.validate().unwrap_err(),
+            EntryError::Invalid {
+                what: "pending",
+                ..
+            }
+        ));
+    }
+
+    /// Golden vectors: the digests of a fixed proposal are pinned so a codec
+    /// change that moves bytes fails here before it reaches a book. The
+    /// minor-0 vector is the original layout and is never re-pinned; the
+    /// minor-1 vector adds the (empty) extension block of fa-rqe.
+    #[test]
+    fn digest_golden_vectors_per_minor() {
         let hex = |d: [u8; 32]| d.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let mut p = proposal(two_legs());
+        p.schema_minor = 0;
+        let e = p.clone().seal(vec![], None).unwrap();
         assert_eq!(
             (hex(e.proposal_digest), hex(e.entry_digest)),
             (
@@ -1995,5 +2298,26 @@ mod tests {
                 "3be6122714342ee45b11fda3e107965bbb25778ec942654a4347ca5a31e18b8a".to_string()
             )
         );
+        let minor0 = e.encode().unwrap();
+        p.schema_minor = 1;
+        let e1 = p.seal(vec![], None).unwrap();
+        assert_eq!(
+            (hex(e1.proposal_digest), hex(e1.entry_digest)),
+            (
+                "507387780770c1f354bef0cd009cce6e8142bbd22de4793770dcdbb8abcc0ad3".to_string(),
+                "b61584c562d45095a4bf212cb0ec1fa5752cb1bb67b9f8c52398dfb3ff6da64e".to_string()
+            )
+        );
+        // Minor 1 is minor 0 plus exactly the empty extension block; both
+        // decode, and the minor-0 bytes decode without any extension field.
+        assert_eq!(Entry::decode(&minor0).unwrap(), e);
+        assert!(
+            Entry::decode(&minor0)
+                .unwrap()
+                .proposal
+                .extensions
+                .is_empty()
+        );
+        assert_eq!(Entry::decode(&e1.encode().unwrap()).unwrap(), e1);
     }
 }

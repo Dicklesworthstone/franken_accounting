@@ -23,6 +23,8 @@ pub const VALUE_FLAGS: &[&str] = &[
     "--adjustment-periods",
     "--fiscal-year",
     "--period",
+    "--as-of",
+    "--as-known-at",
     "--intent",
     "--as",
     "--grant",
@@ -31,7 +33,14 @@ pub const VALUE_FLAGS: &[&str] = &[
     "--to",
     "--date",
 ];
-pub const SWITCHES: &[&str] = &["--json", "--yes", "--help", "--version", "--no-color"];
+pub const SWITCHES: &[&str] = &[
+    "--json",
+    "--yes",
+    "--help",
+    "--version",
+    "--no-color",
+    "--activity",
+];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UsageError {
