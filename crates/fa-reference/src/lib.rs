@@ -15,6 +15,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod sod;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use fa_registry::{Admissibility, Decision, EntryClasses};

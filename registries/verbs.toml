@@ -289,7 +289,7 @@ fields = ["exit:int", "message:string", "detail:any"]
 [[event]]
 name = "capabilities"
 doc = "What this build can do."
-fields = ["version:string", "verbs:[string]", "aliases:[alias]", "exit_codes:[exit_code]", "entry_classes:[string]", "robot_mode:robot_mode", "stdout:string", "stderr:string", "tui:bool"]
+fields = ["version:string", "verbs:[string]", "aliases:[alias]", "exit_codes:[exit_code]", "entry_classes:[string]", "robot_mode:robot_mode", "stdout:string", "stderr:string", "tui:bool", "capability:capability_model"]
 
 [[event]]
 name = "robot_docs"
@@ -409,6 +409,21 @@ fields = ["code:int", "name:string", "meaning:string"]
 name = "robot_mode"
 doc = "How to switch on robot mode and where the schema lives."
 fields = ["flag:string", "envelope:string", "schema:string"]
+
+[[shape]]
+name = "capability_model"
+doc = "The capability model this build enforces (plan §14.2, §14.4): the closed op vocabulary, the base profiles and the ops each can never hold, the caveats' semantics, the embedded posture's binding, and the digest of the policy (sod_policy.toml) a PolicyActivation must name."
+fields = ["ops:[string]", "profiles:[capability_profile]", "ceilings:text", "expiry:text", "agent_trunk:text", "binding:capability_binding", "policy_oid:hex"]
+
+[[shape]]
+name = "capability_profile"
+doc = "A base profile and the ops a capability under it can never hold."
+fields = ["name:string", "forbidden_ops:[string]"]
+
+[[shape]]
+name = "capability_binding"
+doc = "How the embedded posture binds a capability: --as names the principal, --grant self-issues ops; Human profile, no ceilings, no expiry."
+fields = ["flags:[string]", "profile:string", "ceilings:[string]", "expires_at:seq?", "trust_boundary:text"]
 
 [[shape]]
 name = "envelope_doc"

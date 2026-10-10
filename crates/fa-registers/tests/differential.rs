@@ -325,7 +325,7 @@ fn kernel_post_raw(
         proposal,
         approvals: Vec::new(),
         plan_certificate: None,
-        capability: Capability::with_ops(&ops),
+        capability: Capability::embedded(PRINCIPAL, &ops).expect("registered ops"),
     };
     let ctx = k.ctx();
     let db = &mut k.db;

@@ -208,6 +208,26 @@ fn capabilities_and_robot_docs_are_in_tool() {
             && !out.contains("\"code\":1,"),
         "{out}"
     );
+    // The capability model (fa-llx): the closed op vocabulary, the profiles
+    // and what each can never hold, and the embedded binding's trust boundary.
+    let caps = doc(&out);
+    let model = caps.get("capability").expect("capability section");
+    let ops: Vec<&str> = arr(model, "ops").iter().filter_map(Json::as_str).collect();
+    assert_eq!(ops.len(), 21, "{ops:?}");
+    assert!(ops.contains(&"post_closed") && ops.contains(&"rule_change"));
+    let agent = arr(model, "profiles")
+        .iter()
+        .find(|p| text(p, "name") == "Agent")
+        .expect("Agent profile");
+    let forbidden: Vec<&str> = arr(agent, "forbidden_ops")
+        .iter()
+        .filter_map(Json::as_str)
+        .collect();
+    assert!(forbidden.contains(&"approve") && forbidden.contains(&"restate"));
+    let binding = model.get("binding").expect("binding");
+    assert_eq!(text(binding, "profile"), "Human");
+    assert!(text(binding, "trust_boundary").contains("never authenticates"));
+    assert_eq!(text(model, "policy_oid").len(), 64);
     let (code, out, _) = fa(None, &["robot-docs", "exit-codes"]);
     assert_eq!(code, 0);
     assert!(
@@ -216,6 +236,67 @@ fn capabilities_and_robot_docs_are_in_tool() {
     );
     let (code, _, _) = fa(None, &["robot-docs", "guide"]);
     assert_eq!(code, 0);
+}
+
+#[test]
+fn a_grant_typo_is_a_usage_error_naming_the_op_never_a_silently_held_string() -> std::io::Result<()>
+{
+    let dir = tmp("grant-typo")?;
+    let book = dir.join("book");
+    assert_eq!(
+        fa(Some(&book), &["book", "create", "--name", "Grant Co"]).0,
+        0
+    );
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    assert_eq!(fa(Some(&book), &["chart", "import", &chart]).0, 0);
+    assert_eq!(
+        fa(Some(&book), &["period", "create", "--fiscal-year", "2026"]).0,
+        0
+    );
+    assert_eq!(fa(Some(&book), &["period", "open", "FY2026-P03"]).0, 0);
+    let ev = source_doc(&dir, &book);
+    let intent = write(
+        &dir,
+        "entry.json",
+        r#"{"effective_date":"2026-03-15","description":"rent","idempotency_key":"g-1","legs":[{"side":"debit","account":"6000","amount":"10.00 USD"},{"side":"credit","account":"1000","amount":"10.00 USD"}]}"#,
+    );
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "post",
+            "--intent",
+            &intent,
+            "--evidence",
+            &ev,
+            "--grant",
+            "post_clsoed",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("\"event\":\"usage_error\""), "{out}");
+    assert!(out.contains("did you mean `post_closed`"), "{out}");
+    // Nothing was posted; the corrected grant posts.
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "post",
+            "--intent",
+            &intent,
+            "--evidence",
+            &ev,
+            "--grant",
+            "post_closed",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("\"event\":\"posted\""), "{out}");
+    Ok(())
 }
 
 #[test]
@@ -2073,4 +2154,156 @@ fn human_explain_shows_released_only_history_and_an_untouched_account_is_empty()
         "{empty}"
     );
     Ok(())
+}
+
+/// Every policy refusal's fix names only verbs and flags this build
+/// registers (fa-llx, review D-L1): a fix an agent copies must run. One
+/// instance of every `fa_policy::Denial` variant; each `fa <verb>` must be a
+/// registered verb, and each `--flag` a global flag or switch or one some verb
+/// accepts. The match below is exhaustive, so a new variant fails to compile
+/// until it is listed here.
+#[test]
+fn policy_refusal_fixes_name_only_registered_verbs_and_flags() {
+    use fa_policy::{Denial, Op, Profile};
+    use fgdb_types::{CommitSeq, VId};
+    let reg = registry().expect("verbs.toml");
+    let rule = || "adjusting-closed".to_string();
+    let all = vec![
+        Denial::NotHolder {
+            holder: VId(1),
+            principal: VId(2),
+        },
+        Denial::MissingOp {
+            op: Op::PostClosed,
+            what: "posting".into(),
+        },
+        Denial::AgentOnTrunk,
+        Denial::Expired {
+            expires_at: CommitSeq(3),
+            at: CommitSeq(4),
+        },
+        Denial::CeilingExceeded {
+            leg: 0,
+            unit: fa_money::UnitId(0),
+            mantissa: 2,
+            ceiling: 1,
+        },
+        Denial::UnboundedUnit {
+            leg: 0,
+            unit: fa_money::UnitId(1),
+        },
+        Denial::SelfApproval {
+            rule: rule(),
+            approver: VId(1),
+        },
+        Denial::DuplicateApprover {
+            rule: rule(),
+            approver: VId(1),
+        },
+        Denial::ApproverProfile {
+            rule: rule(),
+            approver: VId(1),
+            profile: Profile::Agent,
+            allowed: vec!["Human".into()],
+        },
+        Denial::ApproverOp {
+            rule: rule(),
+            approver: VId(1),
+            recorded: Op::Verify,
+            required: "approve".into(),
+        },
+        Denial::HumanApproversRequired {
+            rule: rule(),
+            required: 1,
+            supplied: 0,
+        },
+        Denial::UnsupportedExclusion {
+            rule: rule(),
+            exclusion: "case_preparer".into(),
+        },
+        Denial::TooFewApprovals {
+            rule: rule(),
+            required: 1,
+            supplied: 0,
+        },
+        Denial::ApprovalBinding { index: 0 },
+        Denial::UnknownApproval {
+            index: 0,
+            approval: VId(9),
+        },
+        Denial::StaleApproval {
+            index: 0,
+            recorded_epoch: 0,
+            current_epoch: 1,
+        },
+        Denial::UnsupportedPolicy {
+            cited: [0xab; 32],
+            enforced: [0xcd; 32],
+        },
+    ];
+    // Exhaustiveness: listing a variant above is enforced by this match.
+    for d in &all {
+        match d {
+            Denial::NotHolder { .. }
+            | Denial::MissingOp { .. }
+            | Denial::AgentOnTrunk
+            | Denial::Expired { .. }
+            | Denial::CeilingExceeded { .. }
+            | Denial::UnboundedUnit { .. }
+            | Denial::SelfApproval { .. }
+            | Denial::DuplicateApprover { .. }
+            | Denial::ApproverProfile { .. }
+            | Denial::ApproverOp { .. }
+            | Denial::HumanApproversRequired { .. }
+            | Denial::UnsupportedExclusion { .. }
+            | Denial::TooFewApprovals { .. }
+            | Denial::ApprovalBinding { .. }
+            | Denial::UnknownApproval { .. }
+            | Denial::StaleApproval { .. }
+            | Denial::UnsupportedPolicy { .. } => {}
+        }
+    }
+    let verb_names: BTreeSet<&str> = reg.verbs.iter().map(|v| v.name.as_str()).collect();
+    let flag_known = |flag: &str| {
+        reg.global.flags.iter().any(|f| f == flag)
+            || reg.global.switches.iter().any(|f| f == flag)
+            || reg.verbs.iter().any(|v| v.accepts(flag))
+    };
+    let trim = |t: &str| {
+        t.trim_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+            .to_string()
+    };
+    let mut verbs_named = 0;
+    let mut flags_named = 0;
+    for d in &all {
+        let fix = d.fix();
+        let tokens: Vec<String> = fix.split_whitespace().map(trim).collect();
+        for (i, t) in tokens.iter().enumerate() {
+            if t == "fa" {
+                let verb = tokens.get(i + 1).map(String::as_str).unwrap_or("");
+                assert!(
+                    verb_names.contains(verb),
+                    "{} fix names `fa {verb}`, which verbs.toml does not register: {fix}",
+                    d.code()
+                );
+                verbs_named += 1;
+            }
+            if t.starts_with("--") {
+                assert!(
+                    flag_known(t),
+                    "{} fix names `{t}`, which verbs.toml does not register: {fix}",
+                    d.code()
+                );
+                flags_named += 1;
+            }
+        }
+    }
+    // The scan is not vacuous: today's fixes name `fa capabilities --json`,
+    // `--as` and `--grant`.
+    assert!(
+        verbs_named >= 1 && flags_named >= 3,
+        "{verbs_named} {flags_named}"
+    );
+    let agent = Denial::AgentOnTrunk;
+    assert!(agent.cite().contains("fa-s7x"), "{}", agent.cite());
 }

@@ -156,7 +156,7 @@ fn run() -> Result<(), BookError> {
         proposal: p,
         approvals: Vec::new(),
         plan_certificate: None,
-        capability: Capability::with_ops(&["post"]),
+        capability: Capability::embedded(principal, &["post"]).expect("post"),
     };
 
     match book.post(request(proposal))? {

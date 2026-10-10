@@ -225,11 +225,14 @@ impl Harness {
     }
 
     fn request(&self, proposal: EntryPayload, ops: &[&str]) -> PostRequest {
+        // Some tests post as another principal; the capability is that
+        // principal's own (fa-llx: a capability authorizes its holder only).
+        let holder = proposal.principal_ref;
         PostRequest {
             proposal,
             approvals: Vec::new(),
             plan_certificate: None,
-            capability: Capability::with_ops(ops),
+            capability: Capability::embedded(holder, ops).expect("registered ops"),
         }
     }
 

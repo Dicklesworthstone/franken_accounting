@@ -51,30 +51,22 @@ use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 use crate::evidence::{evidenced_by, resolve_evidence};
 use crate::genesis::{BookContext, UnitPolicy};
 use crate::limit::{self, LimitCell, Movement, limit_cell_vid};
+use crate::policy;
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{
     AccountRow, applied_witness, edge_id, leg_vid, mantissa_scalar, prop, resolution_vid,
     reversal_vid, state_from_scalar,
 };
 
-/// The capability ops a principal holds (`post`, `post_softclosed`,
-/// `post_closed`, `close`, `restate`, `migrate`). Steward (plan §14) issues
-/// these; in this slice the facade supplies them.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Capability {
-    pub ops: BTreeSet<String>,
-}
-
-impl Capability {
-    pub fn with_ops(ops: &[&str]) -> Self {
-        Self {
-            ops: ops.iter().map(|s| (*s).to_string()).collect(),
-        }
-    }
-}
+/// The capability a post is authorized under: Steward's typed object
+/// (holder, profile, ops, per-unit ceilings, a declared CommitSeq expiry,
+/// issuer), defined and judged in the laws layer (`fa-policy`, bead fa-llx).
+pub use fa_policy::Capability;
 
 /// One post. **Trust boundary:** `proposal.principal_ref` and `capability`
-/// are the caller's claims. In the embedded posture the calling process is the
+/// are the caller's claims; the kernel checks that they agree (the
+/// capability's holder is the principal) and judges the capability, but it
+/// does not authenticate. In the embedded posture the calling process is the
 /// principal's own agent and that claim is trusted; the daemon/MCP posture must
 /// bind both from an authenticated session before calling `post` (Steward,
 /// bead fa-llx). The kernel never authenticates a caller itself.
@@ -317,16 +309,26 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
             "use `fa period <transition>` or `fa chart import`; control records are not posted",
         )));
     }
-    // 1a. Authorization precedes observation (doctrine 8): the base `post`
-    //     op is required before anything is read, including the identity row.
-    if !req.capability.ops.contains("post") {
-        return Ok(Err(Refusal::new(
-            code::CAPABILITY,
-            exit::SAFETY,
-            "the principal holds no `post` capability",
-            "plan §14.2 (capability caveats precede observation)",
-            "obtain `post` from the book's steward",
-        )));
+    // 1a. Authorization precedes observation (doctrine 8, FA-INV-10): the
+    //     capability is the acting principal's, an Agent profile never
+    //     writes trunk, `post` is held, and every explicit leg is within its
+    //     unit's ceiling — decided by fa-policy from the payload alone,
+    //     before anything is read, including the identity row.
+    let explicit: Vec<(fa_money::UnitId, i128)> = proposal
+        .legs
+        .iter()
+        .map(|l| (l.amount.unit, l.amount.mantissa))
+        .collect();
+    if let Err(d) = fa_policy::admit(
+        &req.capability,
+        &fa_policy::Intent {
+            principal: proposal.principal_ref,
+            trunk: proposal.branch_id == Id128::TRUNK,
+            op: fa_policy::Op::Post,
+            legs: &explicit,
+        },
+    ) {
+        return Ok(Err(policy::refusal(&d)));
     }
     // 1b. The supported subset.
     let is_reversal = proposal.class == EntryClass::REVERSAL;
@@ -540,6 +542,13 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
         }
     };
 
+    // 3'. The capability is current at the admission point (plan §14.2):
+    //     the head this single-writer handle observes immediately before the
+    //     transaction opens; nothing can commit in between.
+    if let Err(d) = fa_policy::current(&req.capability, db.frontier()?) {
+        return Ok(Err(policy::refusal(&d)));
+    }
+
     // From here every read is a witness of this transaction.
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
@@ -569,6 +578,10 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     let state_scalar = txn.vertex_property(db, pvid, property::STATE)?;
     let state = state_from_scalar(state_scalar.as_ref())
         .ok_or_else(|| KernelError::Corrupt(format!("period `{}` state mirror", period.code)))?;
+    // 5'. The security policy epoch, a point witness exactly like the period
+    //     state: an activation that commits first makes this post a
+    //     first-committer-wins conflict (plan §14.2 `current-policy`).
+    let epoch = policy::epoch_witness(&txn, db)?;
     let classes = EntryClasses::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
     let matrix =
         Admissibility::embedded(&classes).map_err(|e| KernelError::Corrupt(e.to_string()))?;
@@ -581,11 +594,14 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
         "admissibility.toml ({class_name}{family}, {})",
         state.name()
     );
-    match matrix.decide_disposition(class_name, state, is_release) {
-        Some(Decision::Admit) => {}
+    let matrix_approvals = match matrix.decide_disposition(class_name, state, is_release) {
+        Some(Decision::Admit) => 0,
         Some(Decision::With { op, approvals }) => {
             let op = op.as_str();
-            if !req.capability.ops.contains(op) {
+            let needed = fa_policy::Op::from_name(op).ok_or_else(|| {
+                KernelError::Corrupt(format!("admissibility.toml cites unregistered op `{op}`"))
+            })?;
+            if !req.capability.holds(needed) {
                 txn.abort();
                 return Ok(Err(Refusal::new(
                     code::CAPABILITY,
@@ -600,20 +616,7 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
                     ),
                 )));
             }
-            if req.approvals.len() < usize::from(approvals) {
-                txn.abort();
-                return Ok(Err(Refusal::new(
-                    code::APPROVALS,
-                    exit::SAFETY,
-                    format!(
-                        "`{class_name}` in a {} period requires {approvals} approval(s); {} supplied",
-                        state.name(),
-                        req.approvals.len()
-                    ),
-                    cell,
-                    "collect the approvals over proposal_digest and resubmit",
-                )));
-            }
+            approvals
         }
         Some(Decision::Refuse) | None => {
             txn.abort();
@@ -645,6 +648,34 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
                 fix,
             )));
         }
+    };
+    // 5''. Segregation of duties (plan §14.3, FA-INV-10 `sod`): every cited
+    //      approval is a witnessed Approval binding this proposal under the
+    //      current epoch, and sod_policy.toml judges the set — on `admit`
+    //      cells too, so an attached approval is never ignored. The count is
+    //      max(matrix, rule).
+    let sod_key = fa_policy::sod::posting_key(
+        class_name,
+        state,
+        matches!(resolution, Some((_, Disposition::Posts { .. }))),
+    );
+    let preparer = fa_policy::Party {
+        principal: proposal.principal_ref,
+        profile: req.capability.profile(),
+    };
+    if let Err(r) = policy::authorize_approvals(
+        &txn,
+        db,
+        book,
+        &req.approvals,
+        &proposal.proposal_digest()?,
+        epoch,
+        &sod_key,
+        matrix_approvals,
+        preparer,
+    )? {
+        txn.abort();
+        return Ok(Err(r));
     }
 
     // 5b. Evidence minimum (plan §9.2, FA-INV-05 `evidence-minimum`): every
@@ -1412,7 +1443,7 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
                 exit::CONFLICT,
                 format!("a concurrent commit invalidated a witness this post read: {detail}"),
                 "FG-LAW-FCW-01 (first committer wins)",
-                "re-plan and retry; if a close won, the period law refusal will say so",
+                "re-plan and retry; if a close or a policy activation won, the period-law or stale-approval refusal will say so",
             )))
         }
         Err(WriteTxnError::Write(

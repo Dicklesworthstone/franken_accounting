@@ -194,7 +194,7 @@ impl Harness {
             proposal,
             approvals: Vec::new(),
             plan_certificate: None,
-            capability: Capability::with_ops(&["post"]),
+            capability: Capability::embedded(PRINCIPAL, &["post"]).expect("post"),
         };
         let ctx = self.ctx();
         let db = &mut self.db;
@@ -1161,7 +1161,7 @@ fn chart_limits_are_structural_and_breaches_name_the_admissible_amount() {
             proposal,
             approvals: Vec::new(),
             plan_certificate: None,
-            capability: Capability::with_ops(&["post"]),
+            capability: Capability::embedded(PRINCIPAL, &["post"]).expect("post"),
         };
         let ctx = h.ctx();
         let db = &mut h.db;
@@ -1300,7 +1300,7 @@ fn a_limit_cell_rebound_to_another_account_fails_closed_and_verify_names_both() 
             proposal: h.proposal(legs, key, EntryClass::ORIGINAL),
             approvals: Vec::new(),
             plan_certificate: None,
-            capability: Capability::with_ops(&["post"]),
+            capability: Capability::embedded(PRINCIPAL, &["post"]).expect("post"),
         };
         let ctx = h.ctx();
         let db = &mut h.db;

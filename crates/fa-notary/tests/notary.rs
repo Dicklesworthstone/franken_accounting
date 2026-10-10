@@ -91,7 +91,7 @@ impl Harness {
             proposal,
             approvals: Vec::new(),
             plan_certificate: None,
-            capability: Capability::with_ops(&["post"]),
+            capability: Capability::embedded(PRINCIPAL, &["post"]).expect("post"),
         };
         let ctx = self.ctx();
         let db = &mut self.db;

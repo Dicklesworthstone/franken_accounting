@@ -518,6 +518,7 @@ fn capabilities_cmd(out: &Out, _args: &Args) -> Result<(), Fail> {
         ("stdout", s("data")),
         ("stderr", s("diagnostics")),
         ("tui", Json::Bool(false)),
+        ("capability", capability_model()?),
     ];
     if out.json {
         out.event("capabilities", fields, "");
@@ -525,6 +526,68 @@ fn capabilities_cmd(out: &Out, _args: &Args) -> Result<(), Fail> {
         println!("{}", obj(fields).render());
     }
     Ok(())
+}
+
+/// The capability model this build enforces (plan §14.2, §14.4; fa-policy):
+/// the closed op vocabulary, the profiles and the ops each can never hold,
+/// the caveats' semantics, and the embedded posture's binding.
+fn capability_model() -> Result<Json, Fail> {
+    let steward = fa_journal::policy::steward().map_err(BookError::Kernel)?;
+    let names = |ops: &[fa_policy::Op]| Json::Arr(ops.iter().map(|o| s(o.name())).collect());
+    Ok(obj(vec![
+        ("ops", names(&fa_policy::Op::ALL)),
+        (
+            "profiles",
+            Json::Arr(
+                fa_policy::Profile::ALL
+                    .iter()
+                    .map(|p| {
+                        obj(vec![
+                            ("name", s(p.name())),
+                            ("forbidden_ops", names(p.forbidden_ops())),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+        (
+            "ceilings",
+            s(
+                "amount <= A bounds every leg's mantissa in its unit; a ceiling-bearing capability admits only the units it bounds (FA-REF-015)",
+            ),
+        ),
+        (
+            "expiry",
+            s(
+                "a declared CommitSeq bound: admitted iff the book head at admission is below expires_at (FA-REF-014)",
+            ),
+        ),
+        (
+            "agent_trunk",
+            s(
+                "an Agent-profile capability never writes trunk (FA-REF-013); drafts land with the branch slice",
+            ),
+        ),
+        (
+            "binding",
+            obj(vec![
+                (
+                    "flags",
+                    Json::Arr(vec![s("--as <principal>"), s("--grant <op>")]),
+                ),
+                ("profile", s(fa_policy::Profile::Human.name())),
+                ("ceilings", Json::Arr(Vec::new())),
+                ("expires_at", Json::Null),
+                (
+                    "trust_boundary",
+                    s(
+                        "embedded posture: the calling process is the principal's own agent; --as names the principal and --grant self-issues a Human-profile capability for it with no ceilings and no expiry. The daemon/MCP posture binds the capability from an authenticated session instead; the kernel never authenticates a caller.",
+                    ),
+                ),
+            ]),
+        ),
+        ("policy_oid", s(hex(&steward.policy_oid))),
+    ]))
 }
 
 fn robot_docs_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
@@ -1666,11 +1729,20 @@ fn post_with(out: &Out, args: &Args, forced: Option<EntryClass>) -> Result<(), F
     };
     let mut ops = vec!["post"];
     ops.extend(args.flag_all("--grant"));
+    // Embedded-posture binding (plan §14.2 trust boundary): `--as` names the
+    // principal and `--grant` self-issues a Human-profile capability for it;
+    // an unregistered op name is a usage error, never a silently held string.
+    let capability = Capability::embedded(who, &ops).map_err(|e| {
+        usage(
+            e.to_string(),
+            "--grant takes a registered op name; `fa capabilities --json` lists them",
+        )
+    })?;
     let req = PostRequest {
         proposal,
         approvals: Vec::new(),
         plan_certificate: None,
-        capability: Capability::with_ops(&ops),
+        capability,
     };
     match book.post(req)?? {
         Posted::Committed {
