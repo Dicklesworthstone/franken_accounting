@@ -405,3 +405,16 @@ approver_profiles = ["Human"]
 agent_prepared_human_approvers = 0
 exclusions = ["preparer", "duplicate"]
 cite = "plan §7.6, §8.1 (schedule-cancellation controls need their own authority row)"
+
+# ---- Import runs (book-scoped; fa-txf) --------------------------------------
+[[rule]]
+name = "import-run"
+class = "ImportControl"
+transition = "Import"
+preparer_op = "post"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §9.3 (an ImportReceipt for every document the book ingests); fa-txf"
