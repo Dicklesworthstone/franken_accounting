@@ -427,14 +427,20 @@ mod tests {
                 "has no catalog row",
             ),
             (
-                "one code under two names (the 018 collision, resolved by D-I1)",
+                "one code under two names",
                 vec![decl("fa-policy", "STALE_APPROVAL_2", "FA-REF-022")],
                 vec![],
                 "declared under 2 names",
             ),
             (
-                "a declared reserved code (the lease before its row lands)",
-                vec![decl("fa-cli", "LEASE_HELD", "FA-REF-018")],
+                "the 018 collision itself (D-I1): the stale approval back on the lease's code",
+                vec![decl("fa-policy", "STALE_APPROVAL", "FA-REF-018")],
+                vec![],
+                "declared under 2 names",
+            ),
+            (
+                "a declared reserved code (the confirmation gate before its row lands)",
+                vec![decl("fa-cli", "CONFIRMATION_REQUIRED", "FA-REF-007")],
                 vec![],
                 "declares reserved",
             ),
@@ -534,7 +540,7 @@ mod tests {
             ),
             (
                 "a reserved code with a row",
-                "code = \"FA-REF-018\"\nholder",
+                "code = \"FA-REF-007\"\nholder",
                 "code = \"FA-REF-001\"\nholder",
             ),
         ] {

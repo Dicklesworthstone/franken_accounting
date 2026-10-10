@@ -1,0 +1,24 @@
+[package]
+name = "fad"
+version = "0.0.1"
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "The FrankenAccounting daemon (plan §1 posture (c), §5.10, §15.3, Appendix D): holds a book's writer lease, serves `fa` over a Unix socket with 4-byte length-prefixed canonical-JSON frames, and runs every request through the same registry-driven dispatcher as the `fa` binary. Bead fa-i8j."
+publish = false
+
+[lints]
+workspace = true
+
+[lib]
+name = "fad"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fad"
+path = "src/main.rs"
+
+[dependencies]
+asupersync = { workspace = true }
+fa = { path = "../fa", version = "=0.0.1" }
+fa-cli = { path = "../fa-cli", version = "=0.0.1" }

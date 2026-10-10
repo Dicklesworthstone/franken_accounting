@@ -33,6 +33,7 @@ exceptions = [
   { crate = "fa-registry@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fa-time@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fa-verify@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fad@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fsym-bigint@0.1.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fsym-budget@0.1.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fsym-modular@0.1.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
@@ -131,6 +132,11 @@ license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
 
 [[licenses.clarify]]
 crate = "fa-verify@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fad@0.0.1"
 expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
 

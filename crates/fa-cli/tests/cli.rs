@@ -1869,7 +1869,13 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         run(true, &["verify", "registers", "--period", "FY2026-P03"]).0,
         8
     );
-    let declared: BTreeSet<String> = reg.events.iter().map(|e| e.name.clone()).collect();
+    // The daemon's frames and its own output are fad's to emit (crates/fad tests).
+    let declared: BTreeSet<String> = reg
+        .events
+        .iter()
+        .map(|e| e.name.clone())
+        .filter(|name| !reg.daemon.events.contains(name))
+        .collect();
     assert_eq!(
         seen, declared,
         "every declared event is emitted, and nothing undeclared is"

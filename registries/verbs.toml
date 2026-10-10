@@ -26,10 +26,32 @@ discriminator = "event"
 description = "Robot mode (--json): stdout carries one JSON object per line and nothing else. Every object has an `event` field naming its schema below, plus exactly that schema's fields; keys are sorted, amounts are strings with their unit (never JSON numbers), recorded sequences are integers, dates are civil YYYY-MM-DD. stderr carries diagnostics only. The exit code is the verdict (fa robot-docs exit-codes); every non-zero exit emits one of the error events (usage_error, refusal, error, verification_failed)."
 
 [global]
-flags = ["--book", "--keys", "--as"]
+flags = ["--book", "--keys", "--as", "--via"]
 switches = ["--json", "--help", "--version", "--no-color", "--yes"]
 events = ["version", "triage", "help", "usage_error", "refusal", "error", "verification_failed"]
-usage = "--book <dir> (or FA_BOOK) · --keys <file> (default <dir>/book.keys) · --json · --as <principal> (default operator) · --help (also `fa <verb> --help`)"
+usage = "--book <dir> (or FA_BOOK) · --keys <file> (default <dir>/book.keys) · --json · --as <principal> (default operator) · --via fad|direct (default: through the book's fad when one holds its writer lease) · --help (also `fa <verb> --help`)"
+
+# The fad daemon (plan §15.3, Appendix D, bead fa-i8j). One fad per book
+# directory holds the book's writer lease (an OS lock on <dir>/<lease>, so a
+# crashed daemon releases it) and serves `fa` over <dir>/<socket>. A frame is
+# a 4-byte big-endian length then that many bytes of canonical JSON (sorted
+# keys, integers only); the first frame on a connection is a fad_request, and
+# every request gets exactly one fad_response. Every `fa` command that opens
+# the book directly holds the same lease for its duration, so there is one
+# writer per book at a time.
+
+[daemon]
+binary = "fad"
+protocol = 1
+socket = "fad.sock"
+lease = "fad.lease"
+max_frame_bytes = 67108864
+idle_timeout_ms = 30000
+verbs = ["serve", "status", "stop"]
+flags = ["--book", "--keys"]
+switches = ["--json", "--help"]
+events = ["fad_request", "fad_response", "fad_serving", "fad_status", "fad_stopped"]
+usage = ["fad serve --book <dir> [--keys <file>] [--json]   (holds the writer lease and serves until `fad stop`)", "fad status --book <dir> [--json]", "fad stop --book <dir> [--json]"]
 
 # ---------------------------------------------------------------------------
 # Verbs
@@ -262,6 +284,31 @@ expands = ["post"]
 name = "document"
 doc = "A document the book holds. `oid` locates it; `doc_commit` = BLAKE3(\"fa:doc:v1\" ‖ kind ‖ length ‖ 4 KiB-chunk Merkle root) is its public commitment; `evidence` is the citation for an intent's `evidence` list (or pass --evidence <oid>). On a repeat intake `already_recorded` is true and kind/grade are the book's. `self_sourced` (AgentUpload) will need a reviewer's attestation before promotion; not yet enforced."
 fields = ["oid:hex", "doc_commit:hex", "kind:string", "grade:string", "self_sourced:bool", "size:int", "recorded_at:seq", "already_recorded:bool", "evidence:evidence_ref"]
+
+[[event]]
+name = "fad_request"
+doc = "A frame from a client to fad. op `run` executes `argv` (an `fa` command line, without --via) exactly as `fa` would, with relative paths resolved against `cwd` and `-` reading `stdin` (hex); op `status` and op `stop` take an empty argv."
+fields = ["v:int", "op:string", "argv:[string]", "cwd:string?", "stdin:hex?"]
+
+[[event]]
+name = "fad_response"
+doc = "fad's answer to one fad_request: the command's exit code and its stdout and stderr, byte for byte as `fa` would have written them (the stdout lines are themselves robot-mode events when the request asked for --json). A protocol fault is answered with exit 2 and a usage_error line, then the connection closes."
+fields = ["v:int", "op:string", "exit:int", "stdout:text", "stderr:text"]
+
+[[event]]
+name = "fad_serving"
+doc = "`fad serve`: the writer lease is held and the socket is listening."
+fields = ["book_id:hex", "dir:string", "socket:string", "pid:int", "protocol:int", "max_frame_bytes:int"]
+
+[[event]]
+name = "fad_status"
+doc = "`fad status`: whether a fad serves the book; when one does, its pid, book, and requests answered so far. `holder` is the lease file's note when the lease is held by something that is not answering (a direct `fa` command mid-flight)."
+fields = ["serving:bool", "dir:string", "socket:string", "pid:int?", "book_id:hex?", "requests:int?", "holder:string?"]
+
+[[event]]
+name = "fad_stopped"
+doc = "`fad stop` (and the daemon itself, on its way out): the daemon released the lease after answering `requests` requests."
+fields = ["dir:string", "requests:int"]
 
 [[event]]
 name = "version"

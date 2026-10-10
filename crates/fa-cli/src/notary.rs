@@ -3,11 +3,11 @@
 //! These commands publish and recompute the existing Notary state objects.
 //! They do not issue a signed TransparencyCheckpoint or an evidence bundle.
 
-use fa_cli::json::{Json, obj, s};
+use crate::json::{Json, obj, s};
 use fa_policy::{Capability, Intent, Op};
 
 use crate::args::Args;
-use crate::{Fail, Out, hex, open_book, principal, unhandled, usage};
+use crate::cli::{Ctx, Fail, hex, principal, unhandled, usage};
 
 fn arguments(args: &Args, example: &str) -> Result<(), Fail> {
     if let Some(extra) = args.positional.get(2) {
@@ -26,7 +26,7 @@ fn arguments(args: &Args, example: &str) -> Result<(), Fail> {
     Ok(())
 }
 
-pub(crate) fn checkpoint_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
+pub(crate) fn checkpoint_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.positional.get(1).map(String::as_str) != Some("create") {
         return Err(unhandled(
             "checkpoint",
@@ -51,11 +51,11 @@ pub(crate) fn checkpoint_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
         },
     )
     .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
-    let mut book = open_book(args)?;
+    let mut book = ctx.books.open(args)?;
     let created = book.checkpoint(actor, &capability)??;
     let stored = &created.stored;
     let state = &stored.state;
-    out.event(
+    ctx.out.event(
         "checkpoint_created",
         vec![
             ("book", s(hex(&state.book_id.0))),
@@ -78,9 +78,9 @@ pub(crate) fn checkpoint_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
-pub(crate) fn verify_accumulator(out: &Out, args: &Args) -> Result<(), Fail> {
+pub(crate) fn verify_accumulator(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     arguments(args, "fa verify accumulator --book <dir> --json")?;
-    let book = open_book(args)?;
+    let book = ctx.books.open(args)?;
     let result = book.verify_accumulator()?;
     let green = result.is_green();
     let through = if green {
@@ -156,6 +156,6 @@ pub(crate) fn verify_accumulator(out: &Out, args: &Args) -> Result<(), Fail> {
             result.states.len(),
         ),
     };
-    out.event("accumulator_verified", fields, &human);
+    ctx.out.event("accumulator_verified", fields, &human);
     Ok(())
 }

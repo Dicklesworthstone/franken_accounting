@@ -24,6 +24,7 @@ members = [
     "crates/fa-verify",
     "crates/fa-notary",
     "crates/fa-policy",
+    "crates/fad",
 ]
 
 [workspace.package]

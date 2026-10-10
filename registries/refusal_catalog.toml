@@ -22,8 +22,8 @@
 schema_version = 1
 
 [[reserved]]
-code = "FA-REF-018"
-holder = "fad daemon writer lease (Appendix D; JadePeak, fad); STALE_APPROVAL moved to 022 (D-I1, 4d2d3ad)"
+code = "FA-REF-007"
+holder = "fa-cli CONFIRMATION_REQUIRED: a dangerous operation without --yes or a plan (Appendix D; JadePeak, fa-12x, approved 3232)"
 
 # ---- Folio: balance law, chart, units (001–004) -------------------------
 [[refusal]]
@@ -130,6 +130,15 @@ owners = ["fa-policy"]
 exit = "safety"
 cite = "FA-INV-10 approval-binds-proposal"
 fix = "cite approvals recorded in this book"
+
+# 018 sits in this block's range but is Teller's: the book's writer lease.
+[[refusal]]
+code = "FA-REF-018"
+name = "LEASE_HELD"
+owners = ["fa-cli"]
+exit = "conflict"
+cite = "plan §5.10 one writer per book; Appendix D FA-REF-018"
+fix = "route via fad (automatic: `fa` sends the command to the serving fad), or see `fad status --book {dir}` and retry when the holder is done"
 
 [[refusal]]
 code = "FA-REF-019"

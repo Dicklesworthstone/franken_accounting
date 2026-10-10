@@ -161,10 +161,33 @@ pub struct Global {
     pub usage: String,
 }
 
+/// The `fad` daemon's contract (plan §15.3, Appendix D): where its socket
+/// and writer lease live in a book directory, the frame protocol's version
+/// and limits, the daemon binary's own verbs and flags, and the events its
+/// frames and its own output carry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Daemon {
+    pub binary: String,
+    pub protocol: i128,
+    /// File names inside the book directory.
+    pub socket: String,
+    pub lease: String,
+    /// The largest frame payload either side sends or accepts.
+    pub max_frame_bytes: usize,
+    /// How long a connection may sit between frames before the daemon closes it.
+    pub idle_timeout_ms: u64,
+    pub verbs: Vec<String>,
+    pub flags: Vec<String>,
+    pub switches: Vec<String>,
+    pub events: Vec<String>,
+    pub usage: Vec<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Registry {
     pub envelope: Envelope,
     pub global: Global,
+    pub daemon: Daemon,
     pub verbs: Vec<Verb>,
     pub aliases: Vec<Alias>,
     pub events: Vec<Schema>,
@@ -303,9 +326,31 @@ impl Registry {
             let expands = get_strs(t, "expands", &format!("alias {name}"))?;
             aliases.push(Alias { name, expands });
         }
+        let d = table(&doc, "daemon")?;
+        let int = |key: &str| {
+            d.get(key)
+                .and_then(Value::as_int)
+                .ok_or_else(|| format!("verbs.toml: daemon: missing integer `{key}`"))
+        };
+        let daemon = Daemon {
+            binary: get_str(d, "binary", "daemon")?.to_string(),
+            protocol: int("protocol")?,
+            socket: get_str(d, "socket", "daemon")?.to_string(),
+            lease: get_str(d, "lease", "daemon")?.to_string(),
+            max_frame_bytes: usize::try_from(int("max_frame_bytes")?)
+                .map_err(|_| "verbs.toml: daemon: max_frame_bytes out of range".to_string())?,
+            idle_timeout_ms: u64::try_from(int("idle_timeout_ms")?)
+                .map_err(|_| "verbs.toml: daemon: idle_timeout_ms out of range".to_string())?,
+            verbs: get_strs(d, "verbs", "daemon")?,
+            flags: get_strs(d, "flags", "daemon")?,
+            switches: get_strs(d, "switches", "daemon")?,
+            events: get_strs(d, "events", "daemon")?,
+            usage: get_strs(d, "usage", "daemon")?,
+        };
         let registry = Self {
             envelope,
             global,
+            daemon,
             verbs,
             aliases,
             events: schemas(&doc, "event")?,
@@ -401,8 +446,29 @@ impl Registry {
                 return Err(format!("verbs.toml: global event `{e}` is undeclared"));
             }
         }
+        for e in &self.daemon.events {
+            if self.event(e).is_none() {
+                return Err(format!("verbs.toml: daemon event `{e}` is undeclared"));
+            }
+        }
+        let d = &self.daemon;
+        if d.protocol < 1
+            || d.max_frame_bytes == 0
+            || u32::try_from(d.max_frame_bytes).is_err()
+            || d.idle_timeout_ms == 0
+            || d.socket.contains('/')
+            || d.lease.contains('/')
+            || d.socket == d.lease
+        {
+            return Err(
+                "verbs.toml: daemon: protocol ≥ 1, a frame limit that fits the 4-byte prefix, a non-zero idle timeout, and two distinct plain file names".into(),
+            );
+        }
         for e in &self.events {
-            if !self.global.events.contains(&e.name) && self.emitters(&e.name).is_empty() {
+            if !self.global.events.contains(&e.name)
+                && !self.daemon.events.contains(&e.name)
+                && self.emitters(&e.name).is_empty()
+            {
                 return Err(format!(
                     "verbs.toml: event `{}` is emitted by no verb (dead schema)",
                     e.name

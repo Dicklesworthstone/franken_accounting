@@ -655,6 +655,15 @@ name = "fa-verify"
 version = "0.0.1"
 
 [[package]]
+name = "fad"
+version = "0.0.1"
+dependencies = [
+ "asupersync",
+ "fa",
+ "fa-cli",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -8,13 +8,13 @@
 //! CLI, decides whether a citation names a held document under its exact
 //! commitment and whether the class's minimum is met.
 
-use fa_cli::json::{Json, obj, s};
+use crate::json::{Json, obj, s};
 use fa_journal::evidence::{Document, self_sourced};
 use fa_model::{EvidenceRef, Oid};
 use fa_registry::evidence_policy::EvidencePolicy;
 
 use crate::args::{Args, nearest};
-use crate::{Fail, Out, hex, open_book, principal, unhandled, usage};
+use crate::cli::{Ctx, Fail, hex, principal, unhandled, usage};
 
 const ADD_EXAMPLE: &str = "fa document add invoice.pdf --kind Invoice --mime application/pdf --grade HumanUpload --book <dir> --json";
 const EVIDENCE_EXAMPLE: &str = r#""evidence": ["<document oid hex>"] or [{"document_oid": "<hex>", "doc_commit": "<hex>", "role": "Source"}], or --evidence <oid>"#;
@@ -24,22 +24,6 @@ const DEFAULT_ROLE: &str = "Source";
 fn policy() -> Result<EvidencePolicy, Fail> {
     EvidencePolicy::embedded()
         .map_err(|e| Fail::Internal(format!("the embedded evidence policy: {e}")))
-}
-
-fn read_bytes(path: &str) -> Result<Vec<u8>, Fail> {
-    if path == "-" {
-        let mut buf = Vec::new();
-        std::io::Read::read_to_end(&mut std::io::stdin(), &mut buf)
-            .map_err(|e| usage(format!("stdin: {e}"), "pipe the document's bytes to stdin"))?;
-        Ok(buf)
-    } else {
-        std::fs::read(path).map_err(|e| {
-            usage(
-                format!("{path}: {e}"),
-                "pass a readable file, or `-` for stdin",
-            )
-        })
-    }
 }
 
 fn hex32(text: &str, what: &str) -> Result<[u8; 32], Fail> {
@@ -85,16 +69,17 @@ fn named(what: &str, given: &str, names: &[&str]) -> Fail {
 }
 
 /// `fa document add <file|-> [--kind K] [--mime M] [--grade G]`.
-pub(crate) fn document_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
+pub(crate) fn document_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     // Dispatch has already refused a subcommand verbs.toml does not register.
     match args.positional.get(1).map(String::as_str) {
-        Some("add") => add(out, args),
+        Some("add") => add(ctx, args),
         None => Err(usage("`fa document` needs a subcommand", ADD_EXAMPLE)),
         other => Err(unhandled("document", other)),
     }
 }
 
-fn add(out: &Out, args: &Args) -> Result<(), Fail> {
+fn add(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let out = &ctx.out;
     let path = args.positional.get(2).ok_or_else(|| {
         usage(
             "`fa document add` needs a file (or - for stdin)",
@@ -115,8 +100,8 @@ fn add(out: &Out, args: &Args) -> Result<(), Fail> {
         named("provenance grade", grade_name, &names)
     })?;
     let mime = args.flag("--mime").unwrap_or("application/octet-stream");
-    let bytes = read_bytes(path)?;
-    let mut book = open_book(args)?;
+    let bytes = ctx.files.read_bytes(path)?;
+    let mut book = ctx.books.open(args)?;
     let doc = Document {
         book_id: book.context().book_id,
         kind: kind.tag,
