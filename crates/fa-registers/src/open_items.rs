@@ -87,21 +87,24 @@ fn carries_open_items(entry: &Entry) -> bool {
 }
 
 /// The lineage predicate: `reversed_by[e]` is the reversal targeting `e`,
-/// and `e` is live iff it has no live reversal. Chains are short (a
-/// reversal of a reversal), so a direct recursion with a cycle guard is the
-/// obvious implementation.
-fn is_live(
-    vid: VId,
-    reversed_by: &BTreeMap<VId, VId>,
-    depth: usize,
-) -> Result<bool, RegisterError> {
-    if depth > 64 {
-        return Err(KernelError::Corrupt("reversal lineage deeper than 64".into()).into());
+/// and `e` is live iff it has no live reversal. A chain of any length is
+/// legal (every reversal of a reversal is an explicit entry), so this is an
+/// iterative parity walk; the only failure is a cycle, which honest
+/// identities cannot form and which therefore means corruption.
+pub fn is_live(vid: VId, reversed_by: &BTreeMap<VId, VId>) -> Result<bool, RegisterError> {
+    let mut live = true;
+    let mut current = vid;
+    let mut seen: BTreeSet<VId> = BTreeSet::new();
+    while let Some(reversal) = reversed_by.get(&current) {
+        if !seen.insert(current) {
+            return Err(
+                KernelError::Corrupt(format!("reversal lineage of {:032x} cycles", vid.0)).into(),
+            );
+        }
+        live = !live;
+        current = *reversal;
     }
-    match reversed_by.get(&vid) {
-        None => Ok(true),
-        Some(reversal) => Ok(!is_live(*reversal, reversed_by, depth + 1)?),
-    }
+    Ok(live)
 }
 
 /// The open items of the book (optionally one account) as known at `known_at`.
@@ -127,7 +130,7 @@ pub fn open_items<V: asupersync::fs::Vfs + Clone>(
     }
     let mut live: BTreeSet<VId> = BTreeSet::new();
     for (vid, _, _) in &entries {
-        if is_live(*vid, &reversed_by, 0)? {
+        if is_live(*vid, &reversed_by)? {
             live.insert(*vid);
         }
     }
@@ -252,4 +255,36 @@ pub fn verify_open_items<V: asupersync::fs::Vfs + Clone>(
         legs_checked,
         drift,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Parity over a chain of any length: 65 links reverse the original,
+    /// 66 revive it; a cycle is corruption, never a stack overflow or a
+    /// false "corrupt" on a long honest history.
+    #[test]
+    fn liveness_is_parity_over_arbitrarily_long_chains_and_cycles_are_corruption() {
+        for n in [0usize, 1, 2, 63, 64, 65, 66, 200] {
+            let mut reversed_by = BTreeMap::new();
+            for i in 0..n {
+                reversed_by.insert(VId(i as u128), VId(i as u128 + 1));
+            }
+            assert_eq!(
+                is_live(VId(0), &reversed_by).unwrap(),
+                n % 2 == 0,
+                "chain {n}"
+            );
+            assert!(is_live(VId(n as u128), &reversed_by).unwrap(), "tip {n}");
+        }
+        let mut cyclic = BTreeMap::new();
+        cyclic.insert(VId(1), VId(2));
+        cyclic.insert(VId(2), VId(3));
+        cyclic.insert(VId(3), VId(1));
+        assert!(matches!(
+            is_live(VId(1), &cyclic),
+            Err(RegisterError::Kernel(KernelError::Corrupt(_)))
+        ));
+    }
 }

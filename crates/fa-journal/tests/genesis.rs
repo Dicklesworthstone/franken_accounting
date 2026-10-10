@@ -1410,3 +1410,45 @@ fn applications_settle_open_items_within_the_open_amount_and_reversal_undoes_the
         .unwrap_err();
     assert_eq!((r.code, r.exit), ("FA-REF-070", exit::REFUSAL));
 }
+
+#[test]
+fn a_reversal_chain_of_any_length_keeps_liveness_by_parity_and_settles_the_revived_original() {
+    let mut h = harness();
+    let usd = h.usd;
+    let original = h
+        .post(h.request(h.invoice(100, b"inv-chain"), &["post"]))
+        .expect("admitted")
+        .entry_ref();
+    // Sixty-six successive reversals, each targeting the previous entry.
+    let mut tip = original;
+    for i in 0..66u32 {
+        tip = h
+            .post(h.request(
+                h.reversal_of_entry(tip, format!("rev-{i}").as_bytes()),
+                &["post"],
+            ))
+            .expect("every reversal of a reversal is admitted")
+            .entry_ref();
+    }
+    // Even parity: the original is live again, so a receipt may settle it
+    // (witnessed applied mirror becomes 1).
+    let receipt = h
+        .post(h.request(
+            h.receipt(1, vec![settle(original, 0, usd, 1)], b"rcpt-after-66"),
+            &["post"],
+        ))
+        .expect("the revived original is an open item");
+    assert!(matches!(receipt, Posted::Committed { .. }));
+    assert_eq!(h.applied_to(original.vid, 0), 1);
+    // A 67th reversal (odd parity) reverses the original again: a further
+    // application against it is refused as a reversed target.
+    let r67 = h.post(h.request(h.reversal_of_entry(tip, b"rev-66"), &["post"]));
+    assert!(r67.is_ok(), "{r67:?}");
+    let r = h
+        .post(h.request(
+            h.receipt(1, vec![settle(original, 0, usd, 1)], b"rcpt-after-67"),
+            &["post"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-070", exit::REFUSAL));
+}

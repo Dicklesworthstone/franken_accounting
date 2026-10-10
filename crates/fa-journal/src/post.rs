@@ -752,20 +752,22 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
                 )));
             }
             // Liveness is a lineage predicate (plan §8.2): a reversed entry
-            // nets to zero, and a reversed reversal revives it. Each hop is a
-            // witnessed point read, so a concurrent reversal conflicts.
+            // nets to zero, and a reversed reversal revives it; a chain of any
+            // length is legal, so the walk is bounded only by a cycle check
+            // (impossible for honest identities, corruption otherwise). Each
+            // hop is a witnessed point read, so a concurrent reversal conflicts.
             let mut reversed = false;
             let mut current = s.target.vid;
-            let mut hops = 0usize;
+            let mut seen: BTreeSet<VId> = BTreeSet::new();
             while txn.vertex(db, reversal_vid(current))?.is_some() {
+                if !seen.insert(current) {
+                    return Err(KernelError::Corrupt(format!(
+                        "reversal lineage of {:032x} cycles",
+                        s.target.vid.0
+                    )));
+                }
                 reversed = !reversed;
                 current = reversal_vid(current);
-                hops += 1;
-                if hops > 64 {
-                    return Err(KernelError::Corrupt(
-                        "reversal lineage deeper than 64".into(),
-                    ));
-                }
             }
             if reversed {
                 txn.abort();

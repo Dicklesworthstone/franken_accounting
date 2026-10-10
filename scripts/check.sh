@@ -57,7 +57,8 @@ gate_init "check.sh"
 # through (observed: `Remote command finished: exit=101` with real rustc
 # diagnostics). So:
 #   exit 103 (rch refused to offload)                                → UNRUN
-#   "[RCH] … refusing local fallback" or exit 100 (network/SSH) with NO
+#   "[RCH] … refusing local fallback" or "… completion unconfirmed" (SSH
+#   timeout, remote process killed) or exit 100 (network/SSH) with NO
 #   "Remote command finished" line (nothing executed)                → UNRUN
 #   anything else nonzero, including 101/102 after execution         → FAIL
 run_step() {
@@ -76,7 +77,7 @@ run_step() {
   local executed=0
   grep -q 'Remote command finished' "$log" && executed=1
   if [ "$rc" -eq 103 ] \
-    || { [ "$executed" -eq 0 ] && { [ "$rc" -eq 100 ] || grep -q '^\[RCH\] .*refusing local fallback' "$log"; }; }; then
+    || { [ "$executed" -eq 0 ] && { [ "$rc" -eq 100 ] || grep -Eq '^\[RCH\] .*(refusing local fallback|completion unconfirmed)' "$log"; }; }; then
     gate_unrun "$label — the rch offloader did not run the command (exit $rc: refused, no admissible worker, or lost the worker before execution; retryable, not a product verdict); log: $log"
   else
     gate_fail "$label (exit $rc); log: $log"
