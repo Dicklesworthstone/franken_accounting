@@ -1,0 +1,671 @@
+//! Steward at the kernel boundary (plan §5.1 steps 1/5, §14, FA-INV-10).
+//!
+//! The kernel calls *down* into `fa-policy`, the laws layer, and supplies
+//! only what the laws cannot observe themselves: the admission point (the
+//! book head on the single-writer handle, read just before the transaction
+//! opens), the book's **security policy epoch** read as a point witness
+//! inside the transaction, and the approvals a transcript cites, each one a
+//! point read. Every decision is fa-policy's; this module maps a
+//! [`Denial`] onto the refusal envelope one-to-one.
+//!
+//! **Current-policy witness.** The epoch is the `security_policy_epoch`
+//! property of the book root vertex (absent = 0, the policy this build
+//! embeds). A post point-reads it exactly as it reads its period's `state`;
+//! [`activate_policy`] moves it by compare-and-set. So a policy activation
+//! that commits between a post's read and its commit makes the post a
+//! first-committer-wins conflict, never a post admitted under superseded
+//! policy; and an approval recorded under an earlier epoch is refused as
+//! stale, never silently honoured.
+//!
+//! **Approvals are objects.** [`record_approval`] writes an `Approval`
+//! vertex (`fa:approval:v1`) whose identity derives from (book, approver,
+//! approved proposal digest, epoch); a transcript's `ApprovalRef` must name
+//! one, bind this proposal's digest, and pass SoD. A fabricated reference
+//! is a refusal, not a count.
+
+use std::sync::OnceLock;
+
+use fa_model::symbols::{label, property, relation};
+use fa_model::{
+    ApprovalRef, ControlPayload, Entry, EntryClass, EntryOrigin, EntryPayload, Erasable, Id128,
+    Oid, entry_mirrors, entry_vid,
+};
+use fa_policy::{
+    Approval, Approver, Capability, CapabilityError, Denial, Intent, Op, Party, Steward,
+};
+use fa_registry::sod_policy::SodKey;
+use fa_time::DateDay;
+use fgdb::{Database, WriteBatch, WriteMismatchPolicy, WriteTxn, WriteTxnError};
+use fgdb_crypto::Hasher;
+use fgdb_types::context::PurposeContexts;
+use fgdb_types::{CanonicalScalar, CommitSeq, VId};
+
+use crate::genesis::BookContext;
+use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
+use crate::rows::{book_root, prop, scalar_bytes};
+
+/// The kernel's refusal for a policy denial: code, exit, message, cite and
+/// fix exactly as fa-policy decided them.
+#[must_use]
+pub fn refusal(d: &Denial) -> Refusal {
+    Refusal::new(d.code(), d.exit(), d.message(), d.cite(), d.fix())
+}
+
+/// The embedded policy, parsed and cross-checked once per process.
+pub fn steward() -> Result<&'static Steward, KernelError> {
+    static STEWARD: OnceLock<Result<Steward, String>> = OnceLock::new();
+    STEWARD
+        .get_or_init(|| Steward::embedded().map_err(|e| e.to_string()))
+        .as_ref()
+        .map_err(|e| KernelError::Corrupt(format!("embedded policy: {e}")))
+}
+
+fn capability_error(e: CapabilityError) -> KernelError {
+    match e {
+        CapabilityError::Encode(e) => KernelError::Model(e.into()),
+        CapabilityError::Decode(e) => KernelError::Model(e.into()),
+        other => KernelError::Corrupt(format!("capability: {other}")),
+    }
+}
+
+/// `vid(Approval) = H("fa:vid:approval:v1" ‖ book ‖ approver ‖ digest ‖ epoch)`:
+/// one approval per approver per proposal per policy epoch, by identity.
+#[must_use]
+pub fn approval_vid(book: Id128, approver: VId, approved_digest: &[u8; 32], epoch: u64) -> VId {
+    let mut h = Hasher::new();
+    h.update(b"fa:vid:approval:v1");
+    h.update(&book.0);
+    h.update(&approver.0.to_le_bytes());
+    h.update(approved_digest);
+    h.update(&epoch.to_le_bytes());
+    let d = h.finalize();
+    let mut lo = [0u8; 16];
+    lo.copy_from_slice(&d.0[..16]);
+    VId(u128::from_le_bytes(lo))
+}
+
+fn epoch_from(scalar: Option<&CanonicalScalar>) -> Result<u64, KernelError> {
+    match scalar {
+        None => Ok(0),
+        Some(CanonicalScalar::Int(n)) => u64::try_from(*n)
+            .map_err(|_| KernelError::Corrupt(format!("security_policy_epoch {n} is negative"))),
+        Some(other) => Err(KernelError::Corrupt(format!(
+            "security_policy_epoch: expected Int, found {other:?}"
+        ))),
+    }
+}
+
+/// The security policy epoch as a point witness of `txn` (plan §14.2
+/// `current-policy`): a concurrent activation invalidates the transaction.
+pub fn epoch_witness<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+) -> Result<u64, KernelError> {
+    let scalar = txn.vertex_property(db, book_root(), property::SECURITY_POLICY_EPOCH)?;
+    epoch_from(scalar.as_ref())
+}
+
+/// The security policy epoch at the book head (outside a transaction).
+pub fn security_policy_epoch<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+) -> Result<u64, KernelError> {
+    let row = db
+        .vertex(book_root())?
+        .ok_or_else(|| KernelError::Corrupt("no book root".into()))?;
+    epoch_from(prop(&row, property::SECURITY_POLICY_EPOCH))
+}
+
+/// Witness every cited approval inside `txn` and evaluate SoD for `key`.
+/// Each `ApprovalRef` must bind `proposal_digest`, name a recorded approval
+/// of this book whose identity matches its content, and have been recorded
+/// under `epoch`; then the rule (or the default) decides. Runs on every
+/// post, so an approval attached where none is required is still checked.
+#[allow(clippy::too_many_arguments)]
+pub fn authorize_approvals<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    approvals: &[ApprovalRef],
+    proposal_digest: &[u8; 32],
+    epoch: u64,
+    key: &SodKey,
+    matrix_approvals: u8,
+    preparer: Party,
+) -> Outcome<()> {
+    let steward = steward()?;
+    let mut witnessed: Vec<Approver> = Vec::with_capacity(approvals.len());
+    for (index, cited) in approvals.iter().enumerate() {
+        if &cited.approved_digest != proposal_digest {
+            return Ok(Err(refusal(&Denial::ApprovalBinding { index })));
+        }
+        let unknown = Denial::UnknownApproval {
+            index,
+            approval: cited.approval_vid,
+        };
+        let Some(row) = txn.vertex(db, cited.approval_vid)? else {
+            return Ok(Err(refusal(&unknown)));
+        };
+        if !row.labels.contains(&label::APPROVAL) {
+            return Ok(Err(refusal(&unknown)));
+        }
+        let approval = match prop(&row, property::FA_PAYLOAD) {
+            Some(CanonicalScalar::Bytes(b)) => {
+                Approval::decode(b.as_slice()).map_err(|e| KernelError::Model(e.into()))?
+            }
+            other => {
+                return Err(KernelError::Corrupt(format!(
+                    "approval _fa_payload: {other:?}"
+                )));
+            }
+        };
+        let derived = approval_vid(
+            approval.book_id,
+            approval.principal,
+            &approval.approved_proposal_digest,
+            approval.security_policy_epoch,
+        );
+        if derived != cited.approval_vid {
+            return Err(KernelError::Corrupt(format!(
+                "approval {:032x} does not carry the identity its content derives",
+                cited.approval_vid.0
+            )));
+        }
+        if let Err(d) = approval.check_binding(
+            index,
+            &cited.approved_digest,
+            proposal_digest,
+            book.book_id,
+            epoch,
+        ) {
+            return Ok(Err(refusal(&d)));
+        }
+        witnessed.push(Approver::from(&approval));
+    }
+    Ok(steward
+        .segregate(key, matrix_approvals, preparer, &witnessed)
+        .map_err(|d| refusal(&d)))
+}
+
+/// Record one approval over a proposal digest.
+#[derive(Clone, Debug)]
+pub struct ApprovalRequest {
+    /// The approver's capability; it must hold `approve`.
+    pub capability: Capability,
+    /// The `proposal_digest` of the entry being approved.
+    pub approved_proposal_digest: [u8; 32],
+    pub role: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Approved {
+    Recorded {
+        approval: ApprovalRef,
+        security_policy_epoch: u64,
+        recorded_at: CommitSeq,
+    },
+    /// The identical approval already exists; nothing was written.
+    AlreadyRecorded {
+        approval: ApprovalRef,
+        recorded_at: CommitSeq,
+    },
+}
+
+impl Approved {
+    #[must_use]
+    pub fn approval(&self) -> ApprovalRef {
+        match self {
+            Self::Recorded { approval, .. } | Self::AlreadyRecorded { approval, .. } => *approval,
+        }
+    }
+
+    #[must_use]
+    pub fn recorded_at(&self) -> CommitSeq {
+        match self {
+            Self::Recorded { recorded_at, .. } | Self::AlreadyRecorded { recorded_at, .. } => {
+                *recorded_at
+            }
+        }
+    }
+}
+
+/// Record an approval (plan Appendix A `Approval`): admitted from the
+/// capability alone (it holds `approve`, which no Agent or System profile
+/// can), current at the admission point, bound to the epoch witnessed in
+/// the same transaction. One commit on success.
+pub async fn record_approval<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    req: ApprovalRequest,
+) -> Outcome<Approved> {
+    if let Err(d) = fa_policy::require(&req.capability, Op::Approve, "recording an approval") {
+        return Ok(Err(refusal(&d)));
+    }
+    let at = db.frontier()?;
+    if let Err(d) = fa_policy::current(&req.capability, at) {
+        return Ok(Err(refusal(&d)));
+    }
+    let txn_cx = ctx.txn();
+    let mut txn = db.begin(&txn_cx)?;
+    let epoch = epoch_witness(&txn, db)?;
+    let approval = match Approval::by(
+        &req.capability,
+        Op::Approve,
+        book.book_id,
+        req.approved_proposal_digest,
+        epoch,
+        req.role,
+    )
+    .map_err(capability_error)?
+    {
+        Ok(a) => a,
+        Err(d) => {
+            txn.abort();
+            return Ok(Err(refusal(&d)));
+        }
+    };
+    let bytes = approval
+        .canonical_bytes()
+        .map_err(|e| KernelError::Model(e.into()))?;
+    let digest = approval
+        .digest()
+        .map_err(|e| KernelError::Model(e.into()))?;
+    let vid = approval_vid(
+        book.book_id,
+        approval.principal,
+        &approval.approved_proposal_digest,
+        epoch,
+    );
+    let handle = ApprovalRef {
+        approval_vid: vid,
+        approved_digest: approval.approved_proposal_digest,
+    };
+    if let Some(row) = txn.vertex(db, vid)? {
+        txn.abort();
+        return Ok(match prop(&row, property::FA_PAYLOAD) {
+            Some(CanonicalScalar::Bytes(b)) if b.as_slice() == bytes.as_slice() => {
+                Ok(Approved::AlreadyRecorded {
+                    approval: handle,
+                    recorded_at: row.created_at,
+                })
+            }
+            _ => Err(Refusal::new(
+                code::IDEMPOTENCY_CONFLICT,
+                exit::CONFLICT,
+                format!(
+                    "approval {:032x} already exists for this approver, proposal and epoch with different content",
+                    vid.0
+                ),
+                "plan Appendix A Approval (one per approver, proposal and policy epoch)",
+                "cite the existing approval; re-approving under a different capability or role needs a new policy epoch",
+            )),
+        });
+    }
+    let mut batch = WriteBatch::new(relation::IN_BOOK);
+    let mut props = vec![
+        (
+            property::FA_PAYLOAD,
+            scalar_bytes("approval.payload", bytes)?,
+        ),
+        (
+            property::FA_DIGEST,
+            scalar_bytes("approval.digest", digest.to_vec())?,
+        ),
+    ];
+    props.sort_by_key(|(k, _)| k.0);
+    batch.create_vertex(vid, vec![label::APPROVAL], props);
+    txn.write(db, batch)?;
+    match txn.commit(db, &ctx.commit()).await {
+        Ok(seq) => Ok(Ok(Approved::Recorded {
+            approval: handle,
+            security_policy_epoch: epoch,
+            recorded_at: seq,
+        })),
+        Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
+            Ok(Err(Refusal::new(
+                code::CONFLICT,
+                exit::CONFLICT,
+                format!("a concurrent commit invalidated this approval's witness: {detail}"),
+                "FG-LAW-FCW-01 (first committer wins)",
+                "the security policy moved; approve again under the current epoch",
+            )))
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// The one `effective_to` this subset accepts. The security policy is
+/// selected by known-at (the epoch a commit witnesses), not by effective
+/// date: an activation governs every commit after it, whatever date the
+/// entry carries. A bounded interval would claim a date scoping the kernel
+/// does not enforce, so it is refused rather than recorded and ignored.
+pub const OPEN_END: DateDay = DateDay(i32::MAX);
+
+/// The `PolicyControl` proposal that activates `policy_oid` from
+/// `effective_from` onward, `[effective_from, OPEN_END)`, the one interval
+/// this subset accepts. Approvers approve its `proposal_digest()` before
+/// [`activate_policy`] commits it.
+#[must_use]
+pub fn activation_proposal(
+    book: &BookContext,
+    principal: VId,
+    policy_oid: [u8; 32],
+    effective_from: DateDay,
+    idempotency_key: &[u8],
+    description: Erasable<String>,
+) -> EntryPayload {
+    EntryPayload {
+        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        book_id: book.book_id,
+        branch_id: Id128::TRUNK,
+        class: EntryClass::POLICY_CONTROL,
+        effective_date: effective_from,
+        document_date: None,
+        description,
+        effective_period: None,
+        legs: Vec::new(),
+        control: Some(ControlPayload::PolicyActivation {
+            policy_oid: Oid(policy_oid),
+            effective_from,
+            effective_to: OPEN_END,
+        }),
+        unit_totals: Vec::new(),
+        base_totals: None,
+        idempotency_key: idempotency_key.to_vec(),
+        origin: EntryOrigin::Control {
+            control_kind: 3,
+            spec_body_digest: policy_oid,
+        },
+        principal_ref: principal,
+        session_ref: None,
+        evidence: Vec::new(),
+        supersession: Vec::new(),
+        pending: None,
+        external_ids: Vec::new(),
+        extensions: Vec::new(),
+        tags: Vec::new(),
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ActivationRequest {
+    pub proposal: EntryPayload,
+    pub capability: Capability,
+    pub approvals: Vec<ApprovalRef>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PolicyActivated {
+    pub from_epoch: u64,
+    pub to_epoch: u64,
+    pub recorded_at: CommitSeq,
+    pub control_entry: VId,
+    /// The same activation was already recorded (FA-INV-09): this is that
+    /// outcome, nothing was written, and its approvals were not re-judged
+    /// (they were judged at its own commit, under the epoch it then moved).
+    pub already_recorded: bool,
+}
+
+/// The recorded outcome of the activation at `row`: its epochs are read
+/// from the book root as of the activation's own commit, which is the
+/// commit that moved the epoch to `to_epoch`.
+fn recorded_activation<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    row: &fgdb::VertexRow,
+) -> Result<PolicyActivated, KernelError> {
+    let root = db
+        .vertex_at(book_root(), row.created_at)?
+        .ok_or_else(|| KernelError::Corrupt("no book root at the activation's commit".into()))?;
+    let to_epoch = epoch_from(prop(&root, property::SECURITY_POLICY_EPOCH))?;
+    let from_epoch = to_epoch.checked_sub(1).ok_or_else(|| {
+        KernelError::Corrupt(format!(
+            "activation {:032x} is recorded but the epoch at its commit is 0",
+            row.vid.0
+        ))
+    })?;
+    Ok(PolicyActivated {
+        from_epoch,
+        to_epoch,
+        recorded_at: row.created_at,
+        control_entry: row.vid,
+        already_recorded: true,
+    })
+}
+
+/// An existing row at the activation's identity (plan §4.9, FA-INV-09):
+/// the recorded outcome when the proposal is the same — byte for byte, or
+/// semantically equal under the book key (an erasable description re-sealed
+/// with fresh salt is the same request) — and a conflict otherwise.
+fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    row: &fgdb::VertexRow,
+    proposal: &EntryPayload,
+    proposal_digest: &[u8; 32],
+) -> Outcome<PolicyActivated> {
+    let stored = match prop(row, property::FA_PAYLOAD) {
+        Some(CanonicalScalar::Bytes(b)) => Entry::decode(b.as_slice())?,
+        other => {
+            return Err(KernelError::Corrupt(format!(
+                "entry _fa_payload: {other:?}"
+            )));
+        }
+    };
+    let conflict = || {
+        Refusal::new(
+            code::IDEMPOTENCY_CONFLICT,
+            exit::CONFLICT,
+            format!(
+                "idempotency key reused with different content; the recorded entry is {:032x}",
+                row.vid.0
+            ),
+            "plan §4.9 (identity is derived from the key; content is bound by proposal_digest)",
+            "resubmit the identical activation to get the recorded outcome, or use a new idempotency key",
+        )
+    };
+    if stored.proposal.class != EntryClass::POLICY_CONTROL {
+        return Ok(Err(conflict()));
+    }
+    if &stored.proposal_digest == proposal_digest {
+        return recorded_activation(db, row).map(Ok);
+    }
+    match (
+        stored.proposal.semantic_digest(&book.seal_key),
+        proposal.semantic_digest(&book.seal_key),
+    ) {
+        (Ok(a), Ok(b)) if a == b => recorded_activation(db, row).map(Ok),
+        (Ok(_), Ok(_)) => Ok(Err(conflict())),
+        (Err(fa_model::EntryError::Sealed(_)), _) | (_, Err(fa_model::EntryError::Sealed(_))) => {
+            Ok(Err(Refusal::new(
+                code::EQUIVALENCE_UNVERIFIABLE,
+                exit::CONFLICT,
+                format!(
+                    "an activation with this identity exists ({:032x}) but a sealed field cannot be opened, so equivalence cannot be verified",
+                    row.vid.0
+                ),
+                "plan §8.5 (no plaintext equivalence over destroyed secrets)",
+                "resubmit the exact prepared bytes to get the recorded outcome, or use a new idempotency key",
+            )))
+        }
+        (Err(e), _) | (_, Err(e)) => Err(e.into()),
+    }
+}
+
+/// Activate a security policy: one commit journaling the `PolicyControl`
+/// entry (legs = [], `ControlPayload::PolicyActivation`) and moving the
+/// book's `security_policy_epoch` by compare-and-set from the value this
+/// transaction witnessed. Refused before any read: a malformed proposal, an
+/// interval other than `[effective_date, OPEN_END)`, a policy digest this
+/// build does not enforce, a capability that is not the preparer's,
+/// lacks `rule_change`, or has expired. Then the identity: the same
+/// activation again is its recorded outcome. Then authority at commit: the
+/// `policy-activate` SoD row (two Human approvers who are not the preparer,
+/// recorded under the current epoch).
+pub async fn activate_policy<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    req: ActivationRequest,
+) -> Outcome<PolicyActivated> {
+    let proposal = &req.proposal;
+    let activation = match (&proposal.control, proposal.validate()) {
+        (
+            Some(ControlPayload::PolicyActivation {
+                policy_oid,
+                effective_from,
+                effective_to,
+            }),
+            Ok(()),
+        ) if proposal.class == EntryClass::POLICY_CONTROL => {
+            Some((policy_oid.0, *effective_from, *effective_to))
+        }
+        _ => None,
+    };
+    let Some((policy_oid, effective_from, effective_to)) = activation else {
+        return Ok(Err(Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            "a policy activation is a valid PolicyControl entry carrying a PolicyActivation payload",
+            "Appendix A ControlPayload::PolicyActivation",
+            "build the proposal with fa_journal::activation_proposal",
+        )));
+    };
+    if effective_from != proposal.effective_date || effective_to != OPEN_END {
+        return Ok(Err(Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            format!(
+                "this slice activates a policy from its own effective date onward: effective_from must equal effective_date ({}) and effective_to must be OPEN_END",
+                proposal.effective_date.render()
+            ),
+            "plan §14.2 (policy is selected by known-at, the security_policy_epoch a commit witnesses, not by effective date)",
+            "build the proposal with fa_journal::activation_proposal; date-scoped policy versions land with loaded, versioned policies",
+        )));
+    }
+    if proposal.book_id != book.book_id || proposal.branch_id != Id128::TRUNK {
+        return Ok(Err(Refusal::new(
+            code::COORDINATE,
+            exit::USAGE,
+            "the activation names another book or a branch",
+            "plan §2.2",
+            "activate on this book's trunk",
+        )));
+    }
+    // Admission before any read: the policy is the one this build enforces,
+    // and the capability is the preparer's, current, and holds the SoD
+    // row's preparer op.
+    let steward = steward()?;
+    if let Err(d) = steward.check_activation(&policy_oid) {
+        return Ok(Err(refusal(&d)));
+    }
+    let key = fa_policy::sod::control_key("PolicyControl", None, "Activate");
+    let Some(op) = steward.preparer_op(&key) else {
+        return Err(KernelError::Corrupt(
+            "sod_policy.toml has no policy-activate rule".into(),
+        ));
+    };
+    if let Err(d) = fa_policy::admit(
+        &req.capability,
+        &Intent {
+            principal: proposal.principal_ref,
+            trunk: true,
+            op,
+            legs: &[],
+        },
+    ) {
+        return Ok(Err(refusal(&d)));
+    }
+    let at = db.frontier()?;
+    if let Err(d) = fa_policy::current(&req.capability, at) {
+        return Ok(Err(refusal(&d)));
+    }
+    let proposal_digest = proposal.proposal_digest()?;
+    let txn_cx = ctx.txn();
+    let mut txn = db.begin(&txn_cx)?;
+    let evid = entry_vid(
+        book.book_id,
+        &proposal.principal_ref.0.to_le_bytes(),
+        &proposal.idempotency_key,
+    );
+    if let Some(row) = txn.vertex(db, evid)? {
+        txn.abort();
+        return recorded_or_conflict(db, book, &row, proposal, &proposal_digest);
+    }
+    // The witnessed scalar is the compare-and-set's expectation (absent on
+    // a book that never activated a policy).
+    let witnessed = txn.vertex_property(db, book_root(), property::SECURITY_POLICY_EPOCH)?;
+    let epoch = epoch_from(witnessed.as_ref())?;
+    let preparer = Party {
+        principal: proposal.principal_ref,
+        profile: req.capability.profile(),
+    };
+    if let Err(r) = authorize_approvals(
+        &txn,
+        db,
+        book,
+        &req.approvals,
+        &proposal_digest,
+        epoch,
+        &key,
+        0,
+        preparer,
+    )? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    let next_epoch = epoch
+        .checked_add(1)
+        .ok_or_else(|| KernelError::Corrupt("security_policy_epoch overflow".into()))?;
+    let next = i64::try_from(next_epoch)
+        .map(CanonicalScalar::Int)
+        .map_err(|_| KernelError::Corrupt("security_policy_epoch exceeds i64".into()))?;
+    let entry = proposal.clone().seal(req.approvals.clone(), None)?;
+    let mut batch = WriteBatch::new(relation::IN_BOOK);
+    batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    batch.compare_and_set_vertex_property(
+        book_root(),
+        property::SECURITY_POLICY_EPOCH,
+        witnessed,
+        next,
+        WriteMismatchPolicy::AbortWrite,
+    );
+    txn.write(db, batch)?;
+    match txn.commit(db, &ctx.commit()).await {
+        Ok(seq) => Ok(Ok(PolicyActivated {
+            from_epoch: epoch,
+            to_epoch: next_epoch,
+            recorded_at: seq,
+            control_entry: evid,
+            already_recorded: false,
+        })),
+        Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
+            Ok(Err(Refusal::new(
+                code::CONFLICT,
+                exit::CONFLICT,
+                format!("a concurrent commit invalidated this activation's witness: {detail}"),
+                "FG-LAW-FCW-01 (first committer wins)",
+                "re-read the policy epoch, re-approve under it, and retry",
+            )))
+        }
+        Err(WriteTxnError::Write(fgdb::WriteError::CompareAndSetMismatch(_))) => {
+            Ok(Err(Refusal::new(
+                code::CONFLICT,
+                exit::CONFLICT,
+                "the security policy epoch moved under this activation",
+                "plan §14.2 (policy changes are serialized through the epoch)",
+                "re-read the policy epoch, re-approve under it, and retry",
+            )))
+        }
+        Err(WriteTxnError::Write(
+            fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
+        )) => match db.vertex(evid)? {
+            // Lost the identity race: the recorded outcome if it is the same
+            // activation, a conflict if it is not.
+            Some(row) => recorded_or_conflict(db, book, &row, proposal, &proposal_digest),
+            None => Err(KernelError::Corrupt(
+                "identity spent but no live row".into(),
+            )),
+        },
+        Err(e) => Err(e.into()),
+    }
+}

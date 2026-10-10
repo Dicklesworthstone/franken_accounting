@@ -237,6 +237,9 @@ name = "upper_bound"
 id = 44
 name = "generation"
 [[property]]
+id = 45
+name = "security_policy_epoch"
+[[property]]
 id = 46
 name = "accumulator_head"
 

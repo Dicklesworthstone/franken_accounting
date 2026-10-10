@@ -34,9 +34,30 @@ fa registers materialize --book ./books/acme --period FY2026-P03 --json
 
 Omitting `--as-known-at` selects the current head; the response records the resolved sequence. A later backdated entry appears at head but cannot change a report at an earlier sequence. Instant selectors require TimeEvidence and are currently refused. These reports are exact payload folds; report certificates and independent offline verification are still pending. The [persistent CLI tests](./crates/fa-cli/tests/cli.rs) exercise book creation, chart installation, posting, reporting, refusals and recovery with the actual binary.
 
-Reports show posted and pending amounts separately. A hold reserves its original period; a later partial posting releases the entire hold and posts only the explicitly selected sub-vector in the resolution's period. A void releases the hold without posting. Earlier recorded snapshots still show the unresolved reservation. Timed expiry and account availability limits remain unfinished.
+Reports show posted and pending amounts separately. A hold reserves its original period; a later partial posting releases the entire hold and posts only the explicitly selected sub-vector in the resolution's period. A void releases the hold without posting. Earlier recorded snapshots still show the unresolved reservation. Limited accounts reserve pending outflows; pending inflows cannot fund spending. `fa verify availability` compares each limited account's expected cell, including its account binding, with a journal fold. Timed expiry remains unfinished.
 
 Register verification compares both amount columns, counts, identity, period membership, watermark and fold checksum against the journal payloads. Rebuilding repairs derived rows and retires phantom cells without changing journal entries. Existing register caches from before the pending-column format must be rebuilt; their missing columns are reported as drift rather than assumed to be zero.
+
+### Entry accumulator checkpoints
+
+The CLI can publish an unsigned checkpoint over the book's entry prefix and
+recompute the stored chain from the journal:
+
+```bash
+fa checkpoint create --grant witness --book ./books/acme --json
+fa verify accumulator --book ./books/acme --json
+```
+
+Publication requires witness authority; an Agent profile cannot publish on
+trunk. Verification reports `verified_through`, the newest checked prefix,
+so later postings are covered only after another checkpoint. With no stored
+checkpoints it returns `status: "no_checkpoints"` and a null
+`verified_through`. A corrupt state or broken chain produces exit 8 and a
+finding; checkpoint creation refuses a corrupt predecessor. These states
+cover entries, including control entries. Signed transparency checkpoints,
+document-receipt coverage and evidence bundles remain unfinished. The
+[CLI tests](./crates/fa-cli/tests/notary.rs) exercise persistence, later
+postings, authorization and real storage corruption.
 
 ### Exact arithmetic available now
 

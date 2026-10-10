@@ -94,6 +94,7 @@ fn exit_classes_agree_with_the_registry_and_codes_are_distinct() {
         code::APPROVAL_BINDING,
         code::UNKNOWN_APPROVAL,
         code::STALE_APPROVAL,
+        code::UNSUPPORTED_POLICY,
     ];
     let mut seen = std::collections::BTreeSet::new();
     for c in all {

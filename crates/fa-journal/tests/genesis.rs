@@ -18,7 +18,7 @@ use fa_model::symbols::{property, relation};
 use fa_model::{
     ControlPayload, Disposition, EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable,
     EvidenceRef, Id128, LegPayload, Oid, Pending, SealKey, Settlement, Supersession,
-    SupersessionKind, SymbolTable, account_vid, period_vid,
+    SupersessionKind, SymbolTable, account_vid, entry_vid, period_vid,
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodState, PeriodTransition};
@@ -225,11 +225,14 @@ impl Harness {
     }
 
     fn request(&self, proposal: EntryPayload, ops: &[&str]) -> PostRequest {
+        // Some tests post as another principal; the capability is that
+        // principal's own (fa-llx: a capability authorizes its holder only).
+        let holder = proposal.principal_ref;
         PostRequest {
             proposal,
             approvals: Vec::new(),
             plan_certificate: None,
-            capability: Capability::with_ops(ops),
+            capability: Capability::embedded(holder, ops).expect("registered ops"),
         }
     }
 
@@ -565,7 +568,14 @@ fn unbalanced_entry_is_refused_with_exit_3_and_nothing_written() {
     let r = h.post(h.request(proposal, &["post"])).unwrap_err();
     assert_eq!((r.code, r.exit), ("FA-REF-001", exit::REFUSAL));
     assert!(r.message.contains("USD"), "{}", r.message);
-    assert!(r.fix.contains("credit leg of 1 USD"), "{}", r.fix);
+    // Rendered at the unit's scale: the one-cent gap, never "1 USD".
+    assert!(r.fix.contains("credit leg of 0.01 USD"), "{}", r.fix);
+    assert!(
+        r.message
+            .contains("debits 1200.00 USD ≠ credits 1199.99 USD (difference 0.01 USD)"),
+        "{}",
+        r.message
+    );
     let vid = fa_model::entry_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), b"inv-2");
     assert!(h.db.vertex(vid).unwrap().is_none());
 }
@@ -1624,4 +1634,139 @@ fn document_intake_refuses_empty_oversized_unregistered_and_unverifiable_input()
         h.add_document(&h.document(INVOICE, AGENT_UPLOAD, body))
             .is_ok()
     );
+}
+
+// ---------------------------------------------------------------------------
+// Evidence minimum at commit (fa-lp6, FA-INV-05 `evidence-minimum`)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_entry_below_its_evidence_minimum_is_refused_and_a_cited_document_is_linked() {
+    let mut h = harness();
+    let mut bare = h.proposal(h.rent_legs(50_000), b"ev-bare", EntryClass::ORIGINAL);
+    bare.evidence.clear();
+    let evid = entry_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), b"ev-bare");
+
+    // No citation: refused, naming the registry row and the intake command.
+    let r = h.post(h.request(bare.clone(), &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-080", exit::REFUSAL), "{r}");
+    assert!(r.cite.contains("class = \"Original\""), "{}", r.cite);
+    assert!(r.fix.contains("fa document add"), "{}", r.fix);
+
+    // A citation of a document the book does not hold.
+    let ghost = h.document(INVOICE, HUMAN_UPLOAD, b"an invoice nobody recorded");
+    let mut p = bare.clone();
+    p.evidence = vec![ghost.evidence_ref(ROLE_SOURCE)];
+    let r = h.post(h.request(p, &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-081", exit::REFUSAL), "{r}");
+
+    // A citation under a commitment that is not the document's.
+    let mut wrong = h.evidence[0];
+    wrong.doc_commit = [0; 32];
+    let mut p = bare.clone();
+    p.evidence = vec![wrong];
+    let r = h.post(h.request(p, &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-082", exit::REFUSAL), "{r}");
+
+    // A second citation of a held document under a wrong commitment is
+    // refused even when the first citation is right (review D1): every
+    // citation's commitment is checked, not one per document.
+    let good = h.evidence[0];
+    assert!(
+        good.doc_commit < [0xff; 32],
+        "the forged citation sorts second"
+    );
+    for role in [good.role, 2] {
+        let forged = EvidenceRef {
+            doc_commit: [0xff; 32],
+            role,
+            ..good
+        };
+        let mut p = bare.clone();
+        p.evidence = vec![good, forged];
+        let r = h.post(h.request(p, &["post"])).unwrap_err();
+        assert_eq!(
+            (r.code, r.exit),
+            ("FA-REF-082", exit::REFUSAL),
+            "role {role}: {r}"
+        );
+    }
+
+    // An unregistered role is a structural error.
+    let mut odd = h.evidence[0];
+    odd.role = 99;
+    let mut p = bare.clone();
+    p.evidence = vec![odd];
+    let r = h.post(h.request(p, &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-100", exit::USAGE), "{r}");
+
+    // Every refusal left the book unchanged.
+    assert!(h.db.vertex(evid).unwrap().is_none());
+
+    // Cited (one document in two roles, a second document): committed, one
+    // EVIDENCED_BY edge per distinct document, the citations carried exactly.
+    let support = h.document(RECEIPT, AGENT_UPLOAD, b"bank receipt for the rent");
+    h.add_document(&support).expect("admitted");
+    let source = h.evidence[0];
+    let mut also = source;
+    also.role = 2;
+    let mut cites = vec![source, also, support.evidence_ref(2)];
+    cites.sort();
+    let mut p = bare.clone();
+    p.evidence = cites.clone();
+    let entry = h
+        .post(h.request(p, &["post"]))
+        .expect("admitted")
+        .entry_ref()
+        .vid;
+    assert_eq!(entry, evid);
+    for d in [
+        document_vid(&source.document_oid),
+        document_vid(&support.oid()),
+    ] {
+        assert!(
+            h.db.edge(edge_id(relation::EVIDENCED_BY, entry, d))
+                .unwrap()
+                .is_some(),
+            "EVIDENCED_BY to {d:?}"
+        );
+    }
+    let (back, _) = read_entry(&h.db, entry).unwrap().expect("entry row");
+    assert_eq!(back.proposal.evidence, cites);
+}
+
+#[test]
+fn target_classes_rest_on_their_target_while_a_hold_needs_its_own_document() {
+    let mut h = harness();
+    let original = h
+        .post(h.request(h.invoice(700, b"ev-inv"), &["post"]))
+        .expect("admitted")
+        .entry_ref();
+    // A reversal's closure is the reversed entry: no document of its own.
+    let mut rev = h.reversal_of_entry(original, b"ev-rev");
+    rev.evidence.clear();
+    let r = h.post(h.request(rev, &["post"]));
+    assert!(r.is_ok(), "{r:?}");
+
+    // A hold is the claim its resolution posts: it carries the document.
+    let mut hold = h.pending(h.rent_legs(900), b"ev-hold");
+    hold.evidence.clear();
+    let r = h.post(h.request(hold, &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-080", exit::REFUSAL), "{r}");
+    assert!(r.cite.contains("class = \"Pending\""), "{}", r.cite);
+    let pending = h
+        .post(h.request(h.pending(h.rent_legs(900), b"ev-hold"), &["post"]))
+        .expect("reserves")
+        .entry_ref();
+    // Its resolution posts on the hold's closure, citing nothing.
+    let mut res = h.resolution_posts(pending, h.rent_legs(900), vec![0, 1], b"ev-res");
+    res.evidence.clear();
+    let r = h.post(h.request(res, &["post"]));
+    assert!(r.is_ok(), "{r:?}");
+
+    // An Adjusting entry, like an Original, needs its document.
+    let mut adj = h.proposal(h.rent_legs(10), b"ev-adj", EntryClass::ADJUSTING);
+    adj.evidence.clear();
+    let r = h.post(h.request(adj, &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-080", exit::REFUSAL), "{r}");
 }

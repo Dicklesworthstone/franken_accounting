@@ -78,4 +78,36 @@ impl Steward {
             .and_then(|r| r.preparer_op.as_deref())
             .and_then(Op::from_name)
     }
+
+    /// A `PolicyActivation` may name only the policy this build enforces:
+    /// journaling any other digest would record rules the kernel never
+    /// applies (fail closed until loaded, versioned policies land).
+    pub fn check_activation(&self, policy_oid: &[u8; 32]) -> Result<(), Denial> {
+        if *policy_oid == self.policy_oid {
+            Ok(())
+        } else {
+            Err(Denial::UnsupportedPolicy {
+                cited: *policy_oid,
+                enforced: self.policy_oid,
+            })
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_enforced_policy_can_be_activated() {
+        let steward = Steward::embedded().unwrap();
+        assert_eq!(steward.check_activation(&steward.policy_oid), Ok(()));
+        let d = steward.check_activation(&[0xab; 32]).unwrap_err();
+        assert_eq!(
+            (d.code(), d.kind(), d.exit()),
+            ("FA-REF-019", "unsupported_policy", 7)
+        );
+        assert!(d.message().contains(&"ab".repeat(32)), "{}", d.message());
+        assert!(d.fix().contains("capability.policy_oid"), "{}", d.fix());
+    }
 }

@@ -21,6 +21,7 @@ pub mod evidence;
 pub mod genesis;
 pub mod limit;
 pub mod period;
+pub mod policy;
 pub mod post;
 pub mod refusal;
 pub mod rows;
@@ -32,6 +33,10 @@ pub use genesis::{
 };
 pub use limit::{BalanceLimit, LimitCell, cell_account, limit_cell_vid};
 pub use period::{Transitioned, transition_period};
+pub use policy::{
+    ActivationRequest, ApprovalRequest, Approved, PolicyActivated, activate_policy,
+    activation_proposal, record_approval, security_policy_epoch,
+};
 pub use post::{Capability, PostRequest, Posted, post};
 pub use refusal::{KernelError, Refusal, exit};
 pub use rows::{AccountRow, PeriodRow};

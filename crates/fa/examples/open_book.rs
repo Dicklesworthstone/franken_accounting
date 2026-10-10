@@ -6,7 +6,7 @@
 
 use std::process::ExitCode;
 
-use fa::book::{Book, BookError, BookKeys, Entropy};
+use fa::{Book, BookError, BookKeys, Entropy};
 use fa_journal::{AccountSpec, BookSpec, Capability, PostRequest, UnitPolicy};
 use fa_model::{EntryClass, EntryOrigin, EntryPayload, Id128, LegPayload, Oid, account_vid};
 use fa_money::{Amount, Side};
@@ -156,7 +156,7 @@ fn run() -> Result<(), BookError> {
         proposal: p,
         approvals: Vec::new(),
         plan_certificate: None,
-        capability: Capability::with_ops(&["post"]),
+        capability: Capability::embedded(principal, &["post"]).expect("post"),
     };
 
     match book.post(request(proposal))? {

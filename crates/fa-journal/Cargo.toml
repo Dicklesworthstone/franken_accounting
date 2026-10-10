@@ -15,6 +15,7 @@ fa-money = { path = "../fa-money", version = "=0.0.1" }
 fa-time = { path = "../fa-time", version = "=0.0.1" }
 fa-registry = { path = "../fa-registry", version = "=0.0.1" }
 fa-model = { path = "../fa-model", version = "=0.0.1" }
+fa-policy = { path = "../fa-policy", version = "=0.0.1" }
 asupersync = { workspace = true }
 fgdb = { workspace = true }
 fgdb-types = { workspace = true }

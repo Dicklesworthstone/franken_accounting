@@ -38,6 +38,9 @@ pub mod code {
     /// The approval was recorded under a security policy epoch that is no
     /// longer current.
     pub const STALE_APPROVAL: &str = "FA-REF-018";
+    /// A policy activation names policy content this build does not embed,
+    /// so it could journal rules the kernel would not enforce.
+    pub const UNSUPPORTED_POLICY: &str = "FA-REF-019";
 }
 
 /// Exit classes (`registries/exit_codes.toml`); `tests/policy.rs` checks them.
@@ -123,6 +126,12 @@ pub enum Denial {
         recorded_epoch: u64,
         current_epoch: u64,
     },
+    /// The activation names a policy digest other than the one this build
+    /// enforces (`Steward::policy_oid`).
+    UnsupportedPolicy {
+        cited: [u8; 32],
+        enforced: [u8; 32],
+    },
 }
 
 impl Denial {
@@ -143,6 +152,7 @@ impl Denial {
             Self::ApprovalBinding { .. } => code::APPROVAL_BINDING,
             Self::UnknownApproval { .. } => code::UNKNOWN_APPROVAL,
             Self::StaleApproval { .. } => code::STALE_APPROVAL,
+            Self::UnsupportedPolicy { .. } => code::UNSUPPORTED_POLICY,
         }
     }
 
@@ -167,6 +177,7 @@ impl Denial {
             Self::ApprovalBinding { .. } => "approval_binding",
             Self::UnknownApproval { .. } => "unknown_approval",
             Self::StaleApproval { .. } => "stale_approval",
+            Self::UnsupportedPolicy { .. } => "unsupported_policy",
         }
     }
 
@@ -254,6 +265,11 @@ impl Denial {
             } => format!(
                 "approval {index} was recorded under security policy epoch {recorded_epoch}; the book is at epoch {current_epoch}"
             ),
+            Self::UnsupportedPolicy { cited, enforced } => format!(
+                "the activation names policy {}, but this build enforces only policy {}",
+                hex(cited),
+                hex(enforced)
+            ),
         }
     }
 
@@ -262,7 +278,9 @@ impl Denial {
         match self {
             Self::NotHolder { .. } => "plan §14.2 (a capability authorizes its holder only)".into(),
             Self::MissingOp { .. } => "plan §14.2 (capability caveats)".into(),
-            Self::AgentOnTrunk => "plan §14.4 Agent profile (branch-confined)".into(),
+            Self::AgentOnTrunk => {
+                "plan §14.4 Agent profile (branch-confined); drafts and promotion: fa-s7x".into()
+            }
             Self::Expired { .. } => {
                 "plan §14.2 (authority is evaluated against current policy)".into()
             }
@@ -280,6 +298,9 @@ impl Denial {
                 "FA-INV-10 approval-binds-proposal".into()
             }
             Self::StaleApproval { .. } => "FA-INV-10 current-policy".into(),
+            Self::UnsupportedPolicy { .. } => {
+                "plan §14.2 (authority is evaluated against current policy); a journaled activation must name the rules the kernel enforces".into()
+            }
         }
     }
 
@@ -293,13 +314,14 @@ impl Denial {
                 "obtain `{op}` from the book's steward (embedded posture: --grant {op})"
             ),
             Self::AgentOnTrunk => {
-                "work on a draft: `fa draft new <name>`, then resubmit the same command with --draft <name>; a Human principal promotes it (drafts land with the branch slice; until then an agent proposes and a Human posts)".into()
+                "drafts are not yet available (fa-s7x): ask a Human principal to post this intent, or post it under a Human-profile capability".into()
             }
             Self::Expired { .. } => {
                 "obtain a fresh capability; an expired token is never extended".into()
             }
-            Self::CeilingExceeded { ceiling, .. } => format!(
-                "split the work so each leg is at most {ceiling}, or have a principal with a higher ceiling post it"
+            Self::CeilingExceeded { ceiling, unit, .. } => format!(
+                "split the work so each leg's mantissa in unit {} is at most {ceiling}, or have a principal with a higher ceiling post it",
+                unit.0
             ),
             Self::UnboundedUnit { .. } => {
                 "obtain a capability whose ceilings name this unit".into()
@@ -332,8 +354,16 @@ impl Denial {
             Self::StaleApproval { .. } => {
                 "the security policy changed after the approval; re-approve under the current epoch and resubmit".into()
             }
+            Self::UnsupportedPolicy { enforced, .. } => format!(
+                "activate the policy this build enforces ({}, `fa capabilities --json` capability.policy_oid); different rules need a build that embeds them",
+                hex(enforced)
+            ),
         }
     }
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 impl core::fmt::Display for Denial {
