@@ -1,0 +1,45 @@
+# intake_sources.toml — where a document may enter a book (plan §9.3
+# `ImportReceipt.source`; fa-txf).
+#
+# Every document the book ingests gets an ImportReceipt naming its source,
+# and an entry may cite a document only when its custody chain starts at a
+# receipt whose source this registry admits (FA-REF-114 otherwise). A source
+# kind is admitted when it has a `[[kind]]` row. A Connector source must also
+# name a registered `[[connector]]` (name and version); a Scan source must
+# name a registered `[[device]]`. Upload names its principal and Email its
+# message id; neither needs further registration.
+#
+# Consumer: fa-registry `intake_sources` (parser), fa-journal `custody`
+# (intake and the posting kernel's custody check).
+# Gate: kinds closed to the four the payload encodes; names unique; text
+# within max_intake_text_bytes.
+#
+# Additive-only: a released row is never removed while a receipt names it.
+
+schema_version = 1
+
+[[kind]]
+name = "Upload"
+meaning = "a principal uploaded the bytes (fa document add; Document.retrieved_by)"
+
+[[kind]]
+name = "Connector"
+meaning = "a registered connector fetched the bytes in an import run"
+
+[[kind]]
+name = "Email"
+meaning = "the bytes arrived as an e-mail message or attachment, named by its message id"
+
+[[kind]]
+name = "Scan"
+meaning = "a registered scanning device captured the bytes"
+
+# The import path of fa itself: a batch of files a principal or job hands to
+# an import run (the `fa import` verb is JadePeak's, after fa-txf).
+[[connector]]
+name = "fa-import"
+version = "1"
+meaning = "files handed to an import run by a principal or a scheduled job"
+
+# No scanning device is registered in this build: a Scan source is refused
+# until a device row exists.

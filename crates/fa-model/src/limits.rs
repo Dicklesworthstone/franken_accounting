@@ -33,6 +33,11 @@ pub const MAX_EXTENSION_BYTES: usize = 64 * 1024;
 /// Entries one batch commits in one transaction; an expiry-sweep batch is
 /// bounded by it (plan §5.4).
 pub const MAX_BATCH_ENTRIES: usize = 8190;
+/// Text fields of an intake source (connector name and version, message id,
+/// scanning device).
+pub const MAX_INTAKE_TEXT_BYTES: usize = 256;
+/// Documents in one import run (one transaction).
+pub const MAX_IMPORT_DOCUMENTS: usize = 1024;
 
 /// Every limit as `(name, value)`, in registry order.
 pub const ALL: &[(&str, u64)] = &[
@@ -68,6 +73,8 @@ pub const ALL: &[(&str, u64)] = &[
     ("max_extensions", MAX_EXTENSIONS as u64),
     ("max_extension_bytes", MAX_EXTENSION_BYTES as u64),
     ("max_batch_entries", MAX_BATCH_ENTRIES as u64),
+    ("max_intake_text_bytes", MAX_INTAKE_TEXT_BYTES as u64),
+    ("max_import_documents", MAX_IMPORT_DOCUMENTS as u64),
 ];
 
 #[cfg(test)]

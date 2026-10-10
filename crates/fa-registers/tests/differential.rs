@@ -1247,6 +1247,7 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                 grade: grade.into(),
                 commit: e.doc_commit,
                 uploader: 7,
+                custody: fa_reference::evidence::Custody::uploaded(),
             },
         )
     })

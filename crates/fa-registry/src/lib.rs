@@ -10,6 +10,7 @@
 
 pub mod evidence_policy;
 pub mod foundations;
+pub mod intake_sources;
 pub mod invariants;
 pub mod reason_codes;
 pub mod refusal_catalog;
