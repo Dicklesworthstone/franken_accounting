@@ -25,7 +25,7 @@ schema_version = 1
 code = "FA-REF-007"
 holder = "fa-cli CONFIRMATION_REQUIRED: a dangerous operation without --yes or a plan (Appendix D; JadePeak, fa-12x, approved 3232)"
 
-# ---- Folio: balance law, chart, units (001–004) -------------------------
+# ---- Folio: balance law, chart, units, entities (001–005) ---------------
 [[refusal]]
 code = "FA-REF-001"
 name = "UNBALANCED"
@@ -57,6 +57,14 @@ owners = ["fa-journal"]
 exit = "refusal"
 cite = "plan §4.3"
 fix = "fa chart list --json to find the account, or fa chart import to add it"
+
+[[refusal]]
+code = "FA-REF-005"
+name = "DIMENSION_MISSING"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §4.1, §5.2 (legal_entity is a mandatory balancing dimension in a multi-entity book; FA-INV-01 per-entity)"
+fix = "add the legal-entity dimension to leg {i}: one of {entities}"
 
 # ---- Steward: authority, SoD, approvals (008–019) ------------------------
 [[refusal]]
@@ -405,7 +413,7 @@ exit = "usage"
 cite = "plan §5.5 (Balancing leg: the two-leg TigerBeetle option)"
 fix = "post two legs of one unit and one positive amount (a debit and a credit on different accounts), class Original/Adjusting/Pending, and name leg 0 or 1 as balancing; an N-leg entry states its amounts"
 
-# ---- TimeEvidence ticks and the expiry sweep (094–098) --------------------
+# ---- TimeEvidence ticks, the expiry sweep, schedules (094–099) -----------
 [[refusal]]
 code = "FA-REF-094"
 name = "TICK_ORDER"
@@ -454,7 +462,7 @@ exit = "usage"
 cite = "plan §7.6 (cancelled by lineage), FA-INV-08"
 fix = "reverse the scheduled target with a Reversal; its commit journals the cancellation"
 
-# ---- Structure and coordinate (100–103) ----------------------------------
+# ---- Structure, coordinate, entities (100–104) ---------------------------
 [[refusal]]
 code = "FA-REF-100"
 name = "STRUCTURE"
@@ -486,6 +494,14 @@ owners = ["fa-journal"]
 exit = "usage"
 cite = "plan §2.2 (an object belongs to exactly one book)"
 fix = "set book_id to this book's id (fa book info --json) or open the book the intent names"
+
+[[refusal]]
+code = "FA-REF-104"
+name = "ENTITY_UNDECLARED"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §4.1 (Book.entities: a leg posts for a declared legal entity)"
+fix = "name one of the book's declared entities (fa book info --json lists them); a new entity is declared at genesis"
 
 # ---- Notary (120–125) ----------------------------------------------------
 [[refusal]]

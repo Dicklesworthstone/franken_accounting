@@ -27,6 +27,7 @@ fn run() -> Result<(), BookError> {
         base_unit: usd,
         calendar,
         time_zone_policy: None,
+        entities: Vec::new(),
     };
     let mut book =
         Book::create_memory(BookKeys::for_development(0x5a), spec, Entropy::production())?;

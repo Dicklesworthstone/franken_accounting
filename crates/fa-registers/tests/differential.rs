@@ -14,13 +14,15 @@ use fa_journal::*;
 use fa_model::{
     ControlPayload, Disposition, EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable,
     EvidenceRef, Id128, LegPayload, Oid, Pending, PeriodRef, SealKey, Settlement, Supersession,
-    SupersessionKind, SymbolTable, account_vid,
+    SupersessionKind, SymbolTable, account_vid, dimension_vid, entity_value_vid, legal_entity_vid,
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_reference::{Account, Cell, Int, Intent, Leg, Limit, Oracle, Resolve, Settle, Verdict};
 use fa_registers::{
-    TrialBalance, balance_as_of, explain_balance, fold_period, open_items, period_activity,
-    trial_balance, trial_balance_at, verify_availability, verify_open_items,
+    EntityCellKey, RegisterEquals, TrialBalance, balance_as_of, check_register_equals,
+    explain_balance, fold_period, fold_period_by_entity, open_items, period_activity,
+    register_equals, trial_balance, trial_balance_at, verify_availability, verify_entities,
+    verify_open_items,
 };
 use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodState, PeriodTransition};
 use fgdb::{Database, DatabaseKeys, MemVfs, WriteBatch};
@@ -104,6 +106,12 @@ fn db_keys() -> DatabaseKeys {
 /// [`setup_with`], also returning the in-memory filesystem the store lives
 /// on, so a test can drop the handle (a crash) and reopen what committed.
 fn setup_store(rows: &[ChartRow]) -> (Kernel, Oracle, Vec<String>, MemVfs) {
+    setup_entities(rows, &[])
+}
+
+/// [`setup_store`] for a book declaring `entities` (plan §4.1
+/// `Book.entities`); the oracle is told the same declaration.
+fn setup_entities(rows: &[ChartRow], entities: &[&str]) -> (Kernel, Oracle, Vec<String>, MemVfs) {
     let runtime = RuntimeBuilder::new().build().expect("runtime");
     let root = runtime.request_cx_with_budget(Budget::INFINITE);
     let ctx = PurposeContexts::narrow_runtime_root(&root);
@@ -126,6 +134,13 @@ fn setup_store(rows: &[ChartRow]) -> (Kernel, Oracle, Vec<String>, MemVfs) {
         calendar: calendar.clone(),
         // Declared: the scheduled-reversal tests need ticks to become dates.
         time_zone_policy: Some(TimeZonePolicy::Utc),
+        entities: entities
+            .iter()
+            .map(|code| LegalEntitySpec {
+                code: (*code).into(),
+                name: format!("{code} entity"),
+            })
+            .collect(),
     };
     let symbols = SymbolTable::compiled();
     runtime
@@ -204,6 +219,7 @@ fn setup_store(rows: &[ChartRow]) -> (Kernel, Oracle, Vec<String>, MemVfs) {
     let agent_evidence = agent_upload.evidence_ref(1);
 
     let mut oracle = Oracle::new(calendar);
+    oracle.declare_entities(entities);
     for (code, _, leaf, normal, limit) in rows {
         oracle.add_account(Account {
             code: (*code).into(),
@@ -245,7 +261,7 @@ fn setup_store(rows: &[ChartRow]) -> (Kernel, Oracle, Vec<String>, MemVfs) {
 fn to_kernel_legs(book_id: Id128, usd: UnitId, legs: &[Leg]) -> Vec<LegPayload> {
     legs.iter()
         .map(|l| {
-            LegPayload::simple(
+            let mut leg = LegPayload::simple(
                 if l.side == fa_reference::Side::Debit {
                     Side::Debit
                 } else {
@@ -253,7 +269,15 @@ fn to_kernel_legs(book_id: Id128, usd: UnitId, legs: &[Leg]) -> Vec<LegPayload> 
                 },
                 account_vid(book_id, &l.account),
                 Amount::new(usd, l.mantissa),
-            )
+            );
+            // The legal entity rides in the leg's dimension_set (plan §5.2).
+            if let Some(e) = &l.entity {
+                leg.dimension_set = vec![(
+                    fa_model::LEGAL_ENTITY_DIMENSION,
+                    fa_model::entity_value_vid(book_id, e),
+                )];
+            }
+            leg
         })
         .collect()
 }
@@ -578,6 +602,7 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
             side,
             account: account.into(),
             unit: usd.0,
+            entity: None,
             mantissa,
         };
         if needed.contains("FA-REF-032")
@@ -708,12 +733,14 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                             side: fa_reference::Side::Debit,
                             account: "1200".into(),
                             unit: usd.0,
+                            entity: None,
                             mantissa: amount,
                         },
                         Leg {
                             side: fa_reference::Side::Credit,
                             account: "4000".into(),
                             unit: usd.0,
+                            entity: None,
                             mantissa: amount,
                         },
                     ],
@@ -759,12 +786,14 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                             side: fa_reference::Side::Debit,
                             account: "1000".into(),
                             unit: usd.0,
+                            entity: None,
                             mantissa: amount,
                         },
                         Leg {
                             side: fa_reference::Side::Credit,
                             account: "1200".into(),
                             unit: usd.0,
+                            entity: None,
                             mantissa: amount,
                         },
                     ],
@@ -822,6 +851,7 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                                 side: l.side,
                                 account: l.account.clone(),
                                 unit: l.unit,
+                                entity: l.entity.clone(),
                                 mantissa: take,
                             });
                             ordinals.push(i as u16);
@@ -872,6 +902,7 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                         side: l.side.flipped(),
                         account: l.account.clone(),
                         unit: l.unit,
+                        entity: l.entity.clone(),
                         mantissa: l.mantissa,
                     })
                     .collect();
@@ -921,6 +952,7 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                         side,
                         account: account.into(),
                         unit: usd.0,
+                        entity: None,
                         mantissa,
                     });
                 }
@@ -1395,12 +1427,14 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                 side: fa_reference::Side::Debit,
                 account: "1000".into(),
                 unit: usd.0,
+                entity: None,
                 mantissa: 1,
             },
             Leg {
                 side: fa_reference::Side::Credit,
                 account: "1200".into(),
                 unit: usd.0,
+                entity: None,
                 mantissa: 1,
             },
         ],
@@ -1490,12 +1524,14 @@ fn temporal_intent(
                 side: fa_reference::Side::Debit,
                 account: debit.into(),
                 unit: unit.0,
+                entity: None,
                 mantissa: amount,
             },
             Leg {
                 side: fa_reference::Side::Credit,
                 account: credit.into(),
                 unit: unit.0,
+                entity: None,
                 mantissa: amount,
             },
         ],
@@ -1908,6 +1944,7 @@ fn kernel_and_oracle_agree_on_limited_accounts() {
         side,
         account: account.into(),
         unit: usd.0,
+        entity: None,
         mantissa,
     };
     let dr = fa_reference::Side::Debit;
@@ -2536,6 +2573,7 @@ fn kernel_and_oracle_agree_on_budget_caps_and_balancing() {
         side,
         account: account.into(),
         unit: usd.0,
+        entity: None,
         mantissa,
     };
     let dr = fa_reference::Side::Debit;
@@ -3116,12 +3154,14 @@ fn kernel_and_oracle_agree_on_budget_caps_and_balancing() {
                 side: fa_reference::Side::Debit,
                 account: "1000".into(),
                 unit: usd.0,
+                entity: None,
                 mantissa: 1,
             },
             Leg {
                 side: fa_reference::Side::Credit,
                 account: "6100".into(),
                 unit: usd.0,
+                entity: None,
                 mantissa: 1,
             },
         ],
@@ -3418,6 +3458,7 @@ fn kernel_and_oracle_agree_on_ticks_timed_holds_and_the_expiry_sweep() {
         side,
         account: account.into(),
         unit: usd.0,
+        entity: None,
         mantissa,
     };
     let dr = fa_reference::Side::Debit;
@@ -3820,6 +3861,7 @@ fn timed_holds_anchor_on_a_witnessed_tick_and_posts_stop_at_the_deadline() {
         side,
         account: account.into(),
         unit: usd.0,
+        entity: None,
         mantissa,
     };
     let dr = fa_reference::Side::Debit;
@@ -4043,6 +4085,7 @@ fn the_sweep_and_manual_resolution_race_by_identity_never_double_release() {
         side,
         account: account.into(),
         unit: usd.0,
+        entity: None,
         mantissa,
     };
     let dr = fa_reference::Side::Debit;
@@ -4260,6 +4303,7 @@ fn a_crashed_sweep_leaves_nothing_partial_and_the_cursor_survives_restart() {
         side,
         account: account.into(),
         unit: usd.0,
+        entity: None,
         mantissa,
     };
     let dr = fa_reference::Side::Debit;
@@ -4479,6 +4523,7 @@ fn multi_unit_holds_post_partially_per_unit_and_expire_in_every_unit() {
         side,
         account: account.into(),
         unit: unit.0,
+        entity: None,
         mantissa,
     };
     let dr = fa_reference::Side::Debit;
@@ -4835,6 +4880,7 @@ fn kernel_and_oracle_agree_on_scheduled_reversals() {
         side,
         account: account.into(),
         unit: usd.0,
+        entity: None,
         mantissa,
     };
     let dr = fa_reference::Side::Debit;
@@ -5170,6 +5216,7 @@ fn a_manual_reversal_and_the_reversal_sweep_race_by_identity() {
         side,
         account: account.into(),
         unit: usd.0,
+        entity: None,
         mantissa,
     };
     let march = |d: u8| DateDay::from_ymd(2026, 3, d).unwrap();
@@ -5317,4 +5364,725 @@ fn a_manual_reversal_and_the_reversal_sweep_race_by_identity() {
     assert_eq!(rest.minted.len(), 1);
     let v = verify_schedules(&k.db, &k.book).unwrap();
     assert!(v.is_green() && v.executed == 2 && v.cancelled == 0, "{v:?}");
+}
+
+// ---------------------------------------------------------------------------
+// The per-entity balance law (plan §4.1, §5.2, FA-INV-01 `per-entity`;
+// bead fa-bvx slice 3)
+// ---------------------------------------------------------------------------
+
+/// Cash with a floor, intercompany due-from (1500) and due-to (2500), equity,
+/// revenue, expense.
+const ENTITY_CHART: &[ChartRow] = &[
+    (
+        "1000",
+        1,
+        true,
+        0,
+        Some(BalanceLimit {
+            lower: Some(0),
+            upper: None,
+            scope: LimitScope::Lifetime,
+        }),
+    ),
+    ("1500", 1, true, 0, None),
+    ("2500", 2, true, 1, None),
+    ("3000", 3, true, 1, None),
+    ("4000", 4, true, 1, None),
+    ("6000", 5, true, 0, None),
+];
+
+const ENTITIES: &[&str] = &["US", "UK", "DE"];
+
+/// `(account code, unit, entity) → (debits, credits, entry_count)`.
+type EntityTable = BTreeMap<(String, u32, Option<String>), (i128, i128, u64)>;
+
+/// The kernel's per-entity fold of `period` as the oracle's map.
+fn kernel_entity_fold(
+    k: &Kernel,
+    period: &str,
+    known_at: Option<CommitSeq>,
+) -> (EntityTable, [u8; 32]) {
+    let fold = fold_period_by_entity(&k.db, &k.book, period, known_at).unwrap();
+    let code_of = |vid: VId| {
+        ENTITY_CHART
+            .iter()
+            .map(|(c, ..)| *c)
+            .find(|c| account_vid(k.book.book_id, c) == vid)
+            .expect("a chart account")
+            .to_string()
+    };
+    (
+        fold.cells
+            .iter()
+            .map(|c| {
+                (
+                    (code_of(c.key.account), c.key.unit_id, c.key.entity.clone()),
+                    (c.debits, c.credits, c.entry_count),
+                )
+            })
+            .collect(),
+        fold.fold_digest,
+    )
+}
+
+fn oracle_entity_fold(oracle: &Oracle, period: &str) -> EntityTable {
+    oracle
+        .fold_by_entity(period)
+        .into_iter()
+        .map(|(k, c)| {
+            (
+                k,
+                (
+                    c.debits.to_i128().expect("fits"),
+                    c.credits.to_i128().expect("fits"),
+                    c.entry_count,
+                ),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn kernel_and_oracle_agree_on_the_per_entity_balance_law() {
+    let (mut k, mut oracle, periods, _) = setup_entities(ENTITY_CHART, ENTITIES);
+    let usd = k.book.units.lookup("USD").unwrap();
+    let march = periods[2].clone();
+    open_period(&mut k, &mut oracle, &march, 1);
+    let day = |d: u64| DateDay::from_ymd(2026, 3, 1 + (d % 28) as u8).unwrap();
+    let leg = |side: fa_reference::Side, account: &str, entity: Option<&str>, m: i128| Leg {
+        side,
+        account: account.into(),
+        unit: usd.0,
+        entity: entity.map(str::to_string),
+        mantissa: m,
+    };
+    let dr = fa_reference::Side::Debit;
+    let cr = fa_reference::Side::Credit;
+    let plain = |class: &str, legs: Vec<Leg>, key: Vec<u8>, date: DateDay| Intent {
+        class: class.into(),
+        date,
+        discriminator: None,
+        legs,
+        key,
+        ops: vec!["post".into()],
+        approvals: 0,
+        reverses: None,
+        resolves: None,
+        settles: Vec::new(),
+    };
+    let mut rng = Rng(0x00E7_1717_B41A_7CE5);
+    let mut refs: Vec<EntryRef> = Vec::new();
+    let mut holds: Vec<usize> = Vec::new();
+    let mut resolved: BTreeSet<usize> = BTreeSet::new();
+    let mut reversed: BTreeSet<usize> = BTreeSet::new();
+    let mut posted_entries: Vec<usize> = Vec::new();
+    let mut refused: BTreeMap<&'static str, u32> = BTreeMap::new();
+    let (mut posted, mut intercompany, mut balancing_ok) = (0u32, 0u32, 0u32);
+    let (mut cross_entity, mut cross_balancing) = (0u32, 0u32);
+    let mut claims: Vec<(RegisterEquals, i128)> = Vec::new();
+    let (mut claims_checked, mut drifted) = (0u32, 0u32);
+
+    // Fund every entity's cash.
+    for (n, e) in ENTITIES.iter().enumerate() {
+        let i = plain(
+            "Original",
+            vec![
+                leg(dr, "1000", Some(e), 500_000),
+                leg(cr, "3000", Some(e), 500_000),
+            ],
+            format!("fund-{e}").into_bytes(),
+            day(n as u64),
+        );
+        refs.push(
+            kernel_post(&mut k, &i, usd, &refs)
+                .expect("funds")
+                .entry_ref(),
+        );
+        assert!(matches!(oracle.post(&i), Verdict::Posted { .. }));
+        posted_entries.push(refs.len() - 1);
+    }
+
+    for step in 0..440u64 {
+        let key = format!("e{step}").into_bytes();
+        let date = day(rng.below(28));
+        let pick = |rng: &mut Rng| ENTITIES[rng.below(ENTITIES.len() as u64) as usize];
+        let e1 = pick(&mut rng);
+        let mut e2 = pick(&mut rng);
+        if e2 == e1 {
+            e2 = ENTITIES[(ENTITIES.iter().position(|x| *x == e1).unwrap() + 1) % ENTITIES.len()];
+        }
+        let a = 1 + rng.below(20_000) as i128;
+        // (intent, planted code, balancing leg)
+        let (intent, planted, balancing): (Intent, Option<&'static str>, Option<u16>) =
+            match rng.below(22) {
+                0..=4 => (
+                    // Within one entity: revenue or spend.
+                    if rng.chance(50) {
+                        plain(
+                            "Original",
+                            vec![leg(dr, "1000", Some(e1), a), leg(cr, "4000", Some(e1), a)],
+                            key,
+                            date,
+                        )
+                    } else {
+                        plain(
+                            "Original",
+                            vec![leg(dr, "6000", Some(e1), a), leg(cr, "1000", Some(e1), a)],
+                            key,
+                            date,
+                        )
+                    },
+                    None,
+                    None,
+                ),
+                5..=7 => (
+                    // Intercompany: e1 pays e2's expense; each entity
+                    // balances through its due-from / due-to account.
+                    plain(
+                        "Original",
+                        vec![
+                            leg(dr, "6000", Some(e2), a),
+                            leg(cr, "2500", Some(e2), a),
+                            leg(dr, "1500", Some(e1), a),
+                            leg(cr, "1000", Some(e1), a),
+                        ],
+                        key,
+                        date,
+                    ),
+                    None,
+                    None,
+                ),
+                8 => (
+                    // Planted: balanced per unit, not per entity.
+                    plain(
+                        "Original",
+                        vec![leg(dr, "6000", Some(e2), a), leg(cr, "1000", Some(e1), a)],
+                        key,
+                        date,
+                    ),
+                    Some("FA-REF-001"),
+                    None,
+                ),
+                9 => (
+                    // Planted: an entity the book never declared.
+                    plain(
+                        "Original",
+                        vec![
+                            leg(dr, "6000", Some("ZZ"), a),
+                            leg(cr, "1000", Some("ZZ"), a),
+                        ],
+                        key,
+                        date,
+                    ),
+                    Some("FA-REF-104"),
+                    None,
+                ),
+                10 => (
+                    // Planted: a leg naming no entity in a multi-entity book.
+                    plain(
+                        "Original",
+                        vec![leg(dr, "6000", Some(e1), a), leg(cr, "1000", None, a)],
+                        key,
+                        date,
+                    ),
+                    Some("FA-REF-005"),
+                    None,
+                ),
+                11..=12 => (
+                    // A balancing request: within one entity, or (planted)
+                    // across two.
+                    {
+                        let across = rng.chance(40);
+                        plain(
+                            "Original",
+                            vec![
+                                leg(dr, "6000", Some(if across { e2 } else { e1 }), a),
+                                leg(cr, "1000", Some(e1), a),
+                            ],
+                            key,
+                            date,
+                        )
+                    },
+                    None,
+                    Some(1),
+                ),
+                13..=14 => {
+                    // A hold within one entity.
+                    let mut i = plain(
+                        "Pending",
+                        vec![leg(dr, "6000", Some(e1), a), leg(cr, "1000", Some(e1), a)],
+                        key,
+                        date,
+                    );
+                    i.class = "Pending".into();
+                    (i, None, None)
+                }
+                15..=16 if holds.iter().any(|h| !resolved.contains(h)) => {
+                    // Resolve a hold: Posts part of it (same entities) or Voids.
+                    let open: Vec<usize> = holds
+                        .iter()
+                        .copied()
+                        .filter(|h| !resolved.contains(h))
+                        .collect();
+                    let target = open[rng.below(open.len() as u64) as usize];
+                    let hold = oracle.entry(target).expect("hold").clone();
+                    let (legs, posts) = if rng.chance(60) {
+                        let t = 1 + rng.below(hold.legs[0].mantissa as u64) as i128;
+                        (
+                            hold.legs
+                                .iter()
+                                .map(|l| Leg {
+                                    mantissa: t,
+                                    ..l.clone()
+                                })
+                                .collect(),
+                            Some(vec![0u16, 1]),
+                        )
+                    } else {
+                        (Vec::new(), None)
+                    };
+                    let mut i = plain("Resolution", legs, key, date);
+                    i.resolves = Some(Resolve { target, posts });
+                    (i, None, None)
+                }
+                17 if posted_entries.iter().any(|p| !reversed.contains(p)) => {
+                    // Reverse a posted entry: the swap keeps every entity.
+                    let live: Vec<usize> = posted_entries
+                        .iter()
+                        .copied()
+                        .filter(|p| !reversed.contains(p))
+                        .collect();
+                    let target = live[rng.below(live.len() as u64) as usize];
+                    let original = oracle.entry(target).expect("posted").clone();
+                    let mut i = plain(
+                        "Reversal",
+                        original
+                            .legs
+                            .iter()
+                            .map(|l| Leg {
+                                side: l.side.flipped(),
+                                ..l.clone()
+                            })
+                            .collect(),
+                        key,
+                        date,
+                    );
+                    i.reverses = Some(target);
+                    (i, None, None)
+                }
+                _ => (
+                    plain(
+                        "Original",
+                        vec![leg(dr, "6000", Some(e1), a), leg(cr, "4000", Some(e1), a)],
+                        key,
+                        date,
+                    ),
+                    None,
+                    None,
+                ),
+            };
+        let crosses = intent
+            .legs
+            .iter()
+            .filter_map(|l| l.entity.clone())
+            .collect::<BTreeSet<_>>()
+            .len()
+            > 1;
+        let (kernel, model) = match balancing {
+            Some(l) => (
+                kernel_post_balancing_raw(&mut k, &intent, usd, &refs, l),
+                oracle.post_balancing(&intent, l),
+            ),
+            None => (
+                kernel_post(&mut k, &intent, usd, &refs).map(|p| (p, None)),
+                oracle.post(&intent),
+            ),
+        };
+        match (&kernel, &model) {
+            (Ok((Posted::Committed { entry_ref, .. }, _)), Verdict::Posted { index, .. }) => {
+                assert!(planted.is_none(), "step {step}: a planted negative posted");
+                assert_eq!(*index, refs.len(), "step {step}: journal index");
+                refs.push(*entry_ref);
+                posted += 1;
+                match intent.class.as_str() {
+                    "Pending" => holds.push(*index),
+                    "Resolution" => {
+                        resolved.insert(intent.resolves.as_ref().expect("target").target);
+                    }
+                    "Reversal" => {
+                        reversed.insert(intent.reverses.expect("target"));
+                    }
+                    _ => {
+                        posted_entries.push(*index);
+                        if intent.legs.len() == 4 {
+                            intercompany += 1;
+                        }
+                        if balancing.is_some() {
+                            balancing_ok += 1;
+                        }
+                    }
+                }
+            }
+            (Err(r), Verdict::Refused { code }) => {
+                assert_eq!(r.code, *code, "step {step}: {r}");
+                *refused.entry(code).or_insert(0) += 1;
+                if let Some(p) = planted {
+                    assert_eq!(*code, p, "step {step}: planted refusal");
+                }
+                if *code == "FA-REF-001" && crosses {
+                    // Balanced per unit, unbalanced per entity: the refusal
+                    // names the entities, never a leg to invent.
+                    assert!(r.message.contains("per legal entity"), "{r}");
+                    for l in &intent.legs {
+                        let e = l.entity.as_deref().expect("named");
+                        assert!(r.message.contains(&format!("`{e}`")), "{r}");
+                    }
+                    assert!(r.fix.contains("never invents"), "{r}");
+                    if balancing.is_some() {
+                        cross_balancing += 1;
+                    } else {
+                        cross_entity += 1;
+                    }
+                }
+                if *code == "FA-REF-005" {
+                    assert!(r.message.contains("US, UK, DE"), "{r}");
+                }
+            }
+            _ => assert_eq!(
+                format!("kernel {kernel:?}"),
+                format!("oracle {model:?}"),
+                "step {step}: disagreement on {intent:?}"
+            ),
+        }
+        // The per-entity register agrees with the literal fold.
+        if step % 40 == 0 {
+            let (kernel_fold, digest) = kernel_entity_fold(&k, &march, None);
+            assert_eq!(
+                kernel_fold,
+                oracle_entity_fold(&oracle, &march),
+                "step {step}"
+            );
+            // Refolding is byte-identical.
+            assert_eq!(kernel_entity_fold(&k, &march, None).1, digest);
+            // A balance assertion on one entity's cash binds this fold.
+            let cell = EntityCellKey {
+                account: account_vid(k.book.book_id, "1000"),
+                unit_id: usd.0,
+                period: march.clone(),
+                entity: Some(e1.to_string()),
+            };
+            let claim = register_equals(&k.db, &k.book, &cell, None).unwrap();
+            assert_eq!(claim.fold_digest, digest);
+            claims.push((claim.clone(), claim.amount.mantissa));
+        }
+    }
+    // Every claim still holds at its own sequence; the head moved under
+    // most of them (drift is a head-following comparison, never a change to
+    // the claim).
+    for (claim, amount) in &claims {
+        assert!(check_register_equals(&k.db, &k.book, claim).unwrap());
+        claims_checked += 1;
+        let now = register_equals(&k.db, &k.book, &claim.cell_key, None).unwrap();
+        if now.amount.mantissa != *amount || now.fold_digest != claim.fold_digest {
+            drifted += 1;
+        }
+        // A tampered claim does not check.
+        let mut forged = claim.clone();
+        forged.amount = Amount::new(usd, amount + 1);
+        assert!(!check_register_equals(&k.db, &k.book, &forged).unwrap());
+    }
+    let verified = verify_entities(&k.db, &k.book, &march, None).unwrap();
+    assert!(verified.is_green(), "{verified:?}");
+    assert!(verified.entries_checked >= 150);
+    assert!(
+        verify_availability(&k.db, &k.book, None)
+            .unwrap()
+            .is_green()
+    );
+
+    // Not vacuous.
+    assert!(posted >= 150, "posted {posted}");
+    assert!(intercompany >= 20, "intercompany {intercompany}");
+    assert!(balancing_ok >= 3, "within-entity balancing {balancing_ok}");
+    assert!(cross_entity >= 3, "cross-entity imbalances {cross_entity}");
+    assert!(
+        cross_balancing >= 3,
+        "cross-entity balancing {cross_balancing}"
+    );
+    assert!(
+        claims_checked >= 10 && drifted >= 3,
+        "claims {claims_checked}/{drifted}"
+    );
+    for must in ["FA-REF-104", "FA-REF-005"] {
+        assert!(
+            refused.get(must).is_some_and(|n| *n >= 3),
+            "refusal {must} under-exercised: {refused:?}"
+        );
+    }
+}
+
+/// A balancing post on the kernel without unwrapping its refusal.
+fn kernel_post_balancing_raw(
+    k: &mut Kernel,
+    intent: &Intent,
+    usd: UnitId,
+    refs: &[EntryRef],
+    leg: u16,
+) -> Result<(Posted, Option<i128>), Refusal> {
+    kernel_post_balancing(k, intent, usd, refs, leg).map(|b| (b.posted, Some(b.moved)))
+}
+
+/// A book declaring exactly one entity: a leg may omit it (it is that
+/// entity), naming it is the same cell, and naming another is refused. A
+/// book declaring none keeps its genesis bytes.
+#[test]
+fn one_entity_books_and_entityless_books_keep_the_per_unit_law() {
+    let (mut k, mut oracle, periods, _) = setup_entities(ENTITY_CHART, &["SOLO"]);
+    let usd = k.book.units.lookup("USD").unwrap();
+    open_period(&mut k, &mut oracle, &periods[2], 1);
+    let date = DateDay::from_ymd(2026, 3, 9).unwrap();
+    let leg = |side, account: &str, entity: Option<&str>, m| Leg {
+        side,
+        account: account.into(),
+        unit: usd.0,
+        entity: entity.map(str::to_string),
+        mantissa: m,
+    };
+    let dr = fa_reference::Side::Debit;
+    let cr = fa_reference::Side::Credit;
+    let intent = |legs, key: &str| Intent {
+        class: "Original".into(),
+        date,
+        discriminator: None,
+        legs,
+        key: key.as_bytes().to_vec(),
+        ops: vec!["post".into()],
+        approvals: 0,
+        reverses: None,
+        resolves: None,
+        settles: Vec::new(),
+    };
+    let mut refs = Vec::new();
+    for (key, legs) in [
+        (
+            "omitted",
+            vec![leg(dr, "1000", None, 70), leg(cr, "3000", None, 70)],
+        ),
+        (
+            "named",
+            vec![
+                leg(dr, "6000", Some("SOLO"), 20),
+                leg(cr, "1000", Some("SOLO"), 20),
+            ],
+        ),
+        (
+            "mixed",
+            vec![leg(dr, "6000", Some("SOLO"), 5), leg(cr, "1000", None, 5)],
+        ),
+    ] {
+        let i = intent(legs, key);
+        refs.push(kernel_post(&mut k, &i, usd, &refs).expect(key).entry_ref());
+        assert!(matches!(oracle.post(&i), Verdict::Posted { .. }), "{key}");
+    }
+    let other = intent(
+        vec![
+            leg(dr, "6000", Some("OTHER"), 1),
+            leg(cr, "1000", Some("OTHER"), 1),
+        ],
+        "other",
+    );
+    let r = kernel_post(&mut k, &other, usd, &refs).expect_err("undeclared");
+    assert_eq!(oracle.post(&other), Verdict::Refused { code: "FA-REF-104" });
+    assert_eq!((r.code, r.exit), ("FA-REF-104", exit::REFUSAL), "{r}");
+    assert!(r.message.contains("SOLO"), "{r}");
+    // Every leg belongs to SOLO: one cash cell, 70 − 20 − 5.
+    let (fold, _) = kernel_entity_fold(&k, &periods[2], None);
+    assert_eq!(fold, oracle_entity_fold(&oracle, &periods[2]));
+    assert_eq!(
+        fold.get(&("1000".to_string(), usd.0, Some("SOLO".to_string()))),
+        Some(&(70, 25, 3))
+    );
+    assert!(
+        verify_entities(&k.db, &k.book, &periods[2], None)
+            .unwrap()
+            .is_green()
+    );
+    // The declaration is journaled: a LegalEntity, the legal-entity
+    // dimension, and its value bound by REPRESENTS.
+    let book_id = k.book.book_id;
+    let entity =
+        k.db.vertex(legal_entity_vid(book_id, "SOLO"))
+            .unwrap()
+            .expect("entity");
+    assert!(
+        entity
+            .labels
+            .contains(&fa_model::symbols::label::LEGAL_ENTITY)
+    );
+    let dim =
+        k.db.vertex(dimension_vid(
+            book_id,
+            fa_model::LEGAL_ENTITY_DIMENSION_CODE,
+        ))
+        .unwrap()
+        .expect("dimension");
+    assert!(dim.labels.contains(&fa_model::symbols::label::DIMENSION));
+    let value = entity_value_vid(book_id, "SOLO");
+    assert!(
+        k.db.vertex(value)
+            .unwrap()
+            .expect("value")
+            .labels
+            .contains(&fa_model::symbols::label::DIMENSION_VALUE)
+    );
+    assert_eq!(
+        k.db.in_neighbours(value, fa_model::symbols::relation::REPRESENTS)
+            .unwrap(),
+        vec![legal_entity_vid(book_id, "SOLO")]
+    );
+
+    // A book declaring none: its genesis bytes have no entity trailer (the
+    // pre-fa-bvx bytes), and its entity cells carry no entity.
+    let (k0, oracle0, periods0, _) = setup_store(ENTITY_CHART);
+    let spec = fa_journal::genesis::read_book_spec(&k0.db)
+        .unwrap()
+        .expect("spec");
+    assert!(spec.entities.is_empty());
+    let none = BookSpec {
+        time_zone_policy: None,
+        ..spec.clone()
+    };
+    let utc_only = spec.canonical_bytes().unwrap();
+    assert_eq!(utc_only.len(), none.canonical_bytes().unwrap().len() + 1);
+    let (fold0, _) = kernel_entity_fold(&k0, &periods0[2], None);
+    assert!(fold0.is_empty() && oracle_entity_fold(&oracle0, &periods0[2]).is_empty());
+}
+
+/// Plan §5.4 with §5.2: a two-phase sub-vector satisfies each native
+/// `(unit, legal_entity)` equality. From an intercompany hold, posting the
+/// expense of one entity against the cash of the other balances per unit but
+/// not per entity and is refused by both engines; the per-entity sub-vector
+/// posts, and the hold's full original legs release in every entity.
+#[test]
+fn two_phase_sub_vectors_balance_per_entity() {
+    let (mut k, mut oracle, periods, _) = setup_entities(ENTITY_CHART, ENTITIES);
+    let usd = k.book.units.lookup("USD").unwrap();
+    open_period(&mut k, &mut oracle, &periods[2], 1);
+    let date = DateDay::from_ymd(2026, 3, 12).unwrap();
+    let leg = |side, account: &str, entity: &str, m| Leg {
+        side,
+        account: account.into(),
+        unit: usd.0,
+        entity: Some(entity.to_string()),
+        mantissa: m,
+    };
+    let dr = fa_reference::Side::Debit;
+    let cr = fa_reference::Side::Credit;
+    let intent = |class: &str, legs, key: &str, resolves| Intent {
+        class: class.into(),
+        date,
+        discriminator: None,
+        legs,
+        key: key.as_bytes().to_vec(),
+        ops: vec!["post".into()],
+        approvals: 0,
+        reverses: None,
+        resolves,
+        settles: Vec::new(),
+    };
+    let mut refs = Vec::new();
+    let fund = intent(
+        "Original",
+        vec![leg(dr, "1000", "US", 1_000), leg(cr, "3000", "US", 1_000)],
+        "fund",
+        None,
+    );
+    refs.push(
+        kernel_post(&mut k, &fund, usd, &refs)
+            .expect("funds")
+            .entry_ref(),
+    );
+    assert!(matches!(oracle.post(&fund), Verdict::Posted { .. }));
+    // US holds cash to pay UK's expense: each entity balanced on its own.
+    let hold = intent(
+        "Pending",
+        vec![
+            leg(dr, "6000", "UK", 300),
+            leg(cr, "2500", "UK", 300),
+            leg(dr, "1500", "US", 300),
+            leg(cr, "1000", "US", 300),
+        ],
+        "hold",
+        None,
+    );
+    refs.push(
+        kernel_post(&mut k, &hold, usd, &refs)
+            .expect("hold")
+            .entry_ref(),
+    );
+    assert!(matches!(
+        oracle.post(&hold),
+        Verdict::Posted { index: 1, .. }
+    ));
+    let posts = |legs, ordinals: Vec<u16>, key: &str| {
+        intent(
+            "Resolution",
+            legs,
+            key,
+            Some(Resolve {
+                target: 1,
+                posts: Some(ordinals),
+            }),
+        )
+    };
+    // UK's expense against US's cash: balanced per unit, not per entity.
+    let crossed = posts(
+        vec![leg(dr, "6000", "UK", 100), leg(cr, "1000", "US", 100)],
+        vec![0, 3],
+        "crossed",
+    );
+    let r = kernel_post(&mut k, &crossed, usd, &refs).expect_err("cross-entity");
+    assert_eq!(
+        oracle.post(&crossed),
+        Verdict::Refused { code: "FA-REF-001" }
+    );
+    assert_eq!(r.code, "FA-REF-001", "{r}");
+    assert!(
+        r.message.contains("`UK`") && r.message.contains("`US`"),
+        "{r}"
+    );
+    // The per-entity sub-vector posts 100 of 300 in every entity.
+    let good = posts(
+        vec![
+            leg(dr, "6000", "UK", 100),
+            leg(cr, "2500", "UK", 100),
+            leg(dr, "1500", "US", 100),
+            leg(cr, "1000", "US", 100),
+        ],
+        vec![0, 1, 2, 3],
+        "good",
+    );
+    refs.push(
+        kernel_post(&mut k, &good, usd, &refs)
+            .expect("per-entity")
+            .entry_ref(),
+    );
+    assert!(matches!(
+        oracle.post(&good),
+        Verdict::Posted { index: 2, .. }
+    ));
+    let (fold, _) = kernel_entity_fold(&k, &periods[2], None);
+    assert_eq!(fold, oracle_entity_fold(&oracle, &periods[2]));
+    assert_eq!(
+        fold.get(&("1000".to_string(), usd.0, Some("US".to_string()))),
+        Some(&(1_000, 100, 2))
+    );
+    let pending = fold_period_by_entity(&k.db, &k.book, &periods[2], None).unwrap();
+    assert!(pending.pending.is_empty(), "the hold released in full");
+    assert!(
+        verify_entities(&k.db, &k.book, &periods[2], None)
+            .unwrap()
+            .is_green()
+    );
 }

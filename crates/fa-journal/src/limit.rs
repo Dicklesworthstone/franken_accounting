@@ -958,11 +958,20 @@ fn balancing_shape(p: &EntryPayload, leg: u16) -> Option<String> {
     if a.side == b.side || a.account_ref == b.account_ref {
         return Some("one debit and one credit on two different accounts".into());
     }
-    if [a, b]
-        .iter()
-        .any(|l| !l.settles.is_empty() || l.base_amount.is_some() || !l.dimension_set.is_empty())
-    {
-        return Some("balancing legs carry no settles, base amount, or dimensions".into());
+    // A legal entity is a leg's balancing dimension (plan §5.2): the two
+    // legs may name theirs, and the per-entity law then judges the request
+    // (a request across entities is unbalanced per entity, FA-REF-001).
+    if [a, b].iter().any(|l| {
+        !l.settles.is_empty()
+            || l.base_amount.is_some()
+            || l.dimension_set
+                .iter()
+                .any(|(d, _)| *d != fa_model::LEGAL_ENTITY_DIMENSION)
+    }) {
+        return Some(
+            "balancing legs carry no settles, base amount, or dimensions other than the legal entity"
+                .into(),
+        );
     }
     None
 }

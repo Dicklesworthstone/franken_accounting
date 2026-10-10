@@ -422,6 +422,7 @@ mod tests {
         let cases: Vec<(&str, Vec<Declaration>, Vec<Site>, &str)> = vec![
             (
                 "a constant with no row",
+                // FA-REF-9xx is the test-only placeholder range and is never claimed.
                 vec![decl("fa-journal", "NEW_THING", "FA-REF-999")],
                 vec![],
                 "has no catalog row",

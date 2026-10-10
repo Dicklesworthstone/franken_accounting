@@ -189,6 +189,42 @@ pub fn unit_vid(book: Id128, unit_code: &str) -> VId {
     derive_vid(b"fa:vid:unit:v1", &[&book.0, unit_code.as_bytes()])
 }
 
+/// The dimension id of a book's legal-entity dimension (plan §4.1 Dimension
+/// row, §5.2): the balancing dimension a leg's `dimension_set` carries its
+/// legal entity in.
+pub const LEGAL_ENTITY_DIMENSION: u32 = 1;
+
+/// The code of a book's legal-entity dimension.
+pub const LEGAL_ENTITY_DIMENSION_CODE: &str = "legal_entity";
+
+/// `vid(LegalEntity) = H("fa:vid:legal-entity:v1" ‖ book_id ‖ code)`.
+#[must_use]
+pub fn legal_entity_vid(book: Id128, code: &str) -> VId {
+    derive_vid(b"fa:vid:legal-entity:v1", &[&book.0, code.as_bytes()])
+}
+
+/// `vid(Dimension) = H("fa:vid:dimension:v1" ‖ book_id ‖ dimension_code)`.
+#[must_use]
+pub fn dimension_vid(book: Id128, code: &str) -> VId {
+    derive_vid(b"fa:vid:dimension:v1", &[&book.0, code.as_bytes()])
+}
+
+/// `vid(DimensionValue) = H("fa:vid:dimension-value:v1" ‖ book_id ‖
+/// dimension_code ‖ value_code)`: what a leg's `dimension_set` references.
+#[must_use]
+pub fn dimension_value_vid(book: Id128, dimension_code: &str, value_code: &str) -> VId {
+    derive_vid(
+        b"fa:vid:dimension-value:v1",
+        &[&book.0, dimension_code.as_bytes(), value_code.as_bytes()],
+    )
+}
+
+/// The `dimension_set` value of legal entity `code` in `book`.
+#[must_use]
+pub fn entity_value_vid(book: Id128, code: &str) -> VId {
+    dimension_value_vid(book, LEGAL_ENTITY_DIMENSION_CODE, code)
+}
+
 /// `vid(Principal) = H("fa:vid:principal:v1" ‖ name)`: the identity a
 /// named operator or agent posts under until Steward issues principals.
 #[must_use]
@@ -234,6 +270,36 @@ mod tests {
         assert_ne!(
             period_vid("cal", "FY2026-P01"),
             period_vid("cal", "FY2026-P02")
+        );
+        // An entity, its dimension value, and the dimension are distinct.
+        assert_ne!(legal_entity_vid(book, "A"), entity_value_vid(book, "A"));
+        assert_ne!(entity_value_vid(book, "A"), entity_value_vid(book, "B"));
+        assert_ne!(
+            dimension_value_vid(book, "legal_entity", "A"),
+            dimension_value_vid(book, "legal_entityA", "")
+        );
+    }
+
+    /// The legal-entity identities are durable formats: pinned by fixed
+    /// vectors so neither a domain nor a part order can drift.
+    #[test]
+    fn legal_entity_identities_are_fixed_vectors() {
+        let book = Id128([1; 16]);
+        assert_eq!(
+            entity_value_vid(book, "A"),
+            dimension_value_vid(book, LEGAL_ENTITY_DIMENSION_CODE, "A")
+        );
+        assert_eq!(
+            legal_entity_vid(book, "A"),
+            VId(0x49e8_d274_2d3f_58a5_620b_c8a6_1641_bc35)
+        );
+        assert_eq!(
+            dimension_vid(book, LEGAL_ENTITY_DIMENSION_CODE),
+            VId(0x8d62_bd8e_6d0d_4a82_b970_32a9_91c3_b236)
+        );
+        assert_eq!(
+            entity_value_vid(book, "A"),
+            VId(0x706e_3a84_7465_5d79_9778_0326_7661_5406)
         );
     }
 

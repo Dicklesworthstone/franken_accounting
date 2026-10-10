@@ -43,7 +43,24 @@ pub struct BookSpec {
     /// needs one (plan §7.7). Declared at genesis, never defaulted: a book
     /// without it refuses scheduled reversals (`auto_reverse_on`).
     pub time_zone_policy: Option<TimeZonePolicy>,
+    /// The legal entities posting into the book (plan §4.1 `Book.entities`),
+    /// declared at genesis. With more than one, `legal_entity` is a mandatory
+    /// balancing dimension on every leg and the balance law holds per
+    /// `(unit, legal_entity)` (FA-INV-01 `per-entity`, §5.2). Empty: the book
+    /// is its single implicit entity and its bytes are unchanged.
+    pub entities: Vec<LegalEntitySpec>,
 }
+
+/// One declared legal entity (plan §4.1 `LegalEntity`; this slice carries
+/// its code and name, its functional unit being the book's base unit).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LegalEntitySpec {
+    pub code: String,
+    pub name: String,
+}
+
+const MAX_ENTITY_CODE_BYTES: usize = 32;
+const MAX_ENTITIES: usize = 256;
 
 /// The book's `time_zone_policy` (plan §7.7). This slice registers `Utc`
 /// only; a zone with rules lands with the calendar-arithmetic slice.
@@ -159,12 +176,56 @@ impl BookSpec {
                 encode_rule(&mut w, end_rule);
             }
         }
-        // Trailing, and only when declared: a book without a policy keeps
-        // the bytes it always had.
-        if let Some(p) = self.time_zone_policy {
-            w.u8(p.tag());
+        // Trailing, and only when declared: a book without a policy or
+        // entities keeps the bytes it always had. `[tz]`, then `[entities]`
+        // (with tz 0 = undeclared when only entities are declared).
+        if self.time_zone_policy.is_some() || !self.entities.is_empty() {
+            w.u8(self.time_zone_policy.map_or(0, TimeZonePolicy::tag));
+        }
+        if !self.entities.is_empty() {
+            w.list(&self.entities, |w, e| {
+                w.str(&e.code).str(&e.name);
+            });
         }
         w.finish().map_err(|e| KernelError::Model(e.into()))
+    }
+
+    /// The structural law of a declaration (plan §4.1): entity codes are
+    /// non-empty, at most 32 bytes, unique; at most 256 entities; names at
+    /// most 256 bytes.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.entities.len() > MAX_ENTITIES {
+            return Err(format!(
+                "a book declares at most {MAX_ENTITIES} legal entities"
+            ));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for e in &self.entities {
+            if e.code.is_empty() || e.code.len() > MAX_ENTITY_CODE_BYTES {
+                return Err(format!(
+                    "legal entity code `{}` must be 1..={MAX_ENTITY_CODE_BYTES} bytes",
+                    e.code
+                ));
+            }
+            if e.name.len() > MAX_BOOK_NAME_BYTES {
+                return Err(format!(
+                    "legal entity `{}` has a name over {MAX_BOOK_NAME_BYTES} bytes",
+                    e.code
+                ));
+            }
+            if !seen.insert(e.code.as_str()) {
+                return Err(format!("legal entity `{}` is declared twice", e.code));
+            }
+        }
+        Ok(())
+    }
+
+    /// The declared entity whose `dimension_set` value is `value`.
+    #[must_use]
+    pub fn entity_of(&self, value: VId) -> Option<&LegalEntitySpec> {
+        self.entities
+            .iter()
+            .find(|e| fa_model::entity_value_vid(self.book_id, &e.code) == value)
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, KernelError> {
@@ -202,13 +263,34 @@ impl BookSpec {
                 t => return Err(r.bad_tag("calendar.kind", t)),
             };
             let time_zone_policy = if r.remaining() > 0 {
-                let t = r.u8("book.time_zone_policy")?;
-                Some(
-                    TimeZonePolicy::from_tag(t)
-                        .ok_or_else(|| r.bad_tag("book.time_zone_policy", t))?,
-                )
+                match r.u8("book.time_zone_policy")? {
+                    // 0 = undeclared, written only before an entity list:
+                    // a lone 0 is not a canonical encoding.
+                    0 if r.remaining() == 0 => return Err(r.invalid("book.time_zone_policy")),
+                    0 => None,
+                    t => Some(
+                        TimeZonePolicy::from_tag(t)
+                            .ok_or_else(|| r.bad_tag("book.time_zone_policy", t))?,
+                    ),
+                }
             } else {
                 None
+            };
+            let entities = if r.remaining() > 0 {
+                let list = r.list(MAX_ENTITIES, "book.entities", |r| {
+                    Ok(LegalEntitySpec {
+                        code: r
+                            .str(MAX_ENTITY_CODE_BYTES, "book.entity.code")?
+                            .to_string(),
+                        name: r.str(MAX_BOOK_NAME_BYTES, "book.entity.name")?.to_string(),
+                    })
+                })?;
+                if list.is_empty() {
+                    return Err(r.invalid("book.entities"));
+                }
+                list
+            } else {
+                Vec::new()
             };
             r.finish()?;
             Ok(Self {
@@ -221,6 +303,7 @@ impl BookSpec {
                     adjustment_periods,
                 },
                 time_zone_policy,
+                entities,
             })
         })()
         .map_err(|e| KernelError::Model(e.into()))?;
@@ -337,8 +420,72 @@ pub async fn create_book<V: asupersync::fs::Vfs + Clone>(
         batch.create_vertex(uvid, vec![label::UNIT], props);
         batch.add_edge(edge_id(relation::IN_BOOK, uvid, bvid), uvid, bvid, vec![]);
     }
-    Ok(db.write(&ctx.commit(), batch).await?)
+    if spec.entities.is_empty() {
+        return Ok(db.write(&ctx.commit(), batch).await?);
+    }
+    // Declared legal entities (plan §4.1): each a `LegalEntity`, the book's
+    // legal-entity `Dimension` (kind LegalEntity, balancing), and one
+    // `DimensionValue` per entity, bound to it by `REPRESENTS` — the value a
+    // leg's `dimension_set` names. A second relation is a second batch,
+    // staged in order in one commit.
+    if let Err(why) = spec.validate() {
+        return Err(KernelError::Corrupt(format!("invalid book spec: {why}")));
+    }
+    let book_id = scalar_bytes("book_id", spec.book_id.0.to_vec())?;
+    let dim = fa_model::dimension_vid(spec.book_id, fa_model::LEGAL_ENTITY_DIMENSION_CODE);
+    let dim_id = CanonicalScalar::Int(i64::from(fa_model::LEGAL_ENTITY_DIMENSION));
+    let mut props = vec![
+        (property::BOOK_ID, book_id.clone()),
+        (
+            property::CODE,
+            scalar_text("code", fa_model::LEGAL_ENTITY_DIMENSION_CODE)?,
+        ),
+        (property::NAME, scalar_text("name", "Legal entity")?),
+        (property::DIMENSION_ID, dim_id.clone()),
+        (
+            property::DIMENSION_KIND,
+            CanonicalScalar::Int(DIMENSION_KIND_LEGAL_ENTITY),
+        ),
+    ];
+    props.sort_by_key(|(k, _)| k.0);
+    batch.create_vertex(dim, vec![label::DIMENSION], props);
+    batch.add_edge(edge_id(relation::IN_BOOK, dim, bvid), dim, bvid, vec![]);
+    let mut represents = WriteBatch::new(relation::REPRESENTS);
+    for e in &spec.entities {
+        let evid = fa_model::legal_entity_vid(spec.book_id, &e.code);
+        let value = fa_model::entity_value_vid(spec.book_id, &e.code);
+        let mut props = vec![
+            (property::BOOK_ID, book_id.clone()),
+            (property::CODE, scalar_text("code", &e.code)?),
+            (property::NAME, scalar_text("name", &e.name)?),
+        ];
+        props.sort_by_key(|(k, _)| k.0);
+        batch.create_vertex(evid, vec![label::LEGAL_ENTITY], props);
+        batch.add_edge(edge_id(relation::IN_BOOK, evid, bvid), evid, bvid, vec![]);
+        let mut props = vec![
+            (property::BOOK_ID, book_id.clone()),
+            (property::CODE, scalar_text("code", &e.code)?),
+            (property::DIMENSION_ID, dim_id.clone()),
+        ];
+        props.sort_by_key(|(k, _)| k.0);
+        batch.create_vertex(value, vec![label::DIMENSION_VALUE], props);
+        batch.add_edge(edge_id(relation::IN_BOOK, value, bvid), value, bvid, vec![]);
+        represents.add_edge(
+            edge_id(relation::REPRESENTS, evid, value),
+            evid,
+            value,
+            vec![],
+        );
+    }
+    let txn_cx = ctx.txn();
+    let mut txn = db.begin(&txn_cx)?;
+    txn.write_ordered(db, vec![batch, represents])?;
+    Ok(txn.commit(db, &ctx.commit()).await?)
 }
+
+/// `Dimension.kind` of the legal-entity dimension (plan §4.1 Dimension row:
+/// `kind: {LegalEntity, …}`, balancing).
+pub const DIMENSION_KIND_LEGAL_ENTITY: i64 = 1;
 
 /// The spec journaled at genesis, or `None` when the store holds no book.
 pub fn read_book_spec<V: asupersync::fs::Vfs + Clone>(
@@ -756,10 +903,49 @@ mod tests {
                     adjustment_periods: 2,
                 },
                 time_zone_policy: None,
+                entities: Vec::new(),
             };
             let bytes = spec.canonical_bytes().unwrap();
             assert_eq!(BookSpec::decode(&bytes).unwrap(), spec);
             assert!(BookSpec::decode(&bytes[..bytes.len() - 1]).is_err());
+            // Declared entities trail the policy byte (0 = undeclared); the
+            // bytes before them are unchanged; a lone 0 is not canonical.
+            let entities = vec![
+                LegalEntitySpec {
+                    code: "US".into(),
+                    name: "US Co".into(),
+                },
+                LegalEntitySpec {
+                    code: "UK".into(),
+                    name: "UK Ltd".into(),
+                },
+            ];
+            let multi = BookSpec {
+                entities: entities.clone(),
+                ..spec.clone()
+            };
+            let mb = multi.canonical_bytes().unwrap();
+            assert_eq!(&mb[..bytes.len()], bytes.as_slice());
+            assert_eq!(mb[bytes.len()], 0);
+            assert_eq!(BookSpec::decode(&mb).unwrap(), multi);
+            let both = BookSpec {
+                time_zone_policy: Some(TimeZonePolicy::Utc),
+                entities,
+                ..spec.clone()
+            };
+            assert_eq!(
+                BookSpec::decode(&both.canonical_bytes().unwrap()).unwrap(),
+                both
+            );
+            let mut lone_zero = bytes.clone();
+            lone_zero.push(0);
+            assert!(BookSpec::decode(&lone_zero).is_err());
+            assert!(multi.validate().is_ok());
+            let twice = BookSpec {
+                entities: vec![multi.entities[0].clone(), multi.entities[0].clone()],
+                ..spec.clone()
+            };
+            assert!(twice.validate().unwrap_err().contains("twice"));
             // A declared policy is one trailing byte; the bytes without it
             // are unchanged, and an unregistered tag is refused.
             let declared = BookSpec {

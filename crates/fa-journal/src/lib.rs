@@ -17,6 +17,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod entity;
 pub mod evidence;
 pub mod genesis;
 pub mod limit;
@@ -30,8 +31,8 @@ pub mod sweep;
 
 pub use evidence::{Document, DocumentAdded, add_document, read_document};
 pub use genesis::{
-    AccountSpec, BookContext, BookSpec, ChartInstalled, TimeZonePolicy, UnitPolicy, create_book,
-    create_periods, install_chart,
+    AccountSpec, BookContext, BookSpec, ChartInstalled, LegalEntitySpec, TimeZonePolicy,
+    UnitPolicy, create_book, create_periods, install_chart,
 };
 pub use limit::{
     BalanceLimit, Balanced, LimitCell, LimitScope, cell_account, limit_cell_vid, period_cell_vid,

@@ -1205,6 +1205,7 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     base_unit,
                     calendar,
                     time_zone_policy: None,
+                    entities: Vec::new(),
                 },
                 entropy,
             )?;

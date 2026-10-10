@@ -793,6 +793,7 @@ mod tests {
                 base_unit: usd,
                 calendar,
                 time_zone_policy: None,
+                entities: Vec::new(),
             },
             usd,
         )

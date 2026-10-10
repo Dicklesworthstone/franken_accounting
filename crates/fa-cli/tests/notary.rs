@@ -281,6 +281,7 @@ fn assert_corruption_refused(corrupt_head: bool) {
             base_unit: units.lookup("USD").expect("USD"),
             calendar: fa_time::FiscalCalendar::monthly("fiscal", 1, 1).expect("calendar"),
             time_zone_policy: None,
+            entities: Vec::new(),
         },
         Entropy::deterministic(43),
     )

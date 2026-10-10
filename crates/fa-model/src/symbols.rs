@@ -122,6 +122,8 @@ symbols!(
         (EXEC_OP, "exec_op", 61),
         (EFFECTS_DIGEST, "effects_digest", 62),
         (SCHEDULE_CURSOR, "schedule_cursor", 63),
+        (DIMENSION_ID, "dimension_id", 64),
+        (DIMENSION_KIND, "dimension_kind", 65),
     ]
 );
 

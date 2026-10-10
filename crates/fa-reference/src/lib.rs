@@ -200,6 +200,9 @@ pub struct Leg {
     pub side: Side,
     pub account: String,
     pub unit: u32,
+    /// The leg's legal entity (plan §4.1, §5.2): a declared entity's code,
+    /// or `None` (the book's single entity, or a book declaring none).
+    pub entity: Option<String>,
     pub mantissa: i128,
 }
 
@@ -302,6 +305,8 @@ pub mod code {
     pub const TICK_MISSING: &str = "FA-REF-095";
     pub const DEADLINE_OVERFLOW: &str = "FA-REF-096";
     pub const HOLD_DUE: &str = "FA-REF-097";
+    pub const DIMENSION_MISSING: &str = "FA-REF-005";
+    pub const ENTITY_UNDECLARED: &str = "FA-REF-104";
     pub const STRUCTURE: &str = "FA-REF-100";
     pub const CONTROL_VIA_POST: &str = "FA-REF-101";
     pub const CLASS_NOT_IMPLEMENTED: &str = "FA-REF-102";
@@ -464,6 +469,8 @@ pub struct Oracle {
     tz_declared: bool,
     /// Scheduled target index → its schedule.
     schedules: BTreeMap<usize, ScheduleState>,
+    /// The book's declared legal entities (plan §4.1 `Book.entities`).
+    entities: Vec<String>,
     /// The reversal sweep's position: (tick index, last target examined).
     schedule_cursor: Option<(usize, usize)>,
     classes: EntryClasses,
@@ -488,6 +495,7 @@ impl Oracle {
             cursor: None,
             tz_declared: false,
             schedules: BTreeMap::new(),
+            entities: Vec::new(),
             schedule_cursor: None,
             classes,
             matrix,
@@ -495,6 +503,57 @@ impl Oracle {
     }
 
     /// The book declares `time_zone_policy = Utc` at genesis (plan §7.7).
+    /// The book declares these legal entities at genesis (plan §4.1).
+    pub fn declare_entities(&mut self, codes: &[&str]) {
+        self.entities = codes.iter().map(|c| (*c).to_string()).collect();
+    }
+
+    /// The entity a leg belongs to: its own, the book's single entity when
+    /// it names none, `None` in a book declaring none.
+    fn entity_of(&self, l: &Leg) -> Option<String> {
+        l.entity.clone().or_else(|| match self.entities.as_slice() {
+            [only] => Some(only.clone()),
+            _ => None,
+        })
+    }
+
+    /// The literal per-entity fold of one period (plan §5.3 by legal
+    /// entity): posted legs of every non-Pending entry effective in it,
+    /// keyed `(account, unit, entity)`.
+    #[must_use]
+    pub fn fold_by_entity(&self, period: &str) -> BTreeMap<(String, u32, Option<String>), Cell> {
+        let mut cells: BTreeMap<(String, u32, Option<String>), Cell> = BTreeMap::new();
+        for e in self
+            .journal
+            .iter()
+            .filter(|e| e.period == period && e.class != "Pending")
+        {
+            let mut touched: Vec<(String, u32, Option<String>)> = Vec::new();
+            for l in &e.legs {
+                let key = (l.account.clone(), l.unit, self.entity_of(l));
+                let c = cells.entry(key.clone()).or_insert(Cell {
+                    debits: Int::zero(),
+                    credits: Int::zero(),
+                    entry_count: 0,
+                });
+                let m = Int::from_i128(l.mantissa);
+                match l.side {
+                    Side::Debit => c.debits = c.debits.add(&m),
+                    Side::Credit => c.credits = c.credits.add(&m),
+                }
+                if !touched.contains(&key) {
+                    touched.push(key);
+                }
+            }
+            for key in touched {
+                if let Some(c) = cells.get_mut(&key) {
+                    c.entry_count += 1;
+                }
+            }
+        }
+        cells
+    }
+
     pub fn declare_time_zone(&mut self) {
         self.tz_declared = true;
     }
@@ -946,6 +1005,24 @@ impl Oracle {
                 code: code::CLASS_NOT_IMPLEMENTED,
             };
         }
+        // 1d'. Legal entities (plan §4.1, §5.2), leg by leg: a named entity
+        //      the book has not declared is refused; in a book declaring
+        //      more than one, a leg naming none is refused.
+        for l in &intent.legs {
+            match &l.entity {
+                Some(e) if !self.entities.contains(e) => {
+                    return Verdict::Refused {
+                        code: code::ENTITY_UNDECLARED,
+                    };
+                }
+                None if self.entities.len() > 1 => {
+                    return Verdict::Refused {
+                        code: code::DIMENSION_MISSING,
+                    };
+                }
+                _ => {}
+            }
+        }
         // 1e. Application structure (plan §5.7), from the intent alone:
         //     only a posting entry applies; positive amounts; each target
         //     leg named once per leg; a leg applies at most itself.
@@ -1041,6 +1118,23 @@ impl Oracle {
             }
         }
         if per_unit.values().any(|(d, c)| d != c) {
+            return Verdict::Refused {
+                code: code::UNBALANCED,
+            };
+        }
+        // 2'. Balance per (unit, legal entity) (FA-INV-01 `per-entity`).
+        let mut per_entity: BTreeMap<(u32, Option<String>), (Int, Int)> = BTreeMap::new();
+        for l in &intent.legs {
+            let e = per_entity
+                .entry((l.unit, self.entity_of(l)))
+                .or_insert((Int::zero(), Int::zero()));
+            let m = Int::from_i128(l.mantissa);
+            match l.side {
+                Side::Debit => e.0 = e.0.add(&m),
+                Side::Credit => e.1 = e.1.add(&m),
+            }
+        }
+        if per_entity.values().any(|(d, c)| d != c) {
             return Verdict::Refused {
                 code: code::UNBALANCED,
             };
@@ -1193,6 +1287,7 @@ impl Oracle {
                 && original.legs.iter().zip(&intent.legs).all(|(o, r)| {
                     o.account == r.account
                         && o.unit == r.unit
+                        && o.entity == r.entity
                         && o.mantissa == r.mantissa
                         && o.side.flipped() == r.side
                 });
@@ -1245,6 +1340,7 @@ impl Oracle {
                     };
                     if src.account != leg.account
                         || src.unit != leg.unit
+                        || src.entity != leg.entity
                         || src.side != leg.side
                         || leg.mantissa <= 0
                         || leg.mantissa > src.mantissa
@@ -1781,12 +1877,14 @@ mod tests {
                     side: Side::Debit,
                     account: "6000".into(),
                     unit: 1,
+                    entity: None,
                     mantissa: d,
                 },
                 Leg {
                     side: Side::Credit,
                     account: "1000".into(),
                     unit: 1,
+                    entity: None,
                     mantissa: c,
                 },
             ]
@@ -1850,12 +1948,14 @@ mod tests {
                 side: Side::Credit,
                 account: "6000".into(),
                 unit: 1,
+                entity: None,
                 mantissa: 5,
             },
             Leg {
                 side: Side::Debit,
                 account: "1000".into(),
                 unit: 1,
+                entity: None,
                 mantissa: 5,
             },
         ];
@@ -1939,12 +2039,14 @@ mod tests {
                     side: Side::Debit,
                     account: dr.into(),
                     unit: 1,
+                    entity: None,
                     mantissa: m,
                 },
                 Leg {
                     side: Side::Credit,
                     account: cr.into(),
                     unit: 1,
+                    entity: None,
                     mantissa: m,
                 },
             ]
@@ -2068,12 +2170,14 @@ mod tests {
                 side: Side::Debit,
                 account: "6000".into(),
                 unit: 1,
+                entity: None,
                 mantissa: 10,
             },
             Leg {
                 side: Side::Credit,
                 account: "1000".into(),
                 unit: 1,
+                entity: None,
                 mantissa: 10,
             },
         ];

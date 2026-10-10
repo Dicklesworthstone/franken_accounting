@@ -272,6 +272,12 @@ name = "effects_digest"
 [[property]]
 id = 63
 name = "schedule_cursor"
+[[property]]
+id = 64
+name = "dimension_id"
+[[property]]
+id = 65
+name = "dimension_kind"
 
 # ---- relations ------------------------------------------------------------
 [[relation]]

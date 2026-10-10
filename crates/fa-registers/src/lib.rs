@@ -13,6 +13,7 @@
 #![forbid(unsafe_code)]
 
 pub mod availability;
+pub mod entity;
 pub mod explain;
 pub mod open_items;
 
@@ -33,6 +34,10 @@ use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
 pub use availability::{
     AccountAvailability, AvailabilityDrift, AvailabilityVerification, verify_availability,
+};
+pub use entity::{
+    EntityCell, EntityCellKey, EntityFold, EntityVerification, RegisterEquals,
+    check_register_equals, fold_period_by_entity, register_equals, verify_entities,
 };
 pub use explain::{BalanceExplanation, explain_balance};
 pub use open_items::{
@@ -185,7 +190,7 @@ pub(crate) fn resolve_known_at<V: asupersync::fs::Vfs + Clone>(
     Ok(seq)
 }
 
-fn period_at<V: asupersync::fs::Vfs + Clone>(
+pub(crate) fn period_at<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     code: &str,
@@ -228,7 +233,7 @@ pub(crate) fn entries_at<V: asupersync::fs::Vfs + Clone>(
     Ok(entries)
 }
 
-fn entry_period(book: &BookContext, entry: &Entry) -> Result<String, RegisterError> {
+pub(crate) fn entry_period(book: &BookContext, entry: &Entry) -> Result<String, RegisterError> {
     let date = entry.proposal.effective_date;
     let fy = book
         .calendar
@@ -253,7 +258,7 @@ fn entry_period(book: &BookContext, entry: &Entry) -> Result<String, RegisterErr
 
 /// Resolve holds using authoritative payloads at the same known-at frontier.
 /// A missing or duplicated target is corruption, not an absent reservation.
-fn resolutions(
+pub(crate) fn resolutions(
     entries: &[(VId, Entry, CommitSeq)],
 ) -> Result<BTreeMap<VId, CommitSeq>, RegisterError> {
     let by_id: BTreeMap<_, _> = entries.iter().map(|(id, e, seq)| (*id, (e, seq))).collect();

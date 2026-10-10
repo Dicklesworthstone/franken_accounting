@@ -172,6 +172,11 @@ pub mod code {
     /// journals a schedule's cancellation itself, in the commit of the manual
     /// Reversal that supersedes the scheduled target (plan §7.6).
     pub const CANCEL_BY_KERNEL: &str = "FA-REF-099";
+    /// A leg in a book that declares more than one legal entity names none
+    /// (plan §4.1, §5.2: `legal_entity` is a mandatory balancing dimension).
+    pub const DIMENSION_MISSING: &str = "FA-REF-005";
+    /// A leg names a legal-entity value the book has not declared.
+    pub const ENTITY_UNDECLARED: &str = "FA-REF-104";
 }
 
 /// A foundation failure. Exit 5; never partial.

@@ -50,6 +50,7 @@ use fgdb::{Database, VertexRow, WriteBatch, WriteMismatchPolicy, WriteTxnError};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
+use crate::entity;
 use crate::evidence::{evidenced_by, resolve_evidence};
 use crate::genesis::{BookContext, UnitPolicy};
 use crate::limit;
@@ -405,10 +406,20 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
         if leg.base_amount.is_some() {
             return Ok(Err(not_implemented("leg.base_amount")));
         }
-        if !leg.dimension_set.is_empty() {
+    }
+    // 1d'. Legal entities (plan §4.1, §5.2): a leg names its entity in its
+    //      dimension_set; the book's declaration (its immutable genesis spec)
+    //      decides — undeclared is refused, and in a multi-entity book every
+    //      leg names one. Other dimensions wait for the dimension registry.
+    let spec = crate::genesis::read_book_spec(db)?
+        .ok_or_else(|| KernelError::Corrupt("no book spec on the root".into()))?;
+    let leg_entities = match entity::leg_entities(&spec, &proposal.legs) {
+        Ok(e) => e,
+        Err(entity::LegEntityError::OtherDimension) => {
             return Ok(Err(not_implemented("leg.dimension_set")));
         }
-    }
+        Err(entity::LegEntityError::Refused(r)) => return Ok(Err(r)),
+    };
     // 1e. Application structure (plan §5.7), decided from the payload alone:
     //     only a posting entry applies (a Reversal's undo is derived; a hold
     //     reserves), every settlement is positive in the leg's unit, a leg
@@ -547,6 +558,12 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
                 ),
             )));
         }
+    }
+    // 2'. Per legal entity (FA-INV-01 `per-entity`): the same law per
+    //     (unit, legal_entity); a cross-entity imbalance is never closed by
+    //     an invented leg.
+    if let Some(r) = entity::per_entity_refusal(&proposal.legs, &leg_entities, &book.units)? {
+        return Ok(Err(r));
     }
 
     // 3. Resolve the effective date to exactly one period (plan §7.3).

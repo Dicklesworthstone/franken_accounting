@@ -293,6 +293,7 @@ fn harness() -> Harness {
         base_unit: usd,
         calendar: calendar.clone(),
         time_zone_policy: None,
+        entities: Vec::new(),
     };
     let symbols = SymbolTable::compiled();
     runtime

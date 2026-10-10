@@ -38,8 +38,10 @@ pub use entry::{
 };
 pub use erasable::{Canonical, Erasable, EraseError, SealKey};
 pub use ids::{
-    ApprovalRef, EntryRef, Id128, Oid, PeriodRef, TypedRef, account_vid, domain_digest, entry_vid,
-    external_id_vid, period_vid, principal_vid, unit_vid,
+    ApprovalRef, EntryRef, Id128, LEGAL_ENTITY_DIMENSION, LEGAL_ENTITY_DIMENSION_CODE, Oid,
+    PeriodRef, TypedRef, account_vid, dimension_value_vid, dimension_vid, domain_digest,
+    entity_value_vid, entry_vid, external_id_vid, legal_entity_vid, period_vid, principal_vid,
+    unit_vid,
 };
 pub use mirrors::{MirrorError, entry_mirrors, leg_mirrors};
 pub use symbols::SymbolTable;
