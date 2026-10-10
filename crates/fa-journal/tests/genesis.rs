@@ -11,13 +11,13 @@
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
 use fa_journal::post::read_entry;
-use fa_journal::rows::{book_root, edge_id, leg_vid, resolution_vid, reversal_vid};
+use fa_journal::rows::{applied, book_root, edge_id, leg_vid, resolution_vid, reversal_vid};
 use fa_journal::*;
 use fa_model::symbols::{property, relation};
 use fa_model::{
     ControlPayload, Disposition, EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable, Id128,
-    LegPayload, Oid, Pending, SealKey, Supersession, SupersessionKind, SymbolTable, account_vid,
-    period_vid,
+    LegPayload, Oid, Pending, SealKey, Settlement, Supersession, SupersessionKind, SymbolTable,
+    account_vid, period_vid,
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodState, PeriodTransition};
@@ -37,6 +37,8 @@ struct Harness {
     cash: VId,
     rent: VId,
     assets: VId,
+    receivable: VId,
+    revenue: VId,
     march: String,
     april: String,
 }
@@ -145,6 +147,69 @@ impl Harness {
             resolution_of: Some(target),
             disposition: Some(Disposition::Voids),
         });
+        p
+    }
+
+    /// An invoice: Dr receivable / Cr revenue.
+    fn invoice(&self, cents: i128, key: &[u8]) -> EntryPayload {
+        let legs = vec![
+            LegPayload::simple(Side::Debit, self.receivable, Amount::new(self.usd, cents)),
+            LegPayload::simple(Side::Credit, self.revenue, Amount::new(self.usd, cents)),
+        ];
+        self.proposal(legs, key, EntryClass::ORIGINAL)
+    }
+
+    /// A receipt: Dr cash / Cr receivable, the credit leg applying `settles`.
+    fn receipt(&self, cents: i128, settles: Vec<Settlement>, key: &[u8]) -> EntryPayload {
+        let mut credit =
+            LegPayload::simple(Side::Credit, self.receivable, Amount::new(self.usd, cents));
+        credit.settles = settles;
+        let legs = vec![
+            LegPayload::simple(Side::Debit, self.cash, Amount::new(self.usd, cents)),
+            credit,
+        ];
+        self.proposal(legs, key, EntryClass::ORIGINAL)
+    }
+
+    fn applied_to(&self, entry: VId, ordinal: u16) -> i128 {
+        applied(
+            &self
+                .db
+                .vertex(leg_vid(entry, ordinal))
+                .unwrap()
+                .expect("leg row"),
+        )
+        .unwrap()
+        .unwrap_or(0)
+    }
+
+    /// The exact side-swap of a posted entry, read back from the book.
+    fn reversal_of_entry(&self, target: EntryRef, key: &[u8]) -> EntryPayload {
+        let (original, _) = read_entry(&self.db, target.vid)
+            .unwrap()
+            .expect("target row");
+        let legs = original
+            .proposal
+            .legs
+            .iter()
+            .map(|l| {
+                LegPayload::simple(
+                    if l.side == Side::Debit {
+                        Side::Credit
+                    } else {
+                        Side::Debit
+                    },
+                    l.account_ref,
+                    l.amount,
+                )
+            })
+            .collect();
+        let mut p = self.proposal(legs, key, EntryClass::REVERSAL);
+        p.supersession = vec![Supersession {
+            target,
+            kind: SupersessionKind::Reverses,
+            reason_code: 1,
+        }];
         p
     }
 
@@ -287,6 +352,24 @@ fn harness() -> Harness {
             unit_policy: UnitPolicy::Single(usd),
             parent_code: None,
         },
+        AccountSpec {
+            code: "1200".into(),
+            name: "Receivable".into(),
+            account_type: 1,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(usd),
+            parent_code: Some("1".into()),
+        },
+        AccountSpec {
+            code: "4000".into(),
+            name: "Revenue".into(),
+            account_type: 4,
+            normal_balance: 1,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(usd),
+            parent_code: None,
+        },
     ];
     let day = DateDay::from_ymd(2026, 1, 1).unwrap();
     let installed = runtime
@@ -305,14 +388,14 @@ fn harness() -> Harness {
         })
         .expect("kernel")
         .expect("chart installs");
-    assert_eq!(installed.accounts, 3);
+    assert_eq!(installed.accounts, 5);
     assert_eq!(
         fa_journal::genesis::list_accounts(&db)
             .unwrap()
             .iter()
             .map(|a| a.code.as_str())
             .collect::<Vec<_>>(),
-        vec!["1", "1000", "6000"]
+        vec!["1", "1000", "1200", "4000", "6000"]
     );
 
     let (_, periods) = runtime
@@ -342,6 +425,8 @@ fn harness() -> Harness {
         cash: account_vid(book_id, "1000"),
         rent: account_vid(book_id, "6000"),
         assets: account_vid(book_id, "1"),
+        receivable: account_vid(book_id, "1200"),
+        revenue: account_vid(book_id, "4000"),
         book,
         usd,
         march: march.clone(),
@@ -1102,27 +1187,226 @@ fn rich_leg_fields_without_a_law_are_refused_not_admitted() {
     let mut h = harness();
     let frontier = h.db.frontier().unwrap();
     let base = h.proposal(h.rent_legs(10), b"rich", EntryClass::ORIGINAL);
-    let mut settles = base.clone();
-    settles.legs[0].settles = vec![fa_model::Settlement {
-        target: EntryRef {
-            vid: VId(1),
-            entry_digest: [0; 32],
-        },
-        ordinal: 0,
-        amount: Amount::new(h.usd, 10),
-    }];
     let mut converted = base.clone();
     converted.legs[0].base_amount = Some(Amount::new(h.usd, 10));
     let mut dimensioned = base;
     dimensioned.legs[0].dimension_set = vec![(1, VId(99))];
-    for (what, p) in [
-        ("settles", settles),
-        ("base_amount", converted),
-        ("dimension_set", dimensioned),
-    ] {
+    for (what, p) in [("base_amount", converted), ("dimension_set", dimensioned)] {
         let r = h.post(h.request(p, &["post"])).unwrap_err();
         assert_eq!((r.code, r.exit), ("FA-REF-102", exit::REFUSAL), "{what}");
         assert!(r.message.contains(what), "{what}: {}", r.message);
     }
     assert_eq!(h.db.frontier().unwrap(), frontier, "refusals write nothing");
+}
+
+fn settle(target: EntryRef, ordinal: u16, usd: UnitId, cents: i128) -> Settlement {
+    Settlement {
+        target,
+        ordinal,
+        amount: Amount::new(usd, cents),
+    }
+}
+
+#[test]
+fn applications_settle_open_items_within_the_open_amount_and_reversal_undoes_them() {
+    let mut h = harness();
+    let usd = h.usd;
+    let invoice = h
+        .post(h.request(h.invoice(50_000, b"inv-1"), &["post"]))
+        .expect("admitted")
+        .entry_ref();
+    assert_eq!(h.applied_to(invoice.vid, 0), 0);
+
+    // Structure (decided from the payload, nothing written): applying more
+    // than the leg carries, a non-positive amount, the same target twice, a
+    // Reversal with settles, a hold with settles.
+    let frontier = h.db.frontier().unwrap();
+    let r = h
+        .post(h.request(
+            h.receipt(100, vec![settle(invoice, 0, usd, 101)], b"r-over-leg"),
+            &["post"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-071", exit::REFUSAL));
+    let r = h
+        .post(h.request(
+            h.receipt(100, vec![settle(invoice, 0, usd, 0)], b"r-zero"),
+            &["post"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-071", exit::REFUSAL));
+    let r = h
+        .post(h.request(
+            h.receipt(
+                100,
+                vec![settle(invoice, 0, usd, 50), settle(invoice, 0, usd, 50)],
+                b"r-twice",
+            ),
+            &["post"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-071", exit::REFUSAL));
+    let mut hold = h.pending(h.rent_legs(100), b"hold-settles");
+    hold.legs[1].settles = vec![settle(invoice, 0, usd, 1)];
+    let r = h.post(h.request(hold, &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-102", exit::REFUSAL));
+    assert_eq!(h.db.frontier().unwrap(), frontier);
+
+    // Target and shape against the witnessed invoice: unknown entry, an
+    // account vertex, a stale handle, the revenue leg (other account), the
+    // same side, a leg ordinal that does not exist, a hold as target.
+    let ghost = EntryRef {
+        vid: VId(424_242),
+        entry_digest: [0; 32],
+    };
+    let r = h
+        .post(h.request(
+            h.receipt(100, vec![settle(ghost, 0, usd, 100)], b"r-ghost"),
+            &["post"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-070", exit::REFUSAL));
+    let not_an_entry = EntryRef {
+        vid: h.receivable,
+        entry_digest: [0; 32],
+    };
+    let r = h
+        .post(h.request(
+            h.receipt(100, vec![settle(not_an_entry, 0, usd, 100)], b"r-acct"),
+            &["post"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-070", exit::REFUSAL));
+    let stale = EntryRef {
+        vid: invoice.vid,
+        entry_digest: [9; 32],
+    };
+    let r = h
+        .post(h.request(
+            h.receipt(100, vec![settle(stale, 0, usd, 100)], b"r-stale"),
+            &["post"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-070", exit::REFUSAL));
+    let r = h
+        .post(h.request(
+            h.receipt(100, vec![settle(invoice, 1, usd, 100)], b"r-revenue"),
+            &["post"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-071", exit::REFUSAL));
+    let r = h
+        .post(h.request(
+            h.receipt(100, vec![settle(invoice, 2, usd, 100)], b"r-ordinal"),
+            &["post"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-071", exit::REFUSAL));
+    let mut same_side = h.invoice(100, b"inv-same-side");
+    same_side.legs[0].settles = vec![settle(invoice, 0, usd, 100)];
+    let r = h.post(h.request(same_side, &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-071", exit::REFUSAL));
+    let hold = h
+        .post(h.request(h.pending(h.rent_legs(100), b"hold"), &["post"]))
+        .expect("admitted")
+        .entry_ref();
+    let r = h
+        .post(h.request(
+            h.receipt(100, vec![settle(hold, 1, usd, 100)], b"r-hold"),
+            &["post"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-070", exit::REFUSAL));
+    assert_eq!(h.applied_to(invoice.vid, 0), 0);
+
+    // 300.00 of the 500.00 invoice is received: SETTLES edge, applied mirror.
+    let receipt_1 = h
+        .post(h.request(
+            h.receipt(30_000, vec![settle(invoice, 0, usd, 30_000)], b"rcpt-1"),
+            &["post"],
+        ))
+        .expect("admitted")
+        .entry_ref();
+    assert_eq!(h.applied_to(invoice.vid, 0), 30_000);
+    let edge =
+        h.db.edge(edge_id(
+            relation::SETTLES,
+            leg_vid(receipt_1.vid, 1),
+            leg_vid(invoice.vid, 0),
+        ))
+        .unwrap()
+        .expect("SETTLES edge");
+    assert!(edge.props.iter().any(|(k, v)| *k == property::AMOUNT_BYTES
+        && *v == CanonicalScalar::bytes(30_000i128.to_le_bytes().to_vec()).unwrap()));
+
+    // Over-application names the open amount; the identical retry is recorded.
+    let r = h
+        .post(h.request(
+            h.receipt(25_000, vec![settle(invoice, 0, usd, 25_000)], b"rcpt-2"),
+            &["post"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-072", exit::REFUSAL));
+    assert!(r.message.contains("20000"), "{}", r.message);
+    assert_eq!(h.applied_to(invoice.vid, 0), 30_000);
+    let again = h
+        .post(h.request(
+            h.receipt(30_000, vec![settle(invoice, 0, usd, 30_000)], b"rcpt-1"),
+            &["post"],
+        ))
+        .expect("recorded");
+    assert!(matches!(again, Posted::AlreadyRecorded { .. }));
+    assert_eq!(h.applied_to(invoice.vid, 0), 30_000);
+
+    // The invoice cannot be reversed while a receipt is applied to it.
+    let r = h
+        .post(h.request(h.reversal_of_entry(invoice, b"rev-inv-live"), &["post"]))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-073", exit::REFUSAL));
+
+    // Reversing the receipt undoes its application exactly: UNSETTLES edge,
+    // applied back to zero, and the second receipt now fits.
+    let rev_1 = h
+        .post(h.request(h.reversal_of_entry(receipt_1, b"rev-rcpt-1"), &["post"]))
+        .expect("admitted")
+        .entry_ref();
+    assert_eq!(h.applied_to(invoice.vid, 0), 0);
+    assert!(
+        h.db.edge(edge_id(
+            relation::UNSETTLES,
+            leg_vid(rev_1.vid, 1),
+            leg_vid(invoice.vid, 0)
+        ))
+        .unwrap()
+        .is_some()
+    );
+    let (stored, _) = read_entry(&h.db, rev_1.vid).unwrap().expect("row");
+    assert!(stored.proposal.legs.iter().all(|l| l.settles.is_empty()));
+    let receipt_2 = h
+        .post(h.request(
+            h.receipt(25_000, vec![settle(invoice, 0, usd, 25_000)], b"rcpt-2"),
+            &["post"],
+        ))
+        .expect("admitted")
+        .entry_ref();
+    assert_eq!(h.applied_to(invoice.vid, 0), 25_000);
+    // Reversing the reversal of an applying entry would re-apply: refused.
+    let r = h
+        .post(h.request(h.reversal_of_entry(rev_1, b"rev-rev-1"), &["post"]))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-102", exit::REFUSAL));
+    // Once the last receipt is reversed, the invoice itself can be reversed,
+    // and nothing can be applied to a reversed entry.
+    h.post(h.request(h.reversal_of_entry(receipt_2, b"rev-rcpt-2"), &["post"]))
+        .expect("admitted");
+    assert_eq!(h.applied_to(invoice.vid, 0), 0);
+    h.post(h.request(h.reversal_of_entry(invoice, b"rev-inv"), &["post"]))
+        .expect("admitted");
+    let r = h
+        .post(h.request(
+            h.receipt(100, vec![settle(invoice, 0, usd, 100)], b"r-reversed"),
+            &["post"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-070", exit::REFUSAL));
 }

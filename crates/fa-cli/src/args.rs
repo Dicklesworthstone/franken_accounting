@@ -25,6 +25,7 @@ pub const VALUE_FLAGS: &[&str] = &[
     "--period",
     "--as-of",
     "--as-known-at",
+    "--account",
     "--intent",
     "--as",
     "--grant",

@@ -791,3 +791,110 @@ fn two_phase_reserve_and_resolve_follow_the_contract() -> std::io::Result<()> {
     assert_eq!(field(&rent, "debits_pending"), Some("0.00 USD"), "{tb}");
     Ok(())
 }
+
+#[test]
+fn applications_settle_open_items_and_reversals_reopen_them() -> std::io::Result<()> {
+    let dir = tmp("open-items")?;
+    let book = dir.join("book");
+    let (code, out, err) = fa(
+        Some(&book),
+        &["book", "create", "--name", "AR Co", "--json"],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD"},{"code":"1200","name":"Receivable","type":"Asset","leaf":true,"unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","leaf":true,"unit":"USD"}]}"#,
+    );
+    let (code, out, err) = fa(Some(&book), &["chart", "import", &chart, "--json"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let (code, _, _) = fa(
+        Some(&book),
+        &["period", "create", "--fiscal-year", "2026", "--json"],
+    );
+    assert_eq!(code, 0);
+    let (code, _, _) = fa(Some(&book), &["period", "open", "FY2026-P03", "--json"]);
+    assert_eq!(code, 0);
+
+    let invoice = write(
+        &dir,
+        "invoice.json",
+        r#"{"effective_date":"2026-03-05","idempotency_key":"inv-9","legs":[{"side":"debit","account":"1200","amount":"500.00 USD"},{"side":"credit","account":"4000","amount":"500.00 USD"}]}"#,
+    );
+    let (code, out, err) = fa(Some(&book), &["post", "--intent", &invoice, "--json"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let inv_vid = field(&out, "vid").unwrap().to_string();
+    let (code, out, _) = fa(Some(&book), &["open-items", "--account", "1200", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "event"), Some("open_items"), "{out}");
+    assert_eq!(field(&out, "count"), Some("1"), "{out}");
+    assert!(out.contains("\"open\":\"500.00 USD\""), "{out}");
+
+    // A receipt for 300.00 applied to the invoice's debit leg.
+    let receipt = write(
+        &dir,
+        "receipt.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-20","idempotency_key":"rcpt-9","legs":[{{"side":"debit","account":"1000","amount":"300.00 USD"}},{{"side":"credit","account":"1200","amount":"300.00 USD","settles":[{{"entry":"{inv_vid}","ordinal":0,"amount":"300.00 USD"}}]}}]}}"#
+        ),
+    );
+    let (code, out, err) = fa(Some(&book), &["post", "--intent", &receipt, "--json"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let rcpt_vid = field(&out, "vid").unwrap().to_string();
+    let (code, out, _) = fa(Some(&book), &["open-items", "--account", "1200", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("\"applied\":\"300.00 USD\"") && out.contains("\"open\":\"200.00 USD\""),
+        "{out}"
+    );
+    assert!(out.contains("\"live\":true"), "{out}");
+
+    // Over-application is refused with the open amount; reversing the
+    // invoice is refused while the receipt is applied.
+    let over = write(
+        &dir,
+        "over.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-21","idempotency_key":"rcpt-10","legs":[{{"side":"debit","account":"1000","amount":"250.00 USD"}},{{"side":"credit","account":"1200","amount":"250.00 USD","settles":[{{"entry":"{inv_vid}","ordinal":0,"amount":"250.00 USD"}}]}}]}}"#
+        ),
+    );
+    let (code, out, _) = fa(Some(&book), &["post", "--intent", &over, "--json"]);
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "code"), Some("FA-REF-072"), "{out}");
+    assert!(out.contains("20000"), "{out}");
+    let rev_inv = write(
+        &dir,
+        "rev-inv.json",
+        &format!(
+            r#"{{"class":"Reversal","reverses":"{inv_vid}","effective_date":"2026-03-22","idempotency_key":"rev-inv"}}"#
+        ),
+    );
+    let (code, out, _) = fa(Some(&book), &["post", "--intent", &rev_inv, "--json"]);
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "code"), Some("FA-REF-073"), "{out}");
+
+    // Reversing the receipt reopens the invoice; the mirrors verify.
+    let rev_rcpt = write(
+        &dir,
+        "rev-rcpt.json",
+        &format!(
+            r#"{{"class":"Reversal","reverses":"{rcpt_vid}","effective_date":"2026-03-22","idempotency_key":"rev-rcpt"}}"#
+        ),
+    );
+    let (code, out, err) = fa(Some(&book), &["post", "--intent", &rev_rcpt, "--json"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let (code, out, _) = fa(Some(&book), &["open-items", "--account", "1200", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("\"applied\":\"0.00 USD\"") && out.contains("\"open\":\"500.00 USD\""),
+        "{out}"
+    );
+    assert!(out.contains("\"live\":false"), "{out}");
+    let (code, out, err) = fa(Some(&book), &["verify", "open-items", "--json"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert_eq!(field(&out, "event"), Some("open_items_verified"), "{out}");
+    let (code, out, _) = fa(Some(&book), &["open-items", "--as-known-at", "1", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "count"), Some("0"), "{out}");
+    Ok(())
+}

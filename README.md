@@ -38,6 +38,40 @@ Reports show posted and pending amounts separately. A hold reserves its original
 
 Register verification compares both amount columns, counts, identity, period membership, watermark and fold checksum against the journal payloads. Rebuilding repairs derived rows and retires phantom cells without changing journal entries. Existing register caches from before the pending-column format must be rebuilt; their missing columns are reported as drift rather than assumed to be zero.
 
+### Exact arithmetic available now
+
+`fa-money` supports the full signed `i128` amount range, including parsing,
+rendering, identity conversion and allocation of `i128::MIN`. Posting legs
+remain nonnegative. Conversion cancels common decimal scale factors before
+exact 256-bit division; allocation also uses a wide sum of weights. Rates
+have private, reduced `u128` coefficients and checked composition that cancels
+cross factors before multiplying. Unit registration rejects unsupported scales
+and conflicting definitions of an existing version. Production arithmetic is
+std-only; historical amounts render with their original unit version after a
+precision change. Tests compare arithmetic operations and all nine rounding laws against the
+approved `fgdb-bigint` oracle. Arbitrary-size rate coefficients, journaled unit
+evolution and complete FX-law integration remain unfinished (`fa-p7r`).
+
+**FrankenSymPy assessment (2026-10-10, corrected after the owner's clarification).**
+The owner's own Rust projects — Franken-named or not — are eligible dependencies,
+including their recorded transitive dependencies. [`frankensympy`](https://github.com/Dicklesworthstone/frankensympy/tree/f449ab0e5d93579725b38c71b8704e2989642f8b)
+is useful for a specific remaining requirement: arbitrary-precision exact
+rationals for `Rate`, currently limited to reduced `u128` coefficients.
+Its [`fsym-rational`](https://github.com/Dicklesworthstone/frankensympy/blob/f449ab0e5d93579725b38c71b8704e2989642f8b/crates/fsym-rational/src/lib.rs)
+and `fsym-bigint` APIs provide normalized rationals, cross-cancelled composition
+and metered arithmetic. Planned integration (`fa-pri`) uses those APIs for large
+rate coefficients and exact conversion intermediates, with registered rounding
+back to fixed-scale `i128` amounts. It includes a `Cx`-backed budget meter,
+bounded input decoding, exact dependency pins and recorded wrapper paths.
+`fgdb-bigint` remains an independent test oracle; a production `fsym-rational`
+calculation cannot also serve as its own independent oracle. Symbolic rule
+analysis is a separate possible use without a current consumer. An isolated
+consumer of the pinned revision compiled remotely and passed five tests:
+coefficients beyond 128 bits with exact inverse composition, common-factor
+normalization, zero-denominator/divisor refusal, cancellation before work, and
+budget exhaustion. This proves those API examples; production integration,
+accounting differentials and performance evaluation remain pending.
+
 ---
 
 ## TL;DR
@@ -57,7 +91,7 @@ Register verification compares both amount columns, counts, identity, period mem
 | Graph | Accounts, entities, parties, instruments, documents, periods, findings are vertices; legs, approvals, ownership, settlement, intercompany pairs, supersession are edges. Tracing (LIBR/FIFO/pro rata as code), related-party exposure, layering, kiting, Ponzi motifs, structuring: graph procedures in the database, certified. |
 | Determinism | Same closure ⇒ byte-identical output, with a certificate. A damages schedule computed in 2026 replays in 2029. |
 | Agents | Typed intents with dry-run plans; refusals that name the law and the exact fix; drafts that cannot touch trunk without authorized promotion; `fa triage` in one call; robot-mode NDJSON; an MCP server with the same verbs. |
-| Safety | `unsafe_code = "forbid"` everywhere, zero unsafe islands. Closed dependency universe: `std` + the pinned nightly + asupersync + FrankenGraphDB + `fnx` + fastmcp_rust (MCP posture only). No serde, no tokio, no chrono, no decimal crates, no arrow, no sqlite, no TUI crate. |
+| Safety | `unsafe_code = "forbid"` everywhere, zero unsafe islands. Dependencies are `std`, the pinned nightly and suitable Franken-suite foundations with exact pins and recorded transitive paths. Unrelated third-party crates are not imported directly by accounting code. FrankenGraphDB is the sole book storage engine. |
 
 ---
 
@@ -197,7 +231,7 @@ What it is **not**: an ERP, a payments processor, a UI, a tax engine or GAAP int
 
 ## Design philosophy
 
-1. **The dependency universe is closed.** `std` + the pinned nightly + four foundations. Everything else is built in-house and owned.
+1. **Reuse the Franken suite.** `std`, the pinned nightly and suitable owner-maintained Franken projects are eligible dependencies. Pin and record their transitive paths; own the accounting laws and contracts here.
 2. **Memory safety is structural**, with zero unsafe islands.
 3. **`Cx` everywhere.** Rules and procedures run under a context with no clock, entropy, network, or filesystem.
 4. **Exactness is constitutional.** No float in any amount path; every rounding is a named law.

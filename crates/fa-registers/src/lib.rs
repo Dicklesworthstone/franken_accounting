@@ -12,6 +12,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod open_items;
+
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -26,6 +28,10 @@ use fgdb::{Database, VertexRow, WriteBatch};
 use fgdb_crypto::Hasher;
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
+
+pub use open_items::{
+    Application, AppliedDrift, OpenItem, OpenItemVerification, open_items, verify_open_items,
+};
 
 pub const FOLD_DIGEST_DOMAIN: &[u8] = b"fa:register-fold:v2";
 
@@ -158,7 +164,7 @@ fn digest_of(
     Ok(h.finalize().0)
 }
 
-fn resolve_known_at<V: asupersync::fs::Vfs + Clone>(
+pub(crate) fn resolve_known_at<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     known_at: Option<CommitSeq>,
 ) -> Result<CommitSeq, RegisterError> {
@@ -193,7 +199,7 @@ fn period_at<V: asupersync::fs::Vfs + Clone>(
 
 /// Read the authoritative payloads in a fixed historical snapshot. Derived
 /// IN_PERIOD edges are not an input: a damaged projection cannot hide a posting.
-fn entries_at<V: asupersync::fs::Vfs + Clone>(
+pub(crate) fn entries_at<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     seq: CommitSeq,

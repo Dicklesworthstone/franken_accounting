@@ -32,14 +32,35 @@ pub struct Unit {
     pub kind: UnitKind,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UnitError {
+    InvalidScale(u8),
+    ConflictingVersion { code: String, version: u16 },
+    TooManyUnits,
+}
+
+impl fmt::Display for UnitError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidScale(scale) => write!(f, "unit scale {scale} exceeds 38"),
+            Self::ConflictingVersion { code, version } => write!(
+                f,
+                "unit {code}@v{version} already has a different definition; register a new version"
+            ),
+            Self::TooManyUnits => f.write_str("unit registry exhausted its u32 identifiers"),
+        }
+    }
+}
+
+impl core::error::Error for UnitError {}
+
 impl Unit {
     /// `10^scale` as the mantissa of one whole unit.
     pub fn one(&self) -> i128 {
         pow10(self.scale)
     }
 
-    /// Display spelling: `USD` for version 0, `USD@4` otherwise... no — the
-    /// spelling always carries the scale so a reader never has to look it up.
+    /// Display spelling: `USD` for version 0, `USD@vN` for later versions.
     pub fn spelling(&self) -> String {
         if self.version == 0 {
             self.code.clone()
@@ -91,53 +112,71 @@ impl UnitRegistry {
             cur("AUD", 36, 2),
             cur("KWD", 414, 3),
         ] {
-            r.register(u);
+            r.register(u).expect("valid built-in unit");
         }
         r.register(Unit {
             code: "BTC".into(),
             scale: 8,
             version: 0,
             kind: UnitKind::Commodity,
-        });
+        })
+        .expect("valid built-in unit");
         r.register(Unit {
             code: "ETH".into(),
             scale: 18,
             version: 0,
             kind: UnitKind::Commodity,
-        });
+        })
+        .expect("valid built-in unit");
         r.register(Unit {
             code: "SHARE".into(),
             scale: 6,
             version: 0,
             kind: UnitKind::Share,
-        });
+        })
+        .expect("valid built-in unit");
         r.register(Unit {
             code: "HOUR".into(),
             scale: 2,
             version: 0,
             kind: UnitKind::Time,
-        });
+        })
+        .expect("valid built-in unit");
         r.register(Unit {
             code: "EACH".into(),
             scale: 0,
             version: 0,
             kind: UnitKind::Count,
-        });
+        })
+        .expect("valid built-in unit");
         r
     }
 
-    /// Register a unit version; returns its id. Registering the same
-    /// `(code, version)` twice returns the existing id and never mutates it.
-    pub fn register(&mut self, unit: Unit) -> UnitId {
+    /// Register an immutable unit version. An identical definition returns
+    /// its existing id; a conflicting definition or unsupported scale is
+    /// refused without changing the registry.
+    pub fn register(&mut self, unit: Unit) -> Result<UnitId, UnitError> {
+        if unit.scale > 38 {
+            return Err(UnitError::InvalidScale(unit.scale));
+        }
         if let Some(i) = self
             .units
             .iter()
             .position(|u| u.code == unit.code && u.version == unit.version)
         {
-            return UnitId(i as u32);
+            if self.units[i] != unit {
+                return Err(UnitError::ConflictingVersion {
+                    code: unit.code,
+                    version: unit.version,
+                });
+            }
+            return Ok(UnitId(
+                u32::try_from(i).map_err(|_| UnitError::TooManyUnits)?,
+            ));
         }
+        let id = UnitId(u32::try_from(self.units.len()).map_err(|_| UnitError::TooManyUnits)?);
         self.units.push(unit);
-        UnitId((self.units.len() - 1) as u32)
+        Ok(id)
     }
 
     /// Every registered unit with its id, in registration order.
@@ -200,22 +239,40 @@ mod tests {
         let mut r = UnitRegistry::with_defaults();
         let usd = r.lookup("USD").unwrap();
         assert_eq!(r.get(usd).unwrap().scale, 2);
-        // Re-registering USD v0 with another scale does not change the existing unit.
-        let again = r.register(Unit {
+        let original = r.get(usd).unwrap().clone();
+        let count = r.len();
+        assert_eq!(r.register(original.clone()), Ok(usd));
+        // Re-registering USD v0 with another scale is a typed refusal.
+        let conflict = r.register(Unit {
             code: "USD".into(),
             scale: 4,
             version: 0,
             kind: UnitKind::Custom,
         });
-        assert_eq!(again, usd);
-        assert_eq!(r.get(usd).unwrap().scale, 2);
+        assert_eq!(
+            conflict,
+            Err(UnitError::ConflictingVersion {
+                code: "USD".into(),
+                version: 0
+            })
+        );
+        let mut changed_kind = original.clone();
+        changed_kind.kind = UnitKind::Custom;
+        assert!(matches!(
+            r.register(changed_kind),
+            Err(UnitError::ConflictingVersion { .. })
+        ));
+        assert_eq!(r.len(), count);
+        assert_eq!(r.get(usd), Some(&original));
         // A precision change is a new version with its own id.
-        let usd4 = r.register(Unit {
-            code: "USD".into(),
-            scale: 4,
-            version: 1,
-            kind: UnitKind::Currency { iso4217: 840 },
-        });
+        let usd4 = r
+            .register(Unit {
+                code: "USD".into(),
+                scale: 4,
+                version: 1,
+                kind: UnitKind::Currency { iso4217: 840 },
+            })
+            .unwrap();
         assert_ne!(usd4, usd);
         assert_eq!(
             r.lookup("USD"),
@@ -223,6 +280,32 @@ mod tests {
             "bare code resolves to the newest version"
         );
         assert_eq!(r.lookup("USD@v0"), Some(usd));
+    }
+
+    #[test]
+    fn unsupported_scales_are_refused_before_registration() {
+        let mut registry = UnitRegistry::empty();
+        for scale in [39, u8::MAX] {
+            assert_eq!(
+                registry.register(Unit {
+                    code: "INVALID".into(),
+                    scale,
+                    version: 0,
+                    kind: UnitKind::Custom,
+                }),
+                Err(UnitError::InvalidScale(scale))
+            );
+            assert!(registry.is_empty());
+        }
+        let id = registry
+            .register(Unit {
+                code: "WIDE".into(),
+                scale: 38,
+                version: 0,
+                kind: UnitKind::Custom,
+            })
+            .unwrap();
+        assert_eq!(registry.get(id).unwrap().one(), pow10(38));
     }
 
     #[test]

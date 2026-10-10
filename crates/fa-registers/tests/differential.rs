@@ -12,16 +12,17 @@ use asupersync::{Budget, Cx};
 use fa_journal::*;
 use fa_model::{
     ControlPayload, Disposition, EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable, Id128,
-    LegPayload, Oid, Pending, PeriodRef, SealKey, Supersession, SupersessionKind, SymbolTable,
-    account_vid,
+    LegPayload, Oid, Pending, PeriodRef, SealKey, Settlement, Supersession, SupersessionKind,
+    SymbolTable, account_vid,
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
-use fa_reference::{Account, Cell, Int, Intent, Leg, Oracle, Resolve, Verdict};
+use fa_reference::{Account, Cell, Int, Intent, Leg, Oracle, Resolve, Settle, Verdict};
 use fa_registers::{
-    TrialBalance, balance_as_of, fold_period, period_activity, trial_balance, trial_balance_at,
+    TrialBalance, balance_as_of, fold_period, open_items, period_activity, trial_balance,
+    trial_balance_at, verify_open_items,
 };
 use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodState, PeriodTransition};
-use fgdb::{Database, DatabaseKeys, MemVfs};
+use fgdb::{Database, DatabaseKeys, MemVfs, WriteBatch};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::ids::DatabaseSecurityNamespaceId;
 use fgdb_types::{CommitSeq, VId};
@@ -64,6 +65,7 @@ const ACCOUNTS: &[(&str, u8, bool)] = &[
     ("1000", 1, true),
     ("6000", 5, true),
     ("4000", 4, true),
+    ("1200", 1, true),
     ("1", 1, false),
 ];
 
@@ -181,7 +183,23 @@ fn kernel_post(
     usd: UnitId,
     refs: &[EntryRef],
 ) -> Result<Posted, Refusal> {
-    let legs = to_kernel_legs(k.book.book_id, usd, &intent.legs);
+    kernel_post_raw(k, intent, usd, refs).expect("kernel")
+}
+
+fn kernel_post_raw(
+    k: &mut Kernel,
+    intent: &Intent,
+    usd: UnitId,
+    refs: &[EntryRef],
+) -> Result<Result<Posted, Refusal>, KernelError> {
+    let mut legs = to_kernel_legs(k.book.book_id, usd, &intent.legs);
+    for s in &intent.settles {
+        legs[s.leg].settles.push(Settlement {
+            target: refs[s.target],
+            ordinal: u16::try_from(s.ordinal).expect("small ordinal"),
+            amount: Amount::new(usd, s.mantissa),
+        });
+    }
     let unit_totals =
         EntryPayload::fold_unit_totals(&legs).expect("no overflow in generated amounts");
     let pending = match (intent.class.as_str(), &intent.resolves) {
@@ -269,7 +287,6 @@ fn kernel_post(
     let book = &k.book;
     k.runtime
         .block_on(async move { post(db, &ctx, book, req).await })
-        .expect("kernel")
 }
 
 fn kernel_transition(
@@ -329,10 +346,14 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
         "Replacement",
         "Pending",
         "Pending",
-        "Pending",
         "Resolution",
         "Resolution",
         "Resolution",
+        "Invoice",
+        "Invoice",
+        "Receipt",
+        "Receipt",
+        "Receipt",
     ];
     let leaf_codes = ["1000", "6000", "4000"];
     let mut history: Vec<Intent> = Vec::new();
@@ -343,13 +364,34 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
     let mut resolved_targets: BTreeSet<usize> = BTreeSet::new();
     let mut posted_holds = 0u32;
     let mut posted_resolutions = (0u32, 0u32); // (Posts, Voids)
+    // Journal indexes of posted invoices (Dr 1200 / Cr 4000) and counts of
+    // posted applications and of reversals that undid one.
+    let mut invoices: Vec<usize> = Vec::new();
+    // Planted negative: the first Posts resolution against an open hold is
+    // deliberately malformed (FA-REF-061), so the shape law is exercised on
+    // every seed rather than by luck.
+    let mut planted_shape = false;
+    // Planted negatives: each of these refusals is produced deterministically
+    // at the first step where its precondition holds, then removed; the rest
+    // of the history is random. Coverage by construction, not by seed luck.
+    let mut needed: BTreeSet<&'static str> = [
+        "FA-REF-032",
+        "FA-REF-070",
+        "FA-REF-071",
+        "FA-REF-072",
+        "FA-REF-073",
+    ]
+    .into_iter()
+    .collect();
+    let mut applications_posted = 0u32;
+    let mut undone = 0u32;
     // Kernel handles of posted entries, indexed like the oracle's journal.
     let mut refs: Vec<EntryRef> = Vec::new();
     let mut posted = 0u32;
     let mut recorded = 0u32;
     let mut refused: BTreeMap<&'static str, u32> = BTreeMap::new();
 
-    for step in 0..480u64 {
+    for step in 0..640u64 {
         if rng.chance(15) {
             let code = periods[1 + rng.below(3) as usize].clone(); // Feb, Mar, Apr
             let t = match rng.below(5) {
@@ -381,9 +423,114 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
             continue;
         }
 
+        let open_now = oracle.open_items();
+        let mut planted: Option<Intent> = None;
+        let fresh_key = format!("planted-{step}").into_bytes();
+        let leg = |side: fa_reference::Side, account: &str, mantissa: i128| Leg {
+            side,
+            account: account.into(),
+            unit: usd.0,
+            mantissa,
+        };
+        if needed.contains("FA-REF-032")
+            && let Some(plain) = posted_intents
+                .iter()
+                .find(|i| i.reverses.is_none() && i.resolves.is_none() && i.settles.is_empty())
+        {
+            // Same key, different date: an idempotency conflict.
+            let mut again = plain.clone();
+            again.date = if again.date == dates[0] {
+                dates[1]
+            } else {
+                dates[0]
+            };
+            planted = Some(again);
+        } else if needed.contains("FA-REF-073")
+            && let Some((i, _)) = invoices
+                .iter()
+                .filter_map(|i| open_now.get(&(*i, 0)).map(|(_, a, _)| (*i, *a)))
+                .find(|(_, applied)| *applied > 0)
+        {
+            // Reversing an invoice with a live application.
+            let original = oracle.entry(i).expect("posted invoice");
+            planted = Some(Intent {
+                class: "Reversal".into(),
+                date: dates[1],
+                discriminator: None,
+                legs: original
+                    .legs
+                    .iter()
+                    .map(|l| leg(l.side.flipped(), &l.account, l.mantissa))
+                    .collect(),
+                key: fresh_key.clone(),
+                ops: vec!["post".into(), "post_closed".into()],
+                approvals: 0,
+                reverses: Some(i),
+                resolves: None,
+                settles: Vec::new(),
+            });
+        } else if (needed.contains("FA-REF-072") || needed.contains("FA-REF-071"))
+            && let Some((i, open)) = invoices
+                .iter()
+                .filter_map(|i| open_now.get(&(*i, 0)).map(|(o, a, out)| (*i, o - out - a)))
+                .find(|(_, open)| *open > 0)
+        {
+            // Over the open amount (072) or against the revenue leg (071).
+            let (amount, ordinal) = if needed.contains("FA-REF-072") {
+                (open + 1, 0)
+            } else {
+                (1, 1)
+            };
+            planted = Some(Intent {
+                class: "Original".into(),
+                date: dates[1],
+                discriminator: None,
+                legs: vec![
+                    leg(fa_reference::Side::Debit, "1000", amount),
+                    leg(fa_reference::Side::Credit, "1200", amount),
+                ],
+                key: fresh_key.clone(),
+                ops: vec!["post".into(), "post_closed".into()],
+                approvals: 0,
+                reverses: None,
+                resolves: None,
+                settles: vec![Settle {
+                    leg: 1,
+                    target: i,
+                    ordinal,
+                    mantissa: amount,
+                }],
+            });
+        } else if needed.contains("FA-REF-070")
+            && let Some(h) = holds.first()
+        {
+            // A hold is not an open item.
+            planted = Some(Intent {
+                class: "Original".into(),
+                date: dates[1],
+                discriminator: None,
+                legs: vec![
+                    leg(fa_reference::Side::Debit, "1000", 7),
+                    leg(fa_reference::Side::Credit, "1200", 7),
+                ],
+                key: fresh_key,
+                ops: vec!["post".into(), "post_closed".into()],
+                approvals: 0,
+                reverses: None,
+                resolves: None,
+                settles: vec![Settle {
+                    leg: 1,
+                    target: *h,
+                    ordinal: 1,
+                    mantissa: 7,
+                }],
+            });
+        }
         // Retry an earlier intent: identical (expect recorded) or with a
         // different date (expect an idempotency conflict).
-        let intent = if !history.is_empty() && rng.chance(12) {
+        let intent = if let Some(p) = planted {
+            p
+        } else if !history.is_empty() && rng.chance(12) {
             if rng.chance(50) && !posted_intents.is_empty() {
                 // An exact resubmission of something that posted: recorded.
                 posted_intents[rng.below(posted_intents.len() as u64) as usize].clone()
@@ -402,7 +549,90 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                 vec!["post".into()]
             };
             let key = format!("k{step}").into_bytes();
-            if class == "Resolution" && !refs.is_empty() {
+            if class == "Invoice" {
+                let amount = 1_000 + rng.below(90_000) as i128;
+                Intent {
+                    class: "Original".into(),
+                    date: dates[rng.below(4) as usize],
+                    discriminator: None,
+                    legs: vec![
+                        Leg {
+                            side: fa_reference::Side::Debit,
+                            account: "1200".into(),
+                            unit: usd.0,
+                            mantissa: amount,
+                        },
+                        Leg {
+                            side: fa_reference::Side::Credit,
+                            account: "4000".into(),
+                            unit: usd.0,
+                            mantissa: amount,
+                        },
+                    ],
+                    key,
+                    ops,
+                    approvals: 0,
+                    reverses: None,
+                    resolves: None,
+                    settles: Vec::new(),
+                }
+            } else if class == "Receipt" && !refs.is_empty() {
+                // A receipt applies its credit leg to an open invoice leg:
+                // mostly within the open amount, sometimes over it
+                // (FA-REF-072), sometimes to the revenue leg (071), sometimes
+                // to a non-invoice or a reversed one (070).
+                let open_now = oracle.open_items();
+                let live_invoices: Vec<(usize, i128)> = invoices
+                    .iter()
+                    .filter_map(|i| {
+                        open_now
+                            .get(&(*i, 0))
+                            .map(|(orig, applied, out)| (*i, orig - out - applied))
+                            .filter(|(_, open)| *open > 0)
+                    })
+                    .collect();
+                let (target, open) = if !live_invoices.is_empty() && rng.chance(85) {
+                    live_invoices[rng.below(live_invoices.len() as u64) as usize]
+                } else {
+                    (rng.below(refs.len() as u64) as usize, 0)
+                };
+                let amount = if open > 0 && rng.chance(75) {
+                    1 + rng.below(open as u64) as i128
+                } else {
+                    open + 1 + rng.below(5_000) as i128
+                };
+                let ordinal = if rng.chance(10) { 1 } else { 0 };
+                Intent {
+                    class: "Original".into(),
+                    date: dates[rng.below(4) as usize],
+                    discriminator: None,
+                    legs: vec![
+                        Leg {
+                            side: fa_reference::Side::Debit,
+                            account: "1000".into(),
+                            unit: usd.0,
+                            mantissa: amount,
+                        },
+                        Leg {
+                            side: fa_reference::Side::Credit,
+                            account: "1200".into(),
+                            unit: usd.0,
+                            mantissa: amount,
+                        },
+                    ],
+                    key,
+                    ops,
+                    approvals: 0,
+                    reverses: None,
+                    resolves: None,
+                    settles: vec![Settle {
+                        leg: 1,
+                        target,
+                        ordinal,
+                        mantissa: amount,
+                    }],
+                }
+            } else if class == "Resolution" && !refs.is_empty() {
                 // Prefer an unresolved hold, so the resolution law itself is
                 // exercised; sometimes a posted non-hold (FA-REF-060) or an
                 // already-resolved hold (FA-REF-062).
@@ -411,13 +641,14 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                     .copied()
                     .filter(|i| !resolved_targets.contains(i))
                     .collect();
-                let target = if !open.is_empty() && rng.chance(80) {
+                let force_shape = !planted_shape && !open.is_empty();
+                let target = if force_shape || (!open.is_empty() && rng.chance(80)) {
                     open[rng.below(open.len() as u64) as usize]
                 } else {
                     rng.below(refs.len() as u64) as usize
                 };
                 let original = oracle.entry(target).expect("posted entry");
-                let (legs, posts) = if rng.chance(50) {
+                let (legs, posts) = if force_shape || rng.chance(50) {
                     // A balanced sub-vector: a total t ≤ T allocated greedily
                     // over the debit legs and over the credit legs, in order.
                     let total: i128 = original
@@ -448,7 +679,7 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                             ordinals.push(i as u16);
                         }
                     }
-                    if rng.chance(25) && !legs.is_empty() {
+                    if (force_shape || rng.chance(25)) && !legs.is_empty() {
                         // Same amounts (still balanced), different account:
                         // not drawn from the hold (FA-REF-061).
                         legs[0].account = if legs[0].account == "1000" {
@@ -471,6 +702,7 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                     approvals: 0,
                     reverses: None,
                     resolves: Some(Resolve { target, posts }),
+                    settles: Vec::new(),
                 }
             } else if class == "Reversal" && !refs.is_empty() {
                 // Prefer a target nobody has reversed yet, so the reversal
@@ -515,9 +747,10 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                     approvals: 0,
                     reverses: Some(target),
                     resolves: None,
+                    settles: Vec::new(),
                 }
             } else {
-                let class = if class == "Reversal" || class == "Resolution" {
+                let class = if matches!(class, "Reversal" | "Resolution" | "Receipt") {
                     "Original"
                 } else {
                     class
@@ -577,6 +810,7 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                     approvals: 0,
                     reverses: None,
                     resolves: None,
+                    settles: Vec::new(),
                 }
             }
         };
@@ -603,6 +837,21 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                     holds.push(*index);
                     posted_holds += 1;
                 }
+                if intent.class == "Original"
+                    && intent.legs.len() == 2
+                    && intent.legs[0].account == "1200"
+                    && intent.settles.is_empty()
+                {
+                    invoices.push(*index);
+                }
+                if !intent.settles.is_empty() {
+                    applications_posted += 1;
+                }
+                if let Some(t) = intent.reverses
+                    && oracle.entry(t).is_some_and(|e| !e.settles.is_empty())
+                {
+                    undone += 1;
+                }
                 if let Some(r) = &intent.resolves {
                     resolved_targets.insert(r.target);
                     if r.posts.is_some() {
@@ -619,6 +868,10 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
             (Err(r), Verdict::Refused { code }) => {
                 assert_eq!(r.code, *code, "step {step}: refusal code for {intent:?}");
                 *refused.entry(code).or_insert(0) += 1;
+                if *code == "FA-REF-061" {
+                    planted_shape = true;
+                }
+                needed.remove(*code);
             }
             _ => assert_eq!(
                 format!("kernel {kernel:?}"),
@@ -633,6 +886,11 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
     assert!(recorded >= 3, "recorded {recorded}");
     assert!(posted_holds >= 5, "holds {posted_holds}");
     assert!(
+        applications_posted >= 5,
+        "applications {applications_posted}"
+    );
+    assert!(undone >= 1, "no reversal undid an application");
+    assert!(
         posted_resolutions.0 >= 3 && posted_resolutions.1 >= 3,
         "resolutions (posts, voids) {posted_resolutions:?}"
     );
@@ -644,6 +902,10 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
         "FA-REF-060",
         "FA-REF-061",
         "FA-REF-062",
+        "FA-REF-070",
+        "FA-REF-071",
+        "FA-REF-072",
+        "FA-REF-073",
         "FA-REF-102",
     ] {
         assert!(
@@ -726,6 +988,151 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
             );
         }
     }
+    // Open items agree leg by leg (original, applied, open), and the kernel's
+    // applied mirrors verify against the fold.
+    let kernel_items = open_items(&k.db, &k.book, None, None).unwrap();
+    let model_items = oracle.open_items();
+    assert_eq!(kernel_items.len(), model_items.len(), "open item count");
+    for item in &kernel_items {
+        let index = refs
+            .iter()
+            .position(|r| r.vid == item.entry)
+            .expect("kernel open item belongs to a posted entry");
+        let model = model_items
+            .get(&(index, usize::from(item.ordinal)))
+            .copied();
+        assert!(
+            model.is_some(),
+            "oracle lacks open item {index}/{}",
+            item.ordinal
+        );
+        let (original, applied, applied_out) = model.expect("asserted above");
+        assert_eq!(item.original, original, "{index}/{} original", item.ordinal);
+        assert_eq!(item.applied, applied, "{index}/{} applied", item.ordinal);
+        assert_eq!(
+            item.applied_out, applied_out,
+            "{index}/{} applied_out",
+            item.ordinal
+        );
+        assert_eq!(
+            item.open,
+            original - applied_out - applied,
+            "{index}/{} open",
+            item.ordinal
+        );
+    }
+    let verified = verify_open_items(&k.db, &k.book, None).unwrap();
+    assert!(verified.is_green(), "{verified:?}");
+    assert!(verified.legs_checked > 0);
+
+    // Corruption negative: a leg whose applied mirror is removed is drift to
+    // the verifier and corruption to the kernel — never an implicit zero
+    // that would admit a fresh over-application.
+    let victim = kernel_items
+        .iter()
+        .find(|i| i.applied > 0)
+        .expect("some live leg has an application");
+    let victim_leg = fa_journal::rows::leg_vid(victim.entry, victim.ordinal);
+    {
+        let ctx = k.ctx();
+        let mut batch = WriteBatch::new(fa_model::symbols::relation::HAS_LEG);
+        batch.set_vertex_property(victim_leg, fa_model::symbols::property::APPLIED, None);
+        k.runtime
+            .block_on(async { k.db.write(&ctx.commit(), batch).await })
+            .expect("plant the missing mirror");
+    }
+    let verified = verify_open_items(&k.db, &k.book, None).unwrap();
+    assert!(!verified.is_green(), "{verified:?}");
+    assert!(
+        verified
+            .drift
+            .iter()
+            .any(|d| d.entry == victim.entry && d.ordinal == victim.ordinal && d.stored.is_none()),
+        "{verified:?}"
+    );
+    let victim_index = refs
+        .iter()
+        .position(|r| r.vid == victim.entry)
+        .expect("victim is a posted entry");
+    // The corruption check lives behind the period law, so post into a
+    // period both engines agree is Open: reopen March deterministically
+    // (both engines, refusals ignored in lockstep) before the probe.
+    for (n, t) in [
+        PeriodTransition::Open,
+        PeriodTransition::Reopen {
+            to: PeriodState::Open,
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let kernel = kernel_transition(&mut k, &periods[2], t, 9_000 + n as u64);
+        let model = oracle.transition(&periods[2], t);
+        assert_eq!(kernel.is_ok(), model.is_ok(), "reopen March for the probe");
+    }
+    assert_eq!(
+        oracle.period_state(&periods[2]),
+        Some(PeriodState::Open),
+        "March must be Open for the corruption probe"
+    );
+    let receipt = Intent {
+        class: "Original".into(),
+        date: dates[1],
+        discriminator: None,
+        legs: vec![
+            Leg {
+                side: fa_reference::Side::Debit,
+                account: "1000".into(),
+                unit: usd.0,
+                mantissa: 1,
+            },
+            Leg {
+                side: fa_reference::Side::Credit,
+                account: "1200".into(),
+                unit: usd.0,
+                mantissa: 1,
+            },
+        ],
+        key: b"after-corruption".to_vec(),
+        ops: vec!["post".into(), "post_closed".into()],
+        approvals: 0,
+        reverses: None,
+        resolves: None,
+        settles: vec![Settle {
+            leg: 1,
+            target: victim_index,
+            ordinal: usize::from(victim.ordinal),
+            mantissa: 1,
+        }],
+    };
+    let outcome = kernel_post_raw(&mut k, &receipt, usd, &refs);
+    assert!(
+        matches!(outcome, Err(KernelError::Corrupt(_))),
+        "a missing mirror must be corruption, got {outcome:?}"
+    );
+    // A negative mirror (which would inflate the open amount) and a mirror
+    // above the leg's capacity are corruption too, and drift to the verifier.
+    for (what, bad) in [("negative", -100i128), ("oversized", i128::MAX / 4)] {
+        let ctx = k.ctx();
+        let mut batch = WriteBatch::new(fa_model::symbols::relation::HAS_LEG);
+        batch.set_vertex_property(
+            victim_leg,
+            fa_model::symbols::property::APPLIED,
+            Some(fa_journal::rows::mantissa_scalar("applied", bad).unwrap()),
+        );
+        k.runtime
+            .block_on(async { k.db.write(&ctx.commit(), batch).await })
+            .expect("plant the bad mirror");
+        let verified = verify_open_items(&k.db, &k.book, None).unwrap();
+        assert!(!verified.is_green(), "{what}: {verified:?}");
+        let mut probe = receipt.clone();
+        probe.key = format!("after-{what}").into_bytes();
+        let outcome = kernel_post_raw(&mut k, &probe, usd, &refs);
+        assert!(
+            matches!(outcome, Err(KernelError::Corrupt(_))),
+            "a {what} mirror must be corruption, got {outcome:?}"
+        );
+    }
     let tb = trial_balance(&k.db, &k.book, &periods).unwrap();
     assert!(tb.is_balanced(), "{:?}", tb.unit_totals);
 }
@@ -786,6 +1193,7 @@ fn temporal_intent(
         approvals: 0,
         reverses: None,
         resolves: None,
+        settles: Vec::new(),
     }
 }
 

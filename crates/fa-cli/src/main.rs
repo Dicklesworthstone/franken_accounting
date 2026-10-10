@@ -39,6 +39,7 @@ const VERBS: &[&str] = &[
     "reserve",
     "resolve",
     "tb",
+    "open-items",
     "verify",
     "registers",
     "entry",
@@ -193,13 +194,11 @@ fn dispatch(out: &Out, args: &Args) -> Result<(), Fail> {
         print!("{}", help_text());
         return Ok(());
     }
-    if verb != Some("tb")
-        && (args.flag("--as-of").is_some()
-            || args.flag("--as-known-at").is_some()
-            || args.switch("--activity"))
+    if (verb != Some("tb") && (args.flag("--as-of").is_some() || args.switch("--activity")))
+        || (!matches!(verb, Some("tb" | "open-items")) && args.flag("--as-known-at").is_some())
     {
         return Err(usage(
-            "--as-of, --as-known-at and --activity are supported only by `fa tb`",
+            "--as-of and --activity are supported only by `fa tb`; --as-known-at by `fa tb` and `fa open-items`",
             "fa tb --as-of 2026-03-15 --as-known-at HEAD --book <dir>",
         ));
     }
@@ -217,6 +216,7 @@ fn dispatch(out: &Out, args: &Args) -> Result<(), Fail> {
         Some("reserve") => post_cmd(out, args, Some(EntryClass::PENDING)),
         Some("resolve") => post_cmd(out, args, Some(EntryClass::RESOLUTION)),
         Some("tb") => tb_cmd(out, args),
+        Some("open-items") => open_items_cmd(out, args),
         Some("verify") => verify_cmd(out, args),
         Some("registers") => registers_cmd(out, args),
         Some("entry") => entry_cmd(out, args),
@@ -264,7 +264,8 @@ fn help_text() -> String {
          tb ((--period <code>)... | --fiscal-year N) [--activity] [--as-known-at HEAD|<seq>]\n  \
          tb --as-of YYYY-MM-DD [--as-known-at HEAD|<seq>]\n  \
          Stock balances include opening history; --activity is selected-period movement. Instants are unsupported.\n  \
-         verify registers --period <code>\n  \
+         open-items [--account <code>] [--as-known-at HEAD|<seq>]   (plan §5.7: each live posted leg, its applications, its open amount)\n  \
+         verify registers --period <code> | verify open-items\n  \
          registers materialize --period <code>\n  \
          entry show <vid-hex>\n  \
          capabilities | robot-docs guide|exit-codes|examples\n\n\
@@ -351,7 +352,8 @@ const GUIDE: &str = "fa robot-docs guide\n\
 5. Corrections are new entries (Reversal, Replacement, Reclassification) that cite the original; nothing is edited in place.\n\
 6. Idempotency: every intent carries idempotency_key; resubmitting returns the recorded outcome (event \"recorded\"), never a duplicate.\n\
 7. Posting into a non-Open period is decided by the admissibility matrix; the refusal cites the (class, state) cell and names the admissible class or capability.\n\
-8. Two-phase: `fa reserve` posts a Pending (amounts in the pending columns, never posted); `fa resolve` names it with `resolves` and either posts a sub-vector (`legs`, each drawn from one hold leg — same account and side, at most the reserved amount; add `source_ordinal` when the hold has several such legs) or voids it (`disposition: \"voids\"`). The rest of the hold is released either way. One resolution per hold: a second is exit 6 (FA-REF-062); resolving a non-hold is FA-REF-060.\n";
+8. Two-phase: `fa reserve` posts a Pending (amounts in the pending columns, never posted); `fa resolve` names it with `resolves` and either posts a sub-vector (`legs`, each drawn from one hold leg — same account and side, at most the reserved amount; add `source_ordinal` when the hold has several such legs) or voids it (`disposition: \"voids\"`). The rest of the hold is released either way. One resolution per hold: a second is exit 6 (FA-REF-062); resolving a non-hold is FA-REF-060.\n\
+9. Application: a leg may carry `settles: [{entry, ordinal, amount}]` to apply itself to an open item — the opposite side on the same account and unit, at most the item's open amount (FA-REF-072 names what is open). `fa open-items --account <code>` lists items with their applications. Reversing a receipt reopens the invoice (its applications are undone, never re-entered); an invoice with live applications cannot be reversed until its receipts are (FA-REF-073).\n";
 
 const EXAMPLES: &str = "fa robot-docs examples\n\
 \n\
@@ -386,7 +388,14 @@ fa verify registers --period FY2026-P03 --book ./books/myco  # exit 8 on drift\n
 {\"resolves\":\"<vid>\",\"disposition\":\"voids\",\"effective_date\":\"2026-03-21\",\"idempotency_key\":\"void-77\"}\n\
 fa reserve --intent hold.json --book ./books/myco --json      # exit 0, event posted, class Pending\n\
 fa resolve --intent res.json --book ./books/myco --json       # exit 0, event posted, class Resolution\n\
-fa resolve --intent void.json --book ./books/myco --json      # exit 6, FA-REF-062: the hold is already resolved\n";
+fa resolve --intent void.json --book ./books/myco --json      # exit 6, FA-REF-062: the hold is already resolved\n\
+\n\
+# invoice.json / receipt.json (the receipt's credit leg settles the invoice's debit leg 0)\n\
+{\"effective_date\":\"2026-03-05\",\"idempotency_key\":\"inv-9\",\"legs\":[{\"side\":\"debit\",\"account\":\"1200\",\"amount\":\"500.00 USD\"},{\"side\":\"credit\",\"account\":\"4000\",\"amount\":\"500.00 USD\"}]}\n\
+{\"effective_date\":\"2026-03-20\",\"idempotency_key\":\"rcpt-9\",\"legs\":[{\"side\":\"debit\",\"account\":\"1000\",\"amount\":\"300.00 USD\"},\n\
+  {\"side\":\"credit\",\"account\":\"1200\",\"amount\":\"300.00 USD\",\"settles\":[{\"entry\":\"<invoice vid>\",\"ordinal\":0,\"amount\":\"300.00 USD\"}]}]}\n\
+fa open-items --account 1200 --book ./books/myco --json       # open 200.00 on the invoice's leg 0\n\
+fa verify open-items --book ./books/myco                      # exit 8 if an applied mirror drifts from the fold\n";
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -892,7 +901,72 @@ fn parse_vid(text: &str, what: &str) -> Result<VId, Fail> {
 
 /// The `legs` array of an intent: each leg with its optional `source_ordinal`
 /// (meaningful only for a Resolution(Posts)).
-fn parse_legs(doc: &Json, ctx: &BookContext) -> Result<Vec<(LegPayload, Option<u16>)>, Fail> {
+/// A leg's `settles` array: `{entry, ordinal, amount}` per application; the
+/// entry's current digest is read from the book so the handle self-verifies.
+fn parse_settles(
+    leg_doc: &Json,
+    what: &str,
+    ctx: &BookContext,
+    book: &Book,
+) -> Result<Vec<fa_model::Settlement>, Fail> {
+    let Some(list) = leg_doc.get("settles") else {
+        return Ok(Vec::new());
+    };
+    let Some(list) = list.as_arr() else {
+        return Err(usage(
+            format!("{what}: `settles` must be an array"),
+            "settles: [{\"entry\": \"<vid>\", \"ordinal\": 0, \"amount\": \"300.00 USD\"}]",
+        ));
+    };
+    let mut out = Vec::with_capacity(list.len());
+    for (j, item) in list.iter().enumerate() {
+        let what = format!("{what}.settles[{j}]");
+        let vid = parse_vid(req_str(item, "entry", &what)?, &format!("{what}.entry"))?;
+        let Some((target, _)) = book.read_entry(vid)? else {
+            return Err(usage(
+                format!("{what}: no entry {:032x} in this book", vid.0),
+                "fa open-items --account <code> lists the open items to apply to",
+            ));
+        };
+        let ordinal = match item.get("ordinal") {
+            Some(Json::Int(n)) => u16::try_from(*n).map_err(|_| {
+                usage(
+                    format!("{what}: ordinal {n} is out of range"),
+                    "ordinal: the 0-based index of the open item's leg",
+                )
+            })?,
+            Some(other) => match other.as_str().and_then(|t| t.parse::<u16>().ok()) {
+                Some(n) => n,
+                None => {
+                    return Err(usage(
+                        format!("{what}: ordinal must be a small non-negative integer"),
+                        "ordinal: the 0-based index of the open item's leg",
+                    ));
+                }
+            },
+            None => 0,
+        };
+        let amount_s = req_str(item, "amount", &what)?;
+        let amount = Amount::parse(amount_s, &ctx.units).map_err(|e| {
+            usage(
+                format!("{what}: amount `{amount_s}`: {e:?}"),
+                "amount: \"300.00 USD\" (exact, in the leg's unit)",
+            )
+        })?;
+        out.push(fa_model::Settlement {
+            target: target.entry_ref(vid),
+            ordinal,
+            amount,
+        });
+    }
+    Ok(out)
+}
+
+fn parse_legs(
+    doc: &Json,
+    ctx: &BookContext,
+    book: &Book,
+) -> Result<Vec<(LegPayload, Option<u16>)>, Fail> {
     let legs_doc = doc.get("legs").and_then(Json::as_arr).ok_or_else(|| {
         usage(
             "intent: `legs` must be an array (or `reverses` a vid)",
@@ -938,10 +1012,9 @@ fn parse_legs(doc: &Json, ctx: &BookContext) -> Result<Vec<(LegPayload, Option<u
                 }
             },
         };
-        legs.push((
-            LegPayload::simple(side, account_vid(ctx.book_id, account), amount),
-            ordinal,
-        ));
+        let mut leg = LegPayload::simple(side, account_vid(ctx.book_id, account), amount);
+        leg.settles = parse_settles(l, &what, ctx, book)?;
+        legs.push((leg, ordinal));
     }
     Ok(legs)
 }
@@ -1030,12 +1103,16 @@ fn post_cmd(out: &Out, args: &Args, forced: Option<EntryClass>) -> Result<(), Fa
             .legs
             .iter()
             .map(|l| {
+                // Every field survives except the applications: the undo of
+                // a reversed entry's applications is derived by the kernel,
+                // never re-entered (plan §5.7).
                 let mut swapped = l.clone();
                 swapped.side = if l.side == Side::Debit {
                     Side::Credit
                 } else {
                     Side::Debit
                 };
+                swapped.settles = Vec::new();
                 swapped
             })
             .collect()
@@ -1080,7 +1157,7 @@ fn post_cmd(out: &Out, args: &Args, forced: Option<EntryClass>) -> Result<(), Fa
             }
             "posts" | "post" => {
                 let mut pairs: Vec<(u16, LegPayload)> = Vec::new();
-                for (i, (leg, explicit)) in parse_legs(&doc, &ctx)?.into_iter().enumerate() {
+                for (i, (leg, explicit)) in parse_legs(&doc, &ctx, &book)?.into_iter().enumerate() {
                     let ordinal = match explicit {
                         Some(o) => o,
                         None => {
@@ -1155,7 +1232,7 @@ fn post_cmd(out: &Out, args: &Args, forced: Option<EntryClass>) -> Result<(), Fa
                 disposition: None,
             });
         }
-        let parsed = parse_legs(&doc, &ctx)?;
+        let parsed = parse_legs(&doc, &ctx, &book)?;
         if let Some(i) = parsed.iter().position(|(_, o)| o.is_some()) {
             return Err(usage(
                 format!("legs[{i}]: `source_ordinal` belongs to a Resolution(Posts) only"),
@@ -1563,11 +1640,163 @@ fn verify_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
                 ))
             }
         }
+        Some("open-items") => {
+            let book = open_book(args)?;
+            let v = book.verify_open_items()?;
+            let drift: Vec<Json> = v
+                .drift
+                .iter()
+                .map(|d| {
+                    obj(vec![
+                        ("entry", s(format!("{:032x}", d.entry.0))),
+                        ("ordinal", Json::Int(i128::from(d.ordinal))),
+                        ("stored", d.stored.map_or(Json::Null, Json::Int)),
+                        ("refolded", Json::Int(d.refolded)),
+                    ])
+                })
+                .collect();
+            let fields = vec![
+                ("known_at", Json::Int(i128::from(v.known_at.0))),
+                ("legs_checked", Json::Int(v.legs_checked as i128)),
+                ("drift", Json::Arr(drift)),
+            ];
+            if v.is_green() {
+                out.event(
+                    "open_items_verified",
+                    fields,
+                    &format!(
+                        "open items verified by refold: {} legs, applied mirrors agree",
+                        v.legs_checked
+                    ),
+                );
+                Ok(())
+            } else {
+                Err(Fail::Verification(
+                    format!(
+                        "{} applied mirrors differ from the open-item fold",
+                        v.drift.len()
+                    ),
+                    obj(fields),
+                ))
+            }
+        }
         other => Err(usage(
-            format!("verify needs `registers`, got {other:?}"),
-            "fa verify registers --period FY2026-P03 --book <dir>",
+            format!("verify needs `registers` or `open-items`, got {other:?}"),
+            "fa verify registers --period FY2026-P03 --book <dir> | fa verify open-items --book <dir>",
         )),
     }
+}
+
+fn open_items_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
+    let book = open_book(args)?;
+    if args.positional.len() != 1 {
+        return Err(usage(
+            "unexpected open-items argument",
+            "fa open-items [--account <code>] [--as-known-at HEAD|<seq>] --book <dir>",
+        ));
+    }
+    let ctx = book.context().clone();
+    let account = args
+        .flag("--account")
+        .map(|code| account_vid(ctx.book_id, code));
+    let known_at = match args.flag("--as-known-at") {
+        None | Some("HEAD") => None,
+        Some(value) => Some(CommitSeq(value.parse::<u64>().map_err(|_| {
+            usage(
+                "--as-known-at requires HEAD or an unsigned CommitSeq",
+                "--as-known-at HEAD or --as-known-at <u64 commit sequence>",
+            )
+        })?)),
+    };
+    let items = book.open_items(account, known_at)?;
+    let codes: std::collections::BTreeMap<VId, String> = book
+        .accounts()?
+        .into_iter()
+        .map(|a| (a.vid, a.code))
+        .collect();
+    let code_of = |vid: VId| {
+        codes
+            .get(&vid)
+            .cloned()
+            .unwrap_or_else(|| format!("{:032x}", vid.0))
+    };
+    let render = |unit: u32, m: i128| Amount::new(fa_money::UnitId(unit), m).render(&ctx.units);
+    let rows: Vec<Json> = items
+        .iter()
+        .map(|i| {
+            obj(vec![
+                ("entry", s(format!("{:032x}", i.entry.0))),
+                ("ordinal", Json::Int(i128::from(i.ordinal))),
+                ("account", s(code_of(i.account))),
+                (
+                    "side",
+                    s(if i.side == Side::Debit {
+                        "debit"
+                    } else {
+                        "credit"
+                    }),
+                ),
+                ("effective_date", s(i.effective_date.render())),
+                ("recorded_at", Json::Int(i128::from(i.recorded_at.0))),
+                ("original", s(render(i.unit_id, i.original))),
+                ("applied", s(render(i.unit_id, i.applied))),
+                ("applied_out", s(render(i.unit_id, i.applied_out))),
+                ("open", s(render(i.unit_id, i.open))),
+                (
+                    "applications",
+                    Json::Arr(
+                        i.applications
+                            .iter()
+                            .map(|a| {
+                                obj(vec![
+                                    ("entry", s(format!("{:032x}", a.entry.0))),
+                                    ("ordinal", Json::Int(i128::from(a.ordinal))),
+                                    ("amount", s(render(i.unit_id, a.amount))),
+                                    ("recorded_at", Json::Int(i128::from(a.recorded_at.0))),
+                                    ("live", Json::Bool(a.live)),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                ),
+            ])
+        })
+        .collect();
+    if out.json {
+        out.event(
+            "open_items",
+            vec![
+                ("account", args.flag("--account").map_or(Json::Null, s)),
+                ("count", Json::Int(items.len() as i128)),
+                ("items", Json::Arr(rows)),
+            ],
+            "",
+        );
+    } else {
+        println!(
+            "{:<10} {:<34} {:>3} {:<6} {:>18} {:>18} {:>18} {:>18}",
+            "account", "entry", "leg", "side", "original", "applied", "applied_out", "open"
+        );
+        for i in &items {
+            println!(
+                "{:<10} {:<34} {:>3} {:<6} {:>18} {:>18} {:>18} {:>18}",
+                code_of(i.account),
+                format!("{:032x}", i.entry.0),
+                i.ordinal,
+                if i.side == Side::Debit {
+                    "debit"
+                } else {
+                    "credit"
+                },
+                render(i.unit_id, i.original),
+                render(i.unit_id, i.applied),
+                render(i.unit_id, i.applied_out),
+                render(i.unit_id, i.open)
+            );
+        }
+        println!("{} open item(s)", items.len());
+    }
+    Ok(())
 }
 
 fn registers_cmd(out: &Out, args: &Args) -> Result<(), Fail> {

@@ -1,13 +1,22 @@
-//! Exact positive rationals for rates, factors, and percentages.
+//! Exact non-negative rationals for rates, factors, and percentages.
 
 use core::fmt;
 
+use crate::wide::U256;
+
+/// A reduced rational with a nonzero denominator and bounded coefficients.
+/// Construction always validates and normalizes the value.
+///
+/// ```compile_fail
+/// use fa_money::Rate;
+/// let invalid = Rate { num: 1, den: 0 };
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Rate {
     /// Numerator, reduced.
-    pub num: u128,
+    num: u128,
     /// Denominator, reduced, nonzero.
-    pub den: u128,
+    den: u128,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,6 +50,14 @@ fn gcd(mut a: u128, mut b: u128) -> u128 {
 impl Rate {
     pub const ONE: Self = Self { num: 1, den: 1 };
 
+    pub const fn numerator(self) -> u128 {
+        self.num
+    }
+
+    pub const fn denominator(self) -> u128 {
+        self.den
+    }
+
     pub fn new(num: u128, den: u128) -> Result<Self, RateError> {
         if den == 0 {
             return Err(RateError::ZeroDenominator);
@@ -56,7 +73,8 @@ impl Rate {
     }
 
     /// Parse a decimal literal such as `"0.075"`, `"149.37"`, or `"1"` into an
-    /// exact rational. Up to 38 fractional digits.
+    /// exact rational. Up to 38 fractional digits after trailing zeroes are
+    /// removed. Only the reduced numerator and denominator must fit u128.
     pub fn from_decimal(text: &str) -> Result<Self, RateError> {
         let t = text.trim();
         let (int_part, frac_part) = t.split_once('.').unwrap_or((t, ""));
@@ -66,18 +84,26 @@ impl Rate {
         {
             return Err(RateError::Malformed(text.into()));
         }
-        let mut num: u128 = 0;
-        for c in int_part.chars().chain(frac_part.chars()) {
-            num = num
-                .checked_mul(10)
-                .and_then(|n| n.checked_add(u128::from(c as u8 - b'0')))
-                .ok_or(RateError::Overflow)?;
-        }
+        let frac_part = frac_part.trim_end_matches('0');
         let mut den: u128 = 1;
         for _ in 0..frac_part.len() {
             den = den.checked_mul(10).ok_or(RateError::Overflow)?;
         }
-        Self::new(num, den)
+        let mut num = U256::ZERO;
+        for c in int_part.chars().chain(frac_part.chars()) {
+            num = num
+                .checked_mul_u128(10)
+                .and_then(|n| n.checked_add(U256::from_u128(u128::from(c as u8 - b'0'))))
+                .ok_or(RateError::Overflow)?;
+        }
+        let (_, remainder) = num
+            .checked_div_rem(U256::from_u128(den))
+            .ok_or(RateError::ZeroDenominator)?;
+        let common = gcd(remainder.to_u128().ok_or(RateError::Overflow)?, den);
+        let (reduced, _) = num
+            .checked_div_rem(U256::from_u128(common))
+            .ok_or(RateError::ZeroDenominator)?;
+        Self::new(reduced.to_u128().ok_or(RateError::Overflow)?, den / common)
     }
 
     /// Basis points: `bps / 10_000`.
@@ -101,6 +127,25 @@ impl Rate {
 
     pub fn is_zero(self) -> bool {
         self.num == 0
+    }
+
+    /// Compose exact rates, cancelling cross factors before multiplication.
+    /// Overflow means a reduced coefficient does not fit the bounded domain.
+    pub fn checked_mul(self, other: Self) -> Result<Self, RateError> {
+        let left = gcd(self.num, other.den);
+        let right = gcd(other.num, self.den);
+        let num = (self.num / left)
+            .checked_mul(other.num / right)
+            .ok_or(RateError::Overflow)?;
+        let den = (self.den / right)
+            .checked_mul(other.den / left)
+            .ok_or(RateError::Overflow)?;
+        Self::new(num, den)
+    }
+
+    /// Divide exact rates; a zero divisor has no reciprocal.
+    pub fn checked_div(self, other: Self) -> Result<Self, RateError> {
+        self.checked_mul(other.inverse().ok_or(RateError::ZeroDenominator)?)
     }
 }
 
@@ -142,5 +187,40 @@ mod tests {
             Some(Rate { num: 3, den: 2 })
         );
         assert_eq!(Rate::new(0, 5).unwrap().inverse(), None);
+    }
+
+    #[test]
+    fn cross_rates_cancel_before_multiplying() {
+        let rate = Rate::new(u128::MAX, u128::MAX - 1).unwrap();
+        assert_eq!(rate.checked_mul(rate.inverse().unwrap()), Ok(Rate::ONE));
+        assert_eq!(rate.checked_div(rate), Ok(Rate::ONE));
+        assert_eq!(
+            Rate::new(u128::MAX, 1)
+                .unwrap()
+                .checked_mul(Rate::new(2, 1).unwrap()),
+            Err(RateError::Overflow)
+        );
+        let zero = Rate::new(0, u128::MAX).unwrap();
+        assert_eq!(zero.checked_mul(rate), Ok(zero));
+        assert_eq!(rate.checked_mul(zero), Ok(zero));
+        assert_eq!(rate.checked_div(zero), Err(RateError::ZeroDenominator));
+        assert_eq!(rate.numerator(), u128::MAX);
+        assert_eq!(rate.denominator(), u128::MAX - 1);
+    }
+
+    #[test]
+    fn decimal_coefficients_are_reduced_before_narrowing() {
+        assert_eq!(
+            Rate::from_decimal(&format!(
+                "{}.0000000000000000000000000000000000000000",
+                u128::MAX
+            )),
+            Rate::new(u128::MAX, 1)
+        );
+        // The decimal mantissa exceeds u128 but its reduced numerator fits.
+        assert_eq!(
+            Rate::from_decimal("17014118346046923173168730371588410572.75"),
+            Rate::new(68_056_473_384_187_692_692_674_921_486_353_642_291, 4)
+        );
     }
 }

@@ -3,7 +3,7 @@
 //! remainders in deterministic order. Conservation (`Σ shares = total`) is a
 //! theorem, and the test below checks it on a grid.
 
-use crate::amount::{Amount, AmountError};
+use crate::amount::{Amount, AmountError, signed_magnitude};
 use crate::wide::U256;
 
 /// Distribute `total` across `weights` (any non-negative integers; not all
@@ -11,11 +11,11 @@ use crate::wide::U256;
 /// remainder resolve to the lowest index, so the result is deterministic.
 /// Negative totals allocate the magnitude and restore the sign.
 pub fn largest_remainder(total: Amount, weights: &[u128]) -> Result<Vec<Amount>, AmountError> {
-    let weight_sum: u128 = weights
+    let weight_sum = weights
         .iter()
-        .try_fold(0u128, |acc, w| acc.checked_add(*w))
+        .try_fold(U256::ZERO, |acc, w| acc.checked_add(U256::from_u128(*w)))
         .ok_or(AmountError::Overflow)?;
-    if weight_sum == 0 {
+    if weight_sum.is_zero() {
         return Err(AmountError::Malformed(
             "allocation weights sum to zero".into(),
         ));
@@ -23,13 +23,14 @@ pub fn largest_remainder(total: Amount, weights: &[u128]) -> Result<Vec<Amount>,
     let negative = total.mantissa < 0;
     let mag = total.mantissa.unsigned_abs();
     let mut shares: Vec<u128> = Vec::with_capacity(weights.len());
-    let mut remainders: Vec<(u128, usize)> = Vec::with_capacity(weights.len());
+    let mut remainders: Vec<(U256, usize)> = Vec::with_capacity(weights.len());
     let mut allocated: u128 = 0;
     for (i, w) in weights.iter().enumerate() {
         let (q, r) = U256::from_u128(mag)
             .checked_mul_u128(*w)
             .ok_or(AmountError::Overflow)?
-            .div_rem_u128(weight_sum);
+            .checked_div_rem(weight_sum)
+            .ok_or(AmountError::InvariantViolation("zero allocation divisor"))?;
         let q = q.to_u128().ok_or(AmountError::Overflow)?;
         shares.push(q);
         remainders.push((r, i));
@@ -42,7 +43,7 @@ pub fn largest_remainder(total: Amount, weights: &[u128]) -> Result<Vec<Amount>,
         if residual == 0 {
             break;
         }
-        if r == 0 {
+        if r.is_zero() {
             // No fractional remainder anywhere left — cannot happen while residual > 0,
             // but keep the loop total rather than trusting the arithmetic.
             break;
@@ -50,16 +51,14 @@ pub fn largest_remainder(total: Amount, weights: &[u128]) -> Result<Vec<Amount>,
         shares[i] += 1;
         residual -= 1;
     }
-    debug_assert_eq!(
-        residual, 0,
-        "largest-remainder residual must be fully distributed"
-    );
+    if residual != 0 {
+        return Err(AmountError::InvariantViolation(
+            "allocation residual was not fully distributed",
+        ));
+    }
     shares
         .into_iter()
-        .map(|s| {
-            let m = i128::try_from(s).map_err(|_| AmountError::Overflow)?;
-            Ok(Amount::new(total.unit, if negative { -m } else { m }))
-        })
+        .map(|s| Ok(Amount::new(total.unit, signed_magnitude(s, negative)?)))
         .collect()
 }
 
@@ -111,5 +110,49 @@ mod tests {
     #[test]
     fn zero_weights_are_refused() {
         assert!(largest_remainder(Amount::new(UnitId(0), 5), &[0, 0]).is_err());
+    }
+
+    #[test]
+    fn regression_large_weights_preserve_small_allocations() {
+        let unit = UnitId(0);
+        assert_eq!(
+            largest_remainder(Amount::new(unit, 7), &[u128::MAX, u128::MAX]),
+            Ok(vec![Amount::new(unit, 4), Amount::new(unit, 3)])
+        );
+    }
+
+    #[test]
+    fn regression_minimum_total_can_be_allocated_without_sign_overflow() {
+        let total = Amount::new(UnitId(0), i128::MIN);
+        assert_eq!(largest_remainder(total, &[1]), Ok(vec![total]));
+    }
+
+    #[test]
+    fn wide_weight_allocations_conserve_signed_boundaries() {
+        let unit = UnitId(0);
+        for mantissa in [i128::MIN, -i128::MAX, -7, 0, 7, i128::MAX] {
+            let total = Amount::new(unit, mantissa);
+            for weights in [
+                vec![u128::MAX],
+                vec![u128::MAX, u128::MAX],
+                vec![0, u128::MAX, 1],
+                vec![u128::MAX; 17],
+            ] {
+                let shares = largest_remainder(total, &weights).unwrap();
+                assert_eq!(shares.len(), weights.len());
+                assert_eq!(Amount::sum(unit, shares.iter().copied()), Ok(total));
+                for (weight, share) in weights.iter().zip(&shares) {
+                    if *weight == 0 {
+                        assert_eq!(share.mantissa, 0);
+                    }
+                    assert!(share.mantissa == 0 || share.mantissa.signum() == mantissa.signum());
+                }
+            }
+        }
+        assert!(largest_remainder(Amount::zero(unit), &[]).is_err());
+        assert_eq!(
+            largest_remainder(Amount::new(unit, -7), &[u128::MAX, u128::MAX]),
+            Ok(vec![Amount::new(unit, -4), Amount::new(unit, -3)])
+        );
     }
 }

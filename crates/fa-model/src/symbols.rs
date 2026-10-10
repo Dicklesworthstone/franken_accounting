@@ -105,6 +105,7 @@ symbols!(
         (CREDITS_PENDING, "credits_pending", 38),
         (PENDING_COUNT, "pending_count", 39),
         (DISPOSITION, "disposition", 40),
+        (APPLIED, "applied", 41),
     ]
 );
 
@@ -140,6 +141,7 @@ symbols!(
         (REPRESENTS, "REPRESENTS", 26),
         (IN_PERIOD, "IN_PERIOD", 27),
         (IN_BOOK, "IN_BOOK", 28),
+        (UNSETTLES, "UNSETTLES", 29),
     ]
 );
 

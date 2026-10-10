@@ -391,7 +391,8 @@ pub fn units_embedded() -> Result<UnitRegistry, RegistryError> {
             scale,
             version,
             kind,
-        });
+        })
+        .map_err(|error| invalid(R, error.to_string()))?;
     }
     if reg.is_empty() {
         return Err(invalid(R, "no units"));

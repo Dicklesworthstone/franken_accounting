@@ -64,22 +64,30 @@ impl RoundingLaw {
 
     /// Round the magnitude `q + r/d` where the true value's sign is given by
     /// `negative`. Returns the rounded magnitude, or `None` on overflow of
-    /// `q + 1`.
+    /// `q + 1`, a zero denominator, or a remainder outside `[0, d)`.
     ///
     /// `HalfUp`/`HalfDown` are "toward +∞ / −∞ on a tie" (the signed meaning);
     /// `HalfAwayFromZero`/`HalfTowardZero` are magnitude-based; `HalfEven` is
     /// banker's rounding on the magnitude (even is sign-symmetric).
     pub fn apply_magnitude(self, q: u128, r: u128, d: u128, negative: bool) -> Option<u128> {
-        if r == 0 {
+        if d == 0 || r >= d {
+            return None;
+        }
+        self.apply_fraction(q, r != 0, r.cmp(&(d - r)), negative)
+    }
+
+    /// Apply the law after an exact division. Comparing r with d-r allows
+    /// callers with wider remainders to share the law without narrowing them.
+    pub(crate) fn apply_fraction(
+        self,
+        q: u128,
+        has_remainder: bool,
+        cmp_half: core::cmp::Ordering,
+        negative: bool,
+    ) -> Option<u128> {
+        if !has_remainder {
             return Some(q);
         }
-        let up = q.checked_add(1);
-        // Compare 2r with d exactly without overflow: r < d <= u128::MAX.
-        let twice = r.checked_mul(2);
-        let cmp_half = match twice {
-            Some(t) => t.cmp(&d),
-            None => core::cmp::Ordering::Greater, // 2r overflowed, so 2r > d
-        };
         use core::cmp::Ordering::*;
         let round_up_magnitude = match self {
             Self::TowardZero => false,
@@ -104,7 +112,11 @@ impl RoundingLaw {
                 Equal => negative,
             },
         };
-        if round_up_magnitude { up } else { Some(q) }
+        if round_up_magnitude {
+            q.checked_add(1)
+        } else {
+            Some(q)
+        }
     }
 }
 
@@ -165,6 +177,11 @@ mod tests {
             RoundingLaw::AwayFromZero.apply_magnitude(u128::MAX, 1, 2, false),
             None
         );
+        for law in RoundingLaw::ALL {
+            assert_eq!(law.apply_magnitude(0, 0, 0, false), None);
+            assert_eq!(law.apply_magnitude(0, 3, 3, false), None);
+            assert_eq!(law.apply_magnitude(0, 4, 3, true), None);
+        }
     }
 
     #[test]

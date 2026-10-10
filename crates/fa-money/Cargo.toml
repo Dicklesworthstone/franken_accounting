@@ -11,3 +11,7 @@ publish = false
 workspace = true
 
 [dependencies]
+
+[dev-dependencies]
+# Plan §6.1: independent arithmetic oracle; absent from the production closure.
+fgdb-bigint.workspace = true

@@ -16,11 +16,17 @@
 //! by leg from the witnessed pending entry; `Voids` releases everything),
 //! with the identity `H("fa:vid:resolution:v1" ‖ pending_vid)` so a pending
 //! entry has exactly one resolution. Timed pendings and `Expires` need the
-//! TimeEvidence ticks and the sweep and are refused until that slice. Every
-//! other registered class is refused with the bead that lands it; no class
-//! passes through a generic two-leg check.
+//! TimeEvidence ticks and the sweep and are refused until that slice.
+//! Application (plan §5.7): a leg's `settles` apply it to witnessed open
+//! target legs (same account and unit, opposite side) within their open
+//! amount, creating SETTLES edges and moving the target leg's `applied`
+//! mirror by compare-and-set; reversing an applying entry emits the exact
+//! derived UNSETTLES effects, and an entry with live applications against
+//! it is not reversed. Every other registered class is refused with the
+//! bead that lands it; no class passes through a generic two-leg check.
 
-use std::collections::BTreeSet;
+use std::collections::btree_map::Entry as MapEntry;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fa_model::Id128;
 use fa_model::SealKey;
@@ -32,14 +38,15 @@ use fa_model::{
 use fa_money::Side;
 use fa_registry::{Admissibility, Decision, EntryClasses};
 use fa_time::resolve_period;
-use fgdb::{Database, VertexRow, WriteBatch, WriteTxnError};
+use fgdb::{Database, VertexRow, WriteBatch, WriteMismatchPolicy, WriteTxnError};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
 use crate::genesis::{BookContext, UnitPolicy};
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{
-    AccountRow, edge_id, leg_vid, prop, resolution_vid, reversal_vid, state_from_scalar,
+    AccountRow, applied_witness, edge_id, leg_vid, mantissa_scalar, prop, resolution_vid,
+    reversal_vid, state_from_scalar,
 };
 
 /// The capability ops a principal holds (`post`, `post_softclosed`,
@@ -219,7 +226,9 @@ fn not_implemented(class_name: &str) -> Refusal {
         "Resolution(Expires)" | "timed Pending" => {
             "the TimeEvidence tick and expiry-sweep slice (plan §5.4, §7.1a)"
         }
-        "leg.settles" => "fa-omi (settlement application)",
+        "settles on a two-phase entry" | "re-application by reversing a reversal" => {
+            "the full application-netting law (plan §5.7, §8.2; fa-06a)"
+        }
         "leg.base_amount" => "the FX law slice (fa-p7r)",
         "leg.dimension_set" => "the dimension registry slice (plan §4.3)",
         "Replacement" | "Reclassification" => "fa-omi (supersession beyond exact reversal)",
@@ -360,14 +369,81 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     //     admitted unchecked: a leg that settles, converts, or carries
     //     dimensions waits for the law that reads it.
     for leg in &proposal.legs {
-        if !leg.settles.is_empty() {
-            return Ok(Err(not_implemented("leg.settles")));
-        }
         if leg.base_amount.is_some() {
             return Ok(Err(not_implemented("leg.base_amount")));
         }
         if !leg.dimension_set.is_empty() {
             return Ok(Err(not_implemented("leg.dimension_set")));
+        }
+    }
+    // 1e. Application structure (plan §5.7), decided from the payload alone:
+    //     only a posting entry applies (a Reversal's undo is derived; a hold
+    //     reserves), every settlement is positive in the leg's unit, a leg
+    //     names each target leg once, and the applications fit the leg.
+    for (i, leg) in proposal.legs.iter().enumerate() {
+        if leg.settles.is_empty() {
+            continue;
+        }
+        match proposal.class {
+            EntryClass::ORIGINAL | EntryClass::ADJUSTING => {}
+            EntryClass::REVERSAL => {
+                return Ok(Err(Refusal::new(
+                    code::SETTLE_SHAPE,
+                    exit::REFUSAL,
+                    format!("leg {i}: a Reversal carries no settles"),
+                    "plan §5.7 (application undo is derived from the reversed target, never re-entered)",
+                    "remove `settles`; reversing an applying entry undoes its applications",
+                )));
+            }
+            _ => return Ok(Err(not_implemented("settles on a two-phase entry"))),
+        }
+        let mut sum: i128 = 0;
+        let mut named: BTreeSet<(VId, u16)> = BTreeSet::new();
+        for (j, s) in leg.settles.iter().enumerate() {
+            if s.amount.mantissa <= 0 || s.amount.unit != leg.amount.unit {
+                return Ok(Err(Refusal::new(
+                    code::SETTLE_SHAPE,
+                    exit::REFUSAL,
+                    format!(
+                        "leg {i} settles[{j}]: a settlement is a positive amount in the leg's unit"
+                    ),
+                    "plan §5.7",
+                    "state the applied amount in the leg's unit; a different unit is an FX conversion under a law",
+                )));
+            }
+            if !named.insert((s.target.vid, s.ordinal)) {
+                return Ok(Err(Refusal::new(
+                    code::SETTLE_SHAPE,
+                    exit::REFUSAL,
+                    format!("leg {i} settles[{j}]: the same target leg is named twice"),
+                    "plan §5.7",
+                    "merge the two settlements into one amount",
+                )));
+            }
+            sum = match sum.checked_add(s.amount.mantissa) {
+                Some(v) => v,
+                None => {
+                    return Ok(Err(Refusal::new(
+                        code::SETTLE_SHAPE,
+                        exit::REFUSAL,
+                        format!("leg {i}: the settlements overflow"),
+                        "plan §6.1 (checked arithmetic)",
+                        "apply amounts that sum within the leg",
+                    )));
+                }
+            };
+        }
+        if sum > leg.amount.mantissa {
+            return Ok(Err(Refusal::new(
+                code::SETTLE_SHAPE,
+                exit::REFUSAL,
+                format!(
+                    "leg {i} applies {sum} but carries only {}",
+                    leg.amount.mantissa
+                ),
+                "plan §5.7 (a leg applies at most itself)",
+                "reduce the settlements to the leg's amount",
+            )));
         }
     }
     let is_release = matches!(resolution, Some((_, Disposition::Voids)));
@@ -602,6 +678,193 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
         accounts.push(account);
     }
 
+    // 7a. Application law (plan §5.7): each settlement names a witnessed,
+    //     posted, unreversed target leg on the same account and unit with
+    //     the opposite side, and the amount fits the target's open amount
+    //     (original − applied). The `applied` mirror is read as a point
+    //     witness, so a concurrent application is a first-committer-wins
+    //     conflict, never an over-application.
+    let mut applications: Vec<(u16, VId, i128)> = Vec::new();
+    let mut undo: Vec<(u16, VId, i128)> = Vec::new();
+    let mut applied_delta: BTreeMap<VId, (i128, i128)> = BTreeMap::new();
+    for (i, leg) in proposal.legs.iter().enumerate() {
+        let ordinal =
+            u16::try_from(i).map_err(|_| KernelError::Corrupt("more than u16 legs".into()))?;
+        for s in &leg.settles {
+            let Some(row) = txn.vertex(db, s.target.vid)? else {
+                txn.abort();
+                return Ok(Err(Refusal::new(
+                    code::SETTLE_TARGET,
+                    exit::REFUSAL,
+                    format!("leg {i}: no entry {:032x} in this book", s.target.vid.0),
+                    "plan §5.7",
+                    "fa open-items --account <code> lists the open items to apply to",
+                )));
+            };
+            if !row.labels.contains(&label::ENTRY) {
+                txn.abort();
+                return Ok(Err(Refusal::new(
+                    code::SETTLE_TARGET,
+                    exit::REFUSAL,
+                    format!("leg {i}: {:032x} is not an entry", s.target.vid.0),
+                    "plan §5.7 (a settlement cites an entry's leg)",
+                    "cite the entry vid from `fa open-items`",
+                )));
+            }
+            let target = match prop(&row, property::FA_PAYLOAD) {
+                Some(CanonicalScalar::Bytes(b)) => Entry::decode(b.as_slice())?,
+                other => {
+                    return Err(KernelError::Corrupt(format!(
+                        "entry _fa_payload: {other:?}"
+                    )));
+                }
+            };
+            if target.entry_digest != s.target.entry_digest {
+                txn.abort();
+                return Ok(Err(Refusal::new(
+                    code::SETTLE_TARGET,
+                    exit::REFUSAL,
+                    format!(
+                        "leg {i}: the handle's entry_digest does not match entry {:032x}",
+                        s.target.vid.0
+                    ),
+                    "plan §4.9 (EntryRef is self-verifying)",
+                    "re-read the entry and cite its current entry_digest",
+                )));
+            }
+            let open_item_class = matches!(
+                target.proposal.class,
+                EntryClass::ORIGINAL | EntryClass::ADJUSTING
+            ) || (target.proposal.class == EntryClass::RESOLUTION
+                && !target.proposal.legs.is_empty());
+            if !open_item_class {
+                txn.abort();
+                return Ok(Err(Refusal::new(
+                    code::SETTLE_TARGET,
+                    exit::REFUSAL,
+                    format!(
+                        "leg {i}: entry {:032x} is a {}, which carries no open item",
+                        s.target.vid.0,
+                        target.proposal.class.name().unwrap_or("?")
+                    ),
+                    "plan §5.7 (open items are posted legs; a hold, a release, or a reversal leg is not one)",
+                    "apply to the posted entry; fa open-items --account <code>",
+                )));
+            }
+            // Liveness is a lineage predicate (plan §8.2): a reversed entry
+            // nets to zero, and a reversed reversal revives it. Each hop is a
+            // witnessed point read, so a concurrent reversal conflicts.
+            let mut reversed = false;
+            let mut current = s.target.vid;
+            let mut hops = 0usize;
+            while txn.vertex(db, reversal_vid(current))?.is_some() {
+                reversed = !reversed;
+                current = reversal_vid(current);
+                hops += 1;
+                if hops > 64 {
+                    return Err(KernelError::Corrupt(
+                        "reversal lineage deeper than 64".into(),
+                    ));
+                }
+            }
+            if reversed {
+                txn.abort();
+                return Ok(Err(Refusal::new(
+                    code::SETTLE_TARGET,
+                    exit::REFUSAL,
+                    format!(
+                        "leg {i}: entry {:032x} is reversed; nothing of it is open",
+                        s.target.vid.0
+                    ),
+                    "plan §8.2 (a reversed entry nets to zero)",
+                    "apply to the replacement entry, or post a new open item",
+                )));
+            }
+            let Some(target_leg) = target.proposal.legs.get(usize::from(s.ordinal)) else {
+                txn.abort();
+                return Ok(Err(Refusal::new(
+                    code::SETTLE_SHAPE,
+                    exit::REFUSAL,
+                    format!(
+                        "leg {i}: entry {:032x} has {} legs, no ordinal {}",
+                        s.target.vid.0,
+                        target.proposal.legs.len(),
+                        s.ordinal
+                    ),
+                    "plan §5.7",
+                    "fa entry show <vid> and name the 0-based leg being settled",
+                )));
+            };
+            if target_leg.account_ref != leg.account_ref
+                || target_leg.amount.unit != leg.amount.unit
+                || target_leg.side == leg.side
+            {
+                txn.abort();
+                return Ok(Err(Refusal::new(
+                    code::SETTLE_SHAPE,
+                    exit::REFUSAL,
+                    format!(
+                        "leg {i} does not settle entry {:032x} leg {}: an application is the opposite side on the same account and unit",
+                        s.target.vid.0, s.ordinal
+                    ),
+                    "plan §5.7 (a receipt settles a debit-side open item in the same unit)",
+                    "apply the leg on the open item's account with the opposite side",
+                )));
+            }
+            let target_leg_vid = leg_vid(s.target.vid, s.ordinal);
+            if let MapEntry::Vacant(slot) = applied_delta.entry(target_leg_vid) {
+                let leg_row = txn.vertex(db, target_leg_vid)?.ok_or_else(|| {
+                    KernelError::Corrupt("settlement target leg row missing".into())
+                })?;
+                slot.insert((applied_witness(&leg_row)?, 0));
+            }
+            let (witnessed, delta) = applied_delta
+                .get_mut(&target_leg_vid)
+                .ok_or_else(|| KernelError::Corrupt("applied witness".into()))?;
+            // What the target leg itself applied to others consumed it too.
+            let mut consumed: i128 = 0;
+            for t in &target_leg.settles {
+                consumed = consumed
+                    .checked_add(t.amount.mantissa)
+                    .ok_or_else(|| KernelError::Corrupt("applied_out overflow".into()))?;
+            }
+            let capacity = target_leg
+                .amount
+                .mantissa
+                .checked_sub(consumed)
+                .ok_or_else(|| KernelError::Corrupt("applied_out exceeds the leg".into()))?;
+            if *witnessed > capacity {
+                return Err(KernelError::Corrupt(format!(
+                    "leg {:032x} applied mirror {} exceeds its capacity {capacity}; `fa verify open-items` names it",
+                    target_leg_vid.0, *witnessed
+                )));
+            }
+            let open = capacity
+                .checked_sub(*witnessed)
+                .and_then(|o| o.checked_sub(*delta))
+                .ok_or_else(|| KernelError::Corrupt("open amount underflow".into()))?;
+            if s.amount.mantissa > open {
+                txn.abort();
+                return Ok(Err(Refusal::new(
+                    code::OVER_APPLICATION,
+                    exit::REFUSAL,
+                    format!(
+                        "leg {i} applies {} to entry {:032x} leg {}, but only {open} is open",
+                        s.amount.mantissa, s.target.vid.0, s.ordinal
+                    ),
+                    "plan §5.7 (over-application is refused with the open amount)",
+                    format!(
+                        "apply at most {open}; the remainder is a new open item or an unapplied receipt"
+                    ),
+                )));
+            }
+            *delta = delta
+                .checked_add(s.amount.mantissa)
+                .ok_or_else(|| KernelError::Corrupt("applied overflow".into()))?;
+            applications.push((ordinal, target_leg_vid, s.amount.mantissa));
+        }
+    }
+
     // 7. Reversal law (plan §4.4): the witnessed target exists, its digest
     //    matches the handle, and the legs are its exact side-swap.
     if let Some(target) = reversal_target {
@@ -715,6 +978,73 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
                 "plan §4.4 (a reversal is a side swap with the same mantissa, never a signed storno)",
                 "post the same accounts and amounts in the same order with debit and credit exchanged; a different correction is a Replacement",
             )));
+        }
+        // 7c. Application effects (plan §5.7, §8.2): a target with live
+        //     applications against its legs is not reversed — the applying
+        //     entries come first; the target's own applications are undone
+        //     exactly as derived UNSETTLES effects, never re-entered. Reversing
+        //     a reversal that undid applications would re-apply them; that
+        //     waits for the full netting law.
+        for i in 0..original.proposal.legs.len() {
+            let ordinal =
+                u16::try_from(i).map_err(|_| KernelError::Corrupt("more than u16 legs".into()))?;
+            let lvid = leg_vid(target.vid, ordinal);
+            let row = txn
+                .vertex(db, lvid)?
+                .ok_or_else(|| KernelError::Corrupt("reversal target leg row missing".into()))?;
+            let live = applied_witness(&row)?;
+            if live != 0 {
+                txn.abort();
+                return Ok(Err(Refusal::new(
+                    code::LIVE_APPLICATIONS,
+                    exit::REFUSAL,
+                    format!(
+                        "leg {i} of entry {:032x} has {live} applied against it",
+                        target.vid.0
+                    ),
+                    "plan §5.7 (reversing an open item with live applications would strand them)",
+                    "reverse the applying entries first (fa open-items --account <code> lists them), then reverse this entry",
+                )));
+            }
+        }
+        if original.proposal.class == EntryClass::REVERSAL
+            && let [first] = original.proposal.supersession.as_slice()
+            && let Some(grand) = txn.vertex(db, first.target.vid)?
+        {
+            let grand = match prop(&grand, property::FA_PAYLOAD) {
+                Some(CanonicalScalar::Bytes(b)) => Entry::decode(b.as_slice())?,
+                other => {
+                    return Err(KernelError::Corrupt(format!(
+                        "entry _fa_payload: {other:?}"
+                    )));
+                }
+            };
+            if grand.proposal.legs.iter().any(|l| !l.settles.is_empty()) {
+                txn.abort();
+                return Ok(Err(not_implemented(
+                    "re-application by reversing a reversal",
+                )));
+            }
+        }
+        for (i, oleg) in original.proposal.legs.iter().enumerate() {
+            let ordinal =
+                u16::try_from(i).map_err(|_| KernelError::Corrupt("more than u16 legs".into()))?;
+            for s in &oleg.settles {
+                let target_leg_vid = leg_vid(s.target.vid, s.ordinal);
+                if let MapEntry::Vacant(slot) = applied_delta.entry(target_leg_vid) {
+                    let leg_row = txn.vertex(db, target_leg_vid)?.ok_or_else(|| {
+                        KernelError::Corrupt("undo target leg row missing".into())
+                    })?;
+                    slot.insert((applied_witness(&leg_row)?, 0));
+                }
+                let (_, delta) = applied_delta
+                    .get_mut(&target_leg_vid)
+                    .ok_or_else(|| KernelError::Corrupt("applied witness".into()))?;
+                *delta = delta
+                    .checked_sub(s.amount.mantissa)
+                    .ok_or_else(|| KernelError::Corrupt("applied underflow".into()))?;
+                undo.push((ordinal, target_leg_vid, s.amount.mantissa));
+            }
         }
     }
 
@@ -839,11 +1169,9 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
         let ordinal =
             u16::try_from(i).map_err(|_| KernelError::Corrupt("more than u16 legs".into()))?;
         let lvid = leg_vid(evid, ordinal);
-        has_leg.create_vertex(
-            lvid,
-            vec![label::LEG],
-            leg_mirrors(leg, ordinal, entry.proposal.effective_date, &book.units)?,
-        );
+        let mut mirrors = leg_mirrors(leg, ordinal, entry.proposal.effective_date, &book.units)?;
+        mirrors.push((property::APPLIED, mantissa_scalar("applied", 0)?));
+        has_leg.create_vertex(lvid, vec![label::LEG], mirrors);
         has_leg.add_edge(
             edge_id(relation::HAS_LEG, evid, lvid),
             evid,
@@ -883,6 +1211,49 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
             vec![(property::DISPOSITION, CanonicalScalar::Int(tag))],
         );
         batches.push(resolves);
+    }
+    if !applications.is_empty() || !undo.is_empty() {
+        let mut settles = WriteBatch::new(relation::SETTLES);
+        for (ordinal, target_leg, amount) in &applications {
+            let src = leg_vid(evid, *ordinal);
+            settles.add_edge(
+                edge_id(relation::SETTLES, src, *target_leg),
+                src,
+                *target_leg,
+                vec![(
+                    property::AMOUNT_BYTES,
+                    mantissa_scalar("settles.amount", *amount)?,
+                )],
+            );
+        }
+        let mut unsettles = WriteBatch::new(relation::UNSETTLES);
+        for (ordinal, target_leg, amount) in &undo {
+            let src = leg_vid(evid, *ordinal);
+            unsettles.add_edge(
+                edge_id(relation::UNSETTLES, src, *target_leg),
+                src,
+                *target_leg,
+                vec![(
+                    property::AMOUNT_BYTES,
+                    mantissa_scalar("unsettles.amount", *amount)?,
+                )],
+            );
+        }
+        for (target_leg, (witnessed, delta)) in &applied_delta {
+            let next = witnessed
+                .checked_add(*delta)
+                .filter(|n| *n >= 0)
+                .ok_or_else(|| KernelError::Corrupt("applied mirror out of range".into()))?;
+            settles.compare_and_set_vertex_property(
+                *target_leg,
+                property::APPLIED,
+                Some(mantissa_scalar("applied", *witnessed)?),
+                mantissa_scalar("applied", next)?,
+                WriteMismatchPolicy::AbortWrite,
+            );
+        }
+        batches.push(settles);
+        batches.push(unsettles);
     }
     batches.retain(|b| !b.is_empty());
     txn.write_ordered(db, batches)?;

@@ -73,6 +73,52 @@ pub fn reversal_vid(target: VId) -> VId {
     vid_from(h)
 }
 
+/// The `applied` mirror of a Leg vertex: the sum of live applications
+/// against it (plan §5.7), kept as a point-read witness so a concurrent
+/// application is a first-committer-wins conflict. Derived; `fa verify
+/// open-items` refolds it from the SETTLES/UNSETTLES payloads. `None` when
+/// the mirror is absent — the kernel writes it on every leg it creates, so
+/// an absent mirror is corruption to the kernel ([`applied_witness`]) and
+/// drift to the verifier, never an implicit zero.
+pub fn applied(row: &VertexRow) -> Result<Option<i128>, KernelError> {
+    match prop(row, property::APPLIED) {
+        None => Ok(None),
+        Some(CanonicalScalar::Bytes(b)) => {
+            let raw: [u8; 16] = b
+                .as_slice()
+                .try_into()
+                .map_err(|_| KernelError::Corrupt("leg applied mirror width".into()))?;
+            Ok(Some(i128::from_le_bytes(raw)))
+        }
+        other => Err(KernelError::Corrupt(format!(
+            "leg applied mirror: {other:?}"
+        ))),
+    }
+}
+
+/// The `applied` mirror as the kernel witnesses it: present and
+/// non-negative, or corruption. (The caller also bounds it by the leg: a
+/// mirror above `original − applied_out` is corruption too.) There is no
+/// repair command yet; `fa verify open-items` names the leg.
+pub fn applied_witness(row: &VertexRow) -> Result<i128, KernelError> {
+    match applied(row)? {
+        None => Err(KernelError::Corrupt(format!(
+            "leg {:032x} has no applied mirror; `fa verify open-items` names it; no application is admitted against it",
+            row.vid.0
+        ))),
+        Some(v) if v < 0 => Err(KernelError::Corrupt(format!(
+            "leg {:032x} has a negative applied mirror ({v}); `fa verify open-items` names it",
+            row.vid.0
+        ))),
+        Some(v) => Ok(v),
+    }
+}
+
+/// The scalar form of an `applied` mirror or a SETTLES/UNSETTLES amount.
+pub fn mantissa_scalar(what: &'static str, mantissa: i128) -> Result<CanonicalScalar, KernelError> {
+    scalar_bytes(what, mantissa.to_le_bytes().to_vec())
+}
+
 /// `vid(Resolution) = H("fa:vid:resolution:v1" ‖ pending_vid)` (plan §5.4):
 /// one resolution per pending entry, so a manual void racing the sweep is a
 /// point conflict on the identity, never a double release.

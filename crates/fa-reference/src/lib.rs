@@ -15,7 +15,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fa_registry::{Admissibility, Decision, EntryClasses};
 use fa_time::period::transition;
@@ -216,6 +216,18 @@ pub struct Intent {
     pub reverses: Option<usize>,
     /// For a Resolution: the pending entry it resolves and its disposition.
     pub resolves: Option<Resolve>,
+    /// Applications (plan §5.7): `legs[leg]` applies `mantissa` to journal
+    /// entry `target`'s leg `ordinal`.
+    pub settles: Vec<Settle>,
+}
+
+/// One application of an intent's leg to an open item.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Settle {
+    pub leg: usize,
+    pub target: usize,
+    pub ordinal: usize,
+    pub mantissa: i128,
 }
 
 /// A Resolution's target and disposition (plan §5.4): `posts = Some(ordinals)`
@@ -246,6 +258,10 @@ pub mod code {
     pub const RESOLUTION_TARGET: &str = "FA-REF-060";
     pub const RESOLUTION_SHAPE: &str = "FA-REF-061";
     pub const ALREADY_RESOLVED: &str = "FA-REF-062";
+    pub const SETTLE_TARGET: &str = "FA-REF-070";
+    pub const SETTLE_SHAPE: &str = "FA-REF-071";
+    pub const OVER_APPLICATION: &str = "FA-REF-072";
+    pub const LIVE_APPLICATIONS: &str = "FA-REF-073";
     pub const STRUCTURE: &str = "FA-REF-100";
     pub const CONTROL_VIA_POST: &str = "FA-REF-101";
     pub const CLASS_NOT_IMPLEMENTED: &str = "FA-REF-102";
@@ -277,6 +293,7 @@ pub struct Entry {
     pub reverses: Option<usize>,
     /// For a Resolution: the journal index of the pending entry it resolves.
     pub resolves: Option<usize>,
+    pub settles: Vec<Settle>,
 }
 
 /// The semantic content an identity binds (what the kernel's
@@ -289,6 +306,7 @@ struct Content {
     legs: Vec<Leg>,
     reverses: Option<usize>,
     resolves: Option<Resolve>,
+    settles: Vec<Settle>,
     key: Vec<u8>,
 }
 
@@ -301,6 +319,7 @@ impl Content {
             legs: i.legs.clone(),
             reverses: i.reverses,
             resolves: i.resolves.clone(),
+            settles: i.settles.clone(),
             key: i.key.clone(),
         }
     }
@@ -435,6 +454,55 @@ impl Oracle {
                 code: code::CLASS_NOT_IMPLEMENTED,
             };
         }
+        // 1e. Application structure (plan §5.7), from the intent alone:
+        //     only a posting entry applies; positive amounts; each target
+        //     leg named once per leg; a leg applies at most itself.
+        for (i, leg) in intent.legs.iter().enumerate() {
+            let mine: Vec<&Settle> = intent.settles.iter().filter(|s| s.leg == i).collect();
+            if mine.is_empty() {
+                continue;
+            }
+            match intent.class.as_str() {
+                "Original" | "Adjusting" => {}
+                "Reversal" => {
+                    return Verdict::Refused {
+                        code: code::SETTLE_SHAPE,
+                    };
+                }
+                _ => {
+                    return Verdict::Refused {
+                        code: code::CLASS_NOT_IMPLEMENTED,
+                    };
+                }
+            }
+            let mut named = BTreeSet::new();
+            let mut sum: i128 = 0;
+            for s in mine {
+                if s.mantissa <= 0 || !named.insert((s.target, s.ordinal)) {
+                    return Verdict::Refused {
+                        code: code::SETTLE_SHAPE,
+                    };
+                }
+                sum = match sum.checked_add(s.mantissa) {
+                    Some(v) => v,
+                    None => {
+                        return Verdict::Refused {
+                            code: code::SETTLE_SHAPE,
+                        };
+                    }
+                };
+            }
+            if sum > leg.mantissa {
+                return Verdict::Refused {
+                    code: code::SETTLE_SHAPE,
+                };
+            }
+        }
+        if intent.settles.iter().any(|s| s.leg >= intent.legs.len()) {
+            return Verdict::Refused {
+                code: code::STRUCTURE,
+            };
+        }
         // 2. Balance per unit.
         let mut per_unit: BTreeMap<u32, (Int, Int)> = BTreeMap::new();
         for l in &intent.legs {
@@ -535,6 +603,47 @@ impl Oracle {
                 };
             }
         }
+        // 7a. Application law (plan §5.7): a witnessed, live, posted target
+        //     leg on the same account and unit with the opposite side, within
+        //     its open amount (counting earlier settlements of this intent).
+        let mut used: BTreeMap<(usize, usize), i128> = BTreeMap::new();
+        for s in &intent.settles {
+            let leg = &intent.legs[s.leg];
+            let Some(target) = self.journal.get(s.target) else {
+                return Verdict::Refused {
+                    code: code::SETTLE_TARGET,
+                };
+            };
+            if !Self::carries_open_items(target) || !self.is_live(s.target) {
+                return Verdict::Refused {
+                    code: code::SETTLE_TARGET,
+                };
+            }
+            let Some(tl) = target.legs.get(s.ordinal) else {
+                return Verdict::Refused {
+                    code: code::SETTLE_SHAPE,
+                };
+            };
+            if tl.account != leg.account || tl.unit != leg.unit || tl.side == leg.side {
+                return Verdict::Refused {
+                    code: code::SETTLE_SHAPE,
+                };
+            }
+            let before = used.get(&(s.target, s.ordinal)).copied().unwrap_or(0);
+            let consumed: i128 = target
+                .settles
+                .iter()
+                .filter(|t| t.leg == s.ordinal)
+                .map(|t| t.mantissa)
+                .sum();
+            let open = tl.mantissa - consumed - self.applied_to(s.target, s.ordinal) - before;
+            if s.mantissa > open {
+                return Verdict::Refused {
+                    code: code::OVER_APPLICATION,
+                };
+            }
+            used.insert((s.target, s.ordinal), before + s.mantissa);
+        }
         // 7. Reversal law: the target exists and the legs are its exact side-swap.
         if let Some(target) = intent.reverses {
             let Some(original) = self.journal.get(target) else {
@@ -563,6 +672,26 @@ impl Oracle {
             if !swapped {
                 return Verdict::Refused {
                     code: code::REVERSAL_SHAPE,
+                };
+            }
+            // 7c. Application effects (plan §5.7, §8.2): an item with live
+            //     applications is not reversed; re-applying by reversing a
+            //     reversal waits for the full netting law.
+            for i in 0..original.legs.len() {
+                if self.applied_to(target, i) != 0 {
+                    return Verdict::Refused {
+                        code: code::LIVE_APPLICATIONS,
+                    };
+                }
+            }
+            if original.class == "Reversal"
+                && original
+                    .reverses
+                    .and_then(|g| self.journal.get(g))
+                    .is_some_and(|g| !g.settles.is_empty())
+            {
+                return Verdict::Refused {
+                    code: code::CLASS_NOT_IMPLEMENTED,
                 };
             }
         }
@@ -609,6 +738,7 @@ impl Oracle {
             key: intent.key.clone(),
             reverses: intent.reverses,
             resolves: intent.resolves.as_ref().map(|r| r.target),
+            settles: intent.settles.clone(),
         });
         match (intent.reverses, &intent.resolves) {
             (Some(target), _) => {
@@ -733,6 +863,55 @@ impl Oracle {
         self.pending_at(period, self.journal.len())
     }
 
+    /// Posted classes carry open items: a hold reserves, a release posts
+    /// nothing, and a reversal's legs negate.
+    fn carries_open_items(e: &Entry) -> bool {
+        matches!(e.class.as_str(), "Original" | "Adjusting")
+            || (e.class == "Resolution" && !e.legs.is_empty())
+    }
+
+    /// Live unless a live reversal targets it (a reversed reversal revives).
+    fn is_live(&self, index: usize) -> bool {
+        match self.reversed.get(&index) {
+            None => true,
+            Some((reversal, _)) => !self.is_live(*reversal),
+        }
+    }
+
+    /// The sum of live applications against `target`'s leg `ordinal`.
+    fn applied_to(&self, target: usize, ordinal: usize) -> i128 {
+        self.journal
+            .iter()
+            .enumerate()
+            .filter(|(i, e)| Self::carries_open_items(e) && self.is_live(*i))
+            .flat_map(|(_, e)| e.settles.iter())
+            .filter(|s| s.target == target && s.ordinal == ordinal)
+            .map(|s| s.mantissa)
+            .sum()
+    }
+
+    /// The literal open-item fold: every leg of every live posted entry →
+    /// `(original, applied against it, applied out of it)`.
+    #[must_use]
+    pub fn open_items(&self) -> BTreeMap<(usize, usize), (i128, i128, i128)> {
+        let mut out = BTreeMap::new();
+        for (i, e) in self.journal.iter().enumerate() {
+            if !Self::carries_open_items(e) || !self.is_live(i) {
+                continue;
+            }
+            for (o, leg) in e.legs.iter().enumerate() {
+                let out_of: i128 = e
+                    .settles
+                    .iter()
+                    .filter(|s| s.leg == o)
+                    .map(|s| s.mantissa)
+                    .sum();
+                out.insert((i, o), (leg.mantissa, self.applied_to(i, o), out_of));
+            }
+        }
+        out
+    }
+
     #[must_use]
     pub fn journal_len(&self) -> usize {
         self.journal.len()
@@ -831,6 +1010,7 @@ mod tests {
             approvals: 0,
             reverses,
             resolves: None,
+            settles: Vec::new(),
         };
         assert_eq!(
             o.post(&intent("Original", legs(5, 5), b"a", None)),

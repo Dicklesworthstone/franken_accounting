@@ -22,7 +22,7 @@ use fa_journal::{
     Transitioned,
 };
 use fa_model::{Entry, Erasable, SealKey, SymbolTable};
-use fa_registers::{Fold, TrialBalance, Verification};
+use fa_registers::{Fold, OpenItem, OpenItemVerification, TrialBalance, Verification};
 use fa_time::{DateDay, PeriodDef, PeriodTransition};
 use fgdb::{Database, DatabaseKeys, MemVfs};
 use fgdb_crypto::{CryptoCx, DeterministicEntropy, EntropyError, SystemEntropy, derive_key};
@@ -542,6 +542,23 @@ impl Book {
     /// Refold a period and compare it to its stored registers (`fa verify registers`).
     pub fn verify_registers(&self, period_code: &str) -> Result<Verification, BookError> {
         Ok(with_store!(&self.store, db => fa_registers::verify_period(db, &self.ctx, period_code))?)
+    }
+
+    /// Open items (plan §5.7): every leg of a live posted entry, optionally
+    /// on one account, with its applications and open amount.
+    pub fn open_items(
+        &self,
+        account: Option<VId>,
+        known_at: Option<CommitSeq>,
+    ) -> Result<Vec<OpenItem>, BookError> {
+        Ok(
+            with_store!(&self.store, db => fa_registers::open_items(db, &self.ctx, account, known_at))?,
+        )
+    }
+
+    /// Compare every posted leg's `applied` mirror with the open-item fold.
+    pub fn verify_open_items(&self) -> Result<OpenItemVerification, BookError> {
+        Ok(with_store!(&self.store, db => fa_registers::verify_open_items(db, &self.ctx, None))?)
     }
 
     /// Stock balances from inception through the latest selected period's end.

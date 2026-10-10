@@ -221,6 +221,9 @@ name = "pending_count"
 [[property]]
 id = 40
 name = "disposition"
+[[property]]
+id = 41
+name = "applied"
 
 # ---- relations ------------------------------------------------------------
 [[relation]]
@@ -307,3 +310,6 @@ name = "IN_PERIOD"
 [[relation]]
 id = 28
 name = "IN_BOOK"
+[[relation]]
+id = 29
+name = "UNSETTLES"

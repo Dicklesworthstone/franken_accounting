@@ -114,6 +114,14 @@ pub mod code {
     pub const RESOLUTION_SHAPE: &str = "FA-REF-061";
     /// The pending entry already has its one resolution.
     pub const ALREADY_RESOLVED: &str = "FA-REF-062";
+    /// The settlement names an entry that is missing, not posted, reversed, or whose handle digest mismatches.
+    pub const SETTLE_TARGET: &str = "FA-REF-070";
+    /// The settlement does not fit its legs: wrong ordinal, account, unit, or side; sum over the leg; a Reversal applying.
+    pub const SETTLE_SHAPE: &str = "FA-REF-071";
+    /// The settlement exceeds the target leg's open amount.
+    pub const OVER_APPLICATION: &str = "FA-REF-072";
+    /// The reversal target has live applications against its legs.
+    pub const LIVE_APPLICATIONS: &str = "FA-REF-073";
     /// A key collided but equivalence cannot be verified: a sealed field is erased or under a key this book lacks.
     pub const EQUIVALENCE_UNVERIFIABLE: &str = "FA-REF-033";
 }

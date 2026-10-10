@@ -2,10 +2,10 @@
 //!
 //! An `i128` mantissa times a `u128` numerator can need 256 bits; dividing that
 //! by a `u128` denominator and rounding under a law needs the exact quotient
-//! and remainder. This module provides exactly that and nothing more: an
-//! unsigned 256-bit magnitude with multiply-by-u128, divide-by-u128 (shift-
-//! subtract; correctness over speed — amounts are not hot loops), comparison,
-//! and conversion back to `u128`. Signs are handled by the callers.
+//! and remainder. Scale conversion and allocation weights can also require a
+//! 256-bit denominator. This module provides checked multiplication, addition,
+//! subtraction and division, comparison, and conversion back to `u128`.
+//! Division uses shift-subtract arithmetic. Signs are handled by the callers.
 
 use core::cmp::Ordering;
 
@@ -56,30 +56,35 @@ impl U256 {
         Some(Self { hi, lo })
     }
 
-    /// Exact `(quotient, remainder)` of `self / d`. `d` must be nonzero.
-    pub fn div_rem_u128(self, d: u128) -> (Self, u128) {
-        assert!(d != 0, "division by zero");
-        if self.hi == 0 {
-            return (Self::from_u128(self.lo / d), self.lo % d);
+    /// Exact `(quotient, remainder)` of `self / d`, or `None` for zero `d`.
+    pub fn checked_div_rem(self, d: Self) -> Option<(Self, Self)> {
+        if d.is_zero() {
+            return None;
+        }
+        if self < d {
+            return Some((Self::ZERO, self));
+        }
+        if self.hi == 0 && d.hi == 0 {
+            return Some((
+                Self::from_u128(self.lo / d.lo),
+                Self::from_u128(self.lo % d.lo),
+            ));
         }
         // Shift-subtract long division, one bit at a time, from the top.
         let mut quotient = Self::ZERO;
-        let mut remainder: u128 = 0; // always < d <= u128::MAX, so a u128 suffices
+        let mut remainder = Self::ZERO;
         for i in (0..256).rev() {
-            // remainder = remainder << 1 | bit(i); remainder stays < 2*d <= 2^129
-            // so we carry the top bit explicitly.
-            let top = remainder >> 127;
-            remainder <<= 1;
-            remainder |= self.bit(i);
-            let ge = top == 1 || remainder >= d;
-            if ge {
-                // When top == 1 the true value is remainder + 2^128, which is >= d;
-                // subtracting d wraps correctly in two's complement.
-                remainder = remainder.wrapping_sub(d);
+            // The remainder never exceeds the already-consumed dividend
+            // prefix. Before this shift that prefix has at most 255 bits,
+            // so the next bit fits without an intermediate overflow.
+            remainder.hi = (remainder.hi << 1) | (remainder.lo >> 127);
+            remainder.lo = (remainder.lo << 1) | self.bit(i);
+            if remainder >= d {
+                remainder = remainder.checked_sub(d)?;
                 quotient.set_bit(i);
             }
         }
-        (quotient, remainder)
+        Some((quotient, remainder))
     }
 
     pub fn to_u128(self) -> Option<u128> {
@@ -136,6 +141,111 @@ fn mul_u128(a: u128, b: u128) -> (u128, u128) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fgdb_bigint::{BigInt, LimbLimit, Sign};
+
+    const ORACLE_LIMIT: LimbLimit = LimbLimit::new(16);
+
+    fn bigint(value: U256) -> BigInt {
+        let mut limbs = vec![
+            value.lo as u64,
+            (value.lo >> 64) as u64,
+            value.hi as u64,
+            (value.hi >> 64) as u64,
+        ];
+        while limbs.last() == Some(&0) {
+            limbs.pop();
+        }
+        let sign = if limbs.is_empty() {
+            Sign::Zero
+        } else {
+            Sign::Positive
+        };
+        BigInt::from_canonical_limbs(sign, limbs.into_boxed_slice(), ORACLE_LIMIT).unwrap()
+    }
+
+    fn narrow(value: &BigInt) -> Option<U256> {
+        let limbs = value.magnitude_limbs_le();
+        if value.is_negative() || limbs.len() > 4 {
+            return None;
+        }
+        let limb = |i| u128::from(limbs.get(i).copied().unwrap_or(0));
+        Some(U256 {
+            lo: limb(0) | (limb(1) << 64),
+            hi: limb(2) | (limb(3) << 64),
+        })
+    }
+
+    fn compare_with_bigint(a: U256, b: U256) {
+        let left = bigint(a);
+        let right = bigint(b);
+        assert_eq!(
+            a.checked_add(b),
+            narrow(&left.checked_add(&right, ORACLE_LIMIT).unwrap())
+        );
+        assert_eq!(
+            a.checked_sub(b),
+            narrow(&left.checked_sub(&right, ORACLE_LIMIT).unwrap())
+        );
+        let product = left
+            .checked_mul(&BigInt::from_u128(b.lo), ORACLE_LIMIT)
+            .unwrap();
+        assert_eq!(a.checked_mul_u128(b.lo), narrow(&product));
+        if b.is_zero() {
+            assert_eq!(a.checked_div_rem(b), None);
+            assert!(left.checked_div_rem(&right, ORACLE_LIMIT).is_err());
+        } else {
+            let (quotient, remainder) = left.checked_div_rem(&right, ORACLE_LIMIT).unwrap();
+            assert_eq!(
+                a.checked_div_rem(b),
+                Some((narrow(&quotient).unwrap(), narrow(&remainder).unwrap()))
+            );
+        }
+    }
+
+    #[test]
+    fn wide_operations_match_bigint_on_boundaries_and_seeded_values() {
+        let boundary = [
+            U256::ZERO,
+            U256::from_u128(1),
+            U256::from_u128(u128::MAX),
+            U256 { hi: 1, lo: 0 },
+            U256 {
+                hi: 1,
+                lo: u128::MAX,
+            },
+            U256 {
+                hi: 1 << 127,
+                lo: 0,
+            },
+            U256 {
+                hi: u128::MAX,
+                lo: u128::MAX,
+            },
+        ];
+        for a in boundary {
+            for b in boundary {
+                compare_with_bigint(a, b);
+            }
+        }
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            u128::from(state)
+        };
+        for _ in 0..512 {
+            let a = U256 {
+                hi: next() | (next() << 64),
+                lo: next() | (next() << 64),
+            };
+            let b = U256 {
+                hi: next() | (next() << 64),
+                lo: next() | (next() << 64),
+            };
+            compare_with_bigint(a, b);
+        }
+    }
 
     #[test]
     fn mul_matches_u128_where_it_fits() {
@@ -165,13 +275,9 @@ mod tests {
         ];
         for &(a, m, d) in cases {
             let x = U256::from_u128(a).checked_mul_u128(m).unwrap();
-            let (q, r) = x.div_rem_u128(d);
-            assert!(r < d);
-            let back = q
-                .checked_mul_u128(d)
-                .unwrap()
-                .checked_add(U256::from_u128(r))
-                .unwrap();
+            let (q, r) = x.checked_div_rem(U256::from_u128(d)).unwrap();
+            assert!(r < U256::from_u128(d));
+            let back = q.checked_mul_u128(d).unwrap().checked_add(r).unwrap();
             assert_eq!(
                 back, x,
                 "q*d + r must equal the dividend for a={a} m={m} d={d}"
