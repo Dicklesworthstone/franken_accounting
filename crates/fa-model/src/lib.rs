@@ -1,0 +1,45 @@
+//! FrankenAccounting's durable model (plan §4, Appendix A).
+//!
+//! Everything here is a deterministic function of its inputs: no clock, no
+//! entropy, no I/O. Entropy an object needs (an erasable field's salt and
+//! nonce) is an explicit input supplied by the kernel under its `Cx`.
+//!
+//! Layout:
+//! - [`canon`] — the canonical byte codec every durable object uses.
+//! - [`symbols`] — the frozen label/property/relation table, as constants and
+//!   as the substrate's `GraphSymbolResolver`.
+//! - [`limits`] — the size bounds every decoder enforces before allocating.
+//! - [`ids`] — `Id128`, `EntryRef`, `ApprovalRef`, `PeriodRef`, `TypedRef`,
+//!   and the derived vertex identities of plan §4.9.
+//! - [`erasable`] — field-level erasure: a digest that survives and bytes
+//!   sealed under a subject key.
+//! - [`entry`] — the `fa:entry:v1` payload, `ControlPayload`, `EntryOrigin`,
+//!   the proposal and envelope digests, and structural validation.
+//! - [`mirrors`] — the scalar properties an `Entry` and its derived `Leg`
+//!   vertices carry for predicates and indexes (§4.2 storage form).
+
+#![forbid(unsafe_code)]
+
+pub mod account;
+pub mod canon;
+pub mod entry;
+pub mod erasable;
+pub mod ids;
+pub mod limits;
+pub mod mirrors;
+pub mod symbols;
+
+pub use account::AccountType;
+pub use canon::{DecodeError, EncodeError, Reader, Writer};
+pub use entry::{
+    BaseTotals, ControlPayload, Disposition, Entry, EntryClass, EntryError, EntryOrigin,
+    EntryPayload, EvidenceRef, ExternalId, LegPayload, Pending, Residual, Settlement, Supersession,
+    SupersessionKind, Tag, TagValue, UnitTotal,
+};
+pub use erasable::{Canonical, Erasable, EraseError, SealKey};
+pub use ids::{
+    ApprovalRef, EntryRef, Id128, Oid, PeriodRef, TypedRef, account_vid, entry_vid,
+    external_id_vid, period_vid, unit_vid,
+};
+pub use mirrors::{MirrorError, entry_mirrors, leg_mirrors};
+pub use symbols::SymbolTable;

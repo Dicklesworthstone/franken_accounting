@@ -625,7 +625,8 @@ pub fn limits_embedded() -> Result<BTreeMap<String, u64>, RegistryError> {
     for t in doc.arrays.get("limit").unwrap_or(&Vec::new()) {
         let name = req_str(R, t, "name")?.to_string();
         let value = req_int(R, t, "value")?;
-        let value = u64::try_from(value).map_err(|_| invalid(R, format!("`{name}` is negative")))?;
+        let value =
+            u64::try_from(value).map_err(|_| invalid(R, format!("`{name}` is negative")))?;
         if value == 0 {
             return Err(invalid(R, format!("`{name}` is zero")));
         }
@@ -637,4 +638,56 @@ pub fn limits_embedded() -> Result<BTreeMap<String, u64>, RegistryError> {
         return Err(invalid(R, "no limits"));
     }
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Account types
+// ---------------------------------------------------------------------------
+
+const ACCOUNT_TYPES: &str = include_str!("../../../registries/account_types.toml");
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AccountTypeRow {
+    pub tag: u8,
+    pub name: String,
+    /// `stock` (carries forward), `flow` (closes to equity each fiscal year),
+    /// or `memo` (outside the balance law).
+    pub kind: String,
+    /// 0 = debit-normal, 1 = credit-normal.
+    pub normal_balance: u8,
+}
+
+/// `registries/account_types.toml`; fa-model's `AccountType` constants are
+/// cross-checked against it.
+pub fn account_types_embedded() -> Result<Vec<AccountTypeRow>, RegistryError> {
+    const R: &str = "account_types.toml";
+    let doc = load(R, ACCOUNT_TYPES)?;
+    let mut rows = Vec::new();
+    let mut tags = std::collections::BTreeSet::new();
+    for t in doc.arrays.get("account_type").unwrap_or(&Vec::new()) {
+        let tag =
+            u8::try_from(req_int(R, t, "tag")?).map_err(|_| invalid(R, "tag out of range"))?;
+        let kind = req_str(R, t, "kind")?.to_string();
+        if !matches!(kind.as_str(), "stock" | "flow" | "memo") {
+            return Err(invalid(R, format!("unknown kind `{kind}`")));
+        }
+        let normal_balance = u8::try_from(req_int(R, t, "normal_balance")?)
+            .map_err(|_| invalid(R, "normal_balance out of range"))?;
+        if normal_balance > 1 {
+            return Err(invalid(R, "normal_balance is 0 (debit) or 1 (credit)"));
+        }
+        if !tags.insert(tag) {
+            return Err(invalid(R, format!("duplicate tag {tag}")));
+        }
+        rows.push(AccountTypeRow {
+            tag,
+            name: req_str(R, t, "name")?.to_string(),
+            kind,
+            normal_balance,
+        });
+    }
+    if rows.is_empty() {
+        return Err(invalid(R, "no account types"));
+    }
+    Ok(rows)
 }

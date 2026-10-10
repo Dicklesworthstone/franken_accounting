@@ -1,0 +1,53 @@
+# account_types.toml — the account types and the stock/flow rule (plan §4.3,
+# §7.5, fa-xwv). `stock` accounts carry their balance forward across fiscal
+# years (balance sheet); `flow` accounts accumulate within a fiscal year and
+# close to equity (income statement); `memo` accounts sit outside the balance
+# law. A balance "as of" a date folds inception-to-date for stock and
+# year-to-date for flow — the rule fa-registers branches on.
+#
+# Consumer: fa-model AccountType constants (cross-checked), fa-registers
+# balance/TB folds, fa-journal chart install. Gate: unknown kind fails.
+
+schema_version = 1
+
+[[account_type]]
+tag = 1
+name = "Asset"
+kind = "stock"
+normal_balance = 0
+
+[[account_type]]
+tag = 2
+name = "Liability"
+kind = "stock"
+normal_balance = 1
+
+[[account_type]]
+tag = 3
+name = "Equity"
+kind = "stock"
+normal_balance = 1
+
+[[account_type]]
+tag = 4
+name = "Revenue"
+kind = "flow"
+normal_balance = 1
+
+[[account_type]]
+tag = 5
+name = "Expense"
+kind = "flow"
+normal_balance = 0
+
+[[account_type]]
+tag = 6
+name = "Memo"
+kind = "memo"
+normal_balance = 0
+
+[[account_type]]
+tag = 7
+name = "Statistical"
+kind = "memo"
+normal_balance = 0

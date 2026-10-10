@@ -1,0 +1,22 @@
+[package]
+name = "fa-journal"
+version = "0.0.1"
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "Folio, the posting kernel (plan §5): book genesis, chart install and period transitions as journaled control records, and the post pipeline — structure, balance law, period law under the admissibility matrix with a point-read witness on the period state, leaf-only and unit-policy checks, identity-derived idempotency, and Entry/Leg mirrors committed in one substrate transaction. Bead fa-op5."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+fa-money = { path = "../fa-money" }
+fa-time = { path = "../fa-time" }
+fa-registry = { path = "../fa-registry" }
+fa-model = { path = "../fa-model" }
+asupersync = { workspace = true }
+fgdb = { workspace = true }
+fgdb-types = { workspace = true }
+fgdb-delta-types = { workspace = true }
+fgdb-crypto = { workspace = true }

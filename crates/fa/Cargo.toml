@@ -4,17 +4,23 @@ version = "0.0.1"
 edition.workspace = true
 license-file.workspace = true
 repository.workspace = true
-description = "The embedded FrankenAccounting library (plan §15.2). This increment lands the Genesis witness: a book on FrankenGraphDB that the production asupersync runtime opens, writes through the real commit path, and reads back. Deliberately a SUBSET of the final `fa::Book` surface; bead fa-0o2."
+description = "FrankenAccounting — the embedded library facade: a Book over FrankenGraphDB that creates, installs a chart, opens periods, posts under the accounting laws, and refuses lawfully (plan §18.1 `fa`)."
 publish = false
 
 [lints]
 workspace = true
 
 [dependencies]
+fa-journal = { path = "../fa-journal" }
+fa-model = { path = "../fa-model" }
+fa-money = { path = "../fa-money" }
+fa-registers = { path = "../fa-registers" }
+fa-registry = { path = "../fa-registry" }
+fa-time = { path = "../fa-time" }
 asupersync = { workspace = true }
 fgdb = { workspace = true }
+fgdb-crypto = { workspace = true }
 fgdb-types = { workspace = true }
-fgdb-delta-types = { workspace = true }
 
 [[example]]
 name = "open_book"

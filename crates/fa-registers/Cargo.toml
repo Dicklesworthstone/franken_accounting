@@ -1,0 +1,24 @@
+[package]
+name = "fa-registers"
+version = "0.0.1"
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "Registers as projections (plan §5.3, FA-INV-04): a deterministic fold over the entry payloads of a period with a watermark and a fold digest, materialized Register vertices, verify-by-refold that reports drift, the stock/flow balance rule, and the trial balance. Never more authoritative than the journal. Bead fa-1kd."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+fa-money = { path = "../fa-money" }
+fa-time = { path = "../fa-time" }
+fa-model = { path = "../fa-model" }
+fa-journal = { path = "../fa-journal" }
+asupersync = { workspace = true }
+fgdb = { workspace = true }
+fgdb-types = { workspace = true }
+fgdb-crypto = { workspace = true }
+
+[dev-dependencies]
+fa-reference = { path = "../fa-reference" }

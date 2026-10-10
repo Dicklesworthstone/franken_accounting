@@ -1,0 +1,20 @@
+[package]
+name = "fa-model"
+version = "0.0.1"
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "FrankenAccounting's durable model (plan §4, Appendix A): the canonical byte codec, the frozen symbol table with its GQL resolver, derived identities, sealed erasable fields, the `fa:entry:v1` payload with proposal_digest and entry_digest, control payloads, and the scalar mirrors the substrate indexes. Bead fa-vjc."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+fa-money = { path = "../fa-money" }
+fa-time = { path = "../fa-time" }
+fa-registry = { path = "../fa-registry" }
+fgdb-types = { workspace = true }
+fgdb-delta-types = { workspace = true }
+fgdb-crypto = { workspace = true }
+fgdb-gql = { workspace = true }

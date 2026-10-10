@@ -328,7 +328,8 @@ Entry {
   pending: Option<{timeout: Option<Duration>, resolution_of: Option<EntryRef>}>,
   external_ids: List<{system, id}>,
   tags: Map<String, CanonicalPropertyValue> (bounded),
-  entry_digest: [u8;32]                    // BLAKE3("fa:entry:v1" ‖ proposal_digest ‖ canonical(approvals)) — the committed envelope; acyclic (§4.6)
+  plan_certificate_oid: Option<Oid>,       // envelope field, outside the proposal: the dry-run certificate is computed over proposal_digest (§4.6)
+  entry_digest: [u8;32]                    // BLAKE3("fa:entry:v1" ‖ proposal_digest ‖ canonical(plan_certificate_oid) ‖ canonical(approvals)) — the committed envelope; acyclic (§4.6)
 }
 LegPayload {
   side: Debit | Credit,
@@ -1212,18 +1213,19 @@ Entry (schema fa:entry:v1)                                                // §4
     legs: List<LegPayload> (2 ≤ len ≤ max_legs_per_entry for posting classes; exactly 0 for control classes),
     control: Option<ControlPayload>,         // present iff legs is empty (control classes only)
     unit_totals: sorted Map<unit_id, { debits: i128, credits: i128 }>,
-    base_totals: Option<{ unit_id, debits: i128, credits: i128, fx_law_oid: Oid, rate_doc_oids: sorted [Oid] }>,
+    base_totals: Option<{ unit_id, debits: i128, credits: i128, fx_law_oid: Oid, rate_doc_oids: sorted [Oid], residual: Option<{ leg_ordinal: u16, amount: Amount }> }>,   // residual as §5.2: absorbed by one designated leg
     idempotency_key: Bytes (1..=64),
     origin: EntryOrigin,
     principal_ref: VId128, session_ref: Option<VId128>,
-    proposal_digest: BLAKE3("fa:entry-proposal:v1" ‖ canonical(every field except approvals, proposal_digest, entry_digest)),
+    proposal_digest: BLAKE3("fa:entry-proposal:v1" ‖ canonical(every field except plan_certificate_oid, approvals, proposal_digest, entry_digest)),
+    plan_certificate_oid: Option<Oid>,       // ENVELOPE field: the dry-run certificate is computed over a plan that already contains proposal_digest, so it can only bind here (acyclic); None for rule-, sweep-, control-, and migration-origin entries
     approvals: [ApprovalRef],                // each binds proposal_digest; the transcript is part of the envelope
     evidence: sorted [{ document_oid: Oid (strong), doc_commit: [u8;32], role: EvidenceRole(u8) }],
     supersession: [{ target: EntryRef, kind: SupersessionKind(u8), reason_code: u16 }],
     pending: Option<{ timeout_ns: Option<u64>, resolution_of: Option<EntryRef>, disposition: Option<Disposition> }>,
     external_ids: sorted [{ system: String(≤64), id: Erasable<String(≤256)> }],
     tags: sorted Map<String(≤64), Erasable<TagValue>> (≤ 32 entries, ≤ 4 KiB),   // TagValue = Null | Bool | Int(i64) | Text(≤256) | Bytes(≤1024): the storable scalar subset under FrankenAccounting's own codec, so the durable format never tracks the substrate's scalar encoding
-    entry_digest: BLAKE3("fa:entry:v1" ‖ proposal_digest ‖ canonical(approvals)) }   // the committed envelope
+    entry_digest: BLAKE3("fa:entry:v1" ‖ proposal_digest ‖ canonical(plan_certificate_oid) ‖ canonical(approvals)) }   // the committed envelope
 
 ControlPayload (closed union; legs are empty)
   = PeriodTransition   { period_ref, from: u8, to: u8, reason_code: u16, case_ref: Option<VId128> }
@@ -1250,7 +1252,7 @@ LegPayload (wire type, inline)
     settles: [{ target_leg: (EntryRef, ordinal: u16), amount: Amount }] }
 
 EntryOrigin (closed union)
-  = Intent     { intent_oid: Oid, intent_kind: u16, plan_certificate_oid: Oid }
+  = Intent     { intent_oid: Oid, intent_kind: u16 }                                   // the plan certificate is an envelope field, never part of the proposal it is computed from
   | Rule       { rule_version_oid: Oid, event_ref: VId128, inputs_digest: [u8;32] }
   | Migration  { run_ref: VId128, source_system: String(≤64), source_id: Erasable<String(≤256)>, source_recorded_at: Option<i64 ns>,
                  source_entered_by: Option<Erasable<String>>, source_approved_by: Option<Erasable<String>>, batch_oid: Oid }

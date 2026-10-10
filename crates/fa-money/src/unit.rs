@@ -140,6 +140,14 @@ impl UnitRegistry {
         UnitId((self.units.len() - 1) as u32)
     }
 
+    /// Every registered unit with its id, in registration order.
+    pub fn iter(&self) -> impl Iterator<Item = (UnitId, &Unit)> {
+        self.units
+            .iter()
+            .enumerate()
+            .map(|(i, u)| (UnitId(u32::try_from(i).unwrap_or(u32::MAX)), u))
+    }
+
     pub fn get(&self, id: UnitId) -> Option<&Unit> {
         self.units.get(id.0 as usize)
     }

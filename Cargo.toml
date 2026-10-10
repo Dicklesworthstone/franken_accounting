@@ -18,6 +18,10 @@ members = [
     "crates/fa-money",
     "crates/fa-time",
     "crates/fa-registry",
+    "crates/fa-model",
+    "crates/fa-journal",
+    "crates/fa-registers",
+    "crates/fa-reference",
 ]
 
 [workspace.package]

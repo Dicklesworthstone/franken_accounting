@@ -1,0 +1,15 @@
+[package]
+name = "fa-reference"
+version = "0.0.1"
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "The reference oracle (plan §16.2): a deliberately simple, single-threaded, obviously correct model of posting, period law, admissibility, idempotency, and register folds over canonical maps, with its own limb arithmetic. Depends on no engine or substrate crate; compiled for tests only; never shipped; never optimized. Bead fa-d93."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+fa-time = { path = "../fa-time" }
+fa-registry = { path = "../fa-registry" }
