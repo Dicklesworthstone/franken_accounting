@@ -298,6 +298,10 @@ pub mod code {
     pub const AVAILABILITY_UPPER: &str = "FA-REF-091";
     pub const LIMIT_CEILING: &str = "FA-REF-092";
     pub const BALANCING_SHAPE: &str = "FA-REF-093";
+    pub const TICK_ORDER: &str = "FA-REF-094";
+    pub const TICK_MISSING: &str = "FA-REF-095";
+    pub const DEADLINE_OVERFLOW: &str = "FA-REF-096";
+    pub const HOLD_DUE: &str = "FA-REF-097";
     pub const STRUCTURE: &str = "FA-REF-100";
     pub const CONTROL_VIA_POST: &str = "FA-REF-101";
     pub const CLASS_NOT_IMPLEMENTED: &str = "FA-REF-102";
@@ -347,10 +351,15 @@ struct Content {
     /// A balancing request's leg: the identity binds the request (its legs
     /// at the requested amount, and which leg balances), not what moved.
     balancing: Option<u16>,
+    /// A timed hold's `timeout_ns` (the deadline's anchor is not content:
+    /// it is derived from the hold's journal position).
+    timeout: Option<u64>,
+    /// Minted by the expiry sweep: never the content of a submitted intent.
+    by_sweep: bool,
 }
 
 impl Content {
-    fn of(i: &Intent, balancing: Option<u16>) -> Self {
+    fn of(i: &Intent, balancing: Option<u16>, timeout: Option<u64>) -> Self {
         Self {
             class: i.class.clone(),
             date: i.date,
@@ -361,8 +370,21 @@ impl Content {
             settles: i.settles.clone(),
             key: i.key.clone(),
             balancing,
+            timeout,
+            by_sweep: false,
         }
     }
+}
+
+/// One expiry-sweep batch in the model (plan §5.4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SweepBatch {
+    /// The tick (its observed instant) the batch ran under.
+    pub tick: u64,
+    /// `(hold index, its Expires resolution's index)`, in journal order.
+    pub expired: Vec<(usize, usize)>,
+    /// Holds due under this tick left for the next batch.
+    pub remaining_due: usize,
 }
 
 /// One cell of the oracle's fold.
@@ -387,6 +409,13 @@ pub struct Oracle {
     resolved: BTreeMap<usize, (usize, Content)>,
     /// Limited account code → its limit.
     limits: BTreeMap<String, Limit>,
+    /// Committed TimeEvidence ticks, strictly increasing (plan §7.1a).
+    ticks: Vec<u64>,
+    /// Timed hold index → its deadline (the latest tick when it posted, plus
+    /// its timeout).
+    deadlines: BTreeMap<usize, u64>,
+    /// The sweep's position: (tick index, last hold index it expired).
+    cursor: Option<(usize, usize)>,
     classes: EntryClasses,
     matrix: Admissibility,
 }
@@ -404,6 +433,9 @@ impl Oracle {
             reversed: BTreeMap::new(),
             resolved: BTreeMap::new(),
             limits: BTreeMap::new(),
+            ticks: Vec::new(),
+            deadlines: BTreeMap::new(),
+            cursor: None,
             classes,
             matrix,
         }
@@ -449,7 +481,134 @@ impl Oracle {
     }
 
     pub fn post(&mut self, intent: &Intent) -> Verdict {
-        self.post_inner(intent, None)
+        self.post_inner(intent, None, None)
+    }
+
+    /// Journal a TimeEvidence tick (plan §7.1a): strictly after the latest.
+    /// `Ok(tick index)`.
+    pub fn record_tick(&mut self, observed_utc_ns: u64) -> Result<usize, &'static str> {
+        if self.ticks.last().is_some_and(|t| observed_utc_ns <= *t) {
+            return Err(code::TICK_ORDER);
+        }
+        self.ticks.push(observed_utc_ns);
+        Ok(self.ticks.len() - 1)
+    }
+
+    /// The latest committed tick's instant.
+    #[must_use]
+    pub fn latest_tick(&self) -> Option<u64> {
+        self.ticks.last().copied()
+    }
+
+    /// A timed hold (plan §5.4): a `Pending` whose deadline is the latest
+    /// tick at the moment it posts plus `timeout_ns`.
+    pub fn post_timed(&mut self, intent: &Intent, timeout_ns: u64) -> Verdict {
+        if intent.class != "Pending" {
+            return Verdict::Refused {
+                code: code::STRUCTURE,
+            };
+        }
+        self.post_inner(intent, None, Some(timeout_ns))
+    }
+
+    /// A timed hold's deadline.
+    #[must_use]
+    pub fn deadline(&self, hold: usize) -> Option<u64> {
+        self.deadlines.get(&hold).copied()
+    }
+
+    /// Every unresolved timed hold the latest tick has reached, in journal
+    /// order: due, and still pending in every register until expired.
+    #[must_use]
+    pub fn due(&self) -> Vec<usize> {
+        let Some(now) = self.latest_tick() else {
+            return Vec::new();
+        };
+        self.deadlines
+            .iter()
+            .filter(|(h, d)| now >= **d && !self.resolved.contains_key(h))
+            .map(|(h, _)| *h)
+            .collect()
+    }
+
+    /// One expiry-sweep batch (plan §5.4): the first `max_batch` due holds
+    /// after the cursor when the cursor belongs to the latest tick (else
+    /// from the first), each expired by a leg-less resolution dated in its
+    /// hold's period, then the cursor moves to the last one. `Ok(None)` when
+    /// nothing is due; a release is admissible in every state but Future.
+    pub fn sweep_batch(&mut self, max_batch: usize) -> Result<Option<SweepBatch>, &'static str> {
+        if max_batch == 0 {
+            return Err(code::STRUCTURE);
+        }
+        let Some(tick_index) = self.ticks.len().checked_sub(1) else {
+            return Ok(None);
+        };
+        let after = match self.cursor {
+            Some((t, last)) if t == tick_index => Some(last),
+            _ => None,
+        };
+        let due: Vec<usize> = self
+            .due()
+            .into_iter()
+            .filter(|h| after.is_none_or(|a| *h > a))
+            .collect();
+        let take = due.len().min(max_batch);
+        if take == 0 {
+            return Ok(None);
+        }
+        let mut expired = Vec::with_capacity(take);
+        for &h in &due[..take] {
+            let hold = self.journal[h].clone();
+            let state = self
+                .period_state(&hold.period)
+                .unwrap_or(PeriodState::Future);
+            // The registered Resolution(Expires) row of the hold's period
+            // state decides (the sweep holds `post` only).
+            if !matches!(self.matrix.decide_expires(state), Some(Decision::Admit)) {
+                return Err(code::PERIOD_LAW);
+            }
+            let index = self.journal.len();
+            let key = b"expires".to_vec();
+            self.journal.push(Entry {
+                class: "Resolution".into(),
+                date: hold.date,
+                period: hold.period.clone(),
+                legs: Vec::new(),
+                key: key.clone(),
+                reverses: None,
+                resolves: Some(h),
+                settles: Vec::new(),
+            });
+            self.resolved.insert(
+                h,
+                (
+                    index,
+                    Content {
+                        class: "Resolution".into(),
+                        date: hold.date,
+                        discriminator: None,
+                        legs: Vec::new(),
+                        reverses: None,
+                        resolves: Some(Resolve {
+                            target: h,
+                            posts: None,
+                        }),
+                        settles: Vec::new(),
+                        key,
+                        balancing: None,
+                        timeout: None,
+                        by_sweep: true,
+                    },
+                ),
+            );
+            expired.push((h, index));
+        }
+        self.cursor = Some((tick_index, due[take - 1]));
+        Ok(Some(SweepBatch {
+            tick: self.ticks[tick_index],
+            expired,
+            remaining_due: due.len() - take,
+        }))
     }
 
     /// A balancing post (plan §5.5, TigerBeetle `balancing_*`): a two-leg
@@ -481,10 +640,15 @@ impl Oracle {
                 code: code::BALANCING_SHAPE,
             };
         }
-        self.post_inner(intent, Some(leg))
+        self.post_inner(intent, Some(leg), None)
     }
 
-    fn post_inner(&mut self, intent: &Intent, balancing: Option<u16>) -> Verdict {
+    fn post_inner(
+        &mut self,
+        intent: &Intent,
+        balancing: Option<u16>,
+        timeout: Option<u64>,
+    ) -> Verdict {
         // 1. Structure.
         let Some(class) = self.classes.by_name(&intent.class) else {
             return Verdict::Refused {
@@ -621,7 +785,7 @@ impl Oracle {
         let period = period.code.clone();
         // 4. Identity: the recorded outcome when the content is the same,
         //    a conflict when it is not — before any law is re-checked.
-        let content = Content::of(intent, balancing);
+        let content = Content::of(intent, balancing, timeout);
         let existing = match (intent.reverses, &intent.resolves) {
             (Some(target), _) => self.reversed.get(&target),
             (None, Some(r)) => self.resolved.get(&r.target),
@@ -813,6 +977,34 @@ impl Oracle {
                 }
             }
         }
+        // 7e. Timing (plan §5.4): a timed hold needs a tick to anchor on and
+        //     a representable deadline; a Posts on a hold whose deadline the
+        //     latest tick has reached is refused (Voids is not).
+        let mut deadline = None;
+        if let Some(t) = timeout {
+            let Some(anchor) = self.latest_tick() else {
+                return Verdict::Refused {
+                    code: code::TICK_MISSING,
+                };
+            };
+            let Some(d) = anchor.checked_add(t) else {
+                return Verdict::Refused {
+                    code: code::DEADLINE_OVERFLOW,
+                };
+            };
+            deadline = Some(d);
+        }
+        if let Some(Resolve {
+            target,
+            posts: Some(_),
+        }) = &intent.resolves
+            && let (Some(d), Some(now)) = (self.deadlines.get(target), self.latest_tick())
+            && now >= *d
+        {
+            return Verdict::Refused {
+                code: code::HOLD_DUE,
+            };
+        }
         // 7d. Reserved availability, budget caps, balancing (plan §5.4–5.5).
         //     A balancing request first resolves its legs to
         //     min(R, admissible) on the literal fold; then each limited cell
@@ -993,6 +1185,9 @@ impl Oracle {
             resolves: intent.resolves.as_ref().map(|r| r.target),
             settles: intent.settles.clone(),
         });
+        if let Some(d) = deadline {
+            self.deadlines.insert(index, d);
+        }
         match (intent.reverses, &intent.resolves) {
             (Some(target), _) => {
                 self.reversed.insert(target, (index, content));
@@ -1559,5 +1754,136 @@ mod tests {
             Verdict::Posted { index: 5, .. }
         ));
         assert_eq!(o.availability("1000").debits_pending.to_i128(), Some(0));
+    }
+
+    /// Plan §5.4, §7.1a in the model: strictly increasing ticks, the anchor
+    /// is the latest tick when the hold posts, due at equality, Posts refused
+    /// once due (Voids not), and the sweep's batches walk the due holds in
+    /// journal order behind a cursor that restarts with a new tick.
+    #[test]
+    fn ticks_anchor_timed_holds_and_the_sweep_batches_behind_a_cursor() {
+        let cal = FiscalCalendar::monthly("cal", 1, 1).unwrap();
+        let mut o = Oracle::new(cal);
+        for code in ["1000", "6000"] {
+            o.add_account(Account {
+                code: code.into(),
+                is_leaf: true,
+                unit: Some(1),
+            });
+        }
+        o.create_periods(2026);
+        o.transition("FY2026-P03", PeriodTransition::Open).unwrap();
+        let day = DateDay::from_ymd(2026, 3, 15).unwrap();
+        let hold_legs = vec![
+            Leg {
+                side: Side::Debit,
+                account: "6000".into(),
+                unit: 1,
+                mantissa: 10,
+            },
+            Leg {
+                side: Side::Credit,
+                account: "1000".into(),
+                unit: 1,
+                mantissa: 10,
+            },
+        ];
+        let intent = |class: &str, legs: Vec<Leg>, key: &[u8], resolves: Option<Resolve>| Intent {
+            class: class.into(),
+            date: day,
+            discriminator: None,
+            legs,
+            key: key.to_vec(),
+            ops: vec!["post".into()],
+            approvals: 0,
+            reverses: None,
+            resolves,
+            settles: Vec::new(),
+        };
+        let refused = |code| Verdict::Refused { code };
+        // No tick yet: a timed hold has nothing to anchor on.
+        assert_eq!(
+            o.post_timed(&intent("Pending", hold_legs.clone(), b"h0", None), 5),
+            refused(code::TICK_MISSING)
+        );
+        assert_eq!(o.record_tick(100), Ok(0));
+        assert_eq!(o.record_tick(100), Err(code::TICK_ORDER));
+        assert_eq!(o.record_tick(99), Err(code::TICK_ORDER));
+        assert_eq!(
+            o.post_timed(&intent("Pending", hold_legs.clone(), b"h0", None), u64::MAX),
+            refused(code::DEADLINE_OVERFLOW)
+        );
+        // Holds 0..4 anchored at 100 with timeouts 5, 10, 10, 20; hold 4 untimed.
+        for (i, t) in [5u64, 10, 10, 20].iter().enumerate() {
+            let key = format!("h{i}").into_bytes();
+            assert!(matches!(
+                o.post_timed(&intent("Pending", hold_legs.clone(), &key, None), *t),
+                Verdict::Posted { index, .. } if index == i
+            ));
+        }
+        assert!(matches!(
+            o.post(&intent("Pending", hold_legs.clone(), b"h4", None)),
+            Verdict::Posted { index: 4, .. }
+        ));
+        assert_eq!(o.deadline(1), Some(110));
+        assert_eq!(o.deadline(4), None);
+        // Tick 105: hold 0 is due at equality; the Posts on it is refused.
+        o.record_tick(105).unwrap();
+        assert_eq!(o.due(), vec![0]);
+        let posts = |target| Resolve {
+            target,
+            posts: Some(vec![0, 1]),
+        };
+        assert_eq!(
+            o.post(&intent(
+                "Resolution",
+                hold_legs.clone(),
+                b"p0",
+                Some(posts(0))
+            )),
+            refused(code::HOLD_DUE)
+        );
+        // Tick 110: holds 0, 1, 2 are due; batches of 2 walk them.
+        o.record_tick(110).unwrap();
+        assert_eq!(o.due(), vec![0, 1, 2]);
+        let b1 = o.sweep_batch(2).unwrap().unwrap();
+        assert_eq!(b1.tick, 110);
+        assert_eq!(b1.expired, vec![(0, 5), (1, 6)]);
+        assert_eq!(b1.remaining_due, 1);
+        // Due-but-unswept stays pending; a manual Voids on it still wins.
+        assert_eq!(o.due(), vec![2]);
+        assert!(matches!(
+            o.post(&intent(
+                "Resolution",
+                Vec::new(),
+                b"v2",
+                Some(Resolve {
+                    target: 2,
+                    posts: None
+                })
+            )),
+            Verdict::Posted { index: 7, .. }
+        ));
+        assert_eq!(o.sweep_batch(2).unwrap(), None);
+        // A manual void of an expired hold is the one-resolution conflict.
+        assert_eq!(
+            o.post(&intent(
+                "Resolution",
+                Vec::new(),
+                b"v0",
+                Some(Resolve {
+                    target: 0,
+                    posts: None
+                })
+            )),
+            refused(code::ALREADY_RESOLVED)
+        );
+        // A new tick restarts the epoch: hold 3 (deadline 120) is due.
+        o.record_tick(120).unwrap();
+        let b2 = o.sweep_batch(2).unwrap().unwrap();
+        assert_eq!(b2.expired, vec![(3, 8)]);
+        assert_eq!(b2.remaining_due, 0);
+        assert!(o.due().is_empty());
+        assert_eq!(o.availability("1000").credits_pending.to_i128(), Some(10));
     }
 }

@@ -405,6 +405,47 @@ exit = "usage"
 cite = "plan §5.5 (Balancing leg: the two-leg TigerBeetle option)"
 fix = "post two legs of one unit and one positive amount (a debit and a credit on different accounts), class Original/Adjusting/Pending, and name leg 0 or 1 as balancing; an N-leg entry states its amounts"
 
+# ---- TimeEvidence ticks and the expiry sweep (094–098) --------------------
+[[refusal]]
+code = "FA-REF-094"
+name = "TICK_ORDER"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §7.1a (ticks are strictly increasing; a rollback is refused)"
+fix = "journal an observation later than {latest} ns; a clock that stepped back is an operational incident, not a tick"
+
+[[refusal]]
+code = "FA-REF-095"
+name = "TICK_MISSING"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §5.4 (anchor = the latest tick in a strictly preceding committed prefix)"
+fix = "journal a tick first (the daemon's time evidence), then post the hold; or post it without timeout_ns"
+
+[[refusal]]
+code = "FA-REF-096"
+name = "DEADLINE_OVERFLOW"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §5.4 (deadline = anchor + timeout_ns, checked)"
+fix = "use a timeout_ns of at most {room} ns"
+
+[[refusal]]
+code = "FA-REF-097"
+name = "HOLD_DUE"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §5.4 (a manual Posts is admissible only while no committed tick has observed_utc_ns ≥ deadline)"
+fix = "release it with Resolution(Voids) or let the expiry sweep expire it, then post the amount as a new entry"
+
+[[refusal]]
+code = "FA-REF-098"
+name = "EXPIRES_BY_SWEEP"
+owners = ["fa-journal"]
+exit = "usage"
+cite = "plan §5.4 (Expires is the system's void at timeout)"
+fix = "release the hold now with Resolution(Voids), or let the expiry sweep expire it once a tick reaches its deadline"
+
 # ---- Structure and coordinate (100–103) ----------------------------------
 [[refusal]]
 code = "FA-REF-100"

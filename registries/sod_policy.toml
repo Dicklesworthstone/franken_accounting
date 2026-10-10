@@ -236,3 +236,34 @@ approver_profiles = ["Human"]
 agent_prepared_human_approvers = 2
 exclusions = ["preparer", "duplicate"]
 cite = "Appendix C PolicyControl: W(rule_change, 2 for activations)"
+
+# ---- Time evidence and the expiry sweep (book-scoped) ----------------------
+# A tick journals an observed instant (plan §7.1a); the preparer holds
+# `witness`. Ticks are strictly increasing; the kernel refuses any other.
+[[rule]]
+name = "time-tick"
+class = "TimeControl"
+transition = "Tick"
+preparer_op = "witness"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §7.1a, §8.1 (time controls need their own authority row)"
+
+# One expiry-sweep batch (plan §5.4): Resolution(Expires) entries plus the
+# SweepCursor that journals the batch's progress. The preparer holds `post`;
+# the kernel also requires the System profile (the sweep is the book's
+# intrinsic actor, whose post_closed covers Expires only).
+[[rule]]
+name = "expiry-sweep"
+class = "SweepControl"
+transition = "Expire"
+preparer_op = "post"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §5.4, §8.1 (sweep-cursor controls need their own authority row)"

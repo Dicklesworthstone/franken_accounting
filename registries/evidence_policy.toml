@@ -270,3 +270,15 @@ class = "PolicyControl"
 requirement = "control_record"
 min_documents = 0
 kinds = "any"
+
+[[minimum]]
+class = "TimeControl"
+requirement = "control_record"
+min_documents = 0
+kinds = "any"
+
+[[minimum]]
+class = "SweepControl"
+requirement = "control_record"
+min_documents = 0
+kinds = "any"

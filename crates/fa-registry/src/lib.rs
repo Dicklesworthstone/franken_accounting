@@ -227,16 +227,34 @@ enum Qualifier {
     PostsRefused,
 }
 
+const ALL_STATES: [PeriodState; 5] = [
+    PeriodState::Future,
+    PeriodState::Open,
+    PeriodState::SoftClosed,
+    PeriodState::Closed,
+    PeriodState::Locked,
+];
+
 #[derive(Clone, Debug, Default)]
 pub struct Admissibility {
     cells: BTreeMap<(String, PeriodState), (Decision, Option<String>, Qualifier)>,
+    /// `Resolution(Expires)`, the expiry sweep's release, decided per state
+    /// by its own rows (`disposition = "Expires"`, plan §5.4, Appendix C).
+    expires: BTreeMap<PeriodState, (Decision, Option<String>)>,
 }
 
 impl Admissibility {
     pub fn embedded(classes: &EntryClasses) -> Result<Self, RegistryError> {
+        Self::parse(classes, ADMISSIBILITY)
+    }
+
+    /// Parse a matrix in the `admissibility.toml` format (the embedded one,
+    /// or a planted variant in a test).
+    pub fn parse(classes: &EntryClasses, text: &str) -> Result<Self, RegistryError> {
         const R: &str = "admissibility.toml";
-        let doc = load(R, ADMISSIBILITY)?;
+        let doc = load(R, text)?;
         let mut cells = BTreeMap::new();
+        let mut expires = BTreeMap::new();
         for t in doc.arrays.get("cell").unwrap_or(&Vec::new()) {
             let class = req_str(R, t, "class")?.to_string();
             if classes
@@ -250,6 +268,23 @@ impl Admissibility {
                 .ok_or_else(|| invalid(R, format!("unknown state `{state_s}`")))?;
             let decision = parse_decision(R, req_str(R, t, "decision")?)?;
             let note = t.get("note").and_then(Value::as_str).map(str::to_string);
+            if let Some(disposition) = t.get("disposition") {
+                if class != "Resolution" || disposition.as_str() != Some("Expires") {
+                    return Err(invalid(
+                        R,
+                        format!(
+                            "({class}, {state_s}): only Resolution has disposition rows, and only Expires (Posts and Voids follow the class cell)"
+                        ),
+                    ));
+                }
+                if expires.insert(state, (decision, note)).is_some() {
+                    return Err(invalid(
+                        R,
+                        format!("cell (Resolution(Expires), {state_s}) decided twice"),
+                    ));
+                }
+                continue;
+            }
             let qualifier = match note.as_deref().and_then(|n| n.split(':').next()) {
                 Some("posts_only_with") => Qualifier::ReleasesAdmit,
                 Some("voids_expires") => Qualifier::PostsRefused,
@@ -271,15 +306,10 @@ impl Admissibility {
                 ));
             }
         }
-        // Exhaustiveness: every posting class × every state exactly once.
+        // Exhaustiveness: every posting class × every state exactly once, and
+        // the sweep's Resolution(Expires) × every state exactly once.
         for c in classes.posting() {
-            for s in [
-                PeriodState::Future,
-                PeriodState::Open,
-                PeriodState::SoftClosed,
-                PeriodState::Closed,
-                PeriodState::Locked,
-            ] {
+            for s in ALL_STATES {
                 if !cells.contains_key(&(c.name.clone(), s)) {
                     return Err(invalid(
                         R,
@@ -288,16 +318,31 @@ impl Admissibility {
                 }
             }
         }
-        Ok(Self { cells })
+        for s in ALL_STATES {
+            if !expires.contains_key(&s) {
+                return Err(invalid(
+                    R,
+                    format!("undecided cell (Resolution(Expires), {})", s.name()),
+                ));
+            }
+        }
+        Ok(Self { cells, expires })
     }
 
     pub fn decide(&self, class: &str, state: PeriodState) -> Option<&Decision> {
         self.cells.get(&(class.to_string(), state)).map(|(d, ..)| d)
     }
 
+    /// The registered decision for the expiry sweep's `Resolution(Expires)`
+    /// in a period of `state` (its own `disposition = "Expires"` rows).
+    pub fn decide_expires(&self, state: PeriodState) -> Option<&Decision> {
+        self.expires.get(&state).map(|(d, _)| d)
+    }
+
     /// The cell's decision for one disposition family (plan §5.4): `release`
-    /// is true for `Voids`/`Expires`, false for `Posts` and for every class
-    /// that has no dispositions (where this equals [`Self::decide`]).
+    /// is true for `Voids`, false for `Posts` and for every class that has no
+    /// dispositions (where this equals [`Self::decide`]). `Expires` is decided
+    /// by its own rows ([`Self::decide_expires`]).
     pub fn decide_disposition(
         &self,
         class: &str,
@@ -547,6 +592,49 @@ impl Registries {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// fa-ctf: the expiry sweep's `Resolution(Expires)` is decided by its
+    /// own registered rows — every state but Future admits (plan §5.4,
+    /// Appendix C) — and a matrix missing one, or naming another
+    /// disposition, is refused.
+    #[test]
+    fn expires_rows_are_registered_per_state_and_required() {
+        let classes = EntryClasses::embedded().unwrap();
+        let m = Admissibility::embedded(&classes).unwrap();
+        assert_eq!(
+            m.decide_expires(PeriodState::Future),
+            Some(&Decision::Refuse)
+        );
+        for s in [
+            PeriodState::Open,
+            PeriodState::SoftClosed,
+            PeriodState::Closed,
+            PeriodState::Locked,
+        ] {
+            assert_eq!(m.decide_expires(s), Some(&Decision::Admit), "{s:?}");
+        }
+        let locked_row = "[[cell]]\nclass = \"Resolution\"\ndisposition = \"Expires\"\nstate = \"Locked\"\ndecision = \"admit\"\nnote = \"a reservation release (plan §7.3: Locked admits Voids/Expires)\"\n";
+        assert!(ADMISSIBILITY.contains(locked_row), "the Locked Expires row");
+        let without = ADMISSIBILITY.replace(locked_row, "");
+        let e = Admissibility::parse(&classes, &without).unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("undecided cell (Resolution(Expires), Locked)"),
+            "{e}"
+        );
+        let voids = ADMISSIBILITY.replace(locked_row, &locked_row.replace("Expires", "Voids"));
+        let e = Admissibility::parse(&classes, &voids).unwrap_err();
+        assert!(e.to_string().contains("only Expires"), "{e}");
+        let refusing = ADMISSIBILITY.replace(
+            locked_row,
+            &locked_row.replace("decision = \"admit\"", "decision = \"refuse\""),
+        );
+        let planted = Admissibility::parse(&classes, &refusing).unwrap();
+        assert_eq!(
+            planted.decide_expires(PeriodState::Locked),
+            Some(&Decision::Refuse)
+        );
+    }
 
     #[test]
     fn all_embedded_registries_load_and_validate() {

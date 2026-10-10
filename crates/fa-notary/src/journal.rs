@@ -62,7 +62,13 @@ pub struct LeafEnvelope {
 /// The book-scoped control classes carry no effective day (plan §7.1).
 #[must_use]
 pub fn is_undated(class: EntryClass) -> bool {
-    class == EntryClass::SCHEMA_CONTROL || class == EntryClass::POLICY_CONTROL
+    matches!(
+        class,
+        EntryClass::SCHEMA_CONTROL
+            | EntryClass::POLICY_CONTROL
+            | EntryClass::TIME_CONTROL
+            | EntryClass::SWEEP_CONTROL
+    )
 }
 
 impl LeafEnvelope {

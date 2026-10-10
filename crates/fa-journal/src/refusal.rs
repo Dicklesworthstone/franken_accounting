@@ -154,6 +154,20 @@ pub mod code {
     /// A balancing request is not the two-leg single-unit shape (plan §5.5),
     /// or its `fa:balancing:v1` extension is malformed or disagrees with the legs.
     pub const BALANCING_SHAPE: &str = "FA-REF-093";
+    /// A TimeEvidence tick does not strictly follow the book's latest tick
+    /// (plan §7.1a).
+    pub const TICK_ORDER: &str = "FA-REF-094";
+    /// A timed `Pending` has no committed TimeEvidence tick to anchor its
+    /// deadline (plan §5.4).
+    pub const TICK_MISSING: &str = "FA-REF-095";
+    /// A timed `Pending`'s deadline (anchor tick + `timeout_ns`) leaves `u64`.
+    pub const DEADLINE_OVERFLOW: &str = "FA-REF-096";
+    /// A `Resolution(Posts)` names a hold a committed tick has already made due
+    /// (`observed_utc_ns ≥ deadline`, plan §5.4).
+    pub const HOLD_DUE: &str = "FA-REF-097";
+    /// A `Resolution(Expires)` was submitted through `post`; only the expiry
+    /// sweep mints one (plan §5.4).
+    pub const EXPIRES_BY_SWEEP: &str = "FA-REF-098";
 }
 
 /// A foundation failure. Exit 5; never partial.

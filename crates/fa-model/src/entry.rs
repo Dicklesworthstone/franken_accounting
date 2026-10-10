@@ -88,6 +88,8 @@ impl EntryClass {
     pub const PERIOD_CONTROL: Self = Self(16);
     pub const SCHEMA_CONTROL: Self = Self(17);
     pub const POLICY_CONTROL: Self = Self(18);
+    pub const TIME_CONTROL: Self = Self(19);
+    pub const SWEEP_CONTROL: Self = Self(20);
 
     /// `(tag, name, is_control)` for every registered class.
     pub const ALL: &[(u16, &str, bool)] = &[
@@ -109,6 +111,8 @@ impl EntryClass {
         (16, "PeriodControl", true),
         (17, "SchemaControl", true),
         (18, "PolicyControl", true),
+        (19, "TimeControl", true),
+        (20, "SweepControl", true),
     ];
 
     #[must_use]

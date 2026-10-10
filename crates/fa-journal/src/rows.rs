@@ -131,6 +131,18 @@ pub fn resolution_vid(pending: VId) -> VId {
     vid_from(h)
 }
 
+/// `vid(SweepCursor) = H("fa:vid:sweep-cursor:v1" ‖ tick_vid ‖ last_pending_vid)`
+/// (plan §5.4): one cursor per (tick, position), so two sweeps racing over
+/// the same batch are a point conflict on the identity.
+#[must_use]
+pub fn sweep_cursor_vid(tick: VId, last_pending: VId) -> VId {
+    let mut h = Hasher::new();
+    h.update(b"fa:vid:sweep-cursor:v1");
+    h.update(&tick.0.to_le_bytes());
+    h.update(&last_pending.0.to_le_bytes());
+    vid_from(h)
+}
+
 /// `vid(Leg) = H("fa:vid:leg:v1" ‖ entry_vid ‖ ordinal)`.
 #[must_use]
 pub fn leg_vid(entry: VId, ordinal: u16) -> VId {

@@ -1129,8 +1129,11 @@ fn releases_stay_admissible_after_close_and_lock_while_posts_follow_the_matrix()
     );
 }
 
+/// Plan §5.4 at the kernel boundary (fa-ctf): a timed hold needs a committed
+/// tick to anchor on, and `Expires` is the sweep's — never posted. The sweep
+/// itself is exercised against the oracle in fa-registers' differential.
 #[test]
-fn timed_holds_and_expiry_are_refused_until_the_tick_and_sweep_slice() {
+fn a_timed_hold_needs_a_tick_and_expires_is_never_posted() {
     let mut h = harness();
     let mut timed = h.pending(h.rent_legs(10), b"timed");
     timed.pending = Some(Pending {
@@ -1139,8 +1142,9 @@ fn timed_holds_and_expiry_are_refused_until_the_tick_and_sweep_slice() {
         disposition: None,
     });
     let r = h.post(h.request(timed, &["post"])).unwrap_err();
-    assert_eq!((r.code, r.exit), ("FA-REF-102", exit::REFUSAL));
-    assert!(r.fix.contains("TimeEvidence"), "{}", r.fix);
+    assert_eq!((r.code, r.exit), ("FA-REF-095", exit::REFUSAL));
+    assert!(r.fix.contains("tick"), "{}", r.fix);
+    assert_eq!(latest_tick(&h.db).unwrap(), None, "no tick was journaled");
     let hold = h
         .post(h.request(h.pending(h.rent_legs(10), b"hold"), &["post"]))
         .expect("admitted")
@@ -1152,7 +1156,8 @@ fn timed_holds_and_expiry_are_refused_until_the_tick_and_sweep_slice() {
         disposition: Some(Disposition::Expires { at_tick: 9 }),
     });
     let r = h.post(h.request(expires, &["post"])).unwrap_err();
-    assert_eq!((r.code, r.exit), ("FA-REF-102", exit::REFUSAL));
+    assert_eq!((r.code, r.exit), ("FA-REF-098", exit::USAGE));
+    assert!(r.fix.contains("Resolution(Voids)"), "{}", r.fix);
     assert!(h.db.vertex(resolution_vid(hold.vid)).unwrap().is_none());
 }
 

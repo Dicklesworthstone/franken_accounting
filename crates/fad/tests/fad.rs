@@ -304,7 +304,7 @@ fn one_daemon_per_book_and_fa_gets_byte_identical_answers_through_it() {
     let answered: u64 = field(&status, "requests")
         .and_then(|n| n.parse().ok())
         .unwrap_or(0);
-    assert!(answered >= asks.len() as u64 + 1, "{status}");
+    assert!(answered > asks.len() as u64, "{status}");
 
     let (code, stopped, err) = fad(&["stop", "--book", &b, "--json"]);
     assert_eq!(code, 0, "{stopped}\n{err}");

@@ -89,16 +89,31 @@ fn setup() -> (Kernel, Oracle, Vec<String>) {
 }
 
 fn setup_with(rows: &[ChartRow]) -> (Kernel, Oracle, Vec<String>) {
-    let runtime = RuntimeBuilder::new().build().expect("runtime");
-    let root = runtime.request_cx_with_budget(Budget::INFINITE);
-    let ctx = PurposeContexts::narrow_runtime_root(&root);
-    let keys = DatabaseKeys::new(
+    let (k, oracle, periods, _) = setup_store(rows);
+    (k, oracle, periods)
+}
+
+fn db_keys() -> DatabaseKeys {
+    DatabaseKeys::new(
         [0x7a; 32],
         DatabaseSecurityNamespaceId([0x7b; 32]),
         [0x7c; 32],
-    );
+    )
+}
+
+/// [`setup_with`], also returning the in-memory filesystem the store lives
+/// on, so a test can drop the handle (a crash) and reopen what committed.
+fn setup_store(rows: &[ChartRow]) -> (Kernel, Oracle, Vec<String>, MemVfs) {
+    let runtime = RuntimeBuilder::new().build().expect("runtime");
+    let root = runtime.request_cx_with_budget(Budget::INFINITE);
+    let ctx = PurposeContexts::narrow_runtime_root(&root);
+    // Database::open_memory, with the filesystem kept.
+    let vfs = MemVfs::new().expect("memory filesystem");
+    let dir = vfs.database_dir();
     let mut db = runtime
-        .block_on(async { Database::open_memory(&ctx.commit(), keys).await })
+        .block_on(async {
+            Database::create_with_vfs(&ctx.commit(), vfs.clone(), dir, db_keys()).await
+        })
         .expect("open");
     let units = UnitRegistry::with_defaults();
     let usd = units.lookup("USD").unwrap();
@@ -221,6 +236,7 @@ fn setup_with(rows: &[ChartRow]) -> (Kernel, Oracle, Vec<String>) {
         },
         oracle,
         normal,
+        vfs,
     )
 }
 
@@ -3132,4 +3148,1498 @@ fn kernel_and_oracle_agree_on_budget_caps_and_balancing() {
         ),
         Ok(Posted::Committed { .. })
     ));
+}
+
+// ---------------------------------------------------------------------------
+// TimeEvidence ticks, timed holds, and the expiry sweep (plan §5.4, §7.1a;
+// bead fa-ctf)
+// ---------------------------------------------------------------------------
+
+/// The book's intrinsic actor: the expiry sweep's principal.
+const SYSTEM: VId = VId(99);
+
+/// A description sealed under fresh salt and nonce, so no nonce is ever
+/// reused under the book key with a different plaintext.
+fn fresh_seal(key: &SealKey, text: &str) -> Erasable<String> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let n = NEXT
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        .to_le_bytes();
+    let mut salt = [0x5e; 32];
+    salt[..8].copy_from_slice(&n);
+    let mut nonce = [0x6f; 24];
+    nonce[..8].copy_from_slice(&n);
+    Erasable::seal(&text.to_string(), None, key, salt, nonce)
+}
+
+fn tick_request(k: &Kernel, observed_utc_ns: u64, key: &str) -> TickRequest {
+    TickRequest {
+        observed_utc_ns,
+        source: fa_journal::sweep::SOURCE_DAEMON_CLOCK,
+        monotonic_ok: true,
+        principal_ref: PRINCIPAL,
+        capability: Capability::embedded(PRINCIPAL, &["witness"]).expect("registered ops"),
+        idempotency_key: key.as_bytes().to_vec(),
+        description: fresh_seal(&k.book.seal_key, "tick"),
+    }
+}
+
+fn kernel_tick_raw(k: &mut Kernel, req: TickRequest) -> Result<Ticked, Refusal> {
+    let ctx = k.ctx();
+    let db = &mut k.db;
+    let book = &k.book;
+    k.runtime
+        .block_on(async move { record_tick(db, &ctx, book, req).await })
+        .expect("kernel")
+}
+
+fn kernel_tick(k: &mut Kernel, observed_utc_ns: u64, key: &str) -> Result<Ticked, Refusal> {
+    let req = tick_request(k, observed_utc_ns, key);
+    kernel_tick_raw(k, req)
+}
+
+/// A timed hold: the oracle intent's kernel request with `timeout_ns`.
+fn kernel_post_timed(
+    k: &mut Kernel,
+    intent: &Intent,
+    usd: UnitId,
+    refs: &[EntryRef],
+    timeout_ns: u64,
+) -> Result<Posted, Refusal> {
+    let mut req = kernel_request(k, intent, usd, refs);
+    if let Some(p) = req.proposal.pending.as_mut() {
+        p.timeout_ns = Some(timeout_ns);
+    }
+    let ctx = k.ctx();
+    let db = &mut k.db;
+    let book = &k.book;
+    k.runtime
+        .block_on(async move { post(db, &ctx, book, req).await })
+        .expect("kernel")
+}
+
+fn sweeper(max_batch: usize) -> SweepRequest {
+    SweepRequest {
+        principal_ref: SYSTEM,
+        capability: Capability::new(SYSTEM, Profile::System, &[Op::Post], SYSTEM)
+            .expect("a System capability"),
+        max_batch,
+    }
+}
+
+fn kernel_sweep_raw(k: &mut Kernel, req: &SweepRequest) -> Result<Option<SweepBatch>, Refusal> {
+    let ctx = k.ctx();
+    let db = &mut k.db;
+    let book = &k.book;
+    k.runtime
+        .block_on(async move {
+            let mut describe = |text: &str| fresh_seal(&book.seal_key, text);
+            sweep_batch(db, &ctx, book, req, &mut describe).await
+        })
+        .expect("kernel")
+}
+
+fn kernel_sweep(k: &mut Kernel, max_batch: usize) -> Result<Option<SweepBatch>, Refusal> {
+    kernel_sweep_raw(k, &sweeper(max_batch))
+}
+
+/// The kernel's due backlog as oracle journal indices.
+fn kernel_due(k: &Kernel, refs: &[EntryRef]) -> Vec<usize> {
+    due_holds(&k.db, None)
+        .expect("due scan")
+        .iter()
+        .map(|d| {
+            refs.iter()
+                .position(|r| *r == d.hold)
+                .expect("a due hold the differential posted")
+        })
+        .collect()
+}
+
+/// One sweep batch on both engines; the verdicts, the expired holds, their
+/// derived identities, and the backlog must agree. The resolutions join
+/// `refs` at the oracle's journal indices. `Some(batch)` when one committed.
+fn sweep_both(
+    k: &mut Kernel,
+    oracle: &mut Oracle,
+    refs: &mut Vec<EntryRef>,
+    max_batch: usize,
+    step: u64,
+) -> Option<fa_reference::SweepBatch> {
+    let kernel = kernel_sweep(k, max_batch);
+    let model = oracle.sweep_batch(max_batch);
+    match (&kernel, &model) {
+        (Ok(None), Ok(None)) => None,
+        (Ok(Some(b)), Ok(Some(m))) => {
+            assert_eq!(b.tick.observed_utc_ns, m.tick, "step {step}: sweep tick");
+            assert_eq!(b.remaining_due, m.remaining_due, "step {step}: backlog");
+            assert_eq!(b.expired.len(), m.expired.len(), "step {step}: batch size");
+            assert!(b.expired.len() <= max_batch, "step {step}: batch bound");
+            for ((hold, expires), (h, index)) in b.expired.iter().zip(&m.expired) {
+                assert_eq!(*hold, refs[*h], "step {step}: expired hold");
+                assert_eq!(*index, refs.len(), "step {step}: journal index");
+                assert_eq!(expires.vid, rows::resolution_vid(hold.vid));
+                refs.push(*expires);
+            }
+            let last = b.expired.last().expect("a committed batch expires").0;
+            assert_eq!(
+                b.cursor_entry.vid,
+                rows::sweep_cursor_vid(b.tick.entry, last.vid),
+                "step {step}: cursor identity"
+            );
+            Some(m.clone())
+        }
+        (Err(r), Err(code)) => {
+            assert_eq!(r.code, *code, "step {step}: sweep refusal {r}");
+            None
+        }
+        _ => {
+            assert_eq!(
+                format!("kernel {kernel:?}"),
+                format!("oracle {model:?}"),
+                "step {step}: sweep disagreement"
+            );
+            None
+        }
+    }
+}
+
+/// The pending registers of `periods` agree with the oracle's literal fold:
+/// a due-but-unswept hold is still pending; an expired one released its own
+/// period's reservation exactly once.
+fn assert_pending_registers(k: &Kernel, oracle: &Oracle, periods: &[String], step: u64) {
+    for code in periods {
+        let kernel_fold = fold_period(&k.db, &k.book, code).unwrap();
+        let model = oracle.pending_fold(code);
+        assert_eq!(
+            kernel_fold.pending.len(),
+            model.len(),
+            "step {step}: {code} pending cell count"
+        );
+        for cell in &kernel_fold.pending {
+            let account = BUDGETED
+                .iter()
+                .map(|(c, ..)| *c)
+                .find(|c| account_vid(k.book.book_id, c) == cell.key.account)
+                .expect("known account");
+            let m = model
+                .get(&(account.to_string(), cell.key.unit_id))
+                .expect("the oracle has the pending cell");
+            assert_eq!(
+                (m.debits.to_i128(), m.credits.to_i128()),
+                (Some(cell.debits), Some(cell.credits)),
+                "step {step}: {code}/{account} pending"
+            );
+        }
+    }
+}
+
+/// A timed hold on both engines: the verdicts and the derived deadline
+/// agree. `Some(index)` when it posted.
+#[allow(clippy::too_many_arguments)]
+fn post_timed_both(
+    k: &mut Kernel,
+    oracle: &mut Oracle,
+    refs: &mut Vec<EntryRef>,
+    refused: &mut BTreeMap<&'static str, u32>,
+    intent: &Intent,
+    usd: UnitId,
+    timeout: u64,
+    step: u64,
+) -> Option<usize> {
+    let kernel = kernel_post_timed(k, intent, usd, refs, timeout);
+    let model = oracle.post_timed(intent, timeout);
+    match (&kernel, &model) {
+        (Ok(Posted::Committed { entry_ref, .. }), Verdict::Posted { index, .. }) => {
+            assert_eq!(*index, refs.len(), "step {step}: journal index");
+            refs.push(*entry_ref);
+            let seq =
+                k.db.vertex(entry_ref.vid)
+                    .unwrap()
+                    .expect("hold row")
+                    .created_at;
+            assert_eq!(
+                oracle.deadline(*index),
+                fa_journal::sweep::deadline(&k.db, seq, timeout).ok(),
+                "step {step}: the deadline derived from the hold's journal position"
+            );
+            Some(*index)
+        }
+        (Err(r), Verdict::Refused { code }) => {
+            assert_eq!(r.code, *code, "step {step}: {r}");
+            *refused.entry(code).or_insert(0) += 1;
+            None
+        }
+        _ => {
+            assert_eq!(
+                format!("kernel {kernel:?}"),
+                format!("oracle {model:?}"),
+                "step {step}: timed hold disagreement on {intent:?}"
+            );
+            None
+        }
+    }
+}
+
+fn close_and_maybe_lock(k: &mut Kernel, oracle: &mut Oracle, code: &str, lock: bool, step: u64) {
+    let mut moves = vec![PeriodTransition::SoftClose, PeriodTransition::Close];
+    if lock {
+        moves.push(PeriodTransition::Lock);
+    }
+    for (i, t) in moves.into_iter().enumerate() {
+        let kernel = kernel_transition(k, code, t, step * 10 + i as u64).expect("transition");
+        let model = oracle.transition(code, t).expect("oracle transition");
+        assert_eq!((kernel.from, kernel.to), model, "{code} {t:?}");
+    }
+}
+
+#[test]
+fn kernel_and_oracle_agree_on_ticks_timed_holds_and_the_expiry_sweep() {
+    let (mut k, mut oracle, periods) = setup_with(BUDGETED);
+    let usd = k.book.units.lookup("USD").unwrap();
+    for (i, p) in periods.iter().take(4).enumerate() {
+        open_period(&mut k, &mut oracle, p, 9_000 + i as u64);
+    }
+    let watched: Vec<String> = periods.iter().take(4).cloned().collect();
+    let dated = [
+        DateDay::from_ymd(2026, 1, 20).unwrap(),
+        DateDay::from_ymd(2026, 2, 10).unwrap(),
+        DateDay::from_ymd(2026, 3, 15).unwrap(),
+        DateDay::from_ymd(2026, 4, 20).unwrap(),
+    ];
+    let leg = |side: fa_reference::Side, account: &str, mantissa: i128| Leg {
+        side,
+        account: account.into(),
+        unit: usd.0,
+        mantissa,
+    };
+    let dr = fa_reference::Side::Debit;
+    let cr = fa_reference::Side::Credit;
+    let plain = |class: &str, legs: Vec<Leg>, key: Vec<u8>, date: DateDay| Intent {
+        class: class.into(),
+        date,
+        discriminator: None,
+        legs,
+        key,
+        ops: vec!["post".into()],
+        approvals: 0,
+        reverses: None,
+        resolves: None,
+        settles: Vec::new(),
+    };
+    let mut rng = Rng(0x7135_EED5_0FA0_C7F1);
+    let mut refs: Vec<EntryRef> = Vec::new();
+    let mut holds: Vec<usize> = Vec::new();
+    let mut resolved: BTreeSet<usize> = BTreeSet::new();
+    let mut expired: BTreeSet<usize> = BTreeSet::new();
+    let mut refused: BTreeMap<&'static str, u32> = BTreeMap::new();
+    let mut now: u64 = 0;
+    let mut tick_seq = 0u64;
+    // Coverage floors (asserted at the end).
+    let mut timed_posted = 0u32;
+    let mut posts_before_due = 0u32;
+    let mut voids_on_due = 0u32;
+    let mut batches = 0u32;
+    let mut backlog_batches = 0u32;
+    let mut expired_in: BTreeMap<PeriodState, u32> = BTreeMap::new();
+    let mut due_seen = 0u32;
+    let mut equal_deadline = 0u32;
+
+    // Planted: a timed hold before any tick has nothing to anchor on.
+    let first = plain(
+        "Pending",
+        vec![leg(dr, "6100", 10), leg(cr, "1000", 10)],
+        b"timed-before-tick".to_vec(),
+        dated[2],
+    );
+    let kernel = kernel_post_timed(&mut k, &first, usd, &refs, 5);
+    assert_eq!(
+        oracle.post_timed(&first, 5),
+        Verdict::Refused { code: "FA-REF-095" }
+    );
+    let r = kernel.expect_err("no tick yet");
+    assert_eq!((r.code, r.exit), ("FA-REF-095", exit::REFUSAL), "{r}");
+    *refused.entry("FA-REF-095").or_insert(0) += 1;
+    // Fund cash so outflow holds have room.
+    let fund = plain(
+        "Original",
+        vec![leg(dr, "1000", 400_000), leg(cr, "3000", 400_000)],
+        b"fund".to_vec(),
+        dated[0],
+    );
+    let funded = kernel_post(&mut k, &fund, usd, &refs).expect("funds");
+    assert!(matches!(funded, Posted::Committed { .. }));
+    assert!(matches!(
+        oracle.post(&fund),
+        Verdict::Posted { index: 0, .. }
+    ));
+    refs.push(funded.entry_ref());
+
+    for step in 0..600u64 {
+        // Origin periods close and lock under live holds (plan §5.4: a hold
+        // never becomes unreleasable because its period closed). Just before
+        // each, timed holds dated in that period, due after it closes.
+        if step == 199 || step == 379 {
+            let date = if step == 199 { dated[0] } else { dated[1] };
+            for n in 0..6 {
+                let i = plain(
+                    "Pending",
+                    vec![leg(dr, "6100", 1), leg(cr, "1000", 1)],
+                    format!("pre-close-{step}-{n}").into_bytes(),
+                    date,
+                );
+                let posted = post_timed_both(
+                    &mut k,
+                    &mut oracle,
+                    &mut refs,
+                    &mut refused,
+                    &i,
+                    usd,
+                    60,
+                    step,
+                );
+                let h = posted.expect("a pre-close hold posts");
+                holds.push(h);
+                timed_posted += 1;
+            }
+        }
+        if step == 200 {
+            close_and_maybe_lock(&mut k, &mut oracle, &periods[0], true, step);
+        }
+        if step == 380 {
+            close_and_maybe_lock(&mut k, &mut oracle, &periods[1], false, step);
+        }
+        let key = format!("x{step}").into_bytes();
+        let date = dated[rng.below(4) as usize];
+        let open: Vec<usize> = holds
+            .iter()
+            .copied()
+            .filter(|h| !resolved.contains(h))
+            .collect();
+        match rng.below(20) {
+            0..=2 => {
+                // A tick: usually forward; sometimes planted at or behind the
+                // latest (FA-REF-094).
+                let planted = now > 0 && rng.chance(12);
+                let ns = if planted {
+                    now - rng.below(2)
+                } else {
+                    now + 1 + rng.below(25)
+                };
+                tick_seq += 1;
+                let kernel = kernel_tick(&mut k, ns, &format!("tick-{tick_seq}"));
+                let model = oracle.record_tick(ns);
+                match (&kernel, &model) {
+                    (Ok(t), Ok(_)) => {
+                        assert!(!t.already_recorded);
+                        assert_eq!(t.tick.observed_utc_ns, ns);
+                        now = ns;
+                    }
+                    (Err(r), Err(code)) => {
+                        assert_eq!(r.code, *code, "step {step}: {r}");
+                        assert!(r.message.contains(&now.to_string()), "{r}");
+                        *refused.entry(code).or_insert(0) += 1;
+                    }
+                    _ => assert_eq!(
+                        format!("kernel {kernel:?}"),
+                        format!("oracle {model:?}"),
+                        "step {step}: tick disagreement"
+                    ),
+                }
+            }
+            3..=7 => {
+                // A timed hold: an outflow from cash into a budget-capped
+                // expense, in a random period, timing out soon. Rarely the
+                // timeout overflows the deadline (FA-REF-096).
+                let a = 1 + rng.below(9_000) as i128;
+                let timeout = if now > 0 && rng.chance(5) {
+                    u64::MAX - now + 1
+                } else {
+                    rng.below(40)
+                };
+                let i = plain(
+                    "Pending",
+                    vec![leg(dr, "6100", a), leg(cr, "1000", a)],
+                    key,
+                    date,
+                );
+                if let Some(h) = post_timed_both(
+                    &mut k,
+                    &mut oracle,
+                    &mut refs,
+                    &mut refused,
+                    &i,
+                    usd,
+                    timeout,
+                    step,
+                ) {
+                    holds.push(h);
+                    timed_posted += 1;
+                }
+            }
+            8 => {
+                // An untimed hold: never due, never swept.
+                let a = 1 + rng.below(9_000) as i128;
+                let i = plain(
+                    "Pending",
+                    vec![leg(dr, "6100", a), leg(cr, "1000", a)],
+                    key,
+                    date,
+                );
+                let kernel = kernel_post(&mut k, &i, usd, &refs);
+                let model = oracle.post(&i);
+                if let (Ok(Posted::Committed { entry_ref, .. }), Verdict::Posted { index, .. }) =
+                    (&kernel, &model)
+                {
+                    refs.push(*entry_ref);
+                    holds.push(*index);
+                } else {
+                    assert_eq!(
+                        kernel.as_ref().err().map(|r| r.code),
+                        match model {
+                            Verdict::Refused { code } => Some(code),
+                            _ => None,
+                        },
+                        "step {step}: untimed hold"
+                    );
+                }
+            }
+            9..=11 if !open.is_empty() || !expired.is_empty() => {
+                // A manual resolution: Posts part of an open hold, Voids it,
+                // or (planted) void a hold the sweep already expired.
+                let planted = !expired.is_empty() && (open.is_empty() || rng.chance(15));
+                let target = if planted {
+                    let e: Vec<usize> = expired.iter().copied().collect();
+                    e[rng.below(e.len() as u64) as usize]
+                } else {
+                    open[rng.below(open.len() as u64) as usize]
+                };
+                let hold = oracle.entry(target).expect("hold").clone();
+                let was_due = oracle.due().contains(&target);
+                let posts = !planted && rng.chance(55);
+                let (legs, ordinals) = if posts {
+                    let t = 1 + rng.below(hold.legs[0].mantissa as u64) as i128;
+                    (
+                        hold.legs
+                            .iter()
+                            .map(|l| leg(l.side, &l.account, t))
+                            .collect(),
+                        Some(vec![0u16, 1]),
+                    )
+                } else {
+                    (Vec::new(), None)
+                };
+                let mut i = plain("Resolution", legs, key, dated[2 + rng.below(2) as usize]);
+                i.resolves = Some(Resolve {
+                    target,
+                    posts: ordinals,
+                });
+                let kernel = kernel_post(&mut k, &i, usd, &refs);
+                let model = oracle.post(&i);
+                match (&kernel, &model) {
+                    (Ok(Posted::Committed { entry_ref, .. }), Verdict::Posted { index, .. }) => {
+                        assert_eq!(*index, refs.len(), "step {step}");
+                        refs.push(*entry_ref);
+                        resolved.insert(target);
+                        if posts && oracle.deadline(target).is_some() {
+                            posts_before_due += 1;
+                        }
+                        if !posts && was_due {
+                            voids_on_due += 1;
+                        }
+                    }
+                    (Err(r), Verdict::Refused { code }) => {
+                        assert_eq!(r.code, *code, "step {step}: {r}");
+                        *refused.entry(code).or_insert(0) += 1;
+                        if *code == "FA-REF-097" {
+                            assert!(was_due, "step {step}: 097 on a hold not due");
+                            assert!(r.fix.contains("Resolution(Voids)"), "{r}");
+                        }
+                        if planted {
+                            assert_eq!(*code, "FA-REF-062", "step {step}: void after expiry");
+                        }
+                    }
+                    _ => assert_eq!(
+                        format!("kernel {kernel:?}"),
+                        format!("oracle {model:?}"),
+                        "step {step}: resolution disagreement on {i:?}"
+                    ),
+                }
+            }
+            12..=15 => {
+                // The sweep, under the latest tick, with a small batch bound
+                // so a backlog takes several batches.
+                let max = 1 + rng.below(3) as usize;
+                let states: BTreeMap<usize, PeriodState> = oracle
+                    .due()
+                    .iter()
+                    .map(|h| {
+                        let p = oracle.entry(*h).expect("hold").period.clone();
+                        (*h, oracle.period_state(&p).expect("created"))
+                    })
+                    .collect();
+                if let Some(m) = sweep_both(&mut k, &mut oracle, &mut refs, max, step) {
+                    batches += 1;
+                    if m.remaining_due > 0 {
+                        backlog_batches += 1;
+                    }
+                    for (h, _) in &m.expired {
+                        expired.insert(*h);
+                        resolved.insert(*h);
+                        *expired_in.entry(states[h]).or_insert(0) += 1;
+                        if oracle.deadline(*h) == Some(m.tick) {
+                            equal_deadline += 1;
+                        }
+                    }
+                }
+            }
+            16 => {
+                // More cash, so holds keep finding room.
+                let a = 1 + rng.below(50_000) as i128;
+                let i = plain(
+                    "Original",
+                    vec![leg(dr, "1000", a), leg(cr, "3000", a)],
+                    key,
+                    dated[2 + rng.below(2) as usize],
+                );
+                let kernel = kernel_post(&mut k, &i, usd, &refs);
+                let model = oracle.post(&i);
+                match (&kernel, &model) {
+                    (Ok(Posted::Committed { entry_ref, .. }), Verdict::Posted { .. }) => {
+                        refs.push(*entry_ref);
+                    }
+                    (Err(r), Verdict::Refused { code }) => assert_eq!(r.code, *code),
+                    _ => assert_eq!(format!("{kernel:?}"), format!("{model:?}")),
+                }
+            }
+            _ => {
+                // Spend: an unlimited move that never touches a cell.
+                let a = 1 + rng.below(900) as i128;
+                let i = plain(
+                    "Original",
+                    vec![leg(dr, "6000", a), leg(cr, "4000", a)],
+                    key,
+                    dated[2 + rng.below(2) as usize],
+                );
+                let kernel = kernel_post(&mut k, &i, usd, &refs);
+                let model = oracle.post(&i);
+                if let (Ok(Posted::Committed { entry_ref, .. }), Verdict::Posted { .. }) =
+                    (&kernel, &model)
+                {
+                    refs.push(*entry_ref);
+                } else {
+                    assert_eq!(format!("{kernel:?}"), format!("{model:?}"));
+                }
+            }
+        }
+        // After every step: the due backlog and every reservation cell agree.
+        let due = oracle.due();
+        assert_eq!(kernel_due(&k, &refs), due, "step {step}: due backlog");
+        if !due.is_empty() {
+            due_seen += 1;
+        }
+        assert_cell_in(&k, &oracle, "1000", None, step);
+        for p in &watched {
+            assert_cell_in(&k, &oracle, "6100", Some(p.as_str()), step);
+        }
+        if step % 50 == 0 {
+            assert_pending_registers(&k, &oracle, &watched, step);
+        }
+    }
+    // Drain: one more tick past every deadline, then sweep to the end.
+    now += 1_000;
+    assert!(kernel_tick(&mut k, now, "tick-final").is_ok());
+    assert!(oracle.record_tick(now).is_ok());
+    while let Some(m) = sweep_both(&mut k, &mut oracle, &mut refs, 2, 10_000) {
+        for (h, _) in &m.expired {
+            expired.insert(*h);
+        }
+    }
+    assert!(oracle.due().is_empty() && kernel_due(&k, &refs).is_empty());
+    assert_pending_registers(&k, &oracle, &watched, 10_001);
+    assert_cell_in(&k, &oracle, "1000", None, 10_001);
+    for p in &watched {
+        assert_cell_in(&k, &oracle, "6100", Some(p.as_str()), 10_001);
+    }
+    let verified = verify_availability(&k.db, &k.book, None).unwrap();
+    assert!(verified.is_green(), "{verified:?}");
+
+    // Agreement is not vacuous: every law fired, a backlog took several
+    // batches, and holds expired out of Closed and Locked origin periods.
+    assert!(timed_posted >= 60, "timed holds {timed_posted}");
+    assert!(expired.len() >= 30, "expired {}", expired.len());
+    assert!(
+        batches >= 15 && backlog_batches >= 5,
+        "batches {batches}/{backlog_batches}"
+    );
+    assert!(due_seen >= 20, "due-but-unswept observed {due_seen}");
+    assert!(posts_before_due >= 3, "posts before due {posts_before_due}");
+    assert!(voids_on_due >= 1, "voids of due holds {voids_on_due}");
+    assert!(
+        equal_deadline >= 1,
+        "expiry at deadline equality {equal_deadline}"
+    );
+    for state in [PeriodState::Closed, PeriodState::Locked] {
+        assert!(
+            expired_in.get(&state).is_some_and(|n| *n >= 2),
+            "expired out of {state:?}: {expired_in:?}"
+        );
+    }
+    for (must, floor) in [
+        ("FA-REF-094", 3),
+        ("FA-REF-095", 1),
+        ("FA-REF-096", 1),
+        ("FA-REF-097", 3),
+        ("FA-REF-062", 2),
+    ] {
+        assert!(
+            refused.get(must).is_some_and(|n| *n >= floor),
+            "refusal {must} under-exercised: {refused:?}"
+        );
+    }
+}
+
+/// Plan §5.4 timing on the real substrate: the anchor is a point witness (a
+/// tick committed between plan and publication is a first-committer-wins
+/// loss), equality at the deadline is due, Posts stops at the deadline while
+/// Voids does not, and `Expires` is never posted.
+#[test]
+fn timed_holds_anchor_on_a_witnessed_tick_and_posts_stop_at_the_deadline() {
+    let (mut k, mut oracle, periods) = setup_with(BUDGETED);
+    let usd = k.book.units.lookup("USD").unwrap();
+    open_period(&mut k, &mut oracle, &periods[2], 1);
+    let march = DateDay::from_ymd(2026, 3, 15).unwrap();
+    let leg = |side: fa_reference::Side, account: &str, mantissa: i128| Leg {
+        side,
+        account: account.into(),
+        unit: usd.0,
+        mantissa,
+    };
+    let dr = fa_reference::Side::Debit;
+    let cr = fa_reference::Side::Credit;
+    let intent = |class: &str, legs: Vec<Leg>, key: &str, resolves: Option<Resolve>| Intent {
+        class: class.into(),
+        date: march,
+        discriminator: None,
+        legs,
+        key: key.as_bytes().to_vec(),
+        ops: vec!["post".into()],
+        approvals: 0,
+        reverses: None,
+        resolves,
+        settles: Vec::new(),
+    };
+    let mut refs: Vec<EntryRef> = Vec::new();
+    let fund = intent(
+        "Original",
+        vec![leg(dr, "1000", 1_000), leg(cr, "3000", 1_000)],
+        "fund",
+        None,
+    );
+    refs.push(
+        kernel_post(&mut k, &fund, usd, &refs)
+            .expect("funds")
+            .entry_ref(),
+    );
+    assert!(matches!(oracle.post(&fund), Verdict::Posted { .. }));
+    let hold_legs = vec![leg(dr, "6100", 100), leg(cr, "1000", 100)];
+
+    // Ticks are journaled controls: book-scoped, strictly increasing,
+    // idempotent per key, `witness`-authorized, daemon-clock only.
+    let t0 = kernel_tick(&mut k, 1_000, "t0").expect("first tick");
+    assert_eq!(oracle.record_tick(1_000), Ok(0));
+    let (entry, _) = fa_journal::post::read_entry(&k.db, t0.entry_ref.vid)
+        .unwrap()
+        .expect("tick entry");
+    assert_eq!(entry.proposal.class, EntryClass::TIME_CONTROL);
+    assert!(entry.proposal.legs.is_empty() && entry.proposal.effective_period.is_none());
+    assert_eq!(latest_tick(&k.db).unwrap(), Some(t0.tick));
+    let again = kernel_tick(&mut k, 1_000, "t0").expect("same request");
+    assert!(again.already_recorded && again.entry_ref == t0.entry_ref);
+    let r = kernel_tick(&mut k, 1_000, "t0-dup").expect_err("not increasing");
+    assert_eq!((r.code, r.exit), ("FA-REF-094", exit::REFUSAL), "{r}");
+    let mut foreign = tick_request(&k, 2_000, "t-source");
+    foreign.source = 2;
+    let r = kernel_tick_raw(&mut k, foreign).expect_err("SubstrateMarker is not live");
+    assert_eq!(r.code, "FA-REF-102", "{r}");
+    let mut unwitnessed = tick_request(&k, 2_000, "t-op");
+    unwitnessed.capability = Capability::embedded(PRINCIPAL, &["post"]).expect("ops");
+    let r = kernel_tick_raw(&mut k, unwitnessed).expect_err("needs witness");
+    assert_eq!(r.exit, exit::SAFETY, "{r}");
+    assert_eq!(latest_tick(&k.db).unwrap(), Some(t0.tick));
+
+    // Holds anchored at 1_000: A (timeout 10), B (timeout 10), C (timeout 30).
+    let post_hold =
+        |k: &mut Kernel, oracle: &mut Oracle, refs: &mut Vec<EntryRef>, key: &str, t: u64| {
+            let i = intent("Pending", hold_legs.clone(), key, None);
+            let posted = kernel_post_timed(k, &i, usd, refs, t).expect("timed hold");
+            assert!(matches!(oracle.post_timed(&i, t), Verdict::Posted { .. }));
+            refs.push(posted.entry_ref());
+            refs.len() - 1
+        };
+    let a = post_hold(&mut k, &mut oracle, &mut refs, "A", 10);
+    let b = post_hold(&mut k, &mut oracle, &mut refs, "B", 10);
+    let c = post_hold(&mut k, &mut oracle, &mut refs, "C", 30);
+    // The anchor is derived from journal position: the tick strictly before
+    // the hold's commit.
+    let a_row = k.db.vertex(refs[a].vid).unwrap().unwrap();
+    assert_eq!(
+        fa_journal::sweep::tick_before(&k.db, a_row.created_at).unwrap(),
+        Some(t0.tick)
+    );
+    assert_eq!(
+        fa_journal::sweep::deadline(&k.db, a_row.created_at, 10).unwrap(),
+        1_010
+    );
+    let posts = |target: usize, key: &str, t: i128| {
+        intent(
+            "Resolution",
+            vec![leg(dr, "6100", t), leg(cr, "1000", t)],
+            key,
+            Some(Resolve {
+                target,
+                posts: Some(vec![0, 1]),
+            }),
+        )
+    };
+
+    // Before the deadline a Posts is admissible (A posts 40 of 100).
+    kernel_tick(&mut k, 1_009, "t1").expect("tick");
+    oracle.record_tick(1_009).unwrap();
+    let pa = posts(a, "posts-A", 40);
+    refs.push(
+        kernel_post(&mut k, &pa, usd, &refs)
+            .expect("posts before due")
+            .entry_ref(),
+    );
+    assert!(matches!(oracle.post(&pa), Verdict::Posted { .. }));
+
+    // A tick committed between plan and publication: a transaction that
+    // witnessed the latest tick (as the kernel's 7e does) loses to it.
+    let ctx = k.ctx();
+    let txn_cx = ctx.txn();
+    let mut slow = k.db.begin(&txn_cx).expect("begin");
+    let witnessed = slow
+        .vertex_property(
+            &k.db,
+            rows::book_root(),
+            fa_model::symbols::property::LATEST_TICK,
+        )
+        .expect("read");
+    assert!(witnessed.is_some());
+    let mut control = k.db.begin(&txn_cx).expect("begin");
+    assert!(control.vertex(&k.db, refs[c].vid).expect("read").is_some());
+    let t_due = kernel_tick(&mut k, 1_010, "t2").expect("the due tick");
+    oracle.record_tick(1_010).unwrap();
+    let mut batch = WriteBatch::new(fa_model::symbols::relation::IN_PERIOD);
+    batch.set_vertex_property(
+        refs[b].vid,
+        fa_model::symbols::property::DISPOSITION,
+        Some(fgdb_types::CanonicalScalar::Int(0)),
+    );
+    let staged = slow.write_ordered(&mut k.db, vec![batch]);
+    assert!(
+        matches!(staged, Err(fgdb::WriteTxnError::SnapshotAdvanced { .. })),
+        "{staged:?}"
+    );
+    let refreshed = slow.refresh_snapshot(&k.db, &txn_cx);
+    assert!(
+        matches!(
+            refreshed,
+            Err(fgdb::WriteTxnError::Write(
+                fgdb::WriteError::FirstCommitterWins { .. }
+            ))
+        ),
+        "a stale tick witness must lose: {refreshed:?}"
+    );
+    slow.abort();
+    assert!(control.refresh_snapshot(&k.db, &txn_cx).is_ok());
+    control.abort();
+
+    // Re-planned after the due tick, at equality with the deadline: refused.
+    let pb = posts(b, "posts-B", 40);
+    let r = kernel_post(&mut k, &pb, usd, &refs).expect_err("due at equality");
+    assert_eq!(oracle.post(&pb), Verdict::Refused { code: "FA-REF-097" });
+    assert_eq!((r.code, r.exit), ("FA-REF-097", exit::REFUSAL), "{r}");
+    assert!(
+        r.message.contains("1010") && r.message.contains(&t_due.tick.observed_utc_ns.to_string())
+    );
+    // C is not due yet (deadline 1_030): its Posts is admissible.
+    let pc = posts(c, "posts-C", 1);
+    refs.push(
+        kernel_post(&mut k, &pc, usd, &refs)
+            .expect("C not due")
+            .entry_ref(),
+    );
+    assert!(matches!(oracle.post(&pc), Verdict::Posted { .. }));
+    // B is due but a Voids still releases it (the identity race with the
+    // sweep, not the deadline, decides).
+    let vb = intent(
+        "Resolution",
+        Vec::new(),
+        "void-B",
+        Some(Resolve {
+            target: b,
+            posts: None,
+        }),
+    );
+    refs.push(
+        kernel_post(&mut k, &vb, usd, &refs)
+            .expect("voids a due hold")
+            .entry_ref(),
+    );
+    assert!(matches!(oracle.post(&vb), Verdict::Posted { .. }));
+    assert_cell_in(&k, &oracle, "1000", None, 1);
+    assert_cell_in(&k, &oracle, "6100", Some(periods[2].as_str()), 1);
+
+    // Expires is the sweep's: through `post` it is refused, nothing written.
+    let d = intent("Pending", hold_legs.clone(), "D", None);
+    let d_ref = kernel_post_timed(&mut k, &d, usd, &refs, 1)
+        .expect("D")
+        .entry_ref();
+    let mut req = kernel_request(&k, &vb, usd, &refs);
+    req.proposal.idempotency_key = b"expires-by-hand".to_vec();
+    req.proposal.pending = Some(Pending {
+        timeout_ns: None,
+        resolution_of: Some(d_ref),
+        disposition: Some(Disposition::Expires { at_tick: 2_000 }),
+    });
+    let ctx = k.ctx();
+    let db = &mut k.db;
+    let book = &k.book;
+    let r = k
+        .runtime
+        .block_on(async move { post(db, &ctx, book, req).await })
+        .expect("kernel")
+        .expect_err("Expires is never posted");
+    assert_eq!((r.code, r.exit), ("FA-REF-098", exit::USAGE), "{r}");
+    assert!(
+        k.db.vertex(rows::resolution_vid(d_ref.vid))
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// Plan §5.4 on the real substrate: one resolution per hold, by identity.
+/// A manual void before the sweep leaves the sweep nothing to do for that
+/// hold; a manual void after it is the one-resolution conflict; a void and a
+/// sweep in flight together race on the resolution identity and the second
+/// loses first-committer-wins, never a double release. The sweep refuses a
+/// non-System capability and a batch bound outside `1..=max_batch_entries`.
+#[test]
+fn the_sweep_and_manual_resolution_race_by_identity_never_double_release() {
+    let (mut k, mut oracle, periods) = setup_with(BUDGETED);
+    let usd = k.book.units.lookup("USD").unwrap();
+    open_period(&mut k, &mut oracle, &periods[2], 1);
+    let march = DateDay::from_ymd(2026, 3, 15).unwrap();
+    let leg = |side: fa_reference::Side, account: &str, mantissa: i128| Leg {
+        side,
+        account: account.into(),
+        unit: usd.0,
+        mantissa,
+    };
+    let dr = fa_reference::Side::Debit;
+    let cr = fa_reference::Side::Credit;
+    let intent = |class: &str, legs: Vec<Leg>, key: &str, resolves: Option<Resolve>| Intent {
+        class: class.into(),
+        date: march,
+        discriminator: None,
+        legs,
+        key: key.as_bytes().to_vec(),
+        ops: vec!["post".into()],
+        approvals: 0,
+        reverses: None,
+        resolves,
+        settles: Vec::new(),
+    };
+    let void = |target: usize, key: &str| {
+        intent(
+            "Resolution",
+            Vec::new(),
+            key,
+            Some(Resolve {
+                target,
+                posts: None,
+            }),
+        )
+    };
+    let mut refs: Vec<EntryRef> = Vec::new();
+    let fund = intent(
+        "Original",
+        vec![leg(dr, "1000", 5_000), leg(cr, "3000", 5_000)],
+        "fund",
+        None,
+    );
+    refs.push(
+        kernel_post(&mut k, &fund, usd, &refs)
+            .expect("funds")
+            .entry_ref(),
+    );
+    assert!(matches!(oracle.post(&fund), Verdict::Posted { .. }));
+    kernel_tick(&mut k, 100, "t0").expect("tick");
+    oracle.record_tick(100).unwrap();
+    let mut holds = Vec::new();
+    for key in ["H0", "H1", "H2", "H3", "H4"] {
+        let i = intent(
+            "Pending",
+            vec![leg(dr, "6100", 100), leg(cr, "1000", 100)],
+            key,
+            None,
+        );
+        refs.push(
+            kernel_post_timed(&mut k, &i, usd, &refs, 10)
+                .expect("hold")
+                .entry_ref(),
+        );
+        assert!(matches!(oracle.post_timed(&i, 10), Verdict::Posted { .. }));
+        holds.push(refs.len() - 1);
+    }
+    // Before any due tick the sweep has nothing to do and writes nothing.
+    let frontier = k.db.frontier().unwrap();
+    assert_eq!(kernel_sweep(&mut k, 5), Ok(None));
+    assert_eq!(k.db.frontier().unwrap(), frontier);
+
+    // The sweep's authority: System only, `post`, a batch bound in range.
+    let mut human = sweeper(2);
+    human.capability = Capability::embedded(SYSTEM, &["post"]).expect("ops");
+    let r = kernel_sweep_raw(&mut k, &human).expect_err("not System");
+    assert_eq!((r.code, r.exit), ("FA-REF-011", exit::SAFETY), "{r}");
+    for bad in [0, fa_model::limits::MAX_BATCH_ENTRIES + 1] {
+        let r = kernel_sweep(&mut k, bad).expect_err("batch bound");
+        assert_eq!((r.code, r.exit), ("FA-REF-100", exit::USAGE), "{r}");
+    }
+
+    kernel_tick(&mut k, 110, "t1").expect("the due tick");
+    oracle.record_tick(110).unwrap();
+    assert_eq!(kernel_due(&k, &refs), holds);
+
+    // Manual void, then the sweep: H0 is resolved and no longer due.
+    refs.push(
+        kernel_post(&mut k, &void(holds[0], "void-H0"), usd, &refs)
+            .expect("void")
+            .entry_ref(),
+    );
+    assert!(matches!(
+        oracle.post(&void(holds[0], "void-H0")),
+        Verdict::Posted { .. }
+    ));
+    assert_eq!(kernel_due(&k, &refs), holds[1..].to_vec());
+
+    // In flight together: a manual void of H1 that witnessed H1's
+    // resolution identity as absent (its step 4) loses to the sweep that
+    // expires H1 first.
+    let ctx = k.ctx();
+    let txn_cx = ctx.txn();
+    let mut manual = k.db.begin(&txn_cx).expect("begin");
+    let h1 = refs[holds[1]].vid;
+    assert!(
+        manual
+            .vertex(&k.db, rows::resolution_vid(h1))
+            .expect("read")
+            .is_none()
+    );
+    let batch = sweep_both(&mut k, &mut oracle, &mut refs, 2, 1).expect("expires H1, H2");
+    assert_eq!(
+        batch.expired.iter().map(|(h, _)| *h).collect::<Vec<_>>(),
+        holds[1..3].to_vec()
+    );
+    assert_eq!(batch.remaining_due, 2);
+    let mut write = WriteBatch::new(fa_model::symbols::relation::IN_PERIOD);
+    write.create_vertex(
+        rows::resolution_vid(h1),
+        vec![fa_model::symbols::label::ENTRY],
+        Vec::new(),
+    );
+    let staged = manual.write_ordered(&mut k.db, vec![write]);
+    assert!(
+        matches!(staged, Err(fgdb::WriteTxnError::SnapshotAdvanced { .. })),
+        "{staged:?}"
+    );
+    let refreshed = manual.refresh_snapshot(&k.db, &txn_cx);
+    assert!(
+        matches!(
+            refreshed,
+            Err(fgdb::WriteTxnError::Write(
+                fgdb::WriteError::FirstCommitterWins { .. }
+            ))
+        ),
+        "the manual void must lose the identity race: {refreshed:?}"
+    );
+    manual.abort();
+
+    // The converse: a sweep transaction that witnessed H3's identity as
+    // absent loses to a manual void that commits first.
+    let mut swept = k.db.begin(&txn_cx).expect("begin");
+    let h3 = refs[holds[3]].vid;
+    assert!(
+        swept
+            .vertex(&k.db, rows::resolution_vid(h3))
+            .expect("read")
+            .is_none()
+    );
+    refs.push(
+        kernel_post(&mut k, &void(holds[3], "void-H3"), usd, &refs)
+            .expect("void")
+            .entry_ref(),
+    );
+    assert!(matches!(
+        oracle.post(&void(holds[3], "void-H3")),
+        Verdict::Posted { .. }
+    ));
+    let refreshed = swept.refresh_snapshot(&k.db, &txn_cx);
+    assert!(
+        matches!(
+            refreshed,
+            Err(fgdb::WriteTxnError::Write(
+                fgdb::WriteError::FirstCommitterWins { .. }
+            ))
+        ),
+        "the stale sweep must lose the identity race: {refreshed:?}"
+    );
+    swept.abort();
+
+    // The next batch continues after the cursor: only H4 is left (H3 was
+    // voided by hand); then nothing.
+    let rest = sweep_both(&mut k, &mut oracle, &mut refs, 2, 2).expect("expires H4");
+    assert_eq!(
+        rest.expired.iter().map(|(h, _)| *h).collect::<Vec<_>>(),
+        vec![holds[4]]
+    );
+    assert_eq!(rest.remaining_due, 0);
+    assert!(sweep_both(&mut k, &mut oracle, &mut refs, 2, 3).is_none());
+
+    // After the sweep, a manual void of an expired hold is the
+    // one-resolution conflict, citing the sweep's resolution.
+    let late = void(holds[2], "void-H2-late");
+    let r = kernel_post(&mut k, &late, usd, &refs).expect_err("already expired");
+    assert_eq!(oracle.post(&late), Verdict::Refused { code: "FA-REF-062" });
+    assert_eq!((r.code, r.exit), ("FA-REF-062", exit::CONFLICT), "{r}");
+    assert!(
+        r.message.contains(&format!(
+            "{:032x}",
+            rows::resolution_vid(refs[holds[2]].vid).0
+        )),
+        "{r}"
+    );
+    // Every hold released exactly once: the cells and registers agree.
+    assert_cell_in(&k, &oracle, "1000", None, 4);
+    assert_cell_in(&k, &oracle, "6100", Some(periods[2].as_str()), 4);
+    assert_pending_registers(&k, &oracle, &periods[2..3], 4);
+    assert!(
+        verify_availability(&k.db, &k.book, None)
+            .unwrap()
+            .is_green()
+    );
+}
+
+/// A crash between batches: the committed batch and its cursor survive a
+/// restart, an uncommitted batch leaves nothing, and the rerun continues
+/// after the cursor with the same derived identities.
+#[test]
+fn a_crashed_sweep_leaves_nothing_partial_and_the_cursor_survives_restart() {
+    let (mut k, mut oracle, periods, vfs) = setup_store(BUDGETED);
+    let usd = k.book.units.lookup("USD").unwrap();
+    open_period(&mut k, &mut oracle, &periods[2], 1);
+    let march = DateDay::from_ymd(2026, 3, 15).unwrap();
+    let leg = |side: fa_reference::Side, account: &str, mantissa: i128| Leg {
+        side,
+        account: account.into(),
+        unit: usd.0,
+        mantissa,
+    };
+    let dr = fa_reference::Side::Debit;
+    let cr = fa_reference::Side::Credit;
+    let intent = |class: &str, legs: Vec<Leg>, key: &str| Intent {
+        class: class.into(),
+        date: march,
+        discriminator: None,
+        legs,
+        key: key.as_bytes().to_vec(),
+        ops: vec!["post".into()],
+        approvals: 0,
+        reverses: None,
+        resolves: None,
+        settles: Vec::new(),
+    };
+    let mut refs: Vec<EntryRef> = Vec::new();
+    let fund = intent(
+        "Original",
+        vec![leg(dr, "1000", 5_000), leg(cr, "3000", 5_000)],
+        "fund",
+    );
+    refs.push(
+        kernel_post(&mut k, &fund, usd, &refs)
+            .expect("funds")
+            .entry_ref(),
+    );
+    assert!(matches!(oracle.post(&fund), Verdict::Posted { .. }));
+    kernel_tick(&mut k, 50, "t0").expect("tick");
+    oracle.record_tick(50).unwrap();
+    for n in 0..5 {
+        let i = intent(
+            "Pending",
+            vec![leg(dr, "6100", 10 + n), leg(cr, "1000", 10 + n)],
+            &format!("H{n}"),
+        );
+        refs.push(
+            kernel_post_timed(&mut k, &i, usd, &refs, 5)
+                .expect("hold")
+                .entry_ref(),
+        );
+        assert!(matches!(oracle.post_timed(&i, 5), Verdict::Posted { .. }));
+    }
+    let tick = kernel_tick(&mut k, 60, "t1").expect("due tick").tick;
+    oracle.record_tick(60).unwrap();
+    let first = sweep_both(&mut k, &mut oracle, &mut refs, 2, 1).expect("first batch");
+    assert_eq!(first.remaining_due, 3);
+
+    // A crash mid-batch: a transaction stages the next batch's resolutions
+    // and the process dies before commit.
+    let ctx = k.ctx();
+    let txn_cx = ctx.txn();
+    let mut doomed = k.db.begin(&txn_cx).expect("begin");
+    let mut write = WriteBatch::new(fa_model::symbols::relation::IN_PERIOD);
+    for h in [3usize, 4] {
+        write.create_vertex(
+            rows::resolution_vid(refs[h].vid),
+            vec![fa_model::symbols::label::ENTRY],
+            Vec::new(),
+        );
+    }
+    doomed
+        .write_ordered(&mut k.db, vec![write])
+        .expect("staged, never committed");
+    let committed = k.db.frontier().unwrap();
+    drop(doomed);
+    let Kernel {
+        runtime,
+        root,
+        db,
+        book,
+        evidence,
+        agent_evidence,
+    } = k;
+    drop(db);
+    let ctx = PurposeContexts::narrow_runtime_root(&root);
+    let dir = vfs.database_dir();
+    let db = runtime
+        .block_on(async {
+            Database::open_with_vfs(&ctx.commit(), vfs.clone(), dir, db_keys()).await
+        })
+        .expect("reopen after the crash");
+    let mut k = Kernel {
+        runtime,
+        root,
+        db,
+        book,
+        evidence,
+        agent_evidence,
+    };
+    // Exactly what committed survived: the first batch and its cursor; the
+    // staged resolutions did not.
+    assert_eq!(k.db.frontier().unwrap(), committed);
+    assert_eq!(latest_tick(&k.db).unwrap(), Some(tick));
+    for h in [3usize, 4] {
+        assert!(
+            k.db.vertex(rows::resolution_vid(refs[h].vid))
+                .unwrap()
+                .is_none()
+        );
+    }
+    assert_eq!(kernel_due(&k, &refs), oracle.due());
+    assert_cell_in(&k, &oracle, "1000", None, 2);
+    assert_cell_in(&k, &oracle, "6100", Some(periods[2].as_str()), 2);
+    // The rerun continues after the persisted cursor, batch by batch, with
+    // the same derived identities, and stops when nothing is due.
+    let second = sweep_both(&mut k, &mut oracle, &mut refs, 2, 3).expect("second batch");
+    assert_eq!(
+        second.expired.iter().map(|(h, _)| *h).collect::<Vec<_>>(),
+        vec![3, 4]
+    );
+    let third = sweep_both(&mut k, &mut oracle, &mut refs, 2, 4).expect("third batch");
+    assert_eq!(
+        third.expired.iter().map(|(h, _)| *h).collect::<Vec<_>>(),
+        vec![5]
+    );
+    assert_eq!(third.remaining_due, 0);
+    assert!(sweep_both(&mut k, &mut oracle, &mut refs, 2, 5).is_none());
+    assert_cell_in(&k, &oracle, "1000", None, 6);
+    assert_cell_in(&k, &oracle, "6100", Some(periods[2].as_str()), 6);
+    assert_pending_registers(&k, &oracle, &periods[2..3], 6);
+    assert!(
+        verify_availability(&k.db, &k.book, None)
+            .unwrap()
+            .is_green()
+    );
+}
+
+/// Plan §5.4 per-leg sub-vectors across units: a USD+EUR hold posts a
+/// partial sub-vector balanced per unit, an unbalanced one is refused per
+/// unit, and a timed multi-unit hold the sweep expires releases both units'
+/// cells. Kernel and oracle agree on every verdict and cell.
+#[test]
+fn multi_unit_holds_post_partially_per_unit_and_expire_in_every_unit() {
+    let (mut k, mut oracle, periods) = setup_with(BUDGETED);
+    let usd = k.book.units.lookup("USD").unwrap();
+    let eur = k.book.units.lookup("EUR").unwrap();
+    open_period(&mut k, &mut oracle, &periods[2], 1);
+    // EUR cash (with a floor) and EUR expense, in a second chart effect.
+    let eur_chart = [
+        AccountSpec {
+            code: "1010".into(),
+            name: "Cash EUR".into(),
+            account_type: 1,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(eur),
+            parent_code: None,
+            limit: Some(BalanceLimit {
+                lower: Some(0),
+                upper: None,
+                scope: LimitScope::Lifetime,
+            }),
+        },
+        AccountSpec {
+            code: "6010".into(),
+            name: "Expense EUR".into(),
+            account_type: 5,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(eur),
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "3010".into(),
+            name: "Equity EUR".into(),
+            account_type: 3,
+            normal_balance: 1,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(eur),
+            parent_code: None,
+            limit: None,
+        },
+    ];
+    {
+        let ctx = k.ctx();
+        let db = &mut k.db;
+        let book = &k.book;
+        let day = DateDay::from_ymd(2026, 1, 1).unwrap();
+        let description = fresh_seal(&book.seal_key, "eur chart");
+        k.runtime
+            .block_on(async move {
+                install_chart(
+                    db,
+                    &ctx,
+                    book,
+                    &eur_chart,
+                    PRINCIPAL,
+                    day,
+                    b"eur",
+                    description,
+                )
+                .await
+            })
+            .expect("kernel")
+            .expect("installs");
+    }
+    for code in ["1010", "6010", "3010"] {
+        oracle.add_account(Account {
+            code: code.into(),
+            is_leaf: true,
+            unit: Some(eur.0),
+        });
+    }
+    oracle.set_limit(
+        "1010",
+        Limit {
+            normal: fa_reference::Side::Debit,
+            lower: Some(0),
+            upper: None,
+            per_period: false,
+        },
+    );
+    let march = DateDay::from_ymd(2026, 3, 15).unwrap();
+    let leg = |side: fa_reference::Side, account: &str, unit: UnitId, mantissa: i128| Leg {
+        side,
+        account: account.into(),
+        unit: unit.0,
+        mantissa,
+    };
+    let dr = fa_reference::Side::Debit;
+    let cr = fa_reference::Side::Credit;
+    let intent = |class: &str, legs: Vec<Leg>, key: &str, resolves: Option<Resolve>| Intent {
+        class: class.into(),
+        date: march,
+        discriminator: None,
+        legs,
+        key: key.as_bytes().to_vec(),
+        ops: vec!["post".into()],
+        approvals: 0,
+        reverses: None,
+        resolves,
+        settles: Vec::new(),
+    };
+    // The kernel request with each leg in its own unit (the shared helper
+    // writes USD).
+    let in_units = |k: &Kernel, i: &Intent, refs: &[EntryRef], timeout: Option<u64>| {
+        let mut req = kernel_request(k, i, usd, refs);
+        for (l, m) in req.proposal.legs.iter_mut().zip(&i.legs) {
+            l.amount = Amount::new(UnitId(m.unit), l.amount.mantissa);
+        }
+        req.proposal.unit_totals =
+            EntryPayload::fold_unit_totals(&req.proposal.legs).expect("totals");
+        if let (Some(t), Some(p)) = (timeout, req.proposal.pending.as_mut()) {
+            p.timeout_ns = Some(t);
+        }
+        req
+    };
+    let run = |k: &mut Kernel, i: &Intent, refs: &[EntryRef], timeout: Option<u64>| {
+        let req = in_units(k, i, refs, timeout);
+        let ctx = k.ctx();
+        let db = &mut k.db;
+        let book = &k.book;
+        k.runtime
+            .block_on(async move { post(db, &ctx, book, req).await })
+            .expect("kernel")
+    };
+    let mut refs: Vec<EntryRef> = Vec::new();
+    for (key, legs) in [
+        (
+            "fund-usd",
+            vec![leg(dr, "1000", usd, 1_000), leg(cr, "3000", usd, 1_000)],
+        ),
+        (
+            "fund-eur",
+            vec![leg(dr, "1010", eur, 800), leg(cr, "3010", eur, 800)],
+        ),
+    ] {
+        let i = intent("Original", legs, key, None);
+        refs.push(run(&mut k, &i, &refs, None).expect("funds").entry_ref());
+        assert!(matches!(oracle.post(&i), Verdict::Posted { .. }));
+    }
+    // Hold: Dr 6000 USD 100, Dr 6010 EUR 50 / Cr 1000 USD 100, Cr 1010 EUR 50.
+    let hold_legs = vec![
+        leg(dr, "6000", usd, 100),
+        leg(dr, "6010", eur, 50),
+        leg(cr, "1000", usd, 100),
+        leg(cr, "1010", eur, 50),
+    ];
+    let hold = intent("Pending", hold_legs.clone(), "hold", None);
+    refs.push(run(&mut k, &hold, &refs, None).expect("hold").entry_ref());
+    assert!(matches!(
+        oracle.post(&hold),
+        Verdict::Posted { index: 2, .. }
+    ));
+    let posts = |legs: Vec<Leg>, key: &str| {
+        intent(
+            "Resolution",
+            legs,
+            key,
+            Some(Resolve {
+                target: 2,
+                posts: Some(vec![0, 1, 2, 3]),
+            }),
+        )
+    };
+    // Unbalanced in EUR (20 vs 30): refused per unit, by both.
+    let bad = posts(
+        vec![
+            leg(dr, "6000", usd, 60),
+            leg(dr, "6010", eur, 20),
+            leg(cr, "1000", usd, 60),
+            leg(cr, "1010", eur, 30),
+        ],
+        "bad",
+    );
+    let r = run(&mut k, &bad, &refs, None).expect_err("EUR unbalanced");
+    assert_eq!(oracle.post(&bad), Verdict::Refused { code: "FA-REF-001" });
+    assert_eq!(r.code, "FA-REF-001", "{r}");
+    assert!(r.message.contains("EUR"), "{r}");
+    // A EUR leg drawn from a USD pending leg: refused, by both.
+    let crossed = intent(
+        "Resolution",
+        vec![leg(dr, "6010", eur, 20), leg(cr, "1010", eur, 20)],
+        "crossed",
+        Some(Resolve {
+            target: 2,
+            posts: Some(vec![0, 3]),
+        }),
+    );
+    let r = run(&mut k, &crossed, &refs, None).expect_err("wrong source");
+    assert_eq!(
+        oracle.post(&crossed),
+        Verdict::Refused { code: "FA-REF-061" }
+    );
+    assert_eq!(r.code, "FA-REF-061", "{r}");
+    // Partial in both units, balanced per unit: posted; the full hold is
+    // released in both units and only the sub-vector posts.
+    let good = posts(
+        vec![
+            leg(dr, "6000", usd, 60),
+            leg(dr, "6010", eur, 20),
+            leg(cr, "1000", usd, 60),
+            leg(cr, "1010", eur, 20),
+        ],
+        "good",
+    );
+    refs.push(
+        run(&mut k, &good, &refs, None)
+            .expect("partial")
+            .entry_ref(),
+    );
+    assert!(matches!(
+        oracle.post(&good),
+        Verdict::Posted { index: 3, .. }
+    ));
+    assert_cell_in(&k, &oracle, "1000", None, 1);
+    assert_cell_in(&k, &oracle, "1010", None, 1);
+    let eur_cash = oracle.availability("1010");
+    assert_eq!(
+        (
+            eur_cash.credits_posted.to_i128(),
+            eur_cash.credits_pending.to_i128()
+        ),
+        (Some(20), Some(0))
+    );
+
+    // A timed multi-unit hold the sweep expires releases both units.
+    kernel_tick(&mut k, 7, "t0").expect("tick");
+    oracle.record_tick(7).unwrap();
+    let timed = intent("Pending", hold_legs, "timed", None);
+    refs.push(
+        run(&mut k, &timed, &refs, Some(3))
+            .expect("timed")
+            .entry_ref(),
+    );
+    assert!(matches!(
+        oracle.post_timed(&timed, 3),
+        Verdict::Posted { index: 4, .. }
+    ));
+    assert_eq!(
+        oracle.availability("1010").credits_pending.to_i128(),
+        Some(50)
+    );
+    kernel_tick(&mut k, 10, "t1").expect("due tick");
+    oracle.record_tick(10).unwrap();
+    let swept = sweep_both(&mut k, &mut oracle, &mut refs, 4, 2).expect("expires");
+    assert_eq!(
+        swept.expired.iter().map(|(h, _)| *h).collect::<Vec<_>>(),
+        vec![4]
+    );
+    assert_cell_in(&k, &oracle, "1000", None, 3);
+    assert_cell_in(&k, &oracle, "1010", None, 3);
+    assert_eq!(
+        oracle.availability("1010").credits_pending.to_i128(),
+        Some(0)
+    );
+    assert_eq!(
+        oracle.availability("1000").credits_pending.to_i128(),
+        Some(0)
+    );
+    assert!(
+        verify_availability(&k.db, &k.book, None)
+            .unwrap()
+            .is_green()
+    );
 }

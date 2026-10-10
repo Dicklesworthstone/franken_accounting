@@ -30,6 +30,9 @@ pub const MAX_SCHEMA_CHANGE_BYTES: usize = 1024 * 1024;
 /// Additive-minor extension entries per entry, and bytes per entry.
 pub const MAX_EXTENSIONS: usize = 64;
 pub const MAX_EXTENSION_BYTES: usize = 64 * 1024;
+/// Entries one batch commits in one transaction; an expiry-sweep batch is
+/// bounded by it (plan §5.4).
+pub const MAX_BATCH_ENTRIES: usize = 8190;
 
 /// Every limit as `(name, value)`, in registry order.
 pub const ALL: &[(&str, u64)] = &[
@@ -64,6 +67,7 @@ pub const ALL: &[(&str, u64)] = &[
     ("max_schema_change_bytes", MAX_SCHEMA_CHANGE_BYTES as u64),
     ("max_extensions", MAX_EXTENSIONS as u64),
     ("max_extension_bytes", MAX_EXTENSION_BYTES as u64),
+    ("max_batch_entries", MAX_BATCH_ENTRIES as u64),
 ];
 
 #[cfg(test)]

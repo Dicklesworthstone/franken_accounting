@@ -248,6 +248,12 @@ name = "accumulator_head"
 [[property]]
 id = 56
 name = "limit_scope"
+[[property]]
+id = 57
+name = "latest_tick"
+[[property]]
+id = 58
+name = "sweep_cursor"
 
 # ---- relations ------------------------------------------------------------
 [[relation]]

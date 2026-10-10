@@ -114,6 +114,8 @@ symbols!(
         (SECURITY_POLICY_EPOCH, "security_policy_epoch", 45),
         (ACCUMULATOR_HEAD, "accumulator_head", 46),
         (LIMIT_SCOPE, "limit_scope", 56),
+        (LATEST_TICK, "latest_tick", 57),
+        (SWEEP_CURSOR, "sweep_cursor", 58),
     ]
 );
 

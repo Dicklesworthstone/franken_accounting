@@ -28,6 +28,12 @@ pub const EXCLUSIONS: &[&str] = &["preparer", "duplicate", "case_preparer", "ses
 /// Transitions a control rule may key on, per control class.
 const PERIOD_TRANSITIONS: &[&str] = &["Lock", "Reopen"];
 const POLICY_TRANSITIONS: &[&str] = &["Activate"];
+/// A TimeEvidence tick (plan §7.1a).
+const TIME_TRANSITIONS: &[&str] = &["Tick"];
+/// One expiry-sweep batch: its Expires resolutions and its SweepCursor (§5.4).
+const SWEEP_TRANSITIONS: &[&str] = &["Expire"];
+/// The control classes with no period state (book-scoped, plan §7.1).
+const BOOK_SCOPED_CONTROLS: &[&str] = &["PolicyControl", "TimeControl", "SweepControl"];
 
 /// Which entry a rule governs. `state` is the period state the entry
 /// resolves to (for `PeriodControl`, the transition's from-state); `None`
@@ -279,6 +285,8 @@ impl SodPolicy {
                     let allowed: &[&str] = match class.as_str() {
                         "PeriodControl" => PERIOD_TRANSITIONS,
                         "PolicyControl" => POLICY_TRANSITIONS,
+                        "TimeControl" => TIME_TRANSITIONS,
+                        "SweepControl" => SWEEP_TRANSITIONS,
                         other => {
                             return Err(invalid(
                                 R,
@@ -302,11 +310,11 @@ impl SodPolicy {
                                 format!("{name}: a PeriodControl rule names the from-state"),
                             ));
                         }
-                        ("PolicyControl", Some(_)) => {
+                        (book_scoped, Some(_)) if BOOK_SCOPED_CONTROLS.contains(&book_scoped) => {
                             return Err(invalid(
                                 R,
                                 format!(
-                                    "{name}: PolicyControl is book-scoped; it has no period state"
+                                    "{name}: {book_scoped} is book-scoped; it has no period state"
                                 ),
                             ));
                         }
@@ -470,6 +478,8 @@ mod tests {
                 1,
             ),
             (key("PolicyControl", None, None, Some("Activate")), 2),
+            (key("TimeControl", None, None, Some("Tick")), 0),
+            (key("SweepControl", None, None, Some("Expire")), 0),
         ] {
             let (name, req) = p.requirement(&k);
             assert_ne!(name, "default", "{k:?} must be governed by a rule");
@@ -542,6 +552,14 @@ mod tests {
             (
                 format!("[[rule]]\nname = \"x\"\nclass = \"PolicyControl\"\ntransition = \"Activate\"\napprovers = 2\n{OK_REQ}"),
                 "preparer's op",
+            ),
+            (
+                format!("[[rule]]\nname = \"x\"\nclass = \"TimeControl\"\nstate = \"Open\"\ntransition = \"Tick\"\npreparer_op = \"witness\"\napprovers = 0\n{OK_REQ}"),
+                "TimeControl is book-scoped",
+            ),
+            (
+                format!("[[rule]]\nname = \"x\"\nclass = \"SweepControl\"\ntransition = \"Tick\"\npreparer_op = \"post\"\napprovers = 0\n{OK_REQ}"),
+                "not a SweepControl transition",
             ),
             (
                 "[[rule]]\nname = \"x\"\nclass = \"Reversal\"\nstate = \"Closed\"\napprovers = 0\napprover_op = \"approve\"\napprover_profiles = [\"Human\"]\nagent_prepared_human_approvers = 0\nexclusions = [\"duplicate\"]\ncite = \"c\"\n".to_string(),

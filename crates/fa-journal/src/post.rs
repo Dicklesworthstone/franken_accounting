@@ -15,8 +15,10 @@
 //! `Resolution` (`Posts { source_ordinals }` draws a balanced sub-vector leg
 //! by leg from the witnessed pending entry; `Voids` releases everything),
 //! with the identity `H("fa:vid:resolution:v1" ‖ pending_vid)` so a pending
-//! entry has exactly one resolution. Timed pendings and `Expires` need the
-//! TimeEvidence ticks and the sweep and are refused until that slice.
+//! entry has exactly one resolution. A timed `Pending` anchors its deadline
+//! on the latest TimeEvidence tick, witnessed here; a `Posts` on a hold a
+//! committed tick has made due is refused; `Expires` is minted only by the
+//! expiry sweep (`crate::sweep`), never posted.
 //! Application (plan §5.7): a leg's `settles` apply it to witnessed open
 //! target legs (same account and unit, opposite side) within their open
 //! amount, creating SETTLES edges and moving the target leg's `applied`
@@ -57,6 +59,7 @@ use crate::rows::{
     AccountRow, applied_witness, edge_id, leg_vid, mantissa_scalar, prop, resolution_vid,
     reversal_vid, state_from_scalar,
 };
+use crate::sweep;
 
 /// The capability a post is authorized under: Steward's typed object
 /// (holder, profile, ops, per-unit ceilings, a declared CommitSeq expiry,
@@ -126,7 +129,7 @@ impl Posted {
 /// How an entry's identity was derived (plan §4.9, §5.4): from the
 /// principal's idempotency key, or from the target it reverses or resolves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Identity {
+pub(crate) enum Identity {
     Key,
     Reversal,
     Resolution,
@@ -142,7 +145,7 @@ enum Identity {
 /// otherwise a private plaintext transcript under the book key decides equal
 /// (recorded) or different (conflict); (4) a field that cannot be opened is
 /// "cannot verify", never a claimed equivalence.
-fn recorded_or_conflict(
+pub(crate) fn recorded_or_conflict(
     row: &VertexRow,
     proposal: &EntryPayload,
     key: &SealKey,
@@ -234,9 +237,6 @@ fn recorded_or_conflict(
 
 fn not_implemented(class_name: &str) -> Refusal {
     let lands_with = match class_name {
-        "Resolution(Expires)" | "timed Pending" => {
-            "the TimeEvidence tick and expiry-sweep slice (plan §5.4, §7.1a)"
-        }
         "settles on a two-phase entry" | "re-application by reversing a reversal" => {
             "the full application-netting law (plan §5.7, §8.2; fa-06a)"
         }
@@ -354,19 +354,15 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(not_implemented(class_name)));
     }
     // 1c. Two-phase shape (plan §5.4). `validate` already fixed the arity;
-    //     here the slice declares what it does not yet enforce: timed
-    //     pendings anchor on TimeEvidence ticks, and `Expires` is the sweep's.
-    if proposal.class == EntryClass::PENDING
-        && matches!(
-            proposal.pending,
-            Some(Pending {
-                timeout_ns: Some(_),
-                ..
-            })
-        )
-    {
-        return Ok(Err(not_implemented("timed Pending")));
-    }
+    //     `Expires` is the system's void at timeout — the expiry sweep mints
+    //     it under a committed tick, so a caller never posts one.
+    let timeout = match &proposal.pending {
+        Some(Pending {
+            timeout_ns: Some(t),
+            ..
+        }) if proposal.class == EntryClass::PENDING => Some(*t),
+        _ => None,
+    };
     let resolution: Option<(EntryRef, Disposition)> = match (&proposal.pending, class_name) {
         (
             Some(Pending {
@@ -384,7 +380,13 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
         _ => None,
     };
     if matches!(resolution, Some((_, Disposition::Expires { .. }))) {
-        return Ok(Err(not_implemented("Resolution(Expires)")));
+        return Ok(Err(Refusal::new(
+            code::EXPIRES_BY_SWEEP,
+            exit::USAGE,
+            "a Resolution(Expires) is minted by the expiry sweep under a committed tick, never posted",
+            "plan §5.4 (Expires is the system's void at timeout)",
+            "release the hold now with Resolution(Voids), or let the expiry sweep expire it once a tick reaches its deadline",
+        )));
     }
     // 1d. Rich leg fields this slice does not enforce are refused, never
     //     admitted unchecked: a leg that settles, converts, or carries
@@ -1135,6 +1137,7 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     //     reserved). Balance per unit was checked in step 2. The hold's legs
     //     are kept: a resolution releases all of them (step 7d).
     let mut hold: Option<EntryPayload> = None;
+    let mut hold_seq: Option<CommitSeq> = None;
     if let Some((target, disposition)) = &resolution {
         let Some(row) = txn.vertex(db, target.vid)? else {
             txn.abort();
@@ -1192,6 +1195,7 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
             )));
         }
         hold = Some(pending_entry.proposal.clone());
+        hold_seq = Some(row.created_at);
         if let Disposition::Posts { source_ordinals } = disposition {
             for (i, (leg, ordinal)) in proposal.legs.iter().zip(source_ordinals).enumerate() {
                 let Some(src) = pending_entry.proposal.legs.get(usize::from(*ordinal)) else {
@@ -1236,6 +1240,74 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
                         "post at most the reserved amount; the remainder is released automatically",
                     )));
                 }
+            }
+        }
+    }
+
+    // 7e. Timing (plan §5.4, §7.1a). A timed hold anchors on the latest
+    //     committed tick, read here as a point witness: a tick that commits
+    //     first is a first-committer-wins conflict, so the anchor is the
+    //     latest tick of the strictly preceding prefix. A Posts resolution is
+    //     admissible only while no committed tick has reached its hold's
+    //     deadline — a tick committed after this witness conflicts, and the
+    //     re-plan refuses. Voids keeps the identity race with the sweep.
+    let posts_timed = match (&resolution, &hold, hold_seq) {
+        (Some((_, Disposition::Posts { .. })), Some(h), Some(seq)) => match &h.pending {
+            Some(Pending {
+                timeout_ns: Some(t),
+                ..
+            }) => Some((seq, *t)),
+            _ => None,
+        },
+        _ => None,
+    };
+    if timeout.is_some() || posts_timed.is_some() {
+        let (_, latest) = sweep::tick_witness(&txn, db)?;
+        if let Some(t) = timeout {
+            let Some(anchor) = latest else {
+                txn.abort();
+                return Ok(Err(Refusal::new(
+                    code::TICK_MISSING,
+                    exit::REFUSAL,
+                    "a timed Pending anchors on a committed TimeEvidence tick, and this book has none",
+                    "plan §5.4 (anchor = the latest tick in a strictly preceding committed prefix)",
+                    "journal a tick first (the daemon's time evidence), then post the hold; or post it without timeout_ns",
+                )));
+            };
+            if anchor.observed_utc_ns.checked_add(t).is_none() {
+                txn.abort();
+                return Ok(Err(Refusal::new(
+                    code::DEADLINE_OVERFLOW,
+                    exit::REFUSAL,
+                    format!(
+                        "the deadline {} ns + {t} ns leaves u64",
+                        anchor.observed_utc_ns
+                    ),
+                    "plan §5.4 (deadline = anchor + timeout_ns, checked)",
+                    format!(
+                        "use a timeout_ns of at most {} ns",
+                        u64::MAX - anchor.observed_utc_ns
+                    ),
+                )));
+            }
+        }
+        if let Some((seq, t)) = posts_timed {
+            let deadline = sweep::deadline(db, seq, t)?;
+            if let Some(now) = latest
+                && now.observed_utc_ns >= deadline
+            {
+                txn.abort();
+                let target = resolution.as_ref().map_or(0, |(r, _)| r.vid.0);
+                return Ok(Err(Refusal::new(
+                    code::HOLD_DUE,
+                    exit::REFUSAL,
+                    format!(
+                        "pending entry {target:032x} is due: tick {} ns has reached its deadline {deadline} ns",
+                        now.observed_utc_ns
+                    ),
+                    "plan §5.4 (a manual Posts is admissible only while no committed tick has observed_utc_ns ≥ deadline)",
+                    "release it with Resolution(Voids) or let the expiry sweep expire it, then post the amount as a new entry",
+                )));
             }
         }
     }

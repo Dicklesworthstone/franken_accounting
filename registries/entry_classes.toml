@@ -115,3 +115,19 @@ tag = 18
 name = "PolicyControl"
 kind = "control"
 supersession = "none"
+
+# TimeEvidence ticks (plan §7.1a): ControlPayload::TimeTick, book-scoped,
+# strictly increasing; authority row `time-tick` in sod_policy.toml.
+[[class]]
+tag = 19
+name = "TimeControl"
+kind = "control"
+supersession = "none"
+
+# Expiry-sweep progress (plan §5.4): ControlPayload::SweepCursor, book-scoped,
+# one per sweep batch; authority row `expiry-sweep` in sod_policy.toml.
+[[class]]
+tag = 20
+name = "SweepControl"
+kind = "control"
+supersession = "none"

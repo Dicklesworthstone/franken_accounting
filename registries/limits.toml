@@ -83,3 +83,9 @@ value = 64
 [[limit]]
 name = "max_extension_bytes"
 value = 65536
+# Entries one batch may commit in one substrate transaction (plan §5.6, §5.4:
+# an expiry-sweep batch is bounded by it). TigerBeetle's batch maximum (1 MiB
+# message, 128-byte transfers).
+[[limit]]
+name = "max_batch_entries"
+value = 8190

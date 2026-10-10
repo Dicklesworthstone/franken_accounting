@@ -25,6 +25,7 @@ pub mod policy;
 pub mod post;
 pub mod refusal;
 pub mod rows;
+pub mod sweep;
 
 pub use evidence::{Document, DocumentAdded, add_document, read_document};
 pub use genesis::{
@@ -43,3 +44,7 @@ pub use policy::{
 pub use post::{Capability, PostRequest, Posted, post};
 pub use refusal::{KernelError, Refusal, exit};
 pub use rows::{AccountRow, PeriodRow};
+pub use sweep::{
+    DueHold, Op, Profile, SweepBatch, SweepRequest, Tick, TickRequest, Ticked, due_holds,
+    latest_tick, record_tick, sweep, sweep_batch,
+};

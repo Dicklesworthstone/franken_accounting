@@ -6,7 +6,9 @@
 # Qualifiers ("case" = inside an approved RestatementCase; "run" = inside an
 # open MigrationRun; "voids_expires" = only Voids/Expires dispositions;
 # "posts_only_with" = Posts needs the op, Voids/Expires admit) are recorded in
-# `note` and enforced by the kernel's class-specific checks.
+# `note` and enforced by the kernel's class-specific checks. A Resolution
+# row may name `disposition = "Expires"`: the expiry sweep's release is
+# decided by those rows (one per state), not by the class cell.
 #
 # Consumer: fa-journal laws step; the exhaustive generated test in fa-registry
 # (every posting class × every state must be decided exactly once).
@@ -81,6 +83,41 @@ class = "Resolution"
 state = "Locked"
 decision = "admit"
 note = "voids_expires: Posts refused"
+
+# ---- Resolution(Expires): the expiry sweep's release -----------------------
+# Plan §5.4 and Appendix C (Resolution row: "Voids/Expires Admit (the sweep's
+# intrinsic post_closed)" in Closed, "Voids/Expires Admit; Posts Refuse" in
+# Locked): the sweep expires a due hold dated in the hold's own period, so a
+# hold never becomes unreleasable because its period closed or locked. The
+# kernel's sweep and the oracle decide Expires from these rows alone: a row
+# that refuses refuses the sweep, and a missing row fails the registry.
+[[cell]]
+class = "Resolution"
+disposition = "Expires"
+state = "Future"
+decision = "refuse"
+[[cell]]
+class = "Resolution"
+disposition = "Expires"
+state = "Open"
+decision = "admit"
+[[cell]]
+class = "Resolution"
+disposition = "Expires"
+state = "SoftClosed"
+decision = "admit"
+[[cell]]
+class = "Resolution"
+disposition = "Expires"
+state = "Closed"
+decision = "admit"
+note = "the sweep's intrinsic post_closed (plan §5.4)"
+[[cell]]
+class = "Resolution"
+disposition = "Expires"
+state = "Locked"
+decision = "admit"
+note = "a reservation release (plan §7.3: Locked admits Voids/Expires)"
 
 # ---- Reversal -------------------------------------------------------------
 [[cell]]
