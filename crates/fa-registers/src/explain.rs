@@ -14,6 +14,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fa_journal::KernelError;
 use fa_journal::genesis::BookContext;
+use fa_journal::rows::AccountRow;
+use fa_model::symbols::label;
 use fa_model::{EntryClass, EvidenceRef, Supersession};
 use fa_money::Side;
 use fa_time::DateDay;
@@ -86,6 +88,8 @@ pub struct CellChange {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BalanceExplanation {
     pub account: VId,
+    /// The account as it stood at `known_at` (never a later chart's metadata).
+    pub account_row: AccountRow,
     pub period: String,
     /// The fixed snapshot read, including when the caller asked for HEAD.
     pub known_at: CommitSeq,
@@ -124,6 +128,20 @@ pub fn explain_balance<V: asupersync::fs::Vfs + Clone>(
     let seq = resolve_known_at(db, known_at)?;
     // The projection first; it also refuses a period unknown at `seq`.
     let fold = fold_period_at(db, book, period_code, Some(seq))?;
+    // The account is resolved at the same coordinate: one created later is
+    // refused like a period created later, never described with its
+    // present-day metadata.
+    let account_row = db
+        .vertex_at(account, seq)?
+        .filter(|r| r.labels.contains(&label::ACCOUNT))
+        .map(|r| AccountRow::decode(&r))
+        .transpose()?
+        .ok_or_else(|| {
+            RegisterError::InvalidSelection(format!(
+                "unknown account {:032x} at sequence {}",
+                account.0, seq.0
+            ))
+        })?;
     let entries = entries_at(db, book, seq)?;
     let resolved = resolutions(&entries)?;
     let mut contributions = Vec::new();
@@ -185,6 +203,7 @@ pub fn explain_balance<V: asupersync::fs::Vfs + Clone>(
     let history = history(&contributions)?;
     Ok(BalanceExplanation {
         account,
+        account_row,
         period: period_code.to_string(),
         known_at: seq,
         fold_digest: fold.fold_digest,

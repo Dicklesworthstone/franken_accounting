@@ -105,6 +105,29 @@ fn write(dir: &Path, name: &str, text: &str) -> String {
     p.display().to_string()
 }
 
+/// Record one source document in `book` and return its oid: the evidence an
+/// Original, Pending, or Adjusting entry cites (`--evidence <oid>`).
+fn source_doc(dir: &Path, book: &Path) -> String {
+    let f = write(dir, "source.txt", "INVOICE (cli fixture source document)");
+    let (code, out, err) = fa(
+        Some(book),
+        &[
+            "document",
+            "add",
+            &f,
+            "--kind",
+            "Invoice",
+            "--grade",
+            "HumanUpload",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    let oid = field(&out, "oid").unwrap_or_default().to_string();
+    assert_eq!(oid.len(), 64, "{out}");
+    oid
+}
+
 fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     let pat = format!("\"{key}\":");
     let i = line.find(&pat)? + pat.len();
@@ -239,13 +262,17 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Res
     let (code, out, err) = fa(Some(&book), &["period", "open", march, "--json"]);
     assert_eq!(code, 0, "{out}\n{err}");
     assert!(out.contains("\"from\":\"Future\"") && out.contains("\"to\":\"Open\""));
+    let ev = source_doc(&dir, &book);
 
     let intent = write(
         &dir,
         "entry.json",
         r#"{"class":"Original","effective_date":"2026-03-15","description":"March rent","idempotency_key":"inv-1001","legs":[{"side":"debit","account":"6000","amount":"1500.00 USD"},{"side":"credit","account":"1000","amount":"1500.00 USD"}]}"#,
     );
-    let (code, out, err) = fa(Some(&book), &["post", "--intent", &intent, "--json"]);
+    let (code, out, err) = fa(
+        Some(&book),
+        &["post", "--intent", &intent, "--evidence", &ev, "--json"],
+    );
     assert_eq!(code, 0, "{out}\n{err}");
     assert!(
         out.contains("\"event\":\"posted\"") && out.contains(&format!("\"period\":\"{march}\"")),
@@ -256,7 +283,10 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Res
     let digest = field(&out, "entry_digest").unwrap().to_string();
 
     // Same intent again: recorded, exit 0, same digest.
-    let (code, out, _) = fa(Some(&book), &["post", "--intent", &intent, "--json"]);
+    let (code, out, _) = fa(
+        Some(&book),
+        &["post", "--intent", &intent, "--evidence", &ev, "--json"],
+    );
     assert_eq!(code, 0);
     assert!(out.contains("\"event\":\"recorded\""), "{out}");
     assert_eq!(field(&out, "entry_digest"), Some(digest.as_str()));
@@ -275,7 +305,10 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Res
         "bad.json",
         r#"{"effective_date":"2026-03-15","idempotency_key":"inv-1002","legs":[{"side":"debit","account":"6000","amount":"1500.00 USD"},{"side":"credit","account":"1000","amount":"1499.99 USD"}]}"#,
     );
-    let (code, out, err) = fa(Some(&book), &["post", "--intent", &bad, "--json"]);
+    let (code, out, err) = fa(
+        Some(&book),
+        &["post", "--intent", &bad, "--evidence", &ev, "--json"],
+    );
     assert_eq!(code, 3, "{out}\n{err}");
     assert!(
         out.contains("\"event\":\"refusal\"")
@@ -294,7 +327,10 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Res
         "float.json",
         r#"{"effective_date":"2026-03-15","idempotency_key":"inv-1003","legs":[{"side":"debit","account":"6000","amount":1500.5},{"side":"credit","account":"1000","amount":"1500.50 USD"}]}"#,
     );
-    let (code, _, err) = fa(Some(&book), &["post", "--intent", &float]);
+    let (code, _, err) = fa(
+        Some(&book),
+        &["post", "--intent", &float, "--evidence", &ev],
+    );
     assert_eq!(code, 2);
     assert!(err.contains("amounts as strings"), "{err}");
 
@@ -307,14 +343,20 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Res
         "february.json",
         r#"{"effective_date":"2026-02-20","idempotency_key":"february-rent","legs":[{"side":"debit","account":"6000","amount":"100.00 USD"},{"side":"credit","account":"1000","amount":"100.00 USD"}]}"#,
     );
-    let (code, out, err) = fa(Some(&book), &["post", "--intent", &opening, "--json"]);
+    let (code, out, err) = fa(
+        Some(&book),
+        &["post", "--intent", &opening, "--evidence", &ev, "--json"],
+    );
     assert_eq!(code, 0, "{out}\n{err}");
     let future = write(
         &dir,
         "future-in-march.json",
         r#"{"effective_date":"2026-03-25","idempotency_key":"future-in-march","legs":[{"side":"debit","account":"6000","amount":"200.00 USD"},{"side":"credit","account":"1000","amount":"200.00 USD"}]}"#,
     );
-    let (code, out, err) = fa(Some(&book), &["post", "--intent", &future, "--json"]);
+    let (code, out, err) = fa(
+        Some(&book),
+        &["post", "--intent", &future, "--evidence", &ev, "--json"],
+    );
     assert_eq!(code, 0, "{out}\n{err}");
     let before_backdate = field(&out, "recorded_at").unwrap().to_string();
     let backdate = write(
@@ -322,7 +364,10 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Res
         "late-recorded-backdate.json",
         r#"{"effective_date":"2026-03-10","idempotency_key":"late-recorded-backdate","legs":[{"side":"debit","account":"6000","amount":"300.00 USD"},{"side":"credit","account":"1000","amount":"300.00 USD"}]}"#,
     );
-    let (code, out, err) = fa(Some(&book), &["post", "--intent", &backdate, "--json"]);
+    let (code, out, err) = fa(
+        Some(&book),
+        &["post", "--intent", &backdate, "--evidence", &ev, "--json"],
+    );
     assert_eq!(code, 0, "{out}\n{err}");
     let after_backdate = field(&out, "recorded_at").unwrap().to_string();
     assert!(after_backdate.parse::<u64>().unwrap() > before_backdate.parse::<u64>().unwrap());
@@ -556,7 +601,10 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Res
     assert_eq!(code, 0);
     let (code, _, _) = fa(Some(&book), &["period", "close", march]);
     assert_eq!(code, 0);
-    let (code, out, _) = fa(Some(&book), &["post", "--intent", &late, "--json"]);
+    let (code, out, _) = fa(
+        Some(&book),
+        &["post", "--intent", &late, "--evidence", &ev, "--json"],
+    );
     assert_eq!(code, 7, "{out}");
     assert!(
         out.contains("\"code\":\"FA-REF-010\"") && out.contains("Closed"),
@@ -567,7 +615,7 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Res
     assert_eq!(code, 7, "{out}");
     let (code, _, _) = fa(Some(&book), &["period", "reopen", march, "--to", "open"]);
     assert_eq!(code, 0);
-    let (code, _, _) = fa(Some(&book), &["post", "--intent", &late]);
+    let (code, _, _) = fa(Some(&book), &["post", "--intent", &late, "--evidence", &ev]);
     assert_eq!(code, 0);
     let (code, out, err) = fa(
         Some(&book),
@@ -605,12 +653,16 @@ fn reversals_by_target_and_idempotency_conflicts_follow_the_contract() -> std::i
         0
     );
     assert_eq!(fa(Some(&book), &["period", "open", "FY2026-P03"]).0, 0);
+    let ev = source_doc(&dir, &book);
     let intent = write(
         &dir,
         "entry.json",
         r#"{"effective_date":"2026-03-15","description":"rent","idempotency_key":"inv-1","legs":[{"side":"debit","account":"6000","amount":"10.00 USD"},{"side":"credit","account":"1000","amount":"10.00 USD"}]}"#,
     );
-    let (code, out, _) = fa(Some(&book), &["post", "--intent", &intent, "--json"]);
+    let (code, out, _) = fa(
+        Some(&book),
+        &["post", "--intent", &intent, "--evidence", &ev, "--json"],
+    );
     assert_eq!(code, 0, "{out}");
     let vid = field(&out, "vid").unwrap().to_string();
 
@@ -645,7 +697,10 @@ fn reversals_by_target_and_idempotency_conflicts_follow_the_contract() -> std::i
         "changed.json",
         r#"{"effective_date":"2026-03-15","description":"rent","idempotency_key":"inv-1","legs":[{"side":"debit","account":"6000","amount":"11.00 USD"},{"side":"credit","account":"1000","amount":"11.00 USD"}]}"#,
     );
-    let (code, out, _) = fa(Some(&book), &["post", "--intent", &changed, "--json"]);
+    let (code, out, _) = fa(
+        Some(&book),
+        &["post", "--intent", &changed, "--evidence", &ev, "--json"],
+    );
     assert_eq!(code, 6, "{out}");
     assert!(out.contains("\"code\":\"FA-REF-032\""), "{out}");
     // An unsupported class is refused with the bead that lands it (exit 3).
@@ -654,7 +709,10 @@ fn reversals_by_target_and_idempotency_conflicts_follow_the_contract() -> std::i
         "repl.json",
         r#"{"class":"Replacement","effective_date":"2026-03-15","idempotency_key":"rp-1","legs":[{"side":"debit","account":"6000","amount":"1.00 USD"},{"side":"credit","account":"1000","amount":"1.00 USD"}]}"#,
     );
-    let (code, out, _) = fa(Some(&book), &["post", "--intent", &repl, "--json"]);
+    let (code, out, _) = fa(
+        Some(&book),
+        &["post", "--intent", &repl, "--evidence", &ev, "--json"],
+    );
     assert_eq!(code, 3, "{out}");
     assert!(
         out.contains("\"code\":\"FA-REF-102\"") && out.contains("fa-omi"),
@@ -693,6 +751,7 @@ fn two_phase_reserve_and_resolve_follow_the_contract() -> std::io::Result<()> {
     assert_eq!(code, 0);
     let (code, _, _) = fa(Some(&book), &["period", "open", "FY2026-P03", "--json"]);
     assert_eq!(code, 0);
+    let ev = source_doc(&dir, &book);
     let row = |out: &str, code: &str| -> String {
         let found = out
             .split('{')
@@ -709,7 +768,10 @@ fn two_phase_reserve_and_resolve_follow_the_contract() -> std::io::Result<()> {
         "hold.json",
         r#"{"effective_date":"2026-03-10","description":"PO 77 hold","idempotency_key":"hold-77","legs":[{"side":"debit","account":"6000","amount":"80.00 USD"},{"side":"credit","account":"1000","amount":"80.00 USD"}]}"#,
     );
-    let (code, out, err) = fa(Some(&book), &["reserve", "--intent", &hold, "--json"]);
+    let (code, out, err) = fa(
+        Some(&book),
+        &["reserve", "--intent", &hold, "--evidence", &ev, "--json"],
+    );
     assert_eq!(code, 0, "{out}\n{err}");
     assert_eq!(field(&out, "event"), Some("posted"), "{out}");
     assert_eq!(field(&out, "class"), Some("Pending"), "{out}");
@@ -741,7 +803,10 @@ fn two_phase_reserve_and_resolve_follow_the_contract() -> std::io::Result<()> {
         "timed.json",
         r#"{"effective_date":"2026-03-10","idempotency_key":"hold-t","timeout_ns":5,"legs":[{"side":"debit","account":"6000","amount":"1.00 USD"},{"side":"credit","account":"1000","amount":"1.00 USD"}]}"#,
     );
-    let (code, out, _) = fa(Some(&book), &["reserve", "--intent", &timed, "--json"]);
+    let (code, out, _) = fa(
+        Some(&book),
+        &["reserve", "--intent", &timed, "--evidence", &ev, "--json"],
+    );
     assert_eq!(code, 2, "{out}");
     assert!(out.contains("timed holds"), "{out}");
     let stray = write(
@@ -749,7 +814,10 @@ fn two_phase_reserve_and_resolve_follow_the_contract() -> std::io::Result<()> {
         "stray.json",
         r#"{"effective_date":"2026-03-10","idempotency_key":"stray","legs":[{"side":"debit","account":"6000","amount":"1.00 USD","source_ordinal":0},{"side":"credit","account":"1000","amount":"1.00 USD"}]}"#,
     );
-    let (code, out, _) = fa(Some(&book), &["post", "--intent", &stray, "--json"]);
+    let (code, out, _) = fa(
+        Some(&book),
+        &["post", "--intent", &stray, "--evidence", &ev, "--json"],
+    );
     assert_eq!(code, 2, "{out}");
     assert!(out.contains("source_ordinal"), "{out}");
     // `fa reserve` refuses an intent that says it is something else.
@@ -758,7 +826,17 @@ fn two_phase_reserve_and_resolve_follow_the_contract() -> std::io::Result<()> {
         "orig.json",
         r#"{"class":"Original","effective_date":"2026-03-10","idempotency_key":"o-1","legs":[{"side":"debit","account":"6000","amount":"1.00 USD"},{"side":"credit","account":"1000","amount":"1.00 USD"}]}"#,
     );
-    let (code, _, _) = fa(Some(&book), &["reserve", "--intent", &not_a_hold, "--json"]);
+    let (code, _, _) = fa(
+        Some(&book),
+        &[
+            "reserve",
+            "--intent",
+            &not_a_hold,
+            "--evidence",
+            &ev,
+            "--json",
+        ],
+    );
     assert_eq!(code, 2);
 
     // Post 60.00 of the hold (ordinals inferred from account + side): the
@@ -809,7 +887,10 @@ fn two_phase_reserve_and_resolve_follow_the_contract() -> std::io::Result<()> {
         "hold2.json",
         r#"{"class":"Pending","effective_date":"2026-03-12","idempotency_key":"hold-78","legs":[{"side":"debit","account":"6000","amount":"20.00 USD"},{"side":"credit","account":"1000","amount":"20.00 USD"}]}"#,
     );
-    let (code, out, _) = fa(Some(&book), &["post", "--intent", &hold_2, "--json"]);
+    let (code, out, _) = fa(
+        Some(&book),
+        &["post", "--intent", &hold_2, "--evidence", &ev, "--json"],
+    );
     assert_eq!(code, 0, "{out}");
     let hold_2_vid = field(&out, "vid").unwrap().to_string();
     let tb = report(&book, &["tb", "--period", "FY2026-P03", "--json"]);
@@ -875,13 +956,17 @@ fn applications_settle_open_items_and_reversals_reopen_them() -> std::io::Result
     assert_eq!(code, 0);
     let (code, _, _) = fa(Some(&book), &["period", "open", "FY2026-P03", "--json"]);
     assert_eq!(code, 0);
+    let ev = source_doc(&dir, &book);
 
     let invoice = write(
         &dir,
         "invoice.json",
         r#"{"effective_date":"2026-03-05","idempotency_key":"inv-9","legs":[{"side":"debit","account":"1200","amount":"500.00 USD"},{"side":"credit","account":"4000","amount":"500.00 USD"}]}"#,
     );
-    let (code, out, err) = fa(Some(&book), &["post", "--intent", &invoice, "--json"]);
+    let (code, out, err) = fa(
+        Some(&book),
+        &["post", "--intent", &invoice, "--evidence", &ev, "--json"],
+    );
     assert_eq!(code, 0, "{out}\n{err}");
     let inv_vid = field(&out, "vid").unwrap().to_string();
     let (code, out, _) = fa(Some(&book), &["open-items", "--account", "1200", "--json"]);
@@ -898,7 +983,10 @@ fn applications_settle_open_items_and_reversals_reopen_them() -> std::io::Result
             r#"{{"effective_date":"2026-03-20","idempotency_key":"rcpt-9","legs":[{{"side":"debit","account":"1000","amount":"300.00 USD"}},{{"side":"credit","account":"1200","amount":"300.00 USD","settles":[{{"entry":"{inv_vid}","ordinal":0,"amount":"300.00 USD"}}]}}]}}"#
         ),
     );
-    let (code, out, err) = fa(Some(&book), &["post", "--intent", &receipt, "--json"]);
+    let (code, out, err) = fa(
+        Some(&book),
+        &["post", "--intent", &receipt, "--evidence", &ev, "--json"],
+    );
     assert_eq!(code, 0, "{out}\n{err}");
     let rcpt_vid = field(&out, "vid").unwrap().to_string();
     let (code, out, _) = fa(Some(&book), &["open-items", "--account", "1200", "--json"]);
@@ -918,7 +1006,10 @@ fn applications_settle_open_items_and_reversals_reopen_them() -> std::io::Result
             r#"{{"effective_date":"2026-03-21","idempotency_key":"rcpt-10","legs":[{{"side":"debit","account":"1000","amount":"250.00 USD"}},{{"side":"credit","account":"1200","amount":"250.00 USD","settles":[{{"entry":"{inv_vid}","ordinal":0,"amount":"250.00 USD"}}]}}]}}"#
         ),
     );
-    let (code, out, _) = fa(Some(&book), &["post", "--intent", &over, "--json"]);
+    let (code, out, _) = fa(
+        Some(&book),
+        &["post", "--intent", &over, "--evidence", &ev, "--json"],
+    );
     assert_eq!(code, 3, "{out}");
     assert_eq!(field(&out, "code"), Some("FA-REF-072"), "{out}");
     assert!(out.contains("20000"), "{out}");
@@ -1233,9 +1324,10 @@ fn explain_balance_lists_every_leg_re_adds_to_the_cell_and_replays_its_history()
     ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
     ok(&["period", "open", "FY2026-P02", "--json"]);
     ok(&["period", "open", "FY2026-P03", "--json"]);
+    let ev = source_doc(&dir, &book);
     let post = |verb: &str, name: &str, body: &str| -> (String, i128) {
         let path = write(&dir, name, body);
-        let posted = doc(&ok(&[verb, "--intent", &path, "--json"]));
+        let posted = doc(&ok(&[verb, "--intent", &path, "--evidence", &ev, "--json"]));
         (
             text(&posted, "vid").to_string(),
             int(&posted, "recorded_at").unwrap_or(-1),
@@ -1373,6 +1465,14 @@ fn explain_balance_lists_every_leg_re_adds_to_the_cell_and_replays_its_history()
         "{head}"
     );
     let by_entry = |vid: &str| contributions.iter().find(|c| text(c, "entry") == vid);
+    // Every leg names its entry's evidence heads: the cited source document.
+    for c in contributions {
+        let heads: Vec<&str> = arr(c, "evidence")
+            .iter()
+            .map(|e| text(e, "document_oid"))
+            .collect();
+        assert_eq!(heads, vec![ev.as_str()], "{head}");
+    }
     let reversal = by_entry(&rev).cloned().unwrap_or(Json::Null);
     assert_eq!(text(&reversal, "class"), "Reversal");
     let lineage = arr(&reversal, "supersedes");
@@ -1597,21 +1697,46 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     assert_eq!(run(true, &["period", "list"]).0, 0);
     assert_eq!(run(true, &["period", "open", "FY2026-P03"]).0, 0);
+    let source = write(
+        &dir,
+        "source.txt",
+        "INVOICE (event fixture source document)",
+    );
+    let (code, out) = run(
+        true,
+        &[
+            "document",
+            "add",
+            &source,
+            "--kind",
+            "Invoice",
+            "--grade",
+            "HumanUpload",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let ev = field(&out, "oid").unwrap_or_default().to_string();
     let rent = write(
         &dir,
         "rent.json",
         r#"{"effective_date":"2026-03-15","idempotency_key":"rent","legs":[{"side":"debit","account":"6000","amount":"10.00 USD"},{"side":"credit","account":"1000","amount":"10.00 USD"}]}"#,
     );
-    let (code, out) = run(true, &["post", "--intent", &rent]);
+    let (code, out) = run(true, &["post", "--intent", &rent, "--evidence", &ev]);
     assert_eq!(code, 0, "{out}");
     let vid = field(&out, "vid").unwrap_or_default().to_string();
-    assert_eq!(run(true, &["post", "--intent", &rent]).0, 0);
+    assert_eq!(
+        run(true, &["post", "--intent", &rent, "--evidence", &ev]).0,
+        0
+    );
     let bad = write(
         &dir,
         "bad.json",
         r#"{"effective_date":"2026-03-15","idempotency_key":"bad","legs":[{"side":"debit","account":"6000","amount":"10.00 USD"},{"side":"credit","account":"1000","amount":"9.99 USD"}]}"#,
     );
-    assert_eq!(run(true, &["post", "--intent", &bad]).0, 3);
+    assert_eq!(
+        run(true, &["post", "--intent", &bad, "--evidence", &ev]).0,
+        3
+    );
     assert_eq!(run(true, &["tb", "--period", "FY2026-P03"]).0, 0);
     assert_eq!(run(true, &["open-items"]).0, 0);
     assert_eq!(run(true, &["entry", "show", &vid]).0, 0);
@@ -1637,12 +1762,16 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         0
     );
     assert_eq!(run(true, &["verify", "open-items"]).0, 0);
+    assert_eq!(run(true, &["verify", "availability"]).0, 0);
     let more = write(
         &dir,
         "more.json",
         r#"{"effective_date":"2026-03-16","idempotency_key":"more","legs":[{"side":"debit","account":"6000","amount":"1.00 USD"},{"side":"credit","account":"1000","amount":"1.00 USD"}]}"#,
     );
-    assert_eq!(run(true, &["post", "--intent", &more]).0, 0);
+    assert_eq!(
+        run(true, &["post", "--intent", &more, "--evidence", &ev]).0,
+        0
+    );
     assert_eq!(
         run(true, &["verify", "registers", "--period", "FY2026-P03"]).0,
         8
@@ -1651,6 +1780,297 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(
         seen, declared,
         "every declared event is emitted, and nothing undeclared is"
+    );
+    Ok(())
+}
+
+#[test]
+fn balance_bounds_refuse_breaches_and_availability_verifies_by_refold() -> std::io::Result<()> {
+    let dir = tmp("limits")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Limit Co", "--json"]);
+
+    // A bound is an exact string in the account's single unit.
+    for (name, chart, needle) in [
+        (
+            "any.json",
+            r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"any","lower_bound":"0.00"}]}"#,
+            "single unit",
+        ),
+        (
+            "number.json",
+            r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD","lower_bound":0}]}"#,
+            "decimal string",
+        ),
+        (
+            "scale.json",
+            r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD","lower_bound":"0.001"}]}"#,
+            "lower_bound",
+        ),
+    ] {
+        let path = write(&dir, name, chart);
+        let (code, out, _) = fa(Some(&book), &["chart", "import", &path, "--json"]);
+        assert_eq!(code, 2, "{name}: {out}");
+        assert!(out.contains(needle), "{name}: {out}");
+    }
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD","lower_bound":"0.00"},{"code":"4000","name":"Sales","type":"Revenue","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    let listed = doc(&ok(&["chart", "list", "--json"]));
+    let account = |code: &str| {
+        arr(&listed, "accounts")
+            .iter()
+            .find(|a| text(a, "code") == code)
+            .cloned()
+            .unwrap_or(Json::Null)
+    };
+    assert_eq!(text(&account("1000"), "lower_bound"), "0.00 USD");
+    assert_eq!(account("1000").get("upper_bound"), Some(&Json::Null));
+    assert_eq!(account("6000").get("lower_bound"), Some(&Json::Null));
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let ev = source_doc(&dir, &book);
+
+    let intent = |name: &str, key: &str, debit: &str, credit: &str, amount: &str| {
+        write(
+            &dir,
+            name,
+            &format!(
+                r#"{{"effective_date":"2026-03-10","idempotency_key":"{key}","legs":[{{"side":"debit","account":"{debit}","amount":"{amount} USD"}},{{"side":"credit","account":"{credit}","amount":"{amount} USD"}}]}}"#
+            ),
+        )
+    };
+    let sale = intent("sale.json", "sale", "1000", "4000", "100.00");
+    ok(&["post", "--intent", &sale, "--evidence", &ev, "--json"]);
+    // Cash may not go below its bound: 100 - 150 < 0.
+    let big = intent("big.json", "big", "6000", "1000", "150.00");
+    let (code, out, err) = fa(
+        Some(&book),
+        &["post", "--intent", &big, "--evidence", &ev, "--json"],
+    );
+    assert_eq!(code, 3, "{out}\n{err}");
+    assert_eq!(field(&out, "code"), Some("FA-REF-090"), "{out}");
+    let rent = intent("rent.json", "rent", "6000", "1000", "60.00");
+    ok(&["post", "--intent", &rent, "--evidence", &ev, "--json"]);
+    // A reservation is an outflow too: 40 available, 50 is refused, 30 holds.
+    let hold = intent("hold.json", "hold", "6000", "1000", "50.00");
+    let (code, out, _) = fa(
+        Some(&book),
+        &["reserve", "--intent", &hold, "--evidence", &ev, "--json"],
+    );
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "code"), Some("FA-REF-090"), "{out}");
+    let small = intent("small.json", "small", "6000", "1000", "30.00");
+    ok(&["reserve", "--intent", &small, "--evidence", &ev, "--json"]);
+
+    let verified = doc(&ok(&["verify", "availability", "--json"]));
+    assert_eq!(int(&verified, "accounts_checked"), Some(1));
+    assert!(arr(&verified, "drift").is_empty());
+    let cash = arr(&verified, "accounts")
+        .first()
+        .cloned()
+        .unwrap_or(Json::Null);
+    assert_eq!(
+        (
+            text(&cash, "account"),
+            text(&cash, "normal"),
+            text(&cash, "lower_bound"),
+            text(&cash, "net"),
+            text(&cash, "pending_out"),
+            text(&cash, "pending_in"),
+        ),
+        (
+            "1000",
+            "debit",
+            "0.00 USD",
+            "40.00 USD",
+            "30.00 USD",
+            "0.00 USD"
+        )
+    );
+    assert_eq!(cash.get("upper_bound"), Some(&Json::Null));
+    let human = ok(&["verify", "availability"]);
+    assert!(human.contains("1 limited accounts"), "{human}");
+    Ok(())
+}
+
+#[test]
+fn explain_balance_resolves_the_account_as_known_at_the_requested_sequence() -> std::io::Result<()>
+{
+    let dir = tmp("explain-history")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "History Co", "--json"]);
+    // Periods first: at this sequence the chart does not exist yet.
+    let created = doc(&ok(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2026",
+        "--json",
+    ]));
+    let before_chart = int(&created, "recorded_at").unwrap_or(-1).to_string();
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    let installed = doc(&ok(&["chart", "import", &chart, "--json"]));
+    let with_chart = int(&installed, "recorded_at").unwrap_or(-1).to_string();
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let ev = source_doc(&dir, &book);
+    let rent = write(
+        &dir,
+        "rent.json",
+        r#"{"effective_date":"2026-03-15","idempotency_key":"rent","legs":[{"side":"debit","account":"6000","amount":"10.00 USD"},{"side":"credit","account":"1000","amount":"10.00 USD"}]}"#,
+    );
+    ok(&["post", "--intent", &rent, "--evidence", &ev, "--json"]);
+
+    // As known before the chart, Cash does not exist: refused with the
+    // sequence it does exist from, never described with today's metadata.
+    let (code, out, err) = fa(
+        Some(&book),
+        &[
+            "explain",
+            "balance",
+            "1000",
+            "--period",
+            "FY2026-P03",
+            "--as-known-at",
+            &before_chart,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 2, "{out}\n{err}");
+    let refused = doc(&out);
+    assert_eq!(text(&refused, "event"), "usage_error", "{out}");
+    assert!(
+        text(&refused, "message").contains(&format!("as known at {before_chart}"))
+            && text(&refused, "fix").contains(&format!("--as-known-at {with_chart}")),
+        "{out}"
+    );
+    // Positive control: as known at the chart's installation the account
+    // exists, with today's posting not yet recorded.
+    let then = doc(&ok(&[
+        "explain",
+        "balance",
+        "1000",
+        "--period",
+        "FY2026-P03",
+        "--as-known-at",
+        &with_chart,
+        "--json",
+    ]));
+    assert_eq!(
+        (text(&then, "name"), text(&then, "type")),
+        ("Cash", "Asset")
+    );
+    assert_eq!(
+        int(&then, "known_at").map(|n| n.to_string()),
+        Some(with_chart)
+    );
+    assert!(arr(&then, "contributions").is_empty() && arr(&then, "cells").is_empty());
+    let now = doc(&ok(&[
+        "explain",
+        "balance",
+        "1000",
+        "--period",
+        "FY2026-P03",
+        "--json",
+    ]));
+    assert_eq!(arr(&now, "contributions").len(), 1);
+    Ok(())
+}
+
+#[test]
+fn human_explain_shows_released_only_history_and_an_untouched_account_is_empty()
+-> std::io::Result<()> {
+    let dir = tmp("released")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Released Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let ev = source_doc(&dir, &book);
+    // Reserve 80, then void it: the hold's legs are released, nothing posts.
+    let hold = write(
+        &dir,
+        "hold.json",
+        r#"{"effective_date":"2026-03-12","idempotency_key":"hold","legs":[{"side":"debit","account":"6000","amount":"80.00 USD"},{"side":"credit","account":"1000","amount":"80.00 USD"}]}"#,
+    );
+    let held = doc(&ok(&[
+        "reserve",
+        "--intent",
+        &hold,
+        "--evidence",
+        &ev,
+        "--json",
+    ]));
+    let hold_vid = text(&held, "vid").to_string();
+    let void = write(
+        &dir,
+        "void.json",
+        &format!(
+            r#"{{"resolves":"{hold_vid}","disposition":"voids","effective_date":"2026-03-21","idempotency_key":"void"}}"#
+        ),
+    );
+    let voided = doc(&ok(&["resolve", "--intent", &void, "--json"]));
+    let void_at = int(&voided, "recorded_at").unwrap_or(-1);
+
+    let ex = doc(&ok(&[
+        "explain",
+        "balance",
+        "1000",
+        "--period",
+        "FY2026-P03",
+        "--json",
+    ]));
+    assert!(arr(&ex, "cells").is_empty(), "nothing posted or pending");
+    let legs = arr(&ex, "contributions");
+    assert_eq!(legs.len(), 1);
+    assert_eq!(
+        (text(&legs[0], "column"), int(&legs[0], "released_at")),
+        ("released", Some(void_at))
+    );
+    assert_eq!(int(&ex, "last_changed_at"), Some(void_at));
+
+    // Human mode shows the same released leg and history, never "no legs".
+    let human = ok(&["explain", "balance", "1000", "--period", "FY2026-P03"]);
+    assert!(!human.contains("no legs on this account"), "{human}");
+    assert!(
+        human.contains("every leg below is a released reservation")
+            && human.contains(&hold_vid)
+            && human.contains(&format!("released at {void_at}"))
+            && human.contains(&format!("last changed at recorded sequence {void_at}")),
+        "{human}"
+    );
+    // Control: an account no leg touched in the period is empty, exit 0.
+    let empty = ok(&["explain", "balance", "1000", "--period", "FY2026-P04"]);
+    assert!(
+        empty.contains("no legs on this account in FY2026-P04") && !empty.contains("contributions"),
+        "{empty}"
     );
     Ok(())
 }

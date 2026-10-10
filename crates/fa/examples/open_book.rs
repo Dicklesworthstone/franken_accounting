@@ -107,6 +107,18 @@ fn run() -> Result<(), BookError> {
             Amount::new(usd, 150_000),
         ),
     ];
+    let source = fa_journal::Document {
+        book_id,
+        kind: 1,
+        mime: "text/plain".into(),
+        grade: 3,
+        retrieved_by: principal,
+        bytes: b"INVOICE 2026-03 Landlord LLC: March rent 1,500.00 USD".to_vec(),
+    };
+    match book.add_document(&source)? {
+        Ok(d) => println!("document recorded at {:?}", d.recorded_at),
+        Err(r) => println!("document refused: {r}"),
+    }
     let proposal = EntryPayload {
         schema_minor: 0,
         book_id,
@@ -128,7 +140,7 @@ fn run() -> Result<(), BookError> {
         },
         principal_ref: principal,
         session_ref: None,
-        evidence: Vec::new(),
+        evidence: vec![source.evidence_ref(1)],
         supersession: Vec::new(),
         pending: None,
         external_ids: Vec::new(),

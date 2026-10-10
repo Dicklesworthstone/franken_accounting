@@ -8,8 +8,8 @@
 
 #![forbid(unsafe_code)]
 
-pub mod sod_policy;
 pub mod evidence_policy;
+pub mod sod_policy;
 pub mod toml;
 
 use core::fmt;

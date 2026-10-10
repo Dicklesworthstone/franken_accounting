@@ -15,6 +15,7 @@
 #![forbid(unsafe_code)]
 
 mod args;
+mod document;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -22,7 +23,7 @@ use std::process::ExitCode;
 use fa::book::{Book, BookError, BookKeys, Entropy};
 use fa_journal::BookContext;
 use fa_journal::{
-    AccountSpec, BookSpec, Capability, PostRequest, Posted, Refusal, UnitPolicy, exit,
+    AccountSpec, BalanceLimit, BookSpec, Capability, PostRequest, Posted, Refusal, UnitPolicy, exit,
 };
 use fa_model::{
     AccountType, EntryClass, EntryOrigin, EntryPayload, Id128, LegPayload, Oid, PeriodRef,
@@ -50,6 +51,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("post", post_cmd),
     ("reserve", reserve_cmd),
     ("resolve", resolve_cmd),
+    ("document", document::document_cmd),
     ("tb", tb_cmd),
     ("open-items", open_items_cmd),
     ("explain", explain_cmd),
@@ -998,6 +1000,38 @@ fn chart_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
                     })?),
                 };
                 let parent_code = row.get("parent").and_then(Json::as_str).map(str::to_string);
+                // Balance bounds (plan §5.4–5.5): exact decimals in the
+                // account's single unit and its normal-balance sign.
+                let bound = |key: &str| -> Result<Option<i128>, Fail> {
+                    let text = match row.get(key) {
+                        None | Some(Json::Null) => return Ok(None),
+                        Some(Json::Str(text)) => text,
+                        Some(_) => {
+                            return Err(usage(
+                                format!("{what}: `{key}` must be a decimal string"),
+                                format!("{key}: \"0.00\" (exact, in the account's unit)"),
+                            ));
+                        }
+                    };
+                    let UnitPolicy::Single(unit) = unit_policy else {
+                        return Err(usage(
+                            format!("{what}: `{key}` needs the account's single unit"),
+                            "unit: \"USD\" (a balance bound is stated in one registered unit)",
+                        ));
+                    };
+                    let code = units.get(unit).map(|u| u.code.clone()).unwrap_or_default();
+                    Amount::parse(&format!("{text} {code}"), units)
+                        .map(|a| Some(a.mantissa))
+                        .map_err(|e| {
+                            usage(
+                                format!("{what}: {key} `{text}`: {e:?}"),
+                                format!("{key}: \"0.00\" (exact, at the unit's scale)"),
+                            )
+                        })
+                };
+                let (lower, upper) = (bound("lower_bound")?, bound("upper_bound")?);
+                let limit =
+                    (lower.is_some() || upper.is_some()).then_some(BalanceLimit { lower, upper });
                 accounts.push(AccountSpec {
                     code: code.to_string(),
                     name: name.to_string(),
@@ -1006,7 +1040,7 @@ fn chart_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
                     is_leaf,
                     unit_policy,
                     parent_code,
-                    limit: None,
+                    limit,
                 });
             }
             let date = date_flag(args, DateDay(0))?;
@@ -1043,10 +1077,16 @@ fn chart_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
             let book = open_book(args)?;
             let rows = book.accounts()?;
             let units = &book.context().units;
+            let bound = |a: &fa_journal::AccountRow, m: Option<i128>| match (a.unit_policy, m) {
+                (UnitPolicy::Single(u), Some(m)) => s(Amount::new(u, m).render(units)),
+                _ => Json::Null,
+            };
             let items: Vec<Json> = rows
                 .iter()
                 .map(|a| {
                     obj(vec![
+                        ("lower_bound", bound(a, a.limit.and_then(|l| l.lower))),
+                        ("upper_bound", bound(a, a.limit.and_then(|l| l.upper))),
                         ("code", s(&a.code)),
                         ("name", s(&a.name)),
                         ("type", s(AccountType(a.account_type).name().unwrap_or("?"))),
@@ -1617,7 +1657,7 @@ fn post_with(out: &Out, args: &Args, forced: Option<EntryClass>) -> Result<(), F
         },
         principal_ref: who,
         session_ref: None,
-        evidence: Vec::new(),
+        evidence: document::parse_evidence(&doc, args, &book)?,
         supersession,
         pending,
         external_ids: Vec::new(),
@@ -1925,6 +1965,73 @@ fn drift_json(drifts: &[fa_registers::Drift]) -> Vec<Json> {
         .collect()
 }
 
+/// The `availability_verified` fields (also the detail of a failed
+/// verification): each limited account in its unit, and each drift row with
+/// the account its stored cell claims.
+fn availability_fields(
+    v: &fa_registers::AvailabilityVerification,
+    amount: &dyn Fn(&str, i128) -> Result<Json, Fail>,
+) -> Result<Vec<(&'static str, Json)>, Fail> {
+    let cell = |c: &fa_journal::LimitCell| {
+        obj(vec![
+            ("debits_posted", Json::Int(c.debits_posted)),
+            ("credits_posted", Json::Int(c.credits_posted)),
+            ("debits_pending", Json::Int(c.debits_pending)),
+            ("credits_pending", Json::Int(c.credits_pending)),
+            ("generation", Json::Int(i128::from(c.generation))),
+        ])
+    };
+    let mut accounts = Vec::with_capacity(v.accounts.len());
+    for a in &v.accounts {
+        accounts.push(obj(vec![
+            ("account", s(&a.code)),
+            ("normal", s(side_name(a.normal))),
+            (
+                "lower_bound",
+                a.limit
+                    .lower
+                    .map_or(Ok(Json::Null), |m| amount(&a.code, m))?,
+            ),
+            (
+                "upper_bound",
+                a.limit
+                    .upper
+                    .map_or(Ok(Json::Null), |m| amount(&a.code, m))?,
+            ),
+            ("net", amount(&a.code, a.net)?),
+            ("pending_out", amount(&a.code, a.pending_out)?),
+            ("pending_in", amount(&a.code, a.pending_in)?),
+            ("generation", Json::Int(i128::from(a.cell.generation))),
+        ]));
+    }
+    let drift: Vec<Json> = v
+        .drift
+        .iter()
+        .map(|d| {
+            obj(vec![
+                ("account", s(&d.code)),
+                ("stored", d.stored.as_ref().map_or(Json::Null, cell)),
+                ("refolded", cell(&d.refolded)),
+                (
+                    "stored_account",
+                    d.stored_account
+                        .map_or(Json::Null, |a| s(format!("{:032x}", a.0))),
+                ),
+                (
+                    "stored_account_code",
+                    d.stored_account_code.as_ref().map_or(Json::Null, s),
+                ),
+            ])
+        })
+        .collect();
+    Ok(vec![
+        ("known_at", Json::Int(i128::from(v.known_at.0))),
+        ("accounts_checked", Json::Int(v.accounts_checked as i128)),
+        ("accounts", Json::Arr(accounts)),
+        ("drift", Json::Arr(drift)),
+    ])
+}
+
 fn verify_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
     match args.positional.get(1).map(String::as_str) {
         Some("registers") => {
@@ -1982,6 +2089,45 @@ fn verify_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
                         }
                     ),
                     Json::Arr(details),
+                ))
+            }
+        }
+        Some("availability") => {
+            let book = open_book(args)?;
+            let v = book.verify_availability()?;
+            let units = &book.context().units;
+            let unit_of: std::collections::BTreeMap<String, fa_money::UnitId> = book
+                .accounts()?
+                .into_iter()
+                .filter_map(|a| match a.unit_policy {
+                    UnitPolicy::Single(u) => Some((a.code, u)),
+                    _ => None,
+                })
+                .collect();
+            let amount = |code: &str, m: i128| -> Result<Json, Fail> {
+                let unit = unit_of.get(code).ok_or_else(|| {
+                    Fail::Internal(format!("limited account `{code}` has no single unit"))
+                })?;
+                Ok(s(Amount::new(*unit, m).render(units)))
+            };
+            let fields = availability_fields(&v, &amount)?;
+            if v.is_green() {
+                out.event(
+                    "availability_verified",
+                    fields,
+                    &format!(
+                        "availability verified by refold: {} limited accounts, stored cells agree",
+                        v.accounts_checked
+                    ),
+                );
+                Ok(())
+            } else {
+                Err(Fail::Verification(
+                    format!(
+                        "{} limited accounts' stored cells differ from the refold",
+                        v.drift.len()
+                    ),
+                    obj(fields),
                 ))
             }
         }
@@ -2190,6 +2336,22 @@ fn explain_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
             },
         ));
     };
+    // Today's chart names the account; whether it existed is decided at the
+    // requested coordinate (the register layer refuses it independently).
+    if let Some(seq) = known_at
+        && seq < account.created_at
+    {
+        return Err(usage(
+            format!(
+                "account `{code}` does not exist as known at {}: the chart created it at sequence {}",
+                seq.0, account.created_at.0
+            ),
+            format!("--as-known-at {} or later (or HEAD)", account.created_at.0),
+        ));
+    }
+    let ex = book.explain_balance(account.vid, period, known_at)?;
+    // Name, type, and leafness as they stood at `known_at`.
+    let account = &ex.account_row;
     if !account.is_leaf {
         return Err(usage(
             format!(
@@ -2198,7 +2360,6 @@ fn explain_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
             "explain one of its leaf accounts (fa chart list --book <dir>)",
         ));
     }
-    let ex = book.explain_balance(account.vid, period, known_at)?;
     let units = &book.context().units;
     let render = |unit: u32, m: i128| Amount::new(fa_money::UnitId(unit), m).render(units);
     let unit_code = |unit: u32| {
@@ -2347,31 +2508,37 @@ fn explain_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
         hex(&ex.fold_digest[..8]),
         ex.watermark.map_or("none".to_string(), |w| w.0.to_string())
     );
-    if by_unit.is_empty() {
+    // Only an account no leg ever touched in this period is empty: a
+    // reservation released since still has its legs and its history.
+    if ex.contributions.is_empty() {
         println!("no legs on this account in {}", ex.period);
         return Ok(());
     }
-    println!(
-        "{:<6} {:>20} {:>20} {:>20} {:>7} {:>20} {:>20}",
-        "unit",
-        "posted debits",
-        "posted credits",
-        "net",
-        "entries",
-        "pending debits",
-        "pending credits"
-    );
-    for (u, [d, c, n, pd, pc, _]) in &by_unit {
+    if by_unit.is_empty() {
+        println!("nothing posted or pending: every leg below is a released reservation");
+    } else {
         println!(
             "{:<6} {:>20} {:>20} {:>20} {:>7} {:>20} {:>20}",
-            unit_code(*u),
-            render(*u, *d),
-            render(*u, *c),
-            render(*u, d - c),
-            n,
-            render(*u, *pd),
-            render(*u, *pc)
+            "unit",
+            "posted debits",
+            "posted credits",
+            "net",
+            "entries",
+            "pending debits",
+            "pending credits"
         );
+        for (u, [d, c, n, pd, pc, _]) in &by_unit {
+            println!(
+                "{:<6} {:>20} {:>20} {:>20} {:>7} {:>20} {:>20}",
+                unit_code(*u),
+                render(*u, *d),
+                render(*u, *c),
+                render(*u, d - c),
+                n,
+                render(*u, *pd),
+                render(*u, *pc)
+            );
+        }
     }
     println!("contributions (by recorded sequence)");
     println!(
@@ -2533,5 +2700,71 @@ mod tests {
         let handled: Vec<&str> = HANDLERS.iter().map(|(name, _)| *name).collect();
         let registered: Vec<&str> = reg.verbs.iter().map(|v| v.name.as_str()).collect();
         assert_eq!(handled, registered);
+    }
+
+    /// A drift row only arises from a tampered store, which no binary test
+    /// can produce: check the rendered rows (a cell rebound to another
+    /// account, a missing cell) against the robot schema here.
+    #[test]
+    fn availability_drift_rows_render_to_the_schema() {
+        let reg = verbs::registry().expect("verbs.toml");
+        let cell = |posted: i128| fa_journal::LimitCell {
+            debits_posted: posted,
+            credits_posted: 0,
+            debits_pending: 0,
+            credits_pending: 0,
+            generation: 1,
+        };
+        let v = fa_registers::AvailabilityVerification {
+            known_at: CommitSeq(9),
+            accounts_checked: 2,
+            accounts: vec![fa_registers::AccountAvailability {
+                account: VId(1),
+                code: "1000".into(),
+                normal: Side::Debit,
+                limit: BalanceLimit {
+                    lower: Some(0),
+                    upper: None,
+                },
+                cell: cell(4_000),
+                net: 4_000,
+                pending_out: 0,
+                pending_in: 0,
+            }],
+            drift: vec![
+                fa_registers::AvailabilityDrift {
+                    account: VId(1),
+                    code: "1000".into(),
+                    stored: Some(cell(4_000)),
+                    refolded: cell(4_000),
+                    stored_account: Some(VId(2)),
+                    stored_account_code: Some("1100".into()),
+                },
+                fa_registers::AvailabilityDrift {
+                    account: VId(3),
+                    code: "1200".into(),
+                    stored: None,
+                    refolded: cell(0),
+                    stored_account: None,
+                    stored_account_code: None,
+                },
+            ],
+        };
+        let amount = |_: &str, m: i128| -> Result<Json, Fail> {
+            Ok(s(format!("{}.{:02} USD", m / 100, m % 100)))
+        };
+        let rendered = availability_fields(&v, &amount);
+        assert!(rendered.is_ok(), "every amount renders");
+        let mut fields = rendered.unwrap_or_default();
+        fields.push(("event", s("availability_verified")));
+        let line = obj(fields).render();
+        assert_eq!(reg.check_line(&line), Ok("availability_verified"), "{line}");
+        assert!(
+            line.contains(&format!(r#""stored_account":"{:032x}""#, 2))
+                && line.contains(r#""stored_account_code":"1100""#)
+                && line.contains(r#""stored":null"#)
+                && line.contains(r#""net":"40.00 USD""#),
+            "{line}"
+        );
     }
 }

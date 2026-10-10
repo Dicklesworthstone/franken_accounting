@@ -740,9 +740,9 @@ mod tests {
         ] {
             assert!(r.check_line(bad).is_err(), "admitted {bad}");
         }
-        let nested = r#"{"accounts":[{"code":"1000","leaf":true,"name":"Cash","type":"Asset","unit":"USD"}],"event":"accounts"}"#;
+        let nested = r#"{"accounts":[{"code":"1000","leaf":true,"lower_bound":"0.00 USD","name":"Cash","type":"Asset","unit":"USD","upper_bound":null}],"event":"accounts"}"#;
         assert_eq!(r.check_line(nested), Ok("accounts"));
-        let nested_bad = r#"{"accounts":[{"code":"1000","leaf":"yes","name":"Cash","type":"Asset","unit":"USD"}],"event":"accounts"}"#;
+        let nested_bad = r#"{"accounts":[{"code":"1000","leaf":"yes","lower_bound":null,"name":"Cash","type":"Asset","unit":"USD","upper_bound":null}],"event":"accounts"}"#;
         assert!(r.check_line(nested_bad).is_err());
         for (amount, ok) in [
             ("1500.00 USD", true),

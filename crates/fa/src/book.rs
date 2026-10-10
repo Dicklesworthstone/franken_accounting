@@ -507,6 +507,28 @@ impl Book {
         )
     }
 
+    /// Record a document (plan §9.1): content-addressed; the same bytes of
+    /// the same kind are the recorded outcome.
+    pub fn add_document(
+        &mut self,
+        doc: &fa_journal::Document,
+    ) -> Outcome<fa_journal::DocumentAdded> {
+        let purposes = self.purposes();
+        let ctx = &self.ctx;
+        let runtime = &self.runtime;
+        Ok(
+            with_store!(&mut self.store, db => runtime.block_on(async { fa_journal::add_document(db, &purposes, ctx, doc).await }))?,
+        )
+    }
+
+    /// The document at `oid`, verified against its commitment.
+    pub fn read_document(
+        &self,
+        oid: &fa_model::Oid,
+    ) -> Result<Option<fa_journal::Document>, BookError> {
+        Ok(with_store!(&self.store, db => fa_journal::read_document(db, oid))?)
+    }
+
     /// Read a committed entry back by its derived identity, verifying its digests.
     pub fn read_entry(&self, vid: VId) -> Result<Option<(Entry, CommitSeq)>, BookError> {
         Ok(with_store!(&self.store, db => fa_journal::post::read_entry(db, vid))?)
@@ -705,6 +727,16 @@ mod tests {
                 Amount::new(usd, cents_credit),
             ),
         ];
+        let source = fa_journal::Document {
+            book_id,
+            kind: 1,
+            mime: "text/plain".into(),
+            grade: 3,
+            retrieved_by: principal,
+            bytes: b"INVOICE (facade fixture source document)".to_vec(),
+        };
+        book.add_document(&source)?
+            .expect("the fixture document is admitted");
         let proposal = EntryPayload {
             schema_minor: 0,
             book_id,
@@ -725,7 +757,7 @@ mod tests {
             },
             principal_ref: principal,
             session_ref: None,
-            evidence: Vec::new(),
+            evidence: vec![source.evidence_ref(1)],
             supersession: Vec::new(),
             pending: None,
             external_ids: Vec::new(),
@@ -837,6 +869,61 @@ mod tests {
                 .map(|a| a.code.as_str())
                 .collect::<Vec<_>>(),
             vec!["1000", "6000"]
+        );
+    }
+
+    #[test]
+    fn explain_balance_resolves_the_account_at_the_requested_sequence() {
+        let book_id = Id128([4; 16]);
+        let (spec, usd) = spec(book_id);
+        let mut book = Book::create_memory(
+            BookKeys::for_development(0x5b),
+            spec,
+            Entropy::deterministic(7),
+        )
+        .expect("create");
+        let principal = VId(1);
+        let day = DateDay::from_ymd(2026, 3, 15).unwrap();
+        // Periods first: as known at `before_chart` no account exists.
+        let (before_chart, periods) = book.create_periods(2026).expect("periods");
+        let march = periods
+            .iter()
+            .find(|p| p.contains(day) && p.kind == PeriodKind::Normal)
+            .unwrap()
+            .code
+            .clone();
+        let installed = book
+            .install_chart(&chart(usd), principal, day, b"chart")
+            .expect("kernel")
+            .expect("installs");
+        book.transition_period(&march, PeriodTransition::Open, principal, 1, day, b"open")
+            .expect("kernel")
+            .expect("opens");
+        post_rent(&mut book, usd, principal, day, b"rent", 150_000)
+            .expect("kernel")
+            .expect("admitted");
+        let cash = account_vid(book_id, "1000");
+        let refused = book
+            .explain_balance(cash, &march, Some(before_chart))
+            .unwrap_err();
+        assert!(
+            matches!(
+                refused,
+                BookError::Registers(fa_registers::RegisterError::InvalidSelection(_))
+            ),
+            "{refused}"
+        );
+        assert_eq!(refused.exit(), fa_journal::exit::USAGE);
+        let then = book
+            .explain_balance(cash, &march, Some(installed.recorded_at))
+            .unwrap();
+        assert_eq!(then.account_row.name, "Cash");
+        assert!(then.contributions.is_empty() && then.cells.is_empty());
+        let now = book.explain_balance(cash, &march, None).unwrap();
+        assert_eq!(now.contributions.len(), 1);
+        assert_eq!(
+            now.cells.iter().map(|c| c.credits).collect::<Vec<_>>(),
+            vec![150_000]
         );
     }
 

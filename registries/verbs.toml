@@ -56,7 +56,7 @@ flags = ["--date", "--key"]
 switches = []
 events = ["chart_installed", "accounts"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["chart import <chart.json> [--date YYYY-MM-DD] [--key K]", "chart list"]
+usage = ["chart import <chart.json> [--date YYYY-MM-DD] [--key K]   (an account may carry lower_bound/upper_bound: \"0.00\" in its unit and normal-balance sign)", "chart list"]
 example = "fa chart import chart.json --book ./books/myco --json"
 
 [[verb]]
@@ -76,11 +76,11 @@ name = "post"
 summary = "Post one entry intent under the accounting laws (balance, period law, idempotency)."
 writes = true
 subcommands = []
-flags = ["--intent", "--grant"]
+flags = ["--intent", "--grant", "--evidence"]
 switches = []
 events = ["posted", "recorded"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["post --intent <file.json|-> [--grant <op>]... [--as <principal>]"]
+usage = ["post --intent <file.json|-> [--grant <op>]... [--evidence <oid>]... [--as <principal>]"]
 example = "fa post --intent entry.json --book ./books/myco --json"
 
 [[verb]]
@@ -88,7 +88,7 @@ name = "reserve"
 summary = "Reserve amounts as a Pending entry (two-phase): nothing is posted."
 writes = true
 subcommands = []
-flags = ["--intent", "--grant"]
+flags = ["--intent", "--grant", "--evidence"]
 switches = []
 events = ["posted", "recorded"]
 exits = [0, 2, 3, 4, 5, 6, 7]
@@ -100,12 +100,24 @@ name = "resolve"
 summary = "Resolve a hold: post a sub-vector drawn from it, or void it; the rest is released."
 writes = true
 subcommands = []
-flags = ["--intent", "--grant"]
+flags = ["--intent", "--grant", "--evidence"]
 switches = []
 events = ["posted", "recorded"]
 exits = [0, 2, 3, 4, 5, 6, 7]
 usage = ["resolve --intent <res.json> (resolves <hold vid>; disposition posts (legs drawn from the hold) | voids)"]
 example = "fa resolve --intent res.json --book ./books/myco --json"
+
+[[verb]]
+name = "document"
+summary = "Record a source document, content-addressed; its doc_commit is the public commitment an entry's evidence cites."
+writes = true
+subcommands = ["add"]
+flags = ["--kind", "--mime", "--grade"]
+switches = []
+events = ["document"]
+exits = [0, 2, 3, 4, 5]
+usage = ["document add <file|-> [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload]"]
+example = "fa document add invoice.pdf --kind Invoice --mime application/pdf --grade HumanUpload --book ./books/myco --json"
 
 [[verb]]
 name = "tb"
@@ -145,14 +157,14 @@ example = "fa explain balance 1000 --period FY2026-P03 --book ./books/myco --jso
 
 [[verb]]
 name = "verify"
-summary = "Verify derived state against the journal by refolding: registers, or open-item applied mirrors (exit 8 on drift)."
+summary = "Verify derived state against the journal by refolding: registers, open-item applied mirrors, or limited accounts' availability cells (exit 8 on drift)."
 writes = false
-subcommands = ["registers", "open-items"]
+subcommands = ["registers", "open-items", "availability"]
 flags = ["--period", "--fiscal-year"]
 switches = []
-events = ["registers_verified", "open_items_verified"]
+events = ["registers_verified", "open_items_verified", "availability_verified"]
 exits = [0, 2, 4, 5, 8]
-usage = ["verify registers ((--period <code>)... | --fiscal-year N)", "verify open-items"]
+usage = ["verify registers ((--period <code>)... | --fiscal-year N)", "verify open-items", "verify availability"]
 example = "fa verify registers --period FY2026-P03 --book ./books/myco"
 
 [[verb]]
@@ -233,6 +245,11 @@ expands = ["post"]
 # ---------------------------------------------------------------------------
 # Events: every `event` a --json line can carry, with exactly its fields.
 # ---------------------------------------------------------------------------
+
+[[event]]
+name = "document"
+doc = "A document the book holds. `oid` locates it; `doc_commit` = BLAKE3(\"fa:doc:v1\" ‖ kind ‖ length ‖ 4 KiB-chunk Merkle root) is its public commitment; `evidence` is the citation for an intent's `evidence` list (or pass --evidence <oid>). On a repeat intake `already_recorded` is true and kind/grade are the book's. `self_sourced` (AgentUpload) will need a reviewer's attestation before promotion; not yet enforced."
+fields = ["oid:hex", "doc_commit:hex", "kind:string", "grade:string", "self_sourced:bool", "size:int", "recorded_at:seq", "already_recorded:bool", "evidence:evidence_ref"]
 
 [[event]]
 name = "version"
@@ -350,6 +367,11 @@ doc = "Every posted leg's applied mirror equals the open-item fold."
 fields = ["known_at:seq", "legs_checked:int", "drift:[applied_drift]"]
 
 [[event]]
+name = "availability_verified"
+doc = "Every limited account's expected LimitCell (the vertex at its derived identity) equals the refold from the journal — sums, generation, and its account_ref binding (plan §5.4–5.5); each account's availability in its normal-balance sign. Scope: only those expected cells are examined; LimitCell vertices that no limited account's identity references are not checked and not reported."
+fields = ["known_at:seq", "accounts_checked:int", "accounts:[account_availability]", "drift:[availability_drift]"]
+
+[[event]]
 name = "registers_materialized"
 doc = "A period's registers written from a fresh fold (derived state)."
 fields = ["period:string", "cells:int", "pending_cells:int", "entries:int", "watermark:seq?", "fold_digest:hex", "recorded_at:seq"]
@@ -367,6 +389,11 @@ fields = ["account:string", "account_vid:hex", "name:string", "type:string", "pe
 # ---------------------------------------------------------------------------
 # Shapes: the objects events nest.
 # ---------------------------------------------------------------------------
+
+[[shape]]
+name = "evidence_ref"
+doc = "One citation: the document, its commitment, and the EVIDENCED_BY role (evidence_policy.toml [[role]])."
+fields = ["document_oid:hex", "doc_commit:hex", "role:string"]
 
 [[shape]]
 name = "alias"
@@ -405,8 +432,8 @@ fields = ["name:string", "type:string"]
 
 [[shape]]
 name = "account"
-doc = "One chart row."
-fields = ["code:string", "name:string", "type:string", "leaf:bool", "unit:string"]
+doc = "One chart row; the bounds are null unless the chart declared a balance limit."
+fields = ["code:string", "name:string", "type:string", "leaf:bool", "unit:string", "lower_bound:amount?", "upper_bound:amount?"]
 
 [[shape]]
 name = "period"
@@ -457,6 +484,21 @@ fields = ["debits:int", "credits:int", "entry_count:int"]
 name = "applied_drift"
 doc = "A leg whose applied mirror differs from the open-item fold."
 fields = ["entry:hex", "ordinal:int", "stored:int?", "refolded:int"]
+
+[[shape]]
+name = "account_availability"
+doc = "One limited account: its bounds, net, and pending flows in its normal-balance sign, and the refolded cell's generation."
+fields = ["account:string", "normal:string", "lower_bound:amount?", "upper_bound:amount?", "net:amount", "pending_out:amount", "pending_in:amount", "generation:int"]
+
+[[shape]]
+name = "availability_drift"
+doc = "A limited account whose expected LimitCell differs from the refold (raw mantissas), or is bound (account_ref) to another account or to none: `stored_account` is the vid the stored cell claims (null when the cell or its reference is missing or malformed), `stored_account_code` its code when it is an account of this book."
+fields = ["account:string", "stored:limit_cell?", "refolded:limit_cell", "stored_account:hex?", "stored_account_code:string?"]
+
+[[shape]]
+name = "limit_cell"
+doc = "A LimitCell's raw mantissas and its generation."
+fields = ["debits_posted:int", "credits_posted:int", "debits_pending:int", "credits_pending:int", "generation:int"]
 
 [[shape]]
 name = "entry_leg"
