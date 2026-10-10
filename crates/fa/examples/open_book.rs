@@ -41,6 +41,7 @@ fn run() -> Result<(), BookError> {
             is_leaf: false,
             unit_policy: UnitPolicy::Single(usd),
             parent_code: None,
+            limit: None,
         },
         AccountSpec {
             code: "1000".into(),
@@ -50,6 +51,7 @@ fn run() -> Result<(), BookError> {
             is_leaf: true,
             unit_policy: UnitPolicy::Single(usd),
             parent_code: Some("1".into()),
+            limit: None,
         },
         AccountSpec {
             code: "6000".into(),
@@ -59,6 +61,7 @@ fn run() -> Result<(), BookError> {
             is_leaf: true,
             unit_policy: UnitPolicy::Single(usd),
             parent_code: None,
+            limit: None,
         },
     ];
     match book.install_chart(&chart, principal, day, b"chart-v1")? {

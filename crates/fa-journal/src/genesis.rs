@@ -16,6 +16,7 @@ use fgdb::{Database, WriteBatch};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
+use crate::limit::{BalanceLimit, LimitCell, limit_cell_vid};
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{book_root, bytes, edge_id, kind_tag, scalar_bytes, scalar_text};
 
@@ -209,6 +210,9 @@ pub struct AccountSpec {
     pub is_leaf: bool,
     pub unit_policy: UnitPolicy,
     pub parent_code: Option<String>,
+    /// A balance limit in the account's single unit and normal-balance sign
+    /// (plan §5.4–5.5); the account then owns a `LimitCell`.
+    pub limit: Option<BalanceLimit>,
 }
 
 impl AccountSpec {
@@ -436,9 +440,46 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
                 "mark the parent as a summary",
             )));
         }
+        if let Some(limit) = &a.limit {
+            let why = if !limit.is_well_formed() {
+                Some("a balance limit names at least one bound, with lower ≤ upper")
+            } else if !a.is_leaf {
+                Some("a balance limit belongs on a leaf (only leaves accept legs)")
+            } else if !matches!(a.unit_policy, UnitPolicy::Single(_)) {
+                Some("a balance limit is stated in the account's single registered unit")
+            } else {
+                None
+            };
+            if let Some(why) = why {
+                return Ok(Err(Refusal::new(
+                    code::STRUCTURE,
+                    exit::USAGE,
+                    format!("account `{}`: {why}", a.code),
+                    "plan §5.4–5.5 (balance limits)",
+                    "give the account one unit, make it a leaf, and name lower ≤ upper (or drop the limit)",
+                )));
+            }
+        }
     }
     let mut w = Writer::new();
     w.list(accounts, |w, a| a.canonical(w));
+    // Limits are an additive trailing list, written only when the chart
+    // declares one, so a chart without limits keeps its canonical bytes.
+    let limits: Vec<(&str, BalanceLimit)> = accounts
+        .iter()
+        .filter_map(|a| a.limit.map(|l| (a.code.as_str(), l)))
+        .collect();
+    if !limits.is_empty() {
+        w.list(&limits, |w, (code, l)| {
+            w.str(code)
+                .opt(l.lower.as_ref(), |w, v| {
+                    w.i128(*v);
+                })
+                .opt(l.upper.as_ref(), |w, v| {
+                    w.i128(*v);
+                });
+        });
+    }
     let canonical_bytes = w.finish().map_err(fa_model::EntryError::from)?;
 
     let proposal = EntryPayload {
@@ -505,8 +546,20 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
                 CanonicalScalar::Int(a.unit_policy.mirror()),
             ),
         ];
+        if let Some(limit) = &a.limit {
+            props.extend(limit.props()?);
+        }
         props.sort_by_key(|(k, _)| k.0);
         batch.create_vertex(avid, vec![label::ACCOUNT], props);
+        // A limited account's reservation cell is born with it (plan §5.5
+        // interim R-ESC): zero sums, generation 0.
+        if a.limit.is_some() {
+            batch.create_vertex(
+                limit_cell_vid(avid),
+                vec![label::LIMIT_CELL],
+                LimitCell::default().create_props(avid)?,
+            );
+        }
     }
     for a in accounts {
         if let Some(p) = &a.parent_code {

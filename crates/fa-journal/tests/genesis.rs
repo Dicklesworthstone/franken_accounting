@@ -364,6 +364,7 @@ fn harness() -> Harness {
             is_leaf: false,
             unit_policy: UnitPolicy::Single(usd),
             parent_code: None,
+            limit: None,
         },
         AccountSpec {
             code: "1000".into(),
@@ -373,6 +374,7 @@ fn harness() -> Harness {
             is_leaf: true,
             unit_policy: UnitPolicy::Single(usd),
             parent_code: Some("1".into()),
+            limit: None,
         },
         AccountSpec {
             code: "6000".into(),
@@ -382,6 +384,7 @@ fn harness() -> Harness {
             is_leaf: true,
             unit_policy: UnitPolicy::Single(usd),
             parent_code: None,
+            limit: None,
         },
         AccountSpec {
             code: "1200".into(),
@@ -391,6 +394,7 @@ fn harness() -> Harness {
             is_leaf: true,
             unit_policy: UnitPolicy::Single(usd),
             parent_code: Some("1".into()),
+            limit: None,
         },
         AccountSpec {
             code: "4000".into(),
@@ -400,6 +404,7 @@ fn harness() -> Harness {
             is_leaf: true,
             unit_policy: UnitPolicy::Single(usd),
             parent_code: None,
+            limit: None,
         },
     ];
     let day = DateDay::from_ymd(2026, 1, 1).unwrap();

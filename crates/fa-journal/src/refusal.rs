@@ -134,6 +134,15 @@ pub mod code {
     pub const DOCUMENT_INTAKE: &str = "FA-REF-083";
     /// The declared provenance grade is one only a verified receipt chain may confer.
     pub const GRADE_UNVERIFIED: &str = "FA-REF-084";
+    /// The entry moves value out of a limited account below its lower bound
+    /// (`net − pending_out − x < lower_bound`, plan §5.4).
+    pub const AVAILABILITY_LOWER: &str = "FA-REF-090";
+    /// The entry moves value into a limited account above its upper bound
+    /// (`net + pending_in + x > upper_bound`, plan §5.4).
+    pub const AVAILABILITY_UPPER: &str = "FA-REF-091";
+    /// A limited account's posted or reserved total would leave the `i128`
+    /// register ceiling.
+    pub const LIMIT_CEILING: &str = "FA-REF-092";
 }
 
 /// A foundation failure. Exit 5; never partial.

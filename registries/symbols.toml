@@ -224,6 +224,15 @@ name = "disposition"
 [[property]]
 id = 41
 name = "applied"
+[[property]]
+id = 42
+name = "lower_bound"
+[[property]]
+id = 43
+name = "upper_bound"
+[[property]]
+id = 44
+name = "generation"
 
 # ---- relations ------------------------------------------------------------
 [[relation]]

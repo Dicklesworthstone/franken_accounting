@@ -19,6 +19,7 @@
 
 pub mod evidence;
 pub mod genesis;
+pub mod limit;
 pub mod period;
 pub mod post;
 pub mod refusal;
@@ -29,6 +30,7 @@ pub use genesis::{
     AccountSpec, BookContext, BookSpec, ChartInstalled, UnitPolicy, create_book, create_periods,
     install_chart,
 };
+pub use limit::{BalanceLimit, LimitCell, limit_cell_vid};
 pub use period::{Transitioned, transition_period};
 pub use post::{Capability, PostRequest, Posted, post};
 pub use refusal::{KernelError, Refusal, exit};

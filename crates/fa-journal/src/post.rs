@@ -22,8 +22,13 @@
 //! amount, creating SETTLES edges and moving the target leg's `applied`
 //! mirror by compare-and-set; reversing an applying entry emits the exact
 //! derived UNSETTLES effects, and an entry with live applications against
-//! it is not reversed. Every other registered class is refused with the
-//! bead that lands it; no class passes through a generic two-leg check.
+//! it is not reversed. Reserved availability (plan §5.4, §5.5 interim
+//! R-ESC): every limited account the entry moves is judged on its
+//! `LimitCell`, read as a point witness and moved by compare-and-set on its
+//! generation — pending outflows reserve, pending inflows never finance, a
+//! resolution releases its hold's full original legs. Every other registered
+//! class is refused with the bead that lands it; no class passes through a
+//! generic two-leg check.
 
 use std::collections::btree_map::Entry as MapEntry;
 use std::collections::{BTreeMap, BTreeSet};
@@ -43,6 +48,7 @@ use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
 use crate::genesis::{BookContext, UnitPolicy};
+use crate::limit::{self, LimitCell, Movement, limit_cell_vid};
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{
     AccountRow, applied_witness, edge_id, leg_vid, mantissa_scalar, prop, resolution_vid,
@@ -1053,7 +1059,9 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     // 7b. Resolution law (plan §5.4): the witnessed target is a Pending whose
     //     digest matches the handle; a Posts sub-vector is drawn leg by leg
     //     from it (same account, unit, side, dimensions; 0 < posted ≤
-    //     reserved). Balance per unit was checked in step 2.
+    //     reserved). Balance per unit was checked in step 2. The hold's legs
+    //     are kept: a resolution releases all of them (step 7d).
+    let mut released: Vec<fa_model::LegPayload> = Vec::new();
     if let Some((target, disposition)) = &resolution {
         let Some(row) = txn.vertex(db, target.vid)? else {
             txn.abort();
@@ -1110,6 +1118,7 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
                 "name the pending entry; a posted entry is corrected with a Reversal",
             )));
         }
+        released.clone_from(&pending_entry.proposal.legs);
         if let Disposition::Posts { source_ordinals } = disposition {
             for (i, (leg, ordinal)) in proposal.legs.iter().zip(source_ordinals).enumerate() {
                 let Some(src) = pending_entry.proposal.legs.get(usize::from(*ordinal)) else {
@@ -1158,6 +1167,98 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
         }
     }
 
+    // 7d. Reserved availability (plan §5.4, §5.5 interim R-ESC): each limited
+    //     account the entry moves, in order of first appearance (its own
+    //     legs, then a resolved hold's legs), is judged on its LimitCell —
+    //     read here as a point witness, so a post that moves the cell first
+    //     makes this one a first-committer-wins conflict. Pending legs
+    //     reserve, a resolution releases the hold's full original legs, and
+    //     every other leg posts.
+    let mut account_rows: BTreeMap<VId, AccountRow> =
+        accounts.iter().map(|a| (a.vid, a.clone())).collect();
+    let mut moves: Vec<(VId, Movement)> = Vec::new();
+    let effects = proposal
+        .legs
+        .iter()
+        .map(|l| (l, false))
+        .chain(released.iter().map(|l| (l, true)));
+    for (leg, is_release) in effects {
+        let account = match account_rows.entry(leg.account_ref) {
+            MapEntry::Occupied(o) => o.into_mut(),
+            MapEntry::Vacant(v) => {
+                let row = txn.vertex(db, leg.account_ref)?.ok_or_else(|| {
+                    KernelError::Corrupt(format!(
+                        "the hold's account {:032x} is missing",
+                        leg.account_ref.0
+                    ))
+                })?;
+                v.insert(AccountRow::decode(&row)?)
+            }
+        };
+        if account.limit.is_none() {
+            continue;
+        }
+        let at = match moves.iter().position(|(a, _)| *a == leg.account_ref) {
+            Some(at) => at,
+            None => {
+                moves.push((leg.account_ref, Movement::default()));
+                moves.len() - 1
+            }
+        };
+        let m = &mut moves[at].1;
+        if is_release {
+            m.release(leg.side, leg.amount.mantissa)?;
+        } else if proposal.class == EntryClass::PENDING {
+            m.reserve(leg.side, leg.amount.mantissa)?;
+        } else {
+            m.post(leg.side, leg.amount.mantissa)?;
+        }
+    }
+    let mut cell_moves: Vec<(VId, LimitCell, LimitCell)> = Vec::with_capacity(moves.len());
+    for (account_vid, m) in &moves {
+        let account = account_rows
+            .get(account_vid)
+            .ok_or_else(|| KernelError::Corrupt("judged account row".into()))?;
+        let limit_spec = account
+            .limit
+            .ok_or_else(|| KernelError::Corrupt("judged account has no limit".into()))?;
+        let cvid = limit_cell_vid(*account_vid);
+        let row = txn
+            .vertex(db, cvid)?
+            .filter(|r| r.labels.contains(&label::LIMIT_CELL))
+            .ok_or_else(|| {
+                KernelError::Corrupt(format!(
+                    "limited account `{}` has no limit cell; `fa verify availability` names it; nothing is admitted on it",
+                    account.code
+                ))
+            })?;
+        let before = LimitCell::decode(&row)?;
+        let normal = if account.normal_balance == 0 {
+            Side::Debit
+        } else {
+            Side::Credit
+        };
+        match limit::apply(&before, normal, &limit_spec, m)? {
+            Ok(next) => cell_moves.push((cvid, before, next)),
+            Err(breach) => {
+                txn.abort();
+                // install_chart admits a limit only on a single-unit account.
+                let UnitPolicy::Single(unit) = account.unit_policy else {
+                    return Err(KernelError::Corrupt(format!(
+                        "limited account `{}` has no single unit",
+                        account.code
+                    )));
+                };
+                return Ok(Err(limit::refusal(
+                    &breach,
+                    &account.code,
+                    unit,
+                    &book.units,
+                )));
+            }
+        }
+    }
+
     // 8. Seal and stage: Entry + Legs + edges, one commit.
     let entry: Entry = req
         .proposal
@@ -1188,6 +1289,9 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
         );
     }
     in_period.add_edge(edge_id(relation::IN_PERIOD, evid, pvid), evid, pvid, vec![]);
+    for (cvid, before, next) in &cell_moves {
+        before.stage(next, *cvid, &mut has_leg)?;
+    }
     let mut batches = vec![has_leg, posts_to, in_period];
     if let Some(target) = reversal_target {
         let mut supersedes = WriteBatch::new(relation::SUPERSEDES);

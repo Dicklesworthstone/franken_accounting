@@ -12,6 +12,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod availability;
 pub mod explain;
 pub mod open_items;
 
@@ -30,6 +31,9 @@ use fgdb_crypto::Hasher;
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
+pub use availability::{
+    AccountAvailability, AvailabilityDrift, AvailabilityVerification, verify_availability,
+};
 pub use explain::{BalanceExplanation, explain_balance};
 pub use open_items::{
     Application, AppliedDrift, OpenItem, OpenItemVerification, open_items, verify_open_items,

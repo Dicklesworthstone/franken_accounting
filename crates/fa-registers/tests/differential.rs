@@ -9,17 +9,18 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
+use fa_journal::evidence::{Document, add_document};
 use fa_journal::*;
 use fa_model::{
-    ControlPayload, Disposition, EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable, Id128,
-    LegPayload, Oid, Pending, PeriodRef, SealKey, Settlement, Supersession, SupersessionKind,
-    SymbolTable, account_vid,
+    ControlPayload, Disposition, EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable,
+    EvidenceRef, Id128, LegPayload, Oid, Pending, PeriodRef, SealKey, Settlement, Supersession,
+    SupersessionKind, SymbolTable, account_vid,
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
-use fa_reference::{Account, Cell, Int, Intent, Leg, Oracle, Resolve, Settle, Verdict};
+use fa_reference::{Account, Cell, Int, Intent, Leg, Limit, Oracle, Resolve, Settle, Verdict};
 use fa_registers::{
-    TrialBalance, balance_as_of, fold_period, open_items, period_activity, trial_balance,
-    trial_balance_at, verify_open_items,
+    TrialBalance, balance_as_of, explain_balance, fold_period, open_items, period_activity,
+    trial_balance, trial_balance_at, verify_availability, verify_open_items,
 };
 use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodState, PeriodTransition};
 use fgdb::{Database, DatabaseKeys, MemVfs, WriteBatch};
@@ -53,6 +54,10 @@ struct Kernel {
     root: Cx,
     db: Database<MemVfs>,
     book: BookContext,
+    /// A real source document recorded at setup; every generated intent cites
+    /// it (FA-INV-05 evidence-minimum). The oracle does not model evidence, so
+    /// every generated intent satisfies the minimum by construction.
+    evidence: Vec<EvidenceRef>,
 }
 
 impl Kernel {
@@ -69,7 +74,18 @@ const ACCOUNTS: &[(&str, u8, bool)] = &[
     ("1", 1, false),
 ];
 
+/// One chart row: code, type, leaf, normal side (0 debit, 1 credit), limit.
+type ChartRow = (&'static str, u8, bool, u8, Option<BalanceLimit>);
+
 fn setup() -> (Kernel, Oracle, Vec<String>) {
+    let chart: Vec<ChartRow> = ACCOUNTS
+        .iter()
+        .map(|(code, ty, leaf)| (*code, *ty, *leaf, 0, None))
+        .collect();
+    setup_with(&chart)
+}
+
+fn setup_with(rows: &[ChartRow]) -> (Kernel, Oracle, Vec<String>) {
     let runtime = RuntimeBuilder::new().build().expect("runtime");
     let root = runtime.request_cx_with_budget(Budget::INFINITE);
     let ctx = PurposeContexts::narrow_runtime_root(&root);
@@ -102,16 +118,17 @@ fn setup() -> (Kernel, Oracle, Vec<String>) {
         seal_key: SealKey([0x11; 32]),
         symbols,
     };
-    let chart: Vec<AccountSpec> = ACCOUNTS
+    let chart: Vec<AccountSpec> = rows
         .iter()
-        .map(|(code, ty, leaf)| AccountSpec {
+        .map(|(code, ty, leaf, normal, limit)| AccountSpec {
             code: (*code).into(),
             name: (*code).into(),
             account_type: *ty,
-            normal_balance: 0,
+            normal_balance: *normal,
             is_leaf: *leaf,
             unit_policy: UnitPolicy::Single(usd),
             parent_code: None,
+            limit: *limit,
         })
         .collect();
     let day = DateDay::from_ymd(2026, 1, 1).unwrap();
@@ -139,14 +156,41 @@ fn setup() -> (Kernel, Oracle, Vec<String>) {
         .filter(|p| p.kind == PeriodKind::Normal)
         .map(|p| p.code.clone())
         .collect();
+    let source = Document {
+        book_id: book.book_id,
+        kind: 1,
+        mime: "text/plain".into(),
+        grade: 3,
+        retrieved_by: PRINCIPAL,
+        bytes: b"INVOICE (differential fixture source document)".to_vec(),
+    };
+    runtime
+        .block_on(async { add_document(&mut db, &ctx, &book, &source).await })
+        .expect("kernel")
+        .expect("the fixture document is admitted");
+    let evidence = vec![source.evidence_ref(1)];
 
     let mut oracle = Oracle::new(calendar);
-    for (code, _, leaf) in ACCOUNTS {
+    for (code, _, leaf, normal, limit) in rows {
         oracle.add_account(Account {
             code: (*code).into(),
             is_leaf: *leaf,
             unit: Some(usd.0),
         });
+        if let Some(l) = limit {
+            oracle.set_limit(
+                code,
+                Limit {
+                    normal: if *normal == 0 {
+                        fa_reference::Side::Debit
+                    } else {
+                        fa_reference::Side::Credit
+                    },
+                    lower: l.lower,
+                    upper: l.upper,
+                },
+            );
+        }
     }
     oracle.create_periods(2026);
     (
@@ -155,6 +199,7 @@ fn setup() -> (Kernel, Oracle, Vec<String>) {
             root,
             db,
             book,
+            evidence,
         },
         oracle,
         normal,
@@ -268,7 +313,7 @@ fn kernel_post_raw(
         },
         principal_ref: PRINCIPAL,
         session_ref: None,
-        evidence: Vec::new(),
+        evidence: k.evidence.clone(),
         supersession,
         pending,
         external_ids: Vec::new(),
@@ -988,6 +1033,116 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
             );
         }
     }
+    // `fa explain balance` agrees with the oracle's journal leg by leg, for
+    // every (period, account): the posted legs of the period's posting
+    // entries, the pending legs of its unresolved holds, and the released
+    // legs of its resolved holds — identified by the kernel handle of the
+    // oracle's journal index, so the selection is checked against the model,
+    // not against the kernel's own fold. Its cells are the fold's cells, and
+    // its known-at history ends at them.
+    let resolved_holds: BTreeSet<usize> = (0..oracle.journal_len())
+        .filter_map(|i| oracle.entry(i).and_then(|e| e.resolves))
+        .collect();
+    let mut explained_legs = 0usize;
+    for code in &periods {
+        let fold = fold_period(&k.db, &k.book, code).unwrap();
+        for (account, ..) in ACCOUNTS {
+            let vid = account_vid(k.book.book_id, account);
+            let ex = explain_balance(&k.db, &k.book, vid, code, None).unwrap();
+            let mut kernel: Vec<(VId, u16, bool, i128, &str)> = ex
+                .contributions
+                .iter()
+                .map(|c| {
+                    (
+                        c.entry,
+                        c.ordinal,
+                        c.side == Side::Debit,
+                        c.mantissa,
+                        c.column.name(),
+                    )
+                })
+                .collect();
+            let mut model = Vec::new();
+            for (i, handle) in refs.iter().enumerate() {
+                let e = oracle.entry(i).expect("journal index");
+                if e.period != *code {
+                    continue;
+                }
+                let column = match (e.class.as_str(), resolved_holds.contains(&i)) {
+                    ("Pending", true) => "released",
+                    ("Pending", false) => "pending",
+                    _ => "posted",
+                };
+                for (ordinal, l) in e.legs.iter().enumerate() {
+                    if l.account == *account {
+                        model.push((
+                            handle.vid,
+                            u16::try_from(ordinal).expect("small ordinal"),
+                            l.side == fa_reference::Side::Debit,
+                            l.mantissa,
+                            column,
+                        ));
+                    }
+                }
+            }
+            kernel.sort();
+            model.sort();
+            assert_eq!(kernel, model, "{code}/{account}: explained legs");
+            explained_legs += kernel.len();
+            let own = |cells: &[fa_registers::Cell]| -> Vec<fa_registers::Cell> {
+                cells
+                    .iter()
+                    .filter(|c| c.key.account == vid)
+                    .cloned()
+                    .collect()
+            };
+            assert_eq!(ex.cells, own(&fold.cells), "{code}/{account}: cells");
+            assert_eq!(ex.pending, own(&fold.pending), "{code}/{account}: pending");
+            assert_eq!(ex.fold_digest, fold.fold_digest, "{code}: fold digest");
+            let units: BTreeSet<u32> = ex
+                .history
+                .iter()
+                .map(|h| h.unit_id)
+                .chain(ex.cells.iter().chain(&ex.pending).map(|c| c.key.unit_id))
+                .collect();
+            for unit in units {
+                let column = |cells: &[fa_registers::Cell]| {
+                    cells
+                        .iter()
+                        .find(|c| c.key.unit_id == unit)
+                        .map_or((0, 0), |c| (c.debits, c.credits))
+                };
+                let last = ex.history.iter().rev().find(|h| h.unit_id == unit);
+                assert_eq!(
+                    last.map(|h| ((h.debits, h.credits), (h.debits_pending, h.credits_pending))),
+                    Some((column(&ex.cells), column(&ex.pending))),
+                    "{code}/{account}: the history ends at the cells"
+                );
+            }
+        }
+    }
+    assert!(explained_legs > 0, "the history explains some legs");
+    // The busiest cell's history replays: each point is the explanation as
+    // known at that sequence (a fresh read of the journal prefix).
+    let cash = account_vid(k.book.book_id, "1000");
+    let ex = explain_balance(&k.db, &k.book, cash, &periods[2], None).unwrap();
+    assert!(ex.history.len() > 3, "March cash has a history");
+    for h in &ex.history {
+        let then = explain_balance(&k.db, &k.book, cash, &periods[2], Some(h.recorded_at)).unwrap();
+        let posted = then.cells.iter().find(|c| c.key.unit_id == h.unit_id);
+        let pending = then.pending.iter().find(|c| c.key.unit_id == h.unit_id);
+        assert_eq!(
+            (
+                posted.map_or(0, |c| c.debits),
+                posted.map_or(0, |c| c.credits),
+                pending.map_or(0, |c| c.debits),
+                pending.map_or(0, |c| c.credits),
+            ),
+            (h.debits, h.credits, h.debits_pending, h.credits_pending),
+            "March cash as known at {}",
+            h.recorded_at.0
+        );
+    }
     // Open items agree leg by leg (original, applied, open), and the kernel's
     // applied mirrors verify against the fold.
     let kernel_items = open_items(&k.db, &k.book, None, None).unwrap();
@@ -1491,4 +1646,567 @@ fn temporal_reports_resolve_period_metadata_at_the_recorded_snapshot() {
         Some(future_day),
     );
     assert_amounts(&current, "1000", 11, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Reserved availability (plan §5.4, §5.5; bead fa-rqe)
+// ---------------------------------------------------------------------------
+
+/// Cash is debit-normal with a floor of 0 and a cap; the credit facility is
+/// credit-normal with a cap on drawn principal; the rest are unlimited.
+const LIMITED: &[ChartRow] = &[
+    (
+        "1000",
+        1,
+        true,
+        0,
+        Some(BalanceLimit {
+            lower: Some(0),
+            upper: Some(400_000),
+        }),
+    ),
+    (
+        "2100",
+        2,
+        true,
+        1,
+        Some(BalanceLimit {
+            lower: None,
+            upper: Some(150_000),
+        }),
+    ),
+    ("3000", 3, true, 1, None),
+    ("4000", 4, true, 1, None),
+    ("6000", 5, true, 0, None),
+];
+
+/// `(L, U) = (net − pending_out, net + pending_in)` of a limited account on
+/// the oracle's literal fold, in its normal-balance sign.
+fn oracle_lu(oracle: &Oracle, code: &str, debit_normal: bool) -> (i128, i128) {
+    let a = oracle.availability(code);
+    let v = |x: &Int| x.to_i128().expect("generated sums fit i128");
+    let (dp, cp, dr, cr) = (
+        v(&a.debits_posted),
+        v(&a.credits_posted),
+        v(&a.debits_pending),
+        v(&a.credits_pending),
+    );
+    if debit_normal {
+        (dp - cp - cr, dp - cp + dr)
+    } else {
+        (cp - dp - dr, cp - dp + cr)
+    }
+}
+
+/// The kernel's stored cell equals the oracle's literal fold, generation
+/// included, after every step.
+fn assert_cell(k: &Kernel, oracle: &Oracle, code: &str, step: u64) {
+    let vid = limit_cell_vid(account_vid(k.book.book_id, code));
+    let row = k.db.vertex(vid).expect("read").expect("limit cell exists");
+    let cell = LimitCell::decode(&row).expect("decodes");
+    let a = oracle.availability(code);
+    assert_eq!(
+        (
+            Some(cell.debits_posted),
+            Some(cell.credits_posted),
+            Some(cell.debits_pending),
+            Some(cell.credits_pending),
+            u64::try_from(cell.generation).expect("non-negative"),
+        ),
+        (
+            a.debits_posted.to_i128(),
+            a.credits_posted.to_i128(),
+            a.debits_pending.to_i128(),
+            a.credits_pending.to_i128(),
+            a.generation,
+        ),
+        "step {step}: limit cell of {code}"
+    );
+}
+
+/// An amount near a boundary: exactly it, one over, strictly inside, or a
+/// random size that may land anywhere.
+fn near(rng: &mut Rng, edge: i128) -> i128 {
+    match rng.below(5) {
+        0 if edge > 0 => edge,
+        1 => edge.max(0) + 1,
+        2 if edge > 1 => 1 + rng.below(edge as u64 - 1) as i128,
+        _ => 1 + rng.below(60_000) as i128,
+    }
+}
+
+#[test]
+fn kernel_and_oracle_agree_on_limited_accounts() {
+    let (mut k, mut oracle, periods) = setup_with(LIMITED);
+    let usd = k.book.units.lookup("USD").unwrap();
+    open_period(&mut k, &mut oracle, &periods[2], 1);
+    let dates = [
+        DateDay::from_ymd(2026, 3, 2).unwrap(),
+        DateDay::from_ymd(2026, 3, 10).unwrap(),
+        DateDay::from_ymd(2026, 3, 20).unwrap(),
+    ];
+    let mut rng = Rng(0xA5A5_5A5A_0F0F_F0F0);
+    let leg = |side: fa_reference::Side, account: &str, mantissa: i128| Leg {
+        side,
+        account: account.into(),
+        unit: usd.0,
+        mantissa,
+    };
+    let dr = fa_reference::Side::Debit;
+    let cr = fa_reference::Side::Credit;
+    let mut refs: Vec<EntryRef> = Vec::new();
+    let mut posted_intents: Vec<Intent> = Vec::new();
+    let mut holds: Vec<usize> = Vec::new();
+    let mut resolved: BTreeSet<usize> = BTreeSet::new();
+    let mut reversed: BTreeSet<usize> = BTreeSet::new();
+    let mut refused: BTreeMap<&'static str, u32> = BTreeMap::new();
+    let (mut posted, mut recorded) = (0u32, 0u32);
+    // Boundary evidence: an outflow of exactly the available amount posts,
+    // one more is refused; likewise for inflows against a cap.
+    let (mut exact_out, mut over_out, mut exact_in, mut over_in) = (0u32, 0u32, 0u32, 0u32);
+    let mut posts_resolutions = 0u32;
+    let mut voids = 0u32;
+    let mut outflow_holds = 0u32;
+
+    for step in 0..700u64 {
+        let (cash_l, cash_u) = oracle_lu(&oracle, "1000", true);
+        let (_, loan_u) = oracle_lu(&oracle, "2100", false);
+        let cash_avail = cash_l; // lower bound 0
+        let cash_room = 400_000 - cash_u;
+        let loan_room = 150_000 - loan_u;
+        let key = format!("l{step}").into_bytes();
+        let plain = |legs: Vec<Leg>, key: Vec<u8>, date: DateDay| Intent {
+            class: "Original".into(),
+            date,
+            discriminator: None,
+            legs,
+            key,
+            ops: vec!["post".into()],
+            approvals: 0,
+            reverses: None,
+            resolves: None,
+            settles: Vec::new(),
+        };
+        let date = dates[rng.below(3) as usize];
+        // (intent, boundary: Some((edge, amount, is_outflow)))
+        let (intent, boundary) = match rng.below(20) {
+            0..=2 => {
+                // Fund cash from equity: an inflow against the cash cap.
+                let a = near(&mut rng, cash_room);
+                (
+                    plain(vec![leg(dr, "1000", a), leg(cr, "3000", a)], key, date),
+                    Some((cash_room, a, false)),
+                )
+            }
+            3..=5 => {
+                // Spend cash: an outflow against the floor.
+                let a = near(&mut rng, cash_avail);
+                (
+                    plain(vec![leg(dr, "6000", a), leg(cr, "1000", a)], key, date),
+                    Some((cash_avail, a, true)),
+                )
+            }
+            6..=7 => {
+                // Hold an outflow: it reserves against the floor.
+                let a = near(&mut rng, cash_avail);
+                let mut i = plain(vec![leg(dr, "6000", a), leg(cr, "1000", a)], key, date);
+                i.class = "Pending".into();
+                (i, Some((cash_avail, a, true)))
+            }
+            8 => {
+                // Hold an inflow: it never finances, but counts against the cap.
+                let a = near(&mut rng, cash_room);
+                let mut i = plain(vec![leg(dr, "1000", a), leg(cr, "4000", a)], key, date);
+                i.class = "Pending".into();
+                (i, Some((cash_room, a, false)))
+            }
+            9..=10 => {
+                // Draw on the facility: an inflow on both limited accounts.
+                let a = near(&mut rng, loan_room.min(cash_room));
+                (
+                    plain(vec![leg(dr, "1000", a), leg(cr, "2100", a)], key, date),
+                    None,
+                )
+            }
+            11 => {
+                // Repay: an outflow of cash, an improvement on the facility.
+                let a = near(&mut rng, cash_avail);
+                (
+                    plain(vec![leg(dr, "2100", a), leg(cr, "1000", a)], key, date),
+                    None,
+                )
+            }
+            12..=14 if holds.iter().any(|h| !resolved.contains(h)) => {
+                // Resolve an open hold: post part of it, or void it.
+                let open: Vec<usize> = holds
+                    .iter()
+                    .copied()
+                    .filter(|h| !resolved.contains(h))
+                    .collect();
+                let target = open[rng.below(open.len() as u64) as usize];
+                let hold = oracle.entry(target).expect("hold").clone();
+                let (legs, posts) = if rng.chance(55) {
+                    let t = 1 + rng.below(hold.legs[0].mantissa as u64) as i128;
+                    (
+                        hold.legs
+                            .iter()
+                            .map(|l| leg(l.side, &l.account, t))
+                            .collect(),
+                        Some(vec![0u16, 1]),
+                    )
+                } else {
+                    (Vec::new(), None)
+                };
+                let mut i = plain(legs, key, date);
+                i.class = "Resolution".into();
+                i.resolves = Some(Resolve { target, posts });
+                (i, None)
+            }
+            15 if !refs.is_empty() => {
+                // Reverse a posted entry: reversing a funding is an outflow.
+                let candidates: Vec<usize> = (0..refs.len())
+                    .filter(|i| !reversed.contains(i))
+                    .filter(|i| {
+                        oracle.entry(*i).is_some_and(|e| {
+                            matches!(e.class.as_str(), "Original" | "Reversal")
+                                || (e.class == "Resolution" && !e.legs.is_empty())
+                        })
+                    })
+                    .collect();
+                if candidates.is_empty() {
+                    continue;
+                }
+                let target = candidates[rng.below(candidates.len() as u64) as usize];
+                let original = oracle.entry(target).expect("posted").clone();
+                let mut i = plain(
+                    original
+                        .legs
+                        .iter()
+                        .map(|l| leg(l.side.flipped(), &l.account, l.mantissa))
+                        .collect(),
+                    key,
+                    date,
+                );
+                i.class = "Reversal".into();
+                i.reverses = Some(target);
+                (i, None)
+            }
+            16 => {
+                // Two legs on cash in one entry: judged on the net movement.
+                let a = 1 + rng.below(40_000) as i128;
+                let b = near(&mut rng, cash_avail + a);
+                let (big, small) = if b >= a { (b, a) } else { (a, b) };
+                let mut legs = vec![leg(dr, "1000", a), leg(cr, "1000", b)];
+                legs.push(if b >= a {
+                    leg(dr, "6000", big - small)
+                } else {
+                    leg(cr, "4000", big - small)
+                });
+                if big == small {
+                    legs.pop();
+                    legs.push(leg(dr, "6000", 1));
+                    legs.push(leg(cr, "4000", 1));
+                }
+                (plain(legs, key, date), None)
+            }
+            17 if !posted_intents.is_empty() => {
+                // An exact resubmission: the recorded outcome, never re-judged.
+                let again = posted_intents[rng.below(posted_intents.len() as u64) as usize].clone();
+                (again, None)
+            }
+            _ => {
+                // Unlimited accounts only: never touches a cell.
+                let a = 1 + rng.below(9_000) as i128;
+                (
+                    plain(vec![leg(dr, "6000", a), leg(cr, "4000", a)], key, date),
+                    None,
+                )
+            }
+        };
+
+        let kernel = kernel_post(&mut k, &intent, usd, &refs);
+        let model = oracle.post(&intent);
+        match (&kernel, &model) {
+            (Ok(Posted::Committed { entry_ref, .. }), Verdict::Posted { index, .. }) => {
+                assert_eq!(*index, refs.len(), "step {step}: journal index");
+                refs.push(*entry_ref);
+                posted += 1;
+                posted_intents.push(intent.clone());
+                match intent.class.as_str() {
+                    "Pending" => {
+                        holds.push(*index);
+                        if intent.legs[1].account == "1000" {
+                            outflow_holds += 1;
+                        }
+                    }
+                    "Resolution" => {
+                        let r = intent.resolves.as_ref().expect("resolution");
+                        resolved.insert(r.target);
+                        if r.posts.is_some() {
+                            posts_resolutions += 1;
+                        } else {
+                            voids += 1;
+                        }
+                    }
+                    "Reversal" => {
+                        reversed.insert(intent.reverses.expect("target"));
+                    }
+                    _ => {}
+                }
+                if let Some((edge, amount, out)) = boundary
+                    && amount == edge
+                {
+                    if out {
+                        exact_out += 1;
+                    } else {
+                        exact_in += 1;
+                    }
+                }
+            }
+            (Ok(Posted::AlreadyRecorded { entry_ref, .. }), Verdict::Recorded { index }) => {
+                assert_eq!(*entry_ref, refs[*index], "step {step}: recorded handle");
+                recorded += 1;
+            }
+            (Err(r), Verdict::Refused { code }) => {
+                assert_eq!(r.code, *code, "step {step}: refusal for {intent:?}: {r}");
+                *refused.entry(code).or_insert(0) += 1;
+                if matches!(*code, "FA-REF-090" | "FA-REF-091") {
+                    // A breach names the bound, the net, the reservations,
+                    // and the fix.
+                    assert!(
+                        r.message.contains("bound") && r.message.contains("net"),
+                        "{r}"
+                    );
+                    assert!(r.cite.contains("§5.4"), "{r}");
+                    assert!(r.fix.contains("Resolution(Voids)"), "{r}");
+                    assert_eq!(r.exit, exit::REFUSAL);
+                }
+                if let Some((edge, amount, out)) = boundary
+                    && amount == edge.max(0) + 1
+                {
+                    if out && *code == "FA-REF-090" {
+                        over_out += 1;
+                    }
+                    if !out && *code == "FA-REF-091" {
+                        over_in += 1;
+                    }
+                }
+            }
+            _ => assert_eq!(
+                format!("kernel {kernel:?}"),
+                format!("oracle {model:?}"),
+                "step {step}: disagreement on {intent:?}"
+            ),
+        }
+        assert_cell(&k, &oracle, "1000", step);
+        assert_cell(&k, &oracle, "2100", step);
+        // The law is an invariant of every committed prefix here: both
+        // accounts were born inside their bounds.
+        let (l, u) = oracle_lu(&oracle, "1000", true);
+        assert!(l >= 0 && u <= 400_000, "step {step}: cash L {l} U {u}");
+        assert!(oracle_lu(&oracle, "2100", false).1 <= 150_000);
+    }
+
+    // Agreement is not vacuous: every outcome kind happened, and the
+    // boundary was hit from both sides on both bounds.
+    assert!(posted >= 120, "posted {posted}");
+    assert!(recorded >= 3, "recorded {recorded}");
+    assert!(outflow_holds >= 5, "outflow holds {outflow_holds}");
+    assert!(
+        posts_resolutions >= 5 && voids >= 5,
+        "resolutions {posts_resolutions}/{voids}"
+    );
+    assert!(reversed.len() >= 5, "reversals {}", reversed.len());
+    assert!(
+        exact_out >= 3 && over_out >= 3,
+        "outflow boundary {exact_out}/{over_out}"
+    );
+    assert!(
+        exact_in >= 2 && over_in >= 2,
+        "inflow boundary {exact_in}/{over_in}"
+    );
+    for must in ["FA-REF-090", "FA-REF-091"] {
+        assert!(
+            refused.get(must).is_some_and(|n| *n >= 5),
+            "refusal {must} under-exercised: {refused:?}"
+        );
+    }
+
+    // `fa verify availability` refolds both cells from the payloads.
+    let verified = verify_availability(&k.db, &k.book, None).unwrap();
+    assert!(verified.is_green(), "{verified:?}");
+    assert_eq!(verified.accounts_checked, 2);
+    for a in &verified.accounts {
+        let model = oracle.availability(&a.code);
+        assert_eq!(a.cell.generation as u64, model.generation, "{}", a.code);
+        assert_eq!(
+            Some(a.cell.credits_pending),
+            model.credits_pending.to_i128()
+        );
+    }
+
+    // Race: a transaction that witnessed the cash cell loses to a post that
+    // moved the cell first — first committer wins, never an overdraft by
+    // interleaving. The racer is whichever move is admissible now: fund if
+    // there is room under the cap, spend if anything is available, else
+    // void an open hold (some hold must be open when U = cap and L = 0).
+    let cash = account_vid(k.book.book_id, "1000");
+    let cash_cell = limit_cell_vid(cash);
+    let (l, u) = oracle_lu(&oracle, "1000", true);
+    let base = Intent {
+        class: "Original".into(),
+        date: dates[0],
+        discriminator: None,
+        legs: vec![leg(dr, "1000", 1), leg(cr, "3000", 1)],
+        key: b"race".to_vec(),
+        ops: vec!["post".into()],
+        approvals: 0,
+        reverses: None,
+        resolves: None,
+        settles: Vec::new(),
+    };
+    let racer = if u < 400_000 {
+        base.clone()
+    } else if l >= 1 {
+        Intent {
+            legs: vec![leg(dr, "6000", 1), leg(cr, "1000", 1)],
+            ..base.clone()
+        }
+    } else {
+        let target = holds
+            .iter()
+            .copied()
+            .find(|h| !resolved.contains(h))
+            .expect("an open hold when cash is pinned at both bounds");
+        Intent {
+            class: "Resolution".into(),
+            legs: Vec::new(),
+            resolves: Some(Resolve {
+                target,
+                posts: None,
+            }),
+            ..base.clone()
+        }
+    };
+    let ctx = k.ctx();
+    let txn_cx = ctx.txn();
+    // The slow transaction witnesses the cash cell; a control transaction
+    // witnesses only the facility's cell, which the racer never moves.
+    let mut slow = k.db.begin(&txn_cx).expect("begin the slow transaction");
+    let witnessed = LimitCell::decode(
+        &slow
+            .vertex(&k.db, cash_cell)
+            .expect("read")
+            .expect("cash cell"),
+    )
+    .expect("decode");
+    let mut control = k.db.begin(&txn_cx).expect("begin the control transaction");
+    let loan_cell = limit_cell_vid(account_vid(k.book.book_id, "2100"));
+    assert!(control.vertex(&k.db, loan_cell).expect("read").is_some());
+    let won = kernel_post(&mut k, &racer, usd, &refs);
+    assert!(matches!(won, Ok(Posted::Committed { .. })), "{won:?}");
+    assert!(matches!(oracle.post(&racer), Verdict::Posted { .. }));
+    refs.push(won.expect("committed").entry_ref());
+    // Staging a move computed from the stale witness is refused outright:
+    // the workspace's snapshot is behind the commit stream.
+    let stale = LimitCell {
+        credits_posted: witnessed.credits_posted + 1,
+        generation: witnessed.generation + 1,
+        ..witnessed
+    };
+    let mut batch = WriteBatch::new(fa_model::symbols::relation::HAS_LEG);
+    witnessed
+        .stage(&stale, cash_cell, &mut batch)
+        .expect("stage the stale move");
+    let staged = slow.write_ordered(&mut k.db, vec![batch.clone()]);
+    assert!(
+        matches!(staged, Err(fgdb::WriteTxnError::SnapshotAdvanced { .. })),
+        "{staged:?}"
+    );
+    // Advancing the snapshot validates every observation: the witnessed
+    // cash cell moved, so the slow transaction loses (first committer
+    // wins), never re-reads its way into an overdraft.
+    let refreshed = slow.refresh_snapshot(&k.db, &txn_cx);
+    assert!(
+        matches!(
+            refreshed,
+            Err(fgdb::WriteTxnError::Write(
+                fgdb::WriteError::FirstCommitterWins { .. }
+            ))
+        ),
+        "a stale availability witness must lose: {refreshed:?}"
+    );
+    slow.abort();
+    // Positive control: the same refresh succeeds for a transaction whose
+    // witness the racer did not touch, so the loss above is the cell's.
+    let advanced = control.refresh_snapshot(&k.db, &txn_cx);
+    assert!(advanced.is_ok(), "{advanced:?}");
+    control.abort();
+    assert_cell(&k, &oracle, "1000", 10_000);
+    assert!(
+        verify_availability(&k.db, &k.book, None)
+            .unwrap()
+            .is_green()
+    );
+    let fund = base;
+
+    // Corruption negatives: a cell whose sums are wrong is drift to the
+    // verifier; a cell without its generation is drift to the verifier and
+    // corruption to the kernel, which then admits nothing on that account
+    // (fail closed) while unlimited accounts still post.
+    let ctx = k.ctx();
+    let stored = LimitCell::decode(&k.db.vertex(cash_cell).unwrap().unwrap()).unwrap();
+    let mut batch = WriteBatch::new(fa_model::symbols::relation::HAS_LEG);
+    batch.set_vertex_property(
+        cash_cell,
+        fa_model::symbols::property::CREDITS_PENDING,
+        Some(
+            fa_journal::rows::mantissa_scalar("credits_pending", stored.credits_pending + 7)
+                .unwrap(),
+        ),
+    );
+    k.runtime
+        .block_on(async { k.db.write(&ctx.commit(), batch).await })
+        .expect("plant a drifted cell");
+    let drifted = verify_availability(&k.db, &k.book, None).unwrap();
+    assert!(!drifted.is_green());
+    assert!(
+        drifted.drift.iter().any(|d| d.code == "1000"
+            && d.stored
+                .is_some_and(|c| c.credits_pending == stored.credits_pending + 7)),
+        "{drifted:?}"
+    );
+    let mut batch = WriteBatch::new(fa_model::symbols::relation::HAS_LEG);
+    batch.set_vertex_property(cash_cell, fa_model::symbols::property::GENERATION, None);
+    k.runtime
+        .block_on(async { k.db.write(&ctx.commit(), batch).await })
+        .expect("plant a cell without generation");
+    let broken = verify_availability(&k.db, &k.book, None).unwrap();
+    assert!(
+        broken
+            .drift
+            .iter()
+            .any(|d| d.code == "1000" && d.stored.is_none()),
+        "{broken:?}"
+    );
+    let probe = Intent {
+        key: b"after-corruption".to_vec(),
+        ..fund.clone()
+    };
+    assert!(
+        matches!(
+            kernel_post_raw(&mut k, &probe, usd, &refs),
+            Err(KernelError::Corrupt(_))
+        ),
+        "a post on a corrupt limited account fails closed"
+    );
+    let elsewhere = Intent {
+        key: b"unlimited-after-corruption".to_vec(),
+        legs: vec![leg(dr, "6000", 5), leg(cr, "4000", 5)],
+        ..fund
+    };
+    assert!(matches!(
+        kernel_post(&mut k, &elsewhere, usd, &refs),
+        Ok(Posted::Committed { .. })
+    ));
 }

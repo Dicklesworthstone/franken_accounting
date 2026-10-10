@@ -1006,6 +1006,7 @@ fn chart_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
                     is_leaf,
                     unit_policy,
                     parent_code,
+                    limit: None,
                 });
             }
             let date = date_flag(args, DateDay(0))?;

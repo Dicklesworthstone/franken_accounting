@@ -23,7 +23,8 @@ use fa_journal::{
 };
 use fa_model::{Entry, Erasable, SealKey, SymbolTable};
 use fa_registers::{
-    BalanceExplanation, Fold, OpenItem, OpenItemVerification, TrialBalance, Verification,
+    AvailabilityVerification, BalanceExplanation, Fold, OpenItem, OpenItemVerification,
+    TrialBalance, Verification,
 };
 use fa_time::{DateDay, PeriodDef, PeriodTransition};
 use fgdb::{Database, DatabaseKeys, MemVfs};
@@ -563,6 +564,13 @@ impl Book {
         Ok(with_store!(&self.store, db => fa_registers::verify_open_items(db, &self.ctx, None))?)
     }
 
+    /// Refold every limited account's `LimitCell` from the journal and
+    /// compare it with the stored cell (`fa verify availability`, plan
+    /// §5.4–5.5). Drift is a finding, never a repair.
+    pub fn verify_availability(&self) -> Result<AvailabilityVerification, BookError> {
+        Ok(with_store!(&self.store, db => fa_registers::verify_availability(db, &self.ctx, None))?)
+    }
+
     /// Explain an account's register cells in one period (`fa explain
     /// balance`): the cells, the fold they belong to, every contributing leg
     /// with its recorded sequence, and the cells' known-at history. `None`
@@ -742,6 +750,7 @@ mod tests {
                 is_leaf: true,
                 unit_policy: UnitPolicy::Single(usd),
                 parent_code: None,
+                limit: None,
             },
             AccountSpec {
                 code: "6000".into(),
@@ -751,6 +760,7 @@ mod tests {
                 is_leaf: true,
                 unit_policy: UnitPolicy::Single(usd),
                 parent_code: None,
+                limit: None,
             },
         ]
     }

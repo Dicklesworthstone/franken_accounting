@@ -164,6 +164,12 @@ impl Int {
     pub fn is_zero(&self) -> bool {
         self.mag.is_empty()
     }
+
+    /// Strictly below zero (a trimmed zero is never negative).
+    #[must_use]
+    pub fn is_negative(&self) -> bool {
+        self.neg && !self.mag.is_empty()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -200,6 +206,26 @@ pub struct Account {
     pub is_leaf: bool,
     /// `None` = any unit.
     pub unit: Option<u32>,
+}
+
+/// A balance limit (plan §5.4): bounds on the account's net balance in its
+/// normal-balance sign (`net = normal-side posted − opposite-side posted`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Limit {
+    pub normal: Side,
+    pub lower: Option<i128>,
+    pub upper: Option<i128>,
+}
+
+/// A limited account's literal fold: posted and outstanding reserved sums
+/// per side, and how many journal entries moved them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Availability {
+    pub debits_posted: Int,
+    pub credits_posted: Int,
+    pub debits_pending: Int,
+    pub credits_pending: Int,
+    pub generation: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -262,6 +288,9 @@ pub mod code {
     pub const SETTLE_SHAPE: &str = "FA-REF-071";
     pub const OVER_APPLICATION: &str = "FA-REF-072";
     pub const LIVE_APPLICATIONS: &str = "FA-REF-073";
+    pub const AVAILABILITY_LOWER: &str = "FA-REF-090";
+    pub const AVAILABILITY_UPPER: &str = "FA-REF-091";
+    pub const LIMIT_CEILING: &str = "FA-REF-092";
     pub const STRUCTURE: &str = "FA-REF-100";
     pub const CONTROL_VIA_POST: &str = "FA-REF-101";
     pub const CLASS_NOT_IMPLEMENTED: &str = "FA-REF-102";
@@ -345,6 +374,8 @@ pub struct Oracle {
     reversed: BTreeMap<usize, (usize, Content)>,
     /// Resolved pending index → (resolution index, content).
     resolved: BTreeMap<usize, (usize, Content)>,
+    /// Limited account code → its limit.
+    limits: BTreeMap<String, Limit>,
     classes: EntryClasses,
     matrix: Admissibility,
 }
@@ -361,6 +392,7 @@ impl Oracle {
             keys: BTreeMap::new(),
             reversed: BTreeMap::new(),
             resolved: BTreeMap::new(),
+            limits: BTreeMap::new(),
             classes,
             matrix,
         }
@@ -368,6 +400,11 @@ impl Oracle {
 
     pub fn add_account(&mut self, a: Account) {
         self.accounts.insert(a.code.clone(), a);
+    }
+
+    /// Give an account a balance limit (plan §5.4); the chart declares it.
+    pub fn set_limit(&mut self, code: &str, limit: Limit) {
+        self.limits.insert(code.to_string(), limit);
     }
 
     /// Create a fiscal year's periods in `Future`.
@@ -729,6 +766,94 @@ impl Oracle {
                 }
             }
         }
+        // 7d. Reserved availability (plan §5.4): each limited account the
+        //     entry moves, in order of first appearance (the entry's legs,
+        //     then a resolved hold's legs), judged on the literal fold.
+        let released: Vec<Leg> = intent
+            .resolves
+            .as_ref()
+            .and_then(|r| self.journal.get(r.target))
+            .map(|t| t.legs.clone())
+            .unwrap_or_default();
+        let mut order: Vec<&str> = Vec::new();
+        for l in intent.legs.iter().chain(&released) {
+            if self.limits.contains_key(&l.account) && !order.contains(&l.account.as_str()) {
+                order.push(&l.account);
+            }
+        }
+        for account in order {
+            let limit = &self.limits[account];
+            let before = self.availability(account);
+            let mut after = before.clone();
+            let bump = |slot: &mut Int, m: i128, sign: bool| {
+                let m = Int::from_i128(m);
+                *slot = if sign { slot.add(&m) } else { slot.sub(&m) };
+            };
+            for l in intent.legs.iter().filter(|l| l.account == account) {
+                match (intent.class.as_str(), l.side) {
+                    ("Pending", Side::Debit) => bump(&mut after.debits_pending, l.mantissa, true),
+                    ("Pending", Side::Credit) => bump(&mut after.credits_pending, l.mantissa, true),
+                    (_, Side::Debit) => bump(&mut after.debits_posted, l.mantissa, true),
+                    (_, Side::Credit) => bump(&mut after.credits_posted, l.mantissa, true),
+                }
+            }
+            for l in released.iter().filter(|l| l.account == account) {
+                match l.side {
+                    Side::Debit => bump(&mut after.debits_pending, l.mantissa, false),
+                    Side::Credit => bump(&mut after.credits_pending, l.mantissa, false),
+                }
+            }
+            if [
+                &after.debits_posted,
+                &after.credits_posted,
+                &after.debits_pending,
+                &after.credits_pending,
+            ]
+            .iter()
+            .any(|v| v.to_i128().is_none())
+            {
+                return Verdict::Refused {
+                    code: code::LIMIT_CEILING,
+                };
+            }
+            // (L, U) = (net − pending_out, net + pending_in), normal sign.
+            let lu = |a: &Availability| {
+                let (n, o, pin, pout) = match limit.normal {
+                    Side::Debit => (
+                        &a.debits_posted,
+                        &a.credits_posted,
+                        &a.debits_pending,
+                        &a.credits_pending,
+                    ),
+                    Side::Credit => (
+                        &a.credits_posted,
+                        &a.debits_posted,
+                        &a.credits_pending,
+                        &a.debits_pending,
+                    ),
+                };
+                let net = n.sub(o);
+                (net.sub(pout), net.add(pin))
+            };
+            let (l0, u0) = lu(&before);
+            let (l1, u1) = lu(&after);
+            if let Some(lower) = limit.lower
+                && l1.sub(&l0).is_negative()
+                && l1.sub(&Int::from_i128(lower)).is_negative()
+            {
+                return Verdict::Refused {
+                    code: code::AVAILABILITY_LOWER,
+                };
+            }
+            if let Some(upper) = limit.upper
+                && u0.sub(&u1).is_negative()
+                && Int::from_i128(upper).sub(&u1).is_negative()
+            {
+                return Verdict::Refused {
+                    code: code::AVAILABILITY_UPPER,
+                };
+            }
+        }
         let index = self.journal.len();
         self.journal.push(Entry {
             class: intent.class.clone(),
@@ -915,6 +1040,45 @@ impl Oracle {
     #[must_use]
     pub fn journal_len(&self) -> usize {
         self.journal.len()
+    }
+
+    /// The literal availability fold of one account over the whole journal:
+    /// posted legs of posting entries, legs of holds with no resolution yet,
+    /// and the count of entries that posted, reserved, or released on it.
+    #[must_use]
+    pub fn availability(&self, account: &str) -> Availability {
+        let mut a = Availability {
+            debits_posted: Int::zero(),
+            credits_posted: Int::zero(),
+            debits_pending: Int::zero(),
+            credits_pending: Int::zero(),
+            generation: 0,
+        };
+        for (i, e) in self.journal.iter().enumerate() {
+            let mut touched = false;
+            for l in e.legs.iter().filter(|l| l.account == account) {
+                touched = true;
+                let m = Int::from_i128(l.mantissa);
+                let slot = match (e.class.as_str(), l.side) {
+                    ("Pending", _) if self.resolved.contains_key(&i) => continue,
+                    ("Pending", Side::Debit) => &mut a.debits_pending,
+                    ("Pending", Side::Credit) => &mut a.credits_pending,
+                    (_, Side::Debit) => &mut a.debits_posted,
+                    (_, Side::Credit) => &mut a.credits_posted,
+                };
+                *slot = slot.add(&m);
+            }
+            // A resolution moves the cell of every account its hold reserved on.
+            if let Some(t) = e.resolves
+                && self.journal[t].legs.iter().any(|l| l.account == account)
+            {
+                touched = true;
+            }
+            if touched {
+                a.generation += 1;
+            }
+        }
+        a
     }
 }
 
@@ -1114,5 +1278,142 @@ mod tests {
             o.transition(&march, PeriodTransition::Lock),
             Err(code::TRANSITION)
         );
+    }
+
+    /// The fa-ctf example (plan §5.4): cash 100 with a floor of 0; a pending
+    /// outflow of 80 blocks a second 80 and an unrelated posted 30, a pending
+    /// inflow never finances, and resolving the hold releases all of it.
+    #[test]
+    fn reserved_availability_in_the_obvious_way() {
+        let cal = FiscalCalendar::monthly("cal", 1, 1).unwrap();
+        let mut o = Oracle::new(cal);
+        for code in ["1000", "3000", "6000"] {
+            o.add_account(Account {
+                code: code.into(),
+                is_leaf: true,
+                unit: Some(1),
+            });
+        }
+        o.set_limit(
+            "1000",
+            Limit {
+                normal: Side::Debit,
+                lower: Some(0),
+                upper: Some(1_000),
+            },
+        );
+        o.create_periods(2026);
+        o.transition("FY2026-P03", PeriodTransition::Open).unwrap();
+        let day = DateDay::from_ymd(2026, 3, 15).unwrap();
+        let mv = |dr: &str, cr: &str, m: i128| {
+            vec![
+                Leg {
+                    side: Side::Debit,
+                    account: dr.into(),
+                    unit: 1,
+                    mantissa: m,
+                },
+                Leg {
+                    side: Side::Credit,
+                    account: cr.into(),
+                    unit: 1,
+                    mantissa: m,
+                },
+            ]
+        };
+        let intent = |class: &str, legs: Vec<Leg>, key: &[u8], resolves: Option<Resolve>| Intent {
+            class: class.into(),
+            date: day,
+            discriminator: None,
+            legs,
+            key: key.to_vec(),
+            ops: vec!["post".into()],
+            approvals: 0,
+            reverses: None,
+            resolves,
+            settles: Vec::new(),
+        };
+        let refused = |code| Verdict::Refused { code };
+        // Funding 100 is an inflow; an outflow of 101 breaches the floor.
+        assert!(matches!(
+            o.post(&intent("Original", mv("1000", "3000", 100), b"fund", None)),
+            Verdict::Posted { index: 0, .. }
+        ));
+        assert_eq!(
+            o.post(&intent("Original", mv("6000", "1000", 101), b"over", None)),
+            refused(code::AVAILABILITY_LOWER)
+        );
+        // A hold of 80 out reserves; a second 80 and a posted 30 are refused.
+        assert!(matches!(
+            o.post(&intent("Pending", mv("6000", "1000", 80), b"hold", None)),
+            Verdict::Posted { index: 1, .. }
+        ));
+        assert_eq!(
+            o.post(&intent("Pending", mv("6000", "1000", 80), b"hold2", None)),
+            refused(code::AVAILABILITY_LOWER)
+        );
+        assert_eq!(
+            o.post(&intent("Original", mv("6000", "1000", 30), b"spend", None)),
+            refused(code::AVAILABILITY_LOWER)
+        );
+        // A pending inflow of 500 does not finance the 30.
+        assert!(matches!(
+            o.post(&intent("Pending", mv("1000", "3000", 500), b"in", None)),
+            Verdict::Posted { index: 2, .. }
+        ));
+        assert_eq!(
+            o.post(&intent("Original", mv("6000", "1000", 30), b"spend", None)),
+            refused(code::AVAILABILITY_LOWER)
+        );
+        // …but it does count against the cap: 100 + 500 + 401 > 1000.
+        assert_eq!(
+            o.post(&intent("Original", mv("1000", "3000", 401), b"cap", None)),
+            refused(code::AVAILABILITY_UPPER)
+        );
+        // Posting 60 of the 80 hold releases all 80: pending −80, posted +60,
+        // and is admitted although it moves value out.
+        let posts = Resolve {
+            target: 1,
+            posts: Some(vec![0, 1]),
+        };
+        assert!(matches!(
+            o.post(&intent(
+                "Resolution",
+                mv("6000", "1000", 60),
+                b"r",
+                Some(posts)
+            )),
+            Verdict::Posted { index: 3, .. }
+        ));
+        let a = o.availability("1000");
+        assert_eq!(
+            (
+                a.debits_posted.to_i128(),
+                a.credits_posted.to_i128(),
+                a.debits_pending.to_i128(),
+                a.credits_pending.to_i128(),
+                a.generation
+            ),
+            (Some(100), Some(60), Some(500), Some(0), 4)
+        );
+        // Now 40 is available: 40 posts, 41 does not.
+        assert_eq!(
+            o.post(&intent("Original", mv("6000", "1000", 41), b"41", None)),
+            refused(code::AVAILABILITY_LOWER)
+        );
+        assert!(matches!(
+            o.post(&intent("Original", mv("6000", "1000", 40), b"40", None)),
+            Verdict::Posted { index: 4, .. }
+        ));
+        // Voiding the pending inflow is always admissible.
+        let void = Resolve {
+            target: 2,
+            posts: None,
+        };
+        assert!(matches!(
+            o.post(&intent("Resolution", Vec::new(), b"v", Some(void))),
+            Verdict::Posted { index: 5, .. }
+        ));
+        assert_eq!(o.availability("1000").debits_pending.to_i128(), Some(0));
     }
 }

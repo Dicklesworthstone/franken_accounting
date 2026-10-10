@@ -5,12 +5,13 @@
 
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
+use fa_journal::evidence::{Document, add_document};
 use fa_journal::rows::edge_id;
 use fa_journal::*;
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    ControlPayload, Disposition, EntryClass, EntryOrigin, EntryPayload, Erasable, Id128,
-    LegPayload, Oid, Pending, SealKey, SymbolTable, account_vid, period_vid,
+    ControlPayload, Disposition, EntryClass, EntryOrigin, EntryPayload, Erasable, EvidenceRef,
+    Id128, LegPayload, Oid, Pending, SealKey, SymbolTable, account_vid, period_vid,
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_registers::{
@@ -34,6 +35,7 @@ struct Harness {
     cash: VId,
     rent: VId,
     march: String,
+    evidence: Vec<EvidenceRef>,
 }
 
 impl Harness {
@@ -178,7 +180,7 @@ impl Harness {
             },
             principal_ref: PRINCIPAL,
             session_ref: None,
-            evidence: Vec::new(),
+            evidence: self.evidence.clone(),
             supersession: Vec::new(),
             pending: None,
             external_ids: Vec::new(),
@@ -311,6 +313,7 @@ fn harness() -> Harness {
             is_leaf: true,
             unit_policy: UnitPolicy::Single(usd),
             parent_code: None,
+            limit: None,
         },
         AccountSpec {
             code: "6000".into(),
@@ -320,6 +323,7 @@ fn harness() -> Harness {
             is_leaf: true,
             unit_policy: UnitPolicy::Single(usd),
             parent_code: None,
+            limit: None,
         },
         AccountSpec {
             code: "7000".into(),
@@ -329,6 +333,7 @@ fn harness() -> Harness {
             is_leaf: true,
             unit_policy: UnitPolicy::Single(usd),
             parent_code: None,
+            limit: None,
         },
     ];
     let day = DateDay::from_ymd(2026, 1, 1).unwrap();
@@ -383,6 +388,18 @@ fn harness() -> Harness {
         })
         .expect("kernel")
         .expect("opens");
+    let source = Document {
+        book_id,
+        kind: 1,
+        mime: "text/plain".into(),
+        grade: 3,
+        retrieved_by: PRINCIPAL,
+        bytes: b"INVOICE (registers fixture source document)".to_vec(),
+    };
+    runtime
+        .block_on(async { add_document(&mut db, &ctx, &book, &source).await })
+        .expect("kernel")
+        .expect("the fixture document is admitted");
     Harness {
         runtime,
         root,
@@ -392,6 +409,7 @@ fn harness() -> Harness {
         book,
         usd,
         march,
+        evidence: vec![source.evidence_ref(1)],
     }
 }
 
@@ -1056,4 +1074,167 @@ fn pending_column_corruption_is_detected_and_rebuilt_from_the_journal() {
             Some(&scalar_bytes(123i128.to_le_bytes().to_vec()))
         );
     }
+}
+
+/// Plan §5.4–5.5 at the kernel boundary: a limit is structural (one unit, a
+/// leaf, lower ≤ upper, at least one bound), a limited account is born with
+/// a zero LimitCell, and a breach names the bound, the net, the
+/// reservations, and the exact amount that would be admissible.
+#[test]
+fn chart_limits_are_structural_and_breaches_name_the_admissible_amount() {
+    let mut h = harness();
+    let usd = h.usd;
+    let install = |h: &mut Harness, spec: AccountSpec, key: &[u8]| {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        let day = DateDay::from_ymd(2026, 1, 1).unwrap();
+        let description =
+            Erasable::seal(&"chart".to_string(), None, &book.seal_key, [5; 32], [6; 24]);
+        h.runtime
+            .block_on(async move {
+                install_chart(db, &ctx, book, &[spec], PRINCIPAL, day, key, description).await
+            })
+            .expect("kernel")
+    };
+    let petty = |limit: Option<BalanceLimit>, policy: UnitPolicy, leaf: bool| AccountSpec {
+        code: "1100".into(),
+        name: "Petty cash".into(),
+        account_type: 1,
+        normal_balance: 0,
+        is_leaf: leaf,
+        unit_policy: policy,
+        parent_code: None,
+        limit,
+    };
+    let floor = |lower: Option<i128>, upper: Option<i128>| Some(BalanceLimit { lower, upper });
+    for (n, bad) in [
+        petty(floor(None, None), UnitPolicy::Single(usd), true),
+        petty(floor(Some(10), Some(5)), UnitPolicy::Single(usd), true),
+        petty(floor(Some(0), None), UnitPolicy::AnyUnit, true),
+        petty(floor(Some(0), None), UnitPolicy::Single(usd), false),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let refused = install(&mut h, bad, format!("bad-{n}").as_bytes()).expect_err("structural");
+        assert_eq!(
+            (refused.code, refused.exit),
+            ("FA-REF-100", exit::USAGE),
+            "{refused}"
+        );
+    }
+    let petty_vid = account_vid(h.book.book_id, "1100");
+    assert!(
+        h.db.vertex(petty_vid).unwrap().is_none(),
+        "a refused chart writes nothing"
+    );
+    install(
+        &mut h,
+        petty(floor(Some(0), Some(50_000)), UnitPolicy::Single(usd), true),
+        b"petty",
+    )
+    .expect("a well-formed limit installs");
+    let row = h.db.vertex(petty_vid).unwrap().expect("account");
+    assert_eq!(
+        rows::AccountRow::decode(&row).unwrap().limit,
+        Some(BalanceLimit {
+            lower: Some(0),
+            upper: Some(50_000)
+        })
+    );
+    let cell =
+        h.db.vertex(limit_cell_vid(petty_vid))
+            .unwrap()
+            .expect("born with its cell");
+    assert!(cell.labels.contains(&label::LIMIT_CELL));
+    assert_eq!(LimitCell::decode(&cell).unwrap(), LimitCell::default());
+
+    let mv = |h: &Harness, dr: VId, cr: VId, cents: i128| {
+        vec![
+            LegPayload::simple(Side::Debit, dr, Amount::new(h.usd, cents)),
+            LegPayload::simple(Side::Credit, cr, Amount::new(h.usd, cents)),
+        ]
+    };
+    let try_commit = |h: &mut Harness, proposal: EntryPayload| {
+        let req = PostRequest {
+            proposal,
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: Capability::with_ops(&["post"]),
+        };
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        h.runtime
+            .block_on(async move { post(db, &ctx, book, req).await })
+            .expect("kernel")
+    };
+    // Fund 100 from cash (unlimited), then try to spend 101.
+    let fund = h.proposal(
+        mv(&h, petty_vid, h.cash, 100),
+        b"fund",
+        EntryClass::ORIGINAL,
+    );
+    assert!(matches!(
+        try_commit(&mut h, fund),
+        Ok(Posted::Committed { .. })
+    ));
+    let over = h.proposal(
+        mv(&h, h.rent, petty_vid, 101),
+        b"over",
+        EntryClass::ORIGINAL,
+    );
+    let refused = try_commit(&mut h, over).expect_err("an overdraw is refused");
+    assert_eq!((refused.code, refused.exit), ("FA-REF-090", exit::REFUSAL));
+    assert!(
+        refused.message.contains("`1100`") && refused.message.contains("net 1.00 USD"),
+        "{refused}"
+    );
+    assert!(
+        refused.message.contains("lower bound 0.00 USD"),
+        "{refused}"
+    );
+    assert!(refused.fix.contains("at most 1.00 USD"), "{refused}");
+    // A hold of 80 reserves: a posted 30 now has only 20 available.
+    h.hold(mv(&h, h.rent, petty_vid, 80), b"hold");
+    let thirty = h.proposal(
+        mv(&h, h.rent, petty_vid, 30),
+        b"thirty",
+        EntryClass::ORIGINAL,
+    );
+    let refused = try_commit(&mut h, thirty).expect_err("the hold reserves");
+    assert!(
+        refused.message.contains("reserved outflows 0.80 USD"),
+        "{refused}"
+    );
+    assert!(refused.fix.contains("at most 0.20 USD"), "{refused}");
+    // The cap: 100 posted in; 49_901 more would exceed 50_000.
+    let cap = h.proposal(
+        mv(&h, petty_vid, h.cash, 49_901),
+        b"cap",
+        EntryClass::ORIGINAL,
+    );
+    let refused = try_commit(&mut h, cap).expect_err("over the cap");
+    assert_eq!(refused.code, "FA-REF-091");
+    assert!(refused.fix.contains("at most 499.00 USD"), "{refused}");
+    let stored =
+        LimitCell::decode(&h.db.vertex(limit_cell_vid(petty_vid)).unwrap().unwrap()).unwrap();
+    assert_eq!(
+        stored,
+        LimitCell {
+            debits_posted: 100,
+            credits_posted: 0,
+            debits_pending: 0,
+            credits_pending: 80,
+            generation: 2
+        }
+    );
+    let verified = fa_registers::verify_availability(&h.db, &h.book, None).unwrap();
+    assert!(verified.is_green(), "{verified:?}");
+    assert_eq!(verified.accounts_checked, 1);
+    assert_eq!(
+        (verified.accounts[0].net, verified.accounts[0].pending_out),
+        (100, 80)
+    );
 }

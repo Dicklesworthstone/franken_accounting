@@ -10,6 +10,7 @@ use fgdb_delta_types::{PropertyKeyId, RelationId};
 use fgdb_types::{CanonicalScalar, CommitSeq, EId, VId};
 
 use crate::genesis::UnitPolicy;
+use crate::limit::BalanceLimit;
 use crate::refusal::KernelError;
 
 pub fn prop(row: &VertexRow, key: PropertyKeyId) -> Option<&CanonicalScalar> {
@@ -173,6 +174,8 @@ pub struct AccountRow {
     pub normal_balance: u8,
     pub is_leaf: bool,
     pub unit_policy: UnitPolicy,
+    /// The balance limit (plan §5.4–5.5), when the chart declared one.
+    pub limit: Option<BalanceLimit>,
     pub created_at: CommitSeq,
 }
 
@@ -194,6 +197,7 @@ impl AccountRow {
             is_leaf: int(row, property::POSTING, "account.posting")? == 1,
             unit_policy: UnitPolicy::from_mirror(policy)
                 .ok_or_else(|| KernelError::Corrupt(format!("account.unit_policy {policy}")))?,
+            limit: BalanceLimit::decode(row)?,
             created_at: row.created_at,
             code,
         })

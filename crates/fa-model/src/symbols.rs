@@ -106,6 +106,9 @@ symbols!(
         (PENDING_COUNT, "pending_count", 39),
         (DISPOSITION, "disposition", 40),
         (APPLIED, "applied", 41),
+        (LOWER_BOUND, "lower_bound", 42),
+        (UPPER_BOUND, "upper_bound", 43),
+        (GENERATION, "generation", 44),
     ]
 );
 
