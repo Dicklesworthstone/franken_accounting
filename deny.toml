@@ -21,6 +21,15 @@ allow = [
   "Zlib",
 ]
 exceptions = [
+  { crate = "fa@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fa-cli@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fa-journal@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fa-model@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fa-money@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fa-reference@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fa-registers@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fa-registry@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fa-time@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "asupersync", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fgdb", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fgdb-types", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
@@ -54,12 +63,159 @@ exceptions = [
   { crate = "franken-kernel", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
 ]
 
+# These packages declare license-file rather than an SPDX expression. The
+# current first-party LICENSE and pinned fgdb b323bd1 / fnx 9d710b1 LICENSE
+# bytes are identical (SHA256 32a82e0a5754e72e51fae44b65a936c831c07376f21c90f5fb9e76897fcc3509).
+# Clarify that exact text, including its rider; a changed text must fail.
+[[licenses.clarify]]
+crate = "fa@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fa-cli@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fa-journal@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fa-model@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fa-money@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fa-reference@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fa-registers@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fa-registry@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fa-time@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fgdb@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fgdb-beacon@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fgdb-bigint@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fgdb-chronicle@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fgdb-codec@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fgdb-crypto@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fgdb-delta-types@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fgdb-gql@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fgdb-prism@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fgdb-strata@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fgdb-types@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fgdb-warden@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fnx-algorithms@0.2.0"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fnx-cgse@0.2.0"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fnx-classes@0.2.0"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fnx-runtime@0.2.0"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
 [bans]
 multiple-versions = "deny"
 wildcards = "deny"
+# Pinned foundations need both generations. Only the exact older release is
+# exempt from duplicate counting; the newer release remains checked. This is
+# not permission to introduce another version or a new first-party dependency.
+skip = [
+  { crate = "block-buffer@0.10.4", reason = "digest 0.10.7 via ed25519-dalek needs 0.10; asupersync crypto uses 0.12.1" },
+  { crate = "const-oid@0.9.6", reason = "der 0.7.10 in the signing closure needs 0.9; digest 0.11.3 uses 0.10.2" },
+  { crate = "cpufeatures@0.2.17", reason = "curve25519-dalek and sha2 0.10.9 need 0.2; current asupersync crypto uses 0.3.1" },
+  { crate = "crypto-common@0.1.7", reason = "digest 0.10.7 needs 0.1; asupersync crypto uses 0.2.2" },
+  { crate = "digest@0.10.7", reason = "curve25519-dalek, signature and sha2 0.10.9 need 0.10; asupersync crypto uses 0.11.3" },
+  { crate = "getrandom@0.2.17", reason = "nkeys and rand_core 0.6.4 need 0.2; asupersync and crypto-common use 0.4.3" },
+  { crate = "rand_core@0.6.4", reason = "rand_chacha, signatory and signature need 0.6; fnx and asupersync crypto use 0.10.1" },
+  { crate = "sha2@0.10.9", reason = "ed25519-dalek needs 0.10; pinned asupersync uses 0.11.0" },
+  { crate = "syn@2.0.119", reason = "prost, pin-project and curve25519 derives need syn 2; serde and thiserror derives use 3.0.6" },
+]
 deny = [
   # Runtimes other than asupersync.
-  { name = "tokio" },
+  # The complete graph includes wasm-bindgen-futures 0.4.79 -> tokio 1.53.2
+  # under cfg(all(target_os="emscripten", wasm_bindgen_unstable_tokio)).
+  # cargo-deny wrappers match immediate names, not versions or ancestors;
+  # Cargo.lock pins these versions. All other immediate parents stay banned.
+  { name = "tokio", wrappers = ["wasm-bindgen-futures"], reason = "pinned asupersync wasm closure only; not a first-party runtime" },
   { name = "async-std" },
   { name = "smol" },
   # Storage engines other than the substrate.

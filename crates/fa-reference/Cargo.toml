@@ -11,5 +11,5 @@ publish = false
 workspace = true
 
 [dependencies]
-fa-time = { path = "../fa-time" }
-fa-registry = { path = "../fa-registry" }
+fa-time = { path = "../fa-time", version = "=0.0.1" }
+fa-registry = { path = "../fa-registry", version = "=0.0.1" }

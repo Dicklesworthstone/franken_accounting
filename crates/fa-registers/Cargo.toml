@@ -11,14 +11,14 @@ publish = false
 workspace = true
 
 [dependencies]
-fa-money = { path = "../fa-money" }
-fa-time = { path = "../fa-time" }
-fa-model = { path = "../fa-model" }
-fa-journal = { path = "../fa-journal" }
+fa-money = { path = "../fa-money", version = "=0.0.1" }
+fa-time = { path = "../fa-time", version = "=0.0.1" }
+fa-model = { path = "../fa-model", version = "=0.0.1" }
+fa-journal = { path = "../fa-journal", version = "=0.0.1" }
 asupersync = { workspace = true }
 fgdb = { workspace = true }
 fgdb-types = { workspace = true }
 fgdb-crypto = { workspace = true }
 
 [dev-dependencies]
-fa-reference = { path = "../fa-reference" }
+fa-reference = { path = "../fa-reference", version = "=0.0.1" }

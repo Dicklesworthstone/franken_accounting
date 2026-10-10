@@ -11,12 +11,12 @@ publish = false
 workspace = true
 
 [dependencies]
-fa-journal = { path = "../fa-journal" }
-fa-model = { path = "../fa-model" }
-fa-money = { path = "../fa-money" }
-fa-registers = { path = "../fa-registers" }
-fa-registry = { path = "../fa-registry" }
-fa-time = { path = "../fa-time" }
+fa-journal = { path = "../fa-journal", version = "=0.0.1" }
+fa-model = { path = "../fa-model", version = "=0.0.1" }
+fa-money = { path = "../fa-money", version = "=0.0.1" }
+fa-registers = { path = "../fa-registers", version = "=0.0.1" }
+fa-registry = { path = "../fa-registry", version = "=0.0.1" }
+fa-time = { path = "../fa-time", version = "=0.0.1" }
 asupersync = { workspace = true }
 fgdb = { workspace = true }
 fgdb-crypto = { workspace = true }

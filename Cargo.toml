@@ -43,12 +43,12 @@ asupersync = { git = "https://github.com/Dicklesworthstone/asupersync", rev = "7
 # The substrate (unpublished; git rev recorded in franken-stack.lock). Bumping
 # this rev is a deliberate, single-commit event that re-runs the substrate
 # behavior suite (plan §16.3).
-fgdb = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf" }
-fgdb-types = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf" }
-fgdb-delta-types = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf" }
-fgdb-gql = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf" }
-fgdb-crypto = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf" }
-fgdb-bigint = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf" }
+fgdb = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf", version = "=0.0.1" }
+fgdb-types = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf", version = "=0.0.1" }
+fgdb-delta-types = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf", version = "=0.0.1" }
+fgdb-gql = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf", version = "=0.0.1" }
+fgdb-crypto = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf", version = "=0.0.1" }
+fgdb-bigint = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf", version = "=0.0.1" }
 
 # Disk-frugal profiles (the substrate's precedent: full DWARF on its test
 # build filled a 300G worker). Backtraces keep file:line.

@@ -11,5 +11,5 @@ publish = false
 workspace = true
 
 [dependencies]
-fa-money = { path = "../fa-money" }
-fa-time = { path = "../fa-time" }
+fa-money = { path = "../fa-money", version = "=0.0.1" }
+fa-time = { path = "../fa-time", version = "=0.0.1" }
