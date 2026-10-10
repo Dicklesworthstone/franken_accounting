@@ -89,3 +89,9 @@ value = 65536
 [[limit]]
 name = "max_batch_entries"
 value = 8190
+[[limit]]
+name = "max_intake_text_bytes"
+value = 256
+[[limit]]
+name = "max_import_documents"
+value = 1024

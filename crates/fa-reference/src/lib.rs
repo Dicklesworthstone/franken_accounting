@@ -34,6 +34,7 @@ pub const CONTROL_KINDS: &[(u16, &str, &str)] = &[
     (3, "policy_activation", "PolicyControl"),
     (4, "time_tick", "TimeControl"),
     (5, "schedule_cancel", "ScheduleControl"),
+    (6, "import_run", "ImportControl"),
     (8, "capability_revocation", "PolicyControl"),
 ];
 

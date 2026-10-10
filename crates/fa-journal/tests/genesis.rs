@@ -2655,3 +2655,520 @@ fn forged_attestations_are_refused_where_the_kernel_relies_on_them() {
     let r = h.review(REVIEWER, other.oid(), Vec::new()).unwrap_err();
     assert_eq!(r.code, "FA-REF-113", "{r}");
 }
+
+// ---------------------------------------------------------------------------
+// Chain of custody and import runs (fa-txf, plan §9.3). Each step logs what
+// the kernel decided (`cargo test -- --nocapture`).
+// ---------------------------------------------------------------------------
+
+impl Harness {
+    fn transfer(
+        &mut self,
+        holder: VId,
+        document: Oid,
+        from: VId,
+        to: VId,
+    ) -> Result<fa_journal::CustodyMoved, Refusal> {
+        let ctx = self.ctx();
+        let cap = Capability::embedded(holder, &["post"]).expect("post");
+        let db = &mut self.db;
+        let book = &self.book;
+        self.runtime
+            .block_on(
+                async move { transfer_custody(db, &ctx, book, &cap, document, from, to).await },
+            )
+            .expect("kernel")
+    }
+
+    fn import(
+        &mut self,
+        cap: &Capability,
+        source: fa_model::IntakeSource,
+        key: &[u8],
+        documents: Vec<Document>,
+    ) -> Result<fa_journal::ImportRecorded, Refusal> {
+        let ctx = self.ctx();
+        let req = fa_journal::ImportRequest {
+            principal: cap.holder(),
+            source,
+            idempotency_key: key.to_vec(),
+            effective_date: DateDay::from_ymd(2026, 3, 15).unwrap(),
+            description: Erasable::seal(
+                &"import run".to_string(),
+                None,
+                &self.book.seal_key,
+                [21; 32],
+                [21; 24],
+            ),
+            documents,
+        };
+        let db = &mut self.db;
+        let book = &self.book;
+        self.runtime
+            .block_on(async move { import_run(db, &ctx, book, cap, req).await })
+            .expect("kernel")
+    }
+
+    /// Write a Document vertex outside every law, with every mirror right
+    /// and `custody_len` as given (absent: a document with no receipt).
+    fn write_document_raw(&mut self, doc: &Document, custody_len: Option<i64>) {
+        use fa_model::symbols::label;
+        let mut props = vec![
+            (
+                property::FA_PAYLOAD,
+                CanonicalScalar::bytes(doc.canonical_bytes().unwrap()).unwrap(),
+            ),
+            (
+                property::FA_DIGEST,
+                CanonicalScalar::bytes(doc.doc_commit().to_vec()).unwrap(),
+            ),
+            (
+                property::BOOK_ID,
+                CanonicalScalar::bytes(doc.book_id.0.to_vec()).unwrap(),
+            ),
+            (
+                property::CODE,
+                CanonicalScalar::ucs_basic_text("Invoice").unwrap(),
+            ),
+        ];
+        if let Some(n) = custody_len {
+            props.push((property::CUSTODY_LEN, CanonicalScalar::Int(n)));
+        }
+        props.sort_by_key(|(k, _)| k.0);
+        let mut batch = fgdb::WriteBatch::new(relation::CUSTODY_OF);
+        batch.create_vertex(document_vid(&doc.oid()), vec![label::DOCUMENT], props);
+        self.write_raw(batch);
+    }
+
+    /// Write a custody event outside every law, with every mirror right.
+    fn write_event_raw(&mut self, event: &fa_journal::CustodyEvent) {
+        use fa_model::symbols::label;
+        let vid = fa_journal::custody::custody_vid(event.book_id, &event.document_oid, event.index);
+        let mut props = vec![
+            (
+                property::FA_PAYLOAD,
+                CanonicalScalar::bytes(event.canonical_bytes().unwrap()).unwrap(),
+            ),
+            (
+                property::FA_DIGEST,
+                CanonicalScalar::bytes(event.digest().unwrap().to_vec()).unwrap(),
+            ),
+            (
+                property::BOOK_ID,
+                CanonicalScalar::bytes(event.book_id.0.to_vec()).unwrap(),
+            ),
+        ];
+        props.sort_by_key(|(k, _)| k.0);
+        let event_label = if event.index == 0 {
+            label::IMPORT_RECEIPT
+        } else {
+            label::CUSTODY_TRANSFER
+        };
+        let mut batch = fgdb::WriteBatch::new(relation::CUSTODY_OF);
+        batch.create_vertex(vid, vec![event_label], props);
+        self.write_raw(batch);
+    }
+
+    fn set_custody_len(&mut self, oid: &Oid, n: i64) {
+        let mut batch = fgdb::WriteBatch::new(relation::CUSTODY_OF);
+        batch.set_vertex_property(
+            document_vid(oid),
+            property::CUSTODY_LEN,
+            Some(CanonicalScalar::Int(n)),
+        );
+        self.write_raw(batch);
+    }
+}
+
+fn receipt_event(doc: &Document, source: fa_model::IntakeSource) -> fa_journal::CustodyEvent {
+    fa_journal::CustodyEvent {
+        book_id: doc.book_id,
+        document_oid: doc.oid(),
+        index: 0,
+        prev_digest: [0; 32],
+        body: fa_journal::CustodyBody::Receipt {
+            source,
+            received_by: doc.retrieved_by,
+            digest_at_receipt: doc.doc_commit(),
+            run_ref: None,
+        },
+    }
+}
+
+#[test]
+fn every_intake_writes_its_receipt_and_custody_passes_only_from_its_holder() {
+    use fa_journal::CustodyBody;
+    use fa_journal::custody::custody_vid;
+    let mut h = harness();
+    let doc = h.document(INVOICE, HUMAN_UPLOAD, b"INVOICE 801 (custody fixture)");
+    let added = h.add_document(&doc).expect("admitted");
+    let oid = doc.oid();
+
+    // Intake wrote custody event 0 in the same commit, linked to the document.
+    let chain = custody_chain(&h.db, &oid).unwrap();
+    eprintln!(
+        "txf custody: intake {} -> chain of {} at {:?}",
+        fa_journal::evidence::hex(&oid.0),
+        chain.len(),
+        added.recorded_at
+    );
+    assert_eq!(chain.len(), 1);
+    assert_eq!(
+        chain[0].1, added.recorded_at,
+        "receipt and document commit together"
+    );
+    assert_eq!(
+        chain[0].0.body,
+        CustodyBody::Receipt {
+            source: fa_model::IntakeSource::Upload {
+                principal: PRINCIPAL
+            },
+            received_by: PRINCIPAL,
+            digest_at_receipt: doc.doc_commit(),
+            run_ref: None,
+        }
+    );
+    let receipt = custody_vid(h.book.book_id, &oid, 0);
+    assert!(
+        h.db.edge(edge_id(relation::CUSTODY_OF, receipt, document_vid(&oid)))
+            .unwrap()
+            .is_some()
+    );
+    // A repeat intake is the recorded outcome: still one receipt.
+    assert!(h.add_document(&doc).expect("recorded").already_recorded);
+    assert_eq!(custody_chain(&h.db, &oid).unwrap().len(), 1);
+
+    // The holder hands it on: event 1, chained to the receipt.
+    let moved = h
+        .transfer(PRINCIPAL, oid, PRINCIPAL, REVIEWER)
+        .expect("recorded");
+    eprintln!(
+        "txf custody: transfer 7 -> 8 recorded as event {}",
+        moved.index
+    );
+    assert_eq!(moved.index, 1);
+    let chain = custody_chain(&h.db, &oid).unwrap();
+    assert_eq!(chain.len(), 2);
+    assert_eq!(chain[1].0.prev_digest, chain[0].0.digest().unwrap());
+    assert_eq!(chain[1].0.holder(), REVIEWER);
+
+    // The former holder can no longer hand it on (SoD-class refusal, exit 7);
+    // a capability that is not `from`'s is refused before any read.
+    let r = h
+        .transfer(PRINCIPAL, oid, PRINCIPAL, OTHER_REVIEWER)
+        .unwrap_err();
+    eprintln!(
+        "txf custody: transfer by a former holder -> {} {}",
+        r.code, r.message
+    );
+    assert_eq!((r.code, r.exit), ("FA-REF-119", exit::SAFETY), "{r}");
+    let r = h
+        .transfer(PRINCIPAL, oid, REVIEWER, OTHER_REVIEWER)
+        .unwrap_err();
+    assert_eq!(r.code, "FA-REF-011", "{r}");
+    assert_eq!(
+        custody_chain(&h.db, &oid).unwrap().len(),
+        2,
+        "nothing written"
+    );
+
+    // A complete two-event chain is citable.
+    let posted = h.post_citing(&doc, b"txf-custody-ok");
+    eprintln!("txf custody: post citing it -> {posted:?}");
+    assert!(matches!(posted, Ok(Posted::Committed { .. })), "{posted:?}");
+}
+
+#[test]
+fn a_document_without_a_complete_custody_chain_cannot_be_cited() {
+    use fa_model::IntakeSource;
+    let mut h = harness();
+
+    // (a) A document with no receipt at all.
+    let bare = h.document(INVOICE, HUMAN_UPLOAD, b"INVOICE 811 (no receipt)");
+    h.write_document_raw(&bare, None);
+    // (b) A chain whose length says 2 but whose link 1 was never written.
+    let gap = h.document(INVOICE, HUMAN_UPLOAD, b"INVOICE 812 (missing link)");
+    h.add_document(&gap).expect("admitted");
+    h.set_custody_len(&gap.oid(), 2);
+    // (c) A transfer that does not chain to the receipt.
+    let unchained = h.document(INVOICE, HUMAN_UPLOAD, b"INVOICE 813 (unchained)");
+    h.add_document(&unchained).expect("admitted");
+    h.write_event_raw(&fa_journal::CustodyEvent {
+        book_id: unchained.book_id,
+        document_oid: unchained.oid(),
+        index: 1,
+        prev_digest: [0xab; 32],
+        body: fa_journal::CustodyBody::Transfer {
+            from: PRINCIPAL,
+            to: REVIEWER,
+        },
+    });
+    h.set_custody_len(&unchained.oid(), 2);
+    // (d) A receipt from a connector this book does not register.
+    let foreign = h.document(INVOICE, HUMAN_UPLOAD, b"INVOICE 814 (unregistered source)");
+    h.write_document_raw(&foreign, Some(1));
+    h.write_event_raw(&receipt_event(
+        &foreign,
+        IntakeSource::Connector {
+            name: "bank-feed".into(),
+            version: "1".into(),
+        },
+    ));
+    // (e) A transfer recorded by a principal that did not hold it.
+    let stolen = h.document(INVOICE, HUMAN_UPLOAD, b"INVOICE 815 (not the holder)");
+    h.add_document(&stolen).expect("admitted");
+    let receipt = receipt_event(
+        &stolen,
+        IntakeSource::Upload {
+            principal: PRINCIPAL,
+        },
+    );
+    h.write_event_raw(&fa_journal::CustodyEvent {
+        index: 1,
+        prev_digest: receipt.digest().unwrap(),
+        body: fa_journal::CustodyBody::Transfer {
+            from: OTHER_REVIEWER,
+            to: REVIEWER,
+        },
+        ..receipt
+    });
+    h.set_custody_len(&stolen.oid(), 2);
+
+    for (doc, key, link, why) in [
+        (&bare, b"txf-bare" as &[u8], "link 0", "no ImportReceipt"),
+        (&gap, b"txf-gap", "link 1", "is missing"),
+        (&unchained, b"txf-unchained", "link 1", "does not chain"),
+        (&foreign, b"txf-foreign", "link 0", "unregistered source"),
+        (&stolen, b"txf-stolen", "link 1", "did not hold"),
+    ] {
+        let r = h.post_citing(doc, key).unwrap_err();
+        eprintln!(
+            "txf custody: citing a broken chain -> {} {}",
+            r.code, r.message
+        );
+        assert_eq!((r.code, r.exit), ("FA-REF-114", exit::REFUSAL), "{r}");
+        assert!(r.message.contains(link), "{}", r.message);
+        assert!(r.message.contains(why), "{}", r.message);
+        assert!(entry_absent(&h, key));
+    }
+    // An intact document beside them still posts.
+    let intact = h.document(INVOICE, HUMAN_UPLOAD, b"INVOICE 816 (intact)");
+    h.add_document(&intact).expect("admitted");
+    assert!(matches!(
+        h.post_citing(&intact, b"txf-intact"),
+        Ok(Posted::Committed { .. })
+    ));
+}
+
+#[test]
+fn an_import_run_records_its_documents_under_a_receipt_that_recomputes() {
+    use fa_journal::CustodyBody;
+    use fa_journal::import::oids_root;
+    use fa_model::IntakeSource;
+    let mut h = harness();
+    let connector = IntakeSource::Connector {
+        name: "fa-import".into(),
+        version: "1".into(),
+    };
+    let held = h.document(INVOICE, HUMAN_UPLOAD, b"INVOICE 901 (already held)");
+    h.add_document(&held).expect("admitted");
+    let docs: Vec<Document> = [
+        b"INVOICE 902 (imported)" as &[u8],
+        b"INVOICE 903 (imported)",
+        b"RECEIPT 904 (imported)",
+    ]
+    .iter()
+    .map(|b| h.document(INVOICE, HUMAN_UPLOAD, b))
+    .chain([held.clone()])
+    .collect();
+    let importer = Capability::embedded(PRINCIPAL, &["post"]).expect("post");
+
+    let run = h
+        .import(&importer, connector.clone(), b"run-1", docs.clone())
+        .expect("recorded");
+    let mut oids: Vec<Oid> = docs.iter().map(Document::oid).collect();
+    oids.sort();
+    eprintln!(
+        "txf import: run {:032x} -> {} documents, {} bytes, root {}, receipt {}",
+        run.receipt.run.0,
+        run.receipt.document_count,
+        run.receipt.byte_count,
+        fa_journal::evidence::hex(&run.receipt.oids_root),
+        fa_journal::evidence::hex(&run.receipt.receipt_hash)
+    );
+    assert_eq!(run.receipt.document_count, 4);
+    let bytes: u64 = docs.iter().map(|d| d.bytes.len() as u64).sum();
+    assert_eq!(run.receipt.byte_count, bytes);
+    assert_eq!(run.receipt.oids_root, oids_root(&oids));
+    assert_eq!(run.already_held, vec![held.oid()]);
+    assert_eq!(run.recorded.len(), 3);
+    assert!(verify_receipt(&run.receipt, h.book.book_id, &oids).is_ok());
+    // The journal binds what the hash does not: the sequence that recorded
+    // the run. A receipt shifted only in `recorded_at` passes the offline
+    // check (no claim) and is refused against the journal (exit 8).
+    assert_eq!(
+        verify_receipt_in(&h.db, h.book.book_id, &run.receipt, &oids).unwrap(),
+        Ok(())
+    );
+    let shifted = fa_journal::RunReceipt {
+        recorded_at: fgdb_types::CommitSeq(run.receipt.recorded_at.0 + 1),
+        ..run.receipt.clone()
+    };
+    assert!(verify_receipt(&shifted, h.book.book_id, &oids).is_ok());
+    let r = verify_receipt_in(&h.db, h.book.book_id, &shifted, &oids)
+        .unwrap()
+        .unwrap_err();
+    eprintln!(
+        "txf import: a receipt with recorded_at shifted -> {} {}",
+        r.code, r.message
+    );
+    assert_eq!((r.code, r.exit), ("FA-REF-115", exit::VERIFICATION), "{r}");
+    assert!(
+        r.message.contains(&format!(
+            "recorded at sequence {}",
+            run.receipt.recorded_at.0
+        )),
+        "{r}"
+    );
+    let elsewhere = fa_journal::RunReceipt {
+        run: fgdb_types::VId(0xabc),
+        ..run.receipt.clone()
+    };
+    let r = verify_receipt_in(&h.db, h.book.book_id, &elsewhere, &oids)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(r.code, "FA-REF-115", "{r}");
+    assert_eq!(
+        read_run(&h.db, run.receipt.run).unwrap(),
+        Some(run.receipt.clone())
+    );
+
+    // A tampered, short, or reordered oid list does not verify (exit 8).
+    let mut tampered = oids.clone();
+    tampered[1].0[0] ^= 1;
+    let mut reordered = oids.clone();
+    reordered.swap(0, 1);
+    for (what, list) in [
+        ("tampered", tampered),
+        ("short", oids[..3].to_vec()),
+        ("reordered", reordered),
+    ] {
+        let r = verify_receipt(&run.receipt, h.book.book_id, &list).unwrap_err();
+        eprintln!("txf import: a {what} oid list -> {} {}", r.code, r.message);
+        assert_eq!((r.code, r.exit), ("FA-REF-115", exit::VERIFICATION));
+    }
+
+    // Each recorded document's receipt names the run and its source; the
+    // already-held one keeps its upload receipt.
+    for oid in &run.recorded {
+        let chain = custody_chain(&h.db, oid).unwrap();
+        let receipt_of = match &chain[0].0.body {
+            CustodyBody::Receipt {
+                source, run_ref, ..
+            } => Some((source.clone(), *run_ref)),
+            CustodyBody::Transfer { .. } => None,
+        };
+        let (source, run_ref) = receipt_of.expect("custody event 0 is a receipt");
+        assert_eq!(
+            (source, run_ref),
+            (connector.clone(), Some(run.receipt.run))
+        );
+        let receipt = fa_journal::custody::custody_vid(h.book.book_id, oid, 0);
+        assert!(
+            h.db.edge(edge_id(relation::IMPORTED_BY, receipt, run.receipt.run))
+                .unwrap()
+                .is_some()
+        );
+    }
+    assert!(matches!(
+        &custody_chain(&h.db, &held.oid()).unwrap()[0].0.body,
+        CustodyBody::Receipt { run_ref: None, .. }
+    ));
+    // An imported document is citable through its run's receipt.
+    let imported = docs.iter().find(|d| d.oid() == run.recorded[0]).unwrap();
+    assert!(matches!(
+        h.post_citing(imported, b"txf-imported"),
+        Ok(Posted::Committed { .. })
+    ));
+
+    // The same run again is its recorded receipt; another under the key is 032.
+    let again = h
+        .import(&importer, connector.clone(), b"run-1", docs.clone())
+        .expect("recorded");
+    assert!(again.already_recorded);
+    assert_eq!(again.receipt, run.receipt);
+    let r = h
+        .import(&importer, connector.clone(), b"run-1", docs[..2].to_vec())
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-032", exit::CONFLICT), "{r}");
+
+    // Refused before any read: an unregistered source, a repeated document,
+    // an empty run, an Agent on trunk, a principal without `post`.
+    let fresh = |b: &[u8]| h.document(INVOICE, HUMAN_UPLOAD, b);
+    let one = vec![fresh(b"INVOICE 905")];
+    let cases: Vec<(&str, Capability, IntakeSource, Vec<Document>, &str)> = vec![
+        (
+            "unregistered connector",
+            importer.clone(),
+            IntakeSource::Connector {
+                name: "bank-feed".into(),
+                version: "1".into(),
+            },
+            one.clone(),
+            "FA-REF-083",
+        ),
+        (
+            "unregistered device",
+            importer.clone(),
+            IntakeSource::Scan {
+                device: "office-scanner".into(),
+            },
+            one.clone(),
+            "FA-REF-083",
+        ),
+        (
+            "a repeated document",
+            importer.clone(),
+            connector.clone(),
+            vec![one[0].clone(), one[0].clone()],
+            "FA-REF-100",
+        ),
+        (
+            "an empty run",
+            importer.clone(),
+            connector.clone(),
+            Vec::new(),
+            "FA-REF-100",
+        ),
+        (
+            "an agent on trunk",
+            fa_policy::Capability::new(
+                PRINCIPAL,
+                fa_policy::Profile::Agent,
+                &[fa_policy::Op::Post],
+                PRINCIPAL,
+            )
+            .unwrap(),
+            connector.clone(),
+            one.clone(),
+            "FA-REF-013",
+        ),
+        (
+            "no post op",
+            Capability::embedded(PRINCIPAL, &["read"]).unwrap(),
+            connector.clone(),
+            one.clone(),
+            "FA-REF-011",
+        ),
+    ];
+    for (i, (what, cap, source, docs, code)) in cases.into_iter().enumerate() {
+        let key = format!("run-bad-{i}");
+        let r = h.import(&cap, source, key.as_bytes(), docs).unwrap_err();
+        eprintln!("txf import: {what} -> {} {}", r.code, r.message);
+        assert_eq!(r.code, code, "{what}: {r}");
+    }
+    assert!(
+        custody_chain(&h.db, &one[0].oid()).unwrap().is_empty(),
+        "nothing written"
+    );
+}

@@ -606,6 +606,66 @@ impl Book {
         )
     }
 
+    /// Record an import run (plan §9.3): the batch's documents and their
+    /// receipts, and the run's `ImportControl` receipt, in one commit.
+    /// `description` is sealed under the book key with fresh entropy.
+    #[allow(clippy::too_many_arguments)]
+    pub fn import_run(
+        &mut self,
+        capability: &fa_journal::Capability,
+        source: fa_model::IntakeSource,
+        idempotency_key: &[u8],
+        effective_date: DateDay,
+        description: &str,
+        documents: Vec<fa_journal::Document>,
+    ) -> Outcome<fa_journal::ImportRecorded> {
+        let req = fa_journal::ImportRequest {
+            principal: capability.holder(),
+            source,
+            idempotency_key: idempotency_key.to_vec(),
+            effective_date,
+            description: self.seal_text(description)?,
+            documents,
+        };
+        let purposes = self.purposes();
+        let ctx = &self.ctx;
+        let runtime = &self.runtime;
+        Ok(with_store!(&mut self.store, db => runtime.block_on(async {
+            fa_journal::import_run(db, &purposes, ctx, capability, req).await
+        }))?)
+    }
+
+    /// The receipt of the import run whose control entry is `run`.
+    pub fn read_run(&self, run: VId) -> Result<Option<fa_journal::RunReceipt>, BookError> {
+        Ok(with_store!(&self.store, db => fa_journal::read_run(db, run))?)
+    }
+
+    /// Hand the document at `document` on from the capability's holder (its
+    /// current custodian) to `to`, as a journaled custody event.
+    pub fn transfer_custody(
+        &mut self,
+        capability: &fa_journal::Capability,
+        document: &fa_model::Oid,
+        to: VId,
+    ) -> Outcome<fa_journal::CustodyMoved> {
+        let from = capability.holder();
+        let document = *document;
+        let purposes = self.purposes();
+        let ctx = &self.ctx;
+        let runtime = &self.runtime;
+        Ok(with_store!(&mut self.store, db => runtime.block_on(async {
+            fa_journal::transfer_custody(db, &purposes, ctx, capability, document, from, to).await
+        }))?)
+    }
+
+    /// The document's chain of custody, verified, oldest first.
+    pub fn custody_chain(
+        &self,
+        document: &fa_model::Oid,
+    ) -> Result<Vec<(fa_journal::CustodyEvent, CommitSeq)>, BookError> {
+        Ok(with_store!(&self.store, db => fa_journal::custody_chain(db, document))?)
+    }
+
     /// The document at `oid`, verified against its commitment.
     pub fn read_document(
         &self,

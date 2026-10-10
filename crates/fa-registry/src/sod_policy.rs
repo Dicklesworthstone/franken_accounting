@@ -38,11 +38,13 @@ const SWEEP_TRANSITIONS: &[&str] = &["Expire", "Reverse"];
 /// A scheduled reversal cancelled by lineage (§7.6).
 const SCHEDULE_TRANSITIONS: &[&str] = &["Cancel"];
 /// The control classes with no period state (book-scoped, plan §7.1).
+const IMPORT_TRANSITIONS: &[&str] = &["Import"];
 const BOOK_SCOPED_CONTROLS: &[&str] = &[
     "PolicyControl",
     "TimeControl",
     "SweepControl",
     "ScheduleControl",
+    "ImportControl",
 ];
 
 /// Which entry a rule governs. `state` is the period state the entry
@@ -298,6 +300,7 @@ impl SodPolicy {
                         "TimeControl" => TIME_TRANSITIONS,
                         "SweepControl" => SWEEP_TRANSITIONS,
                         "ScheduleControl" => SCHEDULE_TRANSITIONS,
+                        "ImportControl" => IMPORT_TRANSITIONS,
                         other => {
                             return Err(invalid(
                                 R,

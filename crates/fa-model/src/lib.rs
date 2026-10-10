@@ -33,8 +33,9 @@ pub use account::AccountType;
 pub use canon::{DecodeError, EncodeError, Reader, Writer};
 pub use entry::{
     BaseTotals, ControlKind, ControlPayload, Disposition, Entry, EntryClass, EntryError,
-    EntryOrigin, EntryPayload, EvidenceRef, ExternalId, LegPayload, Pending, Residual,
-    ScheduleTrigger, Settlement, Supersession, SupersessionKind, Tag, TagValue, UnitTotal,
+    EntryOrigin, EntryPayload, EvidenceRef, ExternalId, IntakeSource, LegPayload, Pending,
+    Residual, ScheduleTrigger, Settlement, Supersession, SupersessionKind, Tag, TagValue,
+    UnitTotal,
 };
 pub use erasable::{Canonical, Erasable, EraseError, SealKey};
 pub use ids::{
