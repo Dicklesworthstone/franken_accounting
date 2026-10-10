@@ -446,6 +446,14 @@ exit = "usage"
 cite = "plan §5.4 (Expires is the system's void at timeout)"
 fix = "release the hold now with Resolution(Voids), or let the expiry sweep expire it once a tick reaches its deadline"
 
+[[refusal]]
+code = "FA-REF-099"
+name = "CANCEL_BY_KERNEL"
+owners = ["fa-journal"]
+exit = "usage"
+cite = "plan §7.6 (cancelled by lineage), FA-INV-08"
+fix = "reverse the scheduled target with a Reversal; its commit journals the cancellation"
+
 # ---- Structure and coordinate (100–103) ----------------------------------
 [[refusal]]
 code = "FA-REF-100"

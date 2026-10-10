@@ -292,6 +292,7 @@ fn harness() -> Harness {
         name: "Reg Co".into(),
         base_unit: usd,
         calendar: calendar.clone(),
+        time_zone_policy: None,
     };
     let symbols = SymbolTable::compiled();
     runtime

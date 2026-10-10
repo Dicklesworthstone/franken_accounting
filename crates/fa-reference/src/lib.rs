@@ -356,10 +356,18 @@ struct Content {
     timeout: Option<u64>,
     /// Minted by the expiry sweep: never the content of a submitted intent.
     by_sweep: bool,
+    /// An Adjusting entry's scheduled reversal date (plan §7.6): the
+    /// proposal digest covers it.
+    auto_reverse: Option<DateDay>,
 }
 
 impl Content {
-    fn of(i: &Intent, balancing: Option<u16>, timeout: Option<u64>) -> Self {
+    fn of(
+        i: &Intent,
+        balancing: Option<u16>,
+        timeout: Option<u64>,
+        auto_reverse: Option<DateDay>,
+    ) -> Self {
         Self {
             class: i.class.clone(),
             date: i.date,
@@ -372,8 +380,43 @@ impl Content {
             balancing,
             timeout,
             by_sweep: false,
+            auto_reverse,
         }
     }
+}
+
+/// A scheduled reversal in the model (plan §7.6): its date, the period that
+/// date lies in, and whether a manual reversal cancelled it by lineage.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScheduleState {
+    pub reverse_on: DateDay,
+    pub period: String,
+    pub cancelled: bool,
+}
+
+/// Where a schedule whose date the latest tick has reached stands (the
+/// kernel's `ReversalStatus`, without the reasons).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reached {
+    /// The period admits a Reversal under the scheduler's `post`.
+    Due,
+    /// The period does not exist yet or is Future.
+    Waiting,
+    /// The Reversal row refuses the scheduler, or the target has live
+    /// applications.
+    Blocked,
+}
+
+/// One scheduled-reversal sweep batch in the model.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReversalSweep {
+    pub tick: u64,
+    /// `(target index, its scheduled reversal's index)`.
+    pub minted: Vec<(usize, usize)>,
+    /// Targets examined and not minted (period row, applications, limits).
+    pub blocked: Vec<usize>,
+    /// Reached schedules left for the next batch under this tick.
+    pub remaining: usize,
 }
 
 /// One expiry-sweep batch in the model (plan §5.4).
@@ -416,6 +459,13 @@ pub struct Oracle {
     deadlines: BTreeMap<usize, u64>,
     /// The sweep's position: (tick index, last hold index it expired).
     cursor: Option<(usize, usize)>,
+    /// The book declares a `time_zone_policy` (Utc: a tick's civil date is
+    /// its UTC day).
+    tz_declared: bool,
+    /// Scheduled target index → its schedule.
+    schedules: BTreeMap<usize, ScheduleState>,
+    /// The reversal sweep's position: (tick index, last target examined).
+    schedule_cursor: Option<(usize, usize)>,
     classes: EntryClasses,
     matrix: Admissibility,
 }
@@ -436,9 +486,17 @@ impl Oracle {
             ticks: Vec::new(),
             deadlines: BTreeMap::new(),
             cursor: None,
+            tz_declared: false,
+            schedules: BTreeMap::new(),
+            schedule_cursor: None,
             classes,
             matrix,
         }
+    }
+
+    /// The book declares `time_zone_policy = Utc` at genesis (plan §7.7).
+    pub fn declare_time_zone(&mut self) {
+        self.tz_declared = true;
     }
 
     pub fn add_account(&mut self, a: Account) {
@@ -471,17 +529,201 @@ impl Oracle {
         code: &str,
         t: PeriodTransition,
     ) -> Result<(PeriodState, PeriodState), &'static str> {
+        self.transition_minting(code, t)
+            .map(|(from, to, _, _)| (from, to))
+    }
+
+    /// A transition, and for `Open` the scheduled reversals dated in the
+    /// period whose date the latest tick has reached, minted in it (plan
+    /// §7.6 rule (b)): `(from, to, minted (target, reversal), blocked)`.
+    #[allow(clippy::type_complexity)]
+    pub fn transition_minting(
+        &mut self,
+        code: &str,
+        t: PeriodTransition,
+    ) -> Result<(PeriodState, PeriodState, Vec<(usize, usize)>, Vec<usize>), &'static str> {
         let Some((_, state)) = self.periods.get_mut(code) else {
             return Err(code::PERIOD_UNKNOWN);
         };
         let to = transition(*state, t).map_err(|_| code::TRANSITION)?;
         let from = *state;
         *state = to;
-        Ok((from, to))
+        let (mut minted, mut blocked) = (Vec::new(), Vec::new());
+        if t == PeriodTransition::Open
+            && let Some(today) = self.today()
+        {
+            let due: Vec<usize> = self
+                .schedules
+                .iter()
+                .filter(|(target, s)| {
+                    s.period == code && s.reverse_on <= today && self.schedule_live(**target)
+                })
+                .map(|(target, _)| *target)
+                .take(8190)
+                .collect();
+            for target in due {
+                match self.mint_scheduled(target) {
+                    Some(index) => minted.push((target, index)),
+                    None => blocked.push(target),
+                }
+            }
+        }
+        Ok((from, to, minted, blocked))
     }
 
     pub fn post(&mut self, intent: &Intent) -> Verdict {
-        self.post_inner(intent, None, None)
+        let v = self.post_inner(intent, None, None, None);
+        // A manual Reversal of a scheduled target cancels the schedule by
+        // lineage (plan §7.6): it can never fire.
+        if matches!(v, Verdict::Posted { .. })
+            && intent.class == "Reversal"
+            && let Some(s) = intent.reverses.and_then(|t| self.schedules.get_mut(&t))
+        {
+            s.cancelled = true;
+        }
+        v
+    }
+
+    /// An Adjusting entry that schedules its own reversal on `reverse_on`
+    /// (plan §7.6, Appendix B `Accrue`/`Defer`).
+    pub fn post_scheduled(&mut self, intent: &Intent, reverse_on: DateDay) -> Verdict {
+        self.post_inner(intent, None, None, Some(reverse_on))
+    }
+
+    /// The schedule of `target`, if it scheduled its reversal.
+    #[must_use]
+    pub fn schedule(&self, target: usize) -> Option<&ScheduleState> {
+        self.schedules.get(&target)
+    }
+
+    /// The civil date of the latest tick (UTC), when the book declares its
+    /// time-zone policy and has a tick.
+    fn today(&self) -> Option<DateDay> {
+        const NS_PER_DAY: u64 = 86_400_000_000_000;
+        if !self.tz_declared {
+            return None;
+        }
+        let ns = self.latest_tick()?;
+        i32::try_from(ns / NS_PER_DAY).ok().map(DateDay)
+    }
+
+    /// Neither cancelled nor executed: its target is unreversed.
+    fn schedule_live(&self, target: usize) -> bool {
+        self.schedules.get(&target).is_some_and(|s| !s.cancelled)
+            && !self.reversed.contains_key(&target)
+    }
+
+    /// Mint the scheduled reversal of `target` through the ordinary posting
+    /// law with the scheduler's authority (`post` only): the exact swap,
+    /// dated `reverse_on`. `Some(index)` when it posted; `None` when the
+    /// period row, live applications, or availability refused it (blocked).
+    fn mint_scheduled(&mut self, target: usize) -> Option<usize> {
+        let s = self.schedules.get(&target)?.clone();
+        let original = self.journal.get(target)?.clone();
+        let intent = Intent {
+            class: "Reversal".into(),
+            date: s.reverse_on,
+            discriminator: None,
+            legs: original
+                .legs
+                .iter()
+                .map(|l| Leg {
+                    side: l.side.flipped(),
+                    ..l.clone()
+                })
+                .collect(),
+            key: b"scheduled".to_vec(),
+            ops: vec!["post".into()],
+            approvals: 0,
+            reverses: Some(target),
+            resolves: None,
+            settles: Vec::new(),
+        };
+        match self.post_inner(&intent, None, None, None) {
+            Verdict::Posted { index, .. } => {
+                if let Some((_, content)) = self.reversed.get_mut(&target) {
+                    content.by_sweep = true;
+                }
+                Some(index)
+            }
+            _ => None,
+        }
+    }
+
+    /// Every live schedule whose date the latest tick has reached, in target
+    /// order, with where it stands (the kernel's `due_reversals`).
+    #[must_use]
+    pub fn reached_reversals(&self) -> Vec<(usize, Reached)> {
+        let Some(today) = self.today() else {
+            return Vec::new();
+        };
+        self.schedules
+            .iter()
+            .filter(|(target, s)| s.reverse_on <= today && self.schedule_live(**target))
+            .map(|(target, s)| {
+                let status = match self.period_state(&s.period) {
+                    None | Some(PeriodState::Future) => Reached::Waiting,
+                    Some(state) => match self.matrix.decide("Reversal", state) {
+                        Some(Decision::Admit) => Reached::Due,
+                        Some(Decision::With { op, .. }) if op == "post" => Reached::Due,
+                        _ => Reached::Blocked,
+                    },
+                };
+                let live_applications =
+                    (0..self.journal[*target].legs.len()).any(|i| self.applied_to(*target, i) != 0);
+                let status = if status == Reached::Due && live_applications {
+                    Reached::Blocked
+                } else {
+                    status
+                };
+                (*target, status)
+            })
+            .collect()
+    }
+
+    /// One scheduled-reversal sweep batch (plan §7.6 rule (a), §5.4 cursor
+    /// discipline): up to `max_batch` reached schedules whose periods exist
+    /// and are not Future, after the cursor when it belongs to the latest
+    /// tick, each minted or blocked; then the cursor moves to the last.
+    pub fn sweep_reversals_batch(
+        &mut self,
+        max_batch: usize,
+    ) -> Result<Option<ReversalSweep>, &'static str> {
+        if max_batch == 0 {
+            return Err(code::STRUCTURE);
+        }
+        let Some(tick_index) = self.ticks.len().checked_sub(1) else {
+            return Ok(None);
+        };
+        let after = match self.schedule_cursor {
+            Some((t, last)) if t == tick_index => Some(last),
+            _ => None,
+        };
+        let reached: Vec<usize> = self
+            .reached_reversals()
+            .into_iter()
+            .filter(|(_, s)| *s != Reached::Waiting)
+            .map(|(t, _)| t)
+            .filter(|t| after.is_none_or(|a| *t > a))
+            .collect();
+        let take = reached.len().min(max_batch);
+        if take == 0 {
+            return Ok(None);
+        }
+        let (mut minted, mut blocked) = (Vec::new(), Vec::new());
+        for &target in &reached[..take] {
+            match self.mint_scheduled(target) {
+                Some(index) => minted.push((target, index)),
+                None => blocked.push(target),
+            }
+        }
+        self.schedule_cursor = Some((tick_index, reached[take - 1]));
+        Ok(Some(ReversalSweep {
+            tick: self.ticks[tick_index],
+            minted,
+            blocked,
+            remaining: reached.len() - take,
+        }))
     }
 
     /// Journal a TimeEvidence tick (plan §7.1a): strictly after the latest.
@@ -508,7 +750,7 @@ impl Oracle {
                 code: code::STRUCTURE,
             };
         }
-        self.post_inner(intent, None, Some(timeout_ns))
+        self.post_inner(intent, None, Some(timeout_ns), None)
     }
 
     /// A timed hold's deadline.
@@ -598,6 +840,7 @@ impl Oracle {
                         balancing: None,
                         timeout: None,
                         by_sweep: true,
+                        auto_reverse: None,
                     },
                 ),
             );
@@ -640,7 +883,7 @@ impl Oracle {
                 code: code::BALANCING_SHAPE,
             };
         }
-        self.post_inner(intent, Some(leg), None)
+        self.post_inner(intent, Some(leg), None, None)
     }
 
     fn post_inner(
@@ -648,6 +891,7 @@ impl Oracle {
         intent: &Intent,
         balancing: Option<u16>,
         timeout: Option<u64>,
+        auto_reverse: Option<DateDay>,
     ) -> Verdict {
         // 1. Structure.
         let Some(class) = self.classes.by_name(&intent.class) else {
@@ -751,6 +995,41 @@ impl Oracle {
                 code: code::STRUCTURE,
             };
         }
+        // 1f. A scheduled reversal (plan §7.6, §7.7): only an Adjusting
+        //     entry without applications, for a later date, in a book that
+        //     declares its time-zone policy, on a date in a normal period.
+        let mut schedule_period = None;
+        if let Some(reverse_on) = auto_reverse {
+            if intent.class != "Adjusting"
+                || !intent.settles.is_empty()
+                || reverse_on <= intent.date
+            {
+                return Verdict::Refused {
+                    code: code::STRUCTURE,
+                };
+            }
+            if !self.tz_declared {
+                return Verdict::Refused {
+                    code: code::CLASS_NOT_IMPLEMENTED,
+                };
+            }
+            let resolved = self
+                .calendar
+                .fiscal_year_of(reverse_on)
+                .ok()
+                .and_then(|fy| self.calendar.periods_for_year(fy).ok())
+                .and_then(|defs| {
+                    resolve_period(&defs, reverse_on, None)
+                        .ok()
+                        .map(|p| p.code.clone())
+                });
+            let Some(p) = resolved else {
+                return Verdict::Refused {
+                    code: code::PERIOD_RESOLVE,
+                };
+            };
+            schedule_period = Some(p);
+        }
         // 2. Balance per unit.
         let mut per_unit: BTreeMap<u32, (Int, Int)> = BTreeMap::new();
         for l in &intent.legs {
@@ -785,7 +1064,7 @@ impl Oracle {
         let period = period.code.clone();
         // 4. Identity: the recorded outcome when the content is the same,
         //    a conflict when it is not — before any law is re-checked.
-        let content = Content::of(intent, balancing, timeout);
+        let content = Content::of(intent, balancing, timeout, auto_reverse);
         let existing = match (intent.reverses, &intent.resolves) {
             (Some(target), _) => self.reversed.get(&target),
             (None, Some(r)) => self.resolved.get(&r.target),
@@ -1187,6 +1466,16 @@ impl Oracle {
         });
         if let Some(d) = deadline {
             self.deadlines.insert(index, d);
+        }
+        if let (Some(reverse_on), Some(period)) = (auto_reverse, schedule_period) {
+            self.schedules.insert(
+                index,
+                ScheduleState {
+                    reverse_on,
+                    period,
+                    cancelled: false,
+                },
+            );
         }
         match (intent.reverses, &intent.resolves) {
             (Some(target), _) => {

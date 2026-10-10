@@ -280,6 +280,7 @@ fn assert_corruption_refused(corrupt_head: bool) {
             name: "Tamper fixture".into(),
             base_unit: units.lookup("USD").expect("USD"),
             calendar: fa_time::FiscalCalendar::monthly("fiscal", 1, 1).expect("calendar"),
+            time_zone_policy: None,
         },
         Entropy::deterministic(43),
     )

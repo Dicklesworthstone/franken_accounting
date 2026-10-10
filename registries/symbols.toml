@@ -105,6 +105,9 @@ name = "AccumulatorState"
 [[label]]
 id = 34
 name = "SupplementalEvidence"
+[[label]]
+id = 35
+name = "ReversalSchedule"
 
 # ---- property keys --------------------------------------------------------
 [[property]]
@@ -254,6 +257,21 @@ name = "latest_tick"
 [[property]]
 id = 58
 name = "sweep_cursor"
+[[property]]
+id = 59
+name = "reverse_on"
+[[property]]
+id = 60
+name = "target_ref"
+[[property]]
+id = 61
+name = "exec_op"
+[[property]]
+id = 62
+name = "effects_digest"
+[[property]]
+id = 63
+name = "schedule_cursor"
 
 # ---- relations ------------------------------------------------------------
 [[relation]]

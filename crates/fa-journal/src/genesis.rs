@@ -39,6 +39,44 @@ pub struct BookSpec {
     pub name: String,
     pub base_unit: UnitId,
     pub calendar: FiscalCalendar,
+    /// How an instant (a TimeEvidence tick) becomes a civil date when a rule
+    /// needs one (plan §7.7). Declared at genesis, never defaulted: a book
+    /// without it refuses scheduled reversals (`auto_reverse_on`).
+    pub time_zone_policy: Option<TimeZonePolicy>,
+}
+
+/// The book's `time_zone_policy` (plan §7.7). This slice registers `Utc`
+/// only; a zone with rules lands with the calendar-arithmetic slice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimeZonePolicy {
+    Utc,
+}
+
+impl TimeZonePolicy {
+    #[must_use]
+    pub fn tag(self) -> u8 {
+        match self {
+            Self::Utc => 1,
+        }
+    }
+
+    #[must_use]
+    pub fn from_tag(tag: u8) -> Option<Self> {
+        match tag {
+            1 => Some(Self::Utc),
+            _ => None,
+        }
+    }
+
+    /// The civil date of an instant under this policy.
+    #[must_use]
+    pub fn civil_date(self, observed_utc_ns: u64) -> DateDay {
+        const NS_PER_DAY: u64 = 86_400_000_000_000;
+        match self {
+            // u64::MAX / NS_PER_DAY = 213_503, well inside i32.
+            Self::Utc => DateDay(i32::try_from(observed_utc_ns / NS_PER_DAY).unwrap_or(i32::MAX)),
+        }
+    }
 }
 
 const MAX_BOOK_NAME_BYTES: usize = 256;
@@ -121,6 +159,11 @@ impl BookSpec {
                 encode_rule(&mut w, end_rule);
             }
         }
+        // Trailing, and only when declared: a book without a policy keeps
+        // the bytes it always had.
+        if let Some(p) = self.time_zone_policy {
+            w.u8(p.tag());
+        }
         w.finish().map_err(|e| KernelError::Model(e.into()))
     }
 
@@ -158,6 +201,15 @@ impl BookSpec {
                 },
                 t => return Err(r.bad_tag("calendar.kind", t)),
             };
+            let time_zone_policy = if r.remaining() > 0 {
+                let t = r.u8("book.time_zone_policy")?;
+                Some(
+                    TimeZonePolicy::from_tag(t)
+                        .ok_or_else(|| r.bad_tag("book.time_zone_policy", t))?,
+                )
+            } else {
+                None
+            };
             r.finish()?;
             Ok(Self {
                 book_id,
@@ -168,6 +220,7 @@ impl BookSpec {
                     kind,
                     adjustment_periods,
                 },
+                time_zone_policy,
             })
         })()
         .map_err(|e| KernelError::Model(e.into()))?;
@@ -702,10 +755,24 @@ mod tests {
                     kind,
                     adjustment_periods: 2,
                 },
+                time_zone_policy: None,
             };
             let bytes = spec.canonical_bytes().unwrap();
             assert_eq!(BookSpec::decode(&bytes).unwrap(), spec);
             assert!(BookSpec::decode(&bytes[..bytes.len() - 1]).is_err());
+            // A declared policy is one trailing byte; the bytes without it
+            // are unchanged, and an unregistered tag is refused.
+            let declared = BookSpec {
+                time_zone_policy: Some(TimeZonePolicy::Utc),
+                ..spec.clone()
+            };
+            let with = declared.canonical_bytes().unwrap();
+            assert_eq!(&with[..bytes.len()], bytes.as_slice());
+            assert_eq!(with.len(), bytes.len() + 1);
+            assert_eq!(BookSpec::decode(&with).unwrap(), declared);
+            let mut unknown = bytes.clone();
+            unknown.push(9);
+            assert!(BookSpec::decode(&unknown).is_err());
         }
     }
 }

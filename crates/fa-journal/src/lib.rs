@@ -25,12 +25,13 @@ pub mod policy;
 pub mod post;
 pub mod refusal;
 pub mod rows;
+pub mod schedule;
 pub mod sweep;
 
 pub use evidence::{Document, DocumentAdded, add_document, read_document};
 pub use genesis::{
-    AccountSpec, BookContext, BookSpec, ChartInstalled, UnitPolicy, create_book, create_periods,
-    install_chart,
+    AccountSpec, BookContext, BookSpec, ChartInstalled, TimeZonePolicy, UnitPolicy, create_book,
+    create_periods, install_chart,
 };
 pub use limit::{
     BalanceLimit, Balanced, LimitCell, LimitScope, cell_account, limit_cell_vid, period_cell_vid,
@@ -44,7 +45,11 @@ pub use policy::{
 pub use post::{Capability, PostRequest, Posted, post};
 pub use refusal::{KernelError, Refusal, exit};
 pub use rows::{AccountRow, PeriodRow};
+pub use schedule::{
+    DueReversal, ReversalBatch, ReversalStatus, Schedule, ScheduleVerification, due_reversals,
+    sweep_reversals_batch, verify_schedules, with_auto_reverse,
+};
 pub use sweep::{
-    DueHold, Op, Profile, SweepBatch, SweepRequest, Tick, TickRequest, Ticked, due_holds,
+    DueHold, Op, Profile, SweepBatch, SweepRequest, Swept, Tick, TickRequest, Ticked, due_holds,
     latest_tick, record_tick, sweep, sweep_batch,
 };

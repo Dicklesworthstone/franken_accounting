@@ -59,6 +59,7 @@ use crate::rows::{
     AccountRow, applied_witness, edge_id, leg_vid, mantissa_scalar, prop, resolution_vid,
     reversal_vid, state_from_scalar,
 };
+use crate::schedule;
 use crate::sweep;
 
 /// The capability a post is authorized under: Steward's typed object
@@ -311,6 +312,15 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
         )));
     }
     let class_name = proposal.class.name().unwrap_or("?");
+    if proposal.class == EntryClass::SCHEDULE_CONTROL {
+        return Ok(Err(Refusal::new(
+            code::CANCEL_BY_KERNEL,
+            exit::USAGE,
+            "a ScheduleControl entry (a schedule's cancellation) is journaled by the kernel, never posted",
+            "plan §7.6 (cancelled by lineage), FA-INV-08",
+            "reverse the scheduled target with a Reversal; its commit journals the cancellation",
+        )));
+    }
     if proposal.class.is_control() {
         return Ok(Err(Refusal::new(
             code::CONTROL_VIA_POST,
@@ -469,6 +479,13 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
             )));
         }
     }
+    // 1f. A scheduled reversal (plan §7.6, §7.7): an Adjusting entry's
+    //     `fa:auto-reverse:v1` request, judged from the payload and the
+    //     book's declared time_zone_policy (its immutable genesis spec).
+    let scheduled = match schedule::admit_request(db, book, proposal)? {
+        Ok(s) => s,
+        Err(r) => return Ok(Err(r)),
+    };
     let is_release = matches!(resolution, Some((_, Disposition::Voids)));
     let reversal_target = if is_reversal {
         match proposal.supersession.as_slice() {
@@ -1370,6 +1387,34 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     in_period.add_edge(edge_id(relation::IN_PERIOD, evid, pvid), evid, pvid, vec![]);
     for m in &judged.moves {
         m.before.stage(&m.after, m.cell, &mut has_leg)?;
+    }
+    // 8'. Scheduled reversals (plan §7.6): an entry that requests one gets
+    //     its schedule in this commit; a manual Reversal of a scheduled
+    //     target takes the reversal identity first and journals the
+    //     schedule's cancellation here, so the schedule never fires.
+    if let Some((reverse_on, reverse_period)) = &scheduled {
+        schedule::stage_schedule(
+            &mut has_leg,
+            entry.entry_ref(evid),
+            *reverse_on,
+            reverse_period,
+        )?;
+    }
+    if let Some(target) = reversal_target
+        && let Err(r) = schedule::cancellation(
+            &txn,
+            db,
+            book,
+            &mut has_leg,
+            target.vid,
+            &entry.proposal,
+            evid,
+            preparer,
+            epoch,
+        )?
+    {
+        txn.abort();
+        return Ok(Err(r));
     }
     let mut batches = vec![has_leg, posts_to, in_period];
     if let Some(target) = reversal_target {

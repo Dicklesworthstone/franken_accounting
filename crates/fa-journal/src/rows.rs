@@ -143,6 +143,48 @@ pub fn sweep_cursor_vid(tick: VId, last_pending: VId) -> VId {
     vid_from(h)
 }
 
+/// The book's intrinsic System principal, `H("fa:vid:system-principal:v1" ‖
+/// book_id)`: the preparer of every entry the book mints itself (expiry
+/// sweeps, scheduled reversals, plan §5.4, §7.6), whoever triggered it.
+#[must_use]
+pub fn system_principal(book: Id128) -> VId {
+    let mut h = Hasher::new();
+    h.update(b"fa:vid:system-principal:v1");
+    h.update(&book.0);
+    vid_from(h)
+}
+
+/// `vid(ReversalSchedule) = H("fa:vid:reversal-schedule:v1" ‖ target_vid)`
+/// (plan §7.6): one schedule per scheduled target, created in its commit.
+#[must_use]
+pub fn schedule_vid(target: VId) -> VId {
+    let mut h = Hasher::new();
+    h.update(b"fa:vid:reversal-schedule:v1");
+    h.update(&target.0.to_le_bytes());
+    vid_from(h)
+}
+
+/// `vid(ScheduleCancelled) = H("fa:vid:schedule-cancel:v1" ‖ schedule_vid)`:
+/// a schedule is cancelled at most once (FA-INV-08).
+#[must_use]
+pub fn schedule_cancel_vid(schedule: VId) -> VId {
+    let mut h = Hasher::new();
+    h.update(b"fa:vid:schedule-cancel:v1");
+    h.update(&schedule.0.to_le_bytes());
+    vid_from(h)
+}
+
+/// `vid(SweepCursor of the reversal sweep) = H("fa:vid:schedule-cursor:v1" ‖
+/// tick_vid ‖ last_target_vid)`.
+#[must_use]
+pub fn schedule_cursor_vid(tick: VId, last_target: VId) -> VId {
+    let mut h = Hasher::new();
+    h.update(b"fa:vid:schedule-cursor:v1");
+    h.update(&tick.0.to_le_bytes());
+    h.update(&last_target.0.to_le_bytes());
+    vid_from(h)
+}
+
 /// `vid(Leg) = H("fa:vid:leg:v1" ‖ entry_vid ‖ ordinal)`.
 #[must_use]
 pub fn leg_vid(entry: VId, ordinal: u16) -> VId {
@@ -326,5 +368,25 @@ mod tests {
         }
         assert_eq!(state_from_scalar(None), Some(PeriodState::Future));
         assert_eq!(state_from_scalar(Some(&CanonicalScalar::Null)), None);
+    }
+
+    /// The System principal is a durable identity (plan §5.4, §7.6): its
+    /// formula `H("fa:vid:system-principal:v1" ‖ book_id)`, low 16 bytes
+    /// little-endian, is pinned by a fixed vector and recomputed with the
+    /// one-shot hash, so neither the domain nor the byte order can drift.
+    #[test]
+    fn the_system_principal_identity_is_a_fixed_vector() {
+        let book = Id128([1; 16]);
+        let mut input = b"fa:vid:system-principal:v1".to_vec();
+        input.extend_from_slice(&book.0);
+        let d = fgdb_crypto::hash(&input).0;
+        let mut lo = [0u8; 16];
+        lo.copy_from_slice(&d[..16]);
+        assert_eq!(system_principal(book), VId(u128::from_le_bytes(lo)));
+        assert_eq!(
+            system_principal(book),
+            VId(0x6f4a_a93f_3104_3242_239e_7d42_14fc_fd77)
+        );
+        assert_ne!(system_principal(book), system_principal(Id128([2; 16])));
     }
 }

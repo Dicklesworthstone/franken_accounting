@@ -124,6 +124,8 @@ fn setup_store(rows: &[ChartRow]) -> (Kernel, Oracle, Vec<String>, MemVfs) {
         name: "Diff Co".into(),
         base_unit: usd,
         calendar: calendar.clone(),
+        // Declared: the scheduled-reversal tests need ticks to become dates.
+        time_zone_policy: Some(TimeZonePolicy::Utc),
     };
     let symbols = SymbolTable::compiled();
     runtime
@@ -3155,8 +3157,11 @@ fn kernel_and_oracle_agree_on_budget_caps_and_balancing() {
 // bead fa-ctf)
 // ---------------------------------------------------------------------------
 
-/// The book's intrinsic actor: the expiry sweep's principal.
-const SYSTEM: VId = VId(99);
+/// The book's intrinsic actor: its System principal, the sweep's principal
+/// and the preparer of everything the book mints itself.
+fn system(k: &Kernel) -> VId {
+    rows::system_principal(k.book.book_id)
+}
 
 /// A description sealed under fresh salt and nonce, so no nonce is ever
 /// reused under the book key with a different plaintext.
@@ -3218,10 +3223,11 @@ fn kernel_post_timed(
         .expect("kernel")
 }
 
-fn sweeper(max_batch: usize) -> SweepRequest {
+fn sweeper(k: &Kernel, max_batch: usize) -> SweepRequest {
+    let system = system(k);
     SweepRequest {
-        principal_ref: SYSTEM,
-        capability: Capability::new(SYSTEM, Profile::System, &[Op::Post], SYSTEM)
+        principal_ref: system,
+        capability: Capability::new(system, Profile::System, &[Op::Post], system)
             .expect("a System capability"),
         max_batch,
     }
@@ -3240,7 +3246,8 @@ fn kernel_sweep_raw(k: &mut Kernel, req: &SweepRequest) -> Result<Option<SweepBa
 }
 
 fn kernel_sweep(k: &mut Kernel, max_batch: usize) -> Result<Option<SweepBatch>, Refusal> {
-    kernel_sweep_raw(k, &sweeper(max_batch))
+    let req = sweeper(k, max_batch);
+    kernel_sweep_raw(k, &req)
 }
 
 /// The kernel's due backlog as oracle journal indices.
@@ -4100,9 +4107,17 @@ fn the_sweep_and_manual_resolution_race_by_identity_never_double_release() {
     assert_eq!(k.db.frontier().unwrap(), frontier);
 
     // The sweep's authority: System only, `post`, a batch bound in range.
-    let mut human = sweeper(2);
-    human.capability = Capability::embedded(SYSTEM, &["post"]).expect("ops");
+    let mut human = sweeper(&k, 2);
+    human.capability = Capability::embedded(system(&k), &["post"]).expect("ops");
     let r = kernel_sweep_raw(&mut k, &human).expect_err("not System");
+    assert_eq!((r.code, r.exit), ("FA-REF-011", exit::SAFETY), "{r}");
+    // A System capability held by any other principal is not the book's
+    // System principal.
+    let mut stranger = sweeper(&k, 2);
+    stranger.principal_ref = VId(99);
+    stranger.capability =
+        Capability::new(VId(99), Profile::System, &[Op::Post], VId(99)).expect("cap");
+    let r = kernel_sweep_raw(&mut k, &stranger).expect_err("not the book's System");
     assert_eq!((r.code, r.exit), ("FA-REF-011", exit::SAFETY), "{r}");
     for bad in [0, fa_model::limits::MAX_BATCH_ENTRIES + 1] {
         let r = kernel_sweep(&mut k, bad).expect_err("batch bound");
@@ -4642,4 +4657,664 @@ fn multi_unit_holds_post_partially_per_unit_and_expire_in_every_unit() {
             .unwrap()
             .is_green()
     );
+}
+
+// ---------------------------------------------------------------------------
+// Scheduled reversals (plan §7.6; bead fa-ctf slice 2)
+// ---------------------------------------------------------------------------
+
+const NS_PER_DAY: u64 = 86_400_000_000_000;
+
+/// A tick at noon UTC of `day`.
+fn noon(day: DateDay) -> u64 {
+    u64::try_from(day.0).expect("after 1970") * NS_PER_DAY + NS_PER_DAY / 2
+}
+
+/// The kernel request of an Adjusting accrual that schedules its reversal.
+fn kernel_post_scheduled(
+    k: &mut Kernel,
+    intent: &Intent,
+    usd: UnitId,
+    refs: &[EntryRef],
+    reverse_on: DateDay,
+) -> Result<Posted, Refusal> {
+    let mut req = kernel_request(k, intent, usd, refs);
+    req.proposal = with_auto_reverse(req.proposal, reverse_on);
+    let ctx = k.ctx();
+    let db = &mut k.db;
+    let book = &k.book;
+    k.runtime
+        .block_on(async move { post(db, &ctx, book, req).await })
+        .expect("kernel")
+}
+
+fn kernel_sweep_reversals(
+    k: &mut Kernel,
+    max_batch: usize,
+) -> Result<Option<ReversalBatch>, Refusal> {
+    let req = sweeper(k, max_batch);
+    let ctx = k.ctx();
+    let db = &mut k.db;
+    let book = &k.book;
+    k.runtime
+        .block_on(async move {
+            let mut describe = |text: &str| fresh_seal(&book.seal_key, text);
+            sweep_reversals_batch(db, &ctx, book, &req, &mut describe).await
+        })
+        .expect("kernel")
+}
+
+fn index_of(refs: &[EntryRef], r: &EntryRef) -> usize {
+    refs.iter()
+        .position(|x| x == r)
+        .expect("an entry the differential posted")
+}
+
+/// The kernel's reached schedules as `(target index, status)`.
+fn kernel_reached(k: &Kernel, refs: &[EntryRef]) -> Vec<(usize, fa_reference::Reached)> {
+    due_reversals(&k.db, &k.book)
+        .expect("due scan")
+        .iter()
+        .map(|d| {
+            (
+                index_of(refs, &d.schedule.target),
+                match d.status {
+                    ReversalStatus::Due => fa_reference::Reached::Due,
+                    ReversalStatus::Waiting { .. } => fa_reference::Reached::Waiting,
+                    ReversalStatus::Blocked { .. } => fa_reference::Reached::Blocked,
+                },
+            )
+        })
+        .collect()
+}
+
+/// One reversal-sweep batch on both engines: minted (with their derived
+/// identities), blocked, and the backlog agree; the minted reversals join
+/// `refs` at the oracle's indices.
+fn reversal_sweep_both(
+    k: &mut Kernel,
+    oracle: &mut Oracle,
+    refs: &mut Vec<EntryRef>,
+    max_batch: usize,
+    step: u64,
+) -> Option<fa_reference::ReversalSweep> {
+    let kernel = kernel_sweep_reversals(k, max_batch);
+    let model = oracle.sweep_reversals_batch(max_batch);
+    match (&kernel, &model) {
+        (Ok(None), Ok(None)) => None,
+        (Ok(Some(b)), Ok(Some(m))) => {
+            assert_eq!(b.tick.observed_utc_ns, m.tick, "step {step}: tick");
+            assert_eq!(b.remaining, m.remaining, "step {step}: reversal backlog");
+            assert_eq!(
+                b.blocked
+                    .iter()
+                    .map(|(t, _)| index_of(refs, t))
+                    .collect::<Vec<_>>(),
+                m.blocked,
+                "step {step}: blocked"
+            );
+            assert_eq!(b.minted.len(), m.minted.len(), "step {step}: minted");
+            assert!(b.minted.len() + b.blocked.len() <= max_batch);
+            for ((target, reversal), (t, index)) in b.minted.iter().zip(&m.minted) {
+                assert_eq!(*target, refs[*t], "step {step}: minted target");
+                assert_eq!(*index, refs.len(), "step {step}: journal index");
+                assert_eq!(reversal.vid, rows::reversal_vid(target.vid));
+                refs.push(*reversal);
+            }
+            Some(m.clone())
+        }
+        (Err(r), Err(code)) => {
+            assert_eq!(r.code, *code, "step {step}: {r}");
+            None
+        }
+        _ => {
+            assert_eq!(
+                format!("kernel {kernel:?}"),
+                format!("oracle {model:?}"),
+                "step {step}: reversal sweep disagreement"
+            );
+            None
+        }
+    }
+}
+
+/// Open `code` on both engines; the reversals minted inside the transition
+/// agree. Returns how many were minted.
+fn open_both(
+    k: &mut Kernel,
+    oracle: &mut Oracle,
+    refs: &mut Vec<EntryRef>,
+    code: &str,
+    step: u64,
+) -> usize {
+    let kernel = kernel_transition(k, code, PeriodTransition::Open, step).expect("opens");
+    let (from, to, minted, blocked) = oracle
+        .transition_minting(code, PeriodTransition::Open)
+        .expect("oracle opens");
+    assert_eq!((kernel.from, kernel.to), (from, to));
+    assert_eq!(
+        kernel
+            .blocked
+            .iter()
+            .map(|(t, _)| index_of(refs, t))
+            .collect::<Vec<_>>(),
+        blocked,
+        "{code}: blocked at Open"
+    );
+    assert_eq!(kernel.minted.len(), minted.len(), "{code}: minted at Open");
+    for ((target, reversal), (t, index)) in kernel.minted.iter().zip(&minted) {
+        assert_eq!(*target, refs[*t]);
+        assert_eq!(*index, refs.len());
+        assert_eq!(reversal.vid, rows::reversal_vid(target.vid));
+        refs.push(*reversal);
+        // The book's own entry, triggered by this transition (rule (b)).
+        let (e, _) = fa_journal::post::read_entry(&k.db, reversal.vid)
+            .unwrap()
+            .expect("minted");
+        assert_eq!(e.proposal.principal_ref, system(k));
+        assert!(matches!(
+            e.proposal.origin,
+            EntryOrigin::Schedule {
+                trigger: fa_model::ScheduleTrigger::OpenPeriod { transition_ref },
+                ..
+            } if transition_ref == kernel.control_entry
+        ));
+    }
+    minted.len()
+}
+
+#[test]
+fn kernel_and_oracle_agree_on_scheduled_reversals() {
+    let (mut k, mut oracle, periods) = setup_with(BUDGETED);
+    oracle.declare_time_zone();
+    let usd = k.book.units.lookup("USD").unwrap();
+    for (i, p) in periods.iter().take(3).enumerate() {
+        open_period(&mut k, &mut oracle, p, 9_100 + i as u64);
+    }
+    let leg = |side: fa_reference::Side, account: &str, mantissa: i128| Leg {
+        side,
+        account: account.into(),
+        unit: usd.0,
+        mantissa,
+    };
+    let dr = fa_reference::Side::Debit;
+    let cr = fa_reference::Side::Credit;
+    let plain = |class: &str, legs: Vec<Leg>, key: Vec<u8>, date: DateDay| Intent {
+        class: class.into(),
+        date,
+        discriminator: None,
+        legs,
+        key,
+        ops: vec!["post".into()],
+        approvals: 0,
+        reverses: None,
+        resolves: None,
+        settles: Vec::new(),
+    };
+    let day0 = DateDay::from_ymd(2026, 1, 5).unwrap();
+    let mut today = day0;
+    let mut rng = Rng(0x5C4E_D01E_D0AF_7E57);
+    let mut refs: Vec<EntryRef> = Vec::new();
+    let mut scheduled: Vec<usize> = Vec::new();
+    let mut refused: BTreeMap<&'static str, u32> = BTreeMap::new();
+    let (mut swept_minted, mut open_minted, mut blocked_seen) = (0usize, 0usize, 0usize);
+    let (mut cancelled, mut by_hand_after_block, mut backlog_batches) = (0u32, 0u32, 0u32);
+    let mut blocked_closed: BTreeSet<usize> = BTreeSet::new();
+
+    let fund = plain(
+        "Original",
+        vec![leg(dr, "1000", 200_000), leg(cr, "3000", 200_000)],
+        b"fund".to_vec(),
+        day0,
+    );
+    refs.push(
+        kernel_post(&mut k, &fund, usd, &refs)
+            .expect("funds")
+            .entry_ref(),
+    );
+    assert!(matches!(oracle.post(&fund), Verdict::Posted { .. }));
+    kernel_tick(&mut k, noon(today), "s-tick-0").expect("tick");
+    oracle.record_tick(noon(today)).unwrap();
+    let mut tick_seq = 0u64;
+
+    for step in 0..420u64 {
+        // Origin periods of live schedules close (P02) and lock (P01): just
+        // before each, two accruals scheduled to reverse inside it, already
+        // reached, so the sweep meets them Closed / Locked (R4).
+        if step == 230 || step == 330 {
+            let month = if step == 230 { 1 } else { 2 };
+            for n in 0..2 {
+                let i = plain(
+                    "Adjusting",
+                    vec![leg(dr, "6000", 10 + n), leg(cr, "3000", 10 + n)],
+                    format!("pre-close-{step}-{n}").into_bytes(),
+                    DateDay::from_ymd(2026, month, 10).unwrap(),
+                );
+                let reverse_on = DateDay::from_ymd(2026, month, 20).unwrap();
+                let posted = kernel_post_scheduled(&mut k, &i, usd, &refs, reverse_on)
+                    .expect("a pre-close accrual posts");
+                assert!(matches!(
+                    oracle.post_scheduled(&i, reverse_on),
+                    Verdict::Posted { .. }
+                ));
+                refs.push(posted.entry_ref());
+                scheduled.push(refs.len() - 1);
+            }
+            let code = periods[usize::from(month) - 1].clone();
+            close_and_maybe_lock(&mut k, &mut oracle, &code, step == 230, step);
+        }
+        match step {
+            150 => open_minted += open_both(&mut k, &mut oracle, &mut refs, &periods[3], step),
+            300 => open_minted += open_both(&mut k, &mut oracle, &mut refs, &periods[4], step),
+            _ => {}
+        }
+        let mut months: Vec<u8> = Vec::new();
+        if step < 230 {
+            months.push(1);
+        }
+        if step < 330 {
+            months.push(2);
+        }
+        months.push(3);
+        if step >= 150 {
+            months.push(4);
+        }
+        if step >= 300 {
+            months.push(5);
+        }
+        let pick_open = |rng: &mut Rng| {
+            let month = months[rng.below(months.len() as u64) as usize];
+            DateDay::from_ymd(2026, month, 1 + rng.below(27) as u8).unwrap()
+        };
+        let key = format!("r{step}").into_bytes();
+        match rng.below(20) {
+            0..=3 => {
+                // Time passes: one to six days.
+                today = DateDay(today.0 + 1 + rng.below(6) as i32);
+                tick_seq += 1;
+                kernel_tick(&mut k, noon(today), &format!("s-tick-{tick_seq}")).expect("tick");
+                oracle.record_tick(noon(today)).unwrap();
+            }
+            4..=8 => {
+                // An accrual that schedules its reversal 1..45 days later:
+                // a cash accrual (its reversal is an outflow the floor may
+                // block) or a budget-capped expense accrual.
+                let a = 1 + rng.below(30_000) as i128;
+                let date = pick_open(&mut rng);
+                let legs = if rng.chance(50) {
+                    vec![leg(dr, "1000", a), leg(cr, "3000", a)]
+                } else {
+                    vec![leg(dr, "6100", a.min(9_000)), leg(cr, "3000", a.min(9_000))]
+                };
+                // Planted: a reversal date not after the entry, or a class
+                // that cannot schedule.
+                let planted = rng.chance(6);
+                let reverse_on = if planted && rng.chance(50) {
+                    date
+                } else {
+                    DateDay(date.0 + 1 + rng.below(45) as i32)
+                };
+                let mut i = plain("Adjusting", legs, key, date);
+                if planted && reverse_on != date {
+                    i.class = "Original".into();
+                }
+                let kernel = kernel_post_scheduled(&mut k, &i, usd, &refs, reverse_on);
+                let model = oracle.post_scheduled(&i, reverse_on);
+                match (&kernel, &model) {
+                    (Ok(Posted::Committed { entry_ref, .. }), Verdict::Posted { index, .. }) => {
+                        assert_eq!(*index, refs.len(), "step {step}");
+                        refs.push(*entry_ref);
+                        scheduled.push(*index);
+                        let svid = rows::schedule_vid(entry_ref.vid);
+                        let row = k.db.vertex(svid).unwrap().expect("schedule vertex");
+                        let s = fa_journal::schedule::decode_schedule(&row).unwrap();
+                        assert_eq!(s.reverse_on, reverse_on);
+                        assert_eq!(
+                            Some(s.period.as_str()),
+                            oracle.schedule(*index).map(|x| x.period.as_str())
+                        );
+                    }
+                    (Err(r), Verdict::Refused { code }) => {
+                        assert_eq!(r.code, *code, "step {step}: {r}");
+                        *refused.entry(code).or_insert(0) += 1;
+                    }
+                    _ => assert_eq!(
+                        format!("kernel {kernel:?}"),
+                        format!("oracle {model:?}"),
+                        "step {step}: scheduled accrual disagreement"
+                    ),
+                }
+            }
+            9..=10 => {
+                // Spend cash: a later cash reversal may meet the floor.
+                let a = 1 + rng.below(40_000) as i128;
+                let i = plain(
+                    "Original",
+                    vec![leg(dr, "6000", a), leg(cr, "1000", a)],
+                    key,
+                    pick_open(&mut rng),
+                );
+                let kernel = kernel_post(&mut k, &i, usd, &refs);
+                let model = oracle.post(&i);
+                match (&kernel, &model) {
+                    (Ok(Posted::Committed { entry_ref, .. }), Verdict::Posted { .. }) => {
+                        refs.push(*entry_ref);
+                    }
+                    (Err(r), Verdict::Refused { code }) => assert_eq!(r.code, *code),
+                    _ => assert_eq!(format!("{kernel:?}"), format!("{model:?}")),
+                }
+            }
+            11..=12 if !scheduled.is_empty() => {
+                // Reverse a scheduled target by hand: before execution it
+                // cancels the schedule by lineage; after, it is the
+                // one-reversal conflict (exit 6).
+                let target = scheduled[rng.below(scheduled.len() as u64) as usize];
+                let original = oracle.entry(target).expect("target").clone();
+                let mut i = plain(
+                    "Reversal",
+                    original
+                        .legs
+                        .iter()
+                        .map(|l| leg(l.side.flipped(), &l.account, l.mantissa))
+                        .collect(),
+                    key,
+                    pick_open(&mut rng),
+                );
+                i.reverses = Some(target);
+                let was_blocked = blocked_closed.contains(&target);
+                let kernel = kernel_post(&mut k, &i, usd, &refs);
+                let model = oracle.post(&i);
+                match (&kernel, &model) {
+                    (Ok(Posted::Committed { entry_ref, .. }), Verdict::Posted { index, .. }) => {
+                        assert_eq!(*index, refs.len(), "step {step}");
+                        refs.push(*entry_ref);
+                        assert!(oracle.schedule(target).is_some_and(|s| s.cancelled));
+                        let svid = rows::schedule_vid(refs[target].vid);
+                        assert!(
+                            k.db.vertex(rows::schedule_cancel_vid(svid))
+                                .unwrap()
+                                .is_some(),
+                            "step {step}: the cancellation is journaled with the reversal"
+                        );
+                        cancelled += 1;
+                        if was_blocked {
+                            by_hand_after_block += 1;
+                        }
+                    }
+                    (Err(r), Verdict::Refused { code }) => {
+                        assert_eq!(r.code, *code, "step {step}: {r}");
+                        if *code == "FA-REF-052" {
+                            assert_eq!(r.exit, exit::CONFLICT);
+                        }
+                        *refused.entry(code).or_insert(0) += 1;
+                    }
+                    _ => assert_eq!(
+                        format!("kernel {kernel:?}"),
+                        format!("oracle {model:?}"),
+                        "step {step}: manual reversal disagreement"
+                    ),
+                }
+            }
+            _ => {
+                let max = 1 + rng.below(3) as usize;
+                if let Some(m) = reversal_sweep_both(&mut k, &mut oracle, &mut refs, max, step) {
+                    swept_minted += m.minted.len();
+                    blocked_seen += m.blocked.len();
+                    if m.remaining > 0 {
+                        backlog_batches += 1;
+                    }
+                }
+            }
+        }
+        // Every step: the reached schedules and every limit cell agree.
+        let reached = oracle.reached_reversals();
+        assert_eq!(kernel_reached(&k, &refs), reached, "step {step}: reached");
+        for (t, s) in &reached {
+            if *s == fa_reference::Reached::Blocked
+                && oracle.schedule(*t).is_some_and(|x| {
+                    matches!(
+                        oracle.period_state(&x.period),
+                        Some(PeriodState::Closed | PeriodState::Locked)
+                    )
+                })
+            {
+                blocked_closed.insert(*t);
+            }
+        }
+        assert_cell_in(&k, &oracle, "1000", None, step);
+        for p in periods.iter().take(6) {
+            assert_cell_in(&k, &oracle, "6100", Some(p.as_str()), step);
+        }
+    }
+    // Every schedule still blocked in the locked period is reversed by hand
+    // in an open one, which cancels it.
+    for t in blocked_closed.clone() {
+        if !oracle.schedule(t).is_some_and(|s| !s.cancelled)
+            || oracle.entry(t).is_none()
+            || k.db
+                .vertex(rows::reversal_vid(refs[t].vid))
+                .unwrap()
+                .is_some()
+        {
+            continue;
+        }
+        let original = oracle.entry(t).expect("target").clone();
+        let mut i = plain(
+            "Reversal",
+            original
+                .legs
+                .iter()
+                .map(|l| leg(l.side.flipped(), &l.account, l.mantissa))
+                .collect(),
+            format!("by-hand-{t}").into_bytes(),
+            DateDay::from_ymd(2026, 3, 20).unwrap(),
+        );
+        i.reverses = Some(t);
+        let kernel = kernel_post(&mut k, &i, usd, &refs);
+        let model = oracle.post(&i);
+        match (&kernel, &model) {
+            (Ok(Posted::Committed { entry_ref, .. }), Verdict::Posted { .. }) => {
+                refs.push(*entry_ref);
+                by_hand_after_block += 1;
+                cancelled += 1;
+            }
+            (Err(r), Verdict::Refused { code }) => assert_eq!(r.code, *code),
+            _ => assert_eq!(format!("{kernel:?}"), format!("{model:?}")),
+        }
+    }
+    let verified = verify_schedules(&k.db, &k.book).unwrap();
+    assert!(verified.is_green(), "{verified:?}");
+    assert_eq!(verified.schedules_checked, scheduled.len());
+    assert_eq!(verified.cancelled as u32, cancelled);
+    assert_eq!(verified.executed, swept_minted + open_minted);
+    assert!(
+        verify_availability(&k.db, &k.book, None)
+            .unwrap()
+            .is_green()
+    );
+
+    // Not vacuous: both execution paths minted, schedules were cancelled by
+    // hand, a locked period blocked some that were then reversed by hand,
+    // availability blocked some, a backlog took several batches, and the
+    // planted refusals fired.
+    assert!(scheduled.len() >= 60, "scheduled {}", scheduled.len());
+    assert!(swept_minted >= 15, "minted by the sweep {swept_minted}");
+    assert!(open_minted >= 2, "minted at Open {open_minted}");
+    assert!(cancelled >= 5, "cancelled {cancelled}");
+    assert!(blocked_seen >= 3, "blocked at execution {blocked_seen}");
+    assert!(
+        blocked_closed.len() >= 4 && by_hand_after_block >= 2,
+        "closed/locked-period blocks {blocked_closed:?}, reversed by hand {by_hand_after_block}"
+    );
+    assert!(backlog_batches >= 3, "backlog batches {backlog_batches}");
+    for (must, floor) in [("FA-REF-100", 2), ("FA-REF-052", 2)] {
+        assert!(
+            refused.get(must).is_some_and(|n| *n >= floor),
+            "refusal {must} under-exercised: {refused:?}"
+        );
+    }
+}
+
+/// Plan §7.6 on the real substrate: a manual Reversal and the reversal
+/// sweep race on the target's reversal identity — the one that witnessed
+/// the identity absent loses first-committer-wins — and after execution a
+/// manual reversal is the one-reversal conflict (exit 6). A ScheduleControl
+/// is never posted (099).
+#[test]
+fn a_manual_reversal_and_the_reversal_sweep_race_by_identity() {
+    let (mut k, mut oracle, periods) = setup_with(BUDGETED);
+    oracle.declare_time_zone();
+    let usd = k.book.units.lookup("USD").unwrap();
+    open_period(&mut k, &mut oracle, &periods[2], 1);
+    let leg = |side: fa_reference::Side, account: &str, mantissa: i128| Leg {
+        side,
+        account: account.into(),
+        unit: usd.0,
+        mantissa,
+    };
+    let march = |d: u8| DateDay::from_ymd(2026, 3, d).unwrap();
+    let accrual = |key: &str| Intent {
+        class: "Adjusting".into(),
+        date: march(2),
+        discriminator: None,
+        legs: vec![
+            leg(fa_reference::Side::Debit, "6000", 50),
+            leg(fa_reference::Side::Credit, "3000", 50),
+        ],
+        key: key.as_bytes().to_vec(),
+        ops: vec!["post".into()],
+        approvals: 0,
+        reverses: None,
+        resolves: None,
+        settles: Vec::new(),
+    };
+    let mut refs: Vec<EntryRef> = Vec::new();
+    kernel_tick(&mut k, noon(march(1)), "t0").expect("tick");
+    oracle.record_tick(noon(march(1))).unwrap();
+    for key in ["A", "B"] {
+        let i = accrual(key);
+        refs.push(
+            kernel_post_scheduled(&mut k, &i, usd, &refs, march(10))
+                .expect("scheduled")
+                .entry_ref(),
+        );
+        assert!(matches!(
+            oracle.post_scheduled(&i, march(10)),
+            Verdict::Posted { .. }
+        ));
+    }
+    // Before the date nothing is reached; the sweep writes nothing.
+    let frontier = k.db.frontier().unwrap();
+    assert_eq!(kernel_sweep_reversals(&mut k, 5), Ok(None));
+    assert_eq!(k.db.frontier().unwrap(), frontier);
+    kernel_tick(&mut k, noon(march(10)), "t1").expect("the date's tick");
+    oracle.record_tick(noon(march(10))).unwrap();
+    assert_eq!(
+        kernel_reached(&k, &refs),
+        vec![
+            (0, fa_reference::Reached::Due),
+            (1, fa_reference::Reached::Due)
+        ]
+    );
+
+    // A manual reversal of A that witnessed A's reversal identity as absent
+    // loses to the sweep that mints it first.
+    let ctx = k.ctx();
+    let txn_cx = ctx.txn();
+    let mut manual = k.db.begin(&txn_cx).expect("begin");
+    let a = refs[0].vid;
+    assert!(
+        manual
+            .vertex(&k.db, rows::reversal_vid(a))
+            .expect("read")
+            .is_none()
+    );
+    let batch = reversal_sweep_both(&mut k, &mut oracle, &mut refs, 1, 1).expect("mints A");
+    assert_eq!(batch.minted.len(), 1);
+    assert_eq!(batch.remaining, 1);
+    let mut write = WriteBatch::new(fa_model::symbols::relation::IN_PERIOD);
+    write.create_vertex(
+        rows::reversal_vid(a),
+        vec![fa_model::symbols::label::ENTRY],
+        Vec::new(),
+    );
+    let staged = manual.write_ordered(&mut k.db, vec![write]);
+    assert!(
+        matches!(staged, Err(fgdb::WriteTxnError::SnapshotAdvanced { .. })),
+        "{staged:?}"
+    );
+    let refreshed = manual.refresh_snapshot(&k.db, &txn_cx);
+    assert!(
+        matches!(
+            refreshed,
+            Err(fgdb::WriteTxnError::Write(
+                fgdb::WriteError::FirstCommitterWins { .. }
+            ))
+        ),
+        "the manual reversal must lose the identity race: {refreshed:?}"
+    );
+    manual.abort();
+    // Through `post`, after execution: the one-reversal conflict, exit 6.
+    let mut by_hand = accrual("by-hand-A");
+    by_hand.class = "Reversal".into();
+    by_hand.date = march(12);
+    by_hand.legs = by_hand
+        .legs
+        .iter()
+        .map(|l| Leg {
+            side: l.side.flipped(),
+            ..l.clone()
+        })
+        .collect();
+    by_hand.reverses = Some(0);
+    let r = kernel_post(&mut k, &by_hand, usd, &refs).expect_err("already reversed");
+    assert_eq!(
+        oracle.post(&by_hand),
+        Verdict::Refused { code: "FA-REF-052" }
+    );
+    assert_eq!((r.code, r.exit), ("FA-REF-052", exit::CONFLICT), "{r}");
+    // The minted reversal is the bound effect: the exact swap, dated
+    // reverse_on, the original preparer, the date basis recorded.
+    let (minted, _) = fa_journal::post::read_entry(&k.db, rows::reversal_vid(a))
+        .unwrap()
+        .expect("minted");
+    assert_eq!(minted.proposal.class, EntryClass::REVERSAL);
+    assert_eq!(minted.proposal.effective_date, march(10));
+    assert_eq!(minted.proposal.principal_ref, system(&k));
+    assert_eq!(
+        minted.proposal.origin,
+        EntryOrigin::Schedule {
+            schedule_ref: rows::schedule_vid(a),
+            trigger: fa_model::ScheduleTrigger::Sweep {
+                tick_ref: latest_tick(&k.db).unwrap().expect("tick").entry,
+            },
+        }
+    );
+    assert!(matches!(
+        fa_journal::schedule::date_basis(&minted.proposal),
+        Ok(Some((TimeZonePolicy::Utc, _)))
+    ));
+    // A ScheduleControl is never posted.
+    let mut req = kernel_request(&k, &accrual("ctl"), usd, &refs);
+    req.proposal.class = EntryClass::SCHEDULE_CONTROL;
+    req.proposal.legs = Vec::new();
+    req.proposal.unit_totals = Vec::new();
+    req.proposal.control = Some(ControlPayload::ScheduleCancelled {
+        schedule_ref: rows::schedule_vid(refs[1].vid),
+        cause_ref: VId(1),
+    });
+    let ctx = k.ctx();
+    let db = &mut k.db;
+    let book = &k.book;
+    let r = k
+        .runtime
+        .block_on(async move { post(db, &ctx, book, req).await })
+        .expect("kernel")
+        .expect_err("never posted");
+    assert_eq!((r.code, r.exit), ("FA-REF-099", exit::USAGE), "{r}");
+    // B still fires, and verify agrees.
+    let rest = reversal_sweep_both(&mut k, &mut oracle, &mut refs, 5, 2).expect("mints B");
+    assert_eq!(rest.minted.len(), 1);
+    let v = verify_schedules(&k.db, &k.book).unwrap();
+    assert!(v.is_green() && v.executed == 2 && v.cancelled == 0, "{v:?}");
 }

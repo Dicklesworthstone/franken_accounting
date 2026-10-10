@@ -60,6 +60,7 @@ symbols!(
         (ENGAGEMENT, "Engagement", 30),
         (ACCUMULATOR_STATE, "AccumulatorState", 31),
         (SUPPLEMENTAL_EVIDENCE, "SupplementalEvidence", 34),
+        (REVERSAL_SCHEDULE, "ReversalSchedule", 35),
     ]
 );
 
@@ -116,6 +117,11 @@ symbols!(
         (LIMIT_SCOPE, "limit_scope", 56),
         (LATEST_TICK, "latest_tick", 57),
         (SWEEP_CURSOR, "sweep_cursor", 58),
+        (REVERSE_ON, "reverse_on", 59),
+        (TARGET_REF, "target_ref", 60),
+        (EXEC_OP, "exec_op", 61),
+        (EFFECTS_DIGEST, "effects_digest", 62),
+        (SCHEDULE_CURSOR, "schedule_cursor", 63),
     ]
 );
 

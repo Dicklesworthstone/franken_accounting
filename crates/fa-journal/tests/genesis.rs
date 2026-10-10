@@ -348,6 +348,7 @@ fn harness() -> Harness {
         name: "Test Co".into(),
         base_unit: usd,
         calendar: calendar.clone(),
+        time_zone_policy: None,
     };
     let symbols = SymbolTable::compiled();
     runtime
@@ -1159,6 +1160,45 @@ fn a_timed_hold_needs_a_tick_and_expires_is_never_posted() {
     assert_eq!((r.code, r.exit), ("FA-REF-098", exit::USAGE));
     assert!(r.fix.contains("Resolution(Voids)"), "{}", r.fix);
     assert!(h.db.vertex(resolution_vid(hold.vid)).unwrap().is_none());
+}
+
+/// Plan §7.6/§7.7 at the kernel boundary (fa-ctf slice 2): this book's
+/// genesis declares no `time_zone_policy`, so no tick can become the date a
+/// scheduled reversal waits for — the request is refused (FA-REF-102,
+/// naming the field), never given an implicit zone; and only an Adjusting
+/// entry schedules its reversal, for a later date.
+#[test]
+fn a_scheduled_reversal_needs_a_declared_time_zone_policy() {
+    let mut h = harness();
+    let april = DateDay::from_ymd(2026, 4, 1).unwrap();
+    let accrual = with_auto_reverse(
+        h.proposal(h.rent_legs(10), b"accrual", EntryClass::ADJUSTING),
+        april,
+    );
+    let r = h.post(h.request(accrual, &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-102", exit::REFUSAL), "{r}");
+    assert!(r.fix.contains("time_zone_policy"), "{}", r.fix);
+    let original = with_auto_reverse(
+        h.proposal(h.rent_legs(10), b"original", EntryClass::ORIGINAL),
+        april,
+    );
+    let r = h.post(h.request(original, &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-100", exit::USAGE), "{r}");
+    let early = with_auto_reverse(
+        h.proposal(h.rent_legs(10), b"early", EntryClass::ADJUSTING),
+        h.day(),
+    );
+    let r = h.post(h.request(early, &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-100", exit::USAGE), "{r}");
+    assert!(
+        h.db.vertex(entry_vid(
+            h.book.book_id,
+            &PRINCIPAL.0.to_le_bytes(),
+            b"accrual"
+        ))
+        .unwrap()
+        .is_none()
+    );
 }
 
 #[test]

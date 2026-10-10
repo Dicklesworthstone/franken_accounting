@@ -8,7 +8,7 @@
 
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    ControlPayload, EntryClass, EntryOrigin, EntryPayload, Erasable, Id128, PeriodRef,
+    ControlPayload, EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable, Id128, PeriodRef,
     entry_mirrors, entry_vid, period_vid,
 };
 use fa_time::period::transition;
@@ -28,6 +28,12 @@ pub struct Transitioned {
     pub to: PeriodState,
     pub recorded_at: CommitSeq,
     pub control_entry: VId,
+    /// An `Open` transition's scheduled reversals (plan §7.6 rule (b)):
+    /// `(target, reversal)` minted in this commit.
+    pub minted: Vec<(EntryRef, EntryRef)>,
+    /// Schedules due in the opened period that the commit examined but did
+    /// not mint, with why (live applications, the availability law).
+    pub blocked: Vec<(EntryRef, String)>,
 }
 
 /// Move one period along the state machine, journaled.
@@ -136,7 +142,30 @@ pub async fn transition_period<V: asupersync::fs::Vfs + Clone>(
         WriteMismatchPolicy::AbortWrite,
     );
     batch.add_edge(edge_id(relation::IN_PERIOD, evid, pvid), evid, pvid, vec![]);
-    txn.write(db, batch)?;
+    // Plan §7.6 rule (b): opening a period mints, in this commit, the
+    // scheduled reversals dated in it whose date the latest committed tick
+    // has reached — so a scheduled reversal never meets a Future period.
+    let (minted, blocked, mut batches) = if t == PeriodTransition::Open {
+        // The trigger is this transition's own control entry; the minted
+        // reversals are the book's (its System principal). Executor
+        // capability admission arrives with fa-llx's start-of-function hunk;
+        // until then the hook rechecks the Reversal row, SoD and epoch.
+        match crate::schedule::mint_on_open(&txn, db, book, period_code, evid)? {
+            Ok(mints) => {
+                let minted = mints.minted.clone();
+                let blocked = mints.blocked.clone();
+                (minted, blocked, mints.into_batches()?)
+            }
+            Err(r) => {
+                txn.abort();
+                return Ok(Err(r));
+            }
+        }
+    } else {
+        (Vec::new(), Vec::new(), Vec::new())
+    };
+    batches.insert(0, batch);
+    txn.write_ordered(db, batches)?;
     match txn.commit(db, &ctx.commit()).await {
         Ok(seq) => Ok(Ok(Transitioned {
             period: period_code.to_string(),
@@ -144,6 +173,8 @@ pub async fn transition_period<V: asupersync::fs::Vfs + Clone>(
             to,
             recorded_at: seq,
             control_entry: evid,
+            minted,
+            blocked,
         })),
         Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
             Ok(Err(Refusal::new(

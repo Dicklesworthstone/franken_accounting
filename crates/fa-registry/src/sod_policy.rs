@@ -30,10 +30,18 @@ const PERIOD_TRANSITIONS: &[&str] = &["Lock", "Reopen"];
 const POLICY_TRANSITIONS: &[&str] = &["Activate"];
 /// A TimeEvidence tick (plan §7.1a).
 const TIME_TRANSITIONS: &[&str] = &["Tick"];
-/// One expiry-sweep batch: its Expires resolutions and its SweepCursor (§5.4).
-const SWEEP_TRANSITIONS: &[&str] = &["Expire"];
+/// One sweep batch and its SweepCursor: the expiry sweep's Expires (§5.4) or
+/// the scheduled-reversal sweep's Reversals (§7.6).
+const SWEEP_TRANSITIONS: &[&str] = &["Expire", "Reverse"];
+/// A scheduled reversal cancelled by lineage (§7.6).
+const SCHEDULE_TRANSITIONS: &[&str] = &["Cancel"];
 /// The control classes with no period state (book-scoped, plan §7.1).
-const BOOK_SCOPED_CONTROLS: &[&str] = &["PolicyControl", "TimeControl", "SweepControl"];
+const BOOK_SCOPED_CONTROLS: &[&str] = &[
+    "PolicyControl",
+    "TimeControl",
+    "SweepControl",
+    "ScheduleControl",
+];
 
 /// Which entry a rule governs. `state` is the period state the entry
 /// resolves to (for `PeriodControl`, the transition's from-state); `None`
@@ -287,6 +295,7 @@ impl SodPolicy {
                         "PolicyControl" => POLICY_TRANSITIONS,
                         "TimeControl" => TIME_TRANSITIONS,
                         "SweepControl" => SWEEP_TRANSITIONS,
+                        "ScheduleControl" => SCHEDULE_TRANSITIONS,
                         other => {
                             return Err(invalid(
                                 R,
@@ -480,6 +489,8 @@ mod tests {
             (key("PolicyControl", None, None, Some("Activate")), 2),
             (key("TimeControl", None, None, Some("Tick")), 0),
             (key("SweepControl", None, None, Some("Expire")), 0),
+            (key("ScheduleControl", None, None, Some("Cancel")), 0),
+            (key("SweepControl", None, None, Some("Reverse")), 0),
         ] {
             let (name, req) = p.requirement(&k);
             assert_ne!(name, "default", "{k:?} must be governed by a rule");

@@ -1204,6 +1204,7 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     name: name.to_string(),
                     base_unit,
                     calendar,
+                    time_zone_policy: None,
                 },
                 entropy,
             )?;

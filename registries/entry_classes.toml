@@ -131,3 +131,12 @@ tag = 20
 name = "SweepControl"
 kind = "control"
 supersession = "none"
+
+# Scheduled-reversal lineage (plan §7.6, FA-INV-08): ControlPayload::
+# ScheduleCancelled, book-scoped, journaled by the kernel in the commit of a
+# manual Reversal of a scheduled target; authority row `schedule-cancel`.
+[[class]]
+tag = 21
+name = "ScheduleControl"
+kind = "control"
+supersession = "none"

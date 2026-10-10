@@ -792,6 +792,7 @@ mod tests {
                 name: "Facade Co".into(),
                 base_unit: usd,
                 calendar,
+                time_zone_policy: None,
             },
             usd,
         )

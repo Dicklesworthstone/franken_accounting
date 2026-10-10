@@ -267,3 +267,33 @@ approver_profiles = ["Human"]
 agent_prepared_human_approvers = 0
 exclusions = ["preparer", "duplicate"]
 cite = "plan §5.4, §8.1 (sweep-cursor controls need their own authority row)"
+
+# One scheduled-reversal sweep batch (plan §7.6 with §5.4's cursor
+# discipline): the reversals it mints plus its SweepCursor (kind 2). System
+# profile, `post`, as for the expiry sweep.
+[[rule]]
+name = "reversal-sweep"
+class = "SweepControl"
+transition = "Reverse"
+preparer_op = "post"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §7.6, §5.4 (scheduled reversals use the sweep's cursor discipline), §8.1"
+
+# A scheduled reversal's cancellation by lineage (plan §7.6, FA-INV-08): the
+# kernel journals it inside the commit of a manual Reversal of a scheduled
+# target, under that Reversal's capability (which holds `post`).
+[[rule]]
+name = "schedule-cancel"
+class = "ScheduleControl"
+transition = "Cancel"
+preparer_op = "post"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §7.6, §8.1 (schedule-cancellation controls need their own authority row)"

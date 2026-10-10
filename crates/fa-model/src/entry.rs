@@ -55,10 +55,25 @@ pub const SEMANTIC_DIGEST_DOMAIN: &[u8] = b"fa:entry-semantic:v1";
 /// The legs carry the amount that moved; the identity of the post binds this
 /// request (fa-journal `limit::post_balancing`).
 pub const BALANCING_EXTENSION: u16 = 1;
+/// Extension tag 2, `fa:auto-reverse:v1` (plan §7.6, Appendix B `Accrue` /
+/// `Defer`): an `Adjusting` entry's scheduled reversal —
+/// `reverse_on: i32 LE (DateDay) ‖ rule: u8` (5 bytes; rule 1 = exact
+/// negation). The proposal digest covers it, so the original approvals bind
+/// the date and the rule (fa-journal `schedule`).
+pub const AUTO_REVERSE_EXTENSION: u16 = 2;
+/// Extension tag 3, `fa:effective-date-basis:v1` (plan §7.7): how a
+/// kernel-minted entry's effective date was derived from an instant —
+/// `policy: u8 ‖ tick_ref: u128 LE` (17 bytes; policy 1 = Utc). Only the
+/// kernel records it, on scheduled reversals.
+pub const DATE_BASIS_EXTENSION: u16 = 3;
 
 /// Extension tags this reader understands. A payload at a higher
 /// `schema_minor` may carry others; they are preserved and skipped.
-pub const KNOWN_EXTENSION_TAGS: &[u16] = &[BALANCING_EXTENSION];
+pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
+    BALANCING_EXTENSION,
+    AUTO_REVERSE_EXTENSION,
+    DATE_BASIS_EXTENSION,
+];
 
 // ---------------------------------------------------------------------------
 // Entry classes (registries/entry_classes.toml, compiled)
@@ -90,6 +105,7 @@ impl EntryClass {
     pub const POLICY_CONTROL: Self = Self(18);
     pub const TIME_CONTROL: Self = Self(19);
     pub const SWEEP_CONTROL: Self = Self(20);
+    pub const SCHEDULE_CONTROL: Self = Self(21);
 
     /// `(tag, name, is_control)` for every registered class.
     pub const ALL: &[(u16, &str, bool)] = &[
@@ -113,6 +129,7 @@ impl EntryClass {
         (18, "PolicyControl", true),
         (19, "TimeControl", true),
         (20, "SweepControl", true),
+        (21, "ScheduleControl", true),
     ];
 
     #[must_use]
@@ -464,6 +481,22 @@ pub enum EntryOrigin {
         sweep_kind: u8,
         tick_evidence_oid: Oid,
     },
+    /// A scheduled effect (plan §7.6): the schedule it executes and what
+    /// triggered it. Tag 5, additive: authorship travels through the
+    /// schedule's lineage, never through the minted entry's principal.
+    Schedule {
+        schedule_ref: VId,
+        trigger: ScheduleTrigger,
+    },
+}
+
+/// What triggered a scheduled effect (plan §7.6 rules (a) and (b)).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScheduleTrigger {
+    /// The first sweep tick whose civil date reached the scheduled date.
+    Sweep { tick_ref: VId },
+    /// The `Open` transition of the scheduled date's period.
+    OpenPeriod { transition_ref: VId },
 }
 
 impl EntryOrigin {
@@ -526,6 +559,20 @@ impl EntryOrigin {
                 w.u8(4).u8(*sweep_kind);
                 encode_oid(w, tick_evidence_oid);
             }
+            Self::Schedule {
+                schedule_ref,
+                trigger,
+            } => {
+                w.u8(5).u128(schedule_ref.0);
+                match trigger {
+                    ScheduleTrigger::Sweep { tick_ref } => {
+                        w.u8(0).u128(tick_ref.0);
+                    }
+                    ScheduleTrigger::OpenPeriod { transition_ref } => {
+                        w.u8(1).u128(transition_ref.0);
+                    }
+                }
+            }
         }
     }
 
@@ -562,6 +609,18 @@ impl EntryOrigin {
             4 => Self::Sweep {
                 sweep_kind: r.u8("origin.sweep_kind")?,
                 tick_evidence_oid: decode_oid(r, "origin.tick_evidence_oid")?,
+            },
+            5 => Self::Schedule {
+                schedule_ref: VId(r.u128("origin.schedule_ref")?),
+                trigger: match r.u8("origin.trigger")? {
+                    0 => ScheduleTrigger::Sweep {
+                        tick_ref: VId(r.u128("origin.tick_ref")?),
+                    },
+                    1 => ScheduleTrigger::OpenPeriod {
+                        transition_ref: VId(r.u128("origin.transition_ref")?),
+                    },
+                    t => return Err(r.bad_tag("origin.trigger", t)),
+                },
             },
             t => return Err(r.bad_tag("origin.tag", t)),
         })
@@ -2145,6 +2204,16 @@ mod tests {
                 sweep_kind: 1,
                 tick_evidence_oid: Oid([6; 32]),
             },
+            EntryOrigin::Schedule {
+                schedule_ref: VId(7),
+                trigger: ScheduleTrigger::Sweep { tick_ref: VId(8) },
+            },
+            EntryOrigin::Schedule {
+                schedule_ref: VId(7),
+                trigger: ScheduleTrigger::OpenPeriod {
+                    transition_ref: VId(9),
+                },
+            },
         ] {
             let mut p = proposal(two_legs());
             p.origin = v.clone();
@@ -2183,6 +2252,11 @@ mod tests {
         // A registered tag validates at this reader's minor.
         let mut known = proposal(two_legs());
         known.extensions = vec![(BALANCING_EXTENSION, vec![0; 18])];
+        assert!(known.validate().is_ok());
+        known.extensions = vec![
+            (AUTO_REVERSE_EXTENSION, vec![0; 5]),
+            (DATE_BASIS_EXTENSION, vec![0; 17]),
+        ];
         assert!(known.validate().is_ok());
     }
 

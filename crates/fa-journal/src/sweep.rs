@@ -132,14 +132,14 @@ pub struct Cursor {
 }
 
 impl Cursor {
-    fn scalar(&self) -> Result<CanonicalScalar, KernelError> {
+    pub(crate) fn scalar(&self) -> Result<CanonicalScalar, KernelError> {
         let mut b = Vec::with_capacity(32);
         b.extend_from_slice(&self.tick.0.to_le_bytes());
         b.extend_from_slice(&self.last_pending.0.to_le_bytes());
         scalar_bytes("sweep_cursor", b)
     }
 
-    fn from_scalar(s: Option<&CanonicalScalar>) -> Result<Option<Self>, KernelError> {
+    pub(crate) fn from_scalar(s: Option<&CanonicalScalar>) -> Result<Option<Self>, KernelError> {
         match s {
             None => Ok(None),
             Some(CanonicalScalar::Bytes(b)) => {
@@ -165,7 +165,7 @@ impl Cursor {
     }
 }
 
-fn root_row<V: asupersync::fs::Vfs + Clone>(
+pub(crate) fn root_row<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     at: Option<CommitSeq>,
 ) -> Result<Option<VertexRow>, KernelError> {
@@ -239,13 +239,13 @@ pub fn deadline<V: asupersync::fs::Vfs + Clone>(
 
 /// The UTC civil day of an instant: the positional date a book-scoped
 /// control carries (its period law is its authority row, not a date).
-fn utc_day(ns: u64) -> Result<DateDay, KernelError> {
+pub(crate) fn utc_day(ns: u64) -> Result<DateDay, KernelError> {
     i32::try_from(ns / NS_PER_DAY)
         .map(DateDay)
         .map_err(|_| KernelError::Corrupt("tick day beyond i32".into()))
 }
 
-fn decode_entry(row: &VertexRow) -> Result<Entry, KernelError> {
+pub(crate) fn decode_entry(row: &VertexRow) -> Result<Entry, KernelError> {
     match prop(row, property::FA_PAYLOAD) {
         Some(CanonicalScalar::Bytes(b)) => Ok(Entry::decode(b.as_slice())?),
         other => Err(KernelError::Corrupt(format!(
@@ -373,7 +373,7 @@ pub fn tick_proposal(book: &BookContext, req: &TickRequest) -> EntryPayload {
     }
 }
 
-fn conflict(what: &str, detail: impl core::fmt::Display) -> Refusal {
+pub(crate) fn conflict(what: &str, detail: impl core::fmt::Display) -> Refusal {
     Refusal::new(
         code::CONFLICT,
         exit::CONFLICT,
@@ -637,9 +637,11 @@ fn expires_proposal(
 }
 
 /// The `SweepControl` proposal recording a batch's progress.
-fn cursor_proposal(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn cursor_proposal(
     book: &BookContext,
     principal: VId,
+    sweep_kind: u8,
     cursor: Cursor,
     cursor_vid: VId,
     tick: Tick,
@@ -657,7 +659,7 @@ fn cursor_proposal(
         effective_period: None,
         legs: Vec::new(),
         control: Some(ControlPayload::SweepCursor {
-            sweep_kind: SWEEP_EXPIRY,
+            sweep_kind,
             last_pending_vid: cursor.last_pending,
             tick_ref: cursor.tick,
         }),
@@ -665,7 +667,7 @@ fn cursor_proposal(
         base_totals: None,
         idempotency_key: format!("sweep:{:032x}", cursor_vid.0).into_bytes(),
         origin: EntryOrigin::Sweep {
-            sweep_kind: SWEEP_EXPIRY,
+            sweep_kind,
             tick_evidence_oid: Oid(tick_digest),
         },
         principal_ref: principal,
@@ -722,9 +724,9 @@ fn expires_admissible(
 
 /// A limit cell a batch moves: the witnessed state and the running state
 /// after every hold released so far (one generation per entry).
-struct CellRun {
-    before: LimitCell,
-    after: LimitCell,
+pub(crate) struct CellRun {
+    pub(crate) before: LimitCell,
+    pub(crate) after: LimitCell,
 }
 
 /// Release `hold`'s full original legs from its own period's reservation
@@ -812,50 +814,47 @@ fn release_hold<V: asupersync::fs::Vfs + Clone>(
     Ok(())
 }
 
-/// Expire up to `req.max_batch` due holds in one transaction (plan §5.4).
-/// `Ok(None)`: no tick yet, or nothing due after the cursor — nothing is
-/// written. `describe` seals each new entry's description (the kernel holds
-/// no entropy). Refusals: a batch bound outside `1..=max_batch_entries`, a
-/// capability that is not the `System` principal's or lacks `post`, an
-/// expired capability, or a conflict (a hold resolved concurrently — its
-/// identity was taken — or a witness moved): rerun the sweep.
-pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
-    db: &mut Database<V>,
-    ctx: &PurposeContexts,
+/// Admission of one sweep transaction, decided before any read (plan §5.4,
+/// §7.6): the batch bound, the System profile (the sweep is the book's
+/// intrinsic actor), the authority row's preparer op and `post`, and the
+/// capability current at the admission point.
+pub(crate) fn admit_sweep<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
     book: &BookContext,
     req: &SweepRequest,
-    describe: &mut dyn FnMut(&str) -> Erasable<String>,
-) -> Outcome<Option<SweepBatch>> {
+    key: &fa_registry::sod_policy::SodKey,
+) -> Outcome<()> {
     if req.max_batch == 0 || req.max_batch > MAX_BATCH_ENTRIES {
         return Ok(Err(Refusal::new(
             code::STRUCTURE,
             exit::USAGE,
             format!(
-                "a sweep batch expires 1..={MAX_BATCH_ENTRIES} holds, not {}",
+                "a sweep batch processes 1..={MAX_BATCH_ENTRIES} entries, not {}",
                 req.max_batch
             ),
             "registries/limits.toml max_batch_entries (plan §5.4)",
             format!("choose a batch size between 1 and {MAX_BATCH_ENTRIES}"),
         )));
     }
-    if req.capability.profile() != Profile::System {
+    let system = crate::rows::system_principal(book.book_id);
+    if req.capability.profile() != Profile::System || req.principal_ref != system {
         return Ok(Err(Refusal::new(
             code::CAPABILITY,
             exit::SAFETY,
             format!(
-                "the expiry sweep runs as the book's System principal; this capability's profile is {}",
+                "the sweep runs as the book's System principal {:032x}; this request is principal {:032x} under a {} capability",
+                system.0,
+                req.principal_ref.0,
                 req.capability.profile().name()
             ),
-            "plan §5.4 (the sweep runs as the System principal), sod_policy.toml expiry-sweep",
-            "run the sweep from the daemon (its System capability); a person releases a hold with Resolution(Voids)",
+            "plan §5.4 (the sweep runs as the System principal), sod_policy.toml expiry-sweep / reversal-sweep",
+            "run the sweep from the daemon (its System capability); a person releases a hold with Resolution(Voids) or reverses an entry by hand",
         )));
     }
-    let steward = policy::steward()?;
-    let sweep_key = fa_policy::sod::control_key("SweepControl", None, "Expire");
-    let Some(op) = steward.preparer_op(&sweep_key) else {
-        return Err(KernelError::Corrupt(
-            "sod_policy.toml has no expiry-sweep rule".into(),
-        ));
+    let Some(op) = policy::steward()?.preparer_op(key) else {
+        return Err(KernelError::Corrupt(format!(
+            "sod_policy.toml has no rule for {key:?}"
+        )));
     };
     for op in [op, Op::Post] {
         if let Err(d) = fa_policy::admit(
@@ -872,6 +871,27 @@ pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
     }
     if let Err(d) = fa_policy::current(&req.capability, db.frontier()?) {
         return Ok(Err(policy::refusal(&d)));
+    }
+    Ok(Ok(()))
+}
+
+/// Expire up to `req.max_batch` due holds in one transaction (plan §5.4).
+/// `Ok(None)`: no tick yet, or nothing due after the cursor — nothing is
+/// written. `describe` seals each new entry's description (the kernel holds
+/// no entropy). Refusals: a batch bound outside `1..=max_batch_entries`, a
+/// capability that is not the `System` principal's or lacks `post`, an
+/// expired capability, or a conflict (a hold resolved concurrently — its
+/// identity was taken — or a witness moved): rerun the sweep.
+pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    req: &SweepRequest,
+    describe: &mut dyn FnMut(&str) -> Erasable<String>,
+) -> Outcome<Option<SweepBatch>> {
+    let sweep_key = fa_policy::sod::control_key("SweepControl", None, "Expire");
+    if let Err(r) = admit_sweep(db, book, req, &sweep_key)? {
+        return Ok(Err(r));
     }
 
     // The candidates, from the head snapshot this single-writer handle is
@@ -1016,6 +1036,7 @@ pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
     let cursor_entry = cursor_proposal(
         book,
         req.principal_ref,
+        SWEEP_EXPIRY,
         next,
         cvid,
         tick,
@@ -1081,9 +1102,17 @@ pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
     }
 }
 
-/// Sweep until nothing due remains under the latest tick: batches of at
-/// most `req.max_batch`, each its own transaction. Returns the committed
-/// batches (empty when nothing was due). A refusal stops the sweep; the
+/// What one full sweep committed: the expiry batches, then the
+/// scheduled-reversal batches.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Swept {
+    pub expiry: Vec<SweepBatch>,
+    pub reversals: Vec<crate::schedule::ReversalBatch>,
+}
+
+/// Sweep until nothing remains under the latest tick: expiry batches (plan
+/// §5.4), then scheduled-reversal batches (§7.6), each batch at most
+/// `req.max_batch` and its own transaction. A refusal stops the sweep; the
 /// batches committed before it stay journaled.
 pub async fn sweep<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
@@ -1091,15 +1120,28 @@ pub async fn sweep<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: &SweepRequest,
     describe: &mut dyn FnMut(&str) -> Erasable<String>,
-) -> Outcome<Vec<SweepBatch>> {
-    let mut out = Vec::new();
+) -> Outcome<Swept> {
+    let mut out = Swept::default();
     loop {
         match sweep_batch(db, ctx, book, req, describe).await? {
             Err(r) => return Ok(Err(r)),
-            Ok(None) => return Ok(Ok(out)),
+            Ok(None) => break,
             Ok(Some(batch)) => {
                 let done = batch.remaining_due == 0;
-                out.push(batch);
+                out.expiry.push(batch);
+                if done {
+                    break;
+                }
+            }
+        }
+    }
+    loop {
+        match crate::schedule::sweep_reversals_batch(db, ctx, book, req, describe).await? {
+            Err(r) => return Ok(Err(r)),
+            Ok(None) => return Ok(Ok(out)),
+            Ok(Some(batch)) => {
+                let done = batch.remaining == 0;
+                out.reversals.push(batch);
                 if done {
                     return Ok(Ok(out));
                 }

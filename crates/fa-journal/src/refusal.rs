@@ -168,6 +168,10 @@ pub mod code {
     /// A `Resolution(Expires)` was submitted through `post`; only the expiry
     /// sweep mints one (plan §5.4).
     pub const EXPIRES_BY_SWEEP: &str = "FA-REF-098";
+    /// A `ScheduleControl` entry was submitted through `post`; the kernel
+    /// journals a schedule's cancellation itself, in the commit of the manual
+    /// Reversal that supersedes the scheduled target (plan §7.6).
+    pub const CANCEL_BY_KERNEL: &str = "FA-REF-099";
 }
 
 /// A foundation failure. Exit 5; never partial.
