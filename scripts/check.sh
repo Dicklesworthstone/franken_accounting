@@ -77,7 +77,11 @@ run_step "check" cargo check --workspace --all-targets
 run_step "clippy" cargo clippy --workspace --all-targets -- -D warnings
 if [ "$QUICK" -eq 0 ]; then
   run_step "test" cargo test --workspace
-  run_step "deny" cargo deny check
+  if cargo deny --version >/dev/null 2>&1; then
+    run_step "deny" cargo deny check
+  else
+    gate_unrun "deny — cargo-deny is not installed; the dependency allowlists in deny.toml were not checked"
+  fi
 fi
 
 # ---- Non-Rust gates ----------------------------------------------------------
@@ -117,17 +121,35 @@ for f in registries/*.toml; do
 done
 [ "$REG_FAIL" -eq 0 ] && gate_pass "registries — every registries/*.toml is embedded by code"
 
-# Forbidden dependencies on first-party paths (plan §1 constraint 1). deny.toml
-# is the full gate; this is the fast, tool-free tripwire over the lockfile.
-if [ -f Cargo.lock ]; then
-  BANNED='^name = "(serde|tokio|chrono|rust_decimal|bigdecimal|rusqlite|sqlx|arrow|polars|petgraph|frankenpandas|fsqlite)"$'
-  if grep -Eq "$BANNED" Cargo.lock; then
-    gate_fail "forbidden crate present in Cargo.lock: $(grep -E "$BANNED" Cargo.lock | tr '\n' ' ')"
-  else
-    gate_pass "forbidden-deps — none of the banned crates is in Cargo.lock"
-  fi
+# Forbidden dependencies (plan §1 constraint 1): every first-party crate may
+# depend DIRECTLY only on first-party crates and the four foundations. The
+# foundations' own transitive dependencies (serde, tokio, … inside asupersync,
+# frankengraphdb, franken_networkx, fastmcp-rust) are confined to their pinned
+# closures and are deny.toml's business (cargo deny), not this tripwire's.
+# What this admits that a lockfile grep would not: foundation-transitive paths.
+# What it still catches: any new direct dependency of fa-* on anything else.
+if ! command -v jq >/dev/null 2>&1; then
+  gate_unrun "forbidden-deps — jq is not installed; first-party direct dependencies were not checked"
 else
-  gate_unrun "forbidden-deps — no Cargo.lock to inspect"
+  DEPS_LOG="$LOG_DIR/forbidden-deps.log"
+  if cargo metadata --no-deps --format-version 1 2>>"$DEPS_LOG" \
+    | jq -r '.packages[] | .name as $p | .dependencies[] | "\($p) \(.name)"' >"$DEPS_LOG.pairs" 2>>"$DEPS_LOG"; then
+    DEP_FAIL=0
+    while read -r pkg dep; do
+      case "$dep" in
+        fa|fa-*|asupersync|fgdb|fgdb-*|fnx-*|fastmcp-rust|fastmcp-*) ;;
+        *)
+          gate_fail "forbidden-deps — $pkg depends directly on \`$dep\`, which is neither first-party nor a foundation"
+          DEP_FAIL=1
+          ;;
+      esac
+    done <"$DEPS_LOG.pairs"
+    if [ "$DEP_FAIL" -eq 0 ]; then
+      gate_pass "forbidden-deps — every first-party direct dependency is first-party or a foundation ($(wc -l <"$DEPS_LOG.pairs" | tr -d ' ') edges)"
+    fi
+  else
+    gate_unrun "forbidden-deps — cargo metadata did not run (offloader or toolchain); log: $DEPS_LOG"
+  fi
 fi
 
 gate_verdict
