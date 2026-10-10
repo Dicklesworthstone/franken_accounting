@@ -23,6 +23,7 @@ members = [
     "crates/fa-registers",
     "crates/fa-reference",
     "crates/fa-cli",
+    "crates/fa-policy",
 ]
 
 [workspace.package]

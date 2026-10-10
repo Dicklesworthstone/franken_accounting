@@ -1,0 +1,238 @@
+# sod_policy.toml — segregation of duties (plan §14.3, Appendix C universal
+# rules, FA-INV-10 clause `sod`).
+#
+# Data, not code: for each dangerous class the minimum number of approvers,
+# the op and profiles an approver must hold, the extra Human approvers an
+# Agent-prepared entry needs, and the exclusions. The kernel evaluates the
+# rule at commit, inside the posting transaction that point-read the
+# approvals, so a violation is a refusal citing the rule's `name`, never a
+# report finding after the fact.
+#
+# Keys:
+#   class                            a registered entry class
+#   state                            posting classes and PeriodControl: the
+#                                    period state the entry resolves to (for
+#                                    PeriodControl, the transition's from-state);
+#                                    absent for book-scoped controls
+#   disposition                      Resolution only: "Posts"
+#   transition                       PeriodControl: Lock | Reopen;
+#                                    PolicyControl: Activate
+#   preparer_op                      control rows only (the admissibility
+#                                    matrix owns the op for posting classes)
+#   approvers                        SoD minimum; the kernel requires
+#                                    max(matrix approvals, approvers), so this
+#                                    can only tighten the matrix
+#   approver_op                      every approver's capability held this op
+#                                    when the approval was recorded
+#   approver_profiles                profiles that may approve
+#   agent_prepared_human_approvers   Human approvers required when the
+#                                    preparer holds an Agent-profile capability
+#   exclusions                       preparer (an approver is never the
+#                                    preparer), duplicate (approvers are
+#                                    distinct principals), case_preparer (no
+#                                    approver prepared any entry in the case),
+#                                    session_lineage (approvers share no session
+#                                    lineage). Every rule lists preparer and
+#                                    duplicate. An exclusion the evaluator
+#                                    cannot decide refuses (fail closed).
+#
+# `[default]` governs every (class, state) no rule names, including any
+# approval attached to an entry whose cell requires none: a supplied approval
+# is always validated, never ignored.
+#
+# Consumer: fa-policy SoD evaluation, called by fa-journal at post step 5 and
+# by `activate_policy`. Gate: fa-registry's sod_policy tests (every class
+# registered, every rule ≥ its matrix cell, no rule on a refused cell, the
+# universal exclusions present); fa-policy's parity test (every op parses in
+# the closed vocabulary); fa-reference's independent SoD oracle, compared
+# exhaustively in fa-policy/tests/sod_oracle.rs.
+
+schema_version = 1
+
+[default]
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §14.3, Appendix C universal rules"
+
+# ---- Corrections into a Closed period --------------------------------------
+[[rule]]
+name = "reversal-closed"
+class = "Reversal"
+state = "Closed"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 1
+exclusions = ["preparer", "duplicate"]
+cite = "plan §14.3, §14.4 (agent-prepared work needs a Human approver)"
+
+[[rule]]
+name = "resolution-posts-closed"
+class = "Resolution"
+state = "Closed"
+disposition = "Posts"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 1
+exclusions = ["preparer", "duplicate"]
+cite = "plan §5.4, §14.3"
+
+[[rule]]
+name = "adjusting-closed"
+class = "Adjusting"
+state = "Closed"
+approvers = 1
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 1
+exclusions = ["preparer", "duplicate"]
+cite = "Appendix C W(post_closed, 1)"
+
+[[rule]]
+name = "replacement-closed"
+class = "Replacement"
+state = "Closed"
+approvers = 1
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 1
+exclusions = ["preparer", "duplicate"]
+cite = "Appendix C W(post_closed, 1)"
+
+[[rule]]
+name = "reclassification-closed"
+class = "Reclassification"
+state = "Closed"
+approvers = 1
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 1
+exclusions = ["preparer", "duplicate"]
+cite = "Appendix C W(post_closed, 1)"
+
+# ---- Restatement family (case-bound) ---------------------------------------
+[[rule]]
+name = "restatement-closed"
+class = "Restatement"
+state = "Closed"
+approvers = 2
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 2
+exclusions = ["preparer", "duplicate", "case_preparer", "session_lineage"]
+cite = "plan §14.3 (two approvers sharing no session lineage)"
+
+[[rule]]
+name = "restatement-locked"
+class = "Restatement"
+state = "Locked"
+approvers = 2
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 2
+exclusions = ["preparer", "duplicate", "case_preparer", "session_lineage"]
+cite = "plan §14.3 (two approvers sharing no session lineage)"
+
+[[rule]]
+name = "prior-period-adjustment-open"
+class = "PriorPeriodAdjustment"
+state = "Open"
+approvers = 2
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 2
+exclusions = ["preparer", "duplicate", "case_preparer"]
+cite = "plan §14.3, Appendix C W(restate, 2)"
+
+[[rule]]
+name = "prior-period-adjustment-softclosed"
+class = "PriorPeriodAdjustment"
+state = "SoftClosed"
+approvers = 2
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 2
+exclusions = ["preparer", "duplicate", "case_preparer"]
+cite = "plan §14.3, Appendix C W(restate, 2)"
+
+# ---- Migration --------------------------------------------------------------
+[[rule]]
+name = "migration-locked"
+class = "Migration"
+state = "Locked"
+approvers = 2
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 2
+exclusions = ["preparer", "duplicate"]
+cite = "plan §8.6, Appendix C W(migrate, 2)"
+
+# ---- Period transitions -----------------------------------------------------
+[[rule]]
+name = "period-reopen-softclosed"
+class = "PeriodControl"
+state = "SoftClosed"
+transition = "Reopen"
+preparer_op = "reopen"
+approvers = 1
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 1
+exclusions = ["preparer", "duplicate"]
+cite = "Appendix C PeriodControl: SoftClosed Reopen W(reopen, 1)"
+
+[[rule]]
+name = "period-lock"
+class = "PeriodControl"
+state = "Closed"
+transition = "Lock"
+preparer_op = "close"
+approvers = 1
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 1
+exclusions = ["preparer", "duplicate"]
+cite = "Appendix C PeriodControl: Closed Lock W(close, 1)"
+
+[[rule]]
+name = "period-reopen-closed"
+class = "PeriodControl"
+state = "Closed"
+transition = "Reopen"
+preparer_op = "reopen"
+approvers = 2
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 2
+exclusions = ["preparer", "duplicate", "case_preparer"]
+cite = "Appendix C PeriodControl: Closed Reopen W(reopen, 2, case)"
+
+[[rule]]
+name = "period-reopen-locked"
+class = "PeriodControl"
+state = "Locked"
+transition = "Reopen"
+preparer_op = "reopen"
+approvers = 2
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 2
+exclusions = ["preparer", "duplicate", "case_preparer"]
+cite = "Appendix C PeriodControl: Locked Reopen W(reopen, 2, case)"
+
+# ---- Policy activation (book-scoped) ---------------------------------------
+[[rule]]
+name = "policy-activate"
+class = "PolicyControl"
+transition = "Activate"
+preparer_op = "rule_change"
+approvers = 2
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 2
+exclusions = ["preparer", "duplicate"]
+cite = "Appendix C PolicyControl: W(rule_change, 2 for activations)"

@@ -577,6 +577,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fa-policy"
+version = "0.0.1"
+dependencies = [
+ "fa-model",
+ "fa-money",
+ "fa-reference",
+ "fa-registry",
+ "fa-time",
+ "fgdb-types",
+]
+
+[[package]]
 name = "fa-reference"
 version = "0.0.1"
 dependencies = [

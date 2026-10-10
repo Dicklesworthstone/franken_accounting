@@ -1,0 +1,81 @@
+//! Steward's laws (plan §14, FA-INV-10): capabilities, admission, expiry,
+//! approvals, and segregation of duties.
+//!
+//! This is a laws-layer crate: pure functions of explicit inputs. It reads
+//! no clock, no storage, no entropy, and takes no `Cx`; it depends on the
+//! model and the registries and on nothing above them. The kernel calls
+//! *down* into it — admission before any storage observation (post step
+//! 1a), expiry at the admission point the kernel observed, and SoD at
+//! commit over the approvals the kernel point-read — and maps each
+//! [`Denial`] one-to-one onto its refusal envelope. Nothing here calls up.
+//!
+//! Layout:
+//! - [`op`] — the closed op vocabulary.
+//! - [`capability`] — `Profile`, the typed `Capability`, `fa:capability:v1`.
+//! - [`admit`] — pre-observation admission, expiry, op requirements.
+//! - [`approval`] — the `fa:approval:v1` object and its binding law.
+//! - [`sod`] — the SoD predicate over `sod_policy.toml` rows.
+//! - [`denial`] — typed denials with code, exit, cite, and fix.
+
+#![forbid(unsafe_code)]
+
+pub mod admit;
+pub mod approval;
+pub mod capability;
+pub mod denial;
+pub mod op;
+pub mod sod;
+
+pub use admit::{Intent, admit, current, require};
+pub use approval::Approval;
+pub use capability::{Capability, CapabilityError, Profile};
+pub use denial::Denial;
+pub use op::Op;
+pub use sod::{Approver, Party};
+
+use fa_model::domain_digest;
+use fa_registry::sod_policy::{SodKey, SodPolicy};
+use fa_registry::{Admissibility, EntryClasses, RegistryError};
+
+pub const POLICY_DOMAIN: &[u8] = b"fa:policy:v1";
+
+/// The policy this build enforces: the SoD rows and their digest, the oid a
+/// `PolicyActivation` journals.
+#[derive(Clone, Debug)]
+pub struct Steward {
+    pub sod: SodPolicy,
+    pub policy_oid: [u8; 32],
+}
+
+impl Steward {
+    /// Load and cross-check the embedded policy.
+    pub fn embedded() -> Result<Self, RegistryError> {
+        let classes = EntryClasses::embedded()?;
+        let matrix = Admissibility::embedded(&classes)?;
+        let sod = SodPolicy::embedded(&classes, &matrix)?;
+        let policy_oid = domain_digest(POLICY_DOMAIN, &[&sod.canonical_bytes()]);
+        Ok(Self { sod, policy_oid })
+    }
+
+    /// SoD for the entry `key` names: its rule (or the default) over the
+    /// preparer and the witnessed approvals.
+    pub fn segregate(
+        &self,
+        key: &SodKey,
+        matrix_approvals: u8,
+        preparer: Party,
+        approvers: &[Approver],
+    ) -> Result<(), Denial> {
+        let (rule, req) = self.sod.requirement(key);
+        sod::evaluate(rule, req, matrix_approvals, preparer, approvers)
+    }
+
+    /// The op a control rule requires of its preparer (`None` when no rule
+    /// governs `key` or the rule names no op).
+    pub fn preparer_op(&self, key: &SodKey) -> Option<Op> {
+        self.sod
+            .rule(key)
+            .and_then(|r| r.preparer_op.as_deref())
+            .and_then(Op::from_name)
+    }
+}
