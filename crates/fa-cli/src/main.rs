@@ -16,6 +16,7 @@
 
 mod args;
 mod document;
+mod notary;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -55,6 +56,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("tb", tb_cmd),
     ("open-items", open_items_cmd),
     ("explain", explain_cmd),
+    ("checkpoint", notary::checkpoint_cmd),
     ("verify", verify_cmd),
     ("registers", registers_cmd),
     ("entry", entry_cmd),
@@ -2106,6 +2108,7 @@ fn availability_fields(
 
 fn verify_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
     match args.positional.get(1).map(String::as_str) {
+        Some("accumulator") => notary::verify_accumulator(out, args),
         Some("registers") => {
             let book = open_book(args)?;
             let periods = selected_periods(args, &book)?;

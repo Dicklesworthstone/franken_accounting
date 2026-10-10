@@ -156,15 +156,27 @@ usage = ["explain balance <account code> --period <code> [--as-known-at HEAD|<se
 example = "fa explain balance 1000 --period FY2026-P03 --book ./books/myco --json"
 
 [[verb]]
+name = "checkpoint"
+summary = "Publish an unsigned, recomputable accumulator state over the book's entry prefix."
+writes = true
+subcommands = ["create"]
+flags = ["--grant"]
+switches = []
+events = ["checkpoint_created"]
+exits = [0, 2, 4, 5, 6, 7, 8]
+usage = ["checkpoint create --grant witness [--as <principal>]", "The state is unsigned and covers entries; it is not a signed TransparencyCheckpoint or an evidence bundle."]
+example = "fa checkpoint create --grant witness --book ./books/myco --json"
+
+[[verb]]
 name = "verify"
-summary = "Verify derived state against the journal by refolding: registers, open-item applied mirrors, or limited accounts' availability cells (exit 8 on drift)."
+summary = "Verify derived state against the journal by refolding: registers, open-item applied mirrors, limited accounts' availability cells, or accumulator states (exit 8 on drift)."
 writes = false
-subcommands = ["registers", "open-items", "availability"]
+subcommands = ["registers", "open-items", "availability", "accumulator"]
 flags = ["--period", "--fiscal-year"]
 switches = []
-events = ["registers_verified", "open_items_verified", "availability_verified"]
+events = ["registers_verified", "open_items_verified", "availability_verified", "accumulator_verified"]
 exits = [0, 2, 4, 5, 8]
-usage = ["verify registers ((--period <code>)... | --fiscal-year N)", "verify open-items", "verify availability"]
+usage = ["verify registers ((--period <code>)... | --fiscal-year N)", "verify open-items", "verify availability", "verify accumulator (every recorded checkpoint; no period filter)"]
 example = "fa verify registers --period FY2026-P03 --book ./books/myco"
 
 [[verb]]
@@ -357,6 +369,16 @@ doc = "Open items, optionally on one account, at the `known_at` snapshot."
 fields = ["account:string?", "count:int", "items:[open_item]"]
 
 [[event]]
+name = "checkpoint_created"
+doc = "An unsigned AccumulatorState over every entry in the named book/branch prefix through through_seq, recorded in a later commit. prev_state_oid links its predecessor. The scope excludes document receipts, attestations, signatures, and bundles."
+fields = ["book:hex", "branch:hex", "oid:hex", "recorded_at:seq", "through_seq:seq", "leaf_count:int", "root:hex", "prev_state_oid:hex?", "signatures:string", "scope:string"]
+
+[[event]]
+name = "accumulator_verified"
+doc = "Every existing accumulator state was recomputed from its entry prefix and every stored state belongs to the chain. status is verified or no_checkpoints; no_checkpoints makes no verification claim and verified_through is null. Otherwise verified_through names the newest checked prefix, never an implicit current-head claim. signatures is unsigned and scope is entry_prefix. States are newest first."
+fields = ["status:string", "signatures:string", "scope:string", "states_checked:int", "broken:string?", "verified_through:seq?", "states:[accumulator_state_check]", "unchained:[hex]"]
+
+[[event]]
 name = "registers_verified"
 doc = "Every selected period's stored registers equal the refold."
 fields = ["periods:[register_check]"]
@@ -389,6 +411,11 @@ fields = ["account:string", "account_vid:hex", "name:string", "type:string", "pe
 # ---------------------------------------------------------------------------
 # Shapes: the objects events nest.
 # ---------------------------------------------------------------------------
+
+[[shape]]
+name = "accumulator_state_check"
+doc = "One state's recomputation result. finding is null on success; verification failure reports the same shape in its detail."
+fields = ["oid:hex", "through_seq:seq", "recorded_at:seq", "leaf_count:int", "finding:string?"]
 
 [[shape]]
 name = "evidence_ref"

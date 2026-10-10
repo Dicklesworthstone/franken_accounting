@@ -6,7 +6,7 @@
 
 use std::process::ExitCode;
 
-use fa::book::{Book, BookError, BookKeys, Entropy};
+use fa::{Book, BookError, BookKeys, Entropy};
 use fa_journal::{AccountSpec, BookSpec, Capability, PostRequest, UnitPolicy};
 use fa_model::{EntryClass, EntryOrigin, EntryPayload, Id128, LegPayload, Oid, account_vid};
 use fa_money::{Amount, Side};

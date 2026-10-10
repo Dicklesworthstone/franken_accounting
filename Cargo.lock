@@ -519,6 +519,8 @@ dependencies = [
  "fa-journal",
  "fa-model",
  "fa-money",
+ "fa-notary",
+ "fa-policy",
  "fa-registers",
  "fa-registry",
  "fa-time",
@@ -531,14 +533,17 @@ dependencies = [
 name = "fa-cli"
 version = "0.0.1"
 dependencies = [
+ "asupersync",
  "fa",
  "fa-journal",
  "fa-model",
  "fa-money",
+ "fa-notary",
  "fa-policy",
  "fa-registers",
  "fa-registry",
  "fa-time",
+ "fgdb",
  "fgdb-types",
 ]
 

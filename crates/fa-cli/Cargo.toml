@@ -28,3 +28,9 @@ fa-registry = { path = "../fa-registry", version = "=0.0.1" }
 fa-registers = { path = "../fa-registers", version = "=0.0.1" }
 fa-time = { path = "../fa-time", version = "=0.0.1" }
 fgdb-types = { workspace = true }
+
+[dev-dependencies]
+# The CLI corruption regression plants a false state in a real persisted book.
+asupersync = { workspace = true }
+fgdb = { workspace = true }
+fa-notary = { path = "../fa-notary", version = "=0.0.1" }

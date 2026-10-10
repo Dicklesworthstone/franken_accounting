@@ -569,6 +569,46 @@ impl Book {
         Ok(with_store!(&self.store, db => fa_registers::verify_period(db, &self.ctx, period_code))?)
     }
 
+    /// Publish an unsigned accumulator state for this book's entry prefix.
+    /// `witness` authorizes publication, not changing its recomputed contents.
+    /// Admission precedes storage observation; Agent profiles cannot publish
+    /// on trunk. Expiry is checked at the single-writer admission frontier.
+    pub fn checkpoint(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<fa_notary::Checkpointed> {
+        if let Err(denial) = fa_policy::admit(
+            capability,
+            &fa_policy::Intent {
+                principal,
+                trunk: true,
+                op: fa_policy::Op::Witness,
+                legs: &[],
+            },
+        ) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        let at = with_store!(&self.store, db => db.frontier()).map_err(KernelError::from)?;
+        if let Err(denial) = fa_policy::current(capability, at) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        let purposes = self.purposes();
+        let ctx = &self.ctx;
+        let runtime = &self.runtime;
+        Ok(with_store!(&mut self.store, db => runtime.block_on(async {
+            fa_notary::checkpoint(db, &purposes, ctx).await
+        }))?)
+    }
+
+    /// Recompute every accumulator state from its journal prefix.
+    /// This reads the whole open embedded book, like the other current read
+    /// methods; scoped session admission is not implemented here. The result
+    /// verifies entry prefixes, without signatures or document-receipt claims.
+    pub fn verify_accumulator(&self) -> Result<fa_notary::AccumulatorVerification, BookError> {
+        Ok(with_store!(&self.store, db => fa_notary::verify_accumulator(db, &self.ctx))?)
+    }
+
     /// Open items (plan §5.7): every leg of a live posted entry, optionally
     /// on one account, with its applications and open amount.
     pub fn open_items(
@@ -689,6 +729,45 @@ mod tests {
         assert_eq!(back.namespace(), keys.namespace());
         assert_eq!(unhex(&hex(&[0xab; 32])), Some([0xab; 32]));
         assert_eq!(unhex("zz"), None);
+    }
+
+    #[test]
+    fn checkpoint_requires_its_holder_witness_authority_and_current_capability() {
+        use fa_policy::{Capability as PolicyCapability, Op, Profile};
+
+        let (spec, _) = spec(Id128([0x45; 16]));
+        let mut book = Book::create_memory(
+            BookKeys::for_development(45),
+            spec,
+            Entropy::deterministic(45),
+        )
+        .unwrap();
+        let before = with_store!(&book.store, db => db.frontier()).unwrap();
+        let principal = VId(45);
+        let witness = PolicyCapability::embedded(principal, &["witness"]).unwrap();
+        let reader = PolicyCapability::embedded(principal, &["read"]).unwrap();
+        let agent =
+            PolicyCapability::new(principal, Profile::Agent, &[Op::Witness], VId(1)).unwrap();
+        for (actor, cap, code) in [
+            (principal, reader, "FA-REF-011"),
+            (VId(46), witness.clone(), "FA-REF-011"),
+            (principal, agent, "FA-REF-013"),
+            (principal, witness.clone().expiring_at(before), "FA-REF-014"),
+        ] {
+            let refusal = book.checkpoint(actor, &cap).unwrap().unwrap_err();
+            assert_eq!((refusal.code, refusal.exit), (code, 7));
+            assert_eq!(
+                with_store!(&book.store, db => db.frontier()).unwrap(),
+                before
+            );
+        }
+        assert!(book.verify_accumulator().unwrap().states.is_empty());
+        let published = book.checkpoint(principal, &witness).unwrap().unwrap();
+        assert!(published.stored.recorded_at > before);
+        let checked = book.verify_accumulator().unwrap();
+        assert!(checked.is_green());
+        assert_eq!(checked.states.len(), 1);
+        assert_eq!(checked.states[0].oid, published.stored.oid);
     }
 
     fn spec(book_id: Id128) -> (BookSpec, fa_money::UnitId) {

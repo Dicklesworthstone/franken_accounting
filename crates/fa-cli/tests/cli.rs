@@ -1216,6 +1216,13 @@ fn verbs_toml_is_the_single_verb_registry_and_the_binary_agrees() -> std::io::Re
                 .collect()
         };
         for mut call in calls {
+            // Checkpoint publication admits its witness before opening a
+            // book. Give this dispatch probe that authority so the absent
+            // book remains its next required input. Missing-grant refusal
+            // is independently covered by the checkpoint command tests.
+            if verb.name == "checkpoint" {
+                call.extend(["--grant", "witness"]);
+            }
             call.push("--json");
             let (code, out, err) = fa(Some(&nowhere), &call);
             assert!(
@@ -1765,6 +1772,11 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(true, &["book", "info"]).0, 4);
     assert_eq!(run(true, &["book", "create", "--name", "Events Co"]).0, 0);
     assert_eq!(run(true, &["book", "info"]).0, 0);
+    assert_eq!(
+        run(true, &["checkpoint", "create", "--grant", "witness"]).0,
+        0
+    );
+    assert_eq!(run(true, &["verify", "accumulator"]).0, 0);
     let chart = write(
         &dir,
         "chart.json",
