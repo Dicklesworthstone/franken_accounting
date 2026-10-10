@@ -519,10 +519,25 @@ dependencies = [
  "fa-journal",
  "fa-model",
  "fa-money",
+ "fa-registers",
  "fa-registry",
  "fa-time",
  "fgdb",
  "fgdb-crypto",
+ "fgdb-types",
+]
+
+[[package]]
+name = "fa-cli"
+version = "0.0.1"
+dependencies = [
+ "fa",
+ "fa-journal",
+ "fa-model",
+ "fa-money",
+ "fa-registers",
+ "fa-registry",
+ "fa-time",
  "fgdb-types",
 ]
 

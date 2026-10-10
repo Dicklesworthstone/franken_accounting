@@ -257,3 +257,86 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() {
         "{out}"
     );
 }
+
+#[test]
+fn reversals_by_target_and_idempotency_conflicts_follow_the_contract() {
+    let dir = tmp("reversal");
+    let book = dir.join("book");
+    assert_eq!(
+        fa(Some(&book), &["book", "create", "--name", "Rev Co"]).0,
+        0
+    );
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    assert_eq!(fa(Some(&book), &["chart", "import", &chart]).0, 0);
+    assert_eq!(
+        fa(Some(&book), &["period", "create", "--fiscal-year", "2026"]).0,
+        0
+    );
+    assert_eq!(fa(Some(&book), &["period", "open", "FY2026-P03"]).0, 0);
+    let intent = write(
+        &dir,
+        "entry.json",
+        r#"{"effective_date":"2026-03-15","description":"rent","idempotency_key":"inv-1","legs":[{"side":"debit","account":"6000","amount":"10.00 USD"},{"side":"credit","account":"1000","amount":"10.00 USD"}]}"#,
+    );
+    let (code, out, _) = fa(Some(&book), &["post", "--intent", &intent, "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let vid = field(&out, "vid").unwrap().to_string();
+
+    // Reverse by target: the CLI derives the side-swapped legs.
+    let rev = write(
+        &dir,
+        "rev.json",
+        &format!(
+            r#"{{"class":"Reversal","reverses":"{vid}","effective_date":"2026-03-16","description":"undo","idempotency_key":"rev-1"}}"#
+        ),
+    );
+    let (code, out, err) = fa(Some(&book), &["post", "--intent", &rev, "--json"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert!(out.contains("\"event\":\"posted\""), "{out}");
+    let (code, out, _) = fa(Some(&book), &["post", "--intent", &rev, "--json"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("\"event\":\"recorded\""), "{out}");
+    // A second, different reversal of the same target is a conflict (exit 6).
+    let rev2 = write(
+        &dir,
+        "rev2.json",
+        &format!(
+            r#"{{"class":"Reversal","reverses":"{vid}","effective_date":"2026-03-17","idempotency_key":"rev-2"}}"#
+        ),
+    );
+    let (code, out, _) = fa(Some(&book), &["post", "--intent", &rev2, "--json"]);
+    assert_eq!(code, 6, "{out}");
+    assert!(out.contains("\"code\":\"FA-REF-052\""), "{out}");
+    // Same idempotency key, different content: conflict (exit 6), nothing invented.
+    let changed = write(
+        &dir,
+        "changed.json",
+        r#"{"effective_date":"2026-03-15","description":"rent","idempotency_key":"inv-1","legs":[{"side":"debit","account":"6000","amount":"11.00 USD"},{"side":"credit","account":"1000","amount":"11.00 USD"}]}"#,
+    );
+    let (code, out, _) = fa(Some(&book), &["post", "--intent", &changed, "--json"]);
+    assert_eq!(code, 6, "{out}");
+    assert!(out.contains("\"code\":\"FA-REF-032\""), "{out}");
+    // An unsupported class is refused with the bead that lands it (exit 3).
+    let repl = write(
+        &dir,
+        "repl.json",
+        r#"{"class":"Replacement","effective_date":"2026-03-15","idempotency_key":"rp-1","legs":[{"side":"debit","account":"6000","amount":"1.00 USD"},{"side":"credit","account":"1000","amount":"1.00 USD"}]}"#,
+    );
+    let (code, out, _) = fa(Some(&book), &["post", "--intent", &repl, "--json"]);
+    assert_eq!(code, 3, "{out}");
+    assert!(
+        out.contains("\"code\":\"FA-REF-102\"") && out.contains("fa-omi"),
+        "{out}"
+    );
+    // The pair nets to zero.
+    let (code, out, _) = fa(Some(&book), &["tb", "--period", "FY2026-P03", "--json"]);
+    assert_eq!(code, 0);
+    assert!(
+        out.contains("\"balanced\":true") && out.contains("\"net\":\"0.00 USD\""),
+        "{out}"
+    );
+}

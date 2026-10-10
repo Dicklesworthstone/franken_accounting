@@ -386,8 +386,7 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
     principal_ref: VId,
     effective_date: DateDay,
     idempotency_key: &[u8],
-    salt: [u8; 32],
-    nonce: [u8; 24],
+    description: Erasable<String>,
 ) -> Outcome<ChartInstalled> {
     // Structural refusals first; nothing is written.
     for a in accounts {
@@ -449,13 +448,7 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
         class: EntryClass::SCHEMA_CONTROL,
         effective_date,
         document_date: None,
-        description: Erasable::seal(
-            &format!("chart install: {} accounts", accounts.len()),
-            None,
-            &book.seal_key,
-            salt,
-            nonce,
-        ),
+        description,
         effective_period: None,
         legs: Vec::new(),
         control: Some(ControlPayload::SchemaChange {

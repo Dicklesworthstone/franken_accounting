@@ -42,8 +42,7 @@ pub async fn transition_period<V: asupersync::fs::Vfs + Clone>(
     reason_code: u16,
     effective_date: DateDay,
     idempotency_key: &[u8],
-    salt: [u8; 32],
-    nonce: [u8; 24],
+    description: Erasable<String>,
 ) -> Outcome<Transitioned> {
     let pvid = period_vid(&book.calendar.id, period_code);
     let txn_cx = ctx.txn();
@@ -88,13 +87,7 @@ pub async fn transition_period<V: asupersync::fs::Vfs + Clone>(
         class: EntryClass::PERIOD_CONTROL,
         effective_date,
         document_date: None,
-        description: Erasable::seal(
-            &format!("period {period_code}: {} → {}", from.name(), to.name()),
-            None,
-            &book.seal_key,
-            salt,
-            nonce,
-        ),
+        description,
         effective_period: Some(PeriodRef {
             calendar: book.calendar.id.clone(),
             code: period_code.to_string(),

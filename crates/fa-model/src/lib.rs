@@ -38,7 +38,7 @@ pub use entry::{
 };
 pub use erasable::{Canonical, Erasable, EraseError, SealKey};
 pub use ids::{
-    ApprovalRef, EntryRef, Id128, Oid, PeriodRef, TypedRef, account_vid, entry_vid,
+    ApprovalRef, EntryRef, Id128, Oid, PeriodRef, TypedRef, account_vid, domain_digest, entry_vid,
     external_id_vid, period_vid, principal_vid, unit_vid,
 };
 pub use mirrors::{MirrorError, entry_mirrors, leg_mirrors};

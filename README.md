@@ -29,8 +29,8 @@
 |---|---|
 | Truth | The journal. There are no balance rows; registers, trial balances, statements, agings, and findings are derived folds, never authoritative, always verifiable by recomputation (`fa verify registers`). |
 | Immutability | Append-only. Corrections are `Reverse`/`Replace`/`Reclass`/`Restate` entries with `SUPERSEDES` lineage. Period close, reopen, and lock are journaled, approved control entries — never a flag. |
-| Time | Bitemporal by construction: **effective date** (which period; user-supplied, validated) × **recorded time** (when the books learned; assigned by the commit stream, never user-supplied). `FOR PERIOD FY2024 AS KNOWN AT 2025-03-03`, `AS ORIGINALLY REPORTED`, `AS CURRENTLY STATED`, `AS REPORTED IN <certificate>` are selectors, not backups. |
-| Exactness | `Amount { unit, mantissa: i128 }` at the unit's registered scale; every rounding, allocation, and FX conversion is a named law with a residual leg. No float ever touches an amount. No tolerance. No auto-balancing. |
+| Time | Bitemporal by construction: period-scoped entries have a validated **effective date**; all entries have a commit-assigned **recorded sequence**, never user-supplied. Undated Book controls follow registered applicability rules. Instant selectors resolve through retained TimeEvidence. `FOR PERIOD FY2024 AS KNOWN AT 2025-03-03`, `AS ORIGINALLY REPORTED`, `AS CURRENTLY STATED`, `AS REPORTED IN <certificate>` are selectors, not backups. |
+| Exactness | `Amount { unit, mantissa: i128 }` at the unit's registered scale; every rounding, allocation, and FX conversion names a registered law and exact error bound. Native residual postings are explicit where the law requires them; base-valuation residuals are recorded and absorbed under plan §5.2. No float ever touches an amount. No tolerance. No auto-balancing. |
 | Evidence | Nothing posts without a why: documents, the REA event, the posting-rule version, principal/agent/session, approvals, and every rate and basis document form a content-addressed provenance closure. `fa explain evidence <entry>` walks it. |
 | Proofs | A journal-level Merkle accumulator with witnessed transparency checkpoints; evidence bundles (`.fab`) with inclusion proofs; `fa-verify`, a dependency-free static verifier a regulator runs on an air-gapped laptop. |
 | Graph | Accounts, entities, parties, instruments, documents, periods, findings are vertices; legs, approvals, ownership, settlement, intercompany pairs, supersession are edges. Tracing (LIBR/FIFO/pro rata as code), related-party exposure, layering, kiting, Ponzi motifs, structuring: graph procedures in the database, certified. |
@@ -80,8 +80,10 @@ fa procedure run graph.related_party_exposure --entity ACME --json
 
 # Proofs an outsider can check without the book.
 fa bundle produce --scope 'period:FY2025 account-subtree:1000' --with-evidence --out fy2025-cash.fab
-fa-verify fy2025-cash.fab --checkpoint ck:…      # std-only binary; verifies inclusion, consistency, folds, replay
+fa-verify fy2025-cash.fab --checkpoint ck:…      # std-only; reports the predicates and scope actually verified
 ```
+
+An account-subtree extract needs authenticated hierarchy and complete account/range coverage, or the complete-prefix fallback. Membership alone does not prove scope completeness. A stock balance also needs its contributing opening history or an explicitly labeled baseline plus complete delta; the verifier reports these predicates separately.
 
 ```gql
 -- GQL through the substrate, plus the FrankenAccounting profile.

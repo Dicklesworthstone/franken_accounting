@@ -12,6 +12,15 @@
 # not installed) is `UNRUN` + `FAIL`, never a silent green. The contract is
 # scripts/lib/gate_verdict.sh, adopted verbatim from FrankenGraphDB.
 #
+# NOT COVERED YET (explicitly; a 0 exit here is not whole-chain G0 closure):
+#   the AGENTS file-coverage closure, the claims lint, verb parity
+#   (verbs.toml vs CLI vs MCP), the robot-schema fixture pin, a registry
+#   schema checker (the registries are validated by the fa-registry and
+#   fa-model tests, not by this script), and a forbidden-deps check that
+#   distinguishes permitted foundation transitive paths from new paths
+#   (cargo deny is the real gate; the grep below is a tripwire). Bead fa-lbh
+#   stays open until those exist or are exempted with a reason.
+#
 # Usage: bash scripts/check.sh            # everything
 #        bash scripts/check.sh --quick    # fmt, check, clippy, ubs (no tests, no deny)
 #        CHECK_LOG_DIR=<dir> keeps the per-step logs somewhere other than a temp dir.
@@ -53,8 +62,8 @@ run_step() {
   local rc=$?
   if [ "$rc" -eq 0 ]; then
     gate_pass "$label"
-  elif [ "$rc" -eq 103 ] || grep -q '\[RCH\] remote required' "$log"; then
-    gate_unrun "$label — the rch fleet refused the offload (retryable, not a product verdict); log: $log"
+  elif [ "$rc" -eq 103 ] || grep -q '^\[RCH\]' "$log"; then
+    gate_unrun "$label — the rch offloader did not run the command (refused or lost the worker; retryable, not a product verdict); log: $log"
   else
     gate_fail "$label (exit $rc); log: $log"
     gate_diag "---- $label: last 40 lines of $log"
@@ -74,7 +83,7 @@ fi
 # ---- Non-Rust gates ----------------------------------------------------------
 # ubs: the bug scanner over every tracked Rust file. ubs exits 0 on "nothing
 # checked", so an empty file list is UNRUN here, not a pass.
-mapfile -t RUST_FILES < <(git ls-files '*.rs')
+mapfile -t RUST_FILES < <(git ls-files --cached --others --exclude-standard -- '*.rs')
 if [ "${#RUST_FILES[@]}" -eq 0 ]; then
   gate_unrun "ubs — no tracked Rust files; nothing was checked"
 elif ! command -v ubs >/dev/null 2>&1; then
@@ -90,7 +99,7 @@ else
 fi
 
 # Lint our scripts with shellcheck (the gate library is adopted verbatim and exempt).
-mapfile -t SHELL_FILES < <(git ls-files 'scripts/*.sh' | grep -v 'scripts/lib/gate_verdict.sh')
+mapfile -t SHELL_FILES < <(git ls-files --cached --others --exclude-standard -- 'scripts/*.sh' | grep -v 'scripts/lib/gate_verdict.sh')
 if [ "${#SHELL_FILES[@]}" -gt 0 ]; then
   run_step "shellcheck" shellcheck -S warning "${SHELL_FILES[@]}"
 fi

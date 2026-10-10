@@ -29,4 +29,4 @@ pub use period::{
     PeriodDef, PeriodKind, PeriodState, PeriodTransition, ResolveError, TransitionError,
     resolve_period,
 };
-pub use selector::EffectiveSelector;
+pub use selector::{EffectiveSelector, SelectorError};

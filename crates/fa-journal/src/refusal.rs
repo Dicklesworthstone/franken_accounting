@@ -96,6 +96,18 @@ pub mod code {
     pub const STRUCTURE: &str = "FA-REF-100";
     /// A control class was sent through `post`.
     pub const CONTROL_VIA_POST: &str = "FA-REF-101";
+    /// The class is registered but its semantics are not enforced by this slice.
+    pub const CLASS_NOT_IMPLEMENTED: &str = "FA-REF-102";
+    /// The idempotency key was reused with different content.
+    pub const IDEMPOTENCY_CONFLICT: &str = "FA-REF-032";
+    /// A Reversal names no target, a target that does not exist, or a digest that does not match.
+    pub const REVERSAL_TARGET: &str = "FA-REF-050";
+    /// A Reversal's legs are not the exact side-swap of the target's legs.
+    pub const REVERSAL_SHAPE: &str = "FA-REF-051";
+    /// The target is already reversed by another entry.
+    pub const ALREADY_REVERSED: &str = "FA-REF-052";
+    /// A key collided but equivalence cannot be verified: a sealed field is erased or under a key this book lacks.
+    pub const EQUIVALENCE_UNVERIFIABLE: &str = "FA-REF-033";
 }
 
 /// A foundation failure. Exit 5; never partial.

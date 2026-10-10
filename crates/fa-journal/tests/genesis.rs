@@ -2,19 +2,20 @@
 //! substrate: a balanced entry commits with its mirrors and edges in one
 //! transaction; an unbalanced one is refused (exit 3, FA-REF-001); a post
 //! into a Closed period is refused (exit 7, the matrix cell cited) while a
-//! Reversal under `post_closed` is admitted; a duplicate idempotency key
-//! returns the recorded outcome; a period transition is a control record with
-//! no legs (fa-bvx).
+//! Reversal under `post_closed` is admitted; an identical retry is the
+//! recorded outcome and a changed one is a conflict (exit 6); a period
+//! transition is a control record with no legs (fa-bvx); unsupported classes
+//! are refused rather than admitted.
 
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
 use fa_journal::post::read_entry;
-use fa_journal::rows::{book_root, edge_id, leg_vid};
+use fa_journal::rows::{book_root, edge_id, leg_vid, reversal_vid};
 use fa_journal::*;
 use fa_model::symbols::{property, relation};
 use fa_model::{
-    ControlPayload, EntryClass, EntryOrigin, EntryPayload, Erasable, Id128, LegPayload, Oid,
-    SealKey, SymbolTable, account_vid, period_vid,
+    ControlPayload, EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable, Id128, LegPayload,
+    Oid, SealKey, Supersession, SupersessionKind, SymbolTable, account_vid, period_vid,
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodState, PeriodTransition};
@@ -90,12 +91,25 @@ impl Harness {
         ]
     }
 
+    fn reversal_of(&self, target: EntryRef, cents: i128, key: &[u8]) -> EntryPayload {
+        let legs = vec![
+            LegPayload::simple(Side::Credit, self.rent, Amount::new(self.usd, cents)),
+            LegPayload::simple(Side::Debit, self.cash, Amount::new(self.usd, cents)),
+        ];
+        let mut p = self.proposal(legs, key, EntryClass::REVERSAL);
+        p.supersession = vec![Supersession {
+            target,
+            kind: SupersessionKind::Reverses,
+            reason_code: 1,
+        }];
+        p
+    }
+
     fn request(&self, proposal: EntryPayload, ops: &[&str]) -> PostRequest {
         PostRequest {
             proposal,
             approvals: Vec::new(),
             plan_certificate: None,
-            principal_scope: PRINCIPAL.0.to_le_bytes().to_vec(),
             capability: Capability::with_ops(ops),
         }
     }
@@ -122,7 +136,22 @@ impl Harness {
         self.runtime
             .block_on(async move {
                 transition_period(
-                    db, &ctx, book, code, t, PRINCIPAL, 1, day, key, [3; 32], [4; 24],
+                    db,
+                    &ctx,
+                    book,
+                    code,
+                    t,
+                    PRINCIPAL,
+                    1,
+                    day,
+                    key,
+                    Erasable::seal(
+                        &"period".to_string(),
+                        None,
+                        &book.seal_key,
+                        [3; 32],
+                        [4; 24],
+                    ),
                 )
                 .await
             })
@@ -210,13 +239,28 @@ fn harness() -> Harness {
     let installed = runtime
         .block_on(async {
             install_chart(
-                &mut db, &ctx, &book, &chart, PRINCIPAL, day, b"chart-1", [5; 32], [6; 24],
+                &mut db,
+                &ctx,
+                &book,
+                &chart,
+                PRINCIPAL,
+                day,
+                b"chart-1",
+                Erasable::seal(&"chart".to_string(), None, &book.seal_key, [5; 32], [6; 24]),
             )
             .await
         })
         .expect("kernel")
         .expect("chart installs");
     assert_eq!(installed.accounts, 3);
+    assert_eq!(
+        fa_journal::genesis::list_accounts(&db)
+            .unwrap()
+            .iter()
+            .map(|a| a.code.as_str())
+            .collect::<Vec<_>>(),
+        vec!["1", "1000", "6000"]
+    );
 
     let (_, periods) = runtime
         .block_on(async { create_periods(&mut db, &ctx, &book, 2026).await })
@@ -275,7 +319,6 @@ fn balanced_entry_commits_with_mirrors_and_edges_in_one_transaction() {
         .expect("entry row");
     assert_eq!(back, expected);
     assert_eq!(created_at, recorded_at);
-    // Leg mirrors: side, account, unit, amount as Decimal.
     for (i, leg) in expected.proposal.legs.iter().enumerate() {
         let row =
             h.db.vertex(leg_vid(entry_ref.vid, i as u16))
@@ -320,6 +363,12 @@ fn balanced_entry_commits_with_mirrors_and_edges_in_one_transaction() {
         .is_some()
     );
     assert!(h.db.vertex(book_root()).unwrap().is_some());
+    assert_eq!(
+        fa_journal::genesis::read_book_spec(&h.db)
+            .unwrap()
+            .map(|s| s.name),
+        Some("Test Co".to_string())
+    );
 }
 
 #[test]
@@ -331,8 +380,7 @@ fn unbalanced_entry_is_refused_with_exit_3_and_nothing_written() {
     ];
     let proposal = h.proposal(legs, b"inv-2", EntryClass::ORIGINAL);
     let r = h.post(h.request(proposal, &["post"])).unwrap_err();
-    assert_eq!(r.code, "FA-REF-001");
-    assert_eq!(r.exit, exit::REFUSAL);
+    assert_eq!((r.code, r.exit), ("FA-REF-001", exit::REFUSAL));
     assert!(r.message.contains("USD"), "{}", r.message);
     assert!(r.fix.contains("credit leg of 1 USD"), "{}", r.fix);
     let vid = fa_model::entry_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), b"inv-2");
@@ -340,10 +388,16 @@ fn unbalanced_entry_is_refused_with_exit_3_and_nothing_written() {
 }
 
 #[test]
-fn posting_into_a_closed_period_is_refused_citing_the_cell_and_a_reversal_under_post_closed_is_admitted()
- {
+fn closed_period_refuses_originals_and_admits_an_exact_reversal_under_post_closed() {
     let mut h = harness();
     let march = h.march.clone();
+    let original = h
+        .post(h.request(
+            h.proposal(h.rent_legs(5_000), b"orig", EntryClass::ORIGINAL),
+            &["post"],
+        ))
+        .expect("admitted")
+        .entry_ref();
     h.transition(&march, PeriodTransition::SoftClose, b"sc")
         .expect("soft close");
     let t = h
@@ -354,27 +408,94 @@ fn posting_into_a_closed_period_is_refused_citing_the_cell_and_a_reversal_under_
         (PeriodState::SoftClosed, PeriodState::Closed)
     );
 
-    let proposal = h.proposal(h.rent_legs(5_000), b"late-1", EntryClass::ORIGINAL);
+    let late = h.proposal(h.rent_legs(5_000), b"late-1", EntryClass::ORIGINAL);
     let r = h
-        .post(h.request(proposal, &["post", "post_closed"]))
+        .post(h.request(late, &["post", "post_closed"]))
         .unwrap_err();
-    assert_eq!(r.code, "FA-REF-010");
-    assert_eq!(r.exit, exit::SAFETY);
+    assert_eq!((r.code, r.exit), ("FA-REF-010", exit::SAFETY));
     assert!(
         r.cite.contains("Original") && r.cite.contains("Closed"),
         "{}",
         r.cite
     );
 
-    // A Reversal needs post_closed in a Closed period: refused without it,
-    // admitted with it.
-    let reversal = h.proposal(h.rent_legs(5_000), b"rev-1", EntryClass::REVERSAL);
+    // Reversal in a Closed period: needs post_closed.
+    let reversal = h.reversal_of(original, 5_000, b"rev-1");
     let r = h.post(h.request(reversal.clone(), &["post"])).unwrap_err();
-    assert_eq!(r.code, "FA-REF-011");
-    assert_eq!(r.exit, exit::SAFETY);
+    assert_eq!((r.code, r.exit), ("FA-REF-011", exit::SAFETY));
     assert!(r.message.contains("post_closed"), "{}", r.message);
     let posted = h
+        .post(h.request(reversal.clone(), &["post", "post_closed"]))
+        .expect("admitted");
+    assert!(matches!(posted, Posted::Committed { .. }));
+    assert_eq!(
+        posted.entry_ref().vid,
+        reversal_vid(original.vid),
+        "identity derived from the target"
+    );
+    assert!(
+        h.db.edge(edge_id(
+            relation::SUPERSEDES,
+            posted.entry_ref().vid,
+            original.vid
+        ))
+        .unwrap()
+        .is_some()
+    );
+
+    // The identical reversal again: recorded. A different reversal of the same target: conflict.
+    let again = h
         .post(h.request(reversal, &["post", "post_closed"]))
+        .expect("recorded");
+    assert!(matches!(again, Posted::AlreadyRecorded { .. }));
+    let other = h.reversal_of(original, 5_000, b"rev-2");
+    let r = h
+        .post(h.request(other, &["post", "post_closed"]))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-052", exit::CONFLICT));
+}
+
+#[test]
+fn reversal_law_requires_a_witnessed_target_and_the_exact_side_swap() {
+    let mut h = harness();
+    let original = h
+        .post(h.request(
+            h.proposal(h.rent_legs(700), b"o", EntryClass::ORIGINAL),
+            &["post"],
+        ))
+        .expect("admitted")
+        .entry_ref();
+    // Wrong amount: not the side-swap.
+    let r = h
+        .post(h.request(h.reversal_of(original, 701, b"r1"), &["post"]))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-051", exit::REFUSAL));
+    // Stale handle: digest mismatch.
+    let stale = EntryRef {
+        vid: original.vid,
+        entry_digest: [0; 32],
+    };
+    let r = h
+        .post(h.request(h.reversal_of(stale, 700, b"r2"), &["post"]))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-050", exit::REFUSAL));
+    // No target at all.
+    let mut none = h.reversal_of(original, 700, b"r3");
+    none.supersession.clear();
+    let r = h.post(h.request(none, &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-050", exit::REFUSAL));
+    // Unknown target.
+    let ghost = EntryRef {
+        vid: VId(123_456),
+        entry_digest: [0; 32],
+    };
+    let r = h
+        .post(h.request(h.reversal_of(ghost, 700, b"r4"), &["post"]))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-050", exit::REFUSAL));
+    // The exact swap posts, and the fold nets the pair to zero.
+    let posted = h
+        .post(h.request(h.reversal_of(original, 700, b"r5"), &["post"]))
         .expect("admitted");
     assert!(matches!(posted, Posted::Committed { .. }));
 }
@@ -395,20 +516,29 @@ fn a_period_never_opened_refuses_with_the_open_fix() {
 }
 
 #[test]
-fn duplicate_idempotency_key_returns_the_recorded_outcome() {
+fn identical_retry_is_recorded_and_a_changed_retry_is_a_conflict() {
     let mut h = harness();
-    let p1 = h.proposal(h.rent_legs(100), b"dup", EntryClass::ORIGINAL);
-    let first = h.post(h.request(p1, &["post"])).expect("first");
-    // Same key, different amount: the recorded outcome wins, nothing new is written.
-    let p2 = h.proposal(h.rent_legs(999), b"dup", EntryClass::ORIGINAL);
-    let second = h.post(h.request(p2, &["post"])).expect("second");
+    let p = h.proposal(h.rent_legs(100), b"dup", EntryClass::ORIGINAL);
+    let first = h.post(h.request(p.clone(), &["post"])).expect("first");
     assert!(matches!(first, Posted::Committed { .. }), "{first:?}");
+    // Same bytes: the recorded outcome, nothing new written.
+    let second = h.post(h.request(p, &["post"])).expect("second");
     assert!(
         matches!(second, Posted::AlreadyRecorded { .. }),
         "{second:?}"
     );
     assert_eq!(first.entry_ref(), second.entry_ref());
     assert_eq!(first.recorded_at(), second.recorded_at());
+    // Same key, different amount: a conflict, exit 6, and the journal is unchanged.
+    let changed = h.proposal(h.rent_legs(999), b"dup", EntryClass::ORIGINAL);
+    let r = h.post(h.request(changed, &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-032", exit::CONFLICT));
+    assert!(
+        r.message
+            .contains(&format!("{:032x}", first.entry_ref().vid.0)),
+        "{}",
+        r.message
+    );
     let (back, _) = read_entry(&h.db, first.entry_ref().vid)
         .unwrap()
         .expect("row");
@@ -452,7 +582,7 @@ fn summary_account_unknown_account_and_unit_policy_are_refused() {
 }
 
 #[test]
-fn control_classes_cannot_be_posted_and_structure_errors_are_usage_errors() {
+fn control_classes_unsupported_classes_and_structure_errors_are_refused_by_kind() {
     let mut h = harness();
     let mut p = h.proposal(Vec::new(), b"ctl", EntryClass::PERIOD_CONTROL);
     p.control = Some(ControlPayload::TimeTick {
@@ -474,6 +604,35 @@ fn control_classes_cannot_be_posted_and_structure_errors_are_usage_errors() {
     );
     let r = h.post(h.request(one_leg, &["post"])).unwrap_err();
     assert_eq!((r.code, r.exit), ("FA-REF-100", exit::USAGE));
+
+    // A registered class this slice does not enforce is refused, naming its bead.
+    for class in [
+        EntryClass::REPLACEMENT,
+        EntryClass::PENDING,
+        EntryClass::RESTATEMENT,
+        EntryClass::MIGRATION,
+    ] {
+        let r = h
+            .post(h.request(
+                h.proposal(h.rent_legs(1), b"cls", class),
+                &["post", "post_closed", "restate", "migrate"],
+            ))
+            .unwrap_err();
+        assert_eq!((r.code, r.exit), ("FA-REF-102", exit::REFUSAL), "{class:?}");
+        assert!(
+            r.fix.contains("fa-") || r.fix.contains("plan §"),
+            "{}",
+            r.fix
+        );
+    }
+    // Adjusting is a plain posting class and is admitted.
+    let posted = h
+        .post(h.request(
+            h.proposal(h.rent_legs(2), b"adj", EntryClass::ADJUSTING),
+            &["post"],
+        ))
+        .expect("admitted");
+    assert!(matches!(posted, Posted::Committed { .. }));
 }
 
 #[test]
@@ -495,16 +654,67 @@ fn period_transition_is_a_control_record_with_no_legs_and_moves_the_state_mirror
         Some(ControlPayload::PeriodTransition { from, to, ref period_ref, .. }) if from == PeriodState::Future.tag() && to == PeriodState::Open.tag() && period_ref.code == april
     ));
     assert_eq!(h.period_state(&april), PeriodState::Open);
+    assert_eq!(
+        fa_journal::genesis::list_periods(&h.db)
+            .unwrap()
+            .iter()
+            .filter(|p| p.state == PeriodState::Open)
+            .count(),
+        2
+    );
 
-    // An illegal edge of the state machine is refused, and the mirror stays.
     let r = h
         .transition(&april, PeriodTransition::Lock, b"lock-april")
         .unwrap_err();
     assert_eq!((r.code, r.exit), ("FA-REF-040", exit::SAFETY));
     assert_eq!(h.period_state(&april), PeriodState::Open);
-    // A missing period is refused, not invented.
     let r = h
         .transition("FY2031-P01", PeriodTransition::Open, b"nope")
         .unwrap_err();
     assert_eq!((r.code, r.exit), ("FA-REF-021", exit::SAFETY));
+}
+
+#[test]
+fn equivalence_is_plaintext_level_and_never_crosses_principals() {
+    let mut h = harness();
+    let p = h.proposal(h.rent_legs(300), b"salted", EntryClass::ORIGINAL);
+    let first = h.post(h.request(p.clone(), &["post"])).expect("first");
+    // Same content, freshly sealed description (different salt and nonce):
+    // the prepared bytes differ, the semantic transcript does not → recorded.
+    let mut resealed = p.clone();
+    resealed.description = Erasable::seal(
+        &"March rent".to_string(),
+        None,
+        &h.book.seal_key,
+        [9; 32],
+        [8; 24],
+    );
+    assert_ne!(
+        resealed.proposal_digest().unwrap(),
+        p.proposal_digest().unwrap()
+    );
+    let again = h.post(h.request(resealed, &["post"])).expect("recorded");
+    assert!(matches!(again, Posted::AlreadyRecorded { .. }), "{again:?}");
+    assert_eq!(again.entry_ref(), first.entry_ref());
+    // A different description under the same key: conflict.
+    let mut other = p.clone();
+    other.description = Erasable::seal(
+        &"Not rent".to_string(),
+        None,
+        &h.book.seal_key,
+        [9; 32],
+        [8; 24],
+    );
+    let r = h.post(h.request(other, &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-032", exit::CONFLICT));
+    // Another principal reversing an already-reversed target is a conflict
+    // even with identical content: no equality oracle across principals.
+    let original = first.entry_ref();
+    let rev = h.reversal_of(original, 300, b"r-a");
+    h.post(h.request(rev.clone(), &["post"])).expect("reversal");
+    let mut foreign = rev.clone();
+    foreign.principal_ref = VId(99);
+    let req = h.request(foreign, &["post"]);
+    let r = h.post(req).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-052", exit::CONFLICT));
 }

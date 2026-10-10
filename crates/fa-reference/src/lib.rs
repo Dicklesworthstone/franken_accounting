@@ -3,10 +3,11 @@
 //! Everything here is the *obvious* implementation: canonical maps, linear
 //! scans, and sign-magnitude limb integers written from scratch so that a
 //! shared arithmetic bug in `fa-money` cannot make the differential green.
-//! The oracle mirrors the kernel's law order exactly — structure, balance,
-//! period resolution, idempotency, period law, accounts — and returns the
-//! same refusal codes as independent string constants, so a renumbering on
-//! either side is a differential failure, never a silent agreement.
+//! The oracle mirrors the kernel's law order exactly — structure, control,
+//! supported subset, balance, period resolution, identity (recorded outcome
+//! or conflict), period law, accounts, reversal shape — and returns the same
+//! refusal codes as independent string constants, so a renumbering on either
+//! side is a differential failure, never a silent agreement.
 //!
 //! Boundary: `std`, `fa-time`, and the registries. No `fa-money`, no
 //! `fa-model`, no substrate.
@@ -174,6 +175,16 @@ pub enum Side {
     Credit,
 }
 
+impl Side {
+    #[must_use]
+    pub fn flipped(self) -> Self {
+        match self {
+            Self::Debit => Self::Credit,
+            Self::Credit => Self::Debit,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Leg {
     pub side: Side,
@@ -200,6 +211,8 @@ pub struct Intent {
     pub key: Vec<u8>,
     pub ops: Vec<String>,
     pub approvals: usize,
+    /// For a Reversal: the journal index of the entry it reverses.
+    pub reverses: Option<usize>,
 }
 
 /// Refusal codes, as independent constants (see the module docs).
@@ -213,9 +226,14 @@ pub mod code {
     pub const APPROVALS: &str = "FA-REF-012";
     pub const PERIOD_RESOLVE: &str = "FA-REF-020";
     pub const PERIOD_UNKNOWN: &str = "FA-REF-021";
+    pub const IDEMPOTENCY_CONFLICT: &str = "FA-REF-032";
     pub const TRANSITION: &str = "FA-REF-040";
+    pub const REVERSAL_TARGET: &str = "FA-REF-050";
+    pub const REVERSAL_SHAPE: &str = "FA-REF-051";
+    pub const ALREADY_REVERSED: &str = "FA-REF-052";
     pub const STRUCTURE: &str = "FA-REF-100";
     pub const CONTROL_VIA_POST: &str = "FA-REF-101";
+    pub const CLASS_NOT_IMPLEMENTED: &str = "FA-REF-102";
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -225,7 +243,7 @@ pub enum Verdict {
         index: usize,
         period: String,
     },
-    /// The key was already recorded; the earlier entry's index.
+    /// The same intent was already recorded; the earlier entry's index.
     Recorded {
         index: usize,
     },
@@ -236,9 +254,36 @@ pub enum Verdict {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
+    pub class: String,
     pub period: String,
     pub legs: Vec<Leg>,
     pub key: Vec<u8>,
+    pub reverses: Option<usize>,
+}
+
+/// The semantic content an identity binds (what the kernel's
+/// `proposal_digest` covers, minus fields this model does not carry).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Content {
+    class: String,
+    date: DateDay,
+    discriminator: Option<String>,
+    legs: Vec<Leg>,
+    reverses: Option<usize>,
+    key: Vec<u8>,
+}
+
+impl Content {
+    fn of(i: &Intent) -> Self {
+        Self {
+            class: i.class.clone(),
+            date: i.date,
+            discriminator: i.discriminator.clone(),
+            legs: i.legs.clone(),
+            reverses: i.reverses,
+            key: i.key.clone(),
+        }
+    }
 }
 
 /// One cell of the oracle's fold.
@@ -255,7 +300,10 @@ pub struct Oracle {
     /// Period code → (definition, state). Only created periods exist.
     periods: BTreeMap<String, (PeriodDef, PeriodState)>,
     journal: Vec<Entry>,
-    keys: BTreeMap<Vec<u8>, usize>,
+    /// Key → (journal index, content) for key-identified entries.
+    keys: BTreeMap<Vec<u8>, (usize, Content)>,
+    /// Reversed target index → (reversal index, content).
+    reversed: BTreeMap<usize, (usize, Content)>,
     classes: EntryClasses,
     matrix: Admissibility,
 }
@@ -270,6 +318,7 @@ impl Oracle {
             periods: BTreeMap::new(),
             journal: Vec::new(),
             keys: BTreeMap::new(),
+            reversed: BTreeMap::new(),
             classes,
             matrix,
         }
@@ -289,6 +338,10 @@ impl Oracle {
 
     pub fn period_state(&self, code: &str) -> Option<PeriodState> {
         self.periods.get(code).map(|(_, s)| *s)
+    }
+
+    pub fn entry(&self, index: usize) -> Option<&Entry> {
+        self.journal.get(index)
     }
 
     pub fn transition(
@@ -312,11 +365,6 @@ impl Oracle {
                 code: code::STRUCTURE,
             };
         };
-        if class.kind == fa_registry::ClassKind::Control {
-            return Verdict::Refused {
-                code: code::CONTROL_VIA_POST,
-            };
-        }
         if intent.legs.len() < 2
             || intent.key.is_empty()
             || intent.key.len() > 64
@@ -326,7 +374,29 @@ impl Oracle {
                 code: code::STRUCTURE,
             };
         }
-        // 2. Balance per unit, in ascending unit order (the first unbalanced unit refuses).
+        if class.kind == fa_registry::ClassKind::Control {
+            return Verdict::Refused {
+                code: code::CONTROL_VIA_POST,
+            };
+        }
+        // 1b. The supported subset, and a Reversal's target presence.
+        let is_reversal = intent.class == "Reversal";
+        if !matches!(intent.class.as_str(), "Original" | "Adjusting" | "Reversal") {
+            return Verdict::Refused {
+                code: code::CLASS_NOT_IMPLEMENTED,
+            };
+        }
+        if is_reversal && intent.reverses.is_none() {
+            return Verdict::Refused {
+                code: code::REVERSAL_TARGET,
+            };
+        }
+        if !is_reversal && intent.reverses.is_some() {
+            return Verdict::Refused {
+                code: code::CLASS_NOT_IMPLEMENTED,
+            };
+        }
+        // 2. Balance per unit.
         let mut per_unit: BTreeMap<u32, (Int, Int)> = BTreeMap::new();
         for l in &intent.legs {
             let e = per_unit.entry(l.unit).or_insert((Int::zero(), Int::zero()));
@@ -358,9 +428,25 @@ impl Oracle {
             };
         };
         let period = period.code.clone();
-        // 4. Idempotency: the recorded outcome wins, before any law is re-checked.
-        if let Some(i) = self.keys.get(&intent.key) {
-            return Verdict::Recorded { index: *i };
+        // 4. Identity: the recorded outcome when the content is the same,
+        //    a conflict when it is not — before any law is re-checked.
+        let content = Content::of(intent);
+        let existing = match intent.reverses {
+            Some(target) => self.reversed.get(&target),
+            None => self.keys.get(&intent.key),
+        };
+        if let Some((index, recorded)) = existing {
+            return if *recorded == content {
+                Verdict::Recorded { index: *index }
+            } else if is_reversal {
+                Verdict::Refused {
+                    code: code::ALREADY_REVERSED,
+                }
+            } else {
+                Verdict::Refused {
+                    code: code::IDEMPOTENCY_CONFLICT,
+                }
+            };
         }
         // 5. Period law against the period's current state (Future when never created).
         let state = self.period_state(&period).unwrap_or(PeriodState::Future);
@@ -402,13 +488,42 @@ impl Oracle {
                 };
             }
         }
+        // 7. Reversal law: the target exists and the legs are its exact side-swap.
+        if let Some(target) = intent.reverses {
+            let Some(original) = self.journal.get(target) else {
+                return Verdict::Refused {
+                    code: code::REVERSAL_TARGET,
+                };
+            };
+            let swapped = original.legs.len() == intent.legs.len()
+                && original.legs.iter().zip(&intent.legs).all(|(o, r)| {
+                    o.account == r.account
+                        && o.unit == r.unit
+                        && o.mantissa == r.mantissa
+                        && o.side.flipped() == r.side
+                });
+            if !swapped {
+                return Verdict::Refused {
+                    code: code::REVERSAL_SHAPE,
+                };
+            }
+        }
         let index = self.journal.len();
         self.journal.push(Entry {
+            class: intent.class.clone(),
             period: period.clone(),
             legs: intent.legs.clone(),
             key: intent.key.clone(),
+            reverses: intent.reverses,
         });
-        self.keys.insert(intent.key.clone(), index);
+        match intent.reverses {
+            Some(target) => {
+                self.reversed.insert(target, (index, content));
+            }
+            None => {
+                self.keys.insert(intent.key.clone(), (index, content));
+            }
+        }
         Verdict::Posted { index, period }
     }
 
@@ -486,7 +601,6 @@ mod tests {
                 }
             }
         }
-        // Beyond i128: the sum exists and does not fit.
         let big = Int::from_i128(i128::MAX).add(&Int::from_i128(i128::MAX));
         assert_eq!(big.to_i128(), None);
         assert_eq!(
@@ -496,7 +610,7 @@ mod tests {
     }
 
     #[test]
-    fn the_model_posts_refuses_and_folds_in_the_obvious_way() {
+    fn the_model_posts_refuses_reverses_and_folds_in_the_obvious_way() {
         let cal = FiscalCalendar::monthly("cal", 1, 1).unwrap();
         let mut o = Oracle::new(cal);
         o.add_account(Account {
@@ -532,17 +646,18 @@ mod tests {
                 },
             ]
         };
-        let intent = |legs: Vec<Leg>, key: &[u8]| Intent {
-            class: "Original".into(),
+        let intent = |class: &str, legs: Vec<Leg>, key: &[u8], reverses: Option<usize>| Intent {
+            class: class.into(),
             date: day,
             discriminator: None,
             legs,
             key: key.to_vec(),
             ops: vec!["post".into()],
             approvals: 0,
+            reverses,
         };
         assert_eq!(
-            o.post(&intent(legs(5, 5), b"a")),
+            o.post(&intent("Original", legs(5, 5), b"a", None)),
             Verdict::Refused {
                 code: code::PERIOD_LAW
             }
@@ -553,25 +668,85 @@ mod tests {
             Ok((PeriodState::Future, PeriodState::Open))
         );
         assert_eq!(
-            o.post(&intent(legs(5, 5), b"a")),
+            o.post(&intent("Original", legs(5, 5), b"a", None)),
             Verdict::Posted {
                 index: 0,
                 period: march.clone()
             }
         );
+        // Identical retry: recorded. Same key, different content: conflict.
         assert_eq!(
-            o.post(&intent(legs(9, 9), b"a")),
+            o.post(&intent("Original", legs(5, 5), b"a", None)),
             Verdict::Recorded { index: 0 }
         );
         assert_eq!(
-            o.post(&intent(legs(5, 4), b"b")),
+            o.post(&intent("Original", legs(9, 9), b"a", None)),
+            Verdict::Refused {
+                code: code::IDEMPOTENCY_CONFLICT
+            }
+        );
+        assert_eq!(
+            o.post(&intent("Original", legs(5, 4), b"b", None)),
             Verdict::Refused {
                 code: code::UNBALANCED
             }
         );
+        assert_eq!(
+            o.post(&intent("Replacement", legs(5, 5), b"c", None)),
+            Verdict::Refused {
+                code: code::CLASS_NOT_IMPLEMENTED
+            }
+        );
+        // Reversal: exact side-swap only, one per target.
+        let swapped = vec![
+            Leg {
+                side: Side::Credit,
+                account: "6000".into(),
+                unit: 1,
+                mantissa: 5,
+            },
+            Leg {
+                side: Side::Debit,
+                account: "1000".into(),
+                unit: 1,
+                mantissa: 5,
+            },
+        ];
+        assert_eq!(
+            o.post(&intent("Reversal", swapped.clone(), b"r0", None)),
+            Verdict::Refused {
+                code: code::REVERSAL_TARGET
+            }
+        );
+        assert_eq!(
+            o.post(&intent("Reversal", legs(5, 5), b"r1", Some(0))),
+            Verdict::Refused {
+                code: code::REVERSAL_SHAPE
+            }
+        );
+        assert_eq!(
+            o.post(&intent("Reversal", swapped.clone(), b"r1", Some(0))),
+            Verdict::Posted {
+                index: 1,
+                period: march.clone()
+            }
+        );
+        assert_eq!(
+            o.post(&intent("Reversal", swapped.clone(), b"r1", Some(0))),
+            Verdict::Recorded { index: 1 }
+        );
+        let mut later = intent("Reversal", swapped, b"r2", Some(0));
+        later.date = DateDay::from_ymd(2026, 3, 20).unwrap();
+        assert_eq!(
+            o.post(&later),
+            Verdict::Refused {
+                code: code::ALREADY_REVERSED
+            }
+        );
         let f = o.fold(&march);
         assert_eq!(f[&("1000".to_string(), 1)].credits, Int::from_i128(5));
-        assert_eq!(f[&("6000".to_string(), 1)].entry_count, 1);
+        assert_eq!(f[&("1000".to_string(), 1)].debits, Int::from_i128(5));
+        assert_eq!(f[&("6000".to_string(), 1)].entry_count, 2);
         assert_eq!(
             o.transition(&march, PeriodTransition::Lock),
             Err(code::TRANSITION)

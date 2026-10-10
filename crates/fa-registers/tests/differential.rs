@@ -1,17 +1,18 @@
 //! The reference differential (plan §16.2, bead fa-d93): one seeded history
-//! of posts and period transitions is applied to the real kernel on the
-//! substrate and to the naive oracle; every verdict and every register cell
-//! must agree. The oracle has its own arithmetic and its own copy of the
-//! refusal codes, so agreement is evidence about the kernel, not an echo.
+//! of posts, reversals, retries, and period transitions is applied to the
+//! real kernel on the substrate and to the naive oracle; every verdict and
+//! every register cell must agree. The oracle has its own arithmetic and its
+//! own copy of the refusal codes, so agreement is evidence about the kernel,
+//! not an echo.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
 use fa_journal::*;
 use fa_model::{
-    EntryClass, EntryOrigin, EntryPayload, Erasable, Id128, LegPayload, Oid, PeriodRef, SealKey,
-    SymbolTable, account_vid,
+    EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable, Id128, LegPayload, Oid, PeriodRef,
+    SealKey, Supersession, SupersessionKind, SymbolTable, account_vid,
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_reference::{Account, Intent, Leg, Oracle, Verdict};
@@ -112,7 +113,14 @@ fn setup() -> (Kernel, Oracle, Vec<String>) {
     runtime
         .block_on(async {
             install_chart(
-                &mut db, &ctx, &book, &chart, PRINCIPAL, day, b"chart", [5; 32], [6; 24],
+                &mut db,
+                &ctx,
+                &book,
+                &chart,
+                PRINCIPAL,
+                day,
+                b"chart",
+                Erasable::seal(&"chart".to_string(), None, &book.seal_key, [5; 32], [6; 24]),
             )
             .await
         })
@@ -148,10 +156,8 @@ fn setup() -> (Kernel, Oracle, Vec<String>) {
     )
 }
 
-fn kernel_post(k: &mut Kernel, intent: &Intent, usd: UnitId, step: u64) -> Result<Posted, Refusal> {
-    let legs: Vec<LegPayload> = intent
-        .legs
-        .iter()
+fn to_kernel_legs(book_id: Id128, usd: UnitId, legs: &[Leg]) -> Vec<LegPayload> {
+    legs.iter()
         .map(|l| {
             LegPayload::simple(
                 if l.side == fa_reference::Side::Debit {
@@ -159,13 +165,32 @@ fn kernel_post(k: &mut Kernel, intent: &Intent, usd: UnitId, step: u64) -> Resul
                 } else {
                     Side::Credit
                 },
-                account_vid(k.book.book_id, &l.account),
+                account_vid(book_id, &l.account),
                 Amount::new(usd, l.mantissa),
             )
         })
-        .collect();
+        .collect()
+}
+
+fn kernel_post(
+    k: &mut Kernel,
+    intent: &Intent,
+    usd: UnitId,
+    refs: &[EntryRef],
+) -> Result<Posted, Refusal> {
+    let legs = to_kernel_legs(k.book.book_id, usd, &intent.legs);
     let unit_totals =
         EntryPayload::fold_unit_totals(&legs).expect("no overflow in generated amounts");
+    let supersession = intent
+        .reverses
+        .map(|i| {
+            vec![Supersession {
+                target: refs[i],
+                kind: SupersessionKind::Reverses,
+                reason_code: 0,
+            }]
+        })
+        .unwrap_or_default();
     let proposal = EntryPayload {
         schema_minor: 0,
         book_id: k.book.book_id,
@@ -173,8 +198,10 @@ fn kernel_post(k: &mut Kernel, intent: &Intent, usd: UnitId, step: u64) -> Resul
         class: EntryClass::from_name(&intent.class).expect("registered class"),
         effective_date: intent.date,
         document_date: None,
+        // Constant on purpose: the retry comparison covers it, and the oracle
+        // does not model descriptions.
         description: Erasable::seal(
-            &format!("step {step}"),
+            &"generated".to_string(),
             None,
             &k.book.seal_key,
             [1; 32],
@@ -196,7 +223,7 @@ fn kernel_post(k: &mut Kernel, intent: &Intent, usd: UnitId, step: u64) -> Resul
         principal_ref: PRINCIPAL,
         session_ref: None,
         evidence: Vec::new(),
-        supersession: Vec::new(),
+        supersession,
         pending: None,
         external_ids: Vec::new(),
         tags: Vec::new(),
@@ -206,7 +233,6 @@ fn kernel_post(k: &mut Kernel, intent: &Intent, usd: UnitId, step: u64) -> Resul
         proposal,
         approvals: Vec::new(),
         plan_certificate: None,
-        principal_scope: PRINCIPAL.0.to_le_bytes().to_vec(),
         capability: Capability::with_ops(&ops),
     };
     let ctx = k.ctx();
@@ -240,8 +266,13 @@ fn kernel_transition(
                 1,
                 day,
                 key.as_bytes(),
-                [3; 32],
-                [4; 24],
+                Erasable::seal(
+                    &"period".to_string(),
+                    None,
+                    &book.seal_key,
+                    [3; 32],
+                    [4; 24],
+                ),
             )
             .await
         })
@@ -263,18 +294,24 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
         "Original",
         "Original",
         "Original",
-        "Reversal",
         "Adjusting",
+        "Reversal",
+        "Reversal",
         "Replacement",
+        "Pending",
     ];
     let leaf_codes = ["1000", "6000", "4000"];
-    let mut keys: Vec<Vec<u8>> = Vec::new();
+    let mut history: Vec<Intent> = Vec::new();
+    let mut posted_intents: Vec<Intent> = Vec::new();
+    let mut reversed_targets: BTreeSet<usize> = BTreeSet::new();
+    // Kernel handles of posted entries, indexed like the oracle's journal.
+    let mut refs: Vec<EntryRef> = Vec::new();
     let mut posted = 0u32;
     let mut recorded = 0u32;
     let mut refused: BTreeMap<&'static str, u32> = BTreeMap::new();
 
-    for step in 0..160u64 {
-        if rng.chance(20) {
+    for step in 0..360u64 {
+        if rng.chance(15) {
             let code = periods[1 + rng.below(3) as usize].clone(); // Feb, Mar, Apr
             let t = match rng.below(5) {
                 0 => PeriodTransition::Open,
@@ -296,101 +333,191 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                 (Err(r), Err(c)) => {
                     assert_eq!(r.code, c, "step {step}: transition refusal {code} {t:?}")
                 }
-                (kr, mr) => panic_step(
-                    step,
-                    &format!("transition {code} {t:?}: kernel {kr:?} vs oracle {mr:?}"),
+                (kr, mr) => assert_eq!(
+                    format!("kernel {kr:?}"),
+                    format!("oracle {mr:?}"),
+                    "step {step}: transition {code} {t:?} disagreement"
                 ),
             }
             continue;
         }
-        let n_legs = 2 + rng.below(3) as usize;
-        let mut legs = Vec::with_capacity(n_legs);
-        let mut debit_total = 0i128;
-        for i in 0..n_legs {
-            let account = if rng.chance(4) {
-                "1"
+
+        // Retry an earlier intent: identical (expect recorded) or with a
+        // different date (expect an idempotency conflict).
+        let intent = if !history.is_empty() && rng.chance(12) {
+            if rng.chance(50) && !posted_intents.is_empty() {
+                // An exact resubmission of something that posted: recorded.
+                posted_intents[rng.below(posted_intents.len() as u64) as usize].clone()
             } else {
-                leaf_codes[rng.below(3) as usize]
+                // The same key with a different date: a conflict (or the
+                // same refusal as before, when the original never posted).
+                let mut again = history[rng.below(history.len() as u64) as usize].clone();
+                again.date = dates[rng.below(4) as usize];
+                again
+            }
+        } else {
+            let class = classes[rng.below(classes.len() as u64) as usize];
+            let ops: Vec<String> = if rng.chance(35) {
+                vec!["post".into(), "post_closed".into()]
+            } else {
+                vec!["post".into()]
             };
-            let mantissa = 1 + rng.below(50_000) as i128;
-            let side = if i < n_legs - 1 {
-                if rng.chance(50) {
-                    fa_reference::Side::Debit
+            let key = format!("k{step}").into_bytes();
+            if class == "Reversal" && !refs.is_empty() {
+                // Prefer a target nobody has reversed yet, so the reversal
+                // law itself (shape, identity) is exercised, not only the
+                // already-reversed conflict.
+                let unreversed: Vec<usize> = (0..refs.len())
+                    .filter(|i| !reversed_targets.contains(i))
+                    .collect();
+                let target = if !unreversed.is_empty() && rng.chance(80) {
+                    unreversed[rng.below(unreversed.len() as u64) as usize]
                 } else {
-                    fa_reference::Side::Credit
+                    rng.below(refs.len() as u64) as usize
+                };
+                let original = oracle.entry(target).expect("posted entry");
+                let mut legs: Vec<Leg> = original
+                    .legs
+                    .iter()
+                    .map(|l| Leg {
+                        side: l.side.flipped(),
+                        account: l.account.clone(),
+                        unit: l.unit,
+                        mantissa: l.mantissa,
+                    })
+                    .collect();
+                if rng.chance(15) {
+                    // Same amounts (still balanced), different account: not the exact side-swap.
+                    legs[0].account = if legs[0].account == "1000" {
+                        "6000".into()
+                    } else {
+                        "1000".into()
+                    };
+                }
+                Intent {
+                    class: class.into(),
+                    date: dates[rng.below(4) as usize],
+                    discriminator: None,
+                    legs,
+                    key,
+                    ops,
+                    approvals: 0,
+                    reverses: Some(target),
                 }
             } else {
-                fa_reference::Side::Credit
-            };
-            if side == fa_reference::Side::Debit {
-                debit_total += mantissa;
+                let class = if class == "Reversal" {
+                    "Original"
+                } else {
+                    class
+                };
+                let n_legs = 2 + rng.below(3) as usize;
+                let mut legs = Vec::with_capacity(n_legs);
+                for i in 0..n_legs {
+                    let account = if rng.chance(4) {
+                        "1"
+                    } else {
+                        leaf_codes[rng.below(3) as usize]
+                    };
+                    let mantissa = 1 + rng.below(50_000) as i128;
+                    let side = if i < n_legs - 1 && rng.chance(50) {
+                        fa_reference::Side::Debit
+                    } else {
+                        fa_reference::Side::Credit
+                    };
+                    legs.push(Leg {
+                        side,
+                        account: account.into(),
+                        unit: usd.0,
+                        mantissa,
+                    });
+                }
+                // Balance most of the time by fixing the last leg.
+                let debits: i128 = legs[..n_legs - 1]
+                    .iter()
+                    .filter(|l| l.side == fa_reference::Side::Debit)
+                    .map(|l| l.mantissa)
+                    .sum();
+                let credits: i128 = legs[..n_legs - 1]
+                    .iter()
+                    .filter(|l| l.side == fa_reference::Side::Credit)
+                    .map(|l| l.mantissa)
+                    .sum();
+                if rng.chance(85) {
+                    let last = &mut legs[n_legs - 1];
+                    if debits > credits {
+                        last.side = fa_reference::Side::Credit;
+                        last.mantissa = debits - credits;
+                    } else {
+                        last.side = fa_reference::Side::Debit;
+                        last.mantissa = (credits - debits).max(1);
+                    }
+                }
+                let date = dates[rng.below(4) as usize];
+                let discriminator =
+                    (date == dates[2] && rng.chance(30)).then(|| "FY2026-A1".to_string());
+                Intent {
+                    class: class.into(),
+                    date,
+                    discriminator,
+                    legs,
+                    key,
+                    ops,
+                    approvals: 0,
+                    reverses: None,
+                }
             }
-            legs.push(Leg {
-                side,
-                account: account.into(),
-                unit: usd.0,
-                mantissa,
-            });
-        }
-        // Make it balance most of the time by fixing the last leg.
-        let credit_so_far: i128 = legs[..n_legs - 1]
-            .iter()
-            .filter(|l| l.side == fa_reference::Side::Credit)
-            .map(|l| l.mantissa)
-            .sum();
-        let needed = debit_total - credit_so_far;
-        if needed > 0 && rng.chance(85) {
-            legs[n_legs - 1].mantissa = needed;
-        } else if needed <= 0 {
-            legs[n_legs - 1].side = fa_reference::Side::Debit;
-            legs[n_legs - 1].mantissa = (credit_so_far - debit_total).max(1);
-        }
-        let key = if !keys.is_empty() && rng.chance(12) {
-            keys[rng.below(keys.len() as u64) as usize].clone()
-        } else {
-            format!("k{step}").into_bytes()
         };
-        keys.push(key.clone());
-        let date = dates[rng.below(4) as usize];
-        let discriminator = (date == dates[2] && rng.chance(30)).then(|| "FY2026-A1".to_string());
-        let ops: Vec<String> = if rng.chance(35) {
-            vec!["post".into(), "post_closed".into()]
-        } else {
-            vec!["post".into()]
-        };
-        let intent = Intent {
-            class: classes[rng.below(6) as usize].into(),
-            date,
-            discriminator,
-            legs,
-            key,
-            ops,
-            approvals: 0,
-        };
+        history.push(intent.clone());
 
-        let kernel = kernel_post(&mut k, &intent, usd, step);
+        let kernel = kernel_post(&mut k, &intent, usd, &refs);
         let model = oracle.post(&intent);
         match (&kernel, &model) {
-            (Ok(Posted::Committed { period, .. }), Verdict::Posted { period: p, .. }) => {
+            (
+                Ok(Posted::Committed {
+                    period, entry_ref, ..
+                }),
+                Verdict::Posted { period: p, index },
+            ) => {
                 assert_eq!(period, p, "step {step}: period");
+                assert_eq!(*index, refs.len(), "step {step}: journal index");
+                refs.push(*entry_ref);
                 posted += 1;
+                posted_intents.push(intent.clone());
+                if let Some(t) = intent.reverses {
+                    reversed_targets.insert(t);
+                }
             }
-            (Ok(Posted::AlreadyRecorded { .. }), Verdict::Recorded { .. }) => recorded += 1,
+            (Ok(Posted::AlreadyRecorded { entry_ref, .. }), Verdict::Recorded { index }) => {
+                assert_eq!(*entry_ref, refs[*index], "step {step}: recorded handle");
+                recorded += 1;
+            }
             (Err(r), Verdict::Refused { code }) => {
                 assert_eq!(r.code, *code, "step {step}: refusal code for {intent:?}");
                 *refused.entry(code).or_insert(0) += 1;
             }
-            _ => panic_step(
-                step,
-                &format!("{intent:?}: kernel {kernel:?} vs oracle {model:?}"),
+            _ => assert_eq!(
+                format!("kernel {kernel:?}"),
+                format!("oracle {model:?}"),
+                "step {step}: disagreement on {intent:?}"
             ),
         }
     }
 
     // The history exercised every outcome kind, so agreement is not vacuous.
-    assert!(posted >= 20, "posted {posted}");
+    assert!(posted >= 30, "posted {posted}");
     assert!(recorded >= 3, "recorded {recorded}");
-    assert!(refused.len() >= 4, "refusal kinds {refused:?}");
+    for must in [
+        "FA-REF-001",
+        "FA-REF-010",
+        "FA-REF-032",
+        "FA-REF-051",
+        "FA-REF-102",
+    ] {
+        assert!(
+            refused.contains_key(must),
+            "refusal {must} never exercised: {refused:?}"
+        );
+    }
     assert_eq!(oracle.journal_len() as u32, posted);
 
     // Every register cell of every period agrees, cell by cell, and the
@@ -409,11 +536,9 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                 .map(|(c, ..)| *c)
                 .find(|c| account_vid(k.book.book_id, c) == cell.key.account)
                 .expect("known account");
-            let m = model_fold
-                .get(&(account_code.to_string(), cell.key.unit_id))
-                .unwrap_or_else(|| {
-                    panic_step(0, &format!("{code}: oracle lacks cell {account_code}"))
-                });
+            let m = model_fold.get(&(account_code.to_string(), cell.key.unit_id));
+            assert!(m.is_some(), "{code}: oracle lacks cell {account_code}");
+            let m = m.expect("asserted above");
             assert_eq!(
                 m.debits.to_i128(),
                 Some(cell.debits),
@@ -432,11 +557,4 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
     }
     let tb = trial_balance(&k.db, &k.book, &periods).unwrap();
     assert!(tb.is_balanced(), "{:?}", tb.unit_totals);
-}
-
-fn panic_step(step: u64, what: &str) -> ! {
-    // One place, so the scanner's panic inventory names exactly this: the
-    // differential found a disagreement, which is the test's reason to exist.
-    assert!(false, "differential disagreement at step {step}: {what}");
-    unreachable!()
 }

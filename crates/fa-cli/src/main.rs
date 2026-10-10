@@ -360,10 +360,10 @@ fn book_dir(args: &Args) -> Result<PathBuf, Fail> {
     if let Some(d) = args.flag("--book") {
         return Ok(PathBuf::from(d));
     }
-    if let Ok(d) = std::env::var("FA_BOOK") {
-        if !d.is_empty() {
-            return Ok(PathBuf::from(d));
-        }
+    if let Ok(d) = std::env::var("FA_BOOK")
+        && !d.is_empty()
+    {
+        return Ok(PathBuf::from(d));
     }
     Err(usage(
         "no book directory",
@@ -476,7 +476,7 @@ fn book_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
             let entropy = Entropy::production();
             let keys = BookKeys::generate(&entropy)?;
             let mut id = [0u8; 16];
-            entropy.fill(&mut id)?;
+            entropy.fill(&mut id).map_err(BookError::Entropy)?;
             let book_id = Id128(id);
             let keys_file = keys_path(args, &dir);
             std::fs::create_dir_all(&dir).map_err(|e| BookError::Io(dir.clone(), e))?;
@@ -631,9 +631,11 @@ fn chart_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
             let date = date_flag(args, DateDay(0))?;
             let key = match args.flag("--key") {
                 Some(k) => k.as_bytes().to_vec(),
-                None => {
-                    format!("chart:{}", hex(&fa_model_digest(text.as_bytes())[..8])).into_bytes()
-                }
+                None => format!(
+                    "chart:{}",
+                    hex(&fa_model::domain_digest(b"fa:chart:v1", &[text.as_bytes()])[..8])
+                )
+                .into_bytes(),
             };
             let installed = book.install_chart(&accounts, principal(args), date, &key)??;
             out.event(
@@ -701,16 +703,6 @@ fn chart_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
             "fa chart import chart.json --book <dir>",
         )),
     }
-}
-
-fn fa_model_digest(bytes: &[u8]) -> [u8; 32] {
-    // The chart's idempotency key is a digest of the file, so re-importing the
-    // same file is the recorded outcome and a changed file is a new install.
-    let mut acc = [0u8; 32];
-    for (i, b) in bytes.iter().enumerate() {
-        acc[i % 32] = acc[i % 32].wrapping_mul(31).wrapping_add(*b);
-    }
-    acc
 }
 
 // ---------------------------------------------------------------------------
@@ -857,7 +849,7 @@ fn post_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
     let text = read_text(path)?;
     let doc = parse_json(path, &text)?;
     let mut book = open_book(args)?;
-    let ctx = book.context();
+    let ctx = book.context().clone();
     let class_name = doc
         .get("class")
         .and_then(Json::as_str)
@@ -877,37 +869,79 @@ fn post_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
     })?;
     let key = req_str(&doc, "idempotency_key", "intent")?;
     let description = doc.get("description").and_then(Json::as_str).unwrap_or("");
-    let legs_doc = doc
-        .get("legs")
-        .and_then(Json::as_arr)
-        .ok_or_else(|| usage("intent: `legs` must be an array", "fa robot-docs examples"))?;
-    let mut legs = Vec::with_capacity(legs_doc.len());
-    for (i, l) in legs_doc.iter().enumerate() {
-        let what = format!("legs[{i}]");
-        let side = match req_str(l, "side", &what)? {
-            "debit" | "dr" | "Debit" => Side::Debit,
-            "credit" | "cr" | "Credit" => Side::Credit,
-            other => {
-                return Err(usage(
-                    format!("{what}: side `{other}`"),
-                    "side: debit|credit",
-                ));
-            }
-        };
-        let account = req_str(l, "account", &what)?;
-        let amount_s = req_str(l, "amount", &what)?;
-        let amount = Amount::parse(amount_s, &ctx.units).map_err(|e| {
+    // A Reversal names its target; its legs are the exact side-swap of the
+    // target's, derived here so an agent never has to retype amounts.
+    let mut supersession = Vec::new();
+    let legs: Vec<LegPayload> = if let Some(target_s) = doc.get("reverses").and_then(Json::as_str) {
+        let vid = u128::from_str_radix(target_s, 16).map_err(|_| {
             usage(
-                format!("{what}: amount `{amount_s}`: {e:?}"),
-                "amount: \"1500.00 USD\" (exact, at the unit's scale, non-negative)",
+                format!("reverses `{target_s}` is not a 32-hex vid"),
+                "reverses: the `vid` from the posted event",
             )
         })?;
-        legs.push(LegPayload::simple(
-            side,
-            account_vid(ctx.book_id, account),
-            amount,
-        ));
-    }
+        let Some((target, _)) = book.read_entry(VId(vid))? else {
+            return Err(usage(
+                format!("reverses: no entry {target_s} in this book"),
+                "fa entry show <vid> to check the identity",
+            ));
+        };
+        supersession.push(fa_model::Supersession {
+            target: target.entry_ref(VId(vid)),
+            kind: fa_model::SupersessionKind::Reverses,
+            reason_code: 0,
+        });
+        target
+            .proposal
+            .legs
+            .iter()
+            .map(|l| {
+                LegPayload::simple(
+                    if l.side == Side::Debit {
+                        Side::Credit
+                    } else {
+                        Side::Debit
+                    },
+                    l.account_ref,
+                    l.amount,
+                )
+            })
+            .collect()
+    } else {
+        let legs_doc = doc.get("legs").and_then(Json::as_arr).ok_or_else(|| {
+            usage(
+                "intent: `legs` must be an array (or `reverses` a vid)",
+                "fa robot-docs examples",
+            )
+        })?;
+        let mut legs = Vec::with_capacity(legs_doc.len());
+        for (i, l) in legs_doc.iter().enumerate() {
+            let what = format!("legs[{i}]");
+            let side = match req_str(l, "side", &what)? {
+                "debit" | "dr" | "Debit" => Side::Debit,
+                "credit" | "cr" | "Credit" => Side::Credit,
+                other => {
+                    return Err(usage(
+                        format!("{what}: side `{other}`"),
+                        "side: debit|credit",
+                    ));
+                }
+            };
+            let account = req_str(l, "account", &what)?;
+            let amount_s = req_str(l, "amount", &what)?;
+            let amount = Amount::parse(amount_s, &ctx.units).map_err(|e| {
+                usage(
+                    format!("{what}: amount `{amount_s}`: {e:?}"),
+                    "amount: \"1500.00 USD\" (exact, at the unit's scale, non-negative)",
+                )
+            })?;
+            legs.push(LegPayload::simple(
+                side,
+                account_vid(ctx.book_id, account),
+                amount,
+            ));
+        }
+        legs
+    };
     let unit_totals = EntryPayload::fold_unit_totals(&legs)
         .map_err(fa_journal::KernelError::Model)
         .map_err(BookError::Kernel)?;
@@ -934,13 +968,16 @@ fn post_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
         base_totals: None,
         idempotency_key: key.as_bytes().to_vec(),
         origin: EntryOrigin::Intent {
-            intent_oid: Oid(fa_model_digest(text.as_bytes())),
+            intent_oid: Oid(fa_model::domain_digest(
+                b"fa:intent:v1",
+                &[&ctx.book_id.0, &who.0.to_le_bytes(), key.as_bytes()],
+            )),
             intent_kind: 1,
         },
         principal_ref: who,
         session_ref: None,
         evidence: Vec::new(),
-        supersession: Vec::new(),
+        supersession,
         pending: None,
         external_ids: Vec::new(),
         tags: Vec::new(),
@@ -951,7 +988,6 @@ fn post_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
         proposal,
         approvals: Vec::new(),
         plan_certificate: None,
-        principal_scope: who.0.to_le_bytes().to_vec(),
         capability: Capability::with_ops(&ops),
     };
     match book.post(req)?? {
@@ -1061,7 +1097,7 @@ fn tb_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
         out.event(
             "trial_balance",
             vec![
-                ("periods", Json::Arr(periods.iter().map(|p| s(p)).collect())),
+                ("periods", Json::Arr(periods.iter().map(s).collect())),
                 ("rows", Json::Arr(rows)),
                 ("unit_totals", Json::Arr(totals)),
                 ("balanced", Json::Bool(tb.is_balanced())),

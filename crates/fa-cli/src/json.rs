@@ -32,13 +32,6 @@ impl Json {
         }
     }
 
-    pub fn as_int(&self) -> Option<i128> {
-        match self {
-            Self::Int(i) => Some(*i),
-            _ => None,
-        }
-    }
-
     pub fn as_bool(&self) -> Option<bool> {
         match self {
             Self::Bool(b) => Some(*b),
@@ -263,7 +256,7 @@ impl Parser<'_> {
 
     fn number(&mut self) -> Result<Json, ParseError> {
         let start = self.i;
-        if self.eat(b'-') {}
+        self.eat(b'-');
         while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
             self.i += 1;
         }
@@ -353,7 +346,7 @@ mod tests {
             v.render(),
             r#"{"a":{"k":"é"},"b":[1,-2,"x\"y\n",true,null]}"#
         );
-        assert_eq!(parse(&v.render()).unwrap(), v);
+        assert_eq!(parse(&v.render()).unwrap().render(), v.render());
         assert!(
             parse("1.5")
                 .unwrap_err()

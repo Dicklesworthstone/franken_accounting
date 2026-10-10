@@ -6,13 +6,23 @@
 //! a close that commits first makes this post a first-committer-wins
 //! conflict — exit 6, retry with a fresh read — never a post that slipped
 //! into a closed period.
+//!
+//! Supported subset (plan §18.1 rule: a subset of the final abstraction,
+//! never a substitute): this slice admits `Original`, `Adjusting`, and
+//! `Reversal` — the last with the exact side-swap law against a witnessed
+//! target and an identity derived from the target, so one reversal per
+//! target. Every other registered class is refused with the bead that lands
+//! it; no class passes through a generic two-leg check.
 
 use std::collections::BTreeSet;
 
+use fa_model::SealKey;
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    ApprovalRef, Entry, EntryPayload, EntryRef, entry_mirrors, entry_vid, leg_mirrors, period_vid,
+    ApprovalRef, Entry, EntryClass, EntryPayload, EntryRef, SupersessionKind, entry_mirrors,
+    entry_vid, leg_mirrors, period_vid,
 };
+use fa_money::Side;
 use fa_registry::{Admissibility, Decision, EntryClasses};
 use fa_time::resolve_period;
 use fgdb::{Database, VertexRow, WriteBatch, WriteTxnError};
@@ -21,7 +31,7 @@ use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
 use crate::genesis::{BookContext, UnitPolicy};
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
-use crate::rows::{AccountRow, edge_id, leg_vid, prop, state_from_scalar};
+use crate::rows::{AccountRow, edge_id, leg_vid, prop, reversal_vid, state_from_scalar};
 
 /// The capability ops a principal holds (`post`, `post_softclosed`,
 /// `post_closed`, `close`, `restate`, `migrate`). Steward (plan §14) issues
@@ -39,12 +49,15 @@ impl Capability {
     }
 }
 
+/// One post. **Trust boundary:** `proposal.principal_ref` and `capability`
+/// are the caller's claims. In the embedded posture the calling process is the
+/// principal's own agent and that claim is trusted; the daemon/MCP posture must
+/// bind both from an authenticated session before calling `post` (Steward,
+/// bead fa-llx). The kernel never authenticates a caller itself.
 #[derive(Clone, Debug)]
 pub struct PostRequest {
     pub proposal: EntryPayload,
     pub approvals: Vec<ApprovalRef>,
-    /// The principal scope the entry identity is derived under (plan §4.9).
-    pub principal_scope: Vec<u8>,
     pub capability: Capability,
     /// The dry-run certificate the plan was approved under, bound in the envelope.
     pub plan_certificate: Option<fa_model::Oid>,
@@ -57,7 +70,8 @@ pub enum Posted {
         recorded_at: CommitSeq,
         period: String,
     },
-    /// The idempotency key was already recorded; this is that outcome.
+    /// The same intent was already recorded (same identity, same proposal
+    /// digest); this is that outcome. Nothing was written.
     AlreadyRecorded {
         entry_ref: EntryRef,
         recorded_at: CommitSeq,
@@ -93,22 +107,107 @@ impl Posted {
     }
 }
 
-fn recorded(row: &VertexRow) -> Result<Posted, KernelError> {
-    let digest = match prop(row, property::FA_DIGEST) {
-        Some(CanonicalScalar::Bytes(b)) if b.len() == 32 => {
-            let mut d = [0u8; 32];
-            d.copy_from_slice(b.as_slice());
-            d
+/// The existing row at this identity (plan §4.9, FA-INV-09), decided in
+/// this order: (1) exact prepared bytes — the stored `proposal_digest` equals
+/// the new one — is the recorded outcome without opening anything, so a
+/// byte-identical replay works even after erasure; (2) a reversal by a
+/// different principal is a conflict, never a comparison (the target-derived
+/// identity is not principal-scoped, so comparing would let one principal
+/// probe another's sealed content); (3) otherwise a private plaintext
+/// transcript under the book key decides equal (recorded) or different
+/// (conflict); (4) a field that cannot be opened is "cannot verify", never a
+/// claimed equivalence.
+fn recorded_or_conflict(
+    row: &VertexRow,
+    proposal: &EntryPayload,
+    key: &SealKey,
+    is_reversal: bool,
+) -> Result<Result<Posted, Refusal>, KernelError> {
+    let stored = match prop(row, property::FA_PAYLOAD) {
+        Some(CanonicalScalar::Bytes(b)) => Entry::decode(b.as_slice())?,
+        other => {
+            return Err(KernelError::Corrupt(format!(
+                "entry _fa_payload: {other:?}"
+            )));
         }
-        other => return Err(KernelError::Corrupt(format!("entry _fa_digest: {other:?}"))),
     };
-    Ok(Posted::AlreadyRecorded {
-        entry_ref: EntryRef {
-            vid: row.vid,
-            entry_digest: digest,
-        },
+    let entry_ref = EntryRef {
+        vid: row.vid,
+        entry_digest: stored.entry_digest,
+    };
+    let recorded = Posted::AlreadyRecorded {
+        entry_ref,
         recorded_at: row.created_at,
-    })
+    };
+    if stored.proposal_digest == proposal.proposal_digest()? {
+        return Ok(Ok(recorded));
+    }
+    let conflict = if is_reversal {
+        Refusal::new(
+            code::ALREADY_REVERSED,
+            exit::CONFLICT,
+            format!("the target is already reversed by entry {:032x}", row.vid.0),
+            "plan §4.9 (one reversal per target, by identity)",
+            "cite the existing reversal instead of posting another",
+        )
+    } else {
+        Refusal::new(
+            code::IDEMPOTENCY_CONFLICT,
+            exit::CONFLICT,
+            format!(
+                "idempotency key reused with different content; the recorded entry is {:032x}",
+                row.vid.0
+            ),
+            "plan §4.9 (identity is derived from the key; content is bound by proposal_digest)",
+            "resubmit the identical intent to get the recorded outcome, or use a new idempotency key for new content",
+        )
+    };
+    if is_reversal && stored.proposal.principal_ref != proposal.principal_ref {
+        return Ok(Err(conflict));
+    }
+    match (
+        stored.proposal.semantic_digest(key),
+        proposal.semantic_digest(key),
+    ) {
+        (Ok(a), Ok(b)) if a == b => Ok(Ok(recorded)),
+        (Ok(_), Ok(_)) => Ok(Err(conflict)),
+        (Err(fa_model::EntryError::Sealed(_)), _) | (_, Err(fa_model::EntryError::Sealed(_))) => {
+            Ok(Err(Refusal::new(
+                code::EQUIVALENCE_UNVERIFIABLE,
+                exit::CONFLICT,
+                format!(
+                    "an entry with this identity exists ({:032x}) but a sealed field cannot be opened, so equivalence cannot be verified",
+                    row.vid.0
+                ),
+                "plan §8.5 (no plaintext equivalence over destroyed secrets)",
+                "resubmit the exact prepared bytes to get the recorded outcome, read it with `fa entry show`, or use a new idempotency key for new content",
+            )))
+        }
+        (Err(e), _) | (_, Err(e)) => Err(e.into()),
+    }
+}
+
+fn not_implemented(class_name: &str) -> Refusal {
+    let lands_with = match class_name {
+        "Pending" | "Resolution" => "fa-rqe (two-phase reserves)",
+        "Replacement" | "Reclassification" => "fa-omi (supersession beyond exact reversal)",
+        "Revision" | "Restatement" | "PriorPeriodAdjustment" => {
+            "the restatement-case slice (fa-azu children)"
+        }
+        "Closing" => "the incremental closing slice (plan §7.5)",
+        "Allocation" | "Revaluation" | "Elimination" => "Canon rules (plan §10)",
+        "Migration" => "MigrationRun (plan §12)",
+        _ => "a later slice",
+    };
+    Refusal::new(
+        code::CLASS_NOT_IMPLEMENTED,
+        exit::REFUSAL,
+        format!("`{class_name}` is registered but this slice does not enforce its semantics"),
+        "plan §18.1 (a slice is a subset of the final abstraction, never a substitute)",
+        format!(
+            "use Original, Adjusting, or Reversal for now; `{class_name}` lands with {lands_with}"
+        ),
+    )
 }
 
 /// Post one entry. Exactly one substrate transaction commits on success;
@@ -141,6 +240,44 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
             "use `fa period <transition>` or `fa chart import`; control records are not posted",
         )));
     }
+    // 1a. Authorization precedes observation (doctrine 8): the base `post`
+    //     op is required before anything is read, including the identity row.
+    if !req.capability.ops.contains("post") {
+        return Ok(Err(Refusal::new(
+            code::CAPABILITY,
+            exit::SAFETY,
+            "the principal holds no `post` capability",
+            "plan §14.2 (capability caveats precede observation)",
+            "obtain `post` from the book's steward",
+        )));
+    }
+    // 1b. The supported subset.
+    let is_reversal = proposal.class == EntryClass::REVERSAL;
+    if !matches!(
+        proposal.class,
+        EntryClass::ORIGINAL | EntryClass::ADJUSTING | EntryClass::REVERSAL
+    ) {
+        return Ok(Err(not_implemented(class_name)));
+    }
+    let reversal_target = if is_reversal {
+        match proposal.supersession.as_slice() {
+            [s] if s.kind == SupersessionKind::Reverses => Some(s.target),
+            _ => {
+                return Ok(Err(Refusal::new(
+                    code::REVERSAL_TARGET,
+                    exit::REFUSAL,
+                    "a Reversal names exactly one target with kind Reverses in `supersession`",
+                    "plan §4.4 (a reversal is a side swap of one entry)",
+                    "set supersession = [{ target: <EntryRef of the original>, kind: Reverses }]",
+                )));
+            }
+        }
+    } else {
+        if !proposal.supersession.is_empty() {
+            return Ok(Err(not_implemented("supersession on a non-Reversal class")));
+        }
+        None
+    };
 
     // 2. Balance law per unit (FA-INV-01). The suggested residual is text.
     for t in &proposal.unit_totals {
@@ -196,15 +333,19 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
 
-    // 4. Idempotency by derived identity (plan §4.9, FA-INV-09).
-    let evid = entry_vid(
-        book.book_id,
-        &req.principal_scope,
-        &proposal.idempotency_key,
-    );
+    // 4. Identity (plan §4.9, FA-INV-09): derived from the key, or from the
+    //    reversed target; an existing row is the recorded outcome or a conflict.
+    let evid = match reversal_target {
+        Some(t) => reversal_vid(t.vid),
+        None => entry_vid(
+            book.book_id,
+            &proposal.principal_ref.0.to_le_bytes(),
+            &proposal.idempotency_key,
+        ),
+    };
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        return Ok(Ok(recorded(&row)?));
+        return recorded_or_conflict(&row, proposal, &book.seal_key, is_reversal);
     }
 
     // 5. Period law (Appendix C) against the witnessed state.
@@ -258,7 +399,7 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
                 )
             } else {
                 format!(
-                    "post in an Open period, or use an admissible class for a {} period (Reversal/Replacement/Adjusting with post_closed, Restatement inside a case)",
+                    "post in an Open period, or use an admissible class for a {} period (Reversal/Adjusting with post_closed)",
                     state.name()
                 )
             };
@@ -330,7 +471,70 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
         accounts.push(account);
     }
 
-    // 7. Seal and stage: Entry + Legs + edges, one commit.
+    // 7. Reversal law (plan §4.4): the witnessed target exists, its digest
+    //    matches the handle, and the legs are its exact side-swap.
+    if let Some(target) = reversal_target {
+        let Some(row) = txn.vertex(db, target.vid)? else {
+            txn.abort();
+            return Ok(Err(Refusal::new(
+                code::REVERSAL_TARGET,
+                exit::REFUSAL,
+                format!("no entry {:032x} in this book", target.vid.0),
+                "plan §4.4",
+                "fa entry show <vid> to find the entry to reverse",
+            )));
+        };
+        let original = match prop(&row, property::FA_PAYLOAD) {
+            Some(CanonicalScalar::Bytes(b)) => Entry::decode(b.as_slice())?,
+            other => {
+                return Err(KernelError::Corrupt(format!(
+                    "entry _fa_payload: {other:?}"
+                )));
+            }
+        };
+        if original.entry_digest != target.entry_digest {
+            txn.abort();
+            return Ok(Err(Refusal::new(
+                code::REVERSAL_TARGET,
+                exit::REFUSAL,
+                format!(
+                    "the handle's entry_digest does not match entry {:032x}",
+                    target.vid.0
+                ),
+                "plan §4.9 (EntryRef is self-verifying)",
+                "re-read the entry and cite its current entry_digest",
+            )));
+        }
+        let swapped = original.proposal.legs.len() == proposal.legs.len()
+            && original
+                .proposal
+                .legs
+                .iter()
+                .zip(&proposal.legs)
+                .all(|(o, r)| {
+                    o.account_ref == r.account_ref
+                        && o.amount == r.amount
+                        && matches!(
+                            (o.side, r.side),
+                            (Side::Debit, Side::Credit) | (Side::Credit, Side::Debit)
+                        )
+                });
+        if original.proposal.legs.is_empty() || !swapped {
+            txn.abort();
+            return Ok(Err(Refusal::new(
+                code::REVERSAL_SHAPE,
+                exit::REFUSAL,
+                format!(
+                    "the legs are not the exact side-swap of entry {:032x}",
+                    target.vid.0
+                ),
+                "plan §4.4 (a reversal is a side swap with the same mantissa, never a signed storno)",
+                "post the same accounts and amounts in the same order with debit and credit exchanged; a different correction is a Replacement",
+            )));
+        }
+    }
+
+    // 8. Seal and stage: Entry + Legs + edges, one commit.
     let entry: Entry = req
         .proposal
         .clone()
@@ -362,7 +566,18 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
         );
     }
     in_period.add_edge(edge_id(relation::IN_PERIOD, evid, pvid), evid, pvid, vec![]);
-    txn.write_ordered(db, vec![has_leg, posts_to, in_period])?;
+    let mut batches = vec![has_leg, posts_to, in_period];
+    if let Some(target) = reversal_target {
+        let mut supersedes = WriteBatch::new(relation::SUPERSEDES);
+        supersedes.add_edge(
+            edge_id(relation::SUPERSEDES, evid, target.vid),
+            evid,
+            target.vid,
+            vec![],
+        );
+        batches.push(supersedes);
+    }
+    txn.write_ordered(db, batches)?;
 
     match txn.commit(db, &ctx.commit()).await {
         Ok(seq) => Ok(Ok(Posted::Committed {
@@ -382,9 +597,10 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
         Err(WriteTxnError::Write(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
         )) => {
-            // Lost the identity race to an identical intent: the recorded outcome.
+            // Lost the identity race: the recorded outcome if it is the same
+            // intent, a conflict if it is not.
             match db.vertex(evid)? {
-                Some(row) => Ok(Ok(recorded(&row)?)),
+                Some(row) => recorded_or_conflict(&row, proposal, &book.seal_key, is_reversal),
                 None => Err(KernelError::Corrupt(
                     "identity spent but no live row".into(),
                 )),

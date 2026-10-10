@@ -2,15 +2,25 @@
 //!
 //! An erasable field stores a digest that survives erasure and bytes sealed
 //! under a subject key (or the book key when the field has no subject).
-//! Payload digests cover `field_digest` only, so destroying the key erases
-//! the value without changing any digest, amount, or proof.
+//! Payload digests cover the field's wire bytes, which erasure never
+//! changes: erasure destroys the key, so the value becomes unopenable while
+//! every digest, amount, and proof stays valid.
 //!
-//! The digest is `BLAKE3("fa:field:v1" ‖ salt ‖ canonical(T))` where the
-//! 32-byte salt travels only inside the ciphertext. Without the salt a short
-//! field (a name, a memo) could be recovered after erasure by hashing
-//! candidates against the digest; with it the digest is a hiding commitment.
-//! Entropy for `salt` and `nonce` is the kernel's to supply under its `Cx` —
-//! this module is deterministic.
+//! Sealing is randomized: the caller supplies a fresh 32-byte salt and a
+//! fresh 24-byte nonce from its entropy capability (the facade's `CryptoCx`;
+//! the kernel itself holds no entropy). The salt travels only inside the
+//! ciphertext, so `field_digest = BLAKE3("fa:field:v1" ‖ salt ‖ canonical(T))`
+//! is a hiding commitment: without the key nobody can recover the salt, and
+//! a short value (a name, a memo) cannot be dictionary-tested against the
+//! digest — not by an outsider, and not by a poster who can get chosen
+//! plaintexts sealed under the same key, because every seal draws its own
+//! salt. The AEAD authenticates the digest and the subject reference, so
+//! neither can be swapped without detection.
+//!
+//! Retry equivalence is decided by the kernel: exact prepared bytes first,
+//! then — under the key it holds — a private plaintext transcript
+//! (`EntryPayload::semantic_digest`) that is never persisted or logged. It
+//! refuses to claim equivalence for a field whose key is gone.
 
 use core::fmt;
 use core::marker::PhantomData;
@@ -107,16 +117,26 @@ fn field_digest(salt: &[u8; SALT_BYTES], canonical: &[u8]) -> [u8; 32] {
     h.finalize().0
 }
 
-fn aad(field_digest: &[u8; 32]) -> Vec<u8> {
-    let mut a = Vec::with_capacity(SEAL_AAD_DOMAIN.len() + 32);
+/// Associated data: the domain, the digest, and the subject reference, so
+/// the AEAD authenticates everything that travels in the clear.
+fn aad(field_digest: &[u8; 32], subject_ref: Option<VId>) -> Vec<u8> {
+    let mut a = Vec::with_capacity(SEAL_AAD_DOMAIN.len() + 32 + 17);
     a.extend_from_slice(SEAL_AAD_DOMAIN);
     a.extend_from_slice(field_digest);
+    match subject_ref {
+        None => a.push(0),
+        Some(v) => {
+            a.push(1);
+            a.extend_from_slice(&v.0.to_le_bytes());
+        }
+    }
     a
 }
 
 impl<T: Canonical> Erasable<T> {
     /// Seal `value` under `key`. `salt` and `nonce` must be fresh entropy
-    /// from the caller's `Cx`; reusing a nonce under one key is a caller bug.
+    /// from the caller's capability; a nonce reused under one key with a
+    /// different plaintext breaks the AEAD, so the caller never derives them.
     pub fn seal(
         value: &T,
         subject_ref: Option<VId>,
@@ -133,7 +153,7 @@ impl<T: Canonical> Erasable<T> {
         let mut plain = Vec::with_capacity(SALT_BYTES + canonical.len());
         plain.extend_from_slice(&salt);
         plain.extend_from_slice(&canonical);
-        let sealed = xchacha20poly1305_seal(&key.0, &nonce, &aad(&digest), &plain);
+        let sealed = xchacha20poly1305_seal(&key.0, &nonce, &aad(&digest, subject_ref), &plain);
         Self {
             field_digest: digest,
             subject_ref,
@@ -145,9 +165,13 @@ impl<T: Canonical> Erasable<T> {
 
     /// Open with `key`; `max` bounds the value's byte length.
     pub fn open(&self, key: &SealKey, max: usize) -> Result<T, EraseError> {
-        let plain =
-            xchacha20poly1305_open(&key.0, &self.nonce, &aad(&self.field_digest), &self.sealed)
-                .map_err(|_| EraseError::Sealed)?;
+        let plain = xchacha20poly1305_open(
+            &key.0,
+            &self.nonce,
+            &aad(&self.field_digest, self.subject_ref),
+            &self.sealed,
+        )
+        .map_err(|_| EraseError::Sealed)?;
         if plain.len() < SALT_BYTES {
             return Err(EraseError::DigestMismatch);
         }
@@ -239,38 +263,36 @@ mod tests {
     }
 
     #[test]
-    fn wrong_key_tamper_and_bound_are_refused() {
-        let e = Erasable::seal(&"secret".to_string(), None, &KEY, [1; 32], [2; 24]);
+    fn fresh_salts_hide_equal_values() {
+        let a = Erasable::seal(&"J. Smith".to_string(), None, &KEY, [1; 32], [2; 24]);
+        let b = Erasable::seal(&"J. Smith".to_string(), None, &KEY, [9; 32], [2; 24]);
+        // Same value, different salt: different digest and bytes — a poster
+        // who seals chosen values cannot test them against this digest.
+        assert_ne!(a.field_digest(), b.field_digest());
+        assert_ne!(a, b);
+        assert_eq!(a.open(&KEY, 64).unwrap(), b.open(&KEY, 64).unwrap());
+    }
+
+    #[test]
+    fn wrong_key_tamper_subject_swap_and_bound_are_refused() {
+        let e = Erasable::seal(&"secret".to_string(), Some(VId(7)), &KEY, [1; 32], [2; 24]);
         assert_eq!(
             e.open(&SealKey([0x22; 32]), 64).unwrap_err(),
             EraseError::Sealed
         );
-        // Flip a ciphertext byte: the AEAD tag fails.
         let mut t = e.clone();
         t.sealed[0] ^= 1;
         assert_eq!(t.open(&KEY, 64).unwrap_err(), EraseError::Sealed);
-        // Swap the digest: the AAD binds it, so the open fails too.
         let mut t = e.clone();
         t.field_digest[0] ^= 1;
         assert_eq!(t.open(&KEY, 64).unwrap_err(), EraseError::Sealed);
-        // A value longer than the caller's bound is refused at open.
+        // The subject reference is authenticated: swapping it fails the AEAD.
+        let mut t = e.clone();
+        t.subject_ref = Some(VId(8));
+        assert_eq!(t.open(&KEY, 64).unwrap_err(), EraseError::Sealed);
         assert!(matches!(
             e.open(&KEY, 3).unwrap_err(),
             EraseError::Decode(_)
         ));
-    }
-
-    #[test]
-    fn digest_hides_the_value_behind_the_salt() {
-        let a = Erasable::seal(&"J. Smith".to_string(), None, &KEY, [1; 32], [2; 24]);
-        let b = Erasable::seal(&"J. Smith".to_string(), None, &KEY, [9; 32], [2; 24]);
-        let c = Erasable::seal(&"J. Smith".to_string(), None, &KEY, [1; 32], [3; 24]);
-        // Same value, different salt: different digest — a guess cannot be
-        // checked against the digest without the (erasable) salt.
-        assert_ne!(a.field_digest(), b.field_digest());
-        // Same value and salt: same digest regardless of nonce (the digest is
-        // a function of the value, not of the ciphertext).
-        assert_eq!(a.field_digest(), c.field_digest());
-        assert_ne!(a.sealed, c.sealed);
     }
 }

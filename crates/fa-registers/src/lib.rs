@@ -154,6 +154,14 @@ pub fn fold_period<V: asupersync::fs::Vfs + Clone>(
     let mut watermark: Option<CommitSeq> = None;
     let mut count = 0u64;
     for evid in entries {
+        let Some(row) = db.vertex(evid)? else {
+            continue;
+        };
+        if !row.labels.contains(&label::ENTRY) {
+            // Materialized Register vertices also hang off the period; the
+            // fold reads entries only (FA-INV-04: registers are never inputs).
+            continue;
+        }
         let Some((entry, created_at)) = read_entry(db, evid)? else {
             continue;
         };
@@ -327,7 +335,8 @@ pub fn verify_period<V: asupersync::fs::Vfs + Clone>(
                     Some(_) => None,
                 });
                 let to_i128 = |b: Vec<u8>| -> Option<i128> {
-                    (b.len() == 16).then(|| i128::from_le_bytes(b.try_into().ok()?))
+                    let arr: [u8; 16] = b.try_into().ok()?;
+                    Some(i128::from_le_bytes(arr))
                 };
                 match (to_i128(d), to_i128(c), u64::try_from(n).ok()) {
                     (Some(d), Some(c), Some(n)) => Some((d, c, n)),

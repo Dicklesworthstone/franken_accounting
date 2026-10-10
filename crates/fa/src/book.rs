@@ -34,16 +34,18 @@ use fgdb_types::{CommitSeq, VId};
 /// security namespace, and the data-encryption key (the substrate's
 /// `DatabaseKeys`). On disk these are the three 64-hex lines of the key file.
 #[derive(Clone)]
-pub struct BookKeys(DatabaseKeys);
+pub struct BookKeys {
+    inner: DatabaseKeys,
+    namespace: [u8; 32],
+}
 
 impl BookKeys {
     /// Keys from raw material. The caller owns their entropy and custody.
     pub fn from_raw(k_oid: [u8; 32], namespace: [u8; 32], dek: [u8; 32]) -> Self {
-        Self(DatabaseKeys::new(
-            k_oid,
-            DatabaseSecurityNamespaceId(namespace),
-            dek,
-        ))
+        Self {
+            inner: DatabaseKeys::new(k_oid, DatabaseSecurityNamespaceId(namespace), dek),
+            namespace,
+        }
     }
 
     /// Deterministic keys for examples and tests. **Never** for a real book:
@@ -79,9 +81,9 @@ impl BookKeys {
         }
         let text = format!(
             "{}\n{}\n{}\n",
-            hex(self.0.k_oid()),
+            hex(self.inner.k_oid()),
             hex(&self.namespace()),
-            hex(self.0.dek())
+            hex(self.inner.dek())
         );
         let mut opts = std::fs::OpenOptions::new();
         opts.write(true).create_new(true);
@@ -132,16 +134,14 @@ impl BookKeys {
     }
 
     fn namespace(&self) -> [u8; 32] {
-        // DatabaseKeys exposes k_oid and dek; the namespace rides inside the
-        // capsule keys. We keep our own copy for the key file.
-        self.0.capsule_keys().namespace.0
+        self.namespace
     }
 
     /// The book key erasable fields without a subject are sealed under:
     /// `KDF(DEK, "fa:erasable:book:v1")`, domain-separated from every
     /// substrate use of the DEK.
     fn seal_key(&self) -> SealKey {
-        SealKey(derive_key("fa:erasable:book:v1", self.0.dek()))
+        SealKey(derive_key("fa:erasable:book:v1", self.inner.dek()))
     }
 }
 
@@ -348,8 +348,9 @@ impl Book {
     ) -> Result<Self, BookError> {
         let (runtime, root) = Self::runtime_and_root()?;
         let purposes = PurposeContexts::narrow_runtime_root(&root);
-        let db = runtime
-            .block_on(async { Database::open_memory(&purposes.commit(), keys.0.clone()).await })?;
+        let db = runtime.block_on(async {
+            Database::open_memory(&purposes.commit(), keys.inner.clone()).await
+        })?;
         let mut store = Store::Memory(db);
         let ctx = Self::genesis(&runtime, &root, &mut store, &keys, spec)?;
         Ok(Self {
@@ -373,7 +374,7 @@ impl Book {
         let purposes = PurposeContexts::narrow_runtime_root(&root);
         let store_path = dir.join("store");
         let db = runtime.block_on(async {
-            Database::create(&purposes.commit(), &store_path, keys.0.clone()).await
+            Database::create(&purposes.commit(), &store_path, keys.inner.clone()).await
         })?;
         let mut store = Store::Dir(db);
         let ctx = Self::genesis(&runtime, &root, &mut store, &keys, spec)?;
@@ -393,7 +394,7 @@ impl Book {
         let purposes = PurposeContexts::narrow_runtime_root(&root);
         let store_path = dir.join("store");
         let db = runtime.block_on(async {
-            Database::open(&purposes.commit(), &store_path, keys.0.clone()).await
+            Database::open(&purposes.commit(), &store_path, keys.inner.clone()).await
         })?;
         let spec = fa_journal::genesis::read_book_spec(&db)?.ok_or(BookError::NoBook)?;
         let ctx = BookContext {
@@ -449,12 +450,12 @@ impl Book {
         effective_date: DateDay,
         idempotency_key: &[u8],
     ) -> Outcome<ChartInstalled> {
+        let description = self.seal_text(&format!("chart install: {} accounts", accounts.len()))?;
         let purposes = self.purposes();
-        let (salt, nonce) = self.salt_and_nonce()?;
         let ctx = &self.ctx;
         let runtime = &self.runtime;
         Ok(
-            with_store!(&mut self.store, db => runtime.block_on(async { fa_journal::install_chart(db, &purposes, ctx, accounts, principal, effective_date, idempotency_key, salt, nonce).await }))?,
+            with_store!(&mut self.store, db => runtime.block_on(async { fa_journal::install_chart(db, &purposes, ctx, accounts, principal, effective_date, idempotency_key, description).await }))?,
         )
     }
 
@@ -481,12 +482,12 @@ impl Book {
         effective_date: DateDay,
         idempotency_key: &[u8],
     ) -> Outcome<Transitioned> {
+        let description = self.seal_text(&format!("period {period_code}: {t:?}"))?;
         let purposes = self.purposes();
-        let (salt, nonce) = self.salt_and_nonce()?;
         let ctx = &self.ctx;
         let runtime = &self.runtime;
         Ok(with_store!(&mut self.store, db => runtime.block_on(async {
-            fa_journal::transition_period(db, &purposes, ctx, period_code, t, principal, reason_code, effective_date, idempotency_key, salt, nonce).await
+            fa_journal::transition_period(db, &purposes, ctx, period_code, t, principal, reason_code, effective_date, idempotency_key, description).await
         }))?)
     }
 
@@ -581,8 +582,8 @@ mod tests {
         keys.save(&path).unwrap();
         assert!(keys.save(&path).is_err(), "never overwritten");
         let back = BookKeys::load(&path).unwrap();
-        assert_eq!(back.0.k_oid(), keys.0.k_oid());
-        assert_eq!(back.0.dek(), keys.0.dek());
+        assert_eq!(back.inner.k_oid(), keys.inner.k_oid());
+        assert_eq!(back.inner.dek(), keys.inner.dek());
         assert_eq!(back.namespace(), keys.namespace());
         assert_eq!(unhex(&hex(&[0xab; 32])), Some([0xab; 32]));
         assert_eq!(unhex("zz"), None);
@@ -654,7 +655,6 @@ mod tests {
             proposal,
             approvals: Vec::new(),
             plan_certificate: None,
-            principal_scope: principal.0.to_le_bytes().to_vec(),
             capability: Capability::with_ops(&["post"]),
         })
     }
@@ -807,7 +807,7 @@ mod tests {
             .expect("the entry survived reopen");
         assert_eq!(entry.entry_digest, entry_ref.entry_digest);
         // The journal is still open for business, and the same key is still recorded.
-        let again = post_rent(&mut book, usd, principal, day, b"rent", 1)
+        let again = post_rent(&mut book, usd, principal, day, b"rent", 150_000)
             .expect("kernel")
             .expect("recorded");
         assert!(matches!(again, Posted::AlreadyRecorded { .. }));

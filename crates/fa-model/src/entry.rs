@@ -16,6 +16,12 @@
 //! Changing one leg changes `proposal_digest`, so an approval no longer binds
 //! and the commit is refused (FA-INV-10).
 //!
+//! Erasable fields are committed by their full wire bytes (digest, subject,
+//! nonce, ciphertext), which erasure never changes. A *semantic* transcript
+//! — the same encoding with each erasable field replaced by its opened
+//! plaintext — exists only in memory for the kernel's retry decision
+//! (`EntryPayload::semantic_digest`); it is never stored or logged.
+//!
 //! What this module checks is *structure*: bounds, class/leg shape, sorted
 //! collections, consistent `unit_totals`, digest integrity. The accounting
 //! laws (balance per unit, leaf-only, period admissibility, evidence minima)
@@ -29,7 +35,7 @@ use fgdb_crypto::Hasher;
 use fgdb_types::VId;
 
 use crate::canon::{DecodeError, EncodeError, Reader, Writer, strictly_ascending};
-use crate::erasable::{Canonical, Erasable};
+use crate::erasable::{Canonical, Erasable, EraseError, SealKey};
 use crate::ids::{ApprovalRef, EntryRef, Id128, Oid, PeriodRef, TypedRef};
 use crate::limits::*;
 
@@ -37,6 +43,7 @@ pub const SCHEMA_MAJOR: u16 = 1;
 pub const SCHEMA_MINOR: u16 = 0;
 pub const PROPOSAL_DIGEST_DOMAIN: &[u8] = b"fa:entry-proposal:v1";
 pub const ENTRY_DIGEST_DOMAIN: &[u8] = b"fa:entry:v1";
+pub const SEMANTIC_DIGEST_DOMAIN: &[u8] = b"fa:entry-semantic:v1";
 
 // ---------------------------------------------------------------------------
 // Entry classes (registries/entry_classes.toml, compiled)
@@ -142,6 +149,8 @@ pub enum EntryError {
         bytes: usize,
         max: usize,
     },
+    /// A sealed field could not be opened for the semantic transcript.
+    Sealed(EraseError),
 }
 
 impl fmt::Display for EntryError {
@@ -156,6 +165,7 @@ impl fmt::Display for EntryError {
             Self::TooLarge { bytes, max } => {
                 write!(f, "payload is {bytes} bytes; max_entry_bytes is {max}")
             }
+            Self::Sealed(e) => write!(f, "sealed field: {e}"),
         }
     }
 }
@@ -176,6 +186,44 @@ impl From<EncodeError> for EntryError {
 
 fn invalid(what: &'static str, why: &'static str) -> EntryError {
     EntryError::Invalid { what, why }
+}
+
+// ---------------------------------------------------------------------------
+// Encoding sinks: the wire form, or the private semantic transcript
+// ---------------------------------------------------------------------------
+
+/// How erasable fields are written. `Wire` writes their committed bytes;
+/// `Plain` opens each one under `key` and writes the plaintext instead,
+/// recording the first failure. `Plain` output exists only in memory.
+enum Sink<'a> {
+    Wire,
+    Plain {
+        key: &'a SealKey,
+        failed: Option<EraseError>,
+    },
+}
+
+impl Sink<'_> {
+    fn erasable<T: Canonical>(&mut self, w: &mut Writer, e: &Erasable<T>, max: usize) {
+        match self {
+            Self::Wire => e.encode(w),
+            Self::Plain { key, failed } => match e.open(key, max) {
+                Ok(v) => {
+                    // The subject context is part of the meaning: the same
+                    // plaintext under two subjects is two different requests.
+                    w.u8(1).opt(e.subject_ref().as_ref(), |w, s| {
+                        w.u128(s.0);
+                    });
+                    v.write_canonical(w);
+                }
+                Err(err) => {
+                    if failed.is_none() {
+                        *failed = Some(err);
+                    }
+                }
+            },
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -243,7 +291,7 @@ impl LegPayload {
         }
     }
 
-    fn encode(&self, w: &mut Writer) {
+    fn encode(&self, w: &mut Writer, sink: &mut Sink<'_>) {
         w.u8(match self.side {
             Side::Debit => 0,
             Side::Credit => 1,
@@ -253,13 +301,21 @@ impl LegPayload {
         w.opt(self.base_amount.as_ref(), encode_amount)
             .list(&self.dimension_set, |w, (d, v)| {
                 w.u32(*d).u128(v.0);
-            })
-            .opt(self.memo.as_ref(), |w, m| m.encode(w))
-            .list(&self.settles, |w, s| {
-                s.target.encode(w);
-                w.u16(s.ordinal);
-                encode_amount(w, &s.amount);
             });
+        match &self.memo {
+            None => {
+                w.u8(0);
+            }
+            Some(m) => {
+                w.u8(1);
+                sink.erasable(w, m, MAX_MEMO_BYTES);
+            }
+        }
+        w.list(&self.settles, |w, s| {
+            s.target.encode(w);
+            w.u16(s.ordinal);
+            encode_amount(w, &s.amount);
+        });
     }
 
     fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
@@ -358,6 +414,9 @@ pub struct BaseTotals {
 
 /// Where the entry came from. The dry-run plan certificate is *not* here: it
 /// is computed over `proposal_digest` and therefore binds in the envelope.
+// The Migration variant carries three sealed fields; payloads are decoded
+// once and held by value, so the size difference is not worth a Box.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EntryOrigin {
     Intent {
@@ -389,7 +448,7 @@ pub enum EntryOrigin {
 }
 
 impl EntryOrigin {
-    fn encode(&self, w: &mut Writer) {
+    fn encode(&self, w: &mut Writer, sink: &mut Sink<'_>) {
         match self {
             Self::Intent {
                 intent_oid,
@@ -418,12 +477,21 @@ impl EntryOrigin {
                 batch_oid,
             } => {
                 w.u8(2).u128(run_ref.0).str(source_system);
-                source_id.encode(w);
+                sink.erasable(w, source_id, MAX_EXTERNAL_ID_BYTES);
                 w.opt(source_recorded_at_ns.as_ref(), |w, v| {
                     w.i64(*v);
-                })
-                .opt(source_entered_by.as_ref(), |w, e| e.encode(w))
-                .opt(source_approved_by.as_ref(), |w, e| e.encode(w));
+                });
+                for field in [source_entered_by, source_approved_by] {
+                    match field {
+                        None => {
+                            w.u8(0);
+                        }
+                        Some(e) => {
+                            w.u8(1);
+                            sink.erasable(w, e, MAX_EXTERNAL_ID_BYTES);
+                        }
+                    }
+                }
                 encode_oid(w, batch_oid);
             }
             Self::Control {
@@ -482,6 +550,7 @@ impl EntryOrigin {
 }
 
 /// Control records carry no legs; the payload says what changed (Appendix A).
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ControlPayload {
     PeriodTransition {
@@ -1061,7 +1130,7 @@ impl EntryPayload {
         Ok(())
     }
 
-    fn encode_into(&self, w: &mut Writer) {
+    fn encode_into(&self, w: &mut Writer, sink: &mut Sink<'_>) {
         w.u16(SCHEMA_MAJOR)
             .u16(self.schema_minor)
             .fixed(&self.book_id.0)
@@ -1069,10 +1138,10 @@ impl EntryPayload {
             .u16(self.class.0);
         encode_day(w, &self.effective_date);
         w.opt(self.document_date.as_ref(), encode_day);
-        self.description.encode(w);
-        w.opt(self.effective_period.as_ref(), |w, p| p.encode(w))
-            .list(&self.legs, |w, l| l.encode(w))
-            .opt(self.control.as_ref(), |w, c| c.encode(w))
+        sink.erasable(w, &self.description, MAX_DESCRIPTION_BYTES);
+        w.opt(self.effective_period.as_ref(), |w, p| p.encode(w));
+        w.list(&self.legs, |w, l| l.encode(w, sink));
+        w.opt(self.control.as_ref(), |w, c| c.encode(w))
             .list(&self.unit_totals, |w, t| {
                 w.u32(t.unit_id).i128(t.debits).i128(t.credits);
             })
@@ -1086,7 +1155,7 @@ impl EntryPayload {
                     });
             })
             .bytes(&self.idempotency_key);
-        self.origin.encode(w);
+        self.origin.encode(w, sink);
         w.u128(self.principal_ref.0)
             .opt(self.session_ref.as_ref(), |w, v| {
                 w.u128(v.0);
@@ -1098,32 +1167,42 @@ impl EntryPayload {
             .list(&self.supersession, |w, s| {
                 s.target.encode(w);
                 w.u8(s.kind as u8).u16(s.reason_code);
-            })
-            .opt(self.pending.as_ref(), |w, p| {
-                w.opt(p.timeout_ns.as_ref(), |w, t| {
-                    w.u64(*t);
-                })
-                .opt(p.resolution_of.as_ref(), |w, r| r.encode(w))
-                .opt(p.disposition.as_ref(), |w, d| match d {
-                    Disposition::Posts { posted_legs } => {
-                        w.u8(0).list(posted_legs, |w, l| l.encode(w));
-                    }
-                    Disposition::Voids => {
-                        w.u8(1);
-                    }
-                    Disposition::Expires { at_tick } => {
-                        w.u8(2).u64(*at_tick);
-                    }
-                });
-            })
-            .list(&self.external_ids, |w, x| {
-                w.str(&x.system);
-                x.id.encode(w);
-            })
-            .list(&self.tags, |w, t| {
-                w.str(&t.key);
-                t.value.encode(w);
             });
+        match &self.pending {
+            None => {
+                w.u8(0);
+            }
+            Some(p) => {
+                w.u8(1)
+                    .opt(p.timeout_ns.as_ref(), |w, t| {
+                        w.u64(*t);
+                    })
+                    .opt(p.resolution_of.as_ref(), |w, r| r.encode(w));
+                match &p.disposition {
+                    None => {
+                        w.u8(0);
+                    }
+                    Some(Disposition::Posts { posted_legs }) => {
+                        w.u8(1).u8(0);
+                        w.list(posted_legs, |w, l| l.encode(w, sink));
+                    }
+                    Some(Disposition::Voids) => {
+                        w.u8(1).u8(1);
+                    }
+                    Some(Disposition::Expires { at_tick }) => {
+                        w.u8(1).u8(2).u64(*at_tick);
+                    }
+                }
+            }
+        }
+        w.list(&self.external_ids, |w, x| {
+            w.str(&x.system);
+            sink.erasable(w, &x.id, MAX_EXTERNAL_ID_BYTES);
+        });
+        w.list(&self.tags, |w, t| {
+            w.str(&t.key);
+            sink.erasable(w, &t.value, MAX_TAG_BYTES_VALUE + 1);
+        });
     }
 
     fn decode_from(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
@@ -1252,13 +1331,36 @@ impl EntryPayload {
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, EntryError> {
         self.validate()?;
         let mut w = Writer::with_capacity(512);
-        self.encode_into(&mut w);
+        self.encode_into(&mut w, &mut Sink::Wire);
         Ok(w.finish()?)
     }
 
     /// `BLAKE3("fa:entry-proposal:v1" ‖ canonical(proposal))`.
     pub fn proposal_digest(&self) -> Result<[u8; 32], EntryError> {
         Ok(proposal_digest_of(&self.canonical_bytes()?))
+    }
+
+    /// The private semantic transcript digest: the proposal encoded with
+    /// every erasable field opened under `key` and written as plaintext.
+    /// Computed in memory for retry decisions only; never persisted or
+    /// logged. Fails with [`EntryError::Sealed`] when any field cannot be
+    /// opened, in which case equivalence is not claimed.
+    pub fn semantic_digest(&self, key: &SealKey) -> Result<[u8; 32], EntryError> {
+        self.validate()?;
+        let mut w = Writer::with_capacity(512);
+        let mut sink = Sink::Plain { key, failed: None };
+        self.encode_into(&mut w, &mut sink);
+        if let Sink::Plain {
+            failed: Some(e), ..
+        } = sink
+        {
+            return Err(EntryError::Sealed(e));
+        }
+        let bytes = w.finish()?;
+        let mut h = Hasher::new();
+        h.update(SEMANTIC_DIGEST_DOMAIN);
+        h.update(&bytes);
+        Ok(h.finalize().0)
     }
 
     /// Bind the envelope — the dry-run plan certificate (if any) and the
@@ -1541,13 +1643,55 @@ mod tests {
         );
     }
 
+    /// Retry equivalence is plaintext-level: the same description sealed with
+    /// a different salt changes the proposal digest but not the semantic
+    /// digest; a different description changes both; a foreign key cannot
+    /// claim equivalence at all.
+    #[test]
+    fn semantic_digest_sees_through_fresh_salts_and_refuses_foreign_keys() {
+        let a = proposal(two_legs());
+        let mut b = a.clone();
+        b.description = Erasable::seal(
+            &"Office rent, March".to_string(),
+            None,
+            &KEY,
+            [9; 32],
+            [8; 24],
+        );
+        let mut c = a.clone();
+        c.description = Erasable::seal(
+            &"Office rent, April".to_string(),
+            None,
+            &KEY,
+            [1; 32],
+            [2; 24],
+        );
+        assert_ne!(a.proposal_digest().unwrap(), b.proposal_digest().unwrap());
+        assert_eq!(
+            a.semantic_digest(&KEY).unwrap(),
+            b.semantic_digest(&KEY).unwrap()
+        );
+        assert_ne!(
+            a.semantic_digest(&KEY).unwrap(),
+            c.semantic_digest(&KEY).unwrap()
+        );
+        assert!(matches!(
+            a.semantic_digest(&SealKey([0; 32])).unwrap_err(),
+            EntryError::Sealed(EraseError::Sealed)
+        ));
+        // The transcript is not the wire form: it never equals the proposal digest.
+        assert_ne!(
+            a.semantic_digest(&KEY).unwrap(),
+            a.proposal_digest().unwrap()
+        );
+    }
+
     #[test]
     fn tampered_bytes_are_refused() {
         let entry = proposal(two_legs())
             .seal(vec![], Some(Oid([2; 32])))
             .unwrap();
         let bytes = entry.encode().unwrap();
-        // Every byte before the digests is covered by one of them.
         for i in 0..bytes.len() - 64 {
             let mut t = bytes.clone();
             t[i] ^= 0x01;
@@ -1556,7 +1700,6 @@ mod tests {
                 "byte {i} flipped and still decoded"
             );
         }
-        // The stored entry_digest is checked too.
         let mut t = bytes.clone();
         let n = t.len();
         t[n - 1] ^= 1;
@@ -1566,7 +1709,6 @@ mod tests {
                 which: "entry_digest"
             }
         );
-        // Trailing bytes are refused.
         let mut t = bytes;
         t.push(0);
         assert!(matches!(
@@ -1735,7 +1877,6 @@ mod tests {
             assert_eq!(back.proposal.control, Some(control));
             assert!(back.proposal.legs.is_empty());
         }
-        // A control class without a payload is refused.
         let mut p = proposal(vec![]);
         p.class = EntryClass::POLICY_CONTROL;
         p.unit_totals = vec![];
@@ -1767,6 +1908,13 @@ mod tests {
             source_approved_by: None,
             batch_oid: Oid([9; 32]),
         };
+        p.legs[0].memo = Some(Erasable::seal(
+            &"memo".to_string(),
+            None,
+            &KEY,
+            [3; 32],
+            [3; 24],
+        ));
         p.pending = Some(Pending {
             timeout_ns: Some(5),
             resolution_of: Some(EntryRef {
@@ -1804,9 +1952,11 @@ mod tests {
             calendar: "cal".into(),
             code: "FY2026-A1".into(),
         });
-        let e = p.seal(vec![], None).unwrap();
+        let e = p.clone().seal(vec![], None).unwrap();
         let back = Entry::decode(&e.encode().unwrap()).unwrap();
         assert_eq!(back, e);
+        // Every erasable field participates in the semantic transcript.
+        assert!(p.semantic_digest(&KEY).is_ok());
         for v in [
             EntryOrigin::Rule {
                 rule_version_oid: Oid([1; 32]),
@@ -1841,8 +1991,8 @@ mod tests {
         assert_eq!(
             (hex(e.proposal_digest), hex(e.entry_digest)),
             (
-                "6e6221ad019374270e2d08ddc55773752d136d033fd8e3029790c97228477e6e".to_string(),
-                "GOLDEN_ENTRY".to_string()
+                "94b3431c8ebc79f6a786216e67942a12aed0b1fee090fa43f69fc3673caa2b24".to_string(),
+                "3be6122714342ee45b11fda3e107965bbb25778ec942654a4347ca5a31e18b8a".to_string()
             )
         );
     }

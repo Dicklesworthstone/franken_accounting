@@ -78,7 +78,6 @@ impl Harness {
             proposal,
             approvals: Vec::new(),
             plan_certificate: None,
-            principal_scope: PRINCIPAL.0.to_le_bytes().to_vec(),
             capability: Capability::with_ops(&["post"]),
         };
         let ctx = self.ctx();
@@ -148,7 +147,14 @@ fn harness() -> Harness {
     runtime
         .block_on(async {
             install_chart(
-                &mut db, &ctx, &book, &chart, PRINCIPAL, day, b"chart", [5; 32], [6; 24],
+                &mut db,
+                &ctx,
+                &book,
+                &chart,
+                PRINCIPAL,
+                day,
+                b"chart",
+                Erasable::seal(&"chart".to_string(), None, &book.seal_key, [5; 32], [6; 24]),
             )
             .await
         })
@@ -177,8 +183,13 @@ fn harness() -> Harness {
                 1,
                 day,
                 b"open",
-                [3; 32],
-                [4; 24],
+                Erasable::seal(
+                    &"period".to_string(),
+                    None,
+                    &book.seal_key,
+                    [3; 32],
+                    [4; 24],
+                ),
             )
             .await
         })

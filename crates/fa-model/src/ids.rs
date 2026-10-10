@@ -196,6 +196,21 @@ pub fn principal_vid(name: &str) -> VId {
     derive_vid(b"fa:vid:principal:v1", &[name.as_bytes()])
 }
 
+/// `BLAKE3(domain ‖ len(part) ‖ part …)`: the one way FrankenAccounting
+/// derives a public identity from parts, so no surviving public digest is
+/// ever an unkeyed hash of a raw request.
+#[must_use]
+pub fn domain_digest(domain: &[u8], parts: &[&[u8]]) -> [u8; 32] {
+    let mut h = Hasher::new();
+    h.update(domain);
+    for p in parts {
+        let n = u32::try_from(p.len()).unwrap_or(u32::MAX);
+        h.update(&n.to_le_bytes());
+        h.update(p);
+    }
+    h.finalize().0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

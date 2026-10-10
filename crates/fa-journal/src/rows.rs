@@ -12,7 +12,7 @@ use fgdb_types::{CanonicalScalar, CommitSeq, EId, VId};
 use crate::genesis::UnitPolicy;
 use crate::refusal::KernelError;
 
-pub fn prop<'a>(row: &'a VertexRow, key: PropertyKeyId) -> Option<&'a CanonicalScalar> {
+pub fn prop(row: &VertexRow, key: PropertyKeyId) -> Option<&CanonicalScalar> {
     row.props.iter().find(|(k, _)| *k == key).map(|(_, v)| v)
 }
 
@@ -60,6 +60,16 @@ pub fn scalar_bytes(what: &'static str, b: Vec<u8>) -> Result<CanonicalScalar, K
 pub fn book_root() -> VId {
     let mut h = Hasher::new();
     h.update(b"fa:vid:book-root:v1");
+    vid_from(h)
+}
+
+/// `vid(Reversal of T) = H("fa:vid:reversal:v1" ‖ T.vid)`: one reversal per
+/// target by identity, so a second reversal is a point conflict (plan §4.9).
+#[must_use]
+pub fn reversal_vid(target: VId) -> VId {
+    let mut h = Hasher::new();
+    h.update(b"fa:vid:reversal:v1");
+    h.update(&target.0.to_le_bytes());
     vid_from(h)
 }
 

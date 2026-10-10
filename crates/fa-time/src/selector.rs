@@ -23,21 +23,48 @@ pub enum EffectiveSelector {
     InceptionToDate(DateDay),
 }
 
+/// Why a selector could not be resolved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SelectorError {
+    /// `Period(code)` names a period the book does not have. Never `All`.
+    UnknownPeriod(String),
+    Date(DateError),
+}
+
+impl core::fmt::Display for SelectorError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::UnknownPeriod(c) => write!(f, "unknown period `{c}`"),
+            Self::Date(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl core::error::Error for SelectorError {}
+
+impl From<DateError> for SelectorError {
+    fn from(e: DateError) -> Self {
+        Self::Date(e)
+    }
+}
+
 impl EffectiveSelector {
     /// Resolve to a concrete half-open day interval, given the calendar, the
-    /// known period definitions, and the book's opening date.
+    /// known period definitions, and the book's opening date. `None` means
+    /// unbounded (`All`); an unknown period is a typed error, never `All`.
     pub fn interval(
         &self,
         calendar: &FiscalCalendar,
         periods: &[PeriodDef],
         opening_date: DateDay,
-    ) -> Result<Option<(DateDay, DateDay)>, DateError> {
+    ) -> Result<Option<(DateDay, DateDay)>, SelectorError> {
         Ok(match self {
             Self::All => None,
             Self::Period(code) => periods
                 .iter()
                 .find(|p| &p.code == code)
-                .map(|p| (p.start, p.end)),
+                .map(|p| Some((p.start, p.end)))
+                .ok_or_else(|| SelectorError::UnknownPeriod(code.clone()))?,
             Self::Range { start, end } => Some((*start, *end)),
             Self::AsOf(day) => Some((DateDay(i32::MIN), day.succ()?)),
             Self::YearToDate(day) => {
@@ -56,7 +83,7 @@ impl EffectiveSelector {
         calendar: &FiscalCalendar,
         periods: &[PeriodDef],
         opening_date: DateDay,
-    ) -> Result<bool, DateError> {
+    ) -> Result<bool, SelectorError> {
         Ok(match self.interval(calendar, periods, opening_date)? {
             None => true,
             Some((s, e)) => day >= s && day < e,
@@ -91,11 +118,16 @@ mod tests {
         let asof = EffectiveSelector::AsOf(d("2026-03-15"));
         assert!(c(&asof, "1980-01-01"));
         assert!(!c(&asof, "2026-03-16"));
+        let unknown = EffectiveSelector::Period("FY2026-P99".into());
+        assert_eq!(
+            unknown.interval(&cal, &ps, opening),
+            Err(SelectorError::UnknownPeriod("FY2026-P99".into()))
+        );
         assert!(
-            EffectiveSelector::Period("FY2026-P99".into())
-                .interval(&cal, &ps, opening)
-                .unwrap()
-                .is_none()
+            unknown
+                .contains(d("2026-01-01"), &cal, &ps, opening)
+                .is_err(),
+            "an unknown period is never All"
         );
     }
 }

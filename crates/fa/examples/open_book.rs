@@ -140,7 +140,6 @@ fn run() -> Result<(), BookError> {
         proposal: p,
         approvals: Vec::new(),
         plan_certificate: None,
-        principal_scope: principal.0.to_le_bytes().to_vec(),
         capability: Capability::with_ops(&["post"]),
     };
 
