@@ -1,40 +1,82 @@
 //! The evidence-minimum oracle (plan §9.2–§9.3, FA-INV-05 clause
-//! `evidence-minimum`).
+//! `evidence-minimum`), with attestations.
 //!
 //! An independent, deliberately literal model of the posting kernel's
-//! evidence law. It shares only the registry rows (`evidence_policy.toml`)
-//! with `fa-journal`; the evaluation is written from the plan text, not from
-//! the kernel's code. Documents are plain records keyed by an integer
-//! surrogate, kinds and grades are plain registry names, and the refusal
+//! evidence law. It shares only the registry rows (`evidence_policy.toml`,
+//! `reason_codes.toml`) with `fa-journal`; the evaluation is written from
+//! the plan text, not from the kernel's code. Documents are plain records
+//! keyed by an integer surrogate, principals are integers, kinds and grades
+//! are plain registry names, attestations are plain maps, and the refusal
 //! codes are this module's own string constants, so a renumbering or a
 //! re-ordering on either side is a differential failure.
 //!
-//! The law, in the order the kernel applies it:
+//! The posting law, in the order the kernel applies it:
 //! 1. every citation's role is a registered role (else `STRUCTURE`);
 //! 2. every cited document is held (else `EVIDENCE_UNKNOWN`), and the
 //!    citation's commitment is the document's (else `EVIDENCE_COMMIT`),
 //!    checked for every citation, in citation order;
 //! 3. a class whose row requires documents needs at least `min_documents`
-//!    distinct cited documents of an admissible kind whose grade is not
-//!    self-sourced (`AgentUpload`, `Generated`: they count only once a
-//!    reviewer attests them, which this build cannot record — fa-g21). When
-//!    the self-sourced ones would have met it: `SELF_SOURCED`; otherwise
-//!    `EVIDENCE_MINIMUM`. A class resting on its target, and a control class,
-//!    needs none.
+//!    distinct cited documents of an admissible kind that count. A document
+//!    counts when its grade is not self-sourced, or when it is (`AgentUpload`,
+//!    `Generated`) and a principal reviewed it (`Reviewed`); a review by the
+//!    principal that uploaded it is `SELF_REVIEW`.
+//! 4. If they fall short and the row admits a ManualAssertion, the
+//!    preparer's assertion over this proposal meets the minimum when its
+//!    reason is registered (else `REASON_CODE`).
+//! 5. Otherwise: `SELF_SOURCED` when the unreviewed self-sourced documents
+//!    would have met it, else `EVIDENCE_MINIMUM`. A class resting on its
+//!    target, and a control class, needs none.
+//!
+//! The recording laws: a review names a held document (else
+//! `ATTESTATION_SUBJECT`) whose uploader is not the reviewer (else
+//! `SELF_REVIEW`), compared against held documents (else
+//! `ATTESTATION_SUBJECT`); an assertion carries a registered reason (else
+//! `REASON_CODE`) for a class whose row admits one (else
+//! `ATTESTATION_SUBJECT`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use fa_registry::RegistryError;
 use fa_registry::evidence_policy::{EvidencePolicy, KindSet, Requirement};
+use fa_registry::reason_codes::ReasonCodes;
 
 pub const STRUCTURE: &str = "FA-REF-100";
 pub const EVIDENCE_MINIMUM: &str = "FA-REF-080";
 pub const EVIDENCE_UNKNOWN: &str = "FA-REF-081";
 pub const EVIDENCE_COMMIT: &str = "FA-REF-082";
 pub const SELF_SOURCED: &str = "FA-REF-086";
+pub const ATTESTATION_SUBJECT: &str = "FA-REF-110";
+pub const SELF_REVIEW: &str = "FA-REF-111";
+pub const REASON_CODE: &str = "FA-REF-112";
 
-/// The registry rows the oracle reads (`evidence_policy.toml`).
-pub fn embedded_policy() -> Result<EvidencePolicy, fa_registry::RegistryError> {
-    EvidencePolicy::embedded()
+/// The registry rows the oracle reads.
+#[derive(Clone, Debug)]
+pub struct Law {
+    pub policy: EvidencePolicy,
+    pub reasons: ReasonCodes,
+}
+
+impl Law {
+    pub fn embedded() -> Result<Self, RegistryError> {
+        Ok(Self {
+            policy: EvidencePolicy::embedded()?,
+            reasons: ReasonCodes::embedded()?,
+        })
+    }
+
+    fn reason_registered(&self, reason: u16) -> bool {
+        self.reasons
+            .rows
+            .iter()
+            .any(|r| r.scope == "manual_assertion" && r.code == reason)
+    }
+
+    /// Whether `class`'s row requires documents and admits an assertion.
+    fn admits_assertion(&self, class: &str) -> bool {
+        self.policy
+            .minimum(class)
+            .is_some_and(|m| m.requirement == Requirement::Documents && m.manual_assertion)
+    }
 }
 
 /// A document the oracle's book holds.
@@ -46,6 +88,8 @@ pub struct Doc {
     pub grade: String,
     /// Its public commitment, as the oracle recorded it at intake.
     pub commit: [u8; 32],
+    /// The principal that uploaded it.
+    pub uploader: u64,
 }
 
 /// One citation, in the order the entry carries them.
@@ -55,6 +99,15 @@ pub struct Citation {
     pub doc: u64,
     pub commit: [u8; 32],
     pub role: u8,
+}
+
+/// The attestations the posting law reads, as plain maps.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Attestations {
+    /// Document surrogate → the principal whose Reviewed attestation names it.
+    pub reviews: BTreeMap<u64, u64>,
+    /// The reason code of the preparer's ManualAssertion over this proposal.
+    pub manual: Option<u16>,
 }
 
 fn admits(policy: &EvidencePolicy, set: &KindSet, kind_name: &str) -> bool {
@@ -67,14 +120,17 @@ fn admits(policy: &EvidencePolicy, set: &KindSet, kind_name: &str) -> bool {
 }
 
 /// The oracle's verdict for an entry of `class` citing `citations` against
-/// the held `docs`: `None` admits; otherwise the refusal code.
+/// the held `docs` and the recorded `attestations`: `None` admits;
+/// otherwise the refusal code.
 #[must_use]
 pub fn verdict(
-    policy: &EvidencePolicy,
+    law: &Law,
     class: &str,
     docs: &BTreeMap<u64, Doc>,
     citations: &[Citation],
+    attestations: &Attestations,
 ) -> Option<&'static str> {
+    let policy = &law.policy;
     // 1. Roles.
     if citations
         .iter()
@@ -91,7 +147,7 @@ pub fn verdict(
             return Some(EVIDENCE_COMMIT);
         }
     }
-    // 3. The class's minimum over distinct documents.
+    // 3. The class's minimum over distinct documents that count.
     let Some(row) = policy.minimum(class) else {
         return Some(EVIDENCE_MINIMUM);
     };
@@ -112,15 +168,67 @@ pub fn verdict(
             .is_none_or(|g| g.self_sourced);
         if !self_sourced {
             counted += 1;
+            continue;
+        }
+        match attestations.reviews.get(id) {
+            Some(reviewer) if *reviewer == doc.uploader => return Some(SELF_REVIEW),
+            Some(_) => counted += 1,
+            None => {}
         }
     }
     let needed = usize::from(row.min_documents);
     if counted >= needed {
-        None
-    } else if admissible >= needed {
+        return None;
+    }
+    // 4. The preparer's assertion, where the row admits one.
+    if row.manual_assertion
+        && let Some(reason) = attestations.manual
+    {
+        return if law.reason_registered(reason) {
+            None
+        } else {
+            Some(REASON_CODE)
+        };
+    }
+    // 5. Short.
+    if admissible >= needed {
         Some(SELF_SOURCED)
     } else {
         Some(EVIDENCE_MINIMUM)
+    }
+}
+
+/// The oracle's verdict on recording a review of `doc` by `reviewer`,
+/// compared `against` other documents: `None` records it.
+#[must_use]
+pub fn review_verdict(
+    docs: &BTreeMap<u64, Doc>,
+    doc: u64,
+    against: &[u64],
+    reviewer: u64,
+) -> Option<&'static str> {
+    let Some(subject) = docs.get(&doc) else {
+        return Some(ATTESTATION_SUBJECT);
+    };
+    if subject.uploader == reviewer {
+        return Some(SELF_REVIEW);
+    }
+    if against.iter().any(|a| !docs.contains_key(a)) {
+        return Some(ATTESTATION_SUBJECT);
+    }
+    None
+}
+
+/// The oracle's verdict on the preparer recording an assertion with
+/// `reason` over a proposal of `class`: `None` records it.
+#[must_use]
+pub fn manual_verdict(law: &Law, class: &str, reason: u16) -> Option<&'static str> {
+    if !law.reason_registered(reason) {
+        Some(REASON_CODE)
+    } else if !law.admits_assertion(class) {
+        Some(ATTESTATION_SUBJECT)
+    } else {
+        None
     }
 }
 
@@ -128,21 +236,23 @@ pub fn verdict(
 mod tests {
     use super::*;
 
-    fn doc(kind: &str, grade: &str, commit: u8) -> Doc {
+    fn doc(kind: &str, grade: &str, commit: u8, uploader: u64) -> Doc {
         Doc {
             kind: kind.into(),
             grade: grade.into(),
             commit: [commit; 32],
+            uploader,
         }
     }
 
     #[test]
     fn the_literal_law_on_hand_picked_cases() {
-        let p = EvidencePolicy::embedded().unwrap();
+        let law = Law::embedded().unwrap();
+        let none = Attestations::default();
         let docs: BTreeMap<u64, Doc> = [
-            (1, doc("Invoice", "HumanUpload", 1)),
-            (2, doc("Invoice", "AgentUpload", 2)),
-            (3, doc("Rate", "HumanUpload", 3)),
+            (1, doc("Invoice", "HumanUpload", 1, 7)),
+            (2, doc("Invoice", "AgentUpload", 2, 7)),
+            (3, doc("Rate", "HumanUpload", 3, 7)),
         ]
         .into_iter()
         .collect();
@@ -151,35 +261,75 @@ mod tests {
             commit: [c; 32],
             role,
         };
-        assert_eq!(verdict(&p, "Original", &docs, &[cite(1, 1, 1)]), None);
-        assert_eq!(verdict(&p, "Original", &docs, &[]), Some(EVIDENCE_MINIMUM));
-        assert_eq!(
-            verdict(&p, "Original", &docs, &[cite(2, 2, 1)]),
-            Some(SELF_SOURCED)
-        );
-        assert_eq!(
-            verdict(&p, "Original", &docs, &[cite(9, 9, 1)]),
-            Some(EVIDENCE_UNKNOWN)
-        );
-        assert_eq!(
-            verdict(&p, "Original", &docs, &[cite(1, 7, 1)]),
-            Some(EVIDENCE_COMMIT)
-        );
+        let v = |class: &str, citations: &[Citation]| verdict(&law, class, &docs, citations, &none);
+        assert_eq!(v("Original", &[cite(1, 1, 1)]), None);
+        assert_eq!(v("Original", &[]), Some(EVIDENCE_MINIMUM));
+        assert_eq!(v("Original", &[cite(2, 2, 1)]), Some(SELF_SOURCED));
+        assert_eq!(v("Original", &[cite(9, 9, 1)]), Some(EVIDENCE_UNKNOWN));
+        assert_eq!(v("Original", &[cite(1, 7, 1)]), Some(EVIDENCE_COMMIT));
         // A right citation then a wrong one of the same document.
         assert_eq!(
-            verdict(&p, "Original", &docs, &[cite(1, 1, 1), cite(1, 7, 2)]),
+            v("Original", &[cite(1, 1, 1), cite(1, 7, 2)]),
             Some(EVIDENCE_COMMIT)
         );
+        assert_eq!(v("Original", &[cite(1, 1, 99)]), Some(STRUCTURE));
+        assert_eq!(v("Revaluation", &[cite(1, 1, 1)]), Some(EVIDENCE_MINIMUM));
+        assert_eq!(v("Revaluation", &[cite(3, 3, 3)]), None);
+        assert_eq!(v("Reversal", &[]), None);
+        assert_eq!(v("PeriodControl", &[]), None);
+    }
+
+    #[test]
+    fn attestations_on_hand_picked_cases() {
+        let law = Law::embedded().unwrap();
+        let docs: BTreeMap<u64, Doc> = [
+            (1, doc("Invoice", "HumanUpload", 1, 7)),
+            (2, doc("Invoice", "AgentUpload", 2, 7)),
+        ]
+        .into_iter()
+        .collect();
+        let agent = [Citation {
+            doc: 2,
+            commit: [2; 32],
+            role: 1,
+        }];
+        let with = |reviews: &[(u64, u64)], manual: Option<u16>| Attestations {
+            reviews: reviews.iter().copied().collect(),
+            manual,
+        };
+        let v = |class: &str, citations: &[Citation], a: &Attestations| {
+            verdict(&law, class, &docs, citations, a)
+        };
+        assert_eq!(v("Original", &agent, &with(&[(2, 8)], None)), None);
         assert_eq!(
-            verdict(&p, "Original", &docs, &[cite(1, 1, 99)]),
-            Some(STRUCTURE)
+            v("Original", &agent, &with(&[(2, 7)], None)),
+            Some(SELF_REVIEW)
         );
+        assert_eq!(v("Original", &[], &with(&[], Some(1))), None);
+        assert_eq!(v("Original", &[], &with(&[], Some(999))), Some(REASON_CODE));
         assert_eq!(
-            verdict(&p, "Revaluation", &docs, &[cite(1, 1, 1)]),
+            v("Pending", &[], &with(&[], Some(1))),
             Some(EVIDENCE_MINIMUM)
         );
-        assert_eq!(verdict(&p, "Revaluation", &docs, &[cite(3, 3, 3)]), None);
-        assert_eq!(verdict(&p, "Reversal", &docs, &[]), None);
-        assert_eq!(verdict(&p, "PeriodControl", &docs, &[]), None);
+        assert_eq!(v("Original", &agent, &with(&[], Some(1))), None);
+        assert_eq!(
+            v("Pending", &agent, &with(&[], Some(1))),
+            Some(SELF_SOURCED)
+        );
+        // Recording.
+        assert_eq!(review_verdict(&docs, 2, &[1], 8), None);
+        assert_eq!(review_verdict(&docs, 2, &[], 7), Some(SELF_REVIEW));
+        assert_eq!(review_verdict(&docs, 9, &[], 8), Some(ATTESTATION_SUBJECT));
+        assert_eq!(review_verdict(&docs, 2, &[9], 8), Some(ATTESTATION_SUBJECT));
+        assert_eq!(manual_verdict(&law, "Original", 1), None);
+        assert_eq!(manual_verdict(&law, "Original", 0), Some(REASON_CODE));
+        assert_eq!(
+            manual_verdict(&law, "Pending", 1),
+            Some(ATTESTATION_SUBJECT)
+        );
+        assert_eq!(
+            manual_verdict(&law, "Reversal", 1),
+            Some(ATTESTATION_SUBJECT)
+        );
     }
 }

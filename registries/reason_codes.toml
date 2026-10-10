@@ -1,0 +1,47 @@
+# reason_codes.toml — the registered reasons a principal may give, by scope
+# (plan §9.2, Appendix F "reason_codes.toml").
+#
+# Scope `manual_assertion`: why no document exists for an entry whose class
+# admits a preparer's ManualAssertion attestation in place of a document
+# ("no document exists because …"). A reason outside this table is refused
+# (FA-REF-112); a reason is never free text — the attestation's statement
+# carries the particulars.
+#
+# Consumer: fa-registry `reason_codes` (parser), fa-journal `attestation`
+# (record_attestation refuses an unregistered reason; the posting kernel
+# re-checks it when it counts the assertion).
+# Gate: codes ≥ 1, unique per scope; names unique per scope; scopes closed.
+#
+# Additive-only: a released code is never renumbered or reused.
+
+schema_version = 1
+
+[[reason]]
+code = 1
+scope = "manual_assertion"
+name = "NoDocumentIssued"
+meaning = "the counterparty issues no document for this kind of transaction (a bank fee shown only as a statement line)"
+
+[[reason]]
+code = 2
+scope = "manual_assertion"
+name = "DocumentLost"
+meaning = "the source document existed and was lost; it is not reconstructed"
+
+[[reason]]
+code = 3
+scope = "manual_assertion"
+name = "OralAgreement"
+meaning = "the transaction rests on an oral agreement; no written instrument exists"
+
+[[reason]]
+code = 4
+scope = "manual_assertion"
+name = "ManagementEstimate"
+meaning = "an accrual or estimate made by management; the statement describes its basis"
+
+[[reason]]
+code = 5
+scope = "manual_assertion"
+name = "InternalTransfer"
+meaning = "a transfer between the book's own accounts, with no external counterparty document"

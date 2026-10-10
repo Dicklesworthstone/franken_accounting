@@ -534,7 +534,7 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
     let mut refused: BTreeMap<&'static str, u32> = BTreeMap::new();
     // Planted evidence negatives (fa-lp6): the documents the evidence oracle
     // holds are the kernel's two fixtures; `ghost` was never recorded.
-    let evidence_policy = fa_reference::evidence::embedded_policy().expect("evidence_policy.toml");
+    let evidence_law = fa_reference::evidence::Law::embedded().expect("evidence registries");
     let held: BTreeMap<u64, fa_reference::evidence::Doc> = [
         (1u64, k.evidence[0], "HumanUpload"),
         (2u64, k.agent_evidence, "AgentUpload"),
@@ -547,6 +547,7 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                 kind: "Invoice".into(),
                 grade: grade.into(),
                 commit: e.doc_commit,
+                uploader: 7,
             },
         )
     })
@@ -1090,9 +1091,14 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                 2 => (vec![ghost], vec![cite(99, ghost.doc_commit)]),
                 _ => (vec![wrong], vec![cite(1, [0; 32])]),
             };
-            let expected =
-                fa_reference::evidence::verdict(&evidence_policy, &copy.class, &held, &citations)
-                    .expect("the evidence oracle refuses every plant");
+            let expected = fa_reference::evidence::verdict(
+                &evidence_law,
+                &copy.class,
+                &held,
+                &citations,
+                &fa_reference::evidence::Attestations::default(),
+            )
+            .expect("the evidence oracle refuses every plant");
             let r = kernel_post_citing(&mut k, &copy, usd, &refs, evidence)
                 .expect_err("an evidence plant was admitted");
             assert_eq!(

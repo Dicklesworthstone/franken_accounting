@@ -17,6 +17,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod attestation;
 pub mod entity;
 pub mod evidence;
 pub mod genesis;
@@ -29,6 +30,9 @@ pub mod rows;
 pub mod schedule;
 pub mod sweep;
 
+pub use attestation::{
+    AttestationClaim, Attested, read_attestation, record_manual_assertion, record_review,
+};
 pub use evidence::{Document, DocumentAdded, add_document, read_document};
 pub use genesis::{
     AccountSpec, BookContext, BookSpec, ChartInstalled, LegalEntitySpec, TimeZonePolicy,

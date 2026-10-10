@@ -136,12 +136,20 @@ pub mod code {
     pub const GRADE_UNVERIFIED: &str = "FA-REF-084";
     /// A stored Document's mirrors disagree with its payload, or its payload does not verify.
     pub const DOCUMENT_DRIFT: &str = "FA-REF-085";
-    /// The minimum is met only by counting self-sourced documents, which count once reviewed (fa-g21).
+    /// The minimum is met only by counting self-sourced documents no reviewer other than the uploader has attested.
     pub const SELF_SOURCED: &str = "FA-REF-086";
     /// Supplemental evidence names an entry that is missing, not an Entry, or whose digest mismatches.
     pub const SUPPLEMENT_TARGET: &str = "FA-REF-087";
     /// `ErasureCut` is a registered absence: the substrate's erasure tombstones are not live (R-ERASE).
     pub const ERASURE_ABSENT: &str = "FA-REF-088";
+    /// An attestation's subject is not one its claim can bind: a Reviewed names a document this book does not hold, or a ManualAssertion's class does not admit one.
+    pub const ATTESTATION_SUBJECT: &str = "FA-REF-110";
+    /// The reviewer of a document is the principal that uploaded it (SoD).
+    pub const SELF_REVIEW: &str = "FA-REF-111";
+    /// A ManualAssertion's reason code is not registered in `reason_codes.toml`.
+    pub const REASON_CODE: &str = "FA-REF-112";
+    /// A stored Attestation does not verify, its mirrors disagree with its payload, or it breaks a law its recording enforces.
+    pub const ATTESTATION_DRIFT: &str = "FA-REF-113";
     /// The entry moves value out of a limited account below its lower bound
     /// (`net − pending_out − x < lower_bound`, plan §5.4).
     pub const AVAILABILITY_LOWER: &str = "FA-REF-090";

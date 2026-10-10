@@ -89,6 +89,9 @@ pub struct Minimum {
     pub requirement: Requirement,
     pub min_documents: u16,
     pub kinds: KindSet,
+    /// A preparer's ManualAssertion attestation (with a registered reason)
+    /// satisfies a `documents` minimum in place of a document (plan §9.2).
+    pub manual_assertion: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -246,11 +249,24 @@ impl EvidencePolicy {
                     ));
                 }
             };
+            let manual_assertion = match t.get("manual_assertion") {
+                None => false,
+                Some(v) => v.as_bool().ok_or_else(|| {
+                    invalid(R, format!("`{class}`: manual_assertion is a boolean"))
+                })?,
+            };
+            if manual_assertion && requirement != Requirement::Documents {
+                return Err(invalid(
+                    R,
+                    format!("`{class}`: only a `documents` minimum admits a manual assertion"),
+                ));
+            }
             minimums.push(Minimum {
                 class,
                 requirement,
                 min_documents,
                 kinds: kinds_set,
+                manual_assertion,
             });
         }
         for c in &classes.rows {
@@ -337,12 +353,15 @@ mod tests {
                 ClassKind::Posting => assert_ne!(m.requirement, Requirement::ControlRecord),
             }
         }
-        // The three classes plan §9.2 names require a document.
+        // The three classes plan §9.2 names require a document, or a
+        // preparer's manual assertion; no other class admits one.
         for class in ["Original", "Adjusting", "Reclassification"] {
             let m = p.minimum(class).unwrap();
             assert_eq!(m.requirement, Requirement::Documents, "{class}");
             assert!(m.min_documents >= 1, "{class}");
+            assert!(m.manual_assertion, "{class}");
         }
+        assert_eq!(p.minimums.iter().filter(|m| m.manual_assertion).count(), 3);
         let rate = p.kind_by_name("Rate").unwrap().tag;
         let invoice = p.kind_by_name("Invoice").unwrap().tag;
         let reval = &p.minimum("Revaluation").unwrap().kinds;
@@ -359,7 +378,7 @@ mod tests {
     fn malformed_policies_are_refused() {
         let classes = EntryClasses::embedded().unwrap();
         let good = EVIDENCE_POLICY;
-        let cases: [(&str, String); 8] = [
+        let cases: [(&str, String); 9] = [
             (
                 "a class without a row",
                 good.replacen(
@@ -395,6 +414,14 @@ mod tests {
             (
                 "an unknown requirement",
                 good.replacen("requirement = \"target\"", "requirement = \"vibes\"", 1),
+            ),
+            (
+                "a manual assertion on a target row",
+                good.replacen(
+                    "class = \"Reversal\"\nrequirement = \"target\"\nmin_documents = 0\nkinds = \"any\"\n",
+                    "class = \"Reversal\"\nrequirement = \"target\"\nmin_documents = 0\nkinds = \"any\"\nmanual_assertion = true\n",
+                    1,
+                ),
             ),
             (
                 "an empty kinds list",

@@ -12,10 +12,11 @@
 #
 # Requirements:
 #   documents       at least `min_documents` cited documents whose kind is in
-#                   `kinds` ("any" = every registered kind). The plan's
-#                   alternative — a preparer's `ManualAssertion` attestation
-#                   with a registered reason code — needs Attestation objects
-#                   and is not admitted until that slice lands.
+#                   `kinds` ("any" = every registered kind). Where the row
+#                   says `manual_assertion = true` (the classes plan §9.2
+#                   names), a preparer's ManualAssertion attestation over the
+#                   entry's proposal digest, with a reason code from
+#                   reason_codes.toml, satisfies the minimum instead.
 #   target          the closure is the superseded / resolved target's
 #                   (§9.2: "for a resolution, reversal, or restatement — the
 #                   target entries"); cited documents are optional and are
@@ -164,6 +165,7 @@ class = "Original"
 requirement = "documents"
 min_documents = 1
 kinds = "any"
+manual_assertion = true
 
 # A hold is the economic claim its Resolution(Posts) later posts; the
 # resolution inherits this closure, so the hold carries the document.
@@ -197,12 +199,14 @@ class = "Reclassification"
 requirement = "documents"
 min_documents = 1
 kinds = "any"
+manual_assertion = true
 
 [[minimum]]
 class = "Adjusting"
 requirement = "documents"
 min_documents = 1
 kinds = "any"
+manual_assertion = true
 
 [[minimum]]
 class = "Closing"

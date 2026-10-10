@@ -541,6 +541,46 @@ impl Book {
         Ok(with_store!(&self.store, db => fa_journal::read_document(db, oid))?)
     }
 
+    /// Record a `Reviewed` attestation over the document at `document`
+    /// (plan §9.3) by the capability's holder, who must hold `approve` and
+    /// must not have uploaded it; a self-sourced document then counts toward
+    /// the evidence minimum of entries posted after it.
+    pub fn record_review(
+        &mut self,
+        capability: &fa_journal::Capability,
+        document: &fa_model::Oid,
+        against: Vec<fa_model::Oid>,
+    ) -> Outcome<fa_journal::Attested> {
+        let reviewer = capability.holder();
+        let document = *document;
+        let purposes = self.purposes();
+        let ctx = &self.ctx;
+        let runtime = &self.runtime;
+        Ok(with_store!(&mut self.store, db => runtime.block_on(async {
+            fa_journal::record_review(db, &purposes, ctx, capability, reviewer, document, against).await
+        }))?)
+    }
+
+    /// Record the preparer's `ManualAssertion` over `proposal` (plan §9.2):
+    /// no document exists, for a registered `reason_code`, as `statement`
+    /// says (sealed under the book key with fresh entropy). Posting that
+    /// exact proposal then meets the minimum where its class admits one.
+    pub fn record_manual_assertion(
+        &mut self,
+        capability: &fa_journal::Capability,
+        proposal: &fa_model::EntryPayload,
+        reason_code: u16,
+        statement: &str,
+    ) -> Outcome<fa_journal::Attested> {
+        let statement = self.seal_text(statement)?;
+        let purposes = self.purposes();
+        let ctx = &self.ctx;
+        let runtime = &self.runtime;
+        Ok(with_store!(&mut self.store, db => runtime.block_on(async {
+            fa_journal::record_manual_assertion(db, &purposes, ctx, capability, proposal, reason_code, statement).await
+        }))?)
+    }
+
     /// Read a committed entry back by its derived identity, verifying its digests.
     pub fn read_entry(&self, vid: VId) -> Result<Option<(Entry, CommitSeq)>, BookError> {
         Ok(with_store!(&self.store, db => fa_journal::post::read_entry(db, vid))?)
@@ -963,6 +1003,116 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["1000", "6000"]
         );
+    }
+
+    #[test]
+    fn attestations_through_the_facade_promote_an_upload_and_stand_in_for_a_document() {
+        let book_id = Id128([0x47; 16]);
+        let (spec, usd) = spec(book_id);
+        let mut book = Book::create_memory(
+            BookKeys::for_development(0x47),
+            spec,
+            Entropy::deterministic(0x47),
+        )
+        .expect("create");
+        let (preparer, reviewer) = (VId(1), VId(2));
+        let day = DateDay::from_ymd(2026, 3, 15).unwrap();
+        book.install_chart(&chart(usd), preparer, day, b"chart")
+            .expect("kernel")
+            .expect("installs");
+        let (_, periods) = book.create_periods(2026).expect("periods");
+        let march = periods
+            .iter()
+            .find(|p| p.contains(day) && p.kind == PeriodKind::Normal)
+            .unwrap()
+            .code
+            .clone();
+        book.transition_period(&march, PeriodTransition::Open, preparer, 1, day, b"open")
+            .expect("kernel")
+            .expect("opens");
+        let upload = fa_journal::Document {
+            book_id,
+            kind: 1,
+            mime: "text/plain".into(),
+            grade: 4,
+            retrieved_by: preparer,
+            bytes: b"INVOICE (an agent's upload, facade fixture)".to_vec(),
+        };
+        book.add_document(&upload)
+            .expect("kernel")
+            .expect("admitted");
+        let rent = |book: &Book, key: &[u8], evidence: Vec<fa_model::EvidenceRef>| {
+            let legs = vec![
+                LegPayload::simple(
+                    Side::Debit,
+                    account_vid(book_id, "6000"),
+                    Amount::new(usd, 900),
+                ),
+                LegPayload::simple(
+                    Side::Credit,
+                    account_vid(book_id, "1000"),
+                    Amount::new(usd, 900),
+                ),
+            ];
+            EntryPayload {
+                schema_minor: 0,
+                book_id,
+                branch_id: Id128::TRUNK,
+                class: EntryClass::ORIGINAL,
+                effective_date: day,
+                document_date: None,
+                description: book.seal_text("rent").unwrap(),
+                effective_period: None,
+                unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
+                legs,
+                control: None,
+                base_totals: None,
+                idempotency_key: key.to_vec(),
+                origin: EntryOrigin::Intent {
+                    intent_oid: Oid([1; 32]),
+                    intent_kind: 1,
+                },
+                principal_ref: preparer,
+                session_ref: None,
+                evidence,
+                supersession: Vec::new(),
+                pending: None,
+                external_ids: Vec::new(),
+                extensions: Vec::new(),
+                tags: Vec::new(),
+            }
+        };
+        let request = |proposal: EntryPayload| PostRequest {
+            proposal,
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: Capability::embedded(preparer, &["post"]).expect("post"),
+        };
+        let cites_upload = rent(&book, b"reviewed", vec![upload.evidence_ref(1)]);
+        let refused = book
+            .post(request(cites_upload.clone()))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refused.code, "FA-REF-086");
+        let approver = Capability::embedded(reviewer, &["approve"]).expect("approve");
+        let reviewed = book
+            .record_review(&approver, &upload.oid(), Vec::new())
+            .expect("kernel")
+            .expect("recorded");
+        assert!(!reviewed.already_recorded);
+        assert!(book.post(request(cites_upload)).unwrap().is_ok());
+
+        let undocumented = rent(&book, b"asserted", Vec::new());
+        let poster = Capability::embedded(preparer, &["post"]).expect("post");
+        let refused = book
+            .record_manual_assertion(&poster, &undocumented, 999, "no invoice is issued")
+            .expect("kernel")
+            .unwrap_err();
+        assert_eq!(refused.code, "FA-REF-112");
+        book.record_manual_assertion(&poster, &undocumented, 1, "no invoice is issued")
+            .expect("kernel")
+            .expect("recorded");
+        assert!(book.post(request(undocumented)).unwrap().is_ok());
     }
 
     #[test]

@@ -2094,7 +2094,7 @@ fn evidence_attached_after_commit_is_a_new_object_and_the_entry_never_changes() 
 
 // ---------------------------------------------------------------------------
 // Self-sourced evidence does not meet the minimum until reviewed (fa-lp6,
-// plan §9.3; the Reviewed attestation is bead fa-g21)
+// plan §9.3; the Reviewed attestation itself is tested below, fa-g21)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -2106,7 +2106,8 @@ fn self_sourced_documents_do_not_meet_the_minimum_until_reviewed() {
     // Only the agent's document: refused, naming fa-g21; nothing written.
     let r = h.post_citing(&agents, b"self-only").unwrap_err();
     assert_eq!((r.code, r.exit), ("FA-REF-086", exit::REFUSAL), "{r}");
-    assert!(r.cite.contains("fa-g21"), "{}", r.cite);
+    assert!(r.cite.contains("Reviewed"), "{}", r.cite);
+    assert!(r.fix.contains("record_review"), "{}", r.fix);
     assert!(r.fix.contains("--grade HumanUpload"), "{}", r.fix);
     let evid = entry_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), b"self-only");
     assert!(h.db.vertex(evid).unwrap().is_none());
@@ -2129,4 +2130,479 @@ fn self_sourced_documents_do_not_meet_the_minimum_until_reviewed() {
     let req = h.request(rev, &["post"]);
     let r = h.post(req);
     assert!(r.is_ok(), "{r:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Attestations (fa-g21, plan §9.2–§9.3): a Reviewed attestation by another
+// principal promotes a self-sourced document; the preparer's ManualAssertion
+// stands in for a document where the class's row admits one. Each step logs
+// what the kernel decided (`cargo test -- --nocapture`).
+// ---------------------------------------------------------------------------
+
+const REVIEWER: VId = VId(8);
+const OTHER_REVIEWER: VId = VId(9);
+
+impl Harness {
+    fn review_as(
+        &mut self,
+        cap: &Capability,
+        reviewer: VId,
+        document: Oid,
+        against: Vec<Oid>,
+    ) -> Result<Attested, Refusal> {
+        let ctx = self.ctx();
+        let db = &mut self.db;
+        let book = &self.book;
+        self.runtime
+            .block_on(async move {
+                record_review(db, &ctx, book, cap, reviewer, document, against).await
+            })
+            .expect("kernel")
+    }
+
+    fn review(
+        &mut self,
+        reviewer: VId,
+        document: Oid,
+        against: Vec<Oid>,
+    ) -> Result<Attested, Refusal> {
+        let cap = Capability::embedded(reviewer, &["approve"]).expect("approve");
+        self.review_as(&cap, reviewer, document, against)
+    }
+
+    fn statement(&self, text: &str, nonce: u8) -> Erasable<String> {
+        Erasable::seal(
+            &text.to_string(),
+            None,
+            &self.book.seal_key,
+            [nonce; 32],
+            [nonce; 24],
+        )
+    }
+
+    fn assert_manually(
+        &mut self,
+        holder: VId,
+        proposal: &EntryPayload,
+        reason: u16,
+        statement: Erasable<String>,
+    ) -> Result<Attested, Refusal> {
+        let ctx = self.ctx();
+        let cap = Capability::embedded(holder, &["post"]).expect("post");
+        let db = &mut self.db;
+        let book = &self.book;
+        self.runtime
+            .block_on(async move {
+                record_manual_assertion(db, &ctx, book, &cap, proposal, reason, statement).await
+            })
+            .expect("kernel")
+    }
+
+    /// Write `a` as a stored Attestation with every mirror right, outside
+    /// every law: a forged row the kernel would never have recorded.
+    fn forge(&mut self, a: &fa_journal::attestation::Attestation) -> VId {
+        use fa_journal::attestation::CapabilityBinding;
+        use fa_model::symbols::label;
+        let vid = a.vid().expect("an identity");
+        let binding = CapabilityBinding {
+            profile: fa_policy::Profile::Human,
+            capability_commitment: [0xf0; 32],
+        };
+        let mut props = vec![
+            (
+                property::FA_PAYLOAD,
+                CanonicalScalar::bytes(a.canonical_bytes(&binding).unwrap()).unwrap(),
+            ),
+            (
+                property::FA_DIGEST,
+                CanonicalScalar::bytes(a.signed_digest().unwrap().to_vec()).unwrap(),
+            ),
+            (
+                property::BOOK_ID,
+                CanonicalScalar::bytes(a.book_id.0.to_vec()).unwrap(),
+            ),
+            (
+                property::CODE,
+                CanonicalScalar::ucs_basic_text(a.claim.name()).unwrap(),
+            ),
+        ];
+        props.sort_by_key(|(k, _)| k.0);
+        let mut batch = fgdb::WriteBatch::new(relation::ATTESTS);
+        batch.create_vertex(vid, vec![label::ATTESTATION], props);
+        self.write_raw(batch);
+        vid
+    }
+}
+
+fn entry_absent(h: &Harness, key: &[u8]) -> bool {
+    let evid = entry_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), key);
+    h.db.vertex(evid).unwrap().is_none()
+}
+
+#[test]
+fn a_review_by_another_approver_promotes_an_agent_upload_and_self_review_is_refused() {
+    use fa_journal::attestation::{AttestationClaim, Subject, review_vid};
+    let mut h = harness();
+    let agents = h.document(INVOICE, AGENT_UPLOAD, b"INVOICE 601 (an agent uploaded it)");
+    h.add_document(&agents).expect("admitted");
+    let oid = agents.oid();
+
+    // Unreviewed: refused 086, naming the Reviewed remedy; nothing written.
+    let r = h.post_citing(&agents, b"g21-before").unwrap_err();
+    eprintln!(
+        "g21 review: post before any review -> {} {}",
+        r.code, r.message
+    );
+    assert_eq!((r.code, r.exit), ("FA-REF-086", exit::REFUSAL), "{r}");
+    assert!(r.fix.contains("record_review"), "{}", r.fix);
+    assert!(entry_absent(&h, b"g21-before"));
+
+    // The uploader reviewing its own upload: SoD, exit 7, nothing written.
+    let r = h.review(PRINCIPAL, oid, Vec::new()).unwrap_err();
+    eprintln!("g21 review: self-review -> {} {}", r.code, r.message);
+    assert_eq!((r.code, r.exit), ("FA-REF-111", exit::SAFETY), "{r}");
+    assert!(
+        h.db.vertex(review_vid(h.book.book_id, &oid))
+            .unwrap()
+            .is_none()
+    );
+
+    // The Human-profile hook: a capability without `approve` is refused, and
+    // an Agent capability is refused before any read (it can never hold it).
+    let post_only = Capability::embedded(REVIEWER, &["post"]).expect("post");
+    let r = h
+        .review_as(&post_only, REVIEWER, oid, Vec::new())
+        .unwrap_err();
+    eprintln!(
+        "g21 review: reviewer without approve -> {} {}",
+        r.code, r.message
+    );
+    assert_eq!((r.code, r.exit), ("FA-REF-011", exit::SAFETY), "{r}");
+    let agent = fa_policy::Capability::new(
+        REVIEWER,
+        fa_policy::Profile::Agent,
+        &[fa_policy::Op::Post],
+        REVIEWER,
+    )
+    .expect("an agent capability");
+    let r = h.review_as(&agent, REVIEWER, oid, Vec::new()).unwrap_err();
+    eprintln!("g21 review: agent reviewer -> {} {}", r.code, r.message);
+    assert_eq!(r.code, "FA-REF-013", "{r}");
+
+    // A document the book does not hold, as the subject or compared against.
+    let ghost = h.document(INVOICE, HUMAN_UPLOAD, b"never recorded");
+    let r = h.review(REVIEWER, ghost.oid(), Vec::new()).unwrap_err();
+    eprintln!("g21 review: unheld subject -> {} {}", r.code, r.message);
+    assert_eq!((r.code, r.exit), ("FA-REF-110", exit::REFUSAL), "{r}");
+    let r = h.review(REVIEWER, oid, vec![ghost.oid()]).unwrap_err();
+    eprintln!("g21 review: unheld comparison -> {} {}", r.code, r.message);
+    assert_eq!(r.code, "FA-REF-110", "{r}");
+    let r = h.review(REVIEWER, oid, vec![oid]).unwrap_err();
+    assert_eq!(
+        r.code, "FA-REF-100",
+        "a document is not compared against itself: {r}"
+    );
+
+    // Another approver reviews it against the person's invoice: recorded,
+    // with ATTESTS to the document and every mirror its payload states.
+    let against = vec![h.evidence[0].document_oid];
+    let reviewed = h.review(REVIEWER, oid, against.clone()).expect("recorded");
+    eprintln!(
+        "g21 review: recorded {:032x} at {:?}",
+        reviewed.vid.0, reviewed.recorded_at
+    );
+    assert!(!reviewed.already_recorded);
+    assert_eq!(reviewed.vid, review_vid(h.book.book_id, &oid));
+    assert!(
+        h.db.edge(edge_id(relation::ATTESTS, reviewed.vid, document_vid(&oid)))
+            .unwrap()
+            .is_some()
+    );
+    let (stored, seq) = read_attestation(&h.db, reviewed.vid)
+        .unwrap()
+        .expect("readable");
+    assert_eq!(seq, reviewed.recorded_at);
+    assert_eq!(stored.attestation.principal, REVIEWER);
+    assert_eq!(stored.attestation.subject, Subject::Document(oid));
+    assert_eq!(
+        stored.attestation.claim,
+        AttestationClaim::Reviewed {
+            against: against.clone()
+        }
+    );
+    assert_eq!(stored.binding.profile, fa_policy::Profile::Human);
+    assert_eq!(stored.signed_digest, reviewed.signed_digest);
+
+    // The same review again is the recorded outcome; another reviewer, or
+    // another comparison, is a conflict (one Reviewed per document).
+    let again = h.review(REVIEWER, oid, against.clone()).expect("recorded");
+    assert!(again.already_recorded);
+    assert_eq!(again.recorded_at, reviewed.recorded_at);
+    let r = h.review(OTHER_REVIEWER, oid, Vec::new()).unwrap_err();
+    eprintln!("g21 review: a second reviewer -> {} {}", r.code, r.message);
+    assert_eq!((r.code, r.exit), ("FA-REF-032", exit::CONFLICT), "{r}");
+
+    // Now the agent's upload counts: the post commits, linked to it.
+    let posted = h.post_citing(&agents, b"g21-after").expect("admitted");
+    let (entry, _) = committed(&posted).expect("committed");
+    eprintln!(
+        "g21 review: post after the review -> committed {:032x}",
+        entry.vid.0
+    );
+    assert!(
+        h.db.edge(edge_id(
+            relation::EVIDENCED_BY,
+            entry.vid,
+            document_vid(&oid)
+        ))
+        .unwrap()
+        .is_some()
+    );
+    let (_, entry_seq) = read_entry(&h.db, entry.vid).unwrap().expect("entry");
+    assert!(
+        reviewed.recorded_at < entry_seq,
+        "the review was known first"
+    );
+}
+
+#[test]
+fn a_preparers_manual_assertion_stands_in_for_a_document_only_where_registered() {
+    use fa_journal::attestation::{AttestationClaim, Subject, manual_assertion_vid};
+    let mut h = harness();
+    let mut original = h.proposal(h.rent_legs(4_200), b"g21-manual", EntryClass::ORIGINAL);
+    original.evidence = Vec::new();
+    let digest = original.proposal_digest().unwrap();
+
+    // No document, no assertion: 080, whose fix names the assertion.
+    let r = h.post(h.request(original.clone(), &["post"])).unwrap_err();
+    eprintln!("g21 manual: post with neither -> {} {}", r.code, r.message);
+    assert_eq!((r.code, r.exit), ("FA-REF-080", exit::REFUSAL), "{r}");
+    assert!(r.fix.contains("record_manual_assertion"), "{}", r.fix);
+
+    // An unregistered reason: exit 2, listing the registered ones.
+    let text = "the landlord issues no invoice; rent is fixed by the lease of 2025-12-01";
+    let r = h
+        .assert_manually(PRINCIPAL, &original, 999, h.statement(text, 1))
+        .unwrap_err();
+    eprintln!("g21 manual: reason 999 -> {} {}", r.code, r.message);
+    assert_eq!((r.code, r.exit), ("FA-REF-112", exit::USAGE), "{r}");
+    assert!(r.fix.contains("1 NoDocumentIssued"), "{}", r.fix);
+
+    // A class whose row admits no assertion.
+    let mut hold = h.pending(h.rent_legs(4_200), b"g21-manual-hold");
+    hold.evidence = Vec::new();
+    let r = h
+        .assert_manually(PRINCIPAL, &hold, 1, h.statement(text, 2))
+        .unwrap_err();
+    eprintln!("g21 manual: a Pending proposal -> {} {}", r.code, r.message);
+    assert_eq!((r.code, r.exit), ("FA-REF-110", exit::REFUSAL), "{r}");
+
+    // Not the preparer's: the capability is not the proposal's principal.
+    let r = h
+        .assert_manually(REVIEWER, &original, 1, h.statement(text, 3))
+        .unwrap_err();
+    eprintln!("g21 manual: another principal -> {} {}", r.code, r.message);
+    assert_eq!((r.code, r.exit), ("FA-REF-011", exit::SAFETY), "{r}");
+
+    // A blank statement, or one sealed under a key this book does not hold.
+    let r = h
+        .assert_manually(PRINCIPAL, &original, 1, h.statement("   ", 4))
+        .unwrap_err();
+    assert_eq!(r.code, "FA-REF-100", "{r}");
+    let foreign = Erasable::seal(
+        &text.to_string(),
+        None,
+        &SealKey([0x99; 32]),
+        [5; 32],
+        [5; 24],
+    );
+    let r = h
+        .assert_manually(PRINCIPAL, &original, 1, foreign)
+        .unwrap_err();
+    assert_eq!(r.code, "FA-REF-100", "{r}");
+    assert!(
+        h.db.vertex(manual_assertion_vid(h.book.book_id, &digest))
+            .unwrap()
+            .is_none(),
+        "no refused assertion was written"
+    );
+
+    // The preparer's assertion with a registered reason: recorded.
+    let asserted = h
+        .assert_manually(PRINCIPAL, &original, 1, h.statement(text, 6))
+        .expect("recorded");
+    eprintln!(
+        "g21 manual: recorded {:032x} at {:?}",
+        asserted.vid.0, asserted.recorded_at
+    );
+    assert_eq!(asserted.vid, manual_assertion_vid(h.book.book_id, &digest));
+    let (stored, _) = read_attestation(&h.db, asserted.vid)
+        .unwrap()
+        .expect("readable");
+    assert_eq!(stored.attestation.subject, Subject::Proposal(digest));
+    assert_eq!(stored.attestation.principal, PRINCIPAL);
+    let manual = match &stored.attestation.claim {
+        AttestationClaim::ManualAssertion {
+            reason_code,
+            statement,
+        } => Some((*reason_code, statement.clone())),
+        AttestationClaim::Reviewed { .. } => None,
+    };
+    let (reason_code, statement) = manual.expect("a ManualAssertion");
+    assert_eq!(reason_code, 1);
+    assert_eq!(
+        statement
+            .open(&h.book.seal_key, fa_model::limits::MAX_DESCRIPTION_BYTES)
+            .unwrap(),
+        text
+    );
+    // Re-sealed, the same statement is the recorded outcome; another is a conflict.
+    let again = h
+        .assert_manually(PRINCIPAL, &original, 1, h.statement(text, 7))
+        .expect("recorded");
+    assert!(again.already_recorded);
+    let r = h
+        .assert_manually(PRINCIPAL, &original, 2, h.statement("lost in the move", 8))
+        .unwrap_err();
+    eprintln!(
+        "g21 manual: a different assertion -> {} {}",
+        r.code, r.message
+    );
+    assert_eq!((r.code, r.exit), ("FA-REF-032", exit::CONFLICT), "{r}");
+
+    // The proposal it binds now posts, and the assertion ATTESTS the entry.
+    let posted = h.post(h.request(original, &["post"])).expect("admitted");
+    let (entry, _) = committed(&posted).expect("committed");
+    eprintln!(
+        "g21 manual: post with the assertion -> committed {:032x}",
+        entry.vid.0
+    );
+    assert!(
+        h.db.edge(edge_id(relation::ATTESTS, asserted.vid, entry.vid))
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        h.db.in_neighbours(entry.vid, relation::ATTESTS).unwrap(),
+        vec![asserted.vid]
+    );
+
+    // It binds that proposal only: another one without a document is 080.
+    let mut other = h.proposal(
+        h.rent_legs(4_200),
+        b"g21-manual-other",
+        EntryClass::ORIGINAL,
+    );
+    other.evidence = Vec::new();
+    let r = h.post(h.request(other, &["post"])).unwrap_err();
+    assert_eq!(r.code, "FA-REF-080", "{r}");
+
+    // Adjusting admits one too.
+    let mut adjusting = h.proposal(h.rent_legs(900), b"g21-manual-adj", EntryClass::ADJUSTING);
+    adjusting.evidence = Vec::new();
+    h.assert_manually(
+        PRINCIPAL,
+        &adjusting,
+        4,
+        h.statement("year-end accrual estimate", 9),
+    )
+    .expect("recorded");
+    let r = h.post(h.request(adjusting, &["post"]));
+    eprintln!("g21 manual: an Adjusting with an assertion -> {r:?}");
+    assert!(matches!(r, Ok(Posted::Committed { .. })), "{r:?}");
+}
+
+#[test]
+fn forged_attestations_are_refused_where_the_kernel_relies_on_them() {
+    use fa_journal::attestation::{Attestation, AttestationClaim, Subject};
+    let mut h = harness();
+
+    // A self-review written outside the law: the post re-checks SoD (111).
+    let agents = h.document(INVOICE, AGENT_UPLOAD, b"INVOICE 701 (agent upload)");
+    h.add_document(&agents).expect("admitted");
+    h.forge(&Attestation {
+        book_id: h.book.book_id,
+        claim: AttestationClaim::Reviewed {
+            against: Vec::new(),
+        },
+        subject: Subject::Document(agents.oid()),
+        principal: PRINCIPAL,
+    });
+    let r = h.post_citing(&agents, b"g21-forged-self").unwrap_err();
+    eprintln!(
+        "g21 forged: a stored self-review -> {} {}",
+        r.code, r.message
+    );
+    assert_eq!((r.code, r.exit), ("FA-REF-111", exit::SAFETY), "{r}");
+    assert!(entry_absent(&h, b"g21-forged-self"));
+
+    // An assertion with a reason the registry does not hold: 112 at post.
+    let mut p = h.proposal(h.rent_legs(300), b"g21-forged-reason", EntryClass::ORIGINAL);
+    p.evidence = Vec::new();
+    h.forge(&Attestation {
+        book_id: h.book.book_id,
+        claim: AttestationClaim::ManualAssertion {
+            reason_code: 999,
+            statement: h.statement("forged", 1),
+        },
+        subject: Subject::Proposal(p.proposal_digest().unwrap()),
+        principal: PRINCIPAL,
+    });
+    let r = h.post(h.request(p, &["post"])).unwrap_err();
+    eprintln!(
+        "g21 forged: an unregistered stored reason -> {} {}",
+        r.code, r.message
+    );
+    assert_eq!((r.code, r.exit), ("FA-REF-112", exit::USAGE), "{r}");
+    assert!(entry_absent(&h, b"g21-forged-reason"));
+
+    // An assertion by someone other than the preparer: drift (113, exit 8).
+    let mut p = h.proposal(
+        h.rent_legs(300),
+        b"g21-forged-principal",
+        EntryClass::ORIGINAL,
+    );
+    p.evidence = Vec::new();
+    h.forge(&Attestation {
+        book_id: h.book.book_id,
+        claim: AttestationClaim::ManualAssertion {
+            reason_code: 1,
+            statement: h.statement("forged", 2),
+        },
+        subject: Subject::Proposal(p.proposal_digest().unwrap()),
+        principal: REVIEWER,
+    });
+    let r = h.post(h.request(p, &["post"])).unwrap_err();
+    eprintln!(
+        "g21 forged: another principal's assertion -> {} {}",
+        r.code, r.message
+    );
+    assert_eq!((r.code, r.exit), ("FA-REF-113", exit::VERIFICATION), "{r}");
+    assert!(entry_absent(&h, b"g21-forged-principal"));
+
+    // A real review whose claim mirror is rewritten: drift at post and on read.
+    let other = h.document(INVOICE, AGENT_UPLOAD, b"INVOICE 702 (agent upload)");
+    h.add_document(&other).expect("admitted");
+    let reviewed = h
+        .review(REVIEWER, other.oid(), Vec::new())
+        .expect("recorded");
+    let mut batch = fgdb::WriteBatch::new(relation::ATTESTS);
+    batch.set_vertex_property(
+        reviewed.vid,
+        property::CODE,
+        Some(CanonicalScalar::ucs_basic_text("ManualAssertion").unwrap()),
+    );
+    h.write_raw(batch);
+    let r = h.post_citing(&other, b"g21-drift").unwrap_err();
+    eprintln!("g21 forged: a drifted review -> {} {}", r.code, r.message);
+    assert_eq!((r.code, r.exit), ("FA-REF-113", exit::VERIFICATION), "{r}");
+    assert!(entry_absent(&h, b"g21-drift"));
+    assert!(
+        matches!(read_attestation(&h.db, reviewed.vid), Err(KernelError::Corrupt(ref why)) if why.contains("FA-REF-113")),
+        "{:?}",
+        read_attestation(&h.db, reviewed.vid)
+    );
+    // Recording the same review again never vouches for the drifted row.
+    let r = h.review(REVIEWER, other.oid(), Vec::new()).unwrap_err();
+    assert_eq!(r.code, "FA-REF-113", "{r}");
 }

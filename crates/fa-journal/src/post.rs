@@ -51,7 +51,7 @@ use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
 use crate::entity;
-use crate::evidence::{evidenced_by, resolve_evidence};
+use crate::evidence::{evidence_edges, resolve_evidence};
 use crate::genesis::{BookContext, UnitPolicy};
 use crate::limit;
 use crate::policy;
@@ -727,11 +727,13 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
 
     // 5b. Evidence minimum (plan §9.2, FA-INV-05 `evidence-minimum`): every
     //     citation names a document this book holds under its exact
-    //     commitment, read as a witness of this transaction, and the class's
-    //     registered minimum holds. Nothing posts without a why.
+    //     commitment, read as a witness of this transaction, as is the
+    //     Reviewed attestation of each self-sourced one and, where the class
+    //     admits one, the preparer's ManualAssertion; the class's registered
+    //     minimum holds. Nothing posts without a why.
     let evidence_policy =
         EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
-    let documents = match resolve_evidence(&txn, db, &evidence_policy, proposal)? {
+    let evidence = match resolve_evidence(&txn, db, &evidence_policy, proposal)? {
         Ok(d) => d,
         Err(r) => {
             txn.abort();
@@ -1502,9 +1504,7 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
         batches.push(settles);
         batches.push(unsettles);
     }
-    if let Some(edges) = evidenced_by(evid, &documents) {
-        batches.push(edges);
-    }
+    batches.extend(evidence_edges(evid, &evidence));
     batches.retain(|b| !b.is_empty());
     txn.write_ordered(db, batches)?;
 

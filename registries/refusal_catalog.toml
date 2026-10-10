@@ -314,7 +314,7 @@ name = "EVIDENCE_MINIMUM"
 owners = ["fa-journal"]
 exit = "refusal"
 cite = "registries/evidence_policy.toml [[minimum]] class = \"{class}\" (FA-INV-05 evidence-minimum)"
-fix = "record the source document with `fa document add <file> --kind <Kind> --json` and cite it in the intent's `evidence` (or --evidence <oid>)"
+fix = "record the source document with `fa document add <file> --kind <Kind> --json` and cite it in the intent's `evidence` (or --evidence <oid>); where the class's row admits one and no document exists, the preparer records a ManualAssertion over the proposal with a reason from reason_codes.toml before posting"
 
 [[refusal]]
 code = "FA-REF-081"
@@ -361,8 +361,8 @@ code = "FA-REF-086"
 name = "SELF_SOURCED"
 owners = ["fa-journal"]
 exit = "refusal"
-cite = "plan §9.3 (self-sourced evidence: AgentUpload, Generated); bead fa-g21 (the Reviewed attestation, not yet implemented)"
-fix = "cite a document a person or third party supplied, recorded with `fa document add <file> --grade HumanUpload --json` by that person"
+cite = "plan §9.3 (self-sourced evidence: AgentUpload, Generated; it counts once an approver other than the uploader records a Reviewed attestation)"
+fix = "have a principal other than the uploader, holding approve, record a Reviewed attestation over each such document; or cite a document a person or third party supplied, recorded with `fa document add <file> --grade HumanUpload --json` by that person"
 
 [[refusal]]
 code = "FA-REF-087"
@@ -502,6 +502,39 @@ owners = ["fa-journal"]
 exit = "refusal"
 cite = "plan §4.1 (Book.entities: a leg posts for a declared legal entity)"
 fix = "name one of the book's declared entities (fa book info --json lists them); a new entity is declared at genesis"
+
+# ---- Attestations (110–119) ----------------------------------------------
+[[refusal]]
+code = "FA-REF-110"
+name = "ATTESTATION_SUBJECT"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §9.2–§9.3 (a Reviewed attestation names documents the book holds; a ManualAssertion stands in for a document only where evidence_policy.toml allows it)"
+fix = "record the document with `fa document add <file> --json` and review the oid it prints; for a class whose row admits no ManualAssertion, cite a document"
+
+[[refusal]]
+code = "FA-REF-111"
+name = "SELF_REVIEW"
+owners = ["fa-journal"]
+exit = "safety"
+cite = "plan §9.3 (self-sourced evidence counts once an approver other than the uploader reviews it); FA-INV-10 (segregation of duties)"
+fix = "have a principal other than the uploader, holding approve, record the Reviewed attestation"
+
+[[refusal]]
+code = "FA-REF-112"
+name = "REASON_CODE"
+owners = ["fa-journal"]
+exit = "usage"
+cite = "registries/reason_codes.toml (scope manual_assertion); plan §9.2"
+fix = "use a registered reason: {listing}; the statement carries the particulars"
+
+[[refusal]]
+code = "FA-REF-113"
+name = "ATTESTATION_DRIFT"
+owners = ["fa-journal"]
+exit = "verification"
+cite = "FA-INV-04 (a mirror is never more authoritative than the payload), FA-INV-05 (the closure verifies)"
+fix = "preserve the store and report the drift; nothing that relies on this attestation is admitted until it is explained"
 
 # ---- Notary (120–125) ----------------------------------------------------
 [[refusal]]

@@ -206,14 +206,16 @@ fn documents_are_recorded_once_and_entries_must_cite_them() -> std::io::Result<(
     );
     assert!(out.contains("evidence_policy.toml"), "{out}");
     assert!(out.contains("fa document add"), "{out}");
-    // An agent's own upload does not meet the minimum until reviewed (fa-g21).
+    // An agent's own upload does not meet the minimum until a principal other
+    // than its uploader reviews it (fa-g21); the refusal names that remedy.
     let out = refused(
         &book,
         &["post", "--intent", &bare, "--evidence", &memo_oid, "--json"],
         "FA-REF-086",
         3,
     );
-    assert!(out.contains("fa-g21"), "{out}");
+    assert!(out.contains("Reviewed attestation"), "{out}");
+    assert!(out.contains("record_review"), "{out}");
     // A citation of a document the book does not hold.
     let unknown = "ab".repeat(32);
     refused(

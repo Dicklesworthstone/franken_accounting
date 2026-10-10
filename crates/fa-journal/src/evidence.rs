@@ -25,23 +25,32 @@
 //!   is not exposed through the embedded handle;
 //! - the provenance grade is recorded at intake from the uploader's declared
 //!   posture (`HumanUpload` | `AgentUpload`); grades derived from a receipt
-//!   chain are refused. `self_sourced` is reported, not enforced: the
-//!   Agent-profile draft gate and the reviewer's `Reviewed` attestation need
-//!   drafts and Attestation objects, which do not exist yet;
-//! - the plan's `ManualAssertion` attestation in place of a document needs
-//!   Attestation objects too, so it is not admitted: such an entry is refused,
-//!   never exempted.
+//!   chain are refused. A self-sourced document (`AgentUpload`, `Generated`)
+//!   counts toward a minimum only once a principal other than its uploader
+//!   has recorded a `Reviewed` attestation over it (plan §9.3; the
+//!   attestation module), read as a witness of the posting transaction; the
+//!   Agent-profile draft gate needs drafts, which do not exist yet, so an
+//!   unreviewed one is refused (FA-REF-086), never exempted;
+//! - the preparer's `ManualAssertion` (plan §9.2) satisfies the minimum in
+//!   place of a document only where the class's row says
+//!   `manual_assertion = true`, and only with a registered reason; it too is
+//!   read as a witness, and the entry gains `ATTESTS` from it.
 
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
     DecodeError, EntryPayload, EntryRef, EvidenceRef, Id128, Oid, Reader, Writer, domain_digest,
 };
 use fa_registry::evidence_policy::{EvidencePolicy, Requirement};
+use fa_registry::reason_codes::ReasonCodes;
 use fgdb::{Database, VertexRow, WriteBatch, WriteTxn};
 use fgdb_crypto::Hasher;
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
+use crate::attestation::{
+    Assertion, MANUAL_ASSERTION_SCOPE, Review, reason_refusal, self_review_refusal,
+    witness_manual_assertion, witness_review,
+};
 use crate::genesis::BookContext;
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{edge_id, prop, scalar_bytes, scalar_text};
@@ -275,7 +284,7 @@ fn intake_refusal(message: impl Into<String>, fix: impl Into<String>) -> Refusal
 /// read (`_fa_digest`, `code`, `book_id`, the label) equals what the payload
 /// says. The payload is the authority; a mirror is never more authoritative
 /// than it (FA-INV-04), so any disagreement is drift, named here.
-fn verify_row(row: &VertexRow, policy: &EvidencePolicy) -> Result<Document, String> {
+pub(crate) fn verify_row(row: &VertexRow, policy: &EvidencePolicy) -> Result<Document, String> {
     if !row.labels.contains(&label::DOCUMENT) {
         return Err("the vertex is not labeled Document".into());
     }
@@ -318,7 +327,7 @@ fn verify_row(row: &VertexRow, policy: &EvidencePolicy) -> Result<Document, Stri
 }
 
 /// The refusal for a Document whose stored row does not verify (exit 8).
-fn drift(oid: &Oid, why: &str) -> Refusal {
+pub(crate) fn drift(oid: &Oid, why: &str) -> Refusal {
     Refusal::new(
         code::DOCUMENT_DRIFT,
         exit::VERIFICATION,
@@ -513,16 +522,24 @@ pub fn read_document<V: asupersync::fs::Vfs + Clone>(
 }
 
 /// The class's evidence minimum over the distinct cited documents (pure; the
-/// posting transaction supplies them, verified). A self-sourced document
-/// (`AgentUpload`, `Generated`: plan §9.3) does not count toward the minimum:
-/// the plan admits it only once a reviewer attests it (`Reviewed`, bead
-/// fa-g21), and that attestation does not exist yet, so an entry that meets
-/// its minimum only by counting self-sourced documents is refused with
-/// FA-REF-086 — stricter than the plan, never an exemption.
+/// posting transaction supplies them, verified, each admissible self-sourced
+/// one with the Reviewed attestation it read, and `manual` with the reason
+/// of the preparer's ManualAssertion when it read one).
+///
+/// In order: a document of an admissible kind counts when it is not
+/// self-sourced, or when it is (`AgentUpload`, `Generated`: plan §9.3) and a
+/// principal other than its uploader reviewed it; a review by the uploader
+/// is refused (FA-REF-111). If the documents fall short and the class's row
+/// admits a ManualAssertion, the preparer's assertion with a registered
+/// reason meets the minimum (an unregistered one: FA-REF-112). Otherwise the
+/// refusal is FA-REF-086 when unreviewed self-sourced documents would have
+/// met it, else FA-REF-080.
 pub fn check_minimum(
     policy: &EvidencePolicy,
+    reasons: &ReasonCodes,
     class_name: &str,
     cited: &[CitedDocument],
+    manual: Option<u16>,
 ) -> Result<(), Refusal> {
     let Some(min) = policy.minimum(class_name) else {
         // The registry is total over the classes; a gap is unsupported, never exempt.
@@ -540,24 +557,42 @@ pub fn check_minimum(
     let needed = usize::from(min.min_documents);
     let admissible: Vec<&CitedDocument> =
         cited.iter().filter(|c| min.kinds.admits(c.kind)).collect();
-    let counted = admissible
-        .iter()
-        .filter(|c| !self_sourced(policy, c.grade))
-        .count();
+    let mut counted = 0usize;
+    for c in &admissible {
+        if !self_sourced(policy, c.grade) {
+            counted += 1;
+            continue;
+        }
+        match c.review {
+            Some(r) if r.reviewer == c.uploader => {
+                return Err(self_review_refusal(&c.oid, r.reviewer));
+            }
+            Some(_) => counted += 1,
+            None => {}
+        }
+    }
     if counted >= needed {
         return Ok(());
+    }
+    if min.manual_assertion
+        && let Some(reason) = manual
+    {
+        return match reasons.get(MANUAL_ASSERTION_SCOPE, reason) {
+            Some(_) => Ok(()),
+            None => Err(reason_refusal(reasons, reason)),
+        };
     }
     if admissible.len() >= needed {
         return Err(Refusal::new(
             code::SELF_SOURCED,
             exit::REFUSAL,
             format!(
-                "`{class_name}` requires at least {needed} document(s); the entry's admissible documents are self-sourced ({} of {}), and a self-sourced document counts only once a reviewer attests it",
+                "`{class_name}` requires at least {needed} document(s); {} of the entry's {} admissible document(s) are self-sourced and unreviewed, and a self-sourced document counts only once a principal other than its uploader reviews it",
                 admissible.len() - counted,
                 admissible.len()
             ),
-            "plan §9.3 (self-sourced evidence: AgentUpload, Generated); bead fa-g21 (the Reviewed attestation, not yet implemented)",
-            "cite a document a person or third party supplied, recorded with `fa document add <file> --grade HumanUpload --json` by the person who supplied it; never re-declare an agent's upload as a person's",
+            "plan §9.3 (self-sourced evidence: AgentUpload, Generated; it counts once an approver other than the uploader records a Reviewed attestation)",
+            "have a principal other than the uploader, holding `approve`, record a Reviewed attestation over each such document (the attestation library's record_review), then post again; or cite a document a person or third party supplied, recorded with `fa document add <file> --grade HumanUpload --json` by that person; never re-declare an agent's upload as a person's",
         ));
     }
     let kinds = policy.kind_names(&min.kinds).join(", ");
@@ -574,6 +609,11 @@ pub fn check_minimum(
             cited.len()
         )
     };
+    let fix = if min.manual_assertion {
+        "record the source document with `fa document add <file> --kind <Kind> --json` and cite the printed `evidence` object in the intent's `evidence`; or, when no document exists, the preparer records a ManualAssertion over this proposal with a reason from reason_codes.toml (the attestation library's record_manual_assertion) before posting it — never fabricate a document"
+    } else {
+        "record the source document with `fa document add <file> --kind <Kind> --json` and cite the printed `evidence` object in the intent's `evidence`; this class admits no ManualAssertion in place of a document — never fabricate one"
+    };
     Err(Refusal::new(
         code::EVIDENCE_MINIMUM,
         exit::REFUSAL,
@@ -581,7 +621,7 @@ pub fn check_minimum(
         format!(
             "registries/evidence_policy.toml [[minimum]] class = \"{class_name}\" (FA-INV-05 evidence-minimum)"
         ),
-        "record the source document with `fa document add <file> --kind <Kind> --json` and cite the printed `evidence` object in the intent's `evidence`; a ManualAssertion attestation in place of a document is not admitted until the attestation slice lands — never fabricate a document",
+        fix,
     ))
 }
 
@@ -589,8 +629,14 @@ pub fn check_minimum(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CitedDocument {
     pub vid: VId,
+    pub oid: Oid,
     pub kind: u8,
     pub grade: u8,
+    /// The principal that brought the bytes into the book.
+    pub uploader: VId,
+    /// The Reviewed attestation over it, when the posting kernel read one
+    /// (it reads one for each admissible self-sourced document).
+    pub review: Option<Review>,
 }
 
 /// Resolve `citations` — strictly ascending by `(oid, commit, role)`, as
@@ -657,8 +703,11 @@ pub fn resolve_documents<V: asupersync::fs::Vfs + Clone>(
                         doc.doc_commit(),
                         Some(CitedDocument {
                             vid: dvid,
+                            oid: e.document_oid,
                             kind: doc.kind,
                             grade: doc.grade,
+                            uploader: doc.retrieved_by,
+                            review: None,
                         }),
                     ),
                     Ok(_) => {
@@ -694,27 +743,87 @@ pub fn resolve_documents<V: asupersync::fs::Vfs + Clone>(
     Ok(Ok(cited))
 }
 
-/// Step 5b of `post`: every citation resolves ([`resolve_documents`]) and
-/// the distinct documents meet the class's minimum. Returns the distinct
-/// documents' vertices, ascending, for `EVIDENCED_BY`.
+/// What step 5b resolved: the edges the entry gains.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedEvidence {
+    /// The distinct cited documents' vertices, ascending (`EVIDENCED_BY`).
+    pub documents: Vec<VId>,
+    /// The preparer's ManualAssertion the minimum rests on (`ATTESTS`).
+    pub manual_assertion: Option<VId>,
+}
+
+/// Step 5b of `post`: every citation resolves ([`resolve_documents`]); the
+/// Reviewed attestation over each admissible self-sourced document is read
+/// as a witness; if the documents fall short of the class's minimum and its
+/// row admits one, the preparer's ManualAssertion over this proposal is read
+/// as a witness; then [`check_minimum`] decides.
 pub fn resolve_evidence<V: asupersync::fs::Vfs + Clone>(
     txn: &WriteTxn,
     db: &Database<V>,
     policy: &EvidencePolicy,
     proposal: &EntryPayload,
-) -> Outcome<Vec<VId>> {
+) -> Outcome<ResolvedEvidence> {
+    let reasons = ReasonCodes::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
     let class_name = proposal.class.name().unwrap_or("?");
-    let cited = match resolve_documents(txn, db, policy, &proposal.evidence)? {
+    let mut cited = match resolve_documents(txn, db, policy, &proposal.evidence)? {
         Ok(cited) => cited,
         Err(r) => return Ok(Err(r)),
     };
-    if let Err(r) = check_minimum(policy, class_name, &cited) {
+    let row = policy
+        .minimum(class_name)
+        .filter(|m| m.requirement == Requirement::Documents);
+    if let Some(min) = row {
+        for c in &mut cited {
+            if min.kinds.admits(c.kind) && self_sourced(policy, c.grade) {
+                c.review = match witness_review(txn, db, proposal.book_id, &c.oid)? {
+                    Ok(review) => review,
+                    Err(r) => return Ok(Err(r)),
+                };
+            }
+        }
+    }
+    let mut manual_assertion = None;
+    let mut verdict = check_minimum(policy, &reasons, class_name, &cited, None);
+    if verdict.is_err() && row.is_some_and(|m| m.manual_assertion) {
+        let digest = proposal.proposal_digest()?;
+        match witness_manual_assertion(txn, db, proposal, &digest)? {
+            Ok(Some(Assertion {
+                attestation,
+                reason_code,
+            })) => {
+                verdict = check_minimum(policy, &reasons, class_name, &cited, Some(reason_code));
+                manual_assertion = Some(attestation);
+            }
+            Ok(None) => {}
+            Err(r) => return Ok(Err(r)),
+        }
+    }
+    if let Err(r) = verdict {
         return Ok(Err(r));
     }
     let mut documents: Vec<VId> = cited.iter().map(|c| c.vid).collect();
     documents.sort_unstable();
     documents.dedup();
-    Ok(Ok(documents))
+    Ok(Ok(ResolvedEvidence {
+        documents,
+        manual_assertion,
+    }))
+}
+
+/// The batches step 5b adds to the posting transaction: `EVIDENCED_BY`
+/// `Entry → Document` for the cited documents and `ATTESTS`
+/// `ManualAssertion → Entry` when the minimum rests on one.
+#[must_use]
+pub fn evidence_edges(entry: VId, resolved: &ResolvedEvidence) -> Vec<WriteBatch> {
+    let mut batches: Vec<WriteBatch> = evidenced_by(entry, &resolved.documents)
+        .into_iter()
+        .collect();
+    if let Some(a) = resolved.manual_assertion {
+        let mut attests = WriteBatch::new(relation::ATTESTS);
+        attests.add_edge(edge_id(relation::ATTESTS, a, entry), a, entry, vec![]);
+        batches.push(attests);
+    }
+    batches
 }
 
 /// The `EVIDENCED_BY` edges `Entry → Document` for the resolved documents.
@@ -735,8 +844,8 @@ pub fn evidenced_by(entry: VId, documents: &[VId]) -> Option<WriteBatch> {
     Some(batch)
 }
 
-/// Whether the document's grade is self-sourced (plan §9.3); reported at
-/// intake and on reads, not yet enforced (no drafts or attestations).
+/// Whether the document's grade is self-sourced (plan §9.3): it counts
+/// toward a minimum only once reviewed by a principal other than its uploader.
 #[must_use]
 pub fn self_sourced(policy: &EvidencePolicy, grade: u8) -> bool {
     policy.grade_by_tag(grade).is_some_and(|g| g.self_sourced)
@@ -1225,12 +1334,19 @@ mod tests {
     #[test]
     fn minimum_counts_admissible_kinds_and_names_the_row() {
         let p = EvidencePolicy::embedded().unwrap();
+        let reasons = ReasonCodes::embedded().unwrap();
+        let check_minimum = |p: &EvidencePolicy, class: &str, cited: &[CitedDocument]| {
+            super::check_minimum(p, &reasons, class, cited, None)
+        };
         let human = p.grade_by_name("HumanUpload").unwrap().tag;
         let agent = p.grade_by_name("AgentUpload").unwrap().tag;
         let doc = |kind: &str, grade: u8| CitedDocument {
             vid: VId(1),
+            oid: Oid([1; 32]),
             kind: p.kind_by_name(kind).unwrap().tag,
             grade,
+            uploader: VId(7),
+            review: None,
         };
         let invoice = doc("Invoice", human);
         let rate = doc("Rate", human);
@@ -1249,13 +1365,14 @@ mod tests {
         assert!(check_minimum(&p, "Resolution", &[]).is_ok());
         assert!(check_minimum(&p, "Pending", &[]).is_err());
         assert!(check_minimum(&p, "NoSuchClass", &[invoice]).is_err());
-        // A self-sourced document does not count (fa-g21); a person's does.
+        // An unreviewed self-sourced document does not count; a person's does.
         let agents = check_minimum(&p, "Original", &[doc("Invoice", agent)]).unwrap_err();
         assert_eq!(
             (agents.code, agents.exit),
             (code::SELF_SOURCED, exit::REFUSAL)
         );
-        assert!(agents.cite.contains("fa-g21"), "{}", agents.cite);
+        assert!(agents.cite.contains("Reviewed"), "{}", agents.cite);
+        assert!(agents.fix.contains("record_review"), "{}", agents.fix);
         assert!(check_minimum(&p, "Original", &[doc("Invoice", agent), invoice]).is_ok());
         // Self-sourced but inadmissible is the plain minimum refusal.
         let wrong_kind =
@@ -1269,5 +1386,71 @@ mod tests {
         );
         // Target classes rest on their target, whatever they cite.
         assert!(check_minimum(&p, "Reversal", &[doc("Memo", agent)]).is_ok());
+    }
+
+    #[test]
+    fn reviews_and_manual_assertions_meet_the_minimum_only_as_registered() {
+        let p = EvidencePolicy::embedded().unwrap();
+        let reasons = ReasonCodes::embedded().unwrap();
+        let agent = p.grade_by_name("AgentUpload").unwrap().tag;
+        let invoice = p.kind_by_name("Invoice").unwrap().tag;
+        let reviewed_by = |reviewer: u128| CitedDocument {
+            vid: VId(1),
+            oid: Oid([1; 32]),
+            kind: invoice,
+            grade: agent,
+            uploader: VId(7),
+            review: Some(Review {
+                attestation: VId(99),
+                reviewer: VId(reviewer),
+            }),
+        };
+        // Reviewed by another principal: it counts.
+        assert!(check_minimum(&p, &reasons, "Original", &[reviewed_by(8)], None).is_ok());
+        // Reviewed by its uploader: refused, SoD (exit 7), naming the document.
+        let own = check_minimum(&p, &reasons, "Original", &[reviewed_by(7)], None).unwrap_err();
+        assert_eq!((own.code, own.exit), (code::SELF_REVIEW, exit::SAFETY));
+        assert!(own.message.contains(&hex(&[1; 32])), "{}", own.message);
+        // A manual assertion stands in for a document where the row admits it.
+        for class in ["Original", "Reclassification", "Adjusting"] {
+            assert!(
+                check_minimum(&p, &reasons, class, &[], Some(1)).is_ok(),
+                "{class}"
+            );
+            let r = check_minimum(&p, &reasons, class, &[], Some(999)).unwrap_err();
+            assert_eq!(
+                (r.code, r.exit),
+                (code::REASON_CODE, exit::USAGE),
+                "{class}"
+            );
+            assert!(r.fix.contains("1 NoDocumentIssued"), "{}", r.fix);
+        }
+        // Nowhere else: the row decides, and the fix says so.
+        let pending = check_minimum(&p, &reasons, "Pending", &[], Some(1)).unwrap_err();
+        assert_eq!(pending.code, code::EVIDENCE_MINIMUM);
+        assert!(
+            pending.fix.contains("admits no ManualAssertion"),
+            "{}",
+            pending.fix
+        );
+        let original = check_minimum(&p, &reasons, "Original", &[], None).unwrap_err();
+        assert!(
+            original.fix.contains("record_manual_assertion"),
+            "{}",
+            original.fix
+        );
+        assert!(check_minimum(&p, &reasons, "Revaluation", &[], Some(1)).is_err());
+        // An assertion beside unreviewed agent uploads still meets it.
+        let unreviewed = CitedDocument {
+            review: None,
+            ..reviewed_by(8)
+        };
+        assert!(check_minimum(&p, &reasons, "Original", &[unreviewed], Some(4)).is_ok());
+        assert_eq!(
+            check_minimum(&p, &reasons, "Original", &[unreviewed], None)
+                .unwrap_err()
+                .code,
+            code::SELF_SOURCED
+        );
     }
 }
