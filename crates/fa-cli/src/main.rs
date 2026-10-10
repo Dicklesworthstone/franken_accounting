@@ -1095,12 +1095,33 @@ fn chart_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
                         })
                 };
                 let (lower, upper) = (bound("lower_bound")?, bound("upper_bound")?);
-                let limit =
-                    (lower.is_some() || upper.is_some()).then_some(BalanceLimit {
-                        lower,
-                        upper,
-                        scope: fa_journal::LimitScope::Lifetime,
-                    });
+                // A lifetime limit bounds the account's whole history; a
+                // period limit (a budget cap) bounds each fiscal period.
+                let scope = match row.get("limit_scope") {
+                    None | Some(Json::Null) => fa_journal::LimitScope::Lifetime,
+                    Some(Json::Str(s)) if s == "lifetime" => fa_journal::LimitScope::Lifetime,
+                    Some(Json::Str(s)) if s == "period" => fa_journal::LimitScope::Period,
+                    Some(other) => {
+                        return Err(usage(
+                            format!("{what}: limit_scope {} is not a scope", other.render()),
+                            "limit_scope: \"lifetime\" (default) or \"period\" (a budget cap per fiscal period)",
+                        ));
+                    }
+                };
+                if row.get("limit_scope").is_some_and(|v| *v != Json::Null)
+                    && lower.is_none()
+                    && upper.is_none()
+                {
+                    return Err(usage(
+                        format!("{what}: limit_scope names no bound to scope"),
+                        "add lower_bound and/or upper_bound, or drop limit_scope",
+                    ));
+                }
+                let limit = (lower.is_some() || upper.is_some()).then_some(BalanceLimit {
+                    lower,
+                    upper,
+                    scope,
+                });
                 accounts.push(AccountSpec {
                     code: code.to_string(),
                     name: name.to_string(),
@@ -1156,6 +1177,15 @@ fn chart_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
                     obj(vec![
                         ("lower_bound", bound(a, a.limit.and_then(|l| l.lower))),
                         ("upper_bound", bound(a, a.limit.and_then(|l| l.upper))),
+                        (
+                            "limit_scope",
+                            a.limit.map_or(Json::Null, |l| {
+                                s(match l.scope {
+                                    fa_journal::LimitScope::Lifetime => "lifetime",
+                                    fa_journal::LimitScope::Period => "period",
+                                })
+                            }),
+                        ),
                         ("code", s(&a.code)),
                         ("name", s(&a.name)),
                         ("type", s(AccountType(a.account_type).name().unwrap_or("?"))),
@@ -1750,7 +1780,50 @@ fn post_with(out: &Out, args: &Args, forced: Option<EntryClass>) -> Result<(), F
         plan_certificate: None,
         capability,
     };
-    match book.post(req)?? {
+    // `--balancing <leg>` (post and reserve): the leg moves at most what its
+    // account's limit admits, decided inside the posting transaction; the
+    // event names what was asked and what moved.
+    let balancing = match args.flag("--balancing") {
+        None => None,
+        Some(v) => Some(v.parse::<u16>().map_err(|_| {
+            usage(
+                format!("--balancing `{v}` is not a leg ordinal"),
+                "--balancing 0 or --balancing 1 (the leg whose account's limit decides the amount)",
+            )
+        })?),
+    };
+    let (posted, amounts) = match balancing {
+        None => (book.post(req)??, None),
+        Some(leg) => {
+            let unit = req
+                .proposal
+                .legs
+                .get(usize::from(leg))
+                .map(|l| l.amount.unit);
+            let balanced = book.post_balancing(req, leg)??;
+            let unit = unit.ok_or_else(|| {
+                Fail::Internal(format!(
+                    "balancing leg {leg} was admitted but does not exist"
+                ))
+            })?;
+            let units = &book.context().units;
+            (
+                balanced.posted,
+                Some((
+                    Amount::new(unit, balanced.requested).render(units),
+                    Amount::new(unit, balanced.moved).render(units),
+                )),
+            )
+        }
+    };
+    let (requested, moved) = match &amounts {
+        Some((r, m)) => (s(r), s(m)),
+        None => (Json::Null, Json::Null),
+    };
+    let balancing_text = amounts.as_ref().map_or(String::new(), |(r, m)| {
+        format!(" · balancing: requested {r}, moved {m}")
+    });
+    match posted {
         Posted::Committed {
             entry_ref,
             recorded_at,
@@ -1764,9 +1837,11 @@ fn post_with(out: &Out, args: &Args, forced: Option<EntryClass>) -> Result<(), F
                     ("entry_digest", s(hex(&entry_ref.entry_digest))),
                     ("recorded_at", Json::Int(i128::from(recorded_at.0))),
                     ("period", s(&period)),
+                    ("requested", requested),
+                    ("moved", moved),
                 ],
                 &format!(
-                    "posted {:032x} in {period}, recorded at {} (entry_digest {})",
+                    "posted {:032x} in {period}, recorded at {} (entry_digest {}){balancing_text}",
                     entry_ref.vid.0,
                     recorded_at.0,
                     hex(&entry_ref.entry_digest)
@@ -1779,8 +1854,17 @@ fn post_with(out: &Out, args: &Args, forced: Option<EntryClass>) -> Result<(), F
         } => {
             out.event(
                 "recorded",
-                vec![("vid", s(format!("{:032x}", entry_ref.vid.0))), ("entry_digest", s(hex(&entry_ref.entry_digest))), ("recorded_at", Json::Int(i128::from(recorded_at.0)))],
-                &format!("already recorded as {:032x} at {} (same idempotency_key); nothing new was written", entry_ref.vid.0, recorded_at.0),
+                vec![
+                    ("vid", s(format!("{:032x}", entry_ref.vid.0))),
+                    ("entry_digest", s(hex(&entry_ref.entry_digest))),
+                    ("recorded_at", Json::Int(i128::from(recorded_at.0))),
+                    ("requested", requested),
+                    ("moved", moved),
+                ],
+                &format!(
+                    "already recorded as {:032x} at {} (same idempotency_key); nothing new was written{balancing_text}",
+                    entry_ref.vid.0, recorded_at.0
+                ),
             );
         }
     }
@@ -2063,6 +2147,7 @@ fn availability_fields(
     for a in &v.accounts {
         accounts.push(obj(vec![
             ("account", s(&a.code)),
+            ("period", a.period.as_ref().map_or(Json::Null, s)),
             ("normal", s(side_name(a.normal))),
             (
                 "lower_bound",
@@ -2088,6 +2173,11 @@ fn availability_fields(
         .map(|d| {
             obj(vec![
                 ("account", s(&d.code)),
+                ("period", d.period.as_ref().map_or(Json::Null, s)),
+                (
+                    "stored_period",
+                    d.stored_period.as_ref().map_or(Json::Null, s),
+                ),
                 ("stored", d.stored.as_ref().map_or(Json::Null, cell)),
                 ("refolded", cell(&d.refolded)),
                 (
@@ -2105,6 +2195,7 @@ fn availability_fields(
     Ok(vec![
         ("known_at", Json::Int(i128::from(v.known_at.0))),
         ("accounts_checked", Json::Int(v.accounts_checked as i128)),
+        ("cells_checked", Json::Int(v.cells_checked as i128)),
         ("accounts", Json::Arr(accounts)),
         ("drift", Json::Arr(drift)),
     ])
@@ -2195,8 +2286,8 @@ fn verify_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
                     "availability_verified",
                     fields,
                     &format!(
-                        "availability verified by refold: {} limited accounts, stored cells agree",
-                        v.accounts_checked
+                        "availability verified by refold: {} limited accounts, {} cells, stored cells agree",
+                        v.accounts_checked, v.cells_checked
                     ),
                 );
                 Ok(())
@@ -2831,8 +2922,9 @@ mod tests {
                     refolded: cell(0),
                     stored_account: None,
                     stored_account_code: None,
-                    period: None,
-                    stored_period: None,
+                    // A budget cap's cell that claims another period.
+                    period: Some("FY2026-P03".into()),
+                    stored_period: Some("FY2026-P04".into()),
                 },
             ],
         };
@@ -2849,6 +2941,9 @@ mod tests {
             line.contains(&format!(r#""stored_account":"{:032x}""#, 2))
                 && line.contains(r#""stored_account_code":"1100""#)
                 && line.contains(r#""stored":null"#)
+                && line.contains(r#""period":"FY2026-P03""#)
+                && line.contains(r#""stored_period":"FY2026-P04""#)
+                && line.contains(r#""cells_checked":2"#)
                 && line.contains(r#""net":"40.00 USD""#),
             "{line}"
         );

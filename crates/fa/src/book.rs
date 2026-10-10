@@ -507,6 +507,18 @@ impl Book {
         )
     }
 
+    /// Post with a balancing leg (plan §5.5): leg `leg` moves at most what its
+    /// account's limit admits, decided inside the posting transaction; the
+    /// request is the entry's identity (`fa post --balancing`).
+    pub fn post_balancing(&mut self, req: PostRequest, leg: u16) -> Outcome<fa_journal::Balanced> {
+        let purposes = self.purposes();
+        let ctx = &self.ctx;
+        let runtime = &self.runtime;
+        Ok(
+            with_store!(&mut self.store, db => runtime.block_on(async { fa_journal::post_balancing(db, &purposes, ctx, req, leg).await }))?,
+        )
+    }
+
     /// Record a document (plan §9.1): content-addressed; the same bytes of
     /// the same kind are the recorded outcome.
     pub fn add_document(

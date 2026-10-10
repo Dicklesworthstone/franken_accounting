@@ -76,11 +76,11 @@ name = "post"
 summary = "Post one entry intent under the accounting laws (balance, period law, idempotency)."
 writes = true
 subcommands = []
-flags = ["--intent", "--grant", "--evidence"]
+flags = ["--intent", "--grant", "--evidence", "--balancing"]
 switches = []
 events = ["posted", "recorded"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["post --intent <file.json|-> [--grant <op>]... [--evidence <oid>]... [--as <principal>]"]
+usage = ["post --intent <file.json|-> [--grant <op>]... [--evidence <oid>]... [--balancing 0|1] [--as <principal>]   (--balancing: that leg moves at most what its account's limit admits; the event says what was requested and what moved)"]
 example = "fa post --intent entry.json --book ./books/myco --json"
 
 [[verb]]
@@ -88,7 +88,7 @@ name = "reserve"
 summary = "Reserve amounts as a Pending entry (two-phase): nothing is posted."
 writes = true
 subcommands = []
-flags = ["--intent", "--grant", "--evidence"]
+flags = ["--intent", "--grant", "--evidence", "--balancing"]
 switches = []
 events = ["posted", "recorded"]
 exits = [0, 2, 3, 4, 5, 6, 7]
@@ -350,13 +350,13 @@ fields = ["period:string", "from:string", "to:string", "control_entry:hex", "rec
 
 [[event]]
 name = "posted"
-doc = "An entry committed; `recorded_at` is its CommitSeq, assigned by the journal."
-fields = ["class:string", "vid:hex", "entry_digest:hex", "recorded_at:seq", "period:string"]
+doc = "An entry committed; `recorded_at` is its CommitSeq, assigned by the journal. With --balancing, `requested` is the amount asked for and `moved` what the balancing leg's account admitted (the legs posted at `moved`); both null otherwise."
+fields = ["class:string", "vid:hex", "entry_digest:hex", "recorded_at:seq", "period:string", "requested:amount?", "moved:amount?"]
 
 [[event]]
 name = "recorded"
-doc = "The same idempotency key was already recorded with the same content; nothing new was written."
-fields = ["vid:hex", "entry_digest:hex", "recorded_at:seq"]
+doc = "The same idempotency key was already recorded with the same content; nothing new was written. For a balancing post the identity is the request (key, requested amount, leg): `requested`/`moved` are the recorded ones, whatever availability is now; null otherwise."
+fields = ["vid:hex", "entry_digest:hex", "recorded_at:seq", "requested:amount?", "moved:amount?"]
 
 [[event]]
 name = "trial_balance"
@@ -391,7 +391,7 @@ fields = ["known_at:seq", "legs_checked:int", "drift:[applied_drift]"]
 [[event]]
 name = "availability_verified"
 doc = "Every limited account's expected LimitCell (the vertex at its derived identity) equals the refold from the journal — sums, generation, and its account_ref binding (plan §5.4–5.5); each account's availability in its normal-balance sign. Scope: only those expected cells are examined; LimitCell vertices that no limited account's identity references are not checked and not reported."
-fields = ["known_at:seq", "accounts_checked:int", "accounts:[account_availability]", "drift:[availability_drift]"]
+fields = ["known_at:seq", "accounts_checked:int", "cells_checked:int", "accounts:[account_availability]", "drift:[availability_drift]"]
 
 [[event]]
 name = "registers_materialized"
@@ -474,8 +474,8 @@ fields = ["name:string", "type:string"]
 
 [[shape]]
 name = "account"
-doc = "One chart row; the bounds are null unless the chart declared a balance limit."
-fields = ["code:string", "name:string", "type:string", "leaf:bool", "unit:string", "lower_bound:amount?", "upper_bound:amount?"]
+doc = "One chart row; the bounds and `limit_scope` (lifetime: the account's whole history; period: a budget cap per fiscal period) are null unless the chart declared a balance limit."
+fields = ["code:string", "name:string", "type:string", "leaf:bool", "unit:string", "lower_bound:amount?", "upper_bound:amount?", "limit_scope:string?"]
 
 [[shape]]
 name = "period"
@@ -529,13 +529,13 @@ fields = ["entry:hex", "ordinal:int", "stored:int?", "refolded:int"]
 
 [[shape]]
 name = "account_availability"
-doc = "One limited account: its bounds, net, and pending flows in its normal-balance sign, and the refolded cell's generation."
-fields = ["account:string", "normal:string", "lower_bound:amount?", "upper_bound:amount?", "net:amount", "pending_out:amount", "pending_in:amount", "generation:int"]
+doc = "One limited account's cell: its bounds, net, and pending flows in its normal-balance sign, and the refolded cell's generation. `period` names the fiscal period of a budget cap's cell (one row per period); null for a lifetime limit."
+fields = ["account:string", "period:string?", "normal:string", "lower_bound:amount?", "upper_bound:amount?", "net:amount", "pending_out:amount", "pending_in:amount", "generation:int"]
 
 [[shape]]
 name = "availability_drift"
-doc = "A limited account whose expected LimitCell differs from the refold (raw mantissas), or is bound (account_ref) to another account or to none: `stored_account` is the vid the stored cell claims (null when the cell or its reference is missing or malformed), `stored_account_code` its code when it is an account of this book."
-fields = ["account:string", "stored:limit_cell?", "refolded:limit_cell", "stored_account:hex?", "stored_account_code:string?"]
+doc = "A limited account whose expected LimitCell differs from the refold (raw mantissas), or is bound (account_ref) to another account or to none, or (a budget cap's cell) to another period: `stored_account` is the vid the stored cell claims (null when the cell or its reference is missing or malformed), `stored_account_code` its code when it is an account of this book; `period` is the cell's fiscal period and `stored_period` the period it claims (null for a lifetime cell)."
+fields = ["account:string", "period:string?", "stored_period:string?", "stored:limit_cell?", "refolded:limit_cell", "stored_account:hex?", "stored_account_code:string?"]
 
 [[shape]]
 name = "limit_cell"

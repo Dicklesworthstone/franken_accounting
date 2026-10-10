@@ -2319,3 +2319,195 @@ fn policy_refusal_fixes_name_only_registered_verbs_and_flags() {
     let agent = Denial::AgentOnTrunk;
     assert!(agent.cite().contains("fa-s7x"), "{}", agent.cite());
 }
+
+#[test]
+fn budget_caps_bound_each_period_and_balancing_moves_what_the_limit_admits() -> std::io::Result<()>
+{
+    let dir = tmp("budget")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Budget Co", "--json"]);
+    // A scope must be a known one, and must scope a bound.
+    for (name, chart, needle) in [
+        (
+            "weekly.json",
+            r#"{"accounts":[{"code":"6000","name":"Rent","type":"Expense","unit":"USD","upper_bound":"100.00","limit_scope":"weekly"}]}"#,
+            "is not a scope",
+        ),
+        (
+            "unbound.json",
+            r#"{"accounts":[{"code":"6000","name":"Rent","type":"Expense","unit":"USD","limit_scope":"period"}]}"#,
+            "names no bound",
+        ),
+    ] {
+        let path = write(&dir, name, chart);
+        let (code, out, _) = fa(Some(&book), &["chart", "import", &path, "--json"]);
+        assert_eq!(code, 2, "{name}: {out}");
+        assert!(out.contains(needle), "{name}: {out}");
+    }
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD","lower_bound":"0.00"},{"code":"4000","name":"Sales","type":"Revenue","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD","upper_bound":"100.00","limit_scope":"period"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    let listed = ok(&["chart", "list", "--json"]);
+    for (code, scope) in [("1000", "lifetime"), ("6000", "period"), ("4000", "null")] {
+        let row = listed
+            .split('{')
+            .find(|r| field(r, "code") == Some(code))
+            .unwrap_or_default();
+        assert_eq!(field(row, "limit_scope"), Some(scope), "{code}: {listed}");
+    }
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    ok(&["period", "open", "FY2026-P04", "--json"]);
+    let ev = source_doc(&dir, &book);
+    let intent = |name: &str, key: &str, date: &str, debit: &str, credit: &str, amount: &str| {
+        write(
+            &dir,
+            name,
+            &format!(
+                r#"{{"effective_date":"{date}","idempotency_key":"{key}","legs":[{{"side":"debit","account":"{debit}","amount":"{amount} USD"}},{{"side":"credit","account":"{credit}","amount":"{amount} USD"}}]}}"#
+            ),
+        )
+    };
+    let sale = intent("sale.json", "sale", "2026-03-01", "1000", "4000", "1000.00");
+    ok(&["post", "--intent", &sale, "--evidence", &ev, "--json"]);
+    // The budget is per period: 80 of 100 in March, 30 more is refused there,
+    // and April has its own 100.
+    let march = intent("m80.json", "m80", "2026-03-05", "6000", "1000", "80.00");
+    let posted = ok(&["post", "--intent", &march, "--evidence", &ev, "--json"]);
+    assert!(posted.contains("\"requested\":null"), "{posted}");
+    let over = intent("m30.json", "m30", "2026-03-06", "6000", "1000", "30.00");
+    let (code, out, _) = fa(
+        Some(&book),
+        &["post", "--intent", &over, "--evidence", &ev, "--json"],
+    );
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "code"), Some("FA-REF-091"), "{out}");
+    let april = intent("a30.json", "a30", "2026-04-06", "6000", "1000", "30.00");
+    ok(&["post", "--intent", &april, "--evidence", &ev, "--json"]);
+
+    // Balancing on the Rent leg (leg 0): 50 asked, the March cap admits 20.
+    let ask = intent("b50.json", "b50", "2026-03-07", "6000", "1000", "50.00");
+    let balanced = ok(&[
+        "post",
+        "--intent",
+        &ask,
+        "--evidence",
+        &ev,
+        "--balancing",
+        "0",
+        "--json",
+    ]);
+    assert_eq!(field(&balanced, "event"), Some("posted"), "{balanced}");
+    assert_eq!(
+        field(&balanced, "requested"),
+        Some("50.00 USD"),
+        "{balanced}"
+    );
+    assert_eq!(field(&balanced, "moved"), Some("20.00 USD"), "{balanced}");
+    // The request is the identity: the same request replays the recorded
+    // outcome; another amount under the same key is a conflict.
+    let again = ok(&[
+        "post",
+        "--intent",
+        &ask,
+        "--evidence",
+        &ev,
+        "--balancing",
+        "0",
+        "--json",
+    ]);
+    assert_eq!(field(&again, "event"), Some("recorded"), "{again}");
+    assert_eq!(
+        (field(&again, "requested"), field(&again, "moved")),
+        (Some("50.00 USD"), Some("20.00 USD")),
+        "{again}"
+    );
+    let other = intent("b60.json", "b50", "2026-03-07", "6000", "1000", "60.00");
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "post",
+            "--intent",
+            &other,
+            "--evidence",
+            &ev,
+            "--balancing",
+            "0",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 6, "{out}");
+    assert_eq!(field(&out, "code"), Some("FA-REF-032"), "{out}");
+    let tb = ok(&["tb", "--period", "FY2026-P03", "--activity", "--json"]);
+    let rent = tb
+        .split('{')
+        .find(|r| field(r, "code") == Some("6000"))
+        .unwrap_or_default();
+    assert_eq!(field(rent, "debits"), Some("100.00 USD"), "{tb}");
+
+    // Shape and spelling refusals.
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "post",
+            "--intent",
+            &ask,
+            "--evidence",
+            &ev,
+            "--balancing",
+            "2",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 2, "{out}");
+    assert_eq!(field(&out, "code"), Some("FA-REF-093"), "{out}");
+    let (code, out, _) = fa(
+        Some(&book),
+        &["post", "--intent", &ask, "--balancing", "debit", "--json"],
+    );
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("is not a leg ordinal"), "{out}");
+    let (code, out, _) = fa(
+        Some(&book),
+        &["resolve", "--intent", &ask, "--balancing", "0", "--json"],
+    );
+    assert_eq!(code, 2, "{out}");
+    assert!(
+        out.contains("--balancing is not a flag of `fa resolve`"),
+        "{out}"
+    );
+
+    // Verify reports each budget cell with its period.
+    let verified = ok(&["verify", "availability", "--json"]);
+    let cells: u64 = field(&verified, "cells_checked")
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0);
+    assert!(
+        cells >= 2,
+        "a lifetime cell plus the budget's period cells: {verified}"
+    );
+    let march_row = verified
+        .split('{')
+        .find(|r| field(r, "account") == Some("6000") && field(r, "period") == Some("FY2026-P03"))
+        .unwrap_or_default();
+    assert_eq!(field(march_row, "net"), Some("100.00 USD"), "{verified}");
+    let april_row = verified
+        .split('{')
+        .find(|r| field(r, "account") == Some("6000") && field(r, "period") == Some("FY2026-P04"))
+        .unwrap_or_default();
+    assert_eq!(field(april_row, "net"), Some("30.00 USD"), "{verified}");
+    let cash_row = verified
+        .split('{')
+        .find(|r| field(r, "account") == Some("1000"))
+        .unwrap_or_default();
+    assert_eq!(field(cash_row, "period"), Some("null"), "{verified}");
+    Ok(())
+}

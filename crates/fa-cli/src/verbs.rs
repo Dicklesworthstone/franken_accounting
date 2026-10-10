@@ -725,24 +725,28 @@ mod tests {
     #[test]
     fn check_line_admits_exactly_the_schema() {
         let r = registry().expect("verbs.toml");
-        let good = r#"{"entry_digest":"ab01","event":"recorded","recorded_at":7,"vid":"00ff"}"#;
+        let good = r#"{"entry_digest":"ab01","event":"recorded","moved":null,"recorded_at":7,"requested":null,"vid":"00ff"}"#;
         assert_eq!(r.check_line(good), Ok("recorded"));
+        let balanced = r#"{"entry_digest":"ab01","event":"recorded","moved":"20.00 USD","recorded_at":7,"requested":"50.00 USD","vid":"00ff"}"#;
+        assert_eq!(r.check_line(balanced), Ok("recorded"));
         for bad in [
             // a missing field, an extra field, a wrong type, a negative
-            // sequence, an uppercase hex, an unknown event, not an object
-            r#"{"entry_digest":"ab01","event":"recorded","vid":"00ff"}"#,
-            r#"{"entry_digest":"ab01","event":"recorded","extra":1,"recorded_at":7,"vid":"00ff"}"#,
-            r#"{"entry_digest":"ab01","event":"recorded","recorded_at":"7","vid":"00ff"}"#,
-            r#"{"entry_digest":"ab01","event":"recorded","recorded_at":-1,"vid":"00ff"}"#,
-            r#"{"entry_digest":"AB01","event":"recorded","recorded_at":7,"vid":"00ff"}"#,
+            // sequence, an uppercase hex, a non-amount, an unknown event,
+            // not an object
+            r#"{"entry_digest":"ab01","event":"recorded","moved":null,"requested":null,"vid":"00ff"}"#,
+            r#"{"entry_digest":"ab01","event":"recorded","extra":1,"moved":null,"recorded_at":7,"requested":null,"vid":"00ff"}"#,
+            r#"{"entry_digest":"ab01","event":"recorded","moved":null,"recorded_at":"7","requested":null,"vid":"00ff"}"#,
+            r#"{"entry_digest":"ab01","event":"recorded","moved":null,"recorded_at":-1,"requested":null,"vid":"00ff"}"#,
+            r#"{"entry_digest":"AB01","event":"recorded","moved":null,"recorded_at":7,"requested":null,"vid":"00ff"}"#,
+            r#"{"entry_digest":"ab01","event":"recorded","moved":20,"recorded_at":7,"requested":null,"vid":"00ff"}"#,
             r#"{"event":"recorded_twice"}"#,
             r#"["recorded"]"#,
         ] {
             assert!(r.check_line(bad).is_err(), "admitted {bad}");
         }
-        let nested = r#"{"accounts":[{"code":"1000","leaf":true,"lower_bound":"0.00 USD","name":"Cash","type":"Asset","unit":"USD","upper_bound":null}],"event":"accounts"}"#;
+        let nested = r#"{"accounts":[{"code":"1000","leaf":true,"limit_scope":"lifetime","lower_bound":"0.00 USD","name":"Cash","type":"Asset","unit":"USD","upper_bound":null}],"event":"accounts"}"#;
         assert_eq!(r.check_line(nested), Ok("accounts"));
-        let nested_bad = r#"{"accounts":[{"code":"1000","leaf":"yes","lower_bound":null,"name":"Cash","type":"Asset","unit":"USD","upper_bound":null}],"event":"accounts"}"#;
+        let nested_bad = r#"{"accounts":[{"code":"1000","leaf":"yes","limit_scope":null,"lower_bound":null,"name":"Cash","type":"Asset","unit":"USD","upper_bound":null}],"event":"accounts"}"#;
         assert!(r.check_line(nested_bad).is_err());
         for (amount, ok) in [
             ("1500.00 USD", true),
