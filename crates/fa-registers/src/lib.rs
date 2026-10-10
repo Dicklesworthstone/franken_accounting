@@ -12,6 +12,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod explain;
 pub mod open_items;
 
 use core::fmt;
@@ -29,6 +30,7 @@ use fgdb_crypto::Hasher;
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
+pub use explain::{BalanceExplanation, explain_balance};
 pub use open_items::{
     Application, AppliedDrift, OpenItem, OpenItemVerification, open_items, verify_open_items,
 };

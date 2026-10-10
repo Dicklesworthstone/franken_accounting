@@ -1,0 +1,489 @@
+# verbs.toml — the single verb registry (plan §15.2–§15.3, Appendix D).
+#
+# One source for the `fa` CLI's verbs, subcommands, aliases, per-verb flags,
+# help text, exit codes, and the robot-mode event schemas that
+# `fa robot-docs schema` prints. The daemon (fa-i8j) and fa-mcp (fa-xex) are
+# generated from and checked against this file when they land.
+#
+# Consumer: fa-cli (dispatch, flag parsing and correction, `--help`,
+# `fa capabilities`, `fa robot-docs schema`). Gate: the fa-cli parity tests
+# fail when a registered verb or subcommand has no handler, a handler has no
+# row, an emitted `--json` line does not match its event schema, or a
+# declared event is never emitted by the binary tests. Retire: never (it is
+# the contract); rows are additive, a removal is a breaking change.
+#
+# Field types: string · text (free-form, may span lines) · int · seq (a
+# CommitSeq, ≥ 0) · bool · amount ("1500.00 USD": exact decimal, a space, the
+# unit code) · date (YYYY-MM-DD) · hex (lowercase hexadecimal) · object (a map
+# with data-dependent keys) · any · <shape> (an object with exactly the
+# shape's fields) · [T] (an array of T) · T? (T or null). Every field is
+# always present; absence is spelled null.
+
+schema_version = 1
+
+[envelope]
+discriminator = "event"
+description = "Robot mode (--json): stdout carries one JSON object per line and nothing else. Every object has an `event` field naming its schema below, plus exactly that schema's fields; keys are sorted, amounts are strings with their unit (never JSON numbers), recorded sequences are integers, dates are civil YYYY-MM-DD. stderr carries diagnostics only. The exit code is the verdict (fa robot-docs exit-codes); every non-zero exit emits one of the error events (usage_error, refusal, error, verification_failed)."
+
+[global]
+flags = ["--book", "--keys", "--as"]
+switches = ["--json", "--help", "--version", "--no-color", "--yes"]
+events = ["version", "triage", "help", "usage_error", "refusal", "error", "verification_failed"]
+usage = "--book <dir> (or FA_BOOK) · --keys <file> (default <dir>/book.keys) · --json · --as <principal> (default operator) · --help (also `fa <verb> --help`)"
+
+# ---------------------------------------------------------------------------
+# Verbs
+# ---------------------------------------------------------------------------
+
+[[verb]]
+name = "book"
+summary = "Create a book directory (store + key file), or describe one."
+writes = true
+subcommands = ["create", "info"]
+flags = ["--name", "--base-unit", "--calendar", "--year-start-month", "--adjustment-periods"]
+switches = []
+events = ["book_created", "book"]
+exits = [0, 2, 4, 5]
+usage = ["book create --name \"My Co\" [--base-unit USD] [--calendar monthly] [--year-start-month 1] [--adjustment-periods 1]", "book info"]
+example = "fa book create --book ./books/myco --name \"My Co\" --json"
+
+[[verb]]
+name = "chart"
+summary = "Install a chart of accounts as one journaled schema effect, or list it."
+writes = true
+subcommands = ["import", "list"]
+flags = ["--date", "--key"]
+switches = []
+events = ["chart_installed", "accounts"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["chart import <chart.json> [--date YYYY-MM-DD] [--key K]", "chart list"]
+example = "fa chart import chart.json --book ./books/myco --json"
+
+[[verb]]
+name = "period"
+summary = "Create a fiscal year's periods, list them, or move one along the period state machine (journaled)."
+writes = true
+subcommands = ["create", "list", "open", "soft-close", "close", "lock", "reopen"]
+flags = ["--fiscal-year", "--to", "--reason", "--key", "--date"]
+switches = []
+events = ["periods_created", "periods", "period_transitioned"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["period create --fiscal-year N", "period list", "period open|soft-close|close|lock|reopen <code> [--to open|soft-closed] [--reason N] [--key K] [--date YYYY-MM-DD]"]
+example = "fa period open FY2026-P03 --book ./books/myco --json"
+
+[[verb]]
+name = "post"
+summary = "Post one entry intent under the accounting laws (balance, period law, idempotency)."
+writes = true
+subcommands = []
+flags = ["--intent", "--grant"]
+switches = []
+events = ["posted", "recorded"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["post --intent <file.json|-> [--grant <op>]... [--as <principal>]"]
+example = "fa post --intent entry.json --book ./books/myco --json"
+
+[[verb]]
+name = "reserve"
+summary = "Reserve amounts as a Pending entry (two-phase): nothing is posted."
+writes = true
+subcommands = []
+flags = ["--intent", "--grant"]
+switches = []
+events = ["posted", "recorded"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["reserve --intent <hold.json> (a Pending: amounts reserved, nothing posted)"]
+example = "fa reserve --intent hold.json --book ./books/myco --json"
+
+[[verb]]
+name = "resolve"
+summary = "Resolve a hold: post a sub-vector drawn from it, or void it; the rest is released."
+writes = true
+subcommands = []
+flags = ["--intent", "--grant"]
+switches = []
+events = ["posted", "recorded"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["resolve --intent <res.json> (resolves <hold vid>; disposition posts (legs drawn from the hold) | voids)"]
+example = "fa resolve --intent res.json --book ./books/myco --json"
+
+[[verb]]
+name = "tb"
+summary = "Trial balance: stock through the selected periods or a civil date, or period activity, at a known-at frontier."
+writes = false
+subcommands = []
+flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at"]
+switches = ["--activity"]
+events = ["trial_balance"]
+exits = [0, 2, 4, 5]
+usage = ["tb ((--period <code>)... | --fiscal-year N) [--activity] [--as-known-at HEAD|<seq>]", "tb --as-of YYYY-MM-DD [--as-known-at HEAD|<seq>]", "Stock balances include opening history; --activity is selected-period movement. Instants are unsupported."]
+example = "fa tb --period FY2026-P03 --book ./books/myco --json"
+
+[[verb]]
+name = "open-items"
+summary = "Open items (plan §5.7): each live posted leg, its applications, and its open amount."
+writes = false
+subcommands = []
+flags = ["--account", "--as-known-at"]
+switches = []
+events = ["open_items"]
+exits = [0, 2, 4, 5]
+usage = ["open-items [--account <code>] [--as-known-at HEAD|<seq>]"]
+example = "fa open-items --account 1200 --book ./books/myco --json"
+
+[[verb]]
+name = "explain"
+summary = "Explain a balance: the account's register cells in a period, the fold they belong to, every contributing leg with its recorded sequence, and the cell's known-at history."
+writes = false
+subcommands = ["balance"]
+flags = ["--period", "--as-known-at"]
+switches = []
+events = ["balance_explained"]
+exits = [0, 2, 4, 5]
+usage = ["explain balance <account code> --period <code> [--as-known-at HEAD|<seq>]"]
+example = "fa explain balance 1000 --period FY2026-P03 --book ./books/myco --json"
+
+[[verb]]
+name = "verify"
+summary = "Verify derived state against the journal by refolding: registers, or open-item applied mirrors (exit 8 on drift)."
+writes = false
+subcommands = ["registers", "open-items"]
+flags = ["--period", "--fiscal-year"]
+switches = []
+events = ["registers_verified", "open_items_verified"]
+exits = [0, 2, 4, 5, 8]
+usage = ["verify registers ((--period <code>)... | --fiscal-year N)", "verify open-items"]
+example = "fa verify registers --period FY2026-P03 --book ./books/myco"
+
+[[verb]]
+name = "registers"
+summary = "Materialize a period's registers from a fresh fold (derived state; rebuilt on demand)."
+writes = true
+subcommands = ["materialize"]
+flags = ["--period", "--fiscal-year"]
+switches = []
+events = ["registers_materialized"]
+exits = [0, 2, 4, 5]
+usage = ["registers materialize ((--period <code>)... | --fiscal-year N)"]
+example = "fa registers materialize --period FY2026-P03 --book ./books/myco"
+
+[[verb]]
+name = "entry"
+summary = "Read one committed entry back by its vid, verifying its digests."
+writes = false
+subcommands = ["show"]
+flags = []
+switches = []
+events = ["entry"]
+exits = [0, 2, 4, 5]
+usage = ["entry show <vid-hex>"]
+example = "fa entry show 3f2a… --book ./books/myco --json"
+
+[[verb]]
+name = "capabilities"
+summary = "What this build can do: verbs, aliases, exit codes, entry classes, robot mode."
+writes = false
+subcommands = []
+flags = []
+switches = []
+events = ["capabilities"]
+exits = [0, 5]
+usage = ["capabilities"]
+example = "fa capabilities --json"
+
+[[verb]]
+name = "robot-docs"
+summary = "In-tool documentation for agents: the guide, the exit codes, worked examples, and the robot-mode schema."
+writes = false
+subcommands = ["guide", "exit-codes", "examples", "schema"]
+flags = []
+switches = []
+events = ["robot_docs", "robot_schema"]
+exits = [0, 2, 5]
+usage = ["robot-docs guide|exit-codes|examples", "robot-docs schema [<event or shape>]"]
+example = "fa robot-docs schema balance_explained --json"
+
+[[verb]]
+name = "help"
+summary = "The command list, or one verb's usage."
+writes = false
+subcommands = []
+flags = []
+switches = []
+events = ["help"]
+exits = [0, 2]
+usage = ["help [<verb>]"]
+example = "fa help explain"
+
+# Spellings agents try first (plan §15.3 intent inference). An alias expands
+# in the verb position; it is never a correction of a mistyped write verb.
+
+[[alias]]
+name = "trial-balance"
+expands = ["tb"]
+
+[[alias]]
+name = "balance"
+expands = ["explain", "balance"]
+
+[[alias]]
+name = "journal"
+expands = ["post"]
+
+# ---------------------------------------------------------------------------
+# Events: every `event` a --json line can carry, with exactly its fields.
+# ---------------------------------------------------------------------------
+
+[[event]]
+name = "version"
+doc = "The build's version."
+fields = ["version:string"]
+
+[[event]]
+name = "triage"
+doc = "Bare `fa`: where to start, as text."
+fields = ["version:string", "text:text"]
+
+[[event]]
+name = "help"
+doc = "`fa --help`, `fa help [<verb>]`, `fa <verb> --help`: usage as text; `verb` is null for the full list."
+fields = ["verb:string?", "text:text"]
+
+[[event]]
+name = "usage_error"
+doc = "Exit 2: a bad flag, verb, argument or intent document; `fix` is the exact correction."
+fields = ["exit:int", "message:string", "fix:string"]
+
+[[event]]
+name = "refusal"
+doc = "A lawful refusal (exit 3, 6 or 7): the refusal code, the law or matrix cell it cites, and the fix. Do the fix; never invent a leg, a date, or an approval."
+fields = ["code:string", "exit:int", "message:string", "cite:string", "fix:string"]
+
+[[event]]
+name = "error"
+doc = "Exit 4 (environment: no book, bad key file) or 5 (foundation/I-O failure)."
+fields = ["exit:int", "message:string"]
+
+[[event]]
+name = "verification_failed"
+doc = "Exit 8: derived state differs from the journal's refold; `detail` is the verify event's payload (the per-period checks for registers, the leg drift for open items)."
+fields = ["exit:int", "message:string", "detail:any"]
+
+[[event]]
+name = "capabilities"
+doc = "What this build can do."
+fields = ["version:string", "verbs:[string]", "aliases:[alias]", "exit_codes:[exit_code]", "entry_classes:[string]", "robot_mode:robot_mode", "stdout:string", "stderr:string", "tui:bool"]
+
+[[event]]
+name = "robot_docs"
+doc = "`fa robot-docs guide|exit-codes|examples --json`: the topic's text."
+fields = ["topic:string", "text:text"]
+
+[[event]]
+name = "robot_schema"
+doc = "`fa robot-docs schema [<name>] --json`: the envelope and the events (with every shape they reference), or the one named event or shape."
+fields = ["envelope:envelope_doc", "events:[event_doc]", "shapes:[shape_doc]"]
+
+[[event]]
+name = "book_created"
+doc = "A new book directory: the store and the key file (keep it; keys are never regenerated)."
+fields = ["book_id:hex", "dir:string", "keys:string", "name:string", "base_unit:string", "calendar:string"]
+
+[[event]]
+name = "book"
+doc = "A book's identity and size."
+fields = ["book_id:hex", "calendar:string", "periods:int", "periods_by_state:object", "accounts:int", "units_registered:int"]
+
+[[event]]
+name = "chart_installed"
+doc = "A chart installed by one journaled control entry."
+fields = ["accounts:int", "control_entry:hex", "recorded_at:seq"]
+
+[[event]]
+name = "accounts"
+doc = "The chart, sorted by code."
+fields = ["accounts:[account]"]
+
+[[event]]
+name = "periods_created"
+doc = "A fiscal year's periods, all Future."
+fields = ["fiscal_year:int", "periods:[string]", "recorded_at:seq"]
+
+[[event]]
+name = "periods"
+doc = "Every period in calendar order with its current state."
+fields = ["periods:[period]"]
+
+[[event]]
+name = "period_transitioned"
+doc = "A period moved along the state machine by a journaled control entry."
+fields = ["period:string", "from:string", "to:string", "control_entry:hex", "recorded_at:seq"]
+
+[[event]]
+name = "posted"
+doc = "An entry committed; `recorded_at` is its CommitSeq, assigned by the journal."
+fields = ["class:string", "vid:hex", "entry_digest:hex", "recorded_at:seq", "period:string"]
+
+[[event]]
+name = "recorded"
+doc = "The same idempotency key was already recorded with the same content; nothing new was written."
+fields = ["vid:hex", "entry_digest:hex", "recorded_at:seq"]
+
+[[event]]
+name = "trial_balance"
+doc = "Stock (through `effective_through`) or activity (the selected periods), at the `known_at` snapshot."
+fields = ["periods:[string]", "known_at:seq", "effective_through:date?", "activity:bool", "mode:string", "rows:[tb_row]", "unit_totals:[unit_total]", "pending_unit_totals:[pending_unit_total]", "balanced:bool"]
+
+[[event]]
+name = "open_items"
+doc = "Open items, optionally on one account, at the `known_at` snapshot."
+fields = ["account:string?", "count:int", "items:[open_item]"]
+
+[[event]]
+name = "registers_verified"
+doc = "Every selected period's stored registers equal the refold."
+fields = ["periods:[register_check]"]
+
+[[event]]
+name = "open_items_verified"
+doc = "Every posted leg's applied mirror equals the open-item fold."
+fields = ["known_at:seq", "legs_checked:int", "drift:[applied_drift]"]
+
+[[event]]
+name = "registers_materialized"
+doc = "A period's registers written from a fresh fold (derived state)."
+fields = ["period:string", "cells:int", "pending_cells:int", "entries:int", "watermark:seq?", "fold_digest:hex", "recorded_at:seq"]
+
+[[event]]
+name = "entry"
+doc = "One committed entry; when `found` is false every other field but `vid` is null."
+fields = ["found:bool", "vid:string", "class:string?", "effective_date:date?", "recorded_at:seq?", "entry_digest:hex?", "proposal_digest:hex?", "approvals:int?", "legs:[entry_leg]?"]
+
+[[event]]
+name = "balance_explained"
+doc = "An account's register cells in one period at the `known_at` snapshot: the cells (one per unit, both columns), the fold they belong to (its digest and watermark), every contributing leg with its entry and recorded sequence, and the cells' known-at history. The legs re-add to the cells exactly or the command fails. A certified-read precursor: `certificate` is null until the notary lands."
+fields = ["account:string", "account_vid:hex", "name:string", "type:string", "period:string", "known_at:seq", "watermark:seq?", "fold_digest:hex", "certificate:hex?", "cells:[explained_cell]", "contributions:[contribution]", "history:[cell_change]", "last_changed_at:seq?"]
+
+# ---------------------------------------------------------------------------
+# Shapes: the objects events nest.
+# ---------------------------------------------------------------------------
+
+[[shape]]
+name = "alias"
+doc = "A spelling that expands in the verb position."
+fields = ["name:string", "expands:string"]
+
+[[shape]]
+name = "exit_code"
+doc = "One row of the exit-code dictionary."
+fields = ["code:int", "name:string", "meaning:string"]
+
+[[shape]]
+name = "robot_mode"
+doc = "How to switch on robot mode and where the schema lives."
+fields = ["flag:string", "envelope:string", "schema:string"]
+
+[[shape]]
+name = "envelope_doc"
+doc = "The robot-mode envelope."
+fields = ["discriminator:string", "description:text", "types:[string]"]
+
+[[shape]]
+name = "event_doc"
+doc = "One event's schema and the verbs that emit it (empty for the global events)."
+fields = ["name:string", "doc:text", "verbs:[string]", "fields:[field_doc]"]
+
+[[shape]]
+name = "shape_doc"
+doc = "One nested object's schema."
+fields = ["name:string", "doc:text", "fields:[field_doc]"]
+
+[[shape]]
+name = "field_doc"
+doc = "One field and its type."
+fields = ["name:string", "type:string"]
+
+[[shape]]
+name = "account"
+doc = "One chart row."
+fields = ["code:string", "name:string", "type:string", "leaf:bool", "unit:string"]
+
+[[shape]]
+name = "period"
+doc = "One period with its current state."
+fields = ["code:string", "state:string", "kind:string", "start:date", "end:date", "fiscal_year:int"]
+
+[[shape]]
+name = "tb_row"
+doc = "One account in one unit."
+fields = ["code:string", "name:string", "type:string", "debits:amount", "credits:amount", "net:amount", "debits_pending:amount", "credits_pending:amount"]
+
+[[shape]]
+name = "unit_total"
+doc = "Posted totals of one unit."
+fields = ["unit:string", "debits:amount", "credits:amount"]
+
+[[shape]]
+name = "pending_unit_total"
+doc = "Pending totals of one unit."
+fields = ["unit:string", "debits_pending:amount", "credits_pending:amount"]
+
+[[shape]]
+name = "open_item"
+doc = "One live posted leg and what has been applied to and from it."
+fields = ["entry:hex", "ordinal:int", "account:string", "side:string", "effective_date:date", "recorded_at:seq", "original:amount", "applied:amount", "applied_out:amount", "open:amount", "applications:[application]"]
+
+[[shape]]
+name = "application"
+doc = "One application against an open item."
+fields = ["entry:hex", "ordinal:int", "amount:amount", "recorded_at:seq", "live:bool"]
+
+[[shape]]
+name = "register_check"
+doc = "One period's verify-by-refold."
+fields = ["period:string", "green:bool", "cells_checked:int", "refold_digest:hex", "stored_digest:hex?", "drift:[cell_drift]", "pending_drift:[cell_drift]", "projection_errors:[string]"]
+
+[[shape]]
+name = "cell_drift"
+doc = "A stored register cell that differs from the refold (raw mantissas)."
+fields = ["account:hex", "unit_id:int", "stored:cell_values?", "refolded:cell_values"]
+
+[[shape]]
+name = "cell_values"
+doc = "A register column's raw mantissas and entry count."
+fields = ["debits:int", "credits:int", "entry_count:int"]
+
+[[shape]]
+name = "applied_drift"
+doc = "A leg whose applied mirror differs from the open-item fold."
+fields = ["entry:hex", "ordinal:int", "stored:int?", "refolded:int"]
+
+[[shape]]
+name = "entry_leg"
+doc = "One leg of a committed entry."
+fields = ["side:string", "account:hex", "amount:amount"]
+
+[[shape]]
+name = "explained_cell"
+doc = "The account's cell in one unit: the posted column and the pending column."
+fields = ["unit:string", "debits:amount", "credits:amount", "net:amount", "entry_count:int", "debits_pending:amount", "credits_pending:amount", "pending_count:int"]
+
+[[shape]]
+name = "contribution"
+doc = "One leg that bears on the cells: `column` is posted, pending (an outstanding reservation), or released (a reservation a Resolution released at `released_at`; in neither column)."
+fields = ["entry:hex", "entry_digest:hex", "class:string", "effective_date:date", "recorded_at:seq", "ordinal:int", "side:string", "amount:amount", "column:string", "released_at:seq?", "resolves:hex?", "supersedes:[lineage]", "evidence:[evidence_head]"]
+
+[[shape]]
+name = "lineage"
+doc = "What an entry supersedes, and how."
+fields = ["entry:hex", "kind:string", "reason_code:int"]
+
+[[shape]]
+name = "evidence_head"
+doc = "A document the entry cites, with its public commitment."
+fields = ["document_oid:hex", "doc_commit:hex", "role:int"]
+
+[[shape]]
+name = "cell_change"
+doc = "The cell in one unit as known after `recorded_at`, at every sequence that touched it."
+fields = ["recorded_at:seq", "unit:string", "debits:amount", "credits:amount", "debits_pending:amount", "credits_pending:amount"]

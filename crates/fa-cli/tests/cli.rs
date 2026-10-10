@@ -1,10 +1,65 @@
 //! Binary-level regression tests for the agent contract (plan §15.3; fa-coa
 //! examples): exit codes per refusal, stdout data / stderr diagnostics, empty
 //! results exit 0, bare `fa` prints triage, typos get a suggestion.
+//!
+//! Every call that passes `--json` is also a robot-schema conformance check:
+//! each stdout line must match its event's schema in `registries/verbs.toml`
+//! (what `fa robot-docs schema` prints), a success emits no error event, and
+//! a failure emits exactly one, last, carrying the process's exit code.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use fa_cli::json::{self, Json};
+use fa_cli::verbs::registry;
+
+const ERROR_EVENTS: &[&str] = &["usage_error", "refusal", "error", "verification_failed"];
+
+/// The robot-mode contract over one call's stdout; returns its event names.
+fn check_robot_output(args: &[&str], code: i32, stdout: &str) -> Vec<String> {
+    let reg = registry().expect("verbs.toml");
+    let mut events = Vec::new();
+    for line in stdout.lines() {
+        let checked = reg.check_line(line);
+        assert!(
+            checked.is_ok(),
+            "args={args:?}\n{}",
+            checked.clone().err().unwrap_or_default()
+        );
+        events.push(checked.unwrap_or_default().to_string());
+    }
+    assert!(
+        !events.is_empty(),
+        "robot mode is never silent: args={args:?}"
+    );
+    let errors: Vec<usize> = events
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| ERROR_EVENTS.contains(&e.as_str()))
+        .map(|(i, _)| i)
+        .collect();
+    if code == 0 {
+        assert!(
+            errors.is_empty(),
+            "exit 0 with an error event: args={args:?}\n{stdout}"
+        );
+    } else {
+        assert_eq!(
+            errors,
+            vec![events.len() - 1],
+            "a failure emits exactly one error event, last: args={args:?}\n{stdout}"
+        );
+        let last = stdout.lines().last().unwrap_or_default();
+        assert_eq!(
+            field(last, "exit"),
+            Some(code.to_string().as_str()),
+            "the error event names the exit code: args={args:?}"
+        );
+    }
+    events
+}
 
 fn fa(dir: Option<&Path>, args: &[&str]) -> (i32, String, String) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_fa"));
@@ -14,9 +69,14 @@ fn fa(dir: Option<&Path>, args: &[&str]) -> (i32, String, String) {
     cmd.args(args);
     cmd.env_remove("FA_BOOK");
     let out = cmd.output().expect("run fa");
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    if args.contains(&"--json") {
+        check_robot_output(args, code, &stdout);
+    }
     (
-        out.status.code().unwrap_or(-1),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
+        code,
+        stdout,
         String::from_utf8_lossy(&out.stderr).into_owned(),
     )
 }
@@ -896,5 +956,701 @@ fn applications_settle_open_items_and_reversals_reopen_them() -> std::io::Result
     let (code, out, _) = fa(Some(&book), &["open-items", "--as-known-at", "1", "--json"]);
     assert_eq!(code, 0, "{out}");
     assert_eq!(field(&out, "count"), Some("0"), "{out}");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// fa-9xt: the verb registry, the robot-mode schema, and `fa explain balance`
+// ---------------------------------------------------------------------------
+
+/// The last stdout line, parsed (robot mode prints one result line here).
+fn doc(out: &str) -> Json {
+    let parsed = json::parse(out.lines().last().unwrap_or_default());
+    assert!(parsed.is_ok(), "not JSON: {out}");
+    parsed.unwrap_or(Json::Null)
+}
+
+fn arr<'a>(j: &'a Json, key: &str) -> &'a [Json] {
+    j.get(key).and_then(Json::as_arr).unwrap_or_default()
+}
+
+fn text<'a>(j: &'a Json, key: &str) -> &'a str {
+    j.get(key).and_then(Json::as_str).unwrap_or_default()
+}
+
+fn int(j: &Json, key: &str) -> Option<i128> {
+    match j.get(key) {
+        Some(Json::Int(n)) => Some(*n),
+        _ => None,
+    }
+}
+
+fn names(items: &[Json]) -> Vec<&str> {
+    items.iter().map(|i| text(i, "name")).collect()
+}
+
+#[test]
+fn verbs_toml_is_the_single_verb_registry_and_the_binary_agrees() -> std::io::Result<()> {
+    let reg = registry().expect("verbs.toml");
+    let nowhere = tmp("parity")?.join("not-a-book");
+
+    // `fa capabilities` lists exactly the registry's verbs and aliases.
+    let (code, out, _) = fa(None, &["capabilities", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let caps = doc(&out);
+    let listed: Vec<&str> = arr(&caps, "verbs")
+        .iter()
+        .filter_map(Json::as_str)
+        .collect();
+    let registered: Vec<&str> = reg.verbs.iter().map(|v| v.name.as_str()).collect();
+    assert_eq!(listed, registered);
+    assert_eq!(
+        names(arr(&caps, "aliases")),
+        reg.aliases
+            .iter()
+            .map(|a| a.name.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    for verb in &reg.verbs {
+        // Help comes from the registry row, in both modes.
+        let (code, out, err) = fa(None, &[&verb.name, "--help", "--json"]);
+        assert_eq!(code, 0, "{}: {out}\n{err}", verb.name);
+        let help = doc(&out);
+        assert_eq!(text(&help, "verb"), verb.name);
+        let (code, human, _) = fa(None, &["help", &verb.name]);
+        assert_eq!(code, 0, "{human}");
+        for line in &verb.usage {
+            assert!(
+                text(&help, "text").contains(line.as_str()),
+                "{}: {line}",
+                verb.name
+            );
+            assert!(
+                human.contains(line.as_str()),
+                "{}: {line}\n{human}",
+                verb.name
+            );
+        }
+        // A handler answers every registered spelling: whatever it needs
+        // next (an argument, a book) it says so, and it is never a parity
+        // defect (exit 5, "has no handler") or an unknown command.
+        let calls: Vec<Vec<&str>> = if verb.subcommands.is_empty() {
+            vec![vec![verb.name.as_str()]]
+        } else {
+            verb.subcommands
+                .iter()
+                .map(|sub| vec![verb.name.as_str(), sub.as_str()])
+                .collect()
+        };
+        for mut call in calls {
+            call.push("--json");
+            let (code, out, err) = fa(Some(&nowhere), &call);
+            assert!(
+                [0, 2, 4].contains(&code) && !out.contains("has no handler"),
+                "{call:?}: exit {code}\n{out}\n{err}"
+            );
+            assert!(!out.contains("unknown command"), "{call:?}: {out}");
+        }
+        // A subcommand the registry lacks is a usage error naming the real ones.
+        if !verb.subcommands.is_empty() {
+            let (code, out, _) = fa(Some(&nowhere), &[&verb.name, "nosuchsub", "--json"]);
+            assert_eq!(code, 2, "{out}");
+            assert!(
+                out.contains("has no subcommand") && out.contains(&verb.subcommands.join("|")),
+                "{out}"
+            );
+        }
+    }
+    assert!(
+        !nowhere.exists(),
+        "no parity probe may create a book: {}",
+        nowhere.display()
+    );
+
+    // Aliases expand to their registered verbs.
+    for alias in &reg.aliases {
+        let (code, out, _) = fa(None, &[&alias.name, "--help", "--json"]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(
+            Some(text(&doc(&out), "verb")),
+            alias.expands.first().map(String::as_str)
+        );
+    }
+
+    // Flags belong to verbs: another verb's flag is refused with this verb's
+    // flags as the fix; a flag with no verb names the commands.
+    let (code, out, _) = fa(None, &["verify", "open-items", "--activity", "--json"]);
+    assert_eq!(code, 2, "{out}");
+    let refused = doc(&out);
+    assert!(
+        text(&refused, "message").contains("--activity is not a flag of `fa verify`")
+            && text(&refused, "fix").contains("--period"),
+        "{out}"
+    );
+    let (code, out, _) = fa(None, &["--period", "FY2026-P03", "--json"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(
+        text(&doc(&out), "message").contains("needs a command"),
+        "{out}"
+    );
+    // The flag list the parser corrects against is the registry's.
+    let (code, _, err) = fa(None, &["explain", "balance", "1000", "--perod", "P"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("--period"), "{err}");
+    // Unknown verbs are corrected against verbs and aliases.
+    let (code, out, _) = fa(None, &["trial-balanse", "--json"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(
+        text(&doc(&out), "fix").contains("fa trial-balance"),
+        "{out}"
+    );
+    Ok(())
+}
+
+#[test]
+fn robot_docs_schema_prints_the_envelope_and_every_event_from_the_registry() {
+    let reg = registry().expect("verbs.toml");
+    let (code, out, err) = fa(None, &["robot-docs", "schema", "--json"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert!(err.is_empty(), "{err}");
+    let schema = doc(&out);
+    let envelope = schema.get("envelope").cloned().unwrap_or(Json::Null);
+    assert_eq!(text(&envelope, "discriminator"), "event");
+    assert!(text(&envelope, "description").contains("one JSON object per line"));
+    let fields_of = |item: &Json| -> Vec<(String, String)> {
+        arr(item, "fields")
+            .iter()
+            .map(|f| (text(f, "name").to_string(), text(f, "type").to_string()))
+            .collect()
+    };
+    let printed: Vec<(String, Vec<(String, String)>)> = arr(&schema, "events")
+        .iter()
+        .map(|e| (text(e, "name").to_string(), fields_of(e)))
+        .collect();
+    let expected: Vec<(String, Vec<(String, String)>)> = reg
+        .events
+        .iter()
+        .map(|e| {
+            (
+                e.name.clone(),
+                e.fields
+                    .iter()
+                    .map(|f| (f.name.clone(), f.type_text.clone()))
+                    .collect(),
+            )
+        })
+        .collect();
+    assert_eq!(printed, expected);
+    assert_eq!(
+        names(arr(&schema, "shapes")),
+        reg.shapes
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>()
+    );
+    for e in arr(&schema, "events") {
+        let verbs: Vec<&str> = arr(e, "verbs").iter().filter_map(Json::as_str).collect();
+        assert_eq!(verbs, reg.emitters(text(e, "name")), "{}", text(e, "name"));
+    }
+
+    // One event: it and exactly the shapes it references.
+    let (code, out, _) = fa(
+        None,
+        &["robot-docs", "schema", "balance_explained", "--json"],
+    );
+    assert_eq!(code, 0, "{out}");
+    let one = doc(&out);
+    assert_eq!(names(arr(&one, "events")), vec!["balance_explained"]);
+    let shapes: BTreeSet<&str> = names(arr(&one, "shapes")).into_iter().collect();
+    let want: BTreeSet<&str> = [
+        "explained_cell",
+        "contribution",
+        "lineage",
+        "evidence_head",
+        "cell_change",
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(shapes, want);
+
+    // An unknown name is a usage error with the nearest real one.
+    let (code, out, _) = fa(
+        None,
+        &["robot-docs", "schema", "balance_explaned", "--json"],
+    );
+    assert_eq!(code, 2, "{out}");
+    assert!(
+        text(&doc(&out), "fix").contains("fa robot-docs schema balance_explained"),
+        "{out}"
+    );
+
+    // Human mode prints the same registry as text.
+    let (code, human, _) = fa(None, &["robot-docs", "schema"]);
+    assert_eq!(code, 0);
+    assert!(
+        human.contains("event balance_explained (explain)")
+            && human.contains("  contributions: [contribution]")
+            && human.contains("shape contribution"),
+        "{human}"
+    );
+}
+
+/// Parse an explanation's single USD cell into
+/// (debits, credits, entry_count, debits_pending, credits_pending, pending_count).
+fn usd_cell(ex: &Json) -> Option<(String, String, i128, String, String, i128)> {
+    let cells = arr(ex, "cells");
+    assert!(cells.len() <= 1, "one unit in this book: {cells:?}");
+    cells.first().map(|c| {
+        (
+            text(c, "debits").to_string(),
+            text(c, "credits").to_string(),
+            int(c, "entry_count").unwrap_or(-1),
+            text(c, "debits_pending").to_string(),
+            text(c, "credits_pending").to_string(),
+            int(c, "pending_count").unwrap_or(-1),
+        )
+    })
+}
+
+#[test]
+fn explain_balance_lists_every_leg_re_adds_to_the_cell_and_replays_its_history()
+-> std::io::Result<()> {
+    let dir = tmp("explain")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Explain Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1","name":"Assets","type":"Asset","leaf":false,"unit":"USD"},{"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD","parent":"1"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P02", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let post = |verb: &str, name: &str, body: &str| -> (String, i128) {
+        let path = write(&dir, name, body);
+        let posted = doc(&ok(&[verb, "--intent", &path, "--json"]));
+        (
+            text(&posted, "vid").to_string(),
+            int(&posted, "recorded_at").unwrap_or(-1),
+        )
+    };
+    let leg = |side: &str, account: &str, amount: &str| {
+        format!(r#"{{"side":"{side}","account":"{account}","amount":"{amount} USD"}}"#)
+    };
+    let pair = |amount: &str| {
+        format!(
+            "[{},{}]",
+            leg("debit", "6000", amount),
+            leg("credit", "1000", amount)
+        )
+    };
+    // February (another period: never in March's explanation).
+    post(
+        "post",
+        "feb.json",
+        &format!(
+            r#"{{"effective_date":"2026-02-20","idempotency_key":"feb","legs":{}}}"#,
+            pair("100.00")
+        ),
+    );
+    let (rent, rent_at) = post(
+        "post",
+        "rent.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-05","idempotency_key":"rent","legs":{}}}"#,
+            pair("1500.00")
+        ),
+    );
+    let (extra, extra_at) = post(
+        "post",
+        "extra.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-10","idempotency_key":"extra","legs":{}}}"#,
+            pair("200.00")
+        ),
+    );
+    let (rev, rev_at) = post(
+        "post",
+        "rev.json",
+        &format!(
+            r#"{{"class":"Reversal","reverses":"{extra}","effective_date":"2026-03-11","idempotency_key":"rev"}}"#
+        ),
+    );
+    let (hold, hold_at) = post(
+        "reserve",
+        "hold.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-12","idempotency_key":"hold","legs":{}}}"#,
+            pair("80.00")
+        ),
+    );
+    let (res, res_at) = post(
+        "resolve",
+        "res.json",
+        &format!(
+            r#"{{"resolves":"{hold}","effective_date":"2026-03-20","idempotency_key":"res","legs":{}}}"#,
+            pair("60.00")
+        ),
+    );
+    let (hold2, hold2_at) = post(
+        "reserve",
+        "hold2.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-25","idempotency_key":"hold2","legs":{}}}"#,
+            pair("30.00")
+        ),
+    );
+
+    let head = ok(&[
+        "explain",
+        "balance",
+        "1000",
+        "--period",
+        "FY2026-P03",
+        "--json",
+    ]);
+    let ex = doc(&head);
+    assert_eq!(text(&ex, "account"), "1000");
+    assert_eq!(text(&ex, "name"), "Cash");
+    assert_eq!(text(&ex, "type"), "Asset");
+    assert_eq!(ex.get("certificate"), Some(&Json::Null));
+    // Posted: credits 1500 + 200 + 60, debits 200 (the reversal), four
+    // entries; pending: the unresolved 30 hold. The resolved 80 hold is in
+    // neither column.
+    assert_eq!(
+        usd_cell(&ex),
+        Some((
+            "200.00 USD".into(),
+            "1760.00 USD".into(),
+            4,
+            "0.00 USD".into(),
+            "30.00 USD".into(),
+            1
+        ))
+    );
+    assert_eq!(text(&arr(&ex, "cells")[0], "net"), "-1560.00 USD");
+    let contributions = arr(&ex, "contributions");
+    let summary: Vec<(String, i128, i128, String, String, String)> = contributions
+        .iter()
+        .map(|c| {
+            (
+                text(c, "entry").to_string(),
+                int(c, "recorded_at").unwrap_or(-1),
+                int(c, "ordinal").unwrap_or(-1),
+                text(c, "side").to_string(),
+                text(c, "amount").to_string(),
+                text(c, "column").to_string(),
+            )
+        })
+        .collect();
+    let row = |vid: &str, at: i128, side: &str, amount: &str, column: &str| {
+        (
+            vid.to_string(),
+            at,
+            1,
+            side.to_string(),
+            format!("{amount} USD"),
+            column.to_string(),
+        )
+    };
+    assert_eq!(
+        summary,
+        vec![
+            row(&rent, rent_at, "credit", "1500.00", "posted"),
+            row(&extra, extra_at, "credit", "200.00", "posted"),
+            row(&rev, rev_at, "debit", "200.00", "posted"),
+            row(&hold, hold_at, "credit", "80.00", "released"),
+            row(&res, res_at, "credit", "60.00", "posted"),
+            row(&hold2, hold2_at, "credit", "30.00", "pending"),
+        ],
+        "{head}"
+    );
+    let by_entry = |vid: &str| contributions.iter().find(|c| text(c, "entry") == vid);
+    let reversal = by_entry(&rev).cloned().unwrap_or(Json::Null);
+    assert_eq!(text(&reversal, "class"), "Reversal");
+    let lineage = arr(&reversal, "supersedes");
+    assert_eq!(lineage.len(), 1, "{head}");
+    assert_eq!(
+        (text(&lineage[0], "entry"), text(&lineage[0], "kind")),
+        (extra.as_str(), "Reverses")
+    );
+    let released = by_entry(&hold).cloned().unwrap_or(Json::Null);
+    assert_eq!(int(&released, "released_at"), Some(res_at));
+    let resolution = by_entry(&res).cloned().unwrap_or(Json::Null);
+    assert_eq!(text(&resolution, "resolves"), hold);
+    assert_eq!(resolution.get("released_at"), Some(&Json::Null));
+
+    // The same cell, from the trial balance's own fold: the explanation re-adds.
+    let tb = ok(&["tb", "--period", "FY2026-P03", "--activity", "--json"]);
+    let cash = arr(&doc(&tb), "rows")
+        .iter()
+        .find(|r| text(r, "code") == "1000")
+        .cloned()
+        .unwrap_or(Json::Null);
+    let cell = usd_cell(&ex).unwrap_or_default();
+    assert_eq!(
+        (
+            text(&cash, "debits"),
+            text(&cash, "credits"),
+            text(&cash, "credits_pending")
+        ),
+        (cell.0.as_str(), cell.1.as_str(), cell.4.as_str())
+    );
+
+    // The known-at history: one point per recorded sequence that touched the
+    // cell, ending at the head's values; each point equals the explanation
+    // as known at that sequence (a fresh read of the journal prefix).
+    let history = arr(&ex, "history");
+    let points: Vec<i128> = history
+        .iter()
+        .map(|h| int(h, "recorded_at").unwrap_or(-1))
+        .collect();
+    assert_eq!(
+        points,
+        vec![rent_at, extra_at, rev_at, hold_at, res_at, hold2_at]
+    );
+    assert_eq!(int(&ex, "last_changed_at"), Some(hold2_at));
+    for h in history {
+        let at = int(h, "recorded_at").unwrap_or(-1).to_string();
+        let then = doc(&ok(&[
+            "explain",
+            "balance",
+            "1000",
+            "--period",
+            "FY2026-P03",
+            "--as-known-at",
+            &at,
+            "--json",
+        ]));
+        assert_eq!(
+            int(&then, "known_at").map(|n| n.to_string()),
+            Some(at.clone())
+        );
+        let (d, c, _, dp, cp, _) = usd_cell(&then).unwrap_or_default();
+        assert_eq!(
+            (d.as_str(), c.as_str(), dp.as_str(), cp.as_str()),
+            (
+                text(h, "debits"),
+                text(h, "credits"),
+                text(h, "debits_pending"),
+                text(h, "credits_pending")
+            ),
+            "as known at {at}"
+        );
+    }
+    // Before the reversal was recorded, it is not part of the explanation.
+    let before = doc(&ok(&[
+        "explain",
+        "balance",
+        "1000",
+        "--period",
+        "FY2026-P03",
+        "--as-known-at",
+        &extra_at.to_string(),
+        "--json",
+    ]));
+    assert_eq!(arr(&before, "contributions").len(), 2);
+
+    // Another period explains only its own legs; an untouched account in a
+    // period is an empty result, exit 0.
+    let feb = doc(&ok(&[
+        "explain",
+        "balance",
+        "1000",
+        "--period",
+        "FY2026-P02",
+        "--json",
+    ]));
+    assert_eq!(arr(&feb, "contributions").len(), 1);
+    assert_eq!(text(&arr(&feb, "cells")[0], "credits"), "100.00 USD");
+    let empty = doc(&ok(&[
+        "explain",
+        "balance",
+        "6000",
+        "--period",
+        "FY2026-P01",
+        "--json",
+    ]));
+    assert!(arr(&empty, "cells").is_empty() && arr(&empty, "contributions").is_empty());
+    assert_eq!(empty.get("last_changed_at"), Some(&Json::Null));
+
+    // The alias `fa balance` is the same read.
+    assert_eq!(
+        ok(&["balance", "1000", "--period", "FY2026-P03", "--json"]),
+        head
+    );
+    // Human mode: plain text, the contributions table.
+    let human = ok(&["explain", "balance", "1000", "--period", "FY2026-P03"]);
+    assert!(
+        human.contains("contributions (by recorded sequence)")
+            && human.contains(&format!("released at {res_at}"))
+            && !human.contains("\"event\""),
+        "{human}"
+    );
+
+    // Refusals name the fix.
+    for (args, needle) in [
+        (
+            vec!["explain", "balance", "100", "--period", "FY2026-P03"],
+            "did you mean `1000`?",
+        ),
+        (
+            vec!["explain", "balance", "1", "--period", "FY2026-P03"],
+            "summary account",
+        ),
+        (
+            vec!["explain", "balance", "1000", "--period", "FY2027-P03"],
+            "--period FY2026-P03",
+        ),
+        (vec!["explain", "balance", "1000"], "--period"),
+        (
+            vec![
+                "explain",
+                "balance",
+                "1000",
+                "--period",
+                "FY2026-P02",
+                "--period",
+                "FY2026-P03",
+            ],
+            "one period at a time",
+        ),
+        (
+            vec![
+                "explain",
+                "balance",
+                "1000",
+                "--period",
+                "FY2026-P03",
+                "--as-known-at",
+                "2026-03-15T00:00:00Z",
+            ],
+            "instant selectors are unsupported",
+        ),
+        (
+            vec![
+                "explain",
+                "balance",
+                "1000",
+                "--period",
+                "FY2026-P03",
+                "--as-known-at",
+                "18446744073709551615",
+            ],
+            "beyond book head",
+        ),
+        (vec!["explain"], "needs a subcommand: balance"),
+        (vec!["explain", "balanse", "1000"], "fa explain balance"),
+    ] {
+        let mut args = args;
+        args.push("--json");
+        let (code, out, err) = fa(Some(&book), &args);
+        assert_eq!(code, 2, "args={args:?}\n{out}\n{err}");
+        assert!(
+            out.contains(needle) && err.contains(needle),
+            "args={args:?}: {needle}\n{out}\n{err}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
+    let reg = registry().expect("verbs.toml");
+    let dir = tmp("events")?;
+    let book = dir.join("book");
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut run = |with_book: bool, args: &[&str]| -> (i32, String) {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, _) = fa(with_book.then_some(book.as_path()), &argv);
+        seen.extend(check_robot_output(&argv, code, &out));
+        (code, out)
+    };
+    assert_eq!(run(false, &["--version"]).0, 0);
+    assert_eq!(run(false, &[]).0, 0);
+    assert_eq!(run(false, &["--help"]).0, 0);
+    assert_eq!(run(false, &["capabilities"]).0, 0);
+    assert_eq!(run(false, &["robot-docs", "guide"]).0, 0);
+    assert_eq!(run(false, &["robot-docs", "schema"]).0, 0);
+    assert_eq!(run(false, &["nosuchverb"]).0, 2);
+    assert_eq!(run(true, &["book", "info"]).0, 4);
+    assert_eq!(run(true, &["book", "create", "--name", "Events Co"]).0, 0);
+    assert_eq!(run(true, &["book", "info"]).0, 0);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    assert_eq!(run(true, &["chart", "import", &chart]).0, 0);
+    assert_eq!(run(true, &["chart", "list"]).0, 0);
+    assert_eq!(
+        run(true, &["period", "create", "--fiscal-year", "2026"]).0,
+        0
+    );
+    assert_eq!(run(true, &["period", "list"]).0, 0);
+    assert_eq!(run(true, &["period", "open", "FY2026-P03"]).0, 0);
+    let rent = write(
+        &dir,
+        "rent.json",
+        r#"{"effective_date":"2026-03-15","idempotency_key":"rent","legs":[{"side":"debit","account":"6000","amount":"10.00 USD"},{"side":"credit","account":"1000","amount":"10.00 USD"}]}"#,
+    );
+    let (code, out) = run(true, &["post", "--intent", &rent]);
+    assert_eq!(code, 0, "{out}");
+    let vid = field(&out, "vid").unwrap_or_default().to_string();
+    assert_eq!(run(true, &["post", "--intent", &rent]).0, 0);
+    let bad = write(
+        &dir,
+        "bad.json",
+        r#"{"effective_date":"2026-03-15","idempotency_key":"bad","legs":[{"side":"debit","account":"6000","amount":"10.00 USD"},{"side":"credit","account":"1000","amount":"9.99 USD"}]}"#,
+    );
+    assert_eq!(run(true, &["post", "--intent", &bad]).0, 3);
+    assert_eq!(run(true, &["tb", "--period", "FY2026-P03"]).0, 0);
+    assert_eq!(run(true, &["open-items"]).0, 0);
+    assert_eq!(run(true, &["entry", "show", &vid]).0, 0);
+    assert_eq!(run(true, &["entry", "show", "00"]).0, 0);
+    assert_eq!(
+        run(
+            true,
+            &["explain", "balance", "1000", "--period", "FY2026-P03"]
+        )
+        .0,
+        0
+    );
+    assert_eq!(
+        run(
+            true,
+            &["registers", "materialize", "--period", "FY2026-P03"]
+        )
+        .0,
+        0
+    );
+    assert_eq!(
+        run(true, &["verify", "registers", "--period", "FY2026-P03"]).0,
+        0
+    );
+    assert_eq!(run(true, &["verify", "open-items"]).0, 0);
+    let more = write(
+        &dir,
+        "more.json",
+        r#"{"effective_date":"2026-03-16","idempotency_key":"more","legs":[{"side":"debit","account":"6000","amount":"1.00 USD"},{"side":"credit","account":"1000","amount":"1.00 USD"}]}"#,
+    );
+    assert_eq!(run(true, &["post", "--intent", &more]).0, 0);
+    assert_eq!(
+        run(true, &["verify", "registers", "--period", "FY2026-P03"]).0,
+        8
+    );
+    let declared: BTreeSet<String> = reg.events.iter().map(|e| e.name.clone()).collect();
+    assert_eq!(
+        seen, declared,
+        "every declared event is emitted, and nothing undeclared is"
+    );
     Ok(())
 }

@@ -6,9 +6,15 @@
 //! 4 environment · 5 foundation · 6 conflict · 7 safety · 8 verification;
 //! 1 is never emitted); empty results exit 0; bare `fa` prints triage and
 //! exits; there is no TUI.
+//!
+//! Every verb, subcommand, alias, flag, usage line, and event schema comes
+//! from the verb registry (`registries/verbs.toml`, [`fa_cli::verbs`]);
+//! `HANDLERS` is the only list of verbs in this file, and the parity tests
+//! fail when the two disagree.
+
+#![forbid(unsafe_code)]
 
 mod args;
-mod json;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -27,25 +33,32 @@ use fa_money::{Amount, Side};
 use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodState, PeriodTransition};
 use fgdb_types::{CommitSeq, VId};
 
+use fa_cli::json::{self, Json, obj, s};
+use fa_cli::verbs::{self, Registry, Verb};
+
 use crate::args::{Args, UsageError, nearest};
-use crate::json::{Json, obj, s};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const VERBS: &[&str] = &[
-    "book",
-    "chart",
-    "period",
-    "post",
-    "reserve",
-    "resolve",
-    "tb",
-    "open-items",
-    "verify",
-    "registers",
-    "entry",
-    "capabilities",
-    "robot-docs",
-    "help",
+
+type Handler = fn(&Out, &Args) -> Result<(), Fail>;
+
+/// One handler per registered verb, keyed by the registry's verb name.
+const HANDLERS: &[(&str, Handler)] = &[
+    ("book", book_cmd),
+    ("chart", chart_cmd),
+    ("period", period_cmd),
+    ("post", post_cmd),
+    ("reserve", reserve_cmd),
+    ("resolve", resolve_cmd),
+    ("tb", tb_cmd),
+    ("open-items", open_items_cmd),
+    ("explain", explain_cmd),
+    ("verify", verify_cmd),
+    ("registers", registers_cmd),
+    ("entry", entry_cmd),
+    ("capabilities", capabilities_cmd),
+    ("robot-docs", robot_docs_cmd),
+    ("help", help_cmd),
 ];
 
 fn main() -> ExitCode {
@@ -59,6 +72,9 @@ enum Fail {
     Refusal(Refusal),
     Book(BookError),
     Verification(String, Json),
+    /// The registry and this binary disagree (a parity defect), or the
+    /// embedded registry is unreadable: a foundation failure, exit 5.
+    Internal(String),
 }
 
 impl From<UsageError> for Fail {
@@ -100,21 +116,25 @@ impl Out {
 }
 
 fn run(argv: &[String]) -> u8 {
-    let args = match args::parse(argv) {
+    let early = Out {
+        json: argv.iter().any(|a| a == "--json"),
+    };
+    let reg = match registry() {
+        Ok(r) => r,
+        Err(fail) => return finish(&early, Err(fail)),
+    };
+    let args = match args::parse(argv, &reg.value_flags(), &reg.switches()) {
         Ok(a) => a,
-        Err(e) => {
-            return finish(
-                &Out {
-                    json: argv.iter().any(|a| a == "--json"),
-                },
-                Err(Fail::Usage(e)),
-            );
-        }
+        Err(e) => return finish(&early, Err(Fail::Usage(e))),
     };
     let out = Out {
         json: args.switch("--json"),
     };
-    finish(&out, dispatch(&out, &args))
+    finish(&out, dispatch(&out, reg, &args))
+}
+
+fn registry() -> Result<&'static Registry, Fail> {
+    verbs::registry().map_err(|e| Fail::Internal(format!("the embedded verb registry: {e}")))
 }
 
 fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
@@ -177,10 +197,22 @@ fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
             );
             exit::VERIFICATION
         }
+        Err(Fail::Internal(message)) => {
+            out.event(
+                "error",
+                vec![
+                    ("exit", Json::Int(i128::from(exit::FOUNDATION))),
+                    ("message", s(&message)),
+                ],
+                "",
+            );
+            eprintln!("error (exit {}): {message}", exit::FOUNDATION);
+            exit::FOUNDATION
+        }
     }
 }
 
-fn dispatch(out: &Out, args: &Args) -> Result<(), Fail> {
+fn dispatch(out: &Out, reg: &Registry, args: &Args) -> Result<(), Fail> {
     if args.switch("--version") {
         out.event(
             "version",
@@ -189,45 +221,137 @@ fn dispatch(out: &Out, args: &Args) -> Result<(), Fail> {
         );
         return Ok(());
     }
-    let verb = args.positional.first().map(String::as_str);
-    if args.switch("--help") || verb == Some("help") {
-        print!("{}", help_text());
-        return Ok(());
-    }
-    if (verb != Some("tb") && (args.flag("--as-of").is_some() || args.switch("--activity")))
-        || (!matches!(verb, Some("tb" | "open-items")) && args.flag("--as-known-at").is_some())
-    {
-        return Err(usage(
-            "--as-of and --activity are supported only by `fa tb`; --as-known-at by `fa tb` and `fa open-items`",
-            "fa tb --as-of 2026-03-15 --as-known-at HEAD --book <dir>",
-        ));
-    }
-    match verb {
-        None => {
-            print!("{}", triage_text());
-            Ok(())
+    // An alias expands in the verb position (plan §15.3: the spellings agents
+    // try first). It is a registered synonym, never a guessed correction.
+    let expanded;
+    let args = match args.positional.first().and_then(|w| reg.alias(w)) {
+        Some(alias) => {
+            let mut a = args.clone();
+            a.positional = alias
+                .expands
+                .iter()
+                .chain(args.positional.iter().skip(1))
+                .cloned()
+                .collect();
+            expanded = a;
+            &expanded
         }
-        Some("capabilities") => capabilities(out),
-        Some("robot-docs") => robot_docs(args),
-        Some("book") => book_cmd(out, args),
-        Some("chart") => chart_cmd(out, args),
-        Some("period") => period_cmd(out, args),
-        Some("post") => post_cmd(out, args, None),
-        Some("reserve") => post_cmd(out, args, Some(EntryClass::PENDING)),
-        Some("resolve") => post_cmd(out, args, Some(EntryClass::RESOLUTION)),
-        Some("tb") => tb_cmd(out, args),
-        Some("open-items") => open_items_cmd(out, args),
-        Some("verify") => verify_cmd(out, args),
-        Some("registers") => registers_cmd(out, args),
-        Some("entry") => entry_cmd(out, args),
-        Some(other) => Err(usage(
-            format!("unknown command `{other}`"),
-            match nearest(other, VERBS) {
+        None => args,
+    };
+    let Some(word) = args.positional.first() else {
+        check_flags(reg, None, args)?;
+        if args.switch("--help") {
+            return emit_help(out, reg, None);
+        }
+        out.event(
+            "triage",
+            vec![("version", s(VERSION)), ("text", s(triage_text()))],
+            triage_text().trim_end(),
+        );
+        return Ok(());
+    };
+    let Some(verb) = reg.verb(word) else {
+        let mut known: Vec<&str> = reg.verbs.iter().map(|v| v.name.as_str()).collect();
+        known.extend(reg.aliases.iter().map(|a| a.name.as_str()));
+        return Err(usage(
+            format!("unknown command `{word}`"),
+            match nearest(word, &known) {
                 Some(n) => format!("did you mean `fa {n}`?"),
                 None => "run `fa --help`".to_string(),
             },
-        )),
+        ));
+    };
+    check_flags(reg, Some(verb), args)?;
+    if args.switch("--help") {
+        return emit_help(out, reg, Some(verb));
     }
+    if !verb.subcommands.is_empty() {
+        let joined = verb.subcommands.join("|");
+        match args.positional.get(1) {
+            Some(sub) if verb.subcommands.contains(sub) => {}
+            Some(sub) => {
+                return Err(usage(
+                    format!("`fa {}` has no subcommand `{sub}`", verb.name),
+                    match nearest(
+                        sub,
+                        &verb
+                            .subcommands
+                            .iter()
+                            .map(String::as_str)
+                            .collect::<Vec<_>>(),
+                    ) {
+                        Some(n) => format!("did you mean `fa {} {n}`?", verb.name),
+                        None => format!("fa {} {joined}", verb.name),
+                    },
+                ));
+            }
+            None => {
+                return Err(usage(
+                    format!("`fa {}` needs a subcommand: {joined}", verb.name),
+                    format!("fa {} {joined} (see `fa {} --help`)", verb.name, verb.name),
+                ));
+            }
+        }
+    }
+    let handler = HANDLERS
+        .iter()
+        .find(|(name, _)| *name == verb.name)
+        .map(|(_, h)| *h)
+        .ok_or_else(|| {
+            Fail::Internal(format!(
+                "registered verb `{}` has no handler in this build",
+                verb.name
+            ))
+        })?;
+    handler(out, args)
+}
+
+/// Every supplied flag must be global or belong to the verb (verbs.toml).
+fn check_flags(reg: &Registry, verb: Option<&Verb>, args: &Args) -> Result<(), Fail> {
+    let supplied = args.flags.keys().chain(args.switches.iter());
+    for flag in supplied {
+        let global = reg.global.flags.contains(flag) || reg.global.switches.contains(flag);
+        if global || verb.is_some_and(|v| v.accepts(flag)) {
+            continue;
+        }
+        return Err(match verb {
+            None => usage(
+                format!("{flag} needs a command"),
+                "fa --help lists the commands; e.g. fa tb --period FY2026-P03 --book <dir>",
+            ),
+            Some(v) => usage(
+                format!("{flag} is not a flag of `fa {}`", v.name),
+                if v.flags.is_empty() && v.switches.is_empty() {
+                    format!(
+                        "`fa {}` takes only the global flags; see `fa {} --help`",
+                        v.name, v.name
+                    )
+                } else {
+                    format!(
+                        "flags of `fa {}`: {}; see `fa {} --help`",
+                        v.name,
+                        v.flags
+                            .iter()
+                            .chain(&v.switches)
+                            .map(String::as_str)
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        v.name
+                    )
+                },
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// A subcommand the registry admitted but this handler does not implement:
+/// a parity defect between verbs.toml and the binary, never a usage error.
+fn unhandled(verb: &str, sub: Option<&str>) -> Fail {
+    Fail::Internal(format!(
+        "registered subcommand `{verb} {}` has no handler in this build",
+        sub.unwrap_or("")
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -245,37 +369,106 @@ fn triage_text() -> String {
          fa post --intent entry.json --book <dir> --json\n  \
          fa reserve --intent hold.json --book <dir> --json; fa resolve --intent res.json --book <dir> --json\n  \
          fa tb --period FY2026-P03 --book <dir> --json\n  \
+         fa explain balance 1000 --period FY2026-P03 --book <dir> --json\n  \
          fa verify registers --period FY2026-P03 --book <dir>\n\n\
          discover\n  \
-         fa capabilities --json · fa robot-docs guide|exit-codes|examples · fa --help\n\n\
+         fa capabilities --json · fa robot-docs guide|exit-codes|examples|schema · fa --help · fa <command> --help\n\n\
          exit codes: 0 ok · 2 usage · 3 accounting-law refusal · 4 environment · 5 foundation · 6 conflict · 7 safety · 8 verification (never 1)\n"
     )
 }
 
-fn help_text() -> String {
-    format!(
-        "{}\ncommands\n  \
-         book create|info\n  \
-         chart import <file.json> | chart list\n  \
-         period create --fiscal-year N | period list | period open|soft-close|close|lock|reopen <code> [--to open|soft-closed] [--reason N] [--key K] [--date YYYY-MM-DD]\n  \
-         post --intent <file.json|-> [--grant <op>]... [--as <principal>]\n  \
-         reserve --intent <hold.json> (a Pending: amounts reserved, nothing posted)\n  \
-         resolve --intent <res.json> (resolves <hold vid>; disposition posts (legs drawn from the hold) | voids)\n  \
-         tb ((--period <code>)... | --fiscal-year N) [--activity] [--as-known-at HEAD|<seq>]\n  \
-         tb --as-of YYYY-MM-DD [--as-known-at HEAD|<seq>]\n  \
-         Stock balances include opening history; --activity is selected-period movement. Instants are unsupported.\n  \
-         open-items [--account <code>] [--as-known-at HEAD|<seq>]   (plan §5.7: each live posted leg, its applications, its open amount)\n  \
-         verify registers --period <code> | verify open-items\n  \
-         registers materialize --period <code>\n  \
-         entry show <vid-hex>\n  \
-         capabilities | robot-docs guide|exit-codes|examples\n\n\
-         global flags\n  \
-         --book <dir> (or FA_BOOK) · --keys <file> (default <dir>/book.keys) · --json · --as <principal> (default operator)\n",
-        triage_text()
-    )
+/// The command list (`verb` = None) or one verb's usage, from verbs.toml.
+fn help_text(reg: &Registry, verb: Option<&Verb>) -> String {
+    let mut text = String::new();
+    match verb {
+        None => {
+            text.push_str(&triage_text());
+            text.push_str("\ncommands\n");
+            for v in &reg.verbs {
+                for line in &v.usage {
+                    text.push_str(&format!("  {line}\n"));
+                }
+            }
+            if !reg.aliases.is_empty() {
+                text.push_str("\naliases\n");
+                for a in &reg.aliases {
+                    text.push_str(&format!("  {} = {}\n", a.name, a.expands.join(" ")));
+                }
+            }
+        }
+        Some(v) => {
+            text.push_str(&format!("fa {} — {}\n\nusage\n", v.name, v.summary));
+            for line in &v.usage {
+                text.push_str(&format!("  fa {line}\n"));
+            }
+            if !v.flags.is_empty() || !v.switches.is_empty() {
+                text.push_str(&format!(
+                    "\nflags\n  {}\n",
+                    v.flags
+                        .iter()
+                        .chain(&v.switches)
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" · ")
+                ));
+            }
+            let exits: Vec<String> = v.exits.iter().map(u8::to_string).collect();
+            text.push_str(&format!(
+                "\nevents (--json)\n  {}\nexits\n  {}\nexample\n  {}\n",
+                v.events.join(" · "),
+                exits.join(" · "),
+                v.example
+            ));
+        }
+    }
+    text.push_str(&format!("\nglobal flags\n  {}\n", reg.global.usage));
+    text
 }
 
-fn capabilities(out: &Out) -> Result<(), Fail> {
+fn emit_help(out: &Out, reg: &Registry, verb: Option<&Verb>) -> Result<(), Fail> {
+    let text = help_text(reg, verb);
+    out.event(
+        "help",
+        vec![
+            ("verb", verb.map_or(Json::Null, |v| s(&v.name))),
+            ("text", s(&text)),
+        ],
+        text.trim_end(),
+    );
+    Ok(())
+}
+
+fn help_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
+    let reg = registry()?;
+    match args.positional.get(1) {
+        None => emit_help(out, reg, None),
+        Some(word) => {
+            let name = reg
+                .alias(word)
+                .and_then(|a| a.expands.first())
+                .unwrap_or(word);
+            match reg.verb(name) {
+                Some(v) => emit_help(out, reg, Some(v)),
+                None => Err(usage(
+                    format!("no command `{word}`"),
+                    match nearest(
+                        word,
+                        &reg.verbs
+                            .iter()
+                            .map(|v| v.name.as_str())
+                            .collect::<Vec<_>>(),
+                    ) {
+                        Some(n) => format!("fa help {n}"),
+                        None => "fa help".to_string(),
+                    },
+                )),
+            }
+        }
+    }
+}
+
+fn capabilities_cmd(out: &Out, _args: &Args) -> Result<(), Fail> {
+    let reg = registry()?;
     let exits = fa_registry::ExitCodes::embedded().map_err(BookError::Registry)?;
     let codes: Vec<Json> = exits
         .rows
@@ -292,19 +485,32 @@ fn capabilities(out: &Out) -> Result<(), Fail> {
     let class_names: Vec<Json> = classes.rows.iter().map(|c| s(&c.name)).collect();
     let fields = vec![
         ("version", s(VERSION)),
-        ("verbs", Json::Arr(VERBS.iter().map(|v| s(*v)).collect())),
+        (
+            "verbs",
+            Json::Arr(reg.verbs.iter().map(|v| s(&v.name)).collect()),
+        ),
+        (
+            "aliases",
+            Json::Arr(
+                reg.aliases
+                    .iter()
+                    .map(|a| {
+                        obj(vec![
+                            ("name", s(&a.name)),
+                            ("expands", s(a.expands.join(" "))),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
         ("exit_codes", Json::Arr(codes)),
         ("entry_classes", Json::Arr(class_names)),
         (
             "robot_mode",
             obj(vec![
                 ("flag", s("--json")),
-                (
-                    "envelope",
-                    s(
-                        "one JSON object per line; `event` discriminates: result events, refusal, error, usage_error, verification_failed",
-                    ),
-                ),
+                ("envelope", s(&reg.envelope.description)),
+                ("schema", s("fa robot-docs schema [<event>] --json")),
             ]),
         ),
         ("stdout", s("data")),
@@ -319,28 +525,154 @@ fn capabilities(out: &Out) -> Result<(), Fail> {
     Ok(())
 }
 
-fn robot_docs(args: &Args) -> Result<(), Fail> {
-    match args.positional.get(1).map(String::as_str) {
+fn robot_docs_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
+    let topic = args.positional.get(1);
+    let text = match topic.map(String::as_str) {
         Some("exit-codes") => {
             let exits = fa_registry::ExitCodes::embedded().map_err(BookError::Registry)?;
-            for r in &exits.rows {
-                println!("{} {:<13} {}", r.code, r.name, r.meaning);
+            exits
+                .rows
+                .iter()
+                .map(|r| format!("{} {:<13} {}\n", r.code, r.name, r.meaning))
+                .collect()
+        }
+        Some("guide") => GUIDE.to_string(),
+        Some("examples") => EXAMPLES.to_string(),
+        Some("schema") => return robot_schema(out, registry()?, args.positional.get(2)),
+        _ => return Err(unhandled("robot-docs", topic.map(String::as_str))),
+    };
+    out.event(
+        "robot_docs",
+        vec![
+            ("topic", s(topic.map_or("", String::as_str))),
+            ("text", s(&text)),
+        ],
+        text.trim_end(),
+    );
+    Ok(())
+}
+
+fn field_docs(fields: &[verbs::Field]) -> Json {
+    Json::Arr(
+        fields
+            .iter()
+            .map(|f| obj(vec![("name", s(&f.name)), ("type", s(&f.type_text))]))
+            .collect(),
+    )
+}
+
+/// `fa robot-docs schema [<name>]`: the envelope and every event (with the
+/// shapes they reference), or one event or shape — printed from verbs.toml.
+fn robot_schema(out: &Out, reg: &Registry, name: Option<&String>) -> Result<(), Fail> {
+    let (events, shapes): (Vec<&verbs::Schema>, Vec<&verbs::Schema>) = match name {
+        None => (reg.events.iter().collect(), reg.shapes.iter().collect()),
+        Some(n) => match (reg.event(n), reg.shape(n)) {
+            (Some(e), _) => (vec![e], reg.closure(&[e])),
+            (None, Some(sh)) => {
+                let mut shapes = vec![sh];
+                shapes.extend(reg.closure(&[sh]));
+                (Vec::new(), shapes)
             }
-            Ok(())
-        }
-        Some("guide") => {
-            print!("{}", GUIDE);
-            Ok(())
-        }
-        Some("examples") => {
-            print!("{}", EXAMPLES);
-            Ok(())
-        }
-        other => Err(usage(
-            format!("robot-docs needs a topic, got {other:?}"),
-            "fa robot-docs guide|exit-codes|examples",
-        )),
+            (None, None) => {
+                let mut known: Vec<&str> = reg.events.iter().map(|e| e.name.as_str()).collect();
+                known.extend(reg.shapes.iter().map(|s| s.name.as_str()));
+                return Err(usage(
+                    format!("no event or shape `{n}` in the robot schema"),
+                    match nearest(n, &known) {
+                        Some(k) => format!("fa robot-docs schema {k}"),
+                        None => "fa robot-docs schema (lists every event)".to_string(),
+                    },
+                ));
+            }
+        },
+    };
+    if out.json {
+        out.event(
+            "robot_schema",
+            vec![
+                (
+                    "envelope",
+                    obj(vec![
+                        ("discriminator", s(&reg.envelope.discriminator)),
+                        ("description", s(&reg.envelope.description)),
+                        (
+                            "types",
+                            Json::Arr(verbs::TYPES.iter().map(|t| s(*t)).collect()),
+                        ),
+                    ]),
+                ),
+                (
+                    "events",
+                    Json::Arr(
+                        events
+                            .iter()
+                            .map(|e| {
+                                obj(vec![
+                                    ("name", s(&e.name)),
+                                    ("doc", s(&e.doc)),
+                                    (
+                                        "verbs",
+                                        Json::Arr(
+                                            reg.emitters(&e.name).into_iter().map(s).collect(),
+                                        ),
+                                    ),
+                                    ("fields", field_docs(&e.fields)),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                ),
+                (
+                    "shapes",
+                    Json::Arr(
+                        shapes
+                            .iter()
+                            .map(|sh| {
+                                obj(vec![
+                                    ("name", s(&sh.name)),
+                                    ("doc", s(&sh.doc)),
+                                    ("fields", field_docs(&sh.fields)),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                ),
+            ],
+            "",
+        );
+        return Ok(());
     }
+    if name.is_none() {
+        println!(
+            "envelope\n  {}\n  discriminator: `{}`\n  types: {}\n",
+            reg.envelope.description,
+            reg.envelope.discriminator,
+            verbs::TYPES.join(" · ")
+        );
+    }
+    for e in &events {
+        let emitters = reg.emitters(&e.name);
+        println!(
+            "event {} ({}) — {}",
+            e.name,
+            if emitters.is_empty() {
+                "any command".to_string()
+            } else {
+                emitters.join(", ")
+            },
+            e.doc
+        );
+        for f in &e.fields {
+            println!("  {}: {}", f.name, f.type_text);
+        }
+    }
+    for sh in &shapes {
+        println!("shape {} — {}", sh.name, sh.doc);
+        for f in &sh.fields {
+            println!("  {}: {}", f.name, f.type_text);
+        }
+    }
+    Ok(())
 }
 
 const GUIDE: &str = "fa robot-docs guide\n\
@@ -353,7 +685,9 @@ const GUIDE: &str = "fa robot-docs guide\n\
 6. Idempotency: every intent carries idempotency_key; resubmitting returns the recorded outcome (event \"recorded\"), never a duplicate.\n\
 7. Posting into a non-Open period is decided by the admissibility matrix; the refusal cites the (class, state) cell and names the admissible class or capability.\n\
 8. Two-phase: `fa reserve` posts a Pending (amounts in the pending columns, never posted); `fa resolve` names it with `resolves` and either posts a sub-vector (`legs`, each drawn from one hold leg — same account and side, at most the reserved amount; add `source_ordinal` when the hold has several such legs) or voids it (`disposition: \"voids\"`). The rest of the hold is released either way. One resolution per hold: a second is exit 6 (FA-REF-062); resolving a non-hold is FA-REF-060.\n\
-9. Application: a leg may carry `settles: [{entry, ordinal, amount}]` to apply itself to an open item — the opposite side on the same account and unit, at most the item's open amount (FA-REF-072 names what is open). `fa open-items --account <code>` lists items with their applications. Reversing a receipt reopens the invoice (its applications are undone, never re-entered); an invoice with live applications cannot be reversed until its receipts are (FA-REF-073).\n";
+9. Explain before you trust: `fa explain balance <account> --period <code> --json` returns the account's register cells, the fold digest they belong to, every contributing leg with its entry and recorded_at, and the cells' known-at history; the legs re-add to the cells exactly. Add --as-known-at <seq> to see what was known then.\n\
+10. Schemas: `fa robot-docs schema --json` lists every event and its fields (generated from registries/verbs.toml); `fa robot-docs schema <event>` prints one. `fa <command> --help` prints that command's usage, flags, events and exits.\n\
+11. Application: a leg may carry `settles: [{entry, ordinal, amount}]` to apply itself to an open item — the opposite side on the same account and unit, at most the item's open amount (FA-REF-072 names what is open). `fa open-items --account <code>` lists items with their applications. Reversing a receipt reopens the invoice (its applications are undone, never re-entered); an invoice with live applications cannot be reversed until its receipts are (FA-REF-073).\n";
 
 const EXAMPLES: &str = "fa robot-docs examples\n\
 \n\
@@ -395,7 +729,11 @@ fa resolve --intent void.json --book ./books/myco --json      # exit 6, FA-REF-0
 {\"effective_date\":\"2026-03-20\",\"idempotency_key\":\"rcpt-9\",\"legs\":[{\"side\":\"debit\",\"account\":\"1000\",\"amount\":\"300.00 USD\"},\n\
   {\"side\":\"credit\",\"account\":\"1200\",\"amount\":\"300.00 USD\",\"settles\":[{\"entry\":\"<invoice vid>\",\"ordinal\":0,\"amount\":\"300.00 USD\"}]}]}\n\
 fa open-items --account 1200 --book ./books/myco --json       # open 200.00 on the invoice's leg 0\n\
-fa verify open-items --book ./books/myco                      # exit 8 if an applied mirror drifts from the fold\n";
+fa verify open-items --book ./books/myco                      # exit 8 if an applied mirror drifts from the fold\n\
+\n\
+fa explain balance 1000 --period FY2026-P03 --book ./books/myco --json   # cells, fold digest, every leg, history\n\
+fa explain balance 1000 --period FY2026-P03 --as-known-at 12 --book ./books/myco --json\n\
+fa robot-docs schema balance_explained --json\n";
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -604,10 +942,7 @@ fn book_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
             );
             Ok(())
         }
-        other => Err(usage(
-            format!("book needs create|info, got {other:?}"),
-            "fa book create --book <dir> --name \"My Co\"",
-        )),
+        other => Err(unhandled("book", other)),
     }
 }
 
@@ -743,10 +1078,7 @@ fn chart_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
             }
             Ok(())
         }
-        other => Err(usage(
-            format!("chart needs import|list, got {other:?}"),
-            "fa chart import chart.json --book <dir>",
-        )),
+        other => Err(unhandled("chart", other)),
     }
 }
 
@@ -868,10 +1200,7 @@ fn period_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
             );
             Ok(())
         }
-        other => Err(usage(
-            format!("period needs create|list|open|soft-close|close|lock|reopen, got {other:?}"),
-            "fa period open FY2026-P03 --book <dir>",
-        )),
+        other => Err(unhandled("period", other)),
     }
 }
 
@@ -1019,7 +1348,19 @@ fn parse_legs(
     Ok(legs)
 }
 
-fn post_cmd(out: &Out, args: &Args, forced: Option<EntryClass>) -> Result<(), Fail> {
+fn post_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
+    post_with(out, args, None)
+}
+
+fn reserve_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
+    post_with(out, args, Some(EntryClass::PENDING))
+}
+
+fn resolve_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
+    post_with(out, args, Some(EntryClass::RESOLUTION))
+}
+
+fn post_with(out: &Out, args: &Args, forced: Option<EntryClass>) -> Result<(), Fail> {
     let path = args.require("--intent", "entry.json (or - for stdin)")?;
     let text = read_text(path)?;
     let doc = parse_json(path, &text)?;
@@ -1331,6 +1672,33 @@ fn post_cmd(out: &Out, args: &Args, forced: Option<EntryClass>) -> Result<(), Fa
 // tb / verify / registers / entry
 // ---------------------------------------------------------------------------
 
+/// `--as-known-at HEAD|<seq>` (at most once): `None` selects the head; an
+/// instant or any other spelling is refused, never converted.
+fn known_at_flag(args: &Args) -> Result<Option<CommitSeq>, Fail> {
+    if args.flag_all("--as-known-at").len() > 1 {
+        return Err(usage(
+            "--as-known-at may be supplied only once",
+            "--as-known-at HEAD or --as-known-at <u64 commit sequence>",
+        ));
+    }
+    match args.flag("--as-known-at") {
+        None | Some("HEAD") => Ok(None),
+        Some(value) => {
+            let sequence = if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
+                value.parse::<u64>().ok()
+            } else {
+                None
+            };
+            sequence.map(|n| Some(CommitSeq(n))).ok_or_else(|| {
+                usage(
+                    "--as-known-at requires HEAD or an unsigned CommitSeq; instant selectors are unsupported",
+                    "--as-known-at HEAD or --as-known-at <u64 commit sequence>",
+                )
+            })
+        }
+    }
+}
+
 fn selected_periods(args: &Args, book: &Book) -> Result<Vec<String>, Fail> {
     if args.flag_all("--fiscal-year").len() > 1
         || (args.flag("--fiscal-year").is_some() && args.flag("--period").is_some())
@@ -1372,34 +1740,10 @@ fn tb_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
     if args.positional.len() != 1 {
         return Err(usage("unexpected trial-balance argument", "fa tb --help"));
     }
-    if args.flag("--date").is_some() {
-        return Err(usage(
-            "--date is a period-transition flag, not a balance selector",
-            "fa tb --as-of YYYY-MM-DD for a stock position on a day, or --period <code>",
-        ));
+    if args.flag_all("--as-of").len() > 1 {
+        return Err(usage("--as-of may be supplied only once", "fa tb --help"));
     }
-    for flag in ["--as-of", "--as-known-at"] {
-        if args.flag_all(flag).len() > 1 {
-            return Err(usage(
-                format!("{flag} may be supplied only once"),
-                "fa tb --help",
-            ));
-        }
-    }
-    let known_at = match args.flag("--as-known-at") {
-        None | Some("HEAD") => None,
-        Some(value) => {
-            let sequence = if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
-                value.parse::<u64>().ok()
-            } else {
-                None
-            };
-            Some(CommitSeq(sequence.ok_or_else(|| usage(
-                "--as-known-at requires HEAD or an unsigned CommitSeq; instant selectors are unsupported",
-                "--as-known-at HEAD or --as-known-at <u64 commit sequence>",
-            ))?))
-        }
-    };
+    let known_at = known_at_flag(args)?;
     let (periods, tb) = if let Some(date) = args.flag("--as-of") {
         if args.flag("--period").is_some()
             || args.flag("--fiscal-year").is_some()
@@ -1680,10 +2024,7 @@ fn verify_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
                 ))
             }
         }
-        other => Err(usage(
-            format!("verify needs `registers` or `open-items`, got {other:?}"),
-            "fa verify registers --period FY2026-P03 --book <dir> | fa verify open-items --book <dir>",
-        )),
+        other => Err(unhandled("verify", other)),
     }
 }
 
@@ -1699,15 +2040,7 @@ fn open_items_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
     let account = args
         .flag("--account")
         .map(|code| account_vid(ctx.book_id, code));
-    let known_at = match args.flag("--as-known-at") {
-        None | Some("HEAD") => None,
-        Some(value) => Some(CommitSeq(value.parse::<u64>().map_err(|_| {
-            usage(
-                "--as-known-at requires HEAD or an unsigned CommitSeq",
-                "--as-known-at HEAD or --as-known-at <u64 commit sequence>",
-            )
-        })?)),
-    };
+    let known_at = known_at_flag(args)?;
     let items = book.open_items(account, known_at)?;
     let codes: std::collections::BTreeMap<VId, String> = book
         .accounts()?
@@ -1799,6 +2132,272 @@ fn open_items_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// explain
+// ---------------------------------------------------------------------------
+
+fn side_name(side: Side) -> &'static str {
+    if side == Side::Debit {
+        "debit"
+    } else {
+        "credit"
+    }
+}
+
+/// `fa explain balance <account> --period <code> [--as-known-at HEAD|<seq>]`.
+fn explain_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
+    let sub = args.positional.get(1).map(String::as_str);
+    if sub != Some("balance") {
+        return Err(unhandled("explain", sub));
+    }
+    let example = "fa explain balance 1000 --period FY2026-P03 --book <dir>";
+    let code = args
+        .positional
+        .get(2)
+        .ok_or_else(|| usage("explain balance needs an account code", example))?;
+    if let Some(extra) = args.positional.get(3) {
+        return Err(usage(format!("unexpected argument `{extra}`"), example));
+    }
+    if args.flag_all("--period").len() > 1 {
+        return Err(usage(
+            "explain balance explains one period at a time",
+            "fa explain balance <account> --period <code>; fa tb for several periods",
+        ));
+    }
+    let period = args.require("--period", "FY2026-P03")?;
+    let known_at = known_at_flag(args)?;
+    let book = open_book(args)?;
+    let periods = book.periods()?;
+    if !periods.iter().any(|p| p.code == period) {
+        let codes: Vec<&str> = periods.iter().map(|p| p.code.as_str()).collect();
+        return Err(usage(
+            format!("no period `{period}` in this book"),
+            match nearest(period, &codes) {
+                Some(n) => format!("did you mean --period {n}? (fa period list)"),
+                None => "fa period list --book <dir>".to_string(),
+            },
+        ));
+    }
+    let accounts = book.accounts()?;
+    let Some(account) = accounts.iter().find(|a| &a.code == code) else {
+        let codes: Vec<&str> = accounts.iter().map(|a| a.code.as_str()).collect();
+        return Err(usage(
+            format!("no account `{code}` in this book's chart"),
+            match nearest(code, &codes) {
+                Some(n) => format!("did you mean `{n}`? (fa chart list)"),
+                None => "fa chart list --book <dir>".to_string(),
+            },
+        ));
+    };
+    if !account.is_leaf {
+        return Err(usage(
+            format!(
+                "account `{code}` is a summary account: registers hold leaf cells, and a summary roll-up is not available yet"
+            ),
+            "explain one of its leaf accounts (fa chart list --book <dir>)",
+        ));
+    }
+    let ex = book.explain_balance(account.vid, period, known_at)?;
+    let units = &book.context().units;
+    let render = |unit: u32, m: i128| Amount::new(fa_money::UnitId(unit), m).render(units);
+    let unit_code = |unit: u32| {
+        units
+            .get(fa_money::UnitId(unit))
+            .map(|u| u.code.clone())
+            .unwrap_or_default()
+    };
+    let type_name = AccountType(account.account_type).name().unwrap_or("?");
+    // One row per unit with both columns, like a materialized register row.
+    let mut by_unit: std::collections::BTreeMap<u32, [i128; 6]> = std::collections::BTreeMap::new();
+    for c in &ex.cells {
+        let row = by_unit.entry(c.key.unit_id).or_insert([0; 6]);
+        row[0] = c.debits;
+        row[1] = c.credits;
+        row[2] = i128::from(c.entry_count);
+    }
+    for c in &ex.pending {
+        let row = by_unit.entry(c.key.unit_id).or_insert([0; 6]);
+        row[3] = c.debits;
+        row[4] = c.credits;
+        row[5] = i128::from(c.entry_count);
+    }
+    if out.json {
+        let cells: Vec<Json> = by_unit
+            .iter()
+            .map(|(u, [d, c, n, pd, pc, pn])| {
+                obj(vec![
+                    ("unit", s(unit_code(*u))),
+                    ("debits", s(render(*u, *d))),
+                    ("credits", s(render(*u, *c))),
+                    ("net", s(render(*u, d - c))),
+                    ("entry_count", Json::Int(*n)),
+                    ("debits_pending", s(render(*u, *pd))),
+                    ("credits_pending", s(render(*u, *pc))),
+                    ("pending_count", Json::Int(*pn)),
+                ])
+            })
+            .collect();
+        let contributions: Vec<Json> = ex
+            .contributions
+            .iter()
+            .map(|c| {
+                obj(vec![
+                    ("entry", s(format!("{:032x}", c.entry.0))),
+                    ("entry_digest", s(hex(&c.entry_digest))),
+                    ("class", s(c.class.name().unwrap_or("?"))),
+                    ("effective_date", s(c.effective_date.render())),
+                    ("recorded_at", Json::Int(i128::from(c.recorded_at.0))),
+                    ("ordinal", Json::Int(i128::from(c.ordinal))),
+                    ("side", s(side_name(c.side))),
+                    ("amount", s(render(c.unit_id, c.mantissa))),
+                    ("column", s(c.column.name())),
+                    (
+                        "released_at",
+                        c.released_at
+                            .map_or(Json::Null, |r| Json::Int(i128::from(r.0))),
+                    ),
+                    (
+                        "resolves",
+                        c.resolves
+                            .map_or(Json::Null, |v| s(format!("{:032x}", v.0))),
+                    ),
+                    (
+                        "supersedes",
+                        Json::Arr(
+                            c.supersedes
+                                .iter()
+                                .map(|l| {
+                                    obj(vec![
+                                        ("entry", s(format!("{:032x}", l.target.vid.0))),
+                                        ("kind", s(format!("{:?}", l.kind))),
+                                        ("reason_code", Json::Int(i128::from(l.reason_code))),
+                                    ])
+                                })
+                                .collect(),
+                        ),
+                    ),
+                    (
+                        "evidence",
+                        Json::Arr(
+                            c.evidence
+                                .iter()
+                                .map(|e| {
+                                    obj(vec![
+                                        ("document_oid", s(hex(&e.document_oid.0))),
+                                        ("doc_commit", s(hex(&e.doc_commit))),
+                                        ("role", Json::Int(i128::from(e.role))),
+                                    ])
+                                })
+                                .collect(),
+                        ),
+                    ),
+                ])
+            })
+            .collect();
+        let history: Vec<Json> = ex
+            .history
+            .iter()
+            .map(|h| {
+                obj(vec![
+                    ("recorded_at", Json::Int(i128::from(h.recorded_at.0))),
+                    ("unit", s(unit_code(h.unit_id))),
+                    ("debits", s(render(h.unit_id, h.debits))),
+                    ("credits", s(render(h.unit_id, h.credits))),
+                    ("debits_pending", s(render(h.unit_id, h.debits_pending))),
+                    ("credits_pending", s(render(h.unit_id, h.credits_pending))),
+                ])
+            })
+            .collect();
+        out.event(
+            "balance_explained",
+            vec![
+                ("account", s(&account.code)),
+                ("account_vid", s(format!("{:032x}", account.vid.0))),
+                ("name", s(&account.name)),
+                ("type", s(type_name)),
+                ("period", s(&ex.period)),
+                ("known_at", Json::Int(i128::from(ex.known_at.0))),
+                (
+                    "watermark",
+                    ex.watermark
+                        .map_or(Json::Null, |w| Json::Int(i128::from(w.0))),
+                ),
+                ("fold_digest", s(hex(&ex.fold_digest))),
+                ("certificate", Json::Null),
+                ("cells", Json::Arr(cells)),
+                ("contributions", Json::Arr(contributions)),
+                ("history", Json::Arr(history)),
+                (
+                    "last_changed_at",
+                    ex.last_changed_at()
+                        .map_or(Json::Null, |w| Json::Int(i128::from(w.0))),
+                ),
+            ],
+            "",
+        );
+        return Ok(());
+    }
+    println!(
+        "balance of {} {} ({type_name}) in {} · known at {} · fold digest {} · watermark {}",
+        account.code,
+        account.name,
+        ex.period,
+        ex.known_at.0,
+        hex(&ex.fold_digest[..8]),
+        ex.watermark.map_or("none".to_string(), |w| w.0.to_string())
+    );
+    if by_unit.is_empty() {
+        println!("no legs on this account in {}", ex.period);
+        return Ok(());
+    }
+    println!(
+        "{:<6} {:>20} {:>20} {:>20} {:>7} {:>20} {:>20}",
+        "unit",
+        "posted debits",
+        "posted credits",
+        "net",
+        "entries",
+        "pending debits",
+        "pending credits"
+    );
+    for (u, [d, c, n, pd, pc, _]) in &by_unit {
+        println!(
+            "{:<6} {:>20} {:>20} {:>20} {:>7} {:>20} {:>20}",
+            unit_code(*u),
+            render(*u, *d),
+            render(*u, *c),
+            render(*u, d - c),
+            n,
+            render(*u, *pd),
+            render(*u, *pc)
+        );
+    }
+    println!("contributions (by recorded sequence)");
+    println!(
+        "{:>9} {:<32} {:>3} {:<12} {:<10} {:<6} {:>20} column",
+        "recorded", "entry", "leg", "class", "effective", "side", "amount"
+    );
+    for c in &ex.contributions {
+        println!(
+            "{:>9} {:<32} {:>3} {:<12} {:<10} {:<6} {:>20} {}{}",
+            c.recorded_at.0,
+            format!("{:032x}", c.entry.0),
+            c.ordinal,
+            c.class.name().unwrap_or("?"),
+            c.effective_date.render(),
+            side_name(c.side),
+            render(c.unit_id, c.mantissa),
+            c.column.name(),
+            c.released_at
+                .map_or(String::new(), |r| format!(" at {}", r.0))
+        );
+    }
+    if let Some(last) = ex.last_changed_at() {
+        println!("last changed at recorded sequence {}", last.0);
+    }
+    Ok(())
+}
+
 fn registers_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
     match args.positional.get(1).map(String::as_str) {
         Some("materialize") => {
@@ -1832,10 +2431,7 @@ fn registers_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
             }
             Ok(())
         }
-        other => Err(usage(
-            format!("registers needs `materialize`, got {other:?}"),
-            "fa registers materialize --period FY2026-P03 --book <dir>",
-        )),
+        other => Err(unhandled("registers", other)),
     }
 }
 
@@ -1858,11 +2454,20 @@ fn entry_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
             let units = &book.context().units;
             match book.read_entry(VId(vid))? {
                 None => {
-                    out.event(
-                        "entry",
-                        vec![("found", Json::Bool(false)), ("vid", s(vid_s))],
-                        &format!("no entry {vid_s}"),
-                    );
+                    // Every field is always present; absence is spelled null.
+                    let mut fields = vec![("found", Json::Bool(false)), ("vid", s(vid_s))];
+                    for absent in [
+                        "class",
+                        "effective_date",
+                        "recorded_at",
+                        "entry_digest",
+                        "proposal_digest",
+                        "approvals",
+                        "legs",
+                    ] {
+                        fields.push((absent, Json::Null));
+                    }
+                    out.event("entry", fields, &format!("no entry {vid_s}"));
                     Ok(())
                 }
                 Some((entry, seq)) => {
@@ -1909,9 +2514,23 @@ fn entry_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
                 }
             }
         }
-        other => Err(usage(
-            format!("entry needs `show`, got {other:?}"),
-            "fa entry show <vid> --book <dir>",
-        )),
+        other => Err(unhandled("entry", other)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The other half of the parity gate (the binary tests prove every
+    /// registered verb and subcommand reaches a handler): a handler whose
+    /// verb is not in verbs.toml would be unreachable, so the two lists are
+    /// the same verbs in the same order.
+    #[test]
+    fn handlers_and_the_verb_registry_name_the_same_verbs() {
+        let reg = verbs::registry().expect("verbs.toml");
+        let handled: Vec<&str> = HANDLERS.iter().map(|(name, _)| *name).collect();
+        let registered: Vec<&str> = reg.verbs.iter().map(|v| v.name.as_str()).collect();
+        assert_eq!(handled, registered);
     }
 }

@@ -10,6 +10,10 @@ publish = false
 [lints]
 workspace = true
 
+[lib]
+name = "fa_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "fa"
 path = "src/main.rs"

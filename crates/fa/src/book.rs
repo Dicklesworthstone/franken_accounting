@@ -22,7 +22,9 @@ use fa_journal::{
     Transitioned,
 };
 use fa_model::{Entry, Erasable, SealKey, SymbolTable};
-use fa_registers::{Fold, OpenItem, OpenItemVerification, TrialBalance, Verification};
+use fa_registers::{
+    BalanceExplanation, Fold, OpenItem, OpenItemVerification, TrialBalance, Verification,
+};
 use fa_time::{DateDay, PeriodDef, PeriodTransition};
 use fgdb::{Database, DatabaseKeys, MemVfs};
 use fgdb_crypto::{CryptoCx, DeterministicEntropy, EntropyError, SystemEntropy, derive_key};
@@ -559,6 +561,21 @@ impl Book {
     /// Compare every posted leg's `applied` mirror with the open-item fold.
     pub fn verify_open_items(&self) -> Result<OpenItemVerification, BookError> {
         Ok(with_store!(&self.store, db => fa_registers::verify_open_items(db, &self.ctx, None))?)
+    }
+
+    /// Explain an account's register cells in one period (`fa explain
+    /// balance`): the cells, the fold they belong to, every contributing leg
+    /// with its recorded sequence, and the cells' known-at history. `None`
+    /// selects the current head; the result records the resolved sequence.
+    pub fn explain_balance(
+        &self,
+        account: VId,
+        period_code: &str,
+        known_at: Option<CommitSeq>,
+    ) -> Result<BalanceExplanation, BookError> {
+        Ok(
+            with_store!(&self.store, db => fa_registers::explain_balance(db, &self.ctx, account, period_code, known_at))?,
+        )
     }
 
     /// Stock balances from inception through the latest selected period's end.

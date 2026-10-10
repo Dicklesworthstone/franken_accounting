@@ -1,7 +1,8 @@
 //! A small argument parser with the agent-ergonomics rules baked in: every
 //! unknown verb or flag is answered with the nearest known one (edit
 //! distance ≤ 2), `--flag=value` and `--flag value` both work, and `--json`
-//! may appear anywhere.
+//! may appear anywhere. The known flags come from the verb registry
+//! (`registries/verbs.toml`): `value_flags` take a value, `switches` do not.
 
 use std::collections::BTreeMap;
 
@@ -12,44 +13,13 @@ pub struct Args {
     pub switches: Vec<String>,
 }
 
-/// Flags that take a value; everything else starting with `--` is a switch.
-pub const VALUE_FLAGS: &[&str] = &[
-    "--book",
-    "--keys",
-    "--name",
-    "--base-unit",
-    "--calendar",
-    "--year-start-month",
-    "--adjustment-periods",
-    "--fiscal-year",
-    "--period",
-    "--as-of",
-    "--as-known-at",
-    "--account",
-    "--intent",
-    "--as",
-    "--grant",
-    "--reason",
-    "--key",
-    "--to",
-    "--date",
-];
-pub const SWITCHES: &[&str] = &[
-    "--json",
-    "--yes",
-    "--help",
-    "--version",
-    "--no-color",
-    "--activity",
-];
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UsageError {
     pub message: String,
     pub fix: String,
 }
 
-pub fn parse(argv: &[String]) -> Result<Args, UsageError> {
+pub fn parse(argv: &[String], value_flags: &[&str], switches: &[&str]) -> Result<Args, UsageError> {
     let mut args = Args::default();
     let mut i = 0;
     while i < argv.len() {
@@ -63,7 +33,7 @@ pub fn parse(argv: &[String]) -> Result<Args, UsageError> {
                 Some((n, v)) => (format!("--{n}"), Some(v.to_string())),
                 None => (a.clone(), None),
             };
-            if VALUE_FLAGS.contains(&name.as_str()) {
+            if value_flags.contains(&name.as_str()) {
                 let value = match inline {
                     Some(v) => v,
                     None => {
@@ -75,7 +45,7 @@ pub fn parse(argv: &[String]) -> Result<Args, UsageError> {
                     }
                 };
                 args.flags.entry(name).or_default().push(value);
-            } else if SWITCHES.contains(&name.as_str()) {
+            } else if switches.contains(&name.as_str()) {
                 if inline.is_some() {
                     return Err(UsageError {
                         message: format!("{name} takes no value"),
@@ -84,7 +54,7 @@ pub fn parse(argv: &[String]) -> Result<Args, UsageError> {
                 }
                 args.switches.push(name);
             } else {
-                let known: Vec<&str> = VALUE_FLAGS.iter().chain(SWITCHES.iter()).copied().collect();
+                let known: Vec<&str> = value_flags.iter().chain(switches).copied().collect();
                 let fix = match nearest(&name, &known) {
                     Some(n) => format!("did you mean {n}?"),
                     None => "run `fa --help` for the flag list".to_string(),
@@ -159,15 +129,20 @@ pub fn levenshtein(a: &str, b: &str) -> usize {
 mod tests {
     use super::*;
 
+    const VALUE: &[&str] = &["--intent", "--grant", "--book", "--period"];
+    const SWITCH: &[&str] = &["--json", "--yes"];
+
     fn argv(s: &str) -> Vec<String> {
         s.split_whitespace().map(String::from).collect()
     }
 
     #[test]
     fn parses_flags_switches_and_positionals() {
-        let a = parse(&argv(
-            "post --intent x.json --json --grant post_closed --grant close --book=/tmp/b",
-        ))
+        let a = parse(
+            &argv("post --intent x.json --json --grant post_closed --grant close --book=/tmp/b"),
+            VALUE,
+            SWITCH,
+        )
         .unwrap();
         assert_eq!(a.positional, vec!["post"]);
         assert_eq!(a.flag("--intent"), Some("x.json"));
@@ -179,9 +154,9 @@ mod tests {
 
     #[test]
     fn typos_get_a_suggestion_and_missing_values_are_named() {
-        let e = parse(&argv("tb --jsno")).unwrap_err();
+        let e = parse(&argv("tb --jsno"), VALUE, SWITCH).unwrap_err();
         assert!(e.fix.contains("--json"), "{e:?}");
-        let e = parse(&argv("tb --period")).unwrap_err();
+        let e = parse(&argv("tb --period"), VALUE, SWITCH).unwrap_err();
         assert!(e.message.contains("--period needs a value"));
         assert_eq!(
             nearest("perod", &["period", "post", "book"]),
