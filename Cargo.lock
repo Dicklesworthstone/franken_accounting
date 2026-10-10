@@ -582,6 +582,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "fa-notary"
+version = "0.0.1"
+dependencies = [
+ "asupersync",
+ "fa-journal",
+ "fa-model",
+ "fa-money",
+ "fa-time",
+ "fa-verify",
+ "fgdb",
+ "fgdb-crypto",
+ "fgdb-types",
+]
+
+[[package]]
 name = "fa-policy"
 version = "0.0.1"
 dependencies = [
@@ -625,6 +640,10 @@ dependencies = [
 
 [[package]]
 name = "fa-time"
+version = "0.0.1"
+
+[[package]]
+name = "fa-verify"
 version = "0.0.1"
 
 [[package]]

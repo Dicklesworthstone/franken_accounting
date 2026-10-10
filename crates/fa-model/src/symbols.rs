@@ -58,6 +58,7 @@ symbols!(
         (MIGRATION_RUN, "MigrationRun", 28),
         (STATEMENT_ISSUANCE, "StatementIssuance", 29),
         (ENGAGEMENT, "Engagement", 30),
+        (ACCUMULATOR_STATE, "AccumulatorState", 31),
     ]
 );
 
@@ -109,6 +110,7 @@ symbols!(
         (LOWER_BOUND, "lower_bound", 42),
         (UPPER_BOUND, "upper_bound", 43),
         (GENERATION, "generation", 44),
+        (ACCUMULATOR_HEAD, "accumulator_head", 46),
     ]
 );
 

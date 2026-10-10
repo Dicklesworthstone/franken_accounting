@@ -1,0 +1,17 @@
+[package]
+name = "fa-verify"
+version = "0.0.1"
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "The dependency-free verifier (plan §13.3): its own BLAKE3, decoders for the leaf envelope and the pinned proof formats, and verification of journal-accumulator inclusion, consistency, and complete-prefix proofs against a trusted checkpoint. Depends on std alone so it can be audited in isolation and run air-gapped. Bead fa-l3c."
+publish = false
+
+[lints]
+workspace = true
+
+# Dependency allowlist: exactly `std` (plan §13.3). No [dependencies] and no
+# [dev-dependencies]: the verifier's own tests prove it against frozen
+# goldens. The differential against the producer and against fgdb-crypto's
+# BLAKE3 lives in fa-notary's tests, which depend on this crate — never the
+# other way round.

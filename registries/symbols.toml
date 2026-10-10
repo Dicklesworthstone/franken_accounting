@@ -99,6 +99,9 @@ name = "StatementIssuance"
 [[label]]
 id = 30
 name = "Engagement"
+[[label]]
+id = 31
+name = "AccumulatorState"
 
 # ---- property keys --------------------------------------------------------
 [[property]]
@@ -233,6 +236,9 @@ name = "upper_bound"
 [[property]]
 id = 44
 name = "generation"
+[[property]]
+id = 46
+name = "accumulator_head"
 
 # ---- relations ------------------------------------------------------------
 [[relation]]

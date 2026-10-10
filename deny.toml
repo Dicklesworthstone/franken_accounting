@@ -26,11 +26,13 @@ exceptions = [
   { crate = "fa-journal@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fa-model@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fa-money@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fa-notary@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fa-policy@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fa-reference@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fa-registers@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fa-registry@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fa-time@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fa-verify@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fsym-bigint@0.1.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fsym-budget@0.1.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fsym-modular@0.1.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
@@ -98,6 +100,11 @@ expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
 
 [[licenses.clarify]]
+crate = "fa-notary@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
 crate = "fa-policy@0.0.1"
 expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
@@ -119,6 +126,11 @@ license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
 
 [[licenses.clarify]]
 crate = "fa-time@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fa-verify@0.0.1"
 expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
 

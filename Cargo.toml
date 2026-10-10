@@ -21,6 +21,8 @@ members = [
     "crates/fa-registers",
     "crates/fa-reference",
     "crates/fa-cli",
+    "crates/fa-verify",
+    "crates/fa-notary",
     "crates/fa-policy",
 ]
 
