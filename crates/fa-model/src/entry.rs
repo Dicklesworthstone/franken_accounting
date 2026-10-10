@@ -1838,7 +1838,12 @@ mod tests {
     fn digest_golden_vector() {
         let e = proposal(two_legs()).seal(vec![], None).unwrap();
         let hex = |d: [u8; 32]| d.iter().map(|b| format!("{b:02x}")).collect::<String>();
-        assert_eq!(hex(e.proposal_digest), "GOLDEN_PROPOSAL");
-        assert_eq!(hex(e.entry_digest), "GOLDEN_ENTRY");
+        assert_eq!(
+            (hex(e.proposal_digest), hex(e.entry_digest)),
+            (
+                "6e6221ad019374270e2d08ddc55773752d136d033fd8e3029790c97228477e6e".to_string(),
+                "GOLDEN_ENTRY".to_string()
+            )
+        );
     }
 }
