@@ -137,7 +137,7 @@ mod tests {
 
     #[test]
     fn leg_amount_mirrors_as_decimal_when_representable_else_bytes() {
-        let units = fa_registry::units_embedded().unwrap();
+        let units = fa_money::UnitRegistry::embedded().unwrap();
         let usd = units.lookup("USD").unwrap();
         let eth = units.lookup("ETH").unwrap();
         // 1,234.56 USD → coefficient 1234.56 × 10^18.

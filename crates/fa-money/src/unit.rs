@@ -80,8 +80,8 @@ pub(crate) fn pow10(scale: u8) -> i128 {
 }
 
 /// The unit table a book binds. Built-in defaults cover the common currencies
-/// and a few non-monetary units; `registries/units.toml` supplies the rest
-/// once `fa-registry` lands.
+/// and a few non-monetary units; [`Self::embedded`] loads the production
+/// `registries/units.toml` table and validates its executable rounding laws.
 #[derive(Clone, Debug, Default)]
 pub struct UnitRegistry {
     units: Vec<Unit>,
@@ -90,6 +90,39 @@ pub struct UnitRegistry {
 impl UnitRegistry {
     pub fn empty() -> Self {
         Self { units: Vec::new() }
+    }
+
+    pub fn embedded() -> Result<Self, fa_registry::RegistryError> {
+        crate::rounding::validate_registry(&fa_registry::rounding_laws_embedded()?)?;
+        let invalid = |message| fa_registry::RegistryError::Invalid {
+            registry: "units.toml",
+            message,
+        };
+        let mut registry = Self::empty();
+        for row in fa_registry::units_embedded()? {
+            let kind = match row.kind.as_str() {
+                "currency" => UnitKind::Currency {
+                    iso4217: row
+                        .iso4217
+                        .ok_or_else(|| invalid("currency lacks ISO code".into()))?,
+                },
+                "commodity" => UnitKind::Commodity,
+                "share" => UnitKind::Share,
+                "time" => UnitKind::Time,
+                "count" => UnitKind::Count,
+                "custom" => UnitKind::Custom,
+                other => return Err(invalid(format!("unknown unit kind `{other}`"))),
+            };
+            registry
+                .register(Unit {
+                    code: row.code,
+                    scale: row.scale,
+                    version: row.version,
+                    kind,
+                })
+                .map_err(|error| invalid(error.to_string()))?;
+        }
+        Ok(registry)
     }
 
     /// The default table used by examples and tests. Scales follow ISO 4217
@@ -233,6 +266,21 @@ impl fmt::Display for UnitId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedded_units_bind_registry_data_and_executable_laws() {
+        let registry = UnitRegistry::embedded().unwrap();
+        for row in fa_registry::units_embedded().unwrap() {
+            let id = registry
+                .lookup(&format!("{}@v{}", row.code, row.version))
+                .unwrap();
+            let unit = registry.get(id).unwrap();
+            assert_eq!(unit.scale, row.scale);
+            if let Some(iso4217) = row.iso4217 {
+                assert_eq!(unit.kind, UnitKind::Currency { iso4217 });
+            }
+        }
+    }
 
     #[test]
     fn registry_is_immutable_per_version() {

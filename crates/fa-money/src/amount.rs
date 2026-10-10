@@ -5,10 +5,10 @@
 use core::cmp::Ordering;
 use core::fmt;
 
-use crate::rate::Rate;
+use crate::rate::{ArithmeticBudget, BigInt, BudgetMeter, Rate, RateError};
 use crate::rounding::RoundingLaw;
 use crate::unit::{UnitId, UnitRegistry, pow10};
-use crate::wide::U256;
+use fsym_bigint::{metered_cmp, metered_div_rem, metered_multiply, metered_subtract};
 
 /// Debit or credit. Legs carry a side and a non-negative mantissa.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -52,6 +52,7 @@ pub enum AmountError {
         suggested_side: Side,
     },
     InvariantViolation(&'static str),
+    Rate(RateError),
 }
 
 impl fmt::Display for AmountError {
@@ -78,11 +79,24 @@ impl fmt::Display for AmountError {
             Self::InvariantViolation(message) => {
                 write!(f, "arithmetic invariant failed: {message}")
             }
+            Self::Rate(error) => write!(f, "{error}"),
         }
     }
 }
 
 impl core::error::Error for AmountError {}
+
+impl From<RateError> for AmountError {
+    fn from(error: RateError) -> Self {
+        Self::Rate(error)
+    }
+}
+
+impl From<crate::rate::MeterError> for AmountError {
+    fn from(error: crate::rate::MeterError) -> Self {
+        Self::Rate(error.into())
+    }
+}
 
 impl Amount {
     pub const fn new(unit: UnitId, mantissa: i128) -> Self {
@@ -167,10 +181,16 @@ impl Amount {
         }
     }
 
-    /// `self × rate`, rounded under `law`, in the same unit. Exact 256-bit
+    /// `self × rate`, rounded under `law`, in the same unit. Exact metered
     /// intermediate; never a float.
-    pub fn mul_rate(self, rate: Rate, law: RoundingLaw) -> Result<Self, AmountError> {
+    pub fn mul_rate(
+        self,
+        budget: &mut ArithmeticBudget<'_, impl Sized>,
+        rate: &Rate,
+        law: RoundingLaw,
+    ) -> Result<Self, AmountError> {
         let m = scaled_div(
+            budget,
             self.mantissa,
             rate.numerator(),
             1,
@@ -185,11 +205,13 @@ impl Amount {
     /// under `law`. Rescales across the two units' scales exactly.
     pub fn convert(
         self,
+        budget: &mut ArithmeticBudget<'_, impl Sized>,
         to: UnitId,
-        rate: Rate,
+        rate: &Rate,
         law: RoundingLaw,
         reg: &UnitRegistry,
     ) -> Result<Self, AmountError> {
+        budget.checkpoint()?;
         let from_scale = reg
             .get(self.unit)
             .ok_or_else(|| AmountError::UnknownUnit(self.unit.to_string()))?
@@ -206,6 +228,7 @@ impl Amount {
             (1, pow10(from_scale - to_scale) as u128)
         };
         let m = scaled_div(
+            budget,
             self.mantissa,
             rate.numerator(),
             numer_scale,
@@ -316,35 +339,41 @@ impl PartialOrd for Amount {
     }
 }
 
-/// `mantissa × a × b / (c × d)` rounded under `law`, with an exact 256-bit
+/// `mantissa × a × b / (c × d)` rounded under `law`, with exact arbitrary-size
 /// intermediate. Shared by `mul_rate` and `convert`.
 fn scaled_div(
+    budget: &mut ArithmeticBudget<'_, impl Sized>,
     mantissa: i128,
-    a: u128,
+    a: &BigInt,
     b: u128,
-    c: u128,
+    c: &BigInt,
     d: u128,
     law: RoundingLaw,
 ) -> Result<i128, AmountError> {
     let negative = mantissa < 0;
-    let mag = mantissa.unsigned_abs();
-    let numer = U256::from_u128(mag)
-        .checked_mul_u128(a)
-        .and_then(|x| x.checked_mul_u128(b))
-        .ok_or(AmountError::Overflow)?;
-    let denom = U256::from_u128(c)
-        .checked_mul_u128(d)
-        .ok_or(AmountError::Overflow)?;
-    let (q, r) = numer
-        .checked_div_rem(denom)
+    budget.reserve(48, 3)?;
+    let mag = BigInt::from_bytes_le(&mantissa.unsigned_abs().to_le_bytes());
+    let b = BigInt::from_bytes_le(&b.to_le_bytes());
+    let d = BigInt::from_bytes_le(&d.to_le_bytes());
+    let product = metered_multiply(&mag, a, budget)?;
+    let numer = metered_multiply(&product, &b, budget)?;
+    let denom = metered_multiply(c, &d, budget)?;
+    let (q, r) = metered_div_rem(&numer, &denom, budget)?
         .ok_or(AmountError::InvariantViolation("zero amount divisor"))?;
-    let q = q.to_u128().ok_or(AmountError::Overflow)?;
-    let distance_to_next = denom
-        .checked_sub(r)
-        .ok_or(AmountError::InvariantViolation("remainder exceeds divisor"))?;
+    if q.bits() > 128 {
+        return Err(AmountError::Overflow);
+    }
+    budget.reserve(16, 1)?;
+    let bytes = q.to_bytes_le();
+    let mut magnitude = [0u8; 16];
+    magnitude[..bytes.len()].copy_from_slice(&bytes);
+    let q = u128::from_le_bytes(magnitude);
+    let distance_to_next = metered_subtract(&denom, &r, budget)?;
+    let cmp_half = metered_cmp(&r, &distance_to_next, budget)?;
     let rounded = law
-        .apply_fraction(q, !r.is_zero(), r.cmp(&distance_to_next), negative)
+        .apply_fraction(q, !r.is_zero(), cmp_half, negative)
         .ok_or(AmountError::Overflow)?;
+    budget.checkpoint()?;
     signed_magnitude(rounded, negative)
 }
 
@@ -379,13 +408,31 @@ mod tests {
         to_scale: u8,
         law: RoundingLaw,
     ) -> Option<i128> {
+        oracle_conversion_wide(
+            mantissa,
+            &BigInt::from_u128(numerator),
+            &BigInt::from_u128(denominator),
+            from_scale,
+            to_scale,
+            law,
+        )
+    }
+
+    fn oracle_conversion_wide(
+        mantissa: i128,
+        numerator: &BigInt,
+        denominator: &BigInt,
+        from_scale: u8,
+        to_scale: u8,
+        law: RoundingLaw,
+    ) -> Option<i128> {
         let limit = LimbLimit::new(16);
         let n = BigInt::from_u128(mantissa.unsigned_abs())
-            .checked_mul(&BigInt::from_u128(numerator), limit)
+            .checked_mul(numerator, limit)
             .unwrap()
             .checked_mul(&BigInt::from_u128(10u128.pow(u32::from(to_scale))), limit)
             .unwrap();
-        let d = BigInt::from_u128(denominator)
+        let d = denominator
             .checked_mul(&BigInt::from_u128(10u128.pow(u32::from(from_scale))), limit)
             .unwrap();
         let (mut q, r) = n.checked_div_rem(&d, limit).unwrap();
@@ -417,8 +464,114 @@ mod tests {
         q.to_i128()
     }
 
+    // Parse the same source digits with the independent foundation's own
+    // limbs. Neither the production parser nor its normalized coefficients
+    // participate in the expected result.
+    fn oracle_integer(text: &str) -> BigInt {
+        text.bytes().fold(BigInt::zero(), |value, digit| {
+            value
+                .checked_mul(&BigInt::from_u64(10), LimbLimit::new(16))
+                .unwrap()
+                .checked_add(
+                    &BigInt::from_u64(u64::from(digit - b'0')),
+                    LimbLimit::new(16),
+                )
+                .unwrap()
+        })
+    }
+
+    #[test]
+    fn arbitrary_coefficients_match_independent_oracle_on_both_sides_of_ties() {
+        let cx = asupersync::Cx::detached_cancel_context();
+        let mut budget = crate::test_budget(&cx);
+        let huge = format!("1{}", "0".repeat(80));
+        let twice_huge = format!("2{}", "0".repeat(80));
+        let above = format!("1{}1", "0".repeat(79));
+        let below = "9".repeat(80);
+        let rates = [
+            (&above, &huge),
+            (&below, &huge),
+            (&above, &twice_huge),
+            (&below, &twice_huge),
+            (&huge, &above),
+            (&above, &below),
+        ];
+        let mut registry = UnitRegistry::empty();
+        let units = [0, 38].map(|scale| {
+            registry
+                .register(crate::unit::Unit {
+                    code: format!("S{scale}"),
+                    scale,
+                    version: 0,
+                    kind: crate::unit::UnitKind::Custom,
+                })
+                .unwrap()
+        });
+        // 6 exact source ratios × 4 scale pairs × 8 signed amounts × 9 laws.
+        let mut compared = 0;
+        for (num, den) in rates {
+            let rate = Rate::from_ratio(&mut budget, num, den).unwrap();
+            assert!(rate.numerator().bits() > 128);
+            let n = oracle_integer(num);
+            let d = oracle_integer(den);
+            for (from, from_scale) in units.into_iter().zip([0, 38]) {
+                for (to, to_scale) in units.into_iter().zip([0, 38]) {
+                    for mantissa in [i128::MIN, -i128::MAX, -5, -1, 1, 3, 5, i128::MAX] {
+                        for law in RoundingLaw::ALL {
+                            let expected =
+                                oracle_conversion_wide(mantissa, &n, &d, from_scale, to_scale, law)
+                                    .map(|m| Amount::new(to, m))
+                                    .ok_or(AmountError::Overflow);
+                            assert_eq!(
+                                Amount::new(from, mantissa).convert(
+                                    &mut budget,
+                                    to,
+                                    &rate,
+                                    law,
+                                    &registry
+                                ),
+                                expected,
+                                "rate={num}/{den}, mantissa={mantissa}, scale={from_scale}->{to_scale}, law={law:?}"
+                            );
+                            compared += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(compared, 1728);
+    }
+
+    #[test]
+    fn conversion_propagates_cancellation_and_exhaustion_without_a_result() {
+        use crate::rate::{BudgetLimits, Dimension, MeterError};
+        let cx = asupersync::Cx::detached_cancel_context();
+        let mut budget = crate::test_budget(&cx);
+        let rate = Rate::from_ratio(
+            &mut budget,
+            "100000000000000000000000000000000000000000000000001",
+            "100000000000000000000000000000000000000000000000000",
+        )
+        .unwrap();
+        let amount = Amount::new(UnitId(0), 5);
+        let mut exhausted = ArithmeticBudget::new(&cx, BudgetLimits::uniform(0, 0), 8192);
+        assert!(matches!(
+            amount.mul_rate(&mut exhausted, &rate, RoundingLaw::HalfEven),
+            Err(AmountError::Rate(RateError::Meter(MeterError::Budget(_))))
+        ));
+        let remaining = budget.remaining(Dimension::MemoryBytes);
+        cx.set_cancel_requested(true);
+        assert_eq!(
+            amount.mul_rate(&mut budget, &rate, RoundingLaw::HalfEven),
+            Err(AmountError::Rate(RateError::Meter(MeterError::Cancelled)))
+        );
+        assert_eq!(budget.remaining(Dimension::MemoryBytes), remaining);
+    }
+
     #[test]
     fn conversions_match_bigint_at_scale_sign_and_rounding_boundaries() {
+        let cx = asupersync::Cx::detached_cancel_context();
+        let mut budget = crate::test_budget(&cx);
         let mut r = UnitRegistry::empty();
         let scales = [0, 2, 18, 38];
         let units = scales.map(|scale| {
@@ -445,7 +598,7 @@ mod tests {
         for (from_index, from) in units.iter().enumerate() {
             for (to_index, to) in units.iter().enumerate() {
                 for (num, den) in rates {
-                    let rate = Rate::new(num, den).unwrap();
+                    let rate = Rate::new(&mut budget, num, den).unwrap();
                     for mantissa in [i128::MIN, -i128::MAX, -50, -1, 0, 1, 50, i128::MAX] {
                         for law in RoundingLaw::ALL {
                             let expected = oracle_conversion(
@@ -459,7 +612,13 @@ mod tests {
                             .map(|value| Amount::new(*to, value))
                             .ok_or(AmountError::Overflow);
                             assert_eq!(
-                                Amount::new(*from, mantissa).convert(*to, rate, law, &r),
+                                Amount::new(*from, mantissa).convert(
+                                    &mut budget,
+                                    *to,
+                                    &rate,
+                                    law,
+                                    &r
+                                ),
                                 expected,
                                 "mantissa={mantissa}, rate={num}/{den}, scales={}→{}, law={law:?}",
                                 scales[from_index],
@@ -503,6 +662,9 @@ mod tests {
 
     #[test]
     fn rendering_preserves_historical_unit_versions() {
+        let cx = asupersync::Cx::detached_cancel_context();
+        let mut budget = crate::test_budget(&cx);
+        let one = Rate::one(&mut budget).unwrap();
         let mut registry = reg();
         let old_amount = Amount::parse("1.23 USD", &registry).unwrap();
         let new_unit = registry
@@ -522,7 +684,13 @@ mod tests {
         assert_eq!(new_amount, Amount::new(new_unit, 12_300));
         assert_eq!(new_amount.render(&registry), "1.2300 USD@v1");
         assert_eq!(
-            old_amount.convert(new_unit, Rate::ONE, RoundingLaw::HalfEven, &registry),
+            old_amount.convert(
+                &mut budget,
+                new_unit,
+                &one,
+                RoundingLaw::HalfEven,
+                &registry
+            ),
             Ok(new_amount)
         );
     }
@@ -590,49 +758,57 @@ mod tests {
 
     #[test]
     fn mul_rate_and_convert_are_exact_then_rounded() {
+        let cx = asupersync::Cx::detached_cancel_context();
+        let mut budget = crate::test_budget(&cx);
         let r = reg();
         let usd = r.lookup("USD").unwrap();
         let jpy = r.lookup("JPY").unwrap();
         let a = Amount::parse("100.00 USD", &r).unwrap();
         // 7.5% tax: 7.50 exactly
+        let tax_rate = Rate::from_decimal(&mut budget, "0.075").unwrap();
         let tax = a
-            .mul_rate(Rate::from_decimal("0.075").unwrap(), RoundingLaw::HalfEven)
+            .mul_rate(&mut budget, &tax_rate, RoundingLaw::HalfEven)
             .unwrap();
         assert_eq!(tax.render(&r), "7.50 USD");
         // 1/3 of 100.00 = 33.333… → 33.33 HalfEven, 33.34 Ceiling
-        let third = Rate::new(1, 3).unwrap();
+        let third = Rate::new(&mut budget, 1, 3).unwrap();
         assert_eq!(
-            a.mul_rate(third, RoundingLaw::HalfEven).unwrap().mantissa,
+            a.mul_rate(&mut budget, &third, RoundingLaw::HalfEven)
+                .unwrap()
+                .mantissa,
             3333
         );
         assert_eq!(
-            a.mul_rate(third, RoundingLaw::Ceiling).unwrap().mantissa,
+            a.mul_rate(&mut budget, &third, RoundingLaw::Ceiling)
+                .unwrap()
+                .mantissa,
             3334
         );
         // 100.00 USD at 149.37 JPY/USD = 14937 JPY (scale 0)
-        let jpy_rate = Rate::from_decimal("149.37").unwrap();
+        let jpy_rate = Rate::from_decimal(&mut budget, "149.37").unwrap();
         assert_eq!(
-            a.convert(jpy, jpy_rate, RoundingLaw::HalfEven, &r)
+            a.convert(&mut budget, jpy, &jpy_rate, RoundingLaw::HalfEven, &r)
                 .unwrap()
                 .render(&r),
             "14937 JPY"
         );
         // and back: 14937 / 149.37 = 100.0000… → 100.00 USD
-        let inv = Rate::new(100, 14937).unwrap();
+        let inv = Rate::new(&mut budget, 100, 14937).unwrap();
         let back = Amount::new(jpy, 14937)
-            .convert(usd, inv, RoundingLaw::HalfEven, &r)
+            .convert(&mut budget, usd, &inv, RoundingLaw::HalfEven, &r)
             .unwrap();
         assert_eq!(back.render(&r), "100.00 USD");
         // negative amounts round symmetrically under HalfAwayFromZero
         let neg = Amount::new(usd, -5); // -0.05
+        let half = Rate::new(&mut budget, 1, 2).unwrap();
         assert_eq!(
-            neg.mul_rate(Rate::new(1, 2).unwrap(), RoundingLaw::HalfAwayFromZero)
+            neg.mul_rate(&mut budget, &half, RoundingLaw::HalfAwayFromZero)
                 .unwrap()
                 .mantissa,
             -3
         );
         assert_eq!(
-            neg.mul_rate(Rate::new(1, 2).unwrap(), RoundingLaw::HalfEven)
+            neg.mul_rate(&mut budget, &half, RoundingLaw::HalfEven)
                 .unwrap()
                 .mantissa,
             -2
@@ -647,26 +823,34 @@ mod tests {
 
     #[test]
     fn regression_scaled_conversion_only_refuses_unrepresentable_results() {
+        let cx = asupersync::Cx::detached_cancel_context();
+        let mut budget = crate::test_budget(&cx);
         let r = reg();
         let usd = r.lookup("USD").unwrap();
         let eur = r.lookup("EUR").unwrap();
         let eth = r.lookup("ETH").unwrap();
         let jpy = r.lookup("JPY").unwrap();
-        let almost_one = Rate::new(u128::MAX - 1, u128::MAX).unwrap();
+        let almost_one = Rate::new(&mut budget, u128::MAX - 1, u128::MAX).unwrap();
         for mantissa in [1, i128::MAX] {
             // The exact result is less than half a minor unit below mantissa.
             assert_eq!(
-                Amount::new(usd, mantissa).convert(eur, almost_one, RoundingLaw::HalfEven, &r),
+                Amount::new(usd, mantissa).convert(
+                    &mut budget,
+                    eur,
+                    &almost_one,
+                    RoundingLaw::HalfEven,
+                    &r
+                ),
                 Ok(Amount::new(eur, mantissa))
             );
         }
-        let tiny = Rate::new(1, u128::MAX).unwrap();
+        let tiny = Rate::new(&mut budget, 1, u128::MAX).unwrap();
         assert_eq!(
-            Amount::new(eth, i128::MAX).convert(jpy, tiny, RoundingLaw::HalfEven, &r),
+            Amount::new(eth, i128::MAX).convert(&mut budget, jpy, &tiny, RoundingLaw::HalfEven, &r),
             Ok(Amount::zero(jpy))
         );
         assert_eq!(
-            Amount::new(eth, i128::MAX).convert(jpy, tiny, RoundingLaw::Ceiling, &r),
+            Amount::new(eth, i128::MAX).convert(&mut budget, jpy, &tiny, RoundingLaw::Ceiling, &r),
             Ok(Amount::new(jpy, 1))
         );
     }
@@ -681,14 +865,20 @@ mod tests {
 
     #[test]
     fn regression_minimum_amount_survives_identity_scaling() {
+        let cx = asupersync::Cx::detached_cancel_context();
+        let mut budget = crate::test_budget(&cx);
+        let one = Rate::one(&mut budget).unwrap();
         let minimum = Amount::new(UnitId(0), i128::MIN);
         for law in RoundingLaw::ALL {
-            assert_eq!(minimum.mul_rate(Rate::ONE, law), Ok(minimum));
+            assert_eq!(minimum.mul_rate(&mut budget, &one, law), Ok(minimum));
         }
     }
 
     #[test]
     fn values_outside_the_signed_amount_domain_are_still_refused() {
+        let cx = asupersync::Cx::detached_cancel_context();
+        let mut budget = crate::test_budget(&cx);
+        let twice = Rate::new(&mut budget, 2, 1).unwrap();
         let r = reg();
         assert_eq!(
             Amount::parse("170141183460469231731687303715884105728 JPY", &r),
@@ -700,8 +890,11 @@ mod tests {
         );
         for mantissa in [i128::MIN, i128::MAX] {
             assert_eq!(
-                Amount::new(UnitId(0), mantissa)
-                    .mul_rate(Rate::new(2, 1).unwrap(), RoundingLaw::TowardZero),
+                Amount::new(UnitId(0), mantissa).mul_rate(
+                    &mut budget,
+                    &twice,
+                    RoundingLaw::TowardZero
+                ),
                 Err(AmountError::Overflow)
             );
         }

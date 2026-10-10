@@ -16,7 +16,7 @@ use fgdb_types::VId;
 fn run() -> Result<(), BookError> {
     let calendar =
         FiscalCalendar::monthly("cal", 1, 1).map_err(|e| BookError::Runtime(format!("{e:?}")))?;
-    let units = fa_registry::units_embedded()?;
+    let units = fa_money::UnitRegistry::embedded()?;
     let usd = units
         .lookup("USD")
         .ok_or_else(|| BookError::Runtime("USD missing".into()))?;

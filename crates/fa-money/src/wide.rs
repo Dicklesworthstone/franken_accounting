@@ -1,4 +1,4 @@
-//! Exact 256-bit intermediates for `mantissa × rate` and unit conversion.
+//! Exact 256-bit intermediates for allocation weights and bounded integer work.
 //!
 //! An `i128` mantissa times a `u128` numerator can need 256 bits; dividing that
 //! by a `u128` denominator and rounding under a law needs the exact quotient
@@ -200,6 +200,61 @@ mod tests {
                 Some((narrow(&quotient).unwrap(), narrow(&remainder).unwrap()))
             );
         }
+        compare_with_frankensympy(a, b);
+    }
+
+    // A second oracle for the std U256 implementation. FrankenSymPy is
+    // independent of that implementation, but is NOT an independent oracle
+    // for the Rate/Amount operations it implements in production.
+    fn compare_with_frankensympy(a: U256, b: U256) {
+        use fsym_bigint::{
+            BigInt as Exact, metered_add, metered_div_rem, metered_multiply, metered_subtract,
+        };
+        let integer = |value: U256| {
+            let mut bytes = [0u8; 32];
+            bytes[..16].copy_from_slice(&value.lo.to_le_bytes());
+            bytes[16..].copy_from_slice(&value.hi.to_le_bytes());
+            Exact::from_bytes_le(&bytes)
+        };
+        let narrow = |value: &Exact| {
+            if value.is_negative() || value.bits() > 256 {
+                return None;
+            }
+            let bytes = value.to_bytes_le();
+            let mut padded = [0u8; 32];
+            padded[..bytes.len()].copy_from_slice(&bytes);
+            Some(U256 {
+                lo: u128::from_le_bytes(padded[..16].try_into().unwrap()),
+                hi: u128::from_le_bytes(padded[16..].try_into().unwrap()),
+            })
+        };
+        let mut budget = fsym_budget::Budget::new(fsym_budget::BudgetLimits::uniform(1_000_000, 0));
+        let left = integer(a);
+        let right = integer(b);
+        assert_eq!(
+            a.checked_add(b),
+            narrow(&metered_add(&left, &right, &mut budget).unwrap())
+        );
+        assert_eq!(
+            a.checked_sub(b),
+            narrow(&metered_subtract(&left, &right, &mut budget).unwrap())
+        );
+        assert_eq!(
+            a.checked_mul_u128(b.lo),
+            narrow(
+                &metered_multiply(
+                    &left,
+                    &Exact::from_bytes_le(&b.lo.to_le_bytes()),
+                    &mut budget
+                )
+                .unwrap()
+            )
+        );
+        let division = metered_div_rem(&left, &right, &mut budget).unwrap();
+        assert_eq!(
+            a.checked_div_rem(b),
+            division.map(|(q, r)| (narrow(&q).unwrap(), narrow(&r).unwrap()))
+        );
     }
 
     #[test]

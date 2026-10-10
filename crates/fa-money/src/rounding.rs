@@ -120,9 +120,60 @@ impl RoundingLaw {
     }
 }
 
+/// Every registry row must name one executable law, and every law must have
+/// exactly one row. This belongs beside arithmetic, keeping fa-reference's
+/// registry dependency independent of the production numeric backend.
+pub(crate) fn validate_registry(
+    rows: &[fa_registry::RoundingLawRow],
+) -> Result<(), fa_registry::RegistryError> {
+    let invalid = |message| fa_registry::RegistryError::Invalid {
+        registry: "rounding_laws.toml",
+        message,
+    };
+    for law in RoundingLaw::ALL {
+        let matching: Vec<_> = rows.iter().filter(|row| row.id == law.id()).collect();
+        if matching.len() != 1 || matching[0].name != law.name() {
+            return Err(invalid(format!(
+                "law {} must have exactly one row named {}",
+                law.id(),
+                law.name()
+            )));
+        }
+    }
+    for row in rows {
+        if RoundingLaw::from_id(row.id).is_none() {
+            return Err(invalid(format!(
+                "registry law {} (id {}) has no code variant",
+                row.name, row.id
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registry_requires_exact_correspondence_with_executable_laws() {
+        let rows = fa_registry::rounding_laws_embedded().unwrap();
+        validate_registry(&rows).unwrap();
+        let mut missing = rows.clone();
+        missing.pop();
+        assert!(validate_registry(&missing).is_err());
+        let mut duplicate = rows.clone();
+        duplicate.push(rows[0].clone());
+        assert!(validate_registry(&duplicate).is_err());
+        let mut renamed = rows.clone();
+        renamed[0].name = "Unimplemented".into();
+        assert!(validate_registry(&renamed).is_err());
+        let mut extra = rows;
+        let mut unknown = extra[0].clone();
+        unknown.id = u16::MAX;
+        extra.push(unknown);
+        assert!(validate_registry(&extra).is_err());
+    }
 
     // value = 2.5 (q=2, r=1, d=2) and -2.5; value = 3.5; value = 2.4; value = 2.6
     #[test]

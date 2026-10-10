@@ -6,10 +6,8 @@
 #   - Workspace-level `unsafe_code = "forbid"`. There are no unsafe islands in
 #     this repository and there will be none; a raw-pointer need is routed
 #     upstream to the substrate's ledgered boundary crates.
-#   - The dependency universe is closed (plan §1 constraint 1, §18.4): std, the
-#     pinned nightly, asupersync (git rev), frankengraphdb (git rev,
-#     unpublished), franken_networkx (git rev, the one fgdb-prism pins), and
-#     fastmcp-rust (crates.io, `fa-mcp` posture only). `deny.toml` enforces it.
+#   - Reuse the owner's projects at exact revisions, recording their actual
+#     dependency paths. Unrelated third-party direct dependencies stay closed.
 
 [workspace]
 resolver = "3"
@@ -50,6 +48,11 @@ fgdb-delta-types = { git = "https://github.com/Dicklesworthstone/frankengraphdb"
 fgdb-gql = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf", version = "=0.0.1" }
 fgdb-crypto = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf", version = "=0.0.1" }
 fgdb-bigint = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf", version = "=0.0.1" }
+
+# Exact rate coefficients and cooperatively metered arithmetic (fa-pri).
+fsym-bigint = { git = "https://github.com/Dicklesworthstone/frankensympy", rev = "bd1ad68a3a06e0a0ed6ee4a9bc76d85dc9e67e2e", version = "=0.1.0" }
+fsym-rational = { git = "https://github.com/Dicklesworthstone/frankensympy", rev = "bd1ad68a3a06e0a0ed6ee4a9bc76d85dc9e67e2e", version = "=0.1.0" }
+fsym-budget = { git = "https://github.com/Dicklesworthstone/frankensympy", rev = "bd1ad68a3a06e0a0ed6ee4a9bc76d85dc9e67e2e", version = "=0.1.0" }
 
 # Disk-frugal profiles (the substrate's precedent: full DWARF on its test
 # build filled a 300G worker). Backtraces keep file:line.

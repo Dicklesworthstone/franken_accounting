@@ -42,3 +42,14 @@ name = "fastmcp-rust"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 version = "=0.12.0"
 role = "MCP framework; fa-mcp posture only; not yet linked — enters with fa-mcp, together with [patch.crates-io] asupersync to the rev above"
+
+[[foundation]]
+name = "frankensympy"
+source = "git+https://github.com/Dicklesworthstone/frankensympy"
+rev = "bd1ad68a3a06e0a0ed6ee4a9bc76d85dc9e67e2e"
+version = "0.1.0 (unpublished)"
+crates = ["fsym-bigint", "fsym-rational", "fsym-budget"]
+transitive_suite_crates = ["fsym-modular"]
+transitive_arithmetic = ["num-bigint 0.4.8", "num-integer 0.1.47", "num-rational 0.4.2", "num-traits", "serde"]
+role = "fa-money arbitrary-size nonnegative Rate, exact conversion intermediates, cancellation-first work metering; no CAS runtime"
+verification = "independent fgdb-bigint rounding differential, canonical rate bytes, resource and cancellation refusals; rerun all on pin changes"

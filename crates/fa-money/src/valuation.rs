@@ -2,7 +2,8 @@
 //! `base-residual` clauses).
 //!
 //! Each monetary leg gets a `base_amount` = its amount converted at the rate
-//! under the law. The two base sums will differ by at most `n × ½ ulp`; that
+//! under the law, after checking exact native balance. The base sums differ
+//! by at most `n × ½ ulp` for half laws, or less than `n ulp` for directed laws; that
 //! difference is **not a leg**: it is absorbed into the valuation of one
 //! designated leg — the largest-base-amount leg on the side that needs it,
 //! ties by ordinal — so no unit's per-unit balance is touched and the base
@@ -17,9 +18,10 @@
 use core::fmt;
 
 use crate::amount::{Amount, AmountError, Side};
-use crate::rate::Rate;
+use crate::rate::{ArithmeticBudget, BudgetMeter, Rate};
 use crate::rounding::RoundingLaw;
 use crate::unit::{UnitId, UnitRegistry};
+use crate::wide::U256;
 
 /// One leg as valuation sees it: side and amount (non-negative mantissa).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,8 +48,11 @@ pub enum ValuationError {
     NegativeLeg {
         ordinal: usize,
     },
-    /// The residual exceeded `n × ½ ulp`, which cannot happen under a half
-    /// law; reported rather than absorbed so a wrong law is loud.
+    /// Native imbalance is not a rounding residual and cannot be absorbed.
+    UnbalancedUnit {
+        unit: UnitId,
+    },
+    /// The residual exceeded the selected law's bound.
     ResidualTooLarge {
         residual: i128,
         bound: i128,
@@ -61,6 +66,10 @@ impl fmt::Display for ValuationError {
         match self {
             Self::Amount(e) => write!(f, "{e}"),
             Self::NegativeLeg { ordinal } => write!(f, "leg {ordinal} has a negative mantissa"),
+            Self::UnbalancedUnit { unit } => write!(
+                f,
+                "native legs in {unit} do not balance; a valuation residual cannot repair them"
+            ),
             Self::ResidualTooLarge { residual, bound } => {
                 write!(f, "valuation residual {residual} exceeds bound {bound}")
             }
@@ -82,15 +91,36 @@ impl From<AmountError> for ValuationError {
 /// Value `legs` (all in one foreign unit) into `base` at `rate` (base units per
 /// foreign unit) under `law`. Legs already in `base` are valued at 1:1.
 pub fn value_legs(
+    budget: &mut ArithmeticBudget<'_, impl Sized>,
     legs: &[LegValue],
     base: UnitId,
-    rate: Rate,
+    rate: &Rate,
     law: RoundingLaw,
     reg: &UnitRegistry,
 ) -> Result<Valuation, ValuationError> {
-    let mut base_amounts = Vec::with_capacity(legs.len());
+    budget.checkpoint().map_err(AmountError::from)?;
+    if reg.get(base).is_none() {
+        return Err(AmountError::UnknownUnit(base.to_string()).into());
+    }
+    check_native_balance(budget, legs, reg)?;
+    let bytes = legs
+        .len()
+        .checked_mul(core::mem::size_of::<Amount>())
+        .ok_or(AmountError::Overflow)?;
+    budget
+        .reserve(u64::try_from(bytes).map_err(|_| AmountError::Overflow)?, 1)
+        .map_err(AmountError::from)?;
+    let mut base_amounts = Vec::new();
+    base_amounts.try_reserve_exact(legs.len()).map_err(|_| {
+        AmountError::Rate(crate::rate::RateError::Arithmetic(
+            crate::rate::RationalArithmeticError::AllocationFailure,
+        ))
+    })?;
     let mut converted = 0usize;
     for (i, leg) in legs.iter().enumerate() {
+        budget
+            .charge(crate::rate::Dimension::ComputeSteps, 1)
+            .map_err(AmountError::from)?;
         if leg.amount.mantissa < 0 {
             return Err(ValuationError::NegativeLeg { ordinal: i });
         }
@@ -98,7 +128,7 @@ pub fn value_legs(
             leg.amount
         } else {
             converted += 1;
-            leg.amount.convert(base, rate, law, reg)?
+            leg.amount.convert(budget, base, rate, law, reg)?
         };
         base_amounts.push(b);
     }
@@ -107,11 +137,18 @@ pub fn value_legs(
     let diff = debits.checked_sub(credits)?.mantissa; // >0: credits short; <0: debits short
     let mut residual = None;
     if diff != 0 {
-        // Bound: n × ½ ulp, where n is the number of converted legs. In minor
-        // units ½ ulp is ½, so |diff| <= ceil(n/2).
-        let bound = i128::try_from(converted.div_ceil(2))
-            .map_err(|_| ValuationError::Amount(AmountError::Overflow))?;
-        if diff.abs() > bound.max(1) {
+        // The residual is an integer. Half laws admit <= n/2, directed laws
+        // admit strictly < n. Base-only entries admit no rounding residual.
+        let bound = match law {
+            RoundingLaw::Ceiling
+            | RoundingLaw::Floor
+            | RoundingLaw::TowardZero
+            | RoundingLaw::AwayFromZero => converted.saturating_sub(1),
+            _ => converted / 2,
+        };
+        let bound =
+            i128::try_from(bound).map_err(|_| ValuationError::Amount(AmountError::Overflow))?;
+        if diff.abs() > bound {
             return Err(ValuationError::ResidualTooLarge {
                 residual: diff,
                 bound,
@@ -138,12 +175,81 @@ pub fn value_legs(
         credits = side_sum(base, legs, &base_amounts, Side::Credit)?;
     }
     debug_assert_eq!(debits, credits);
+    budget.checkpoint().map_err(AmountError::from)?;
     Ok(Valuation {
         base_amounts,
         residual,
         base_debits: debits,
         base_credits: credits,
     })
+}
+
+// Native balance is sufficient for exact pre-rounding base balance: this
+// helper applies the same linear rate to every leg in a given unit. Sort a
+// bounded copy to avoid per-node allocations and order-dependent i128 sums.
+fn check_native_balance(
+    budget: &mut ArithmeticBudget<'_, impl Sized>,
+    legs: &[LegValue],
+    reg: &UnitRegistry,
+) -> Result<(), ValuationError> {
+    let bytes = legs
+        .len()
+        .checked_mul(core::mem::size_of::<LegValue>())
+        .ok_or(AmountError::Overflow)?;
+    budget
+        .reserve(u64::try_from(bytes).map_err(|_| AmountError::Overflow)?, 1)
+        .map_err(AmountError::from)?;
+    let mut sorted = Vec::new();
+    sorted.try_reserve_exact(legs.len()).map_err(|_| {
+        AmountError::Rate(crate::rate::RateError::Arithmetic(
+            crate::rate::RationalArithmeticError::AllocationFailure,
+        ))
+    })?;
+    for (ordinal, leg) in legs.iter().enumerate() {
+        budget
+            .charge(crate::rate::Dimension::ComputeSteps, 1)
+            .map_err(AmountError::from)?;
+        if leg.amount.mantissa < 0 {
+            return Err(ValuationError::NegativeLeg { ordinal });
+        }
+        if reg.get(leg.amount.unit).is_none() {
+            return Err(AmountError::UnknownUnit(leg.amount.unit.to_string()).into());
+        }
+        sorted.push(*leg);
+    }
+    // Deterministic O(n log n) work admission before the allocation-free sort.
+    let work = (legs.len() as u64)
+        .checked_mul(u64::from(legs.len().checked_ilog2().unwrap_or(0)) + 1)
+        .ok_or(AmountError::Overflow)?;
+    budget
+        .charge(crate::rate::Dimension::ComputeSteps, work)
+        .map_err(AmountError::from)?;
+    sorted.sort_unstable_by_key(|leg| leg.amount.unit);
+    let mut start = 0;
+    while start < sorted.len() {
+        let unit = sorted[start].amount.unit;
+        let mut debits = U256::ZERO;
+        let mut credits = U256::ZERO;
+        while start < sorted.len() && sorted[start].amount.unit == unit {
+            budget
+                .charge(crate::rate::Dimension::ComputeSteps, 1)
+                .map_err(AmountError::from)?;
+            let leg = sorted[start];
+            let total = if leg.side == Side::Debit {
+                &mut debits
+            } else {
+                &mut credits
+            };
+            *total = total
+                .checked_add(U256::from_u128(leg.amount.mantissa as u128))
+                .ok_or(AmountError::Overflow)?;
+            start += 1;
+        }
+        if debits != credits {
+            return Err(ValuationError::UnbalancedUnit { unit });
+        }
+    }
+    Ok(())
 }
 
 fn side_sum(
@@ -166,7 +272,82 @@ mod tests {
     use super::*;
 
     #[test]
+    fn directed_rounding_accepts_its_larger_lawful_residual() {
+        let cx = asupersync::Cx::detached_cancel_context();
+        let mut budget = crate::test_budget(&cx);
+        let rate = Rate::new(&mut budget, 99, 100).unwrap();
+        let reg = UnitRegistry::with_defaults();
+        let eur = reg.lookup("EUR").unwrap();
+        let usd = reg.lookup("USD").unwrap();
+        let mut legs = vec![
+            LegValue {
+                side: Side::Debit,
+                amount: Amount::new(eur, 1)
+            };
+            5
+        ];
+        legs.push(LegValue {
+            side: Side::Credit,
+            amount: Amount::new(eur, 5),
+        });
+        let value = value_legs(&mut budget, &legs, usd, &rate, RoundingLaw::Floor, &reg).unwrap();
+        assert_eq!(value.residual, Some((0, 4)));
+        assert_eq!(value.base_debits.mantissa, 4);
+        assert_eq!(value.base_debits, value.base_credits);
+        assert_eq!(value.base_amounts.len(), legs.len());
+    }
+
+    #[test]
+    fn native_imbalance_is_never_absorbed_as_rounding() {
+        let cx = asupersync::Cx::detached_cancel_context();
+        let mut budget = crate::test_budget(&cx);
+        let rate = Rate::new(&mut budget, 1, 2).unwrap();
+        let reg = UnitRegistry::with_defaults();
+        let usd = reg.lookup("USD").unwrap();
+        let eur = reg.lookup("EUR").unwrap();
+        for unit in [usd, eur] {
+            let legs = [
+                LegValue {
+                    side: Side::Debit,
+                    amount: Amount::new(unit, 1),
+                },
+                LegValue {
+                    side: Side::Credit,
+                    amount: Amount::new(unit, 2),
+                },
+            ];
+            for law in RoundingLaw::ALL {
+                assert_eq!(
+                    value_legs(&mut budget, &legs, usd, &rate, law, &reg),
+                    Err(ValuationError::UnbalancedUnit { unit })
+                );
+            }
+            let balanced = [
+                legs[0],
+                LegValue {
+                    amount: legs[0].amount,
+                    ..legs[1]
+                },
+            ];
+            assert!(
+                value_legs(
+                    &mut budget,
+                    &balanced,
+                    usd,
+                    &rate,
+                    RoundingLaw::HalfEven,
+                    &reg
+                )
+                .is_ok()
+            );
+        }
+    }
+
+    #[test]
     fn fa_p7r_counterexample_balances_without_a_new_leg() {
+        let cx = asupersync::Cx::detached_cancel_context();
+        let mut budget = crate::test_budget(&cx);
+        let half = Rate::new(&mut budget, 1, 2).unwrap();
         let reg = UnitRegistry::with_defaults();
         let eur = reg.lookup("EUR").unwrap();
         let usd = reg.lookup("USD").unwrap();
@@ -185,14 +366,7 @@ mod tests {
             },
         ];
         // EUR per-unit balance holds before valuation: 1 + 1 = 2.
-        let v = value_legs(
-            &legs,
-            usd,
-            Rate::new(1, 2).unwrap(),
-            RoundingLaw::HalfUp,
-            &reg,
-        )
-        .unwrap();
+        let v = value_legs(&mut budget, &legs, usd, &half, RoundingLaw::HalfUp, &reg).unwrap();
         // Naive: Dr 0.01 (0.005 -> HalfUp 0.01), Dr 0.01, Cr 0.01 -> credits short by 0.01.
         assert_eq!(v.base_amounts[0].mantissa, 1);
         assert_eq!(v.base_amounts[1].mantissa, 1);
@@ -208,6 +382,9 @@ mod tests {
 
     #[test]
     fn exact_rates_leave_no_residual() {
+        let cx = asupersync::Cx::detached_cancel_context();
+        let mut budget = crate::test_budget(&cx);
+        let rate = Rate::from_decimal(&mut budget, "1.10").unwrap();
         let reg = UnitRegistry::with_defaults();
         let eur = reg.lookup("EUR").unwrap();
         let usd = reg.lookup("USD").unwrap();
@@ -221,20 +398,16 @@ mod tests {
                 amount: Amount::new(eur, 10_000),
             },
         ];
-        let v = value_legs(
-            &legs,
-            usd,
-            Rate::from_decimal("1.10").unwrap(),
-            RoundingLaw::HalfEven,
-            &reg,
-        )
-        .unwrap();
+        let v = value_legs(&mut budget, &legs, usd, &rate, RoundingLaw::HalfEven, &reg).unwrap();
         assert_eq!(v.residual, None);
         assert_eq!(v.base_amounts[0].mantissa, 11_000);
     }
 
     #[test]
     fn mixed_base_and_foreign_legs_value_base_at_par() {
+        let cx = asupersync::Cx::detached_cancel_context();
+        let mut budget = crate::test_budget(&cx);
+        let rate = Rate::from_decimal(&mut budget, "1.1").unwrap();
         let reg = UnitRegistry::with_defaults();
         let eur = reg.lookup("EUR").unwrap();
         let usd = reg.lookup("USD").unwrap();
@@ -257,20 +430,17 @@ mod tests {
                 amount: Amount::new(eur, 100_000),
             },
         ];
-        let v = value_legs(
-            &legs,
-            usd,
-            Rate::from_decimal("1.1").unwrap(),
-            RoundingLaw::HalfEven,
-            &reg,
-        )
-        .unwrap();
+        let v = value_legs(&mut budget, &legs, usd, &rate, RoundingLaw::HalfEven, &reg).unwrap();
         assert_eq!(v.residual, None);
         assert_eq!(v.base_debits.mantissa, 220_000);
     }
 
     #[test]
     fn residual_bound_is_enforced_and_sides_are_ordered() {
+        let cx = asupersync::Cx::detached_cancel_context();
+        let mut budget = crate::test_budget(&cx);
+        let half = Rate::new(&mut budget, 1, 2).unwrap();
+        let one = Rate::one(&mut budget).unwrap();
         let reg = UnitRegistry::with_defaults();
         let eur = reg.lookup("EUR").unwrap();
         let usd = reg.lookup("USD").unwrap();
@@ -294,14 +464,7 @@ mod tests {
                 amount: Amount::new(eur, 3),
             },
         ];
-        let v = value_legs(
-            &legs,
-            usd,
-            Rate::new(1, 2).unwrap(),
-            RoundingLaw::HalfUp,
-            &reg,
-        )
-        .unwrap();
+        let v = value_legs(&mut budget, &legs, usd, &half, RoundingLaw::HalfUp, &reg).unwrap();
         assert_eq!(v.residual, Some((3, 1)));
         assert_eq!(v.base_amounts[3].mantissa, 3);
         // Negative legs are refused before any arithmetic.
@@ -310,7 +473,7 @@ mod tests {
             amount: Amount::new(eur, -1),
         }];
         assert_eq!(
-            value_legs(&bad, usd, Rate::ONE, RoundingLaw::HalfUp, &reg),
+            value_legs(&mut budget, &bad, usd, &one, RoundingLaw::HalfUp, &reg),
             Err(ValuationError::NegativeLeg { ordinal: 0 })
         );
     }

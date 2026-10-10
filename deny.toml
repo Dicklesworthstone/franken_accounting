@@ -26,10 +26,15 @@ exceptions = [
   { crate = "fa-journal@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fa-model@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fa-money@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fa-policy@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fa-reference@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fa-registers@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fa-registry@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fa-time@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fsym-bigint@0.1.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fsym-budget@0.1.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fsym-modular@0.1.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fsym-rational@0.1.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "asupersync", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fgdb", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fgdb-types", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
@@ -64,7 +69,7 @@ exceptions = [
 ]
 
 # These packages declare license-file rather than an SPDX expression. The
-# current first-party LICENSE and pinned fgdb b323bd1 / fnx 9d710b1 LICENSE
+# current first-party LICENSE and pinned fgdb b323bd1 / fnx 9d710b1 / fsym bd1ad68 LICENSE
 # bytes are identical (SHA256 32a82e0a5754e72e51fae44b65a936c831c07376f21c90f5fb9e76897fcc3509).
 # Clarify that exact text, including its rider; a changed text must fail.
 [[licenses.clarify]]
@@ -89,6 +94,11 @@ license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
 
 [[licenses.clarify]]
 crate = "fa-money@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fa-policy@0.0.1"
 expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
 
@@ -192,6 +202,26 @@ crate = "fnx-runtime@0.2.0"
 expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
 
+[[licenses.clarify]]
+crate = "fsym-bigint@0.1.0"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fsym-budget@0.1.0"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fsym-modular@0.1.0"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fsym-rational@0.1.0"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
 [bans]
 multiple-versions = "deny"
 wildcards = "deny"
@@ -223,13 +253,15 @@ deny = [
   { name = "sqlx" },
   { name = "rocksdb" },
   { name = "fsqlite" },
-  # Time, decimal, and big-integer crates: fa-time and fa-money are built in-house
-  # over std and fgdb-bigint (plan §1 constraint 1).
+  # Accounting code imports the pinned FrankenSymPy boundary, never num-*.
+  # Wrappers name actual immediate parents; Cargo.lock pins their versions.
   { name = "chrono" },
   { name = "time" },
   { name = "rust_decimal" },
   { name = "bigdecimal" },
-  { name = "num-bigint" },
+  { name = "num-bigint", wrappers = ["fsym-bigint"], reason = "FrankenSymPy bd1ad68 integer containment only; num-rational's optional bigint feature is disabled" },
+  { name = "num-integer", wrappers = ["fsym-bigint", "num-bigint", "num-rational"], reason = "FrankenSymPy bd1ad68 exact arithmetic closure only" },
+  { name = "num-rational", wrappers = ["fsym-rational"], reason = "FrankenSymPy bd1ad68 rational containment only" },
   # Columnar/dataframe/graph/search stacks banned by the substrate's closure.
   { name = "arrow" },
   { name = "polars" },
@@ -250,4 +282,5 @@ allow-git = [
   "https://github.com/Dicklesworthstone/asupersync",
   "https://github.com/Dicklesworthstone/frankengraphdb",
   "https://github.com/Dicklesworthstone/franken_networkx",
+  "https://github.com/Dicklesworthstone/frankensympy",
 ]

@@ -4,13 +4,18 @@ version = "0.0.1"
 edition.workspace = true
 license-file.workspace = true
 repository.workspace = true
-description = "Abacus: FrankenAccounting's exact money algebra (plan §6). Units with immutable scale, amounts as unit-scaled i128 mantissas, exact rational rates, registered rounding laws, largest-remainder allocation, and functional-currency valuation with the residual absorbed by a designated leg. No float ever touches an amount. std-only; bead fa-3hr."
+description = "Abacus: exact fixed-scale amounts, metered arbitrary-precision rates, registered rounding laws, allocation and functional-currency valuation."
 publish = false
 
 [lints]
 workspace = true
 
 [dependencies]
+fa-registry = { path = "../fa-registry", version = "=0.0.1" }
+asupersync.workspace = true
+fsym-bigint.workspace = true
+fsym-rational.workspace = true
+fsym-budget.workspace = true
 
 [dev-dependencies]
 # Plan §6.1: independent arithmetic oracle; absent from the production closure.

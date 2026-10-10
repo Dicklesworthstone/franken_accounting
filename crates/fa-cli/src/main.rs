@@ -820,7 +820,7 @@ fn book_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
         Some("create") => {
             let dir = book_dir(args)?;
             let name = args.require("--name", "\"My Co\"")?;
-            let units = fa_registry::units_embedded().map_err(BookError::Registry)?;
+            let units = fa_money::UnitRegistry::embedded().map_err(BookError::Registry)?;
             let base = args.flag("--base-unit").unwrap_or("USD");
             let base_unit = units.lookup(base).ok_or_else(|| {
                 usage(

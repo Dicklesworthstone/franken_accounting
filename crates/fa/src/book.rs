@@ -332,7 +332,7 @@ impl Book {
         spec: BookSpec,
     ) -> Result<BookContext, BookError> {
         let purposes = PurposeContexts::narrow_runtime_root(root);
-        let units = fa_registry::units_embedded()?;
+        let units = fa_money::UnitRegistry::embedded()?;
         let symbols = SymbolTable::compiled();
         with_store!(store, db => runtime.block_on(async { fa_journal::create_book(db, &purposes, &spec, &units, &symbols).await }))?;
         Ok(BookContext {
@@ -405,7 +405,7 @@ impl Book {
         let ctx = BookContext {
             book_id: spec.book_id,
             calendar: spec.calendar,
-            units: fa_registry::units_embedded()?,
+            units: fa_money::UnitRegistry::embedded()?,
             seal_key: keys.seal_key(),
             symbols: SymbolTable::compiled(),
         };
@@ -663,7 +663,7 @@ mod tests {
 
     fn spec(book_id: Id128) -> (BookSpec, fa_money::UnitId) {
         let calendar = FiscalCalendar::monthly("cal", 1, 1).unwrap();
-        let units = fa_registry::units_embedded().unwrap();
+        let units = fa_money::UnitRegistry::embedded().unwrap();
         let usd = units.lookup("USD").unwrap();
         (
             BookSpec {

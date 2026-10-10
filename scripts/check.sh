@@ -166,9 +166,9 @@ done
 [ "$REG_FAIL" -eq 0 ] && gate_pass "registries — every registries/*.toml is embedded by code"
 
 # Forbidden dependencies (plan §1 constraint 1): every first-party crate may
-# depend DIRECTLY only on first-party crates and the four foundations. The
+# depend DIRECTLY only on first-party crates and the admitted foundations. The
 # foundations' own transitive dependencies (serde, tokio, … inside asupersync,
-# frankengraphdb, franken_networkx, fastmcp-rust) are confined to their pinned
+# frankengraphdb, franken_networkx, fastmcp-rust, frankensympy) are confined to their pinned
 # closures and are deny.toml's business (cargo deny), not this tripwire's.
 # What this admits that a lockfile grep would not: foundation-transitive paths.
 # What it still catches: any new direct dependency of fa-* on anything else.
@@ -184,7 +184,7 @@ else
     DEP_FAIL=0
     while read -r pkg dep; do
       case "$dep" in
-        fa|fa-*|asupersync|fgdb|fgdb-*|fnx-*|fastmcp-rust|fastmcp-*) ;;
+        fa|fa-*|asupersync|fgdb|fgdb-*|fnx-*|fastmcp-rust|fastmcp-*|fsym-bigint|fsym-rational|fsym-budget) ;;
         *)
           gate_fail "forbidden-deps — $pkg depends directly on \`$dep\`, which is neither first-party nor a foundation"
           DEP_FAIL=1
@@ -197,6 +197,24 @@ else
   else
     gate_unrun "forbidden-deps — cargo metadata or jq did not produce the dependency edges (offloader, toolchain, or empty output); log: $DEPS_LOG"
   fi
+fi
+
+# The reference model must not reach the production arithmetic through a
+# registry dependency. Observed before fa-pri: fa-reference -> fa-registry ->
+# fa-money. Check the actual resolved normal closure, not just direct edges.
+REFERENCE_LOG="$LOG_DIR/reference-boundary.log"
+if cargo tree --locked -p fa-reference --edges normal --prefix none --format '{p}' >"$REFERENCE_LOG" 2>"$REFERENCE_LOG.stderr" \
+  && [ -s "$REFERENCE_LOG" ]; then
+  REFERENCE_FAIL=0
+  while read -r pkg rest; do
+    case "$pkg" in
+      fa-reference|fa-registry|fa-time) ;;
+      *) gate_fail "reference-boundary — production dependency in oracle closure: $pkg $rest"; REFERENCE_FAIL=1 ;;
+    esac
+  done <"$REFERENCE_LOG"
+  [ "$REFERENCE_FAIL" -eq 0 ] && gate_pass "reference-boundary — oracle imports only registry data and calendar primitives"
+else
+  gate_unrun "reference-boundary — cargo tree did not resolve the oracle closure; log: $REFERENCE_LOG.stderr"
 fi
 
 gate_verdict

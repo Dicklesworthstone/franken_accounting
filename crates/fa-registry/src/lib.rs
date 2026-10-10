@@ -14,7 +14,6 @@ pub mod toml;
 use core::fmt;
 use std::collections::BTreeMap;
 
-use fa_money::{RoundingLaw, Unit, UnitKind, UnitRegistry};
 use fa_time::PeriodState;
 
 use crate::toml::{Document, Table, TomlError, Value};
@@ -358,10 +357,21 @@ fn parse_decision(registry: &'static str, text: &str) -> Result<Decision, Regist
 // Units and rounding laws
 // ---------------------------------------------------------------------------
 
-pub fn units_embedded() -> Result<UnitRegistry, RegistryError> {
+/// Registry data, independent of the production arithmetic implementation.
+/// Consumers bind these rows to their own unit representations.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnitRow {
+    pub code: String,
+    pub version: u16,
+    pub scale: u8,
+    pub kind: String,
+    pub iso4217: Option<u16>,
+}
+
+pub fn units_embedded() -> Result<Vec<UnitRow>, RegistryError> {
     const R: &str = "units.toml";
     let doc = load(R, UNITS)?;
-    let mut reg = UnitRegistry::empty();
+    let mut rows = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     for t in doc.arrays.get("unit").unwrap_or(&Vec::new()) {
         let code = req_str(R, t, "code")?.to_string();
@@ -372,33 +382,30 @@ pub fn units_embedded() -> Result<UnitRegistry, RegistryError> {
         if scale > 18 {
             return Err(invalid(R, format!("`{code}` scale {scale} exceeds 18")));
         }
-        let kind = match req_str(R, t, "kind")? {
-            "currency" => UnitKind::Currency {
-                iso4217: u16::try_from(req_int(R, t, "iso4217")?)
+        let kind = req_str(R, t, "kind")?;
+        let iso4217 = match kind {
+            "currency" => Some(
+                u16::try_from(req_int(R, t, "iso4217")?)
                     .map_err(|_| invalid(R, "iso4217 out of range"))?,
-            },
-            "commodity" => UnitKind::Commodity,
-            "share" => UnitKind::Share,
-            "time" => UnitKind::Time,
-            "count" => UnitKind::Count,
-            "custom" => UnitKind::Custom,
+            ),
+            "commodity" | "share" | "time" | "count" | "custom" => None,
             other => return Err(invalid(R, format!("unknown unit kind `{other}`"))),
         };
         if !seen.insert((code.clone(), version)) {
             return Err(invalid(R, format!("duplicate unit {code}@v{version}")));
         }
-        reg.register(Unit {
+        rows.push(UnitRow {
             code,
             scale,
             version,
-            kind,
-        })
-        .map_err(|error| invalid(R, error.to_string()))?;
+            kind: kind.to_owned(),
+            iso4217,
+        });
     }
-    if reg.is_empty() {
+    if rows.is_empty() {
         return Err(invalid(R, "no units"));
     }
-    Ok(reg)
+    Ok(rows)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -419,34 +426,17 @@ pub fn rounding_laws_embedded() -> Result<Vec<RoundingLawRow>, RegistryError> {
             definition: req_str(R, t, "definition")?.to_string(),
         });
     }
-    // Every code variant has a row with the matching id and name, and vice versa.
-    for law in RoundingLaw::ALL {
-        let row = rows
-            .iter()
-            .find(|r| r.id == law.id())
-            .ok_or_else(|| invalid(R, format!("no row for law id {}", law.id())))?;
-        if row.name != law.name() {
-            return Err(invalid(
-                R,
-                format!(
-                    "law id {} is `{}` in code but `{}` in the registry",
-                    law.id(),
-                    law.name(),
-                    row.name
-                ),
-            ));
+    // Data validity lives here; the arithmetic consumer checks the complete
+    // correspondence with its executable RoundingLaw variants.
+    let mut ids = std::collections::BTreeSet::new();
+    let mut names = std::collections::BTreeSet::new();
+    for r in &rows {
+        if r.id == 0 || r.name.is_empty() || !ids.insert(r.id) || !names.insert(&r.name) {
+            return Err(invalid(R, "invalid or duplicate rounding law id/name"));
         }
     }
-    for r in &rows {
-        if RoundingLaw::from_id(r.id).is_none() {
-            return Err(invalid(
-                R,
-                format!(
-                    "registry law `{}` (id {}) has no code variant",
-                    r.name, r.id
-                ),
-            ));
-        }
+    if rows.is_empty() {
+        return Err(invalid(R, "no rounding laws"));
     }
     Ok(rows)
 }
@@ -532,7 +522,7 @@ pub struct Registries {
     pub exit_codes: ExitCodes,
     pub entry_classes: EntryClasses,
     pub admissibility: Admissibility,
-    pub units: UnitRegistry,
+    pub units: Vec<UnitRow>,
     pub rounding_laws: Vec<RoundingLawRow>,
     pub symbols: Symbols,
 }
@@ -570,12 +560,12 @@ mod tests {
         );
         assert_eq!(
             r.units
-                .lookup("USD")
-                .and_then(|u| r.units.get(u))
+                .iter()
+                .find(|u| u.code == "USD" && u.version == 0)
                 .map(|u| u.scale),
             Some(2)
         );
-        assert_eq!(r.rounding_laws.len(), RoundingLaw::ALL.len());
+        assert_eq!(r.rounding_laws.len(), 9);
         assert_eq!(r.symbols.label("Entry"), Some(9));
         assert_eq!(r.symbols.relation("POSTS_TO"), Some(2));
         assert_eq!(r.symbols.property("_fa_payload"), Some(1));
