@@ -1,0 +1,247 @@
+# workspace_topology.toml — plan §18.1 as data (bead fa-37f).
+#
+# `layers` is the legal dependency order, lowest first. A crate may depend
+# only on its own or a lower layer through a normal or build edge; a dev
+# (test-only) edge may also reach the verification layer, where the oracles
+# live. `allowlist`, when present, is the complete set of first-party crates
+# the crate may depend on through any edge (plan §18.1: fa-reference depends
+# on no engine crate, fa-verify on nothing but std).
+#
+# Every §18.1 crate has a row. `planned = true` marks one that does not exist
+# yet; the row flips in the change that creates the crate. scripts/check.sh
+# step `topology` fails when a crate under crates/ has no present row, when a
+# present row names no crate, or when a cargo metadata edge breaks the order
+# or an allowlist. fa-registry pins the rows to the plan's §18.1 table.
+
+schema_version = 1
+layers = ["foundation", "model", "laws", "kernel", "evidence", "analytics", "governance", "interop", "surface", "verification", "tooling"]
+
+[[crate]]
+name = "fa-types"
+layer = "foundation"
+path = "crates/fa-types"
+planned = true
+
+[[crate]]
+name = "fa-money"
+layer = "foundation"
+path = "crates/fa-money"
+planned = false
+
+[[crate]]
+name = "fa-time"
+layer = "foundation"
+path = "crates/fa-time"
+planned = false
+
+[[crate]]
+name = "fa-registry"
+layer = "foundation"
+path = "crates/fa-registry"
+planned = false
+
+[[crate]]
+name = "fa-claim"
+layer = "foundation"
+path = "crates/fa-claim"
+planned = true
+
+[[crate]]
+name = "fa-sim-harness"
+layer = "foundation"
+path = "crates/fa-sim-harness"
+planned = true
+
+[[crate]]
+name = "fa-model"
+layer = "model"
+path = "crates/fa-model"
+planned = false
+
+[[crate]]
+name = "fa-canon"
+layer = "laws"
+path = "crates/fa-canon"
+planned = true
+
+[[crate]]
+name = "fa-policy"
+layer = "laws"
+path = "crates/fa-policy"
+planned = false
+
+[[crate]]
+name = "fa-intents"
+layer = "laws"
+path = "crates/fa-intents"
+planned = true
+
+[[crate]]
+name = "fa-journal"
+layer = "kernel"
+path = "crates/fa-journal"
+planned = false
+
+[[crate]]
+name = "fa-registers"
+layer = "kernel"
+path = "crates/fa-registers"
+planned = false
+
+[[crate]]
+name = "fa-escrow"
+layer = "kernel"
+path = "crates/fa-escrow"
+planned = true
+
+[[crate]]
+name = "fa-palimpsest"
+layer = "kernel"
+path = "crates/fa-palimpsest"
+planned = true
+
+[[crate]]
+name = "fa-docket"
+layer = "evidence"
+path = "crates/fa-docket"
+planned = true
+
+[[crate]]
+name = "fa-notary"
+layer = "evidence"
+path = "crates/fa-notary"
+planned = false
+
+[[crate]]
+name = "fa-statements"
+layer = "analytics"
+path = "crates/fa-statements"
+planned = true
+
+[[crate]]
+name = "fa-concordat"
+layer = "analytics"
+path = "crates/fa-concordat"
+planned = true
+
+[[crate]]
+name = "fa-lantern"
+layer = "analytics"
+path = "crates/fa-lantern"
+planned = true
+
+[[crate]]
+name = "fa-query"
+layer = "analytics"
+path = "crates/fa-query"
+planned = true
+
+[[crate]]
+name = "fa-steward"
+layer = "governance"
+path = "crates/fa-steward"
+planned = true
+
+[[crate]]
+name = "fa-formats"
+layer = "interop"
+path = "crates/fa-formats"
+planned = true
+
+[[crate]]
+name = "fa-verbs"
+layer = "surface"
+path = "crates/fa-verbs"
+planned = true
+
+[[crate]]
+name = "fa"
+layer = "surface"
+path = "crates/fa"
+planned = false
+
+[[crate]]
+name = "fa-demo"
+layer = "surface"
+path = "crates/fa-demo"
+planned = true
+
+[[crate]]
+name = "fa-cli"
+layer = "surface"
+path = "crates/fa-cli"
+planned = false
+
+[[crate]]
+name = "fad"
+layer = "surface"
+path = "crates/fad"
+planned = false
+
+[[crate]]
+name = "fa-mcp"
+layer = "surface"
+path = "crates/fa-mcp"
+planned = true
+
+[[crate]]
+name = "fa-reference"
+layer = "verification"
+path = "crates/fa-reference"
+planned = false
+allowlist = ["fa-time", "fa-registry"]
+
+[[crate]]
+name = "fa-sim"
+layer = "verification"
+path = "crates/fa-sim"
+planned = true
+
+[[crate]]
+name = "fa-oracles"
+layer = "verification"
+path = "crates/fa-oracles"
+planned = true
+
+[[crate]]
+name = "fa-gen"
+layer = "verification"
+path = "crates/fa-gen"
+planned = true
+
+[[crate]]
+name = "fa-bench"
+layer = "verification"
+path = "crates/fa-bench"
+planned = true
+
+[[crate]]
+name = "fa-conformance"
+layer = "verification"
+path = "crates/fa-conformance"
+planned = true
+
+[[crate]]
+name = "fa-fuzz"
+layer = "verification"
+path = "crates/fa-fuzz"
+planned = true
+
+[[crate]]
+name = "fa-verify"
+layer = "verification"
+path = "crates/fa-verify"
+planned = false
+allowlist = []
+
+[[crate]]
+name = "registry-check"
+layer = "tooling"
+path = "tools/registry-check"
+planned = true
+
+[[crate]]
+name = "xtask"
+layer = "tooling"
+path = "tools/xtask"
+planned = true

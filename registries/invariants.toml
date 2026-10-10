@@ -1,0 +1,954 @@
+# invariants.toml — the sixteen FA-INV ids of plan Appendix F and their
+# clauses (bead fa-37f).
+#
+# `[[invariant]]` rows copy Appendix F verbatim (`statement` is the table's
+# Invariant cell, `enforcement` its Enforcement cell); fa-registry's tests
+# fail when the plan's table and this file disagree, so a plan edit to
+# Appendix F must be reconciled here in the same change.
+#
+# `[[clause]]` rows are the stable subordinate records. A `live` clause names
+# its checker and negative-test entrypoints as `crate::target::path`, where
+# target is `lib` or `tests/<file>.rs` and path is the libtest name; the
+# `invariants` step of scripts/check.sh requires each to have run and passed
+# in the same gate run, and fa-registry statically resolves each to its fn. A
+# `dormant` clause names the beads whose landing activates it. Every clause
+# carries `waiver = "forbidden"`: an invariant checker is never waived.
+#
+# No-claim boundary: a green cross-check proves each checker exists, is
+# referenced and passed in that run — not that it is sufficient for the
+# clause.
+#
+# Consumers: scripts/check.sh (`invariants`), the G1 gate review, and
+# `fa capabilities --json` (live clause ids, via fa-registry).
+
+schema_version = 1
+
+# The clauses gate G1 ("The Journal Lives", plan §19) requires live: exactly
+# the clauses whose first_gate is G1, covering the plan's Genesis clause set
+# (fa-registry pins both). A dormant clause here is not refused; it blocks
+# G1 and is reported as blocking it. Today that is FA-INV-11.core: no plan
+# certificate or replay code exists until fa-we7 and fa-9ae land.
+[gate_g1]
+clauses = ["FA-INV-01.per-unit", "FA-INV-01.leaf-only", "FA-INV-01.unit-policy", "FA-INV-02.payload-immutable", "FA-INV-02.control-record", "FA-INV-03.core", "FA-INV-03.transition-journaled", "FA-INV-04.core", "FA-INV-05.evidence-minimum", "FA-INV-06.core", "FA-INV-07.core", "FA-INV-09.core", "FA-INV-10.core", "FA-INV-11.core", "FA-INV-14.leaf-envelope", "FA-INV-14.consistency", "FA-INV-15.core", "FA-INV-16.core"]
+
+[[invariant]]
+id = "FA-INV-01"
+name = "Balance law"
+statement = "**Balance law.** For every committed entry and every unit among its legs, debit and credit totals are exactly equal in that unit (`per-unit`); native balancing dimensions enforce equality per `(unit, legal_entity)` (`per-entity`); when base totals are present, base debits equal base credits under the named FX law, separately per legal entity in multi-entity books (`base`), with each representable valuation adjustment recorded and absorbed within its entity (`base-residual`); realized FX uses the paired postings of §5.2 (`realized-fx`); memo and statistical units balance separately (`memo`); every leg posts to a `Leaf` account effective at the entry's date whose unit policy admits the leg's unit (`leaf-only`, `unit-policy`); required dimensions are present (`dimensions`)."
+enforcement = "Kernel check at step 5 from the payload alone; Canon compiler proof per rule; reference-engine differential; Lean lane for reversal/replacement/reclassification preservation; fuzzed payload decoder."
+
+[[invariant]]
+id = "FA-INV-02"
+name = "Append-only"
+statement = "**Append-only.** Every payload object is immutable after commit in every field (`payload-immutable`); every lifecycle object's authoritative history is its sequence of `LifecycleTransition` control entries and its `status` is a rebuildable projection (`lifecycle-by-transition`); correction is a new object with lineage; no path updates or deletes a committed object; schema and registry changes are journaled control entries with empty legs and a typed control payload (`control-record`); unit versions are immutable and historical mantissas are never reinterpreted (`unit-version`)."
+enforcement = "Substrate immutability (FG-INV-13) plus FrankenAccounting's secure-view facade as the only writer; mutation-attempt negatives; recovery rebuilds derived state only."
+
+[[invariant]]
+id = "FA-INV-03"
+name = "Period law"
+statement = "**Period law.** A period-scoped entry's effective date and special-period discriminator resolve to exactly one permitted period; book-scoped controls follow their registered authority/SoD row without a posting period; the entry's class is admissible for that period's state under the registered matrix and the principal's capability; period transitions occur only through journaled `PeriodControl` entries with the required approvals; `Locked` admits only case-bound restatement classes, case-bound recloses, and reservation releases; the period-state read is a retained point-read witness validated by the substrate's commit-time certifier (first-committer-wins today, SSI when `fgdb-txn` lands) so a transition and a post cannot both commit against stale state; after the latest `Closing` entry of a fiscal year the nominal accounts fold to zero at that known-at (`nominal-zero`)."
+enforcement = "Generated exhaustive matrix test; conflict oracle over post-vs-close interleavings in both orders under DPOR; reference differential; `fa verify close`; Lean lane for the state machine's reachability."
+
+[[invariant]]
+id = "FA-INV-04"
+name = "Registers are folds"
+statement = "**Registers are folds.** Every native or functional-value register cell, checkpoint, statement row, roll-forward, aging bucket, open-amount cell, lot, and reconciliation state equals the deterministic fold of the visible legs at its coordinate and watermark; a statement definition's mappings partition the leaf accounts it covers (`mapping-partition`); derived structures are never authoritative (inherits FG-INV-18); recomputation from the journal reproduces `fold_digest` bit-for-bit; a mismatch is a correctness defect that discards the derived structure."
+enforcement = "`fa verify registers` in CI on every fixture; maintainer crash matrix between delta consumption and watermark publication; reference fold differential; metamorphic suite (rebuild equals maintained)."
+
+[[invariant]]
+id = "FA-INV-05"
+name = "Evidence closure"
+statement = "**Evidence closure.** Every committed entry has a registered origin and satisfies the class's registered evidence minimum (`evidence-minimum`); external evidence retains bytes unless an attested by-reference policy downgrades dependent certificates (`external-retained`); supplemental evidence is a new object (`supplemental`); its provenance closure (documents by digest, event, rule version with inputs digest, principal/session, approvals, rate and basis documents, supersession targets) is enumerable and strongly retained for the retention floor; an entry whose origin or evidence references an unknown object is unencodable."
+enforcement = "Generated reference checker over Appendix A field rows; retention/GC oracle; `fa explain evidence` conformance; bundle round-trip."
+
+[[invariant]]
+id = "FA-INV-06"
+name = "Exactness"
+statement = "**Exactness.** Every amount is an exact fixed-scale integer in a registered unit; every rounding, allocation, FX conversion, and presentation rounding names a registered law; allocations conserve totals exactly; overflow is refused; no float enters any amount path."
+enforcement = "Type-level (no float type in `fa-money`); Lean lanes for rounding bounds and allocation conservation; cross-platform determinism harness; property suites."
+
+[[invariant]]
+id = "FA-INV-07"
+name = "Bitemporal visibility"
+statement = "**Bitemporal visibility.** For period-scoped entry selection at `(known_at, effective)`, the creating sequence must lie in the selected known-at prefix and the posting date must satisfy the effective selector, together with the registered branch, lifecycle and migration predicates. Book-scoped controls follow §7.1's known-at control-history and class-applicability rules without a posting date; extract-row selection is distinct from retaining required control/metadata closure; `recorded_at` is only ever the commit stream's assignment; distinct known-at or effective selectors never alias; a known-at view is immutable once its sequence has passed; `AS ORIGINALLY REPORTED` resolves to the first `StatementIssuance` (else the first `Lock`) and `AS REPORTED IN` to a certificate's closure; imported history never double counts with opening balances (`migration-disjoint`)."
+enforcement = "Reference visibility differential covering Period/Book scopes, control applicability and closure versus extract selection; Lean lane; selector golden corpus; negative fixture for any user-supplied recorded time; migration provenance oracle."
+
+[[invariant]]
+id = "FA-INV-08"
+name = "Supersession lineage"
+statement = "**Supersession lineage.** `SUPERSEDES`/`RESOLVES` edges form a DAG over existing targets; every kind has a registered netting law (`net-law`: negation, paired replacement, partial reclassification, or delta); a `Reversal` is the exact side-swap of its target, reverses the target's application effects through an authenticated derived `UNSETTLES` projection (`unsettle`), subject to the exhaustive target-class admissibility table, and an entry is fully reversed at most once by identity (`reversed-once`); a `Replacement` is paired with its reversal in one batch; a pending entry is resolved at most once; a scheduled reversal is cancelled by lineage when its target is superseded; net effects are computable and the originally-posted and currently-stated views agree with the lineage."
+enforcement = "Generated reference checker; Lean lane for negation and netting; two-phase resolution model; metamorphic (reverse+replace = replace)."
+
+[[invariant]]
+id = "FA-INV-09"
+name = "Idempotent intents"
+statement = "**Idempotent intents.** Within one book and principal scope, an idempotency key maps to at most one immutable outcome; retries with identical canonical semantic request bytes return it; differing semantic request bytes are refused; transport-only execution controls are excluded under Appendix B; outcomes are durable before acknowledgement (inherits FG-INV-01). The key-derived immutable `IntentOutcome` is the scoped retry namespace; target-derived Entry identities separately enforce reversal/resolution uniqueness (§4.9). A duplicate outcome is a point conflict, with semantic request equality checked before disclosure."
+enforcement = "Retry-storm and lost-response tests under lab; key-conflict negatives; `AlreadyLive`/`IdentitySpent` conformance; outcome-durability crash points."
+
+[[invariant]]
+id = "FA-INV-10"
+name = "Authorization before observation; duties segregated"
+statement = "**Authorization before observation; duties segregated.** Capability caveats are enforced before any storage observation (inherits FG-INV-20) or, in the interim posture, by refusal before query construction — never as a result filter; authority is re-evaluated against current policy at commit (`current-policy`), rule-generated effects are authorized after evaluation (`post-evaluation`), ceilings are debited serially (`ceiling`), whole-entry visibility governs scoped reads (`whole-entry`); SoD policy is evaluated at commit for every dangerous class; an approval binds the proposal digest, effects digest, coordinate, and policy epoch of what it approves (`approval-binds-proposal`); a principal cannot approve its own draft's promotion or a case containing its own entries; every external-profile read is logged."
+enforcement = "Capability type matrices; SoD negatives for every policy row; approval-digest mismatch negatives; access-log completeness oracle."
+
+[[invariant]]
+id = "FA-INV-11"
+name = "Determinism and replay"
+statement = "**Determinism and replay.** Every report, finding, plan, and bundle carries a certificate naming its closure; the same closure reproduces byte-identical canonical output; nondeterministic procedures are seeded and declared; missing or erased closure elements downgrade the completeness grade attributably (inherits FG-INV-19)."
+enforcement = "Replay CI over every certified artifact; cross-platform digest comparison; erasure-downgrade tests."
+
+[[invariant]]
+id = "FA-INV-12"
+name = "Subledger–control reconciliation"
+statement = "**Subledger–control reconciliation.** At every committed coordinate the fold of a subledger's detail legs equals its control account's register; external summary feeds must name the detail batch digest they summarize and are refused if the detail does not fold to the summary."
+enforcement = "Synchronous kernel check; reference differential; external-feed negatives."
+
+[[invariant]]
+id = "FA-INV-13"
+name = "Cross-book and consolidation conservation"
+statement = "**Cross-book and consolidation conservation.** Declared intercompany pairs match under the FX law or carry an explicit difference leg; elimination entries are derived deterministically from matched pairs and the ownership graph; consolidated equity reconciles to the entities' equity plus eliminations and non-controlling interest; book-to-book bridges explain every difference by rule version."
+enforcement = "Pair-matching oracle; consolidation replay; bridge completeness test."
+
+[[invariant]]
+id = "FA-INV-14"
+name = "Tamper evidence and accumulator continuity"
+statement = "**Tamper evidence and accumulator continuity.** Each `AccumulatorState` extends the previous (consistency); leaf envelopes bind record kind, coordinate, commit sequence, and within-commit ordinal (`leaf-envelope`); every checkpoint binds a root and a scope-index root the verifier recomputes from the journal prefix; inclusion proofs verify against checkpoints and scope-completeness proofs are sound for their labeled scope (`scope-complete`); public document commitments are recomputable from bytes alone (`public-commitment`); erasure leaves a typed tombstone whose digest the prior proofs still bind; amounts, dates, accounts, and lineage are never in erasure scope."
+enforcement = "`fa-verify` as independent oracle; consistency-proof CI across checkpoints; erasure negatives; rollback-detection tests with witnessed checkpoints."
+
+[[invariant]]
+id = "FA-INV-15"
+name = "Two-phase and limits"
+statement = "**Two-phase and limits.** Pending legs are reserved and the full original pending amounts are removed exactly once at resolution. Posts has one positive balanced sub-vector in Entry.legs with source-ordinal mapping; Voids/Expires has no posting legs and uses the registered ReservationRelease control. Resolution is unique by identity (`sub-vector`, `resolve-once`); reserved availability obeys the §5.4 equations (`availability`); expiry is journaled by sweep under time evidence, never by ambient clock; balance limits are enforced through escrow rights (or, interim, the `LimitCell` reservation of §5.5) and never silently exceeded; `Balancing` legs record the amount actually moved."
+enforcement = "Two-phase model under lab with concurrent manual and sweep resolution; escrow conservation inherited from FG-INV-02; limit-breach negatives."
+
+[[invariant]]
+id = "FA-INV-16"
+name = "Projections equal payloads"
+statement = "**Projections equal payloads.** The derived `Leg` vertices and `HAS_LEG`/`POSTS_TO`/`FOR`/`IN_UNIT` edges of an entry equal its inline legs exactly, are written in the same transaction, and are rebuilt from payloads on recovery; no reader treats a projection as more authoritative than the payload."
+enforcement = "Post-commit oracle in sim; recovery rebuild test; projection-drift negatives."
+
+[[clause]]
+invariant = "FA-INV-01"
+id = "per-unit"
+status = "live"
+statement = "For every committed entry and every unit among its legs, debit and credit totals are exactly equal in that unit; an unbalanced proposal is refused with nothing written."
+evidence_class = "invariant"
+first_gate = "G1"
+owner = "fa-op5"
+checkers = ["fa-journal::tests/genesis.rs::balanced_entry_commits_with_mirrors_and_edges_in_one_transaction", "fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_a_generated_history"]
+negatives = ["fa-journal::tests/genesis.rs::unbalanced_entry_is_refused_with_exit_3_and_nothing_written"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-01"
+id = "leaf-only"
+status = "live"
+statement = "Every leg posts to an existing Leaf account; a summary or unknown account is refused."
+evidence_class = "invariant"
+first_gate = "G1"
+owner = "fa-op5"
+checkers = ["fa-journal::tests/genesis.rs::balanced_entry_commits_with_mirrors_and_edges_in_one_transaction"]
+negatives = ["fa-journal::tests/genesis.rs::summary_account_unknown_account_and_unit_policy_are_refused"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-01"
+id = "unit-policy"
+status = "live"
+statement = "Every leg's unit is admitted by its account's unit policy."
+evidence_class = "invariant"
+first_gate = "G1"
+owner = "fa-op5"
+checkers = ["fa-journal::tests/genesis.rs::balanced_entry_commits_with_mirrors_and_edges_in_one_transaction"]
+negatives = ["fa-journal::tests/genesis.rs::summary_account_unknown_account_and_unit_policy_are_refused"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-01"
+id = "per-entity"
+status = "live"
+statement = "Native balancing dimensions enforce equality per (unit, legal_entity)."
+evidence_class = "invariant"
+first_gate = "G2"
+owner = "fa-bvx"
+checkers = ["fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_the_per_entity_balance_law", "fa-registers::tests/differential.rs::one_entity_books_and_entityless_books_keep_the_per_unit_law"]
+negatives = ["fa-registers::tests/differential.rs::two_phase_sub_vectors_balance_per_entity"]
+depends = ["FA-INV-01.per-unit"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-01"
+id = "dimensions"
+status = "dormant"
+statement = "Required dimensions are present on every leg."
+evidence_class = "invariant"
+first_gate = "G2"
+activating = ["fa-bvx"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-01"
+id = "base"
+status = "dormant"
+statement = "When base totals are present, base debits equal base credits under the named FX law, per legal entity in multi-entity books."
+evidence_class = "invariant"
+first_gate = "G2"
+activating = ["fa-p7r"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-01"
+id = "base-residual"
+status = "dormant"
+statement = "Each representable valuation adjustment is recorded and absorbed within its entity, within the law's exact bound."
+evidence_class = "invariant"
+first_gate = "G2"
+activating = ["fa-p7r"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-01"
+id = "realized-fx"
+status = "dormant"
+statement = "Realized FX uses the paired postings of plan §5.2."
+evidence_class = "invariant"
+first_gate = "G2"
+activating = ["fa-p7r"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-01"
+id = "memo"
+status = "dormant"
+statement = "Memo and statistical units balance separately."
+evidence_class = "invariant"
+first_gate = "G2"
+activating = ["fa-p7r"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-02"
+id = "payload-immutable"
+status = "live"
+statement = "A committed payload is bound byte-for-byte by its digests and no path overwrites it: a different payload at an existing identity is a conflict, never an update."
+evidence_class = "invariant"
+first_gate = "G1"
+owner = "fa-vjc"
+checkers = ["fa-model::lib::entry::tests::tampered_bytes_are_refused", "fa-model::lib::entry::tests::changing_one_leg_changes_the_proposal_digest"]
+negatives = ["fa-journal::tests/genesis.rs::identical_retry_is_recorded_and_a_changed_retry_is_a_conflict"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-02"
+id = "control-record"
+status = "live"
+statement = "Schema, period and policy changes are journaled control entries with empty legs and a typed control payload; a control class cannot be posted as a posting and a control payload never carries legs."
+evidence_class = "invariant"
+first_gate = "G1"
+owner = "fa-op5"
+checkers = ["fa-journal::tests/genesis.rs::period_transition_is_a_control_record_with_no_legs_and_moves_the_state_mirror", "fa-model::lib::entry::tests::control_records_round_trip"]
+negatives = ["fa-journal::tests/genesis.rs::control_classes_unsupported_classes_and_structure_errors_are_refused_by_kind", "fa-model::lib::entry::tests::structural_rules_are_enforced"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-02"
+id = "lifecycle-by-transition"
+status = "dormant"
+statement = "Every lifecycle object's authoritative history is its sequence of LifecycleTransition control entries and its status is a rebuildable projection."
+evidence_class = "invariant"
+first_gate = "G2"
+activating = ["fa-bvx"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-02"
+id = "unit-version"
+status = "dormant"
+statement = "Unit versions are journaled and immutable; historical mantissas are never reinterpreted."
+evidence_class = "invariant"
+first_gate = "G2"
+activating = ["fa-p7r"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-03"
+id = "core"
+status = "live"
+statement = "A period-scoped entry's effective date and discriminator resolve to exactly one period, and its class is admissible for that period's state under the registered matrix and the principal's capability; Closed and Locked periods refuse what the matrix refuses."
+evidence_class = "invariant"
+first_gate = "G1"
+owner = "fa-op5"
+checkers = ["fa-registry::lib::tests::admissibility_matrix_is_exhaustive_and_obeys_the_universal_rules", "fa-time::lib::period::tests::state_machine_matches_the_matrix", "fa-time::lib::period::tests::december_31_resolves_by_discriminator", "fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_a_generated_history"]
+negatives = ["fa-journal::tests/genesis.rs::closed_period_refuses_originals_and_admits_an_exact_reversal_under_post_closed", "fa-journal::tests/genesis.rs::a_period_never_opened_refuses_with_the_open_fix", "fa-journal::tests/genesis.rs::releases_stay_admissible_after_close_and_lock_while_posts_follow_the_matrix"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-03"
+id = "transition-journaled"
+status = "live"
+statement = "Period state changes only through journaled PeriodControl entries along the registered state machine."
+evidence_class = "invariant"
+first_gate = "G1"
+owner = "fa-op5"
+checkers = ["fa-journal::tests/genesis.rs::period_transition_is_a_control_record_with_no_legs_and_moves_the_state_mirror", "fa-time::lib::period::tests::state_machine_matches_the_matrix"]
+negatives = ["fa-journal::tests/genesis.rs::control_classes_unsupported_classes_and_structure_errors_are_refused_by_kind"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-03"
+id = "transition-approvals"
+status = "live"
+statement = "Period transitions carry the approvals their sod_policy rows require."
+evidence_class = "invariant"
+first_gate = "G2"
+owner = "fa-llx"
+checkers = ["fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_period_authority", "fa-journal::tests/policy.rs::period_control_is_admitted_under_close_and_a_lock_needs_a_distinct_human_approver"]
+negatives = ["fa-journal::tests/policy.rs::a_lock_approval_from_a_superseded_epoch_is_stale", "fa-journal::tests/policy.rs::a_soft_closed_reopen_needs_one_approver_and_a_case_bound_reopen_fails_closed"]
+depends = ["FA-INV-03.core"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-03"
+id = "witness-race"
+status = "dormant"
+statement = "A transition and a post cannot both commit against a stale period state: the conflict oracle over post-vs-close interleavings in both orders under DPOR."
+evidence_class = "bounded_model"
+first_gate = "G2"
+activating = ["fa-0fl"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-03"
+id = "nominal-zero"
+status = "dormant"
+statement = "After the latest Closing entry of a fiscal year the nominal accounts fold to zero at that known-at."
+evidence_class = "invariant"
+first_gate = "G2"
+activating = ["fa-xwv"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-04"
+id = "core"
+status = "live"
+statement = "Every register cell equals the deterministic fold of the visible legs at its coordinate and watermark; recomputation reproduces the fold digest and a tampered, phantom or stale register is drift, never truth."
+evidence_class = "invariant"
+first_gate = "G1"
+owner = "fa-1kd"
+checkers = ["fa-registers::tests/registers.rs::fold_equals_the_posted_legs_with_the_last_commit_as_watermark", "fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_a_generated_history", "fa-registers::lib::tests::fold_digest_is_a_function_of_cells_and_watermark"]
+negatives = ["fa-registers::tests/registers.rs::materialize_then_verify_is_green_and_a_tampered_register_is_drift", "fa-registers::tests/registers.rs::zero_phantom_cells_are_detected_and_rebuild_removes_them", "fa-registers::tests/registers.rs::register_metadata_and_watermark_corruption_cannot_verify", "fa-registers::tests/registers.rs::pending_column_corruption_is_detected_and_rebuilt_from_the_journal"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-04"
+id = "open-amount"
+status = "live"
+statement = "Open-amount cells equal the fold of SETTLES and UNSETTLES over the lineage; a missing or wrong applied mirror is drift to the verifier and corruption to the kernel."
+evidence_class = "invariant"
+first_gate = "G2"
+owner = "fa-omi"
+checkers = ["fa-registers::lib::open_items::tests::liveness_is_parity_over_arbitrarily_long_chains_and_cycles_are_corruption", "fa-journal::tests/genesis.rs::applications_settle_open_items_within_the_open_amount_and_reversal_undoes_them"]
+negatives = ["fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_a_generated_history"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-04"
+id = "outsider-recomputation"
+status = "live"
+statement = "A posted balance is independently recomputable by fa-verify from exactly the authenticated in-scope entries of a checkpoint's prefix and equals the register fold."
+evidence_class = "invariant"
+first_gate = "G2"
+owner = "fa-l3c"
+checkers = ["fa-notary::tests/notary.rs::balance_proofs_refold_exactly_the_register_balances_and_refuse_tampering", "fa-verify::tests/golden.rs::the_pinned_balance_proof_refolds_cash"]
+negatives = ["fa-verify::tests/golden.rs::every_pinned_vector_refuses_every_flipped_bit"]
+depends = ["FA-INV-14.seq-range-complete"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-04"
+id = "mapping-partition"
+status = "dormant"
+statement = "A statement definition's mappings partition the leaf accounts it covers."
+evidence_class = "invariant"
+first_gate = "G3"
+activating = ["fa-9ae"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-04"
+id = "maintainer"
+status = "dormant"
+statement = "The incremental register maintainer equals the rebuild under crash points between delta consumption and watermark publication."
+evidence_class = "invariant"
+first_gate = "G2"
+activating = ["fa-vn4"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-04"
+id = "functional-fold"
+status = "dormant"
+statement = "Functional-value registers fold base amounts under a registered functional fold."
+evidence_class = "invariant"
+first_gate = "G2"
+activating = ["fa-p7r"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-05"
+id = "evidence-minimum"
+status = "live"
+statement = "Every committed entry satisfies its class's registered evidence minimum; an entry below it is refused."
+evidence_class = "invariant"
+first_gate = "G1"
+owner = "fa-lp6"
+checkers = ["fa-registry::lib::evidence_policy::tests::embedded_policy_is_total_over_entry_classes", "fa-journal::lib::evidence::tests::minimum_counts_admissible_kinds_and_names_the_row"]
+negatives = ["fa-journal::tests/genesis.rs::an_entry_below_its_evidence_minimum_is_refused_and_a_cited_document_is_linked", "fa-journal::tests/genesis.rs::target_classes_rest_on_their_target_while_a_hold_needs_its_own_document"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-05"
+id = "closure"
+status = "dormant"
+statement = "The provenance closure is enumerable and strongly retained for the retention floor; unknown references are unencodable."
+evidence_class = "invariant"
+first_gate = "G2"
+activating = ["fa-txf"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-05"
+id = "external-retained"
+status = "dormant"
+statement = "External evidence retains bytes unless an attested by-reference policy downgrades dependent certificates."
+evidence_class = "invariant"
+first_gate = "G2"
+activating = ["fa-txf"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-05"
+id = "supplemental"
+status = "live"
+statement = "Supplemental evidence is a new object."
+evidence_class = "invariant"
+first_gate = "G2"
+owner = "fa-lp6"
+checkers = ["fa-journal::tests/genesis.rs::evidence_attached_after_commit_is_a_new_object_and_the_entry_never_changes"]
+negatives = ["fa-journal::lib::evidence::tests::a_supplement_round_trips_and_its_digest_binds_every_field"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-06"
+id = "core"
+status = "live"
+statement = "Every amount is an exact fixed-scale integer in a registered unit; rounding names a registered law with its bound; allocations conserve totals; overflow is refused, never wrapped."
+evidence_class = "invariant"
+first_gate = "G1"
+owner = "fa-p7r"
+checkers = ["fa-money::lib::allocation::tests::conserves_total_on_a_grid", "fa-money::lib::rounding::tests::registry_requires_exact_correspondence_with_executable_laws", "fa-money::lib::rounding::tests::error_bound_is_half_ulp_for_half_laws"]
+negatives = ["fa-money::lib::amount::tests::checked_arithmetic_refuses_overflow_and_unit_mixing", "fa-money::lib::amount::tests::over_scale_is_refused_not_rounded", "fa-money::lib::wide::tests::overflow_is_detected", "fa-model::lib::entry::tests::overflowing_leg_sums_are_refused_not_wrapped", "fa-money::lib::valuation::tests::native_imbalance_is_never_absorbed_as_rounding"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-06"
+id = "proofs"
+status = "dormant"
+statement = "Lean lanes for rounding bounds and allocation conservation."
+evidence_class = "proof"
+first_gate = "G3"
+activating = ["fa-8x9"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-07"
+id = "core"
+status = "live"
+statement = "Selection at (known_at, effective) reads exactly the entries whose creating commit lies in the known-at prefix and whose posting date satisfies the selector; metadata created later is invisible at an earlier known-at."
+evidence_class = "invariant"
+first_gate = "G1"
+owner = "fa-xwv"
+checkers = ["fa-registers::tests/differential.rs::temporal_stock_and_activity_agree_with_literal_journal_prefixes", "fa::lib::book::tests::explain_balance_resolves_the_account_at_the_requested_sequence"]
+negatives = ["fa-registers::tests/differential.rs::temporal_reports_resolve_period_metadata_at_the_recorded_snapshot"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-07"
+id = "book-scoped"
+status = "dormant"
+statement = "Book-scoped controls follow the known-at control-history and class-applicability rules without a posting date."
+evidence_class = "invariant"
+first_gate = "G2"
+activating = ["fa-xwv"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-07"
+id = "branch"
+status = "dormant"
+statement = "Branch predicates select drafts and scenarios without aliasing trunk."
+evidence_class = "invariant"
+first_gate = "G2"
+activating = ["fa-s7x"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-07"
+id = "originally-reported"
+status = "dormant"
+statement = "AS ORIGINALLY REPORTED resolves to the first StatementIssuance (else the first Lock) and AS REPORTED IN to a certificate's closure."
+evidence_class = "invariant"
+first_gate = "G3"
+activating = ["fa-9ae"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-07"
+id = "migration-disjoint"
+status = "dormant"
+statement = "Imported history never double counts with opening balances."
+evidence_class = "invariant"
+first_gate = "G2"
+activating = ["fa-xo0"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-08"
+id = "reversal"
+status = "live"
+statement = "A Reversal is the exact side-swap of an existing posted target."
+evidence_class = "invariant"
+first_gate = "G2"
+owner = "fa-op5"
+checkers = ["fa-journal::tests/genesis.rs::reversal_law_requires_a_witnessed_target_and_the_exact_side_swap"]
+negatives = ["fa-journal::tests/genesis.rs::reversal_targets_are_posted_entries_and_non_entries_are_typed_refusals"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-08"
+id = "reversed-once"
+status = "live"
+statement = "An entry is reversed at most once by identity; a second reversal of the same target is a conflict."
+evidence_class = "invariant"
+first_gate = "G2"
+owner = "fa-omi"
+checkers = ["fa-journal::tests/genesis.rs::a_reversal_chain_of_any_length_keeps_liveness_by_parity_and_settles_the_revived_original"]
+negatives = ["fa-journal::tests/genesis.rs::closed_period_refuses_originals_and_admits_an_exact_reversal_under_post_closed", "fa-journal::tests/genesis.rs::equivalence_is_plaintext_level_and_never_crosses_principals"]
+depends = ["FA-INV-08.reversal"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-08"
+id = "unsettle"
+status = "live"
+statement = "Reversing an application restores exactly its effects through a derived UNSETTLES projection."
+evidence_class = "invariant"
+first_gate = "G2"
+owner = "fa-omi"
+checkers = ["fa-journal::tests/genesis.rs::applications_settle_open_items_within_the_open_amount_and_reversal_undoes_them"]
+negatives = ["fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_a_generated_history"]
+depends = ["FA-INV-08.reversal"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-08"
+id = "dag"
+status = "live"
+statement = "Supersession edges point at existing posted targets and form a DAG; a cycle is corruption."
+evidence_class = "invariant"
+first_gate = "G2"
+owner = "fa-omi"
+checkers = ["fa-registers::lib::open_items::tests::liveness_is_parity_over_arbitrarily_long_chains_and_cycles_are_corruption"]
+negatives = ["fa-journal::tests/genesis.rs::reversal_targets_are_posted_entries_and_non_entries_are_typed_refusals"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-08"
+id = "net-law"
+status = "dormant"
+statement = "Every supersession kind has a registered netting law."
+evidence_class = "invariant"
+first_gate = "G2"
+activating = ["fa-oz3"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-08"
+id = "replacement-paired"
+status = "dormant"
+statement = "A Replacement is paired with its reversal in one batch."
+evidence_class = "invariant"
+first_gate = "G2"
+activating = ["fa-oz3"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-08"
+id = "scheduled-cancel"
+status = "live"
+statement = "A scheduled reversal is cancelled by lineage when its target is superseded."
+evidence_class = "invariant"
+first_gate = "G2"
+owner = "fa-ctf"
+checkers = ["fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_scheduled_reversals"]
+negatives = ["fa-registers::tests/differential.rs::a_manual_reversal_and_the_reversal_sweep_race_by_identity"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-09"
+id = "core"
+status = "live"
+statement = "Within one book and principal scope an idempotency key maps to one outcome: an identical retry returns it and a differing request is refused."
+evidence_class = "invariant"
+first_gate = "G1"
+owner = "fa-op5"
+checkers = ["fa-journal::tests/genesis.rs::identical_retry_is_recorded_and_a_changed_retry_is_a_conflict", "fa-model::lib::entry::tests::semantic_digest_sees_through_fresh_salts_and_refuses_foreign_keys"]
+negatives = ["fa-journal::tests/genesis.rs::equivalence_is_plaintext_level_and_never_crosses_principals"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-09"
+id = "intent-outcome"
+status = "dormant"
+statement = "The key-derived immutable IntentOutcome object records committed outcomes and durable refusals."
+evidence_class = "invariant"
+first_gate = "G2"
+activating = ["fa-we7"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-10"
+id = "core"
+status = "live"
+statement = "Capability caveats are enforced before any storage observation; a refusal precedes every read."
+evidence_class = "invariant"
+first_gate = "G1"
+owner = "fa-llx"
+checkers = ["fa-policy::lib::admit::tests::admission_order_is_holder_then_agent_then_op_then_ceilings"]
+negatives = ["fa-journal::tests/policy.rs::a_capability_authorizes_only_its_holder_and_refusals_precede_any_read", "fa-journal::tests/policy.rs::an_agent_profile_capability_never_writes_trunk_and_its_refusal_cites_fa_s7x", "fa-journal::tests/genesis.rs::a_foreign_book_or_branch_coordinate_is_refused_before_any_read"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-10"
+id = "current-policy"
+status = "live"
+statement = "Authority is re-evaluated against the current policy epoch at commit."
+evidence_class = "invariant"
+first_gate = "G2"
+owner = "fa-llx"
+checkers = ["fa-journal::tests/policy.rs::a_post_reads_the_current_epoch_so_an_earlier_approval_is_stale"]
+negatives = ["fa-journal::tests/policy.rs::a_transaction_that_witnessed_the_epoch_loses_to_a_concurrent_activation", "fa-journal::tests/policy.rs::an_approval_recorded_before_an_activation_is_stale_after_it"]
+depends = ["FA-INV-10.core"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-10"
+id = "approval-binds-proposal"
+status = "live"
+statement = "An approval binds the proposal digest and the policy epoch of what it approves (effects digest and coordinate bind when batches land)."
+evidence_class = "invariant"
+first_gate = "G2"
+owner = "fa-llx"
+checkers = ["fa-policy::lib::approval::tests::approval_round_trips_and_its_digest_binds_every_field", "fa-model::lib::entry::tests::changing_one_leg_changes_the_proposal_digest"]
+negatives = ["fa-policy::lib::approval::tests::recording_requires_the_op_and_binding_is_exact"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-10"
+id = "sod"
+status = "live"
+statement = "SoD policy is evaluated at commit for every dangerous class; a principal cannot approve its own work."
+evidence_class = "invariant"
+first_gate = "G2"
+owner = "fa-llx"
+checkers = ["fa-policy::tests/sod_oracle.rs::engine_and_oracle_agree_on_every_transcript", "fa-registry::lib::sod_policy::tests::embedded_sod_policy_loads_and_governs_the_dangerous_classes"]
+negatives = ["fa-journal::tests/policy.rs::self_approval_is_refused_and_a_distinct_human_approval_admits", "fa-policy::tests/sod_oracle.rs::a_loosened_rule_is_caught_by_the_differential"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-10"
+id = "post-evaluation"
+status = "dormant"
+statement = "Rule-generated effects are authorized after evaluation against the caller's caveats and the rule's grant."
+evidence_class = "invariant"
+first_gate = "G2"
+activating = ["fa-c34"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-10"
+id = "ceiling"
+status = "dormant"
+statement = "Amount ceilings are debited serially through usage cells."
+evidence_class = "invariant"
+first_gate = "G2"
+activating = ["fa-llx"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-10"
+id = "whole-entry"
+status = "dormant"
+statement = "Whole-entry visibility governs scoped reads."
+evidence_class = "invariant"
+first_gate = "G3"
+activating = ["fa-5c1"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-10"
+id = "access-log"
+status = "dormant"
+statement = "Every external-profile read is logged."
+evidence_class = "invariant"
+first_gate = "G3"
+activating = ["fa-t6m"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-10"
+id = "self-promotion"
+status = "dormant"
+statement = "A principal cannot approve its own draft's promotion or a case containing its own entries."
+evidence_class = "invariant"
+first_gate = "G2"
+activating = ["fa-s7x"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-11"
+id = "core"
+status = "dormant"
+statement = "Every plan carries a certificate naming its closure and the same closure reproduces byte-identical output."
+evidence_class = "invariant"
+first_gate = "G1"
+activating = ["fa-we7", "fa-9ae"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-11"
+id = "report-replay"
+status = "dormant"
+statement = "Every report, finding and bundle replays byte-for-byte from its certificate; erased closure elements downgrade the grade attributably."
+evidence_class = "invariant"
+first_gate = "G3"
+activating = ["fa-9ae"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-12"
+id = "core"
+status = "dormant"
+statement = "At every committed coordinate the fold of a subledger's detail legs equals its control account's register."
+evidence_class = "invariant"
+first_gate = "G2"
+activating = ["fa-06a"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-12"
+id = "external-feed"
+status = "dormant"
+statement = "External summary feeds name the detail batch digest they summarize and are refused if the detail does not fold to the summary."
+evidence_class = "invariant"
+first_gate = "G3"
+activating = ["fa-06a"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-13"
+id = "core"
+status = "dormant"
+statement = "Intercompany pairs match under the FX law or carry an explicit difference leg; eliminations derive deterministically; consolidated equity reconciles."
+evidence_class = "invariant"
+first_gate = "G3"
+activating = ["fa-9ae"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-14"
+id = "leaf-envelope"
+status = "live"
+statement = "Leaf envelopes bind record kind, coordinate, commit sequence, within-commit ordinal and the record digest; the producer and the independent verifier agree on every leaf and root."
+evidence_class = "invariant"
+first_gate = "G1"
+owner = "fa-l3c"
+checkers = ["fa-notary::tests/notary.rs::the_producer_and_the_independent_verifier_agree_on_every_leaf_and_the_root", "fa-notary::tests/golden.rs::accumulator_formats_equal_the_pinned_vectors"]
+negatives = ["fa-verify::tests/golden.rs::every_pinned_vector_refuses_every_flipped_bit", "fa-notary::tests/notary.rs::every_byte_of_an_inclusion_proof_is_bound"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-14"
+id = "consistency"
+status = "live"
+statement = "Each AccumulatorState extends the previous and is recomputed from the journal prefix; a forged or non-extending state is found and never published over."
+evidence_class = "invariant"
+first_gate = "G1"
+owner = "fa-l3c"
+checkers = ["fa-notary::tests/notary.rs::a_later_state_extends_the_earlier_and_consistency_verifies", "fa-notary::tests/notary.rs::recomputation_finds_a_forged_state_and_blocks_checkpoints_over_it"]
+negatives = ["fa-notary::tests/differential.rs::more_leaves_at_the_same_sequence_are_a_regression_not_an_extension", "fa-notary::tests/notary.rs::checkpoint_refuses_a_predecessor_with_a_falsely_advanced_sequence", "fa-verify::lib::tree::tests::every_consistency_path_verifies_and_every_wrong_claim_fails"]
+depends = ["FA-INV-14.leaf-envelope"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-14"
+id = "inclusion"
+status = "live"
+statement = "Inclusion proofs verify against a checkpoint the caller trusts and only for records inside its prefix."
+evidence_class = "invariant"
+first_gate = "G2"
+owner = "fa-l3c"
+checkers = ["fa-notary::tests/notary.rs::every_entry_proves_inclusion_against_a_journaled_state"]
+negatives = ["fa-notary::tests/notary.rs::an_entry_recorded_after_the_state_is_refused_and_a_forged_proof_fails", "fa-verify::lib::tree::tests::every_inclusion_path_verifies_and_every_wrong_claim_fails"]
+depends = ["FA-INV-14.leaf-envelope"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-14"
+id = "public-commitment"
+status = "live"
+statement = "Public document commitments are recomputable from bytes alone."
+evidence_class = "invariant"
+first_gate = "G2"
+owner = "fa-lp6"
+checkers = ["fa-notary::tests/differential.rs::verifier_doc_commit_equals_the_kernel_at_every_chunk_boundary", "fa-journal::lib::evidence::tests::chunk_root_matches_a_literal_tree"]
+negatives = ["fa-journal::lib::evidence::tests::commitment_binds_kind_length_and_every_chunk", "fa-verify::lib::document::tests::kind_length_and_every_chunk_are_bound"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-14"
+id = "seq-range-complete"
+status = "live"
+statement = "A complete-prefix proof is sound for its labeled scope: an omitted, padded, reordered or altered leaf is detected."
+evidence_class = "invariant"
+first_gate = "G2"
+owner = "fa-l3c"
+checkers = ["fa-notary::tests/notary.rs::the_complete_prefix_verifies_and_an_omitted_leaf_is_detected"]
+negatives = ["fa-verify::tests/golden.rs::every_pinned_vector_refuses_every_flipped_bit"]
+depends = ["FA-INV-14.leaf-envelope"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-14"
+id = "scope-index-complete"
+status = "dormant"
+statement = "Every checkpoint binds a scope-index root the verifier recomputes, and ScopeIndexComplete proofs are sound for their labeled scope."
+evidence_class = "invariant"
+first_gate = "G2"
+activating = ["fa-l3c"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-14"
+id = "witnessed"
+status = "dormant"
+statement = "Signed, witnessed transparency checkpoints detect rollback."
+evidence_class = "invariant"
+first_gate = "G3"
+activating = ["fa-l3c"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-14"
+id = "erasure"
+status = "dormant"
+statement = "Erasure leaves a typed tombstone whose digest prior proofs still bind; amounts, dates, accounts and lineage are never in erasure scope."
+evidence_class = "invariant"
+first_gate = "G3"
+activating = ["fa-v74"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-15"
+id = "core"
+status = "live"
+statement = "Pending legs are reserved; one resolution per hold removes the full original pending amounts exactly once and Posts posts one balanced sub-vector with source-ordinal mapping."
+evidence_class = "invariant"
+first_gate = "G1"
+owner = "fa-rqe"
+checkers = ["fa-journal::tests/genesis.rs::a_hold_reserves_and_its_one_resolution_posts_a_sub_vector_drawn_leg_by_leg", "fa-registers::tests/registers.rs::partial_post_releases_all_march_reservations_and_posts_only_in_april", "fa-journal::lib::limit::tests::a_resolution_releases_the_full_hold_and_never_reduces_availability"]
+negatives = ["fa-registers::tests/registers.rs::april_void_releases_only_its_march_hold_and_never_posts"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-15"
+id = "availability"
+status = "live"
+statement = "Reserved availability obeys the plan §5.4 equations: pending outflows reserve and pending inflows never finance."
+evidence_class = "invariant"
+first_gate = "G2"
+owner = "fa-rqe"
+checkers = ["fa-journal::lib::limit::tests::pending_outflows_reserve_and_pending_inflows_never_finance", "fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_limited_accounts"]
+negatives = ["fa-registers::tests/registers.rs::chart_limits_are_structural_and_breaches_name_the_admissible_amount", "fa-journal::lib::limit::tests::only_a_worsening_side_is_judged"]
+depends = ["FA-INV-15.core"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-15"
+id = "limits"
+status = "live"
+statement = "Balance limits are enforced through the interim LimitCell reservation cells and never silently exceeded."
+evidence_class = "invariant"
+first_gate = "G2"
+owner = "fa-rqe"
+checkers = ["fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_budget_caps_and_balancing"]
+negatives = ["fa-registers::tests/registers.rs::a_limit_cell_rebound_to_another_account_fails_closed_and_verify_names_both"]
+depends = ["FA-INV-15.availability"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-15"
+id = "balancing"
+status = "live"
+statement = "Balancing legs record the amount actually moved."
+evidence_class = "invariant"
+first_gate = "G2"
+owner = "fa-rqe"
+checkers = ["fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_budget_caps_and_balancing"]
+negatives = ["fa-cli::tests/cli.rs::budget_caps_bound_each_period_and_balancing_moves_what_the_limit_admits"]
+depends = ["FA-INV-15.limits"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-15"
+id = "expiry"
+status = "live"
+statement = "Expiry is journaled by sweep under time evidence, never by an ambient clock."
+evidence_class = "invariant"
+first_gate = "G2"
+owner = "fa-ctf"
+checkers = ["fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_ticks_timed_holds_and_the_expiry_sweep", "fa-registers::tests/differential.rs::timed_holds_anchor_on_a_witnessed_tick_and_posts_stop_at_the_deadline", "fa-registers::tests/differential.rs::a_crashed_sweep_leaves_nothing_partial_and_the_cursor_survives_restart"]
+negatives = ["fa-registers::tests/differential.rs::the_sweep_and_manual_resolution_race_by_identity_never_double_release", "fa-journal::lib::sweep::tests::the_sweep_obeys_the_registered_expires_rows"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-15"
+id = "escrow"
+status = "dormant"
+statement = "Balance limits are enforced through substrate escrow rights once R-ESC is live."
+evidence_class = "invariant"
+first_gate = "G3"
+activating = ["fa-s30"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-16"
+id = "core"
+status = "live"
+statement = "Derived Leg vertices and edges equal the inline legs, are written in the posting transaction, and no reader treats a projection as more authoritative than the payload."
+evidence_class = "invariant"
+first_gate = "G1"
+owner = "fa-op5"
+checkers = ["fa-journal::tests/genesis.rs::balanced_entry_commits_with_mirrors_and_edges_in_one_transaction", "fa-model::lib::mirrors::tests::leg_amount_mirrors_as_decimal_when_representable_else_bytes"]
+negatives = ["fa-registers::tests/registers.rs::missing_entry_period_projection_does_not_hide_journal_contributions", "fa-registers::tests/registers.rs::recovery_refuses_to_rewrite_an_account_forged_as_a_register"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-16"
+id = "recovery-rebuild"
+status = "dormant"
+statement = "Projections are rebuilt from payloads on recovery."
+evidence_class = "invariant"
+first_gate = "G2"
+activating = ["fa-vn4"]
+waiver = "forbidden"

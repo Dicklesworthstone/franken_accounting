@@ -102,12 +102,41 @@ cargo_build() {
   fi
 }
 
+# run_gate <label> <script> <args...>
+# A sub-gate that reports under the verdict contract itself (bead fa-37f):
+# exit 0 is PASS; exit 2 with an UNRUN line in its transcript is UNRUN;
+# anything else is FAIL, with the sub-gate's FAIL lines on stderr. Its full
+# transcript goes to the step log.
+run_gate() {
+  local label="$1"; shift
+  local log="$LOG_DIR/${label//[^A-Za-z0-9_.-]/_}.log"
+  bash "$@" >"$log" 2>&1
+  local rc=$?
+  local tally
+  tally="$(grep -E '^[a-z-]+: [0-9]+ passed, [0-9]+ failed, [0-9]+ unrun$' "$log" | tail -n 1)"
+  if [ "$rc" -eq 0 ]; then
+    gate_pass "$label ($tally)"
+  elif [ "$rc" -eq 2 ] && grep -q '^UNRUN ' "$log"; then
+    gate_unrun "$label — $(grep -m1 '^UNRUN ' "$log" | cut -c7-); log: $log"
+  else
+    gate_fail "$label (exit $rc; $tally); log: $log"
+    grep '^FAIL ' "$log" >&2 || true
+  fi
+}
+
 # ---- Rust -------------------------------------------------------------------
 run_step "fmt" cargo fmt --all --check
 cargo_build "check" check --workspace --all-targets
 cargo_build "clippy" clippy --workspace --all-targets -- -D warnings
 if [ "$QUICK" -eq 0 ]; then
   cargo_build "test" test --workspace
+  # Invariant cross-check (bead fa-37f): every live clause's checker and
+  # negative tests ran and passed in THIS run's test transcript; then the
+  # same gate is shown able to fail on a planted rename.
+  run_gate "invariants" "$ROOT/scripts/invariants_check.sh" \
+    "$ROOT/registries/invariants.toml" "$LOG_DIR/test.log"
+  run_gate "invariants-negative" "$ROOT/scripts/tests/invariants_negative.sh" \
+    "$ROOT/registries/invariants.toml" "$LOG_DIR/test.log" "$LOG_DIR/invariants-negative"
   if cargo deny --version >/dev/null 2>&1; then
     run_step "deny" cargo deny check
   else
@@ -215,6 +244,22 @@ if cargo tree --locked -p fa-reference --edges normal --prefix none --format '{p
   [ "$REFERENCE_FAIL" -eq 0 ] && gate_pass "reference-boundary — oracle imports only registry data and calendar primitives"
 else
   gate_unrun "reference-boundary — cargo tree did not resolve the oracle closure; log: $REFERENCE_LOG.stderr"
+fi
+
+# Workspace topology (bead fa-37f): the cargo graph obeys the layer order of
+# registries/workspace_topology.toml (plan §18.1) and every crate has a row;
+# then the same gate is shown able to fail on planted defects.
+TOPOLOGY_META="$LOG_DIR/topology-metadata.json"
+if ! command -v jq >/dev/null 2>&1; then
+  gate_unrun "topology — jq is not installed; the cargo graph was not read"
+elif cargo metadata --no-deps --format-version 1 >"$TOPOLOGY_META" 2>"$TOPOLOGY_META.stderr" \
+  && [ -s "$TOPOLOGY_META" ]; then
+  run_gate "topology" "$ROOT/scripts/topology_check.sh" \
+    "$ROOT/registries/workspace_topology.toml" "$TOPOLOGY_META"
+  run_gate "topology-negative" "$ROOT/scripts/tests/topology_negative.sh" \
+    "$ROOT/registries/workspace_topology.toml" "$TOPOLOGY_META" "$LOG_DIR/topology-negative"
+else
+  gate_unrun "topology — cargo metadata did not produce the workspace graph; log: $TOPOLOGY_META.stderr"
 fi
 
 gate_verdict

@@ -1600,7 +1600,7 @@ Laws: **derivability** (every §17 gate names its class and counting unit and is
 
 ## Appendix H — Foundation Dependency Ledger (status 2026-10-10)
 
-The planned `registries/foundation_dependencies.toml` and G0 drift checker are not implemented yet. Current adopted pins and their scopes live in `franken-stack.lock`; each capability row below must be verified against its pinned foundation before use. A foundation's presence does not imply every planned capability is live.
+`registries/foundation_dependencies.toml` copies this table row for row, and fa-registry's tests fail when the two differ or when a `franken-stack.lock` revision drifts from a workspace `Cargo.toml` pin (fa-37f). Current adopted pins and their scopes live in `franken-stack.lock`; each capability row below must be verified against its pinned foundation before use. A foundation's presence does not imply every planned capability is live.
 
 | Row | Foundation capability | Status 2026-10-10 | FrankenAccounting interim posture | Switch-over rule |
 |---|---|---|---|---|

@@ -1,0 +1,319 @@
+# foundation_dependencies.toml — plan Appendix H as data (bead fa-37f).
+#
+# One `[[capability]]` per Appendix H row. `row`, `capability`, `status`,
+# `posture` and `switch_over` copy the table's cells verbatim; fa-registry's
+# tests fail when the plan's table and this file disagree, so an Appendix H
+# edit is reconciled here in the same change. The classification is ours:
+#
+#   foundation  the franken-stack.lock foundation that ships the capability
+#   upstream    live | partial | planned | absent (the Status cell, classified)
+#   fa_status   live (consumed as-is) | interim (the registered interim posture
+#               holds until the switch-over rule fires)
+#   tracking    the bead that owns the switch-over or first use, when one exists
+#
+# Laws enforced by fa-registry: a capability that is planned or absent
+# upstream is interim here; an interim row names a switch-over rule; every
+# foundation is a franken-stack.lock entry, and every lock revision equals the
+# workspace Cargo.toml pin of each crate it ships (the drift check).
+#
+# Never assume a planned capability is live: check its row first (AGENTS.md).
+
+schema_version = 1
+
+[[capability]]
+row = "R-RATIONAL"
+capability = "FrankenSymPy `fsym-bigint`, `fsym-rational`, `fsym-budget` at the exact `franken-stack.lock` revision"
+status = "Integrated in `fa-money`: metered arbitrary-size rates and exact conversion intermediates; native verification required at landing"
+posture = "Fixed-scale `i128` amounts and accounting rounding/FX laws remain owned here; `fgdb-bigint` and the reference engine remain independent oracles"
+switch_over = "Re-pin only with arithmetic, codec, resource-refusal and dependency-closure gates; no symbolic-engine adoption implied"
+foundation = "frankensympy"
+upstream = "live"
+fa_status = "live"
+tracking = "fa-dbx"
+
+[[capability]]
+row = "R-API"
+capability = "`fgdb::Database` embedded API: `WriteBatch`, `WriteTxn` (`begin`, point reads, `write_ordered`, `refresh_snapshot`, `commit`), `Database::query`, `execute_certified`, `replay`, `read_session`, `subscribe_native`, `delta_since`/`ensure_delta_window`, `open_memory`, `bulk_load`"
+status = "Live (single-writer handle)"
+posture = "the legacy `execute_gql*`/`BoundPlan` path is never called"
+switch_over = "—"
+foundation = "frankengraphdb"
+upstream = "live"
+fa_status = "live"
+
+[[capability]]
+row = "R-ST"
+capability = "Chronicle system time, `FOR SYSTEM_TIME AS OF SEQ`, retention"
+status = "Live"
+posture = "—"
+switch_over = "retention policy per book"
+foundation = "frankengraphdb"
+upstream = "live"
+fa_status = "live"
+
+[[capability]]
+row = "R-SSI"
+capability = "Full Graph-SSI (`fgdb-txn`)"
+status = "Planned (\"deliberately not SSI\" today; pinned WriteTxn already has point/scan witnesses and admitted bounded single-vertex predicate-selection prefixes)"
+posture = "bounded optimistic `WriteTxn` with first-committer-wins over point-read witnesses for dependencies they cover; mutating aggregate-derived plans additionally require §5.10's atomic basis guard. Point-only ordinary posts gain no scan witness or shared hot object. Guard activation requires pinned-foundation conformance and both-order tests; conservative invalidation can require retry or quiescence under the existing soft-close workflow"
+switch_over = "adopt SSI; the conflict oracle is unchanged"
+foundation = "frankengraphdb"
+upstream = "planned"
+fa_status = "interim"
+tracking = "fa-0fl"
+
+[[capability]]
+row = "R-CAT"
+capability = "Graph catalog (`CREATE GRAPH`)"
+status = "Absent"
+posture = "label-partitioned regions with `_graph` property"
+switch_over = "migrate to named graphs with a differential run"
+foundation = "frankengraphdb"
+upstream = "absent"
+fa_status = "interim"
+
+[[capability]]
+row = "R-VT"
+capability = "`ValidTimeContract`, slices, `FOR VALID_TIME`, temporal non-overlap"
+status = "Planned (normative)"
+posture = "`effective_date` and effectivity bounds as indexed properties; `fa-time` interval algebra in the kernel; index-range witnesses"
+switch_over = "shadow-build/validate/activate with the full §16 temporal suite on both representations"
+foundation = "frankengraphdb"
+upstream = "planned"
+fa_status = "interim"
+tracking = "fa-xwv"
+
+[[capability]]
+row = "R-ESC"
+capability = "Escrow domains (balance limits without hot locks)"
+status = "Planned"
+posture = "per-limited-account `LimitCell` reservation cells updated by CAS (§5.5, §0.4 decision 7)"
+switch_over = "registered decision row; abort-rate gate reported in both"
+foundation = "frankengraphdb"
+upstream = "planned"
+fa_status = "interim"
+tracking = "fa-s30"
+
+[[capability]]
+row = "R-REG"
+capability = "Ripple materialized views"
+status = "Planned"
+posture = "`fa-registers` maintainer actor over `delta_since` (pull-only; `ensure_delta_window` on open; rebuild from the last `RegisterCheckpoint` on `DeltaCursorRetired`; woken by `fad` after each commit) with checkpoints and tail folds"
+switch_over = "replace the maintainer body; readers unchanged"
+foundation = "frankengraphdb"
+upstream = "planned"
+fa_status = "interim"
+tracking = "fa-vn4"
+
+[[capability]]
+row = "R-SUB"
+capability = "`subscribe_native` / `SUBSCRIBE TO`"
+status = "Live, in-process only, no durable resume, requires an unrestricted-scope capability"
+posture = "used for incremental findings and live triage post-1.0 once scoped capabilities and durable resume land"
+switch_over = "—"
+foundation = "frankengraphdb"
+upstream = "live"
+fa_status = "live"
+
+[[capability]]
+row = "R-BR"
+capability = "Branch fork/merge, `DIFF` family"
+status = "Read selectors live; fork/merge planned"
+posture = "drafts as intent logs (promotion = replay = merge-ladder rung 1); scenarios as scratch-book replay via `open_memory`"
+switch_over = "drafts gain optional branch materialization; scenarios become forks; promotion stays intent replay"
+foundation = "frankengraphdb"
+upstream = "partial"
+fa_status = "interim"
+tracking = "fa-s7x"
+
+[[capability]]
+row = "R-IDX"
+capability = "Beacon durable property/range indexes; FTS/HNSW"
+status = "In-memory property *equality* index per published snapshot only; no durable, range, or commit-maintained index; no range witnesses; FTS/HNSW per-call"
+posture = "accelerators only, never semantics; the posting transaction never scans (§7.8)"
+switch_over = "—"
+foundation = "frankengraphdb"
+upstream = "partial"
+fa_status = "live"
+
+[[capability]]
+row = "R-PRISM"
+capability = "`CALL fnx.*` over `SnapshotGraphView`"
+status = "Live subset"
+posture = "direct `fnx` over Lantern projections where the subset lacks an algorithm"
+switch_over = "—"
+foundation = "franken_networkx"
+upstream = "partial"
+fa_status = "live"
+tracking = "fa-nlu"
+
+[[capability]]
+row = "R-WARDEN"
+capability = "Macaroon caveats compiled to planner predicates; redaction; audit pipeline"
+status = "Types live; compilation in progress; audit pipeline planned"
+posture = "caveats evaluated by Steward before query construction (refusal, never result filtering); FrankenAccounting access log; redaction by document-class storage separation"
+switch_over = "adopt compiled caveats and substrate redaction; FA-INV-10 clause text updated by registered decision"
+foundation = "frankengraphdb"
+upstream = "partial"
+fa_status = "interim"
+tracking = "fa-llx"
+
+[[capability]]
+row = "R-CERT"
+capability = "`execute_certified` → `NativeResultCertificate`, `replay`, `ReplayManifest` grades"
+status = "Live for native reads including `fnx` procedure evidence; not for writes or subscriptions"
+posture = "FrankenAccounting `Certificate.inputs` embeds every `NativeResultCertificate` and replay calls `Database::replay` per input (§13.6)"
+switch_over = "—"
+foundation = "frankengraphdb"
+upstream = "live"
+fa_status = "live"
+tracking = "fa-9ae"
+
+[[capability]]
+row = "R-MMR"
+capability = "§5.8 accumulator, transparency checkpoints, witness policies, verifier SDK"
+status = "Planned"
+posture = "journal-level accumulator and checkpoints (permanent design)"
+switch_over = "cross-anchor `AccumulatorState` into the substrate MMR; two independent chains"
+foundation = "frankengraphdb"
+upstream = "planned"
+fa_status = "interim"
+tracking = "fa-l3c"
+
+[[capability]]
+row = "R-VM"
+capability = "`fgdb-udf-vm` deterministic bytecode"
+status = "Planned"
+posture = "Canon IR interpreter under stripped `Cx`; IR frozen"
+switch_over = "compile IR to VM; differential on every golden corpus"
+foundation = "frankengraphdb"
+upstream = "planned"
+fa_status = "interim"
+tracking = "fa-c34"
+
+[[capability]]
+row = "R-BULK"
+capability = "Bulk-load protocol with durable chunk manifests and a load registry (substrate §7.5)"
+status = "A bounded, chunked, resumable online loader (`bulk_load`, `BulkLoadPolicy`, `BulkLoadCheckpoint`; caller-managed continuation) is live; the manifest/registry protocol is planned"
+posture = "`MigrationRun` carries FrankenAccounting-level chunk manifests and resume over the live loader"
+switch_over = "adopt substrate manifests"
+foundation = "frankengraphdb"
+upstream = "partial"
+fa_status = "interim"
+tracking = "fa-xo0"
+
+[[capability]]
+row = "R-EXP"
+capability = "`ExpiryContract` / epoch advance"
+status = "Planned"
+posture = "FrankenAccounting expiry sweep control entries under time evidence"
+switch_over = "adopt the contract for pending-entry visibility; sweep remains for resolutions"
+foundation = "frankengraphdb"
+upstream = "planned"
+fa_status = "interim"
+tracking = "fa-ctf"
+
+[[capability]]
+row = "R-CLI"
+capability = "`fgdb` robot-mode conventions (`--robot` first, `event`-discriminated NDJSON, `robot schema`, exit codes 0/2/3/4/5)"
+status = "Live (`doctor`/`--json` are the substrate's W10 target)"
+posture = "matched by `fa`; `fa`'s dictionary is a strict superset"
+switch_over = "—"
+foundation = "frankengraphdb"
+upstream = "live"
+fa_status = "live"
+tracking = "fa-12x"
+
+[[capability]]
+row = "R-SRV"
+capability = "`fgdbd` server posture, FGP"
+status = "Live (bounded)"
+posture = "not used in 1.0; `fad` is embedded + local RPC + MCP"
+switch_over = "post-1.0 networked posture"
+foundation = "frankengraphdb"
+upstream = "live"
+fa_status = "live"
+
+[[capability]]
+row = "R-LAB"
+capability = "`fgdb-sim`, lab VFS, crash matrices"
+status = "Live for bounded scenarios"
+posture = "`fa-sim` extends"
+switch_over = "—"
+foundation = "frankengraphdb"
+upstream = "live"
+fa_status = "live"
+tracking = "fa-0fl"
+
+[[capability]]
+row = "R-HLC"
+capability = "Wall-clock/HLC instant on `CommitMarker`"
+status = "Planned (`commit_hlc` carries the sequence number)"
+posture = "journaled `TimeEvidence` ticks (§7.1a); `AS KNOWN AT <instant>` resolves through ticks and certificates record the bracketing ticks"
+switch_over = "substrate HLC becomes primary; ticks remain as corroboration"
+foundation = "frankengraphdb"
+upstream = "planned"
+fa_status = "interim"
+
+[[capability]]
+row = "R-CON"
+capability = "Key/existence/cardinality/check constraints (`fgdb-constraints`, `fgdb-secure-view`)"
+status = "Planned"
+posture = "identity-derived `vid`s (§4.9) make duplicates point conflicts; required dimensions and leaf-only are kernel checks"
+switch_over = "constraints become a redundant guard, never a replacement"
+foundation = "frankengraphdb"
+upstream = "planned"
+fa_status = "interim"
+
+[[capability]]
+row = "R-SYM"
+capability = "Durable label/property/relation catalog"
+status = "Absent (host-interned ids; host supplies `GraphSymbolResolver`)"
+posture = "`registries/symbols.toml` frozen at G0, journaled at book creation, checked by `fa doctor`"
+switch_over = "adopt the substrate catalog with a differential run"
+foundation = "frankengraphdb"
+upstream = "absent"
+fa_status = "interim"
+
+[[capability]]
+row = "R-GC"
+capability = "Group commit on the embedded handle"
+status = "Planned (one publication, two syncs, per `write`/`commit`)"
+posture = "intent-level batching (`PostBatch`, draft promotion); §17's unbatched rate reported, not gated"
+switch_over = "derive the fused-arm gates from the registry row"
+foundation = "frankengraphdb"
+upstream = "planned"
+fa_status = "interim"
+
+[[capability]]
+row = "R-ERASE"
+capability = "`ErasureCutSpec`, typed tombstones, crypto-erasure with GC cooperation"
+status = "Planned"
+posture = "`ErasureCut` is a feature-flagged absence refused with this row cited"
+switch_over = "enable the intent; FA-INV-14 erasure clauses go live"
+foundation = "frankengraphdb"
+upstream = "planned"
+fa_status = "interim"
+tracking = "fa-v74"
+
+[[capability]]
+row = "R-RED"
+capability = "Redaction contracts with proofs (substrate §12.6)"
+status = "Planned"
+posture = "privileged bytes in a separate `PrivilegedDocument` class gated by the `privileged` caveat before query construction"
+switch_over = "adopt substrate redaction proofs"
+foundation = "frankengraphdb"
+upstream = "planned"
+fa_status = "interim"
+tracking = "fa-txf"
+
+[[capability]]
+row = "R-KEY"
+capability = "`fgdb-keymgr` key lifecycle and rotation"
+status = "Planned"
+posture = "the three-line 0600 `DatabaseKeys` file managed by `fad`; rotation is a registered absence"
+switch_over = "adopt the lifecycle"
+foundation = "frankengraphdb"
+upstream = "planned"
+fa_status = "interim"
+tracking = "fa-v74"

@@ -4,7 +4,7 @@ version = "0.0.1"
 edition.workspace = true
 license-file.workspace = true
 repository.workspace = true
-description = "The registries FrankenAccounting code branches on (plan §18.2), embedded at compile time from `registries/*.toml` and read by a std-only TOML-subset parser: exit codes, entry classes, the admissibility matrix, unit versions, rounding laws, and the frozen symbol table. No serde, no toml crate. Bead fa-2xh."
+description = "The registries FrankenAccounting code branches on (plan §18.2), embedded at compile time from `registries/*.toml` and read by a std-only TOML-subset parser: exit codes, entry classes, the admissibility matrix, unit versions, rounding laws, the frozen symbol table, the invariant registry with its clause laws, the foundation dependency ledger, and the workspace topology. No serde, no toml crate. Beads fa-2xh, fa-37f."
 publish = false
 
 [lints]
