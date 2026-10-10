@@ -143,6 +143,9 @@ pub mod code {
     /// A limited account's posted or reserved total would leave the `i128`
     /// register ceiling.
     pub const LIMIT_CEILING: &str = "FA-REF-092";
+    /// A balancing request is not the two-leg single-unit shape (plan §5.5),
+    /// or its `fa:balancing:v1` extension is malformed or disagrees with the legs.
+    pub const BALANCING_SHAPE: &str = "FA-REF-093";
 }
 
 /// A foundation failure. Exit 5; never partial.

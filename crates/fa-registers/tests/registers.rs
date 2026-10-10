@@ -1107,7 +1107,13 @@ fn chart_limits_are_structural_and_breaches_name_the_admissible_amount() {
         parent_code: None,
         limit,
     };
-    let floor = |lower: Option<i128>, upper: Option<i128>| Some(BalanceLimit { lower, upper });
+    let floor = |lower: Option<i128>, upper: Option<i128>| {
+        Some(BalanceLimit {
+            lower,
+            upper,
+            scope: LimitScope::Lifetime,
+        })
+    };
     for (n, bad) in [
         petty(floor(None, None), UnitPolicy::Single(usd), true),
         petty(floor(Some(10), Some(5)), UnitPolicy::Single(usd), true),
@@ -1140,7 +1146,8 @@ fn chart_limits_are_structural_and_breaches_name_the_admissible_amount() {
         rows::AccountRow::decode(&row).unwrap().limit,
         Some(BalanceLimit {
             lower: Some(0),
-            upper: Some(50_000)
+            upper: Some(50_000),
+            scope: LimitScope::Lifetime,
         })
     );
     let cell =
@@ -1252,6 +1259,7 @@ fn a_limit_cell_rebound_to_another_account_fails_closed_and_verify_names_both() 
     let floor = Some(BalanceLimit {
         lower: Some(0),
         upper: None,
+        scope: LimitScope::Lifetime,
     });
     let spec = |code: &str| AccountSpec {
         code: code.into(),

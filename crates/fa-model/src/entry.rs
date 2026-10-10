@@ -50,9 +50,15 @@ pub const EXTENSIONS_MINOR: u16 = 1;
 pub const PROPOSAL_DIGEST_DOMAIN: &[u8] = b"fa:entry-proposal:v1";
 pub const ENTRY_DIGEST_DOMAIN: &[u8] = b"fa:entry:v1";
 pub const SEMANTIC_DIGEST_DOMAIN: &[u8] = b"fa:entry-semantic:v1";
-/// Extension tags this reader understands (none yet). A payload at a higher
+/// Extension tag 1, `fa:balancing:v1` (plan §5.5): the balancing request of
+/// a two-leg entry — `leg: u16 LE ‖ requested mantissa: i128 LE` (18 bytes).
+/// The legs carry the amount that moved; the identity of the post binds this
+/// request (fa-journal `limit::post_balancing`).
+pub const BALANCING_EXTENSION: u16 = 1;
+
+/// Extension tags this reader understands. A payload at a higher
 /// `schema_minor` may carry others; they are preserved and skipped.
-pub const KNOWN_EXTENSION_TAGS: &[u16] = &[];
+pub const KNOWN_EXTENSION_TAGS: &[u16] = &[BALANCING_EXTENSION];
 
 // ---------------------------------------------------------------------------
 // Entry classes (registries/entry_classes.toml, compiled)
@@ -2170,6 +2176,10 @@ mod tests {
         let mut unsorted = p.clone();
         unsorted.extensions = vec![(9, vec![]), (7, vec![])];
         assert!(unsorted.validate().is_err());
+        // A registered tag validates at this reader's minor.
+        let mut known = proposal(two_legs());
+        known.extensions = vec![(BALANCING_EXTENSION, vec![0; 18])];
+        assert!(known.validate().is_ok());
     }
 
     /// Disposition-sensitive arity (plan §5.4): a Pending carries a bare

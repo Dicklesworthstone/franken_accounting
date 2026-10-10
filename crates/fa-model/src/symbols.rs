@@ -112,6 +112,7 @@ symbols!(
         (GENERATION, "generation", 44),
         (SECURITY_POLICY_EPOCH, "security_policy_epoch", 45),
         (ACCUMULATOR_HEAD, "accumulator_head", 46),
+        (LIMIT_SCOPE, "limit_scope", 56),
     ]
 );
 

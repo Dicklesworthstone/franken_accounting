@@ -188,6 +188,7 @@ fn setup_with(rows: &[ChartRow]) -> (Kernel, Oracle, Vec<String>) {
                     },
                     lower: l.lower,
                     upper: l.upper,
+                    per_period: l.scope == LimitScope::Period,
                 },
             );
         }
@@ -237,6 +238,33 @@ fn kernel_post_raw(
     usd: UnitId,
     refs: &[EntryRef],
 ) -> Result<Result<Posted, Refusal>, KernelError> {
+    let req = kernel_request(k, intent, usd, refs);
+    let ctx = k.ctx();
+    let db = &mut k.db;
+    let book = &k.book;
+    k.runtime
+        .block_on(async move { post(db, &ctx, book, req).await })
+}
+
+/// A balancing post (plan §5.5) of the same request the oracle receives.
+fn kernel_post_balancing(
+    k: &mut Kernel,
+    intent: &Intent,
+    usd: UnitId,
+    refs: &[EntryRef],
+    leg: u16,
+) -> Result<Balanced, Refusal> {
+    let req = kernel_request(k, intent, usd, refs);
+    let ctx = k.ctx();
+    let db = &mut k.db;
+    let book = &k.book;
+    k.runtime
+        .block_on(async move { post_balancing(db, &ctx, book, req, leg).await })
+        .expect("kernel")
+}
+
+/// The kernel request for an oracle intent.
+fn kernel_request(k: &Kernel, intent: &Intent, usd: UnitId, refs: &[EntryRef]) -> PostRequest {
     let mut legs = to_kernel_legs(k.book.book_id, usd, &intent.legs);
     for s in &intent.settles {
         legs[s.leg].settles.push(Settlement {
@@ -321,17 +349,12 @@ fn kernel_post_raw(
         tags: Vec::new(),
     };
     let ops: Vec<&str> = intent.ops.iter().map(String::as_str).collect();
-    let req = PostRequest {
+    PostRequest {
         proposal,
         approvals: Vec::new(),
         plan_certificate: None,
         capability: Capability::embedded(PRINCIPAL, &ops).expect("registered ops"),
-    };
-    let ctx = k.ctx();
-    let db = &mut k.db;
-    let book = &k.book;
-    k.runtime
-        .block_on(async move { post(db, &ctx, book, req).await })
+    }
 }
 
 fn kernel_transition(
@@ -1663,6 +1686,7 @@ const LIMITED: &[ChartRow] = &[
         Some(BalanceLimit {
             lower: Some(0),
             upper: Some(400_000),
+            scope: LimitScope::Lifetime,
         }),
     ),
     (
@@ -1673,6 +1697,7 @@ const LIMITED: &[ChartRow] = &[
         Some(BalanceLimit {
             lower: None,
             upper: Some(150_000),
+            scope: LimitScope::Lifetime,
         }),
     ),
     ("3000", 3, true, 1, None),
@@ -2037,7 +2062,7 @@ fn kernel_and_oracle_agree_on_limited_accounts() {
     assert!(verified.is_green(), "{verified:?}");
     assert_eq!(verified.accounts_checked, 2);
     for a in &verified.accounts {
-        let model = oracle.availability(&a.code);
+        let model = oracle.availability_in(&a.code, a.period.as_deref());
         assert_eq!(a.cell.generation as u64, model.generation, "{}", a.code);
         assert_eq!(
             Some(a.cell.credits_pending),
@@ -2207,6 +2232,789 @@ fn kernel_and_oracle_agree_on_limited_accounts() {
     };
     assert!(matches!(
         kernel_post(&mut k, &elsewhere, usd, &refs),
+        Ok(Posted::Committed { .. })
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// Budget caps and balancing legs (plan §5.5; bead fa-rqe 2c)
+// ---------------------------------------------------------------------------
+
+/// Cash has a floor, the facility a cap on drawn principal, and expense 6100
+/// a budget cap per period (6200 is budget-capped after its periods exist,
+/// so its cells come from chart install rather than period creation).
+const BUDGETED: &[ChartRow] = &[
+    (
+        "1000",
+        1,
+        true,
+        0,
+        Some(BalanceLimit {
+            lower: Some(0),
+            upper: None,
+            scope: LimitScope::Lifetime,
+        }),
+    ),
+    (
+        "2100",
+        2,
+        true,
+        1,
+        Some(BalanceLimit {
+            lower: None,
+            upper: Some(150_000),
+            scope: LimitScope::Lifetime,
+        }),
+    ),
+    (
+        "6100",
+        5,
+        true,
+        0,
+        Some(BalanceLimit {
+            lower: None,
+            upper: Some(50_000),
+            scope: LimitScope::Period,
+        }),
+    ),
+    ("3000", 3, true, 1, None),
+    ("4000", 4, true, 1, None),
+    ("6000", 5, true, 0, None),
+];
+
+/// `(L, U)` of one cell on the oracle's literal fold (`period: None` is the
+/// lifetime cell), in the account's normal-balance sign.
+fn oracle_lu_in(
+    oracle: &Oracle,
+    code: &str,
+    period: Option<&str>,
+    debit_normal: bool,
+) -> (i128, i128) {
+    let a = oracle.availability_in(code, period);
+    let v = |x: &Int| x.to_i128().expect("generated sums fit i128");
+    let (dp, cp, dr, cr) = (
+        v(&a.debits_posted),
+        v(&a.credits_posted),
+        v(&a.debits_pending),
+        v(&a.credits_pending),
+    );
+    if debit_normal {
+        (dp - cp - cr, dp - cp + dr)
+    } else {
+        (cp - dp - dr, cp - dp + cr)
+    }
+}
+
+/// The kernel's stored cell (bound to its account and period) equals the
+/// oracle's literal fold, generation included.
+fn assert_cell_in(k: &Kernel, oracle: &Oracle, code: &str, period: Option<&str>, step: u64) {
+    let account = account_vid(k.book.book_id, code);
+    let row =
+        k.db.vertex(fa_journal::limit::cell_vid(account, period))
+            .expect("read")
+            .expect("limit cell exists");
+    let cell = LimitCell::decode_bound(&row, account, period).expect("bound cell");
+    let a = oracle.availability_in(code, period);
+    assert_eq!(
+        (
+            Some(cell.debits_posted),
+            Some(cell.credits_posted),
+            Some(cell.debits_pending),
+            Some(cell.credits_pending),
+            u64::try_from(cell.generation).expect("non-negative"),
+        ),
+        (
+            a.debits_posted.to_i128(),
+            a.credits_posted.to_i128(),
+            a.debits_pending.to_i128(),
+            a.credits_pending.to_i128(),
+            a.generation,
+        ),
+        "step {step}: cell of {code} in {period:?}"
+    );
+}
+
+#[test]
+fn kernel_and_oracle_agree_on_budget_caps_and_balancing() {
+    let (mut k, mut oracle, periods) = setup_with(BUDGETED);
+    let usd = k.book.units.lookup("USD").unwrap();
+    for (n, p) in periods[1..4].iter().enumerate() {
+        open_period(&mut k, &mut oracle, p, 1 + n as u64);
+    }
+    // 6200: budget-capped after its periods exist (chart-install cells).
+    {
+        let spec = AccountSpec {
+            code: "6200".into(),
+            name: "6200".into(),
+            account_type: 5,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(usd),
+            parent_code: None,
+            limit: Some(BalanceLimit {
+                lower: None,
+                upper: Some(20_000),
+                scope: LimitScope::Period,
+            }),
+        };
+        let ctx = k.ctx();
+        let db = &mut k.db;
+        let book = &k.book;
+        let day = DateDay::from_ymd(2026, 1, 1).unwrap();
+        let description =
+            Erasable::seal(&"chart".to_string(), None, &book.seal_key, [5; 32], [6; 24]);
+        k.runtime
+            .block_on(async move {
+                install_chart(
+                    db,
+                    &ctx,
+                    book,
+                    &[spec],
+                    PRINCIPAL,
+                    day,
+                    b"6200",
+                    description,
+                )
+                .await
+            })
+            .expect("kernel")
+            .expect("installs");
+        oracle.add_account(Account {
+            code: "6200".into(),
+            is_leaf: true,
+            unit: Some(usd.0),
+        });
+        oracle.set_limit(
+            "6200",
+            Limit {
+                normal: fa_reference::Side::Debit,
+                lower: None,
+                upper: Some(20_000),
+                per_period: true,
+            },
+        );
+    }
+    let dated = [
+        (DateDay::from_ymd(2026, 2, 10).unwrap(), periods[1].clone()),
+        (DateDay::from_ymd(2026, 3, 15).unwrap(), periods[2].clone()),
+        (DateDay::from_ymd(2026, 4, 20).unwrap(), periods[3].clone()),
+    ];
+    let leg = |side: fa_reference::Side, account: &str, mantissa: i128| Leg {
+        side,
+        account: account.into(),
+        unit: usd.0,
+        mantissa,
+    };
+    let dr = fa_reference::Side::Debit;
+    let cr = fa_reference::Side::Credit;
+    let plain = |class: &str, legs: Vec<Leg>, key: Vec<u8>, date: DateDay| Intent {
+        class: class.into(),
+        date,
+        discriminator: None,
+        legs,
+        key,
+        ops: vec!["post".into()],
+        approvals: 0,
+        reverses: None,
+        resolves: None,
+        settles: Vec::new(),
+    };
+    let mut rng = Rng(0x0BAD_C0DE_5EED_1234);
+    let mut refs: Vec<EntryRef> = Vec::new();
+    let mut plain_posted: Vec<Intent> = Vec::new();
+    // (request, balancing leg, journal index, moved)
+    let mut balanced: Vec<(Intent, u16, usize, i128)> = Vec::new();
+    let mut holds: Vec<usize> = Vec::new();
+    let mut resolved: BTreeSet<usize> = BTreeSet::new();
+    let mut reversed: BTreeSet<usize> = BTreeSet::new();
+    let mut refused: BTreeMap<&'static str, u32> = BTreeMap::new();
+    let (mut posted, mut recorded) = (0u32, 0u32);
+    let (mut reduced, mut full) = (0u32, 0u32);
+    let mut budget_exact = 0u32;
+    let mut cross_period_posts = 0u32;
+    // Planted negatives and identity probes: each fires once, at the first
+    // step where its precondition holds.
+    let mut needed: BTreeSet<&'static str> = [
+        "shape-legs",
+        "shape-unequal",
+        "shape-account",
+        "shape-leg",
+        "shape-class",
+        "retry-same",
+        "retry-other-amount",
+        "retry-other-leg",
+        "retry-same-later",
+        "cross-period",
+    ]
+    .into_iter()
+    .collect();
+    let (mut identity_recorded, mut identity_conflicts) = (0u32, 0u32);
+    // The first reduced balancing post: the identity probes' subject.
+    let mut probe: Option<(Intent, u16, usize, i128)> = None;
+
+    for step in 0..640u64 {
+        let key = format!("b{step}").into_bytes();
+        let (date, period) = dated[rng.below(3) as usize].clone();
+        let budget_room = |o: &Oracle, code: &str, cap: i128, p: &str| {
+            cap - oracle_lu_in(o, code, Some(p), true).1
+        };
+        let (cash_avail, _) = oracle_lu_in(&oracle, "1000", None, true);
+        let (_, loan_u) = oracle_lu_in(&oracle, "2100", None, false);
+        let mut planted: Option<(Intent, Option<u16>)> = None;
+        // Which identity probe this step is, if any (only planted probes count).
+        let mut probe_tag: Option<&'static str> = None;
+        if let Some(tag) = needed.iter().copied().find(|t| t.starts_with("shape-")) {
+            let two = vec![leg(dr, "6000", 10), leg(cr, "1000", 10)];
+            let (intent, l) = match tag {
+                "shape-legs" => (
+                    plain(
+                        "Original",
+                        vec![leg(dr, "6000", 10), leg(cr, "1000", 6), leg(cr, "3000", 4)],
+                        key.clone(),
+                        date,
+                    ),
+                    0,
+                ),
+                "shape-unequal" => (
+                    plain(
+                        "Original",
+                        vec![leg(dr, "6000", 10), leg(cr, "1000", 9)],
+                        key.clone(),
+                        date,
+                    ),
+                    0,
+                ),
+                "shape-account" => (
+                    plain(
+                        "Original",
+                        vec![leg(dr, "1000", 10), leg(cr, "1000", 10)],
+                        key.clone(),
+                        date,
+                    ),
+                    1,
+                ),
+                "shape-leg" => (plain("Original", two, key.clone(), date), 2),
+                _ => (plain("Reversal", two, key.clone(), date), 0),
+            };
+            needed.remove(tag);
+            planted = Some((intent, Some(l)));
+        } else if let Some((request, l, _, _)) = probe.clone() {
+            if needed.contains("retry-same") {
+                needed.remove("retry-same");
+                probe_tag = Some("retry-same");
+                planted = Some((request, Some(l)));
+            } else if needed.contains("retry-other-amount") {
+                needed.remove("retry-other-amount");
+                probe_tag = Some("retry-other-amount");
+                let mut other = request.clone();
+                for x in &mut other.legs {
+                    x.mantissa -= 1;
+                }
+                planted = Some((other, Some(l)));
+            } else if needed.contains("retry-other-leg") {
+                needed.remove("retry-other-leg");
+                probe_tag = Some("retry-other-leg");
+                planted = Some((request, Some(1 - l)));
+            } else if needed.contains("retry-same-later") && step > 300 {
+                // Availability has moved on since; the recorded outcome holds.
+                needed.remove("retry-same-later");
+                probe_tag = Some("retry-same-later");
+                planted = Some((request, Some(l)));
+            }
+        }
+        if planted.is_none()
+            && needed.contains("cross-period")
+            && step % 7 == 0
+            && let Some(h) = holds.iter().copied().find(|h| {
+                !resolved.contains(h) && oracle.entry(*h).is_some_and(|e| e.period == periods[1])
+            })
+        {
+            // A February encumbrance posted in April: releases February's
+            // budget cell, charges April's (retried until April has room).
+            let hold = oracle.entry(h).expect("hold").clone();
+            let t = 1;
+            let mut i = plain(
+                "Resolution",
+                hold.legs
+                    .iter()
+                    .map(|x| leg(x.side, &x.account, t))
+                    .collect(),
+                key.clone(),
+                dated[2].0,
+            );
+            i.resolves = Some(Resolve {
+                target: h,
+                posts: Some(vec![0, 1]),
+            });
+            planted = Some((i, None));
+        }
+        let (intent, balancing) = if let Some(p) = planted {
+            p
+        } else {
+            match rng.below(24) {
+                0..=2 => {
+                    let a = 1 + rng.below(80_000) as i128;
+                    (
+                        plain(
+                            "Original",
+                            vec![leg(dr, "1000", a), leg(cr, "3000", a)],
+                            key,
+                            date,
+                        ),
+                        None,
+                    )
+                }
+                3..=5 => {
+                    let edge = budget_room(&oracle, "6100", 50_000, &period);
+                    let a = near(&mut rng, edge.min(cash_avail.max(1)));
+                    (
+                        plain(
+                            "Original",
+                            vec![leg(dr, "6100", a), leg(cr, "1000", a)],
+                            key,
+                            date,
+                        ),
+                        None,
+                    )
+                }
+                6..=7 => {
+                    let edge = budget_room(&oracle, "6100", 50_000, &period);
+                    let a = near(&mut rng, edge);
+                    (
+                        plain(
+                            "Pending",
+                            vec![leg(dr, "6100", a), leg(cr, "3000", a)],
+                            key,
+                            date,
+                        ),
+                        None,
+                    )
+                }
+                8..=10 if holds.iter().any(|h| !resolved.contains(h)) => {
+                    let open: Vec<usize> = holds
+                        .iter()
+                        .copied()
+                        .filter(|h| !resolved.contains(h))
+                        .collect();
+                    let target = open[rng.below(open.len() as u64) as usize];
+                    let hold = oracle.entry(target).expect("hold").clone();
+                    let (legs, posts) = if rng.chance(60) {
+                        let t = 1 + rng.below(hold.legs[0].mantissa as u64) as i128;
+                        (
+                            hold.legs
+                                .iter()
+                                .map(|x| leg(x.side, &x.account, t))
+                                .collect(),
+                            Some(vec![0u16, 1]),
+                        )
+                    } else {
+                        (Vec::new(), None)
+                    };
+                    let mut i = plain("Resolution", legs, key, date);
+                    i.resolves = Some(Resolve { target, posts });
+                    (i, None)
+                }
+                11..=14 => {
+                    // Balancing budget spend: the budget leg balances. Mostly
+                    // over the room (moves the room), sometimes within it
+                    // (moves the whole request).
+                    let edge = budget_room(&oracle, "6100", 50_000, &period);
+                    let r = if rng.chance(30) && edge > 1 {
+                        1 + rng.below(edge as u64) as i128
+                    } else {
+                        edge.max(0) + 1 + rng.below(30_000) as i128
+                    };
+                    (
+                        plain(
+                            "Original",
+                            vec![leg(dr, "6100", r), leg(cr, "1000", r)],
+                            key,
+                            date,
+                        ),
+                        Some(0),
+                    )
+                }
+                15..=16 => {
+                    // Balancing cash spend: the cash leg balances.
+                    let r = if rng.chance(30) && cash_avail > 1 {
+                        1 + rng.below(cash_avail as u64) as i128
+                    } else {
+                        cash_avail.max(0) + 1 + rng.below(20_000) as i128
+                    };
+                    (
+                        plain(
+                            "Original",
+                            vec![leg(dr, "6000", r), leg(cr, "1000", r)],
+                            key,
+                            date,
+                        ),
+                        Some(1),
+                    )
+                }
+                17 => {
+                    // Balancing draw on the facility (credit-normal, capped).
+                    let r = (150_000 - loan_u).max(0) + rng.below(20_000) as i128 + 1;
+                    (
+                        plain(
+                            "Original",
+                            vec![leg(dr, "1000", r), leg(cr, "2100", r)],
+                            key,
+                            date,
+                        ),
+                        Some(1),
+                    )
+                }
+                18 => {
+                    // Balancing encumbrance on 6200: reserve up to its room.
+                    let edge = budget_room(&oracle, "6200", 20_000, &period);
+                    let r = edge.max(0) + 1 + rng.below(10_000) as i128;
+                    (
+                        plain(
+                            "Pending",
+                            vec![leg(dr, "6200", r), leg(cr, "3000", r)],
+                            key,
+                            date,
+                        ),
+                        Some(0),
+                    )
+                }
+                19 if !refs.is_empty() => {
+                    let candidates: Vec<usize> = (0..refs.len())
+                        .filter(|i| !reversed.contains(i))
+                        .filter(|i| {
+                            oracle.entry(*i).is_some_and(|e| {
+                                matches!(e.class.as_str(), "Original" | "Reversal")
+                                    || (e.class == "Resolution" && !e.legs.is_empty())
+                            })
+                        })
+                        .collect();
+                    if candidates.is_empty() {
+                        continue;
+                    }
+                    let target = candidates[rng.below(candidates.len() as u64) as usize];
+                    let original = oracle.entry(target).expect("posted").clone();
+                    let mut i = plain(
+                        "Reversal",
+                        original
+                            .legs
+                            .iter()
+                            .map(|x| leg(x.side.flipped(), &x.account, x.mantissa))
+                            .collect(),
+                        key,
+                        date,
+                    );
+                    i.reverses = Some(target);
+                    (i, None)
+                }
+                20 if !plain_posted.is_empty() || !balanced.is_empty() => {
+                    if !balanced.is_empty() && rng.chance(50) {
+                        let (r, l, _, _) =
+                            balanced[rng.below(balanced.len() as u64) as usize].clone();
+                        (r, Some(l))
+                    } else if !plain_posted.is_empty() {
+                        (
+                            plain_posted[rng.below(plain_posted.len() as u64) as usize].clone(),
+                            None,
+                        )
+                    } else {
+                        continue;
+                    }
+                }
+                21 => {
+                    // Two legs on the budgeted account in one entry.
+                    let a = 1 + rng.below(20_000) as i128;
+                    let b = 1 + rng.below(20_000) as i128;
+                    let mut legs = vec![leg(dr, "6100", a), leg(cr, "6100", b)];
+                    if a > b {
+                        legs.push(leg(cr, "3000", a - b));
+                    } else if b > a {
+                        legs.push(leg(dr, "6000", b - a));
+                    } else {
+                        legs.push(leg(dr, "6000", 1));
+                        legs.push(leg(cr, "3000", 1));
+                    }
+                    (plain("Original", legs, key, date), None)
+                }
+                _ => {
+                    let a = 1 + rng.below(9_000) as i128;
+                    (
+                        plain(
+                            "Original",
+                            vec![leg(dr, "6000", a), leg(cr, "4000", a)],
+                            key,
+                            date,
+                        ),
+                        None,
+                    )
+                }
+            }
+        };
+        let budget_edge = (intent.legs.len() == 2
+            && intent.legs[0].account == "6100"
+            && intent.resolves.is_none()
+            && balancing.is_none())
+        .then(|| budget_room(&oracle, "6100", 50_000, &period));
+        let is_cross_period = intent.resolves.as_ref().is_some_and(|r| {
+            r.posts.is_some()
+                && oracle
+                    .entry(r.target)
+                    .is_some_and(|h| h.period == periods[1] && intent.date == dated[2].0)
+        });
+
+        match balancing {
+            None => {
+                let kernel = kernel_post(&mut k, &intent, usd, &refs);
+                let model = oracle.post(&intent);
+                match (&kernel, &model) {
+                    (Ok(Posted::Committed { entry_ref, .. }), Verdict::Posted { index, .. }) => {
+                        assert_eq!(*index, refs.len(), "step {step}: journal index");
+                        refs.push(*entry_ref);
+                        posted += 1;
+                        plain_posted.push(intent.clone());
+                        match intent.class.as_str() {
+                            "Pending" => holds.push(*index),
+                            "Resolution" => {
+                                resolved.insert(intent.resolves.as_ref().expect("r").target);
+                                if is_cross_period {
+                                    cross_period_posts += 1;
+                                    needed.remove("cross-period");
+                                }
+                            }
+                            "Reversal" => {
+                                reversed.insert(intent.reverses.expect("target"));
+                            }
+                            _ => {}
+                        }
+                        if budget_edge
+                            .is_some_and(|e| intent.legs.first().is_some_and(|l| l.mantissa == e))
+                        {
+                            budget_exact += 1;
+                        }
+                    }
+                    (
+                        Ok(Posted::AlreadyRecorded { entry_ref, .. }),
+                        Verdict::Recorded { index },
+                    ) => {
+                        assert_eq!(*entry_ref, refs[*index], "step {step}: recorded handle");
+                        recorded += 1;
+                    }
+                    (Err(r), Verdict::Refused { code }) => {
+                        assert_eq!(r.code, *code, "step {step}: refusal for {intent:?}: {r}");
+                        *refused.entry(code).or_insert(0) += 1;
+                    }
+                    _ => assert_eq!(
+                        format!("kernel {kernel:?}"),
+                        format!("oracle {model:?}"),
+                        "step {step}: disagreement on {intent:?}"
+                    ),
+                }
+            }
+            Some(l) => {
+                let kernel = kernel_post_balancing(&mut k, &intent, usd, &refs, l);
+                let model = oracle.post_balancing(&intent, l);
+                let requested = intent.legs[0].mantissa;
+                match (&kernel, &model) {
+                    (
+                        Ok(Balanced {
+                            posted: Posted::Committed { entry_ref, .. },
+                            requested: kr,
+                            moved,
+                        }),
+                        Verdict::Posted { index, .. },
+                    ) => {
+                        assert_eq!(*index, refs.len(), "step {step}: journal index");
+                        let model_moved =
+                            oracle.entry(*index).expect("entry").legs[usize::from(l)].mantissa;
+                        assert_eq!(
+                            (*kr, *moved),
+                            (requested, model_moved),
+                            "step {step}: moved"
+                        );
+                        assert!(*moved > 0 && *moved <= requested);
+                        refs.push(*entry_ref);
+                        posted += 1;
+                        if *moved < requested {
+                            reduced += 1;
+                            if probe.is_none() {
+                                probe = Some((intent.clone(), l, *index, *moved));
+                            }
+                        } else {
+                            full += 1;
+                        }
+                        if intent.class == "Pending" {
+                            holds.push(*index);
+                        }
+                        balanced.push((intent.clone(), l, *index, *moved));
+                    }
+                    (
+                        Ok(Balanced {
+                            posted: Posted::AlreadyRecorded { entry_ref, .. },
+                            moved,
+                            ..
+                        }),
+                        Verdict::Recorded { index },
+                    ) => {
+                        assert_eq!(*entry_ref, refs[*index], "step {step}: recorded handle");
+                        let model_moved =
+                            oracle.entry(*index).expect("entry").legs[usize::from(l)].mantissa;
+                        assert_eq!(*moved, model_moved, "step {step}: recorded moved");
+                        recorded += 1;
+                        if matches!(probe_tag, Some("retry-same" | "retry-same-later")) {
+                            assert!(
+                                probe.as_ref().is_some_and(|(r, pl, pi, pm)| {
+                                    r == &intent && *pl == l && *pi == *index && *pm == *moved
+                                }),
+                                "step {step}: the probe replays its recorded outcome"
+                            );
+                            identity_recorded += 1;
+                        }
+                    }
+                    (Err(r), Verdict::Refused { code }) => {
+                        assert_eq!(
+                            r.code, *code,
+                            "step {step}: balancing refusal for {intent:?}: {r}"
+                        );
+                        *refused.entry(code).or_insert(0) += 1;
+                        if matches!(probe_tag, Some("retry-other-amount" | "retry-other-leg")) {
+                            assert_eq!(
+                                *code, "FA-REF-032",
+                                "step {step}: a changed request conflicts"
+                            );
+                            identity_conflicts += 1;
+                        }
+                    }
+                    _ => assert_eq!(
+                        format!("kernel {kernel:?}"),
+                        format!("oracle {model:?}"),
+                        "step {step}: balancing disagreement on {intent:?} leg {l}"
+                    ),
+                }
+            }
+        }
+        assert_cell_in(&k, &oracle, "1000", None, step);
+        assert_cell_in(&k, &oracle, "2100", None, step);
+        for p in &periods {
+            assert_cell_in(&k, &oracle, "6100", Some(p), step);
+            assert_cell_in(&k, &oracle, "6200", Some(p), step);
+            // Budget caps hold in every period cell at every prefix.
+            assert!(oracle_lu_in(&oracle, "6100", Some(p), true).1 <= 50_000);
+            assert!(oracle_lu_in(&oracle, "6200", Some(p), true).1 <= 20_000);
+        }
+    }
+
+    // Agreement is not vacuous.
+    assert!(posted >= 150, "posted {posted}");
+    assert!(recorded >= 3, "recorded {recorded}");
+    assert!(
+        reduced >= 8 && full >= 3,
+        "balancing reduced/full {reduced}/{full}"
+    );
+    assert!(budget_exact >= 2, "budget boundary posts {budget_exact}");
+    assert!(
+        cross_period_posts >= 1,
+        "cross-period encumbrance posts {cross_period_posts}"
+    );
+    assert!(needed.is_empty(), "planted probes never fired: {needed:?}");
+    assert_eq!(
+        (identity_recorded, identity_conflicts),
+        (2, 2),
+        "identity: same request recorded (now and later), other amount/leg conflict"
+    );
+    assert!(
+        refused.get("FA-REF-093").is_some_and(|n| *n >= 5),
+        "{refused:?}"
+    );
+    assert!(
+        refused.get("FA-REF-091").is_some_and(|n| *n >= 5),
+        "{refused:?}"
+    );
+    assert!(
+        refused.get("FA-REF-090").is_some_and(|n| *n >= 2),
+        "{refused:?}"
+    );
+
+    // `fa verify availability` refolds every expected cell.
+    let all_periods = k.book.calendar.periods_for_year(2026).unwrap().len();
+    let verified = verify_availability(&k.db, &k.book, None).unwrap();
+    assert!(verified.is_green(), "{verified:?}");
+    assert_eq!(verified.accounts_checked, 4);
+    assert_eq!(verified.cells_checked, 2 + 2 * all_periods);
+    for a in &verified.accounts {
+        let model = oracle.availability_in(&a.code, a.period.as_deref());
+        assert_eq!(
+            a.cell.generation as u64, model.generation,
+            "{} {:?}",
+            a.code, a.period
+        );
+        assert_eq!(Some(a.cell.debits_posted), model.debits_posted.to_i128());
+        assert_eq!(Some(a.cell.debits_pending), model.debits_pending.to_i128());
+    }
+
+    // Corruption negative: rebind March's 6100 cell to February. Verify
+    // names the period binding; the kernel refuses every post on 6100 dated
+    // in March (fail closed) while April still posts.
+    let budget = account_vid(k.book.book_id, "6100");
+    let march_cell = fa_journal::limit::period_cell_vid(budget, &periods[2]);
+    {
+        let ctx = k.ctx();
+        let mut batch = WriteBatch::new(fa_model::symbols::relation::HAS_LEG);
+        batch.set_vertex_property(
+            march_cell,
+            fa_model::symbols::property::EFFECTIVE_PERIOD,
+            Some(fgdb_types::CanonicalScalar::ucs_basic_text(&periods[1]).unwrap()),
+        );
+        k.runtime
+            .block_on(async { k.db.write(&ctx.commit(), batch).await })
+            .expect("plant a rebound period cell");
+    }
+    let rebound = verify_availability(&k.db, &k.book, None).unwrap();
+    assert!(
+        rebound.drift.iter().any(|d| d.code == "6100"
+            && d.period.as_deref() == Some(periods[2].as_str())
+            && d.stored_period.as_deref() == Some(periods[1].as_str())),
+        "{rebound:?}"
+    );
+    let credit_back = |key: &[u8], date: DateDay| Intent {
+        class: "Original".into(),
+        date,
+        discriminator: None,
+        legs: vec![
+            Leg {
+                side: fa_reference::Side::Debit,
+                account: "1000".into(),
+                unit: usd.0,
+                mantissa: 1,
+            },
+            Leg {
+                side: fa_reference::Side::Credit,
+                account: "6100".into(),
+                unit: usd.0,
+                mantissa: 1,
+            },
+        ],
+        key: key.to_vec(),
+        ops: vec!["post".into()],
+        approvals: 0,
+        reverses: None,
+        resolves: None,
+        settles: Vec::new(),
+    };
+    assert!(matches!(
+        kernel_post_raw(
+            &mut k,
+            &credit_back(b"march-after-rebind", dated[1].0),
+            usd,
+            &refs
+        ),
+        Err(KernelError::Corrupt(_))
+    ));
+    assert!(matches!(
+        kernel_post(
+            &mut k,
+            &credit_back(b"april-after-rebind", dated[2].0),
+            usd,
+            &refs
+        ),
         Ok(Posted::Committed { .. })
     ));
 }

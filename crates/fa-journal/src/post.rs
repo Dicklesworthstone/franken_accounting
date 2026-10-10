@@ -50,7 +50,7 @@ use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
 use crate::evidence::{evidenced_by, resolve_evidence};
 use crate::genesis::{BookContext, UnitPolicy};
-use crate::limit::{self, LimitCell, Movement, limit_cell_vid};
+use crate::limit;
 use crate::policy;
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{
@@ -164,7 +164,15 @@ fn recorded_or_conflict(
         entry_ref,
         recorded_at: row.created_at,
     };
-    if stored.proposal_digest == proposal.proposal_digest()? {
+    // A balancing post's identity binds its request (plan §5.5): a stored
+    // balancing entry is compared in request form — its legs at the
+    // requested amount, never at what moved.
+    let request_form = limit::request_form(&stored.proposal)?;
+    let stored_digest = match &request_form {
+        Some(r) => r.proposal_digest()?,
+        None => stored.proposal_digest,
+    };
+    if stored_digest == proposal.proposal_digest()? {
         return Ok(Ok(recorded));
     }
     let conflict = match identity {
@@ -200,7 +208,10 @@ fn recorded_or_conflict(
         return Ok(Err(conflict));
     }
     match (
-        stored.proposal.semantic_digest(key),
+        request_form
+            .as_ref()
+            .unwrap_or(&stored.proposal)
+            .semantic_digest(key),
         proposal.semantic_digest(key),
     ) {
         (Ok(a), Ok(b)) if a == b => Ok(Ok(recorded)),
@@ -1123,7 +1134,7 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     //     from it (same account, unit, side, dimensions; 0 < posted ≤
     //     reserved). Balance per unit was checked in step 2. The hold's legs
     //     are kept: a resolution releases all of them (step 7d).
-    let mut released: Vec<fa_model::LegPayload> = Vec::new();
+    let mut hold: Option<EntryPayload> = None;
     if let Some((target, disposition)) = &resolution {
         let Some(row) = txn.vertex(db, target.vid)? else {
             txn.abort();
@@ -1180,7 +1191,7 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
                 "name the pending entry; a posted entry is corrected with a Reversal",
             )));
         }
-        released.clone_from(&pending_entry.proposal.legs);
+        hold = Some(pending_entry.proposal.clone());
         if let Disposition::Posts { source_ordinals } = disposition {
             for (i, (leg, ordinal)) in proposal.legs.iter().zip(source_ordinals).enumerate() {
                 let Some(src) = pending_entry.proposal.legs.get(usize::from(*ordinal)) else {
@@ -1229,105 +1240,37 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
         }
     }
 
-    // 7d. Reserved availability (plan §5.4, §5.5 interim R-ESC): each limited
-    //     account the entry moves, in order of first appearance (its own
-    //     legs, then a resolved hold's legs), is judged on its LimitCell —
-    //     read here as a point witness, so a post that moves the cell first
-    //     makes this one a first-committer-wins conflict. Pending legs
-    //     reserve, a resolution releases the hold's full original legs, and
-    //     every other leg posts.
-    let mut account_rows: BTreeMap<VId, AccountRow> =
-        accounts.iter().map(|a| (a.vid, a.clone())).collect();
-    let mut moves: Vec<(VId, Movement)> = Vec::new();
-    let effects = proposal
-        .legs
-        .iter()
-        .map(|l| (l, false))
-        .chain(released.iter().map(|l| (l, true)));
-    for (leg, is_release) in effects {
-        let account = match account_rows.entry(leg.account_ref) {
-            MapEntry::Occupied(o) => o.into_mut(),
-            MapEntry::Vacant(v) => {
-                let row = txn.vertex(db, leg.account_ref)?.ok_or_else(|| {
-                    KernelError::Corrupt(format!(
-                        "the hold's account {:032x} is missing",
-                        leg.account_ref.0
-                    ))
-                })?;
-                v.insert(AccountRow::decode(&row)?)
-            }
-        };
-        if account.limit.is_none() {
-            continue;
+    // 7d. Reserved availability, budget caps, and balancing (plan §5.4–5.5,
+    //     interim R-ESC): `limit::judge` reads every limit cell the entry
+    //     moves through this transaction (point witnesses, bound to their
+    //     account and period), resolves a balancing request's legs from its
+    //     leg's cell, and applies the law; the moves are staged as
+    //     compare-and-sets on each cell's generation (step 8).
+    let judged = match limit::judge(
+        &txn,
+        db,
+        book,
+        &accounts,
+        proposal,
+        &period.code,
+        hold.as_ref(),
+    )? {
+        Ok(judged) => judged,
+        Err(refusal) => {
+            txn.abort();
+            return Ok(Err(refusal));
         }
-        let at = match moves.iter().position(|(a, _)| *a == leg.account_ref) {
-            Some(at) => at,
-            None => {
-                moves.push((leg.account_ref, Movement::default()));
-                moves.len() - 1
-            }
-        };
-        let m = &mut moves[at].1;
-        if is_release {
-            m.release(leg.side, leg.amount.mantissa)?;
-        } else if proposal.class == EntryClass::PENDING {
-            m.reserve(leg.side, leg.amount.mantissa)?;
-        } else {
-            m.post(leg.side, leg.amount.mantissa)?;
-        }
-    }
-    let mut cell_moves: Vec<(VId, LimitCell, LimitCell)> = Vec::with_capacity(moves.len());
-    for (account_vid, m) in &moves {
-        let account = account_rows
-            .get(account_vid)
-            .ok_or_else(|| KernelError::Corrupt("judged account row".into()))?;
-        let limit_spec = account
-            .limit
-            .ok_or_else(|| KernelError::Corrupt("judged account has no limit".into()))?;
-        let cvid = limit_cell_vid(*account_vid);
-        let row = txn
-            .vertex(db, cvid)?
-            .filter(|r| r.labels.contains(&label::LIMIT_CELL))
-            .ok_or_else(|| {
-                KernelError::Corrupt(format!(
-                    "limited account `{}` has no limit cell; `fa verify availability` names it; nothing is admitted on it",
-                    account.code
-                ))
-            })?;
-        // The cell must be bound to this account (its `account_ref`), not
-        // merely found at the derived identity.
-        let before = LimitCell::decode_for(&row, *account_vid)?;
-        let normal = if account.normal_balance == 0 {
-            Side::Debit
-        } else {
-            Side::Credit
-        };
-        match limit::apply(&before, normal, &limit_spec, m)? {
-            Ok(next) => cell_moves.push((cvid, before, next)),
-            Err(breach) => {
-                txn.abort();
-                // install_chart admits a limit only on a single-unit account.
-                let UnitPolicy::Single(unit) = account.unit_policy else {
-                    return Err(KernelError::Corrupt(format!(
-                        "limited account `{}` has no single unit",
-                        account.code
-                    )));
-                };
-                return Ok(Err(limit::refusal(
-                    &breach,
-                    &account.code,
-                    unit,
-                    &book.units,
-                )));
-            }
-        }
-    }
+    };
 
     // 8. Seal and stage: Entry + Legs + edges, one commit.
-    let entry: Entry = req
-        .proposal
-        .clone()
-        .seal(req.approvals.clone(), req.plan_certificate)?;
+    // A balancing request records the legs that moved (step 7d).
+    let mut sealed = req.proposal.clone();
+    if let Some(legs) = &judged.resolved_legs {
+        sealed.legs.clone_from(legs);
+        sealed.unit_totals = EntryPayload::fold_unit_totals(&sealed.legs)
+            .map_err(|e| KernelError::Corrupt(format!("balancing unit totals: {e:?}")))?;
+    }
+    let entry: Entry = sealed.seal(req.approvals.clone(), req.plan_certificate)?;
     let mut has_leg = WriteBatch::new(relation::HAS_LEG);
     let mut posts_to = WriteBatch::new(relation::POSTS_TO);
     let mut in_period = WriteBatch::new(relation::IN_PERIOD);
@@ -1353,8 +1296,8 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
         );
     }
     in_period.add_edge(edge_id(relation::IN_PERIOD, evid, pvid), evid, pvid, vec![]);
-    for (cvid, before, next) in &cell_moves {
-        before.stage(next, *cvid, &mut has_leg)?;
+    for m in &judged.moves {
+        m.before.stage(&m.after, m.cell, &mut has_leg)?;
     }
     let mut batches = vec![has_leg, posts_to, in_period];
     if let Some(target) = reversal_target {

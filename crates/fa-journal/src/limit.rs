@@ -28,16 +28,56 @@
 //! conflict, never an overdraft. The cell is a witness, never truth: `fa
 //! verify availability` refolds it from the journal, and a missing or
 //! malformed cell is corruption to the kernel (fail closed), never a zero.
+//!
+//! **Budget caps (plan §5.5: "a budget cap ≡ upper bound on an expense
+//! account's period cell").** A limit has a [`LimitScope`]: `Lifetime` judges
+//! the account's whole history; `Period` judges one cell per fiscal period —
+//! the entry's own period for posted and reserved legs, and the *hold's*
+//! period for released legs (plan §5.4 keying), so a March encumbrance posted
+//! in April releases March's cap and charges April's. Period cells are
+//! created eagerly (chart install for existing periods, period creation for
+//! limited accounts), so an absent cell is still corruption.
+//!
+//! **Balancing legs (plan §5.5, TigerBeetle `balancing_debit/credit`).**
+//! [`post_balancing`] records the request — which leg balances and the
+//! requested amount `R` — as entry extension `fa:balancing:v1`, and the
+//! posting transaction itself ([`judge`], step 7d) resolves the two legs to
+//! `min(R, admissible)` from the balancing leg's witnessed cell, so the
+//! amount is computed under the same witness that commits it; the recorded
+//! legs are what moved. When nothing is admissible the request stays at `R`
+//! and the law refuses it with the shortfall — a balancing leg never invents
+//! a zero posting. The identity binds the request, not the outcome: a retry
+//! with the same key, `R`, and leg is the recorded outcome; another `R` or
+//! leg under that key is a conflict ([`request_form`]).
 
-use fa_model::symbols::property;
+use std::collections::BTreeMap;
+use std::collections::btree_map::Entry as MapEntry;
+
+use fa_model::entry::BALANCING_EXTENSION;
+use fa_model::symbols::{label, property};
+use fa_model::{EntryClass, EntryPayload, LegPayload};
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
-use fgdb::{VertexRow, WriteBatch, WriteMismatchPolicy};
+use fa_time::resolve_period;
+use fgdb::{Database, VertexRow, WriteBatch, WriteMismatchPolicy, WriteTxn};
 use fgdb_crypto::Hasher;
 use fgdb_delta_types::PropertyKeyId;
+use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, VId};
 
-use crate::refusal::{KernelError, Refusal, code, exit};
-use crate::rows::{mantissa_scalar, prop, scalar_bytes};
+use crate::genesis::{BookContext, UnitPolicy};
+use crate::post::{PostRequest, Posted, post, read_entry};
+use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
+use crate::rows::{AccountRow, mantissa_scalar, prop, scalar_bytes, scalar_text};
+
+/// What a limit's bounds apply to (plan §5.5).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LimitScope {
+    /// The account's whole history (an overdraft floor, a facility cap).
+    #[default]
+    Lifetime,
+    /// Each fiscal period separately (a budget cap on an expense account).
+    Period,
+}
 
 /// A per-account limit in the account's registered unit and normal-balance
 /// sign. At least one bound is named, and `lower ≤ upper` when both are.
@@ -45,6 +85,7 @@ use crate::rows::{mantissa_scalar, prop, scalar_bytes};
 pub struct BalanceLimit {
     pub lower: Option<i128>,
     pub upper: Option<i128>,
+    pub scope: LimitScope,
 }
 
 impl BalanceLimit {
@@ -66,16 +107,37 @@ impl BalanceLimit {
         if let Some(u) = self.upper {
             out.push((property::UPPER_BOUND, mantissa_scalar("upper_bound", u)?));
         }
+        // Absent = Lifetime, so lifetime limits keep their d66413e properties.
+        if self.scope == LimitScope::Period {
+            out.push((property::LIMIT_SCOPE, CanonicalScalar::Int(1)));
+        }
         Ok(out)
     }
 
     /// The limit an Account vertex carries; `None` when it names no bound.
     pub fn decode(row: &VertexRow) -> Result<Option<Self>, KernelError> {
+        let scope = match prop(row, property::LIMIT_SCOPE) {
+            None => LimitScope::Lifetime,
+            Some(CanonicalScalar::Int(1)) => LimitScope::Period,
+            other => {
+                return Err(KernelError::Corrupt(format!(
+                    "account {:032x}: limit_scope {other:?}",
+                    row.vid.0
+                )));
+            }
+        };
         let limit = Self {
             lower: i128_of(row, property::LOWER_BOUND, "account.lower_bound")?,
             upper: i128_of(row, property::UPPER_BOUND, "account.upper_bound")?,
+            scope,
         };
         if limit.lower.is_none() && limit.upper.is_none() {
+            if scope == LimitScope::Period {
+                return Err(KernelError::Corrupt(format!(
+                    "account {:032x}: a period limit scope without a bound",
+                    row.vid.0
+                )));
+            }
             return Ok(None);
         }
         if !limit.is_well_formed() {
@@ -113,6 +175,66 @@ pub fn limit_cell_vid(account: VId) -> VId {
     let mut lo = [0u8; 16];
     lo.copy_from_slice(&d.0[..16]);
     VId(u128::from_le_bytes(lo))
+}
+
+/// `vid(period LimitCell) = H("fa:vid:limit-period-cell:v1" ‖ account_vid ‖
+/// len ‖ period)`: one cell per period of a period-scoped (budget) limit.
+#[must_use]
+pub fn period_cell_vid(account: VId, period: &str) -> VId {
+    let mut h = Hasher::new();
+    h.update(b"fa:vid:limit-period-cell:v1");
+    h.update(&account.0.to_le_bytes());
+    h.update(
+        &u32::try_from(period.len())
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+    );
+    h.update(period.as_bytes());
+    let d = h.finalize();
+    let mut lo = [0u8; 16];
+    lo.copy_from_slice(&d.0[..16]);
+    VId(u128::from_le_bytes(lo))
+}
+
+/// The cell a limit judges: the lifetime cell, or the named period's cell.
+#[must_use]
+pub fn cell_vid(account: VId, period: Option<&str>) -> VId {
+    match period {
+        None => limit_cell_vid(account),
+        Some(p) => period_cell_vid(account, p),
+    }
+}
+
+/// The period a stored cell claims (`effective_period`); `None` when absent.
+pub fn cell_period(row: &VertexRow) -> Result<Option<String>, KernelError> {
+    match prop(row, property::EFFECTIVE_PERIOD) {
+        None => Ok(None),
+        Some(CanonicalScalar::Text(t)) => core::str::from_utf8(t.as_bytes())
+            .map(|p| Some(p.to_string()))
+            .map_err(|_| {
+                KernelError::Corrupt(format!(
+                    "limit cell {:032x}: effective_period is not UTF-8",
+                    row.vid.0
+                ))
+            }),
+        other => Err(KernelError::Corrupt(format!(
+            "limit cell {:032x}: effective_period {other:?}",
+            row.vid.0
+        ))),
+    }
+}
+
+/// The period code an entry's effective date resolves to (plan §7.3).
+pub fn period_code(book: &BookContext, p: &EntryPayload) -> Result<String, KernelError> {
+    let fy = book.calendar.fiscal_year_of(p.effective_date)?;
+    let periods = book.calendar.periods_for_year(fy)?;
+    resolve_period(
+        &periods,
+        p.effective_date,
+        p.effective_period.as_ref().map(|x| x.code.as_str()),
+    )
+    .map(|d| d.code.clone())
+    .map_err(|e| KernelError::Corrupt(format!("entry period: {e:?}")))
 }
 
 /// The reservation cell of one limited account: monotone posted sums and
@@ -154,6 +276,29 @@ impl LimitCell {
     /// is derived from it), then the sums decode as [`Self::decode`]. A cell
     /// bound to another account, or to none, is corruption: nothing is
     /// admitted on the account until `fa verify availability` is green again.
+    /// [`Self::decode_for`] plus, for a period cell, the stored
+    /// `effective_period` must name `period`: a cell found at a derived
+    /// identity must also be bound to what that identity encodes.
+    pub fn decode_bound(
+        row: &VertexRow,
+        account: VId,
+        period: Option<&str>,
+    ) -> Result<Self, KernelError> {
+        let cell = Self::decode_for(row, account)?;
+        if let Some(p) = period {
+            match cell_period(row)? {
+                Some(q) if q == p => {}
+                other => {
+                    return Err(KernelError::Corrupt(format!(
+                        "limit cell {:032x} of account {:032x} for period `{p}` is bound to period {other:?}; `fa verify availability` names it; nothing is admitted on the account in that period",
+                        row.vid.0, account.0
+                    )));
+                }
+            }
+        }
+        Ok(cell)
+    }
+
     pub fn decode_for(row: &VertexRow, account: VId) -> Result<Self, KernelError> {
         match cell_account(row)? {
             Some(a) if a == account => Self::decode(row),
@@ -204,10 +349,12 @@ impl LimitCell {
         })
     }
 
-    /// The properties of a fresh cell for `account`, sorted by key id.
+    /// The properties of a fresh cell for `account` (and, for a period
+    /// cell, its period), sorted by key id.
     pub fn create_props(
         &self,
         account: VId,
+        period: Option<&str>,
     ) -> Result<Vec<(PropertyKeyId, CanonicalScalar)>, KernelError> {
         let mut props = vec![
             (
@@ -216,6 +363,12 @@ impl LimitCell {
             ),
             (property::GENERATION, CanonicalScalar::Int(self.generation)),
         ];
+        if let Some(p) = period {
+            props.push((
+                property::EFFECTIVE_PERIOD,
+                scalar_text("effective_period", p)?,
+            ));
+        }
         props.extend(self.sums()?);
         props.sort_by_key(|(k, _)| k.0);
         Ok(props)
@@ -478,6 +631,391 @@ pub fn apply(
     Ok(Ok(next))
 }
 
+/// One limit cell an entry moves: its identity, the witnessed state, and
+/// the state to stage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CellMove {
+    pub cell: VId,
+    pub before: LimitCell,
+    pub after: LimitCell,
+}
+
+/// What step 7d decided: the cells to stage and, for a balancing request,
+/// the legs as resolved (the amounts that move, which the entry records).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Judged {
+    pub moves: Vec<CellMove>,
+    pub resolved_legs: Option<Vec<LegPayload>>,
+}
+
+/// The `fa:balancing:v1` extension bytes: `leg ‖ requested`.
+#[must_use]
+pub fn balancing_bytes(leg: u16, requested: i128) -> Vec<u8> {
+    let mut b = Vec::with_capacity(18);
+    b.extend_from_slice(&leg.to_le_bytes());
+    b.extend_from_slice(&requested.to_le_bytes());
+    b
+}
+
+/// The balancing request an entry carries: `Ok(None)` without the
+/// extension, `Err(why)` when its bytes are malformed.
+pub fn balancing_request(p: &EntryPayload) -> Result<Option<(u16, i128)>, String> {
+    let Some((_, b)) = p.extensions.iter().find(|(t, _)| *t == BALANCING_EXTENSION) else {
+        return Ok(None);
+    };
+    let (Ok(leg), Ok(req)) = (
+        <[u8; 2]>::try_from(b.get(..2).unwrap_or_default()),
+        <[u8; 16]>::try_from(b.get(2..).unwrap_or_default()),
+    ) else {
+        return Err(format!(
+            "the fa:balancing:v1 extension is {} bytes, not 18",
+            b.len()
+        ));
+    };
+    Ok(Some((u16::from_le_bytes(leg), i128::from_le_bytes(req))))
+}
+
+/// The request form of a balancing entry (identity, plan §5.5): its legs at
+/// the requested amount, which is what the poster submitted and what a retry
+/// resubmits. `None` for an entry without the extension.
+pub fn request_form(p: &EntryPayload) -> Result<Option<EntryPayload>, KernelError> {
+    let Some((_, requested)) = balancing_request(p).map_err(KernelError::Corrupt)? else {
+        return Ok(None);
+    };
+    let mut q = p.clone();
+    for l in &mut q.legs {
+        l.amount = Amount::new(l.amount.unit, requested);
+    }
+    q.unit_totals = EntryPayload::fold_unit_totals(&q.legs)
+        .map_err(|e| KernelError::Corrupt(format!("balancing request totals: {e:?}")))?;
+    Ok(Some(q))
+}
+
+fn shape_refusal(why: String) -> Refusal {
+    Refusal::new(
+        code::BALANCING_SHAPE,
+        exit::USAGE,
+        why,
+        "plan §5.5 (Balancing leg: the two-leg TigerBeetle option)",
+        "post two legs of one unit and one positive amount (a debit and a credit on different accounts), class Original/Adjusting/Pending, and name leg 0 or 1 as balancing; an N-leg entry states its amounts",
+    )
+}
+
+/// Step 7d of the posting pipeline (plan §5.4–5.5): judge every limited
+/// account the entry moves, keyed by the cell its limit judges — in order
+/// of first appearance (the entry's legs, then a resolved hold's legs).
+/// Each cell is read through `txn` (a point-read witness) and must be bound
+/// to its account (and period). Pending legs reserve, a resolution releases
+/// the hold's full original legs (in the hold's period), and every other leg
+/// posts (in the entry's period). `Ok(Ok(moves))` are the cells to stage.
+pub fn judge<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    accounts: &[AccountRow],
+    proposal: &EntryPayload,
+    period: &str,
+    hold: Option<&EntryPayload>,
+) -> Result<Result<Judged, Refusal>, KernelError> {
+    let hold_period = match hold {
+        Some(h) => Some(period_code(book, h)?),
+        None => None,
+    };
+    let mut rows: BTreeMap<VId, AccountRow> = accounts.iter().map(|a| (a.vid, a.clone())).collect();
+    // A balancing request resolves its two legs to min(R, admissible) from
+    // the balancing leg's cell, read here through the transaction — the
+    // same witness the move below stages against.
+    let resolved_legs = match balancing_request(proposal) {
+        Err(why) => return Ok(Err(shape_refusal(why))),
+        Ok(None) => None,
+        Ok(Some((leg, requested))) => {
+            if let Some(why) = balancing_shape(proposal, leg) {
+                return Ok(Err(shape_refusal(why)));
+            }
+            if proposal.legs.iter().any(|l| l.amount.mantissa != requested) {
+                return Ok(Err(shape_refusal(
+                    "the legs carry the requested amount the fa:balancing:v1 extension names"
+                        .into(),
+                )));
+            }
+            let target = &proposal.legs[usize::from(leg)];
+            let account = rows
+                .get(&target.account_ref)
+                .ok_or_else(|| KernelError::Corrupt("balancing leg account row".into()))?;
+            let admissible_amount = match account.limit {
+                None => None,
+                Some(limit) => {
+                    let cell_period = match limit.scope {
+                        LimitScope::Lifetime => None,
+                        LimitScope::Period => Some(period),
+                    };
+                    let cvid = cell_vid(account.vid, cell_period);
+                    let row = txn
+                        .vertex(db, cvid)?
+                        .filter(|r| r.labels.contains(&label::LIMIT_CELL))
+                        .ok_or_else(|| {
+                            KernelError::Corrupt(format!(
+                                "limited account `{}` has no limit cell; `fa verify availability` names it; nothing is admitted on it",
+                                account.code
+                            ))
+                        })?;
+                    let cell = LimitCell::decode_bound(&row, account.vid, cell_period)?;
+                    let normal = if account.normal_balance == 0 {
+                        Side::Debit
+                    } else {
+                        Side::Credit
+                    };
+                    admissible(&cell, normal, &limit, target.side)?
+                }
+            };
+            let moved = match admissible_amount {
+                Some(a) if a > 0 => a.min(requested),
+                _ => requested,
+            };
+            Some(
+                proposal
+                    .legs
+                    .iter()
+                    .map(|l| LegPayload {
+                        amount: Amount::new(l.amount.unit, moved),
+                        ..l.clone()
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        }
+    };
+    let legs = resolved_legs.as_deref().unwrap_or(&proposal.legs);
+    let mut moves: Vec<((VId, Option<String>), Movement)> = Vec::new();
+    let effects = legs.iter().map(|l| (l, false)).chain(
+        hold.into_iter()
+            .flat_map(|h| h.legs.iter())
+            .map(|l| (l, true)),
+    );
+    for (leg, is_release) in effects {
+        let account = match rows.entry(leg.account_ref) {
+            MapEntry::Occupied(o) => o.into_mut(),
+            MapEntry::Vacant(v) => {
+                let row = txn.vertex(db, leg.account_ref)?.ok_or_else(|| {
+                    KernelError::Corrupt(format!(
+                        "the hold's account {:032x} is missing",
+                        leg.account_ref.0
+                    ))
+                })?;
+                v.insert(AccountRow::decode(&row)?)
+            }
+        };
+        let Some(limit) = account.limit else {
+            continue;
+        };
+        let cell_period = match (limit.scope, is_release) {
+            (LimitScope::Lifetime, _) => None,
+            (LimitScope::Period, false) => Some(period.to_string()),
+            (LimitScope::Period, true) => Some(
+                hold_period
+                    .clone()
+                    .ok_or_else(|| KernelError::Corrupt("released legs without a hold".into()))?,
+            ),
+        };
+        let key = (leg.account_ref, cell_period);
+        let at = match moves.iter().position(|(k, _)| *k == key) {
+            Some(at) => at,
+            None => {
+                moves.push((key, Movement::default()));
+                moves.len() - 1
+            }
+        };
+        let m = &mut moves[at].1;
+        if is_release {
+            m.release(leg.side, leg.amount.mantissa)?;
+        } else if proposal.class == EntryClass::PENDING {
+            m.reserve(leg.side, leg.amount.mantissa)?;
+        } else {
+            m.post(leg.side, leg.amount.mantissa)?;
+        }
+    }
+    let mut out = Vec::with_capacity(moves.len());
+    for ((account_vid, cell_period), m) in &moves {
+        let account = rows
+            .get(account_vid)
+            .ok_or_else(|| KernelError::Corrupt("judged account row".into()))?;
+        let limit = account
+            .limit
+            .ok_or_else(|| KernelError::Corrupt("judged account has no limit".into()))?;
+        let cvid = cell_vid(*account_vid, cell_period.as_deref());
+        let row = txn
+            .vertex(db, cvid)?
+            .filter(|r| r.labels.contains(&label::LIMIT_CELL))
+            .ok_or_else(|| {
+                KernelError::Corrupt(format!(
+                    "limited account `{}` has no limit cell{}; `fa verify availability` names it; nothing is admitted on it",
+                    account.code,
+                    cell_period
+                        .as_deref()
+                        .map_or_else(String::new, |p| format!(" for period `{p}`"))
+                ))
+            })?;
+        // The cell must be bound to this account (and period), not merely
+        // found at the derived identity.
+        let before = LimitCell::decode_bound(&row, *account_vid, cell_period.as_deref())?;
+        let normal = if account.normal_balance == 0 {
+            Side::Debit
+        } else {
+            Side::Credit
+        };
+        match apply(&before, normal, &limit, m)? {
+            Ok(after) => out.push(CellMove {
+                cell: cvid,
+                before,
+                after,
+            }),
+            Err(breach) => {
+                // install_chart admits a limit only on a single-unit account.
+                let UnitPolicy::Single(unit) = account.unit_policy else {
+                    return Err(KernelError::Corrupt(format!(
+                        "limited account `{}` has no single unit",
+                        account.code
+                    )));
+                };
+                return Ok(Err(refusal(
+                    &breach,
+                    &account.code,
+                    cell_period.as_deref(),
+                    unit,
+                    &book.units,
+                )));
+            }
+        }
+    }
+    Ok(Ok(Judged {
+        moves: out,
+        resolved_legs,
+    }))
+}
+
+/// The largest amount one leg on `side` may move against `cell` under
+/// `limit` (plan §5.5 Balancing): `None` when that direction is unbounded,
+/// else `Some(a)` with `a ≥ 0` (`0` = nothing available). An outflow is
+/// bounded by `net − pending_out − lower`, an inflow by `upper − net −
+/// pending_in`; saturation at the `i128` edges is exact for any request,
+/// which is itself an `i128`.
+pub fn admissible(
+    cell: &LimitCell,
+    normal: Side,
+    limit: &BalanceLimit,
+    side: Side,
+) -> Result<Option<i128>, KernelError> {
+    let (net, pending_out, pending_in) = cell.availability(normal)?;
+    let a = if side == normal {
+        let Some(upper) = limit.upper else {
+            return Ok(None);
+        };
+        net.checked_add(pending_in)
+            .map_or(0, |u| upper.saturating_sub(u))
+    } else {
+        let Some(lower) = limit.lower else {
+            return Ok(None);
+        };
+        net.checked_sub(pending_out)
+            .map_or(0, |l| l.saturating_sub(lower))
+    };
+    Ok(Some(a.max(0)))
+}
+
+/// What a balancing post moved (plan §5.5): the requested amount and the
+/// amount actually recorded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Balanced {
+    pub posted: Posted,
+    pub requested: i128,
+    pub moved: i128,
+}
+
+fn balancing_shape(p: &EntryPayload, leg: u16) -> Option<String> {
+    if !matches!(
+        p.class,
+        EntryClass::ORIGINAL | EntryClass::ADJUSTING | EntryClass::PENDING
+    ) {
+        return Some(format!(
+            "a balancing leg posts an Original, Adjusting, or Pending, not a {}",
+            p.class.name().unwrap_or("?")
+        ));
+    }
+    let [a, b] = p.legs.as_slice() else {
+        return Some(format!(
+            "a balancing entry has exactly two legs, not {}",
+            p.legs.len()
+        ));
+    };
+    if leg > 1 {
+        return Some(format!("the balancing leg is 0 or 1, not {leg}"));
+    }
+    if a.amount.unit != b.amount.unit || a.amount.mantissa != b.amount.mantissa {
+        return Some("the two legs carry one amount in one unit".into());
+    }
+    if a.amount.mantissa <= 0 {
+        return Some("the requested amount is positive".into());
+    }
+    if a.side == b.side || a.account_ref == b.account_ref {
+        return Some("one debit and one credit on two different accounts".into());
+    }
+    if [a, b]
+        .iter()
+        .any(|l| !l.settles.is_empty() || l.base_amount.is_some() || !l.dimension_set.is_empty())
+    {
+        return Some("balancing legs carry no settles, base amount, or dimensions".into());
+    }
+    None
+}
+
+/// Post a two-leg single-unit entry with leg `leg` balancing (plan §5.5,
+/// TigerBeetle's `balancing_debit/credit`). The request — `leg` and the
+/// requested amount `R` the two legs carry — is recorded as the entry's
+/// `fa:balancing:v1` extension; the posting transaction resolves the legs to
+/// `min(R, admissible)` from that leg's witnessed cell (its period cell for a
+/// budget limit) and runs the full law on them, so the other leg's account
+/// is judged too and nothing is silently exceeded. The identity binds the
+/// request: a retry with the same key, `R`, and leg returns the recorded
+/// outcome whatever availability is now; another `R` or leg is a conflict.
+pub async fn post_balancing<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    mut req: PostRequest,
+    leg: u16,
+) -> Outcome<Balanced> {
+    if let Some(why) = balancing_shape(&req.proposal, leg) {
+        return Ok(Err(shape_refusal(why)));
+    }
+    let p = &mut req.proposal;
+    if p.extensions.iter().any(|(t, _)| *t == BALANCING_EXTENSION) {
+        return Ok(Err(shape_refusal(
+            "the request already carries a fa:balancing:v1 extension".into(),
+        )));
+    }
+    let requested = p.legs[0].amount.mantissa;
+    p.schema_minor = p.schema_minor.max(fa_model::entry::EXTENSIONS_MINOR);
+    p.extensions
+        .push((BALANCING_EXTENSION, balancing_bytes(leg, requested)));
+    p.extensions.sort_by_key(|(t, _)| *t);
+    let posted = match post(db, ctx, book, req).await? {
+        Ok(posted) => posted,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let (entry, _) = read_entry(db, posted.entry_ref().vid)?
+        .ok_or_else(|| KernelError::Corrupt("the posted entry is not readable".into()))?;
+    let moved = entry
+        .proposal
+        .legs
+        .get(usize::from(leg))
+        .map(|l| l.amount.mantissa)
+        .ok_or_else(|| KernelError::Corrupt("the posted balancing entry lost a leg".into()))?;
+    Ok(Ok(Balanced {
+        posted,
+        requested,
+        moved,
+    }))
+}
+
 /// An amount in `unit` at its registered scale (`"1.00 USD"`), so a refusal
 /// names amounts the caller can post as written. A unit the registry does
 /// not hold cannot be rendered; it is named, never panicked on.
@@ -494,8 +1032,18 @@ fn render(units: &UnitRegistry, unit: UnitId, v: i128) -> String {
 /// with the exact admissible amount — every amount rendered at the unit's
 /// scale.
 #[must_use]
-pub fn refusal(breach: &Breach, account: &str, unit: UnitId, units: &UnitRegistry) -> Refusal {
+pub fn refusal(
+    breach: &Breach,
+    account: &str,
+    period: Option<&str>,
+    unit: UnitId,
+    units: &UnitRegistry,
+) -> Refusal {
     let show = |v: i128| render(units, unit, v);
+    let account = &match period {
+        None => format!("`{account}`"),
+        Some(p) => format!("`{account}` in period `{p}`"),
+    };
     let show_flow = |v: u128| {
         i128::try_from(v).map_or_else(|_| "an amount beyond the i128 domain".to_string(), show)
     };
@@ -512,18 +1060,18 @@ pub fn refusal(breach: &Breach, account: &str, unit: UnitId, units: &UnitRegistr
                 .and_then(|l| l.checked_sub(*bound));
             let fix = match available {
                 Some(a) if a > 0 => format!(
-                    "move at most {} out of `{account}` (net − reserved outflows − lower bound), fund it first, or release one of its holds with a Resolution(Voids); a pending inflow never finances an outflow",
+                    "move at most {} out of {account} (net − reserved outflows − lower bound), fund it first, or release one of its holds with a Resolution(Voids); a pending inflow never finances an outflow",
                     show(a)
                 ),
                 _ => format!(
-                    "nothing above the lower bound is available on `{account}`: fund it with a posted inflow first, or release one of its holds with a Resolution(Voids)"
+                    "nothing above the lower bound is available on {account}: fund it with a posted inflow first, or release one of its holds with a Resolution(Voids)"
                 ),
             };
             Refusal::new(
                 code::AVAILABILITY_LOWER,
                 exit::REFUSAL,
                 format!(
-                    "account `{account}`: this entry moves {} out; net {} − reserved outflows {} − {} = {} is below the lower bound {}",
+                    "account {account}: this entry moves {} out; net {} − reserved outflows {} − {} = {} is below the lower bound {}",
                     show_flow(*outflow),
                     show(*net),
                     show(*pending_out),
@@ -547,18 +1095,18 @@ pub fn refusal(breach: &Breach, account: &str, unit: UnitId, units: &UnitRegistr
                 .and_then(|r| r.checked_sub(*pending_in));
             let fix = match room {
                 Some(r) if r > 0 => format!(
-                    "move at most {} into `{account}` (upper bound − net − reserved inflows), or release one of its pending inflows with a Resolution(Voids) first",
+                    "move at most {} into {account} (upper bound − net − reserved inflows), or release one of its pending inflows with a Resolution(Voids) first",
                     show(r)
                 ),
                 _ => format!(
-                    "`{account}` has no room under its upper bound: post an outflow first, or release one of its pending inflows with a Resolution(Voids)"
+                    "{account} has no room under its upper bound: post an outflow first, or release one of its pending inflows with a Resolution(Voids)"
                 ),
             };
             Refusal::new(
                 code::AVAILABILITY_UPPER,
                 exit::REFUSAL,
                 format!(
-                    "account `{account}`: this entry moves {} in; net {} + reserved inflows {} + {} = {} is above the upper bound {}",
+                    "account {account}: this entry moves {} in; net {} + reserved inflows {} + {} = {} is above the upper bound {}",
                     show_flow(*inflow),
                     show(*net),
                     show(*pending_in),
@@ -574,11 +1122,11 @@ pub fn refusal(breach: &Breach, account: &str, unit: UnitId, units: &UnitRegistr
             code::LIMIT_CEILING,
             exit::REFUSAL,
             format!(
-                "account `{account}`: a posted or reserved total would leave the i128 register ceiling"
+                "account {account}: a posted or reserved total would leave the i128 register ceiling"
             ),
             "plan §6.1 (checked exact arithmetic; the register ceiling)",
             format!(
-                "split `{account}`'s activity across accounts; no total beyond the ceiling is representable"
+                "split {account}'s activity across accounts; no total beyond the ceiling is representable"
             ),
         ),
     }
@@ -601,6 +1149,7 @@ mod tests {
     const FLOOR: BalanceLimit = BalanceLimit {
         lower: Some(0),
         upper: None,
+        scope: LimitScope::Lifetime,
     };
 
     /// The fa-ctf example: cash 100; a pending outflow of 80 blocks a second
@@ -682,6 +1231,7 @@ mod tests {
         let floor_100 = BalanceLimit {
             lower: Some(100),
             upper: Some(150),
+            scope: LimitScope::Lifetime,
         };
         let mut deposit = Movement::default();
         deposit.post(Side::Debit, 50).unwrap();
@@ -709,6 +1259,7 @@ mod tests {
         let facility = BalanceLimit {
             lower: None,
             upper: Some(500),
+            scope: LimitScope::Lifetime,
         };
         let mut draw = Movement::default();
         draw.post(Side::Credit, 500).unwrap();
@@ -743,7 +1294,7 @@ mod tests {
         let breach = apply(&held, Side::Debit, &FLOOR, &spend)
             .unwrap()
             .unwrap_err();
-        let r = refusal(&breach, "1000", usd, &units);
+        let r = refusal(&breach, "1000", None, usd, &units);
         assert_eq!(r.code, "FA-REF-090");
         assert!(r.message.contains("moves 0.30 USD out"), "{r}");
         assert!(r.message.contains("net 1.00 USD"), "{r}");
@@ -751,11 +1302,70 @@ mod tests {
         assert!(r.message.contains("= -0.10 USD"), "{r}");
         assert!(r.message.contains("lower bound 0.00 USD"), "{r}");
         assert!(r.fix.contains("at most 0.20 USD"), "{r}");
-        let unregistered = refusal(&breach, "1000", UnitId(u32::MAX), &units);
+        let unregistered = refusal(&breach, "1000", None, UnitId(u32::MAX), &units);
         assert!(
             unregistered.fix.contains("mantissa of unregistered unit"),
             "{unregistered}"
         );
+    }
+
+    /// Plan §5.5 Balancing: an outflow may move `net − pending_out − lower`,
+    /// an inflow `upper − net − pending_in`; an unbounded direction is
+    /// `None`; nothing available is `0`, never negative.
+    #[test]
+    fn admissible_is_the_room_on_the_legs_side() {
+        let cap = BalanceLimit {
+            lower: Some(0),
+            upper: Some(1_000),
+            scope: LimitScope::Period,
+        };
+        let held = cell(100, 0, 500, 80);
+        assert_eq!(
+            admissible(&held, Side::Debit, &cap, Side::Credit).unwrap(),
+            Some(20)
+        );
+        assert_eq!(
+            admissible(&held, Side::Debit, &cap, Side::Debit).unwrap(),
+            Some(400)
+        );
+        assert_eq!(
+            admissible(&cell(0, 0, 0, 80), Side::Debit, &cap, Side::Credit).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            admissible(&held, Side::Debit, &FLOOR, Side::Debit).unwrap(),
+            None
+        );
+        // Credit-normal: a facility drawn 500 of 500 has no room to draw.
+        let facility = BalanceLimit {
+            lower: None,
+            upper: Some(500),
+            scope: LimitScope::Lifetime,
+        };
+        assert_eq!(
+            admissible(&cell(0, 500, 0, 0), Side::Credit, &facility, Side::Credit).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            admissible(&cell(0, 500, 0, 0), Side::Credit, &facility, Side::Debit).unwrap(),
+            None
+        );
+        // The i128 edges saturate exactly: a floor of i128::MIN is room for
+        // any request.
+        let low = BalanceLimit {
+            lower: Some(i128::MIN),
+            upper: None,
+            scope: LimitScope::Lifetime,
+        };
+        assert_eq!(
+            admissible(&cell(i128::MAX, 0, 0, 0), Side::Debit, &low, Side::Credit).unwrap(),
+            Some(i128::MAX)
+        );
+        assert_ne!(
+            period_cell_vid(VId(1), "P01"),
+            period_cell_vid(VId(1), "P02")
+        );
+        assert_ne!(period_cell_vid(VId(1), "P01"), limit_cell_vid(VId(1)));
     }
 
     #[test]
@@ -766,6 +1376,7 @@ mod tests {
         let low = BalanceLimit {
             lower: Some(i128::MIN),
             upper: None,
+            scope: LimitScope::Lifetime,
         };
         // net 0 − pending max − max is below i128::MIN, below the lowest bound.
         assert!(matches!(
@@ -780,14 +1391,16 @@ mod tests {
         assert!(
             !BalanceLimit {
                 lower: None,
-                upper: None
+                upper: None,
+                scope: LimitScope::Period,
             }
             .is_well_formed()
         );
         assert!(
             !BalanceLimit {
                 lower: Some(2),
-                upper: Some(1)
+                upper: Some(1),
+                scope: LimitScope::Lifetime,
             }
             .is_well_formed()
         );

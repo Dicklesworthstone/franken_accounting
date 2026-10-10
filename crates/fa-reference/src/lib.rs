@@ -212,11 +212,14 @@ pub struct Account {
 
 /// A balance limit (plan §5.4): bounds on the account's net balance in its
 /// normal-balance sign (`net = normal-side posted − opposite-side posted`).
+/// `per_period` makes it a budget cap (plan §5.5): the bounds apply to each
+/// period's activity separately.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Limit {
     pub normal: Side,
     pub lower: Option<i128>,
     pub upper: Option<i128>,
+    pub per_period: bool,
 }
 
 /// A limited account's literal fold: posted and outstanding reserved sums
@@ -293,6 +296,7 @@ pub mod code {
     pub const AVAILABILITY_LOWER: &str = "FA-REF-090";
     pub const AVAILABILITY_UPPER: &str = "FA-REF-091";
     pub const LIMIT_CEILING: &str = "FA-REF-092";
+    pub const BALANCING_SHAPE: &str = "FA-REF-093";
     pub const STRUCTURE: &str = "FA-REF-100";
     pub const CONTROL_VIA_POST: &str = "FA-REF-101";
     pub const CLASS_NOT_IMPLEMENTED: &str = "FA-REF-102";
@@ -339,10 +343,13 @@ struct Content {
     resolves: Option<Resolve>,
     settles: Vec<Settle>,
     key: Vec<u8>,
+    /// A balancing request's leg: the identity binds the request (its legs
+    /// at the requested amount, and which leg balances), not what moved.
+    balancing: Option<u16>,
 }
 
 impl Content {
-    fn of(i: &Intent) -> Self {
+    fn of(i: &Intent, balancing: Option<u16>) -> Self {
         Self {
             class: i.class.clone(),
             date: i.date,
@@ -352,6 +359,7 @@ impl Content {
             resolves: i.resolves.clone(),
             settles: i.settles.clone(),
             key: i.key.clone(),
+            balancing,
         }
     }
 }
@@ -440,6 +448,42 @@ impl Oracle {
     }
 
     pub fn post(&mut self, intent: &Intent) -> Verdict {
+        self.post_inner(intent, None)
+    }
+
+    /// A balancing post (plan §5.5, TigerBeetle `balancing_*`): a two-leg
+    /// single-unit Original/Adjusting/Pending of one positive amount `R`
+    /// whose leg `leg` balances — it moves `min(R, admissible)`, where
+    /// `admissible` is the room on that leg's side of its account's cell
+    /// (its period cell for a budget cap); with no room, or no limit in that
+    /// direction, the request stays at `R` and the law decides. The identity
+    /// binds the request (`R` and `leg`). The moved amount is the journal
+    /// entry's legs.
+    pub fn post_balancing(&mut self, intent: &Intent, leg: u16) -> Verdict {
+        let shape_ok = matches!(intent.class.as_str(), "Original" | "Adjusting" | "Pending")
+            && intent.reverses.is_none()
+            && intent.resolves.is_none()
+            && intent.settles.is_empty()
+            && leg <= 1
+            && match intent.legs.as_slice() {
+                [a, b] => {
+                    a.unit == b.unit
+                        && a.mantissa == b.mantissa
+                        && a.mantissa > 0
+                        && a.side != b.side
+                        && a.account != b.account
+                }
+                _ => false,
+            };
+        if !shape_ok {
+            return Verdict::Refused {
+                code: code::BALANCING_SHAPE,
+            };
+        }
+        self.post_inner(intent, Some(leg))
+    }
+
+    fn post_inner(&mut self, intent: &Intent, balancing: Option<u16>) -> Verdict {
         // 1. Structure.
         let Some(class) = self.classes.by_name(&intent.class) else {
             return Verdict::Refused {
@@ -576,7 +620,7 @@ impl Oracle {
         let period = period.code.clone();
         // 4. Identity: the recorded outcome when the content is the same,
         //    a conflict when it is not — before any law is re-checked.
-        let content = Content::of(intent);
+        let content = Content::of(intent, balancing);
         let existing = match (intent.reverses, &intent.resolves) {
             (Some(target), _) => self.reversed.get(&target),
             (None, Some(r)) => self.resolved.get(&r.target),
@@ -768,30 +812,108 @@ impl Oracle {
                 }
             }
         }
-        // 7d. Reserved availability (plan §5.4): each limited account the
-        //     entry moves, in order of first appearance (the entry's legs,
-        //     then a resolved hold's legs), judged on the literal fold.
-        let released: Vec<Leg> = intent
+        // 7d. Reserved availability, budget caps, balancing (plan §5.4–5.5).
+        //     A balancing request first resolves its legs to
+        //     min(R, admissible) on the literal fold; then each limited cell
+        //     the entry moves — keyed (account, period) for a budget cap:
+        //     posted and reserved legs in the entry's period, released legs in
+        //     the hold's — in order of first appearance (the entry's legs,
+        //     then a resolved hold's legs), is judged on the literal fold.
+        let legs: Vec<Leg> = match balancing {
+            None => intent.legs.clone(),
+            Some(leg) => {
+                let target = &intent.legs[usize::from(leg)];
+                let requested = target.mantissa;
+                let moved = match self.limits.get(&target.account) {
+                    None => requested,
+                    Some(limit) => {
+                        let cell = self.availability_in(
+                            &target.account,
+                            limit.per_period.then_some(period.as_str()),
+                        );
+                        let (n, o, pin, pout) = match limit.normal {
+                            Side::Debit => (
+                                &cell.debits_posted,
+                                &cell.credits_posted,
+                                &cell.debits_pending,
+                                &cell.credits_pending,
+                            ),
+                            Side::Credit => (
+                                &cell.credits_posted,
+                                &cell.debits_posted,
+                                &cell.credits_pending,
+                                &cell.debits_pending,
+                            ),
+                        };
+                        let net = n.sub(o);
+                        let room = if target.side == limit.normal {
+                            limit.upper.map(|u| Int::from_i128(u).sub(&net.add(pin)))
+                        } else {
+                            limit.lower.map(|l| net.sub(pout).sub(&Int::from_i128(l)))
+                        };
+                        match room {
+                            Some(r) if !r.is_negative() && !r.is_zero() => {
+                                // min(R, room), exactly: R − room < 0 ⇔ R < room.
+                                if Int::from_i128(requested).sub(&r).is_negative() {
+                                    requested
+                                } else {
+                                    r.to_i128().unwrap_or(requested)
+                                }
+                            }
+                            _ => requested,
+                        }
+                    }
+                };
+                intent
+                    .legs
+                    .iter()
+                    .map(|l| Leg {
+                        mantissa: moved,
+                        ..l.clone()
+                    })
+                    .collect()
+            }
+        };
+        let hold = intent
             .resolves
             .as_ref()
-            .and_then(|r| self.journal.get(r.target))
-            .map(|t| t.legs.clone())
-            .unwrap_or_default();
-        let mut order: Vec<&str> = Vec::new();
-        for l in intent.legs.iter().chain(&released) {
-            if self.limits.contains_key(&l.account) && !order.contains(&l.account.as_str()) {
-                order.push(&l.account);
+            .and_then(|r| self.journal.get(r.target));
+        let released: Vec<Leg> = hold.map(|t| t.legs.clone()).unwrap_or_default();
+        let hold_period: Option<String> = hold.map(|t| t.period.clone());
+        let cell_of = |account: &str, release: bool| -> Option<(String, Option<String>)> {
+            let limit = self.limits.get(account)?;
+            let p = match (limit.per_period, release) {
+                (false, _) => None,
+                (true, false) => Some(period.clone()),
+                (true, true) => hold_period.clone(),
+            };
+            Some((account.to_string(), p))
+        };
+        let mut order: Vec<(String, Option<String>)> = Vec::new();
+        for (l, release) in legs
+            .iter()
+            .map(|l| (l, false))
+            .chain(released.iter().map(|l| (l, true)))
+        {
+            if let Some(k) = cell_of(&l.account, release)
+                && !order.contains(&k)
+            {
+                order.push(k);
             }
         }
-        for account in order {
+        for (account, cell_period) in &order {
+            let account = account.as_str();
             let limit = &self.limits[account];
-            let before = self.availability(account);
+            let before = self.availability_in(account, cell_period.as_deref());
             let mut after = before.clone();
             let bump = |slot: &mut Int, m: i128, sign: bool| {
                 let m = Int::from_i128(m);
                 *slot = if sign { slot.add(&m) } else { slot.sub(&m) };
             };
-            for l in intent.legs.iter().filter(|l| l.account == account) {
+            for l in legs.iter().filter(|l| {
+                l.account == account
+                    && cell_of(&l.account, false).as_ref().map(|k| &k.1) == Some(cell_period)
+            }) {
                 match (intent.class.as_str(), l.side) {
                     ("Pending", Side::Debit) => bump(&mut after.debits_pending, l.mantissa, true),
                     ("Pending", Side::Credit) => bump(&mut after.credits_pending, l.mantissa, true),
@@ -799,7 +921,10 @@ impl Oracle {
                     (_, Side::Credit) => bump(&mut after.credits_posted, l.mantissa, true),
                 }
             }
-            for l in released.iter().filter(|l| l.account == account) {
+            for l in released.iter().filter(|l| {
+                l.account == account
+                    && cell_of(&l.account, true).as_ref().map(|k| &k.1) == Some(cell_period)
+            }) {
                 match l.side {
                     Side::Debit => bump(&mut after.debits_pending, l.mantissa, false),
                     Side::Credit => bump(&mut after.credits_pending, l.mantissa, false),
@@ -861,7 +986,7 @@ impl Oracle {
             class: intent.class.clone(),
             date: intent.date,
             period: period.clone(),
-            legs: intent.legs.clone(),
+            legs,
             key: intent.key.clone(),
             reverses: intent.reverses,
             resolves: intent.resolves.as_ref().map(|r| r.target),
@@ -1049,6 +1174,16 @@ impl Oracle {
     /// and the count of entries that posted, reserved, or released on it.
     #[must_use]
     pub fn availability(&self, account: &str) -> Availability {
+        self.availability_in(account, None)
+    }
+
+    /// [`Self::availability`] restricted to one period's cell (a budget cap,
+    /// plan §5.5): entries effective in `period` post and reserve there, and
+    /// a resolution releases in its hold's period. `None` is the lifetime
+    /// cell.
+    #[must_use]
+    pub fn availability_in(&self, account: &str, period: Option<&str>) -> Availability {
+        let in_period = |e: &Entry| period.is_none_or(|p| e.period == p);
         let mut a = Availability {
             debits_posted: Int::zero(),
             credits_posted: Int::zero(),
@@ -1058,7 +1193,11 @@ impl Oracle {
         };
         for (i, e) in self.journal.iter().enumerate() {
             let mut touched = false;
-            for l in e.legs.iter().filter(|l| l.account == account) {
+            for l in e
+                .legs
+                .iter()
+                .filter(|l| l.account == account && in_period(e))
+            {
                 touched = true;
                 let m = Int::from_i128(l.mantissa);
                 let slot = match (e.class.as_str(), l.side) {
@@ -1072,6 +1211,7 @@ impl Oracle {
             }
             // A resolution moves the cell of every account its hold reserved on.
             if let Some(t) = e.resolves
+                && in_period(&self.journal[t])
                 && self.journal[t].legs.iter().any(|l| l.account == account)
             {
                 touched = true;
@@ -1302,6 +1442,7 @@ mod tests {
                 normal: Side::Debit,
                 lower: Some(0),
                 upper: Some(1_000),
+                per_period: false,
             },
         );
         o.create_periods(2026);

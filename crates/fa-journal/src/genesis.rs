@@ -16,7 +16,7 @@ use fgdb::{Database, WriteBatch};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
-use crate::limit::{BalanceLimit, LimitCell, limit_cell_vid};
+use crate::limit::{BalanceLimit, LimitCell, LimitScope, limit_cell_vid, period_cell_vid};
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{book_root, bytes, edge_id, kind_tag, scalar_bytes, scalar_text};
 
@@ -350,6 +350,19 @@ pub async fn create_periods<V: asupersync::fs::Vfs + Clone>(
         batch.create_vertex(pvid, vec![label::PERIOD], props);
         batch.add_edge(edge_id(relation::IN_BOOK, pvid, bvid), pvid, bvid, vec![]);
     }
+    // A budget-capped (period-scoped) account owns one limit cell per period,
+    // born with the period (plan §5.5), so an absent cell stays corruption.
+    for account in list_accounts(db)? {
+        if account.limit.is_some_and(|l| l.scope == LimitScope::Period) {
+            for p in &periods {
+                batch.create_vertex(
+                    period_cell_vid(account.vid, &p.code),
+                    vec![label::LIMIT_CELL],
+                    LimitCell::default().create_props(account.vid, Some(&p.code))?,
+                );
+            }
+        }
+    }
     let seq = db.write(&ctx.commit(), batch).await?;
     Ok((seq, periods))
 }
@@ -480,6 +493,19 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
                 });
         });
     }
+    // Budget caps (period-scoped limits, plan §5.5) are a second trailing
+    // list of their account codes, written only when one exists, so every
+    // earlier chart (with or without lifetime limits) keeps its bytes.
+    let period_scoped: Vec<&str> = limits
+        .iter()
+        .filter(|(_, l)| l.scope == LimitScope::Period)
+        .map(|(code, _)| *code)
+        .collect();
+    if !period_scoped.is_empty() {
+        w.list(&period_scoped, |w, code| {
+            w.str(code);
+        });
+    }
     let canonical_bytes = w.finish().map_err(fa_model::EntryError::from)?;
 
     let proposal = EntryPayload {
@@ -518,6 +544,15 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
         &principal_ref.0.to_le_bytes(),
         idempotency_key,
     );
+    // A budget-capped account is born with one cell per existing period.
+    let existing_periods = if accounts
+        .iter()
+        .any(|a| a.limit.is_some_and(|l| l.scope == LimitScope::Period))
+    {
+        list_periods(db)?
+    } else {
+        Vec::new()
+    };
     let mut batch = WriteBatch::new(relation::CHILD_OF);
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
     for a in accounts {
@@ -552,13 +587,27 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
         props.sort_by_key(|(k, _)| k.0);
         batch.create_vertex(avid, vec![label::ACCOUNT], props);
         // A limited account's reservation cell is born with it (plan §5.5
-        // interim R-ESC): zero sums, generation 0.
-        if a.limit.is_some() {
-            batch.create_vertex(
-                limit_cell_vid(avid),
-                vec![label::LIMIT_CELL],
-                LimitCell::default().create_props(avid)?,
-            );
+        // interim R-ESC): zero sums, generation 0 — one cell for a lifetime
+        // limit, one per existing period for a budget cap (later periods get
+        // theirs from `create_periods`).
+        match a.limit.map(|l| l.scope) {
+            None => {}
+            Some(LimitScope::Lifetime) => {
+                batch.create_vertex(
+                    limit_cell_vid(avid),
+                    vec![label::LIMIT_CELL],
+                    LimitCell::default().create_props(avid, None)?,
+                );
+            }
+            Some(LimitScope::Period) => {
+                for p in &existing_periods {
+                    batch.create_vertex(
+                        period_cell_vid(avid, &p.code),
+                        vec![label::LIMIT_CELL],
+                        LimitCell::default().create_props(avid, Some(&p.code))?,
+                    );
+                }
+            }
         }
     }
     for a in accounts {

@@ -1096,7 +1096,11 @@ fn chart_cmd(out: &Out, args: &Args) -> Result<(), Fail> {
                 };
                 let (lower, upper) = (bound("lower_bound")?, bound("upper_bound")?);
                 let limit =
-                    (lower.is_some() || upper.is_some()).then_some(BalanceLimit { lower, upper });
+                    (lower.is_some() || upper.is_some()).then_some(BalanceLimit {
+                        lower,
+                        upper,
+                        scope: fa_journal::LimitScope::Lifetime,
+                    });
                 accounts.push(AccountSpec {
                     code: code.to_string(),
                     name: name.to_string(),
@@ -2793,13 +2797,16 @@ mod tests {
         let v = fa_registers::AvailabilityVerification {
             known_at: CommitSeq(9),
             accounts_checked: 2,
+            cells_checked: 2,
             accounts: vec![fa_registers::AccountAvailability {
                 account: VId(1),
                 code: "1000".into(),
+                period: None,
                 normal: Side::Debit,
                 limit: BalanceLimit {
                     lower: Some(0),
                     upper: None,
+                    scope: fa_journal::LimitScope::Lifetime,
                 },
                 cell: cell(4_000),
                 net: 4_000,
@@ -2814,6 +2821,8 @@ mod tests {
                     refolded: cell(4_000),
                     stored_account: Some(VId(2)),
                     stored_account_code: Some("1100".into()),
+                    period: None,
+                    stored_period: None,
                 },
                 fa_registers::AvailabilityDrift {
                     account: VId(3),
@@ -2822,6 +2831,8 @@ mod tests {
                     refolded: cell(0),
                     stored_account: None,
                     stored_account_code: None,
+                    period: None,
+                    stored_period: None,
                 },
             ],
         };

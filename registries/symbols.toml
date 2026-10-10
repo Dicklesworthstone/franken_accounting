@@ -242,6 +242,9 @@ name = "security_policy_epoch"
 [[property]]
 id = 46
 name = "accumulator_head"
+[[property]]
+id = 56
+name = "limit_scope"
 
 # ---- relations ------------------------------------------------------------
 [[relation]]

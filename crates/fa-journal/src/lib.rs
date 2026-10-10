@@ -31,7 +31,10 @@ pub use genesis::{
     AccountSpec, BookContext, BookSpec, ChartInstalled, UnitPolicy, create_book, create_periods,
     install_chart,
 };
-pub use limit::{BalanceLimit, LimitCell, cell_account, limit_cell_vid};
+pub use limit::{
+    BalanceLimit, Balanced, LimitCell, LimitScope, cell_account, limit_cell_vid, period_cell_vid,
+    post_balancing,
+};
 pub use period::{Transitioned, transition_period};
 pub use policy::{
     ActivationRequest, ApprovalRequest, Approved, PolicyActivated, activate_policy,
