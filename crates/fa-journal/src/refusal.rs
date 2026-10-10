@@ -124,6 +124,16 @@ pub mod code {
     pub const LIVE_APPLICATIONS: &str = "FA-REF-073";
     /// A key collided but equivalence cannot be verified: a sealed field is erased or under a key this book lacks.
     pub const EQUIVALENCE_UNVERIFIABLE: &str = "FA-REF-033";
+    /// The entry cites fewer admissible documents than its class's `evidence_policy.toml` minimum.
+    pub const EVIDENCE_MINIMUM: &str = "FA-REF-080";
+    /// A citation names a document this book does not hold.
+    pub const EVIDENCE_UNKNOWN: &str = "FA-REF-081";
+    /// A citation's `doc_commit` is not the named document's commitment.
+    pub const EVIDENCE_COMMIT: &str = "FA-REF-082";
+    /// The document is empty, oversized, or names an unregistered kind, grade, or malformed mime.
+    pub const DOCUMENT_INTAKE: &str = "FA-REF-083";
+    /// The declared provenance grade is one only a verified receipt chain may confer.
+    pub const GRADE_UNVERIFIED: &str = "FA-REF-084";
 }
 
 /// A foundation failure. Exit 5; never partial.

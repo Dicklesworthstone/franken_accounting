@@ -1,0 +1,272 @@
+# evidence_policy.toml — what an entry must rest on (plan §9.1–§9.3,
+# FA-INV-05 clause `evidence-minimum`): the closed Document kinds, the
+# provenance grades a document carries, the EVIDENCED_BY roles, and one
+# evidence-minimum row per entry class.
+#
+# Consumer: fa-registry (`evidence_policy` module), fa-journal (`evidence.rs`:
+# Document vertices at intake; every cited document resolved and the class's
+# minimum checked inside the posting transaction), fa-cli (`fa document add`).
+# Gate: every class in entry_classes.toml has exactly one [[minimum]] row; tags
+# and names are unique per table; a `kinds` list names only registered kinds;
+# a `documents` row requires at least one document.
+#
+# Requirements:
+#   documents       at least `min_documents` cited documents whose kind is in
+#                   `kinds` ("any" = every registered kind). The plan's
+#                   alternative — a preparer's `ManualAssertion` attestation
+#                   with a registered reason code — needs Attestation objects
+#                   and is not admitted until that slice lands.
+#   target          the closure is the superseded / resolved target's
+#                   (§9.2: "for a resolution, reversal, or restatement — the
+#                   target entries"); cited documents are optional and are
+#                   still resolved and linked.
+#   control_record  control classes rest on their control record and nothing
+#                   else (§9.2); they never pass through `post`.
+#
+# Additive-only: a released tag is never renumbered or reused.
+
+schema_version = 1
+
+# Bytes a Document may carry inline in this slice (the substrate has no
+# object store yet; the canonical bytes ride the Document's payload).
+max_document_bytes = 16777216
+max_mime_bytes = 128
+
+# ---- Document kinds (plan §9.1) ------------------------------------------
+[[kind]]
+tag = 1
+name = "Invoice"
+[[kind]]
+tag = 2
+name = "Bill"
+[[kind]]
+tag = 3
+name = "Receipt"
+[[kind]]
+tag = 4
+name = "Contract"
+[[kind]]
+tag = 5
+name = "BankStatement"
+[[kind]]
+tag = 6
+name = "Check"
+[[kind]]
+tag = 7
+name = "WireConfirmation"
+[[kind]]
+tag = 8
+name = "Remittance"
+[[kind]]
+tag = 9
+name = "PurchaseOrder"
+[[kind]]
+tag = 10
+name = "ReceivingReport"
+[[kind]]
+tag = 11
+name = "Rate"
+[[kind]]
+tag = 12
+name = "Confirmation"
+[[kind]]
+tag = 13
+name = "Representation"
+[[kind]]
+tag = 14
+name = "BoardMinutes"
+[[kind]]
+tag = 15
+name = "CourtOrder"
+[[kind]]
+tag = 16
+name = "Memo"
+[[kind]]
+tag = 17
+name = "Email"
+[[kind]]
+tag = 18
+name = "Spreadsheet"
+[[kind]]
+tag = 19
+name = "Image"
+[[kind]]
+tag = 20
+name = "Disclosure"
+[[kind]]
+tag = 21
+name = "Workpaper"
+[[kind]]
+tag = 22
+name = "Other"
+
+# ---- Provenance grades (plan §9.3) ---------------------------------------
+# `self_sourced`: an entry whose only evidence carries such a grade is
+# self-sourced (Agent profile: drafts only; promotion needs a reviewer's
+# attestation). The grade is recorded at intake; the draft/attestation
+# enforcement lands with drafts and attestations.
+# `intake`: whether `fa document add` may record this grade today. The others
+# are derived from a receipt chain (signature, connector transcript, rule run)
+# this slice cannot verify, so claiming them is refused.
+[[grade]]
+tag = 1
+name = "ThirdPartySigned"
+self_sourced = false
+intake = false
+[[grade]]
+tag = 2
+name = "Connector"
+self_sourced = false
+intake = false
+[[grade]]
+tag = 3
+name = "HumanUpload"
+self_sourced = false
+intake = true
+[[grade]]
+tag = 4
+name = "AgentUpload"
+self_sourced = true
+intake = true
+[[grade]]
+tag = 5
+name = "Generated"
+self_sourced = true
+intake = false
+
+# ---- EVIDENCED_BY roles (plan §4.1 relation table) -----------------------
+[[role]]
+tag = 1
+name = "Source"
+[[role]]
+tag = 2
+name = "Support"
+[[role]]
+tag = 3
+name = "Rate"
+[[role]]
+tag = 4
+name = "Contract"
+[[role]]
+tag = 5
+name = "Statement"
+[[role]]
+tag = 6
+name = "Approval"
+[[role]]
+tag = 7
+name = "Other"
+
+# ---- Evidence minimum per class (FA-INV-05 `evidence-minimum`) -----------
+# Original, Adjusting, Reclassification: named by plan §9.2.
+[[minimum]]
+class = "Original"
+requirement = "documents"
+min_documents = 1
+kinds = "any"
+
+# A hold is the economic claim its Resolution(Posts) later posts; the
+# resolution inherits this closure, so the hold carries the document.
+[[minimum]]
+class = "Pending"
+requirement = "documents"
+min_documents = 1
+kinds = "any"
+
+[[minimum]]
+class = "Resolution"
+requirement = "target"
+min_documents = 0
+kinds = "any"
+
+[[minimum]]
+class = "Reversal"
+requirement = "target"
+min_documents = 0
+kinds = "any"
+
+# A replacement's legs are new assertions: they need their own why.
+[[minimum]]
+class = "Replacement"
+requirement = "documents"
+min_documents = 1
+kinds = "any"
+
+[[minimum]]
+class = "Reclassification"
+requirement = "documents"
+min_documents = 1
+kinds = "any"
+
+[[minimum]]
+class = "Adjusting"
+requirement = "documents"
+min_documents = 1
+kinds = "any"
+
+[[minimum]]
+class = "Closing"
+requirement = "documents"
+min_documents = 1
+kinds = ["Workpaper", "Memo"]
+
+[[minimum]]
+class = "Allocation"
+requirement = "documents"
+min_documents = 1
+kinds = ["Workpaper", "Spreadsheet", "Memo", "Contract"]
+
+# Rates are documents (AGENTS.md accounting doctrine); a revaluation cites one.
+[[minimum]]
+class = "Revaluation"
+requirement = "documents"
+min_documents = 1
+kinds = ["Rate"]
+
+[[minimum]]
+class = "Elimination"
+requirement = "documents"
+min_documents = 1
+kinds = ["Workpaper", "Spreadsheet", "Memo", "Confirmation"]
+
+[[minimum]]
+class = "Migration"
+requirement = "documents"
+min_documents = 1
+kinds = "any"
+
+[[minimum]]
+class = "Revision"
+requirement = "documents"
+min_documents = 1
+kinds = "any"
+
+[[minimum]]
+class = "Restatement"
+requirement = "documents"
+min_documents = 1
+kinds = "any"
+
+[[minimum]]
+class = "PriorPeriodAdjustment"
+requirement = "documents"
+min_documents = 1
+kinds = "any"
+
+[[minimum]]
+class = "PeriodControl"
+requirement = "control_record"
+min_documents = 0
+kinds = "any"
+
+[[minimum]]
+class = "SchemaControl"
+requirement = "control_record"
+min_documents = 0
+kinds = "any"
+
+[[minimum]]
+class = "PolicyControl"
+requirement = "control_record"
+min_documents = 0
+kinds = "any"

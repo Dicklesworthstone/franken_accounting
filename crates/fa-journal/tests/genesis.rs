@@ -10,14 +10,15 @@
 
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
+use fa_journal::evidence::{Document, DocumentAdded, add_document, document_vid, read_document};
 use fa_journal::post::read_entry;
 use fa_journal::rows::{applied, book_root, edge_id, leg_vid, resolution_vid, reversal_vid};
 use fa_journal::*;
 use fa_model::symbols::{property, relation};
 use fa_model::{
-    ControlPayload, Disposition, EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable, Id128,
-    LegPayload, Oid, Pending, SealKey, Settlement, Supersession, SupersessionKind, SymbolTable,
-    account_vid, period_vid,
+    ControlPayload, Disposition, EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable,
+    EvidenceRef, Id128, LegPayload, Oid, Pending, SealKey, Settlement, Supersession,
+    SupersessionKind, SymbolTable, account_vid, period_vid,
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodState, PeriodTransition};
@@ -27,6 +28,13 @@ use fgdb_types::ids::DatabaseSecurityNamespaceId;
 use fgdb_types::{CanonicalScalar, VId};
 
 const PRINCIPAL: VId = VId(7);
+
+/// Registry tags (`evidence_policy.toml`) the evidence tests name.
+const INVOICE: u8 = 1;
+const RECEIPT: u8 = 3;
+const HUMAN_UPLOAD: u8 = 3;
+const AGENT_UPLOAD: u8 = 4;
+const ROLE_SOURCE: u8 = 1;
 
 struct Harness {
     runtime: Runtime,
@@ -41,6 +49,9 @@ struct Harness {
     revenue: VId,
     march: String,
     april: String,
+    /// A real source document recorded at setup; every proposal cites it
+    /// (FA-INV-05 `evidence-minimum`).
+    evidence: Vec<EvidenceRef>,
 }
 
 impl Harness {
@@ -80,7 +91,7 @@ impl Harness {
             },
             principal_ref: PRINCIPAL,
             session_ref: None,
-            evidence: Vec::new(),
+            evidence: self.evidence.clone(),
             supersession: Vec::new(),
             pending: None,
             external_ids: Vec::new(),
@@ -220,6 +231,26 @@ impl Harness {
             plan_certificate: None,
             capability: Capability::with_ops(ops),
         }
+    }
+
+    fn document(&self, kind: u8, grade: u8, bytes: &[u8]) -> Document {
+        Document {
+            book_id: self.book.book_id,
+            kind,
+            mime: "text/plain".into(),
+            grade,
+            retrieved_by: PRINCIPAL,
+            bytes: bytes.to_vec(),
+        }
+    }
+
+    fn add_document(&mut self, doc: &Document) -> Result<DocumentAdded, Refusal> {
+        let ctx = self.ctx();
+        let db = &mut self.db;
+        let book = &self.book;
+        self.runtime
+            .block_on(async move { add_document(db, &ctx, book, doc).await })
+            .expect("kernel")
     }
 
     fn post(&mut self, req: PostRequest) -> Result<Posted, Refusal> {
@@ -431,7 +462,16 @@ fn harness() -> Harness {
         usd,
         march: march.clone(),
         april,
+        evidence: Vec::new(),
     };
+    let source = h.document(
+        INVOICE,
+        HUMAN_UPLOAD,
+        b"INVOICE 2026-0315 Test Co: March rent and services (fixture source document)",
+    );
+    h.add_document(&source)
+        .expect("the fixture document is admitted");
+    h.evidence = vec![source.evidence_ref(ROLE_SOURCE)];
     h.transition(&march, PeriodTransition::Open, b"open-march")
         .expect("march opens");
     h
@@ -1451,4 +1491,132 @@ fn a_reversal_chain_of_any_length_keeps_liveness_by_parity_and_settles_the_reviv
         ))
         .unwrap_err();
     assert_eq!((r.code, r.exit), ("FA-REF-070", exit::REFUSAL));
+}
+
+// ---------------------------------------------------------------------------
+// Evidence (fa-lp6, plan §9.1–§9.3): content-addressed Documents
+// ---------------------------------------------------------------------------
+
+#[test]
+fn documents_are_content_addressed_idempotent_and_verified_on_read() {
+    let mut h = harness();
+    let bytes = b"BILL 77 from Landlord LLC: April rent 1,200.00 USD";
+    let doc = h.document(INVOICE, HUMAN_UPLOAD, bytes);
+    let added = h.add_document(&doc).expect("admitted");
+    assert!(!added.already_recorded);
+    assert_eq!(
+        added.doc_commit,
+        fa_journal::evidence::doc_commit(INVOICE, bytes)
+    );
+    assert_eq!(added.oid, doc.oid());
+    assert_eq!(added.vid, document_vid(&doc.oid()));
+    assert_eq!(added.size, bytes.len() as u64);
+    // The vertex is a Document, recorded at the commit that created it.
+    let row = h.db.vertex(added.vid).unwrap().expect("document row");
+    assert_eq!(row.labels, vec![fa_model::symbols::label::DOCUMENT]);
+    assert_eq!(row.created_at, added.recorded_at);
+    // Reading verifies the bytes against the commitment and returns them.
+    assert_eq!(read_document(&h.db, &added.oid).unwrap(), Some(doc.clone()));
+    // The same bytes of the same kind are the recorded outcome, whatever grade
+    // the second intake declares: the first intake's grade stands.
+    let again = h
+        .add_document(&h.document(INVOICE, AGENT_UPLOAD, bytes))
+        .expect("recorded");
+    assert!(again.already_recorded);
+    assert_eq!(
+        (again.oid, again.grade, again.recorded_at),
+        (added.oid, HUMAN_UPLOAD, added.recorded_at)
+    );
+    // The kind is part of the commitment: the same bytes as a Receipt are a
+    // different document.
+    let receipt = h
+        .add_document(&h.document(RECEIPT, HUMAN_UPLOAD, bytes))
+        .expect("admitted");
+    assert!(!receipt.already_recorded);
+    assert_ne!(receipt.oid, added.oid);
+    assert_ne!(receipt.doc_commit, added.doc_commit);
+    // An oid this book never recorded reads as absent.
+    assert_eq!(read_document(&h.db, &Oid([0xee; 32])).unwrap(), None);
+}
+
+#[test]
+fn document_intake_refuses_empty_oversized_unregistered_and_unverifiable_input() {
+    let mut h = harness();
+    let policy = fa_registry::evidence_policy::EvidencePolicy::embedded().unwrap();
+    let body = b"WIRE CONFIRMATION 9 (fixture)";
+    let mut cases: Vec<(&str, Document, &str, u8)> = vec![
+        (
+            "empty",
+            h.document(INVOICE, HUMAN_UPLOAD, b""),
+            "FA-REF-083",
+            exit::USAGE,
+        ),
+        (
+            "unregistered kind",
+            h.document(0, HUMAN_UPLOAD, body),
+            "FA-REF-083",
+            exit::USAGE,
+        ),
+        (
+            "unregistered kind 99",
+            h.document(99, HUMAN_UPLOAD, body),
+            "FA-REF-083",
+            exit::USAGE,
+        ),
+        (
+            "unregistered grade",
+            h.document(INVOICE, 99, body),
+            "FA-REF-083",
+            exit::USAGE,
+        ),
+        (
+            "ThirdPartySigned is never declared at intake",
+            h.document(INVOICE, 1, body),
+            "FA-REF-084",
+            exit::REFUSAL,
+        ),
+        (
+            "Generated is never declared at intake",
+            h.document(INVOICE, 5, body),
+            "FA-REF-084",
+            exit::REFUSAL,
+        ),
+        (
+            "oversized",
+            h.document(
+                INVOICE,
+                HUMAN_UPLOAD,
+                &vec![b'x'; usize::try_from(policy.max_document_bytes).unwrap() + 1],
+            ),
+            "FA-REF-083",
+            exit::USAGE,
+        ),
+    ];
+    let mut bad_mime = h.document(INVOICE, HUMAN_UPLOAD, body);
+    bad_mime.mime = "text plain".into();
+    cases.push(("mime with a space", bad_mime, "FA-REF-083", exit::USAGE));
+    let mut no_mime = h.document(INVOICE, HUMAN_UPLOAD, body);
+    no_mime.mime = String::new();
+    cases.push(("empty mime", no_mime, "FA-REF-083", exit::USAGE));
+    let mut foreign = h.document(INVOICE, HUMAN_UPLOAD, body);
+    foreign.book_id = Id128([1; 16]);
+    cases.push(("a foreign book", foreign, "FA-REF-103", exit::USAGE));
+    for (what, doc, code, exit_class) in cases {
+        let r = h.add_document(&doc).unwrap_err();
+        assert_eq!((r.code, r.exit), (code, exit_class), "{what}: {r}");
+        assert!(!r.fix.is_empty(), "{what}: a refusal names the fix");
+        // Nothing was written at the identity the document would have had.
+        assert!(
+            h.db.vertex(document_vid(&doc.oid())).unwrap().is_none(),
+            "{what}: a refused intake writes nothing"
+        );
+    }
+    // The grade refusal cites the registry row.
+    let r = h.add_document(&h.document(INVOICE, 1, body)).unwrap_err();
+    assert!(r.cite.contains("ThirdPartySigned"), "{}", r.cite);
+    // And the honest declaration of the same bytes is admitted.
+    assert!(
+        h.add_document(&h.document(INVOICE, AGENT_UPLOAD, body))
+            .is_ok()
+    );
 }

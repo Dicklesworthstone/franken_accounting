@@ -17,12 +17,14 @@
 
 #![forbid(unsafe_code)]
 
+pub mod evidence;
 pub mod genesis;
 pub mod period;
 pub mod post;
 pub mod refusal;
 pub mod rows;
 
+pub use evidence::{Document, DocumentAdded, add_document, read_document};
 pub use genesis::{
     AccountSpec, BookContext, BookSpec, ChartInstalled, UnitPolicy, create_book, create_periods,
     install_chart,
