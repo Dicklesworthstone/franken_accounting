@@ -11,7 +11,8 @@
 use core::fmt;
 use std::path::{Path, PathBuf};
 
-use asupersync::fs::UnixVfs;
+use asupersync::fs::{OpenOptions, UnixVfs, Vfs};
+use asupersync::io::AsyncWriteExt;
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
 use fa_journal::rows::{AccountRow, PeriodRow};
@@ -27,11 +28,12 @@ use fa_registers::{
 use fa_time::{DateDay, PeriodDef, PeriodTransition};
 use fgdb::{Database, DatabaseKeys, MemVfs};
 use fgdb_crypto::{CryptoCx, DeterministicEntropy, EntropyError, SystemEntropy, derive_key};
-use fgdb_types::context::PurposeContexts;
+use fgdb_types::context::{CommitCx, PurposeContexts, QueryCx};
 use fgdb_types::ids::DatabaseSecurityNamespaceId;
 use fgdb_types::{CommitSeq, VId};
 
 use crate::AsyncBook;
+use crate::async_book::{rooted_path, sync_file};
 
 /// The three secrets a book directory needs: the object-identity key, the
 /// security namespace, and the data-encryption key (the substrate's
@@ -73,42 +75,90 @@ impl BookKeys {
     }
 
     /// Write the key file (three 64-hex lines) with mode 0600, refusing to
-    /// overwrite an existing one.
+    /// overwrite an existing one. Both its bytes and its directory entry
+    /// are durable before this returns.
     pub fn save(&self, path: &Path) -> Result<(), BookError> {
-        use std::io::Write as _;
-        if path.exists() {
-            return Err(BookError::KeyFile(format!(
-                "{} already exists; keys are never overwritten",
-                path.display()
-            )));
-        }
+        let (runtime, root) = Book::runtime_and_root()?;
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        runtime.block_on(self.save_with_vfs(&cx.commit(), &UnixVfs, path))
+    }
+
+    /// Save through the caller's filesystem and commit context. The parent
+    /// must exist; its whole ancestor chain is fenced, including directories
+    /// the caller created before this operation. This also covers a key file
+    /// kept outside the book directory.
+    pub async fn save_with_vfs<V: Vfs>(
+        &self,
+        cx: &CommitCx,
+        vfs: &V,
+        path: &Path,
+    ) -> Result<(), BookError> {
+        cx.checkpoint().map_err(BookError::Context)?;
+        let path = rooted_path(path);
         let text = format!(
             "{}\n{}\n{}\n",
             hex(self.inner.k_oid()),
             hex(&self.namespace()),
             hex(self.inner.dek())
         );
-        let mut opts = std::fs::OpenOptions::new();
-        opts.write(true).create_new(true);
+        let opts = OpenOptions::new().write(true).create_new(true);
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            opts.mode(0o600);
-        }
-        let mut f = opts
-            .open(path)
-            .map_err(|e| BookError::Io(path.to_path_buf(), e))?;
-        f.write_all(text.as_bytes())
-            .map_err(|e| BookError::Io(path.to_path_buf(), e))?;
-        f.sync_all()
-            .map_err(|e| BookError::Io(path.to_path_buf(), e))?;
-        Ok(())
+        let opts = opts.mode(0o600);
+        cx.with_restriction_async(async {
+            let mut file = match vfs.open(&path, &opts).await {
+                Ok(file) => file,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    return Err(BookError::KeyFile(format!(
+                        "{} already exists; keys are never overwritten",
+                        path.display()
+                    )));
+                }
+                Err(e) => return Err(BookError::Io(path.clone(), e)),
+            };
+            file.write_all(text.as_bytes())
+                .await
+                .map_err(|e| BookError::Io(path.clone(), e))?;
+            sync_file(&mut file)
+                .await
+                .map_err(|e| BookError::Io(path.clone(), e))?;
+            for directory in path
+                .ancestors()
+                .skip(1)
+                .filter(|p| !p.as_os_str().is_empty())
+            {
+                cx.checkpoint().map_err(BookError::Context)?;
+                let mut handle = vfs
+                    .open(directory, &OpenOptions::new().read(true))
+                    .await
+                    .map_err(|e| BookError::Io(directory.to_path_buf(), e))?;
+                sync_file(&mut handle)
+                    .await
+                    .map_err(|e| BookError::Io(directory.to_path_buf(), e))?;
+            }
+            Ok(())
+        })
+        .await
     }
 
     /// Read a key file written by [`BookKeys::save`].
     pub fn load(path: &Path) -> Result<Self, BookError> {
-        let text =
-            std::fs::read_to_string(path).map_err(|e| BookError::Io(path.to_path_buf(), e))?;
+        let (runtime, root) = Book::runtime_and_root()?;
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        runtime.block_on(Self::load_with_vfs(&cx.query(), &UnixVfs, path))
+    }
+
+    /// Read keys through the caller's filesystem and read context.
+    pub async fn load_with_vfs<V: Vfs>(
+        cx: &QueryCx,
+        vfs: &V,
+        path: &Path,
+    ) -> Result<Self, BookError> {
+        cx.checkpoint().map_err(BookError::Context)?;
+        let path = rooted_path(path);
+        let text = cx
+            .with_restriction_async(vfs.read_to_string(&path))
+            .await
+            .map_err(|e| BookError::Io(path.to_path_buf(), e))?;
         let lines: Vec<&str> = text
             .lines()
             .map(str::trim)
@@ -1316,6 +1366,103 @@ mod tests {
     }
 
     #[test]
+    fn keys_outside_the_book_directory_survive_loss_of_unsynced_names() {
+        under_lab(37, |root| async move {
+            let cx = PurposeContexts::narrow_runtime_root(&root);
+            let keys = BookKeys::for_development(0x65);
+            for fence_directories in [false, true] {
+                let backing = cx.commit().with_restriction(MemVfs::new).unwrap();
+                let vfs = FaultVfs::new(
+                    backing,
+                    FaultPlan {
+                        dirent_loss: Trigger::Always,
+                        ..FaultPlan::faultless()
+                    },
+                );
+                let path = Path::new("./separate-key-custody/nested/book.keys");
+                cx.commit()
+                    .with_restriction_async(vfs.create_dir_all(path.parent().unwrap()))
+                    .await
+                    .unwrap();
+                if fence_directories {
+                    keys.save_with_vfs(&cx.commit(), &vfs, path).await.unwrap();
+                    assert_eq!(vfs.pending_dirent_ops(), 0);
+                    assert!(matches!(
+                        BookKeys::for_development(0x66)
+                            .save_with_vfs(&cx.commit(), &vfs, path)
+                            .await,
+                        Err(BookError::KeyFile(_))
+                    ));
+                } else {
+                    // Reproduce the old save sequence, including a real
+                    // file sync. No book constructor touches this directory.
+                    cx.commit()
+                        .with_restriction_async(async {
+                            let mut file = vfs
+                                .open(path, &OpenOptions::new().write(true).create_new(true))
+                                .await
+                                .unwrap();
+                            let text = format!(
+                                "{}\n{}\n{}\n",
+                                hex(keys.inner.k_oid()),
+                                hex(&keys.namespace()),
+                                hex(keys.inner.dek())
+                            );
+                            file.write_all(text.as_bytes()).await.unwrap();
+                            sync_file(&mut file).await.unwrap();
+                        })
+                        .await;
+                    assert!(vfs.pending_dirent_ops() > 0);
+                }
+                cx.commit()
+                    .with_restriction_async(vfs.crash())
+                    .await
+                    .unwrap();
+                let loaded = BookKeys::load_with_vfs(&cx.query(), &vfs, path).await;
+                if fence_directories {
+                    let loaded = loaded.unwrap();
+                    assert_eq!(loaded.inner.k_oid(), keys.inner.k_oid());
+                    assert_eq!(loaded.namespace(), keys.namespace());
+                    assert_eq!(loaded.inner.dek(), keys.inner.dek());
+                    assert!(
+                        !vfs.events()
+                            .iter()
+                            .any(|event| { matches!(event.kind, FaultKind::DirentLoss { .. }) })
+                    );
+                } else {
+                    assert!(matches!(loaded, Err(BookError::Io(_, _))));
+                    assert!(
+                        vfs.events()
+                            .iter()
+                            .any(|event| { matches!(event.kind, FaultKind::DirentLoss { .. }) })
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn key_file_io_honors_caller_cancellation_before_observation() {
+        under_lab(41, |root| async move {
+            let cx = PurposeContexts::narrow_runtime_root(&root);
+            let vfs = cx.commit().with_restriction(MemVfs::new).unwrap();
+            root.cancel_with(CancelKind::User, Some("key custody cancelled"));
+            // The paths deliberately do not exist: an I/O attempt would
+            // produce a filesystem error, not the caller's cancellation.
+            assert!(matches!(
+                BookKeys::for_development(0x67)
+                    .save_with_vfs(&cx.commit(), &vfs, Path::new("missing/book.keys"))
+                    .await,
+                Err(BookError::Context(_))
+            ));
+            assert!(matches!(
+                BookKeys::load_with_vfs(&cx.query(), &vfs, Path::new("missing/book.keys")).await,
+                Err(BookError::Context(_))
+            ));
+        });
+    }
+
+    #[test]
     fn keys_never_print_and_round_trip_through_the_key_file() {
         assert_eq!(
             format!("{:?}", BookKeys::for_development(1)),
@@ -1330,6 +1477,14 @@ mod tests {
         let path = dir.join("book.keys");
         let keys = BookKeys::generate(&Entropy::deterministic(3)).unwrap();
         keys.save(&path).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
         assert!(keys.save(&path).is_err(), "never overwritten");
         let back = BookKeys::load(&path).unwrap();
         assert_eq!(back.inner.k_oid(), keys.inner.k_oid());

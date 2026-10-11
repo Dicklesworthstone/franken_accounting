@@ -1,7 +1,7 @@
 //! A book executed by its caller's runtime and filesystem.
 //!
 //! This is the shared implementation for the embedded async API and the
-//! synchronous production adapter. It owns no runtime or root context. Both
+//! synchronous production adapter. It owns no runtime or root context.
 //! Ordinary books use clones of the same supplied VFS for database and
 //! document bytes. Scratch books retain their source's blob store, so a
 //! caller can keep both stores on the same lab-controlled I/O plane.
@@ -757,7 +757,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
 /// Give relative paths an explicit current-directory anchor. This keeps
 /// directory-entry ownership consistent for fault-injecting VFSes while
 /// avoiding an attempt to open the empty path on the host filesystem.
-fn rooted_path(path: &Path) -> PathBuf {
+pub(crate) fn rooted_path(path: &Path) -> PathBuf {
     if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -765,7 +765,7 @@ fn rooted_path(path: &Path) -> PathBuf {
     }
 }
 
-async fn sync_file<F: VfsFile>(file: &mut F) -> std::io::Result<()> {
+pub(crate) async fn sync_file<F: VfsFile>(file: &mut F) -> std::io::Result<()> {
     file.sync_all().await
 }
 
