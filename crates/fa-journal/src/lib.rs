@@ -37,6 +37,7 @@ pub mod rows;
 pub mod schedule;
 pub mod scratch;
 pub mod sweep;
+pub mod temporal;
 
 pub use attestation::{
     AttestationClaim, Attested, read_attestation, record_manual_assertion, record_review,
@@ -79,7 +80,6 @@ pub use policy::{
 pub use post::{
     Capability, PostPreparation, PostRequest, Posted, PreparedPost, post, prepare_post,
 };
-pub use projections::{ProjectionVerification, verify_projections};
 pub use redaction::{
     DocumentRead, RedactedView, ViewChunk, ViewDerived, derive_redacted_view, read_document_for,
     redacted_view_vid,
@@ -95,3 +95,6 @@ pub use sweep::{
     DueHold, Op, Profile, SweepBatch, SweepRequest, Swept, Tick, TickRequest, Ticked, due_holds,
     latest_tick, record_tick, sweep, sweep_batch,
 };
+pub use temporal::{InstantSelection, resolve_instant_at};
+
+pub use projections::{ProjectionVerification, verify_projections};

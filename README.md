@@ -32,7 +32,7 @@ fa verify registers --book ./books/acme --period FY2026-P03 --json
 fa registers materialize --book ./books/acme --period FY2026-P03 --json
 ```
 
-Omitting `--as-known-at` selects the current head; the response records the resolved sequence. A later backdated entry appears at head but cannot change a report at an earlier sequence. Instant selectors require TimeEvidence and are currently refused. These reports are exact payload folds; `tb` can retain a replay certificate as described below. The [persistent CLI tests](./crates/fa-cli/tests/cli.rs) exercise book creation, chart installation, posting, reporting, retained replay, refusals and recovery with the actual binary.
+Omitting `--as-known-at` selects the current head; the response records the resolved sequence. A later backdated entry appears at head but cannot change a report at an earlier sequence. `--as-known-at` also accepts an RFC 3339 instant when the book contains retained TimeEvidence ticks. It resolves the latest recorded sequence in the matching tick bucket, reports the original frontier and both brackets under `coordinate.time_evidence`, and refuses an instant before the first tick. Numeric UTC offsets and up to nine fractional digits are exact. `--as-of` remains a civil-date selector. These reports are exact payload folds; `tb` can retain a replay certificate as described below. The [persistent CLI tests](./crates/fa-cli/tests/cli.rs) exercise book creation, chart installation, posting, reporting, retained replay, refusals and recovery with the actual binary.
 
 Reports show posted and pending amounts separately. A hold reserves its original period; a later partial posting releases the entire hold and posts only the explicitly selected sub-vector in the resolution's period. A void releases the hold without posting. Earlier recorded snapshots still show the unresolved reservation. Limited accounts reserve pending outflows; pending inflows cannot fund spending. `fa verify availability` compares each limited account's expected cell, including its account binding, with a journal fold. Library sweeps expire holds using committed ticks; daemon scheduling and full timing simulation remain unfinished.
 
@@ -53,6 +53,14 @@ fa replay march.cert --book ./books/acme --json
 # Reports Current or SupersededBy, with the later relevant entry identities.
 fa certificate status march.cert --book ./books/acme --json
 ```
+
+Instant-selected certificates also retain their requested instant, observed frontier,
+and tick identities. Replay uses those saved brackets even after later ticks or
+postings arrive. An open upper bracket is explicit; this is a clock-observation
+bucket, without a claim about the physical instant of each commit. The same
+instant selector is available on `open-items` and `explain balance`. Ticks are
+currently journaled through the existing library API; automatic daemon tick
+scheduling remains unfinished.
 
 The original call emits two robot lines, `trial_balance` and `report_certificate`,
 with the certificate digest in their envelopes. `--certificate-out` implies

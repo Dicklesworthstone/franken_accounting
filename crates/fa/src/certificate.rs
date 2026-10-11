@@ -35,6 +35,8 @@ pub mod code {
 }
 
 pub const CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v1";
+/// Instant-selected certificates extend the retained format with tick evidence.
+pub const INSTANT_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v2";
 pub const REPLAY_SCOPE: &str = "fa-fold-over-prefix";
 pub const AUTHORITY: &str = "embedded-owner";
 pub const OUTPUT_FORMAT: &str = "fa:trial-balance:v1";
@@ -158,6 +160,9 @@ pub struct ReportCertificate {
     pub book_id: Id128,
     pub branch_id: Id128,
     pub known_at: CommitSeq,
+    /// Present only for a read selected by an instant. Sequence-selected v1
+    /// certificates retain their original bytes and digest domain.
+    pub time_selection: Option<fa_journal::InstantSelection>,
     pub selection: TrialBalanceSelection,
     pub registry_digest: [u8; 32],
     pub journal_root: [u8; 32],
@@ -264,10 +269,74 @@ fn policy() -> GqlQueryPolicy {
     GqlQueryPolicy::new(10_000_000, 1_000_000, 256 * 1024 * 1024, 256 * 1024 * 1024)
 }
 
+fn write_observation(w: &mut Writer, tick: &fa_time::TimeObservation) {
+    w.u64(tick.recorded_at)
+        .u64(tick.observed_utc_ns)
+        .u8(tick.source)
+        .bool(tick.monotonic_ok);
+}
+
+fn read_observation(
+    r: &mut Reader<'_>,
+) -> Result<fa_time::TimeObservation, fa_model::DecodeError> {
+    Ok(fa_time::TimeObservation {
+        recorded_at: r.u64("tick sequence")?,
+        observed_utc_ns: r.u64("tick observed UTC nanoseconds")?,
+        source: r.u8("tick source")?,
+        monotonic_ok: r.bool("tick monotonic corroboration")?,
+    })
+}
+
+fn write_time_selection(w: &mut Writer, time: &fa_journal::InstantSelection) {
+    let resolution = &time.resolution;
+    w.u64(resolution.requested_utc_ns)
+        .u64(resolution.frontier)
+        .u64(resolution.resolved_seq);
+    write_observation(w, &resolution.lower);
+    w.opt(resolution.upper.as_ref(), write_observation)
+        .u128(time.lower_entry.0)
+        .opt(time.upper_entry.as_ref(), |w, vid| {
+            w.u128(vid.0);
+        });
+}
+
+fn read_time_selection(
+    r: &mut Reader<'_>,
+) -> Result<fa_journal::InstantSelection, fa_model::DecodeError> {
+    let requested_utc_ns = r.u64("requested UTC nanoseconds")?;
+    let frontier = r.u64("TimeEvidence frontier")?;
+    let resolved_seq = r.u64("resolved known-at")?;
+    let lower = read_observation(r)?;
+    let upper = r.opt("upper tick", read_observation)?;
+    let lower_entry = VId(r.u128("lower tick entry")?);
+    let upper_entry = r.opt("upper tick entry", |r| {
+        Ok(VId(r.u128("upper tick entry")?))
+    })?;
+    Ok(fa_journal::InstantSelection {
+        resolution: fa_time::InstantResolution {
+            requested_utc_ns,
+            frontier,
+            resolved_seq,
+            lower,
+            upper,
+        },
+        lower_entry,
+        upper_entry,
+    })
+}
+
 impl ReportCertificate {
+    fn format(&self) -> &'static [u8] {
+        if self.time_selection.is_some() {
+            INSTANT_CERTIFICATE_FORMAT
+        } else {
+            CERTIFICATE_FORMAT
+        }
+    }
+
     fn body_bytes(&self) -> Result<Vec<u8>, fa_model::EncodeError> {
         let mut w = Writer::new();
-        w.fixed(CERTIFICATE_FORMAT)
+        w.fixed(self.format())
             .str(REPLAY_SCOPE)
             .str(AUTHORITY)
             .str(OUTPUT_FORMAT)
@@ -283,6 +352,9 @@ impl ReportCertificate {
             })
             .bytes(&self.output)
             .fixed(&self.output_digest);
+        if let Some(time) = &self.time_selection {
+            write_time_selection(&mut w, time);
+        }
         w.finish()
     }
 
@@ -300,8 +372,9 @@ impl ReportCertificate {
         }
         let decode = || -> Result<Self, fa_model::DecodeError> {
             let mut r = Reader::new(bytes);
-            if r.fixed::<{ CERTIFICATE_FORMAT.len() }>("certificate format")? != CERTIFICATE_FORMAT
-            {
+            let format = r.fixed::<{ CERTIFICATE_FORMAT.len() }>("certificate format")?;
+            let has_time = format == INSTANT_CERTIFICATE_FORMAT;
+            if format != CERTIFICATE_FORMAT && !has_time {
                 return Err(r.invalid("report certificate format"));
             }
             for (name, expected) in [
@@ -334,12 +407,18 @@ impl ReportCertificate {
             }
             let output = r.bytes(MAX_CERTIFICATE_BYTES, "report output")?.to_vec();
             let output_digest = r.fixed("output digest")?;
+            let time_selection = if has_time {
+                Some(read_time_selection(&mut r)?)
+            } else {
+                None
+            };
             let digest = r.fixed("certificate digest")?;
             r.finish()?;
             Ok(Self {
                 book_id,
                 branch_id,
                 known_at,
+                time_selection,
                 selection,
                 registry_digest,
                 journal_root,
@@ -360,6 +439,13 @@ impl ReportCertificate {
         if self.branch_id != Id128::TRUNK || !self.selection.is_canonical() {
             return Err(invalid(
                 "unsupported branch or noncanonical report selector",
+            ));
+        }
+        if let Some(time) = &self.time_selection
+            && (!time.is_canonical() || time.resolution.resolved_seq != self.known_at.0)
+        {
+            return Err(invalid(
+                "TimeEvidence brackets do not resolve to the certified sequence",
             ));
         }
         let expected = statements(self.known_at);
@@ -387,7 +473,7 @@ impl ReportCertificate {
         }
         let body = self.body_bytes().map_err(|e| invalid(e.to_string()))?;
         if body.len().saturating_add(32) > MAX_CERTIFICATE_BYTES
-            || digest(CERTIFICATE_FORMAT, &body) != self.digest
+            || digest(self.format(), &body) != self.digest
         {
             return Err(invalid(
                 "the report certificate's content digest does not match",
@@ -403,6 +489,38 @@ pub(crate) fn certify<V: Vfs + Clone>(
     book: &BookContext,
     selection: TrialBalanceSelection,
     known_at: Option<CommitSeq>,
+) -> Outcome<CertifiedTrialBalance> {
+    certify_selected(db, cx, book, selection, known_at, None)
+}
+
+pub(crate) fn certify_instant<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    selection: TrialBalanceSelection,
+    requested_utc_ns: u64,
+) -> Outcome<CertifiedTrialBalance> {
+    let time = match fa_journal::resolve_instant_at(db, cx, book, requested_utc_ns, None)? {
+        Ok(time) => time,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    certify_selected(
+        db,
+        cx,
+        book,
+        selection,
+        Some(CommitSeq(time.resolution.resolved_seq)),
+        Some(time),
+    )
+}
+
+fn certify_selected<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    selection: TrialBalanceSelection,
+    known_at: Option<CommitSeq>,
+    time_selection: Option<fa_journal::InstantSelection>,
 ) -> Outcome<CertifiedTrialBalance> {
     cx.checkpoint().map_err(BookError::Context)?;
     let selection = selection.normalize();
@@ -441,6 +559,7 @@ pub(crate) fn certify<V: Vfs + Clone>(
         book_id: book.book_id,
         branch_id: Id128::TRUNK,
         known_at: at,
+        time_selection,
         selection,
         registry_digest: registry_digest(),
         journal_root: journal.root(),
@@ -451,7 +570,7 @@ pub(crate) fn certify<V: Vfs + Clone>(
         digest: [0; 32],
     };
     certificate.digest = digest(
-        CERTIFICATE_FORMAT,
+        certificate.format(),
         &certificate.body_bytes().map_err(encoding)?,
     );
     if let Err(refusal) = certificate.validate() {
@@ -516,6 +635,30 @@ pub(crate) fn replay<V: Vfs + Clone>(
         return Ok(Err(invalid(
             "the certificate's registry or foundation versions are unavailable in this executable",
         )));
+    }
+    if let Some(expected) = &certificate.time_selection {
+        // The later upper tick can lie after the report's sequence. Resolve
+        // against the saved observed frontier, never today's HEAD, and verify
+        // the retained tick payloads against their unchanged current records.
+        let actual = match fa_journal::resolve_instant_at(
+            db,
+            cx,
+            book,
+            expected.resolution.requested_utc_ns,
+            Some(CommitSeq(expected.resolution.frontier)),
+        ) {
+            Ok(Ok(actual)) => actual,
+            Ok(Err(refusal)) => return Ok(Err(invalid(refusal.message))),
+            Err(fa_journal::KernelError::Corrupt(why)) => {
+                return Ok(Err(invalid(format!("TimeEvidence does not replay: {why}"))));
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if &actual != expected {
+            return Ok(Err(invalid(
+                "TimeEvidence resolution differs from the certified frontier and brackets",
+            )));
+        }
     }
     for (index, input) in certificate.inputs.iter().enumerate() {
         if let Err(error) = db.replay(

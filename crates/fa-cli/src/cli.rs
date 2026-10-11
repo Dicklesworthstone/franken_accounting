@@ -195,6 +195,7 @@ impl Style {
 struct Said {
     at: Option<At>,
     warnings: Vec<String>,
+    time_selection: Option<fa::InstantSelection>,
 }
 
 /// Where a robot line sits (plan §4.8): the book's id, and the branch
@@ -216,7 +217,7 @@ pub struct At {
 /// flat object, never a robot line.
 #[must_use]
 pub fn robot_line(event: &str, data: Json, at: Option<&At>, warnings: &[String]) -> Json {
-    robot_line_with_actions(event, data, at, warnings, &[], None)
+    robot_line_with_actions(event, data, at, warnings, &[], None, None)
 }
 
 fn robot_line_with_actions(
@@ -226,6 +227,7 @@ fn robot_line_with_actions(
     warnings: &[String],
     actions: &[(String, String)],
     certificate: Option<&str>,
+    time_selection: Option<&fa::InstantSelection>,
 ) -> Json {
     let mut next_actions: Vec<Json> = verbs::registry().map_or_else(
         |_| Vec::new(),
@@ -251,6 +253,7 @@ fn robot_line_with_actions(
                     ("branch", s("trunk")),
                     ("known_at", Json::Int(i128::from(a.known_at.0))),
                     ("effective", s(&a.effective)),
+                    ("time_evidence", time_selection.map_or(Json::Null, time_selection_json)),
                 ])
             }),
         ),
@@ -270,6 +273,7 @@ fn stamp(said: &RefCell<Said>, book: &Book) -> Result<(), Fail> {
         .at
         .as_ref()
         .map_or_else(|| "all".to_string(), |a| a.effective.clone());
+    said.time_selection = None;
     said.at = Some(At {
         book: book.context().book_id.to_hex(),
         known_at: head,
@@ -325,9 +329,26 @@ impl Out {
 
     /// Pin the coordinate's recorded sequence (an `--as-known-at` read).
     pub(crate) fn known_at(&self, seq: CommitSeq) {
-        if let Some(a) = self.said.borrow_mut().at.as_mut() {
+        let mut said = self.said.borrow_mut();
+        if let Some(a) = said.at.as_mut() {
             a.known_at = seq;
         }
+        if said
+            .time_selection
+            .as_ref()
+            .is_some_and(|time| time.resolution.resolved_seq != seq.0)
+        {
+            said.time_selection = None;
+        }
+    }
+
+    /// Bind an instant-selected coordinate to the retained tick resolution.
+    pub(crate) fn time_selection(&self, time: Option<&fa::InstantSelection>) {
+        let mut said = self.said.borrow_mut();
+        if let (Some(a), Some(time)) = (said.at.as_mut(), time) {
+            a.known_at = CommitSeq(time.resolution.resolved_seq);
+        }
+        said.time_selection = time.cloned();
     }
 
     /// Something the command noticed but did not refuse: robot mode carries
@@ -409,6 +430,7 @@ impl Out {
                 &said.warnings,
                 actions,
                 certificate,
+                said.time_selection.as_ref(),
             );
             self.line(line.render());
         } else if !human.is_empty() {
@@ -2987,8 +3009,6 @@ fn post_document(
 // tb / verify / registers / entry
 // ---------------------------------------------------------------------------
 
-/// `--as-known-at HEAD|<seq>` (at most once): `None` selects the head; an
-/// instant or any other spelling is refused, never converted.
 /// The envelope's effective selector for a period selection (plan §4.8).
 pub(crate) fn periods_selector(periods: &[String]) -> String {
     match periods {
@@ -2998,27 +3018,79 @@ pub(crate) fn periods_selector(periods: &[String]) -> String {
     }
 }
 
-fn known_at_flag(args: &Args) -> Result<Option<CommitSeq>, Fail> {
+fn time_selection_json(time: &fa::InstantSelection) -> Json {
+    let resolution = &time.resolution;
+    let tick = |tick: &fa_time::TimeObservation, entry: VId| {
+        obj(vec![
+            ("entry", s(format!("{:032x}", entry.0))),
+            ("recorded_at", Json::Int(i128::from(tick.recorded_at))),
+            ("observed_utc_ns", Json::Int(i128::from(tick.observed_utc_ns))),
+            ("source", Json::Int(i128::from(tick.source))),
+            ("monotonic_ok", Json::Bool(tick.monotonic_ok)),
+        ])
+    };
+    obj(vec![
+        (
+            "requested_instant",
+            s(fa_time::UtcInstant::from_unix_ns(resolution.requested_utc_ns).to_string()),
+        ),
+        (
+            "requested_utc_ns",
+            Json::Int(i128::from(resolution.requested_utc_ns)),
+        ),
+        ("frontier", Json::Int(i128::from(resolution.frontier))),
+        ("resolved_seq", Json::Int(i128::from(resolution.resolved_seq))),
+        ("precision", s(resolution.precision_grade())),
+        ("source_grade", s(resolution.source_grade())),
+        ("lower", tick(&resolution.lower, time.lower_entry)),
+        (
+            "upper",
+            resolution
+                .upper
+                .as_ref()
+                .zip(time.upper_entry)
+                .map_or(Json::Null, |(observation, entry)| tick(observation, entry)),
+        ),
+    ])
+}
+
+/// Parse and resolve a known-at selector. An instant records its evidence
+/// beside the resolved sequence; missing evidence is never a HEAD fallback.
+fn known_at_flag(
+    args: &Args,
+    book: &Book,
+    out: &Out,
+) -> Result<(Option<CommitSeq>, Option<u64>), Fail> {
     if args.flag_all("--as-known-at").len() > 1 {
         return Err(usage(
             "--as-known-at may be supplied only once",
-            "--as-known-at HEAD or --as-known-at <u64 commit sequence>",
+            "--as-known-at HEAD, <u64 commit sequence>, or <RFC3339 instant>",
         ));
     }
     match args.flag("--as-known-at") {
-        None | Some("HEAD") => Ok(None),
-        Some(value) => {
-            let sequence = if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
-                value.parse::<u64>().ok()
-            } else {
-                None
-            };
-            sequence.map(|n| Some(CommitSeq(n))).ok_or_else(|| {
+        None | Some("HEAD") => Ok((None, None)),
+        Some(value) if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) => {
+            let sequence = value.parse::<u64>().map_err(|_| {
                 usage(
-                    "--as-known-at requires HEAD or an unsigned CommitSeq; instant selectors are unsupported",
-                    "--as-known-at HEAD or --as-known-at <u64 commit sequence>",
+                    "--as-known-at commit sequence exceeds u64",
+                    "--as-known-at HEAD or an existing unsigned commit sequence",
                 )
-            })
+            })?;
+            Ok((Some(CommitSeq(sequence)), None))
+        }
+        Some(value) => {
+            let instant = fa_time::UtcInstant::parse(value).map_err(|error| {
+                usage(
+                    format!("invalid --as-known-at selector: {error}"),
+                    "--as-known-at HEAD, <u64 commit sequence>, or 2026-03-15T00:00:00Z",
+                )
+            })?;
+            let time = book.resolve_known_at_instant(instant.unix_ns())??;
+            out.time_selection(Some(&time));
+            Ok((
+                Some(CommitSeq(time.resolution.resolved_seq)),
+                Some(instant.unix_ns()),
+            ))
         }
     }
 }
@@ -3074,7 +3146,7 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "fa tb --help",
         ));
     }
-    let known_at = known_at_flag(args)?;
+    let (known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
     let selection = if let Some(date) = args.flag("--as-of") {
         if args.flag("--period").is_some()
             || args.flag("--fiscal-year").is_some()
@@ -3102,7 +3174,11 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     };
     let (tb, certificate) = if args.switch("--certify") || args.flag("--certificate-out").is_some()
     {
-        let certified = book.certify_trial_balance(selection.clone(), known_at)??;
+        let certified = match requested_utc_ns {
+            Some(instant) => book.certify_trial_balance_at_instant(selection.clone(), instant)??,
+            None => book.certify_trial_balance(selection.clone(), known_at)??,
+        };
+        out.time_selection(certified.certificate.time_selection.as_ref());
         (certified.report, Some(certified.certificate))
     } else {
         let report = match &selection {
@@ -3600,7 +3676,7 @@ fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let account = args
         .flag("--account")
         .map(|code| account_vid(ctx.book_id, code));
-    let known_at = known_at_flag(args)?;
+    let (known_at, _) = known_at_flag(args, &book, out)?;
     let items = book.open_items(account, known_at)?;
     if let Some(seq) = known_at {
         out.known_at(seq);
@@ -3729,8 +3805,8 @@ fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
     let period = args.require("--period", "FY2026-P03")?;
-    let known_at = known_at_flag(args)?;
     let book = ctx.books.open(args)?;
+    let (known_at, _) = known_at_flag(args, &book, out)?;
     let periods = book.periods()?;
     if !periods.iter().any(|p| p.code == period) {
         let codes: Vec<&str> = periods.iter().map(|p| p.code.as_str()).collect();

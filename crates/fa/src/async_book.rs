@@ -1037,6 +1037,42 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    /// Resolve a UTC instant from the journal's retained TimeEvidence at HEAD.
+    /// The returned frontier and brackets describe the precision of the read.
+    pub fn resolve_known_at_instant(
+        &self,
+        cx: &PurposeContexts,
+        requested_utc_ns: u64,
+    ) -> Outcome<fa_journal::InstantSelection> {
+        self.query(cx, |db, book| {
+            Ok(fa_journal::resolve_instant_at(
+                db,
+                &cx.query(),
+                book,
+                requested_utc_ns,
+                None,
+            )?)
+        })
+    }
+
+    /// Certify an instant-selected report, including its original tick brackets.
+    pub fn certify_trial_balance_at_instant(
+        &self,
+        cx: &PurposeContexts,
+        selection: crate::TrialBalanceSelection,
+        requested_utc_ns: u64,
+    ) -> Outcome<crate::CertifiedTrialBalance> {
+        self.query(cx, |db, book| {
+            crate::certificate::certify_instant(
+                db,
+                &cx.query(),
+                book,
+                selection,
+                requested_utc_ns,
+            )
+        })
+    }
+
     /// Replay every native input, then the exact accounting fold.
     pub fn replay_trial_balance(
         &self,

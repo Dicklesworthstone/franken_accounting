@@ -1037,14 +1037,6 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Res
         vec!["tb", "--period", march, "--fiscal-year", "2026", "--json"],
         vec!["tb", "--as-of", "2026-03-15T00:00:00Z", "--json"],
         vec!["tb", "--as-of", "2026-02-30", "--json"],
-        vec![
-            "tb",
-            "--period",
-            march,
-            "--as-known-at",
-            "2026-03-15T00:00:00Z",
-            "--json",
-        ],
         vec!["tb", "--period", march, "--as-known-at", "-1", "--json"],
         vec![
             "tb",
@@ -3092,9 +3084,9 @@ fn explain_balance_lists_every_leg_re_adds_to_the_cell_and_replays_its_history()
                 "--period",
                 "FY2026-P03",
                 "--as-known-at",
-                "2026-03-15T00:00:00Z",
+                "2026-03-15T00:00:00",
             ],
-            "instant selectors are unsupported",
+            "invalid --as-known-at selector",
         ),
         (
             vec![
@@ -4582,5 +4574,267 @@ fn a_hosts_relative_book_and_keys_resolve_against_its_files_cwd() -> std::io::Re
         ],
     );
     assert!(matches!(code, 4 | 5), "exit {code}: {out}");
+    Ok(())
+}
+
+#[test]
+fn instant_selected_cli_reports_retain_tick_evidence_and_replay() -> std::io::Result<()> {
+    use asupersync::Budget;
+    use asupersync::runtime::RuntimeBuilder;
+    use fa::book::{Book, BookKeys, Entropy};
+    use fa_journal::{Capability, Ticked};
+    use fgdb_types::{CommitSeq, VId};
+
+    // Independent epoch constants, not values produced by the parser under
+    // test: 2026-03-15 at 12:00:00Z, 12:00:05Z and 12:00:10Z.
+    const LOWER_NS: u64 = 1_773_576_000_000_000_000;
+    const REQUESTED_NS: u64 = 1_773_576_005_000_000_000;
+    const UPPER_NS: u64 = 1_773_576_010_000_000_000;
+    const INSTANT: &str = "2026-03-15T12:00:05Z";
+    const CANONICAL_INSTANT: &str = "2026-03-15T12:00:05.000000000Z";
+    const OFFSET_INSTANT: &str = "2026-03-15T08:00:05-04:00";
+    const PERIOD: &str = "FY2026-P03";
+
+    let dir = tmp("instant-reports")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        assert!(err.is_empty(), "{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Time Evidence Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", PERIOD, "--json"]);
+    let evidence = source_doc(&dir, &book);
+
+    let keys = BookKeys::load(&book.join("book.keys")).unwrap();
+    let open = || Book::open_dir(&book, keys.clone(), Entropy::production()).unwrap();
+    let head = || open().head().unwrap();
+    let before_evidence = head();
+    for args in [
+        vec!["tb", "--period", PERIOD, "--as-known-at", INSTANT, "--json"],
+        vec![
+            "open-items",
+            "--account",
+            "1000",
+            "--as-known-at",
+            INSTANT,
+            "--json",
+        ],
+        vec![
+            "explain",
+            "balance",
+            "1000",
+            "--period",
+            PERIOD,
+            "--as-known-at",
+            INSTANT,
+            "--json",
+        ],
+    ] {
+        let (code, out, err) = fa(Some(&book), &args);
+        assert_eq!(code, 3, "args={args:?}\n{out}\n{err}");
+        assert_eq!(text(&doc(&out), "refusal_id"), "FA-REF-151", "{out}");
+        assert_eq!(out.lines().count(), 1);
+    }
+    assert_eq!(head(), before_evidence, "missing time evidence never writes");
+
+    // Only this explicit, witness-authorized host records clock evidence.
+    // The read-only CLI is not given a tick command or System authority.
+    let runtime = RuntimeBuilder::new().build().unwrap();
+    let root = runtime.request_cx_with_budget(Budget::INFINITE);
+    let witness = Capability::embedded(VId(7), &["witness"]).unwrap();
+    let tick = |observed_utc_ns| -> Ticked {
+        let mut handle = open();
+        runtime
+            .block_on(handle.record_tick(&root, observed_utc_ns, true, &witness))
+            .unwrap()
+            .unwrap()
+    };
+    let lower = tick(LOWER_NS);
+    let first_file = write(
+        &dir,
+        "first.json",
+        r#"{"effective_date":"2026-03-15","idempotency_key":"first","legs":[{"side":"debit","account":"6000","amount":"100.00 USD"},{"side":"credit","account":"1000","amount":"100.00 USD"}]}"#,
+    );
+    let first = doc(&ok(&[
+        "post",
+        "--intent",
+        &first_file,
+        "--evidence",
+        &evidence,
+        "--json",
+    ]));
+    let first_seq = int(&first, "recorded_at").unwrap();
+    let first_vid = text(&first, "vid").to_string();
+    assert!(first_seq > i128::from(lower.recorded_at.0));
+
+    let check_coordinate = |line: &str, frontier: CommitSeq, upper: Option<&Ticked>| {
+        let envelope = json::parse(line).unwrap();
+        let coordinate = envelope.get("coordinate").unwrap();
+        assert_eq!(int(coordinate, "known_at"), Some(first_seq), "{line}");
+        let time = coordinate.get("time_evidence").unwrap();
+        assert_eq!(text(time, "requested_instant"), CANONICAL_INSTANT, "{line}");
+        assert_eq!(int(time, "requested_utc_ns"), Some(i128::from(REQUESTED_NS)));
+        assert_eq!(int(time, "frontier"), Some(i128::from(frontier.0)));
+        assert_eq!(int(time, "resolved_seq"), Some(first_seq));
+        assert_eq!(text(time, "precision"), "tick_bucket", "{line}");
+        assert_eq!(text(time, "source_grade"), "corroborated_daemon_clock", "{line}");
+        let observation = time.get("lower").unwrap();
+        assert_eq!(
+            text(observation, "entry"),
+            format!("{:032x}", lower.entry_ref.vid.0)
+        );
+        assert_eq!(
+            int(observation, "recorded_at"),
+            Some(i128::from(lower.recorded_at.0))
+        );
+        assert_eq!(
+            int(observation, "observed_utc_ns"),
+            Some(i128::from(LOWER_NS))
+        );
+        assert_eq!(int(observation, "source"), Some(0));
+        assert_eq!(observation.get("monotonic_ok"), Some(&Json::Bool(true)));
+        match upper {
+            Some(tick) => {
+                let observation = time.get("upper").unwrap();
+                assert_eq!(
+                    text(observation, "entry"),
+                    format!("{:032x}", tick.entry_ref.vid.0)
+                );
+                assert_eq!(
+                    int(observation, "recorded_at"),
+                    Some(i128::from(tick.recorded_at.0))
+                );
+                assert_eq!(
+                    int(observation, "observed_utc_ns"),
+                    Some(i128::from(UPPER_NS))
+                );
+                assert_eq!(observation.get("monotonic_ok"), Some(&Json::Bool(true)));
+            }
+            None => assert_eq!(time.get("upper"), Some(&Json::Null), "{line}"),
+        }
+    };
+
+    let open_frontier = head();
+    let path = dir.join("open-bucket.cert").display().to_string();
+    let certified = ok(&[
+        "tb",
+        "--period",
+        PERIOD,
+        "--as-known-at",
+        INSTANT,
+        "--certificate-out",
+        &path,
+        "--json",
+    ]);
+    let lines: Vec<&str> = certified.lines().collect();
+    assert_eq!(lines.len(), 2, "trial balance plus retained certificate");
+    assert_eq!(field(lines[0], "event"), Some("trial_balance"));
+    assert_cash_credits(lines[0], "100.00 USD");
+    check_coordinate(lines[0], open_frontier, None);
+    check_coordinate(lines[1], open_frontier, None);
+    let retained_line = format!("{}\n", lines[0]);
+    let retained = fa::ReportCertificate::decode(&std::fs::read(&path)?).unwrap();
+    let bound_time = retained.time_selection.as_ref().unwrap();
+    assert_eq!(bound_time.resolution.frontier, open_frontier.0);
+    assert_eq!(bound_time.resolution.requested_utc_ns, REQUESTED_NS);
+    assert!(bound_time.resolution.upper.is_none());
+    assert_eq!(head(), open_frontier, "certifying an instant never posts a tick");
+
+    let upper = tick(UPPER_NS);
+    assert_eq!(
+        i128::from(upper.recorded_at.0.checked_sub(1).unwrap()),
+        first_seq,
+        "the next tick closes the selected bucket before its own commit"
+    );
+    let later_file = write(
+        &dir,
+        "later.json",
+        r#"{"effective_date":"2026-03-15","idempotency_key":"later","legs":[{"side":"debit","account":"6000","amount":"25.00 USD"},{"side":"credit","account":"1000","amount":"25.00 USD"}]}"#,
+    );
+    ok(&[
+        "post",
+        "--intent",
+        &later_file,
+        "--evidence",
+        &evidence,
+        "--json",
+    ]);
+    tick(1_773_576_020_000_000_000);
+    let current_frontier = head();
+
+    let selected = report(
+        &book,
+        &["tb", "--period", PERIOD, "--as-known-at", INSTANT, "--json"],
+    );
+    assert_cash_credits(&selected, "100.00 USD");
+    check_coordinate(selected.trim_end(), current_frontier, Some(&upper));
+    let equivalent = report(
+        &book,
+        &[
+            "tb",
+            "--period",
+            PERIOD,
+            "--as-known-at",
+            OFFSET_INSTANT,
+            "--json",
+        ],
+    );
+    assert_eq!(selected, equivalent, "equivalent offsets canonicalize identically");
+
+    let items_out = ok(&[
+        "open-items",
+        "--account",
+        "1000",
+        "--as-known-at",
+        INSTANT,
+        "--json",
+    ]);
+    check_coordinate(items_out.trim_end(), current_frontier, Some(&upper));
+    let items = doc(&items_out);
+    assert_eq!(int(&items, "count"), Some(1));
+    let item = &arr(&items, "items")[0];
+    assert_eq!(text(item, "entry"), first_vid);
+    assert_eq!(text(item, "open"), "100.00 USD");
+
+    let explained = ok(&[
+        "explain",
+        "balance",
+        "1000",
+        "--period",
+        PERIOD,
+        "--as-known-at",
+        INSTANT,
+        "--json",
+    ]);
+    check_coordinate(explained.trim_end(), current_frontier, Some(&upper));
+    let explanation = doc(&explained);
+    assert_eq!(arr(&explanation, "contributions").len(), 1);
+    assert_eq!(text(&arr(&explanation, "contributions")[0], "entry"), first_vid);
+    assert_eq!(text(&arr(&explanation, "cells")[0], "credits"), "100.00 USD");
+
+    let replay = ok(&["replay", &path, "--json"]);
+    assert_eq!(
+        replay, retained_line,
+        "replay retains the original frontier and open bracket after later ticks"
+    );
+    check_coordinate(replay.trim_end(), open_frontier, None);
+    assert_cash_credits(
+        &report(&book, &["tb", "--period", PERIOD, "--json"]),
+        "125.00 USD",
+    );
+    assert_eq!(
+        head(),
+        current_frontier,
+        "instant resolution, reports and replay leave the journal frontier unchanged"
+    );
     Ok(())
 }

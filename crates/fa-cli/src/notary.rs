@@ -214,6 +214,7 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let certificate = read_report_certificate(&ctx.files, &args.positional[1])?;
     let book = ctx.books.open(args)?;
     let report = book.replay_trial_balance(&certificate)??;
+    ctx.out.time_selection(certificate.time_selection.as_ref());
     render_trial_balance(
         &ctx.out,
         &book,

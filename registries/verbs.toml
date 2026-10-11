@@ -188,7 +188,7 @@ flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at", "--certificate
 switches = ["--activity", "--certify"]
 events = ["trial_balance", "report_certificate"]
 exits = [0, 2, 3, 4, 5, 8]
-usage = ["tb ((--period <code>)... | --fiscal-year N) [--activity] [--as-known-at HEAD|<seq>]", "tb --as-of YYYY-MM-DD [--as-known-at HEAD|<seq>]", "Add --certify to emit a report_certificate with complete canonical bytes as hex; --certificate-out <new-file> implies certification and also saves canonical binary bytes without replacing any existing file.", "Stock balances include opening history; --activity is selected-period movement. Instants are unsupported. Certificates have embedded-owner authority and fa-fold-over-prefix replay scope; no witness signature or outsider completeness claim."]
+usage = ["tb ((--period <code>)... | --fiscal-year N) [--activity] [--as-known-at HEAD|<seq>|<RFC3339>]", "tb --as-of YYYY-MM-DD [--as-known-at HEAD|<seq>|<RFC3339>]", "Add --certify to emit a report_certificate with complete canonical bytes as hex; --certificate-out <new-file> implies certification and also saves canonical binary bytes without replacing any existing file.", "Stock balances include opening history; --activity is selected-period movement. Known-at instants resolve from retained TimeEvidence and report the observed frontier and tick brackets; as-of remains a civil date. Certificates preserve the original instant resolution, with embedded-owner authority and fa-fold-over-prefix replay scope; no witness signature or physical timestamp claim."]
 example = "fa tb --period FY2026-P03 --book ./books/myco --json"
 
 [[verb]]
@@ -224,7 +224,7 @@ flags = ["--account", "--as-known-at"]
 switches = []
 events = ["open_items"]
 exits = [0, 2, 4, 5]
-usage = ["open-items [--account <code>] [--as-known-at HEAD|<seq>]"]
+usage = ["open-items [--account <code>] [--as-known-at HEAD|<seq>|<RFC3339>]"]
 example = "fa open-items --account 1200 --book ./books/myco --json"
 
 [[verb]]
@@ -236,7 +236,7 @@ flags = ["--period", "--as-known-at"]
 switches = []
 events = ["balance_explained"]
 exits = [0, 2, 4, 5]
-usage = ["explain balance <account code> --period <code> [--as-known-at HEAD|<seq>]"]
+usage = ["explain balance <account code> --period <code> [--as-known-at HEAD|<seq>|<RFC3339>]"]
 example = "fa explain balance 1000 --period FY2026-P03 --book ./books/myco --json"
 
 [[verb]]
@@ -829,8 +829,18 @@ fields = ["recorded_at:seq", "unit:string", "debits:amount", "credits:amount", "
 
 [[shape]]
 name = "coordinate"
-doc = "What a line describes (plan §4.8), beside the envelope's `book` (the book id): the branch (`trunk`; drafts and scenarios land later), `known_at` (the recorded sequence: the head when read, or the one --as-known-at selected; after a write, the head that write produced), and `effective` (`all`, `period:<code>`, `periods:<code>,<code>…`, or `as-of:<YYYY-MM-DD>`)."
-fields = ["branch:string", "known_at:seq", "effective:string"]
+doc = "What a line describes (plan §4.8), beside the envelope's `book` (the book id): the branch (`trunk`; drafts and scenarios land later), `known_at` (the recorded sequence: the head when read, or the one --as-known-at selected; after a write, the head that write produced), and `effective` (`all`, `period:<code>`, `periods:<code>,<code>…`, or `as-of:<YYYY-MM-DD>`). `time_evidence` is null for sequence/HEAD reads; instant reads and their replays retain the original observed frontier, resolved sequence and tick brackets."
+fields = ["branch:string", "known_at:seq", "effective:string", "time_evidence:time_evidence?"]
+
+[[shape]]
+name = "time_evidence"
+doc = "The retained resolution of a requested UTC instant under plan §7.1a. precision is tick_bucket; source_grade preserves clock corroboration. A null upper bracket is open at frontier. This does not establish a physical commit instant, and replay uses this saved frontier."
+fields = ["requested_instant:string", "requested_utc_ns:int", "frontier:seq", "resolved_seq:seq", "precision:string", "source_grade:string", "lower:time_tick", "upper:time_tick?"]
+
+[[shape]]
+name = "time_tick"
+doc = "One journaled TimeEvidence observation and its immutable entry identity. source 0 is the daemon clock; monotonic_ok records corroboration, not proof of UTC accuracy."
+fields = ["entry:hex", "recorded_at:seq", "observed_utc_ns:int", "source:int", "monotonic_ok:bool"]
 
 [[shape]]
 name = "next_action"
@@ -1116,7 +1126,7 @@ positionals = []
 flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at"]
 required = []
 dont = ["Don't pass an instant to `as_of`: a civil date, never a timestamp; instants are unsupported here.", "Don't mix `as_of` with `period`, `fiscal_year` or `activity`.", "Use certify: true to receive the report and its complete certificate as two data items; retain the certificate's bytes string for replay. MCP certification returns bytes inline and exposes no certificate_out host-file write."]
-mistakes = ["Reading `activity` rows as stock: stock includes opening history, `activity: true` is the selected periods' movement.", "Expecting `as_known_at` to accept an instant: it takes `HEAD` or a recorded sequence."]
+mistakes = ["Reading `activity` rows as stock: stock includes opening history, `activity: true` is the selected periods' movement.", "Treating a known-at instant as an exact physical commit timestamp: it is a retained TimeEvidence bucket, with its frontier and brackets in the coordinate."]
 
 [[mcp.tool]]
 cluster = "fa.read"

@@ -1031,6 +1031,25 @@ impl Book {
         with_store!(&self.store, core => core.certify_trial_balance(&self.purposes(), selection, known_at))
     }
 
+    /// Resolve a UTC instant from retained ticks without reading a clock.
+    /// Keep the returned frontier and brackets with the resolved sequence.
+    pub fn resolve_known_at_instant(
+        &self,
+        requested_utc_ns: u64,
+    ) -> Outcome<fa_journal::InstantSelection> {
+        with_store!(&self.store, core => core.resolve_known_at_instant(&self.purposes(), requested_utc_ns))
+    }
+
+    /// Certify a trial balance selected by a TimeEvidence instant. Replay
+    /// preserves its original resolution even after later ticks are recorded.
+    pub fn certify_trial_balance_at_instant(
+        &self,
+        selection: crate::TrialBalanceSelection,
+        requested_utc_ns: u64,
+    ) -> Outcome<crate::CertifiedTrialBalance> {
+        with_store!(&self.store, core => core.certify_trial_balance_at_instant(&self.purposes(), selection, requested_utc_ns))
+    }
+
     /// Reproduce the report at the certificate's fixed known-at sequence,
     /// refusing changed inputs, unavailable history or different output bytes.
     pub fn replay_trial_balance(
@@ -3353,6 +3372,181 @@ mod tests {
         (book, usd, day, posted.entry_ref().vid)
     }
 
+    fn certificate_tick(book: &mut Book, ns: u64, monotonic_ok: bool) -> fa_journal::Ticked {
+        let (runtime, root) = Book::runtime_and_root().unwrap();
+        let witness = Capability::embedded(VId(1), &["witness"]).unwrap();
+        runtime
+            .block_on(book.record_tick(&root, ns, monotonic_ok, &witness))
+            .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn instant_certificates_keep_their_original_frontier_and_tick_brackets() {
+        use crate::{ReportCertificate, TrialBalanceSelection};
+        let (mut book, usd, day, _) = certified_fixture();
+        let selection = TrialBalanceSelection::Periods(vec!["FY2026-P03".into()]);
+        let base = fa_time::UtcInstant::parse("2026-03-15T00:00:00Z")
+            .unwrap()
+            .unix_ns();
+        let refused = book.resolve_known_at_instant(base).unwrap().unwrap_err();
+        assert_eq!((refused.code, refused.exit), ("FA-REF-151", 3));
+
+        let lower = certificate_tick(&mut book, base + 100, true);
+        post_rent(&mut book, usd, VId(1), day, b"inside-first-bucket", 150_000)
+            .unwrap()
+            .unwrap();
+        let frontier = book.head().unwrap();
+        let open = book
+            .certify_trial_balance_at_instant(selection.clone(), base + 105)
+            .unwrap()
+            .unwrap();
+        let evidence = open.certificate.time_selection.as_ref().unwrap();
+        assert_eq!(evidence.resolution.frontier, frontier.0);
+        assert_eq!(evidence.resolution.resolved_seq, frontier.0);
+        assert_eq!(evidence.lower_entry, lower.tick.entry);
+        assert!(evidence.resolution.upper.is_none());
+        assert!(evidence.upper_entry.is_none());
+        assert_eq!(open.report.unit_totals[&usd.0], (300_000, 300_000));
+        assert_eq!(book.head().unwrap(), frontier, "certification is read-only");
+
+        // New commits can extend a still-open bucket. Its earlier certificate
+        // must replay the old frontier, even after an upper tick later arrives.
+        post_rent(&mut book, usd, VId(1), day, b"extend-open-bucket", 150_000)
+            .unwrap()
+            .unwrap();
+        let before_upper = book.head().unwrap();
+        let upper = certificate_tick(&mut book, base + 110, false);
+        post_rent(&mut book, usd, VId(1), day, b"after-upper-tick", 150_000)
+            .unwrap()
+            .unwrap();
+        let current = book.head().unwrap();
+        let closed = book
+            .certify_trial_balance_at_instant(selection.clone(), base + 105)
+            .unwrap()
+            .unwrap();
+        let time = closed.certificate.time_selection.as_ref().unwrap();
+        assert_eq!(time.resolution.frontier, current.0);
+        assert_eq!(time.resolution.resolved_seq, before_upper.0);
+        assert_eq!(time.upper_entry, Some(upper.tick.entry));
+        assert_eq!(time.resolution.upper.unwrap().recorded_at, upper.recorded_at.0);
+        assert_eq!(time.resolution.precision_grade(), "tick_bucket");
+        assert_eq!(time.resolution.source_grade(), "uncorroborated_daemon_clock");
+        assert_eq!(closed.report.unit_totals[&usd.0], (450_000, 450_000));
+        assert_eq!(
+            book.trial_balance(&["FY2026-P03".into()])
+                .unwrap()
+                .unit_totals[&usd.0],
+            (600_000, 600_000)
+        );
+
+        for saved in [&open, &closed] {
+            let encoded = saved.certificate.canonical_bytes().unwrap();
+            assert!(encoded.starts_with(crate::certificate::INSTANT_CERTIFICATE_FORMAT));
+            let decoded = ReportCertificate::decode(&encoded).unwrap();
+            assert_eq!(decoded, saved.certificate);
+            assert_eq!(
+                book.replay_trial_balance(&decoded).unwrap().unwrap(),
+                saved.report
+            );
+        }
+        assert_eq!(book.head().unwrap(), current, "replay appends nothing");
+        let exact = book.resolve_known_at_instant(base + 110).unwrap().unwrap();
+        assert_eq!(exact.lower_entry, upper.tick.entry);
+        assert_eq!(exact.resolution.resolved_seq, current.0);
+        assert!(exact.upper_entry.is_none());
+        let before_first = book
+            .resolve_known_at_instant(base + 99)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((before_first.code, before_first.exit), ("FA-REF-151", 3));
+
+        // A self-consistent rehash cannot substitute a different tick identity.
+        let mut forged = closed.certificate.clone();
+        forged.time_selection.as_mut().unwrap().lower_entry = VId(0xdead);
+        let raw = forged.canonical_bytes().unwrap();
+        let mut hasher = fgdb_crypto::Hasher::new();
+        hasher.update(crate::certificate::INSTANT_CERTIFICATE_FORMAT);
+        hasher.update(&raw[..raw.len() - 32]);
+        forged.digest = hasher.finalize().0;
+        let decoded = ReportCertificate::decode(&forged.canonical_bytes().unwrap()).unwrap();
+        let refusal = book.replay_trial_balance(&decoded).unwrap().unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
+
+        let sequence = book
+            .certify_trial_balance(selection, Some(frontier))
+            .unwrap()
+            .unwrap();
+        assert!(sequence.certificate.time_selection.is_none());
+        assert!(
+            sequence
+                .certificate
+                .canonical_bytes()
+                .unwrap()
+                .starts_with(crate::certificate::CERTIFICATE_FORMAT)
+        );
+        assert_eq!(sequence.report, open.report);
+    }
+
+
+    #[test]
+    fn instant_certificate_replay_checks_upper_tick_beyond_the_report_prefix() {
+        use crate::TrialBalanceSelection;
+        use fa_model::symbols::{property, relation};
+        for retire in [false, true] {
+            let (mut book, _, day, _) = certified_fixture();
+            let base = fa_time::UtcInstant::parse("2026-03-15T00:00:00Z")
+                .unwrap()
+                .unix_ns();
+            certificate_tick(&mut book, base + 100, true);
+            let upper = certificate_tick(&mut book, base + 110, true);
+            let certificate = book
+                .certify_trial_balance_at_instant(TrialBalanceSelection::AsOf(day), base + 105)
+                .unwrap()
+                .unwrap()
+                .certificate;
+            let frontier = CommitSeq(certificate.time_selection.as_ref().unwrap().resolution.frontier);
+            assert!(certificate.known_at < upper.recorded_at);
+            assert!(book.replay_trial_balance(&certificate).unwrap().is_ok());
+
+            // The upper bracket lies outside the report's native read closure.
+            // Its later alteration must still invalidate the time interpretation.
+            let contexts = book.purposes();
+            let mut change = fgdb::WriteBatch::new(relation::HAS_LEG);
+            if retire {
+                change.delete_vertex(upper.entry_ref.vid);
+            } else {
+                change.set_vertex_property(
+                    upper.entry_ref.vid,
+                    property::FA_PAYLOAD,
+                    Some(fgdb_types::CanonicalScalar::bytes(b"rewritten tick".to_vec()).unwrap()),
+                );
+            }
+            with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&contexts.commit(), change))).unwrap();
+            let historical = with_store!(&book.store, core => core.db.vertex_at(upper.entry_ref.vid, frontier))
+                .unwrap()
+                .unwrap();
+            let old = Entry::decode(
+                &fa_journal::rows::bytes(&historical, property::FA_PAYLOAD, "tick.payload").unwrap(),
+            )
+            .unwrap();
+            assert!(matches!(
+                old.proposal.control,
+                Some(fa_model::ControlPayload::TimeTick { observed_utc_ns, .. })
+                    if observed_utc_ns == base + 110
+            ));
+            let head = book.head().unwrap();
+            let refusal = book
+                .replay_trial_balance(&certificate)
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(refusal.code, crate::certificate::code::CERTIFICATE_INVALID);
+            assert_eq!(refusal.exit, fa_journal::exit::VERIFICATION);
+            assert!(book.certificate_status(&certificate).unwrap().is_err());
+            assert_eq!(book.head().unwrap(), head, "failed reads never repair or append");
+        }
+    }
+
     #[test]
     fn certified_trial_balance_replays_after_later_and_backdated_postings() {
         use crate::{CertificateStatus, ReportCertificate, TrialBalanceSelection};
@@ -3555,7 +3749,7 @@ mod tests {
                     .unwrap()
                     .unwrap();
             let old = Entry::decode(
-                &fa_journal::bytes(&old_row, property::FA_PAYLOAD, "entry.payload").unwrap(),
+                &fa_journal::rows::bytes(&old_row, property::FA_PAYLOAD, "entry.payload").unwrap(),
             )
             .unwrap();
             assert_eq!(old.proposal.effective_date, day);

@@ -246,6 +246,15 @@ exit = "verification"
 cite = "plan §13.6 / FA-INV-11"
 fix = "recreate the certificate from the original book and selector; retain its certified history and registry versions"
 
+# ---- TimeEvidence selection (151) ---------------------------------------
+[[refusal]]
+code = "FA-REF-151"
+name = "INSTANT_UNAVAILABLE"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §7.1a / FA-INV-07"
+fix = "select --as-known-at HEAD or an existing commit sequence; an instant before the first retained tick cannot be reconstructed"
+
 # ---- Supersession (050–054) ----------------------------------------------
 [[refusal]]
 code = "FA-REF-050"

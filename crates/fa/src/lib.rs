@@ -34,6 +34,7 @@ pub use book::{Book, BookError, BookKeys, Entropy, Outcome};
 pub use certificate::{
     CertificateStatus, CertifiedTrialBalance, ReportCertificate, TrialBalanceSelection,
 };
+pub use fa_journal::InstantSelection;
 pub use fa_notary::{AccumulatorVerification, Checkpointed};
 pub use fa_policy::{Capability, Op, Profile};
 pub use fa_registers::Advance;

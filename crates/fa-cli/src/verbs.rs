@@ -1228,7 +1228,7 @@ mod tests {
     }
 
     const BOOK: &str = r#""0a1b""#;
-    const COORDINATE: &str = r#"{"branch":"trunk","effective":"all","known_at":7}"#;
+    const COORDINATE: &str = r#"{"branch":"trunk","effective":"all","known_at":7,"time_evidence":null}"#;
     const RECORDED: &str =
         r#"{"entry_digest":"ab01","moved":null,"recorded_at":7,"requested":null,"vid":"00ff"}"#;
 
