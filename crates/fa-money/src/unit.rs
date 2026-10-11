@@ -4,6 +4,8 @@
 
 use core::fmt;
 
+use crate::rounding::RoundingLaw;
+
 /// Index into a [`UnitRegistry`]. Stable for the life of the registry epoch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UnitId(pub u32);
@@ -30,11 +32,15 @@ pub struct Unit {
     pub scale: u8,
     pub version: u16,
     pub kind: UnitKind,
+    /// Immutable default for this unit version. Arithmetic operations still
+    /// require an explicit law; this is metadata, never implicit rounding.
+    pub rounding_default: RoundingLaw,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UnitError {
     InvalidScale(u8),
+    InvalidCode,
     ConflictingVersion { code: String, version: u16 },
     TooManyUnits,
 }
@@ -43,6 +49,7 @@ impl fmt::Display for UnitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidScale(scale) => write!(f, "unit scale {scale} exceeds 38"),
+            Self::InvalidCode => f.write_str("unit code must contain 1..=64 bytes"),
             Self::ConflictingVersion { code, version } => write!(
                 f,
                 "unit {code}@v{version} already has a different definition; register a new version"
@@ -113,14 +120,23 @@ impl UnitRegistry {
                 "custom" => UnitKind::Custom,
                 other => return Err(invalid(format!("unknown unit kind `{other}`"))),
             };
-            registry
+            let rounding_default = RoundingLaw::from_id(row.rounding_default)
+                .ok_or_else(|| invalid("default rounding law is not executable".into()))?;
+            let id = registry
                 .register(Unit {
                     code: row.code,
                     scale: row.scale,
                     version: row.version,
                     kind,
+                    rounding_default,
                 })
                 .map_err(|error| invalid(error.to_string()))?;
+            if id.0 != row.id {
+                return Err(invalid(format!(
+                    "unit id {} differs from declared id {}",
+                    id.0, row.id
+                )));
+            }
         }
         Ok(registry)
     }
@@ -134,6 +150,7 @@ impl UnitRegistry {
             scale,
             version: 0,
             kind: UnitKind::Currency { iso4217: iso },
+            rounding_default: RoundingLaw::HalfEven,
         };
         for u in [
             cur("USD", 840, 2),
@@ -152,6 +169,7 @@ impl UnitRegistry {
             scale: 8,
             version: 0,
             kind: UnitKind::Commodity,
+            rounding_default: RoundingLaw::HalfEven,
         })
         .expect("valid built-in unit");
         r.register(Unit {
@@ -159,6 +177,7 @@ impl UnitRegistry {
             scale: 18,
             version: 0,
             kind: UnitKind::Commodity,
+            rounding_default: RoundingLaw::HalfEven,
         })
         .expect("valid built-in unit");
         r.register(Unit {
@@ -166,6 +185,7 @@ impl UnitRegistry {
             scale: 6,
             version: 0,
             kind: UnitKind::Share,
+            rounding_default: RoundingLaw::HalfEven,
         })
         .expect("valid built-in unit");
         r.register(Unit {
@@ -173,6 +193,7 @@ impl UnitRegistry {
             scale: 2,
             version: 0,
             kind: UnitKind::Time,
+            rounding_default: RoundingLaw::HalfEven,
         })
         .expect("valid built-in unit");
         r.register(Unit {
@@ -180,6 +201,7 @@ impl UnitRegistry {
             scale: 0,
             version: 0,
             kind: UnitKind::Count,
+            rounding_default: RoundingLaw::HalfEven,
         })
         .expect("valid built-in unit");
         r
@@ -189,6 +211,9 @@ impl UnitRegistry {
     /// its existing id; a conflicting definition or unsupported scale is
     /// refused without changing the registry.
     pub fn register(&mut self, unit: Unit) -> Result<UnitId, UnitError> {
+        if unit.code.is_empty() || unit.code.len() > 64 {
+            return Err(UnitError::InvalidCode);
+        }
         if unit.scale > 38 {
             return Err(UnitError::InvalidScale(unit.scale));
         }
@@ -275,7 +300,9 @@ mod tests {
                 .lookup(&format!("{}@v{}", row.code, row.version))
                 .unwrap();
             let unit = registry.get(id).unwrap();
+            assert_eq!(id.0, row.id);
             assert_eq!(unit.scale, row.scale);
+            assert_eq!(unit.rounding_default.id(), row.rounding_default);
             if let Some(iso4217) = row.iso4217 {
                 assert_eq!(unit.kind, UnitKind::Currency { iso4217 });
             }
@@ -296,6 +323,7 @@ mod tests {
             scale: 4,
             version: 0,
             kind: UnitKind::Custom,
+            rounding_default: RoundingLaw::HalfEven,
         });
         assert_eq!(
             conflict,
@@ -310,6 +338,12 @@ mod tests {
             r.register(changed_kind),
             Err(UnitError::ConflictingVersion { .. })
         ));
+        let mut changed_rounding = original.clone();
+        changed_rounding.rounding_default = RoundingLaw::HalfUp;
+        assert!(matches!(
+            r.register(changed_rounding),
+            Err(UnitError::ConflictingVersion { .. })
+        ));
         assert_eq!(r.len(), count);
         assert_eq!(r.get(usd), Some(&original));
         // A precision change is a new version with its own id.
@@ -319,6 +353,7 @@ mod tests {
                 scale: 4,
                 version: 1,
                 kind: UnitKind::Currency { iso4217: 840 },
+                rounding_default: RoundingLaw::HalfEven,
             })
             .unwrap();
         assert_ne!(usd4, usd);
@@ -340,6 +375,7 @@ mod tests {
                     scale,
                     version: 0,
                     kind: UnitKind::Custom,
+                    rounding_default: RoundingLaw::HalfEven,
                 }),
                 Err(UnitError::InvalidScale(scale))
             );
@@ -351,6 +387,7 @@ mod tests {
                 scale: 38,
                 version: 0,
                 kind: UnitKind::Custom,
+                rounding_default: RoundingLaw::HalfEven,
             })
             .unwrap();
         assert_eq!(registry.get(id).unwrap().one(), pow10(38));

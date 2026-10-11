@@ -504,6 +504,7 @@ mod tests {
                     scale,
                     version: 0,
                     kind: crate::unit::UnitKind::Custom,
+                    rounding_default: RoundingLaw::HalfEven,
                 })
                 .unwrap()
         });
@@ -580,6 +581,7 @@ mod tests {
                 scale,
                 version: 0,
                 kind: crate::unit::UnitKind::Custom,
+                rounding_default: RoundingLaw::HalfEven,
             })
             .unwrap()
         });
@@ -673,6 +675,7 @@ mod tests {
                 scale: 4,
                 version: 1,
                 kind: crate::unit::UnitKind::Currency { iso4217: 840 },
+                rounding_default: RoundingLaw::HalfEven,
             })
             .unwrap();
         assert_eq!(old_amount.render(&registry), "1.23 USD@v0");

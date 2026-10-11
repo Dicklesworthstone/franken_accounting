@@ -883,20 +883,39 @@ fn parse_decision(registry: &'static str, text: &str) -> Result<Decision, Regist
 /// Consumers bind these rows to their own unit representations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnitRow {
+    pub id: u32,
     pub code: String,
     pub version: u16,
     pub scale: u8,
     pub kind: String,
     pub iso4217: Option<u16>,
+    pub rounding_default: u16,
 }
 
 pub fn units_embedded() -> Result<Vec<UnitRow>, RegistryError> {
+    parse_units(UNITS)
+}
+
+/// Parse explicit, append-only unit identities and their immutable defaults.
+pub fn parse_units(text: &str) -> Result<Vec<UnitRow>, RegistryError> {
     const R: &str = "units.toml";
-    let doc = load(R, UNITS)?;
+    let doc = load(R, text)?;
+    let rounding_laws = rounding_laws_embedded()?;
     let mut rows = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     for t in doc.arrays.get("unit").unwrap_or(&Vec::new()) {
+        let id = u32::try_from(req_int(R, t, "id")?)
+            .map_err(|_| invalid(R, "unit id out of range"))?;
+        if usize::try_from(id).ok() != Some(rows.len()) {
+            return Err(invalid(
+                R,
+                format!("unit id {id} is out of order; expected {}", rows.len()),
+            ));
+        }
         let code = req_str(R, t, "code")?.to_string();
+        if code.is_empty() || code.len() > 64 {
+            return Err(invalid(R, "unit code must contain 1..=64 bytes"));
+        }
         let version = u16::try_from(req_int(R, t, "version")?)
             .map_err(|_| invalid(R, "version out of range"))?;
         let scale =
@@ -913,15 +932,27 @@ pub fn units_embedded() -> Result<Vec<UnitRow>, RegistryError> {
             "commodity" | "share" | "time" | "count" | "custom" => None,
             other => return Err(invalid(R, format!("unknown unit kind `{other}`"))),
         };
+        let rounding_default = u16::try_from(req_int(R, t, "rounding_default")?)
+            .map_err(|_| invalid(R, "default rounding law out of range"))?;
+        if !rounding_laws.iter().any(|law| law.id == rounding_default) {
+            return Err(invalid(
+                R,
+                format!(
+                    "`{code}` names unregistered default rounding law {rounding_default}"
+                ),
+            ));
+        }
         if !seen.insert((code.clone(), version)) {
             return Err(invalid(R, format!("duplicate unit {code}@v{version}")));
         }
         rows.push(UnitRow {
+            id,
             code,
             scale,
             version,
             kind: kind.to_owned(),
             iso4217,
+            rounding_default,
         });
     }
     if rows.is_empty() {
@@ -1371,6 +1402,73 @@ mod tests {
         ] {
             let e = Admissibility::parse(&classes, &planted).unwrap_err();
             assert!(e.to_string().contains(why), "{why}: {e}");
+        }
+    }
+
+    #[test]
+    fn original_unit_definitions_are_pinned_and_new_ids_are_additive() {
+        // Independent fixture: these identities have already been written
+        // into amount payloads. Never regenerate it from units.toml.
+        let original = [
+            (0, "USD", 0, 2, "currency", Some(840), 3),
+            (1, "EUR", 0, 2, "currency", Some(978), 3),
+            (2, "GBP", 0, 2, "currency", Some(826), 3),
+            (3, "JPY", 0, 0, "currency", Some(392), 3),
+            (4, "CHF", 0, 2, "currency", Some(756), 3),
+            (5, "CAD", 0, 2, "currency", Some(124), 3),
+            (6, "AUD", 0, 2, "currency", Some(36), 3),
+            (7, "KWD", 0, 3, "currency", Some(414), 3),
+            (8, "BTC", 0, 8, "commodity", None, 3),
+            (9, "ETH", 0, 18, "commodity", None, 3),
+            (10, "SHARE", 0, 6, "share", None, 3),
+            (11, "HOUR", 0, 2, "time", None, 3),
+            (12, "EACH", 0, 0, "count", None, 3),
+        ];
+        let rows = units_embedded().unwrap();
+        assert!(rows.len() >= original.len(), "existing units were removed");
+        for (row, expected) in rows.iter().zip(original) {
+            assert_eq!(
+                (
+                    row.id,
+                    row.code.as_str(),
+                    row.version,
+                    row.scale,
+                    row.kind.as_str(),
+                    row.iso4217,
+                    row.rounding_default,
+                ),
+                expected,
+                "immutable unit {} changed; add a new version instead",
+                expected.1
+            );
+        }
+        let appended = format!(
+            "{UNITS}\n[[unit]]\nid = {}\ncode = \"NEW\"\nversion = 0\nscale = 2\nkind = \"custom\"\nrounding_default = 3\n",
+            rows.len()
+        );
+        let extended = parse_units(&appended).unwrap();
+        assert_eq!(&extended[..rows.len()], rows);
+        assert_eq!(extended.len(), rows.len() + 1);
+    }
+
+    #[test]
+    fn unit_registry_refuses_reordered_missing_duplicate_and_unknown_law_rows() {
+        for (text, why) in [
+            (UNITS.replacen("id = 0", "id = 1", 1), "out of order"),
+            (UNITS.replacen("id = 1\n", "id = 0\n", 1), "out of order"),
+            (UNITS.replacen("id = 1\n", "id = 2\n", 1), "out of order"),
+            (UNITS.replacen("id = 0\n", "", 1), "missing integer `id`"),
+            (
+                UNITS.replacen("code = \"EUR\"", "code = \"USD\"", 1),
+                "duplicate unit",
+            ),
+            (
+                UNITS.replacen("rounding_default = 3", "rounding_default = 65535", 1),
+                "unregistered default rounding",
+            ),
+        ] {
+            let error = parse_units(&text).unwrap_err().to_string();
+            assert!(error.contains(why), "{why}: {error}");
         }
     }
 
