@@ -840,14 +840,17 @@ pub(crate) fn mint_on_open<V: asupersync::fs::Vfs + Clone>(
     };
     let today = policy.civil_date(tick.observed_utc_ns);
     let mut due: Vec<Schedule> = Vec::new();
-    for row in db.vertices()? {
+    // The candidate population is itself a dependency, including when it
+    // is empty. A schedule posted after preparation must invalidate Open
+    // instead of being silently omitted from its automatic reversals.
+    for row in txn.vertices(db)? {
         if !row.labels.contains(&label::REVERSAL_SCHEDULE) {
             continue;
         }
         let s = decode_schedule(&row)?;
         if s.period == period
             && s.reverse_on <= today
-            && db.vertex(reversal_vid(s.target.vid))?.is_none()
+            && txn.vertex(db, reversal_vid(s.target.vid))?.is_none()
         {
             due.push(s);
         }

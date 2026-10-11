@@ -61,15 +61,17 @@ pub use migration::{
     visible_at,
 };
 pub use period::{
-    TransitionPlan, Transitioned, plan_transition, transition_name, transition_period,
-    transition_proposal,
+    PreparedTransition, TransitionPlan, Transitioned, plan_transition, prepare_transition,
+    transition_name, transition_period, transition_proposal,
 };
 pub use policy::{
     ActivationRequest, ApprovalRequest, Approved, PolicyActivated, RevocationRequest, Revoked,
     activate_policy, activation_proposal, record_approval, revoke_capability,
     security_policy_epoch,
 };
-pub use post::{Capability, PostRequest, Posted, post};
+pub use post::{
+    Capability, PostPreparation, PostRequest, Posted, PreparedPost, post, prepare_post,
+};
 pub use refusal::{KernelError, Refusal, exit};
 pub use rows::{AccountRow, PeriodRow};
 pub use schedule::{

@@ -1278,6 +1278,870 @@ mod tests {
         assert_eq!(lab_lifecycle(19), lab_lifecycle(19));
     }
 
+    type LabBook = AsyncBook<FaultVfs<MemVfs>>;
+
+    struct PreparedFixture {
+        book: LabBook,
+        vfs: FaultVfs<MemVfs>,
+        request: PostRequest,
+        march: String,
+        april: String,
+        usd: fa_money::UnitId,
+    }
+
+    async fn prepared_fixture(root: &Cx, seed: u64) -> PreparedFixture {
+        let cx = PurposeContexts::narrow_runtime_root(root);
+        let backing = cx.commit().with_restriction(MemVfs::new).unwrap();
+        let vfs = FaultVfs::with_clock(
+            backing,
+            FaultPlan {
+                seed,
+                latency: Trigger::Always,
+                latency_micros: 1,
+                ..FaultPlan::faultless()
+            },
+            root.clone(),
+        );
+        let book_id = Id128([0x69; 16]);
+        let (mut spec, usd) = spec(book_id);
+        spec.time_zone_policy = Some(fa_journal::TimeZonePolicy::Utc);
+        let mut book = AsyncBook::create_with_vfs(
+            &cx,
+            vfs.clone(),
+            Path::new("./prepared-book"),
+            BookKeys::for_development(0x69),
+            spec,
+            Entropy::deterministic(seed),
+        )
+        .await
+        .unwrap();
+        let principal = VId(1);
+        let day = DateDay::from_ymd(2026, 3, 15).unwrap();
+        book.install_chart(&cx, &chart(usd), principal, day, b"chart")
+            .await
+            .unwrap()
+            .unwrap();
+        let (_, periods) = book.create_periods(&cx, 2026).await.unwrap();
+        let period = |date| {
+            periods
+                .iter()
+                .find(|p| p.kind == PeriodKind::Normal && p.contains(date))
+                .unwrap()
+                .code
+                .clone()
+        };
+        let march = period(day);
+        let april = period(DateDay::from_ymd(2026, 4, 1).unwrap());
+        book.transition_period(
+            &cx,
+            &march,
+            PeriodTransition::Open,
+            principal,
+            1,
+            day,
+            b"open-march",
+            &Capability::embedded(principal, &["close"]).unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let document = fa_journal::Document {
+            book_id,
+            kind: 1,
+            mime: "text/plain".into(),
+            grade: 3,
+            retrieved_by: principal,
+            bytes: b"Invoice: March rent, USD 1500.00".to_vec(),
+        };
+        book.add_document(&cx, &document).await.unwrap().unwrap();
+        let legs = vec![
+            LegPayload::simple(
+                Side::Debit,
+                account_vid(book_id, "6000"),
+                Amount::new(usd, 150_000),
+            ),
+            LegPayload::simple(
+                Side::Credit,
+                account_vid(book_id, "1000"),
+                Amount::new(usd, 150_000),
+            ),
+        ];
+        let proposal = EntryPayload {
+            schema_minor: 0,
+            book_id,
+            branch_id: Id128::TRUNK,
+            class: EntryClass::ORIGINAL,
+            effective_date: day,
+            document_date: None,
+            description: book.seal_text(&cx, "prepared March rent").unwrap(),
+            effective_period: None,
+            unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
+            legs,
+            control: None,
+            base_totals: None,
+            idempotency_key: b"prepared-rent".to_vec(),
+            origin: EntryOrigin::Intent {
+                intent_oid: Oid([1; 32]),
+                intent_kind: 1,
+            },
+            principal_ref: principal,
+            session_ref: None,
+            evidence: vec![document.evidence_ref(1)],
+            supersession: Vec::new(),
+            pending: None,
+            external_ids: Vec::new(),
+            extensions: Vec::new(),
+            tags: Vec::new(),
+        };
+        PreparedFixture {
+            book,
+            vfs,
+            request: PostRequest {
+                proposal,
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: Capability::embedded(principal, &["post"]).unwrap(),
+            },
+            march,
+            april,
+            usd,
+        }
+    }
+
+    fn prepare_fixture_post(
+        book: &mut LabBook,
+        cx: &PurposeContexts,
+        request: PostRequest,
+    ) -> Box<fa_journal::post::PreparedPost> {
+        let context = book.context().clone();
+        match fa_journal::post::prepare_post(&mut book.db, cx, &context, request)
+            .unwrap()
+            .unwrap()
+        {
+            fa_journal::post::PostPreparation::Ready(prepared) => prepared,
+            fa_journal::post::PostPreparation::AlreadyRecorded(_) => {
+                panic!("fixture must prepare a fresh transaction")
+            }
+        }
+    }
+
+    fn prepare_fixture_transition(
+        book: &mut LabBook,
+        cx: &PurposeContexts,
+        period: &str,
+        transition: PeriodTransition,
+        capability: &Capability,
+    ) -> fa_journal::period::PreparedTransition {
+        let context = book.context().clone();
+        let description = book.seal_text(cx, "prepared period transition").unwrap();
+        fa_journal::period::prepare_transition(
+            &mut book.db,
+            cx,
+            &context,
+            period,
+            transition,
+            VId(1),
+            1,
+            DateDay::from_ymd(2026, 3, 15).unwrap(),
+            b"prepared-transition",
+            description,
+            capability,
+            &[],
+        )
+        .unwrap()
+        .unwrap()
+    }
+
+    fn journal_entries(book: &LabBook, cx: &PurposeContexts) -> Vec<(VId, Entry, CommitSeq)> {
+        let mut entries: Vec<_> = cx
+            .query()
+            .with_restriction(|| book.db.vertices())
+            .unwrap()
+            .into_iter()
+            .filter(|row| row.labels.contains(&fa_model::symbols::label::ENTRY))
+            .map(|row| {
+                let (entry, at) = book.read_entry(cx, row.vid).unwrap().unwrap();
+                (row.vid, entry, at)
+            })
+            .collect();
+        entries.sort_by_key(|(vid, _, _)| *vid);
+        entries
+    }
+
+    fn assert_rent_cells(fold: &Fold, book_id: Id128, usd: fa_money::UnitId, reversed: bool) {
+        assert_eq!(fold.entries, 1);
+        assert!(fold.pending.is_empty());
+        let mut expected = vec![
+            fa_registers::Cell {
+                key: fa_registers::CellKey {
+                    account: account_vid(book_id, "6000"),
+                    unit_id: usd.0,
+                    period: fold.period.clone(),
+                },
+                debits: if reversed { 0 } else { 150_000 },
+                credits: if reversed { 150_000 } else { 0 },
+                entry_count: 1,
+            },
+            fa_registers::Cell {
+                key: fa_registers::CellKey {
+                    account: account_vid(book_id, "1000"),
+                    unit_id: usd.0,
+                    period: fold.period.clone(),
+                },
+                debits: if reversed { 150_000 } else { 0 },
+                credits: if reversed { 0 } else { 150_000 },
+                entry_count: 1,
+            },
+        ];
+        expected.sort_by(|a, b| a.key.cmp(&b.key));
+        assert_eq!(fold.cells, expected);
+    }
+
+    fn drive_prepared_lab(runtime: &mut LabRuntime) {
+        let advanced = runtime.run_with_auto_advance();
+        assert!(
+            matches!(advanced.termination, AutoAdvanceTermination::Quiescent),
+            "prepared transaction lab must finish: {advanced:?}"
+        );
+        let report = runtime.report();
+        assert!(report.lab_test_passed(), "prepared lab oracles: {report:?}");
+    }
+
+    /// Both original transactions survive the rendezvous. Only the database
+    /// handle is serialized; neither witness set is refreshed before commit.
+    fn prepared_post_close_race(runtime: &mut LabRuntime) -> bool {
+        use asupersync::sync::{Barrier, Mutex, OwnedMutexGuard};
+        use std::sync::Arc;
+
+        let seed = runtime.config().seed;
+        let region = runtime.state.create_root_region(Budget::INFINITE);
+        let (setup, mut setup_handle) = runtime
+            .state
+            .create_task(region, Budget::INFINITE, async move {
+                let root = Cx::current().unwrap();
+                let fixture = prepared_fixture(&root, seed).await;
+                let cx = PurposeContexts::narrow_runtime_root(&root);
+                let basis = fixture.book.head(&cx).unwrap();
+                let entries = journal_entries(&fixture.book, &cx).len();
+                (fixture, basis, entries)
+            })
+            .unwrap();
+        runtime.scheduler.lock().schedule(setup, 0);
+        drive_prepared_lab(runtime);
+        let (fixture, basis, entries) = setup_handle.try_join().unwrap().unwrap();
+        let PreparedFixture {
+            book,
+            vfs,
+            request,
+            march,
+            usd,
+            ..
+        } = fixture;
+        let race_events_start = vfs.events().len();
+        let shared = Arc::new(Mutex::new(book));
+        let barrier = Arc::new(Barrier::new(2));
+        let post_book = Arc::clone(&shared);
+        let post_barrier = Arc::clone(&barrier);
+        let retry = request.clone();
+        let (post_task, mut post_handle) = runtime
+            .state
+            .create_task(region, Budget::INFINITE, async move {
+                let root = Cx::current().unwrap();
+                let cx = PurposeContexts::narrow_runtime_root(&root);
+                let prepared = {
+                    let mut book = post_book.lock(&root).await.unwrap();
+                    prepare_fixture_post(&mut book, &cx, request)
+                };
+                let basis = prepared.basis();
+                post_barrier.wait(&root).await.unwrap();
+                asupersync::runtime::yield_now().await;
+                let outcome = {
+                    let mut book = OwnedMutexGuard::lock(post_book, &root).await.unwrap();
+                    prepared.commit(&mut book.db, &cx).await.unwrap()
+                };
+                (basis, outcome)
+            })
+            .unwrap();
+        let close_book = Arc::clone(&shared);
+        let close_period = march.clone();
+        let (close_task, mut close_handle) = runtime
+            .state
+            .create_task(region, Budget::INFINITE, async move {
+                let root = Cx::current().unwrap();
+                let cx = PurposeContexts::narrow_runtime_root(&root);
+                let prepared = {
+                    let mut book = close_book.lock(&root).await.unwrap();
+                    prepare_fixture_transition(
+                        &mut book,
+                        &cx,
+                        &close_period,
+                        PeriodTransition::SoftClose,
+                        &Capability::embedded(VId(1), &["close"]).unwrap(),
+                    )
+                };
+                let basis = prepared.basis();
+                barrier.wait(&root).await.unwrap();
+                asupersync::runtime::yield_now().await;
+                let outcome = {
+                    let mut book = OwnedMutexGuard::lock(close_book, &root).await.unwrap();
+                    prepared.commit(&mut book.db, &cx).await.unwrap()
+                };
+                (basis, outcome)
+            })
+            .unwrap();
+        {
+            let mut scheduler = runtime.scheduler.lock();
+            scheduler.schedule(post_task, 0);
+            scheduler.schedule(close_task, 0);
+        }
+        drive_prepared_lab(runtime);
+        assert!(vfs.events()[race_events_start..].iter().any(|event| {
+            matches!(event.kind, FaultKind::Latency { .. })
+                && event.path.starts_with("./prepared-book/store")
+        }));
+        let (post_basis, post) = post_handle.try_join().unwrap().unwrap();
+        let (close_basis, close) = close_handle.try_join().unwrap().unwrap();
+        assert_eq!((post_basis, close_basis), (basis, basis));
+        let post_won = match (&post, &close) {
+            (Ok(Posted::Committed { recorded_at, .. }), Err(refusal)) => {
+                assert_eq!(*recorded_at, CommitSeq(basis.0 + 1));
+                assert_eq!((refusal.code, refusal.exit), ("FA-REF-030", 6));
+                true
+            }
+            (Err(refusal), Ok(closed)) => {
+                assert_eq!(closed.recorded_at, CommitSeq(basis.0 + 1));
+                assert_eq!((refusal.code, refusal.exit), ("FA-REF-030", 6));
+                false
+            }
+            outcomes => {
+                panic!("seed {seed}: expected one commit and one witness conflict: {outcomes:?}")
+            }
+        };
+        let (verify, mut verify_handle) = runtime
+            .state
+            .create_task(region, Budget::INFINITE, async move {
+                let root = Cx::current().unwrap();
+                let cx = PurposeContexts::narrow_runtime_root(&root);
+                let mut book = OwnedMutexGuard::lock(shared, &root).await.unwrap();
+                assert_eq!(book.head(&cx).unwrap(), CommitSeq(basis.0 + 1));
+                assert_eq!(journal_entries(&book, &cx).len(), entries + 1);
+                let proposed_vid = fa_model::entry_vid(
+                    retry.proposal.book_id,
+                    &retry.proposal.principal_ref.0.to_le_bytes(),
+                    &retry.proposal.idempotency_key,
+                );
+                let stored = book.read_entry(&cx, proposed_vid).unwrap();
+                assert_eq!(stored.is_some(), post_won);
+                if let Some((entry, at)) = stored {
+                    assert_eq!(entry.proposal, retry.proposal);
+                    assert_eq!(at, CommitSeq(basis.0 + 1));
+                }
+                if post_won {
+                    let before = book.head(&cx).unwrap();
+                    assert!(matches!(
+                        book.post(&cx, retry).await.unwrap().unwrap(),
+                        Posted::AlreadyRecorded { .. }
+                    ));
+                    assert_eq!(book.head(&cx).unwrap(), before);
+                    // A new close after the posting is a legal serial history.
+                    let fresh = prepare_fixture_transition(
+                        &mut book,
+                        &cx,
+                        &march,
+                        PeriodTransition::SoftClose,
+                        &Capability::embedded(VId(1), &["close"]).unwrap(),
+                    );
+                    fresh.commit(&mut book.db, &cx).await.unwrap().unwrap();
+                    assert_eq!(journal_entries(&book, &cx).len(), entries + 2);
+                }
+                assert_eq!(
+                    book.periods(&cx)
+                        .unwrap()
+                        .iter()
+                        .find(|p| p.code == march)
+                        .unwrap()
+                        .state,
+                    fa_time::PeriodState::SoftClosed,
+                );
+                let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+                if post_won {
+                    assert_rent_cells(&fold, book.context().book_id, usd, false);
+                    assert_eq!(fold.watermark, Some(CommitSeq(basis.0 + 1)));
+                } else {
+                    assert_eq!(fold.entries, 0);
+                    assert!(fold.cells.is_empty() && fold.pending.is_empty());
+                    assert_eq!(fold.watermark, None);
+                }
+                assert_eq!(fold, book.fold_period(&cx, &march).unwrap());
+                assert!(book.verify_registers(&cx, &march).unwrap().is_green());
+                let head = book.head(&cx).unwrap();
+                let scratch_db = Database::create_with_vfs(
+                    &cx.commit(),
+                    vfs.clone(),
+                    PathBuf::from("./race-replay"),
+                    BookKeys::for_development(0x6a).inner,
+                )
+                .await
+                .unwrap();
+                let replay_events_start = vfs.events().len();
+                let (scratch, map) = book
+                    .replay_into(&cx, scratch_db, None, Entropy::deterministic(seed + 100))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let verified = book.verify_replay(&cx, &scratch, &map).unwrap().unwrap();
+                assert!(!map.pairs.is_empty());
+                assert_eq!(verified.pairs_checked, map.pairs.len());
+                let replayed = scratch.fold_period(&cx, &march).unwrap();
+                assert_eq!(replayed.cells, fold.cells);
+                assert_eq!(replayed.pending, fold.pending);
+                assert_eq!(replayed.entries, fold.entries);
+                let source_entries = journal_entries(&book, &cx);
+                let replay_entries = journal_entries(&scratch, &cx);
+                assert_eq!(replay_entries.len(), source_entries.len());
+                for ((source_vid, source, source_at), (replay_vid, replay, replay_at)) in
+                    source_entries.iter().zip(&replay_entries)
+                {
+                    assert_eq!(replay_vid, source_vid);
+                    assert_eq!(replay, source);
+                    assert_eq!(
+                        *replay_at,
+                        map.pairs
+                            .iter()
+                            .find(|pair| pair.source_seq == *source_at)
+                            .expect("every replayed entry has a mapped creating commit")
+                            .scratch_seq,
+                    );
+                }
+                assert_eq!(
+                    replayed.watermark,
+                    fold.watermark.map(|at| {
+                        map.pairs
+                            .iter()
+                            .find(|pair| pair.source_seq == at)
+                            .expect("the contributing commit must be replayed")
+                            .scratch_seq
+                    })
+                );
+                assert_eq!(book.head(&cx).unwrap(), head);
+                let events = vfs.events();
+                assert!(events[replay_events_start..].iter().any(|e| {
+                    matches!(e.kind, FaultKind::Latency { .. })
+                        && e.path.starts_with("./race-replay")
+                }));
+            })
+            .unwrap();
+        runtime.scheduler.lock().schedule(verify, 0);
+        drive_prepared_lab(runtime);
+        verify_handle.try_join().unwrap().unwrap();
+        post_won
+    }
+
+    #[test]
+    fn prepared_post_and_close_preserve_witnesses_under_16_lab_schedules() {
+        use asupersync::lab::{ExplorerConfig, ScheduleExplorer};
+        use std::cell::RefCell;
+
+        // A bounded seed sweep, not exhaustive DPOR. Coverage is observed
+        // from real commit outcomes, not inferred from the number of runs.
+        let winners = RefCell::new(std::collections::BTreeSet::new());
+        let mut explorer = ScheduleExplorer::new(
+            ExplorerConfig::new(0, 16)
+                .worker_count(2)
+                .max_steps(100_000),
+        );
+        let report = explorer.explore(|runtime| {
+            winners
+                .borrow_mut()
+                .insert(prepared_post_close_race(runtime));
+        });
+        assert!(!report.has_violations(), "{report:?}");
+        assert_eq!(report.total_runs, 16);
+        assert_eq!(
+            winners.into_inner(),
+            std::collections::BTreeSet::from([false, true])
+        );
+    }
+
+    async fn unrelated_document(book: &mut LabBook, cx: &PurposeContexts) {
+        book.add_document(
+            cx,
+            &fa_journal::Document {
+                book_id: book.context().book_id,
+                kind: 1,
+                mime: "text/plain".into(),
+                grade: 3,
+                retrieved_by: VId(1),
+                bytes: b"A different invoice, unrelated to the prepared transaction".to_vec(),
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    }
+
+    #[test]
+    fn prepared_post_rechecks_its_capability_expiry_without_rejecting_unrelated_commits() {
+        for expires_in in [1, 3] {
+            under_lab(61 + expires_in, move |root| async move {
+                let cx = PurposeContexts::narrow_runtime_root(&root);
+                let mut fixture = prepared_fixture(&root, 61 + expires_in).await;
+                let basis = fixture.book.head(&cx).unwrap();
+                fixture.request.capability = fixture
+                    .request
+                    .capability
+                    .expiring_at(CommitSeq(basis.0 + expires_in));
+                let prepared = prepare_fixture_post(&mut fixture.book, &cx, fixture.request);
+                assert_eq!(prepared.basis(), basis);
+                unrelated_document(&mut fixture.book, &cx).await;
+                let before = fixture.book.head(&cx).unwrap();
+                assert_eq!(before, CommitSeq(basis.0 + 1));
+                let entries = journal_entries(&fixture.book, &cx);
+                let result = prepared.commit(&mut fixture.book.db, &cx).await.unwrap();
+                if expires_in == 1 {
+                    let refusal = result.unwrap_err();
+                    assert_eq!((refusal.code, refusal.exit), ("FA-REF-014", 7));
+                    assert_eq!(fixture.book.head(&cx).unwrap(), before);
+                    assert_eq!(journal_entries(&fixture.book, &cx), entries);
+                    assert!(
+                        fixture
+                            .book
+                            .fold_period(&cx, &fixture.march)
+                            .unwrap()
+                            .cells
+                            .is_empty()
+                    );
+                } else {
+                    assert_eq!(result.unwrap().recorded_at(), CommitSeq(before.0 + 1));
+                    assert_eq!(journal_entries(&fixture.book, &cx).len(), entries.len() + 1);
+                    let fold = fixture
+                        .book
+                        .advance_registers(&cx, &fixture.march)
+                        .await
+                        .unwrap()
+                        .fold;
+                    assert_rent_cells(&fold, fixture.book.context().book_id, fixture.usd, false);
+                    assert!(
+                        fixture
+                            .book
+                            .verify_registers(&cx, &fixture.march)
+                            .unwrap()
+                            .is_green()
+                    );
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn prepared_transition_rechecks_its_capability_expiry_without_rejecting_unrelated_commits() {
+        for expires_in in [1, 3] {
+            under_lab(71 + expires_in, move |root| async move {
+                let cx = PurposeContexts::narrow_runtime_root(&root);
+                let mut fixture = prepared_fixture(&root, 71 + expires_in).await;
+                let basis = fixture.book.head(&cx).unwrap();
+                let capability = Capability::embedded(VId(1), &["close"])
+                    .unwrap()
+                    .expiring_at(CommitSeq(basis.0 + expires_in));
+                let prepared = prepare_fixture_transition(
+                    &mut fixture.book,
+                    &cx,
+                    &fixture.march,
+                    PeriodTransition::SoftClose,
+                    &capability,
+                );
+                assert_eq!(prepared.basis(), basis);
+                unrelated_document(&mut fixture.book, &cx).await;
+                let before = fixture.book.head(&cx).unwrap();
+                assert_eq!(before, CommitSeq(basis.0 + 1));
+                let entries = journal_entries(&fixture.book, &cx);
+                let result = prepared.commit(&mut fixture.book.db, &cx).await.unwrap();
+                let expected_state = if expires_in == 1 {
+                    let refusal = result.unwrap_err();
+                    assert_eq!((refusal.code, refusal.exit), ("FA-REF-014", 7));
+                    assert_eq!(fixture.book.head(&cx).unwrap(), before);
+                    assert_eq!(journal_entries(&fixture.book, &cx), entries);
+                    fa_time::PeriodState::Open
+                } else {
+                    assert_eq!(result.unwrap().recorded_at, CommitSeq(before.0 + 1));
+                    assert_eq!(journal_entries(&fixture.book, &cx).len(), entries.len() + 1);
+                    fa_time::PeriodState::SoftClosed
+                };
+                assert_eq!(
+                    fixture
+                        .book
+                        .periods(&cx)
+                        .unwrap()
+                        .iter()
+                        .find(|p| p.code == fixture.march)
+                        .unwrap()
+                        .state,
+                    expected_state
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn prepared_post_and_transition_conflict_when_their_acting_capability_is_revoked() {
+        under_lab(81, |root| async move {
+            let cx = PurposeContexts::narrow_runtime_root(&root);
+            let mut fixture = prepared_fixture(&root, 81).await;
+            let capability = Capability::embedded(VId(1), &["post", "close"]).unwrap();
+            fixture.request.capability = capability.clone();
+            let request = fixture.request.clone();
+            let basis = fixture.book.head(&cx).unwrap();
+            let before_entries = journal_entries(&fixture.book, &cx);
+            let post = prepare_fixture_post(&mut fixture.book, &cx, fixture.request);
+            let transition = prepare_fixture_transition(
+                &mut fixture.book,
+                &cx,
+                &fixture.march,
+                PeriodTransition::SoftClose,
+                &capability,
+            );
+            assert_eq!((post.basis(), transition.basis()), (basis, basis));
+            let context = fixture.book.context().clone();
+            let revocation = fa_journal::RevocationRequest {
+                capability: Capability::embedded(VId(2), &["issue_capability"]).unwrap(),
+                revoked: capability.commitment().unwrap(),
+                effective_date: DateDay::from_ymd(2026, 3, 15).unwrap(),
+                idempotency_key: b"revoke-prepared-actor".to_vec(),
+                description: fixture
+                    .book
+                    .seal_text(&cx, "revoke prepared actor")
+                    .unwrap(),
+            };
+            let revoked =
+                fa_journal::revoke_capability(&mut fixture.book.db, &cx, &context, revocation)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert!(!revoked.already_recorded);
+            assert_eq!(revoked.recorded_at, CommitSeq(basis.0 + 1));
+            let after_revocation = journal_entries(&fixture.book, &cx);
+            assert_eq!(after_revocation.len(), before_entries.len() + 1);
+            assert!(after_revocation.iter().any(|(vid, entry, at)| {
+                *vid == revoked.control_entry
+                    && *at == revoked.recorded_at
+                    && entry.proposal.class == EntryClass::POLICY_CONTROL
+            }));
+
+            // Both preparations retain the original absent-revocation
+            // witness. Neither may silently adopt authority from a new basis.
+            let post_refusal = post
+                .commit(&mut fixture.book.db, &cx)
+                .await
+                .unwrap()
+                .unwrap_err();
+            assert_eq!((post_refusal.code, post_refusal.exit), ("FA-REF-030", 6));
+            assert_eq!(fixture.book.head(&cx).unwrap(), revoked.recorded_at);
+            assert_eq!(journal_entries(&fixture.book, &cx), after_revocation);
+            let transition_refusal = transition
+                .commit(&mut fixture.book.db, &cx)
+                .await
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(
+                (transition_refusal.code, transition_refusal.exit),
+                ("FA-REF-030", 6)
+            );
+            assert_eq!(fixture.book.head(&cx).unwrap(), revoked.recorded_at);
+            assert_eq!(journal_entries(&fixture.book, &cx), after_revocation);
+
+            // Fresh preparation observes the journaled revocation and names
+            // that refusal, without appending either abandoned operation.
+            let refusal =
+                fa_journal::post::prepare_post(&mut fixture.book.db, &cx, &context, request)
+                    .unwrap()
+                    .unwrap_err();
+            assert_eq!((refusal.code, refusal.exit), ("FA-REF-023", 7));
+            assert_eq!(fixture.book.head(&cx).unwrap(), revoked.recorded_at);
+            assert_eq!(journal_entries(&fixture.book, &cx), after_revocation);
+            let description = fixture
+                .book
+                .seal_text(&cx, "fresh revoked transition")
+                .unwrap();
+            let refusal = fa_journal::period::prepare_transition(
+                &mut fixture.book.db,
+                &cx,
+                &context,
+                &fixture.march,
+                PeriodTransition::SoftClose,
+                VId(1),
+                1,
+                DateDay::from_ymd(2026, 3, 15).unwrap(),
+                b"fresh-revoked-transition",
+                description,
+                &capability,
+                &[],
+            )
+            .unwrap()
+            .unwrap_err();
+            assert_eq!((refusal.code, refusal.exit), ("FA-REF-023", 7));
+            assert_eq!(fixture.book.head(&cx).unwrap(), revoked.recorded_at);
+            assert_eq!(journal_entries(&fixture.book, &cx), after_revocation);
+            assert_eq!(
+                fixture
+                    .book
+                    .periods(&cx)
+                    .unwrap()
+                    .iter()
+                    .find(|p| p.code == fixture.march)
+                    .unwrap()
+                    .state,
+                fa_time::PeriodState::Open
+            );
+            let fold = fixture.book.fold_period(&cx, &fixture.march).unwrap();
+            assert_eq!(fold.entries, 0);
+            assert!(fold.cells.is_empty() && fold.pending.is_empty());
+        });
+    }
+
+    #[test]
+    fn prepared_open_conflicts_with_a_new_due_schedule_and_fresh_open_mints_once() {
+        under_lab(83, |root| async move {
+            let cx = PurposeContexts::narrow_runtime_root(&root);
+            let mut fixture = prepared_fixture(&root, 83).await;
+            let april_day = DateDay::from_ymd(2026, 4, 1).unwrap();
+            let context = fixture.book.context().clone();
+            let tick = fa_journal::TickRequest {
+                observed_utc_ns: u64::try_from(april_day.0).unwrap() * 86_400_000_000_000,
+                source: fa_journal::sweep::SOURCE_DAEMON_CLOCK,
+                monotonic_ok: true,
+                principal_ref: VId(1),
+                capability: Capability::embedded(VId(1), &["witness"]).unwrap(),
+                idempotency_key: b"april-tick".to_vec(),
+                description: fixture.book.seal_text(&cx, "April begins").unwrap(),
+            };
+            fa_journal::record_tick(&mut fixture.book.db, &cx, &context, tick)
+                .await
+                .unwrap()
+                .unwrap();
+            let capability = Capability::embedded(VId(1), &["close"]).unwrap();
+            let prepared = prepare_fixture_transition(
+                &mut fixture.book,
+                &cx,
+                &fixture.april,
+                PeriodTransition::Open,
+                &capability,
+            );
+            let basis = prepared.basis();
+            fixture.request.proposal.class = EntryClass::ADJUSTING;
+            fixture.request.proposal =
+                fa_journal::with_auto_reverse(fixture.request.proposal, april_day);
+            let original = fixture
+                .book
+                .post(&cx, fixture.request)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(original.recorded_at(), CommitSeq(basis.0 + 1));
+            let before = fixture.book.head(&cx).unwrap();
+            let entries = journal_entries(&fixture.book, &cx);
+            let refusal = prepared
+                .commit(&mut fixture.book.db, &cx)
+                .await
+                .unwrap()
+                .unwrap_err();
+            assert_eq!((refusal.code, refusal.exit), ("FA-REF-030", 6));
+            assert_eq!(fixture.book.head(&cx).unwrap(), before);
+            assert_eq!(journal_entries(&fixture.book, &cx), entries);
+            assert_eq!(
+                fixture
+                    .book
+                    .periods(&cx)
+                    .unwrap()
+                    .iter()
+                    .find(|p| p.code == fixture.april)
+                    .unwrap()
+                    .state,
+                fa_time::PeriodState::Future
+            );
+            let fresh = prepare_fixture_transition(
+                &mut fixture.book,
+                &cx,
+                &fixture.april,
+                PeriodTransition::Open,
+                &capability,
+            );
+            let opened = fresh
+                .commit(&mut fixture.book.db, &cx)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(opened.blocked.is_empty());
+            assert_eq!(opened.minted.len(), 1);
+            assert_eq!(opened.minted[0].0, original.entry_ref());
+            let (reversal, at) = fixture
+                .book
+                .read_entry(&cx, opened.minted[0].1.vid)
+                .unwrap()
+                .unwrap();
+            assert_eq!(at, opened.recorded_at);
+            assert_eq!(reversal.entry_digest, opened.minted[0].1.entry_digest);
+            assert_eq!(reversal.proposal.class, EntryClass::REVERSAL);
+            assert_eq!(reversal.proposal.effective_date, april_day);
+            assert_eq!(reversal.proposal.supersession.len(), 1);
+            assert_eq!(
+                reversal.proposal.supersession[0].target,
+                original.entry_ref()
+            );
+            assert_eq!(journal_entries(&fixture.book, &cx).len(), entries.len() + 2);
+            for (period, reversed) in [(&fixture.march, false), (&fixture.april, true)] {
+                let fold = fixture
+                    .book
+                    .advance_registers(&cx, period)
+                    .await
+                    .unwrap()
+                    .fold;
+                assert_rent_cells(&fold, context.book_id, fixture.usd, reversed);
+                assert_eq!(
+                    fold.watermark,
+                    Some(if reversed {
+                        opened.recorded_at
+                    } else {
+                        original.recorded_at()
+                    })
+                );
+                assert_eq!(fold, fixture.book.fold_period(&cx, period).unwrap());
+                assert!(
+                    fixture
+                        .book
+                        .verify_registers(&cx, period)
+                        .unwrap()
+                        .is_green()
+                );
+            }
+            let before = fixture.book.head(&cx).unwrap();
+            assert!(
+                fixture
+                    .book
+                    .transition_period(
+                        &cx,
+                        &fixture.april,
+                        PeriodTransition::Open,
+                        VId(1),
+                        1,
+                        april_day,
+                        b"second-open",
+                        &capability,
+                    )
+                    .await
+                    .unwrap()
+                    .is_err()
+            );
+            assert_eq!(fixture.book.head(&cx).unwrap(), before);
+            assert_eq!(
+                journal_entries(&fixture.book, &cx)
+                    .iter()
+                    .filter(|(_, entry, _)| entry.proposal.class == EntryClass::REVERSAL)
+                    .count(),
+                1
+            );
+        });
+    }
+
     #[test]
     fn async_book_honors_caller_cancellation_before_reads_and_writes() {
         under_cancelled_lab(23, |root| async move {

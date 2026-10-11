@@ -1379,6 +1379,154 @@ fn settle(target: EntryRef, ordinal: u16, usd: UnitId, cents: i128) -> Settlemen
 }
 
 #[test]
+fn prepared_receipts_compete_for_the_same_open_amount_in_both_commit_orders() {
+    // Two real substrate transactions retain the same application witness.
+    // This enumerates these two commit orders, not a lab/DPOR campaign.
+    let prepare = |h: &mut Harness, proposal: EntryPayload| {
+        let ctx = h.ctx();
+        let request = h.request(proposal, &["post"]);
+        match prepare_post(&mut h.db, &ctx, &h.book, request)
+            .expect("prepare kernel")
+            .expect("receipt admitted at its basis")
+        {
+            PostPreparation::Ready(prepared) => prepared,
+            PostPreparation::AlreadyRecorded(_) => panic!("a distinct receipt must be fresh"),
+        }
+    };
+    let commit = |h: &mut Harness, prepared: Box<PreparedPost>| {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        h.runtime
+            .block_on(async move { prepared.commit(db, &ctx).await })
+            .expect("commit kernel")
+    };
+    for winner_index in [0, 1] {
+        let mut h = harness();
+        let usd = h.usd;
+        let invoice = h
+            .post(h.request(h.invoice(10_000, b"race-invoice"), &["post"]))
+            .expect("invoice committed")
+            .entry_ref();
+        let basis = h.db.frontier().unwrap();
+        let keys: [&[u8]; 2] = [b"race-receipt-a", b"race-receipt-b"];
+        let proposals = keys.map(|key| h.receipt(6_000, vec![settle(invoice, 0, usd, 6_000)], key));
+        let identities = keys.map(|key| entry_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), key));
+        assert_ne!(identities[0], identities[1]);
+
+        // Preparation checks the complete target reference, not just its vid.
+        let mut stale = proposals[0].clone();
+        stale.legs[1].settles[0].target.entry_digest[0] ^= 1;
+        let request = h.request(stale, &["post"]);
+        let ctx = h.ctx();
+        let refused = prepare_post(&mut h.db, &ctx, &h.book, request)
+            .expect("stale-reference kernel")
+            .unwrap_err();
+        assert_eq!((refused.code, refused.exit), ("FA-REF-070", exit::REFUSAL));
+        assert_eq!(h.db.frontier().unwrap(), basis);
+
+        let first = prepare(&mut h, proposals[0].clone());
+        let second = prepare(&mut h, proposals[1].clone());
+        assert_eq!(first.basis(), basis);
+        assert_eq!(second.basis(), basis);
+        assert_eq!(
+            h.db.frontier().unwrap(),
+            basis,
+            "preparation publishes nothing"
+        );
+        assert_eq!(h.applied_to(invoice.vid, 0), 0);
+        for vid in identities {
+            assert!(read_entry(&h.db, vid).unwrap().is_none());
+        }
+        let (winner, loser) = if winner_index == 0 {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        let loser_index = 1 - winner_index;
+        let won = commit(&mut h, winner).expect("first prepared receipt commits");
+        assert!(matches!(won, Posted::Committed { .. }));
+        assert_eq!(won.entry_ref().vid, identities[winner_index]);
+        let after_winner = h.db.frontier().unwrap();
+        assert_eq!(after_winner.0, basis.0 + 1);
+        assert_eq!(won.recorded_at(), after_winner);
+        assert_eq!(h.applied_to(invoice.vid, 0), 6_000);
+
+        let refused = commit(&mut h, loser).expect_err("stale application witness conflicts");
+        assert_eq!((refused.code, refused.exit), ("FA-REF-030", exit::CONFLICT));
+        assert_eq!(h.db.frontier().unwrap(), after_winner, "no second commit");
+        assert_eq!(h.applied_to(invoice.vid, 0), 6_000, "no double application");
+        let loser_vid = identities[loser_index];
+        assert!(read_entry(&h.db, loser_vid).unwrap().is_none());
+        for ordinal in [0, 1] {
+            assert!(h.db.vertex(leg_vid(loser_vid, ordinal)).unwrap().is_none());
+        }
+        assert!(
+            h.db.edge(edge_id(
+                relation::SETTLES,
+                leg_vid(loser_vid, 1),
+                leg_vid(invoice.vid, 0),
+            ))
+            .unwrap()
+            .is_none()
+        );
+        let (stored, recorded_at) = read_entry(&h.db, won.entry_ref().vid)
+            .unwrap()
+            .expect("winning entry");
+        assert_eq!(stored.entry_digest, won.entry_ref().entry_digest);
+        assert_eq!(recorded_at, after_winner);
+        assert_eq!(
+            stored.proposal.legs[1].settles,
+            vec![settle(invoice, 0, usd, 6_000)]
+        );
+        let edge =
+            h.db.edge(edge_id(
+                relation::SETTLES,
+                leg_vid(won.entry_ref().vid, 1),
+                leg_vid(invoice.vid, 0),
+            ))
+            .unwrap()
+            .expect("winning settlement edge");
+        assert!(edge.props.iter().any(|(key, value)| {
+            *key == property::AMOUNT_BYTES
+                && *value == CanonicalScalar::bytes(6_000i128.to_le_bytes().to_vec()).unwrap()
+        }));
+
+        let again = h
+            .post(h.request(proposals[winner_index].clone(), &["post"]))
+            .expect("winner retry is already recorded");
+        assert!(matches!(again, Posted::AlreadyRecorded { .. }));
+        assert_eq!(again.entry_ref(), won.entry_ref());
+        assert_eq!(again.recorded_at(), won.recorded_at());
+        assert_eq!(h.db.frontier().unwrap(), after_winner);
+        assert_eq!(h.applied_to(invoice.vid, 0), 6_000);
+
+        let refused = h
+            .post(h.request(proposals[loser_index].clone(), &["post"]))
+            .expect_err("a fresh 60 receipt exceeds the remaining 40");
+        assert_eq!((refused.code, refused.exit), ("FA-REF-072", exit::REFUSAL));
+        assert!(refused.message.contains("only 4000 is open"));
+        assert_eq!(h.db.frontier().unwrap(), after_winner);
+        assert_eq!(h.applied_to(invoice.vid, 0), 6_000);
+
+        // The failed receipt's key was never consumed, so its corrected
+        // 40 receipt can commit and settle the invoice exactly once.
+        let remainder = h.receipt(
+            4_000,
+            vec![settle(invoice, 0, usd, 4_000)],
+            keys[loser_index],
+        );
+        let completed = h
+            .post(h.request(remainder, &["post"]))
+            .expect("remaining 40 commits");
+        assert!(matches!(completed, Posted::Committed { .. }));
+        assert_eq!(completed.entry_ref().vid, loser_vid);
+        assert_eq!(completed.recorded_at().0, after_winner.0 + 1);
+        assert_eq!(h.db.frontier().unwrap(), completed.recorded_at());
+        assert_eq!(h.applied_to(invoice.vid, 0), 10_000);
+    }
+}
+
+#[test]
 fn applications_settle_open_items_within_the_open_amount_and_reversal_undoes_them() {
     let mut h = harness();
     let usd = h.usd;

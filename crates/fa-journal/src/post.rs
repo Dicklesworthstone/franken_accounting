@@ -50,7 +50,7 @@ use fa_money::Side;
 use fa_registry::evidence_policy::EvidencePolicy;
 use fa_registry::{Admissibility, Decision, EntryClasses};
 use fa_time::resolve_period;
-use fgdb::{Database, VertexRow, WriteBatch, WriteMismatchPolicy, WriteTxnError};
+use fgdb::{Database, VertexRow, WriteBatch, WriteMismatchPolicy, WriteTxn, WriteTxnError};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
@@ -129,6 +129,91 @@ impl Posted {
         match self {
             Self::Committed { period, .. } => Some(period),
             Self::AlreadyRecorded { .. } => None,
+        }
+    }
+}
+
+/// An admitted retry is already complete; a fresh post retains the actual
+/// substrate transaction until its caller chooses to commit or abort it.
+#[derive(Debug)]
+#[must_use]
+pub enum PostPreparation {
+    AlreadyRecorded(Posted),
+    Ready(Box<PreparedPost>),
+}
+
+/// A sealed post and its original read witnesses. Fields stay private so a
+/// caller cannot replace the acting capability, proposal, or transaction.
+/// Dropping this value abandons the staged write and releases its pin.
+#[derive(Debug)]
+#[must_use]
+pub struct PreparedPost {
+    txn: WriteTxn,
+    request: PostRequest,
+    entry_ref: EntryRef,
+    period: String,
+    identity: Identity,
+    seal_key: SealKey,
+}
+
+impl PreparedPost {
+    /// The committed prefix against which all laws and witnesses were read.
+    #[must_use]
+    pub fn basis(&self) -> CommitSeq {
+        self.txn.basis()
+    }
+
+    /// Release the prepared transaction without publishing any effects.
+    pub fn abort(self) {
+        self.txn.abort();
+    }
+
+    /// Publish once through the ordinary substrate validator. Expiry is
+    /// judged again at the current frontier, without refreshing any of the
+    /// preparation's revocation, policy, period, or accounting witnesses.
+    pub async fn commit<V: asupersync::fs::Vfs + Clone>(
+        self,
+        db: &mut Database<V>,
+        ctx: &PurposeContexts,
+    ) -> Outcome<Posted> {
+        let commit = ctx.commit();
+        commit.checkpoint().map_err(WriteTxnError::Interrupted)?;
+        let Self {
+            mut txn,
+            request,
+            entry_ref,
+            period,
+            identity,
+            seal_key,
+        } = self;
+        if let Err(d) = fa_policy::current(&request.capability, db.frontier()?) {
+            txn.abort();
+            return Ok(Err(policy::refusal(&d)));
+        }
+        match txn.commit(db, &commit).await {
+            Ok(seq) => Ok(Ok(Posted::Committed {
+                entry_ref,
+                recorded_at: seq,
+                period,
+            })),
+            Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
+                Ok(Err(Refusal::new(
+                    code::CONFLICT,
+                    exit::CONFLICT,
+                    format!("a concurrent commit invalidated a witness this post read: {detail}"),
+                    "FG-LAW-FCW-01 (first committer wins)",
+                    "re-plan and retry; if a close or a policy activation won, the period-law or stale-approval refusal will say so",
+                )))
+            }
+            Err(WriteTxnError::Write(
+                fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
+            )) => match db.vertex(entry_ref.vid)? {
+                Some(row) => recorded_or_conflict(&row, &request.proposal, &seal_key, identity),
+                None => Err(KernelError::Corrupt(
+                    "identity spent but no live row".into(),
+                )),
+            },
+            Err(e) => Err(e.into()),
         }
     }
 }
@@ -280,6 +365,24 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: PostRequest,
 ) -> Outcome<Posted> {
+    match prepare_post(db, ctx, book, req)? {
+        Err(refusal) => Ok(Err(refusal)),
+        Ok(PostPreparation::AlreadyRecorded(posted)) => Ok(Ok(posted)),
+        Ok(PostPreparation::Ready(prepared)) => prepared.commit(db, ctx).await,
+    }
+}
+
+/// Run the production posting pipeline through staging, retaining its
+/// witnesses at one prefix without publishing a commit. Another prepared
+/// operation may commit before this one; the ordinary validator decides
+/// whether the original witnesses still hold.
+pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    req: PostRequest,
+) -> Outcome<PostPreparation> {
+    ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
     let proposal = &req.proposal;
 
     // 1. Structure (fa-model's rules). Usage error: the payload is malformed.
@@ -686,7 +789,10 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     };
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        return recorded_or_conflict(&row, proposal, &book.seal_key, identity);
+        return Ok(
+            recorded_or_conflict(&row, proposal, &book.seal_key, identity)?
+                .map(PostPreparation::AlreadyRecorded),
+        );
     }
 
     // 4'. The run (plan §8.6): its state is a point witness, so a Finalize
@@ -1612,35 +1718,14 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     batches.retain(|b| !b.is_empty());
     txn.write_ordered(db, batches)?;
 
-    match txn.commit(db, &ctx.commit()).await {
-        Ok(seq) => Ok(Ok(Posted::Committed {
-            entry_ref: entry.entry_ref(evid),
-            recorded_at: seq,
-            period: period.code,
-        })),
-        Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
-            Ok(Err(Refusal::new(
-                code::CONFLICT,
-                exit::CONFLICT,
-                format!("a concurrent commit invalidated a witness this post read: {detail}"),
-                "FG-LAW-FCW-01 (first committer wins)",
-                "re-plan and retry; if a close or a policy activation won, the period-law or stale-approval refusal will say so",
-            )))
-        }
-        Err(WriteTxnError::Write(
-            fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
-        )) => {
-            // Lost the identity race: the recorded outcome if it is the same
-            // intent, a conflict if it is not.
-            match db.vertex(evid)? {
-                Some(row) => recorded_or_conflict(&row, proposal, &book.seal_key, identity),
-                None => Err(KernelError::Corrupt(
-                    "identity spent but no live row".into(),
-                )),
-            }
-        }
-        Err(e) => Err(e.into()),
-    }
+    Ok(Ok(PostPreparation::Ready(Box::new(PreparedPost {
+        txn,
+        request: req,
+        entry_ref: entry.entry_ref(evid),
+        period: period.code,
+        identity,
+        seal_key: book.seal_key.clone(),
+    }))))
 }
 
 /// Read a committed entry back by its derived identity.

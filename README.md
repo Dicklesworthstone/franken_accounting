@@ -55,6 +55,17 @@ cancellation and an injected write failure. The full registered crash-point
 matrix, concurrency exploration and 1,000-seed Genesis campaign remain open
 under `fa-0fl`; these smoke tests do not establish that broader claim.
 
+The posting and period kernels also expose owned prepared transactions.
+Their ordinary entrypoints prepare and commit through the same code.
+Preparation retains the substrate's original witnesses; commit rechecks the
+acting capability's expiry at the current frontier and validates those
+witnesses without refreshing them. This permits controlled interleavings
+between preparation and publication while preserving the accounting laws.
+Period opening also witnesses the population of reversal schedules, including
+an empty population, so a newly due schedule invalidates a prepared opening.
+The filesystem fault tests currently cover consistently anchored paths;
+relative-path alias handling in the substrate simulator is tracked by `fa-n4m`.
+
 ### Entry accumulator checkpoints
 
 The CLI can publish an unsigned checkpoint over the book's entry prefix and
