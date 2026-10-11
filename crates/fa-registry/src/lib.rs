@@ -982,6 +982,7 @@ mod tests {
                 (6, "import_run"),
                 (7, "legal_hold"),
                 (8, "capability_revocation"),
+                (9, "migration_run"),
             ]
         );
         assert_eq!(

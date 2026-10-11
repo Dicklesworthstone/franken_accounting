@@ -235,4 +235,4 @@ minted_by = "fa-journal policy::revoke_capability"
 id = 9
 name = "migration_run"
 class = "MigrationControl"
-minted_by = "fa-journal migration::open_run / transition_run"
+minted_by = "fa-journal migration::open_proposal, migration::plan_run_transition"

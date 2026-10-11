@@ -108,9 +108,6 @@ name = "SupplementalEvidence"
 [[label]]
 id = 35
 name = "ReversalSchedule"
-[[label]]
-id = 41
-name = "RegisterState"
 
 # fa-txf (Docket slice 2): custody events. Event 0 is the ImportReceipt every
 # intake writes; later events are CustodyTransfers.
@@ -131,6 +128,10 @@ name = "RedactedView"
 [[label]]
 id = 39
 name = "LegalHoldCell"
+
+[[label]]
+id = 41
+name = "RegisterState"
 
 # ---- property keys --------------------------------------------------------
 [[property]]
