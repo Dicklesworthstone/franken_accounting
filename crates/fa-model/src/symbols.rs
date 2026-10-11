@@ -61,6 +61,7 @@ symbols!(
         (ACCUMULATOR_STATE, "AccumulatorState", 31),
         (SUPPLEMENTAL_EVIDENCE, "SupplementalEvidence", 34),
         (REVERSAL_SCHEDULE, "ReversalSchedule", 35),
+        (REGISTER_STATE, "RegisterState", 41),
     ]
 );
 
