@@ -4297,6 +4297,147 @@ mod tests {
     }
 
     #[test]
+    fn initial_certificate_retention_can_follow_unrelated_commits() {
+        use crate::TrialBalanceSelection;
+
+        let (mut book, _, day, _) = certified_fixture();
+        let certified = book
+            .certify_trial_balance(TrialBalanceSelection::AsOf(day), None)
+            .unwrap()
+            .unwrap();
+        let original_bytes = certified.certificate.canonical_bytes().unwrap();
+        let document = fa_journal::Document {
+            book_id: book.context().book_id,
+            kind: 1,
+            mime: "text/plain".into(),
+            grade: 3,
+            retrieved_by: VId(1),
+            bytes: b"Unrelated document recorded before delayed certificate retention".to_vec(),
+        };
+        book.add_document(&document).unwrap().unwrap();
+        let after_unrelated = book.head().unwrap();
+        assert!(after_unrelated > certified.certificate.known_at);
+        let retained = book
+            .retain_certificate(&certified.certificate)
+            .unwrap()
+            .unwrap();
+        assert!(retained.recorded_at > after_unrelated);
+        assert_eq!(
+            book.read_certificate(&retained.digest)
+                .unwrap()
+                .unwrap()
+                .canonical_bytes()
+                .unwrap(),
+            original_bytes
+        );
+        assert_eq!(
+            book.retain_certificate(&certified.certificate)
+                .unwrap()
+                .unwrap(),
+            retained
+        );
+        assert_eq!(
+            book.replay_trial_balance(&certified.certificate)
+                .unwrap()
+                .unwrap(),
+            certified.report,
+            "delayed retention preserves the original historical report"
+        );
+        assert_eq!(book.head().unwrap(), retained.recorded_at);
+    }
+
+    #[test]
+    fn restored_certificate_bytes_do_not_hide_a_later_record_version() {
+        use crate::{ReportCertificate, TrialBalanceSelection};
+        use fa_model::symbols::{property, relation};
+        use fgdb_types::CanonicalScalar;
+
+        let (mut book, _, day, _) = certified_fixture();
+        let certified = book
+            .certify_trial_balance(TrialBalanceSelection::AsOf(day), None)
+            .unwrap()
+            .unwrap();
+        let certificate = certified.certificate;
+        let retained = book.retain_certificate(&certificate).unwrap().unwrap();
+        let vid =
+            crate::certificate_store::certificate_vid(book.context().book_id, &retained.digest);
+        let original = with_store!(&book.store, core => core.db.vertex(vid))
+            .unwrap()
+            .unwrap();
+        let purposes = book.purposes();
+        let mut damage = fgdb::WriteBatch::new(relation::DERIVED_FROM);
+        damage.set_vertex_property(
+            vid,
+            property::FA_DIGEST,
+            Some(CanonicalScalar::bytes(vec![0x71; 32]).unwrap()),
+        );
+        with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&purposes.commit(), damage)))
+            .unwrap();
+        let mut restore = fgdb::WriteBatch::new(relation::DERIVED_FROM);
+        restore.set_vertex_property(
+            vid,
+            property::FA_DIGEST,
+            Some(
+                fa_journal::rows::prop(&original, property::FA_DIGEST)
+                    .unwrap()
+                    .clone(),
+            ),
+        );
+        with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&purposes.commit(), restore)))
+            .unwrap();
+
+        let current = with_store!(&book.store, core => core.db.vertex(vid))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            current.props, original.props,
+            "all exact bytes were restored"
+        );
+        assert_eq!(current.labels, original.labels);
+        assert!(current.created_at > retained.recorded_at);
+        let same_version =
+            with_store!(&book.store, core => core.db.vertex_at(vid, current.created_at))
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            same_version, current,
+            "comparing only the claimed creating snapshot cannot detect the rewrite"
+        );
+        let before_refusal = book.head().unwrap();
+        let refusal = book
+            .read_certificate(&retained.digest)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
+        assert!(refusal.message.contains("existed before"), "{refusal}");
+        let refusal = book.retain_certificate(&certificate).unwrap().unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
+        assert_eq!(
+            book.head().unwrap(),
+            before_refusal,
+            "no silent repair or re-retention"
+        );
+
+        let historical =
+            with_store!(&book.store, core => core.db.vertex_at(vid, retained.recorded_at))
+                .unwrap()
+                .unwrap();
+        let original_bytes =
+            fa_journal::rows::bytes(&historical, property::FA_PAYLOAD, "historical certificate")
+                .unwrap();
+        assert_eq!(
+            ReportCertificate::decode(&original_bytes).unwrap(),
+            certificate
+        );
+        assert_eq!(
+            book.replay_trial_balance(&certificate).unwrap().unwrap(),
+            certified.report,
+            "the original report and certificate remain readable in history"
+        );
+        assert_eq!(book.head().unwrap(), before_refusal);
+    }
+
+    #[test]
     fn retained_certificate_rewrites_and_retirements_are_refused_without_repairing_history() {
         use crate::TrialBalanceSelection;
         use fa_model::symbols::{label, property, relation};

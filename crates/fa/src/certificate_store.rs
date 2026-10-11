@@ -115,9 +115,14 @@ fn decoded_row(
     Ok(certificate)
 }
 
-/// Compare with the creating snapshot as well as validating the current bytes.
-/// A raw write cannot turn a colliding or unrelated earlier row into an exact
-/// retry merely by replacing its payload and digest with valid new bytes.
+/// Prove that the current version is the identity's actual creation, then
+/// compare its creating snapshot as well as validating the current bytes.
+/// The substrate's `created_at` is a version start: a property update gives
+/// the successor a new timestamp. Checking only `vertex_at(created_at)`
+/// would accept that same successor after a rewrite or an exact restoration.
+/// Identities are never reused and native history preserves the prior
+/// version, so an immutable certificate must be absent immediately before
+/// the current version's start. This also permits delayed first retention.
 fn unchanged_row<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &QueryCx,
@@ -130,6 +135,21 @@ fn unchanged_row<V: Vfs + Clone>(
         Err(refusal) => return Ok(Err(refusal)),
     };
     cx.checkpoint().map_err(BookError::Context)?;
+    let Some(before_creation) = row.created_at.0.checked_sub(1) else {
+        return Ok(Err(invalid(
+            "a retained certificate cannot have creating sequence zero",
+        )));
+    };
+    if db
+        .vertex_at(row.vid, CommitSeq(before_creation))
+        .map_err(KernelError::from)?
+        .is_some()
+    {
+        return Ok(Err(invalid(format!(
+            "retained certificate {:032x} existed before its current version at sequence {}; its immutable record was rewritten or rebound",
+            row.vid.0, row.created_at.0
+        ))));
+    }
     let Some(original) = db
         .vertex_at(row.vid, row.created_at)
         .map_err(KernelError::from)?
