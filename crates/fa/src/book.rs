@@ -1277,11 +1277,16 @@ mod tests {
             ));
             assert!(!book.advance_registers(&cx, &march).await.unwrap().wrote);
             let source_head = book.head(&cx).unwrap();
-            let scratch_path = Path::new("./scratch-store");
+            let scratch_path = cx
+                .commit()
+                .with_restriction_async(vfs.canonicalize(Path::new(".")))
+                .await
+                .unwrap()
+                .join("scratch-store");
             let scratch_db = Database::create_with_vfs(
                 &cx.commit(),
                 vfs.clone(),
-                scratch_path.to_path_buf(),
+                scratch_path.clone(),
                 BookKeys::for_development(0x63).inner,
             )
             .await
@@ -1311,7 +1316,7 @@ mod tests {
             assert_eq!(book.head(&cx).unwrap(), source_head);
             let events = vfs.events();
             assert!(events[replay_events_start..].iter().any(|e| {
-                matches!(e.kind, FaultKind::Latency { .. }) && e.path.starts_with(scratch_path)
+                matches!(e.kind, FaultKind::Latency { .. }) && e.path.starts_with(&scratch_path)
             }));
             assert!(
                 events
@@ -1604,6 +1609,7 @@ mod tests {
             usd,
             ..
         } = fixture;
+        let store_path = book.db.path().to_path_buf();
         let race_events_start = vfs.events().len();
         let shared = Arc::new(Mutex::new(book));
         let barrier = Arc::new(Barrier::new(2));
@@ -1663,8 +1669,7 @@ mod tests {
         }
         drive_prepared_lab(runtime);
         assert!(vfs.events()[race_events_start..].iter().any(|event| {
-            matches!(event.kind, FaultKind::Latency { .. })
-                && event.path.starts_with("./prepared-book/store")
+            matches!(event.kind, FaultKind::Latency { .. }) && event.path.starts_with(&store_path)
         }));
         let (post_basis, post) = post_handle.try_join().unwrap().unwrap();
         let (close_basis, close) = close_handle.try_join().unwrap().unwrap();
@@ -1742,10 +1747,16 @@ mod tests {
                 assert_eq!(fold, book.fold_period(&cx, &march).unwrap());
                 assert!(book.verify_registers(&cx, &march).unwrap().is_green());
                 let head = book.head(&cx).unwrap();
+                let scratch_path = cx
+                    .commit()
+                    .with_restriction_async(vfs.canonicalize(Path::new(".")))
+                    .await
+                    .unwrap()
+                    .join("race-replay");
                 let scratch_db = Database::create_with_vfs(
                     &cx.commit(),
                     vfs.clone(),
-                    PathBuf::from("./race-replay"),
+                    scratch_path.clone(),
                     BookKeys::for_development(0x6a).inner,
                 )
                 .await
@@ -1793,8 +1804,7 @@ mod tests {
                 assert_eq!(book.head(&cx).unwrap(), head);
                 let events = vfs.events();
                 assert!(events[replay_events_start..].iter().any(|e| {
-                    matches!(e.kind, FaultKind::Latency { .. })
-                        && e.path.starts_with("./race-replay")
+                    matches!(e.kind, FaultKind::Latency { .. }) && e.path.starts_with(&scratch_path)
                 }));
             })
             .unwrap();
@@ -2216,6 +2226,7 @@ mod tests {
         under_lab(89, |root| async move {
             let cx = PurposeContexts::narrow_runtime_root(&root);
             let mut fixture = prepared_fixture(&root, 89).await;
+            let store_path = fixture.book.db.path().to_path_buf();
             let book_id = fixture.book.context().book_id;
             let witness = Capability::embedded(VId(1), &["witness"]).unwrap();
             let system = fa_journal::rows::system_principal(book_id);
@@ -2245,7 +2256,7 @@ mod tests {
                     .iter()
                     .any(|event| {
                         matches!(event.kind, FaultKind::Latency { .. })
-                            && event.path.starts_with("./prepared-book/store")
+                            && event.path.starts_with(&store_path)
                     })
             );
 
@@ -2359,7 +2370,7 @@ mod tests {
                     .iter()
                     .any(|event| {
                         matches!(event.kind, FaultKind::Latency { .. })
-                            && event.path.starts_with("./prepared-book/store")
+                            && event.path.starts_with(&store_path)
                     })
             );
             assert_eq!(swept.expiry.len(), 1);

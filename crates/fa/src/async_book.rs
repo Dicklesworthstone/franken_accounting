@@ -100,8 +100,18 @@ impl<V: Vfs + Clone> AsyncBook<V> {
                 Ok::<_, BookError>(())
             })
             .await?;
+        // Chronicle's process-local writer lease uses a host path. Resolve
+        // through the supplied VFS so a memory filesystem's private shadow
+        // namespace and the lease identify the same database directory.
+        // Keep ancestor fencing above on the caller's path: a canonical
+        // memory path has host ancestors outside that VFS's namespace.
+        let database_dir = commit
+            .with_restriction_async(vfs.canonicalize(&dir))
+            .await
+            .map_err(|e| BookError::Io(dir.clone(), e))?
+            .join("store");
         let mut db =
-            Database::create_with_vfs(&commit, vfs.clone(), dir.join("store"), keys.inner.clone())
+            Database::create_with_vfs(&commit, vfs.clone(), database_dir, keys.inner.clone())
                 .await?;
         let units = fa_money::UnitRegistry::embedded()?;
         let symbols = SymbolTable::compiled();
@@ -132,9 +142,13 @@ impl<V: Vfs + Clone> AsyncBook<V> {
         let dir = rooted_path(dir);
         let commit = cx.commit();
         commit.checkpoint().map_err(BookError::Context)?;
+        let database_dir = commit
+            .with_restriction_async(vfs.canonicalize(&dir))
+            .await
+            .map_err(|e| BookError::Io(dir.clone(), e))?
+            .join("store");
         let db =
-            Database::open_with_vfs(&commit, vfs.clone(), dir.join("store"), keys.inner.clone())
-                .await?;
+            Database::open_with_vfs(&commit, vfs.clone(), database_dir, keys.inner.clone()).await?;
         let query = cx.query();
         query.checkpoint().map_err(BookError::Context)?;
         let spec = query
