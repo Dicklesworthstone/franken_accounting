@@ -27,7 +27,7 @@ use fgdb_types::{CommitSeq, VId};
 
 use crate::book::{BookError, BookKeys, Entropy, Outcome};
 
-const BOOK_BLOB_STORE: u16 = 1;
+pub(crate) const BOOK_BLOB_STORE: u16 = 1;
 
 fn seal(
     cx: &PurposeContexts,

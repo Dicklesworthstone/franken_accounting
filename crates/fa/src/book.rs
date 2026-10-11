@@ -1020,6 +1020,7 @@ impl fmt::Debug for Book {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::async_book::BOOK_BLOB_STORE;
     use asupersync::lab::{AutoAdvanceTermination, LabConfig, LabRuntime};
     use asupersync::types::CancelKind;
     use fa_journal::{Capability, UnitPolicy};
