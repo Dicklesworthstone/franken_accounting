@@ -648,6 +648,8 @@ pub struct Verification {
     pub stale: bool,
     /// Book-wide unread Entry creations, including controls and staged
     /// migrations. Projection-only commits do not contribute to this count.
+    /// Counted by the pinned substrate's `(vid, created_at)` identity; a
+    /// replaced prefix identity is corruption, not a second legitimate entry.
     pub lag_entries: usize,
     pub cells_checked: usize,
     pub drift: Vec<Drift>,
@@ -777,7 +779,8 @@ pub fn verify_period<V: asupersync::fs::Vfs + Clone>(
             .count();
         for (vid, row) in &before {
             if current.get(vid).is_none_or(|now| {
-                prop(now, property::FA_PAYLOAD) != prop(row, property::FA_PAYLOAD)
+                now.created_at != row.created_at
+                    || prop(now, property::FA_PAYLOAD) != prop(row, property::FA_PAYLOAD)
             }) {
                 result.projection_errors.push(format!(
                     "journal entry {:032x} changed or disappeared after the checked prefix",

@@ -3123,6 +3123,7 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let mut details = Vec::new();
             let mut diagnostics = Vec::new();
             let mut actions = Vec::new();
+            let mut repairs = Vec::new();
             for p in &periods {
                 let v = match book.verify_registers(p) {
                     Ok(v) => v,
@@ -3136,7 +3137,9 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                             message: format!("register verification failed in {p}: {why}"),
                             detail: obj(vec![("period", s(p)), ("problem", s(&why))]),
                             cite: Some("FA-INV-04 (registers are derived from the journal)".into()),
-                            fix: None,
+                            fix: Some(format!(
+                                "retain this finding (`fa verify registers --period {p} --json`); if repair is intended, run `fa registers materialize --period {p} --yes --json`"
+                            )),
                         });
                     }
                     Err(error) => return Err(error.into()),
@@ -3152,6 +3155,11 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     ));
                 }
                 all_green &= v.is_green();
+                if !v.is_green() {
+                    repairs.push(format!(
+                        "fa registers materialize --period {p} --yes --json"
+                    ));
+                }
                 if v.is_green() && v.stale {
                     out.warn(format!(
                         "{p}: verified cache has {} unread journal entries; run fa registers advance --period {p} --json",
@@ -3164,7 +3172,7 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 }
                 if v.cache_status == fa_registers::CacheStatus::Uninitialized {
                     out.warn(format!(
-                        "{p}: register cache is uninitialized; no processed prefix is certified"
+                        "{p}: register cache is uninitialized; no processed prefix is certified; initialize it with fa registers advance --period {p} --json"
                     ));
                 }
                 details.push(obj(vec![
@@ -3219,8 +3227,11 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         }
                     ),
                     detail: Json::Arr(details),
-                    cite: None,
-                    fix: None,
+                    cite: Some("FA-INV-04 (registers are derived from the journal)".into()),
+                    fix: Some(format!(
+                        "retain this verification finding; if repair is intended, run {} with the same --book",
+                        repairs.join("; ")
+                    )),
                 })
             }
         }
@@ -3787,7 +3798,25 @@ fn registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             // (verbs.toml [[dangerous]]): every period is checked, and the
             // whole command refused, before anything is written.
             for p in &periods {
-                let v = book.verify_registers(p)?;
+                let v = match book.verify_registers(p) {
+                    Ok(v) => v,
+                    Err(BookError::Registers(fa_registers::RegisterError::ProjectionDrift(_)))
+                    | Err(BookError::Registers(fa_registers::RegisterError::Kernel(
+                        fa_journal::KernelError::Corrupt(_),
+                    ))) => {
+                        // Malformed derived values still require explicit
+                        // replacement authorization. The rebuild below must
+                        // independently fold valid journal payloads.
+                        gate(
+                            args,
+                            "registers",
+                            Some("materialize"),
+                            &Condition::ExistingCells,
+                        )?;
+                        continue;
+                    }
+                    Err(error) => return Err(error.into()),
+                };
                 let existing = v.stored_digest.is_some()
                     || v.drift
                         .iter()

@@ -1304,8 +1304,86 @@ fn register_advance_consumes_only_new_entries_and_refuses_damaged_cache() -> std
         }
     }
     ok(&["verify", "registers", "--fiscal-year", "2026", "--json"]);
-    // A damaged amount is still a verification failure, with no advance
-    // suggestion: only an explicit repair may replace corrupt derived cells.
+    // Both a wrong value and a malformed column are verification findings;
+    // they carry a repair command, never an automatic advance suggestion.
+    for bad_amount in [
+        CanonicalScalar::bytes(2_999i128.to_le_bytes().to_vec()).unwrap(),
+        CanonicalScalar::Int(2_999),
+    ] {
+        let malformed = matches!(&bad_amount, CanonicalScalar::Int(_));
+        let mut db = runtime
+            .block_on(Database::open(
+                &ctx.commit(),
+                &book.join("store"),
+                DatabaseKeys::new([57; 32], DatabaseSecurityNamespaceId([58; 32]), [59; 32]),
+            ))
+            .unwrap();
+        let key = fa_registers::CellKey {
+            account: fa_model::account_vid(book_id, "1000"),
+            unit_id: fa_money::UnitRegistry::embedded()
+                .unwrap()
+                .lookup("USD")
+                .unwrap()
+                .0,
+            period: period.into(),
+        };
+        let mut batch = WriteBatch::new(relation::DERIVED_FROM);
+        batch.set_vertex_property(
+            fa_registers::register_vid(book_id, &key),
+            property::CREDITS_POSTED,
+            Some(bad_amount),
+        );
+        runtime.block_on(db.write(&ctx.commit(), batch)).unwrap();
+        drop(db);
+        let (code, verification, err) = fa(
+            Some(&book),
+            &["verify", "registers", "--period", period, "--json"],
+        );
+        assert_eq!(code, 8, "{verification}\n{err}");
+        let error = doc(&verification);
+        if malformed {
+            assert!(text(error.get("detail").unwrap(), "problem").contains("expected Bytes"));
+        } else {
+            let check = &error.get("detail").unwrap().as_arr().unwrap()[0];
+            assert_eq!(text(check, "cache_status"), "corrupt");
+            assert_eq!(check.get("verified_through"), Some(&Json::Null));
+            assert!(!arr(check, "drift").is_empty());
+        }
+        assert!(text(&error, "cite").contains("FA-INV-04"));
+        assert!(
+            text(&error, "fix")
+                .contains("fa registers materialize --period FY2026-P03 --yes --json")
+        );
+        assert!(arr(&robot_line(&verification), "next_actions").is_empty());
+        assert_eq!(
+            fa(
+                Some(&book),
+                &["registers", "materialize", "--period", period, "--json"]
+            )
+            .0,
+            7
+        );
+        ok(&[
+            "registers",
+            "materialize",
+            "--period",
+            period,
+            "--yes",
+            "--json",
+        ]);
+        ok(&["verify", "registers", "--period", period, "--json"]);
+    }
+
+    // An undecodable journal payload is a foundation error, not a cache
+    // mismatch. Use an uninitialized new period so the verifier reads HEAD.
+    ok(&["period", "create", "--fiscal-year", "2027", "--json"]);
+    let verify_new = ["verify", "registers", "--period", "FY2027-P03", "--json"];
+    let empty = ok(&verify_new);
+    assert_eq!(
+        text(&arr(&doc(&empty), "periods")[0], "cache_status"),
+        "uninitialized"
+    );
+    assert!(empty.contains("initialize it with fa registers advance --period FY2027-P03 --json"));
     let mut db = runtime
         .block_on(Database::open(
             &ctx.commit(),
@@ -1313,43 +1391,27 @@ fn register_advance_consumes_only_new_entries_and_refuses_damaged_cache() -> std
             DatabaseKeys::new([57; 32], DatabaseSecurityNamespaceId([58; 32]), [59; 32]),
         ))
         .unwrap();
-    let key = fa_registers::CellKey {
-        account: fa_model::account_vid(book_id, "1000"),
-        unit_id: fa_money::UnitRegistry::embedded()
-            .unwrap()
-            .lookup("USD")
-            .unwrap()
-            .0,
-        period: period.into(),
-    };
+    let entry = db
+        .vertices()
+        .unwrap()
+        .into_iter()
+        .find(|row| row.labels.contains(&fa_model::symbols::label::ENTRY))
+        .unwrap()
+        .vid;
     let mut batch = WriteBatch::new(relation::DERIVED_FROM);
     batch.set_vertex_property(
-        fa_registers::register_vid(book_id, &key),
-        property::CREDITS_POSTED,
-        Some(CanonicalScalar::bytes(2_999i128.to_le_bytes().to_vec()).unwrap()),
+        entry,
+        property::FA_PAYLOAD,
+        Some(CanonicalScalar::bytes(vec![0xff]).unwrap()),
     );
     runtime.block_on(db.write(&ctx.commit(), batch)).unwrap();
     drop(db);
-    let (code, verification, err) = fa(
-        Some(&book),
-        &["verify", "registers", "--period", period, "--json"],
+    let (code, refusal, err) = fa(Some(&book), &verify_new);
+    assert_eq!(
+        code, 5,
+        "model decode stays a foundation failure: {refusal}\n{err}"
     );
-    assert_eq!(code, 8, "{verification}\n{err}");
-    let error = doc(&verification);
-    let check = &error.get("detail").unwrap().as_arr().unwrap()[0];
-    assert_eq!(text(check, "cache_status"), "corrupt");
-    assert_eq!(check.get("verified_through"), Some(&Json::Null));
-    assert!(!arr(check, "drift").is_empty());
-    assert!(arr(&robot_line(&verification), "next_actions").is_empty());
-    ok(&[
-        "registers",
-        "materialize",
-        "--period",
-        period,
-        "--yes",
-        "--json",
-    ]);
-    ok(&["verify", "registers", "--period", period, "--json"]);
+    assert_eq!(text(&doc(&refusal), "class"), "foundation");
     Ok(())
 }
 
