@@ -958,8 +958,8 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Res
     let (code, _, _) = fa(Some(&book), &["period", "soft-close", march]);
     assert_eq!(code, 0);
     // A SoftClosed period still takes a post under `post_softclosed`; it lands
-    // in March after the register was materialized, so the register is stale:
-    // a verification failure (exit 8).
+    // in March after the register was materialized. The checked prefix stays
+    // valid and ordinary lag remains a successful verification.
     let (code, out, _) = fa(
         Some(&book),
         &[
@@ -978,11 +978,13 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Res
         Some(&book),
         &["verify", "registers", "--period", march, "--json"],
     );
-    assert_eq!(code, 8, "{out}\n{err}");
-    assert!(
-        out.contains("\"event\":\"error\"") && out.contains("\"class\":\"verification\""),
-        "{out}"
-    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert_eq!(field(&out, "event"), Some("registers_verified"));
+    let verified = doc(&out);
+    let checks = arr(&verified, "periods");
+    assert_eq!(checks[0].get("stale"), Some(&Json::Bool(true)));
+    assert!(int(&checks[0], "lag_entries").is_some_and(|n| n >= 1));
+    assert!(out.contains("fa registers advance --period FY2026-P03 --json"));
     let (code, _, _) = fa(Some(&book), &["period", "close", march, "--yes"]);
     assert_eq!(code, 0);
     let later = write(
@@ -1179,6 +1181,18 @@ fn register_advance_consumes_only_new_entries_and_refuses_damaged_cache() -> std
     drop(db);
     let damaged_balance = report(&book, &["tb", "--period", period, "--json"]);
     assert_cash_credits(&damaged_balance, "30.00 USD");
+    let (code, verification, err) = fa(
+        Some(&book),
+        &["verify", "registers", "--period", period, "--json"],
+    );
+    assert_eq!(code, 8, "{verification}\n{err}");
+    let error = doc(&verification);
+    let [check] = error.get("detail").unwrap().as_arr().unwrap() else {
+        panic!("one corrupt period expected: {verification}");
+    };
+    assert_eq!(text(check, "cache_status"), "corrupt");
+    assert_eq!(check.get("verified_through"), Some(&Json::Null));
+    assert!(arr(&robot_line(&verification), "next_actions").is_empty());
     let (code, out, err) = fa(Some(&book), &advance);
     assert_eq!(code, 8, "{out}\n{err}");
     let refusal = doc(&out);
@@ -1290,6 +1304,52 @@ fn register_advance_consumes_only_new_entries_and_refuses_damaged_cache() -> std
         }
     }
     ok(&["verify", "registers", "--fiscal-year", "2026", "--json"]);
+    // A damaged amount is still a verification failure, with no advance
+    // suggestion: only an explicit repair may replace corrupt derived cells.
+    let mut db = runtime
+        .block_on(Database::open(
+            &ctx.commit(),
+            &book.join("store"),
+            DatabaseKeys::new([57; 32], DatabaseSecurityNamespaceId([58; 32]), [59; 32]),
+        ))
+        .unwrap();
+    let key = fa_registers::CellKey {
+        account: fa_model::account_vid(book_id, "1000"),
+        unit_id: fa_money::UnitRegistry::embedded()
+            .unwrap()
+            .lookup("USD")
+            .unwrap()
+            .0,
+        period: period.into(),
+    };
+    let mut batch = WriteBatch::new(relation::DERIVED_FROM);
+    batch.set_vertex_property(
+        fa_registers::register_vid(book_id, &key),
+        property::CREDITS_POSTED,
+        Some(CanonicalScalar::bytes(2_999i128.to_le_bytes().to_vec()).unwrap()),
+    );
+    runtime.block_on(db.write(&ctx.commit(), batch)).unwrap();
+    drop(db);
+    let (code, verification, err) = fa(
+        Some(&book),
+        &["verify", "registers", "--period", period, "--json"],
+    );
+    assert_eq!(code, 8, "{verification}\n{err}");
+    let error = doc(&verification);
+    let check = &error.get("detail").unwrap().as_arr().unwrap()[0];
+    assert_eq!(text(check, "cache_status"), "corrupt");
+    assert_eq!(check.get("verified_through"), Some(&Json::Null));
+    assert!(!arr(check, "drift").is_empty());
+    assert!(arr(&robot_line(&verification), "next_actions").is_empty());
+    ok(&[
+        "registers",
+        "materialize",
+        "--period",
+        period,
+        "--yes",
+        "--json",
+    ]);
+    ok(&["verify", "registers", "--period", period, "--json"]);
     Ok(())
 }
 
@@ -2496,16 +2556,32 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         run(true, &["post", "--intent", &more, "--evidence", &ev]).0,
         0
     );
+    let (code, stale) = run(true, &["verify", "registers", "--period", "FY2026-P03"]);
+    assert_eq!(code, 0, "ordinary lag is not corruption: {stale}");
+    let stale_data = doc(&stale);
+    let checks = arr(&stale_data, "periods");
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0].get("stale"), Some(&Json::Bool(true)));
+    assert_eq!(int(&checks[0], "lag_entries"), Some(1));
+    assert!(int(&checks[0], "verified_through").is_some());
+    assert_eq!(text(&checks[0], "cache_status"), "verified");
+    let envelope = json::parse(&stale).unwrap();
+    let actions = arr(&envelope, "next_actions");
+    assert_eq!(actions.len(), 1);
     assert_eq!(
-        run(true, &["verify", "registers", "--period", "FY2026-P03"]).0,
-        8
+        text(&actions[0], "command"),
+        "fa registers advance --period FY2026-P03 --json"
     );
     let (code, out) = run(true, &["registers", "advance", "--period", "FY2026-P03"]);
     assert_eq!(code, 0, "{out}");
-    assert_eq!(
-        run(true, &["verify", "registers", "--period", "FY2026-P03"]).0,
-        0
-    );
+    let (code, current) = run(true, &["verify", "registers", "--period", "FY2026-P03"]);
+    assert_eq!(code, 0, "{current}");
+    let current_data = doc(&current);
+    let checks = arr(&current_data, "periods");
+    assert_eq!(checks[0].get("stale"), Some(&Json::Bool(false)));
+    assert_eq!(int(&checks[0], "lag_entries"), Some(0));
+    let envelope = json::parse(&current).unwrap();
+    assert!(arr(&envelope, "next_actions").is_empty());
     // A planned, approved lock (R4): `period_planned`, then `approved`.
     assert_eq!(run(true, &["period", "open", "FY2026-P04"]).0, 0);
     assert_eq!(run(true, &["period", "close", "FY2026-P04", "--yes"]).0, 0);

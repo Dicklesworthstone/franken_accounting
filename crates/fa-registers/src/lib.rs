@@ -624,9 +624,31 @@ pub struct Drift {
     pub refolded: (i128, i128, u64),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CacheStatus {
+    /// No maintenance header or stored cells exist. Empty-set equality can
+    /// still be green, but no processed journal prefix is certified.
+    Uninitialized,
+    /// Stored cells and the maintenance header agree with their journal prefix.
+    Verified,
+    /// Stored cells, metadata, or the authoritative prefix disagree.
+    Corrupt,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Verification {
     pub period: String,
+    pub cache_status: CacheStatus,
+    /// The journal prefix independently verified against the current stored
+    /// cells. None on a mismatch or an uninitialized cache. This is the
+    /// processed basis, not the last monetary contribution.
+    pub verified_through: Option<CommitSeq>,
+    /// Whether journal entries remain after the checked basis. Meaningful
+    /// only when is_green(); corruption never becomes ordinary lag.
+    pub stale: bool,
+    /// Book-wide unread Entry creations, including controls and staged
+    /// migrations. Projection-only commits do not contribute to this count.
+    pub lag_entries: usize,
     pub cells_checked: usize,
     pub drift: Vec<Drift>,
     pub pending_drift: Vec<Drift>,
@@ -709,17 +731,78 @@ fn stored_values(row: &VertexRow, pending: bool) -> Result<Option<CellValues>, R
     )
 }
 
-/// Refold the period and compare every stored `Register` vertex to it.
+/// Compare current stored cells with the journal at their processed basis,
+/// reporting freshness separately. Later postings are lag, not corruption.
+/// A headerless cache retains the current-head comparison; no historical
+/// prefix is inferred from a contribution watermark or publication sequence.
 pub fn verify_period<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     period_code: &str,
 ) -> Result<Verification, RegisterError> {
-    let fold = fold_period(db, book, period_code)?;
+    let head = db.frontier()?;
+    let (through, state_error) = maintainer::verify_state(db, book, period_code)?;
+    let basis = through.unwrap_or(head);
+    let fold = fold_period_at(db, book, period_code, Some(basis))?;
     let mut result = verify_projection(db, book, &fold)?;
-    if let Some(error) = maintainer::verify_state(db, book, period_code)? {
+    let has_stored_cells = !stored_registers(db, book, &fold)?.is_empty();
+    let uninitialized = through.is_none() && state_error.is_none() && !has_stored_cells;
+    if let Some(error) = state_error {
         result.projection_errors.push(error);
     }
+    if through.is_none() && has_stored_cells {
+        result
+            .projection_errors
+            .push("stored register cells have no valid maintenance header".into());
+    }
+    if basis < head {
+        let before: BTreeMap<_, _> = db
+            .vertices_at(basis)?
+            .into_iter()
+            .filter(|row| row.labels.contains(&label::ENTRY))
+            .map(|row| (row.vid, row))
+            .collect();
+        let current: BTreeMap<_, _> = db
+            .vertices_at(head)?
+            .into_iter()
+            .filter(|row| row.labels.contains(&label::ENTRY))
+            .map(|row| (row.vid, row))
+            .collect();
+        // Freshness is not head-minus-basis: register publications and other
+        // non-entry commits do not create work. Never hide a rewrite or
+        // retirement of the authoritative prefix behind a historical check.
+        result.lag_entries = current
+            .values()
+            .filter(|row| row.created_at > basis)
+            .count();
+        for (vid, row) in &before {
+            if current.get(vid).is_none_or(|now| {
+                prop(now, property::FA_PAYLOAD) != prop(row, property::FA_PAYLOAD)
+            }) {
+                result.projection_errors.push(format!(
+                    "journal entry {:032x} changed or disappeared after the checked prefix",
+                    vid.0
+                ));
+            }
+        }
+        for row in current.values() {
+            if row.created_at <= basis && !before.contains_key(&row.vid) {
+                result.projection_errors.push(format!(
+                    "journal entry {:032x} appeared with a creation sequence inside the checked prefix",
+                    row.vid.0
+                ));
+            }
+        }
+    }
+    result.stale = result.lag_entries != 0;
+    result.cache_status = if uninitialized {
+        CacheStatus::Uninitialized
+    } else if result.is_green() {
+        result.verified_through = through;
+        CacheStatus::Verified
+    } else {
+        CacheStatus::Corrupt
+    };
     Ok(result)
 }
 
@@ -820,6 +903,10 @@ fn verify_projection<V: asupersync::fs::Vfs + Clone>(
     }
     Ok(Verification {
         period: period_code.to_string(),
+        cache_status: CacheStatus::Uninitialized,
+        verified_through: None,
+        stale: false,
+        lag_entries: 0,
         cells_checked,
         drift,
         pending_drift,

@@ -565,7 +565,7 @@ fields = ["status:string", "signatures:string", "scope:string", "states_checked:
 [[event]]
 name = "registers_verified"
 book = true
-doc = "Every selected period's stored registers equal the refold."
+doc = "Every selected period's stored registers equal the refold at verified_through. Stale means unread journal entries remain after that processed basis, not corruption; exit 8 still means a mismatch. Uninitialized empty caches have no verified_through."
 fields = ["periods:[register_check]"]
 
 [[event]]
@@ -705,8 +705,8 @@ fields = ["entry:hex", "ordinal:int", "amount:amount", "recorded_at:seq", "live:
 
 [[shape]]
 name = "register_check"
-doc = "One period's verify-by-refold."
-fields = ["period:string", "green:bool", "cells_checked:int", "refold_digest:hex", "stored_digest:hex?", "drift:[cell_drift]", "pending_drift:[cell_drift]", "projection_errors:[string]"]
+doc = "One period's verify-by-refold at its processed basis (not its last monetary contribution). cache_status is uninitialized, verified, or corrupt. verified_through is null on a mismatch or an uninitialized cache; empty uninitialized caches compare green but certify no prefix. When green, stale reports unread journal entries and lag_entries counts their book-wide Entry creations, including controls and staged migrations; projection-only commits do not count."
+fields = ["period:string", "green:bool", "cache_status:string", "verified_through:seq?", "stale:bool", "lag_entries:int", "cells_checked:int", "refold_digest:hex", "stored_digest:hex?", "drift:[cell_drift]", "pending_drift:[cell_drift]", "projection_errors:[string]"]
 
 [[shape]]
 name = "cell_drift"
