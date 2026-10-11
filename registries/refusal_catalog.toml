@@ -616,3 +616,12 @@ owners = ["fa-notary"]
 exit = "usage"
 cite = "plan §13.1 (a prefix cannot extend past the head)"
 fix = "select a sequence at or before the head"
+
+# ---- Balance assertions (140–149) -----------------------------------------
+[[refusal]]
+code = "FA-REF-140"
+name = "REGISTER_CLAIM_FALSE"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §9.4 (a RegisterEquals binds the cell's value and fold digest at the sequence it was evaluated at)"
+fix = "evaluate the claim from the book (fa-registers register_equals) at the sequence you attest, and attest exactly that"
