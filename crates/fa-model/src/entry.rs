@@ -66,6 +66,11 @@ pub const AUTO_REVERSE_EXTENSION: u16 = 2;
 /// `policy: u8 ‖ tick_ref: u128 LE` (17 bytes; policy 1 = Utc). Only the
 /// kernel records it, on scheduled reversals.
 pub const DATE_BASIS_EXTENSION: u16 = 3;
+/// Extension tag 4, `fa:legal-hold-scope:v1` (plan §8.5; fa-txf): a
+/// `HoldControl` entry's scope beside its `HoldEvent`, which carries only the
+/// scope's digest. On a Place: `0u8 ‖ list(u128 subject)`, strictly
+/// ascending. On a Release: `1u8 ‖ u128 hold`, the Place it releases.
+pub const LEGAL_HOLD_SCOPE_EXTENSION: u16 = 4;
 
 /// Extension tags this reader understands. A payload at a higher
 /// `schema_minor` may carry others; they are preserved and skipped.
@@ -73,6 +78,7 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     BALANCING_EXTENSION,
     AUTO_REVERSE_EXTENSION,
     DATE_BASIS_EXTENSION,
+    LEGAL_HOLD_SCOPE_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------
@@ -108,6 +114,8 @@ impl EntryClass {
     pub const SCHEDULE_CONTROL: Self = Self(21);
     /// An `ImportRun` receipt (plan §9.3): book-scoped, undated.
     pub const IMPORT_CONTROL: Self = Self(23);
+    /// A legal hold or its release (plan §8.5): book-scoped, undated.
+    pub const HOLD_CONTROL: Self = Self(24);
 
     /// `(tag, name, is_control)` for every registered class.
     pub const ALL: &[(u16, &str, bool)] = &[
@@ -133,6 +141,7 @@ impl EntryClass {
         (20, "SweepControl", true),
         (21, "ScheduleControl", true),
         (23, "ImportControl", true),
+        (24, "HoldControl", true),
     ];
 
     #[must_use]
@@ -183,6 +192,7 @@ impl ControlKind {
     pub const TIME_TICK: Self = Self(4);
     pub const SCHEDULE_CANCEL: Self = Self(5);
     pub const IMPORT_RUN: Self = Self(6);
+    pub const LEGAL_HOLD: Self = Self(7);
     pub const CAPABILITY_REVOCATION: Self = Self(8);
 
     /// Every registered kind: `(kind, name, the control class it mints)`.
@@ -209,6 +219,7 @@ impl ControlKind {
             EntryClass::SCHEDULE_CONTROL,
         ),
         (Self::IMPORT_RUN, "import_run", EntryClass::IMPORT_CONTROL),
+        (Self::LEGAL_HOLD, "legal_hold", EntryClass::HOLD_CONTROL),
         (
             Self::CAPABILITY_REVOCATION,
             "capability_revocation",
@@ -2040,7 +2051,7 @@ mod tests {
                 }
             );
         }
-        for id in [0, 7, 9, u16::MAX] {
+        for id in [0, 9, 10, u16::MAX] {
             assert!(
                 EntryOrigin::decode(&mut Reader::new(&origin(id))).is_err(),
                 "control_kind {id}"
@@ -2629,6 +2640,7 @@ mod tests {
         known.extensions = vec![
             (AUTO_REVERSE_EXTENSION, vec![0; 5]),
             (DATE_BASIS_EXTENSION, vec![0; 17]),
+            (LEGAL_HOLD_SCOPE_EXTENSION, vec![1; 17]),
         ];
         assert!(known.validate().is_ok());
     }
