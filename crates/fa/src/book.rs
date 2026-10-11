@@ -1372,6 +1372,36 @@ mod tests {
         assert!(checked.is_green());
         assert_eq!(checked.states.len(), 1);
         assert_eq!(checked.states[0].oid, published.stored.oid);
+
+        // Revoked (fa-bcd): refused before the journal is read, nothing
+        // written; another capability of the same principal still publishes.
+        let req = fa_journal::RevocationRequest {
+            capability: PolicyCapability::embedded(VId(47), &["issue_capability"]).unwrap(),
+            revoked: witness.commitment().unwrap(),
+            effective_date: fa_time::DateDay::from_ymd(2026, 1, 1).unwrap(),
+            idempotency_key: b"revoke-witness".to_vec(),
+            description: fa_model::Erasable::seal(
+                &"revoke".to_string(),
+                None,
+                &book.context().seal_key,
+                [0x47; 32],
+                [0x47; 24],
+            ),
+        };
+        let purposes = book.purposes();
+        let ctx = book.context().clone();
+        with_store!(&mut book.store, core => book.runtime.block_on(async {
+            fa_journal::revoke_capability(&mut core.db, &purposes, &ctx, req).await
+        }))
+        .unwrap()
+        .expect("revoked");
+        let revoked_at = book.head().unwrap();
+        let refusal = book.checkpoint(principal, &witness).unwrap().unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-023", 7));
+        assert_eq!(book.head().unwrap(), revoked_at);
+        let renewed = PolicyCapability::embedded(principal, &["witness", "read"]).unwrap();
+        book.checkpoint(principal, &renewed).unwrap().unwrap();
+        assert_eq!(book.verify_accumulator().unwrap().states.len(), 2);
     }
 
     fn spec(book_id: Id128) -> (BookSpec, fa_money::UnitId) {

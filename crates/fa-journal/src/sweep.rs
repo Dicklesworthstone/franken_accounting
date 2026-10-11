@@ -440,6 +440,11 @@ pub async fn record_tick<V: asupersync::fs::Vfs + Clone>(
     let proposal_digest = proposal.proposal_digest()?;
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
+    // Not revoked (plan §14.2): the first read, before the identity.
+    if let Err(r) = policy::capability_witness(&txn, db, book, &req.capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
     let evid = entry_vid(
         book.book_id,
         &req.principal_ref.0.to_le_bytes(),
@@ -871,7 +876,9 @@ pub(crate) fn admit_sweep<V: asupersync::fs::Vfs + Clone>(
     if let Err(d) = fa_policy::current(&req.capability, db.frontier()?) {
         return Ok(Err(policy::refusal(&d)));
     }
-    Ok(Ok(()))
+    // Not revoked, before the candidate scan reads the head; each batch
+    // re-reads it as the first witness of its transaction.
+    policy::capability_admitted(db, book, &req.capability)
 }
 
 /// Expire up to `req.max_batch` due holds in one transaction (plan §5.4).
@@ -922,6 +929,10 @@ pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
 
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
+    if let Err(r) = policy::capability_witness(&txn, db, book, &req.capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
     let (_, witnessed_tick) = tick_witness(&txn, db)?;
     if witnessed_tick != Some(tick) {
         txn.abort();

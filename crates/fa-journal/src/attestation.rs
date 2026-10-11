@@ -928,6 +928,11 @@ pub async fn record_review<V: asupersync::fs::Vfs + Clone>(
 
     let txn_cx = ctx.txn();
     let txn = db.begin(&txn_cx)?;
+    // Not revoked (plan §14.2): the first read, before the subject.
+    if let Err(r) = crate::policy::capability_witness(&txn, db, book, capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
     let dvid = document_vid(&document);
     let subject = match held_document(&txn, db, &policy, &document)? {
         Ok(Some(doc)) => doc,
@@ -1077,6 +1082,10 @@ pub async fn record_manual_assertion<V: asupersync::fs::Vfs + Clone>(
     };
     let txn_cx = ctx.txn();
     let txn = db.begin(&txn_cx)?;
+    if let Err(r) = crate::policy::capability_witness(&txn, db, book, capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
     commit_attestation(db, ctx, book, txn, &attestation, &binding, None).await
 }
 

@@ -650,6 +650,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         if let Err(denial) = fa_policy::current(capability, self.head(cx)?) {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
+        // The exclusive book handle holds the single-writer admission
+        // frontier while checking revocation and publishing the checkpoint.
+        if let Err(refusal) = self.query(cx, |db, book| {
+            Ok(fa_journal::policy::capability_admitted(
+                db, book, capability,
+            )?)
+        })? {
+            return Ok(Err(refusal));
+        }
         Ok(fa_notary::checkpoint(&mut self.db, cx, &self.context).await?)
     }
 
