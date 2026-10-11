@@ -21,7 +21,7 @@ use fa_notary::{
     AccumulatorState, Journal, StoredState, chain, checkpoint, code, latest, prove_balance,
     prove_consistency, prove_inclusion, prove_prefix, state_oid, state_vid, verify_accumulator,
 };
-use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodTransition};
+use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodState, PeriodTransition};
 use fa_verify::{RecordCheck, VerifyError};
 use fgdb::{Database, DatabaseKeys, MemVfs, WriteBatch, WriteMismatchPolicy};
 use fgdb_types::context::PurposeContexts;
@@ -1020,45 +1020,6 @@ fn balance_proofs_refold_exactly_the_register_balances_and_refuse_tampering() {
 fn a_staged_migration_chunk_blocks_its_balance_proof_until_the_run_finalizes() {
     let mut h = harness();
     let opening = DateDay::from_ymd(2026, 1, 1).unwrap();
-    for (i, t) in [
-        PeriodTransition::Open,
-        PeriodTransition::SoftClose,
-        PeriodTransition::Close,
-        PeriodTransition::Lock,
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let ctx = h.ctx();
-        let db = &mut h.db;
-        let book = &h.book;
-        let key = format!("opening-{i}");
-        let desc = Erasable::seal(
-            &"opening".to_string(),
-            None,
-            &book.seal_key,
-            [3; 32],
-            [4; 24],
-        );
-        h.runtime
-            .block_on(async move {
-                transition_period(
-                    db,
-                    &ctx,
-                    book,
-                    "FY2026-OPEN",
-                    t,
-                    PRINCIPAL,
-                    1,
-                    opening,
-                    key.as_bytes(),
-                    desc,
-                )
-                .await
-            })
-            .expect("kernel")
-            .expect("transition");
-    }
     let sealed = |h: &Harness, text: &str| {
         Erasable::seal(&text.to_string(), None, &h.book.seal_key, [5; 32], [6; 24])
     };
@@ -1082,6 +1043,71 @@ fn a_staged_migration_chunk_blocks_its_balance_proof_until_the_run_finalizes() {
             })
             .collect()
     };
+    for (i, t) in [
+        PeriodTransition::Open,
+        PeriodTransition::SoftClose,
+        PeriodTransition::Close,
+        PeriodTransition::Lock,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let key = format!("opening-{i}");
+        let desc = |h: &Harness| {
+            Erasable::seal(
+                &"opening".to_string(),
+                None,
+                &h.book.seal_key,
+                [3; 32],
+                [4; 24],
+            )
+        };
+        // Lock is dual-controlled (sod_policy.toml): the approvers approve
+        // exactly the proposal this transition commits (Lock is legal only
+        // from Closed).
+        let approvals = if matches!(t, PeriodTransition::Lock) {
+            let digest = transition_proposal(
+                &h.book,
+                "FY2026-OPEN",
+                PeriodState::Closed,
+                PeriodState::Locked,
+                PRINCIPAL,
+                1,
+                opening,
+                key.as_bytes(),
+                desc(&h),
+            )
+            .proposal_digest()
+            .unwrap();
+            approve(&mut h, digest)
+        } else {
+            Vec::new()
+        };
+        let desc = desc(&h);
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        h.runtime
+            .block_on(async move {
+                transition_period(
+                    db,
+                    &ctx,
+                    book,
+                    "FY2026-OPEN",
+                    t,
+                    PRINCIPAL,
+                    1,
+                    opening,
+                    key.as_bytes(),
+                    desc,
+                    &Capability::embedded(PRINCIPAL, &["close"]).unwrap(),
+                    &approvals,
+                )
+                .await
+            })
+            .expect("kernel")
+            .expect("transition");
+    }
     let preparer = Capability::embedded(PRINCIPAL, &["post", "migrate"]).unwrap();
 
     // Open a run over cash and rent: Dr cash 5,000 / Cr rent 5,000.

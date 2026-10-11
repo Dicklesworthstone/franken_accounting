@@ -24,7 +24,7 @@ use fa_model::{
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_reference::{Account, Intent, Known, Leg, Limit, Oracle, RunSpec, Verdict};
 use fa_registers::fold_period_at;
-use fa_time::{DateDay, FiscalCalendar, PeriodTransition};
+use fa_time::{DateDay, FiscalCalendar, PeriodState, PeriodTransition};
 use fgdb::{Database, DatabaseKeys, MemVfs, WriteBatch};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::ids::DatabaseSecurityNamespaceId;
@@ -239,6 +239,26 @@ fn setup() -> (Kernel, Oracle) {
 }
 
 fn transition(k: &mut Kernel, code: &str, t: PeriodTransition, key: &str) {
+    // Lock is dual-controlled (sod_policy.toml): Bob approves exactly the
+    // proposal this transition commits. Lock is legal only from Closed.
+    let approvals = if matches!(t, PeriodTransition::Lock) {
+        let digest = transition_proposal(
+            &k.book,
+            code,
+            PeriodState::Closed,
+            PeriodState::Locked,
+            PRINCIPAL,
+            1,
+            opening_date(),
+            key.as_bytes(),
+            sealed(&k.book, "period"),
+        )
+        .proposal_digest()
+        .expect("digest");
+        approve_by(k, digest, &[BOB])
+    } else {
+        Vec::new()
+    };
     let ctx = k.ctx();
     let db = &mut k.db;
     let book = &k.book;
@@ -256,6 +276,8 @@ fn transition(k: &mut Kernel, code: &str, t: PeriodTransition, key: &str) {
                 opening_date(),
                 key.as_bytes(),
                 desc,
+                &capability(&["close"]),
+                &approvals,
             )
             .await
         })
@@ -334,8 +356,13 @@ fn capability(ops: &[&str]) -> Capability {
 
 /// Bob and Carol (Humans, `approve`) approve `digest`.
 fn approve(k: &mut Kernel, digest: [u8; 32]) -> Vec<ApprovalRef> {
+    approve_by(k, digest, &[BOB, CAROL])
+}
+
+/// Each of `approvers` (Humans, `approve`) approves `digest`.
+fn approve_by(k: &mut Kernel, digest: [u8; 32], approvers: &[VId]) -> Vec<ApprovalRef> {
     let mut out = Vec::new();
-    for who in [BOB, CAROL] {
+    for &who in approvers {
         let ctx = k.ctx();
         let db = &mut k.db;
         let book = &k.book;
