@@ -58,6 +58,9 @@ exceptions = [
   { crate = "fgdb-resource", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fgdb-sketch", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fgdb-calibrate", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  # fa-txf B: fa-journal's dev-only lab VFS edge (CobaltGull 3452/3462).
+  { crate = "fgdb-sim", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fgdb-reference", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fgdb-order", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fgdb-unsafe-arena", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fgdb-unsafe-simd", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
@@ -197,6 +200,48 @@ license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
 
 [[licenses.clarify]]
 crate = "fgdb-warden@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+# fa-txf B: the closure fgdb-sim (fa-journal dev-only) adds at the pinned rev;
+# same LICENSE bytes as every frankengraphdb crate above.
+[[licenses.clarify]]
+crate = "fgdb-calibrate@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fgdb-claim@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fgdb-collections@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fgdb-evidence@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fgdb-reference@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fgdb-sim@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fgdb-sketch@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fgdb-unsafe-arena@0.0.1"
 expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
 

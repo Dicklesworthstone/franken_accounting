@@ -14,8 +14,16 @@
 //!   satisfies the minimum, in place of a document, only for the classes
 //!   whose `evidence_policy.toml` row says `manual_assertion = true`.
 //!
-//! The other Appendix A claims (`Prepared`, `Reconciled`, `RegisterEquals`,
-//! `Confirmed`, `Examined`, `Custom`) keep their tags (1, 3–7) and are not
+//! - **`RegisterEquals`** (§9.4, fa-g21 part 2): a balance assertion — the
+//!   posted net of one per-entity register cell, bound to the fold digest at
+//!   the sequence it was evaluated at, with the evidence it rests on (a bank
+//!   statement) in `evidence_refs`. Its subject is the cell (a digest of the
+//!   cell key, not a vertex). The attester holds `reconcile`; the analytics
+//!   layer (fa-registers) refolds the claim before it is committed, and
+//!   re-verifies a stored one by refold wherever it is relied on.
+//!
+//! The other Appendix A claims (`Prepared`, `Reconciled`, `Confirmed`,
+//! `Examined`, `Custom`) keep their tags (1, 3, 5–7) and are not
 //! representable in this build: no constructor exists, and a stored payload
 //! carrying one does not decode.
 //!
@@ -53,6 +61,7 @@ use fa_model::{
 use fa_policy::{Capability, Op, Profile};
 use fa_registry::evidence_policy::{EvidencePolicy, Requirement};
 use fa_registry::reason_codes::ReasonCodes;
+use fa_time::DateDay;
 use fgdb::{Database, VertexRow, WriteBatch, WriteTxn};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
@@ -71,7 +80,7 @@ const SCHEME_CAPABILITY: u8 = 0;
 pub const MANUAL_ASSERTION_SCOPE: &str = "manual_assertion";
 
 /// `AttestationClaim` tags, in Appendix A's order; 8 is §9.2's
-/// ManualAssertion. Only [`claim::REVIEWED`] and
+/// ManualAssertion. [`claim::REVIEWED`], [`claim::REGISTER_EQUALS`] and
 /// [`claim::MANUAL_ASSERTION`] are implemented.
 pub mod claim {
     pub const PREPARED: u8 = 1;
@@ -87,6 +96,96 @@ pub mod claim {
 /// Subject tags of `subject_refs`.
 const SUBJECT_DOCUMENT: u8 = 1;
 const SUBJECT_PROPOSAL: u8 = 2;
+const SUBJECT_CELL: u8 = 3;
+
+/// A `RegisterEquals` claim's bytes (GrayPike's field table, fa-bvx 3221):
+/// the per-entity cell, its posted net in debit sign (the unit is the
+/// cell's), the last day of the cell's period, the sequence it was
+/// evaluated at, and the fold digest it is bound to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegisterEqualsClaim {
+    pub account: VId,
+    pub unit_id: u32,
+    /// The period's code (at most `max_period_ref_bytes`).
+    pub period: String,
+    /// The legal entity's code (at most `max_period_ref_bytes`); `None` in
+    /// a book that declares none.
+    pub entity: Option<String>,
+    pub mantissa: i128,
+    pub as_of_effective: DateDay,
+    pub evaluated_known_at: CommitSeq,
+    pub fold_digest: [u8; 32],
+}
+
+impl RegisterEqualsClaim {
+    /// `H("fa:register-cell:v1" ‖ account ‖ unit ‖ period ‖ entity)`: the
+    /// claim's subject.
+    #[must_use]
+    pub fn cell_digest(&self) -> [u8; 32] {
+        let entity: Vec<u8> = match &self.entity {
+            None => vec![0],
+            Some(e) => {
+                let mut v = vec![1];
+                v.extend_from_slice(e.as_bytes());
+                v
+            }
+        };
+        domain_digest(
+            b"fa:register-cell:v1",
+            &[
+                &self.account.0.to_le_bytes(),
+                &self.unit_id.to_le_bytes(),
+                self.period.as_bytes(),
+                &entity,
+            ],
+        )
+    }
+
+    /// The period and entity codes are 1..=`max_period_ref_bytes` bytes.
+    #[must_use]
+    pub fn within_bounds(&self) -> bool {
+        let ok = |s: &str| !s.is_empty() && s.len() <= fa_model::limits::MAX_PERIOD_REF_BYTES;
+        ok(&self.period) && self.entity.as_deref().is_none_or(ok)
+    }
+
+    fn encode(&self, w: &mut Writer) {
+        w.u128(self.account.0).u32(self.unit_id).str(&self.period);
+        match &self.entity {
+            None => {
+                w.u8(0);
+            }
+            Some(e) => {
+                w.u8(1).str(e);
+            }
+        }
+        w.i128(self.mantissa)
+            .i32(self.as_of_effective.0)
+            .u64(self.evaluated_known_at.0)
+            .fixed(&self.fold_digest);
+    }
+
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let max = fa_model::limits::MAX_PERIOD_REF_BYTES;
+        let account = VId(r.u128("register_equals.account")?);
+        let unit_id = r.u32("register_equals.unit_id")?;
+        let period = r.str(max, "register_equals.period")?.to_string();
+        let entity = match r.u8("register_equals.entity")? {
+            0 => None,
+            1 => Some(r.str(max, "register_equals.entity")?.to_string()),
+            t => return Err(r.bad_tag("register_equals.entity", t)),
+        };
+        Ok(Self {
+            account,
+            unit_id,
+            period,
+            entity,
+            mantissa: r.i128("register_equals.mantissa")?,
+            as_of_effective: DateDay(r.i32("register_equals.as_of_effective")?),
+            evaluated_known_at: CommitSeq(r.u64("register_equals.evaluated_known_at")?),
+            fold_digest: r.fixed("register_equals.fold_digest")?,
+        })
+    }
+}
 
 /// What an attestation claims.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,6 +200,8 @@ pub enum AttestationClaim {
         reason_code: u16,
         statement: Erasable<String>,
     },
+    /// "This register cell equals this amount at this sequence" (§9.4).
+    RegisterEquals(RegisterEqualsClaim),
 }
 
 impl AttestationClaim {
@@ -109,6 +210,7 @@ impl AttestationClaim {
         match self {
             Self::Reviewed { .. } => claim::REVIEWED,
             Self::ManualAssertion { .. } => claim::MANUAL_ASSERTION,
+            Self::RegisterEquals(_) => claim::REGISTER_EQUALS,
         }
     }
 
@@ -118,6 +220,7 @@ impl AttestationClaim {
         match self {
             Self::Reviewed { .. } => "Reviewed",
             Self::ManualAssertion { .. } => "ManualAssertion",
+            Self::RegisterEquals(_) => "RegisterEquals",
         }
     }
 }
@@ -129,6 +232,8 @@ pub enum Subject {
     Document(Oid),
     /// An entry's `proposal_digest` (a ManualAssertion's subject).
     Proposal([u8; 32]),
+    /// A register cell's digest (a RegisterEquals' subject).
+    Cell([u8; 32]),
 }
 
 /// An attestation's signed content (`signed_digest` covers exactly this).
@@ -139,6 +244,9 @@ pub struct Attestation {
     pub subject: Subject,
     /// The attesting principal.
     pub principal: VId,
+    /// The documents the claim rests on, strictly ascending; non-empty only
+    /// for `RegisterEquals` in this build (its bank statement).
+    pub evidence_refs: Vec<Oid>,
 }
 
 /// The binding the kernel admitted an attestation under, stored where
@@ -179,6 +287,30 @@ pub fn manual_assertion_vid(book: Id128, proposal_digest: &[u8; 32]) -> VId {
     vid_of(b"fa:vid:attestation-manual:v1", book, proposal_digest)
 }
 
+/// `vid(RegisterEquals) = H("fa:vid:attestation-register:v1" ‖ book ‖ cell
+/// ‖ u64 evaluated_known_at ‖ u128 principal)`: one claim per attester per
+/// cell per sequence.
+#[must_use]
+pub fn register_equals_vid(
+    book: Id128,
+    cell: &[u8; 32],
+    known_at: CommitSeq,
+    principal: VId,
+) -> VId {
+    let d = domain_digest(
+        b"fa:vid:attestation-register:v1",
+        &[
+            &book.0,
+            cell,
+            &known_at.0.to_le_bytes(),
+            &principal.0.to_le_bytes(),
+        ],
+    );
+    let mut lo = [0u8; 16];
+    lo.copy_from_slice(&d[..16]);
+    VId(u128::from_le_bytes(lo))
+}
+
 impl Attestation {
     /// The derived identity: the claim and its subject decide it.
     #[must_use]
@@ -189,6 +321,14 @@ impl Attestation {
             }
             (AttestationClaim::ManualAssertion { .. }, Subject::Proposal(d)) => {
                 Some(manual_assertion_vid(self.book_id, d))
+            }
+            (AttestationClaim::RegisterEquals(c), Subject::Cell(d)) if *d == c.cell_digest() => {
+                Some(register_equals_vid(
+                    self.book_id,
+                    d,
+                    c.evaluated_known_at,
+                    self.principal,
+                ))
             }
             _ => None,
         }
@@ -214,6 +354,7 @@ impl Attestation {
                 w.u16(*reason_code);
                 statement.encode(&mut w);
             }
+            AttestationClaim::RegisterEquals(c) => c.encode(&mut w),
         }
         w.list(&[self.subject], |w, s| match s {
             Subject::Document(oid) => {
@@ -222,10 +363,12 @@ impl Attestation {
             Subject::Proposal(d) => {
                 w.u8(SUBJECT_PROPOSAL).fixed(d);
             }
+            Subject::Cell(d) => {
+                w.u8(SUBJECT_CELL).fixed(d);
+            }
         })
         .u128(self.principal.0);
-        let evidence_refs: [Oid; 0] = [];
-        w.list(&evidence_refs, |w, o| {
+        w.list(&self.evidence_refs, |w, o| {
             w.fixed(&o.0);
         });
         w.finish().map_err(|e| KernelError::Model(e.into()))
@@ -279,8 +422,11 @@ impl StoredAttestation {
                             fa_model::limits::MAX_DESCRIPTION_BYTES,
                         )?,
                     },
-                    // Prepared, Reconciled, RegisterEquals, Confirmed,
-                    // Examined, Custom: not in this build.
+                    claim::REGISTER_EQUALS => {
+                        AttestationClaim::RegisterEquals(RegisterEqualsClaim::decode(&mut r)?)
+                    }
+                    // Prepared, Reconciled, Confirmed, Examined, Custom: not
+                    // in this build.
                     t => return Err(r.bad_tag("attestation.claim", t)),
                 };
                 let subjects = r.list(1, "attestation.subject_refs", |r| {
@@ -289,6 +435,7 @@ impl StoredAttestation {
                             Ok(Subject::Document(Oid(r.fixed("attestation.subject")?)))
                         }
                         SUBJECT_PROPOSAL => Ok(Subject::Proposal(r.fixed("attestation.subject")?)),
+                        SUBJECT_CELL => Ok(Subject::Cell(r.fixed("attestation.subject")?)),
                         t => Err(r.bad_tag("attestation.subject", t)),
                     }
                 })?;
@@ -296,8 +443,22 @@ impl StoredAttestation {
                     return Err(r.invalid("attestation.subject_refs"));
                 };
                 let principal = VId(r.u128("attestation.principal")?);
-                // Empty in this subset: a count above 0 is refused.
-                r.count(0, "attestation.evidence_refs")?;
+                // Only a RegisterEquals rests on documents in this build; for
+                // every other claim a count above 0 is refused.
+                let evidence_refs = if matches!(claim, AttestationClaim::RegisterEquals(_)) {
+                    let refs = r.list(
+                        fa_model::limits::MAX_EVIDENCE_PER_ENTRY,
+                        "attestation.evidence_refs",
+                        |r| Ok(Oid(r.fixed("attestation.evidence_ref")?)),
+                    )?;
+                    if !refs.windows(2).all(|w| w[0] < w[1]) {
+                        return Err(r.unsorted("attestation.evidence_refs"));
+                    }
+                    refs
+                } else {
+                    r.count(0, "attestation.evidence_refs")?;
+                    Vec::new()
+                };
                 let signed_digest: [u8; 32] = r.fixed("attestation.signed_digest")?;
                 if r.u8("attestation.scheme")? != SCHEME_CAPABILITY {
                     return Err(r.invalid("attestation.scheme"));
@@ -313,6 +474,7 @@ impl StoredAttestation {
                         claim,
                         subject: *subject,
                         principal,
+                        evidence_refs,
                     },
                     signed_digest,
                     CapabilityBinding {
@@ -475,10 +637,9 @@ pub fn witness_manual_assertion<V: asupersync::fs::Vfs + Clone>(
             attestation: vid,
             reason_code,
         }))),
-        AttestationClaim::Reviewed { .. } => Ok(Err(attestation_drift(
-            vid,
-            "a Reviewed claim sits at a ManualAssertion's identity",
-        ))),
+        AttestationClaim::Reviewed { .. } | AttestationClaim::RegisterEquals(_) => Ok(Err(
+            attestation_drift(vid, "another claim sits at a ManualAssertion's identity"),
+        )),
     }
 }
 
@@ -703,6 +864,10 @@ fn recorded_or_conflict(row: &VertexRow, ours: &Attestation, key: &SealKey) -> O
             "proposal {} already carries a ManualAssertion with a different statement",
             hex(d)
         ),
+        Subject::Cell(d) => format!(
+            "register cell {} already carries this principal's RegisterEquals at this sequence with different content",
+            hex(d)
+        ),
     };
     Ok(Err(Refusal::new(
         code::IDEMPOTENCY_CONFLICT,
@@ -758,6 +923,7 @@ pub async fn record_review<V: asupersync::fs::Vfs + Clone>(
         },
         subject: Subject::Document(document),
         principal: reviewer,
+        evidence_refs: Vec::new(),
     };
 
     let txn_cx = ctx.txn();
@@ -812,7 +978,7 @@ fn held_document<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     policy: &EvidencePolicy,
     oid: &Oid,
-) -> Outcome<Option<crate::evidence::Document>> {
+) -> Outcome<Option<crate::evidence::DocumentRecord>> {
     let Some(row) = txn.vertex(db, document_vid(oid))? else {
         return Ok(Ok(None));
     };
@@ -907,9 +1073,101 @@ pub async fn record_manual_assertion<V: asupersync::fs::Vfs + Clone>(
         },
         subject: Subject::Proposal(proposal.proposal_digest()?),
         principal: proposal.principal_ref,
+        evidence_refs: Vec::new(),
     };
     let txn_cx = ctx.txn();
     let txn = db.begin(&txn_cx)?;
+    commit_attestation(db, ctx, book, txn, &attestation, &binding, None).await
+}
+
+/// Authority for a balance assertion (plan §9.4): the capability is its
+/// holder's own, not an Agent's on trunk, and holds `reconcile`. Decided
+/// from the capability alone, before any read; the analytics layer calls it
+/// before it refolds the claim.
+pub fn admit_reconciler(capability: &Capability, book: Id128) -> Result<(), Refusal> {
+    fa_policy::admit(
+        capability,
+        &fa_policy::Intent {
+            principal: capability.holder(),
+            trunk: true,
+            op: Op::Reconcile,
+            book,
+            legs: &[],
+        },
+    )
+    .map_err(|d| crate::policy::refusal(&d))
+}
+
+/// Commit a `RegisterEquals` attestation by the capability's holder over
+/// `claim`, resting on `evidence` (documents this book holds, strictly
+/// ascending). The value is the analytics layer's to verify: fa-registers'
+/// `record_register_equals` refolds the claim at its own sequence before it
+/// calls this, and `assertion_holds` re-verifies a stored claim by refold.
+/// Here: structure, authority ([`admit_reconciler`], current at the
+/// admission point), every evidence document held and verifying (FA-REF-110
+/// / FA-REF-085), then the claim's identity — the same claim again is its
+/// recorded outcome, different content under it is FA-REF-032.
+pub async fn commit_register_equals<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capability: &Capability,
+    claim: RegisterEqualsClaim,
+    evidence: Vec<Oid>,
+) -> Outcome<Attested> {
+    let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    if !claim.within_bounds()
+        || evidence.len() > fa_model::limits::MAX_EVIDENCE_PER_ENTRY
+        || !evidence.windows(2).all(|w| w[0] < w[1])
+    {
+        return Ok(Err(Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            "a RegisterEquals names a period and entity of 1..=max_period_ref_bytes and its evidence once each, strictly ascending",
+            "Appendix A AttestationClaim::RegisterEquals; plan §9.4",
+            "fix the named field",
+        )));
+    }
+    if let Err(r) = admit_reconciler(capability, book.book_id) {
+        return Ok(Err(r));
+    }
+    if let Err(d) = fa_policy::current(capability, db.frontier()?) {
+        return Ok(Err(crate::policy::refusal(&d)));
+    }
+    let binding = binding(capability)?;
+    let cell = claim.cell_digest();
+    let attestation = Attestation {
+        book_id: book.book_id,
+        claim: AttestationClaim::RegisterEquals(claim),
+        subject: Subject::Cell(cell),
+        principal: capability.holder(),
+        evidence_refs: evidence.clone(),
+    };
+    let txn_cx = ctx.txn();
+    let txn = db.begin(&txn_cx)?;
+    if let Err(r) = crate::policy::capability_witness(&txn, db, book, capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    for (i, oid) in evidence.iter().enumerate() {
+        match held_document(&txn, db, &policy, oid)? {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                txn.abort();
+                return Ok(Err(subject_refusal(
+                    format!(
+                        "evidence[{i}] names document {} which this book does not hold",
+                        hex(&oid.0)
+                    ),
+                    "record the statement with `fa document add <file> --json` first and cite the oid it prints",
+                )));
+            }
+            Err(r) => {
+                txn.abort();
+                return Ok(Err(r));
+            }
+        }
+    }
     commit_attestation(db, ctx, book, txn, &attestation, &binding, None).await
 }
 
@@ -943,6 +1201,7 @@ mod tests {
             },
             subject: Subject::Document(Oid([9; 32])),
             principal: VId(8),
+            evidence_refs: Vec::new(),
         };
         let manual = Attestation {
             book_id: Id128([5; 16]),
@@ -952,6 +1211,7 @@ mod tests {
             },
             subject: Subject::Proposal([7; 32]),
             principal: VId(7),
+            evidence_refs: Vec::new(),
         };
         for a in [&review, &manual] {
             let bytes = a.canonical_bytes(&binding()).unwrap();
@@ -1012,6 +1272,7 @@ mod tests {
             },
             subject: Subject::Document(Oid([9; 32])),
             principal: VId(8),
+            evidence_refs: Vec::new(),
         };
         let bytes = review.canonical_bytes(&binding()).unwrap();
         // The claim tag sits after the version (2) and the book (16).
@@ -1048,6 +1309,7 @@ mod tests {
             },
             subject: Subject::Proposal([7; 32]),
             principal: VId(7),
+            evidence_refs: Vec::new(),
         };
         let resealed = Attestation {
             claim: AttestationClaim::ManualAssertion {
@@ -1079,5 +1341,120 @@ mod tests {
         assert!(!same_statement(&base, &other_reason, &key));
         // Under a key that cannot open them, equivalence is never claimed.
         assert!(!same_statement(&base, &resealed, &SealKey([0x22; 32])));
+    }
+
+    fn register_claim(entity: Option<&str>) -> RegisterEqualsClaim {
+        RegisterEqualsClaim {
+            account: VId(42),
+            unit_id: 1,
+            period: "FY2026-P03".into(),
+            entity: entity.map(str::to_string),
+            mantissa: -150_000,
+            as_of_effective: DateDay(20_543),
+            evaluated_known_at: CommitSeq(9),
+            fold_digest: [0x0f; 32],
+        }
+    }
+
+    /// Fixed vectors from an independent BLAKE3 written from the
+    /// specification (never from this code).
+    #[test]
+    fn register_cells_and_identities_match_fixed_vectors() {
+        let us = register_claim(Some("US"));
+        assert_eq!(
+            hex(&us.cell_digest()),
+            "329bf6b07163f9616f2ff4dbcf2ffe84c49cebfce39d242d9bcd44bbbfd983e1"
+        );
+        assert_eq!(
+            hex(&register_claim(None).cell_digest()),
+            "40f0ba0b79b681ac8b26032a63226bf907e9ff3453b7e57cd71f1454c3856462"
+        );
+        assert_eq!(
+            register_equals_vid(Id128([5; 16]), &us.cell_digest(), CommitSeq(9), VId(8)),
+            VId(0xdd56_1253_49ba_a52c_70e4_52ee_f692_194e)
+        );
+        // Another attester, another sequence: another claim.
+        let cell = us.cell_digest();
+        let a = register_equals_vid(Id128([5; 16]), &cell, CommitSeq(9), VId(8));
+        assert_ne!(
+            a,
+            register_equals_vid(Id128([5; 16]), &cell, CommitSeq(9), VId(9))
+        );
+        assert_ne!(
+            a,
+            register_equals_vid(Id128([5; 16]), &cell, CommitSeq(10), VId(8))
+        );
+    }
+
+    #[test]
+    fn a_register_claim_round_trips_with_its_evidence_and_binds_every_byte() {
+        let claim = register_claim(Some("US"));
+        let a = Attestation {
+            book_id: Id128([5; 16]),
+            subject: Subject::Cell(claim.cell_digest()),
+            claim: AttestationClaim::RegisterEquals(claim.clone()),
+            principal: VId(8),
+            evidence_refs: vec![Oid([1; 32]), Oid([2; 32])],
+        };
+        let bytes = a.canonical_bytes(&binding()).unwrap();
+        let stored = StoredAttestation::decode(&bytes).unwrap();
+        assert_eq!(stored.attestation, a);
+        assert_eq!(
+            a.vid(),
+            Some(register_equals_vid(
+                Id128([5; 16]),
+                &claim.cell_digest(),
+                CommitSeq(9),
+                VId(8)
+            ))
+        );
+        let signed = bytes.len() - 32 - 34;
+        for i in 0..signed {
+            let mut t = bytes.clone();
+            t[i] ^= 0x01;
+            assert!(StoredAttestation::decode(&t).is_err(), "byte {i}");
+        }
+        // A cell subject that is not the claim's own cell has no identity.
+        let wrong_cell = Attestation {
+            subject: Subject::Cell([0xaa; 32]),
+            ..a.clone()
+        };
+        assert_eq!(wrong_cell.vid(), None);
+        assert!(
+            StoredAttestation::decode(&wrong_cell.canonical_bytes(&binding()).unwrap()).is_err()
+        );
+        // Unsorted evidence never decodes.
+        let unsorted = Attestation {
+            evidence_refs: vec![Oid([2; 32]), Oid([1; 32])],
+            ..a.clone()
+        };
+        assert!(StoredAttestation::decode(&unsorted.canonical_bytes(&binding()).unwrap()).is_err());
+        // Only a RegisterEquals rests on documents: a Reviewed with evidence
+        // never decodes.
+        let review = Attestation {
+            book_id: Id128([5; 16]),
+            claim: AttestationClaim::Reviewed {
+                against: Vec::new(),
+            },
+            subject: Subject::Document(Oid([9; 32])),
+            principal: VId(8),
+            evidence_refs: vec![Oid([1; 32])],
+        };
+        assert!(StoredAttestation::decode(&review.canonical_bytes(&binding()).unwrap()).is_err());
+        // Bounds: an empty or oversized period is out of bounds.
+        assert!(
+            !RegisterEqualsClaim {
+                period: String::new(),
+                ..claim.clone()
+            }
+            .within_bounds()
+        );
+        assert!(
+            !RegisterEqualsClaim {
+                entity: Some("x".repeat(33)),
+                ..claim
+            }
+            .within_bounds()
+        );
     }
 }

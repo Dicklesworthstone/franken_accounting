@@ -51,6 +51,10 @@ fgdb-delta-types = { git = "https://github.com/Dicklesworthstone/frankengraphdb"
 fgdb-gql = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf", version = "=0.0.1" }
 fgdb-crypto = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf", version = "=0.0.1" }
 fgdb-bigint = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf", version = "=0.0.1" }
+# The substrate's lab VFS (fault injection, crash simulation), at the same
+# rev: a dev-only edge of fa-journal's tests, never in a shipped closure
+# (fa-txf B, CobaltGull 3452/3462; fa-0fl reuses it).
+fgdb-sim = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf", version = "=0.0.1" }
 
 # Exact rate coefficients and cooperatively metered arithmetic (fa-pri).
 fsym-bigint = { git = "https://github.com/Dicklesworthstone/frankensympy", rev = "bd1ad68a3a06e0a0ed6ee4a9bc76d85dc9e67e2e", version = "=0.1.0" }

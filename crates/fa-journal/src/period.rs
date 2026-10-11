@@ -108,7 +108,7 @@ pub fn transition_proposal(
         base_totals: None,
         idempotency_key: idempotency_key.to_vec(),
         origin: EntryOrigin::Control {
-            control_kind: 2,
+            control_kind: fa_model::ControlKind::PERIOD_TRANSITION,
             spec_body_digest: fgdb_crypto::hash(idempotency_key).0,
         },
         principal_ref,

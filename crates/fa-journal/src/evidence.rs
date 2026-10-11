@@ -38,7 +38,8 @@
 
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    DecodeError, EntryPayload, EntryRef, EvidenceRef, Id128, Oid, Reader, Writer, domain_digest,
+    DecodeError, EntryPayload, EntryRef, EvidenceRef, Id128, IntakeSource, Oid, Reader, Writer,
+    domain_digest,
 };
 use fa_registry::evidence_policy::{EvidencePolicy, Requirement};
 use fa_registry::reason_codes::ReasonCodes;
@@ -65,6 +66,9 @@ const MAX_DECODED_MIME_BYTES: usize = 1024;
 
 /// Storage tags of `fa:document:v1`.
 const STORAGE_INLINE: u8 = 0;
+const STORAGE_EXTERNAL: u8 = 1;
+/// Bound on an external locator (Appendix A `locator: String(≤2048)`).
+const MAX_LOCATOR_BYTES: usize = 2048;
 
 fn finalize(h: Hasher) -> [u8; 32] {
     h.finalize().0
@@ -186,8 +190,7 @@ impl Document {
         }
     }
 
-    pub fn canonical_bytes(&self) -> Result<Vec<u8>, KernelError> {
-        let mut w = Writer::with_capacity(self.bytes.len() + 128);
+    fn prefix(&self, w: &mut Writer) {
         w.u16(1)
             .fixed(&self.book_id.0)
             .u8(self.kind)
@@ -195,17 +198,114 @@ impl Document {
             .u64(len_u64(self.bytes.len()))
             .fixed(&self.doc_commit())
             .u8(self.grade)
-            .u128(self.retrieved_by.0)
-            .u8(STORAGE_INLINE)
-            .bytes(&self.bytes);
+            .u128(self.retrieved_by.0);
+    }
+
+    /// The inline payload: the bytes ride in the journal.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, KernelError> {
+        let mut w = Writer::with_capacity(self.bytes.len() + 128);
+        self.prefix(&mut w);
+        w.u8(STORAGE_INLINE).bytes(&self.bytes);
         w.finish().map_err(|e| KernelError::Model(e.into()))
     }
 
-    /// Decode and verify: the stored size and commitment must be the ones
-    /// the bytes produce, or the row is corrupt.
+    /// The external payload: size and commitment inline, the bytes in
+    /// registered store `store` under `locator`.
+    pub fn canonical_bytes_external(
+        &self,
+        store: u16,
+        locator: &str,
+    ) -> Result<Vec<u8>, KernelError> {
+        let mut w = Writer::with_capacity(256);
+        self.prefix(&mut w);
+        w.u8(STORAGE_EXTERNAL).u16(store).str(locator);
+        w.finish().map_err(|e| KernelError::Model(e.into()))
+    }
+
+    /// Decode an inline payload and verify it (an external payload carries
+    /// no bytes: decode it as a [`DocumentRecord`]).
+    pub fn decode(payload: &[u8]) -> Result<Self, KernelError> {
+        let record = DocumentRecord::decode(payload)?;
+        match record.storage {
+            Storage::Inline(ref bytes) => Ok(Self {
+                book_id: record.book_id,
+                kind: record.kind,
+                mime: record.mime.clone(),
+                grade: record.grade,
+                retrieved_by: record.retrieved_by,
+                bytes: bytes.clone(),
+            }),
+            Storage::External { .. } => Err(KernelError::Corrupt(format!(
+                "document {}: an external payload carries no bytes",
+                hex(&record.doc_commit)
+            ))),
+        }
+    }
+}
+
+/// Where a recorded document's bytes are (plan §9.1 `storage`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Storage {
+    /// In the journal, in the payload itself.
+    Inline(Vec<u8>),
+    /// In registered store `store` (document_stores.toml) under `locator`.
+    External { store: u16, locator: String },
+}
+
+/// A Document row's payload, decoded: what every reader of the evidence law
+/// needs — kind, grade, uploader, size, commitment — and where the bytes
+/// are. An inline payload is verified against its bytes at decode; an
+/// external one when its bytes are fetched ([`fetch_document`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DocumentRecord {
+    pub book_id: Id128,
+    pub kind: u8,
+    pub mime: String,
+    pub size: u64,
+    pub doc_commit: [u8; 32],
+    pub grade: u8,
+    pub retrieved_by: VId,
+    pub storage: Storage,
+}
+
+impl DocumentRecord {
+    #[must_use]
+    pub fn oid(&self) -> Oid {
+        document_oid(self.book_id, &self.doc_commit)
+    }
+
+    /// The citation an entry carries for this document in `role`.
+    #[must_use]
+    pub fn evidence_ref(&self, role: u8) -> EvidenceRef {
+        EvidenceRef {
+            document_oid: self.oid(),
+            doc_commit: self.doc_commit,
+            role,
+        }
+    }
+
+    /// The document `bytes` are, if they are this record's: the size and the
+    /// commitment recomputed from them must be the recorded ones.
+    #[must_use]
+    pub fn with_bytes(&self, bytes: Vec<u8>) -> Option<Document> {
+        if len_u64(bytes.len()) != self.size || doc_commit(self.kind, &bytes) != self.doc_commit {
+            return None;
+        }
+        Some(Document {
+            book_id: self.book_id,
+            kind: self.kind,
+            mime: self.mime.clone(),
+            grade: self.grade,
+            retrieved_by: self.retrieved_by,
+            bytes,
+        })
+    }
+
+    /// Decode a `fa:document:v1` payload; an inline one must reproduce its
+    /// stored size and commitment, or the row is corrupt.
     pub fn decode(payload: &[u8]) -> Result<Self, KernelError> {
         let mut r = Reader::new(payload);
-        let (doc, size, commit) = (|| -> Result<(Self, u64, [u8; 32]), DecodeError> {
+        let record = (|| -> Result<Self, DecodeError> {
             if r.u16("document.version")? != 1 {
                 return Err(r.invalid("document.version"));
             }
@@ -213,38 +313,53 @@ impl Document {
             let kind = r.u8("document.kind")?;
             let mime = r.str(MAX_DECODED_MIME_BYTES, "document.mime")?.to_string();
             let size = r.u64("document.size")?;
-            let commit: [u8; 32] = r.fixed("document.doc_commit")?;
+            let doc_commit: [u8; 32] = r.fixed("document.doc_commit")?;
             let grade = r.u8("document.grade")?;
             let retrieved_by = VId(r.u128("document.retrieved_by")?);
-            let storage = r.u8("document.storage")?;
-            if storage != STORAGE_INLINE {
-                return Err(r.bad_tag("document.storage", storage));
-            }
-            let bytes = r
-                .bytes(MAX_DECODED_DOCUMENT_BYTES, "document.bytes")?
-                .to_vec();
+            let storage = match r.u8("document.storage")? {
+                STORAGE_INLINE => Storage::Inline(
+                    r.bytes(MAX_DECODED_DOCUMENT_BYTES, "document.bytes")?
+                        .to_vec(),
+                ),
+                STORAGE_EXTERNAL => {
+                    let store = r.u16("document.store")?;
+                    let locator = r.str(MAX_LOCATOR_BYTES, "document.locator")?.to_string();
+                    if store == 0 || locator.is_empty() {
+                        return Err(r.invalid("document.external"));
+                    }
+                    Storage::External { store, locator }
+                }
+                t => return Err(r.bad_tag("document.storage", t)),
+            };
             r.finish()?;
-            Ok((
-                Self {
-                    book_id,
-                    kind,
-                    mime,
-                    grade,
-                    retrieved_by,
-                    bytes,
-                },
+            Ok(Self {
+                book_id,
+                kind,
+                mime,
                 size,
-                commit,
-            ))
+                doc_commit,
+                grade,
+                retrieved_by,
+                storage,
+            })
         })()
         .map_err(|e| KernelError::Model(e.into()))?;
-        if size != len_u64(doc.bytes.len()) || commit != doc.doc_commit() {
+        let verifies = match &record.storage {
+            Storage::Inline(bytes) => {
+                record.size == len_u64(bytes.len())
+                    && record.doc_commit == doc_commit(record.kind, bytes)
+            }
+            Storage::External { .. } => {
+                usize::try_from(record.size).is_ok_and(|n| n <= MAX_DECODED_DOCUMENT_BYTES)
+            }
+        };
+        if !verifies {
             return Err(KernelError::Corrupt(format!(
                 "document {}: stored size/commitment do not match its bytes",
-                hex(&commit)
+                hex(&record.doc_commit)
             )));
         }
-        Ok(doc)
+        Ok(record)
     }
 }
 
@@ -284,19 +399,42 @@ fn intake_refusal(message: impl Into<String>, fix: impl Into<String>) -> Refusal
 /// read (`_fa_digest`, `code`, `book_id`, the label) equals what the payload
 /// says. The payload is the authority; a mirror is never more authoritative
 /// than it (FA-INV-04), so any disagreement is drift, named here.
-pub(crate) fn verify_row(row: &VertexRow, policy: &EvidencePolicy) -> Result<Document, String> {
+pub(crate) fn verify_row(
+    row: &VertexRow,
+    policy: &EvidencePolicy,
+) -> Result<DocumentRecord, String> {
     if !row.labels.contains(&label::DOCUMENT) {
         return Err("the vertex is not labeled Document".into());
     }
     let Some(CanonicalScalar::Bytes(payload)) = prop(row, property::FA_PAYLOAD) else {
         return Err("the vertex carries no document payload".into());
     };
-    let doc = Document::decode(payload.as_slice())
+    let doc = DocumentRecord::decode(payload.as_slice())
         .map_err(|e| format!("the payload does not verify: {e}"))?;
     if document_vid(&doc.oid()) != row.vid {
         return Err("the payload is not the document this vertex's identity names".into());
     }
-    let commit = doc.doc_commit();
+    if let Storage::External { store, locator } = &doc.storage {
+        let stores =
+            fa_registry::document_stores::DocumentStores::embedded().map_err(|e| e.to_string())?;
+        let Some(registered) = stores.get(*store) else {
+            return Err(format!(
+                "its bytes are in store {store}, which is not registered"
+            ));
+        };
+        if doc.size > registered.max_document_bytes {
+            return Err(format!(
+                "it is {} bytes, past store {store}'s bound of {}",
+                doc.size, registered.max_document_bytes
+            ));
+        }
+        if *locator != crate::blob::locator_of(&doc.doc_commit) {
+            return Err(
+                "its locator is not its commitment (the store is content-addressed)".into(),
+            );
+        }
+    }
+    let commit = doc.doc_commit;
     match prop(row, property::FA_DIGEST) {
         Some(CanonicalScalar::Bytes(b)) if b.as_slice() == commit.as_slice() => {}
         _ => return Err("the commitment mirror differs from the payload's commitment".into()),
@@ -351,29 +489,27 @@ fn added_from_row(
     };
     Ok(Ok(DocumentAdded {
         oid: doc.oid(),
-        doc_commit: doc.doc_commit(),
+        doc_commit: doc.doc_commit,
         vid: row.vid,
         kind: doc.kind,
         grade: doc.grade,
-        size: len_u64(doc.bytes.len()),
+        size: doc.size,
         recorded_at: row.created_at,
         already_recorded,
     }))
 }
 
-/// Record a document in the book: one `Document` vertex carrying the
-/// canonical payload and its mirrors (`_fa_digest` = `doc_commit`, `code` =
-/// the kind's registered name, `book_id`), in one commit. The same bytes of
-/// the same kind are the recorded outcome, never a second vertex.
-pub async fn add_document<V: asupersync::fs::Vfs + Clone>(
-    db: &mut Database<V>,
-    ctx: &PurposeContexts,
+/// The intake laws every document meets before it is written (plan §9.1):
+/// this book's, non-empty, inline-bounded, a printable mime, a registered
+/// kind, and a grade the uploader may declare. Returns the kind's name.
+pub(crate) fn intake_check(
+    policy: &EvidencePolicy,
     book: &BookContext,
     doc: &Document,
-) -> Outcome<DocumentAdded> {
-    let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    max_bytes: u64,
+) -> Result<String, Refusal> {
     if doc.book_id != book.book_id {
-        return Ok(Err(Refusal::new(
+        return Err(Refusal::new(
             code::COORDINATE,
             exit::USAGE,
             format!(
@@ -383,38 +519,42 @@ pub async fn add_document<V: asupersync::fs::Vfs + Clone>(
             ),
             "plan §2.2 (an object belongs to exactly one book)",
             "set book_id to this book's id (fa book info --json)",
-        )));
+        ));
     }
     if doc.bytes.is_empty() {
-        return Ok(Err(intake_refusal(
+        return Err(intake_refusal(
             "the document is empty; zero bytes are not evidence",
             "add the file that records the transaction",
-        )));
+        ));
     }
-    if len_u64(doc.bytes.len()) > policy.max_document_bytes {
-        return Ok(Err(intake_refusal(
+    if len_u64(doc.bytes.len()) > max_bytes {
+        let fix = if max_bytes == policy.max_document_bytes {
+            "record it in the book's blob store: `fa document add` routes a document past the inline bound there (library: add_document_external with a registered store)"
+        } else {
+            "split the document: it is past every registered store's bound (document_stores.toml)"
+        };
+        return Err(intake_refusal(
             format!(
-                "the document is {} bytes; inline documents are bounded at {}",
-                doc.bytes.len(),
-                policy.max_document_bytes
+                "the document is {} bytes; this intake is bounded at {max_bytes}",
+                doc.bytes.len()
             ),
-            "split the document, or wait for External storage (plan §9.1)",
-        )));
+            fix,
+        ));
     }
     let mime_ok = !doc.mime.is_empty()
         && doc.mime.len() <= policy.max_mime_bytes
         && doc.mime.bytes().all(|b| b.is_ascii_graphic());
     if !mime_ok {
-        return Ok(Err(intake_refusal(
+        return Err(intake_refusal(
             format!(
                 "mime `{}` must be 1..={} printable ASCII bytes with no spaces",
                 doc.mime, policy.max_mime_bytes
             ),
             "pass --mime type/subtype, e.g. application/pdf",
-        )));
+        ));
     }
     let Some(kind) = policy.kind_by_tag(doc.kind) else {
-        return Ok(Err(intake_refusal(
+        return Err(intake_refusal(
             format!("document kind {} is not registered", doc.kind),
             format!(
                 "use a registered kind: {}",
@@ -425,16 +565,16 @@ pub async fn add_document<V: asupersync::fs::Vfs + Clone>(
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-        )));
+        ));
     };
     let Some(grade) = policy.grade_by_tag(doc.grade) else {
-        return Ok(Err(intake_refusal(
+        return Err(intake_refusal(
             format!("provenance grade {} is not registered", doc.grade),
             "declare HumanUpload or AgentUpload",
-        )));
+        ));
     };
     if !grade.intake {
-        return Ok(Err(Refusal::new(
+        return Err(Refusal::new(
             code::GRADE_UNVERIFIED,
             exit::REFUSAL,
             format!(
@@ -446,20 +586,32 @@ pub async fn add_document<V: asupersync::fs::Vfs + Clone>(
                 grade.name
             ),
             "declare the upload honestly: HumanUpload when a person supplied the bytes, AgentUpload when an agent did",
-        )));
+        ));
     }
+    Ok(kind.name.clone())
+}
 
+/// Stage a new Document vertex with its payload, mirrors and `custody_len`
+/// of 1 (its receipt is staged beside it).
+pub(crate) fn stage_document(
+    batch: &mut WriteBatch,
+    book: &BookContext,
+    doc: &Document,
+    kind_name: &str,
+) -> Result<(), KernelError> {
+    stage_document_payload(batch, book, doc, kind_name, doc.canonical_bytes()?)
+}
+
+fn stage_document_payload(
+    batch: &mut WriteBatch,
+    book: &BookContext,
+    doc: &Document,
+    kind_name: &str,
+    payload: Vec<u8>,
+) -> Result<(), KernelError> {
     let commit = doc.doc_commit();
-    let oid = document_oid(book.book_id, &commit);
-    let vid = document_vid(&oid);
-    if let Some(row) = db.vertex(vid)? {
-        return added_from_row(&row, &policy, &oid, true);
-    }
     let mut props = vec![
-        (
-            property::FA_PAYLOAD,
-            scalar_bytes("_fa_payload", doc.canonical_bytes()?)?,
-        ),
+        (property::FA_PAYLOAD, scalar_bytes("_fa_payload", payload)?),
         (
             property::FA_DIGEST,
             scalar_bytes("_fa_digest", commit.to_vec())?,
@@ -468,11 +620,46 @@ pub async fn add_document<V: asupersync::fs::Vfs + Clone>(
             property::BOOK_ID,
             scalar_bytes("book_id", book.book_id.0.to_vec())?,
         ),
-        (property::CODE, scalar_text("code", &kind.name)?),
+        (property::CODE, scalar_text("code", kind_name)?),
+        (property::CUSTODY_LEN, CanonicalScalar::Int(1)),
     ];
     props.sort_by_key(|(k, _)| k.0);
-    let mut batch = WriteBatch::new(relation::EVIDENCED_BY);
-    batch.create_vertex(vid, vec![label::DOCUMENT], props);
+    batch.create_vertex(document_vid(&doc.oid()), vec![label::DOCUMENT], props);
+    Ok(())
+}
+
+/// Record a document in the book (plan §9.1, §9.3): one `Document` vertex
+/// carrying the canonical payload and its mirrors (`_fa_digest` =
+/// `doc_commit`, `code` = the kind's registered name, `book_id`,
+/// `custody_len`), and its `ImportReceipt` — custody event 0, source
+/// `Upload(retrieved_by)` — in one commit. The same bytes of the same kind
+/// are the recorded outcome, never a second vertex or a second receipt.
+pub async fn add_document<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    doc: &Document,
+) -> Outcome<DocumentAdded> {
+    let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    let kind_name = match intake_check(&policy, book, doc, policy.max_document_bytes) {
+        Ok(name) => name,
+        Err(r) => return Ok(Err(r)),
+    };
+    let source = IntakeSource::Upload {
+        principal: doc.retrieved_by,
+    };
+    if let Err(r) = crate::custody::admit_source(&source) {
+        return Ok(Err(r));
+    }
+    let commit = doc.doc_commit();
+    let oid = document_oid(book.book_id, &commit);
+    let vid = document_vid(&oid);
+    if let Some(row) = db.vertex(vid)? {
+        return added_from_row(&row, &policy, &oid, true);
+    }
+    let mut batch = WriteBatch::new(relation::CUSTODY_OF);
+    stage_document(&mut batch, book, doc, &kind_name)?;
+    crate::custody::stage_receipt(&mut batch, book, doc, source, doc.retrieved_by, None)?;
     match db.write(&ctx.commit(), batch).await {
         Ok(seq) => Ok(Ok(DocumentAdded {
             oid,
@@ -496,12 +683,14 @@ pub async fn add_document<V: asupersync::fs::Vfs + Clone>(
     }
 }
 
-/// The document at `oid`, decoded and verified against its commitment, or
-/// `None` when the book does not hold it.
-pub fn read_document<V: asupersync::fs::Vfs + Clone>(
+/// The record at `oid` — metadata and where the bytes are — verified
+/// against its own payload and mirrors, or `None` when the book does not
+/// hold it. No bytes are fetched; a drifted row is an error naming
+/// FA-REF-085.
+pub fn document_record<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     oid: &Oid,
-) -> Result<Option<Document>, KernelError> {
+) -> Result<Option<DocumentRecord>, KernelError> {
     let Some(row) = db.vertex(document_vid(oid))? else {
         return Ok(None);
     };
@@ -518,6 +707,183 @@ pub fn read_document<V: asupersync::fs::Vfs + Clone>(
             code::DOCUMENT_DRIFT,
             hex(&oid.0)
         ))),
+    }
+}
+
+fn record_or_drift<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    oid: &Oid,
+) -> Outcome<Option<DocumentRecord>> {
+    let Some(row) = db.vertex(document_vid(oid))? else {
+        return Ok(Ok(None));
+    };
+    let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    match verify_row(&row, &policy) {
+        Ok(doc) if doc.oid() == *oid => Ok(Ok(Some(doc))),
+        Ok(_) => Ok(Err(drift(oid, "the vertex holds another document"))),
+        Err(why) => Ok(Err(drift(oid, &why))),
+    }
+}
+
+/// The refusal for bytes a store cannot produce (exit 5: the environment
+/// failed to supply them; never a silent null).
+fn blob_missing(oid: &Oid, why: &str) -> Refusal {
+    Refusal::new(
+        code::BLOB_MISSING,
+        exit::FOUNDATION,
+        format!("document {}: {why}", hex(&oid.0)),
+        "plan §9.1 (a document's bytes are produced on request and verified against its public commitment); registries/document_stores.toml",
+        "restore the blob from the book's backup into its store; the commitment names exactly the bytes expected, and nothing substitutes for them",
+    )
+}
+
+/// The document at `oid` with its bytes, from its payload: an inline
+/// document, verified; an external one is FA-REF-116 here (its bytes are in
+/// a store: [`fetch_document`]); a drifted row is FA-REF-085.
+pub fn read_document<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    oid: &Oid,
+) -> Outcome<Option<Document>> {
+    let record = match record_or_drift(db, oid)? {
+        Ok(Some(record)) => record,
+        Ok(None) => return Ok(Ok(None)),
+        Err(r) => return Ok(Err(r)),
+    };
+    match &record.storage {
+        Storage::Inline(bytes) => Ok(record
+            .with_bytes(bytes.clone())
+            .map(Some)
+            .ok_or_else(|| drift(oid, "the inline bytes do not reproduce the commitment"))),
+        Storage::External { store, .. } => Ok(Err(blob_missing(
+            oid,
+            &format!("its bytes are in store {store}; read it with fetch_document and that store"),
+        ))),
+    }
+}
+
+/// The document at `oid` with its bytes, wherever they are, verified on
+/// every read: an inline document from its payload; an external one from
+/// `store`, whose bytes must reproduce the recorded size and commitment
+/// (else FA-REF-085, exit 8). A missing blob, a store that cannot be read,
+/// or a document held in another store is FA-REF-116 (exit 5).
+pub async fn fetch_document<V, W>(
+    db: &Database<V>,
+    ctx: &PurposeContexts,
+    store: &crate::blob::BlobStore<W>,
+    oid: &Oid,
+) -> Outcome<Option<Document>>
+where
+    V: asupersync::fs::Vfs + Clone,
+    W: asupersync::fs::Vfs + Clone,
+{
+    let record = match record_or_drift(db, oid)? {
+        Ok(Some(record)) => record,
+        Ok(None) => return Ok(Ok(None)),
+        Err(r) => return Ok(Err(r)),
+    };
+    let bytes = match &record.storage {
+        Storage::Inline(bytes) => bytes.clone(),
+        Storage::External { store: id, locator } => {
+            if *id != store.id() {
+                return Ok(Err(blob_missing(
+                    oid,
+                    &format!("its bytes are in store {id}, not store {}", store.id()),
+                )));
+            }
+            match store.get(&ctx.query(), locator).await {
+                Ok(Some(bytes)) => bytes,
+                Ok(None) => {
+                    return Ok(Err(blob_missing(
+                        oid,
+                        &format!("store {id} holds no blob {locator}"),
+                    )));
+                }
+                Err(e) => {
+                    return Ok(Err(blob_missing(
+                        oid,
+                        &format!("store {id} could not be read: {e}"),
+                    )));
+                }
+            }
+        }
+    };
+    Ok(record.with_bytes(bytes).map(Some).ok_or_else(|| {
+        drift(
+            oid,
+            "the stored bytes do not reproduce the recorded size and commitment",
+        )
+    }))
+}
+
+/// Record a document whose bytes live in `store` (plan §9.1 `External`):
+/// the intake laws bounded by the store's limit, the upload's source, then
+/// the bytes written under the commitment's locator, then — in one commit —
+/// the Document vertex (size and commitment inline, the payload naming the
+/// store and locator) and its ImportReceipt. The same bytes of the same
+/// kind are the recorded outcome, however they were first stored.
+pub async fn add_document_external<V, W>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    store: &crate::blob::BlobStore<W>,
+    doc: &Document,
+) -> Outcome<DocumentAdded>
+where
+    V: asupersync::fs::Vfs + Clone,
+    W: asupersync::fs::Vfs + Clone,
+{
+    let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    let kind_name = match intake_check(&policy, book, doc, store.max_document_bytes()) {
+        Ok(name) => name,
+        Err(r) => return Ok(Err(r)),
+    };
+    let source = IntakeSource::Upload {
+        principal: doc.retrieved_by,
+    };
+    if let Err(r) = crate::custody::admit_source(&source) {
+        return Ok(Err(r));
+    }
+    let commit = doc.doc_commit();
+    let oid = document_oid(book.book_id, &commit);
+    let vid = document_vid(&oid);
+    if let Some(row) = db.vertex(vid)? {
+        return added_from_row(&row, &policy, &oid, true);
+    }
+    let locator = crate::blob::locator_of(&commit);
+    if let Err(e) = store.put(&ctx.commit(), &locator, &doc.bytes).await {
+        return Ok(Err(blob_missing(
+            &oid,
+            &format!("store {} could not be written: {e}", store.id()),
+        )));
+    }
+    let mut batch = WriteBatch::new(relation::CUSTODY_OF);
+    stage_document_payload(
+        &mut batch,
+        book,
+        doc,
+        &kind_name,
+        doc.canonical_bytes_external(store.id(), &locator)?,
+    )?;
+    crate::custody::stage_receipt(&mut batch, book, doc, source, doc.retrieved_by, None)?;
+    match db.write(&ctx.commit(), batch).await {
+        Ok(seq) => Ok(Ok(DocumentAdded {
+            oid,
+            doc_commit: commit,
+            vid,
+            kind: doc.kind,
+            grade: doc.grade,
+            size: len_u64(doc.bytes.len()),
+            recorded_at: seq,
+            already_recorded: false,
+        })),
+        Err(fgdb::WriteError::AlreadyLive { .. }) => match db.vertex(vid)? {
+            Some(row) => added_from_row(&row, &policy, &oid, true),
+            None => Err(KernelError::Corrupt(format!(
+                "document {} reported live but is absent",
+                hex(&commit)
+            ))),
+        },
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -700,7 +1066,7 @@ pub fn resolve_documents<V: asupersync::fs::Vfs + Clone>(
                 }
                 Some(row) => match verify_row(&row, policy) {
                     Ok(doc) if doc.oid() == e.document_oid => (
-                        doc.doc_commit(),
+                        doc.doc_commit,
                         Some(CitedDocument {
                             vid: dvid,
                             oid: e.document_oid,
@@ -737,6 +1103,9 @@ pub fn resolve_documents<V: asupersync::fs::Vfs + Clone>(
         let (false, Some(doc)) = (repeat, resolved) else {
             continue;
         };
+        if let Err(r) = crate::custody::witness_custody(txn, db, policy, &e.document_oid)? {
+            return Ok(Err(r));
+        }
         last = Some((e.document_oid, stored));
         cited.push(doc);
     }

@@ -11,8 +11,9 @@
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
 use fa_journal::evidence::{
-    Document, DocumentAdded, EvidenceAttached, SupplementalEvidence, add_document, attach_evidence,
-    document_vid, read_document, supplements_of,
+    Document, DocumentAdded, EvidenceAttached, Storage, SupplementalEvidence, add_document,
+    add_document_external, attach_evidence, document_record, document_vid, fetch_document,
+    read_document, supplements_of,
 };
 use fa_journal::post::read_entry;
 use fa_journal::rows::{applied, book_root, edge_id, leg_vid, resolution_vid, reversal_vid};
@@ -1646,7 +1647,10 @@ fn documents_are_content_addressed_idempotent_and_verified_on_read() {
     assert_eq!(row.labels, vec![fa_model::symbols::label::DOCUMENT]);
     assert_eq!(row.created_at, added.recorded_at);
     // Reading verifies the bytes against the commitment and returns them.
-    assert_eq!(read_document(&h.db, &added.oid).unwrap(), Some(doc.clone()));
+    assert_eq!(
+        read_document(&h.db, &added.oid).unwrap().unwrap(),
+        Some(doc.clone())
+    );
     // The same bytes of the same kind are the recorded outcome, whatever grade
     // the second intake declares: the first intake's grade stands.
     let again = h
@@ -1666,7 +1670,10 @@ fn documents_are_content_addressed_idempotent_and_verified_on_read() {
     assert_ne!(receipt.oid, added.oid);
     assert_ne!(receipt.doc_commit, added.doc_commit);
     // An oid this book never recorded reads as absent.
-    assert_eq!(read_document(&h.db, &Oid([0xee; 32])).unwrap(), None);
+    assert_eq!(
+        read_document(&h.db, &Oid([0xee; 32])).unwrap().unwrap(),
+        None
+    );
 }
 
 #[test]
@@ -1954,7 +1961,7 @@ fn a_document_whose_mirrors_drift_from_its_payload_is_refused_and_an_untouched_o
         assert!(h.db.vertex(evid).unwrap().is_none());
         // Reading it back, or re-adding the same bytes, never vouches for it.
         assert!(
-            matches!(read_document(&h.db, &doc.oid()), Err(KernelError::Corrupt(ref why)) if why.contains("FA-REF-085")),
+            matches!(read_document(&h.db, &doc.oid()), Ok(Err(ref r)) if r.code == "FA-REF-085"),
             "{:?}",
             read_document(&h.db, &doc.oid())
         );
@@ -1970,7 +1977,7 @@ fn a_document_whose_mirrors_drift_from_its_payload_is_refused_and_an_untouched_o
         Posted::Committed { .. }
     ));
     assert_eq!(
-        read_document(&h.db, &intact.oid()).unwrap(),
+        read_document(&h.db, &intact.oid()).unwrap().unwrap(),
         Some(intact.clone())
     );
 }
@@ -2504,7 +2511,7 @@ fn a_preparers_manual_assertion_stands_in_for_a_document_only_where_registered()
             reason_code,
             statement,
         } => Some((*reason_code, statement.clone())),
-        AttestationClaim::Reviewed { .. } => None,
+        AttestationClaim::Reviewed { .. } | AttestationClaim::RegisterEquals(_) => None,
     };
     let (reason_code, statement) = manual.expect("a ManualAssertion");
     assert_eq!(reason_code, 1);
@@ -2585,6 +2592,7 @@ fn forged_attestations_are_refused_where_the_kernel_relies_on_them() {
         },
         subject: Subject::Document(agents.oid()),
         principal: PRINCIPAL,
+        evidence_refs: Vec::new(),
     });
     let r = h.post_citing(&agents, b"g21-forged-self").unwrap_err();
     eprintln!(
@@ -2605,6 +2613,7 @@ fn forged_attestations_are_refused_where_the_kernel_relies_on_them() {
         },
         subject: Subject::Proposal(p.proposal_digest().unwrap()),
         principal: PRINCIPAL,
+        evidence_refs: Vec::new(),
     });
     let r = h.post(h.request(p, &["post"])).unwrap_err();
     eprintln!(
@@ -2629,6 +2638,7 @@ fn forged_attestations_are_refused_where_the_kernel_relies_on_them() {
         },
         subject: Subject::Proposal(p.proposal_digest().unwrap()),
         principal: REVIEWER,
+        evidence_refs: Vec::new(),
     });
     let r = h.post(h.request(p, &["post"])).unwrap_err();
     eprintln!(
@@ -2663,4 +2673,878 @@ fn forged_attestations_are_refused_where_the_kernel_relies_on_them() {
     // Recording the same review again never vouches for the drifted row.
     let r = h.review(REVIEWER, other.oid(), Vec::new()).unwrap_err();
     assert_eq!(r.code, "FA-REF-113", "{r}");
+}
+
+// ---------------------------------------------------------------------------
+// Chain of custody and import runs (fa-txf, plan §9.3). Each step logs what
+// the kernel decided (`cargo test -- --nocapture`).
+// ---------------------------------------------------------------------------
+
+impl Harness {
+    fn transfer(
+        &mut self,
+        holder: VId,
+        document: Oid,
+        from: VId,
+        to: VId,
+    ) -> Result<fa_journal::CustodyMoved, Refusal> {
+        let ctx = self.ctx();
+        let cap = Capability::embedded(holder, &["post"]).expect("post");
+        let db = &mut self.db;
+        let book = &self.book;
+        self.runtime
+            .block_on(
+                async move { transfer_custody(db, &ctx, book, &cap, document, from, to).await },
+            )
+            .expect("kernel")
+    }
+
+    fn import(
+        &mut self,
+        cap: &Capability,
+        source: fa_model::IntakeSource,
+        key: &[u8],
+        documents: Vec<Document>,
+    ) -> Result<fa_journal::ImportRecorded, Refusal> {
+        let ctx = self.ctx();
+        let req = fa_journal::ImportRequest {
+            principal: cap.holder(),
+            source,
+            idempotency_key: key.to_vec(),
+            effective_date: DateDay::from_ymd(2026, 3, 15).unwrap(),
+            description: Erasable::seal(
+                &"import run".to_string(),
+                None,
+                &self.book.seal_key,
+                [21; 32],
+                [21; 24],
+            ),
+            documents,
+        };
+        let db = &mut self.db;
+        let book = &self.book;
+        self.runtime
+            .block_on(async move { import_run(db, &ctx, book, cap, req).await })
+            .expect("kernel")
+    }
+
+    /// Write a Document vertex outside every law, with every mirror right
+    /// and `custody_len` as given (absent: a document with no receipt).
+    fn write_document_raw(&mut self, doc: &Document, custody_len: Option<i64>) {
+        use fa_model::symbols::label;
+        let mut props = vec![
+            (
+                property::FA_PAYLOAD,
+                CanonicalScalar::bytes(doc.canonical_bytes().unwrap()).unwrap(),
+            ),
+            (
+                property::FA_DIGEST,
+                CanonicalScalar::bytes(doc.doc_commit().to_vec()).unwrap(),
+            ),
+            (
+                property::BOOK_ID,
+                CanonicalScalar::bytes(doc.book_id.0.to_vec()).unwrap(),
+            ),
+            (
+                property::CODE,
+                CanonicalScalar::ucs_basic_text("Invoice").unwrap(),
+            ),
+        ];
+        if let Some(n) = custody_len {
+            props.push((property::CUSTODY_LEN, CanonicalScalar::Int(n)));
+        }
+        props.sort_by_key(|(k, _)| k.0);
+        let mut batch = fgdb::WriteBatch::new(relation::CUSTODY_OF);
+        batch.create_vertex(document_vid(&doc.oid()), vec![label::DOCUMENT], props);
+        self.write_raw(batch);
+    }
+
+    /// Write a custody event outside every law, with every mirror right.
+    fn write_event_raw(&mut self, event: &fa_journal::CustodyEvent) {
+        use fa_model::symbols::label;
+        let vid = fa_journal::custody::custody_vid(event.book_id, &event.document_oid, event.index);
+        let mut props = vec![
+            (
+                property::FA_PAYLOAD,
+                CanonicalScalar::bytes(event.canonical_bytes().unwrap()).unwrap(),
+            ),
+            (
+                property::FA_DIGEST,
+                CanonicalScalar::bytes(event.digest().unwrap().to_vec()).unwrap(),
+            ),
+            (
+                property::BOOK_ID,
+                CanonicalScalar::bytes(event.book_id.0.to_vec()).unwrap(),
+            ),
+        ];
+        props.sort_by_key(|(k, _)| k.0);
+        let event_label = if event.index == 0 {
+            label::IMPORT_RECEIPT
+        } else {
+            label::CUSTODY_TRANSFER
+        };
+        let mut batch = fgdb::WriteBatch::new(relation::CUSTODY_OF);
+        batch.create_vertex(vid, vec![event_label], props);
+        self.write_raw(batch);
+    }
+
+    fn set_custody_len(&mut self, oid: &Oid, n: i64) {
+        let mut batch = fgdb::WriteBatch::new(relation::CUSTODY_OF);
+        batch.set_vertex_property(
+            document_vid(oid),
+            property::CUSTODY_LEN,
+            Some(CanonicalScalar::Int(n)),
+        );
+        self.write_raw(batch);
+    }
+}
+
+fn receipt_event(doc: &Document, source: fa_model::IntakeSource) -> fa_journal::CustodyEvent {
+    fa_journal::CustodyEvent {
+        book_id: doc.book_id,
+        document_oid: doc.oid(),
+        index: 0,
+        prev_digest: [0; 32],
+        body: fa_journal::CustodyBody::Receipt {
+            source,
+            received_by: doc.retrieved_by,
+            digest_at_receipt: doc.doc_commit(),
+            run_ref: None,
+        },
+    }
+}
+
+#[test]
+fn every_intake_writes_its_receipt_and_custody_passes_only_from_its_holder() {
+    use fa_journal::CustodyBody;
+    use fa_journal::custody::custody_vid;
+    let mut h = harness();
+    let doc = h.document(INVOICE, HUMAN_UPLOAD, b"INVOICE 801 (custody fixture)");
+    let added = h.add_document(&doc).expect("admitted");
+    let oid = doc.oid();
+
+    // Intake wrote custody event 0 in the same commit, linked to the document.
+    let chain = custody_chain(&h.db, &oid).unwrap();
+    eprintln!(
+        "txf custody: intake {} -> chain of {} at {:?}",
+        fa_journal::evidence::hex(&oid.0),
+        chain.len(),
+        added.recorded_at
+    );
+    assert_eq!(chain.len(), 1);
+    assert_eq!(
+        chain[0].1, added.recorded_at,
+        "receipt and document commit together"
+    );
+    assert_eq!(
+        chain[0].0.body,
+        CustodyBody::Receipt {
+            source: fa_model::IntakeSource::Upload {
+                principal: PRINCIPAL
+            },
+            received_by: PRINCIPAL,
+            digest_at_receipt: doc.doc_commit(),
+            run_ref: None,
+        }
+    );
+    let receipt = custody_vid(h.book.book_id, &oid, 0);
+    assert!(
+        h.db.edge(edge_id(relation::CUSTODY_OF, receipt, document_vid(&oid)))
+            .unwrap()
+            .is_some()
+    );
+    // A repeat intake is the recorded outcome: still one receipt.
+    assert!(h.add_document(&doc).expect("recorded").already_recorded);
+    assert_eq!(custody_chain(&h.db, &oid).unwrap().len(), 1);
+
+    // The holder hands it on: event 1, chained to the receipt.
+    let moved = h
+        .transfer(PRINCIPAL, oid, PRINCIPAL, REVIEWER)
+        .expect("recorded");
+    eprintln!(
+        "txf custody: transfer 7 -> 8 recorded as event {}",
+        moved.index
+    );
+    assert_eq!(moved.index, 1);
+    let chain = custody_chain(&h.db, &oid).unwrap();
+    assert_eq!(chain.len(), 2);
+    assert_eq!(chain[1].0.prev_digest, chain[0].0.digest().unwrap());
+    assert_eq!(chain[1].0.holder(), REVIEWER);
+
+    // The former holder can no longer hand it on (SoD-class refusal, exit 7);
+    // a capability that is not `from`'s is refused before any read.
+    let r = h
+        .transfer(PRINCIPAL, oid, PRINCIPAL, OTHER_REVIEWER)
+        .unwrap_err();
+    eprintln!(
+        "txf custody: transfer by a former holder -> {} {}",
+        r.code, r.message
+    );
+    assert_eq!((r.code, r.exit), ("FA-REF-119", exit::SAFETY), "{r}");
+    let r = h
+        .transfer(PRINCIPAL, oid, REVIEWER, OTHER_REVIEWER)
+        .unwrap_err();
+    assert_eq!(r.code, "FA-REF-011", "{r}");
+    assert_eq!(
+        custody_chain(&h.db, &oid).unwrap().len(),
+        2,
+        "nothing written"
+    );
+
+    // A complete two-event chain is citable.
+    let posted = h.post_citing(&doc, b"txf-custody-ok");
+    eprintln!("txf custody: post citing it -> {posted:?}");
+    assert!(matches!(posted, Ok(Posted::Committed { .. })), "{posted:?}");
+}
+
+#[test]
+fn a_document_without_a_complete_custody_chain_cannot_be_cited() {
+    use fa_model::IntakeSource;
+    let mut h = harness();
+
+    // (a) A document with no receipt at all.
+    let bare = h.document(INVOICE, HUMAN_UPLOAD, b"INVOICE 811 (no receipt)");
+    h.write_document_raw(&bare, None);
+    // (b) A chain whose length says 2 but whose link 1 was never written.
+    let gap = h.document(INVOICE, HUMAN_UPLOAD, b"INVOICE 812 (missing link)");
+    h.add_document(&gap).expect("admitted");
+    h.set_custody_len(&gap.oid(), 2);
+    // (c) A transfer that does not chain to the receipt.
+    let unchained = h.document(INVOICE, HUMAN_UPLOAD, b"INVOICE 813 (unchained)");
+    h.add_document(&unchained).expect("admitted");
+    h.write_event_raw(&fa_journal::CustodyEvent {
+        book_id: unchained.book_id,
+        document_oid: unchained.oid(),
+        index: 1,
+        prev_digest: [0xab; 32],
+        body: fa_journal::CustodyBody::Transfer {
+            from: PRINCIPAL,
+            to: REVIEWER,
+        },
+    });
+    h.set_custody_len(&unchained.oid(), 2);
+    // (d) A receipt from a connector this book does not register.
+    let foreign = h.document(INVOICE, HUMAN_UPLOAD, b"INVOICE 814 (unregistered source)");
+    h.write_document_raw(&foreign, Some(1));
+    h.write_event_raw(&receipt_event(
+        &foreign,
+        IntakeSource::Connector {
+            name: "bank-feed".into(),
+            version: "1".into(),
+        },
+    ));
+    // (e) A transfer recorded by a principal that did not hold it.
+    let stolen = h.document(INVOICE, HUMAN_UPLOAD, b"INVOICE 815 (not the holder)");
+    h.add_document(&stolen).expect("admitted");
+    let receipt = receipt_event(
+        &stolen,
+        IntakeSource::Upload {
+            principal: PRINCIPAL,
+        },
+    );
+    h.write_event_raw(&fa_journal::CustodyEvent {
+        index: 1,
+        prev_digest: receipt.digest().unwrap(),
+        body: fa_journal::CustodyBody::Transfer {
+            from: OTHER_REVIEWER,
+            to: REVIEWER,
+        },
+        ..receipt
+    });
+    h.set_custody_len(&stolen.oid(), 2);
+
+    for (doc, key, link, why) in [
+        (&bare, b"txf-bare" as &[u8], "link 0", "no ImportReceipt"),
+        (&gap, b"txf-gap", "link 1", "is missing"),
+        (&unchained, b"txf-unchained", "link 1", "does not chain"),
+        (&foreign, b"txf-foreign", "link 0", "unregistered source"),
+        (&stolen, b"txf-stolen", "link 1", "did not hold"),
+    ] {
+        let r = h.post_citing(doc, key).unwrap_err();
+        eprintln!(
+            "txf custody: citing a broken chain -> {} {}",
+            r.code, r.message
+        );
+        assert_eq!((r.code, r.exit), ("FA-REF-114", exit::REFUSAL), "{r}");
+        assert!(r.message.contains(link), "{}", r.message);
+        assert!(r.message.contains(why), "{}", r.message);
+        assert!(entry_absent(&h, key));
+    }
+    // An intact document beside them still posts.
+    let intact = h.document(INVOICE, HUMAN_UPLOAD, b"INVOICE 816 (intact)");
+    h.add_document(&intact).expect("admitted");
+    assert!(matches!(
+        h.post_citing(&intact, b"txf-intact"),
+        Ok(Posted::Committed { .. })
+    ));
+}
+
+#[test]
+fn an_import_run_records_its_documents_under_a_receipt_that_recomputes() {
+    use fa_journal::CustodyBody;
+    use fa_journal::import::oids_root;
+    use fa_model::IntakeSource;
+    let mut h = harness();
+    let connector = IntakeSource::Connector {
+        name: "fa-import".into(),
+        version: "1".into(),
+    };
+    let held = h.document(INVOICE, HUMAN_UPLOAD, b"INVOICE 901 (already held)");
+    h.add_document(&held).expect("admitted");
+    let docs: Vec<Document> = [
+        b"INVOICE 902 (imported)" as &[u8],
+        b"INVOICE 903 (imported)",
+        b"RECEIPT 904 (imported)",
+    ]
+    .iter()
+    .map(|b| h.document(INVOICE, HUMAN_UPLOAD, b))
+    .chain([held.clone()])
+    .collect();
+    let importer = Capability::embedded(PRINCIPAL, &["post"]).expect("post");
+
+    let run = h
+        .import(&importer, connector.clone(), b"run-1", docs.clone())
+        .expect("recorded");
+    let mut oids: Vec<Oid> = docs.iter().map(Document::oid).collect();
+    oids.sort();
+    eprintln!(
+        "txf import: run {:032x} -> {} documents, {} bytes, root {}, receipt {}",
+        run.receipt.run.0,
+        run.receipt.document_count,
+        run.receipt.byte_count,
+        fa_journal::evidence::hex(&run.receipt.oids_root),
+        fa_journal::evidence::hex(&run.receipt.receipt_hash)
+    );
+    assert_eq!(run.receipt.document_count, 4);
+    let bytes: u64 = docs.iter().map(|d| d.bytes.len() as u64).sum();
+    assert_eq!(run.receipt.byte_count, bytes);
+    assert_eq!(run.receipt.oids_root, oids_root(&oids));
+    assert_eq!(run.already_held, vec![held.oid()]);
+    assert_eq!(run.recorded.len(), 3);
+    assert!(verify_receipt(&run.receipt, h.book.book_id, &oids).is_ok());
+    // The journal binds what the hash does not: the sequence that recorded
+    // the run. A receipt shifted only in `recorded_at` passes the offline
+    // check (no claim) and is refused against the journal (exit 8).
+    assert_eq!(
+        verify_receipt_in(&h.db, h.book.book_id, &run.receipt, &oids).unwrap(),
+        Ok(())
+    );
+    let shifted = fa_journal::RunReceipt {
+        recorded_at: fgdb_types::CommitSeq(run.receipt.recorded_at.0 + 1),
+        ..run.receipt.clone()
+    };
+    assert!(verify_receipt(&shifted, h.book.book_id, &oids).is_ok());
+    let r = verify_receipt_in(&h.db, h.book.book_id, &shifted, &oids)
+        .unwrap()
+        .unwrap_err();
+    eprintln!(
+        "txf import: a receipt with recorded_at shifted -> {} {}",
+        r.code, r.message
+    );
+    assert_eq!((r.code, r.exit), ("FA-REF-115", exit::VERIFICATION), "{r}");
+    assert!(
+        r.message.contains(&format!(
+            "recorded at sequence {}",
+            run.receipt.recorded_at.0
+        )),
+        "{r}"
+    );
+    let elsewhere = fa_journal::RunReceipt {
+        run: fgdb_types::VId(0xabc),
+        ..run.receipt.clone()
+    };
+    let r = verify_receipt_in(&h.db, h.book.book_id, &elsewhere, &oids)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(r.code, "FA-REF-115", "{r}");
+    assert_eq!(
+        read_run(&h.db, run.receipt.run).unwrap(),
+        Some(run.receipt.clone())
+    );
+
+    // A tampered, short, or reordered oid list does not verify (exit 8).
+    let mut tampered = oids.clone();
+    tampered[1].0[0] ^= 1;
+    let mut reordered = oids.clone();
+    reordered.swap(0, 1);
+    for (what, list) in [
+        ("tampered", tampered),
+        ("short", oids[..3].to_vec()),
+        ("reordered", reordered),
+    ] {
+        let r = verify_receipt(&run.receipt, h.book.book_id, &list).unwrap_err();
+        eprintln!("txf import: a {what} oid list -> {} {}", r.code, r.message);
+        assert_eq!((r.code, r.exit), ("FA-REF-115", exit::VERIFICATION));
+    }
+
+    // Each recorded document's receipt names the run and its source; the
+    // already-held one keeps its upload receipt.
+    for oid in &run.recorded {
+        let chain = custody_chain(&h.db, oid).unwrap();
+        let receipt_of = match &chain[0].0.body {
+            CustodyBody::Receipt {
+                source, run_ref, ..
+            } => Some((source.clone(), *run_ref)),
+            CustodyBody::Transfer { .. } => None,
+        };
+        let (source, run_ref) = receipt_of.expect("custody event 0 is a receipt");
+        assert_eq!(
+            (source, run_ref),
+            (connector.clone(), Some(run.receipt.run))
+        );
+        let receipt = fa_journal::custody::custody_vid(h.book.book_id, oid, 0);
+        assert!(
+            h.db.edge(edge_id(relation::IMPORTED_BY, receipt, run.receipt.run))
+                .unwrap()
+                .is_some()
+        );
+    }
+    assert!(matches!(
+        &custody_chain(&h.db, &held.oid()).unwrap()[0].0.body,
+        CustodyBody::Receipt { run_ref: None, .. }
+    ));
+    // An imported document is citable through its run's receipt.
+    let imported = docs.iter().find(|d| d.oid() == run.recorded[0]).unwrap();
+    assert!(matches!(
+        h.post_citing(imported, b"txf-imported"),
+        Ok(Posted::Committed { .. })
+    ));
+
+    // The same run again is its recorded receipt; another under the key is 032.
+    let again = h
+        .import(&importer, connector.clone(), b"run-1", docs.clone())
+        .expect("recorded");
+    assert!(again.already_recorded);
+    assert_eq!(again.receipt, run.receipt);
+    let r = h
+        .import(&importer, connector.clone(), b"run-1", docs[..2].to_vec())
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-032", exit::CONFLICT), "{r}");
+
+    // Refused before any read: an unregistered source, a repeated document,
+    // an empty run, an Agent on trunk, a principal without `post`.
+    let fresh = |b: &[u8]| h.document(INVOICE, HUMAN_UPLOAD, b);
+    let one = vec![fresh(b"INVOICE 905")];
+    let cases: Vec<(&str, Capability, IntakeSource, Vec<Document>, &str)> = vec![
+        (
+            "unregistered connector",
+            importer.clone(),
+            IntakeSource::Connector {
+                name: "bank-feed".into(),
+                version: "1".into(),
+            },
+            one.clone(),
+            "FA-REF-083",
+        ),
+        (
+            "unregistered device",
+            importer.clone(),
+            IntakeSource::Scan {
+                device: "office-scanner".into(),
+            },
+            one.clone(),
+            "FA-REF-083",
+        ),
+        (
+            "a repeated document",
+            importer.clone(),
+            connector.clone(),
+            vec![one[0].clone(), one[0].clone()],
+            "FA-REF-100",
+        ),
+        (
+            "an empty run",
+            importer.clone(),
+            connector.clone(),
+            Vec::new(),
+            "FA-REF-100",
+        ),
+        (
+            "an agent on trunk",
+            fa_policy::Capability::new(
+                PRINCIPAL,
+                fa_policy::Profile::Agent,
+                &[fa_policy::Op::Post],
+                PRINCIPAL,
+            )
+            .unwrap(),
+            connector.clone(),
+            one.clone(),
+            "FA-REF-013",
+        ),
+        (
+            "no post op",
+            Capability::embedded(PRINCIPAL, &["read"]).unwrap(),
+            connector.clone(),
+            one.clone(),
+            "FA-REF-011",
+        ),
+    ];
+    for (i, (what, cap, source, docs, code)) in cases.into_iter().enumerate() {
+        let key = format!("run-bad-{i}");
+        let r = h.import(&cap, source, key.as_bytes(), docs).unwrap_err();
+        eprintln!("txf import: {what} -> {} {}", r.code, r.message);
+        assert_eq!(r.code, code, "{what}: {r}");
+    }
+    assert!(
+        custody_chain(&h.db, &one[0].oid()).unwrap().is_empty(),
+        "nothing written"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// External document storage (fa-txf part B, plan §9.1): bytes in the book's
+// blob store, the commitment inline, every read verified.
+// ---------------------------------------------------------------------------
+
+fn blob_store(root: &str) -> BlobStore<fgdb::MemVfs> {
+    BlobStore::open(1, fgdb::MemVfs::new().expect("memvfs"), root).expect("store 1")
+}
+
+/// A blob store over the substrate's lab VFS, rooted three directories deep.
+fn fault_store(
+    vfs: &fgdb_sim::vfs::FaultVfs<fgdb::MemVfs>,
+) -> BlobStore<fgdb_sim::vfs::FaultVfs<fgdb::MemVfs>> {
+    BlobStore::open(1, vfs.clone(), "deep/nested/blobs").expect("store 1")
+}
+
+fn lab_vfs(plan: fgdb_sim::vfs::FaultPlan) -> fgdb_sim::vfs::FaultVfs<fgdb::MemVfs> {
+    fgdb_sim::vfs::FaultVfs::new(fgdb::MemVfs::new().expect("memvfs"), plan)
+}
+
+impl Harness {
+    fn add_external_to<V: asupersync::fs::Vfs + Clone>(
+        &mut self,
+        store: &BlobStore<V>,
+        doc: &Document,
+    ) -> Result<DocumentAdded, Refusal> {
+        let ctx = self.ctx();
+        let db = &mut self.db;
+        let book = &self.book;
+        self.runtime
+            .block_on(async move { add_document_external(db, &ctx, book, store, doc).await })
+            .expect("kernel")
+    }
+
+    fn fetch_from<V: asupersync::fs::Vfs + Clone>(
+        &self,
+        store: &BlobStore<V>,
+        oid: &Oid,
+    ) -> Result<Option<Document>, Refusal> {
+        let ctx = self.ctx();
+        let db = &self.db;
+        self.runtime
+            .block_on(async move { fetch_document(db, &ctx, store, oid).await })
+            .expect("kernel")
+    }
+}
+
+/// The publication fence under the substrate's lab VFS (WhiteCreek 3440,
+/// CobaltGull 3452). With `dirent_loss = Always` a crash rolls back every
+/// namespace change whose parent directory was never honestly synced: the
+/// classic fsync-the-file, forget-the-directory loss. An external document's
+/// blob, published through `put` and only then journaled, owes nothing when
+/// intake returns and reads back after the crash; the faultless plan is the
+/// harness's control.
+#[test]
+fn an_external_blob_survives_a_crash_that_loses_every_unsynced_name() {
+    use fgdb_sim::vfs::{FaultPlan, Trigger};
+    for (what, plan) in [
+        ("faultless (the control)", FaultPlan::faultless()),
+        (
+            "every unsynced name lost",
+            FaultPlan {
+                dirent_loss: Trigger::Always,
+                ..FaultPlan::faultless()
+            },
+        ),
+    ] {
+        let mut h = harness();
+        let vfs = lab_vfs(plan);
+        let store = fault_store(&vfs);
+        let doc = h.document(
+            INVOICE,
+            HUMAN_UPLOAD,
+            format!("INVOICE 991 (crash fixture: {what}) ")
+                .repeat(150)
+                .as_bytes(),
+        );
+        h.add_external_to(&store, &doc).expect("recorded");
+        assert_eq!(
+            vfs.pending_dirent_ops(),
+            0,
+            "{what}: nothing owes a sync once intake returns"
+        );
+        h.runtime.block_on(vfs.crash()).expect("crash");
+        let reopened = fault_store(&vfs);
+        let read = h.fetch_from(&reopened, &doc.oid());
+        eprintln!(
+            "txf fence: {what} -> crash generation {}, read {:?}",
+            vfs.generation(),
+            read.as_ref().map(|d| d.as_ref().map(|d| d.bytes.len()))
+        );
+        assert_eq!(read, Ok(Some(doc)), "{what}");
+    }
+}
+
+/// The planted negative: the same intake through a lab VFS whose directory
+/// syncs lie. The names stay pending, the crash takes them, and the journal
+/// row then names a blob that is gone: the read is FA-REF-116 (exit 5),
+/// never a silent null. This is what the fence prevents, and proves the
+/// crash test above can see an unfenced publication.
+#[test]
+fn a_lying_directory_sync_loses_the_blob_and_the_read_says_so() {
+    use fgdb_sim::vfs::{FaultPlan, Trigger};
+    let mut h = harness();
+    let vfs = lab_vfs(FaultPlan {
+        dirent_loss: Trigger::Always,
+        dirent_lie: Trigger::Always,
+        ..FaultPlan::faultless()
+    });
+    let store = fault_store(&vfs);
+    let doc = h.document(
+        INVOICE,
+        HUMAN_UPLOAD,
+        "INVOICE 992 (lying directory syncs) "
+            .repeat(150)
+            .as_bytes(),
+    );
+    h.add_external_to(&store, &doc)
+        .expect("recorded: the lie reported success");
+    assert!(
+        vfs.pending_dirent_ops() > 0,
+        "the lying syncs settled nothing"
+    );
+    h.runtime.block_on(vfs.crash()).expect("crash");
+    let r = h.fetch_from(&fault_store(&vfs), &doc.oid()).unwrap_err();
+    eprintln!(
+        "txf fence: lying directory syncs, then a crash -> {} {}",
+        r.code, r.message
+    );
+    assert_eq!((r.code, r.exit), ("FA-REF-116", exit::FOUNDATION), "{r}");
+}
+
+/// Ordering, and the retry WhiteCreek 3459 named. A publication the lab VFS
+/// refuses — the first write (ENOSPC) or the sync write-back (a zero space
+/// budget) — never reaches the journal: intake is FA-REF-116 and nothing is
+/// written. Then the retry, after a first put interrupted between its
+/// `mkdir`s and its syncs at depth three: it finds the directories present,
+/// fences the whole ancestor chain anyway, and its blob survives a crash
+/// that loses every unsynced name.
+#[test]
+fn a_blob_not_made_durable_never_reaches_the_journal_and_a_retry_fences_the_chain() {
+    use fgdb_sim::vfs::{FaultPlan, Trigger};
+    for (what, plan) in [
+        (
+            "the first write refused",
+            FaultPlan {
+                write_enospc: Trigger::Always,
+                ..FaultPlan::faultless()
+            },
+        ),
+        (
+            "the sync write-back refused",
+            FaultPlan {
+                space_budget: Some(0),
+                ..FaultPlan::faultless()
+            },
+        ),
+    ] {
+        let mut h = harness();
+        let store = fault_store(&lab_vfs(plan));
+        let doc = h.document(
+            INVOICE,
+            HUMAN_UPLOAD,
+            format!("INVOICE 993 ({what}) ").repeat(150).as_bytes(),
+        );
+        let head = h.db.frontier().unwrap();
+        let r = h.add_external_to(&store, &doc).unwrap_err();
+        eprintln!("txf fence: {what} -> {} {}", r.code, r.message);
+        assert_eq!(
+            (r.code, r.exit),
+            ("FA-REF-116", exit::FOUNDATION),
+            "{what}: {r}"
+        );
+        assert_eq!(h.db.frontier().unwrap(), head, "{what}: nothing journaled");
+        assert!(
+            h.db.vertex(document_vid(&doc.oid())).unwrap().is_none(),
+            "{what}: no row names the blob"
+        );
+    }
+
+    let mut h = harness();
+    let vfs = lab_vfs(FaultPlan {
+        write_enospc: Trigger::At(1),
+        dirent_loss: Trigger::Always,
+        ..FaultPlan::faultless()
+    });
+    let store = fault_store(&vfs);
+    let doc = h.document(
+        INVOICE,
+        HUMAN_UPLOAD,
+        "INVOICE 994 (interrupted, then retried) "
+            .repeat(150)
+            .as_bytes(),
+    );
+    let r = h.add_external_to(&store, &doc).unwrap_err();
+    assert_eq!(r.code, "FA-REF-116", "the interrupted first put: {r}");
+    assert!(
+        vfs.pending_dirent_ops() > 0,
+        "the interrupted put left its directories unsynced"
+    );
+    h.add_external_to(&store, &doc).expect("the retry records");
+    assert_eq!(
+        vfs.pending_dirent_ops(),
+        0,
+        "the retry fenced every name the interrupted put left owing"
+    );
+    h.runtime.block_on(vfs.crash()).expect("crash");
+    assert_eq!(h.fetch_from(&fault_store(&vfs), &doc.oid()), Ok(Some(doc)));
+}
+
+/// The publication fence (WhiteCreek 3440/3445) on a root nested three
+/// directories deep that does not exist yet: `put` creates and syncs every
+/// directory it needs, publishes under its own staged name, and a second put
+/// of the same locator (same bytes, content-addressed) is harmless.
+#[test]
+fn a_blob_publishes_into_a_fresh_nested_root_and_republishes_harmlessly() {
+    let h = harness();
+    let store = blob_store("deep/nested/blobs");
+    let bytes = b"BLOB (publication fixture)".to_vec();
+    let locator = fa_journal::blob::locator_of(&[7; 32]);
+    let ctx = h.ctx();
+    h.runtime.block_on(async {
+        store
+            .put(&ctx.commit(), &locator, &bytes)
+            .await
+            .expect("published");
+        store
+            .put(&ctx.commit(), &locator, &bytes)
+            .await
+            .expect("republished");
+        assert_eq!(
+            store.get(&ctx.query(), &locator).await.expect("read"),
+            Some(bytes.clone())
+        );
+        let other = fa_journal::blob::locator_of(&[8; 32]);
+        assert_eq!(
+            store.get(&ctx.query(), &other).await.expect("read"),
+            None,
+            "a blob never published reads as absent, not as an error"
+        );
+    });
+}
+
+impl Harness {
+    fn add_external(
+        &mut self,
+        store: &BlobStore<fgdb::MemVfs>,
+        doc: &Document,
+    ) -> Result<DocumentAdded, Refusal> {
+        let ctx = self.ctx();
+        let db = &mut self.db;
+        let book = &self.book;
+        self.runtime
+            .block_on(async move { add_document_external(db, &ctx, book, store, doc).await })
+            .expect("kernel")
+    }
+
+    fn fetch(
+        &self,
+        store: &BlobStore<fgdb::MemVfs>,
+        oid: &Oid,
+    ) -> Result<Option<Document>, Refusal> {
+        let ctx = self.ctx();
+        let db = &self.db;
+        self.runtime
+            .block_on(async move { fetch_document(db, &ctx, store, oid).await })
+            .expect("kernel")
+    }
+}
+
+#[test]
+fn an_external_document_reads_back_verified_and_a_missing_or_changed_blob_is_refused() {
+    let mut h = harness();
+    let store = blob_store("blobs");
+    let doc = h.document(
+        INVOICE,
+        HUMAN_UPLOAD,
+        &b"INVOICE 990 (external storage fixture) ".repeat(200),
+    );
+    let added = h.add_external(&store, &doc).expect("recorded");
+    eprintln!(
+        "txf external: recorded {} ({} bytes) in store {} at {:?}",
+        fa_journal::evidence::hex(&added.oid.0),
+        added.size,
+        store.id(),
+        added.recorded_at
+    );
+    // The journal holds the commitment and the locator, not the bytes.
+    let record = document_record(&h.db, &added.oid).unwrap().expect("held");
+    assert_eq!(
+        record.storage,
+        Storage::External {
+            store: 1,
+            locator: fa_journal::blob::locator_of(&doc.doc_commit()),
+        }
+    );
+    assert_eq!(
+        (record.size, record.doc_commit),
+        (added.size, doc.doc_commit())
+    );
+    // Read back byte-identically, the commitment recomputed from the bytes.
+    assert_eq!(h.fetch(&store, &added.oid).unwrap(), Some(doc.clone()));
+    // Without its store a read is a typed refusal naming the store, never null.
+    let r = read_document(&h.db, &added.oid).unwrap().unwrap_err();
+    eprintln!(
+        "txf external: read without the store -> {} {}",
+        r.code, r.message
+    );
+    assert_eq!((r.code, r.exit), ("FA-REF-116", exit::FOUNDATION), "{r}");
+    // Citing it needs no bytes: the evidence law reads the record.
+    assert!(matches!(
+        h.post_citing(&doc, b"txf-external"),
+        Ok(Posted::Committed { .. })
+    ));
+    // The same bytes again (inline or external) are the recorded outcome.
+    assert!(h.add_document(&doc).expect("recorded").already_recorded);
+
+    // A store that holds no such blob: exit 5, never a silent null.
+    let empty = blob_store("elsewhere");
+    let r = h.fetch(&empty, &added.oid).unwrap_err();
+    eprintln!("txf external: a missing blob -> {} {}", r.code, r.message);
+    assert_eq!((r.code, r.exit), ("FA-REF-116", exit::FOUNDATION), "{r}");
+    // A blob whose bytes changed: drift, exit 8, never the changed bytes.
+    let locator = fa_journal::blob::locator_of(&doc.doc_commit());
+    let mut changed = doc.bytes.clone();
+    changed[0] ^= 0x20;
+    h.runtime
+        .block_on(async { store.put(&h.ctx().commit(), &locator, &changed).await })
+        .expect("overwrite the blob outside every law");
+    let r = h.fetch(&store, &added.oid).unwrap_err();
+    eprintln!("txf external: a changed blob -> {} {}", r.code, r.message);
+    assert_eq!((r.code, r.exit), ("FA-REF-085", exit::VERIFICATION), "{r}");
+    // Restoring the right bytes restores the read.
+    h.runtime
+        .block_on(async { store.put(&h.ctx().commit(), &locator, &doc.bytes).await })
+        .expect("restore");
+    assert_eq!(h.fetch(&store, &added.oid).unwrap(), Some(doc));
+}
+
+#[test]
+fn a_document_past_the_inline_bound_is_refused_inline_and_admitted_by_a_store() {
+    let mut h = harness();
+    let bound = 16 * 1024 * 1024;
+    let big = h.document(INVOICE, HUMAN_UPLOAD, &vec![b'x'; bound + 1]);
+    let r = h.add_document(&big).unwrap_err();
+    eprintln!(
+        "txf external: inline past the bound -> {} {}",
+        r.code, r.message
+    );
+    assert_eq!(r.code, "FA-REF-083", "{r}");
+    assert!(r.fix.contains("blob store"), "{}", r.fix);
+    let store = blob_store("blobs");
+    let added = h.add_external(&store, &big).expect("admitted by the store");
+    assert_eq!(added.size, u64::try_from(bound + 1).unwrap());
+    assert_eq!(h.fetch(&store, &added.oid).unwrap(), Some(big));
 }

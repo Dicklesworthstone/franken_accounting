@@ -108,6 +108,8 @@ impl EntryClass {
     pub const SCHEDULE_CONTROL: Self = Self(21);
     /// A `MigrationRun`'s lifecycle (plan §8.6): Open, Finalize, Abandon.
     pub const MIGRATION_CONTROL: Self = Self(22);
+    /// An `ImportRun` receipt (plan §9.3): book-scoped, undated.
+    pub const IMPORT_CONTROL: Self = Self(23);
 
     /// `(tag, name, is_control)` for every registered class.
     pub const ALL: &[(u16, &str, bool)] = &[
@@ -133,6 +135,7 @@ impl EntryClass {
         (20, "SweepControl", true),
         (21, "ScheduleControl", true),
         (22, "MigrationControl", true),
+        (23, "ImportControl", true),
     ];
 
     #[must_use]
@@ -159,6 +162,92 @@ impl EntryClass {
             .iter()
             .find(|(_, n, _)| *n == name)
             .map(|(t, _, _)| Self(*t))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Control kinds (the [[control_kind]] table of registries/entry_classes.toml)
+// ---------------------------------------------------------------------------
+
+/// A registered `EntryOrigin::Control.control_kind`: the act that minted a
+/// control record (fa-g23). The constants mirror the `[[control_kind]]` rows
+/// of `registries/entry_classes.toml` (`code_control_kinds_match_registry`
+/// is the gate). The id is private: outside this crate a kind exists only
+/// as a registered constant, an origin naming an unregistered id does not
+/// decode, and `entry_mirrors` refuses to stage a record whose kind mints
+/// another class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ControlKind(u16);
+
+impl ControlKind {
+    pub const CHART_INSTALL: Self = Self(1);
+    pub const PERIOD_TRANSITION: Self = Self(2);
+    pub const POLICY_ACTIVATION: Self = Self(3);
+    pub const TIME_TICK: Self = Self(4);
+    pub const SCHEDULE_CANCEL: Self = Self(5);
+    pub const IMPORT_RUN: Self = Self(6);
+    pub const CAPABILITY_REVOCATION: Self = Self(8);
+
+    /// Every registered kind: `(kind, name, the control class it mints)`.
+    pub const ALL: &'static [(Self, &'static str, EntryClass)] = &[
+        (
+            Self::CHART_INSTALL,
+            "chart_install",
+            EntryClass::SCHEMA_CONTROL,
+        ),
+        (
+            Self::PERIOD_TRANSITION,
+            "period_transition",
+            EntryClass::PERIOD_CONTROL,
+        ),
+        (
+            Self::POLICY_ACTIVATION,
+            "policy_activation",
+            EntryClass::POLICY_CONTROL,
+        ),
+        (Self::TIME_TICK, "time_tick", EntryClass::TIME_CONTROL),
+        (
+            Self::SCHEDULE_CANCEL,
+            "schedule_cancel",
+            EntryClass::SCHEDULE_CONTROL,
+        ),
+        (Self::IMPORT_RUN, "import_run", EntryClass::IMPORT_CONTROL),
+        (
+            Self::CAPABILITY_REVOCATION,
+            "capability_revocation",
+            EntryClass::POLICY_CONTROL,
+        ),
+    ];
+
+    /// The registered kind with this id, if any.
+    #[must_use]
+    pub fn from_id(id: u16) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .find(|(k, _, _)| k.0 == id)
+            .map(|(k, _, _)| *k)
+    }
+
+    #[must_use]
+    pub fn id(self) -> u16 {
+        self.0
+    }
+
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        Self::ALL
+            .iter()
+            .find(|(k, _, _)| *k == self)
+            .map_or("", |(_, n, _)| *n)
+    }
+
+    /// The control class this kind mints.
+    #[must_use]
+    pub fn class(self) -> Option<EntryClass> {
+        Self::ALL
+            .iter()
+            .find(|(k, _, _)| *k == self)
+            .map(|(_, _, c)| *c)
     }
 }
 
@@ -477,7 +566,7 @@ pub enum EntryOrigin {
         batch_oid: Oid,
     },
     Control {
-        control_kind: u16,
+        control_kind: ControlKind,
         spec_body_digest: [u8; 32],
     },
     Sweep {
@@ -553,7 +642,7 @@ impl EntryOrigin {
                 control_kind,
                 spec_body_digest,
             } => {
-                w.u8(3).u16(*control_kind).fixed(spec_body_digest);
+                w.u8(3).u16(control_kind.id()).fixed(spec_body_digest);
             }
             Self::Sweep {
                 sweep_kind,
@@ -606,7 +695,10 @@ impl EntryOrigin {
                 batch_oid: decode_oid(r, "origin.batch_oid")?,
             },
             3 => Self::Control {
-                control_kind: r.u16("origin.control_kind")?,
+                control_kind: {
+                    let id = r.u16("origin.control_kind")?;
+                    ControlKind::from_id(id).ok_or_else(|| r.invalid("origin.control_kind"))?
+                },
                 spec_body_digest: r.fixed("origin.spec_body_digest")?,
             },
             4 => Self::Sweep {
@@ -626,6 +718,84 @@ impl EntryOrigin {
                 },
             },
             t => return Err(r.bad_tag("origin.tag", t)),
+        })
+    }
+}
+
+/// Where a document entered the book (plan §9.3 `ImportReceipt.source`).
+/// The kinds and connectors a book accepts are `registries/intake_sources.toml`.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum IntakeSource {
+    /// A principal uploaded the bytes.
+    Upload { principal: VId },
+    /// A registered connector fetched them.
+    Connector { name: String, version: String },
+    /// They arrived by e-mail.
+    Email { message_id: String },
+    /// A registered scanning device captured them.
+    Scan { device: String },
+}
+
+impl IntakeSource {
+    /// The registered kind name (`intake_sources.toml [[kind]]`).
+    #[must_use]
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            Self::Upload { .. } => "Upload",
+            Self::Connector { .. } => "Connector",
+            Self::Email { .. } => "Email",
+            Self::Scan { .. } => "Scan",
+        }
+    }
+
+    /// Every text field is 1..=`max_intake_text_bytes` bytes.
+    #[must_use]
+    pub fn within_bounds(&self) -> bool {
+        let ok = |s: &str| !s.is_empty() && s.len() <= MAX_INTAKE_TEXT_BYTES;
+        match self {
+            Self::Upload { .. } => true,
+            Self::Connector { name, version } => ok(name) && ok(version),
+            Self::Email { message_id } => ok(message_id),
+            Self::Scan { device } => ok(device),
+        }
+    }
+
+    pub fn encode(&self, w: &mut Writer) {
+        match self {
+            Self::Upload { principal } => {
+                w.u8(1).u128(principal.0);
+            }
+            Self::Connector { name, version } => {
+                w.u8(2).str(name).str(version);
+            }
+            Self::Email { message_id } => {
+                w.u8(3).str(message_id);
+            }
+            Self::Scan { device } => {
+                w.u8(4).str(device);
+            }
+        }
+    }
+
+    pub fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let text = |r: &mut Reader<'_>, what| -> Result<String, DecodeError> {
+            Ok(r.str(MAX_INTAKE_TEXT_BYTES, what)?.to_string())
+        };
+        Ok(match r.u8("intake.tag")? {
+            1 => Self::Upload {
+                principal: VId(r.u128("intake.principal")?),
+            },
+            2 => Self::Connector {
+                name: text(r, "intake.name")?,
+                version: text(r, "intake.version")?,
+            },
+            3 => Self::Email {
+                message_id: text(r, "intake.message_id")?,
+            },
+            4 => Self::Scan {
+                device: text(r, "intake.device")?,
+            },
+            t => return Err(r.bad_tag("intake.tag", t)),
         })
     }
 }
@@ -694,6 +864,17 @@ pub enum ControlPayload {
     /// a Pending's reservations. Target and disposition ride in `pending`
     /// (plan §5.4). Tag 11; never valid on a control class.
     ReservationRelease,
+    /// An import run's receipt (plan §9.3; class `ImportControl`, tag 13):
+    /// what came in, from where, how much, and the Merkle root over the
+    /// run's distinct document oids. `receipt_hash` is what the external
+    /// party keeps.
+    ImportRun {
+        source: IntakeSource,
+        document_count: u32,
+        byte_count: u64,
+        oids_root: [u8; 32],
+        receipt_hash: [u8; 32],
+    },
 }
 
 impl ControlPayload {
@@ -805,6 +986,20 @@ impl ControlPayload {
             Self::ReservationRelease => {
                 w.u8(11);
             }
+            Self::ImportRun {
+                source,
+                document_count,
+                byte_count,
+                oids_root,
+                receipt_hash,
+            } => {
+                w.u8(13);
+                source.encode(w);
+                w.u32(*document_count)
+                    .u64(*byte_count)
+                    .fixed(oids_root)
+                    .fixed(receipt_hash);
+            }
         }
     }
 
@@ -878,6 +1073,13 @@ impl ControlPayload {
                 tie_out_digest: r.fixed("control.tie_out_digest")?,
             },
             11 => Self::ReservationRelease,
+            13 => Self::ImportRun {
+                source: IntakeSource::decode(r)?,
+                document_count: r.u32("control.document_count")?,
+                byte_count: r.u64("control.byte_count")?,
+                oids_root: r.fixed("control.oids_root")?,
+                receipt_hash: r.fixed("control.receipt_hash")?,
+            },
             t => return Err(r.bad_tag("control.tag", t)),
         })
     }
@@ -896,6 +1098,14 @@ impl ControlPayload {
             Self::LifecycleTransition { proof_refs, .. } if proof_refs.len() > MAX_PROOF_REFS => {
                 Err(invalid("control.proof_refs", "exceeds max_proof_refs"))
             }
+            Self::ImportRun {
+                source,
+                document_count,
+                ..
+            } if !source.within_bounds() || *document_count == 0 => Err(invalid(
+                "control.import_run",
+                "an import run names a bounded source and at least one document",
+            )),
             Self::ErasureCut { field_digests, .. }
                 if field_digests.len() > MAX_FIELD_DIGESTS
                     || !strictly_ascending(field_digests, |d| *d) =>
@@ -1791,6 +2001,169 @@ mod tests {
         ]
     }
 
+    /// fa-g23: the code's kinds are exactly the registry's rows (ids, names,
+    /// classes); the reserved ids have no constant until their class lands.
+    #[test]
+    fn code_control_kinds_match_registry() {
+        let classes = fa_registry::EntryClasses::embedded().unwrap();
+        let reg = fa_registry::ControlKinds::embedded(&classes).unwrap();
+        assert_eq!(reg.rows.len(), ControlKind::ALL.len());
+        for row in &reg.rows {
+            let k = ControlKind::from_id(row.id).expect("kind in code");
+            assert_eq!(k.name(), row.name, "{}", row.id);
+            assert_eq!(
+                k.class().and_then(EntryClass::name),
+                Some(row.class.as_str()),
+                "{}",
+                row.name
+            );
+        }
+        for r in &reg.reserved {
+            assert_eq!(ControlKind::from_id(r.id), None, "{} is reserved", r.name);
+        }
+    }
+
+    /// fa-g23: an origin naming an unregistered kind does not decode; a
+    /// registered one round-trips as its id.
+    #[test]
+    fn an_unregistered_control_kind_is_unencodable() {
+        let origin = |id: u16| {
+            let mut w = Writer::new();
+            w.u8(3).u16(id).fixed(&[5; 32]);
+            w.finish().unwrap()
+        };
+        for (kind, name, _) in ControlKind::ALL {
+            let bytes = origin(kind.id());
+            let back = EntryOrigin::decode(&mut Reader::new(&bytes)).expect(name);
+            assert_eq!(
+                back,
+                EntryOrigin::Control {
+                    control_kind: *kind,
+                    spec_body_digest: [5; 32]
+                }
+            );
+        }
+        for id in [0, 7, 9, u16::MAX] {
+            assert!(
+                EntryOrigin::decode(&mut Reader::new(&origin(id))).is_err(),
+                "control_kind {id}"
+            );
+        }
+    }
+
+    /// fa-g23, the kernel's staging cross-check: every registered kind stages
+    /// a record of its own class and is refused on every other control class
+    /// and on a posting class.
+    #[test]
+    fn a_control_record_stages_only_under_its_registered_kind() {
+        let record = |class: EntryClass, kind: ControlKind, legs: Vec<LegPayload>| {
+            let mut p = proposal(legs);
+            p.class = class;
+            if class.is_control() {
+                p.control = Some(ControlPayload::TimeTick {
+                    observed_utc_ns: 1,
+                    source: 0,
+                    monotonic_ok: true,
+                });
+                p.evidence = Vec::new();
+            }
+            p.origin = EntryOrigin::Control {
+                control_kind: kind,
+                spec_body_digest: [5; 32],
+            };
+            p.seal(vec![], None).unwrap()
+        };
+        let classes: Vec<EntryClass> = EntryClass::ALL
+            .iter()
+            .filter(|(_, _, control)| *control)
+            .map(|(t, _, _)| EntryClass(*t))
+            .collect();
+        for (kind, name, own) in ControlKind::ALL {
+            assert!(
+                crate::mirrors::entry_mirrors(&record(*own, *kind, Vec::new())).is_ok(),
+                "{name} stages on its own class"
+            );
+            for class in classes.iter().filter(|c| *c != own) {
+                assert_eq!(
+                    crate::mirrors::entry_mirrors(&record(*class, *kind, Vec::new())).unwrap_err(),
+                    crate::mirrors::MirrorError::ControlKind {
+                        class: class.0,
+                        kind: kind.id()
+                    },
+                    "{name} on {:?}",
+                    class.name()
+                );
+            }
+            assert!(
+                crate::mirrors::entry_mirrors(&record(EntryClass::ORIGINAL, *kind, two_legs()))
+                    .is_err(),
+                "{name} on a posting class"
+            );
+        }
+    }
+
+    /// The source gate (fa-g23): outside this file no code names a control
+    /// kind by number. The scanner flags a planted line, then the workspace.
+    #[test]
+    fn no_control_kind_is_named_by_number_outside_the_registry_symbols() {
+        fn offending(source: &str) -> Vec<String> {
+            source
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.starts_with("//"))
+                .filter(|l| {
+                    ["control_kind:", "ControlKind(", "ControlKind::from_id("]
+                        .iter()
+                        .any(|pat| {
+                            l.match_indices(pat).any(|(i, _)| {
+                                l[i + pat.len()..]
+                                    .trim_start()
+                                    .starts_with(|c: char| c.is_ascii_digit())
+                            })
+                        })
+                })
+                .map(str::to_string)
+                .collect()
+        }
+        assert_eq!(
+            offending("let o = EntryOrigin::Control { control_kind: 4, spec_body_digest };"),
+            ["let o = EntryOrigin::Control { control_kind: 4, spec_body_digest };"]
+        );
+        assert_eq!(offending("x = ControlKind::from_id( 7);").len(), 1);
+        assert!(offending("control_kind: ControlKind::TIME_TICK,").is_empty());
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut stack = vec![crates];
+        let mut found = Vec::new();
+        let mut scanned = 0usize;
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("read crates") {
+                let path = entry.expect("dir entry").path();
+                if path.is_dir() {
+                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    if name != "target" && !name.starts_with('.') {
+                        stack.push(path);
+                    }
+                } else if path.extension().is_some_and(|e| e == "rs")
+                    && !path.ends_with("fa-model/src/entry.rs")
+                {
+                    scanned += 1;
+                    let text = std::fs::read_to_string(&path).expect("read source");
+                    for line in offending(&text) {
+                        found.push(format!("{}: {line}", path.display()));
+                    }
+                }
+            }
+        }
+        assert!(
+            scanned > 50,
+            "the scan reached the workspace ({scanned} files)"
+        );
+        assert!(
+            found.is_empty(),
+            "control kinds named by number: {found:#?}"
+        );
+    }
+
     #[test]
     fn code_classes_match_registry() {
         let reg = fa_registry::EntryClasses::embedded().unwrap();
@@ -2200,7 +2573,7 @@ mod tests {
                 inputs_digest: [3; 32],
             },
             EntryOrigin::Control {
-                control_kind: 4,
+                control_kind: ControlKind::TIME_TICK,
                 spec_body_digest: [5; 32],
             },
             EntryOrigin::Sweep {

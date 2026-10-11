@@ -21,3 +21,7 @@ fgdb = { workspace = true }
 fgdb-types = { workspace = true }
 fgdb-delta-types = { workspace = true }
 fgdb-crypto = { workspace = true }
+
+[dev-dependencies]
+# The lab VFS for the blob store's crash regression (dev only).
+fgdb-sim = { workspace = true }

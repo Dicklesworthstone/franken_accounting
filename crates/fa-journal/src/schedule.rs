@@ -85,9 +85,6 @@ pub const SWEEP_REVERSAL: u8 = 2;
 /// judged by the Reversal row of the reversal period's state.
 pub const EXEC_OP: &str = "post";
 
-/// `EntryOrigin::Control.control_kind` of a schedule cancellation.
-const CONTROL_KIND_CANCEL: u16 = 5;
-
 const EFFECTS_DOMAIN: &[u8] = b"fa:schedule-effects:v1";
 
 /// The `fa:auto-reverse:v1` bytes: `reverse_on: i32 LE ‖ rule: u8`.
@@ -1140,7 +1137,7 @@ pub(crate) fn cancellation<V: asupersync::fs::Vfs + Clone>(
         base_totals: None,
         idempotency_key: format!("cancel:{:032x}", svid.0).into_bytes(),
         origin: EntryOrigin::Control {
-            control_kind: CONTROL_KIND_CANCEL,
+            control_kind: fa_model::ControlKind::SCHEDULE_CANCEL,
             spec_body_digest: fgdb_crypto::hash(&svid.0.to_le_bytes()).0,
         },
         principal_ref: reversal.principal_ref,

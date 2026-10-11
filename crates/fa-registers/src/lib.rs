@@ -12,6 +12,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod assertion;
 pub mod availability;
 pub mod entity;
 pub mod explain;

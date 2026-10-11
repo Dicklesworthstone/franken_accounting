@@ -24,6 +24,29 @@
 pub mod evidence;
 pub mod sod;
 
+/// The registered control kinds (`registries/entry_classes.toml`
+/// `[[control_kind]]`, fa-g23), written out literally: `(id, name, the
+/// control class it mints)`. The oracle's own copy, so a drift between the
+/// kernel's origin bytes and the registry is a differential failure.
+pub const CONTROL_KINDS: &[(u16, &str, &str)] = &[
+    (1, "chart_install", "SchemaControl"),
+    (2, "period_transition", "PeriodControl"),
+    (3, "policy_activation", "PolicyControl"),
+    (4, "time_tick", "TimeControl"),
+    (5, "schedule_cancel", "ScheduleControl"),
+    (6, "import_run", "ImportControl"),
+    (8, "capability_revocation", "PolicyControl"),
+];
+
+/// The control class a record of kind `id` must carry, per the oracle's copy.
+#[must_use]
+pub fn control_kind_class(id: u16) -> Option<&'static str> {
+    CONTROL_KINDS
+        .iter()
+        .find(|(k, _, _)| *k == id)
+        .map(|(_, _, class)| *class)
+}
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use fa_registry::sod_policy::{SodPolicy, SodRequirement};
@@ -2368,6 +2391,23 @@ impl Oracle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// fa-g23: the oracle's literal copy is the registry's table, row for row.
+    #[test]
+    fn control_kinds_mirror_the_registry() {
+        let classes = EntryClasses::embedded().unwrap();
+        let reg = fa_registry::ControlKinds::embedded(&classes).unwrap();
+        let mut rows: Vec<(u16, &str, &str)> = reg
+            .rows
+            .iter()
+            .map(|r| (r.id, r.name.as_str(), r.class.as_str()))
+            .collect();
+        rows.sort_unstable();
+        assert_eq!(rows, CONTROL_KINDS);
+        for r in &reg.reserved {
+            assert_eq!(control_kind_class(r.id), None, "{} is reserved", r.name);
+        }
+    }
 
     #[test]
     fn limb_arithmetic_agrees_with_i128_on_the_edges() {

@@ -301,3 +301,11 @@ class = "MigrationControl"
 requirement = "control_record"
 min_documents = 0
 kinds = "any"
+
+# An import run is its own control record: the documents it brings in are
+# its subject, not its evidence (fa-txf).
+[[minimum]]
+class = "ImportControl"
+requirement = "control_record"
+min_documents = 0
+kinds = "any"
