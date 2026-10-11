@@ -182,7 +182,7 @@ fn refused_write(error: WriteTxnError) -> Outcome<RetainedCertificate> {
         }
         WriteTxnError::Write(WriteError::FirstCommitterWins { detail, .. }) => {
             Ok(Err(Refusal::new(
-                fa_journal::code::CONFLICT,
+                fa_journal::refusal::code::CONFLICT,
                 exit::CONFLICT,
                 format!("a concurrent commit changed the certificate storage witness: {detail}"),
                 "FG-LAW-FCW-01 (first committer wins over the retained certificate's point witness)",

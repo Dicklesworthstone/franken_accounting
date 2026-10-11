@@ -195,7 +195,7 @@ exit = "safety"
 cite = "plan §14.2 (revocation is a journaled control entry; authority is evaluated against current policy at commit)"
 fix = "obtain a fresh capability from the book's steward; a revoked token is never reinstated"
 
-# ---- Concurrency and identity (030–033) ----------------------------------
+# ---- Concurrency, identity and posting plans (030–034) --------------------
 [[refusal]]
 code = "FA-REF-030"
 name = "CONFLICT"
@@ -227,6 +227,14 @@ owners = ["fa-journal"]
 exit = "conflict"
 cite = "plan §8.5 (no plaintext equivalence over destroyed secrets)"
 fix = "resubmit the exact prepared bytes to get the recorded outcome, or use a new idempotency key"
+
+[[refusal]]
+code = "FA-REF-034"
+name = "PLAN_INVALIDATED"
+owners = ["fa-journal"]
+exit = "conflict"
+cite = "plan §5.1 / §14.2 / FA-INV-11 (authenticated posting plan, exact preparation basis and current authority)"
+fix = "rehearse the original intent again at the current book head under the acting capability, review its new certificate, then commit that exact plan"
 
 # ---- Period transitions (040) --------------------------------------------
 [[refusal]]

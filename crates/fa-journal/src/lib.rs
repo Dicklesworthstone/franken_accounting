@@ -28,6 +28,7 @@ pub mod legal_hold;
 pub mod limit;
 pub mod migration;
 pub mod period;
+pub mod plan;
 pub mod policy;
 pub mod post;
 pub mod projections;
@@ -72,6 +73,7 @@ pub use period::{
     PreparedTransition, TransitionPlan, Transitioned, plan_transition, prepare_transition,
     transition_name, transition_period, transition_proposal,
 };
+pub use plan::{commit_plan, plan_certificate_vid, plan_post};
 pub use policy::{
     ActivationRequest, ApprovalRequest, Approved, PolicyActivated, RevocationRequest, Revoked,
     activate_policy, activation_proposal, record_approval, revoke_capability,

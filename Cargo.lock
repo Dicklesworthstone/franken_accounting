@@ -789,6 +789,7 @@ name = "fa"
 version = "0.0.1"
 dependencies = [
  "asupersync",
+ "fa-intents",
  "fa-journal",
  "fa-model",
  "fa-money",
@@ -823,10 +824,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "fa-intents"
+version = "0.0.1"
+dependencies = [
+ "fa-model",
+ "fgdb-types",
+]
+
+[[package]]
 name = "fa-journal"
 version = "0.0.1"
 dependencies = [
  "asupersync",
+ "fa-intents",
  "fa-model",
  "fa-money",
  "fa-policy",

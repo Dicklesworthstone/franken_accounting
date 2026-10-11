@@ -128,6 +128,9 @@ pub mod code {
     pub const LIVE_APPLICATIONS: &str = "FA-REF-073";
     /// A key collided but equivalence cannot be verified: a sealed field is erased or under a key this book lacks.
     pub const EQUIVALENCE_UNVERIFIABLE: &str = "FA-REF-033";
+    /// A portable PostEntry plan is stale, unauthentic, or no longer
+    /// reproduces its exact admitted proposal and native staged effects.
+    pub const PLAN_INVALIDATED: &str = "FA-REF-034";
     /// The entry cites fewer admissible documents than its class's `evidence_policy.toml` minimum.
     pub const EVIDENCE_MINIMUM: &str = "FA-REF-080";
     /// A citation names a document this book does not hold.

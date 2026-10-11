@@ -609,6 +609,41 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.post(&purposes, req)))
     }
 
+    /// Rehearse an intent through the posting kernel without publishing.
+    ///
+    /// The portable plan retains the original sealed proposal and approvals,
+    /// and binds the actual staged effects to this book's current sequence
+    /// and the supplied capability. This first slice requires any necessary
+    /// approvals to exist already; an intervening publication requires a new
+    /// plan. Planning neither records an entry nor consumes its idempotency key.
+    pub fn plan(
+        &mut self,
+        intent: fa_intents::PostIntent,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_intents::PostPlan> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => core.plan(&purposes, intent, capability))
+    }
+
+    /// Commit the exact rehearsed intent under the caller's current authority.
+    ///
+    /// The kernel authenticates the plan, repeats its accounting and authority
+    /// checks, and compares the staged effects before publishing. It retains
+    /// the plan as an immutable graph certificate linked to the entry in the
+    /// same transaction. Its public digest is a locator, not a native object
+    /// ID; the entry's native `plan_certificate` envelope field remains absent.
+    /// An exact retry returns the original recorded entry without writing.
+    pub fn commit_plan(
+        &mut self,
+        plan: fa_intents::PostPlan,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<Posted> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.commit_plan(
+            &purposes, plan, capability,
+        )))
+    }
+
     /// Post with a balancing leg (plan §5.5): leg `leg` moves at most what its
     /// account's limit admits, decided inside the posting transaction; the
     /// request is the entry's identity (`fa post --balancing`).

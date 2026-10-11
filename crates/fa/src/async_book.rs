@@ -344,6 +344,40 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         Ok(fa_journal::post(&mut self.db, cx, &self.context, req).await?)
     }
 
+    /// Run the real posting preparation under the caller's transaction
+    /// context, then abort it. No runtime or authority is created here.
+    pub fn plan(
+        &mut self,
+        cx: &PurposeContexts,
+        intent: fa_intents::PostIntent,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_intents::PostPlan> {
+        cx.txn().checkpoint().map_err(BookError::Context)?;
+        Ok(fa_journal::plan_post(
+            &mut self.db,
+            cx,
+            &self.context,
+            capability.clone(),
+            intent,
+        )?)
+    }
+
+    /// Revalidate and atomically publish a portable plan with its retained
+    /// graph certificate. Authority is supplied by this caller, never taken
+    /// from the artifact, and all I/O retains the caller's purpose contexts.
+    pub async fn commit_plan(
+        &mut self,
+        cx: &PurposeContexts,
+        plan: fa_intents::PostPlan,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<Posted> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        Ok(
+            fa_journal::commit_plan(&mut self.db, cx, &self.context, capability.clone(), plan)
+                .await?,
+        )
+    }
+
     pub async fn post_balancing(
         &mut self,
         cx: &PurposeContexts,

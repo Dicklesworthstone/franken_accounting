@@ -24,6 +24,7 @@ members = [
     "crates/fa-verify",
     "crates/fa-notary",
     "crates/fa-policy",
+    "crates/fa-intents",
     "crates/fad",
     "crates/fa-mcp",
 ]

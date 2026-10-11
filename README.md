@@ -133,6 +133,46 @@ and RFC3339 instant selectors; replay preserves the original coordinate even
 after later postings or ticks arrive. Signed witness claims, independent offline
 bundles, and certificates for additional report families remain unfinished.
 
+### Typed posting plans
+
+The embedded API can rehearse a typed `PostIntent` through the actual posting
+kernel, export its bounded canonical bytes, and commit that same intent later:
+
+```rust
+let intent = fa::PostIntent::new(request.proposal, request.approvals)?;
+let plan = book.plan(intent, &request.capability)??;
+let saved_bytes = plan.canonical_bytes()?;
+let restored = fa::PostPlan::decode(&saved_bytes)?;
+let posted = book.commit_plan(restored, &request.capability)??;
+```
+
+Planning runs the same balance, period, evidence, capability, approval,
+settlement, reservation and balance-limit checks as posting, then aborts the
+prepared transaction. It publishes nothing and consumes no idempotency key.
+The artifact preserves the original sealed proposal, supplied approvals and
+resolved entry preview. Its authenticated certificate binds the book,
+principal, capability commitment, proposal, native staged effects, snapshot,
+security-policy epoch and capability expiry. No capability is created from
+the artifact; the caller supplies current authority again at commit.
+
+This first slice deliberately requires the exact same book sequence. A new
+posting, period transition, policy change, approval or retained report
+certificate requires a fresh plan. A mismatched plan refuses with
+`FA-REF-034` (exit 6), and current authorization is checked before protected
+book observations. Commit repeats the posting checks and compares the actual
+staged effects before publishing. An exact retry of a successfully committed
+plan returns the original entry and sequence without another write.
+
+The committed transaction also retains the complete plan in an immutable
+graph `Certificate` with a `CITES` edge from the entry. Its public digest is
+a graph locator. The pinned substrate has no public generic application
+object store, so this slice leaves the native `Entry.plan_certificate` field
+absent instead of treating that digest as a substrate object ID. Planning
+requires any needed approvals to exist already. Planning before approval
+collection, rebasing through portable read witnesses, atomic multi-intent
+batches, draft promotion and authenticated sessions remain unfinished
+under `fa-we7` and its dependent beads.
+
 ### Embedded execution
 
 `AsyncBook<V>` accepts the caller's `PurposeContexts` for each operation and

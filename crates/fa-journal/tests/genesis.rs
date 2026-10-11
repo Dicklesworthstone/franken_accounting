@@ -381,6 +381,14 @@ fn harness() -> Harness {
 }
 
 fn harness_with_entities(entities: Vec<LegalEntitySpec>) -> Harness {
+    harness_configured(entities, None, None)
+}
+
+fn harness_configured(
+    entities: Vec<LegalEntitySpec>,
+    time_zone_policy: Option<TimeZonePolicy>,
+    cash_limit: Option<BalanceLimit>,
+) -> Harness {
     let runtime = RuntimeBuilder::new().build().expect("runtime");
     let root = runtime.request_cx_with_budget(Budget::INFINITE);
     let ctx = PurposeContexts::narrow_runtime_root(&root);
@@ -402,7 +410,7 @@ fn harness_with_entities(entities: Vec<LegalEntitySpec>) -> Harness {
         name: "Test Co".into(),
         base_unit: usd,
         calendar: calendar.clone(),
-        time_zone_policy: None,
+        time_zone_policy,
         entities,
         opening_date: None,
     };
@@ -437,7 +445,7 @@ fn harness_with_entities(entities: Vec<LegalEntitySpec>) -> Harness {
             is_leaf: true,
             unit_policy: UnitPolicy::Single(usd),
             parent_code: Some("1".into()),
-            limit: None,
+            limit: cash_limit,
         },
         AccountSpec {
             code: "6000".into(),
@@ -4992,7 +5000,6 @@ fn a_privileged_holder_derives_the_view_a_reader_gets_in_place_of_the_bytes() {
     assert_eq!(h.db.frontier().unwrap(), head, "nothing written");
 }
 
-
 fn assert_leg_projections(h: &Harness) -> ProjectionVerification {
     let report = verify_projections(&h.db, &h.book, None).expect("projection snapshot");
     assert!(report.is_green(), "{report:?}");
@@ -5015,11 +5022,10 @@ fn projection_verification_covers_posted_pending_resolved_reversed_and_control_e
     let unit = fa_model::unit_vid(h.book.book_id, "USD@v0");
     for ordinal in 0..2 {
         let lvid = leg_vid(invoice.vid, ordinal);
-        let edge = h
-            .db
-            .edge(edge_id(relation::IN_UNIT, lvid, unit))
-            .unwrap()
-            .expect("a currency link is created with each leg");
+        let edge =
+            h.db.edge(edge_id(relation::IN_UNIT, lvid, unit))
+                .unwrap()
+                .expect("a currency link is created with each leg");
         assert_eq!(edge.entry.src, lvid);
         assert_eq!(edge.entry.dst, unit);
         assert!(edge.props.is_empty());
@@ -5051,12 +5057,8 @@ fn projection_verification_covers_posted_pending_resolved_reversed_and_control_e
     let pending = h.pending(h.rent_legs(900), b"projection-hold");
     let hold = h.post(h.request(pending, &["post"])).unwrap().entry_ref();
     assert_eq!(assert_leg_projections(&h).legs_checked, 8);
-    let resolution = h.resolution_posts(
-        hold,
-        h.rent_legs(400),
-        vec![0, 1],
-        b"projection-resolution",
-    );
+    let resolution =
+        h.resolution_posts(hold, h.rent_legs(400), vec![0, 1], b"projection-resolution");
     h.post(h.request(resolution, &["post"])).unwrap();
     assert_eq!(assert_leg_projections(&h).legs_checked, 10);
 
@@ -5074,7 +5076,11 @@ fn projection_verification_covers_posted_pending_resolved_reversed_and_control_e
 #[test]
 fn projection_verifier_detects_every_scalar_mirror_and_preserves_known_at() {
     let mut h = harness();
-    let proposal = h.proposal(h.rent_legs(12_345), b"projection-mirrors", EntryClass::ORIGINAL);
+    let proposal = h.proposal(
+        h.rent_legs(12_345),
+        b"projection-mirrors",
+        EntryClass::ORIGINAL,
+    );
     let posted = h.post(h.request(proposal, &["post"])).unwrap();
     let entry = posted.entry_ref();
     let prefix = posted.recorded_at();
@@ -5094,7 +5100,11 @@ fn projection_verifier_detects_every_scalar_mirror_and_preserves_known_at() {
             Some(CanonicalScalar::bytes(h.cash.0.to_le_bytes().to_vec()).unwrap()),
             "account_ref",
         ),
-        (property::UNIT_ID, Some(CanonicalScalar::Int(999)), "unit_id"),
+        (
+            property::UNIT_ID,
+            Some(CanonicalScalar::Int(999)),
+            "unit_id",
+        ),
         (property::AMOUNT, Some(CanonicalScalar::Null), "amount"),
         (
             property::AMOUNT_BYTES,
@@ -5125,11 +5135,7 @@ fn projection_verifier_detects_every_scalar_mirror_and_preserves_known_at() {
         );
         assert_eq!(read_entry(&h.db, entry.vid).unwrap().unwrap(), payload);
         let mut restore = fgdb::WriteBatch::new(relation::HAS_LEG);
-        restore.set_vertex_property(
-            lvid,
-            key,
-            fa_journal::rows::prop(&pristine, key).cloned(),
-        );
+        restore.set_vertex_property(lvid, key, fa_journal::rows::prop(&pristine, key).cloned());
         h.write_raw(restore);
         assert_leg_projections(&h);
     }
@@ -5176,7 +5182,11 @@ fn projection_verifier_rejects_missing_extra_and_misdirected_topology() {
 
     for plant in 0..7 {
         let mut h = harness();
-        let p = h.proposal(h.rent_legs(100), b"projection-topology", EntryClass::ORIGINAL);
+        let p = h.proposal(
+            h.rent_legs(100),
+            b"projection-topology",
+            EntryClass::ORIGINAL,
+        );
         let posted = h.post(h.request(p, &["post"])).unwrap();
         let entry = posted.entry_ref().vid;
         let lvid = leg_vid(entry, 0);
@@ -5264,11 +5274,7 @@ fn dimension_edges_are_published_with_legs_and_their_metadata_is_verified() {
         )]
     );
     let mut corrupt = fgdb::WriteBatch::new(relation::FOR);
-    corrupt.set_edge_property(
-        eid,
-        property::DIMENSION_ID,
-        Some(CanonicalScalar::Int(999)),
-    );
+    corrupt.set_edge_property(eid, property::DIMENSION_ID, Some(CanonicalScalar::Int(999)));
     h.write_raw(corrupt);
     let report = verify_projections(&h.db, &h.book, None).unwrap();
     assert!(!report.is_green());
@@ -5309,10 +5315,7 @@ fn journaled_units_are_runtime_truth_and_binary_extensions_do_not_install_units(
         h.book.units.iter().collect::<Vec<_>>()
     );
     for (id, unit) in loaded.iter() {
-        let vid = fa_model::unit_vid(
-            h.book.book_id,
-            &format!("{}@v{}", unit.code, unit.version),
-        );
+        let vid = fa_model::unit_vid(h.book.book_id, &format!("{}@v{}", unit.code, unit.version));
         let row = h.db.vertex(vid).unwrap().unwrap();
         let bytes = rows::bytes(&row, property::FA_PAYLOAD, "unit.payload").unwrap();
         let definition = fa_model::UnitDefinition::decode(&bytes).unwrap();
@@ -5324,7 +5327,9 @@ fn journaled_units_are_runtime_truth_and_binary_extensions_do_not_install_units(
 #[test]
 fn unit_reconciliation_refuses_every_changed_historical_meaning() {
     let h = harness();
-    for change in ["code", "version", "scale", "kind", "ISO", "rounding", "missing"] {
+    for change in [
+        "code", "version", "scale", "kind", "ISO", "rounding", "missing",
+    ] {
         let mut supported = UnitRegistry::empty();
         for (id, unit) in h.book.units.iter() {
             if change == "missing" && id.0 + 1 == h.book.units.len() as u32 {
@@ -5428,10 +5433,8 @@ fn unit_payload_and_table_commitment_damage_are_refused_without_repair() {
             }
             "last_membership" => {
                 let (_, last) = h.book.units.iter().last().unwrap();
-                let last_vid = fa_model::unit_vid(
-                    h.book.book_id,
-                    &format!("{}@v{}", last.code, last.version),
-                );
+                let last_vid =
+                    fa_model::unit_vid(h.book.book_id, &format!("{}@v{}", last.code, last.version));
                 batch.delete_edge(edge_id(relation::IN_BOOK, last_vid, book_root()));
             }
             "book_id" => {
@@ -5449,25 +5452,13 @@ fn unit_payload_and_table_commitment_damage_are_refused_without_repair() {
                 );
             }
             "version" => {
-                batch.set_vertex_property(
-                    uvid,
-                    property::VERSION,
-                    Some(CanonicalScalar::Int(1)),
-                );
+                batch.set_vertex_property(uvid, property::VERSION, Some(CanonicalScalar::Int(1)));
             }
             "id" => {
-                batch.set_vertex_property(
-                    uvid,
-                    property::UNIT_ID,
-                    Some(CanonicalScalar::Int(99)),
-                );
+                batch.set_vertex_property(uvid, property::UNIT_ID, Some(CanonicalScalar::Int(99)));
             }
             "scale" => {
-                batch.set_vertex_property(
-                    uvid,
-                    property::SCALE,
-                    Some(CanonicalScalar::Int(4)),
-                );
+                batch.set_vertex_property(uvid, property::SCALE, Some(CanonicalScalar::Int(4)));
             }
             _ => unreachable!(),
         }
@@ -5488,4 +5479,685 @@ fn unit_payload_and_table_commitment_damage_are_refused_without_repair() {
             "{damage} must not repair silently"
         );
     }
+}
+
+impl Harness {
+    fn post_plan(&mut self, request: PostRequest) -> Result<fa_intents::PostPlan, Refusal> {
+        assert!(request.plan_certificate.is_none());
+        let intent =
+            fa_intents::PostIntent::new(request.proposal, request.approvals).expect("typed intent");
+        let ctx = self.ctx();
+        plan_post(&mut self.db, &ctx, &self.book, request.capability, intent)
+            .expect("planning kernel")
+    }
+
+    fn publish_plan(
+        &mut self,
+        plan: fa_intents::PostPlan,
+        capability: &Capability,
+    ) -> Result<Posted, Refusal> {
+        let ctx = self.ctx();
+        let db = &mut self.db;
+        let book = &self.book;
+        let capability = capability.clone();
+        self.runtime
+            .block_on(async move { commit_plan(db, &ctx, book, capability, plan).await })
+            .expect("plan commit kernel")
+    }
+}
+
+#[test]
+fn portable_post_plan_is_zero_write_and_retains_exact_evidence_with_its_entry() {
+    let mut h = harness();
+    let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let proposal = h.proposal(h.rent_legs(12_345), b"portable-plan", EntryClass::ORIGINAL);
+    let request = h.request(proposal.clone(), &["post"]);
+    let basis = h.db.frontier().unwrap();
+    let before_vertices = h.db.vertices().unwrap();
+    let plan = h.post_plan(request).expect("full rehearsal admitted");
+    assert_eq!(h.db.frontier().unwrap(), basis);
+    assert_eq!(h.db.vertices().unwrap(), before_vertices);
+    assert_eq!(plan.certificate().snapshot_seq, basis);
+    assert_eq!(plan.certificate().period, h.march);
+    assert_eq!(plan.proposal(), &proposal);
+    assert_eq!(plan.intent().proposal(), &proposal);
+    assert_eq!(
+        plan.certificate().proposal_digest,
+        proposal.proposal_digest().unwrap()
+    );
+    assert_eq!(
+        plan.certificate().intent_digest,
+        plan.intent().digest().unwrap()
+    );
+    let digest = plan.certificate().digest().unwrap();
+    let cvid = plan_certificate_vid(h.book.book_id, &digest);
+    assert!(
+        h.db.vertex(cvid).unwrap().is_none(),
+        "dry-run retains no graph record"
+    );
+
+    // Portable bytes preserve the original ciphertext/salt/nonce. Repeating
+    // the same exact rehearsal at this basis is deterministic.
+    let bytes = plan.canonical_bytes().unwrap();
+    let decoded = fa_intents::PostPlan::decode(&bytes).unwrap();
+    assert_eq!(decoded, plan);
+    let repeat = h.post_plan(h.request(proposal.clone(), &["post"])).unwrap();
+    assert_eq!(repeat, plan);
+    let mut resealed = proposal;
+    resealed.description = Erasable::seal(
+        &"March rent".to_string(),
+        None,
+        &h.book.seal_key,
+        [9; 32],
+        [8; 24],
+    );
+    let resealed_intent = fa_intents::PostIntent::new(resealed, Vec::new()).unwrap();
+    assert_ne!(
+        resealed_intent.digest().unwrap(),
+        plan.intent().digest().unwrap()
+    );
+
+    let posted = h
+        .publish_plan(decoded, &capability)
+        .expect("verified publication");
+    assert!(matches!(posted, Posted::Committed { .. }));
+    assert_eq!(posted.recorded_at().0, basis.0 + 1);
+    let (entry, recorded_at) = read_entry(&h.db, posted.entry_ref().vid).unwrap().unwrap();
+    assert_eq!(&entry, plan.prepared_entry());
+    assert_eq!(recorded_at, posted.recorded_at());
+    assert!(
+        entry.plan_certificate.is_none(),
+        "graph evidence is not a native OID"
+    );
+    let retained = h.db.vertex(cvid).unwrap().unwrap();
+    assert_eq!(retained.created_at, posted.recorded_at());
+    assert_eq!(
+        fa_journal::rows::bytes(&retained, property::FA_PAYLOAD, "plan").unwrap(),
+        bytes,
+    );
+    assert_eq!(
+        fa_journal::rows::bytes(&retained, property::FA_DIGEST, "digest").unwrap(),
+        digest,
+    );
+    let cites =
+        h.db.edge(edge_id(relation::CITES, posted.entry_ref().vid, cvid))
+            .unwrap()
+            .unwrap();
+    assert_eq!(cites.entry.created_at, posted.recorded_at());
+    assert_eq!(
+        (cites.entry.src, cites.entry.dst),
+        (posted.entry_ref().vid, cvid)
+    );
+    let after = h.db.frontier().unwrap();
+    let retry = h
+        .publish_plan(plan.clone(), &capability)
+        .expect("exact outcome retry");
+    assert!(matches!(retry, Posted::AlreadyRecorded { .. }));
+    assert_eq!(retry.entry_ref(), posted.entry_ref());
+    assert_eq!(h.db.frontier().unwrap(), after);
+
+    // The public raw-post boundary remains closed to arbitrary ObjectIds.
+    let mut raw = h.request(
+        h.proposal(h.rent_legs(1), b"fake-native-oid", EntryClass::ORIGINAL),
+        &["post"],
+    );
+    raw.plan_certificate = Some(Oid(digest));
+    assert_eq!(h.post(raw).unwrap_err().code, "FA-REF-102");
+    assert_eq!(h.db.frontier().unwrap(), after);
+}
+
+#[test]
+fn portable_post_plan_authentication_and_actual_effect_comparison_both_fail_closed() {
+    let mut h = harness();
+    let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let proposal = h.proposal(h.rent_legs(1_000), b"plan-tamper", EntryClass::ORIGINAL);
+    let plan = h.post_plan(h.request(proposal, &["post"])).unwrap();
+    let before = h.db.frontier().unwrap();
+    for damage in [
+        "effects",
+        "basis",
+        "epoch",
+        "period",
+        "capability",
+        "expiry",
+        "tag",
+    ] {
+        let mut certificate = plan.certificate().clone();
+        match damage {
+            "effects" => certificate.effects_digest[0] ^= 1,
+            "basis" => certificate.snapshot_seq.0 += 1,
+            "epoch" => certificate.security_policy_epoch += 1,
+            "period" => certificate.period = h.april.clone(),
+            "capability" => certificate.capability_commitment[0] ^= 1,
+            "expiry" => certificate.expires_at = Some(fgdb_types::CommitSeq(before.0 + 5)),
+            "tag" => certificate.authentication[0] ^= 1,
+            _ => unreachable!(),
+        }
+        let changed = fa_intents::PostPlan::new(
+            plan.intent().clone(),
+            plan.prepared_entry().clone(),
+            certificate,
+        )
+        .unwrap();
+        let refusal = h.publish_plan(changed, &capability).unwrap_err();
+        assert_eq!(
+            (refusal.code, refusal.exit),
+            ("FA-REF-034", exit::CONFLICT),
+            "{damage}"
+        );
+        assert_eq!(h.db.frontier().unwrap(), before, "{damage}");
+    }
+
+    // A test issuer holding the actual book key can make an authentic but
+    // false effects claim. The kernel must still compare the native staged
+    // transaction; verifying only the authentication tag would admit this.
+    let mut certificate = plan.certificate().clone();
+    certificate.effects_digest[0] ^= 1;
+    let key = fgdb_crypto::derive_key("fa:post-plan-authentication-key:v1", &h.book.seal_key.0);
+    certificate.authentication =
+        fgdb_crypto::keyed_hash(&key, &certificate.authentication_bytes().unwrap()).0;
+    let changed = fa_intents::PostPlan::new(
+        plan.intent().clone(),
+        plan.prepared_entry().clone(),
+        certificate,
+    )
+    .unwrap();
+    let refusal = h.publish_plan(changed, &capability).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-034", exit::CONFLICT));
+    assert!(refusal.message.contains("native effects"), "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert!(
+        h.db.vertex(entry_vid(
+            h.book.book_id,
+            &PRINCIPAL.0.to_le_bytes(),
+            b"plan-tamper"
+        ))
+        .unwrap()
+        .is_none()
+    );
+}
+
+#[test]
+fn portable_post_plan_rejects_changed_intent_even_with_recomputed_public_digests() {
+    let mut h = harness();
+    let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let proposal = h.proposal(h.rent_legs(1_000), b"plan-body", EntryClass::ORIGINAL);
+    let plan = h.post_plan(h.request(proposal, &["post"])).unwrap();
+    let before = h.db.frontier().unwrap();
+    let mut proposal = plan.intent().proposal().clone();
+    for leg in &mut proposal.legs {
+        leg.amount.mantissa += 1;
+    }
+    proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
+    let intent = fa_intents::PostIntent::new(proposal.clone(), Vec::new()).unwrap();
+    let entry = proposal.seal(Vec::new(), None).unwrap();
+    let mut certificate = plan.certificate().clone();
+    certificate.intent_digest = intent.digest().unwrap();
+    certificate.proposal_digest = entry.proposal_digest;
+    let forged = fa_intents::PostPlan::new(intent, entry, certificate).unwrap();
+    let refusal = h.publish_plan(forged, &capability).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-034", exit::CONFLICT));
+    assert!(
+        refusal.message.contains("authenticated fields changed"),
+        "{refusal}"
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+#[test]
+fn portable_post_plan_invalidation_and_exact_retry_have_distinct_basis_rules() {
+    for change in ["unrelated", "close", "epoch"] {
+        let mut h = harness();
+        let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+        let proposal = h.proposal(h.rent_legs(500), b"stale-plan", EntryClass::ORIGINAL);
+        let plan = h.post_plan(h.request(proposal, &["post"])).unwrap();
+        match change {
+            "unrelated" => {
+                h.post(h.request(h.invoice(100, b"other-entry"), &["post"]))
+                    .unwrap();
+            }
+            "close" => {
+                let march = h.march.clone();
+                h.transition(&march, PeriodTransition::SoftClose, b"soft-close-plan")
+                    .unwrap();
+                h.transition(&march, PeriodTransition::Close, b"close-plan")
+                    .unwrap();
+            }
+            "epoch" => {
+                // A planted epoch change exercises stale-basis behavior
+                // independently of the policy activation command's laws.
+                let mut batch = fgdb::WriteBatch::new(relation::IN_BOOK);
+                batch.set_vertex_property(
+                    book_root(),
+                    property::SECURITY_POLICY_EPOCH,
+                    Some(CanonicalScalar::Int(1)),
+                );
+                h.write_raw(batch);
+            }
+            _ => unreachable!(),
+        }
+        let before = h.db.frontier().unwrap();
+        let refusal = h.publish_plan(plan, &capability).unwrap_err();
+        assert_eq!(
+            (refusal.code, refusal.exit),
+            ("FA-REF-034", exit::CONFLICT),
+            "{change}"
+        );
+        assert_eq!(h.db.frontier().unwrap(), before, "{change}");
+    }
+
+    let mut h = harness();
+    let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let proposal = h.proposal(h.rent_legs(500), b"recorded-plan", EntryClass::ORIGINAL);
+    let plan = h.post_plan(h.request(proposal, &["post"])).unwrap();
+    let posted = h.publish_plan(plan.clone(), &capability).unwrap();
+    h.post(h.request(h.invoice(100, b"after-plan"), &["post"]))
+        .unwrap();
+    let before = h.db.frontier().unwrap();
+    let retry = h.publish_plan(plan, &capability).unwrap();
+    assert!(matches!(retry, Posted::AlreadyRecorded { .. }));
+    assert_eq!(retry.entry_ref(), posted.entry_ref());
+    assert_eq!(retry.recorded_at(), posted.recorded_at());
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+#[test]
+fn portable_post_plan_cannot_claim_a_direct_post_or_changed_retaining_evidence() {
+    let mut h = harness();
+    let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let proposal = h.proposal(
+        h.rent_legs(500),
+        b"direct-not-planned",
+        EntryClass::ORIGINAL,
+    );
+    let plan = h.post_plan(h.request(proposal.clone(), &["post"])).unwrap();
+    h.post(h.request(proposal, &["post"])).unwrap();
+    let before = h.db.frontier().unwrap();
+    assert_eq!(
+        h.publish_plan(plan, &capability).unwrap_err().code,
+        "FA-REF-034"
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+
+    for damage in ["payload", "digest", "book", "entry", "cites"] {
+        let mut h = harness();
+        let proposal = h.proposal(h.rent_legs(500), b"retention-damage", EntryClass::ORIGINAL);
+        let plan = h.post_plan(h.request(proposal, &["post"])).unwrap();
+        let posted = h.publish_plan(plan.clone(), &capability).unwrap();
+        let cvid = plan_certificate_vid(h.book.book_id, &plan.certificate().digest().unwrap());
+        let mut batch = fgdb::WriteBatch::new(relation::CITES);
+        match damage {
+            "payload" => {
+                batch.set_vertex_property(cvid, property::FA_PAYLOAD, None);
+            }
+            "digest" => {
+                batch.set_vertex_property(
+                    cvid,
+                    property::FA_DIGEST,
+                    Some(CanonicalScalar::bytes(vec![0; 32]).unwrap()),
+                );
+            }
+            "book" => {
+                batch.set_vertex_property(
+                    cvid,
+                    property::BOOK_ID,
+                    Some(CanonicalScalar::bytes(vec![0; 16]).unwrap()),
+                );
+            }
+            "entry" => {
+                batch.set_vertex_property(
+                    posted.entry_ref().vid,
+                    property::FA_DIGEST,
+                    Some(CanonicalScalar::bytes(vec![0; 32]).unwrap()),
+                );
+            }
+            "cites" => {
+                batch.delete_edge(edge_id(relation::CITES, posted.entry_ref().vid, cvid));
+            }
+            _ => unreachable!(),
+        }
+        h.write_raw(batch);
+        let before = h.db.frontier().unwrap();
+        let refusal = h.publish_plan(plan, &capability).unwrap_err();
+        assert_eq!(
+            (refusal.code, refusal.exit),
+            ("FA-REF-034", exit::CONFLICT),
+            "{damage}"
+        );
+        assert_eq!(h.db.frontier().unwrap(), before, "{damage}");
+    }
+}
+
+#[test]
+fn portable_post_plan_never_grants_authority_or_revives_an_expired_capability() {
+    let mut h = harness();
+    let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let proposal = h.proposal(h.rent_legs(500), b"plan-authority", EntryClass::ORIGINAL);
+    let plan = h.post_plan(h.request(proposal, &["post"])).unwrap();
+    let before = h.db.frontier().unwrap();
+    let agent = Capability::new(
+        PRINCIPAL,
+        fa_policy::Profile::Agent,
+        &[fa_policy::Op::Post],
+        PRINCIPAL,
+    )
+    .unwrap();
+    let refusal = h.publish_plan(plan.clone(), &agent).unwrap_err();
+    assert_eq!(refusal.exit, exit::SAFETY, "{refusal}");
+    let other = Capability::embedded(VId(99), &["post"]).unwrap();
+    assert!(h.publish_plan(plan.clone(), &other).is_err());
+    let changed_capability = capability.clone().with_ceiling(h.usd, 1_000).unwrap();
+    assert_eq!(
+        h.publish_plan(plan, &changed_capability).unwrap_err().code,
+        "FA-REF-034"
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+
+    let expiring = capability.expiring_at(fgdb_types::CommitSeq(before.0 + 1));
+    let mut request = h.request(
+        h.proposal(h.rent_legs(500), b"plan-expiry", EntryClass::ORIGINAL),
+        &["post"],
+    );
+    request.capability = expiring.clone();
+    let plan = h.post_plan(request).unwrap();
+    let posted = h.publish_plan(plan.clone(), &expiring).unwrap();
+    let refusal = h.publish_plan(plan, &expiring).unwrap_err();
+    assert!(refusal.message.contains("expired"), "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), posted.recorded_at());
+}
+
+#[test]
+fn portable_post_plans_cover_application_undo_and_target_derived_resolution_identities() {
+    let mut h = harness();
+    let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let invoice = h
+        .post(h.request(h.invoice(1_000, b"plan-invoice"), &["post"]))
+        .unwrap()
+        .entry_ref();
+    let receipt = h.receipt(600, vec![settle(invoice, 0, h.usd, 600)], b"plan-receipt");
+    let plan = h.post_plan(h.request(receipt, &["post"])).unwrap();
+    assert_eq!(
+        h.applied_to(invoice.vid, 0),
+        0,
+        "rehearsal leaves applied unchanged"
+    );
+    let receipt = h.publish_plan(plan, &capability).unwrap().entry_ref();
+    assert_eq!(h.applied_to(invoice.vid, 0), 600);
+    let reversal = h.reversal_of_entry(receipt, b"plan-unsettle");
+    let plan = h.post_plan(h.request(reversal, &["post"])).unwrap();
+    assert_eq!(
+        h.applied_to(invoice.vid, 0),
+        600,
+        "undo rehearsal writes nothing"
+    );
+    let undone = h.publish_plan(plan.clone(), &capability).unwrap();
+    assert_eq!(undone.entry_ref().vid, reversal_vid(receipt.vid));
+    assert_eq!(h.applied_to(invoice.vid, 0), 0);
+    assert_eq!(
+        h.publish_plan(plan, &capability).unwrap().entry_ref(),
+        undone.entry_ref()
+    );
+
+    let hold = h.pending(h.rent_legs(800), b"planned-hold");
+    let plan = h.post_plan(h.request(hold, &["post"])).unwrap();
+    let hold = h.publish_plan(plan, &capability).unwrap().entry_ref();
+    let resolution = h.resolution_posts(hold, h.rent_legs(500), vec![0, 1], b"planned-resolution");
+    let plan = h.post_plan(h.request(resolution, &["post"])).unwrap();
+    assert!(h.db.vertex(resolution_vid(hold.vid)).unwrap().is_none());
+    let resolved = h.publish_plan(plan.clone(), &capability).unwrap();
+    assert_eq!(resolved.entry_ref().vid, resolution_vid(hold.vid));
+    assert_eq!(
+        h.publish_plan(plan, &capability).unwrap().entry_ref(),
+        resolved.entry_ref()
+    );
+}
+
+#[test]
+fn portable_post_plan_retains_requested_and_resolved_balancing_legs() {
+    let mut h = harness_configured(
+        Vec::new(),
+        None,
+        Some(BalanceLimit {
+            lower: Some(-700),
+            upper: None,
+            scope: LimitScope::Lifetime,
+        }),
+    );
+    let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let mut proposal = h.proposal(h.rent_legs(1_000), b"plan-balancing", EntryClass::ORIGINAL);
+    proposal.schema_minor = fa_model::entry::EXTENSIONS_MINOR;
+    proposal.extensions.push((
+        fa_model::entry::BALANCING_EXTENSION,
+        limit::balancing_bytes(1, 1_000),
+    ));
+    let basis = h.db.frontier().unwrap();
+    let cell = h.db.vertex(limit_cell_vid(h.cash)).unwrap().unwrap();
+    let plan = h.post_plan(h.request(proposal, &["post"])).unwrap();
+    assert_eq!(plan.intent().proposal().legs[0].amount.mantissa, 1_000);
+    assert_eq!(plan.proposal().legs[0].amount.mantissa, 700);
+    assert_eq!(plan.proposal().legs[1].amount.mantissa, 700);
+    assert_ne!(
+        plan.intent().proposal().proposal_digest().unwrap(),
+        plan.certificate().proposal_digest
+    );
+    assert_eq!(h.db.frontier().unwrap(), basis);
+    assert_eq!(h.db.vertex(limit_cell_vid(h.cash)).unwrap().unwrap(), cell);
+    let wire = plan.canonical_bytes().unwrap();
+    let plan = fa_intents::PostPlan::decode(&wire).unwrap();
+    let posted = h.publish_plan(plan.clone(), &capability).unwrap();
+    let (entry, _) = read_entry(&h.db, posted.entry_ref().vid).unwrap().unwrap();
+    assert_eq!(entry.proposal.legs[0].amount.mantissa, 700);
+    let retry = h.publish_plan(plan, &capability).unwrap();
+    assert_eq!(retry.entry_ref(), posted.entry_ref());
+    assert_eq!(h.db.frontier().unwrap(), posted.recorded_at());
+}
+
+#[test]
+fn portable_post_plan_preserves_scheduled_reversal_and_cancellation_digests() {
+    let mut h = harness_configured(Vec::new(), Some(TimeZonePolicy::Utc), None);
+    let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let proposal = with_auto_reverse(
+        h.proposal(h.rent_legs(100), b"planned-accrual", EntryClass::ADJUSTING),
+        DateDay::from_ymd(2026, 4, 1).unwrap(),
+    );
+    let plan = h.post_plan(h.request(proposal, &["post"])).unwrap();
+    let basis = h.db.frontier().unwrap();
+    assert_eq!(
+        verify_schedules(&h.db, &h.book).unwrap().schedules_checked,
+        0
+    );
+    let posted = h.publish_plan(plan, &capability).unwrap();
+    assert_eq!(posted.recorded_at().0, basis.0 + 1);
+    let schedule = schedule::decode_schedule(
+        &h.db
+            .vertex(fa_journal::rows::schedule_vid(posted.entry_ref().vid))
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(schedule.target, posted.entry_ref());
+    assert_eq!(schedule.recorded_at, posted.recorded_at());
+    let verified = verify_schedules(&h.db, &h.book).unwrap();
+    assert!(verified.is_green(), "{verified:?}");
+    assert_eq!(verified.schedules_checked, 1);
+    let reversal = h.reversal_of_entry(posted.entry_ref(), b"planned-manual-reversal");
+    let plan = h.post_plan(h.request(reversal, &["post"])).unwrap();
+    assert_eq!(verify_schedules(&h.db, &h.book).unwrap().cancelled, 0);
+    h.publish_plan(plan, &capability).unwrap();
+    let verified = verify_schedules(&h.db, &h.book).unwrap();
+    assert!(verified.is_green(), "{verified:?}");
+    assert_eq!(verified.cancelled, 1);
+}
+
+#[test]
+fn portable_post_plan_requires_real_approvals_before_issuing_a_certificate() {
+    let mut h = harness();
+    let march = h.march.clone();
+    h.transition(&march, PeriodTransition::Close, b"close-for-approved-plan")
+        .unwrap();
+    let capability = Capability::embedded(PRINCIPAL, &["post", "post_closed"]).unwrap();
+    let proposal = h.proposal(h.rent_legs(100), b"approved-plan", EntryClass::ADJUSTING);
+    let mut request = h.request(proposal.clone(), &["post", "post_closed"]);
+    let before = h.db.frontier().unwrap();
+    let refusal = h.post_plan(request.clone()).unwrap_err();
+    assert_eq!(refusal.code, "FA-REF-012", "{refusal}");
+    assert_eq!(
+        h.db.frontier().unwrap(),
+        before,
+        "failed rehearsal records nothing"
+    );
+    let approval = h.approve_transition(proposal.proposal_digest().unwrap());
+    request.approvals = vec![approval];
+    let plan = h.post_plan(request).unwrap();
+    assert_eq!(plan.approvals(), &[approval]);
+    assert_eq!(plan.certificate().snapshot_seq, h.db.frontier().unwrap());
+    let posted = h.publish_plan(plan.clone(), &capability).unwrap();
+    let (entry, _) = read_entry(&h.db, posted.entry_ref().vid).unwrap().unwrap();
+    assert_eq!(entry.approvals, vec![approval]);
+    assert_eq!(
+        h.publish_plan(plan, &capability).unwrap().entry_ref(),
+        posted.entry_ref()
+    );
+}
+
+#[test]
+fn portable_post_plan_checks_revocation_before_fresh_commit_and_recorded_outcome() {
+    for already_recorded in [false, true] {
+        let mut h = harness();
+        let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+        let proposal = h.proposal(h.rent_legs(100), b"revoked-plan", EntryClass::ORIGINAL);
+        let plan = h.post_plan(h.request(proposal, &["post"])).unwrap();
+        if already_recorded {
+            h.publish_plan(plan.clone(), &capability).unwrap();
+        }
+        let revoke = RevocationRequest {
+            capability: Capability::embedded(VId(99), &["issue_capability"]).unwrap(),
+            revoked: capability.commitment().unwrap(),
+            effective_date: h.day(),
+            idempotency_key: b"revoke-plan-capability".to_vec(),
+            description: Erasable::seal(
+                &"revoke planning authority".to_string(),
+                None,
+                &h.book.seal_key,
+                [17; 32],
+                [18; 24],
+            ),
+        };
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        h.runtime
+            .block_on(async move { revoke_capability(db, &ctx, book, revoke).await })
+            .expect("revocation kernel")
+            .expect("capability revoked");
+        let before = h.db.frontier().unwrap();
+        let refusal = h.publish_plan(plan, &capability).unwrap_err();
+        assert!(
+            refusal.message.contains("revoked"),
+            "{already_recorded}: {refusal}"
+        );
+        assert_eq!(h.db.frontier().unwrap(), before);
+    }
+}
+
+#[test]
+fn portable_post_plan_wire_refuses_new_versions_verbs_and_caller_envelope_oids() {
+    let mut h = harness();
+    let proposal = h.proposal(h.rent_legs(100), b"plan-wire", EntryClass::ORIGINAL);
+    let plan = h.post_plan(h.request(proposal, &["post"])).unwrap();
+    let bytes = plan.canonical_bytes().unwrap();
+    for offset in [0, 13, 15] {
+        let mut changed = bytes.clone();
+        changed[offset] = 255;
+        assert!(
+            fa_intents::PostPlan::decode(&changed).is_err(),
+            "plan offset {offset}"
+        );
+    }
+    for end in [0, 13, 16, 20, bytes.len() / 2, bytes.len() - 1] {
+        assert!(
+            fa_intents::PostPlan::decode(&bytes[..end]).is_err(),
+            "prefix {end}"
+        );
+    }
+    let mut trailing = bytes;
+    trailing.push(0);
+    assert!(fa_intents::PostPlan::decode(&trailing).is_err());
+    let intent = plan.intent().canonical_bytes().unwrap();
+    for offset in [10, 12, 14] {
+        let mut changed = intent.clone();
+        changed[offset] = 255;
+        assert!(
+            fa_intents::PostIntent::decode(&changed).is_err(),
+            "intent offset {offset}"
+        );
+    }
+    let envelope = plan
+        .intent()
+        .proposal()
+        .clone()
+        .seal(plan.approvals().to_vec(), Some(Oid([55; 32])))
+        .unwrap();
+    let mut wire = fa_model::Writer::new();
+    wire.fixed(b"FA-INTENT\0")
+        .u16(1)
+        .u16(0)
+        .u8(0)
+        .bytes(&envelope.encode().unwrap());
+    let refusal = fa_intents::PostIntent::decode(&wire.finish().unwrap()).unwrap_err();
+    assert!(
+        refusal.to_string().contains("caller cannot supply"),
+        "{refusal}"
+    );
+}
+
+#[test]
+fn portable_post_plan_retry_rejects_later_versions_even_when_exact_bytes_are_restored() {
+    let mut h = harness();
+    let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let proposal = h.proposal(h.rent_legs(100), b"restored-plan", EntryClass::ORIGINAL);
+    let plan = h.post_plan(h.request(proposal, &["post"])).unwrap();
+    let posted = h.publish_plan(plan.clone(), &capability).unwrap();
+    let evid = posted.entry_ref().vid;
+    let cvid = plan_certificate_vid(h.book.book_id, &plan.certificate().digest().unwrap());
+    let eid = edge_id(relation::CITES, evid, cvid);
+    let original_entry = h.db.vertex(evid).unwrap().unwrap();
+    let original_certificate = h.db.vertex(cvid).unwrap().unwrap();
+    let mut damage = fgdb::WriteBatch::new(relation::CITES);
+    for vid in [evid, cvid] {
+        damage.set_vertex_property(
+            vid,
+            property::FA_DIGEST,
+            Some(CanonicalScalar::bytes(vec![0; 32]).unwrap()),
+        );
+    }
+    damage.set_edge_property(
+        eid,
+        property::FA_DIGEST,
+        Some(CanonicalScalar::bytes(vec![0; 32]).unwrap()),
+    );
+    h.write_raw(damage);
+    let mut restore = fgdb::WriteBatch::new(relation::CITES);
+    for row in [&original_entry, &original_certificate] {
+        let digest = fa_journal::rows::prop(row, property::FA_DIGEST)
+            .unwrap()
+            .clone();
+        restore.set_vertex_property(row.vid, property::FA_DIGEST, Some(digest));
+    }
+    restore.set_edge_property(eid, property::FA_DIGEST, None);
+    h.write_raw(restore);
+    let current_entry = h.db.vertex(evid).unwrap().unwrap();
+    let current_certificate = h.db.vertex(cvid).unwrap().unwrap();
+    let current_edge = h.db.edge(eid).unwrap().unwrap();
+    assert_eq!(current_entry.props, original_entry.props);
+    assert_eq!(current_certificate.props, original_certificate.props);
+    assert!(current_entry.created_at > posted.recorded_at());
+    assert!(current_certificate.created_at > posted.recorded_at());
+    assert_eq!(current_entry.created_at, current_certificate.created_at);
+    assert_eq!(current_edge.entry.created_at, current_entry.created_at);
+    assert!(current_edge.props.is_empty());
+    let before = h.db.frontier().unwrap();
+    let refusal = h.publish_plan(plan, &capability).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-034", exit::CONFLICT));
+    assert_eq!(h.db.frontier().unwrap(), before);
 }

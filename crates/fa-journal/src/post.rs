@@ -153,8 +153,10 @@ pub enum PostPreparation {
 pub struct PreparedPost {
     txn: WriteTxn,
     request: PostRequest,
+    entry: Entry,
     entry_ref: EntryRef,
     period: String,
+    security_policy_epoch: u64,
     identity: Identity,
     seal_key: SealKey,
 }
@@ -164,6 +166,34 @@ impl PreparedPost {
     #[must_use]
     pub fn basis(&self) -> CommitSeq {
         self.txn.basis()
+    }
+
+    pub(crate) fn entry(&self) -> &Entry {
+        &self.entry
+    }
+
+    pub(crate) fn period(&self) -> &str {
+        &self.period
+    }
+
+    pub(crate) fn security_policy_epoch(&self) -> u64 {
+        self.security_policy_epoch
+    }
+
+    pub(crate) fn effects_digest(&self) -> Result<[u8; 32], KernelError> {
+        Ok(self.txn.staged_effect_digest()?.0)
+    }
+
+    /// Only the verified planning path appends its immutable graph evidence
+    /// after comparing the actual accounting effect. The original witnesses
+    /// and exact prepared Entry remain in this same transaction.
+    pub(crate) fn retain_plan<V: asupersync::fs::Vfs + Clone>(
+        &mut self,
+        db: &mut Database<V>,
+        batch: WriteBatch,
+    ) -> Result<(), KernelError> {
+        self.txn.write_ordered(db, vec![batch])?;
+        Ok(())
     }
 
     /// Release the prepared transaction without publishing any effects.
@@ -184,8 +214,10 @@ impl PreparedPost {
         let Self {
             mut txn,
             request,
+            entry: _,
             entry_ref,
             period,
+            security_policy_epoch: _,
             identity,
             seal_key,
         } = self;
@@ -1995,7 +2027,9 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
         txn,
         request: req,
         entry_ref: entry.entry_ref(evid),
+        entry,
         period: period.code,
+        security_policy_epoch: epoch,
         identity,
         seal_key: book.seal_key.clone(),
     }))))
