@@ -524,6 +524,8 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Res
         "{out}"
     );
     assert!(err.is_empty(), "stderr empty on success: {err}");
+    let (code, next, err) = follow_next_action(&book, &out, march);
+    assert_eq!(code, 0, "posted's next action: {next}\n{err}");
     let vid = field(&out, "vid").unwrap().to_string();
     let digest = field(&out, "entry_digest").unwrap().to_string();
 
@@ -829,6 +831,11 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Res
         &["registers", "materialize", "--period", march, "--json"],
     );
     assert_eq!(code, 0, "{out}");
+    let (code, next, err) = follow_next_action(&book, &out, march);
+    assert_eq!(
+        code, 0,
+        "registers_materialized's next action: {next}\n{err}"
+    );
     let (code, out, _) = fa(
         Some(&book),
         &["verify", "registers", "--period", march, "--json"],
@@ -2823,6 +2830,21 @@ fn robot_line(out: &str) -> Json {
     let parsed = json::parse(out.lines().last().unwrap_or_default());
     assert!(parsed.is_ok(), "not JSON: {out}");
     parsed.unwrap_or(Json::Null)
+}
+
+/// Run the first `next_actions` command of the robot line in `out` against
+/// `book`, with its `<code>` placeholder bound to `period`: a suggested next
+/// step must run as written once its placeholders are filled (the Polish
+/// Bar's first-try rule; CobaltGull 3990).
+fn follow_next_action(book: &Path, out: &str, period: &str) -> (i32, String, String) {
+    let line = robot_line(out);
+    let first = arr(&line, "next_actions").first().cloned();
+    assert!(first.is_some(), "no next action: {out}");
+    let command = text(&first.unwrap_or(Json::Null), "command").replace("<code>", period);
+    assert!(!command.contains('<'), "an unfilled placeholder: {command}");
+    let args: Vec<&str> = command.split_whitespace().collect();
+    assert_eq!(args.first(), Some(&"fa"), "{command}");
+    fa(Some(book), &args[1..])
 }
 
 /// `fa` with extra environment variables (robot output checked as `fa`).

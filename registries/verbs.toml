@@ -378,7 +378,7 @@ why = "cite the document in an entry"
 
 [[next_action]]
 after = "posted"
-command = "fa tb --json"
+command = "fa tb --period <code> --json"
 why = "the trial balance with this entry folded in"
 
 [[next_action]]
@@ -388,7 +388,7 @@ why = "this idempotency key already recorded that entry; nothing new was written
 
 [[next_action]]
 after = "registers_materialized"
-command = "fa verify registers --json"
+command = "fa verify registers --period <code> --json"
 why = "prove the materialized cells equal the journal's refold"
 
 [[next_action]]
