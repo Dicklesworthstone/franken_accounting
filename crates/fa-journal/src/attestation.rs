@@ -983,7 +983,7 @@ fn held_document<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     policy: &EvidencePolicy,
     oid: &Oid,
-) -> Outcome<Option<crate::evidence::Document>> {
+) -> Outcome<Option<crate::evidence::DocumentRecord>> {
     let Some(row) = txn.vertex(db, document_vid(oid))? else {
         return Ok(Ok(None));
     };

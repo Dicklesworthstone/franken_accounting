@@ -833,6 +833,7 @@ dependencies = [
  "fgdb",
  "fgdb-crypto",
  "fgdb-delta-types",
+ "fgdb-sim",
  "fgdb-types",
 ]
 
@@ -1133,6 +1134,19 @@ version = "0.0.1"
 source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
 
 [[package]]
+name = "fgdb-calibrate"
+version = "0.0.1"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+dependencies = [
+ "asupersync",
+ "fgdb-claim",
+ "fgdb-crypto",
+ "fgdb-evidence",
+ "fgdb-sketch",
+ "fgdb-types",
+]
+
+[[package]]
 name = "fgdb-chronicle"
 version = "0.0.1"
 source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
@@ -1143,12 +1157,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "fgdb-claim"
+version = "0.0.1"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+
+[[package]]
 name = "fgdb-codec"
 version = "0.0.1"
 source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
 dependencies = [
  "asupersync",
  "fgdb-types",
+]
+
+[[package]]
+name = "fgdb-collections"
+version = "0.0.1"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+dependencies = [
+ "fgdb-types",
+ "fgdb-unsafe-arena",
 ]
 
 [[package]]
@@ -1162,6 +1190,15 @@ version = "0.0.1"
 source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
 dependencies = [
  "fgdb-bigint",
+ "fgdb-types",
+]
+
+[[package]]
+name = "fgdb-evidence"
+version = "0.0.1"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+dependencies = [
+ "fgdb-claim",
  "fgdb-types",
 ]
 
@@ -1189,6 +1226,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "fgdb-reference"
+version = "0.0.1"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+dependencies = [
+ "fgdb-crypto",
+ "fgdb-delta-types",
+ "fgdb-types",
+]
+
+[[package]]
+name = "fgdb-sim"
+version = "0.0.1"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+dependencies = [
+ "asupersync",
+ "fgdb",
+ "fgdb-calibrate",
+ "fgdb-chronicle",
+ "fgdb-crypto",
+ "fgdb-delta-types",
+ "fgdb-reference",
+ "fgdb-strata",
+ "fgdb-types",
+]
+
+[[package]]
+name = "fgdb-sketch"
+version = "0.0.1"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+dependencies = [
+ "asupersync",
+ "fgdb-collections",
+ "fgdb-types",
+]
+
+[[package]]
 name = "fgdb-strata"
 version = "0.0.1"
 source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
@@ -1206,6 +1279,14 @@ version = "0.0.1"
 source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
 dependencies = [
  "asupersync",
+]
+
+[[package]]
+name = "fgdb-unsafe-arena"
+version = "0.0.1"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+dependencies = [
+ "fgdb-types",
 ]
 
 [[package]]

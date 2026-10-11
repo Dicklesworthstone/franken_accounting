@@ -162,7 +162,7 @@ fn prepare(
     admit_source(&req.source)?;
     let mut docs: Vec<(Document, String)> = Vec::with_capacity(req.documents.len());
     for (i, doc) in req.documents.iter().enumerate() {
-        match intake_check(policy, book, doc) {
+        match intake_check(policy, book, doc, policy.max_document_bytes) {
             Ok(kind) => docs.push((doc.clone(), kind)),
             Err(mut r) => {
                 r.message = format!("documents[{i}]: {}", r.message);

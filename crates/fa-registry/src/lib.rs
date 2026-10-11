@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod document_stores;
 pub mod evidence_policy;
 pub mod foundations;
 pub mod intake_sources;
