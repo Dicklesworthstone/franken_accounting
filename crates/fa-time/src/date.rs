@@ -50,6 +50,9 @@ impl Weekday {
 /// (Jan 31 + 1 month).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MonthEndPolicy {
+    /// Preserve the day number exactly. A missing target day is refused
+    /// with `InvalidYmd`; it is never clamped or silently skipped.
+    PreserveDay,
     /// Clamp to the last day of the target month (Jan 31 → Feb 28/29).
     ClampToMonthEnd,
     /// If the source day was the last day of its month, the result is the
@@ -106,7 +109,9 @@ impl DateDay {
         if !(1..=12).contains(&month) || day == 0 || day > days_in_month(year, month) {
             return Err(DateError::InvalidYmd { year, month, day });
         }
-        Ok(Self(days_from_civil(year, month, day)))
+        i32::try_from(days_from_civil(year, month, day))
+            .map(Self)
+            .map_err(|_| DateError::OutOfRange)
     }
 
     /// `(year, month, day)`.
@@ -128,7 +133,7 @@ impl DateDay {
 
     pub fn weekday(self) -> Weekday {
         // 1970-01-01 is a Thursday (ISO 4).
-        let iso = ((self.0 + 3).rem_euclid(7) + 1) as u8;
+        let iso = ((i64::from(self.0) + 3).rem_euclid(7) + 1) as u8;
         Weekday::from_iso(iso).expect("1..=7")
     }
 
@@ -153,14 +158,34 @@ impl DateDay {
         d == days_in_month(y, m)
     }
 
-    pub fn month_end(self) -> Self {
+    /// The last day of this month, refusing a result outside `DateDay`.
+    pub fn try_month_end(self) -> Result<Self, DateError> {
         let (y, m, _) = self.ymd();
-        Self(days_from_civil(y, m, days_in_month(y, m)))
+        Self::from_ymd(y, m, days_in_month(y, m))
     }
 
-    pub fn month_start(self) -> Self {
+    /// The last day of this month.
+    ///
+    /// # Panics
+    /// Panics if that day is outside `DateDay`. Use [`Self::try_month_end`]
+    /// for untrusted dates, including dates near the representable boundary.
+    pub fn month_end(self) -> Self {
+        self.try_month_end().expect("month end outside DateDay")
+    }
+
+    /// The first day of this month, refusing a result outside `DateDay`.
+    pub fn try_month_start(self) -> Result<Self, DateError> {
         let (y, m, _) = self.ymd();
-        Self(days_from_civil(y, m, 1))
+        Self::from_ymd(y, m, 1)
+    }
+
+    /// The first day of this month.
+    ///
+    /// # Panics
+    /// Panics if that day is outside `DateDay`. Use [`Self::try_month_start`]
+    /// when the input can reach the representable boundary.
+    pub fn month_start(self) -> Self {
+        self.try_month_start().expect("month start outside DateDay")
     }
 
     /// Add `n` months (may be negative) under an explicit end-of-month policy.
@@ -171,6 +196,7 @@ impl DateDay {
         let nm = (total.rem_euclid(12) + 1) as u8;
         let last = days_in_month(ny, nm);
         let nd = match policy {
+            MonthEndPolicy::PreserveDay => d,
             MonthEndPolicy::ClampToMonthEnd => d.min(last),
             MonthEndPolicy::LastDayStaysLast => {
                 if self.is_month_end() {
@@ -183,29 +209,52 @@ impl DateDay {
         Self::from_ymd(ny, nm, nd)
     }
 
-    /// The last `weekday` on or before `self`.
-    pub fn last_weekday_on_or_before(self, weekday: Weekday) -> Self {
+    /// The last `weekday` on or before `self`, with checked boundaries.
+    pub fn try_last_weekday_on_or_before(self, weekday: Weekday) -> Result<Self, DateError> {
         let delta = (i32::from(self.weekday().iso()) - i32::from(weekday.iso())).rem_euclid(7);
-        DateDay(self.0 - delta)
+        self.add_days(-delta)
+    }
+
+    /// The last `weekday` on or before `self`.
+    ///
+    /// # Panics
+    /// Panics if the result is outside `DateDay`. The `try_` variant refuses
+    /// such a result instead of wrapping into an unrelated accounting date.
+    pub fn last_weekday_on_or_before(self, weekday: Weekday) -> Self {
+        self.try_last_weekday_on_or_before(weekday)
+            .expect("previous weekday outside DateDay")
+    }
+
+    /// The nearest `weekday`, with checked boundaries. Compute the signed
+    /// distance directly: an unrepresentable *unchosen* neighbor is harmless.
+    pub fn try_nearest_weekday(self, weekday: Weekday) -> Result<Self, DateError> {
+        let forward = (i32::from(weekday.iso()) - i32::from(self.weekday().iso())).rem_euclid(7);
+        self.add_days(if forward <= 3 { forward } else { forward - 7 })
     }
 
     /// The `weekday` nearest to `self` (ties resolve to the earlier one).
+    ///
+    /// # Panics
+    /// Panics if the nearest day is outside `DateDay`; use the `try_` variant
+    /// for fallible boundary handling. A seven-day week cannot produce a tie.
     pub fn nearest_weekday(self, weekday: Weekday) -> Self {
-        let before = self.last_weekday_on_or_before(weekday);
-        let after = DateDay(before.0 + 7);
-        if (self.0 - before.0) <= (after.0 - self.0) {
-            before
-        } else {
-            after
-        }
+        self.try_nearest_weekday(weekday)
+            .expect("nearest weekday outside DateDay")
     }
 
-    /// Parse `YYYY-MM-DD` (years 0001–9999, optionally a leading `-` for
-    /// proleptic years is not accepted: accounting dates are modern).
+    /// Parse `YYYY-MM-DD` (years 0001–9999). Signed fields and proleptic
+    /// years are not accepted here; construct those dates with `from_ymd`.
     pub fn parse(text: &str) -> Result<Self, DateError> {
         let t = text.trim();
         let parts: Vec<&str> = t.split('-').collect();
-        if parts.len() != 3 || parts[0].len() != 4 || parts[1].len() != 2 || parts[2].len() != 2 {
+        if parts.len() != 3
+            || parts[0].len() != 4
+            || parts[1].len() != 2
+            || parts[2].len() != 2
+            || parts
+                .iter()
+                .any(|part| !part.bytes().all(|b| b.is_ascii_digit()))
+        {
             return Err(DateError::Malformed(text.into()));
         }
         let num = |s: &str| {
@@ -213,6 +262,9 @@ impl DateDay {
                 .map_err(|_| DateError::Malformed(text.into()))
         };
         let (y, m, d) = (num(parts[0])?, num(parts[1])?, num(parts[2])?);
+        if !(1..=9999).contains(&y) {
+            return Err(DateError::Malformed(text.into()));
+        }
         let (m, d) = (
             u8::try_from(m).map_err(|_| DateError::Malformed(text.into()))?,
             u8::try_from(d).map_err(|_| DateError::Malformed(text.into()))?,
@@ -233,14 +285,14 @@ impl fmt::Display for DateDay {
 }
 
 /// Howard Hinnant's `days_from_civil`: exact for every proleptic Gregorian date.
-fn days_from_civil(y: i32, m: u8, d: u8) -> i32 {
+fn days_from_civil(y: i32, m: u8, d: u8) -> i64 {
     let y = i64::from(y) - i64::from(m <= 2);
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = y - era * 400; // [0, 399]
     let m = i64::from(m);
     let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + i64::from(d) - 1; // [0, 365]
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
-    (era * 146_097 + doe - 719_468) as i32
+    era * 146_097 + doe - 719_468
 }
 
 /// Howard Hinnant's `civil_from_days`.
@@ -270,7 +322,7 @@ mod tests {
         while y <= 2100 {
             let got = civil_from_days(day);
             assert_eq!(got, (y, m, d), "day {day}");
-            assert_eq!(days_from_civil(y, m, d), day);
+            assert_eq!(days_from_civil(y, m, d), i64::from(day));
             // advance the naive counter
             d += 1;
             if d > days_in_month(y, m) {
@@ -367,5 +419,65 @@ mod tests {
             dec31_2025.last_weekday_on_or_before(Weekday::Wednesday),
             dec31_2025
         );
+    }
+
+    #[test]
+    fn preserve_day_refuses_instead_of_clamping() {
+        let jan31 = DateDay::from_ymd(2026, 1, 31).unwrap();
+        assert_eq!(
+            jan31.add_months(1, MonthEndPolicy::PreserveDay),
+            Err(DateError::InvalidYmd {
+                year: 2026,
+                month: 2,
+                day: 31,
+            })
+        );
+        assert_eq!(
+            jan31
+                .add_months(2, MonthEndPolicy::PreserveDay)
+                .unwrap()
+                .render(),
+            "2026-03-31"
+        );
+        assert!(
+            DateDay::from_ymd(2024, 2, 29)
+                .unwrap()
+                .add_months(12, MonthEndPolicy::PreserveDay)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn civil_conversion_and_month_addition_never_wrap() {
+        for raw in [i32::MIN, i32::MIN + 1, -1, 0, 1, i32::MAX - 1, i32::MAX] {
+            let date = DateDay(raw);
+            let (y, m, d) = date.ymd();
+            assert_eq!(DateDay::from_ymd(y, m, d), Ok(date));
+            assert_eq!(date.add_months(0, MonthEndPolicy::PreserveDay), Ok(date));
+            assert!((1..=7).contains(&date.weekday().iso()));
+            assert_eq!(date.try_nearest_weekday(date.weekday()), Ok(date));
+        }
+        for year in [i32::MIN, -10_000_000, 10_000_000, i32::MAX] {
+            assert_eq!(DateDay::from_ymd(year, 1, 1), Err(DateError::OutOfRange));
+        }
+        for months in [i32::MIN, i32::MAX] {
+            assert_eq!(
+                DateDay::EPOCH.add_months(months, MonthEndPolicy::ClampToMonthEnd),
+                Err(DateError::OutOfRange)
+            );
+        }
+        assert!(DateDay(i32::MIN).try_month_start().is_err());
+        assert!(DateDay(i32::MAX).try_month_end().is_err());
+        let earlier = Weekday::from_iso(DateDay(i32::MIN).weekday().iso() % 7 + 1).unwrap();
+        assert!(DateDay(i32::MIN).try_last_weekday_on_or_before(earlier).is_err());
+    }
+
+    #[test]
+    fn parser_requires_unsigned_decimal_fields_and_a_modern_year() {
+        for text in ["0000-01-01", "+026-01-01", "2026-+1-01", "2026-01-+1"] {
+            assert!(DateDay::parse(text).is_err(), "accepted {text}");
+        }
+        assert_eq!(DateDay::parse("0001-01-01").unwrap().year(), 1);
+        assert_eq!(DateDay::parse("9999-12-31").unwrap().year(), 9999);
     }
 }
