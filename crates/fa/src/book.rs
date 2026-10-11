@@ -3000,8 +3000,7 @@ mod tests {
                 Entropy::deterministic(0x5c),
             )
             .expect("kernel")
-            .err()
-            .expect("a scratch Book requires its genesis");
+            .expect_err("a scratch Book requires its genesis");
         assert_eq!(
             (before_genesis.code, before_genesis.exit),
             (
