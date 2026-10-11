@@ -332,7 +332,7 @@ fn not_implemented(class_name: &str) -> Refusal {
         "settles on a two-phase entry" | "re-application by reversing a reversal" => {
             "the full application-netting law (plan §5.7, §8.2; fa-06a)"
         }
-        "leg.base_amount" => "the FX law slice (fa-p7r)",
+        "leg.base_amount" | "base_totals" => "the FX law slice (fa-p7r)",
         "leg.dimension_set" => "the dimension registry slice (plan §4.3)",
         "Replacement" | "Reclassification" => "fa-omi (supersession beyond exact reversal)",
         "Revision" | "Restatement" | "PriorPeriodAdjustment" => {
@@ -536,9 +536,12 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
             "release the hold now with Resolution(Voids), or let the expiry sweep expire it once a tick reaches its deadline",
         )));
     }
-    // 1d. Rich leg fields this slice does not enforce are refused, never
-    //     admitted unchecked: a leg that settles, converts, or carries
-    //     dimensions waits for the law that reads it.
+    // 1d. FX valuations this slice does not enforce are refused, never
+    //     admitted unchecked. The aggregate is itself a claim about a law
+    //     and its rate documents, even when no leg carries a base amount.
+    if proposal.base_totals.is_some() {
+        return Ok(Err(not_implemented("base_totals")));
+    }
     for leg in &proposal.legs {
         if leg.base_amount.is_some() {
             return Ok(Err(not_implemented("leg.base_amount")));
