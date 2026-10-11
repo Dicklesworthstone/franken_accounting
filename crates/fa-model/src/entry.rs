@@ -106,6 +106,8 @@ impl EntryClass {
     pub const TIME_CONTROL: Self = Self(19);
     pub const SWEEP_CONTROL: Self = Self(20);
     pub const SCHEDULE_CONTROL: Self = Self(21);
+    /// A `MigrationRun`'s lifecycle (plan §8.6): Open, Finalize, Abandon.
+    pub const MIGRATION_CONTROL: Self = Self(22);
 
     /// `(tag, name, is_control)` for every registered class.
     pub const ALL: &[(u16, &str, bool)] = &[
@@ -130,6 +132,7 @@ impl EntryClass {
         (19, "TimeControl", true),
         (20, "SweepControl", true),
         (21, "ScheduleControl", true),
+        (22, "MigrationControl", true),
     ];
 
     #[must_use]
@@ -180,6 +183,7 @@ impl ControlKind {
     pub const TIME_TICK: Self = Self(4);
     pub const SCHEDULE_CANCEL: Self = Self(5);
     pub const CAPABILITY_REVOCATION: Self = Self(8);
+    pub const MIGRATION_RUN: Self = Self(9);
 
     /// Every registered kind: `(kind, name, the control class it mints)`.
     pub const ALL: &'static [(Self, &'static str, EntryClass)] = &[
@@ -208,6 +212,11 @@ impl ControlKind {
             Self::CAPABILITY_REVOCATION,
             "capability_revocation",
             EntryClass::POLICY_CONTROL,
+        ),
+        (
+            Self::MIGRATION_RUN,
+            "migration_run",
+            EntryClass::MIGRATION_CONTROL,
         ),
     ];
 
@@ -1917,7 +1926,7 @@ mod tests {
                 }
             );
         }
-        for id in [0, 6, 7, 9, u16::MAX] {
+        for id in [0, 6, 7, 10, u16::MAX] {
             assert!(
                 EntryOrigin::decode(&mut Reader::new(&origin(id))).is_err(),
                 "control_kind {id}"

@@ -183,7 +183,7 @@ fn accumulator_formats_equal_the_pinned_vectors() {
         ("prefix", hex(&full.prefix_proof().unwrap())),
         (
             "balance",
-            hex(&full.balance_proof(VId(0x30), 1, None).unwrap()),
+            hex(&full.balance_proof(VId(0x30), 1, None).unwrap().unwrap()),
         ),
     ];
     let mut drift = Vec::new();

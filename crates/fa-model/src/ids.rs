@@ -162,6 +162,24 @@ pub fn entry_vid(book: Id128, principal_scope: &[u8], idempotency_key: &[u8]) ->
     )
 }
 
+/// `vid(MigrationRun) = H("fa:vid:migration-run:v1" ‖ book_id ‖ run_key)`
+/// (plan §8.6): one run per key, so a retry is a new run under a new key.
+#[must_use]
+pub fn migration_run_vid(book: Id128, run_key: &str) -> VId {
+    derive_vid(b"fa:vid:migration-run:v1", &[&book.0, run_key.as_bytes()])
+}
+
+/// `vid(Entry) = H("fa:vid:migration-entry:v1" ‖ book_id ‖ run ‖
+/// idempotency_key)` for a `Migration` entry (plan §8.6): the run is part of
+/// the identity, so a retry run reuses the abandoned run's keys.
+#[must_use]
+pub fn migration_entry_vid(book: Id128, run: VId, idempotency_key: &[u8]) -> VId {
+    derive_vid(
+        b"fa:vid:migration-entry:v1",
+        &[&book.0, &run.0.to_le_bytes(), idempotency_key],
+    )
+}
+
 /// `vid(ExternalId) = H("fa:vid:extid:v1" ‖ book_id ‖ system ‖ id)`.
 #[must_use]
 pub fn external_id_vid(book: Id128, system: &str, id: &str) -> VId {
@@ -300,6 +318,28 @@ mod tests {
         assert_eq!(
             entity_value_vid(book, "A"),
             VId(0x706e_3a84_7465_5d79_9778_0326_7661_5406)
+        );
+    }
+
+    /// Durable identities (plan §8.6): pinned so a change to the domain, the
+    /// part order, or the run's byte form fails here, not in a migrated book.
+    #[test]
+    fn migration_identities_are_pinned() {
+        let book = Id128([1; 16]);
+        let run = migration_run_vid(book, "go-live");
+        assert_eq!(run, VId(0x234a_61ec_52cd_c6a7_442d_0c1f_8c35_b825));
+        assert_eq!(
+            migration_entry_vid(book, run, b"open-1"),
+            VId(0xe0bc_098e_ed09_c0e6_898e_5de2_fc90_db2c)
+        );
+        // The run is part of an entry's identity; the key alone is not.
+        assert_ne!(
+            migration_entry_vid(book, run, b"open-1"),
+            migration_entry_vid(book, migration_run_vid(book, "retry"), b"open-1")
+        );
+        assert_ne!(
+            migration_entry_vid(book, run, b"open-1"),
+            entry_vid(book, &run.0.to_le_bytes(), b"open-1")
         );
     }
 

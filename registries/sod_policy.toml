@@ -16,7 +16,8 @@
 #                                    absent for book-scoped controls
 #   disposition                      Resolution only: "Posts"
 #   transition                       PeriodControl: Lock | Reopen;
-#                                    PolicyControl: Activate
+#                                    PolicyControl: Activate;
+#                                    MigrationControl: Open | Finalize | Abandon
 #   preparer_op                      control rows only (the admissibility
 #                                    matrix owns the op for posting classes)
 #   approvers                        SoD minimum; the kernel requires
@@ -170,6 +171,47 @@ approver_profiles = ["Human"]
 agent_prepared_human_approvers = 2
 exclusions = ["preparer", "duplicate"]
 cite = "plan §8.6, Appendix C W(migrate, 2)"
+
+# A MigrationRun's lifecycle (book-scoped, plan §8.6). Open stages nothing
+# visible and Abandon only makes staged entries permanently invisible, so
+# neither needs approvers; Finalize activates the whole run and binds the
+# kernel's tie-out digest, so two Humans approve it (the interim
+# MigrationAttestation until fa-g21's attestations, ruling 3236 R4).
+[[rule]]
+name = "migration-run-open"
+class = "MigrationControl"
+transition = "Open"
+preparer_op = "migrate"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §8.6 (a MigrationRun opens staging)"
+
+[[rule]]
+name = "migration-run-finalize"
+class = "MigrationControl"
+transition = "Finalize"
+preparer_op = "migrate"
+approvers = 2
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 2
+exclusions = ["preparer", "duplicate"]
+cite = "plan §8.6 (Finalize activates the run after the tie-out attestation), Appendix C W(migrate, 2)"
+
+[[rule]]
+name = "migration-run-abandon"
+class = "MigrationControl"
+transition = "Abandon"
+preparer_op = "migrate"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §8.6 (an abandoned run stays journaled and invisible)"
 
 # ---- Period transitions -----------------------------------------------------
 # Every transition of the period state machine has a row; transition_period

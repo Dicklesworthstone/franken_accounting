@@ -144,6 +144,14 @@ name = "ScheduleControl"
 kind = "control"
 supersession = "none"
 
+# A MigrationRun's lifecycle (plan §8.6): Open, Finalize, Abandon. Book-scoped;
+# Finalize is the one record that makes a run's staged entries visible.
+[[class]]
+tag = 22
+name = "MigrationControl"
+kind = "control"
+supersession = "none"
+
 # ---- Control kinds (fa-g23) ---------------------------------------------------
 # `EntryOrigin::Control.control_kind`: the act that minted a control record. It
 # is durable in every control record's origin, so it is registered here rather
@@ -203,3 +211,9 @@ id = 8
 name = "capability_revocation"
 class = "PolicyControl"
 minted_by = "fa-journal policy::revoke_capability"
+
+[[control_kind]]
+id = 9
+name = "migration_run"
+class = "MigrationControl"
+minted_by = "fa-journal migration::open_proposal, migration::plan_run_transition"

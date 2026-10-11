@@ -185,6 +185,21 @@ pub mod code {
     pub const DIMENSION_MISSING: &str = "FA-REF-005";
     /// A leg names a legal-entity value the book has not declared.
     pub const ENTITY_UNDECLARED: &str = "FA-REF-104";
+    /// The migration run is not `Open`: it was finalized or abandoned, so it
+    /// takes no more chunks and no second Finalize or Abandon (plan §8.6).
+    pub const RUN_NOT_OPEN: &str = "FA-REF-130";
+    /// The fold of a run's committed entries is not exactly the trial
+    /// balance its body declares, or the declared balance does not balance
+    /// (plan §8.6 tie-out).
+    pub const TIE_OUT_MISMATCH: &str = "FA-REF-131";
+    /// A `Migration` entry outside its run's law: no run named, an unknown
+    /// run, a date other than the run's opening date, or a period other than
+    /// its Opening period; or migration provenance on another class.
+    pub const MIGRATION_OUTSIDE_RUN: &str = "FA-REF-132";
+    /// A scratch replay met history it does not reproduce: a row family fa
+    /// never writes, a property removal, a source window that does not reach
+    /// genesis, or a divergence (plan §15.2).
+    pub const REPLAY_UNSUPPORTED: &str = "FA-REF-134";
 }
 
 /// A foundation failure. Exit 5; never partial.

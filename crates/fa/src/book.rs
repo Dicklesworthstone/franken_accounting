@@ -599,6 +599,131 @@ impl Book {
         )
     }
 
+    /// Open a migration run (plan §8.6): journal its body — the legacy trial
+    /// balance as typed lines — and its `Open` record citing the trial
+    /// balance document. Chunks then post as `Migration` entries naming the
+    /// run and stay invisible until the run is finalized.
+    pub fn open_migration_run(
+        &mut self,
+        body: &fa_journal::RunBody,
+        req: fa_journal::RunControlRequest,
+    ) -> Outcome<fa_journal::RunControlled> {
+        let purposes = self.purposes();
+        let ctx = &self.ctx;
+        let runtime = &self.runtime;
+        Ok(
+            with_store!(&mut self.store, db => runtime.block_on(async { fa_journal::open_run(db, &purposes, ctx, body, req).await }))?,
+        )
+    }
+
+    /// Plan a run's `Finalize` (or `Abandon`) against the head: the proposal
+    /// whose digest the approvers approve. Its `tie_out_digest` binds the
+    /// chunks committed so far.
+    pub fn plan_migration_transition(
+        &self,
+        run: VId,
+        control_kind: u8,
+        principal: VId,
+        idempotency_key: &[u8],
+        description: Erasable<String>,
+    ) -> Outcome<fa_model::EntryPayload> {
+        Ok(
+            with_store!(&self.store, db => fa_journal::plan_run_transition(db, &self.ctx, run, control_kind, principal, idempotency_key, description))?,
+        )
+    }
+
+    /// Finalize or abandon a migration run (one control record).
+    pub fn transition_migration_run(
+        &mut self,
+        req: fa_journal::RunControlRequest,
+    ) -> Outcome<fa_journal::RunControlled> {
+        let purposes = self.purposes();
+        let ctx = &self.ctx;
+        let runtime = &self.runtime;
+        Ok(
+            with_store!(&mut self.store, db => runtime.block_on(async { fa_journal::transition_run(db, &purposes, ctx, req).await }))?,
+        )
+    }
+
+    /// The migration run at `run`, as of `known_at` (head when `None`).
+    pub fn migration_run(
+        &self,
+        run: VId,
+        known_at: Option<CommitSeq>,
+    ) -> Result<Option<fa_journal::Run>, BookError> {
+        Ok(with_store!(&self.store, db => fa_journal::migration::read_run(db, run, known_at))?)
+    }
+
+    /// Replay this book's accounting history through `prefix` (head when
+    /// `None`) into a fresh in-memory scratch book (plan §15.2): the same
+    /// objects, byte for byte, one scratch commit per source commit that
+    /// carries any, under the scratch book's own commit sequences. Returns
+    /// the scratch book (its database opened with `keys`, sealing with
+    /// `entropy`) and the [`fa_journal::SeqMap`] binding the two histories.
+    pub fn replay_into_scratch(
+        &mut self,
+        prefix: Option<CommitSeq>,
+        keys: BookKeys,
+        entropy: Entropy,
+    ) -> Outcome<(Book, fa_journal::SeqMap)> {
+        let purposes = self.purposes();
+        let runtime = &self.runtime;
+        let read = with_store!(&mut self.store, db => runtime.block_on(async {
+            match fa_journal::scratch::ensure_history(db, &purposes).await? {
+                Ok(()) => fa_journal::scratch::source_batches(db, prefix),
+                Err(r) => Ok(Err(r)),
+            }
+        }))?;
+        let (prefix, batches) = match read {
+            Ok(read) => read,
+            Err(r) => return Ok(Err(r)),
+        };
+        let (scratch_runtime, scratch_root) = Self::runtime_and_root()?;
+        let scratch_purposes = PurposeContexts::narrow_runtime_root(&scratch_root);
+        let mut db = scratch_runtime.block_on(async {
+            Database::open_memory(&scratch_purposes.commit(), keys.inner.clone()).await
+        })?;
+        let book_id = self.ctx.book_id;
+        let replayed = scratch_runtime.block_on(async {
+            fa_journal::scratch::replay_batches(
+                &mut db,
+                &scratch_purposes,
+                book_id,
+                prefix,
+                &batches,
+            )
+            .await
+        })?;
+        let map = match replayed {
+            Ok(map) => map,
+            Err(r) => return Ok(Err(r)),
+        };
+        Ok(Ok((
+            Book {
+                runtime: scratch_runtime,
+                root: scratch_root,
+                store: Store::Memory(db),
+                ctx: self.ctx.clone(),
+                entropy,
+            },
+            map,
+        )))
+    }
+
+    /// Verify `scratch` against the [`fa_journal::SeqMap`] of its replay
+    /// from this book (`fa_registers::replay::verify_replay`).
+    pub fn verify_replay(
+        &self,
+        scratch: &Book,
+        map: &fa_journal::SeqMap,
+    ) -> Outcome<fa_registers::replay::ReplayVerification> {
+        Ok(
+            with_store!(&self.store, source => with_store!(&scratch.store, copy => {
+                fa_registers::replay::verify_replay(source, copy, &self.ctx, map)
+            }))?,
+        )
+    }
+
     /// Record a document (plan §9.1): content-addressed; the same bytes of
     /// the same kind are the recorded outcome.
     pub fn add_document(
@@ -1080,6 +1205,113 @@ mod tests {
                 limit: None,
             },
         ]
+    }
+
+    /// Plan §15.2 through the facade: the scratch book (its own runtime and
+    /// store) folds as the source does and verifies against its SeqMap; a
+    /// scenario post lands in the scratch book only; a map with a pair
+    /// removed is FA-REF-135.
+    #[test]
+    fn a_scratch_replay_reproduces_the_book_and_scenario_posts_stay_in_it() {
+        let book_id = Id128([0x5c; 16]);
+        let (spec, usd) = spec(book_id);
+        let mut book = Book::create_memory(
+            BookKeys::for_development(0x5c),
+            spec,
+            Entropy::deterministic(0x5c),
+        )
+        .expect("create");
+        let principal = VId(1);
+        let day = DateDay::from_ymd(2026, 3, 15).unwrap();
+        book.install_chart(&chart(usd), principal, day, b"chart")
+            .expect("kernel")
+            .expect("installs");
+        let (_, periods) = book.create_periods(2026).expect("periods");
+        let march = periods
+            .iter()
+            .find(|p| p.contains(day) && p.kind == PeriodKind::Normal)
+            .unwrap()
+            .code
+            .clone();
+        book.transition_period(
+            &march,
+            PeriodTransition::Open,
+            principal,
+            1,
+            day,
+            b"open",
+            &Capability::embedded(principal, &["close"]).expect("close"),
+        )
+        .expect("kernel")
+        .expect("opens");
+        for key in [&b"rent-1"[..], b"rent-2"] {
+            post_rent(&mut book, usd, principal, day, key, 150_000)
+                .expect("kernel")
+                .expect("admitted");
+        }
+        // Maintained registers are maintenance: never replayed.
+        assert!(book.advance_registers(&march).expect("maintained").wrote);
+        let source_head = with_store!(&book.store, db => db.frontier()).unwrap();
+
+        // Before the book's genesis there is no book to replay (WhiteCreek
+        // 3500): the facade path is refused like the kernel's.
+        let Err(early) = book
+            .replay_into_scratch(
+                Some(CommitSeq(0)),
+                BookKeys::for_development(0x5d),
+                Entropy::deterministic(0x5d),
+            )
+            .expect("kernel")
+        else {
+            panic!("a pre-genesis prefix is refused");
+        };
+        assert_eq!((early.code, early.exit), ("FA-REF-100", 2), "{early}");
+
+        let (mut scratch, map) = book
+            .replay_into_scratch(
+                None,
+                BookKeys::for_development(0x5d),
+                Entropy::deterministic(0x5d),
+            )
+            .expect("kernel")
+            .expect("replays");
+        let verified = book
+            .verify_replay(&scratch, &map)
+            .expect("kernel")
+            .expect("verifies");
+        assert_eq!(verified.pairs_checked, map.pairs.len());
+        assert!(verified.entries_checked >= 2, "{verified:?}");
+        assert_eq!(
+            scratch.fold_period(&march).unwrap().cells,
+            book.fold_period(&march).unwrap().cells
+        );
+        let scratch_rows =
+            with_store!(&scratch.store, db => db.vertices_at(db.frontier().unwrap())).unwrap();
+        assert!(
+            scratch_rows
+                .iter()
+                .all(|v| !v.labels.contains(&fa_model::symbols::label::REGISTER_STATE)),
+            "no maintainer state reaches the scratch book"
+        );
+
+        post_rent(&mut scratch, usd, principal, day, b"what-if", 150_000)
+            .expect("kernel")
+            .expect("a scenario post");
+        assert_eq!(
+            with_store!(&book.store, db => db.frontier()).unwrap(),
+            source_head,
+            "the source never sees a scenario"
+        );
+        assert_ne!(
+            scratch.fold_period(&march).unwrap().cells,
+            book.fold_period(&march).unwrap().cells
+        );
+        // The map still describes the replayed prefix; a removed pair does not.
+        assert!(book.verify_replay(&scratch, &map).unwrap().is_ok());
+        let mut gap = map.clone();
+        gap.pairs.remove(1);
+        let refused = book.verify_replay(&scratch, &gap).unwrap().unwrap_err();
+        assert_eq!((refused.code, refused.exit), ("FA-REF-135", 8), "{refused}");
     }
 
     #[test]

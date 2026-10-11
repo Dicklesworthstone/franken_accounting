@@ -50,6 +50,10 @@ pub mod code {
     pub const NOT_EXTENDED: &str = "FA-REF-124";
     /// The selected known-at sequence is beyond the head.
     pub const BEYOND_HEAD: &str = "FA-REF-125";
+    /// A balance proof would count a migration chunk whose run has no
+    /// Finalize in the prefix (staged or abandoned; plan §8.6). The proof
+    /// format cannot carry the migration predicate yet (bead fa-e00).
+    pub const MIGRATION_STAGED: &str = "FA-REF-133";
 }
 
 /// What a checkpoint commits: the root over the first `leaf_count` leaves

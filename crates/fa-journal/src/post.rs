@@ -28,7 +28,11 @@
 //! R-ESC): every limited account the entry moves is judged on its
 //! `LimitCell`, read as a point witness and moved by compare-and-set on its
 //! generation — pending outflows reserve, pending inflows never finance, a
-//! resolution releases its hold's full original legs. Every other registered
+//! resolution releases its hold's full original legs. `Migration` (plan
+//! §8.6): a chunk of an open `MigrationRun`, named by its origin, dated on
+//! the run's opening date in its Opening period, identified by
+//! `H("fa:vid:migration-entry:v1" ‖ book ‖ run ‖ key)`, and staged invisible
+//! until the run's Finalize (`migration::visible_at`). Every other registered
 //! class is refused with the bead that lands it; no class passes through a
 //! generic two-leg check.
 
@@ -39,8 +43,8 @@ use fa_model::Id128;
 use fa_model::SealKey;
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    ApprovalRef, Disposition, Entry, EntryClass, EntryPayload, EntryRef, Pending, SupersessionKind,
-    entry_mirrors, entry_vid, leg_mirrors, period_vid,
+    ApprovalRef, Disposition, Entry, EntryClass, EntryOrigin, EntryPayload, EntryRef, Pending,
+    SupersessionKind, entry_mirrors, entry_vid, leg_mirrors, migration_entry_vid, period_vid,
 };
 use fa_money::Side;
 use fa_registry::evidence_policy::EvidencePolicy;
@@ -54,6 +58,7 @@ use crate::entity;
 use crate::evidence::{evidence_edges, resolve_evidence};
 use crate::genesis::{BookContext, UnitPolicy};
 use crate::limit;
+use crate::migration;
 use crate::policy;
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{
@@ -250,7 +255,10 @@ fn not_implemented(class_name: &str) -> Refusal {
         }
         "Closing" => "the incremental closing slice (plan §7.5)",
         "Allocation" | "Revaluation" | "Elimination" => "Canon rules (plan §10)",
-        "Migration" => "MigrationRun (plan §12)",
+        "settles on a Migration entry" => "open-item migration (FullDetail, a later fa-xo0 slice)",
+        "Migration into a limited account" => {
+            "the migration availability slice (a staged chunk must not move a LimitCell before Finalize)"
+        }
         _ => "a later slice",
     };
     Refusal::new(
@@ -362,9 +370,34 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
             | EntryClass::REVERSAL
             | EntryClass::PENDING
             | EntryClass::RESOLUTION
+            | EntryClass::MIGRATION
     ) {
         return Ok(Err(not_implemented(class_name)));
     }
+    // 1b'. Migration provenance (plan §8.6): a Migration entry names its run
+    //      in its origin, and no other class carries migration provenance.
+    let migration_run = match (&proposal.origin, proposal.class == EntryClass::MIGRATION) {
+        (EntryOrigin::Migration { run_ref, .. }, true) => Some(*run_ref),
+        (EntryOrigin::Migration { .. }, false) => {
+            return Ok(Err(Refusal::new(
+                code::MIGRATION_OUTSIDE_RUN,
+                exit::REFUSAL,
+                format!("a `{class_name}` entry carries migration provenance"),
+                "plan §8.6 (migrated_from rides Migration entries only)",
+                "post legacy history as a Migration entry inside an open run, or drop the Migration origin",
+            )));
+        }
+        (_, true) => {
+            return Ok(Err(Refusal::new(
+                code::MIGRATION_OUTSIDE_RUN,
+                exit::REFUSAL,
+                "a Migration entry names no run: its origin is not Migration { run_ref, .. }",
+                "plan §8.6, Appendix C (Migration: inside an open MigrationRun)",
+                "set origin = Migration { run_ref: <the run's vid>, .. } and post into the run",
+            )));
+        }
+        _ => None,
+    };
     // 1c. Two-phase shape (plan §5.4). `validate` already fixed the arity;
     //     `Expires` is the system's void at timeout — the expiry sweep mints
     //     it under a committed tick, so a caller never posts one.
@@ -439,6 +472,9 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
                     "plan §5.7 (application undo is derived from the reversed target, never re-entered)",
                     "remove `settles`; reversing an applying entry undoes its applications",
                 )));
+            }
+            EntryClass::MIGRATION => {
+                return Ok(Err(not_implemented("settles on a Migration entry")));
             }
             _ => return Ok(Err(not_implemented("settles on a two-phase entry"))),
         }
@@ -590,6 +626,24 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
         }
     };
 
+    // 3''. A Migration chunk lands in its run's Opening period (plan §8.6;
+    //      OpeningOnly runs: Historical periods arrive with PeriodBalances).
+    if migration_run.is_some() && period.kind != fa_time::PeriodKind::Opening {
+        return Ok(Err(Refusal::new(
+            code::MIGRATION_OUTSIDE_RUN,
+            exit::REFUSAL,
+            format!(
+                "a Migration entry resolves to `{}`, a {:?} period; an OpeningOnly run posts into its Opening period",
+                period.code, period.kind
+            ),
+            "plan §8.6, Appendix C (Migration: Opening and Historical periods only)",
+            format!(
+                "date the chunk on the run's opening date with effective_period FY{}-OPEN",
+                period.fiscal_year
+            ),
+        )));
+    }
+
     // 3'. The capability is current at the admission point (plan §14.2):
     //     the head this single-writer handle observes immediately before the
     //     transaction opens; nothing can commit in between.
@@ -613,18 +667,57 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     let (evid, identity) = match (reversal_target, &resolution) {
         (Some(t), _) => (reversal_vid(t.vid), Identity::Reversal),
         (None, Some((t, _))) => (resolution_vid(t.vid), Identity::Resolution),
-        (None, None) => (
-            entry_vid(
-                book.book_id,
-                &proposal.principal_ref.0.to_le_bytes(),
-                &proposal.idempotency_key,
+        // A chunk's identity includes its run (plan §8.6): a retry run
+        // reuses an abandoned run's keys.
+        (None, None) => match migration_run {
+            Some(run) => (
+                migration_entry_vid(book.book_id, run, &proposal.idempotency_key),
+                Identity::Key,
             ),
-            Identity::Key,
-        ),
+            None => (
+                entry_vid(
+                    book.book_id,
+                    &proposal.principal_ref.0.to_le_bytes(),
+                    &proposal.idempotency_key,
+                ),
+                Identity::Key,
+            ),
+        },
     };
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
         return recorded_or_conflict(&row, proposal, &book.seal_key, identity);
+    }
+
+    // 4'. The run (plan §8.6): its state is a point witness, so a Finalize
+    //     or Abandon that commits first makes this chunk a first-committer-wins
+    //     conflict; the chunk is dated on the run's opening date.
+    if let Some(run_vid) = migration_run {
+        let run = match migration::witness_open(&txn, db, run_vid)? {
+            Ok(run) => run,
+            Err(r) => {
+                txn.abort();
+                return Ok(Err(r));
+            }
+        };
+        if proposal.effective_date != run.body.opening_date {
+            txn.abort();
+            return Ok(Err(Refusal::new(
+                code::MIGRATION_OUTSIDE_RUN,
+                exit::REFUSAL,
+                format!(
+                    "the chunk is dated {} but run `{}` opens on {}",
+                    proposal.effective_date.render(),
+                    run.body.run_key,
+                    run.body.opening_date.render()
+                ),
+                "plan §8.6 (opening balances are effective on the opening date)",
+                format!(
+                    "date the chunk {} (the run's opening date)",
+                    run.body.opening_date.render()
+                ),
+            )));
+        }
     }
 
     // 5. Period law (Appendix C) against the witnessed state.
@@ -800,6 +893,10 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
             )));
         }
         accounts.push(account);
+    }
+    if migration_run.is_some() && accounts.iter().any(|a| a.limit.is_some()) {
+        txn.abort();
+        return Ok(Err(not_implemented("Migration into a limited account")));
     }
 
     // 7a. Application law (plan §5.7): each settlement names a witnessed,

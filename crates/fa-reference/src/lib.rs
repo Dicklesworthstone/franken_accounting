@@ -35,6 +35,7 @@ pub const CONTROL_KINDS: &[(u16, &str, &str)] = &[
     (4, "time_tick", "TimeControl"),
     (5, "schedule_cancel", "ScheduleControl"),
     (8, "capability_revocation", "PolicyControl"),
+    (9, "migration_run", "MigrationControl"),
 ];
 
 /// The control class a record of kind `id` must carry, per the oracle's copy.
@@ -51,7 +52,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use fa_registry::sod_policy::{SodPolicy, SodRequirement};
 use fa_registry::{Admissibility, Decision, EntryClasses};
 use fa_time::period::transition;
-use fa_time::{DateDay, FiscalCalendar, PeriodDef, PeriodState, PeriodTransition, resolve_period};
+use fa_time::{
+    DateDay, FiscalCalendar, PeriodDef, PeriodKind, PeriodState, PeriodTransition, resolve_period,
+};
 
 // ---------------------------------------------------------------------------
 // Own arithmetic: sign-magnitude, base 2^32 limbs, little-endian.
@@ -319,6 +322,7 @@ pub mod code {
     pub const PERIOD_UNKNOWN: &str = "FA-REF-021";
     pub const STALE_APPROVAL: &str = "FA-REF-022";
     pub const REVOKED: &str = "FA-REF-023";
+    pub const CONFLICT: &str = "FA-REF-030";
     pub const IDEMPOTENCY_CONFLICT: &str = "FA-REF-032";
     pub const TRANSITION: &str = "FA-REF-040";
     pub const REVERSAL_TARGET: &str = "FA-REF-050";
@@ -344,6 +348,9 @@ pub mod code {
     pub const STRUCTURE: &str = "FA-REF-100";
     pub const CONTROL_VIA_POST: &str = "FA-REF-101";
     pub const CLASS_NOT_IMPLEMENTED: &str = "FA-REF-102";
+    pub const RUN_NOT_OPEN: &str = "FA-REF-130";
+    pub const TIE_OUT_MISMATCH: &str = "FA-REF-131";
+    pub const MIGRATION_OUTSIDE_RUN: &str = "FA-REF-132";
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -373,6 +380,58 @@ pub struct Entry {
     /// For a Resolution: the journal index of the pending entry it resolves.
     pub resolves: Option<usize>,
     pub settles: Vec<Settle>,
+    /// A `Migration` chunk: the run it stages into (plan §8.6). Selected by
+    /// a fold only where that run is finalized at the fold's coordinate.
+    pub run: Option<usize>,
+}
+
+/// A migration run's declared legacy trial balance (plan §8.6): lines
+/// `(account, unit, net in debit sign)`, strictly ascending by
+/// `(account, unit)`, never zero; opened on the first day of a fiscal year.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunSpec {
+    pub key: String,
+    pub opening_date: DateDay,
+    pub lines: Vec<(String, u32, i128)>,
+}
+
+/// A run's lifecycle (plan §8.6): `Open → Finalized | Abandoned`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunState {
+    Open,
+    Finalized,
+    Abandoned,
+}
+
+/// A known-at coordinate of this model: how many journal entries and how
+/// many run controls (Open, Finalize, Abandon) had been accepted. A
+/// Finalize adds no entry, so the entry count alone cannot say whether a
+/// chunk was visible.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Known {
+    pub entries: usize,
+    pub controls: usize,
+}
+
+#[derive(Clone, Debug)]
+struct Run {
+    spec: RunSpec,
+    state: RunState,
+    /// Journal indices of the run's chunks, in acceptance order.
+    chunks: Vec<usize>,
+    /// The run-control index of the Finalize that activated the run.
+    finalized: Option<usize>,
+}
+
+/// What a run control's identity binds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ControlContent {
+    Open(RunSpec),
+    Transition {
+        run: usize,
+        finalize: bool,
+        chunks: usize,
+    },
 }
 
 /// The semantic content an identity binds (what the kernel's
@@ -529,6 +588,17 @@ pub struct Oracle {
     entities: Vec<String>,
     /// The reversal sweep's position: (tick index, last target examined).
     schedule_cursor: Option<(usize, usize)>,
+    /// Migration runs, by opening order (plan §8.6).
+    runs: Vec<Run>,
+    /// Run key → run index.
+    run_keys: BTreeMap<String, usize>,
+    /// Every accepted run control, as the journal length when it was
+    /// accepted (the model's control timeline).
+    run_controls: Vec<usize>,
+    /// Control idempotency key → (content, run).
+    control_keys: BTreeMap<Vec<u8>, (ControlContent, usize)>,
+    /// (run, key) → (journal index, content) for Migration chunks.
+    migration_keys: BTreeMap<(usize, Vec<u8>), (usize, Content)>,
     classes: EntryClasses,
     matrix: Admissibility,
     sod: SodPolicy,
@@ -559,6 +629,11 @@ impl Oracle {
             schedules: BTreeMap::new(),
             entities: Vec::new(),
             schedule_cursor: None,
+            runs: Vec::new(),
+            run_keys: BTreeMap::new(),
+            run_controls: Vec::new(),
+            control_keys: BTreeMap::new(),
+            migration_keys: BTreeMap::new(),
             classes,
             matrix,
             sod,
@@ -588,10 +663,11 @@ impl Oracle {
     #[must_use]
     pub fn fold_by_entity(&self, period: &str) -> BTreeMap<(String, u32, Option<String>), Cell> {
         let mut cells: BTreeMap<(String, u32, Option<String>), Cell> = BTreeMap::new();
+        let known = self.known();
         for e in self
             .journal
             .iter()
-            .filter(|e| e.period == period && e.class != "Pending")
+            .filter(|e| e.period == period && e.class != "Pending" && self.visible(e, known))
         {
             let mut touched: Vec<(String, u32, Option<String>)> = Vec::new();
             for l in &e.legs {
@@ -840,7 +916,7 @@ impl Oracle {
     }
 
     pub fn post(&mut self, intent: &Intent) -> Verdict {
-        let v = self.post_inner(intent, None, None, None);
+        let v = self.post_inner(intent, None, None, None, None);
         // A manual Reversal of a scheduled target cancels the schedule by
         // lineage (plan §7.6): it can never fire.
         if matches!(v, Verdict::Posted { .. })
@@ -855,7 +931,7 @@ impl Oracle {
     /// An Adjusting entry that schedules its own reversal on `reverse_on`
     /// (plan §7.6, Appendix B `Accrue`/`Defer`).
     pub fn post_scheduled(&mut self, intent: &Intent, reverse_on: DateDay) -> Verdict {
-        self.post_inner(intent, None, None, Some(reverse_on))
+        self.post_inner(intent, None, None, Some(reverse_on), None)
     }
 
     /// The schedule of `target`, if it scheduled its reversal.
@@ -907,7 +983,7 @@ impl Oracle {
             resolves: None,
             settles: Vec::new(),
         };
-        match self.post_inner(&intent, None, None, None) {
+        match self.post_inner(&intent, None, None, None, None) {
             Verdict::Posted { index, .. } => {
                 if let Some((_, content)) = self.reversed.get_mut(&target) {
                     content.by_sweep = true;
@@ -1018,7 +1094,7 @@ impl Oracle {
                 code: code::STRUCTURE,
             };
         }
-        self.post_inner(intent, None, Some(timeout_ns), None)
+        self.post_inner(intent, None, Some(timeout_ns), None, None)
     }
 
     /// A timed hold's deadline.
@@ -1088,6 +1164,7 @@ impl Oracle {
                 reverses: None,
                 resolves: Some(h),
                 settles: Vec::new(),
+                run: None,
             });
             self.resolved.insert(
                 h,
@@ -1151,7 +1228,7 @@ impl Oracle {
                 code: code::BALANCING_SHAPE,
             };
         }
-        self.post_inner(intent, Some(leg), None, None)
+        self.post_inner(intent, Some(leg), None, None, None)
     }
 
     fn post_inner(
@@ -1160,6 +1237,7 @@ impl Oracle {
         balancing: Option<u16>,
         timeout: Option<u64>,
         auto_reverse: Option<DateDay>,
+        run: Option<usize>,
     ) -> Verdict {
         // 1. Structure.
         let Some(class) = self.classes.by_name(&intent.class) else {
@@ -1198,10 +1276,17 @@ impl Oracle {
         let is_reversal = intent.class == "Reversal";
         if !matches!(
             intent.class.as_str(),
-            "Original" | "Adjusting" | "Reversal" | "Pending" | "Resolution"
+            "Original" | "Adjusting" | "Reversal" | "Pending" | "Resolution" | "Migration"
         ) {
             return Verdict::Refused {
                 code: code::CLASS_NOT_IMPLEMENTED,
+            };
+        }
+        // 1b'. Migration provenance (plan §8.6): a Migration entry names its
+        //      run, and only a Migration entry names one.
+        if (intent.class == "Migration") != run.is_some() {
+            return Verdict::Refused {
+                code: code::MIGRATION_OUTSIDE_RUN,
             };
         }
         if is_reversal && intent.reverses.is_none() {
@@ -1248,6 +1333,7 @@ impl Oracle {
                     };
                 }
                 _ => {
+                    // Two-phase entries and Migration chunks: not applied here.
                     return Verdict::Refused {
                         code: code::CLASS_NOT_IMPLEMENTED,
                     };
@@ -1364,6 +1450,12 @@ impl Oracle {
                 code: code::PERIOD_RESOLVE,
             };
         };
+        // 3''. A Migration chunk lands in its run's Opening period.
+        if run.is_some() && period.kind != PeriodKind::Opening {
+            return Verdict::Refused {
+                code: code::MIGRATION_OUTSIDE_RUN,
+            };
+        }
         let period = period.code.clone();
         // 4. Identity: the recorded outcome when the content is the same,
         //    a conflict when it is not — before any law is re-checked.
@@ -1371,7 +1463,10 @@ impl Oracle {
         let existing = match (intent.reverses, &intent.resolves) {
             (Some(target), _) => self.reversed.get(&target),
             (None, Some(r)) => self.resolved.get(&r.target),
-            (None, None) => self.keys.get(&intent.key),
+            (None, None) => match run {
+                Some(r) => self.migration_keys.get(&(r, intent.key.clone())),
+                None => self.keys.get(&intent.key),
+            },
         };
         if let Some((index, recorded)) = existing {
             return if *recorded == content {
@@ -1389,6 +1484,24 @@ impl Oracle {
                     code: code::IDEMPOTENCY_CONFLICT,
                 }
             };
+        }
+        // 4'. The run: known, Open, and the chunk on its opening date.
+        if let Some(r) = run {
+            let Some(rs) = self.runs.get(r) else {
+                return Verdict::Refused {
+                    code: code::MIGRATION_OUTSIDE_RUN,
+                };
+            };
+            if rs.state != RunState::Open {
+                return Verdict::Refused {
+                    code: code::RUN_NOT_OPEN,
+                };
+            }
+            if intent.date != rs.spec.opening_date {
+                return Verdict::Refused {
+                    code: code::MIGRATION_OUTSIDE_RUN,
+                };
+            }
         }
         // 5. Period law against the period's current state (Future when never created).
         let state = self.period_state(&period).unwrap_or(PeriodState::Future);
@@ -1432,6 +1545,18 @@ impl Oracle {
                     code: code::UNIT_POLICY,
                 };
             }
+        }
+        // 6'. A staged chunk never moves a limit (not modelled until the
+        //     migration availability slice).
+        if run.is_some()
+            && intent
+                .legs
+                .iter()
+                .any(|l| self.limits.contains_key(&l.account))
+        {
+            return Verdict::Refused {
+                code: code::CLASS_NOT_IMPLEMENTED,
+            };
         }
         // 7a. Application law (plan §5.7): a witnessed, live, posted target
         //     leg on the same account and unit with the opposite side, within
@@ -1768,7 +1893,11 @@ impl Oracle {
             reverses: intent.reverses,
             resolves: intent.resolves.as_ref().map(|r| r.target),
             settles: intent.settles.clone(),
+            run,
         });
+        if let Some(r) = run {
+            self.runs[r].chunks.push(index);
+        }
         if let Some(d) = deadline {
             self.deadlines.insert(index, d);
         }
@@ -1789,17 +1918,216 @@ impl Oracle {
             (None, Some(r)) => {
                 self.resolved.insert(r.target, (index, content));
             }
-            (None, None) => {
-                self.keys.insert(intent.key.clone(), (index, content));
-            }
+            (None, None) => match run {
+                Some(r) => {
+                    self.migration_keys
+                        .insert((r, intent.key.clone()), (index, content));
+                }
+                None => {
+                    self.keys.insert(intent.key.clone(), (index, content));
+                }
+            },
         }
         Verdict::Posted { index, period }
+    }
+
+    /// Open a migration run (plan §8.6), in the kernel's order: the body's
+    /// own law, then `migrate` held, then the control's identity, then the
+    /// run key's.
+    pub fn open_run(
+        &mut self,
+        spec: &RunSpec,
+        control_key: &[u8],
+        ops: &[String],
+    ) -> Result<usize, &'static str> {
+        if spec.key.is_empty() || spec.key.len() > 64 {
+            return Err(code::STRUCTURE);
+        }
+        if spec.lines.is_empty() || spec.lines.len() > 4096 {
+            return Err(code::STRUCTURE);
+        }
+        if spec
+            .lines
+            .iter()
+            .any(|(account, _, m)| account.is_empty() || account.len() > 64 || *m == 0)
+        {
+            return Err(code::STRUCTURE);
+        }
+        if !spec
+            .lines
+            .windows(2)
+            .all(|w| (&w[0].0, w[0].1) < (&w[1].0, w[1].1))
+        {
+            return Err(code::STRUCTURE);
+        }
+        let mut per_unit: BTreeMap<u32, Int> = BTreeMap::new();
+        for (_, unit, m) in &spec.lines {
+            let e = per_unit.entry(*unit).or_insert_with(Int::zero);
+            *e = e.add(&Int::from_i128(*m));
+        }
+        if per_unit.values().any(|net| !net.is_zero()) {
+            return Err(code::TIE_OUT_MISMATCH);
+        }
+        let year_start = self
+            .calendar
+            .fiscal_year_of(spec.opening_date)
+            .and_then(|fy| self.calendar.year_bounds(fy))
+            .map(|(start, _)| start);
+        if year_start.ok() != Some(spec.opening_date) {
+            return Err(code::STRUCTURE);
+        }
+        if !ops.iter().any(|o| o == "migrate") {
+            return Err(code::CAPABILITY);
+        }
+        if let Some((content, run)) = self.control_keys.get(control_key) {
+            return if *content == ControlContent::Open(spec.clone()) {
+                Ok(*run)
+            } else {
+                Err(code::IDEMPOTENCY_CONFLICT)
+            };
+        }
+        if self.run_keys.contains_key(&spec.key) {
+            return Err(code::IDEMPOTENCY_CONFLICT);
+        }
+        let run = self.runs.len();
+        self.runs.push(Run {
+            spec: spec.clone(),
+            state: RunState::Open,
+            chunks: Vec::new(),
+            finalized: None,
+        });
+        self.run_keys.insert(spec.key.clone(), run);
+        self.control_keys.insert(
+            control_key.to_vec(),
+            (ControlContent::Open(spec.clone()), run),
+        );
+        self.run_controls.push(self.journal.len());
+        Ok(run)
+    }
+
+    /// Post a chunk into `run` (a `Migration` entry naming it).
+    pub fn post_migration(&mut self, run: usize, intent: &Intent) -> Verdict {
+        self.post_inner(intent, None, None, None, Some(run))
+    }
+
+    /// Finalize `run`, planned over `planned_chunks` chunks.
+    pub fn finalize_run(
+        &mut self,
+        run: usize,
+        planned_chunks: usize,
+        control_key: &[u8],
+        ops: &[String],
+        approvals: usize,
+    ) -> Result<(), &'static str> {
+        self.transition_run(run, true, planned_chunks, control_key, ops, approvals)
+    }
+
+    /// Abandon `run`, planned over `planned_chunks` chunks.
+    pub fn abandon_run(
+        &mut self,
+        run: usize,
+        planned_chunks: usize,
+        control_key: &[u8],
+        ops: &[String],
+    ) -> Result<(), &'static str> {
+        self.transition_run(run, false, planned_chunks, control_key, ops, 0)
+    }
+
+    pub fn run_state(&self, run: usize) -> Option<RunState> {
+        self.runs.get(run).map(|r| r.state)
+    }
+
+    pub fn run_chunks(&self, run: usize) -> usize {
+        self.runs.get(run).map_or(0, |r| r.chunks.len())
+    }
+
+    /// The kernel's order: `migrate` held, the control's identity, the run
+    /// known and Open, the fold equal to the declared lines (Finalize), the
+    /// chunk set the one planned, two approvals (Finalize).
+    fn transition_run(
+        &mut self,
+        run: usize,
+        finalize: bool,
+        planned_chunks: usize,
+        control_key: &[u8],
+        ops: &[String],
+        approvals: usize,
+    ) -> Result<(), &'static str> {
+        if !ops.iter().any(|o| o == "migrate") {
+            return Err(code::CAPABILITY);
+        }
+        let content = ControlContent::Transition {
+            run,
+            finalize,
+            chunks: planned_chunks,
+        };
+        if let Some((recorded, _)) = self.control_keys.get(control_key) {
+            return if *recorded == content {
+                Ok(())
+            } else {
+                Err(code::IDEMPOTENCY_CONFLICT)
+            };
+        }
+        let Some(r) = self.runs.get(run) else {
+            return Err(code::MIGRATION_OUTSIDE_RUN);
+        };
+        if r.state != RunState::Open {
+            return Err(code::RUN_NOT_OPEN);
+        }
+        if finalize && !self.ties_out(run) {
+            return Err(code::TIE_OUT_MISMATCH);
+        }
+        if r.chunks.len() != planned_chunks {
+            return Err(code::CONFLICT);
+        }
+        if finalize && approvals < 2 {
+            return Err(code::APPROVALS);
+        }
+        let control = self.run_controls.len();
+        self.run_controls.push(self.journal.len());
+        let r = &mut self.runs[run];
+        if finalize {
+            r.state = RunState::Finalized;
+            r.finalized = Some(control);
+        } else {
+            r.state = RunState::Abandoned;
+        }
+        self.control_keys
+            .insert(control_key.to_vec(), (content, run));
+        Ok(())
+    }
+
+    /// The run's chunks fold, per (account, unit) in debit sign, to exactly
+    /// its declared lines.
+    fn ties_out(&self, run: usize) -> bool {
+        let r = &self.runs[run];
+        let mut folded: BTreeMap<(String, u32), Int> = BTreeMap::new();
+        for i in &r.chunks {
+            for l in &self.journal[*i].legs {
+                let e = folded
+                    .entry((l.account.clone(), l.unit))
+                    .or_insert_with(Int::zero);
+                let m = Int::from_i128(l.mantissa);
+                *e = match l.side {
+                    Side::Debit => e.add(&m),
+                    Side::Credit => e.sub(&m),
+                };
+            }
+        }
+        folded.retain(|_, v| !v.is_zero());
+        let declared: BTreeMap<(String, u32), Int> = r
+            .spec
+            .lines
+            .iter()
+            .map(|(a, u, m)| ((a.clone(), *u), Int::from_i128(*m)))
+            .collect();
+        folded == declared
     }
 
     /// The literal fold of one period: `(account, unit) → cell`.
     #[must_use]
     pub fn fold(&self, period: &str) -> BTreeMap<(String, u32), Cell> {
-        self.activity_at(&[period], self.journal.len())
+        self.activity_known(&[period], self.known())
     }
 
     /// Stock from inception through an inclusive effective day, as known after
@@ -1810,10 +2138,17 @@ impl Oracle {
     /// Panics if the requested prefix extends beyond the oracle's journal.
     #[must_use]
     pub fn stock_at(&self, day: DateDay, accepted_prefix: usize) -> BTreeMap<(String, u32), Cell> {
+        self.stock_known(day, self.known_after(accepted_prefix))
+    }
+
+    /// [`Self::stock_at`] at an explicit coordinate: the migration predicate
+    /// needs the run controls accepted by then, not only the entries.
+    #[must_use]
+    pub fn stock_known(&self, day: DateDay, known: Known) -> BTreeMap<(String, u32), Cell> {
         Self::fold_entries(
-            self.journal[..accepted_prefix]
+            self.journal[..known.entries]
                 .iter()
-                .filter(|entry| entry.date <= day),
+                .filter(|entry| entry.date <= day && self.visible(entry, known)),
         )
     }
 
@@ -1828,11 +2163,50 @@ impl Oracle {
         periods: &[&str],
         accepted_prefix: usize,
     ) -> BTreeMap<(String, u32), Cell> {
+        self.activity_known(periods, self.known_after(accepted_prefix))
+    }
+
+    /// [`Self::activity_at`] at an explicit coordinate.
+    #[must_use]
+    pub fn activity_known(&self, periods: &[&str], known: Known) -> BTreeMap<(String, u32), Cell> {
         Self::fold_entries(
-            self.journal[..accepted_prefix]
-                .iter()
-                .filter(|entry| periods.contains(&entry.period.as_str())),
+            self.journal[..known.entries].iter().filter(|entry| {
+                periods.contains(&entry.period.as_str()) && self.visible(entry, known)
+            }),
         )
+    }
+
+    /// The model's head coordinate.
+    #[must_use]
+    pub fn known(&self) -> Known {
+        Known {
+            entries: self.journal.len(),
+            controls: self.run_controls.len(),
+        }
+    }
+
+    /// The coordinate just before entry `accepted_prefix` was accepted: every
+    /// run control accepted while the journal held at most that many entries.
+    fn known_after(&self, accepted_prefix: usize) -> Known {
+        Known {
+            entries: accepted_prefix,
+            controls: self
+                .run_controls
+                .iter()
+                .filter(|at| **at <= accepted_prefix)
+                .count(),
+        }
+    }
+
+    /// The FA-INV-07 migration predicate: a chunk is selected iff its run's
+    /// Finalize is among the controls accepted by `known`.
+    fn visible(&self, e: &Entry, known: Known) -> bool {
+        match e.run {
+            None => true,
+            Some(r) => self.runs[r]
+                .finalized
+                .is_some_and(|control| control < known.controls),
+        }
     }
 
     fn fold_entries<'a>(entries: impl Iterator<Item = &'a Entry>) -> BTreeMap<(String, u32), Cell> {
