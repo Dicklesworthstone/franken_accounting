@@ -259,7 +259,10 @@ fn a_certified_trial_balance_replays_byte_for_byte_after_reopen_and_on_a_copy() 
     let replayed = parsed(&ok(&book, &["replay", &file, "--json"]));
     assert_eq!(text(&replayed, "event"), "certificate_replayed");
     assert_eq!(text(&replayed, "status"), "reproduced");
-    assert_eq!(text(&replayed, "certificate"), text(&first, "certificate"));
+    assert_eq!(
+        Some(text(&replayed, "certificate")),
+        first.get("certificate").and_then(Json::as_str)
+    );
     assert_eq!(
         replayed.get("certificate"),
         first.get("certificate"),

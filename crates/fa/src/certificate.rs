@@ -696,7 +696,7 @@ pub(crate) fn status<V: Vfs + Clone>(
             TrialBalanceRequest::AsOf { day } => entry.proposal.effective_date <= *day,
             TrialBalanceRequest::Activity { periods } => {
                 let period = fa_registers::canonical::entry_period_code(book, &entry)?;
-                periods.iter().any(|p| *p == period)
+                periods.contains(&period)
             }
         };
         if inside {
