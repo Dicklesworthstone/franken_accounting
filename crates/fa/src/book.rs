@@ -1133,6 +1133,7 @@ mod tests {
             )
             .await
             .unwrap();
+            let replay_events_start = vfs.events().len();
             let (scratch, map) = book
                 .replay_into(&cx, scratch_db, None, Entropy::deterministic(seed + 1))
                 .await
@@ -1156,7 +1157,7 @@ mod tests {
             );
             assert_eq!(book.head(&cx).unwrap(), source_head);
             let events = vfs.events();
-            assert!(events.iter().any(|e| {
+            assert!(events[replay_events_start..].iter().any(|e| {
                 matches!(e.kind, FaultKind::Latency { .. }) && e.path.starts_with(scratch_path)
             }));
             assert!(
