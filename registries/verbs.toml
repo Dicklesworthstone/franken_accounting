@@ -599,7 +599,7 @@ fields = ["status:string", "signatures:string", "scope:string", "states_checked:
 [[event]]
 name = "certificate_replayed"
 book = true
-doc = "The certificate reproduced: every certified input was replayed by the substrate (`Database::replay`) at `known_at`, and the report refolded to the certified output digest and rows. Any difference is exit 8 (FA-REF-162) naming the first input, registry epoch or row that differs; a certificate of another book is FA-REF-161."
+doc = "The certificate reproduced: every certified input was replayed by the substrate (`Database::replay`) at `known_at`, and the report refolded to the certified output digest and rows. Any difference is exit 8 (FA-REF-150) naming the first input, registry epoch or row that differs; a certificate of another book is FA-REF-149."
 fields = ["certificate:hex", "definition:string", "known_at:seq", "inputs_replayed:[string]", "output_digest:hex", "rows:int", "status:string"]
 
 [[event]]
@@ -1119,7 +1119,7 @@ stdin_property = "certificate_hex"
 stdin_kind = "string"
 stdin_via = "certificate"
 required = []
-dont = ["Don't edit the hex: a certificate is never repaired; an altered one is refused (FA-REF-160 malformed, FA-REF-162 not reproduced).", "Don't replay against another book: the certificate names its book (FA-REF-161)."]
+dont = ["Don't edit the hex: a certificate is never repaired; an altered one is refused (FA-REF-148 malformed, FA-REF-150 not reproduced).", "Don't replay against another book: the certificate names its book (FA-REF-149)."]
 mistakes = ["Passing the envelope's `certificate` id instead of `data.certificate.bytes`: replay needs the bytes.", "Reading a SupersededBy status as a failed replay: a superseded certificate still reproduces at its known-at."]
 
 [[mcp.tool]]

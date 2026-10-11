@@ -377,13 +377,13 @@ fn an_altered_certificate_or_another_history_does_not_reproduce() {
     let mut output = original.clone();
     output.output_digest[0] ^= 1;
     let (code, id, message) = refused(&book, &output, "output.cert");
-    assert_eq!((code, id.as_str()), (8, "FA-REF-162"), "{message}");
+    assert_eq!((code, id.as_str()), (8, "FA-REF-150"), "{message}");
     assert!(message.contains("totals differ"), "{message}");
 
     let mut row = original.clone();
     row.row_digests[0][0] ^= 1;
     let (code, id, message) = refused(&book, &row, "row.cert");
-    assert_eq!((code, id.as_str()), (8, "FA-REF-162"), "{message}");
+    assert_eq!((code, id.as_str()), (8, "FA-REF-150"), "{message}");
     assert!(message.contains("row 0"), "{message}");
 
     let mut parameters = original.clone();
@@ -391,12 +391,12 @@ fn an_altered_certificate_or_another_history_does_not_reproduce() {
         periods: vec!["FY2026-P04".into()],
     };
     let (code, id, message) = refused(&book, &parameters, "parameters.cert");
-    assert_eq!((code, id.as_str()), (8, "FA-REF-162"), "{message}");
+    assert_eq!((code, id.as_str()), (8, "FA-REF-150"), "{message}");
 
     let mut earlier = original.clone();
     earlier.known_at = fgdb_types::CommitSeq(known_at.0 - 1);
     let (code, id, message) = refused(&book, &earlier, "known-at.cert");
-    assert_eq!((code, id.as_str()), (8, "FA-REF-162"), "{message}");
+    assert_eq!((code, id.as_str()), (8, "FA-REF-150"), "{message}");
     assert!(
         message.contains("not the certificate's known-at"),
         "{message}"
@@ -405,18 +405,18 @@ fn an_altered_certificate_or_another_history_does_not_reproduce() {
     let mut input = original.clone();
     input.inputs[0].certificate.result_digest.0[0] ^= 1;
     let (code, id, message) = refused(&book, &input, "input.cert");
-    assert_eq!((code, id.as_str()), (8, "FA-REF-162"), "{message}");
+    assert_eq!((code, id.as_str()), (8, "FA-REF-150"), "{message}");
     assert!(message.contains("input `entries`"), "{message}");
 
     let mut dropped = original.clone();
     dropped.inputs.pop();
     let (code, id, message) = refused(&book, &dropped, "dropped.cert");
-    assert_eq!((code, id.as_str()), (8, "FA-REF-162"), "{message}");
+    assert_eq!((code, id.as_str()), (8, "FA-REF-150"), "{message}");
 
     let mut units = original.clone();
     units.units_digest[0] ^= 1;
     let (code, id, message) = refused(&book, &units, "units.cert");
-    assert_eq!((code, id.as_str()), (8, "FA-REF-162"), "{message}");
+    assert_eq!((code, id.as_str()), (8, "FA-REF-150"), "{message}");
     assert!(message.contains("unit table"), "{message}");
 
     // Malformed text is a usage error and never opens the book.
@@ -428,14 +428,14 @@ fn an_altered_certificate_or_another_history_does_not_reproduce() {
         let file = write(&dir, name, &text_);
         let (code, stdout, _) = run(&book, &["replay", &file, "--json"]);
         let (id, message) = refusal_of(&stdout);
-        assert_eq!((code, id.as_str()), (2, "FA-REF-160"), "{name}: {message}");
+        assert_eq!((code, id.as_str()), (2, "FA-REF-148"), "{name}: {message}");
     }
 
     // The fork has the same keys but has not reached the known-at yet.
     let file = write(&dir, "tb.cert", &hex);
     let (code, stdout, _) = run(&fork, &["replay", &file, "--json"]);
     let (id, message) = refusal_of(&stdout);
-    assert_eq!((code, id.as_str()), (8, "FA-REF-162"), "{message}");
+    assert_eq!((code, id.as_str()), (8, "FA-REF-150"), "{message}");
     assert!(message.contains("beyond this book's frontier"), "{message}");
 
     // Once the fork records another sale at the same sequence, its history
@@ -443,17 +443,17 @@ fn an_altered_certificate_or_another_history_does_not_reproduce() {
     sale(&dir, &fork, "sale-1", "2026-03-10", "99.99");
     let (code, stdout, _) = run(&fork, &["replay", &file, "--json"]);
     let (id, message) = refusal_of(&stdout);
-    assert_eq!((code, id.as_str()), (8, "FA-REF-162"), "{message}");
+    assert_eq!((code, id.as_str()), (8, "FA-REF-150"), "{message}");
     assert!(message.contains("not the certified history"), "{message}");
 
     // Another book refuses by name.
     let other = book_other(&dir);
     let (code, stdout, _) = run(&other, &["replay", &file, "--json"]);
     let (id, message) = refusal_of(&stdout);
-    assert_eq!((code, id.as_str()), (8, "FA-REF-161"), "{message}");
+    assert_eq!((code, id.as_str()), (8, "FA-REF-149"), "{message}");
     let (code, stdout, _) = run(&other, &["certificate", "status", &file, "--json"]);
     let (id, _) = refusal_of(&stdout);
-    assert_eq!((code, id.as_str()), (8, "FA-REF-161"));
+    assert_eq!((code, id.as_str()), (8, "FA-REF-149"));
 
     // The untouched certificate still reproduces on its own book.
     let replayed = parsed(&ok(&book, &["replay", &file, "--json"]));

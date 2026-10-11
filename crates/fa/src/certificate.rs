@@ -48,12 +48,12 @@ use crate::book::BookError;
 /// Refusal codes this module issues (registries/refusal_catalog.toml).
 pub mod code {
     /// The certificate text is not a well-formed report certificate.
-    pub const CERTIFICATE_MALFORMED: &str = "FA-REF-160";
+    pub const CERTIFICATE_MALFORMED: &str = "FA-REF-148";
     /// The certificate was issued by another book.
-    pub const CERTIFICATE_OTHER_BOOK: &str = "FA-REF-161";
+    pub const CERTIFICATE_OTHER_BOOK: &str = "FA-REF-149";
     /// Replay did not reproduce the certificate: an input, a registry epoch,
     /// the definition or the output differs.
-    pub const CERTIFICATE_NOT_REPRODUCED: &str = "FA-REF-162";
+    pub const CERTIFICATE_NOT_REPRODUCED: &str = "FA-REF-150";
 }
 
 const FORMAT: &str = "fa:report-certificate";

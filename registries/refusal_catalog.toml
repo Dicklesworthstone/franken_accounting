@@ -743,13 +743,12 @@ exit = "refusal"
 cite = "plan §5.4, §7.1a, §7.6 (automatic effects take time only from a corroborated committed tick)"
 fix = "journal a newer TimeEvidence tick that its source's monotonic clock corroborates (Book::record_tick or AsyncBook::record_tick with monotonic_ok true, by the caller that holds the clock), then rerun the sweep under it (Book::sweep or AsyncBook::sweep)"
 
-# 160–162 (OliveFortress, bead fa-cqk): report certificates (plan §13.6,
+# 148–150 (OliveFortress, bead fa-cqk; block 148–152 assigned by CobaltGull 4313): report certificates (plan §13.6,
 # FA-INV-11). A certificate is decoded before any book is observed; replay
 # re-executes every certified input through the substrate and refolds the
-# report at the certified known-at. 145–159 are left to the chains landing
-# before fa-cqk.
+# report at the certified known-at.
 [[refusal]]
-code = "FA-REF-160"
+code = "FA-REF-148"
 name = "CERTIFICATE_MALFORMED"
 owners = ["fa"]
 exit = "usage"
@@ -757,7 +756,7 @@ cite = "plan §13.6 (a certificate is the canonical bytes `fa tb --json` returns
 fix = "pass the `certificate.bytes` hex from `fa tb … --json`, unedited, as a file or on stdin (`-`)"
 
 [[refusal]]
-code = "FA-REF-161"
+code = "FA-REF-149"
 name = "CERTIFICATE_OTHER_BOOK"
 owners = ["fa"]
 exit = "verification"
@@ -765,7 +764,7 @@ cite = "plan §13.6 (a certificate's closure names its book)"
 fix = "replay it against book {book} (`--book <its directory>`)"
 
 [[refusal]]
-code = "FA-REF-162"
+code = "FA-REF-150"
 name = "CERTIFICATE_NOT_REPRODUCED"
 owners = ["fa"]
 exit = "verification"

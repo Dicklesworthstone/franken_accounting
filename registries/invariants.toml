@@ -27,11 +27,9 @@ schema_version = 1
 # the clauses whose first_gate is G1, covering the plan's Genesis clause set
 # (fa-registry pins both). A dormant clause here is not refused; it blocks
 # G1 and is reported as blocking it. Today that is FA-INV-11.core: no plan
-# certificate exists until fa-we7 lands. The certified trial balance and its
-# replay (the Genesis slice's `fa tb --json` → `fa replay`) are the live
-# first slice FA-INV-11.tb-replay (fa-cqk).
+# certificate or replay code exists until fa-we7 and fa-9ae land.
 [gate_g1]
-clauses = ["FA-INV-01.per-unit", "FA-INV-01.leaf-only", "FA-INV-01.unit-policy", "FA-INV-02.payload-immutable", "FA-INV-02.control-record", "FA-INV-03.core", "FA-INV-03.transition-journaled", "FA-INV-04.core", "FA-INV-05.evidence-minimum", "FA-INV-06.core", "FA-INV-07.core", "FA-INV-09.core", "FA-INV-10.core", "FA-INV-11.core", "FA-INV-11.tb-replay", "FA-INV-14.leaf-envelope", "FA-INV-14.consistency", "FA-INV-15.core", "FA-INV-16.core"]
+clauses = ["FA-INV-01.per-unit", "FA-INV-01.leaf-only", "FA-INV-01.unit-policy", "FA-INV-02.payload-immutable", "FA-INV-02.control-record", "FA-INV-03.core", "FA-INV-03.transition-journaled", "FA-INV-04.core", "FA-INV-05.evidence-minimum", "FA-INV-06.core", "FA-INV-07.core", "FA-INV-09.core", "FA-INV-10.core", "FA-INV-11.core", "FA-INV-14.leaf-envelope", "FA-INV-14.consistency", "FA-INV-15.core", "FA-INV-16.core"]
 
 [[invariant]]
 id = "FA-INV-01"
@@ -735,12 +733,13 @@ id = "tb-replay"
 status = "live"
 statement = "Every trial balance (stock, as-of, period activity) carries a certificate whose inputs are the substrate's certified reads at its known-at and whose output and row digests `fa replay` reproduces byte-for-byte; an altered certificate, another history or another book does not reproduce."
 evidence_class = "invariant"
-first_gate = "G1"
+first_gate = "G3"
 owner = "fa-cqk"
 checkers = ["fa-cli::tests/replay.rs::a_certified_trial_balance_replays_byte_for_byte_after_reopen_and_on_a_copy", "fa-registers::lib::canonical::tests::the_encoding_is_deterministic_and_binds_every_value"]
 negatives = ["fa-cli::tests/replay.rs::an_altered_certificate_or_another_history_does_not_reproduce", "fa::lib::certificate::tests::malformed_certificate_text_is_refused_as_usage_never_decoded_partly"]
 waiver = "forbidden"
 
+# The trial balance is report-replay's first slice: FA-INV-11.tb-replay above.
 [[clause]]
 invariant = "FA-INV-11"
 id = "report-replay"
