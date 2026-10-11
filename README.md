@@ -51,6 +51,13 @@ Changed definitions, missing members, corrupt payloads and unsupported unit
 identifiers fail with exit 5 before amounts are interpreted. Extra units in a
 newer executable are not silently installed into an older book.
 
+Financial CLI output checks every amount's unit and returns exit 5 for an
+unknown identity. Trial-balance unit checks also run before retaining
+certificate metadata in the book or creating a requested certificate file.
+Library callers can use `Amount::try_render` to
+propagate the same typed error; the compatibility `render` method labels an
+unknown value as a raw mantissa without guessing its scale.
+
 **Compatibility:** books created before canonical unit payloads and the table
 commitment were recorded are refused. Keep the creating executable for those
 books. An explicit, authorized backfill that journals the adopted definitions

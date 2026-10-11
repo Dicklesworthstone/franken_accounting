@@ -129,6 +129,30 @@ pub(crate) fn usage(message: impl Into<String>, fix: impl Into<String>) -> Fail 
     })
 }
 
+/// Report amounts come from stored entries and cells. A unit absent from
+/// the book's registry is corruption, not user input or printable money.
+fn amount_corruption(error: fa_money::AmountError) -> Fail {
+    Fail::Book(BookError::Kernel(fa_journal::KernelError::Corrupt(
+        format!(
+            "cannot render stored amount: {error}; preserve the book and use its creating registry; unit reconciliation is required (fa-nnm)"
+        ),
+    )))
+}
+
+fn render_amount(amount: Amount, units: &fa_money::UnitRegistry) -> Result<String, Fail> {
+    amount.try_render(units).map_err(amount_corruption)
+}
+
+fn registered_unit_code(
+    unit: fa_money::UnitId,
+    units: &fa_money::UnitRegistry,
+) -> Result<String, Fail> {
+    units
+        .get(unit)
+        .map(|unit| unit.code.clone())
+        .ok_or_else(|| amount_corruption(fa_money::AmountError::UnknownUnit(unit.to_string())))
+}
+
 /// Where a command's output goes.
 #[derive(Debug)]
 pub enum Sink {
@@ -1927,16 +1951,20 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let book = ctx.books.open(args)?;
             let rows = book.accounts()?;
             let units = &book.context().units;
-            let bound = |a: &fa_journal::AccountRow, m: Option<i128>| match (a.unit_policy, m) {
-                (UnitPolicy::Single(u), Some(m)) => s(Amount::new(u, m).render(units)),
-                _ => Json::Null,
+            let bound = |a: &fa_journal::AccountRow, m: Option<i128>| -> Result<Json, Fail> {
+                match (a.unit_policy, m) {
+                    (UnitPolicy::Single(u), Some(m)) => {
+                        Ok(s(render_amount(Amount::new(u, m), units)?))
+                    }
+                    _ => Ok(Json::Null),
+                }
             };
             let items: Vec<Json> = rows
                 .iter()
                 .map(|a| {
-                    obj(vec![
-                        ("lower_bound", bound(a, a.limit.and_then(|l| l.lower))),
-                        ("upper_bound", bound(a, a.limit.and_then(|l| l.upper))),
+                    Ok(obj(vec![
+                        ("lower_bound", bound(a, a.limit.and_then(|l| l.lower))?),
+                        ("upper_bound", bound(a, a.limit.and_then(|l| l.upper))?),
                         (
                             "limit_scope",
                             a.limit.map_or(Json::Null, |l| {
@@ -1953,16 +1981,14 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         (
                             "unit",
                             s(match a.unit_policy {
-                                UnitPolicy::Single(u) => {
-                                    units.get(u).map(|u| u.code.clone()).unwrap_or_default()
-                                }
+                                UnitPolicy::Single(u) => registered_unit_code(u, units)?,
                                 UnitPolicy::AnyCurrency => "any-currency".into(),
                                 UnitPolicy::AnyUnit => "any".into(),
                             }),
                         ),
-                    ])
+                    ]))
                 })
-                .collect();
+                .collect::<Result<_, Fail>>()?;
             if out.json {
                 out.event("accounts", vec![("accounts", Json::Arr(items))], "");
             } else {
@@ -2921,8 +2947,8 @@ fn post_document(
             (
                 balanced.posted,
                 Some((
-                    Amount::new(unit, balanced.requested).render(units),
-                    Amount::new(unit, balanced.moved).render(units),
+                    render_amount(Amount::new(unit, balanced.requested), units)?,
+                    render_amount(Amount::new(unit, balanced.moved), units)?,
                 )),
             )
         }
@@ -3188,6 +3214,7 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         };
         (report, None)
     };
+    validate_trial_balance_units(&tb, &book.context().units)?;
     let retained = certificate
         .as_ref()
         .map(|certificate| {
@@ -3204,6 +3231,24 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
+/// Check presentation inputs before retaining a certificate or emitting any
+/// report. Even a zero total must name a registered unit.
+fn validate_trial_balance_units(
+    tb: &fa_registers::TrialBalance,
+    units: &fa_money::UnitRegistry,
+) -> Result<(), Fail> {
+    for unit in tb
+        .rows
+        .iter()
+        .map(|row| row.unit_id)
+        .chain(tb.unit_totals.keys().copied())
+        .chain(tb.pending_unit_totals.keys().copied())
+    {
+        registered_unit_code(fa_money::UnitId(unit), units)?;
+    }
+    Ok(())
+}
+
 /// The same renderer serves both an original report and its verified replay.
 /// Its coordinate comes from the certified selector, never the present head.
 pub(crate) fn render_trial_balance(
@@ -3213,6 +3258,17 @@ pub(crate) fn render_trial_balance(
     selection: &TrialBalanceSelection,
     certificate: Option<&str>,
 ) -> Result<(), Fail> {
+    render_trial_balance_with_units(out, &book.context().units, tb, selection, certificate)
+}
+
+fn render_trial_balance_with_units(
+    out: &Out,
+    units: &fa_money::UnitRegistry,
+    tb: &fa_registers::TrialBalance,
+    selection: &TrialBalanceSelection,
+    certificate: Option<&str>,
+) -> Result<(), Fail> {
+    validate_trial_balance_units(tb, units)?;
     let periods: &[String] = match selection {
         TrialBalanceSelection::Periods(periods) | TrialBalanceSelection::Activity(periods) => {
             periods
@@ -3224,58 +3280,45 @@ pub(crate) fn render_trial_balance(
         TrialBalanceSelection::AsOf(date) => format!("as-of:{date}"),
         _ => periods_selector(periods),
     });
-    let units = &book.context().units;
-    let render = |unit: u32, m: i128| Amount::new(fa_money::UnitId(unit), m).render(units);
+    let render = |unit: u32, m: i128| render_amount(Amount::new(fa_money::UnitId(unit), m), units);
     let rows: Vec<Json> = tb
         .rows
         .iter()
         .map(|r| {
-            obj(vec![
+            Ok(obj(vec![
                 ("code", s(&r.code)),
                 ("name", s(&r.name)),
                 ("type", s(r.account_type.name().unwrap_or("?"))),
-                ("debits", s(render(r.unit_id, r.debits))),
-                ("credits", s(render(r.unit_id, r.credits))),
-                ("net", s(render(r.unit_id, r.debits - r.credits))),
-                ("debits_pending", s(render(r.unit_id, r.debits_pending))),
-                ("credits_pending", s(render(r.unit_id, r.credits_pending))),
-            ])
+                ("debits", s(render(r.unit_id, r.debits)?)),
+                ("credits", s(render(r.unit_id, r.credits)?)),
+                ("net", s(render(r.unit_id, r.debits - r.credits)?)),
+                ("debits_pending", s(render(r.unit_id, r.debits_pending)?)),
+                ("credits_pending", s(render(r.unit_id, r.credits_pending)?)),
+            ]))
         })
-        .collect();
+        .collect::<Result<_, Fail>>()?;
     let pending_totals: Vec<Json> = tb
         .pending_unit_totals
         .iter()
         .map(|(u, (d, c))| {
-            obj(vec![
-                (
-                    "unit",
-                    s(units
-                        .get(fa_money::UnitId(*u))
-                        .map(|x| x.code.clone())
-                        .unwrap_or_default()),
-                ),
-                ("debits_pending", s(render(*u, *d))),
-                ("credits_pending", s(render(*u, *c))),
-            ])
+            Ok(obj(vec![
+                ("unit", s(registered_unit_code(fa_money::UnitId(*u), units)?)),
+                ("debits_pending", s(render(*u, *d)?)),
+                ("credits_pending", s(render(*u, *c)?)),
+            ]))
         })
-        .collect();
+        .collect::<Result<_, Fail>>()?;
     let totals: Vec<Json> = tb
         .unit_totals
         .iter()
         .map(|(u, (d, c))| {
-            obj(vec![
-                (
-                    "unit",
-                    s(units
-                        .get(fa_money::UnitId(*u))
-                        .map(|x| x.code.clone())
-                        .unwrap_or_default()),
-                ),
-                ("debits", s(render(*u, *d))),
-                ("credits", s(render(*u, *c))),
-            ])
+            Ok(obj(vec![
+                ("unit", s(registered_unit_code(fa_money::UnitId(*u), units)?)),
+                ("debits", s(render(*u, *d)?)),
+                ("credits", s(render(*u, *c)?)),
+            ]))
         })
-        .collect();
+        .collect::<Result<_, Fail>>()?;
     if out.json {
         out.event_with_certificate(
             "trial_balance",
@@ -3323,10 +3366,10 @@ pub(crate) fn render_trial_balance(
                 "{:<10} {:<28} {:>22} {:>22} {:>22} {:>22}",
                 r.code,
                 r.name,
-                render(r.unit_id, r.debits),
-                render(r.unit_id, r.credits),
-                render(r.unit_id, r.debits_pending),
-                render(r.unit_id, r.credits_pending)
+                render(r.unit_id, r.debits)?,
+                render(r.unit_id, r.credits)?,
+                render(r.unit_id, r.debits_pending)?,
+                render(r.unit_id, r.credits_pending)?
             ));
         }
         let total_units: std::collections::BTreeSet<_> = tb
@@ -3341,10 +3384,10 @@ pub(crate) fn render_trial_balance(
             out.line(format!(
                 "{:<39} {:>22} {:>22} {:>22} {:>22}",
                 "total",
-                render(u, d),
-                render(u, c),
-                render(u, pd),
-                render(u, pc)
+                render(u, d)?,
+                render(u, c)?,
+                render(u, pd)?,
+                render(u, pc)?
             ));
         }
         out.line(format!("balanced: {}", tb.is_balanced()));
@@ -3641,7 +3684,7 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 let unit = unit_of.get(code).ok_or_else(|| {
                     Fail::Internal(format!("limited account `{code}` has no single unit"))
                 })?;
-                Ok(s(Amount::new(*unit, m).render(units)))
+                Ok(s(render_amount(Amount::new(*unit, m), units)?))
             };
             let fields = availability_fields(&v, &amount)?;
             if v.is_green() {
@@ -3741,11 +3784,12 @@ fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             .cloned()
             .unwrap_or_else(|| format!("{:032x}", vid.0))
     };
-    let render = |unit: u32, m: i128| Amount::new(fa_money::UnitId(unit), m).render(&ctx.units);
+    let render =
+        |unit: u32, m: i128| render_amount(Amount::new(fa_money::UnitId(unit), m), &ctx.units);
     let rows: Vec<Json> = items
         .iter()
         .map(|i| {
-            obj(vec![
+            Ok(obj(vec![
                 ("entry", s(format!("{:032x}", i.entry.0))),
                 ("ordinal", Json::Int(i128::from(i.ordinal))),
                 ("account", s(code_of(i.account))),
@@ -3759,30 +3803,30 @@ fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ),
                 ("effective_date", s(i.effective_date.render())),
                 ("recorded_at", Json::Int(i128::from(i.recorded_at.0))),
-                ("original", s(render(i.unit_id, i.original))),
-                ("applied", s(render(i.unit_id, i.applied))),
-                ("applied_out", s(render(i.unit_id, i.applied_out))),
-                ("open", s(render(i.unit_id, i.open))),
+                ("original", s(render(i.unit_id, i.original)?)),
+                ("applied", s(render(i.unit_id, i.applied)?)),
+                ("applied_out", s(render(i.unit_id, i.applied_out)?)),
+                ("open", s(render(i.unit_id, i.open)?)),
                 (
                     "applications",
                     Json::Arr(
                         i.applications
                             .iter()
                             .map(|a| {
-                                obj(vec![
+                                Ok(obj(vec![
                                     ("entry", s(format!("{:032x}", a.entry.0))),
                                     ("ordinal", Json::Int(i128::from(a.ordinal))),
-                                    ("amount", s(render(i.unit_id, a.amount))),
+                                    ("amount", s(render(i.unit_id, a.amount)?)),
                                     ("recorded_at", Json::Int(i128::from(a.recorded_at.0))),
                                     ("live", Json::Bool(a.live)),
-                                ])
+                                ]))
                             })
-                            .collect(),
+                            .collect::<Result<_, Fail>>()?,
                     ),
                 ),
-            ])
+            ]))
         })
-        .collect();
+        .collect::<Result<_, Fail>>()?;
     if out.json {
         out.event(
             "open_items",
@@ -3809,10 +3853,10 @@ fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 } else {
                     "credit"
                 },
-                render(i.unit_id, i.original),
-                render(i.unit_id, i.applied),
-                render(i.unit_id, i.applied_out),
-                render(i.unit_id, i.open)
+                render(i.unit_id, i.original)?,
+                render(i.unit_id, i.applied)?,
+                render(i.unit_id, i.applied_out)?,
+                render(i.unit_id, i.open)?
             ));
         }
         out.line(format!("{} open item(s)", items.len()));
@@ -3905,13 +3949,8 @@ fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
     let units = &book.context().units;
-    let render = |unit: u32, m: i128| Amount::new(fa_money::UnitId(unit), m).render(units);
-    let unit_code = |unit: u32| {
-        units
-            .get(fa_money::UnitId(unit))
-            .map(|u| u.code.clone())
-            .unwrap_or_default()
-    };
+    let render = |unit: u32, m: i128| render_amount(Amount::new(fa_money::UnitId(unit), m), units);
+    let unit_code = |unit: u32| registered_unit_code(fa_money::UnitId(unit), units);
     let type_name = AccountType(account.account_type).name().unwrap_or("?");
     let reasons =
         ReasonCodes::embedded().map_err(|e| Fail::Internal(format!("reason_codes.toml: {e}")))?;
@@ -3929,87 +3968,89 @@ fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         row[4] = c.credits;
         row[5] = i128::from(c.entry_count);
     }
+    // Prepare every amount before emitting either format. In particular,
+    // a corrupt later contribution must not follow a partial human report.
+    let cells: Vec<Json> = by_unit
+        .iter()
+        .map(|(u, [d, c, n, pd, pc, pn])| {
+            Ok(obj(vec![
+                ("unit", s(unit_code(*u)?)),
+                ("debits", s(render(*u, *d)?)),
+                ("credits", s(render(*u, *c)?)),
+                ("net", s(render(*u, d - c)?)),
+                ("entry_count", Json::Int(*n)),
+                ("debits_pending", s(render(*u, *pd)?)),
+                ("credits_pending", s(render(*u, *pc)?)),
+                ("pending_count", Json::Int(*pn)),
+            ]))
+        })
+        .collect::<Result<_, Fail>>()?;
+    let contributions: Vec<Json> = ex
+        .contributions
+        .iter()
+        .map(|c| {
+            Ok(obj(vec![
+                ("entry", s(format!("{:032x}", c.entry.0))),
+                ("entry_digest", s(hex(&c.entry_digest))),
+                ("class", s(c.class.name().unwrap_or("?"))),
+                ("effective_date", s(c.effective_date.render())),
+                ("recorded_at", Json::Int(i128::from(c.recorded_at.0))),
+                ("ordinal", Json::Int(i128::from(c.ordinal))),
+                ("side", s(side_name(c.side))),
+                ("amount", s(render(c.unit_id, c.mantissa)?)),
+                ("column", s(c.column.name())),
+                (
+                    "released_at",
+                    c.released_at
+                        .map_or(Json::Null, |r| Json::Int(i128::from(r.0))),
+                ),
+                (
+                    "resolves",
+                    c.resolves
+                        .map_or(Json::Null, |v| s(format!("{:032x}", v.0))),
+                ),
+                (
+                    "supersedes",
+                    Json::Arr(
+                        c.supersedes
+                            .iter()
+                            .map(|l| lineage_json(l, &reasons))
+                            .collect(),
+                    ),
+                ),
+                (
+                    "evidence",
+                    Json::Arr(
+                        c.evidence
+                            .iter()
+                            .map(|e| {
+                                obj(vec![
+                                    ("document_oid", s(hex(&e.document_oid.0))),
+                                    ("doc_commit", s(hex(&e.doc_commit))),
+                                    ("role", Json::Int(i128::from(e.role))),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                ),
+            ]))
+        })
+        .collect::<Result<_, Fail>>()?;
+    let history: Vec<Json> = ex
+        .history
+        .iter()
+        .map(|h| {
+            Ok(obj(vec![
+                ("recorded_at", Json::Int(i128::from(h.recorded_at.0))),
+                ("unit", s(unit_code(h.unit_id)?)),
+                ("debits", s(render(h.unit_id, h.debits)?)),
+                ("credits", s(render(h.unit_id, h.credits)?)),
+                ("debits_pending", s(render(h.unit_id, h.debits_pending)?)),
+                ("credits_pending", s(render(h.unit_id, h.credits_pending)?)),
+            ]))
+        })
+        .collect::<Result<_, Fail>>()?;
     if out.json {
-        let cells: Vec<Json> = by_unit
-            .iter()
-            .map(|(u, [d, c, n, pd, pc, pn])| {
-                obj(vec![
-                    ("unit", s(unit_code(*u))),
-                    ("debits", s(render(*u, *d))),
-                    ("credits", s(render(*u, *c))),
-                    ("net", s(render(*u, d - c))),
-                    ("entry_count", Json::Int(*n)),
-                    ("debits_pending", s(render(*u, *pd))),
-                    ("credits_pending", s(render(*u, *pc))),
-                    ("pending_count", Json::Int(*pn)),
-                ])
-            })
-            .collect();
-        let contributions: Vec<Json> = ex
-            .contributions
-            .iter()
-            .map(|c| {
-                obj(vec![
-                    ("entry", s(format!("{:032x}", c.entry.0))),
-                    ("entry_digest", s(hex(&c.entry_digest))),
-                    ("class", s(c.class.name().unwrap_or("?"))),
-                    ("effective_date", s(c.effective_date.render())),
-                    ("recorded_at", Json::Int(i128::from(c.recorded_at.0))),
-                    ("ordinal", Json::Int(i128::from(c.ordinal))),
-                    ("side", s(side_name(c.side))),
-                    ("amount", s(render(c.unit_id, c.mantissa))),
-                    ("column", s(c.column.name())),
-                    (
-                        "released_at",
-                        c.released_at
-                            .map_or(Json::Null, |r| Json::Int(i128::from(r.0))),
-                    ),
-                    (
-                        "resolves",
-                        c.resolves
-                            .map_or(Json::Null, |v| s(format!("{:032x}", v.0))),
-                    ),
-                    (
-                        "supersedes",
-                        Json::Arr(
-                            c.supersedes
-                                .iter()
-                                .map(|l| lineage_json(l, &reasons))
-                                .collect(),
-                        ),
-                    ),
-                    (
-                        "evidence",
-                        Json::Arr(
-                            c.evidence
-                                .iter()
-                                .map(|e| {
-                                    obj(vec![
-                                        ("document_oid", s(hex(&e.document_oid.0))),
-                                        ("doc_commit", s(hex(&e.doc_commit))),
-                                        ("role", Json::Int(i128::from(e.role))),
-                                    ])
-                                })
-                                .collect(),
-                        ),
-                    ),
-                ])
-            })
-            .collect();
-        let history: Vec<Json> = ex
-            .history
-            .iter()
-            .map(|h| {
-                obj(vec![
-                    ("recorded_at", Json::Int(i128::from(h.recorded_at.0))),
-                    ("unit", s(unit_code(h.unit_id))),
-                    ("debits", s(render(h.unit_id, h.debits))),
-                    ("credits", s(render(h.unit_id, h.credits))),
-                    ("debits_pending", s(render(h.unit_id, h.debits_pending))),
-                    ("credits_pending", s(render(h.unit_id, h.credits_pending))),
-                ])
-            })
-            .collect();
         out.event(
             "balance_explained",
             vec![
@@ -4070,13 +4111,13 @@ fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         for (u, [d, c, n, pd, pc, _]) in &by_unit {
             out.line(format!(
                 "{:<6} {:>20} {:>20} {:>20} {:>7} {:>20} {:>20}",
-                unit_code(*u),
-                render(*u, *d),
-                render(*u, *c),
-                render(*u, d - c),
+                unit_code(*u)?,
+                render(*u, *d)?,
+                render(*u, *c)?,
+                render(*u, d - c)?,
                 n,
-                render(*u, *pd),
-                render(*u, *pc)
+                render(*u, *pd)?,
+                render(*u, *pc)?
             ));
         }
     }
@@ -4094,7 +4135,7 @@ fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             c.class.name().unwrap_or("?"),
             c.effective_date.render(),
             side_name(c.side),
-            render(c.unit_id, c.mantissa),
+            render(c.unit_id, c.mantissa)?,
             c.column.name(),
             c.released_at
                 .map_or(String::new(), |r| format!(" at {}", r.0))
@@ -4296,7 +4337,7 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         .legs
                         .iter()
                         .map(|l| {
-                            obj(vec![
+                            Ok(obj(vec![
                                 (
                                     "side",
                                     s(if l.side == Side::Debit {
@@ -4306,10 +4347,10 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                                     }),
                                 ),
                                 ("account", s(format!("{:032x}", l.account_ref.0))),
-                                ("amount", s(l.amount.render(units))),
-                            ])
+                                ("amount", s(render_amount(l.amount, units)?)),
+                            ]))
                         })
-                        .collect();
+                        .collect::<Result<_, Fail>>()?;
                     let fields = vec![
                         ("found", Json::Bool(true)),
                         ("vid", s(vid_s)),
@@ -4372,6 +4413,135 @@ mod tests {
         let handled: Vec<&str> = HANDLERS.iter().map(|(name, _)| *name).collect();
         let registered: Vec<&str> = reg.verbs.iter().map(|v| v.name.as_str()).collect();
         assert_eq!(handled, registered);
+    }
+
+    fn render_fixture(unit: fa_money::UnitId) -> fa_registers::TrialBalance {
+        fa_registers::TrialBalance {
+            periods: vec!["FY2026-P03".into()],
+            known_at: CommitSeq(9),
+            effective_through: Some(DateDay(0)),
+            activity: false,
+            rows: vec![fa_registers::TbRow {
+                account: VId(1),
+                code: "1000".into(),
+                name: "Cash".into(),
+                account_type: AccountType(1),
+                unit_id: unit.0,
+                debits: 1_234,
+                credits: 1_234,
+                debits_pending: 25,
+                credits_pending: 25,
+            }],
+            unit_totals: [(unit.0, (1_234, 1_234))].into_iter().collect(),
+            pending_unit_totals: [(unit.0, (25, 25))].into_iter().collect(),
+        }
+    }
+
+    #[test]
+    fn unknown_units_refuse_reports_before_any_success_output() {
+        let units = fa_money::UnitRegistry::with_defaults();
+        let usd = units.lookup("USD").unwrap();
+        let unknown = fa_money::UnitId(u32::MAX);
+        assert!(units.get(unknown).is_none());
+        let certificate = "a".repeat(64);
+        let reg = verbs::registry().expect("verbs.toml");
+        for location in ["row", "posted total", "pending total"] {
+            let mut tb = render_fixture(usd);
+            match location {
+                "row" => tb.rows.push(fa_registers::TbRow {
+                    account: VId(2),
+                    code: "2000".into(),
+                    unit_id: unknown.0,
+                    ..tb.rows[0].clone()
+                }),
+                "posted total" => {
+                    tb.unit_totals.insert(unknown.0, (0, 0));
+                }
+                _ => {
+                    tb.pending_unit_totals.insert(unknown.0, (0, 0));
+                }
+            }
+            let selection = TrialBalanceSelection::Periods(tb.periods.clone());
+            for json in [false, true] {
+                let out = Out::new(json, true);
+                let result = render_trial_balance_with_units(
+                    &out,
+                    &units,
+                    &tb,
+                    &selection,
+                    Some(&certificate),
+                );
+                assert!(matches!(
+                    &result,
+                    Err(Fail::Book(BookError::Kernel(fa_journal::KernelError::Corrupt(_))))
+                ));
+                let (code, captured) = finish_into(out, result);
+                assert_eq!(code, exit::FOUNDATION, "{location}: {}", captured.stderr);
+                assert!(captured.stderr.contains("unknown unit"), "{}", captured.stderr);
+                assert!(captured.stderr.contains("unit reconciliation"), "{}", captured.stderr);
+                if json {
+                    assert_eq!(captured.stdout.lines().count(), 1, "{}", captured.stdout);
+                    assert_eq!(
+                        reg.check_line(captured.stdout.trim_end()),
+                        Ok("error"),
+                        "{}",
+                        captured.stdout
+                    );
+                    assert!(captured.stdout.contains(r#""exit":5"#));
+                    assert!(captured.stdout.contains(r#""class":"foundation""#));
+                    assert!(captured.stdout.contains(r#""certificate":null"#));
+                    assert!(!captured.stdout.contains(r#""event":"trial_balance""#));
+                } else {
+                    assert!(captured.stdout.is_empty(), "{location}: {}", captured.stdout);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn registered_amounts_keep_report_text_and_certificate_binding() {
+        let units = fa_money::UnitRegistry::with_defaults();
+        let tb = render_fixture(units.lookup("USD").unwrap());
+        let selection = TrialBalanceSelection::Periods(tb.periods.clone());
+        let certificate = "b".repeat(64);
+        let reg = verbs::registry().expect("verbs.toml");
+        for json in [false, true] {
+            let out = Out::new(json, true);
+            out.said.borrow_mut().at = Some(At {
+                book: "0a1b".into(),
+                known_at: CommitSeq(10),
+                effective: "all".into(),
+            });
+            let result = render_trial_balance_with_units(
+                &out,
+                &units,
+                &tb,
+                &selection,
+                Some(&certificate),
+            );
+            let (code, captured) = finish_into(out, result);
+            assert_eq!(code, exit::SUCCESS, "{}", captured.stderr);
+            assert!(captured.stderr.is_empty(), "{}", captured.stderr);
+            assert!(captured.stdout.contains("12.34 USD"), "{}", captured.stdout);
+            assert!(captured.stdout.contains("0.25 USD"), "{}", captured.stdout);
+            if json {
+                assert_eq!(
+                    reg.check_line(captured.stdout.trim_end()),
+                    Ok("trial_balance"),
+                    "{}",
+                    captured.stdout
+                );
+                assert!(captured.stdout.contains(r#""net":"0.00 USD""#));
+                assert!(captured.stdout.contains(r#""known_at":9"#));
+                assert!(
+                    captured.stdout.contains(&format!(r#""certificate":"{certificate}""#)),
+                    "{}",
+                    captured.stdout
+                );
+            } else {
+                assert!(captured.stdout.contains("balanced: true"));
+            }
+        }
     }
 
     /// A drift row only arises from a tampered store, which no binary test
@@ -4453,6 +4623,14 @@ mod tests {
                 && line.contains(r#""net":"40.00 USD""#),
             "{line}"
         );
+        let missing_units = fa_money::UnitRegistry::empty();
+        let corrupt_amount = |_: &str, m: i128| -> Result<Json, Fail> {
+            Ok(s(render_amount(Amount::new(fa_money::UnitId(7), m), &missing_units)?))
+        };
+        assert!(matches!(
+            availability_fields(&v, &corrupt_amount),
+            Err(Fail::Book(BookError::Kernel(fa_journal::KernelError::Corrupt(_))))
+        ));
     }
 
     /// Styling is resolved once (plan Appendix D determinism): only a

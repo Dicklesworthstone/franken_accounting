@@ -285,8 +285,13 @@ impl Amount {
     }
 
     /// Render as `"1234.56 USD"` (sign, exact scale, unit spelling).
-    pub fn render(self, reg: &UnitRegistry) -> String {
-        let unit = reg.get(self.unit).expect("registered unit");
+    ///
+    /// A unit absent from this book is a typed error. Never interpret its
+    /// mantissa with a guessed scale or a unit from another registry.
+    pub fn try_render(self, reg: &UnitRegistry) -> Result<String, AmountError> {
+        let unit = reg
+            .get(self.unit)
+            .ok_or_else(|| AmountError::UnknownUnit(self.unit.to_string()))?;
         let one = unit.one();
         let neg = self.mantissa < 0;
         let mag = self.mantissa.unsigned_abs();
@@ -308,7 +313,18 @@ impl Amount {
         } else {
             s.push_str(&unit.spelling());
         }
-        s
+        Ok(s)
+    }
+
+    /// Compatibility rendering for diagnostic text.
+    ///
+    /// Success output should use [`Self::try_render`] and propagate its typed
+    /// error. This existing String-returning API remains panic-free: unknown
+    /// units are explicitly labelled raw mantissas, with no guessed scale.
+    pub fn render(self, reg: &UnitRegistry) -> String {
+        self.try_render(reg).unwrap_or_else(|_| {
+            format!("{} (mantissa of unknown {})", self.mantissa, self.unit)
+        })
     }
 
     /// Canonical encoding: `unit_id: u32 LE ‖ mantissa: i128 LE` (plan §6.6).
@@ -901,5 +917,50 @@ mod tests {
                 Err(AmountError::Overflow)
             );
         }
+    }
+
+    #[test]
+    fn try_render_refuses_unknown_units_without_panicking_or_guessing_a_scale() {
+        let registry = UnitRegistry::with_defaults();
+        let unit = UnitId(u32::MAX);
+        for mantissa in [i128::MIN, -1, 0, 1, i128::MAX] {
+            let amount = Amount::new(unit, mantissa);
+            assert_eq!(
+                amount.try_render(&registry),
+                Err(AmountError::UnknownUnit("unit#4294967295".into()))
+            );
+            assert_eq!(
+                amount.render(&registry),
+                format!("{mantissa} (mantissa of unknown unit#4294967295)")
+            );
+        }
+    }
+
+    #[test]
+    fn checked_rendering_preserves_every_registered_scale_at_integer_boundaries() {
+        let registry = UnitRegistry::with_defaults();
+        for (unit, _) in registry.iter() {
+            for mantissa in [i128::MIN, -1, 0, 1, i128::MAX] {
+                let amount = Amount::new(unit, mantissa);
+                let text = amount.try_render(&registry).expect("known unit");
+                assert_eq!(Amount::parse(&text, &registry), Ok(amount));
+                assert_eq!(amount.render(&registry), text);
+            }
+        }
+        let usd = registry.lookup("USD").unwrap();
+        assert_eq!(
+            Amount::new(usd, 123456).try_render(&registry),
+            Ok("1234.56 USD".into())
+        );
+        let kwd = registry.lookup("KWD").unwrap();
+        assert_eq!(
+            Amount::new(kwd, -123456).try_render(&registry),
+            Ok("-123.456 KWD".into())
+        );
+        let jpy = registry.lookup("JPY").unwrap();
+        assert_eq!(
+            Amount::new(jpy, 123456).try_render(&registry),
+            Ok("123456 JPY".into())
+        );
     }
 }
