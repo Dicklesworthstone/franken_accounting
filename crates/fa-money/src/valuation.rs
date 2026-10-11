@@ -177,6 +177,8 @@ pub fn value_legs(
                     .then(ib.cmp(ia))
             })
             .map(|(i, _)| i)
+            // Native balance with nonnegative legs makes this absence
+            // unreachable for a nonzero residual; keep a law-naming refusal.
             .ok_or(ValuationError::NoLegToAbsorb { law })?;
         let adj = diff.abs();
         base_amounts[target] = base_amounts[target].checked_add(Amount::new(base, adj))?;
