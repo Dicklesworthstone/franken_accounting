@@ -213,7 +213,7 @@ fn every_try_it_today_command_runs_against_the_real_binary() {
 }
 
 #[test]
-fn a_try_it_today_line_with_a_flag_the_binary_lacks_fails_the_harness() {
+fn a_try_it_today_line_with_a_flag_or_verb_the_binary_lacks_fails_the_harness() {
     // The planted negative: the harness is not vacuous. One line gains a
     // flag the binary does not have, and that line, not a later one, fails
     // with exit 2.
@@ -229,6 +229,22 @@ fn a_try_it_today_line_with_a_flag_the_binary_lacks_fails_the_harness() {
     let (line, code, _) = ran.last().expect("a line ran");
     assert!(line.ends_with("--no-such-flag"));
     assert_eq!(*code, 2);
+    // A README line that claims a verb the binary does not have (the
+    // target-state `fa invoice`) also stops the harness there, exit 2.
+    let mut section = self::section(README);
+    let target = section
+        .commands
+        .iter()
+        .position(|l| l.starts_with("fa post"))
+        .expect("the section posts an entry");
+    section.commands[target] = "fa invoice --party ACME-CUST-17 --book acme --json".to_string();
+    let ran = execute(&section);
+    assert_eq!(
+        ran.len(),
+        target + 1,
+        "execution stops at the invented verb"
+    );
+    assert_eq!(ran.last().map(|(_, code, _)| *code), Some(2));
     // And a section without commands is caught too.
     let empty = Section {
         files: Vec::new(),
