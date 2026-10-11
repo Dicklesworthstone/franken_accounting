@@ -1346,6 +1346,51 @@ fn reversal_targets_are_posted_entries_and_non_entries_are_typed_refusals() {
 }
 
 #[test]
+fn unchecked_base_totals_are_refused_before_publication() {
+    let mut h = harness();
+    let frontier = h.db.frontier().unwrap();
+    let native = h.proposal(
+        h.rent_legs(10),
+        b"unchecked-fx-totals",
+        EntryClass::ORIGINAL,
+    );
+    // Even balanced claimed totals are unsupported without a registered FX
+    // law and witnessed rate documents. None of these claims has leg values.
+    for (debits, credits) in [(10, 10), (10, 11), (-1, -1)] {
+        let mut proposal = native.clone();
+        proposal.base_totals = Some(fa_model::BaseTotals {
+            unit_id: h.usd.0,
+            debits,
+            credits,
+            fx_law_oid: Oid([0x91; 32]),
+            rate_doc_oids: vec![Oid([0x92; 32])],
+            residual: Some(fa_model::Residual {
+                leg_ordinal: 0,
+                amount: Amount::new(h.usd, 1),
+            }),
+        });
+        proposal.validate().expect("structurally encodable claim");
+        let refusal = h.post(h.request(proposal, &["post"])).unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-102", exit::REFUSAL));
+        assert!(refusal.message.contains("base_totals"), "{refusal}");
+        assert!(refusal.fix.contains("fa-p7r"), "{refusal}");
+        assert_eq!(
+            h.db.frontier().unwrap(),
+            frontier,
+            "no unchecked FX publication"
+        );
+    }
+    // Refusing an unsupported valuation must neither disable ordinary native
+    // posting nor consume its idempotency key.
+    let posted = h
+        .post(h.request(native.clone(), &["post"]))
+        .expect("native post");
+    let (entry_ref, _) = committed(&posted).expect("fresh native commit");
+    let (stored, _) = read_entry(&h.db, entry_ref.vid).unwrap().unwrap();
+    assert_eq!(stored.proposal, native);
+}
+
+#[test]
 fn rich_leg_fields_without_a_law_are_refused_not_admitted() {
     let mut h = harness();
     let frontier = h.db.frontier().unwrap();
