@@ -4106,3 +4106,254 @@ fn a_held_pending_still_expires_at_its_deadline() {
     let eraser = Capability::embedded(PRINCIPAL, &["erase"]).expect("erase");
     assert_eq!(h.erase(&eraser, pending.vid).code, "FA-REF-117");
 }
+
+// ---------------------------------------------------------------------------
+// Redacted views (fa-txf C2, plan §9.6): a privileged holder derives a view
+// that proves itself against the document's commitment; a reader without
+// `privileged` gets only the view, decided before any read of the bytes.
+// ---------------------------------------------------------------------------
+
+/// `evidence_policy.toml` kind tag of a bank statement (contract 1 governs it).
+const BANK_STATEMENT: u8 = 5;
+
+impl Harness {
+    fn derive_view(
+        &mut self,
+        cap: &Capability,
+        store: &BlobStore<fgdb::MemVfs>,
+        oid: Oid,
+    ) -> Result<ViewDerived, Refusal> {
+        let ctx = self.ctx();
+        let db = &mut self.db;
+        let book = &self.book;
+        self.runtime
+            .block_on(async move { derive_redacted_view(db, &ctx, book, cap, store, oid).await })
+            .expect("kernel")
+    }
+
+    fn read_for(
+        &mut self,
+        cap: &Capability,
+        store: &BlobStore<fgdb::MemVfs>,
+        oid: Oid,
+    ) -> Result<DocumentRead, Refusal> {
+        let ctx = self.ctx();
+        let db = &mut self.db;
+        let book = &self.book;
+        self.runtime
+            .block_on(async move { read_document_for(db, &ctx, book, cap, store, oid).await })
+            .expect("kernel")
+    }
+}
+
+fn redacted(read: DocumentRead) -> Option<RedactedView> {
+    match read {
+        DocumentRead::Redacted(view) => Some(view),
+        DocumentRead::Full(_) => None,
+    }
+}
+
+#[test]
+fn a_privileged_holder_derives_the_view_a_reader_gets_in_place_of_the_bytes() {
+    let mut h = harness();
+    let store = blob_store("blobs");
+    let account = b"ACCOUNT 0012-3456-7890";
+    let mut bytes = b"STATEMENT OF ACCOUNT; HOLDER J. DOE; ".to_vec();
+    bytes.extend_from_slice(account);
+    bytes.extend(b"; ROUTING 021000021\n".repeat(200));
+    bytes.extend(b"2026-03-03 RENT -450.00\n".repeat(300));
+    let statement = h.document(BANK_STATEMENT, HUMAN_UPLOAD, &bytes);
+    h.add_document(&statement).expect("admitted");
+    let unviewed = h.document(BANK_STATEMENT, HUMAN_UPLOAD, b"STATEMENT 2 (no view yet)");
+    h.add_document(&unviewed).expect("admitted");
+    let invoice = h.document(
+        INVOICE,
+        HUMAN_UPLOAD,
+        b"INVOICE 77 (no contract governs it)",
+    );
+    h.add_document(&invoice).expect("admitted");
+    let counsel = Capability::embedded(PRINCIPAL, &["privileged"]).expect("privileged");
+    let reader = Capability::embedded(VId(9), &["read"]).expect("read");
+    let privileged_reader =
+        Capability::embedded(VId(10), &["read", "privileged"]).expect("read, privileged");
+
+    // Before any view exists, a plain reader is refused, never served bytes.
+    let r = h.read_for(&reader, &store, statement.oid()).unwrap_err();
+    eprintln!(
+        "txf redaction: a read before derivation -> {} {}",
+        r.code, r.message
+    );
+    assert_eq!((r.code, r.exit), ("FA-REF-142", exit::REFUSAL), "{r}");
+    assert!(r.fix.contains("privileged"), "{}", r.fix);
+
+    // Derivation needs `privileged`, a governed kind, a document of the book.
+    let head = h.db.frontier().unwrap();
+    for (what, cap, oid, want) in [
+        ("a reader", &reader, statement.oid(), "FA-REF-011"),
+        ("an ungoverned kind", &counsel, invoice.oid(), "FA-REF-100"),
+        ("an unknown document", &counsel, Oid([3; 32]), "FA-REF-081"),
+    ] {
+        let r = h.derive_view(cap, &store, oid).unwrap_err();
+        eprintln!(
+            "txf redaction: derivation by {what} -> {} {}",
+            r.code, r.message
+        );
+        assert_eq!(r.code, want, "{what}: {r}");
+    }
+    assert_eq!(h.db.frontier().unwrap(), head, "nothing written");
+
+    let derived = h
+        .derive_view(&counsel, &store, statement.oid())
+        .expect("derived");
+    eprintln!(
+        "txf redaction: view {:032x} of {} under contract {}, view_commit {}",
+        derived.view.0,
+        fa_journal::evidence::hex(&statement.oid().0),
+        derived.contract,
+        fa_journal::evidence::hex(&derived.view_commit)
+    );
+    assert_eq!(
+        (derived.view, derived.contract, derived.already_recorded),
+        (
+            redacted_view_vid(h.book.book_id, &statement.oid(), 1),
+            1,
+            false
+        )
+    );
+    assert!(
+        h.db.edge(edge_id(
+            relation::REDACTS,
+            derived.view,
+            document_vid(&statement.oid())
+        ))
+        .unwrap()
+        .is_some()
+    );
+    let again = h
+        .derive_view(&counsel, &store, statement.oid())
+        .expect("recorded");
+    assert!(again.already_recorded);
+    assert_eq!(
+        (again.view, again.view_commit),
+        (derived.view, derived.view_commit)
+    );
+
+    // The plain reader now gets the view: chunk 0 (the account block)
+    // withheld, the rest disclosed, the commitment rebuilt from the view.
+    let view = redacted(
+        h.read_for(&reader, &store, statement.oid())
+            .expect("a view"),
+    )
+    .expect("a redacted view, not the bytes");
+    assert_eq!(view.verify(), Ok(()));
+    assert_eq!(view.doc_commit, statement.doc_commit());
+    assert!(matches!(view.chunks[0], ViewChunk::Withheld(_)));
+    assert!(view.chunks.len() >= 3);
+    let mut disclosed = 0;
+    for (offset, chunk) in view.disclosed() {
+        let o = usize::try_from(offset).unwrap();
+        assert!(o >= 4096, "nothing of the account block is disclosed");
+        assert_eq!(&statement.bytes[o..o + chunk.len()], chunk);
+        disclosed += chunk.len();
+    }
+    assert_eq!(disclosed, statement.bytes.len() - 4096);
+    let wire = view.canonical_bytes().unwrap();
+    assert!(
+        !wire.windows(account.len()).any(|w| w == account),
+        "the account number never reaches the reader"
+    );
+
+    // A reader that reveals gets the verified bytes; an ungoverned kind is
+    // read in full by anyone with `read`; no `read` is refused first.
+    assert_eq!(
+        h.read_for(&privileged_reader, &store, statement.oid()),
+        Ok(DocumentRead::Full(statement.clone()))
+    );
+    assert_eq!(
+        h.read_for(&reader, &store, invoice.oid()),
+        Ok(DocumentRead::Full(invoice.clone()))
+    );
+    assert_eq!(
+        h.read_for(&counsel, &store, statement.oid())
+            .unwrap_err()
+            .code,
+        "FA-REF-011"
+    );
+
+    // A stored view is served only when it proves the commitment the book
+    // recorded for the document, rebuilds it, and withholds exactly the
+    // contract's chunks (WhiteCreek 3428); otherwise 143 (exit 8), never
+    // served. Each forgery is planted at its target's view identity with a
+    // recomputed view commitment.
+    let foreign_target = h.document(BANK_STATEMENT, HUMAN_UPLOAD, b"STATEMENT 3 (target)");
+    h.add_document(&foreign_target).expect("admitted");
+    let mut leaky_bytes = b"ACCOUNT 9999-0000-1111; ".to_vec();
+    leaky_bytes.extend(b"2026-03-05 FEE -12.00\n".repeat(250));
+    let leaky = h.document(BANK_STATEMENT, HUMAN_UPLOAD, &leaky_bytes);
+    h.add_document(&leaky).expect("admitted");
+    // (1) A leaf changed: the view no longer rebuilds its commitment.
+    let mut tampered = RedactedView::derive(&unviewed, 1, &[(0, 4096)]);
+    if let ViewChunk::Withheld(leaf) = &mut tampered.chunks[0] {
+        leaf[0] ^= 1;
+    }
+    // (2) A coherent view of other bytes, relabelled with the target's oid.
+    let mut foreign = RedactedView::derive(
+        &h.document(BANK_STATEMENT, HUMAN_UPLOAD, b"SOMEONE ELSE'S STATEMENT"),
+        1,
+        &[(0, 4096)],
+    );
+    foreign.original = foreign_target.oid();
+    assert_eq!(foreign.verify(), Ok(()), "internally consistent");
+    // (3) The genuine document with its privileged chunk disclosed.
+    let disclosing = RedactedView::derive(&leaky, 1, &[]);
+    assert_eq!(disclosing.verify(), Ok(()), "internally consistent");
+    for (what, view, target) in [
+        ("a changed leaf", tampered, unviewed.oid()),
+        ("a foreign document's view", foreign, foreign_target.oid()),
+        ("the privileged chunk disclosed", disclosing, leaky.oid()),
+    ] {
+        let mut batch = fgdb::WriteBatch::new(relation::REDACTS);
+        batch.create_vertex(
+            redacted_view_vid(h.book.book_id, &target, 1),
+            vec![fa_model::symbols::label::REDACTED_VIEW],
+            vec![
+                (
+                    property::FA_PAYLOAD,
+                    CanonicalScalar::bytes(view.canonical_bytes().unwrap()).unwrap(),
+                ),
+                (
+                    property::FA_DIGEST,
+                    CanonicalScalar::bytes(view.view_commit().unwrap().to_vec()).unwrap(),
+                ),
+            ],
+        );
+        h.write_raw(batch);
+        let r = h.read_for(&reader, &store, target).unwrap_err();
+        eprintln!("txf redaction: {what} -> {} {}", r.code, r.message);
+        assert_eq!(
+            (r.code, r.exit),
+            ("FA-REF-143", exit::VERIFICATION),
+            "{what}: {r}"
+        );
+        // Derivation over a forged row refuses rather than overwrite it.
+        let r = h.derive_view(&counsel, &store, target).unwrap_err();
+        assert_eq!(r.code, "FA-REF-143", "{what}: {r}");
+    }
+
+    // A revoked capability learns nothing, not even whether a view exists:
+    // 023 before any other read, for a reader and for a deriver alike.
+    let deriver = Capability::embedded(VId(11), &["privileged"]).expect("privileged");
+    for (n, revoked) in [(66u8, &reader), (67, &deriver)] {
+        h.revoke(revoked, n);
+    }
+    let head = h.db.frontier().unwrap();
+    let r = h.read_for(&reader, &store, statement.oid()).unwrap_err();
+    assert_eq!(r.code, "FA-REF-023", "{r}");
+    let r = h.derive_view(&deriver, &store, unviewed.oid()).unwrap_err();
+    eprintln!(
+        "txf redaction: a revoked deriver -> {} {}",
+        r.code, r.message
+    );
+    assert_eq!(r.code, "FA-REF-023", "{r}");
+    assert_eq!(h.db.frontier().unwrap(), head, "nothing written");
+}

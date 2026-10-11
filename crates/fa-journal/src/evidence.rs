@@ -17,9 +17,11 @@
 //! Interim postures, stated rather than hidden (the pinned substrate has no
 //! object store, Appendix H):
 //! - the canonical bytes ride inline in the Document's `fa:document:v1`
-//!   payload, bounded by `max_document_bytes`; `External` storage, parsed
-//!   projections, redaction contracts and the `ImportReceipt` chain are later
-//!   slices;
+//!   payload up to `max_document_bytes`; past it they live in the book's
+//!   blob store behind the inline commitment (`blob`,
+//!   `document_stores.toml`). Custody and import runs (`custody`, `import`),
+//!   legal holds (`legal_hold`) and redacted views (`redaction`) are their
+//!   own modules; parsed projections are a later slice;
 //! - `document_oid = H("fa:oid:document:v1" ‖ book_id ‖ doc_commit)` is a
 //!   book-scoped locator, because the substrate's keyed `ObjectId` (`K_oid`)
 //!   is not exposed through the embedded handle;
@@ -80,7 +82,7 @@ fn finalize(h: Hasher) -> [u8; 32] {
 /// unchanged. Empty input is one empty leaf, so the function is total.
 #[must_use]
 pub fn chunk_root(bytes: &[u8]) -> [u8; 32] {
-    let mut level: Vec<[u8; 32]> = if bytes.is_empty() {
+    let level: Vec<[u8; 32]> = if bytes.is_empty() {
         vec![leaf(0, &[])]
     } else {
         bytes
@@ -89,6 +91,12 @@ pub fn chunk_root(bytes: &[u8]) -> [u8; 32] {
             .map(|(i, c)| leaf(i, c))
             .collect()
     };
+    tree_root(level)
+}
+
+/// The root over `leaves` in order (one or more), as [`chunk_root`] builds
+/// it; a redacted view rebuilds the tree from disclosed and withheld leaves.
+pub(crate) fn tree_root(mut level: Vec<[u8; 32]>) -> [u8; 32] {
     while level.len() > 1 {
         level = level
             .chunks(2)
@@ -99,7 +107,7 @@ pub fn chunk_root(bytes: &[u8]) -> [u8; 32] {
             })
             .collect();
     }
-    level[0]
+    level.first().copied().unwrap_or_else(|| leaf(0, &[]))
 }
 
 fn node(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
@@ -110,7 +118,7 @@ fn node(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
     finalize(h)
 }
 
-fn leaf(index: usize, chunk: &[u8]) -> [u8; 32] {
+pub(crate) fn leaf(index: usize, chunk: &[u8]) -> [u8; 32] {
     let mut h = Hasher::new();
     h.update(b"fa:doc:leaf:v1");
     h.update(&len_u64(index).to_le_bytes());
@@ -129,11 +137,17 @@ fn len_u64(n: usize) -> u64 {
 /// public commitment every evidence list, bundle and certificate references.
 #[must_use]
 pub fn doc_commit(kind: u8, bytes: &[u8]) -> [u8; 32] {
+    commitment(kind, len_u64(bytes.len()), &chunk_root(bytes))
+}
+
+/// The commitment from its parts: what a redacted view recomputes without
+/// the withheld bytes.
+pub(crate) fn commitment(kind: u8, size: u64, root: &[u8; 32]) -> [u8; 32] {
     let mut h = Hasher::new();
     h.update(b"fa:doc:v1");
     h.update(&[kind]);
-    h.update(&len_u64(bytes.len()).to_le_bytes());
-    h.update(&chunk_root(bytes));
+    h.update(&size.to_le_bytes());
+    h.update(root);
     finalize(h)
 }
 
