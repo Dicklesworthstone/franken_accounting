@@ -4130,13 +4130,13 @@ impl Harness {
             .block_on(async move {
                 let mut describe = |text: &str| {
                     nonce += 1;
-                    Erasable::seal(
+                    Ok(Erasable::seal(
                         &text.to_string(),
                         None,
                         &book.seal_key,
                         [nonce; 32],
                         [nonce; 24],
-                    )
+                    ))
                 };
                 sweep(db, &ctx, book, &req, &mut describe).await
             })
@@ -4506,7 +4506,7 @@ fn redacted(read: DocumentRead) -> Option<RedactedView> {
 #[test]
 fn a_privileged_holder_derives_the_view_a_reader_gets_in_place_of_the_bytes() {
     let mut h = harness();
-    let store = blob_store("blobs");
+    let store = blob_store(&h, "blobs");
     let account = b"ACCOUNT 0012-3456-7890";
     let mut bytes = b"STATEMENT OF ACCOUNT; HOLDER J. DOE; ".to_vec();
     bytes.extend_from_slice(account);
