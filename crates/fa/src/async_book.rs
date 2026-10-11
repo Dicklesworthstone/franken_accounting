@@ -1023,6 +1023,42 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.trial_balance_at(cx, periods, None)
     }
 
+    /// Certify a stock/activity trial balance at a fixed retained snapshot.
+    /// The current whole-book embedded-owner authority is explicit in the
+    /// certificate. Creating this artifact does not advance the journal.
+    pub fn certify_trial_balance(
+        &self,
+        cx: &PurposeContexts,
+        selection: crate::TrialBalanceSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CertifiedTrialBalance> {
+        self.query(cx, |db, book| {
+            crate::certificate::certify(db, &cx.query(), book, selection, known_at)
+        })
+    }
+
+    /// Replay every native input, then the exact accounting fold.
+    pub fn replay_trial_balance(
+        &self,
+        cx: &PurposeContexts,
+        certificate: &crate::ReportCertificate,
+    ) -> Outcome<TrialBalance> {
+        self.query(cx, |db, book| {
+            crate::certificate::replay(db, &cx.query(), book, certificate)
+        })
+    }
+
+    /// Check whether later journal entries affect this report's selector.
+    pub fn certificate_status(
+        &self,
+        cx: &PurposeContexts,
+        certificate: &crate::ReportCertificate,
+    ) -> Outcome<crate::CertificateStatus> {
+        self.query(cx, |db, book| {
+            crate::certificate::status(db, &cx.query(), book, certificate)
+        })
+    }
+
     pub fn trial_balance_at(
         &self,
         cx: &PurposeContexts,

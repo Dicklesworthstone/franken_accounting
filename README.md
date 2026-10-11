@@ -13,7 +13,7 @@
 
 </div>
 
-> **Status (2026-10-10): implementation in progress.** The Rust workspace includes the embedded library and persistent CLI, exact money and calendar primitives, chart installation, period transitions, basic posting/reversal, register folds and verification, and an independent arithmetic oracle. Reporting supports stock balances, period activity, civil-date cutoffs and historical commit-sequence snapshots. Gate G0 and the full Genesis acceptance criteria remain open; the daemon/MCP, certified reports, offline bundles and the broader workflows below are design targets.
+> **Status (2026-10-11): implementation in progress.** The Rust workspace includes the embedded library, persistent CLI, book writer-lease daemon and registered MCP tools, exact money and calendar primitives, chart installation, period transitions, posting and reasoned reversal, register folds and verification, and an independent arithmetic oracle. Trial balances support stock balances, period activity, civil-date cutoffs, historical commit-sequence snapshots, and retained certificates that replay through native certified reads. Gate G0 and the full Genesis acceptance criteria remain open. Signed outsider evidence bundles, certificates for other report families, and the broader workflows below remain design targets.
 
 > **A note on tense.** The rest of this README is written in the **present tense, as if the entire design in [`COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md`](./COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md) is fully realized**: the 1.0 target state. This is deliberate — it describes the *finished* system so it gets trued-up in place as milestones land (§19's gates G1→G4) rather than rewritten later. Where the plan stages something as future work, this README says so plainly.
 
@@ -32,13 +32,46 @@ fa verify registers --book ./books/acme --period FY2026-P03 --json
 fa registers materialize --book ./books/acme --period FY2026-P03 --json
 ```
 
-Omitting `--as-known-at` selects the current head; the response records the resolved sequence. A later backdated entry appears at head but cannot change a report at an earlier sequence. Instant selectors require TimeEvidence and are currently refused. These reports are exact payload folds; report certificates and independent offline verification are still pending. The [persistent CLI tests](./crates/fa-cli/tests/cli.rs) exercise book creation, chart installation, posting, reporting, refusals and recovery with the actual binary.
+Omitting `--as-known-at` selects the current head; the response records the resolved sequence. A later backdated entry appears at head but cannot change a report at an earlier sequence. Instant selectors require TimeEvidence and are currently refused. These reports are exact payload folds; `tb` can retain a replay certificate as described below. The [persistent CLI tests](./crates/fa-cli/tests/cli.rs) exercise book creation, chart installation, posting, reporting, retained replay, refusals and recovery with the actual binary.
 
 Reports show posted and pending amounts separately. A hold reserves its original period; a later partial posting releases the entire hold and posts only the explicitly selected sub-vector in the resolution's period. A void releases the hold without posting. Earlier recorded snapshots still show the unresolved reservation. Limited accounts reserve pending outflows; pending inflows cannot fund spending. `fa verify availability` compares each limited account's expected cell, including its account binding, with a journal fold. Library sweeps expire holds using committed ticks; daemon scheduling and full timing simulation remain unfinished.
 
 Register verification compares both amount columns, counts, identity, period membership, watermark and fold checksum against the journal payloads. Rebuilding repairs derived rows and retires phantom cells without changing journal entries. Existing register caches from before the pending-column format must be rebuilt; their missing columns are reported as drift rather than assumed to be zero.
 
 The embedded API's `Book::advance_registers(period)` consumes new committed entry payloads through `delta_since` for native posted/pending period cells. It publishes cells and the consumed cursor atomically; `Book::rebuild_registers(period)` replaces them from a fresh journal fold. Reopening rehydrates the delta window, and an actually retired cursor falls back to a full rebuild. Staged migration chunks stay invisible; finalizing a run triggers a full fold to include newly activated chunks older than the cursor. Pending-sum overflow also falls back to the final fold, so holds released later in the same suffix do not prevent advancement; a genuinely oversized final sum still fails. `verify_registers` also checks the maintenance state against its journal prefix. This slice still scans projection metadata and writes the period's cells; it makes no throughput claim. Reports retain their literal folds. Historical register checkpoints, cadence policies, other register families, supervised daemon maintenance and cached report reads remain unfinished.
+
+### Certified trial balances and replay
+
+Retain the exact selector, known-at sequence, accounting journal prefix, registry
+versions and native read closure behind a trial balance:
+
+```bash
+# Saves canonical binary certificate bytes to a new file; never overwrites it.
+fa tb --book ./books/acme --period FY2026-P03 --certificate-out march.cert --json
+# Verifies the retained inputs and reproduces the original trial_balance line.
+fa replay march.cert --book ./books/acme --json
+# Reports Current or SupersededBy, with the later relevant entry identities.
+fa certificate status march.cert --book ./books/acme --json
+```
+
+The original call emits two robot lines, `trial_balance` and `report_certificate`,
+with the certificate digest in their envelopes. `--certificate-out` implies
+certification. Use `--certify` to receive the certificate entirely on stdout;
+the second line's `bytes` field is its complete canonical encoding as hex.
+`fa replay -` and `fa certificate status -` accept those hex bytes, or canonical
+binary bytes, on stdin. Retain the file or complete bytes: this slice does not
+resolve a certificate from its digest alone. MCP exposes the same flow through
+`fa_read_trial_balance` with `certify: true`, followed by `fa_read_replay` or
+`fa_read_certificate_status` with the returned hex string as `certificate`.
+
+Certification, replay and status append nothing to the accounting journal.
+The certificate fixes the original `--as-known-at` sequence, including a resolved
+HEAD, so later backdated entries can supersede its current status while its
+historical report still replays exactly. Stock, `--as-of` and `--activity`
+trial balances are supported. The declared scope is `fa-fold-over-prefix` with
+`embedded-owner` authority: unsigned replay against retained native history.
+Signed witness claims, independent offline bundles, and certificates for
+`explain balance`, open items and other report families remain unfinished.
 
 ### Embedded execution
 

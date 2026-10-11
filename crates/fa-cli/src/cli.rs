@@ -25,6 +25,7 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use fa::TrialBalanceSelection;
 use fa::book::{Book, BookError, BookKeys, Entropy};
 use fa_journal::BookContext;
 use fa_journal::{
@@ -66,6 +67,8 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("resolve", resolve_cmd),
     ("document", document::document_cmd),
     ("tb", tb_cmd),
+    ("replay", notary::replay_cmd),
+    ("certificate", notary::certificate_cmd),
     ("open-items", open_items_cmd),
     ("explain", explain_cmd),
     ("checkpoint", notary::checkpoint_cmd),
@@ -207,12 +210,13 @@ pub struct At {
 /// One robot-mode line (plan Appendix D): `{v, event, book, coordinate,
 /// data, certificate, warnings, next_actions}` with the event's fields under
 /// `data`; `book` and `coordinate` from `at` (null when no book backs the
-/// line); the registry's next actions for the event; and the replay
-/// certificate, null until plan certificates land (fa-we7). A daemon wire
-/// frame is its own flat object, never a robot line.
+/// line); and the registry's next actions for the event. This ordinary
+/// constructor leaves `certificate` null; certified reports bind their
+/// retained replay certificate per event. A daemon wire frame is its own
+/// flat object, never a robot line.
 #[must_use]
 pub fn robot_line(event: &str, data: Json, at: Option<&At>, warnings: &[String]) -> Json {
-    robot_line_with_actions(event, data, at, warnings, &[])
+    robot_line_with_actions(event, data, at, warnings, &[], None)
 }
 
 fn robot_line_with_actions(
@@ -221,6 +225,7 @@ fn robot_line_with_actions(
     at: Option<&At>,
     warnings: &[String],
     actions: &[(String, String)],
+    certificate: Option<&str>,
 ) -> Json {
     let mut next_actions: Vec<Json> = verbs::registry().map_or_else(
         |_| Vec::new(),
@@ -250,7 +255,7 @@ fn robot_line_with_actions(
             }),
         ),
         (verbs::PAYLOAD, data),
-        ("certificate", Json::Null),
+        ("certificate", certificate.map_or(Json::Null, s)),
         ("warnings", Json::Arr(warnings.iter().map(s).collect())),
         ("next_actions", Json::Arr(next_actions)),
     ])
@@ -372,6 +377,29 @@ impl Out {
         human: &str,
         actions: &[(String, String)],
     ) {
+        self.emit_event(name, fields, human, actions, None);
+    }
+
+    /// Bind a successful report line to its replay certificate. The binding
+    /// is per event, so a later failure cannot inherit a success certificate.
+    pub(crate) fn event_with_certificate(
+        &self,
+        name: &str,
+        fields: Vec<(&str, Json)>,
+        human: &str,
+        certificate: Option<&str>,
+    ) {
+        self.emit_event(name, fields, human, &[], certificate);
+    }
+
+    fn emit_event(
+        &self,
+        name: &str,
+        fields: Vec<(&str, Json)>,
+        human: &str,
+        actions: &[(String, String)],
+        certificate: Option<&str>,
+    ) {
         if self.json {
             let said = self.said.borrow();
             let line = robot_line_with_actions(
@@ -380,6 +408,7 @@ impl Out {
                 said.at.as_ref(),
                 &said.warnings,
                 actions,
+                certificate,
             );
             self.line(line.render());
         } else if !human.is_empty() {
@@ -530,7 +559,7 @@ fn resolve_in(cwd: Option<&Path>, path: &str) -> PathBuf {
 }
 
 impl Files {
-    fn resolve(&self, path: &str) -> PathBuf {
+    pub(crate) fn resolve(&self, path: &str) -> PathBuf {
         resolve_in(self.cwd.as_deref(), path)
     }
 
@@ -1463,7 +1492,8 @@ const GUIDE: &str = "fa robot-docs guide\n\
 9. Explain before you trust: `fa explain balance <account> --period <code> --json` returns the account's register cells, the fold digest they belong to, every contributing leg with its entry and recorded_at, and the cells' known-at history; the legs re-add to the cells exactly. Add --as-known-at <seq> to see what was known then.\n\
 10. Schemas: `fa robot-docs schema --json` lists every event and its fields (generated from registries/verbs.toml); `fa robot-docs schema <event>` prints one. `fa <command> --help` prints that command's usage, flags, events and exits.\n\
 11. Application: a leg may carry `settles: [{entry, ordinal, amount}]` to apply itself to an open item — the opposite side on the same account and unit, at most the item's open amount (FA-REF-072 names what is open). `fa open-items --account <code>` lists items with their applications. Reversing a receipt reopens the invoice (its applications are undone, never re-entered); an invoice with live applications cannot be reversed until its receipts are (FA-REF-073).\n\
-12. Corrections require a registered reason: `fa reverse <vid> --reason WrongAccount --json` derives the opposite legs and retains the target's date by default; --effective selects an explicit same-or-later admissible period. A Reversal passed to `fa post` likewise carries `reason`, for example \"WrongAmount\". `fa entry show <reversal vid> --json` reports the immutable supersession and its reason. Other requires a description; no reason code proves the explanation true.\n";
+12. Corrections require a registered reason: `fa reverse <vid> --reason WrongAccount --json` derives the opposite legs and retains the target's date by default; --effective selects an explicit same-or-later admissible period. A Reversal passed to `fa post` likewise carries `reason`, for example \"WrongAmount\". `fa entry show <reversal vid> --json` reports the immutable supersession and its reason. Other requires a description; no reason code proves the explanation true.\n\
+13. Retain a report for replay: `fa tb --period FY2026-P03 --certificate-out report.cert --json` emits trial_balance and report_certificate, binding the selector, known-at and native history. The new file is never overwritten. `fa replay report.cert --json` reproduces the original report, and `fa certificate status report.cert --json` names later relevant entries without changing it. Use --certify for inline hex bytes, then feed those complete bytes to `fa replay -`; MCP exposes the same inline workflow. Scope is fa-fold-over-prefix with embedded-owner authority.\n";
 
 const EXAMPLES: &str = "fa robot-docs examples\n\
 \n\
@@ -2944,7 +2974,7 @@ fn post_document(
 /// `--as-known-at HEAD|<seq>` (at most once): `None` selects the head; an
 /// instant or any other spelling is refused, never converted.
 /// The envelope's effective selector for a period selection (plan §4.8).
-fn periods_selector(periods: &[String]) -> String {
+pub(crate) fn periods_selector(periods: &[String]) -> String {
     match periods {
         [] => "all".to_string(),
         [one] => format!("period:{one}"),
@@ -3022,8 +3052,14 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.flag_all("--as-of").len() > 1 {
         return Err(usage("--as-of may be supplied only once", "fa tb --help"));
     }
+    if args.flag_all("--certificate-out").len() > 1 {
+        return Err(usage(
+            "--certificate-out may be supplied only once",
+            "fa tb --help",
+        ));
+    }
     let known_at = known_at_flag(args)?;
-    let (periods, tb) = if let Some(date) = args.flag("--as-of") {
+    let selection = if let Some(date) = args.flag("--as-of") {
         if args.flag("--period").is_some()
             || args.flag("--fiscal-year").is_some()
             || args.switch("--activity")
@@ -3039,20 +3075,60 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 "--as-of YYYY-MM-DD",
             )
         })?;
-        (Vec::new(), book.balance_as_of(day, known_at)?)
+        TrialBalanceSelection::AsOf(day)
     } else {
         let periods = selected_periods(args, &book)?;
-        let tb = if args.switch("--activity") {
-            book.period_activity(&periods, known_at)?
+        if args.switch("--activity") {
+            TrialBalanceSelection::Activity(periods)
         } else {
-            book.trial_balance_at(&periods, known_at)?
+            TrialBalanceSelection::Periods(periods)
+        }
+    };
+    let (tb, certificate) = if args.switch("--certify") || args.flag("--certificate-out").is_some()
+    {
+        let certified = book.certify_trial_balance(selection.clone(), known_at)??;
+        (certified.report, Some(certified.certificate))
+    } else {
+        let report = match &selection {
+            TrialBalanceSelection::AsOf(day) => book.balance_as_of(*day, known_at)?,
+            TrialBalanceSelection::Periods(periods) => book.trial_balance_at(periods, known_at)?,
+            TrialBalanceSelection::Activity(periods) => book.period_activity(periods, known_at)?,
         };
-        (periods, tb)
+        (report, None)
+    };
+    let retained = certificate
+        .as_ref()
+        .map(|certificate| notary::retain_report_certificate(&ctx.files, args, certificate))
+        .transpose()?;
+    let digest = certificate
+        .as_ref()
+        .map(|certificate| hex(&certificate.digest));
+    render_trial_balance(out, &book, &tb, &selection, digest.as_deref())?;
+    if let (Some(certificate), Some(retained)) = (certificate.as_ref(), retained) {
+        notary::emit_report_certificate(out, args, certificate, &retained);
+    }
+    Ok(())
+}
+
+/// The same renderer serves both an original report and its verified replay.
+/// Its coordinate comes from the certified selector, never the present head.
+pub(crate) fn render_trial_balance(
+    out: &Out,
+    book: &Book,
+    tb: &fa_registers::TrialBalance,
+    selection: &TrialBalanceSelection,
+    certificate: Option<&str>,
+) -> Result<(), Fail> {
+    let periods: &[String] = match selection {
+        TrialBalanceSelection::Periods(periods) | TrialBalanceSelection::Activity(periods) => {
+            periods
+        }
+        TrialBalanceSelection::AsOf(_) => &[],
     };
     out.known_at(tb.known_at);
-    out.effective(match args.flag("--as-of") {
-        Some(date) => format!("as-of:{date}"),
-        None => periods_selector(&periods),
+    out.effective(match selection {
+        TrialBalanceSelection::AsOf(date) => format!("as-of:{date}"),
+        _ => periods_selector(periods),
     });
     let units = &book.context().units;
     let render = |unit: u32, m: i128| Amount::new(fa_money::UnitId(unit), m).render(units);
@@ -3107,7 +3183,7 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         })
         .collect();
     if out.json {
-        out.event(
+        out.event_with_certificate(
             "trial_balance",
             vec![
                 ("periods", Json::Arr(periods.iter().map(s).collect())),
@@ -3124,6 +3200,7 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ("balanced", Json::Bool(tb.is_balanced())),
             ],
             "",
+            certificate,
         );
     } else {
         if let Some(day) = tb.effective_through {

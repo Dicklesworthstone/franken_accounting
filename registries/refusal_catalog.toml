@@ -237,6 +237,15 @@ exit = "safety"
 cite = "plan §7.3 period state machine"
 fix = "pick a legal transition: Future→Open, Open→SoftClose, SoftClosed→Close|Reopen, Closed→Lock|Reopen"
 
+# ---- Certified replay (150) ---------------------------------------------
+[[refusal]]
+code = "FA-REF-150"
+name = "CERTIFICATE_INVALID"
+owners = ["fa"]
+exit = "verification"
+cite = "plan §13.6 / FA-INV-11"
+fix = "recreate the certificate from the original book and selector; retain its certified history and registry versions"
+
 # ---- Supersession (050–054) ----------------------------------------------
 [[refusal]]
 code = "FA-REF-050"

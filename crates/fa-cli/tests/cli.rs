@@ -179,6 +179,174 @@ fn assert_cash_credits(out: &str, expected: &str) {
 }
 
 #[test]
+fn retained_trial_balances_replay_exactly_and_report_later_relevant_entries() -> std::io::Result<()>
+{
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let dir = tmp("report-certificate")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        assert!(err.is_empty(), "{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Certificate Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let rent = write(
+        &dir,
+        "rent.json",
+        r#"{"effective_date":"2026-03-15","idempotency_key":"rent","legs":[{"side":"debit","account":"6000","amount":"100.00 USD"},{"side":"credit","account":"1000","amount":"100.00 USD"}]}"#,
+    );
+    ok(&["post", "--intent", &rent, "--evidence", &evidence, "--json"]);
+    let before = report(&book, &["tb", "--period", "FY2026-P03", "--json"]);
+    let mut retained = Vec::new();
+
+    for (name, selector) in [
+        ("stock", vec!["--period", "FY2026-P03"]),
+        ("asof", vec!["--as-of", "2026-03-15"]),
+        ("activity", vec!["--period", "FY2026-P03", "--activity"]),
+    ] {
+        let path = dir.join(format!("{name}.cert")).display().to_string();
+        let mut args = vec!["tb"];
+        args.extend(selector);
+        args.extend(["--certificate-out", path.as_str(), "--json"]);
+        let certified = ok(&args);
+        let lines: Vec<&str> = certified.lines().collect();
+        assert_eq!(lines.len(), 2, "report and its retained certificate");
+        assert_eq!(field(lines[0], "event"), Some("trial_balance"));
+        assert_eq!(field(lines[1], "event"), Some("report_certificate"));
+        let original = format!("{}\n", lines[0]);
+        let certificate = doc(lines[1]);
+        let oid = text(&certificate, "oid");
+        assert_eq!(oid.len(), 64);
+        assert_eq!(field(lines[0], "certificate"), Some(oid));
+        assert_eq!(field(lines[1], "certificate"), Some(oid));
+        assert_eq!(text(&certificate, "file"), path);
+        assert_eq!(text(&certificate, "replay_scope"), "fa-fold-over-prefix");
+        assert_eq!(text(&certificate, "authority"), "embedded-owner");
+        assert_eq!(text(&certificate, "output_format"), "fa:trial-balance:v1");
+        assert!(int(&certificate, "native_inputs").is_some_and(|n| n > 0));
+        let bytes = std::fs::read(&path)?;
+        let decoded = fa::ReportCertificate::decode(&bytes).expect("retained canonical bytes");
+        assert_eq!(decoded.canonical_bytes().unwrap(), bytes);
+        let replayed = ok(&["replay", &path, "--json"]);
+        assert_eq!(replayed, original, "{name}: complete robot line replays");
+        let status = ok(&["certificate", "status", &path, "--json"]);
+        let status = doc(&status);
+        assert_eq!(text(&status, "status"), "Current");
+        assert_eq!(int(&status, "known_at"), int(&certificate, "known_at"));
+        assert_eq!(int(&status, "checked_at"), int(&certificate, "known_at"));
+        assert!(arr(&status, "later_entries").is_empty());
+
+        if name == "stock" {
+            // Human-copyable hex and actual process stdin use the same decoder
+            // as a saved binary certificate, without needing a certificate store.
+            let mut child = Command::new(env!("CARGO_BIN_EXE_fa"))
+                .arg("--book")
+                .arg(&book)
+                .args(["replay", "-", "--json"])
+                .env_remove("FA_BOOK")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()?;
+            child
+                .stdin
+                .take()
+                .expect("piped stdin")
+                .write_all(text(&certificate, "bytes").as_bytes())?;
+            let output = child.wait_with_output()?;
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            assert!(output.status.success(), "{stdout}");
+            check_robot_output(&["replay", "-", "--json"], 0, &stdout);
+            assert_eq!(
+                stdout, original,
+                "hex stdin replays the complete robot line"
+            );
+
+            // An explicit output never truncates an existing certificate, and
+            // its refusal does not emit a report that looks successfully retained.
+            let (code, out, _) = fa(Some(&book), &args);
+            assert_eq!(code, 2, "{out}");
+            assert_eq!(out.lines().count(), 1, "{out}");
+            assert!(out.contains("never overwritten"), "{out}");
+            assert_eq!(std::fs::read(&path)?, bytes);
+
+            let mut damaged = bytes.clone();
+            *damaged.last_mut().unwrap() ^= 1;
+            let tampered = dir.join("tampered.cert");
+            std::fs::write(&tampered, damaged)?;
+            for verb in [vec!["replay"], vec!["certificate", "status"]] {
+                let tampered = tampered.display().to_string();
+                let mut args = verb;
+                args.extend([tampered.as_str(), "--json"]);
+                let (code, out, _) = fa(Some(&book), &args);
+                assert_eq!(code, 8, "{out}");
+                assert_eq!(out.lines().count(), 1, "{out}");
+                assert!(out.contains("FA-REF-150"), "{out}");
+                assert_eq!(field(&out, "certificate"), Some("null"), "{out}");
+            }
+
+            let other = dir.join("other-book");
+            let (code, out, _) = fa(
+                Some(&other),
+                &["book", "create", "--name", "Other", "--json"],
+            );
+            assert_eq!(code, 0, "{out}");
+            let (code, out, _) = fa(Some(&other), &["replay", &path, "--json"]);
+            assert_eq!(code, 8, "{out}");
+            assert!(out.contains("different book"), "{out}");
+        }
+        retained.push((path, original));
+    }
+    assert_eq!(
+        report(&book, &["tb", "--period", "FY2026-P03", "--json"]),
+        before,
+        "certification, status, replay and failed retention never publish journal writes"
+    );
+
+    let later = write(
+        &dir,
+        "later.json",
+        r#"{"effective_date":"2026-03-14","idempotency_key":"later","legs":[{"side":"debit","account":"6000","amount":"25.00 USD"},{"side":"credit","account":"1000","amount":"25.00 USD"}]}"#,
+    );
+    let posted = ok(&[
+        "post",
+        "--intent",
+        &later,
+        "--evidence",
+        &evidence,
+        "--json",
+    ]);
+    let later_vid = field(&posted, "vid").unwrap();
+    for (path, original) in retained {
+        let status = doc(&ok(&["certificate", "status", &path, "--json"]));
+        assert_eq!(text(&status, "status"), "SupersededBy");
+        assert_eq!(
+            arr(&status, "later_entries"),
+            &[Json::Str(later_vid.to_string())]
+        );
+        assert!(int(&status, "checked_at") > int(&status, "known_at"));
+        assert_eq!(ok(&["replay", &path, "--json"]), original);
+    }
+    assert_cash_credits(
+        &report(&book, &["tb", "--period", "FY2026-P03", "--json"]),
+        "125.00 USD",
+    );
+    Ok(())
+}
+
+#[test]
 fn bare_fa_prints_triage_and_exits_zero_without_a_tui() {
     let (code, out, err) = fa(None, &[]);
     assert_eq!(code, 0);
@@ -2795,6 +2963,23 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         run(true, &["reverse", &vid, "--reason", "WrongAccount"]).0,
         0
     );
+    let certificate = dir.join("events.cert").display().to_string();
+    assert_eq!(
+        run(
+            true,
+            &[
+                "tb",
+                "--period",
+                "FY2026-P03",
+                "--certificate-out",
+                &certificate
+            ]
+        )
+        .0,
+        0
+    );
+    assert_eq!(run(true, &["replay", &certificate]).0, 0);
+    assert_eq!(run(true, &["certificate", "status", &certificate]).0, 0);
     // A planned, approved lock (R4): `period_planned`, then `approved`.
     assert_eq!(run(true, &["period", "open", "FY2026-P04"]).0, 0);
     assert_eq!(run(true, &["period", "close", "FY2026-P04", "--yes"]).0, 0);
@@ -3561,7 +3746,7 @@ fn envelope_book(name: &str) -> std::io::Result<(PathBuf, String, PathBuf)> {
 /// Every robot line carries the plan Appendix D envelope: `v`; `book` and
 /// `coordinate` (branch, the recorded sequence the line describes, its
 /// effective selector) on a line about a book, null on a bookless one; the
-/// certificate (null until fa-we7); warnings; and the registry's next
+/// certificate (null for ordinary, uncertified output); warnings; and the registry's next
 /// actions. A write's coordinate is the head that write produced; a read's
 /// is the coordinate it selected.
 #[test]

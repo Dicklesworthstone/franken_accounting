@@ -347,6 +347,18 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
                     .is_some_and(|d| d.contains("Do:")),
                 "{name}"
             );
+            if name == "fa_read_trial_balance" {
+                assert_eq!(
+                    tool["inputSchema"]["properties"]["certify"]["type"],
+                    json!("boolean")
+                );
+                assert!(
+                    tool["inputSchema"]["properties"]
+                        .get("certificate_out")
+                        .is_none(),
+                    "MCP report certificates are returned inline"
+                );
+            }
             listed.insert(name);
         }
         match page.get("nextCursor").and_then(JsonValue::as_str) {
@@ -468,6 +480,60 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         "fa_post_post (same idempotency key) -> recorded; fa_read_show_entry == fa entry show --json",
     );
 
+    // Retain a real certified report through the MCP transport. Inline bytes
+    // satisfy replay's input without creating a host file or looking up an oid.
+    let (is_error, text, result) = call_tool(
+        &mut mcp,
+        "fa_read_trial_balance",
+        json!({"period": "FY2026-P03", "certify": true}),
+    );
+    assert!(!is_error, "{text}");
+    let certified: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        certified.as_array().unwrap().len(),
+        2,
+        "report and certificate"
+    );
+    let certified_report = certified[0].to_string();
+    assert_eq!(
+        certified_report,
+        cli_data(&["tb", "--period", "FY2026-P03", "--book", &b, "--json"])
+    );
+    let certificate_hex = certified[1]["bytes"].as_str().unwrap().to_string();
+    let certificate_oid = certified[1]["oid"].as_str().unwrap().to_string();
+    assert_eq!(certificate_oid.len(), 64);
+    assert_eq!(certified[1]["file"], JsonValue::Null);
+    assert_eq!(certified[1]["replay_scope"], json!("fa-fold-over-prefix"));
+    assert_eq!(certified[1]["authority"], json!("embedded-owner"));
+    let envelope: JsonValue =
+        fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        envelope["events"],
+        json!(["trial_balance", "report_certificate"])
+    );
+    assert_eq!(envelope["certificate"], json!(certificate_oid));
+    let (is_error, replayed, result) = call_tool(
+        &mut mcp,
+        "fa_read_replay",
+        json!({"certificate": certificate_hex}),
+    );
+    assert!(!is_error, "{replayed}");
+    assert_eq!(replayed, certified_report);
+    let replay_envelope: JsonValue =
+        fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(replay_envelope["events"], json!(["trial_balance"]));
+    assert_eq!(replay_envelope["certificate"], json!(certificate_oid));
+    assert_eq!(replay_envelope["coordinate"], envelope["coordinate"]);
+    let (is_error, status, _) = call_tool(
+        &mut mcp,
+        "fa_read_certificate_status",
+        json!({"certificate": certificate_hex}),
+    );
+    assert!(!is_error, "{status}");
+    let current: JsonValue = fastmcp_rust::serde_json::from_str(&status).unwrap();
+    assert_eq!(current["status"], json!("Current"));
+    assert_eq!(current["later_entries"], json!([]));
+
     // The typed reversal is the same law-enforced correction as the CLI:
     // missing and unknown reasons cannot post, and the persisted lineage
     // records the exact registered name/code the caller selected.
@@ -519,6 +585,51 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     assert_eq!(retried["vid"], reversed["vid"]);
     assert_eq!(retried["entry_digest"], reversed["entry_digest"]);
     log("fa_post_reverse: reason refusals, exact retry and persisted lineage agree with the CLI");
+
+    let (is_error, status, _) = call_tool(
+        &mut mcp,
+        "fa_read_certificate_status",
+        json!({"certificate": certificate_hex}),
+    );
+    assert!(!is_error, "{status}");
+    let later: JsonValue = fastmcp_rust::serde_json::from_str(&status).unwrap();
+    assert_eq!(later["status"], json!("SupersededBy"));
+    assert_eq!(later["later_entries"], json!([reversal_vid]));
+    assert_eq!(later["known_at"], current["known_at"]);
+    let (is_error, replayed, _) = call_tool(
+        &mut mcp,
+        "fa_read_replay",
+        json!({"certificate": certificate_hex}),
+    );
+    assert!(!is_error, "{replayed}");
+    assert_eq!(
+        replayed, certified_report,
+        "later reversal leaves original report replayable"
+    );
+    let retained_hex = dir.join("report.hex");
+    std::fs::write(&retained_hex, &certificate_hex).unwrap();
+    assert_eq!(
+        replayed,
+        cli_data(&[
+            "replay",
+            &retained_hex.display().to_string(),
+            "--book",
+            &b,
+            "--json"
+        ])
+    );
+    let mut damaged = certificate_hex.clone();
+    let last = damaged.pop().unwrap();
+    damaged.push(if last == '0' { '1' } else { '0' });
+    let (is_error, text, _) =
+        call_tool(&mut mcp, "fa_read_replay", json!({"certificate": damaged}));
+    assert!(is_error, "tampered certificate must refuse");
+    let error = structured_error(&text);
+    assert_eq!(error["exit"], json!(8), "{error}");
+    assert_eq!(error["refusal_id"], json!("FA-REF-150"), "{error}");
+    log(
+        "certified report: inline replay matches the CLI, later reversal supersedes status, tamper refuses",
+    );
 
     // A refusal from the dispatcher: structured, with the CLI's fix verbatim.
     let (is_error, text, _) = call_tool(

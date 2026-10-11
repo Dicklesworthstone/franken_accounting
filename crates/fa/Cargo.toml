@@ -21,6 +21,7 @@ fa-registry = { path = "../fa-registry", version = "=0.0.1" }
 fa-time = { path = "../fa-time", version = "=0.0.1" }
 asupersync = { workspace = true }
 fgdb = { workspace = true }
+fgdb-gql = { workspace = true }
 fgdb-crypto = { workspace = true }
 fgdb-types = { workspace = true }
 

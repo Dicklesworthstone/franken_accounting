@@ -948,6 +948,40 @@ pub struct TrialBalance {
 }
 
 impl TrialBalance {
+    /// The versioned, exact report output bound by replay certificates. Amounts
+    /// remain integer mantissas and unit IDs; presentation is not an input to
+    /// the fold. The certificate separately binds the unit and symbol registries.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, fa_model::EncodeError> {
+        let mut w = Writer::new();
+        w.fixed(b"fa:trial-balance:v1")
+            .list(&self.periods, |w, p| {
+                w.str(p);
+            })
+            .u64(self.known_at.0)
+            .opt(self.effective_through.as_ref(), |w, d| {
+                w.i32(d.0);
+            })
+            .bool(self.activity)
+            .list(&self.rows, |w, r| {
+                w.u128(r.account.0)
+                    .str(&r.code)
+                    .str(&r.name)
+                    .u8(r.account_type.0)
+                    .u32(r.unit_id)
+                    .i128(r.debits)
+                    .i128(r.credits)
+                    .i128(r.debits_pending)
+                    .i128(r.credits_pending);
+            });
+        for totals in [&self.unit_totals, &self.pending_unit_totals] {
+            let ordered: Vec<_> = totals.iter().collect();
+            w.list(&ordered, |w, (unit, (debits, credits))| {
+                w.u32(**unit).i128(*debits).i128(*credits);
+            });
+        }
+        w.finish()
+    }
+
     /// FA-INV-01 at the register level: every unit's debits equal its credits.
     #[must_use]
     pub fn is_balanced(&self) -> bool {

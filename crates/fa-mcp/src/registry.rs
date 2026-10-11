@@ -902,12 +902,14 @@ impl ToolSpec {
         props.insert(AS.into(), json!({ "type": "string", "description": "the principal acting (`--as`; default operator)" }));
         props.insert(KEYS.into(), json!({ "type": "string", "description": "the book's key file (`--keys`; default <book>/book.keys)" }));
         for r in &self.required {
+            // A path flag or positional can be satisfied by the inline
+            // property. Requiring only the path in the published schema
+            // would make a conforming MCP host reject the inline form.
+            // Invocation validation below enforces exactly one input.
+            if self.stdin.as_ref().is_some_and(|s| &s.via == r) {
+                continue;
+            }
             let prop = if r.starts_with("--") {
-                // A flag that doubles as the stdin property's via is satisfied
-                // by either spelling; JSON Schema `required` cannot say so.
-                if self.stdin.as_ref().is_some_and(|s| &s.via == r) {
-                    continue;
-                }
                 property(r)
             } else {
                 r.clone()
@@ -1768,6 +1770,47 @@ mod tests {
             ]
         );
         assert_eq!(inv.stdin, None);
+    }
+
+    #[test]
+    fn certificate_tools_accept_a_retained_file_or_inline_bytes() {
+        let (mcp, reg) = embedded();
+        for (wire, prefix) in [
+            ("fa_read_replay", vec!["replay"]),
+            ("fa_read_certificate_status", vec!["certificate", "status"]),
+        ] {
+            let tool = mcp.tool_by_wire(wire).expect("certificate tool");
+            let schema = tool.input_schema(&mcp, reg);
+            assert_eq!(schema["properties"]["certificate"]["type"], json!("string"));
+            assert_eq!(schema["properties"]["file"]["type"], json!("string"));
+            assert!(
+                !schema["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("file")),
+                "a host must accept inline bytes without a file: {schema}"
+            );
+            let inline = tool
+                .invocation(&mcp, reg, &json!({"certificate": "abcd"}), Some("/b"))
+                .expect("inline bytes");
+            let mut expected = prefix.clone();
+            expected.extend(["-", "--book", "/b", "--json"]);
+            assert_eq!(inline.argv, expected);
+            assert_eq!(inline.stdin, Some(b"abcd".to_vec()));
+            let file = tool
+                .invocation(&mcp, reg, &json!({"file": "report.cert"}), Some("/b"))
+                .expect("retained file");
+            let mut expected = prefix;
+            expected.extend(["report.cert", "--book", "/b", "--json"]);
+            assert_eq!(file.argv, expected);
+            assert!(file.stdin.is_none());
+            for args in [
+                json!({}),
+                json!({"file": "report.cert", "certificate": "abcd"}),
+            ] {
+                assert!(tool.invocation(&mcp, reg, &args, Some("/b")).is_err());
+            }
+        }
     }
 
     #[test]
