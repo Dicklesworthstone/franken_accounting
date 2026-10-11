@@ -3156,9 +3156,7 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 }
                 all_green &= v.is_green();
                 if !v.is_green() {
-                    repairs.push(format!(
-                        "fa registers materialize --period {p} --yes --json"
-                    ));
+                    repairs.push(format!("--period {p}"));
                 }
                 if v.is_green() && v.stale {
                     out.warn(format!(
@@ -3229,8 +3227,8 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     detail: Json::Arr(details),
                     cite: Some("FA-INV-04 (registers are derived from the journal)".into()),
                     fix: Some(format!(
-                        "retain this verification finding; if repair is intended, run {} with the same --book",
-                        repairs.join("; ")
+                        "retain this verification finding; if repair is intended, run fa registers materialize {} --yes --json with the same --book",
+                        repairs.join(" ")
                     )),
                 })
             }
