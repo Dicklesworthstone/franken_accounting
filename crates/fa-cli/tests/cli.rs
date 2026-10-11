@@ -3329,3 +3329,81 @@ fn corrections_span_exactly_one_edit() {
     );
     assert!(fix.contains("fa --help"), "{out}");
 }
+
+/// fa-40l: a host that is not the `fa` binary (fa-mcp, an embedding) names
+/// the book and its keys file relative to its own working directory, which
+/// it hands over as `Files::cwd`; this process's directory is another. Every
+/// spelling opens the same book and reads byte-identically to the absolute
+/// one, through the public `fa_with`, with this process's cwd and
+/// environment untouched.
+#[test]
+fn a_hosts_relative_book_and_keys_resolve_against_its_files_cwd() -> std::io::Result<()> {
+    let client = tmp("host-cwd")?;
+    let nested = client.join("nested");
+    std::fs::create_dir(&nested)?;
+    std::fs::create_dir(client.join("keys"))?;
+    let book = client.join("acme");
+    let keys = client.join("keys").join("acme.keys");
+    let (b, k) = (book.display().to_string(), keys.display().to_string());
+    let host = |cwd: Option<&Path>, args: &[&str]| -> (u8, String, String) {
+        let argv: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
+        let files = fa_cli::cli::Files {
+            cwd: cwd.map(Path::to_path_buf),
+            stdin: fa_cli::cli::Stdin::Missing,
+        };
+        let (code, out) = fa_cli::entry::fa_with(&argv, files, true);
+        (code, out.stdout, out.stderr)
+    };
+    let (code, out, err) = host(
+        None,
+        &[
+            "book", "create", "--book", &b, "--keys", &k, "--name", "Host Co", "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}{err}");
+    // The keys live outside the book, so every read below resolves `--keys` too.
+    assert!(keys.is_file() && !book.join("book.keys").exists());
+    let absolute = host(
+        None,
+        &["book", "info", "--book", &b, "--keys", &k, "--json"],
+    );
+    assert_eq!(absolute.0, 0, "{absolute:?}");
+    assert_eq!(
+        text(&robot_line(&absolute.1), "event"),
+        "book",
+        "{absolute:?}"
+    );
+    for (cwd, book_arg, keys_arg) in [
+        (client.as_path(), "acme", "keys/acme.keys"),
+        (client.as_path(), "./acme", "./keys/acme.keys"),
+        (nested.as_path(), "../acme", "../keys/acme.keys"),
+        (nested.as_path(), b.as_str(), k.as_str()),
+    ] {
+        let aliased = host(
+            Some(cwd),
+            &[
+                "book", "info", "--book", book_arg, "--keys", keys_arg, "--json",
+            ],
+        );
+        assert_eq!(
+            aliased, absolute,
+            "cwd={cwd:?} book={book_arg} keys={keys_arg}"
+        );
+    }
+    // Without the host's cwd the same relative spelling names a path in this
+    // process's directory, where no such book or keys file exists.
+    let (code, out, _) = host(
+        None,
+        &[
+            "book",
+            "info",
+            "--book",
+            "acme",
+            "--keys",
+            "keys/acme.keys",
+            "--json",
+        ],
+    );
+    assert!(matches!(code, 4 | 5), "exit {code}: {out}");
+    Ok(())
+}
