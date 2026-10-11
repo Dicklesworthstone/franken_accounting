@@ -469,7 +469,11 @@ mod tests {
         assert!(DateDay(i32::MIN).try_month_start().is_err());
         assert!(DateDay(i32::MAX).try_month_end().is_err());
         let earlier = Weekday::from_iso(DateDay(i32::MIN).weekday().iso() % 7 + 1).unwrap();
-        assert!(DateDay(i32::MIN).try_last_weekday_on_or_before(earlier).is_err());
+        assert!(
+            DateDay(i32::MIN)
+                .try_last_weekday_on_or_before(earlier)
+                .is_err()
+        );
     }
 
     #[test]

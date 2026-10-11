@@ -29,9 +29,7 @@ pub mod period;
 pub mod recurrence;
 pub mod selector;
 
-pub use business::{
-    AdjustedOccurrence, BusinessCalendar, BusinessDayConvention, BusinessDayError,
-};
+pub use business::{AdjustedOccurrence, BusinessCalendar, BusinessDayConvention, BusinessDayError};
 pub use calendar::{CalendarKind, FiscalCalendar, WeekPattern, YearEndRule};
 pub use date::{DateDay, DateError, MonthEndPolicy, Weekday};
 pub use period::{

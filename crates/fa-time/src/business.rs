@@ -30,7 +30,10 @@ impl fmt::Display for BusinessDayError {
             Self::NoWorkingWeekday => f.write_str("a business calendar needs a working weekday"),
             Self::OutOfRange => f.write_str("business-day result outside the civil-date range"),
             Self::NoBusinessDayInMonth { year, month } => {
-                write!(f, "the supplied calendar has no business day in {year:04}-{month:02}")
+                write!(
+                    f,
+                    "the supplied calendar has no business day in {year:04}-{month:02}"
+                )
             }
         }
     }
@@ -385,10 +388,7 @@ mod tests {
 
     #[test]
     fn counts_and_offsets_match_naive_walks_for_every_nonempty_workweek() {
-        let holidays: Vec<_> = (-80..=80)
-            .filter(|d| d % 11 == 0)
-            .map(DateDay)
-            .collect();
+        let holidays: Vec<_> = (-80..=80).filter(|d| d % 11 == 0).map(DateDay).collect();
         for mask in 1u8..=127 {
             let working: Vec<_> = WEEK
                 .iter()
@@ -421,7 +421,10 @@ mod tests {
                     let actual = calendar
                         .add_business_days(start, i64::from(offset))
                         .unwrap();
-                    assert_eq!(actual, expected, "mask {mask}, start {start}, offset {offset}");
+                    assert_eq!(
+                        actual, expected,
+                        "mask {mask}, start {start}, offset {offset}"
+                    );
                     if open(start) {
                         assert_eq!(
                             calendar.add_business_days(actual, -i64::from(offset)),
@@ -460,8 +463,14 @@ mod tests {
         let first = DateDay(i32::MIN);
         let last = DateDay(i32::MAX);
         let calendar = BusinessCalendar::new(&WEEK, vec![last, first, last]).unwrap();
-        assert_eq!(calendar.add_business_days(first, 1), Ok(first.succ().unwrap()));
-        assert_eq!(calendar.add_business_days(last, -1), Ok(last.pred().unwrap()));
+        assert_eq!(
+            calendar.add_business_days(first, 1),
+            Ok(first.succ().unwrap())
+        );
+        assert_eq!(
+            calendar.add_business_days(last, -1),
+            Ok(last.pred().unwrap())
+        );
         assert_eq!(
             calendar.adjust(last, BusinessDayConvention::Following),
             Err(BusinessDayError::OutOfRange)
@@ -483,8 +492,7 @@ mod tests {
         let next = date("2026-02-28");
         let holidays = (first.0..next.0).map(DateDay).collect();
         let calendar = BusinessCalendar::new(&WEEK, holidays).unwrap();
-        let recurrence =
-            MonthlyRecurrence::new(first, 1, MonthEndPolicy::ClampToMonthEnd).unwrap();
+        let recurrence = MonthlyRecurrence::new(first, 1, MonthEndPolicy::ClampToMonthEnd).unwrap();
         let a = recurrence
             .occurrence(0)
             .unwrap()

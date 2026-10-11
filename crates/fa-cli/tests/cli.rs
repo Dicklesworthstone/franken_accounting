@@ -1825,6 +1825,312 @@ fn reversals_by_target_and_idempotency_conflicts_follow_the_contract() -> std::i
 }
 
 #[test]
+fn raw_reversal_retries_preserve_legacy_zero_reasons_without_admitting_new_ones()
+-> std::io::Result<()> {
+    use asupersync::runtime::RuntimeBuilder;
+    use asupersync::types::Budget;
+    use fa::{Book, BookKeys, Entropy};
+    use fa_journal::BookSpec;
+    use fa_journal::rows::{edge_id, leg_vid, mantissa_scalar, reversal_vid};
+    use fa_model::symbols::{label, property, relation};
+    use fa_model::{
+        EntryClass, EntryOrigin, EntryPayload, Id128, Oid, Supersession, SupersessionKind,
+    };
+    use fa_money::Side;
+    use fa_time::DateDay;
+    use fgdb::{Database, DatabaseKeys, WriteBatch};
+    use fgdb_types::context::PurposeContexts;
+    use fgdb_types::ids::DatabaseSecurityNamespaceId;
+    use fgdb_types::{CanonicalScalar, VId};
+
+    let dir = tmp("legacy-reversal")?;
+    let book = dir.join("book");
+    let keys = BookKeys::for_development(0x75);
+    let handle = Book::create_dir(
+        &book,
+        keys.clone(),
+        BookSpec {
+            book_id: Id128([0x75; 16]),
+            name: "Legacy reversal retries".into(),
+            base_unit: fa_money::UnitRegistry::embedded()
+                .unwrap()
+                .lookup("USD")
+                .unwrap(),
+            calendar: fa_time::FiscalCalendar::monthly("fiscal", 1, 1).unwrap(),
+            time_zone_policy: None,
+            entities: Vec::new(),
+            opening_date: None,
+        },
+        Entropy::deterministic(0x75),
+    )
+    .unwrap();
+    keys.save(&book.join("book.keys")).unwrap();
+    drop(handle);
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let mut targets = Vec::new();
+    for key in ["legacy-target", "fresh-target"] {
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"2026-03-15","idempotency_key":"{key}","legs":[{{"side":"debit","account":"6000","amount":"10.00 USD"}},{{"side":"credit","account":"1000","amount":"10.00 USD"}}]}}"#
+            ),
+        );
+        let posted = ok(&[
+            "post",
+            "--intent",
+            &intent,
+            "--evidence",
+            &evidence,
+            "--json",
+        ]);
+        targets.push(field(&posted, "vid").unwrap().to_string());
+    }
+
+    // Retain the canonical form emitted by the previous CLI: reason_code 0.
+    // Append it once through the substrate, including its mirrors and edges;
+    // no existing journal object is rewritten and the new law is not relaxed.
+    let handle = Book::open_dir(&book, keys.clone(), Entropy::deterministic(0x76)).unwrap();
+    let context = handle.context().clone();
+    let target_vid = VId(u128::from_str_radix(&targets[0], 16).unwrap());
+    let target = handle.read_entry(target_vid).unwrap().unwrap().0;
+    let mut proposal = target.proposal.clone();
+    proposal.class = EntryClass::REVERSAL;
+    proposal.effective_date = DateDay::parse("2026-03-16").unwrap();
+    proposal.description = handle.seal_text("undo legacy entry").unwrap();
+    proposal.idempotency_key = b"legacy-rev".to_vec();
+    proposal.origin = EntryOrigin::Intent {
+        intent_oid: Oid(fa_model::domain_digest(
+            b"fa:intent:v1",
+            &[
+                &context.book_id.0,
+                &proposal.principal_ref.0.to_le_bytes(),
+                b"legacy-rev",
+            ],
+        )),
+        intent_kind: 1,
+    };
+    proposal.evidence.clear();
+    proposal.supersession = vec![Supersession {
+        target: target.entry_ref(target_vid),
+        kind: SupersessionKind::Reverses,
+        reason_code: 0,
+    }];
+    for leg in &mut proposal.legs {
+        leg.side = if leg.side == Side::Debit {
+            Side::Credit
+        } else {
+            Side::Debit
+        };
+        leg.settles.clear();
+    }
+    proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
+    let legacy = proposal.seal(Vec::new(), None).unwrap();
+    drop(handle);
+    let runtime = RuntimeBuilder::new().build().unwrap();
+    let root = runtime.request_cx_with_budget(Budget::INFINITE);
+    let purposes = PurposeContexts::narrow_runtime_root(&root);
+    let mut db = runtime
+        .block_on(Database::open(
+            &purposes.commit(),
+            &book.join("store"),
+            DatabaseKeys::new(
+                [0x75; 32],
+                DatabaseSecurityNamespaceId([0x76; 32]),
+                [0x77; 32],
+            ),
+        ))
+        .unwrap();
+    let vid = reversal_vid(target_vid);
+    let mut has_leg = WriteBatch::new(relation::HAS_LEG);
+    let mut posts_to = WriteBatch::new(relation::POSTS_TO);
+    has_leg.create_vertex(
+        vid,
+        vec![label::ENTRY],
+        fa_model::entry_mirrors(&legacy).unwrap(),
+    );
+    for (i, leg) in legacy.proposal.legs.iter().enumerate() {
+        let ordinal = u16::try_from(i).unwrap();
+        let lvid = leg_vid(vid, ordinal);
+        let mut mirrors =
+            fa_model::leg_mirrors(leg, ordinal, legacy.proposal.effective_date, &context.units)
+                .unwrap();
+        mirrors.push((property::APPLIED, mantissa_scalar("applied", 0).unwrap()));
+        has_leg.create_vertex(lvid, vec![label::LEG], mirrors);
+        has_leg.add_edge(
+            edge_id(relation::HAS_LEG, vid, lvid),
+            vid,
+            lvid,
+            vec![(property::ORDINAL, CanonicalScalar::Int(i64::from(ordinal)))],
+        );
+        posts_to.add_edge(
+            edge_id(relation::POSTS_TO, lvid, leg.account_ref),
+            lvid,
+            leg.account_ref,
+            vec![],
+        );
+    }
+    let mut in_period = WriteBatch::new(relation::IN_PERIOD);
+    let period = fa_model::period_vid(&context.calendar.id, "FY2026-P03");
+    in_period.add_edge(
+        edge_id(relation::IN_PERIOD, vid, period),
+        vid,
+        period,
+        vec![],
+    );
+    let mut supersedes = WriteBatch::new(relation::SUPERSEDES);
+    supersedes.add_edge(
+        edge_id(relation::SUPERSEDES, vid, target_vid),
+        vid,
+        target_vid,
+        vec![],
+    );
+    let txn_cx = purposes.txn();
+    let mut transaction = db.begin(&txn_cx).unwrap();
+    transaction
+        .write_ordered(&mut db, vec![has_leg, posts_to, in_period, supersedes])
+        .unwrap();
+    let recorded_at = runtime
+        .block_on(transaction.commit(&mut db, &purposes.commit()))
+        .unwrap();
+    drop(db);
+
+    let raw = |name: &str, target: &str, key: &str, description: &str, reason: Option<&str>| {
+        let reason = reason
+            .map(|r| format!(",\"reason\":{r}"))
+            .unwrap_or_default();
+        write(
+            &dir,
+            name,
+            &format!(
+                r#"{{"class":"Reversal","reverses":"{target}","effective_date":"2026-03-16","description":"{description}","idempotency_key":"{key}"{reason}}}"#
+            ),
+        )
+    };
+    let before = report(&book, &["tb", "--period", "FY2026-P03", "--json"]);
+    let expected_vid = format!("{:032x}", vid.0);
+    let expected_digest: String = legacy
+        .entry_digest
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    for (i, reason) in [None, Some("\"0\""), Some("0")].into_iter().enumerate() {
+        let retry = raw(
+            &format!("retry-{i}.json"),
+            &targets[0],
+            "legacy-rev",
+            "undo legacy entry",
+            reason,
+        );
+        let outcome = ok(&["post", "--intent", &retry, "--json"]);
+        assert_eq!(field(&outcome, "event"), Some("recorded"));
+        assert_eq!(field(&outcome, "vid"), Some(expected_vid.as_str()));
+        assert_eq!(
+            field(&outcome, "entry_digest"),
+            Some(expected_digest.as_str())
+        );
+        assert_eq!(
+            int(&doc(&outcome), "recorded_at"),
+            Some(i128::from(recorded_at.0))
+        );
+
+        let fresh = raw(
+            &format!("fresh-{i}.json"),
+            &targets[1],
+            "fresh-rev",
+            "undo legacy entry",
+            reason,
+        );
+        let (code, out, _) = fa(Some(&book), &["post", "--intent", &fresh, "--json"]);
+        assert_eq!(code, 3, "{out}");
+        assert_eq!(field(&out, "refusal_id"), Some("FA-REF-054"), "{out}");
+    }
+    for (i, reason) in ["null", "\"WrongAcount\"", "\"65535\""]
+        .into_iter()
+        .enumerate()
+    {
+        let invalid = raw(
+            &format!("invalid-{i}.json"),
+            &targets[0],
+            "legacy-rev",
+            "undo legacy entry",
+            Some(reason),
+        );
+        let (code, out, _) = fa(Some(&book), &["post", "--intent", &invalid, "--json"]);
+        assert_eq!(code, 3, "{out}");
+        assert_eq!(field(&out, "refusal_id"), Some("FA-REF-054"), "{out}");
+    }
+    for (key, description) in [
+        ("legacy-rev", "changed explanation"),
+        ("changed-key", "undo legacy entry"),
+    ] {
+        let changed = raw(
+            &format!("{key}-changed.json"),
+            &targets[0],
+            key,
+            description,
+            None,
+        );
+        let (code, out, _) = fa(Some(&book), &["post", "--intent", &changed, "--json"]);
+        assert_eq!(code, 6, "{out}");
+        assert_eq!(field(&out, "refusal_id"), Some("FA-REF-052"), "{out}");
+    }
+    let retry = raw(
+        "other-principal.json",
+        &targets[0],
+        "legacy-rev",
+        "undo legacy entry",
+        None,
+    );
+    let (code, out, _) = fa(
+        Some(&book),
+        &["post", "--intent", &retry, "--as", "other", "--json"],
+    );
+    assert_eq!(code, 6, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-052"), "{out}");
+    for reason in [None, Some("0")] {
+        let mut args = vec!["reverse", targets[0].as_str(), "--json"];
+        if let Some(reason) = reason {
+            args.extend(["--reason", reason]);
+        }
+        let (code, out, _) = fa(Some(&book), &args);
+        assert_eq!(code, 3, "{out}");
+        assert_eq!(field(&out, "refusal_id"), Some("FA-REF-054"), "{out}");
+    }
+    let shown = doc(&ok(&["entry", "show", &expected_vid, "--json"]));
+    assert_eq!(int(&arr(&shown, "supersedes")[0], "reason_code"), Some(0));
+    assert_eq!(
+        arr(&shown, "supersedes")[0].get("reason"),
+        Some(&Json::Null)
+    );
+    assert_eq!(
+        report(&book, &["tb", "--period", "FY2026-P03", "--json"]),
+        before
+    );
+    let reopened = Book::open_dir(&book, keys, Entropy::deterministic(0x77)).unwrap();
+    assert_eq!(
+        reopened.head().unwrap(),
+        recorded_at,
+        "every retry/refusal is read-only"
+    );
+    assert_eq!(reopened.read_entry(vid).unwrap().unwrap().0, legacy);
+    Ok(())
+}
+
+#[test]
 fn two_phase_reserve_and_resolve_follow_the_contract() -> std::io::Result<()> {
     let dir = tmp("two-phase")?;
     let book = dir.join("book");

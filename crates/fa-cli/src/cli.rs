@@ -2606,8 +2606,24 @@ fn post_document(
     let mut control = None;
     let mut reversal_detail = None;
     let legs: Vec<LegPayload> = if let Some(target_s) = doc.get("reverses").and_then(Json::as_str) {
-        let reason = reversal_reason(doc.get("reason"))?;
-        if reason.name == "Other" && description.trim().is_empty() {
+        // Earlier raw-post clients recorded zero when no reason was supplied.
+        // Let the kernel compare that complete historical request with the
+        // recorded outcome. It refuses every fresh zero-reason correction
+        // before publication; this path never invents a registered reason or
+        // guesses that two requests are equivalent. Typed reverse remains strict.
+        let legacy_reason = !typed_reversal
+            && class == EntryClass::REVERSAL
+            && match doc.get("reason") {
+                None | Some(Json::Int(0)) => true,
+                Some(Json::Str(reason)) => reason == "0",
+                _ => false,
+            };
+        let reason = if legacy_reason {
+            None
+        } else {
+            Some(reversal_reason(doc.get("reason"))?)
+        };
+        if reason.as_ref().is_some_and(|r| r.name == "Other") && description.trim().is_empty() {
             return Err(Refusal::new(
                 fa_journal::code::SUPERSESSION_REASON,
                 exit::REFUSAL,
@@ -2626,11 +2642,11 @@ fn post_document(
         supersession.push(fa_model::Supersession {
             target: target.entry_ref(vid),
             kind: fa_model::SupersessionKind::Reverses,
-            reason_code: reason.code,
+            reason_code: reason.as_ref().map_or(0, |r| r.code),
         });
         target_date = Some(target.proposal.effective_date);
         target_period = target.proposal.effective_period.clone();
-        reversal_detail = Some((format!("{:032x}", vid.0), reason));
+        reversal_detail = reason.map(|reason| (format!("{:032x}", vid.0), reason));
         if doc.get("legs").is_some() {
             return Err(usage(
                 "a Reversal's legs are derived from the target; do not supply `legs`",
