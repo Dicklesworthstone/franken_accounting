@@ -3496,10 +3496,25 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         "more.json",
         r#"{"effective_date":"2026-03-16","idempotency_key":"more","legs":[{"side":"debit","account":"6000","amount":"1.00 USD"},{"side":"credit","account":"1000","amount":"1.00 USD"}]}"#,
     );
+    let more_plan = dir.join("more.plan").display().to_string();
     assert_eq!(
-        run(true, &["post", "--intent", &more, "--evidence", &ev]).0,
+        run(
+            true,
+            &[
+                "post",
+                "--intent",
+                &more,
+                "--evidence",
+                &ev,
+                "--dry-run",
+                "--plan-out",
+                &more_plan,
+            ],
+        )
+        .0,
         0
     );
+    assert_eq!(run(true, &["commit", "--plan", &more_plan]).0, 0);
     let (code, stale) = run(true, &["verify", "registers", "--period", "FY2026-P03"]);
     assert_eq!(code, 0, "ordinary lag is not corruption: {stale}");
     let stale_data = doc(&stale);

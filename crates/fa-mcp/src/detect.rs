@@ -509,7 +509,7 @@ pub fn remember(
     }
     if reply.exit == 0 {
         for line in &reply.lines {
-            if line.event == "period_planned"
+            if matches!(line.event.as_str(), "period_planned" | "plan")
                 && let Some(digest) = line.data.get("proposal_digest").and_then(Json::as_str)
             {
                 memory.planned.push(Planned {
@@ -818,6 +818,38 @@ mod tests {
             )
             .is_none(),
             "only approve"
+        );
+        let post_digest = "ef".repeat(32);
+        remember(
+            &mut memory,
+            &tool("fa_post_post"),
+            &json!({"intent": {}, "dry_run": true}),
+            &reply(
+                0,
+                "plan",
+                &format!(r#"{{"proposal_digest":"{post_digest}"}}"#),
+            ),
+            "planner",
+        );
+        assert!(
+            self_approval(
+                &approve,
+                &json!({"proposal": post_digest, "as": "controller"}),
+                &memory,
+                "planner",
+            )
+            .is_some(),
+            "a forged argument cannot change the principal who planned the PostEntry"
+        );
+        assert!(
+            self_approval(
+                &approve,
+                &json!({"proposal": post_digest}),
+                &memory,
+                "controller",
+            )
+            .is_none(),
+            "only a separately bound principal can be independent"
         );
     }
 }

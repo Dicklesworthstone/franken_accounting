@@ -21,12 +21,14 @@
 //! byte-identical across the two hosts by construction.
 
 use core::cell::RefCell;
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use fa::book::{Book, BookError, BookKeys, Entropy};
-use fa::{ReportOutput, ReportSelection, TrialBalanceSelection};
+use fa::{
+    MAX_PLAN_BYTES, PostIntent, PostPlan, ReportOutput, ReportSelection, TrialBalanceSelection,
+};
 use fa_journal::BookContext;
 use fa_journal::{
     AccountSpec, BalanceLimit, BookSpec, Capability, PostRequest, Posted, Refusal, UnitPolicy, exit,
@@ -63,6 +65,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("period", period_cmd),
     ("approve", approve_cmd),
     ("post", post_cmd),
+    ("commit", commit_cmd),
     ("reverse", reverse_cmd),
     ("reserve", reserve_cmd),
     ("resolve", resolve_cmd),
@@ -1135,6 +1138,12 @@ fn period_plan_only(verb: &str, args: &Args) -> bool {
         && args.flag_all("--approval").is_empty()
 }
 
+/// These concrete handlers prepare and abort the real posting transaction.
+/// No other verb may use a dry-run flag to bypass its confirmation gate.
+fn post_plan_only(verb: &str, args: &Args) -> bool {
+    matches!(verb, "post" | "reverse" | "reserve" | "resolve") && args.switch("--dry-run")
+}
+
 /// Admit the concrete operation before handlers read input files or the
 /// book. Legacy facade mutations without a caller capability remain owner
 /// operations. Report certificates and derived register caches are metadata,
@@ -1156,7 +1165,7 @@ fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fa
                 &[Op::Read]
             }
             ("verify" | "registers", _) => &[Op::Read, Op::Verify],
-            ("post" | "reverse" | "reserve" | "resolve", _) => &[Op::Post],
+            ("post" | "commit" | "reverse" | "reserve" | "resolve", _) => &[Op::Post],
             ("approve", _) => &[Op::Approve],
             ("checkpoint", _) => &[Op::Witness],
             _ => {
@@ -1257,7 +1266,7 @@ fn gate_from_argv(
     };
     let mut rows = reg.dangerous_for(&verb.name, sub).peekable();
     // Planning commits nothing: the commit from the plan is what confirms.
-    if period_plan_only(&verb.name, args) {
+    if period_plan_only(&verb.name, args) || post_plan_only(&verb.name, args) {
         return Ok(());
     }
     if authority.is_none() && confirmed(args) {
@@ -1304,7 +1313,7 @@ pub(crate) fn gate(
     subcommand: Option<&str>,
     condition: &Condition,
 ) -> Result<(), Fail> {
-    if !out.is_bound() && confirmed(args) {
+    if (!out.is_bound() && confirmed(args)) || post_plan_only(verb, args) {
         return Ok(());
     }
     let reg = registry()?;
@@ -1849,7 +1858,8 @@ const GUIDE: &str = "fa robot-docs guide\n\
 10. Schemas: `fa robot-docs schema --json` lists every event and its fields (generated from registries/verbs.toml); `fa robot-docs schema <event>` prints one. `fa <command> --help` prints that command's usage, flags, events and exits.\n\
 11. Application: a leg may carry `settles: [{entry, ordinal, amount}]` to apply itself to an open item — the opposite side on the same account and unit, at most the item's open amount (FA-REF-072 names what is open). `fa open-items --account <code>` lists items with their applications. Reversing a receipt reopens the invoice (its applications are undone, never re-entered); an invoice with live applications cannot be reversed until its receipts are (FA-REF-073).\n\
 12. Corrections require a registered reason: `fa reverse <vid> --reason WrongAccount --json` derives the opposite legs and retains the target's date by default; --effective selects an explicit same-or-later admissible period. A Reversal passed to `fa post` likewise carries `reason`, for example \"WrongAmount\". `fa entry show <reversal vid> --json` reports the immutable supersession and its reason. Other requires a description; no reason code proves the explanation true.\n\
-13. Retain a report for replay: `fa tb --period FY2026-P03 --certify --json`, `fa explain balance 1000 --period FY2026-P03 --certify --json`, and `fa open-items --account 1000 --certify --json` retain the report's certificate in the book. Each emits its original report event followed by report_certificate, binding the selector, known-at, historical account metadata and native history. `fa replay C:<oid> --json` reproduces the original report, and `fa certificate status C:<oid> --json` names later relevant entries without changing it. --certificate-out report.cert also writes a new external copy, never overwriting one. File and complete inline hex remain accepted; MCP accepts the returned oid or bytes as certificate. Certification writes metadata, never accounting entries; uncertified reads do not write. Scope is fa-fold-over-prefix with embedded-owner authority.\n";
+13. Retain a report for replay: `fa tb --period FY2026-P03 --certify --json`, `fa explain balance 1000 --period FY2026-P03 --certify --json`, and `fa open-items --account 1000 --certify --json` retain the report's certificate in the book. Each emits its original report event followed by report_certificate, binding the selector, known-at, historical account metadata and native history. `fa replay C:<oid> --json` reproduces the original report, and `fa certificate status C:<oid> --json` names later relevant entries without changing it. --certificate-out report.cert also writes a new external copy, never overwriting one. File and complete inline hex remain accepted; MCP accepts the returned oid or bytes as certificate. Certification writes metadata, never accounting entries; uncertified reads do not write. Scope is fa-fold-over-prefix with embedded-owner authority.\n\
+14. Rehearse an entry before writing: add --dry-run to post, reverse, reserve or resolve. The actual posting laws run, their staged transaction is aborted, and one plan event returns the exact sealed proposal, native effects digest, snapshot and complete canonical bytes. --plan-out <new-file> saves a private binary copy without replacing a file. Review it, then `fa commit --plan <file|-> --json` with the same owner --as and --grant; stdin accepts the bytes hex string. MCP uses fa_post_commit_plan with plan set to that string and keeps its launch-bound capability unchanged: ordinary Preparer plans can commit, Agent trunk posting still refuses, and dangerous void commits remain unavailable until separate confirmation exists. A first commit atomically retains its graph Certificate and CITES edge; an exact retry returns plan_committed with already_recorded=true. Any intervening book publication invalidates this first same-snapshot plan and requires another dry run. Planning collects no new approvals and provides no draft or --balancing support. A dry-run void releases nothing; the owner explicitly confirms its exact artifact, while MCP must ask the operator to separately prepare and confirm a release. Public plan digests are data fields, never native object-store OIDs in the envelope.\n";
 
 const EXAMPLES: &str = "fa robot-docs examples\n\
 \n\
@@ -2873,22 +2883,61 @@ fn resolve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 }
 
 fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Result<(), Fail> {
+    check_post_planning_options(args)?;
     let path = args.require("--intent", "entry.json (or - for stdin)")?;
     let text = ctx.files.read_text(path)?;
     let doc = parse_json(path, &text)?;
     post_document(ctx, args, forced, doc)
 }
 
-fn post_document(
-    ctx: &mut Ctx<'_>,
+fn check_post_planning_options(args: &Args) -> Result<(), Fail> {
+    if args.flag_all("--plan-out").len() > 1 {
+        return Err(usage(
+            "--plan-out may be supplied only once",
+            "choose one new plan output file",
+        ));
+    }
+    if let Some(path) = args.flag("--plan-out") {
+        if !args.switch("--dry-run") {
+            return Err(usage(
+                "--plan-out requires --dry-run; nothing was posted",
+                "add --dry-run to rehearse the entry and save its exact plan",
+            ));
+        }
+        if path == "-" {
+            return Err(usage(
+                "--plan-out names a new file; - is not an output file",
+                "omit --plan-out to receive the complete plan bytes as hex on stdout",
+            ));
+        }
+    }
+    if args.switch("--dry-run") && args.flag("--balancing").is_some() {
+        return Err(usage(
+            "--dry-run does not yet rehearse saturating --balancing requests",
+            "plan an intent with explicit amounts and no --balancing; the normal posting laws still apply",
+        ));
+    }
+    Ok(())
+}
+
+struct BuiltPost {
+    request: PostRequest,
+    class_name: String,
+    typed_reversal: bool,
+    reversal_detail: Option<(String, Reason)>,
+}
+
+/// Resolve and seal the request once. Planning and posting must use these
+/// same bytes; rebuilding a description would change its randomized seal.
+fn build_post_request(
+    out: &Out,
+    book: &mut Book,
     args: &Args,
     forced: Option<EntryClass>,
-    doc: Json,
-) -> Result<(), Fail> {
-    let who = ctx.principal(args);
-    let capability = ctx.capability(args, &["post"])?;
-    let out = &ctx.out;
-    let mut book = ctx.books.open(args)?;
+    doc: &Json,
+    who: VId,
+    capability: Capability,
+) -> Result<BuiltPost, Fail> {
     let ctx = book.context().clone();
     let class_name = doc
         .get("class")
@@ -2932,7 +2981,7 @@ fn post_document(
     let supplied_date = if typed_reversal && doc.get("effective_date").is_none() {
         None
     } else {
-        let date_s = req_str(&doc, "effective_date", "intent")?;
+        let date_s = req_str(doc, "effective_date", "intent")?;
         Some(DateDay::parse(date_s).map_err(|e| {
             usage(
                 format!("effective_date `{date_s}`: {e:?}"),
@@ -2942,7 +2991,7 @@ fn post_document(
     };
     let mut target_date = None;
     let mut target_period = None;
-    let key = req_str(&doc, "idempotency_key", "intent")?;
+    let key = req_str(doc, "idempotency_key", "intent")?;
     let description = doc.get("description").and_then(Json::as_str).unwrap_or("");
     // A Reversal names its target; its legs are the exact side-swap of the
     // target's, derived here so an agent never has to retype amounts. A
@@ -3061,7 +3110,7 @@ fn post_document(
             }
             "posts" | "post" => {
                 let mut pairs: Vec<(u16, LegPayload)> = Vec::new();
-                for (i, (leg, explicit)) in parse_legs(&doc, &ctx, &book)?.into_iter().enumerate() {
+                for (i, (leg, explicit)) in parse_legs(doc, &ctx, book)?.into_iter().enumerate() {
                     let ordinal = match explicit {
                         Some(o) => o,
                         None => {
@@ -3136,7 +3185,7 @@ fn post_document(
                 disposition: None,
             });
         }
-        let parsed = parse_legs(&doc, &ctx, &book)?;
+        let parsed = parse_legs(doc, &ctx, book)?;
         if let Some(i) = parsed.iter().position(|(_, o)| o.is_some()) {
             return Err(usage(
                 format!("legs[{i}]: `source_ordinal` belongs to a Resolution(Posts) only"),
@@ -3191,19 +3240,53 @@ fn post_document(
         },
         principal_ref: who,
         session_ref: None,
-        evidence: document::parse_evidence(&doc, args, &mut book)?,
+        evidence: document::parse_evidence(doc, args, book)?,
         supersession,
         pending,
         external_ids: Vec::new(),
         extensions: Vec::new(),
         tags: Vec::new(),
     };
-    let req = PostRequest {
-        proposal,
-        approvals: Vec::new(),
-        plan_certificate: None,
-        capability,
-    };
+    Ok(BuiltPost {
+        request: PostRequest {
+            proposal,
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability,
+        },
+        class_name: class_name.to_string(),
+        typed_reversal,
+        reversal_detail,
+    })
+}
+
+fn post_document(
+    ctx: &mut Ctx<'_>,
+    args: &Args,
+    forced: Option<EntryClass>,
+    doc: Json,
+) -> Result<(), Fail> {
+    check_post_planning_options(args)?;
+    let who = ctx.principal(args);
+    let capability = ctx.capability(args, &["post"])?;
+    let out = &ctx.out;
+    let mut book = ctx.books.open(args)?;
+    let BuiltPost {
+        request: req,
+        class_name,
+        typed_reversal,
+        reversal_detail,
+    } = build_post_request(out, &mut book, args, forced, &doc, who, capability)?;
+    if args.switch("--dry-run") {
+        let intent = PostIntent::new(req.proposal, req.approvals).map_err(|e| {
+            usage(
+                format!("cannot plan this entry: {e}"),
+                "check the entry intent",
+            )
+        })?;
+        let plan = book.plan(intent, &req.capability)??;
+        return emit_post_plan(out, &book, &ctx.files, args, &plan);
+    }
     // `--balancing <leg>` (post and reserve): the leg moves at most what its
     // account's limit admits, decided inside the posting transaction; the
     // event names what was asked and what moved.
@@ -3240,6 +3323,435 @@ fn post_document(
             )
         }
     };
+    out.at_book(&book)?;
+    emit_posted(
+        out,
+        posted,
+        &class_name,
+        typed_reversal,
+        reversal_detail,
+        amounts,
+    )
+}
+
+/// A plan is portable canonical bytes, never an authority token supplied by
+/// the caller. Decode only within its format bound before the kernel checks
+/// its book authentication, capability binding, and current snapshot.
+fn read_post_plan(files: &Files, path: &str) -> Result<PostPlan, Fail> {
+    let limit = MAX_PLAN_BYTES * 2 + 2; // hex, optionally followed by CRLF
+    let read = |reader: &mut dyn Read| -> Result<Vec<u8>, Fail> {
+        let mut bytes = Vec::new();
+        reader
+            .take(limit as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| {
+                usage(
+                    format!("{path}: {e}"),
+                    "pass a readable plan file or - for stdin",
+                )
+            })?;
+        Ok(bytes)
+    };
+    let bytes = if path == "-" {
+        match &files.stdin {
+            Stdin::Forwarded(bytes) => {
+                if bytes.len() > limit {
+                    return Err(usage(
+                        "plan input exceeds its bounded wire size",
+                        "pass the complete plan bytes from a successful --dry-run",
+                    ));
+                }
+                bytes.clone()
+            }
+            Stdin::Missing => {
+                return Err(usage(
+                    "- names plan stdin, but no bytes reached the command",
+                    "forward the plan event's bytes string, or pass its saved plan file",
+                ));
+            }
+            Stdin::Process => read(&mut std::io::stdin().lock())?,
+        }
+    } else {
+        let mut file = std::fs::File::open(files.resolve(path)).map_err(|e| {
+            usage(
+                format!("{path}: {e}"),
+                "pass the plan file saved with --dry-run --plan-out",
+            )
+        })?;
+        read(&mut file)?
+    };
+    if bytes.len() > limit {
+        return Err(usage(
+            "plan input exceeds its bounded wire size",
+            "pass the complete plan bytes from a successful --dry-run",
+        ));
+    }
+    let decode =
+        |bytes: &[u8]| {
+            PostPlan::decode(bytes).map_err(|e| usage(
+            format!("{path} is not a canonical PostEntry plan: {e}"),
+            "use the complete binary plan file or bytes hex string from a successful --dry-run",
+        ))
+        };
+    if bytes.starts_with(b"FA-POST-PLAN\0") {
+        return decode(&bytes);
+    }
+    let Some(text) = std::str::from_utf8(&bytes)
+        .ok()
+        .map(str::trim)
+        .filter(|text| {
+            !text.is_empty() && text.len() % 2 == 0 && text.bytes().all(|b| b.is_ascii_hexdigit())
+        })
+    else {
+        return Err(usage(
+            "expected a canonical binary PostEntry plan or its complete hex encoding",
+            "pass --plan <file> or forward the plan event's bytes string on stdin with --plan -",
+        ));
+    };
+    if text.len() / 2 > MAX_PLAN_BYTES {
+        return Err(usage(
+            "plan exceeds its canonical format limit",
+            "pass the complete plan bytes from a successful --dry-run",
+        ));
+    }
+    let decoded = text
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let digits = std::str::from_utf8(pair)
+                .map_err(|_| usage("invalid plan hex", "pass the complete plan bytes string"))?;
+            u8::from_str_radix(digits, 16)
+                .map_err(|_| usage("invalid plan hex", "pass the complete plan bytes string"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    decode(&decoded)
+}
+
+fn write_post_plan(files: &Files, path: &str, bytes: &[u8]) -> Result<(), Fail> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(files.resolve(path)).map_err(|e| {
+        usage(
+            format!("cannot create plan file {path}: {e}"),
+            "choose a new --plan-out path; an existing file is never overwritten",
+        )
+    })?;
+    file.write_all(bytes).and_then(|()| file.sync_all()).map_err(|e| {
+        Fail::Environment(format!(
+            "could not finish plan file {path}: {e}; nothing was posted; preserve the partial file and retry with a new output path"
+        ))
+    })
+}
+
+fn emit_post_plan(
+    out: &Out,
+    book: &Book,
+    files: &Files,
+    args: &Args,
+    plan: &PostPlan,
+) -> Result<(), Fail> {
+    let certificate = plan.certificate();
+    let proposal = plan.proposal();
+    let encode_error = |e| Fail::Internal(format!("encode the admitted post plan: {e}"));
+    let bytes = plan.canonical_bytes().map_err(encode_error)?;
+    let plan_digest = hex(&plan.digest().map_err(encode_error)?);
+    let certificate_digest = hex(&certificate.digest().map_err(encode_error)?);
+    let accounts: std::collections::BTreeMap<_, _> =
+        book.accounts()?.into_iter().map(|a| (a.vid, a)).collect();
+    let mut human_legs = Vec::new();
+    let legs = proposal
+        .legs
+        .iter()
+        .enumerate()
+        .map(|(ordinal, leg)| {
+            let account = accounts.get(&leg.account_ref).ok_or_else(|| {
+                Fail::Internal(format!(
+                    "admitted plan leg {ordinal} names a missing account {:032x}",
+                    leg.account_ref.0
+                ))
+            })?;
+            let amount = render_amount(leg.amount, &book.context().units)?;
+            let side = side_name(leg.side);
+            human_legs.push(format!(
+                "  {ordinal}: {side} {} ({}) {amount}",
+                account.code, account.name
+            ));
+            Ok(obj(vec![
+                ("ordinal", Json::Int(ordinal as i128)),
+                ("account", s(&account.code)),
+                ("account_vid", s(format!("{:032x}", leg.account_ref.0))),
+                ("side", s(side)),
+                ("amount", s(amount)),
+            ]))
+        })
+        .collect::<Result<Vec<_>, Fail>>()?;
+    let reasons =
+        ReasonCodes::embedded().map_err(|e| Fail::Internal(format!("reason_codes.toml: {e}")))?;
+    let resolves = proposal
+        .pending
+        .as_ref()
+        .and_then(|pending| pending.resolution_of.as_ref());
+    let disposition = proposal
+        .pending
+        .as_ref()
+        .and_then(|pending| pending.disposition.as_ref())
+        .map(|disposition| match disposition {
+            Disposition::Posts { .. } => "posts",
+            Disposition::Voids => "voids",
+            Disposition::Expires { .. } => "expires",
+        });
+    let bound = out.is_bound();
+    let authority_posture = if bound {
+        "mcp-launch-config"
+    } else {
+        "embedded-owner"
+    };
+    let bound_void = bound && disposition == Some("voids");
+    let command = if bound {
+        "fa_post_commit_plan".to_string()
+    } else {
+        let quoted = |word: &str| format!("'{}'", word.replace('\'', "'\\''"));
+        let mut command = format!(
+            "fa commit --plan {}",
+            quoted(args.flag("--plan-out").unwrap_or("-"))
+        );
+        for flag in ["--book", "--keys", "--as"] {
+            if let Some(value) = args.flag(flag) {
+                command.push_str(&format!(" {flag} {}", quoted(value)));
+            }
+        }
+        for grant in args.flag_all("--grant") {
+            command.push_str(&format!(" --grant {}", quoted(grant)));
+        }
+        command.push_str(" --json");
+        command
+    };
+    let commit_guidance = if bound_void {
+        "MCP cannot commit this void plan. Ask the operator to separately prepare, review and confirm the release.".to_string()
+    } else {
+        command.clone()
+    };
+    let next_actions = if bound_void {
+        Vec::new()
+    } else {
+        vec![(command, if bound {
+            "review this exact plan, then call fa_post_commit_plan with plan set to data.bytes in the same launch-bound session"
+        } else {
+            "review this exact plan, then commit it with the same caller capability; when --plan is -, forward data.bytes on stdin"
+        }.to_string())]
+    };
+    let mut human = format!(
+        "Planned {} effective {} in {} at sequence {}; nothing was written to the book.\nPreparer {:032x}\nProposal {}\nNative effects {}\nCertificate {}\n{}\nScope: same-snapshot-post; any intervening publication requires another dry run. Authority: {authority_posture}.\n{commit_guidance}",
+        proposal.class.name().unwrap_or("?"),
+        proposal.effective_date.render(),
+        certificate.period,
+        certificate.snapshot_seq.0,
+        certificate.principal.0,
+        hex(&certificate.proposal_digest),
+        hex(&certificate.effects_digest),
+        certificate_digest,
+        human_legs.join("\n"),
+    );
+    if let Some(disposition) = disposition {
+        human.push_str(&format!("\nResolution disposition: {disposition}"));
+    }
+    if let Some(target) = resolves {
+        human.push_str(&format!("\nResolves hold {:032x}", target.vid.0));
+    }
+    for link in &proposal.supersession {
+        let reason = reasons
+            .get("supersession", link.reason_code)
+            .map_or("unregistered historical reason", |reason| {
+                reason.name.as_str()
+            });
+        human.push_str(&format!(
+            "\n{:?} {:032x}; reason {} ({reason})",
+            link.kind, link.target.vid.0, link.reason_code,
+        ));
+    }
+    let encoded = hex(&bytes);
+    if args.flag("--plan-out").is_none() {
+        human.push_str(&format!(
+            "\nComplete canonical plan bytes (hex):\n{encoded}"
+        ));
+    }
+    // Complete rendering and encoding before creating a file, and create
+    // the entire optional file before publishing any successful plan event.
+    if let Some(path) = args.flag("--plan-out") {
+        write_post_plan(files, path, &bytes)?;
+    }
+    if bound_void {
+        out.warn(&commit_guidance);
+    }
+    out.known_at(certificate.snapshot_seq);
+    out.effective(format!("period:{}", certificate.period));
+    out.event_with_actions(
+        "plan",
+        vec![
+            ("intent_kind", s("PostEntry")),
+            ("class", s(proposal.class.name().unwrap_or("?"))),
+            ("effective_date", s(proposal.effective_date.render())),
+            ("period", s(&certificate.period)),
+            ("principal", s(format!("{:032x}", certificate.principal.0))),
+            ("idempotency_key", s(hex(&proposal.idempotency_key))),
+            ("intent_digest", s(hex(&certificate.intent_digest))),
+            ("proposal_digest", s(hex(&certificate.proposal_digest))),
+            ("effects_digest", s(hex(&certificate.effects_digest))),
+            (
+                "snapshot_seq",
+                Json::Int(i128::from(certificate.snapshot_seq.0)),
+            ),
+            (
+                "security_policy_epoch",
+                Json::Int(i128::from(certificate.security_policy_epoch)),
+            ),
+            (
+                "expires_at",
+                certificate
+                    .expires_at
+                    .map_or(Json::Null, |seq| Json::Int(i128::from(seq.0))),
+            ),
+            (
+                "capability_commitment",
+                s(hex(&certificate.capability_commitment)),
+            ),
+            ("certificate_digest", s(certificate_digest)),
+            ("plan_digest", s(plan_digest)),
+            ("legs", Json::Arr(legs)),
+            (
+                "resolves",
+                resolves.map_or(Json::Null, |entry| s(format!("{:032x}", entry.vid.0))),
+            ),
+            ("disposition", disposition.map_or(Json::Null, s)),
+            (
+                "supersedes",
+                Json::Arr(
+                    proposal
+                        .supersession
+                        .iter()
+                        .map(|link| lineage_json(link, &reasons))
+                        .collect(),
+                ),
+            ),
+            (
+                "evidence",
+                Json::Arr(
+                    proposal
+                        .evidence
+                        .iter()
+                        .map(|evidence| {
+                            obj(vec![
+                                ("document_oid", s(hex(&evidence.document_oid.0))),
+                                ("doc_commit", s(hex(&evidence.doc_commit))),
+                                ("role", Json::Int(i128::from(evidence.role))),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
+            ("approvals", Json::Int(plan.approvals().len() as i128)),
+            ("bytes", s(encoded)),
+            ("file", args.flag("--plan-out").map_or(Json::Null, s)),
+            ("scope", s("same-snapshot-post")),
+            ("authority", s(authority_posture)),
+        ],
+        &human,
+        &next_actions,
+    );
+    Ok(())
+}
+
+fn commit_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.len() != 1 || args.flag_all("--plan").len() != 1 {
+        return Err(usage(
+            "commit requires exactly one --plan and no positional arguments",
+            if ctx.out.is_bound() {
+                "call fa_post_commit_plan with exactly one of plan or plan_file; this session's authority stays fixed"
+            } else {
+                "fa commit --plan <file|-> [--as <principal>] [--grant <op>]... --json"
+            },
+        ));
+    }
+    let path = args.require("--plan", "the exact reviewed plan file, or - for stdin")?;
+    let plan = read_post_plan(&ctx.files, path)?;
+    let plan_digest = hex(&plan.digest().map_err(|e| {
+        usage(
+            format!("cannot identify plan: {e}"),
+            "pass the unchanged plan from --dry-run",
+        )
+    })?);
+    let certificate_digest = hex(&plan.certificate().digest().map_err(|e| {
+        usage(
+            format!("cannot identify plan certificate: {e}"),
+            "pass the unchanged plan from --dry-run",
+        )
+    })?);
+    // The artifact is never confirmation for a bound MCP host's dangerous
+    // release, even when its capability exactly matches an owner's plan.
+    // This check runs before the book is opened and before retry lookup.
+    let voids = matches!(
+        plan.proposal()
+            .pending
+            .as_ref()
+            .and_then(|pending| pending.disposition.as_ref()),
+        Some(Disposition::Voids)
+    ) || matches!(
+        plan.proposal().control.as_ref(),
+        Some(ControlPayload::ReservationRelease)
+    );
+    if ctx.out.is_bound() && voids {
+        gate(&ctx.out, args, "resolve", None, &Condition::Voids)?;
+    }
+    let capability = ctx.capability(args, &["post"])?;
+    let mut book = ctx.books.open(args)?;
+    let (entry_ref, recorded_at, period, already_recorded) =
+        match book.commit_plan(plan, &capability)?? {
+            Posted::Committed {
+                entry_ref,
+                recorded_at,
+                period,
+            } => (entry_ref, recorded_at, Some(period), false),
+            Posted::AlreadyRecorded {
+                entry_ref,
+                recorded_at,
+            } => (entry_ref, recorded_at, None, true),
+        };
+    ctx.out.at_book(&book)?;
+    if let Some(period) = &period {
+        ctx.out.effective(format!("period:{period}"));
+    }
+    ctx.out.event(
+        "plan_committed",
+        vec![
+            ("vid", s(format!("{:032x}", entry_ref.vid.0))),
+            ("entry_digest", s(hex(&entry_ref.entry_digest))),
+            ("recorded_at", Json::Int(i128::from(recorded_at.0))),
+            ("period", period.as_ref().map_or(Json::Null, s)),
+            ("already_recorded", Json::Bool(already_recorded)),
+            ("plan_digest", s(&plan_digest)),
+            ("certificate_digest", s(&certificate_digest)),
+        ],
+        &format!(
+            "{} plan {plan_digest} as entry {:032x}, recorded at {} (certificate {certificate_digest})",
+            if already_recorded { "Already committed" } else { "Committed" }, entry_ref.vid.0, recorded_at.0,
+        ),
+    );
+    Ok(())
+}
+
+fn emit_posted(
+    out: &Out,
+    posted: Posted,
+    class_name: &str,
+    typed_reversal: bool,
+    reversal_detail: Option<(String, Reason)>,
+    amounts: Option<(String, String)>,
+) -> Result<(), Fail> {
     let (requested, moved) = match &amounts {
         Some((r, m)) => (s(r), s(m)),
         None => (Json::Null, Json::Null),
@@ -3247,7 +3759,6 @@ fn post_document(
     let balancing_text = amounts.as_ref().map_or(String::new(), |(r, m)| {
         format!(" · balancing: requested {r}, moved {m}")
     });
-    out.at_book(&book)?;
     match posted {
         Posted::Committed {
             entry_ref,

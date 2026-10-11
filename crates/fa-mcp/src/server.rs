@@ -371,7 +371,14 @@ impl Adapter {
                     "examples": examples.get("text").map_or(JsonValue::Null, to_wire),
                     "tools": tools,
                     "schema": JsonValue::Null,
-                    "note": "the intent document forms this build accepts, as the examples show them (an intent is the `intent` object of the tools listed); a machine-readable intent schema is not registered yet — fa-intents is planned, and this field will carry it",
+                    "planning": {
+                        "dry_run": "Set dry_run=true on a posting tool to run the actual laws without publishing. A bounded Preparer session can review the plan event and pass its complete bytes hex string as plan to fa_post_commit_plan under the same launch principal and capability.",
+                        "scope": "same-snapshot-post",
+                        "invalidation": "Any intervening publication before the first commit requires another dry run. This slice preserves supplied approvals; it does not gather new approvals, create drafts, or rehearse balancing.",
+                        "authority": "The artifact grants no authority. The default Agent profile cannot plan or commit accounting entries to trunk. Tool calls cannot select another principal, profile, book or grants. Dangerous void plan commits remain unavailable until a separate confirmation exchange exists.",
+                        "commit_tool": "fa_post_commit_plan",
+                    },
+                    "note": "the JSON intent document forms this build accepts, as the examples show them (an intent is the `intent` object of the tools listed); a machine-readable JSON intent schema is not registered yet. The fa-intents PostEntry artifact has a separate bounded canonical binary format, returned as complete hex bytes for MCP transport",
                 });
                 Ok((json_mime, v.to_string()))
             }

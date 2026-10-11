@@ -67,7 +67,7 @@ pub const RESOURCES: &[(&str, &str)] = &[
     ),
     (
         "resource://fa/intents",
-        "the intent documents this build accepts: the entry classes and the worked examples (`fa robot-docs examples`); a machine-readable intent schema is not registered yet (fa-intents is planned)",
+        "the intent documents this build accepts: entry classes, worked examples and portable PostEntry planning under the launch authority; a machine-readable JSON intent schema is not registered yet",
     ),
 ];
 
@@ -879,6 +879,10 @@ impl ToolSpec {
                     "string",
                     "a retained certificate oid (C: prefixed or bare 64-hex), or the complete canonical bytes in hex",
                 ),
+                StdinKind::Text if s.property == "plan" => (
+                    "string",
+                    "the complete canonical plan bytes in hex from a successful dry_run under the same launch authority; dangerous void commits still require an unavailable separate confirmation exchange",
+                ),
                 StdinKind::Text => ("string", "the text, inline"),
             };
             let alt = if s.via.starts_with("--") {
@@ -940,12 +944,26 @@ impl ToolSpec {
                 required.push(prop);
             }
         }
-        json!({
+        let mut schema = json!({
             "type": "object",
             "properties": props,
             "required": required,
             "additionalProperties": false,
-        })
+        });
+        if let Some(stdin) = &self.stdin
+            && self.required.contains(&stdin.via)
+        {
+            let path = if stdin.via.starts_with("--") {
+                self.flag_property(&stdin.via)
+            } else {
+                stdin.via.clone()
+            };
+            schema["oneOf"] = json!([
+                { "required": [stdin.property.clone()] },
+                { "required": [path] },
+            ]);
+        }
+        schema
     }
 
     /// The `[[dangerous]]` rows the covered subcommands carry.
@@ -1781,6 +1799,93 @@ mod tests {
             vec!["period", "soft-close", "FY2026-P03", "--json"]
         );
         assert_eq!(inv.stdin, None);
+    }
+
+    #[test]
+    fn posting_tools_plan_inline_and_commit_exact_artifacts_under_launch_authority() {
+        let (mcp, reg) = embedded();
+        for wire in [
+            "fa_post_post",
+            "fa_post_reverse",
+            "fa_post_reserve",
+            "fa_post_resolve",
+        ] {
+            let tool = mcp.tool_by_wire(wire).expect("posting tool");
+            let schema = tool.input_schema(&mcp, reg);
+            assert_eq!(schema["properties"]["dry_run"]["type"], json!("boolean"));
+            assert!(schema["properties"].get("plan_out").is_none(), "{wire}");
+            for argument in FORBIDDEN_ARGUMENTS {
+                assert!(
+                    schema["properties"].get(*argument).is_none(),
+                    "{wire}: {argument}"
+                );
+            }
+        }
+        let post = mcp.tool_by_wire("fa_post_post").unwrap();
+        let planned = post
+            .invocation(
+                &mcp,
+                reg,
+                &json!({
+                    "intent": {"idempotency_key": "same-key", "legs": []},
+                    "dry_run": true,
+                }),
+            )
+            .expect("inline dry run");
+        assert_eq!(
+            planned.argv,
+            vec!["post", "--intent", "-", "--dry-run", "--json"]
+        );
+        assert!(planned.stdin.is_some());
+        assert!(
+            post.invocation(
+                &mcp,
+                reg,
+                &json!({"intent": {}, "dry_run": true, "plan_out": "host.plan"}),
+            )
+            .is_err()
+        );
+
+        let commit = mcp
+            .tool_by_wire("fa_post_commit_plan")
+            .expect("commit tool");
+        let schema = commit.input_schema(&mcp, reg);
+        assert_eq!(schema["properties"]["plan"]["type"], json!("string"));
+        assert_eq!(schema["properties"]["plan_file"]["type"], json!("string"));
+        assert_eq!(
+            schema["oneOf"],
+            json!([
+                {"required": ["plan"]}, {"required": ["plan_file"]},
+            ])
+        );
+        let inline = commit
+            .invocation(&mcp, reg, &json!({"plan": "abcd"}))
+            .expect("hex plan stdin");
+        assert_eq!(inline.argv, vec!["commit", "--plan", "-", "--json"]);
+        assert_eq!(inline.stdin, Some(b"abcd".to_vec()));
+        let file = commit
+            .invocation(&mcp, reg, &json!({"plan_file": "saved.plan"}))
+            .expect("binary file");
+        assert_eq!(file.argv, vec!["commit", "--plan", "saved.plan", "--json"]);
+        assert!(file.stdin.is_none());
+        for args in [
+            json!({}),
+            json!({"plan": {}}),
+            json!({"plan": "ab", "plan_file": "saved.plan"}),
+        ] {
+            assert!(commit.invocation(&mcp, reg, &args).is_err(), "{args}");
+        }
+        for argument in FORBIDDEN_ARGUMENTS {
+            for value in [JsonValue::Null, json!(false), json!("operator")] {
+                let mut arguments = json!({"plan": "abcd"});
+                arguments[*argument] = value;
+                let refused = commit.invocation(&mcp, reg, &arguments).unwrap_err();
+                assert!(
+                    refused.message.contains("forbidden argument"),
+                    "{refused:?}"
+                );
+            }
+        }
     }
 
     #[test]

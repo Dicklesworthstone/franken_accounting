@@ -136,6 +136,36 @@ fn discovery_and_parser_failures_preserve_authority_without_a_book() {
 }
 
 #[test]
+fn planning_and_plan_commit_cannot_add_post_to_a_read_only_launch() {
+    let book = fixture("read-only-plans");
+    let authority = LaunchAuthority::new(book, None, "agent-7", LaunchProfile::Preparer, &["read"])
+        .expect("read-only launch");
+    for argv in [
+        vec![
+            "post",
+            "--intent",
+            "unread-entry.json",
+            "--dry-run",
+            "--json",
+        ],
+        vec!["commit", "--plan", "unread-plan.bin", "--json"],
+    ] {
+        let (exit, out) = run(&authority, &argv);
+        assert_eq!(exit, 7, "argv={argv:?}\n{out:?}");
+        let line = line(&out);
+        assert_eq!(line.get("book"), Some(&Json::Null));
+        assert_eq!(line.get("coordinate"), Some(&Json::Null));
+        assert_eq!(
+            line.get("data")
+                .and_then(|data| data.get("refusal_id"))
+                .and_then(Json::as_str),
+            Some("FA-REF-011"),
+            "authority must refuse before reading the absent input: {out:?}",
+        );
+    }
+}
+
+#[test]
 fn a_missing_lease_directory_is_not_an_unleased_execution_fallback() {
     let book = fixture("missing-lease").join("missing-book");
     let authority = authority(book.clone());

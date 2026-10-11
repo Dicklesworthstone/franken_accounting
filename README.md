@@ -135,8 +135,9 @@ bundles, and certificates for additional report families remain unfinished.
 
 ### Typed posting plans
 
-The embedded API can rehearse a typed `PostIntent` through the actual posting
-kernel, export its bounded canonical bytes, and commit that same intent later:
+The library, CLI and MCP can rehearse an entry through the actual posting
+kernel, export its bounded canonical bytes, and commit that same intent later.
+The embedded API uses a typed `PostIntent`:
 
 ```rust
 let intent = fa::PostIntent::new(request.proposal, request.approvals)?;
@@ -145,6 +146,39 @@ let saved_bytes = plan.canonical_bytes()?;
 let restored = fa::PostPlan::decode(&saved_bytes)?;
 let posted = book.commit_plan(restored, &request.capability)??;
 ```
+
+For an existing book and an entry intent file:
+
+```bash
+# Run the posting laws, review the exact result, and save a new binary plan.
+fa post --book ./books/acme --intent entry.json \
+  --dry-run --plan-out entry.plan --json
+# Commit the reviewed artifact with the same caller and grants.
+fa commit --book ./books/acme --plan entry.plan --json
+```
+
+`reverse`, `reserve` and `resolve` also accept `--dry-run` and optional
+`--plan-out`. Rehearsing a hold acquires no reservation, and rehearsing a void
+releases nothing. On the ordinary owner CLI, the explicit `commit --plan`
+confirms the authenticated artifact; use the same `--as` and `--grant` values
+on both calls.
+
+The robot `plan` event includes the exact legs, effective date, lineage,
+evidence references, snapshot, effects digest and complete canonical `bytes`
+as hex. `--plan-out` creates a private binary file and refuses an existing
+path. Without a file, forward `data.bytes` on stdin to `fa commit --plan -`.
+Commit emits `plan_committed`; an exact retry sets `already_recorded: true`.
+
+An MCP server launched with the bounded Preparer profile below can use
+`dry_run: true` on its posting tools, then pass the returned `data.bytes`
+as `plan` to `fa_post_commit_plan`. Both calls use the exact fixed launch
+capability. Per-call identity or grant overrides remain forbidden; the
+default Agent profile still refuses trunk posting and planning. A void can
+be previewed, but its MCP commit remains refused with `FA-REF-007` until the
+separate confirmation exchange exists. A plan cannot replace that exchange.
+Plan output identifies the actual `embedded-owner` or `mcp-launch-config`
+authority. CLI/MCP dry runs currently refuse `--balancing` and do not collect
+new approvals.
 
 Planning runs the same balance, period, evidence, capability, approval,
 settlement, reservation and balance-limit checks as posting, then aborts the
