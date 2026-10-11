@@ -2532,36 +2532,55 @@ mod tests {
 
     #[test]
     fn directory_book_accepts_a_relative_host_path_without_changing_cwd() {
-        // Reach a unique host temporary directory through a relative path;
-        // no process-global chdir and no deletion of test artifacts.
-        let cwd = std::env::current_dir().unwrap();
-        let mut relative = PathBuf::new();
-        for _ in cwd
-            .components()
-            .filter(|c| matches!(c, std::path::Component::Normal(_)))
-        {
-            relative.push("..");
+        // UnixVfs refuses `..` at rename. Run the relative-path operation
+        // beneath a child-specific cwd, without changing the cwd shared by
+        // parallel tests. Reopen by absolute path in the parent as well:
+        // a child invocation matching zero tests cannot satisfy this oracle.
+        const CHILD: &str = "FA_RELATIVE_BOOK_ROOT_CHILD";
+        let keys = BookKeys::for_development(0x64);
+        if std::env::var_os(CHILD).is_some() {
+            let relative = Path::new("nested/book");
+            let (spec, _) = spec(Id128([0x64; 16]));
+            let book =
+                Book::create_dir(relative, keys.clone(), spec, Entropy::deterministic(31)).unwrap();
+            let head = book.head().unwrap();
+            drop(book);
+            assert_eq!(
+                Book::open_dir(relative, keys, Entropy::deterministic(31))
+                    .unwrap()
+                    .head()
+                    .unwrap(),
+                head
+            );
+            return;
         }
+        let cwd = std::env::current_dir().unwrap();
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let dir = std::env::temp_dir().join(format!("fa-relative-{}-{suffix}", std::process::id()));
-        relative.push(dir.strip_prefix("/").unwrap());
-        assert!(relative.is_relative());
-        let (spec, _) = spec(Id128([0x64; 16]));
-        let keys = BookKeys::for_development(0x64);
-        let book =
-            Book::create_dir(&relative, keys.clone(), spec, Entropy::deterministic(31)).unwrap();
-        let head = book.head().unwrap();
-        drop(book);
-        assert_eq!(
-            Book::open_dir(&relative, keys, Entropy::deterministic(31))
-                .unwrap()
-                .head()
-                .unwrap(),
-            head
+        std::fs::create_dir_all(&dir).unwrap();
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "book::tests::directory_book_accepts_a_relative_host_path_without_changing_cwd",
+                "--exact",
+            ])
+            .env(CHILD, "1")
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert!(
+            child.status.success(),
+            "the relative-book child failed:\n{}{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
         );
+        let reopened = Book::open_dir(&dir.join("nested/book"), keys, Entropy::deterministic(31))
+            .expect("the child created a reopenable book under its relative path");
+        assert_eq!(reopened.context().book_id, Id128([0x64; 16]));
+        assert!(reopened.head().unwrap().0 > 0);
+        assert_eq!(std::env::current_dir().unwrap(), cwd);
     }
 
     #[test]
