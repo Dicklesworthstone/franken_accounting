@@ -17,10 +17,25 @@
 //! chunks say. Amounts, dates, accounts and lineage are never in a
 //! document's bytes' redaction scope: a view changes no entry.
 
-use fa_model::{DecodeError, Oid, Reader, Writer, domain_digest};
+use std::sync::OnceLock;
 
-use crate::evidence::{CHUNK_BYTES, Document, commitment, leaf, tree_root};
-use crate::refusal::KernelError;
+use fa_model::symbols::{label, property, relation};
+use fa_model::{DecodeError, Id128, Oid, Reader, Writer, domain_digest};
+use fa_policy::{Capability, Intent, Op};
+use fa_registry::evidence_policy::EvidencePolicy;
+use fa_registry::redaction_contracts::{Contract, RedactionContracts};
+use fgdb::{Database, VertexRow, WriteBatch, WriteTxnError};
+use fgdb_types::context::PurposeContexts;
+use fgdb_types::{CanonicalScalar, CommitSeq, VId};
+
+use crate::blob::BlobStore;
+use crate::evidence::{
+    CHUNK_BYTES, Document, commitment, document_vid, fetch_document, hex, leaf, tree_root,
+};
+use crate::genesis::BookContext;
+use crate::policy::{capability_witness, refusal};
+use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
+use crate::rows::{edge_id, prop, scalar_bytes};
 
 /// Domain of `view_commit`.
 pub const VIEW_DOMAIN: &[u8] = b"fa:redacted-view:v1";
@@ -211,6 +226,323 @@ impl RedactedView {
             ViewChunk::Withheld(_) => None,
         })
     }
+}
+
+// ---------------------------------------------------------------------------
+// Views in the book: derivation by a privileged holder, reads by capability
+// ---------------------------------------------------------------------------
+
+/// `vid(view) = H("fa:vid:redacted-view:v1" ‖ book ‖ original ‖ u16
+/// contract)`: one view per document per contract.
+#[must_use]
+pub fn redacted_view_vid(book: Id128, original: &Oid, contract: u16) -> VId {
+    let d = domain_digest(
+        b"fa:vid:redacted-view:v1",
+        &[&book.0, &original.0, &contract.to_le_bytes()],
+    );
+    let mut lo = [0u8; 16];
+    lo.copy_from_slice(&d[..16]);
+    VId(u128::from_le_bytes(lo))
+}
+
+/// The embedded contracts, parsed once per process.
+fn contracts() -> Result<&'static RedactionContracts, KernelError> {
+    static CONTRACTS: OnceLock<Result<RedactionContracts, String>> = OnceLock::new();
+    CONTRACTS
+        .get_or_init(|| RedactionContracts::embedded().map_err(|e| e.to_string()))
+        .as_ref()
+        .map_err(|e| KernelError::Corrupt(format!("redaction_contracts.toml: {e}")))
+}
+
+/// The outcome of a derivation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ViewDerived {
+    pub view: VId,
+    pub view_commit: [u8; 32],
+    pub contract: u16,
+    pub recorded_at: CommitSeq,
+    /// The same view was already recorded; nothing was written.
+    pub already_recorded: bool,
+}
+
+/// What a capability may read of a document.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DocumentRead {
+    /// The verified bytes: the capability reveals them, or nothing in the
+    /// document is privileged.
+    Full(Document),
+    /// The document's redacted view, verified against its commitment.
+    Redacted(RedactedView),
+}
+
+fn unknown_document(oid: &Oid) -> Refusal {
+    Refusal::new(
+        code::EVIDENCE_UNKNOWN,
+        exit::REFUSAL,
+        format!("document {} is not in this book", hex(&oid.0)),
+        "plan §9.6 (a redacted view projects a document the book holds)",
+        "name the oid `fa document add` printed for a document of this book",
+    )
+}
+
+fn proof_failed(view: VId, why: &str) -> Refusal {
+    Refusal::new(
+        code::REDACTION_PROOF,
+        exit::VERIFICATION,
+        format!("redacted view {:032x}: {why}", view.0),
+        "plan §9.6 (a redacted view proves it projects the document an entry cites); FA-INV-14 public-commitment",
+        "treat the stored view as untrusted: a view that does not rebuild its document's commitment is not that document's; a privileged principal re-derives it from the verified bytes",
+    )
+}
+
+/// The view stored at `row`, checked to be `oid`'s under `contract` and to
+/// rebuild its commitment; otherwise why not.
+fn stored_view(row: &VertexRow, oid: &Oid, contract: u16) -> Result<RedactedView, String> {
+    let Some(CanonicalScalar::Bytes(b)) = prop(row, property::FA_PAYLOAD) else {
+        return Err("carries no view payload".into());
+    };
+    let view = RedactedView::decode(b.as_slice()).map_err(|e| format!("does not decode: {e}"))?;
+    if view.original != *oid || view.contract != contract {
+        return Err("is another document's or another contract's view".into());
+    }
+    view.verify()?;
+    let commit = view.view_commit().map_err(|e| e.to_string())?;
+    match prop(row, property::FA_DIGEST) {
+        Some(CanonicalScalar::Bytes(d)) if d.as_slice() == commit => Ok(view),
+        _ => Err("its digest mirror is not its view commitment".into()),
+    }
+}
+
+/// Derive and record the redacted view of document `oid` under the contract
+/// governing its kind (plan §9.6). Authority first, before any read: the
+/// capability is its holder's, holds `privileged` (the contracts' revealing
+/// op), and is current. Then the verified bytes (from the book or `store`;
+/// 116/085 as for any read), the governing contract (none: FA-REF-100,
+/// nothing in the document is privileged), the view, and in one transaction
+/// the revocation witness, the view's identity (the same view again is its
+/// recorded outcome) and the view with a `REDACTS` edge to its document.
+pub async fn derive_redacted_view<V, B>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capability: &Capability,
+    store: &BlobStore<B>,
+    oid: Oid,
+) -> Outcome<ViewDerived>
+where
+    V: asupersync::fs::Vfs + Clone,
+    B: asupersync::fs::Vfs + Clone,
+{
+    if let Err(d) = fa_policy::admit(
+        capability,
+        &Intent {
+            principal: capability.holder(),
+            trunk: true,
+            op: Op::Privileged,
+            book: book.book_id,
+            legs: &[],
+        },
+    ) {
+        return Ok(Err(refusal(&d)));
+    }
+    if let Err(d) = fa_policy::current(capability, db.frontier()?) {
+        return Ok(Err(refusal(&d)));
+    }
+    let doc = match fetch_document(db, store, &oid).await? {
+        Ok(Some(doc)) => doc,
+        Ok(None) => return Ok(Err(unknown_document(&oid))),
+        Err(r) => return Ok(Err(r)),
+    };
+    let Some(contract) = contracts()?.for_kind(doc.kind) else {
+        return Ok(Err(Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            format!(
+                "document {} is of a kind no redaction contract governs: nothing in it is privileged",
+                hex(&oid.0)
+            ),
+            "plan §9.6; registries/redaction_contracts.toml",
+            "read the document itself; a view exists only for kinds a contract governs",
+        )));
+    };
+    let view = RedactedView::derive(&doc, contract.id, &contract.privileged);
+    view.verify().map_err(|why| {
+        KernelError::Corrupt(format!(
+            "a derived view does not rebuild its commitment: {why}"
+        ))
+    })?;
+    let view_commit = view.view_commit()?;
+    let vid = redacted_view_vid(book.book_id, &oid, contract.id);
+    let txn_cx = ctx.txn();
+    let mut txn = db.begin(&txn_cx)?;
+    if let Err(r) = capability_witness(&txn, db, book, capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    if let Some(row) = txn.vertex(db, vid)? {
+        txn.abort();
+        return recorded(&row, &oid, contract, view_commit);
+    }
+    let mut batch = WriteBatch::new(relation::REDACTS);
+    batch.create_vertex(
+        vid,
+        vec![label::REDACTED_VIEW],
+        vec![
+            (
+                property::FA_PAYLOAD,
+                scalar_bytes("_fa_payload", view.canonical_bytes()?)?,
+            ),
+            (
+                property::FA_DIGEST,
+                scalar_bytes("_fa_digest", view_commit.to_vec())?,
+            ),
+        ],
+    );
+    let dvid = document_vid(&oid);
+    batch.add_edge(edge_id(relation::REDACTS, vid, dvid), vid, dvid, vec![]);
+    if let Err(e) = txn.write(db, batch) {
+        txn.abort();
+        return Err(e.into());
+    }
+    match txn.commit(db, &ctx.commit()).await {
+        Ok(seq) => Ok(Ok(ViewDerived {
+            view: vid,
+            view_commit,
+            contract: contract.id,
+            recorded_at: seq,
+            already_recorded: false,
+        })),
+        Err(WriteTxnError::Write(
+            fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
+        )) => match db.vertex(vid)? {
+            Some(row) => recorded(&row, &oid, contract, view_commit),
+            None => Err(KernelError::Corrupt(
+                "redacted view identity spent but no live row".into(),
+            )),
+        },
+        Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
+            Ok(Err(Refusal::new(
+                code::CONFLICT,
+                exit::CONFLICT,
+                format!("a concurrent commit invalidated a witness this derivation read: {detail}"),
+                "FG-LAW-FCW-01 (first committer wins)",
+                "retry; if the view was recorded meanwhile the retry returns it",
+            )))
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn recorded(
+    row: &VertexRow,
+    oid: &Oid,
+    contract: &Contract,
+    view_commit: [u8; 32],
+) -> Outcome<ViewDerived> {
+    match stored_view(row, oid, contract.id) {
+        Ok(stored) if stored.view_commit()? == view_commit => Ok(Ok(ViewDerived {
+            view: row.vid,
+            view_commit,
+            contract: contract.id,
+            recorded_at: row.created_at,
+            already_recorded: true,
+        })),
+        Ok(_) => Ok(Err(proof_failed(
+            row.vid,
+            "differs from the view the contract derives from the document's verified bytes",
+        ))),
+        Err(why) => Ok(Err(proof_failed(row.vid, &why))),
+    }
+}
+
+/// Read document `oid` as `capability` may see it (plan §9.6; R-RED interim,
+/// decided before any read of its bytes, never as a result filter). The
+/// capability is its holder's, holds `read`, admits this book and is
+/// current. One that also holds `privileged` reads the verified bytes. For
+/// any other, the document's kind (public metadata, one point read of its
+/// mirror) selects the governing contract: none, and the verified bytes are
+/// read, because nothing in them is privileged; one, and only the view
+/// vertex is read — FA-REF-142 when no view has been derived, FA-REF-143
+/// when the stored view does not rebuild the document's commitment.
+pub async fn read_document_for<V, B>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capability: &Capability,
+    store: &BlobStore<B>,
+    oid: Oid,
+) -> Outcome<DocumentRead>
+where
+    V: asupersync::fs::Vfs + Clone,
+    B: asupersync::fs::Vfs + Clone,
+{
+    if let Err(d) = fa_policy::admit(
+        capability,
+        &Intent {
+            principal: capability.holder(),
+            trunk: true,
+            op: Op::Read,
+            book: book.book_id,
+            legs: &[],
+        },
+    ) {
+        return Ok(Err(refusal(&d)));
+    }
+    if let Err(d) = fa_policy::current(capability, db.frontier()?) {
+        return Ok(Err(refusal(&d)));
+    }
+    let full = |r: Result<Option<Document>, Refusal>| match r {
+        Ok(Some(doc)) => Ok(DocumentRead::Full(doc)),
+        Ok(None) => Err(unknown_document(&oid)),
+        Err(r) => Err(r),
+    };
+    if capability.holds(Op::Privileged) {
+        return Ok(full(fetch_document(db, store, &oid).await?));
+    }
+    let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    let txn_cx = ctx.txn();
+    let txn = db.begin(&txn_cx)?;
+    if let Err(r) = capability_witness(&txn, db, book, capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    let kind = match txn.vertex_property(db, document_vid(&oid), property::CODE)? {
+        Some(CanonicalScalar::Text(t)) => policy
+            .kinds
+            .iter()
+            .find(|k| k.name.as_bytes() == t.as_bytes())
+            .map(|k| k.tag),
+        _ => None,
+    };
+    let Some(kind) = kind else {
+        txn.abort();
+        return Ok(Err(unknown_document(&oid)));
+    };
+    let Some(contract) = contracts()?.for_kind(kind) else {
+        txn.abort();
+        return Ok(full(fetch_document(db, store, &oid).await?));
+    };
+    let vid = redacted_view_vid(book.book_id, &oid, contract.id);
+    let row = txn.vertex(db, vid)?;
+    txn.abort();
+    let Some(row) = row else {
+        return Ok(Err(Refusal::new(
+            code::REDACTED_VIEW_ABSENT,
+            exit::REFUSAL,
+            format!(
+                "document {} is governed by redaction contract {} (`{}`) and has no derived view",
+                hex(&oid.0),
+                contract.id,
+                contract.name
+            ),
+            "plan §9.6 (a reader without the revealing op sees a governed document only through its redacted view); registries/redaction_contracts.toml",
+            "have a principal holding privileged derive the document's redacted view first; the bytes themselves are never served to this capability",
+        )));
+    };
+    Ok(match stored_view(&row, &oid, contract.id) {
+        Ok(view) => Ok(DocumentRead::Redacted(view)),
+        Err(why) => Err(proof_failed(vid, &why)),
+    })
 }
 
 #[cfg(test)]

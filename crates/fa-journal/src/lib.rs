@@ -71,7 +71,10 @@ pub use policy::{
     security_policy_epoch,
 };
 pub use post::{Capability, PostRequest, Posted, post};
-pub use redaction::{RedactedView, ViewChunk};
+pub use redaction::{
+    DocumentRead, RedactedView, ViewChunk, ViewDerived, derive_redacted_view, read_document_for,
+    redacted_view_vid,
+};
 pub use refusal::{KernelError, Refusal, exit};
 pub use rows::{AccountRow, PeriodRow};
 pub use schedule::{

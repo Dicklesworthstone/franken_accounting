@@ -1,0 +1,37 @@
+# redaction_contracts.toml — which byte ranges of a document kind are
+# privileged, and the op that reveals them (plan §9.6; fa-txf part C2).
+#
+# A reader without the revealing op sees a document of a governed kind only
+# through its RedactedView: every 4 KiB chunk a privileged range touches is
+# withheld as its leaf hash and the rest is disclosed, and the view proves
+# itself against the document's public commitment. Amounts, dates, accounts
+# and lineage live in entries, never in a document's bytes, so no contract
+# reaches them.
+#
+# Switch-over rule (CobaltGull 3404): this registry is the registered subset
+# of §9.6's contract-on-a-class. Per-matter and per-production contracts
+# (§13.2) become journaled payloads of the same row shape, and a view names
+# its contract by id either way. The `redaction = <contract>` capability
+# caveat is bead fa-kuu (Capability v2 tag 2); until it lands the revealing
+# op is the only gate (ruling 3251), decided before any read.
+#
+# Consumer: fa-registry `redaction_contracts` (parser), fa-journal
+# `redaction` (derivation and reads).
+# Gate: ids >= 1 and unique; names unique; every kind registered
+# (evidence_policy.toml) and governed by at most one contract; `offsets` and
+# `lengths` parallel and non-empty, each length >= 1, no range past u64;
+# `reveal_op` closed (`privileged`).
+#
+# Additive-only: a contract id is never reused, and a contract's ranges never
+# change while a view names it.
+
+schema_version = 1
+
+[[contract]]
+id = 1
+name = "statement-account-block"
+kinds = ["BankStatement"]
+offsets = [0]
+lengths = [4096]
+reveal_op = "privileged"
+meaning = "a bank statement's first page: the account holder, the account and routing numbers"
