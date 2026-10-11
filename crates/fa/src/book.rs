@@ -1363,6 +1363,7 @@ mod tests {
                 calendar,
                 time_zone_policy: None,
                 entities: Vec::new(),
+                opening_date: None,
             },
             usd,
         )

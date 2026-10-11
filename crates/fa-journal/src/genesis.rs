@@ -9,8 +9,8 @@ use fa_model::{
 };
 use fa_money::{UnitId, UnitRegistry};
 use fa_time::{
-    CalendarKind, DateDay, FiscalCalendar, PeriodDef, PeriodState, WeekPattern, Weekday,
-    YearEndRule,
+    CalendarKind, DateDay, FiscalCalendar, PeriodDef, PeriodKind, PeriodState, WeekPattern,
+    Weekday, YearEndRule,
 };
 use fgdb::{Database, WriteBatch};
 use fgdb_types::context::PurposeContexts;
@@ -49,6 +49,12 @@ pub struct BookSpec {
     /// `(unit, legal_entity)` (FA-INV-01 `per-entity`, §5.2). Empty: the book
     /// is its single implicit entity and its bytes are unchanged.
     pub entities: Vec<LegalEntitySpec>,
+    /// The book's opening date (plan §7.2, Period row): the first day of the
+    /// first `Normal` period the book keeps live. Every `Normal` period that
+    /// ends on or before it is generated `Historical`, born `Locked`, and
+    /// admits only `Migration` entries (Appendix C). `None`: no period is
+    /// historical and the book's bytes are unchanged.
+    pub opening_date: Option<DateDay>,
 }
 
 /// One declared legal entity (plan §4.1 `LegalEntity`; this slice carries
@@ -176,16 +182,22 @@ impl BookSpec {
                 encode_rule(&mut w, end_rule);
             }
         }
-        // Trailing, and only when declared: a book without a policy or
-        // entities keeps the bytes it always had. `[tz]`, then `[entities]`
-        // (with tz 0 = undeclared when only entities are declared).
-        if self.time_zone_policy.is_some() || !self.entities.is_empty() {
+        // Trailing, and only when declared: a book without a policy,
+        // entities or an opening date keeps the bytes it always had.
+        // `[tz] [entities] [opening_date]`, each element present exactly when
+        // it or a later one is declared (tz 0 = undeclared, an empty entity
+        // list = none, each only before a later element).
+        let opening = self.opening_date;
+        if self.time_zone_policy.is_some() || !self.entities.is_empty() || opening.is_some() {
             w.u8(self.time_zone_policy.map_or(0, TimeZonePolicy::tag));
         }
-        if !self.entities.is_empty() {
+        if !self.entities.is_empty() || opening.is_some() {
             w.list(&self.entities, |w, e| {
                 w.str(&e.code).str(&e.name);
             });
+        }
+        if let Some(day) = opening {
+            w.i32(day.0);
         }
         w.finish().map_err(|e| KernelError::Model(e.into()))
     }
@@ -217,7 +229,47 @@ impl BookSpec {
                 return Err(format!("legal entity `{}` is declared twice", e.code));
             }
         }
+        if let Some(day) = self.opening_date {
+            let starts_normal = self
+                .calendar
+                .fiscal_year_of(day)
+                .and_then(|fy| self.calendar.periods_for_year(fy))
+                .is_ok_and(|ps| {
+                    ps.iter()
+                        .any(|p| p.kind == PeriodKind::Normal && p.start == day)
+                });
+            if !starts_normal {
+                return Err(format!(
+                    "opening_date {} is not the first day of a Normal period of calendar `{}`",
+                    day.render(),
+                    self.calendar.id
+                ));
+            }
+        }
         Ok(())
+    }
+
+    /// The kind and birth state of a calendar period in this book (plan
+    /// §7.2): a `Normal` period ending on or before the opening date is
+    /// `Historical` and born `Locked`; a special period the registered
+    /// `pre_opening` rule governs (ending on or before the opening date)
+    /// keeps its kind and is born in the rule's state; every other period
+    /// is born `Future`.
+    #[must_use]
+    pub fn birth(
+        &self,
+        period: &PeriodDef,
+        pre_opening: &fa_registry::PreOpeningRule,
+    ) -> (PeriodKind, PeriodState) {
+        match self.opening_date {
+            Some(day) if period.kind == PeriodKind::Normal && period.end <= day => {
+                (PeriodKind::Historical, PeriodState::Locked)
+            }
+            _ if pre_opening.governs(period.kind, period.end, self.opening_date) => {
+                (period.kind, pre_opening.born)
+            }
+            _ => (period.kind, PeriodState::Future),
+        }
     }
 
     /// The declared entity whose `dimension_set` value is `value`.
@@ -264,7 +316,7 @@ impl BookSpec {
             };
             let time_zone_policy = if r.remaining() > 0 {
                 match r.u8("book.time_zone_policy")? {
-                    // 0 = undeclared, written only before an entity list:
+                    // 0 = undeclared, written only before a later element:
                     // a lone 0 is not a canonical encoding.
                     0 if r.remaining() == 0 => return Err(r.invalid("book.time_zone_policy")),
                     0 => None,
@@ -285,12 +337,18 @@ impl BookSpec {
                         name: r.str(MAX_BOOK_NAME_BYTES, "book.entity.name")?.to_string(),
                     })
                 })?;
-                if list.is_empty() {
+                // An empty list is written only before an opening date.
+                if list.is_empty() && r.remaining() == 0 {
                     return Err(r.invalid("book.entities"));
                 }
                 list
             } else {
                 Vec::new()
+            };
+            let opening_date = if r.remaining() > 0 {
+                Some(DateDay(r.i32("book.opening_date")?))
+            } else {
+                None
             };
             r.finish()?;
             Ok(Self {
@@ -304,6 +362,7 @@ impl BookSpec {
                 },
                 time_zone_policy,
                 entities,
+                opening_date,
             })
         })()
         .map_err(|e| KernelError::Model(e.into()))?;
@@ -487,6 +546,19 @@ pub async fn create_book<V: asupersync::fs::Vfs + Clone>(
 /// `kind: {LegalEntity, …}`, balancing).
 pub const DIMENSION_KIND_LEGAL_ENTITY: i64 = 1;
 
+/// The book's opening date, read inside `txn` from the root's immutable
+/// `_fa_payload` alone (a point witness that never conflicts: the root's
+/// moving pointers are other properties).
+pub(crate) fn opening_date_in<V: asupersync::fs::Vfs + Clone>(
+    txn: &fgdb::WriteTxn,
+    db: &Database<V>,
+) -> Result<Option<DateDay>, KernelError> {
+    match txn.vertex_property(db, book_root(), property::FA_PAYLOAD)? {
+        Some(CanonicalScalar::Bytes(b)) => Ok(BookSpec::decode(b.as_slice())?.opening_date),
+        other => Err(KernelError::Corrupt(format!("book._fa_payload: {other:?}"))),
+    }
+}
+
 /// The spec journaled at genesis, or `None` when the store holds no book.
 pub fn read_book_spec<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
@@ -498,18 +570,36 @@ pub fn read_book_spec<V: asupersync::fs::Vfs + Clone>(
     BookSpec::decode(&payload).map(Some)
 }
 
-/// Create the `Period` vertices of one fiscal year in state `Future`.
-/// Opening them is a journaled transition (`period::transition_period`).
+/// Create the `Period` vertices of one fiscal year, each born as the book
+/// declares (`BookSpec::birth`): `Future`, or `Historical` and `Locked`
+/// before the book's opening date (plan §7.2). Opening a `Future` period is
+/// a journaled transition (`period::transition_period`); a `Historical`
+/// period never transitions. The returned definitions carry the born kind.
 pub async fn create_periods<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
     fiscal_year: i32,
 ) -> Result<(CommitSeq, Vec<PeriodDef>), KernelError> {
-    let periods = book.calendar.periods_for_year(fiscal_year)?;
+    let spec = read_book_spec(db)?
+        .ok_or_else(|| KernelError::Corrupt("periods need a book: no genesis row".into()))?;
+    let classes =
+        fa_registry::EntryClasses::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    let matrix = fa_registry::Admissibility::embedded(&classes)
+        .map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    let pre_opening = matrix
+        .pre_opening()
+        .ok_or_else(|| KernelError::Corrupt("admissibility.toml has no pre_opening rule".into()))?;
+    let mut periods = book.calendar.periods_for_year(fiscal_year)?;
+    let mut states = Vec::with_capacity(periods.len());
+    for p in &mut periods {
+        let (kind, state) = spec.birth(p, pre_opening);
+        p.kind = kind;
+        states.push(state);
+    }
     let bvid = book_root();
     let mut batch = WriteBatch::new(relation::IN_BOOK);
-    for p in &periods {
+    for (p, state) in periods.iter().zip(&states) {
         let pvid = period_vid(&book.calendar.id, &p.code);
         let mut props = vec![
             (
@@ -543,7 +633,7 @@ pub async fn create_periods<V: asupersync::fs::Vfs + Clone>(
             ),
             (
                 property::STATE,
-                CanonicalScalar::Int(i64::from(PeriodState::Future.tag())),
+                CanonicalScalar::Int(i64::from(state.tag())),
             ),
         ];
         props.sort_by_key(|(k, _)| k.0);
@@ -904,6 +994,7 @@ mod tests {
                 },
                 time_zone_policy: None,
                 entities: Vec::new(),
+                opening_date: None,
             };
             let bytes = spec.canonical_bytes().unwrap();
             assert_eq!(BookSpec::decode(&bytes).unwrap(), spec);
@@ -960,5 +1051,118 @@ mod tests {
             unknown.push(9);
             assert!(BookSpec::decode(&unknown).is_err());
         }
+    }
+
+    /// The opening date (plan §7.2) trails the spec canonically, is the first
+    /// day of a Normal period, and decides each period's birth: a Normal
+    /// period ending on or before it is Historical and born Locked; the
+    /// special periods and the live ones are born Future.
+    #[test]
+    fn the_opening_date_trails_canonically_and_births_historical_periods() {
+        let spec = BookSpec {
+            book_id: Id128([5; 16]),
+            name: "Go Live Co".into(),
+            base_unit: UnitId(1),
+            calendar: FiscalCalendar {
+                id: "cy".into(),
+                kind: CalendarKind::Monthly12 {
+                    year_start_month: 1,
+                },
+                adjustment_periods: 1,
+            },
+            time_zone_policy: None,
+            entities: Vec::new(),
+            opening_date: None,
+        };
+        let bare = spec.canonical_bytes().unwrap();
+        let july = DateDay::from_ymd(2026, 7, 1).unwrap();
+        let live = BookSpec {
+            opening_date: Some(july),
+            ..spec.clone()
+        };
+        let bytes = live.canonical_bytes().unwrap();
+        assert_eq!(
+            &bytes[..bare.len()],
+            bare.as_slice(),
+            "earlier bytes unchanged"
+        );
+        assert_eq!(bytes[bare.len()], 0, "tz undeclared before the date");
+        assert_eq!(BookSpec::decode(&bytes).unwrap(), live);
+        // Without the date, the empty entity list it needed is not canonical.
+        assert!(BookSpec::decode(&bytes[..bytes.len() - 4]).is_err());
+        let everything = BookSpec {
+            time_zone_policy: Some(TimeZonePolicy::Utc),
+            entities: vec![LegalEntitySpec {
+                code: "US".into(),
+                name: "US Co".into(),
+            }],
+            ..live.clone()
+        };
+        assert_eq!(
+            BookSpec::decode(&everything.canonical_bytes().unwrap()).unwrap(),
+            everything
+        );
+        assert!(live.validate().is_ok());
+        let mid_month = BookSpec {
+            opening_date: Some(DateDay::from_ymd(2026, 7, 15).unwrap()),
+            ..spec.clone()
+        };
+        assert!(
+            mid_month
+                .validate()
+                .unwrap_err()
+                .contains("not the first day of a Normal period")
+        );
+        let classes = fa_registry::EntryClasses::embedded().unwrap();
+        let matrix = fa_registry::Admissibility::embedded(&classes).unwrap();
+        let rule = matrix.pre_opening().expect("pre_opening");
+        let periods = live.calendar.periods_for_year(2026).unwrap();
+        let birth = |code: &str| {
+            let p = periods.iter().find(|p| p.code == code).expect(code);
+            live.birth(p, rule)
+        };
+        assert_eq!(
+            birth("FY2026-P06"),
+            (PeriodKind::Historical, PeriodState::Locked)
+        );
+        assert_eq!(
+            birth("FY2026-P01"),
+            (PeriodKind::Historical, PeriodState::Locked)
+        );
+        assert_eq!(
+            birth("FY2026-P07"),
+            (PeriodKind::Normal, PeriodState::Future)
+        );
+        // The year's Opening period ends January 2, before the July opening
+        // date: a pre-opening special period, born Locked, kind kept.
+        assert_eq!(
+            birth("FY2026-OPEN"),
+            (PeriodKind::Opening, PeriodState::Locked)
+        );
+        assert_eq!(
+            birth("FY2026-A1"),
+            (PeriodKind::Adjustment, PeriodState::Future)
+        );
+        let before = live.calendar.periods_for_year(2025).unwrap();
+        assert!(
+            before
+                .iter()
+                .filter(|p| p.kind == PeriodKind::Normal)
+                .all(|p| live.birth(p, rule) == (PeriodKind::Historical, PeriodState::Locked))
+        );
+        // FY2025's special periods (its year-end close included) precede the
+        // opening date: kind kept, born Locked.
+        assert!(
+            before
+                .iter()
+                .filter(|p| p.kind != PeriodKind::Normal)
+                .all(|p| live.birth(p, rule) == (p.kind, PeriodState::Locked))
+        );
+        // No opening date: every period is born as the calendar defines it.
+        assert!(
+            periods
+                .iter()
+                .all(|p| spec.birth(p, rule) == (p.kind, PeriodState::Future))
+        );
     }
 }

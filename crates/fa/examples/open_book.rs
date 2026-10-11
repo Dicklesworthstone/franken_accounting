@@ -28,6 +28,7 @@ fn run() -> Result<(), BookError> {
         calendar,
         time_zone_policy: None,
         entities: Vec::new(),
+        opening_date: None,
     };
     let mut book =
         Book::create_memory(BookKeys::for_development(0x5a), spec, Entropy::production())?;

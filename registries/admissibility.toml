@@ -10,9 +10,23 @@
 # row may name `disposition = "Expires"`: the expiry sweep's release is
 # decided by those rows (one per state), not by the class cell.
 #
-# Consumer: fa-journal laws step; the exhaustive generated test in fa-registry
-# (every posting class × every state must be decided exactly once).
-# Gate: an undecided cell fails CI. Control classes are not period-scoped.
+# A `[[kind]]` row narrows the matrix by the period's kind before its state
+# decides (plan §7.2, Appendix C "Period kinds"): it names the classes the
+# kind admits (`admits`) — every other class is refused with `refusal`,
+# whatever the period's state — and the code every transition of such a
+# period is refused with (`transition_refusal`). A kind without a row
+# (Normal, Adjustment, Opening, Closing) is decided by the cells alone.
+#
+# Consumer: fa-journal laws step and period transitions, fa-reference; the
+# exhaustive generated test in fa-registry (every posting class × every
+# state decided exactly once; every posting class × every kind row decided).
+# A `[[pre_opening]]` table (exactly one) governs the special periods that
+# end on or before the book's opening date: born in `born`, kind kept,
+# admitting only `admits` (others refused with `refusal`), never
+# transitioning (`transition_refusal`); legacy closing entries land there.
+# Gate: an undecided cell fails CI; the Historical kind must have a row; the
+# pre_opening table must exist exactly once.
+# Control classes are not period-scoped.
 
 schema_version = 1
 
@@ -388,3 +402,26 @@ decision = "refuse"
 class = "PriorPeriodAdjustment"
 state = "Locked"
 decision = "refuse"
+
+# ---- Period kinds (plan §7.2, Appendix C; ruling 3654) --------------------
+# A Historical period precedes the book's opening date and is born Locked:
+# it admits only Migration (inside an open MigrationRun, by the Migration
+# cells above) and never transitions.
+[[kind]]
+name = "Historical"
+admits = ["Migration"]
+refusal = "FA-REF-010"
+transition_refusal = "FA-REF-040"
+
+# ---- Pre-opening special periods (plan §7.2; ruling 3685) -----------------
+# An Opening, Adjustment or Closing period ending on or before the book's
+# opening date is born Locked, keeps its kind, admits only Migration and
+# never transitions: legacy closing entries land where the legacy books put
+# them, never re-dated.
+[[pre_opening]]
+kinds = ["Opening", "Adjustment", "Closing"]
+born = "Locked"
+admits = ["Migration"]
+refusal = "FA-REF-010"
+transition_refusal = "FA-REF-040"
+cite = "plan §7.2 (periods before the book's opening date)"

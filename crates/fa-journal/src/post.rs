@@ -29,10 +29,13 @@
 //! `LimitCell`, read as a point witness and moved by compare-and-set on its
 //! generation — pending outflows reserve, pending inflows never finance, a
 //! resolution releases its hold's full original legs. `Migration` (plan
-//! §8.6): a chunk of an open `MigrationRun`, named by its origin, dated on
-//! the run's opening date in its Opening period, identified by
-//! `H("fa:vid:migration-entry:v1" ‖ book ‖ run ‖ key)`, and staged invisible
-//! until the run's Finalize (`migration::visible_at`). Every other registered
+//! §8.6): a chunk of an open `MigrationRun`, named by its origin, in the
+//! run's Opening period (dated on the run's opening date) or a period its
+//! body declares (for `FullDetail`, also the special periods between them),
+//! identified by `H("fa:vid:migration-entry:v1" ‖ book ‖ run ‖ key)`, and
+//! staged invisible until the run's Finalize (`migration::visible_at`). A
+//! chunk carries no `settles`; once its run is Finalized, a counting chunk's
+//! legs are open items (ruling 3733). Every other registered
 //! class is refused with the bead that lands it; no class passes through a
 //! generic two-leg check.
 
@@ -255,7 +258,6 @@ fn not_implemented(class_name: &str) -> Refusal {
         }
         "Closing" => "the incremental closing slice (plan §7.5)",
         "Allocation" | "Revaluation" | "Elimination" => "Canon rules (plan §10)",
-        "settles on a Migration entry" => "open-item migration (FullDetail, a later fa-xo0 slice)",
         "Migration into a limited account" => {
             "the migration availability slice (a staged chunk must not move a LimitCell before Finalize)"
         }
@@ -473,8 +475,17 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
                     "remove `settles`; reversing an applying entry undoes its applications",
                 )));
             }
+            // Legacy applications inside a run are the interim posture's
+            // gap (ruling 3733 C2, plan §8.6, Appendix H): until substrate
+            // branches, a chunk is imported net of them.
             EntryClass::MIGRATION => {
-                return Ok(Err(not_implemented("settles on a Migration entry")));
+                return Ok(Err(Refusal::new(
+                    code::SETTLE_SHAPE,
+                    exit::REFUSAL,
+                    format!("leg {i}: a Migration chunk carries no settles"),
+                    "plan §8.6, Appendix H (legacy applications inside a MigrationRun: interim posture), ruling 3733",
+                    "import the legacy open item net of its legacy applications",
+                )));
             }
             _ => return Ok(Err(not_implemented("settles on a two-phase entry"))),
         }
@@ -626,19 +637,21 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
         }
     };
 
-    // 3''. A Migration chunk lands in its run's Opening period (plan §8.6;
-    //      OpeningOnly runs: Historical periods arrive with PeriodBalances).
-    if migration_run.is_some() && period.kind != fa_time::PeriodKind::Opening {
+    // 3''. A Migration chunk names its period (plan §8.6): its run's Opening
+    //      period, a declared Historical period, or (FullDetail) a
+    //      pre-opening special period between them. Which of those the
+    //      named period is, the run (4') and the period row (5) decide.
+    if migration_run.is_some() && proposal.effective_period.is_none() {
         return Ok(Err(Refusal::new(
             code::MIGRATION_OUTSIDE_RUN,
             exit::REFUSAL,
             format!(
-                "a Migration entry resolves to `{}`, a {:?} period; an OpeningOnly run posts into its Opening period",
+                "a Migration entry must name its period with effective_period; it resolves to `{}`, a {:?} period",
                 period.code, period.kind
             ),
             "plan §8.6, Appendix C (Migration: Opening and Historical periods only)",
             format!(
-                "date the chunk on the run's opening date with effective_period FY{}-OPEN",
+                "name FY{}-OPEN (dated on the run's opening date) or one of the run's declared Historical periods in effective_period",
                 period.fiscal_year
             ),
         )));
@@ -691,7 +704,9 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
 
     // 4'. The run (plan §8.6): its state is a point witness, so a Finalize
     //     or Abandon that commits first makes this chunk a first-committer-wins
-    //     conflict; the chunk is dated on the run's opening date.
+    //     conflict. An Opening-period chunk is dated on the run's opening
+    //     date; any other chunk lands in a Historical period its run
+    //     declares.
     if let Some(run_vid) = migration_run {
         let run = match migration::witness_open(&txn, db, run_vid)? {
             Ok(run) => run,
@@ -700,7 +715,50 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
                 return Ok(Err(r));
             }
         };
-        if proposal.effective_date != run.body.opening_date {
+        // The run's own Opening period holds the opening chunks; a Normal
+        // code must be declared; any other special period is FullDetail
+        // detail inside the declared run of periods (a pre-opening Opening,
+        // Adjustment or Closing period, ruling 3685).
+        let own_opening =
+            period.kind == fa_time::PeriodKind::Opening && period.start == run.body.opening_date;
+        let admitted = if own_opening {
+            true
+        } else if period.kind == fa_time::PeriodKind::Normal {
+            run.body.declares(&period.code)
+        } else {
+            run.body.mode == crate::migration::RunMode::FullDetail
+                && migration::within_declared(&txn, db, book, &run.body, &period)?
+        };
+        if !admitted {
+            txn.abort();
+            return Ok(Err(Refusal::new(
+                code::MIGRATION_OUTSIDE_RUN,
+                exit::REFUSAL,
+                format!(
+                    "run `{}` ({:?}) declares no period `{}`",
+                    run.body.run_key, run.body.mode, period.code
+                ),
+                "plan §8.6 (imported detail only in the run's declared Historical periods, and for FullDetail the special periods between them)",
+                "post into the run's Opening period, or into a period its body declares",
+            )));
+        }
+        if own_opening
+            && run.body.mode == crate::migration::RunMode::FullDetail
+            && run.body.sole_opening_source
+        {
+            txn.abort();
+            return Ok(Err(Refusal::new(
+                code::MIGRATION_OUTSIDE_RUN,
+                exit::REFUSAL,
+                format!(
+                    "run `{}` is the sole source of its opening balances: it holds no Opening chunk",
+                    run.body.run_key
+                ),
+                "plan §8.6 (FullDetail sole_opening_source: no opening-balance entry), ruling 3675",
+                "post the legacy detail into its Historical periods; the detail is the opening balances",
+            )));
+        }
+        if own_opening && proposal.effective_date != run.body.opening_date {
             txn.abort();
             return Ok(Err(Refusal::new(
                 code::MIGRATION_OUTSIDE_RUN,
@@ -720,11 +778,21 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
         }
     }
 
-    // 5. Period law (Appendix C) against the witnessed state.
+    // 5. Period law (Appendix C) against the witnessed state and kind. A
+    //    period's kind is decided at its birth (a Normal period before the
+    //    book's opening date is Historical), and a registered kind row
+    //    (`admissibility.toml` `[[kind]]`) narrows the classes it admits,
+    //    whatever its state: a Historical period admits only Migration. (A
+    //    run's chunks reach only its Opening period or the Historical periods
+    //    `check_history` verified at its Open, so a chunk never reaches a
+    //    live period.)
     let pvid = period_vid(&book.calendar.id, &period.code);
     let state_scalar = txn.vertex_property(db, pvid, property::STATE)?;
     let state = state_from_scalar(state_scalar.as_ref())
         .ok_or_else(|| KernelError::Corrupt(format!("period `{}` state mirror", period.code)))?;
+    let kind_scalar = txn.vertex_property(db, pvid, property::PERIOD_KIND)?;
+    let born = crate::rows::kind_from_scalar(kind_scalar.as_ref())
+        .ok_or_else(|| KernelError::Corrupt(format!("period `{}` kind mirror", period.code)))?;
     // 5'. The security policy epoch, a point witness exactly like the period
     //     state: an activation that commits first makes this post a
     //     first-committer-wins conflict (plan §14.2 `current-policy`).
@@ -732,6 +800,59 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     let classes = EntryClasses::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
     let matrix =
         Admissibility::embedded(&classes).map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    if let Some(rule) = matrix.kind_rule(born)
+        && !rule.admits(class_name)
+    {
+        if rule.refusal != code::PERIOD_LAW {
+            return Err(KernelError::Corrupt(format!(
+                "admissibility.toml refuses a {born:?} period with `{}`, not the period law's {}",
+                rule.refusal,
+                code::PERIOD_LAW
+            )));
+        }
+        txn.abort();
+        return Ok(Err(Refusal::new(
+            code::PERIOD_LAW,
+            exit::SAFETY,
+            format!(
+                "`{}` is a {born:?} period (before the book's opening date); it admits only {}, not `{class_name}`",
+                period.code,
+                rule.admits.join(", ")
+            ),
+            format!(
+                "plan §7.2, Appendix C (admissibility.toml kind {born:?}: Historical periods admit only Migration)"
+            ),
+            "post this entry in a live period at or after the book's opening date; legacy history enters through a MigrationRun",
+        )));
+    }
+    // 5''. A special period before the book's opening date (the registered
+    //      pre_opening rule, ruling 3685) admits only its classes, whatever
+    //      its state.
+    if let Some(rule) = matrix.pre_opening()
+        && rule.kinds.contains(&born)
+        && rule.governs(born, period.end, crate::genesis::opening_date_in(&txn, db)?)
+        && !rule.admits(class_name)
+    {
+        if rule.refusal != code::PERIOD_LAW {
+            return Err(KernelError::Corrupt(format!(
+                "admissibility.toml refuses a pre-opening {born:?} period with `{}`, not the period law's {}",
+                rule.refusal,
+                code::PERIOD_LAW
+            )));
+        }
+        txn.abort();
+        return Ok(Err(Refusal::new(
+            code::PERIOD_LAW,
+            exit::SAFETY,
+            format!(
+                "`{}` is a {born:?} period before the book's opening date; it admits only {}, not `{class_name}`",
+                period.code,
+                rule.admits.join(", ")
+            ),
+            rule.cite.clone(),
+            "post this entry in a live period at or after the book's opening date; legacy history enters through a MigrationRun",
+        )));
+    }
     let family = match &resolution {
         Some((_, Disposition::Posts { .. })) => "(Posts)",
         Some((_, Disposition::Voids)) => "(Voids)",
@@ -955,7 +1076,7 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
             }
             let open_item_class = matches!(
                 target.proposal.class,
-                EntryClass::ORIGINAL | EntryClass::ADJUSTING
+                EntryClass::ORIGINAL | EntryClass::ADJUSTING | EntryClass::MIGRATION
             ) || (target.proposal.class == EntryClass::RESOLUTION
                 && !target.proposal.legs.is_empty());
             if !open_item_class {
@@ -971,6 +1092,12 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
                     "plan §5.7 (open items are posted legs; a hold, a release, or a reversal leg is not one)",
                     "apply to the posted entry; fa open-items --account <code>",
                 )));
+            }
+            // A migrated leg is open iff its run is Finalized and its chunk
+            // counts (ruling 3733 C1); the run state is a point witness.
+            if let Err(r) = migration::witness_open_item(&txn, db, s.target.vid, &target, i)? {
+                txn.abort();
+                return Ok(Err(r));
             }
             // Liveness is a lineage predicate (plan §8.2): a reversed entry
             // nets to zero, and a reversed reversal revives it; a chain of any

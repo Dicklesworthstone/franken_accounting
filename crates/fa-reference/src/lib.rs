@@ -390,11 +390,92 @@ pub struct Entry {
 /// A migration run's declared legacy trial balance (plan §8.6): lines
 /// `(account, unit, net in debit sign)`, strictly ascending by
 /// `(account, unit)`, never zero; opened on the first day of a fiscal year.
+/// `full_detail` set: a `FullDetail` run (ruling 3675). Otherwise `periods`
+/// empty: an `OpeningOnly` run; non-empty: a `PeriodBalances` run, naming
+/// every elapsed period before the book's opening date with its trial
+/// balance as of the period's end (cumulative).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunSpec {
     pub key: String,
     pub opening_date: DateDay,
-    pub lines: Vec<(String, u32, i128)>,
+    pub lines: TrialBalance,
+    pub periods: Vec<(String, TrialBalance)>,
+    pub full_detail: Option<FullDetailSpec>,
+}
+
+/// A legacy trial balance: lines `(account, unit, net in debit sign)`.
+pub type TrialBalance = Vec<(String, u32, i128)>;
+
+/// A `FullDetail` run's own declarations: the trial balance at the start of
+/// its first declared period (empty from legacy inception), and whether its
+/// detail is the sole source of the opening balances.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FullDetailSpec {
+    pub detail_base: TrialBalance,
+    pub sole: bool,
+}
+
+impl RunSpec {
+    /// Whether this run declares `period` as one of its elapsed periods.
+    #[must_use]
+    pub fn declares(&self, period: &str) -> bool {
+        self.periods.iter().any(|(code, _)| code == period)
+    }
+
+    /// A sole-source `FullDetail` run.
+    #[must_use]
+    pub fn sole(&self) -> bool {
+        self.full_detail.as_ref().is_some_and(|f| f.sole)
+    }
+
+    /// The first day from which this run's chunks count in folds: a
+    /// non-sole `FullDetail` run's opening date; `None` otherwise.
+    #[must_use]
+    pub fn counts_from(&self) -> Option<DateDay> {
+        self.full_detail
+            .as_ref()
+            .is_some_and(|f| !f.sole)
+            .then_some(self.opening_date)
+    }
+}
+
+/// One declared trial balance's own law, as the oracle states it: 1..=4096
+/// lines, accounts 1..=64 bytes, never zero, strictly ascending, balanced
+/// per unit.
+fn check_trial_balance(lines: &[(String, u32, i128)]) -> Result<(), &'static str> {
+    if lines.is_empty() {
+        return Err(code::STRUCTURE);
+    }
+    check_balance_lines(lines)
+}
+
+/// [`check_trial_balance`] without the non-empty rule (a FullDetail
+/// cumulative balance or base may net to nothing).
+fn check_balance_lines(lines: &[(String, u32, i128)]) -> Result<(), &'static str> {
+    if lines.len() > 4096 {
+        return Err(code::STRUCTURE);
+    }
+    if lines
+        .iter()
+        .any(|(account, _, m)| account.is_empty() || account.len() > 64 || *m == 0)
+    {
+        return Err(code::STRUCTURE);
+    }
+    if !lines
+        .windows(2)
+        .all(|w| (&w[0].0, w[0].1) < (&w[1].0, w[1].1))
+    {
+        return Err(code::STRUCTURE);
+    }
+    let mut per_unit: BTreeMap<u32, Int> = BTreeMap::new();
+    for (_, unit, m) in lines {
+        let e = per_unit.entry(*unit).or_insert_with(Int::zero);
+        *e = e.add(&Int::from_i128(*m));
+    }
+    if per_unit.values().any(|net| !net.is_zero()) {
+        return Err(code::TIE_OUT_MISMATCH);
+    }
+    Ok(())
 }
 
 /// A run's lifecycle (plan §8.6): `Open → Finalized | Abandoned`.
@@ -565,6 +646,9 @@ pub struct Oracle {
     accounts: BTreeMap<String, Account>,
     /// Period code → (definition, state). Only created periods exist.
     periods: BTreeMap<String, (PeriodDef, PeriodState)>,
+    /// The book's opening date (plan §7.2): a Normal period ending on or
+    /// before it is born Historical and Locked.
+    opening_date: Option<DateDay>,
     journal: Vec<Entry>,
     /// Key → (journal index, content) for key-identified entries.
     keys: BTreeMap<Vec<u8>, (usize, Content)>,
@@ -619,6 +703,7 @@ impl Oracle {
             calendar,
             accounts: BTreeMap::new(),
             periods: BTreeMap::new(),
+            opening_date: None,
             journal: Vec::new(),
             keys: BTreeMap::new(),
             reversed: BTreeMap::new(),
@@ -710,11 +795,27 @@ impl Oracle {
         self.limits.insert(code.to_string(), limit);
     }
 
-    /// Create a fiscal year's periods in `Future`.
+    /// Declare the book's opening date (genesis, plan §7.2), before any
+    /// period is created.
+    pub fn set_opening_date(&mut self, day: DateDay) {
+        self.opening_date = Some(day);
+    }
+
+    /// Create a fiscal year's periods: `Future`, except a Normal period that
+    /// ends on or before the book's opening date, which is born Historical
+    /// and Locked.
     pub fn create_periods(&mut self, fy: i32) {
-        for p in self.calendar.periods_for_year(fy).expect("periods") {
-            self.periods
-                .insert(p.code.clone(), (p, PeriodState::Future));
+        let pre_opening = self.matrix.pre_opening().expect("pre_opening rule").clone();
+        for mut p in self.calendar.periods_for_year(fy).expect("periods") {
+            let state = match self.opening_date {
+                Some(day) if p.kind == PeriodKind::Normal && p.end <= day => {
+                    p.kind = PeriodKind::Historical;
+                    PeriodState::Locked
+                }
+                _ if pre_opening.governs(p.kind, p.end, self.opening_date) => pre_opening.born,
+                _ => PeriodState::Future,
+            };
+            self.periods.insert(p.code.clone(), (p, state));
         }
     }
 
@@ -856,9 +957,23 @@ impl Oracle {
         if self.revoked.contains(&authority.token) {
             return Err(code::REVOKED);
         }
-        let Some((_, state)) = self.periods.get(code) else {
+        let Some((def, state)) = self.periods.get(code) else {
             return Err(code::PERIOD_UNKNOWN);
         };
+        // A registered kind row (a Historical period: born Locked) refuses
+        // every transition.
+        if let Some(rule) = self.matrix.kind_rule(def.kind) {
+            assert_eq!(rule.transition_refusal, code::TRANSITION, "registry drift");
+            return Err(code::TRANSITION);
+        }
+        if let Some(rule) = self
+            .matrix
+            .pre_opening()
+            .filter(|r| r.governs(def.kind, def.end, self.opening_date))
+        {
+            assert_eq!(rule.transition_refusal, code::TRANSITION, "registry drift");
+            return Err(code::TRANSITION);
+        }
         let from = *state;
         let to = transition(from, t).map_err(|_| code::TRANSITION)?;
         if approvals.iter().any(|a| a.epoch != self.epoch) {
@@ -1329,13 +1444,15 @@ impl Oracle {
             }
             match intent.class.as_str() {
                 "Original" | "Adjusting" => {}
-                "Reversal" => {
+                // A Migration chunk carries no settles (ruling 3733 C2):
+                // it is imported net of its legacy applications.
+                "Reversal" | "Migration" => {
                     return Verdict::Refused {
                         code: code::SETTLE_SHAPE,
                     };
                 }
                 _ => {
-                    // Two-phase entries and Migration chunks: not applied here.
+                    // Two-phase entries: not applied here.
                     return Verdict::Refused {
                         code: code::CLASS_NOT_IMPLEMENTED,
                     };
@@ -1452,12 +1569,14 @@ impl Oracle {
                 code: code::PERIOD_RESOLVE,
             };
         };
-        // 3''. A Migration chunk lands in its run's Opening period.
-        if run.is_some() && period.kind != PeriodKind::Opening {
+        // 3''. A Migration chunk names its period: the Opening period, or a
+        //      Normal code (whether it was born Historical is step 5's).
+        if run.is_some() && intent.discriminator.is_none() {
             return Verdict::Refused {
                 code: code::MIGRATION_OUTSIDE_RUN,
             };
         }
+        let (calendar_kind, period_start, period_end) = (period.kind, period.start, period.end);
         let period = period.code.clone();
         // 4. Identity: the recorded outcome when the content is the same,
         //    a conflict when it is not — before any law is re-checked.
@@ -1499,13 +1618,56 @@ impl Oracle {
                     code: code::RUN_NOT_OPEN,
                 };
             }
-            if intent.date != rs.spec.opening_date {
+            let own_opening =
+                calendar_kind == PeriodKind::Opening && period_start == rs.spec.opening_date;
+            let admitted = if own_opening {
+                true
+            } else if calendar_kind == PeriodKind::Normal {
+                rs.spec.declares(&period)
+            } else {
+                rs.spec.full_detail.is_some() && {
+                    let first = &self.periods[&rs.spec.periods[0].0].0;
+                    let last = &self.periods[&rs.spec.periods[rs.spec.periods.len() - 1].0].0;
+                    period_start >= first.start && period_end <= last.end
+                }
+            };
+            if !admitted {
+                return Verdict::Refused {
+                    code: code::MIGRATION_OUTSIDE_RUN,
+                };
+            }
+            if own_opening && rs.spec.sole() {
+                return Verdict::Refused {
+                    code: code::MIGRATION_OUTSIDE_RUN,
+                };
+            }
+            if own_opening && intent.date != rs.spec.opening_date {
                 return Verdict::Refused {
                     code: code::MIGRATION_OUTSIDE_RUN,
                 };
             }
         }
-        // 5. Period law against the period's current state (Future when never created).
+        // 5. Period law against the period's current state (Future when
+        //    never created) and its born kind: a Historical period admits
+        //    only Migration.
+        let born = self.periods.get(&period).map(|(d, _)| d.kind);
+        if let Some(rule) = born.and_then(|k| self.matrix.kind_rule(k))
+            && !rule.admits(&intent.class)
+        {
+            assert_eq!(rule.refusal, code::PERIOD_LAW, "registry drift");
+            return Verdict::Refused {
+                code: code::PERIOD_LAW,
+            };
+        }
+        if let (Some(kind), Some(rule)) = (born, self.matrix.pre_opening())
+            && rule.governs(kind, period_end, self.opening_date)
+            && !rule.admits(&intent.class)
+        {
+            assert_eq!(rule.refusal, code::PERIOD_LAW, "registry drift");
+            return Verdict::Refused {
+                code: code::PERIOD_LAW,
+            };
+        }
         let state = self.period_state(&period).unwrap_or(PeriodState::Future);
         match self
             .matrix
@@ -1571,7 +1733,7 @@ impl Oracle {
                     code: code::SETTLE_TARGET,
                 };
             };
-            if !Self::carries_open_items(target) || !self.is_live(s.target) {
+            if !self.carries_open_items(target) || !self.is_live(s.target) {
                 return Verdict::Refused {
                     code: code::SETTLE_TARGET,
                 };
@@ -1945,30 +2107,35 @@ impl Oracle {
         if spec.key.is_empty() || spec.key.len() > 64 {
             return Err(code::STRUCTURE);
         }
-        if spec.lines.is_empty() || spec.lines.len() > 4096 {
+        if spec.sole() {
+            if !spec.lines.is_empty()
+                || spec
+                    .full_detail
+                    .as_ref()
+                    .is_some_and(|f| !f.detail_base.is_empty())
+            {
+                return Err(code::STRUCTURE);
+            }
+        } else {
+            check_trial_balance(&spec.lines)?;
+        }
+        let full = spec.full_detail.is_some();
+        if (full && spec.periods.is_empty()) || spec.periods.len() > 256 {
             return Err(code::STRUCTURE);
         }
-        if spec
-            .lines
-            .iter()
-            .any(|(account, _, m)| account.is_empty() || account.len() > 64 || *m == 0)
-        {
-            return Err(code::STRUCTURE);
+        let mut seen = BTreeSet::new();
+        for (period, lines) in &spec.periods {
+            if period.is_empty() || period.len() > 64 || !seen.insert(period.as_str()) {
+                return Err(code::STRUCTURE);
+            }
+            if full {
+                check_balance_lines(lines)?;
+            } else {
+                check_trial_balance(lines)?;
+            }
         }
-        if !spec
-            .lines
-            .windows(2)
-            .all(|w| (&w[0].0, w[0].1) < (&w[1].0, w[1].1))
-        {
-            return Err(code::STRUCTURE);
-        }
-        let mut per_unit: BTreeMap<u32, Int> = BTreeMap::new();
-        for (_, unit, m) in &spec.lines {
-            let e = per_unit.entry(*unit).or_insert_with(Int::zero);
-            *e = e.add(&Int::from_i128(*m));
-        }
-        if per_unit.values().any(|net| !net.is_zero()) {
-            return Err(code::TIE_OUT_MISMATCH);
+        if let Some(f) = &spec.full_detail {
+            check_balance_lines(&f.detail_base)?;
         }
         let year_start = self
             .calendar
@@ -1990,6 +2157,53 @@ impl Oracle {
         }
         if self.run_keys.contains_key(&spec.key) {
             return Err(code::IDEMPOTENCY_CONFLICT);
+        }
+        // A PeriodBalances run names exactly the elapsed periods from its
+        // opening date to the book's, in calendar order, each created and
+        // born Historical.
+        if !spec.periods.is_empty() {
+            let Some(go_live) = self.opening_date else {
+                return Err(code::STRUCTURE);
+            };
+            // PeriodBalances from the run's opening date; FullDetail from
+            // its first declared period, on or before the opening date
+            // unless the run is the sole source.
+            let start = if spec.full_detail.is_some() {
+                let Some((def, _)) = self.periods.get(&spec.periods[0].0) else {
+                    return Err(code::STRUCTURE);
+                };
+                if !spec.sole() && def.start > spec.opening_date {
+                    return Err(code::STRUCTURE);
+                }
+                def.start
+            } else {
+                spec.opening_date
+            };
+            let (Ok(first), Ok(last)) = (
+                self.calendar.fiscal_year_of(start),
+                self.calendar.fiscal_year_of(go_live),
+            ) else {
+                return Err(code::STRUCTURE);
+            };
+            let mut expected = Vec::new();
+            for fy in first..=last {
+                for p in self.calendar.periods_for_year(fy).expect("periods") {
+                    if p.kind == PeriodKind::Normal && p.start >= start && p.end <= go_live {
+                        expected.push(p.code);
+                    }
+                }
+            }
+            let named: Vec<&String> = spec.periods.iter().map(|(code, _)| code).collect();
+            if named != expected.iter().collect::<Vec<_>>() {
+                return Err(code::STRUCTURE);
+            }
+            if expected.iter().any(|code| {
+                self.periods
+                    .get(code)
+                    .is_none_or(|(d, _)| d.kind != PeriodKind::Historical)
+            }) {
+                return Err(code::STRUCTURE);
+            }
         }
         let run = self.runs.len();
         self.runs.push(Run {
@@ -2099,31 +2313,119 @@ impl Oracle {
         Ok(())
     }
 
-    /// The run's chunks fold, per (account, unit) in debit sign, to exactly
-    /// its declared lines.
+    /// The run's chunks tie out, per (account, unit) in debit sign: the
+    /// chunks outside its declared periods to its opening lines exactly, and
+    /// for each declared period `p` in order, those plus every declared
+    /// period's chunks through `p` to `p`'s cumulative lines.
     fn ties_out(&self, run: usize) -> bool {
         let r = &self.runs[run];
-        let mut folded: BTreeMap<(String, u32), Int> = BTreeMap::new();
+        let own_opening = self
+            .calendar
+            .periods_for_year(
+                self.calendar
+                    .fiscal_year_of(r.spec.opening_date)
+                    .expect("fiscal year"),
+            )
+            .expect("periods")
+            .into_iter()
+            .find(|p| p.kind == PeriodKind::Opening)
+            .expect("an Opening period")
+            .code;
+        let mut cumulative: BTreeMap<(String, u32), Int> = BTreeMap::new();
         for i in &r.chunks {
-            for l in &self.journal[*i].legs {
-                let e = folded
-                    .entry((l.account.clone(), l.unit))
-                    .or_insert_with(Int::zero);
-                let m = Int::from_i128(l.mantissa);
-                *e = match l.side {
-                    Side::Debit => e.add(&m),
-                    Side::Credit => e.sub(&m),
-                };
+            if self.journal[*i].period == own_opening {
+                self.fold_legs(*i, &mut cumulative);
             }
         }
-        folded.retain(|_, v| !v.is_zero());
-        let declared: BTreeMap<(String, u32), Int> = r
-            .spec
-            .lines
+        if !Self::same_balance(&cumulative, &r.spec.lines) {
+            return false;
+        }
+        if let Some(f) = &r.spec.full_detail {
+            // The FullDetail chain from detail_base; unless sole, the
+            // opening lines equal it at the run's opening date.
+            let mut chain: BTreeMap<(String, u32), Int> = f
+                .detail_base
+                .iter()
+                .map(|(a, u, m)| ((a.clone(), *u), Int::from_i128(*m)))
+                .collect();
+            let from = self.periods[&r.spec.periods[0].0].0.start;
+            let to = self.periods[&r.spec.periods[r.spec.periods.len() - 1].0]
+                .0
+                .end;
+            let rank = |k: PeriodKind| match k {
+                PeriodKind::Opening => 0u8,
+                PeriodKind::Normal | PeriodKind::Historical => 1,
+                PeriodKind::Adjustment => 2,
+                PeriodKind::Closing => 3,
+            };
+            let mut order: Vec<&PeriodDef> = self
+                .periods
+                .values()
+                .map(|(d, _)| d)
+                .filter(|d| d.start >= from && d.end <= to && d.code != own_opening)
+                .collect();
+            order.sort_by_key(|d| (d.start, rank(d.kind)));
+            let mut opening_checked = f.sole;
+            for q in order {
+                if !opening_checked && q.start >= r.spec.opening_date {
+                    if !Self::same_balance(&chain, &r.spec.lines) {
+                        return false;
+                    }
+                    opening_checked = true;
+                }
+                for i in &r.chunks {
+                    if self.journal[*i].period == q.code {
+                        self.fold_legs(*i, &mut chain);
+                    }
+                }
+                if let Some((_, lines)) = r.spec.periods.iter().find(|(c, _)| *c == q.code)
+                    && !Self::same_balance(&chain, lines)
+                {
+                    return false;
+                }
+            }
+            return opening_checked || Self::same_balance(&chain, &r.spec.lines);
+        }
+        for (period, lines) in &r.spec.periods {
+            for i in &r.chunks {
+                if self.journal[*i].period == *period {
+                    self.fold_legs(*i, &mut cumulative);
+                }
+            }
+            if !Self::same_balance(&cumulative, lines) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Add journal entry `index`'s legs to `into`, per (account, unit) in
+    /// debit sign.
+    fn fold_legs(&self, index: usize, into: &mut BTreeMap<(String, u32), Int>) {
+        for l in &self.journal[index].legs {
+            let e = into
+                .entry((l.account.clone(), l.unit))
+                .or_insert_with(Int::zero);
+            let m = Int::from_i128(l.mantissa);
+            *e = match l.side {
+                Side::Debit => e.add(&m),
+                Side::Credit => e.sub(&m),
+            };
+        }
+    }
+
+    /// A fold equals declared lines exactly (zero cells are absent lines).
+    fn same_balance(folded: &BTreeMap<(String, u32), Int>, lines: &[(String, u32, i128)]) -> bool {
+        let nonzero: BTreeMap<(String, u32), Int> = folded
+            .iter()
+            .filter(|(_, v)| !v.is_zero())
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let declared: BTreeMap<(String, u32), Int> = lines
             .iter()
             .map(|(a, u, m)| ((a.clone(), *u), Int::from_i128(*m)))
             .collect();
-        folded == declared
+        nonzero == declared
     }
 
     /// The literal fold of one period: `(account, unit) → cell`.
@@ -2205,9 +2507,12 @@ impl Oracle {
     fn visible(&self, e: &Entry, known: Known) -> bool {
         match e.run {
             None => true,
-            Some(r) => self.runs[r]
-                .finalized
-                .is_some_and(|control| control < known.controls),
+            Some(r) => {
+                let run = &self.runs[r];
+                run.finalized
+                    .is_some_and(|control| control < known.controls)
+                    && run.spec.counts_from().is_none_or(|day| e.date >= day)
+            }
         }
     }
 
@@ -2283,9 +2588,12 @@ impl Oracle {
 
     /// Posted classes carry open items: a hold reserves, a release posts
     /// nothing, and a reversal's legs negate.
-    fn carries_open_items(e: &Entry) -> bool {
+    /// A migrated chunk carries open items once its run is Finalized and
+    /// the chunk counts (ruling 3733 C1): the migration predicate at head.
+    fn carries_open_items(&self, e: &Entry) -> bool {
         matches!(e.class.as_str(), "Original" | "Adjusting")
             || (e.class == "Resolution" && !e.legs.is_empty())
+            || (e.class == "Migration" && self.visible(e, self.known()))
     }
 
     /// Live unless a live reversal targets it (a reversed reversal revives).
@@ -2301,7 +2609,7 @@ impl Oracle {
         self.journal
             .iter()
             .enumerate()
-            .filter(|(i, e)| Self::carries_open_items(e) && self.is_live(*i))
+            .filter(|(i, e)| self.carries_open_items(e) && self.is_live(*i))
             .flat_map(|(_, e)| e.settles.iter())
             .filter(|s| s.target == target && s.ordinal == ordinal)
             .map(|s| s.mantissa)
@@ -2314,7 +2622,7 @@ impl Oracle {
     pub fn open_items(&self) -> BTreeMap<(usize, usize), (i128, i128, i128)> {
         let mut out = BTreeMap::new();
         for (i, e) in self.journal.iter().enumerate() {
-            if !Self::carries_open_items(e) || !self.is_live(i) {
+            if !self.carries_open_items(e) || !self.is_live(i) {
                 continue;
             }
             for (o, leg) in e.legs.iter().enumerate() {

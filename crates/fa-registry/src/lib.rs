@@ -23,7 +23,7 @@ pub mod topology;
 use core::fmt;
 use std::collections::BTreeMap;
 
-use fa_time::PeriodState;
+use fa_time::{PeriodKind, PeriodState};
 
 use crate::toml::{Document, Table, TomlError, Value};
 
@@ -370,9 +370,81 @@ const ALL_STATES: [PeriodState; 5] = [
     PeriodState::Locked,
 ];
 
+/// A period kind's rule (plan §7.2, Appendix C "Period kinds"): the
+/// classes it admits — every other class is refused with `refusal`,
+/// whatever the period's state — and the code every transition of such a
+/// period is refused with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KindRule {
+    pub admits: Vec<String>,
+    pub refusal: String,
+    pub transition_refusal: String,
+}
+
+impl KindRule {
+    #[must_use]
+    pub fn admits(&self, class: &str) -> bool {
+        self.admits.iter().any(|c| c == class)
+    }
+}
+
+/// The rule for special periods before the book's opening date (plan §7.2,
+/// `[[pre_opening]]`, ruling 3685): a period of one of `kinds` ending on or
+/// before the opening date is born `born`, keeps its kind, admits only
+/// `admits` (others are refused with `refusal`, whatever its state) and
+/// refuses every transition with `transition_refusal`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreOpeningRule {
+    pub kinds: Vec<PeriodKind>,
+    pub born: PeriodState,
+    pub admits: Vec<String>,
+    pub refusal: String,
+    pub transition_refusal: String,
+    pub cite: String,
+}
+
+impl PreOpeningRule {
+    #[must_use]
+    pub fn admits(&self, class: &str) -> bool {
+        self.admits.iter().any(|c| c == class)
+    }
+
+    /// Whether a period of `kind` ending at `end` is governed by this rule
+    /// in a book whose opening date is `opening_date`.
+    #[must_use]
+    pub fn governs(
+        &self,
+        kind: PeriodKind,
+        end: fa_time::DateDay,
+        opening_date: Option<fa_time::DateDay>,
+    ) -> bool {
+        self.kinds.contains(&kind) && opening_date.is_some_and(|day| end <= day)
+    }
+}
+
+fn kind_from_name(name: &str) -> Option<PeriodKind> {
+    Some(match name {
+        "Normal" => PeriodKind::Normal,
+        "Adjustment" => PeriodKind::Adjustment,
+        "Opening" => PeriodKind::Opening,
+        "Closing" => PeriodKind::Closing,
+        "Historical" => PeriodKind::Historical,
+        _ => return None,
+    })
+}
+
+fn is_refusal_code(code: &str) -> bool {
+    code.strip_prefix("FA-REF-")
+        .is_some_and(|n| n.len() == 3 && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Admissibility {
     cells: BTreeMap<(String, PeriodState), (Decision, Option<String>, Qualifier)>,
+    /// Rules by period kind (`[[kind]]` rows).
+    kinds: BTreeMap<String, KindRule>,
+    /// The special periods before the book's opening date (`[[pre_opening]]`).
+    pre_opening: Option<PreOpeningRule>,
     /// `Resolution(Expires)`, the expiry sweep's release, decided per state
     /// by its own rows (`disposition = "Expires"`, plan §5.4, Appendix C).
     expires: BTreeMap<PeriodState, (Decision, Option<String>)>,
@@ -461,7 +533,160 @@ impl Admissibility {
                 ));
             }
         }
-        Ok(Self { cells, expires })
+        let mut kinds = BTreeMap::new();
+        for t in doc.arrays.get("kind").unwrap_or(&Vec::new()) {
+            let name = req_str(R, t, "name")?;
+            match kind_from_name(name) {
+                None => return Err(invalid(R, format!("unknown period kind `{name}`"))),
+                Some(PeriodKind::Normal) => {
+                    return Err(invalid(
+                        R,
+                        "a Normal period is decided by the cells alone; it has no kind row",
+                    ));
+                }
+                Some(_) => {}
+            }
+            let admits: Vec<String> = t
+                .get("admits")
+                .and_then(Value::as_array)
+                .ok_or_else(|| invalid(R, format!("kind `{name}`: `admits` must be a list")))?
+                .iter()
+                .map(|v| {
+                    v.as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| invalid(R, format!("kind `{name}`: `admits` names classes")))
+                })
+                .collect::<Result<_, _>>()?;
+            for class in &admits {
+                if classes
+                    .by_name(class)
+                    .is_none_or(|c| c.kind != ClassKind::Posting)
+                {
+                    return Err(invalid(
+                        R,
+                        format!("kind `{name}` admits `{class}`, which is not a posting class"),
+                    ));
+                }
+            }
+            let refusal = req_str(R, t, "refusal")?.to_string();
+            let transition_refusal = req_str(R, t, "transition_refusal")?.to_string();
+            for code in [&refusal, &transition_refusal] {
+                if !is_refusal_code(code) {
+                    return Err(invalid(
+                        R,
+                        format!("kind `{name}`: `{code}` is not a refusal code"),
+                    ));
+                }
+            }
+            let rule = KindRule {
+                admits,
+                refusal,
+                transition_refusal,
+            };
+            if kinds.insert(name.to_string(), rule).is_some() {
+                return Err(invalid(R, format!("kind `{name}` has two rows")));
+            }
+        }
+        if !kinds.contains_key("Historical") {
+            return Err(invalid(
+                R,
+                "the Historical kind has no row: what its periods admit is unregistered",
+            ));
+        }
+        let tables = doc.arrays.get("pre_opening").map_or(&[][..], Vec::as_slice);
+        let [t] = tables else {
+            return Err(invalid(
+                R,
+                format!(
+                    "exactly one [[pre_opening]] table governs the special periods before the opening date ({} found)",
+                    tables.len()
+                ),
+            ));
+        };
+        let names = |key: &str| -> Result<Vec<String>, RegistryError> {
+            t.get(key)
+                .and_then(Value::as_array)
+                .ok_or_else(|| invalid(R, format!("pre_opening: `{key}` must be a list")))?
+                .iter()
+                .map(|v| {
+                    v.as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| invalid(R, format!("pre_opening: `{key}` names strings")))
+                })
+                .collect()
+        };
+        let mut pre_kinds = Vec::new();
+        for name in names("kinds")? {
+            match kind_from_name(&name) {
+                None => return Err(invalid(R, format!("pre_opening: unknown kind `{name}`"))),
+                Some(PeriodKind::Normal | PeriodKind::Historical) => {
+                    return Err(invalid(
+                        R,
+                        format!("pre_opening governs special periods only, not `{name}`"),
+                    ));
+                }
+                Some(k) => pre_kinds.push(k),
+            }
+        }
+        let admits = names("admits")?;
+        for class in &admits {
+            if classes
+                .by_name(class)
+                .is_none_or(|c| c.kind != ClassKind::Posting)
+            {
+                return Err(invalid(
+                    R,
+                    format!("pre_opening admits `{class}`, which is not a posting class"),
+                ));
+            }
+        }
+        let born_s = req_str(R, t, "born")?;
+        let born = PeriodState::from_name(born_s)
+            .ok_or_else(|| invalid(R, format!("pre_opening: unknown state `{born_s}`")))?;
+        let refusal = req_str(R, t, "refusal")?.to_string();
+        let transition_refusal = req_str(R, t, "transition_refusal")?.to_string();
+        for code in [&refusal, &transition_refusal] {
+            if !is_refusal_code(code) {
+                return Err(invalid(
+                    R,
+                    format!("pre_opening: `{code}` is not a refusal code"),
+                ));
+            }
+        }
+        let pre_opening = Some(PreOpeningRule {
+            kinds: pre_kinds,
+            born,
+            admits,
+            refusal,
+            transition_refusal,
+            cite: req_str(R, t, "cite")?.to_string(),
+        });
+        Ok(Self {
+            cells,
+            expires,
+            kinds,
+            pre_opening,
+        })
+    }
+
+    /// The rule for special periods before the book's opening date (always
+    /// present in a parsed matrix).
+    #[must_use]
+    pub fn pre_opening(&self) -> Option<&PreOpeningRule> {
+        self.pre_opening.as_ref()
+    }
+
+    /// The rule for periods of `kind`, when the kind has one (plan §7.2).
+    #[must_use]
+    pub fn kind_rule(&self, kind: PeriodKind) -> Option<&KindRule> {
+        let name = match kind {
+            PeriodKind::Normal => return None,
+            PeriodKind::Adjustment => "Adjustment",
+            PeriodKind::Opening => "Opening",
+            PeriodKind::Closing => "Closing",
+            PeriodKind::Historical => "Historical",
+        };
+        self.kinds.get(name)
     }
 
     pub fn decide(&self, class: &str, state: PeriodState) -> Option<&Decision> {
@@ -862,6 +1087,116 @@ mod tests {
             planted.decide_expires(PeriodState::Locked),
             Some(&Decision::Refuse)
         );
+    }
+
+    /// Ruling 3654: the Historical kind is registered. Every posting class
+    /// is decided against it (only Migration admitted; the rest refused
+    /// 010), its transitions are refused 040, the kinds without a row are
+    /// decided by the cells alone, and a matrix without the row, or with a
+    /// row naming a control class or a malformed code, is refused.
+    #[test]
+    fn the_historical_kind_is_registered_and_decides_every_posting_class() {
+        let classes = EntryClasses::embedded().unwrap();
+        let m = Admissibility::embedded(&classes).unwrap();
+        let rule = m.kind_rule(PeriodKind::Historical).expect("Historical row");
+        for c in classes.posting() {
+            assert_eq!(rule.admits(&c.name), c.name == "Migration", "{}", c.name);
+        }
+        assert_eq!(rule.refusal, "FA-REF-010");
+        assert_eq!(rule.transition_refusal, "FA-REF-040");
+        for kind in [
+            PeriodKind::Normal,
+            PeriodKind::Adjustment,
+            PeriodKind::Opening,
+            PeriodKind::Closing,
+        ] {
+            assert!(m.kind_rule(kind).is_none(), "{kind:?}");
+        }
+        let row = "[[kind]]\nname = \"Historical\"\nadmits = [\"Migration\"]\nrefusal = \"FA-REF-010\"\ntransition_refusal = \"FA-REF-040\"\n";
+        assert!(ADMISSIBILITY.contains(row), "the Historical row");
+        let e = Admissibility::parse(&classes, &ADMISSIBILITY.replace(row, "")).unwrap_err();
+        assert!(e.to_string().contains("Historical kind has no row"), "{e}");
+        let control =
+            ADMISSIBILITY.replace(row, &row.replace("[\"Migration\"]", "[\"PeriodControl\"]"));
+        let e = Admissibility::parse(&classes, &control).unwrap_err();
+        assert!(e.to_string().contains("not a posting class"), "{e}");
+        let malformed = ADMISSIBILITY.replace(row, &row.replace("FA-REF-040", "040"));
+        let e = Admissibility::parse(&classes, &malformed).unwrap_err();
+        assert!(e.to_string().contains("not a refusal code"), "{e}");
+        let twice = ADMISSIBILITY.replace(row, &format!("{row}{row}"));
+        let e = Admissibility::parse(&classes, &twice).unwrap_err();
+        assert!(e.to_string().contains("two rows"), "{e}");
+    }
+
+    /// Ruling 3685: the pre-opening rule is registered once. Every posting
+    /// class is decided against every pre-opening kind (only Migration
+    /// admitted), the rule is born Locked and refuses transitions 040, it
+    /// governs a special period only when it ends on or before the opening
+    /// date, and a matrix without the table, with two, with a Normal kind,
+    /// a control class or a malformed code is refused.
+    #[test]
+    fn the_pre_opening_rule_is_registered_and_decides_every_posting_class() {
+        let classes = EntryClasses::embedded().unwrap();
+        let m = Admissibility::embedded(&classes).unwrap();
+        let rule = m.pre_opening().expect("pre_opening table");
+        assert_eq!(
+            rule.kinds,
+            [
+                PeriodKind::Opening,
+                PeriodKind::Adjustment,
+                PeriodKind::Closing
+            ]
+        );
+        for kind in &rule.kinds {
+            for c in classes.posting() {
+                assert_eq!(
+                    rule.admits(&c.name),
+                    c.name == "Migration",
+                    "{kind:?} {}",
+                    c.name
+                );
+            }
+        }
+        assert_eq!(rule.born, PeriodState::Locked);
+        assert_eq!(
+            (rule.refusal.as_str(), rule.transition_refusal.as_str()),
+            ("FA-REF-010", "FA-REF-040")
+        );
+        let day = |m: u8, d: u8| fa_time::DateDay::from_ymd(2026, m, d).unwrap();
+        assert!(rule.governs(PeriodKind::Closing, day(1, 1), Some(day(1, 1))));
+        assert!(!rule.governs(PeriodKind::Closing, day(1, 2), Some(day(1, 1))));
+        assert!(!rule.governs(PeriodKind::Closing, day(1, 1), None));
+        assert!(!rule.governs(PeriodKind::Normal, day(1, 1), Some(day(4, 1))));
+        let table = "[[pre_opening]]\nkinds = [\"Opening\", \"Adjustment\", \"Closing\"]\nborn = \"Locked\"\nadmits = [\"Migration\"]\nrefusal = \"FA-REF-010\"\ntransition_refusal = \"FA-REF-040\"\ncite = \"plan §7.2 (periods before the book's opening date)\"\n";
+        assert!(ADMISSIBILITY.contains(table), "the pre_opening table");
+        for (planted, why) in [
+            (
+                ADMISSIBILITY.replace(table, ""),
+                "exactly one [[pre_opening]]",
+            ),
+            (
+                ADMISSIBILITY.replace(table, &format!("{table}{table}")),
+                "exactly one [[pre_opening]]",
+            ),
+            (
+                ADMISSIBILITY.replace(table, &table.replace("\"Opening\", ", "\"Normal\", ")),
+                "special periods only",
+            ),
+            (
+                ADMISSIBILITY.replace(
+                    table,
+                    &table.replace("[\"Migration\"]", "[\"PeriodControl\"]"),
+                ),
+                "not a posting class",
+            ),
+            (
+                ADMISSIBILITY.replace(table, &table.replace("FA-REF-040", "40")),
+                "not a refusal code",
+            ),
+        ] {
+            let e = Admissibility::parse(&classes, &planted).unwrap_err();
+            assert!(e.to_string().contains(why), "{why}: {e}");
+        }
     }
 
     #[test]

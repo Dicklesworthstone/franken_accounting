@@ -373,6 +373,7 @@ fn book() -> Book {
         calendar: calendar.clone(),
         time_zone_policy: None,
         entities: Vec::new(),
+        opening_date: None,
     };
     let symbols = SymbolTable::compiled();
     runtime

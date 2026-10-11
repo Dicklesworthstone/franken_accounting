@@ -288,6 +288,14 @@ pub(crate) fn kind_tag(k: PeriodKind) -> i64 {
     }
 }
 
+/// A period row's `period_kind` mirror (an `Int` tag), if well formed.
+pub(crate) fn kind_from_scalar(v: Option<&CanonicalScalar>) -> Option<PeriodKind> {
+    match v {
+        Some(CanonicalScalar::Int(t)) => kind_from_tag(*t),
+        _ => None,
+    }
+}
+
 fn kind_from_tag(t: i64) -> Option<PeriodKind> {
     Some(match t {
         0 => PeriodKind::Normal,

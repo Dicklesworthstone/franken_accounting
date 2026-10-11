@@ -1573,6 +1573,7 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     calendar,
                     time_zone_policy: None,
                     entities: Vec::new(),
+                    opening_date: None,
                 },
                 entropy,
             )?;

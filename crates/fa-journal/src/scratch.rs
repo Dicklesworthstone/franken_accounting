@@ -16,8 +16,10 @@
 //!   checkpoints), `AccumulatorState` (the notary's checkpoints) and
 //!   `RegisterState` (the native register maintainer's cells and cursor)
 //!   vertices, and every row on them or their edges — property moves and
-//!   removals, label flips, deletes — are maintenance and are dropped; a
-//!   source commit that is only maintenance yields no scratch commit;
+//!   removals, label flips, deletes — are maintenance and are dropped, as
+//!   are moves of a maintenance property wherever it sits (the notary's
+//!   checkpoint head on the book root); a source commit that is only
+//!   maintenance yields no scratch commit;
 //! - on an accounting object, a removal or a delete (the journal is
 //!   append-only), and anywhere a row family fa never writes (valid time,
 //!   counters, escrow, sketches, schema, constraints), refuses FA-REF-134,
@@ -32,10 +34,10 @@
 
 use std::collections::BTreeSet;
 
-use fa_model::symbols::label;
+use fa_model::symbols::{label, property};
 use fa_model::{Id128, Writer, domain_digest};
 use fgdb::{Database, WriteBatch, WriteMismatchPolicy, WriteTxnError};
-use fgdb_delta_types::{DeltaRow, ElementId, LabelId, LogicalDeltaBatch};
+use fgdb_delta_types::{DeltaRow, ElementId, LabelId, LogicalDeltaBatch, PropertyKeyId};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CommitSeq, EId, VId};
 
@@ -46,6 +48,13 @@ pub const SEQ_MAP_DOMAIN: &[u8] = b"fa:seq-map:v1";
 pub const SEQ_MAP_VERSION: u16 = 1;
 /// The scope a scratch book replays: accounting objects only (§15.2).
 pub const SCOPE_ACCOUNTING_OBJECTS_ONLY: u8 = 1;
+
+/// Properties that are maintenance wherever they sit: the notary's
+/// checkpoint head on the book root (fa-notary `checkpoint` moves it in the
+/// commit that writes an `AccumulatorState`). Their moves are dropped like
+/// every row on a maintenance vertex, so a checkpoint commit replays to
+/// nothing and a scratch book never points at a checkpoint it lacks.
+const MAINTENANCE_PROPERTIES: [PropertyKeyId; 1] = [property::ACCUMULATOR_HEAD];
 
 /// Labels whose vertices are maintenance or checkpoints, never replayed.
 const MAINTENANCE: [LabelId; 3] = [
@@ -203,7 +212,7 @@ pub fn replayable(
                     before,
                     after,
                 } => {
-                    if maintenance.holds(elem) {
+                    if maintenance.holds(elem) || MAINTENANCE_PROPERTIES.contains(property) {
                         continue;
                     }
                     let Some(after) = after else {

@@ -18,11 +18,13 @@ use fa_journal::evidence::{Document, add_document};
 use fa_journal::migration::{kind, read_run};
 use fa_journal::*;
 use fa_model::{
-    ApprovalRef, EntryClass, EntryOrigin, EntryPayload, Erasable, EvidenceRef, Id128, LegPayload,
-    Oid, PeriodRef, SealKey, SymbolTable, account_vid,
+    ApprovalRef, EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable, EvidenceRef, Id128,
+    LegPayload, Oid, PeriodRef, SealKey, Settlement, SymbolTable, account_vid,
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
-use fa_reference::{Account, Intent, Known, Leg, Limit, Oracle, RunSpec, Verdict};
+use fa_reference::{
+    Account, FullDetailSpec, Intent, Known, Leg, Limit, Oracle, RunSpec, TrialBalance, Verdict,
+};
 use fa_registers::fold_period_at;
 use fa_time::{DateDay, FiscalCalendar, PeriodState, PeriodTransition};
 use fgdb::{Database, DatabaseKeys, MemVfs, WriteBatch};
@@ -93,6 +95,13 @@ fn opening_date() -> DateDay {
 /// A book with the chart, FY2026's periods, FY2026-OPEN locked (Migration
 /// is admissible only there) and P01 open, and the trial balance document.
 fn setup() -> (Kernel, Oracle) {
+    setup_with(None)
+}
+
+/// The fixture book. `go_live`: the book's opening date (plan §7.2) and the
+/// live period it starts, which is the one opened; every Normal period before
+/// it is born Historical and Locked. `None`: no opening date, and P01 opens.
+fn setup_with(go_live: Option<(DateDay, &str)>) -> (Kernel, Oracle) {
     let runtime = RuntimeBuilder::new().build().expect("runtime");
     let root = runtime.request_cx_with_budget(Budget::INFINITE);
     let ctx = PurposeContexts::narrow_runtime_root(&root);
@@ -114,6 +123,7 @@ fn setup() -> (Kernel, Oracle) {
         calendar: calendar.clone(),
         time_zone_policy: None,
         entities: Vec::new(),
+        opening_date: go_live.map(|(day, _)| day),
     };
     let symbols = SymbolTable::compiled();
     runtime
@@ -218,22 +228,32 @@ fn setup() -> (Kernel, Oracle) {
             per_period: false,
         },
     );
+    if let Some((day, _)) = go_live {
+        oracle.set_opening_date(day);
+    }
     oracle.create_periods(2026);
-    for (i, t) in [
-        PeriodTransition::Open,
-        PeriodTransition::SoftClose,
-        PeriodTransition::Close,
-        PeriodTransition::Lock,
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    // The Opening period is Locked for the run: walked there when it is a
+    // live period, born Locked when it precedes the book's opening date
+    // (the pre_opening rule, ruling 3685).
+    let born_locked = oracle.period_state(OPENING) == Some(PeriodState::Locked);
+    let transitions = if born_locked {
+        Vec::new()
+    } else {
+        vec![
+            PeriodTransition::Open,
+            PeriodTransition::SoftClose,
+            PeriodTransition::Close,
+            PeriodTransition::Lock,
+        ]
+    };
+    for (i, t) in transitions.into_iter().enumerate() {
         transition(&mut k, OPENING, t, &format!("lock-opening-{i}"));
         oracle.transition(OPENING, t).expect("oracle");
     }
-    transition(&mut k, P01, PeriodTransition::Open, "open-p01");
+    let live = go_live.map_or(P01, |(_, code)| code);
+    transition(&mut k, live, PeriodTransition::Open, "open-live");
     oracle
-        .transition(P01, PeriodTransition::Open)
+        .transition(live, PeriodTransition::Open)
         .expect("oracle");
     (k, oracle)
 }
@@ -335,7 +355,13 @@ fn body_of(k: &Kernel, spec: &RunSpec) -> RunBody {
         book_id: k.book.book_id,
         run_key: spec.key.clone(),
         source_system: "legacy-gl".into(),
-        mode: RunMode::OpeningOnly,
+        mode: if spec.full_detail.is_some() {
+            RunMode::FullDetail
+        } else if spec.periods.is_empty() {
+            RunMode::OpeningOnly
+        } else {
+            RunMode::PeriodBalances
+        },
         trial_balance: k.tb.document_oid,
         opening_date: spec.opening_date,
         lines: spec
@@ -347,7 +373,62 @@ fn body_of(k: &Kernel, spec: &RunSpec) -> RunBody {
                 mantissa: *m,
             })
             .collect(),
+        // Each elapsed period's trial balance is stated in the fixture
+        // document too (one document may state several).
+        periods: spec
+            .periods
+            .iter()
+            .map(|(code, lines)| PeriodBalance {
+                period_code: code.clone(),
+                trial_balance: k.tb.document_oid,
+                lines: lines
+                    .iter()
+                    .map(|(a, u, m)| TrialBalanceLine {
+                        account_code: a.clone(),
+                        unit: UnitId(*u),
+                        mantissa: *m,
+                    })
+                    .collect(),
+            })
+            .collect(),
+        detail_base: spec
+            .full_detail
+            .as_ref()
+            .map(|f| {
+                f.detail_base
+                    .iter()
+                    .map(|(a, u, m)| TrialBalanceLine {
+                        account_code: a.clone(),
+                        unit: UnitId(*u),
+                        mantissa: *m,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        sole_opening_source: spec.full_detail.as_ref().is_some_and(|f| f.sole),
     }
+}
+
+/// A trial balance in USD from `(account, net in debit sign)`, zero lines
+/// omitted, ascending by account.
+fn usd_lines(nets: &[(&str, i128)]) -> Vec<(String, u32, i128)> {
+    let mut out: Vec<(String, u32, i128)> = nets
+        .iter()
+        .filter(|(_, m)| *m != 0)
+        .map(|(a, m)| ((*a).to_string(), usd().0, *m))
+        .collect();
+    out.sort();
+    out
+}
+
+/// Create fiscal year `fy`'s periods on both sides.
+fn create_year(k: &mut Kernel, oracle: &mut Oracle, fy: i32) {
+    let ctx = k.ctx();
+    let (db, book) = (&mut k.db, &k.book);
+    k.runtime
+        .block_on(async move { create_periods(db, &ctx, book, fy).await })
+        .expect("periods");
+    oracle.create_periods(fy);
 }
 
 fn capability(ops: &[&str]) -> Capability {
@@ -392,7 +473,7 @@ fn kernel_open(
         &k.book,
         PRINCIPAL,
         &body,
-        k.tb,
+        vec![k.tb],
         key.as_bytes(),
         sealed(&k.book, "open run"),
     )
@@ -568,6 +649,24 @@ fn code_of<T>(r: &Result<T, Refusal>) -> Result<(), &'static str> {
     r.as_ref().map(|_| ()).map_err(|e| e.code)
 }
 
+/// What a kernel post did: posted, recorded, or refused.
+fn outcome_kind(r: &Result<Posted, Refusal>) -> &'static str {
+    match r {
+        Ok(Posted::Committed { .. }) => "posted",
+        Ok(Posted::AlreadyRecorded { .. }) => "recorded",
+        Err(_) => "refused",
+    }
+}
+
+/// What the oracle did, in [`outcome_kind`]'s words.
+fn verdict_kind(v: &Verdict) -> &'static str {
+    match v {
+        Verdict::Posted { .. } => "posted",
+        Verdict::Recorded { .. } => "recorded",
+        Verdict::Refused { .. } => "refused",
+    }
+}
+
 fn verdict_code(v: &Verdict) -> Result<(), &'static str> {
     match v {
         Verdict::Posted { .. } | Verdict::Recorded { .. } => Ok(()),
@@ -646,6 +745,8 @@ fn plan_run(rng: &mut Rng, key: &str) -> (RunSpec, Vec<Vec<Leg>>) {
                     key: key.into(),
                     opening_date: opening_date(),
                     lines,
+                    periods: Vec::new(),
+                    full_detail: None,
                 },
                 chunks,
             );
@@ -719,8 +820,14 @@ fn kernel_and_oracle_agree_on_migration_runs() {
             let owned_ops: Vec<String> = ops.iter().map(|o| (*o).to_string()).collect();
             let model = oracle.open_run(&spec, control_key.as_bytes(), &owned_ops);
             agree(step, "open", code_of(&kernel), model.map(|_| ()));
-            match (kernel, model) {
-                (Ok(opened), Ok(index)) => {
+            assert_eq!(
+                kernel.is_ok(),
+                model.is_ok(),
+                "step {step}: the kernel and the oracle disagree on whether the run opened"
+            );
+            match kernel {
+                Ok(opened) => {
+                    let index = model.expect("the oracle opened it too");
                     assert_eq!(opened.to, RunState::Open);
                     f.opened += 1;
                     runs.push(LiveRun {
@@ -733,10 +840,7 @@ fn kernel_and_oracle_agree_on_migration_runs() {
                         legacy: Vec::new(),
                     });
                 }
-                (Err(r), Err(_)) => refuse(&mut f, r.code),
-                _ => panic!(
-                    "step {step}: the kernel and the oracle disagree on whether the run opened"
-                ),
+                Err(r) => refuse(&mut f, r.code),
             }
         } else if roll < 55 {
             // Post into a run: the next planned chunk, or a planted negative.
@@ -767,7 +871,7 @@ fn kernel_and_oracle_agree_on_migration_runs() {
                     advances = false;
                 }
                 1 => {
-                    // Dated in P02, a Normal period: 132.
+                    // Dated in P02, naming no period: 132.
                     intent.date = DateDay::from_ymd(2026, 2, 10).unwrap();
                     intent.discriminator = None;
                     intent.key = format!("p02-{serial}").into_bytes();
@@ -847,8 +951,13 @@ fn kernel_and_oracle_agree_on_migration_runs() {
                 _ => oracle.post(&intent),
             };
             agree(step, "chunk", code_of(&kernel), verdict_code(&model));
-            match (&kernel, &model) {
-                (Ok(Posted::Committed { recorded_at, .. }), Verdict::Posted { .. }) => {
+            assert_eq!(
+                outcome_kind(&kernel),
+                verdict_kind(&model),
+                "step {step}: kernel {kernel:?} vs oracle {model:?}"
+            );
+            match &kernel {
+                Ok(Posted::Committed { recorded_at, .. }) => {
                     // Recorded time is the commit's sequence, whatever the
                     // legacy system claimed.
                     assert!(*recorded_at > before, "step {step}");
@@ -862,9 +971,8 @@ fn kernel_and_oracle_agree_on_migration_runs() {
                         f.chunks += 1;
                     }
                 }
-                (Ok(Posted::AlreadyRecorded { .. }), Verdict::Recorded { .. }) => f.recorded += 1,
-                (Err(r), Verdict::Refused { .. }) => refuse(&mut f, r.code),
-                _ => panic!("step {step}: kernel {kernel:?} vs oracle {model:?}"),
+                Ok(Posted::AlreadyRecorded { .. }) => f.recorded += 1,
+                Err(r) => refuse(&mut f, r.code),
             }
         } else if roll < 72 {
             // Finalize a run.
@@ -1829,4 +1937,1353 @@ fn a_scratch_book_with_equal_folds_but_other_entries_is_refused() {
     let r = verify(&a, &b_scratch, &a_map).expect_err("other objects");
     assert_eq!((r.code, r.exit), ("FA-REF-135", exit::VERIFICATION), "{r}");
     assert!(r.message.contains("different entries"), "{r}");
+}
+
+const GO_LIVE_PERIOD: &str = "FY2026-P04";
+
+fn go_live() -> DateDay {
+    DateDay::from_ymd(2026, 4, 1).unwrap()
+}
+
+/// A chunk staged in elapsed period `period`, dated `date` inside it.
+fn period_chunk(key: &str, period: Option<&str>, date: DateDay, legs: Vec<Leg>) -> Intent {
+    Intent {
+        date,
+        discriminator: period.map(str::to_string),
+        ..chunk_intent(key, legs)
+    }
+}
+
+/// Stage `intent` into `run` on both sides; both must agree on the verdict.
+fn stage_both(
+    k: &mut Kernel,
+    oracle: &mut Oracle,
+    run: (VId, usize),
+    intent: &Intent,
+    step: u64,
+    what: &str,
+) -> Result<(), &'static str> {
+    let proposal = chunk_payload(k, run.0, intent, Shape::Chunk, None);
+    let kernel = kernel_post(k, proposal, &["post", "migrate"], true);
+    let model = oracle.post_migration(run.1, intent);
+    agree(step, what, code_of(&kernel), verdict_code(&model));
+    code_of(&kernel)
+}
+
+/// A legacy trial balance over cash 1000, equity 3000, revenue 4000, expense
+/// 6000 and payables 2000 (zero lines omitted, ascending by account).
+fn tb(cash: i128, payables: i128, revenue: i128, expense: i128) -> Vec<(String, u32, i128)> {
+    [
+        ("1000", cash),
+        ("2000", payables),
+        ("3000", -10_000),
+        ("4000", revenue),
+        ("6000", expense),
+    ]
+    .into_iter()
+    .filter(|(_, m)| *m != 0)
+    .map(|(a, m)| (a.to_string(), usd().0, m))
+    .collect()
+}
+
+/// Plan §8.6 PeriodBalances (the mid-year go-live) and §7.2 Historical
+/// periods, kernel against oracle. A book going live on April 1 is born with
+/// P01–P03 Historical and Locked. A PeriodBalances run stages the opening
+/// balances (January 1) and one chunk per elapsed period; they are invisible
+/// until Finalize, which ties out cumulatively per period; afterwards every
+/// period folds as the oracle's. Planted, each reaching one check: an
+/// Original in a Historical period (010, the Historical rule, not the Locked
+/// matrix cell); opening a Historical period (040, the Historical rule, not
+/// the state machine); a body that skips a period (100); a PeriodBalances run
+/// in a book with no opening date (100); a chunk naming no period (132); a
+/// chunk in a period the run does not declare (132); an OpeningOnly run's
+/// chunk in a Historical period (132); and a mismatch confined to P02 (131,
+/// every mismatched line naming P02) while P03's cumulative still ties out.
+#[test]
+fn period_balances_tie_out_cumulatively_and_historical_periods_admit_only_migration() {
+    let (mut k, mut oracle) = setup_with(Some((go_live(), GO_LIVE_PERIOD)));
+    let ops = vec!["post".to_string(), "migrate".to_string()];
+    let (dr, cr) = (fa_reference::Side::Debit, fa_reference::Side::Credit);
+    let day = |m: u8, d: u8| DateDay::from_ymd(2026, m, d).unwrap();
+    let mut step = 0u64;
+    let mut next = || {
+        step += 1;
+        step
+    };
+
+    // An Original dated in P02, a Historical period: refused by the
+    // Historical rule (its cite), whatever the Locked matrix cell says.
+    let original = Intent {
+        date: day(2, 10),
+        ..trunk_intent(
+            "into-history",
+            vec![leg(dr, "6000", 50), leg(cr, "1000", 50)],
+        )
+    };
+    let payload = chunk_payload(&k, VId(0), &original, Shape::NoRun, None);
+    let r =
+        kernel_post(&mut k, payload, &["post"], false).expect_err("history admits only Migration");
+    assert_eq!((r.code, r.exit), ("FA-REF-010", exit::SAFETY), "{r}");
+    assert!(
+        r.cite.contains("Historical periods admit only Migration"),
+        "{r}"
+    );
+    assert_eq!(verdict_code(&oracle.post(&original)), Err("FA-REF-010"));
+
+    // Opening P02: the Historical rule's refusal, not the state machine's.
+    let opened = {
+        let ctx = k.ctx();
+        let (db, book) = (&mut k.db, &k.book);
+        let desc = sealed(book, "period");
+        k.runtime
+            .block_on(async move {
+                transition_period(
+                    db,
+                    &ctx,
+                    book,
+                    "FY2026-P02",
+                    PeriodTransition::Open,
+                    PRINCIPAL,
+                    1,
+                    day(2, 1),
+                    b"open-history",
+                    desc,
+                    &capability(&["close"]),
+                    &[],
+                )
+                .await
+            })
+            .expect("kernel")
+    };
+    let r = opened.expect_err("a Historical period never transitions");
+    assert_eq!(r.code, "FA-REF-040", "{r}");
+    assert!(r.message.contains("is Historical"), "{r}");
+    assert_eq!(
+        oracle.transition("FY2026-P02", PeriodTransition::Open),
+        Err("FA-REF-040")
+    );
+
+    let p01 = tb(10_500, 0, -500, 0);
+    let p02 = tb(10_300, 0, -500, 200);
+    let p03 = tb(10_600, 0, -800, 200);
+    let spec = |key: &str, periods: Vec<(&str, TrialBalance)>| RunSpec {
+        full_detail: None,
+        key: key.into(),
+        opening_date: opening_date(),
+        lines: tb(10_000, 0, 0, 0),
+        periods: periods
+            .into_iter()
+            .map(|(p, l)| (p.to_string(), l))
+            .collect(),
+    };
+
+    // A body that skips P02 is refused at the Open (100, the history check).
+    let skips = spec(
+        "skips",
+        vec![(P01, p01.clone()), ("FY2026-P03", p03.clone())],
+    );
+    let r = kernel_open(&mut k, &skips, "open-skips", &["post", "migrate"])
+        .expect_err("every elapsed period, in order");
+    assert_eq!((r.code, r.exit), ("FA-REF-100", exit::USAGE), "{r}");
+    assert!(r.message.contains("elapsed periods"), "{r}");
+    assert_eq!(
+        oracle.open_run(&skips, b"open-skips", &ops),
+        Err("FA-REF-100")
+    );
+
+    // Run A: P02 is short 100 of cash (parked in payables) and P03 makes it
+    // good, so only P02's cumulative trial balance fails to tie out.
+    let a_spec = spec(
+        "mismatch",
+        vec![
+            (P01, p01.clone()),
+            ("FY2026-P02", p02.clone()),
+            ("FY2026-P03", p03.clone()),
+        ],
+    );
+    let a = kernel_open(&mut k, &a_spec, "open-a", &["post", "migrate"])
+        .expect("opens")
+        .run;
+    let oa = oracle
+        .open_run(&a_spec, b"open-a", &ops)
+        .expect("oracle opens");
+    let a_chunks = [
+        period_chunk(
+            "a-open",
+            Some(OPENING),
+            opening_date(),
+            vec![leg(dr, "1000", 10_000), leg(cr, "3000", 10_000)],
+        ),
+        period_chunk(
+            "a-p01",
+            Some(P01),
+            day(1, 31),
+            vec![leg(dr, "1000", 500), leg(cr, "4000", 500)],
+        ),
+        period_chunk(
+            "a-p02",
+            Some("FY2026-P02"),
+            day(2, 28),
+            vec![
+                leg(dr, "6000", 200),
+                leg(cr, "1000", 100),
+                leg(cr, "2000", 100),
+            ],
+        ),
+        period_chunk(
+            "a-p03",
+            Some("FY2026-P03"),
+            day(3, 31),
+            vec![
+                leg(dr, "1000", 200),
+                leg(dr, "2000", 100),
+                leg(cr, "4000", 300),
+            ],
+        ),
+    ];
+    for intent in &a_chunks {
+        let s = next();
+        stage_both(&mut k, &mut oracle, (a, oa), intent, s, "run A chunk").expect("stages");
+    }
+    let tie = tie_out(
+        &k.db,
+        &k.book,
+        &read_run(&k.db, a, None).unwrap().unwrap(),
+        k.db.frontier().unwrap(),
+    )
+    .expect("tie-out");
+    assert_eq!(tie.chunks.len(), 4);
+    assert!(!tie.mismatches.is_empty());
+    assert!(
+        tie.mismatches
+            .iter()
+            .all(|l| l.period.as_deref() == Some("FY2026-P02")),
+        "only P02 fails: {:?}",
+        tie.mismatches
+    );
+    let r = kernel_plan(&k, a, kind::FINALIZE, "finalize-a").expect_err("P02 does not tie out");
+    assert_eq!((r.code, r.exit), ("FA-REF-131", exit::REFUSAL), "{r}");
+    assert!(r.message.contains("through `FY2026-P02`"), "{r}");
+    assert_eq!(
+        oracle.finalize_run(oa, 4, b"finalize-a", &ops, 2),
+        Err("FA-REF-131")
+    );
+    let abandon = kernel_plan(&k, a, kind::ABANDON, "abandon-a").expect("plans");
+    kernel_transition(&mut k, abandon, false).expect("abandons");
+    oracle
+        .abandon_run(oa, 4, b"abandon-a", &ops)
+        .expect("oracle abandons");
+
+    // Run B, well formed. Planted chunks first: no period named (132 at the
+    // naming rule), a period the run does not declare (132 at the run rule).
+    let b_spec = spec(
+        "go-live",
+        vec![(P01, p01), ("FY2026-P02", p02), ("FY2026-P03", p03)],
+    );
+    let b = kernel_open(&mut k, &b_spec, "open-b", &["post", "migrate"])
+        .expect("opens")
+        .run;
+    let ob = oracle
+        .open_run(&b_spec, b"open-b", &ops)
+        .expect("oracle opens");
+    let unnamed = period_chunk(
+        "b-unnamed",
+        None,
+        day(1, 31),
+        vec![leg(dr, "1000", 500), leg(cr, "4000", 500)],
+    );
+    let s = next();
+    assert_eq!(
+        stage_both(
+            &mut k,
+            &mut oracle,
+            (b, ob),
+            &unnamed,
+            s,
+            "a chunk naming no period"
+        ),
+        Err("FA-REF-132")
+    );
+    let live = period_chunk(
+        "b-live",
+        Some(GO_LIVE_PERIOD),
+        day(4, 10),
+        vec![leg(dr, "1000", 500), leg(cr, "4000", 500)],
+    );
+    let s = next();
+    assert_eq!(
+        stage_both(
+            &mut k,
+            &mut oracle,
+            (b, ob),
+            &live,
+            s,
+            "a chunk in an undeclared period"
+        ),
+        Err("FA-REF-132")
+    );
+    let b_chunks = [
+        period_chunk(
+            "b-open",
+            Some(OPENING),
+            opening_date(),
+            vec![leg(dr, "1000", 10_000), leg(cr, "3000", 10_000)],
+        ),
+        period_chunk(
+            "b-p01",
+            Some(P01),
+            day(1, 31),
+            vec![leg(dr, "1000", 500), leg(cr, "4000", 500)],
+        ),
+        period_chunk(
+            "b-p02",
+            Some("FY2026-P02"),
+            day(2, 28),
+            vec![leg(dr, "6000", 200), leg(cr, "1000", 200)],
+        ),
+        period_chunk(
+            "b-p03",
+            Some("FY2026-P03"),
+            day(3, 31),
+            vec![leg(dr, "1000", 300), leg(cr, "4000", 300)],
+        ),
+    ];
+    for intent in &b_chunks {
+        let s = next();
+        stage_both(&mut k, &mut oracle, (b, ob), intent, s, "run B chunk").expect("stages");
+    }
+
+    // An OpeningOnly run's chunk in a Historical period: 132 at the run rule.
+    let c_spec = spec("opening-only", Vec::new());
+    let c = kernel_open(&mut k, &c_spec, "open-c", &["post", "migrate"])
+        .expect("opens")
+        .run;
+    let oc = oracle
+        .open_run(&c_spec, b"open-c", &ops)
+        .expect("oracle opens");
+    let historical = period_chunk(
+        "c-p01",
+        Some(P01),
+        day(1, 31),
+        vec![leg(dr, "1000", 500), leg(cr, "4000", 500)],
+    );
+    let s = next();
+    assert_eq!(
+        stage_both(
+            &mut k,
+            &mut oracle,
+            (c, oc),
+            &historical,
+            s,
+            "OpeningOnly into history"
+        ),
+        Err("FA-REF-132")
+    );
+
+    // Staged: every period folds empty on both sides.
+    let periods = [OPENING, P01, "FY2026-P02", "FY2026-P03"];
+    for p in periods {
+        let s = next();
+        assert_fold(&k, &oracle, p, k.db.frontier().unwrap(), oracle.known(), s);
+        assert!(
+            fold_period_at(&k.db, &k.book, p, None)
+                .unwrap()
+                .cells
+                .is_empty(),
+            "{p} staged"
+        );
+    }
+
+    // Finalize B: every period folds as the oracle's, and P02 is its chunk.
+    let fin = kernel_plan(&k, b, kind::FINALIZE, "finalize-b").expect("ties out");
+    kernel_transition(&mut k, fin, true).expect("finalizes");
+    oracle
+        .finalize_run(ob, 4, b"finalize-b", &ops, 2)
+        .expect("oracle finalizes");
+    for p in periods {
+        let s = next();
+        assert_fold(&k, &oracle, p, k.db.frontier().unwrap(), oracle.known(), s);
+        assert!(
+            !fold_period_at(&k.db, &k.book, p, None)
+                .unwrap()
+                .cells
+                .is_empty(),
+            "{p} active"
+        );
+    }
+    let p02 = fold_period_at(&k.db, &k.book, "FY2026-P02", None).unwrap();
+    let cash = p02
+        .cells
+        .iter()
+        .find(|c| c.key.account == account_vid(k.book.book_id, "1000"))
+        .expect("cash moved in P02");
+    assert_eq!((cash.debits, cash.credits), (0, 200));
+
+    // A book with no opening date has no Historical period to declare.
+    let (mut plain, mut plain_oracle) = setup();
+    let r = kernel_open(&mut plain, &b_spec, "open-plain", &["post", "migrate"])
+        .expect_err("no opening date");
+    assert_eq!((r.code, r.exit), ("FA-REF-100", exit::USAGE), "{r}");
+    assert!(r.message.contains("no opening date"), "{r}");
+    assert_eq!(
+        plain_oracle.open_run(&b_spec, b"open-plain", &ops),
+        Err("FA-REF-100")
+    );
+}
+
+/// fa-kjl acceptance example: draft-to-trunk digests and approvals (plan
+/// §15.2). A proposal approved in a scratch book posts there under that
+/// approval. On trunk, the same proposal citing the same approval is refused
+/// 017: the approval is a scratch object, not a trunk one. Recorded on trunk
+/// (its identity derives from book, approver, digest and epoch, so it is the
+/// same reference), it admits the proposal, and the trunk entry is the
+/// scratch entry, identity and digest preserved.
+#[test]
+fn an_approval_recorded_in_a_scratch_book_binds_nothing_on_trunk() {
+    let (mut k, _) = setup();
+    let mut scratch = empty_scratch(&k);
+    let head = k.db.frontier().unwrap();
+    let map = replay(&mut k, &mut scratch, head).expect("replays");
+    verify(&k, &scratch, &map).expect("the map verifies");
+    let intent = trunk_intent(
+        "draft-approved",
+        vec![
+            leg(fa_reference::Side::Debit, "6000", 321),
+            leg(fa_reference::Side::Credit, "1000", 321),
+        ],
+    );
+    let proposal = EntryPayload {
+        origin: EntryOrigin::Intent {
+            intent_oid: Oid([1; 32]),
+            intent_kind: 1,
+        },
+        ..chunk_payload(&k, VId(0), &intent, Shape::NoRun, None)
+    };
+    let digest = proposal.proposal_digest().expect("digest");
+    let ctx = k.ctx();
+    let book = &k.book;
+    let req = ApprovalRequest {
+        capability: Capability::embedded(BOB, &["approve"]).expect("approve"),
+        approved_proposal_digest: digest,
+        role: 0,
+    };
+    let drafted_approval = k
+        .runtime
+        .block_on(async { record_approval(&mut scratch, &ctx, book, req).await })
+        .expect("kernel")
+        .expect("recorded in the scratch book")
+        .approval();
+    let req = PostRequest {
+        proposal: proposal.clone(),
+        approvals: vec![drafted_approval],
+        capability: capability(&["post"]),
+        plan_certificate: None,
+    };
+    let drafted = k
+        .runtime
+        .block_on(async { post(&mut scratch, &ctx, book, req).await })
+        .expect("kernel")
+        .expect("posts in the scratch book");
+    let req = PostRequest {
+        proposal: proposal.clone(),
+        approvals: vec![drafted_approval],
+        capability: capability(&["post"]),
+        plan_certificate: None,
+    };
+    let r = kernel_post_req(&mut k, req).expect_err("the approval is not a trunk object");
+    assert_eq!(r.code, "FA-REF-017", "{r}");
+    let trunk_approval = approve_by(&mut k, digest, &[BOB]);
+    assert_eq!(trunk_approval, vec![drafted_approval], "the same reference");
+    let req = PostRequest {
+        proposal,
+        approvals: trunk_approval,
+        capability: capability(&["post"]),
+        plan_certificate: None,
+    };
+    let promoted = kernel_post_req(&mut k, req).expect("posts on trunk");
+    assert_eq!(
+        promoted.entry_ref(),
+        drafted.entry_ref(),
+        "identity and digest preserved from draft to trunk"
+    );
+}
+
+/// Stage each chunk on both sides; every one must stage.
+fn stage_all(
+    k: &mut Kernel,
+    oracle: &mut Oracle,
+    run: (VId, usize),
+    chunks: &[Intent],
+    what: &str,
+) {
+    for (i, intent) in chunks.iter().enumerate() {
+        stage_both(k, oracle, run, intent, i as u64, what).expect("stages");
+    }
+}
+
+/// Finalize `run` on both sides, planned over `chunks` chunks.
+fn finalize_both(k: &mut Kernel, oracle: &mut Oracle, run: (VId, usize), chunks: usize, key: &str) {
+    let ops = vec!["post".to_string(), "migrate".to_string()];
+    let plan = kernel_plan(k, run.0, kind::FINALIZE, key).expect("ties out");
+    kernel_transition(k, plan, true).expect("finalizes");
+    oracle
+        .finalize_run(run.1, chunks, key.as_bytes(), &ops, 2)
+        .expect("oracle finalizes");
+}
+
+fn full_detail(
+    key: &str,
+    lines: TrialBalance,
+    periods: Vec<(String, TrialBalance)>,
+    detail_base: TrialBalance,
+    sole: bool,
+) -> RunSpec {
+    RunSpec {
+        key: key.into(),
+        opening_date: opening_date(),
+        lines,
+        periods,
+        full_detail: Some(FullDetailSpec { detail_base, sole }),
+    }
+}
+
+/// Plan §8.6 FullDetail (ruling 3675), kernel against oracle. Prior years: a
+/// book going live at the fiscal-year start imports FY2025 legacy detail;
+/// the detail ties out cumulatively, the Opening chunk ties to the chain at
+/// the opening date, and the detail, dated before the run's opening date,
+/// stays out of every fold: FY2025's periods fold empty on both sides, so
+/// nothing is counted twice. Mid-year: a book going live April 1 imports
+/// January–March detail on top of the January 1 opening balances; that
+/// detail is dated on or after the run's opening date and counts. Planted:
+/// an Opening chunk whose lines disagree with the chain at the fiscal-year
+/// start (131, every mismatch naming the Opening period); a non-sole run
+/// whose periods start after its opening date (100).
+#[test]
+fn full_detail_counts_detail_by_date_and_ties_the_opening_to_the_chain() {
+    let ops = vec!["post".to_string(), "migrate".to_string()];
+    let (dr, cr) = (fa_reference::Side::Debit, fa_reference::Side::Credit);
+    let day = |y: i32, m: u8, d: u8| DateDay::from_ymd(y, m, d).unwrap();
+
+    // Prior years: the go-live is 2026-01-01, so FY2025 is Historical.
+    let (mut k, mut oracle) = setup_with(Some((opening_date(), P01)));
+    create_year(&mut k, &mut oracle, 2025);
+    let funded = usd_lines(&[("1000", 1_000), ("3000", -1_000)]);
+    let billed = usd_lines(&[("1000", 700), ("1200", 300), ("3000", -1_000)]);
+    let prior = full_detail(
+        "prior-years",
+        billed.clone(),
+        (1..=12)
+            .map(|m| {
+                let cum = if m < 6 {
+                    funded.clone()
+                } else {
+                    billed.clone()
+                };
+                (format!("FY2025-P{m:02}"), cum)
+            })
+            .collect(),
+        Vec::new(),
+        false,
+    );
+    let run = kernel_open(&mut k, &prior, "open-prior", &["post", "migrate"])
+        .expect("opens")
+        .run;
+    let o = oracle
+        .open_run(&prior, b"open-prior", &ops)
+        .expect("oracle opens");
+    let chunks = [
+        period_chunk(
+            "prior-open",
+            Some(OPENING),
+            opening_date(),
+            vec![
+                leg(dr, "1000", 700),
+                leg(dr, "1200", 300),
+                leg(cr, "3000", 1_000),
+            ],
+        ),
+        period_chunk(
+            "prior-jan",
+            Some("FY2025-P01"),
+            day(2025, 1, 15),
+            vec![leg(dr, "1000", 1_000), leg(cr, "3000", 1_000)],
+        ),
+        period_chunk(
+            "prior-jun",
+            Some("FY2025-P06"),
+            day(2025, 6, 10),
+            vec![leg(dr, "1200", 300), leg(cr, "1000", 300)],
+        ),
+    ];
+    stage_all(&mut k, &mut oracle, (run, o), &chunks, "prior-year chunk");
+    finalize_both(&mut k, &mut oracle, (run, o), 3, "finalize-prior");
+    for p in [OPENING, "FY2025-P01", "FY2025-P06"] {
+        assert_fold(&k, &oracle, p, k.db.frontier().unwrap(), oracle.known(), 1);
+    }
+    for p in ["FY2025-P01", "FY2025-P06"] {
+        assert!(
+            fold_period_at(&k.db, &k.book, p, None)
+                .unwrap()
+                .cells
+                .is_empty(),
+            "{p}: detail before the opening date is summarized, not counted"
+        );
+    }
+    assert!(
+        !fold_period_at(&k.db, &k.book, OPENING, None)
+            .unwrap()
+            .cells
+            .is_empty()
+    );
+
+    // Mid-year: the go-live is April 1; January–March detail counts.
+    let (mut k, mut oracle) = setup_with(Some((go_live(), GO_LIVE_PERIOD)));
+    let base = usd_lines(&[("1000", 5_000), ("3000", -5_000)]);
+    let after_p01 = usd_lines(&[("1000", 5_500), ("3000", -5_000), ("4000", -500)]);
+    let after_p03 = usd_lines(&[
+        ("1000", 5_300),
+        ("3000", -5_000),
+        ("4000", -500),
+        ("6000", 200),
+    ]);
+    let mid_periods = || {
+        vec![
+            (P01.to_string(), after_p01.clone()),
+            ("FY2026-P02".to_string(), after_p01.clone()),
+            ("FY2026-P03".to_string(), after_p03.clone()),
+        ]
+    };
+    let detail = |prefix: &str| {
+        [
+            period_chunk(
+                &format!("{prefix}-jan"),
+                Some(P01),
+                day(2026, 1, 20),
+                vec![leg(dr, "1000", 500), leg(cr, "4000", 500)],
+            ),
+            period_chunk(
+                &format!("{prefix}-mar"),
+                Some("FY2026-P03"),
+                day(2026, 3, 5),
+                vec![leg(dr, "6000", 200), leg(cr, "1000", 200)],
+            ),
+        ]
+    };
+
+    // Planted: periods that start after the run's opening date (100).
+    let late = full_detail(
+        "late",
+        base.clone(),
+        mid_periods().into_iter().skip(1).collect(),
+        after_p01.clone(),
+        false,
+    );
+    let r = kernel_open(&mut k, &late, "open-late", &["post", "migrate"])
+        .expect_err("the chain has no value at the opening date");
+    assert_eq!((r.code, r.exit), ("FA-REF-100", exit::USAGE), "{r}");
+    assert!(r.message.contains("after the run's opening date"), "{r}");
+    assert_eq!(
+        oracle.open_run(&late, b"open-late", &ops),
+        Err("FA-REF-100")
+    );
+
+    // Planted: the Opening chunk carries 6,000 while the chain says 5,000.
+    let off = usd_lines(&[("1000", 6_000), ("3000", -6_000)]);
+    let wrong = full_detail(
+        "wrong-opening",
+        off.clone(),
+        mid_periods(),
+        base.clone(),
+        false,
+    );
+    let run = kernel_open(&mut k, &wrong, "open-wrong", &["post", "migrate"])
+        .expect("opens")
+        .run;
+    let o = oracle
+        .open_run(&wrong, b"open-wrong", &ops)
+        .expect("oracle opens");
+    let mut chunks = vec![period_chunk(
+        "wrong-open",
+        Some(OPENING),
+        opening_date(),
+        vec![leg(dr, "1000", 6_000), leg(cr, "3000", 6_000)],
+    )];
+    chunks.extend(detail("wrong"));
+    stage_all(
+        &mut k,
+        &mut oracle,
+        (run, o),
+        &chunks,
+        "mismatched run chunk",
+    );
+    let tie = tie_out(
+        &k.db,
+        &k.book,
+        &read_run(&k.db, run, None).unwrap().unwrap(),
+        k.db.frontier().unwrap(),
+    )
+    .expect("tie-out");
+    assert!(!tie.mismatches.is_empty());
+    assert!(
+        tie.mismatches
+            .iter()
+            .all(|l| l.period.as_deref() == Some(OPENING)),
+        "only the Opening/chain check fails: {:?}",
+        tie.mismatches
+    );
+    let r = kernel_plan(&k, run, kind::FINALIZE, "finalize-wrong").expect_err("disagrees");
+    assert_eq!((r.code, r.exit), ("FA-REF-131", exit::REFUSAL), "{r}");
+    assert!(r.message.contains(&format!("through `{OPENING}`")), "{r}");
+    assert_eq!(
+        oracle.finalize_run(o, 3, b"finalize-wrong", &ops, 2),
+        Err("FA-REF-131")
+    );
+    let abandon = kernel_plan(&k, run, kind::ABANDON, "abandon-wrong").expect("plans");
+    kernel_transition(&mut k, abandon, false).expect("abandons");
+    oracle
+        .abandon_run(o, 3, b"abandon-wrong", &ops)
+        .expect("oracle abandons");
+
+    // The well-formed mid-year run: opening plus January–March detail.
+    let mid = full_detail("mid-year", base.clone(), mid_periods(), base.clone(), false);
+    let run = kernel_open(&mut k, &mid, "open-mid", &["post", "migrate"])
+        .expect("opens")
+        .run;
+    let o = oracle
+        .open_run(&mid, b"open-mid", &ops)
+        .expect("oracle opens");
+    let mut chunks = vec![period_chunk(
+        "mid-open",
+        Some(OPENING),
+        opening_date(),
+        vec![leg(dr, "1000", 5_000), leg(cr, "3000", 5_000)],
+    )];
+    chunks.extend(detail("mid"));
+    stage_all(&mut k, &mut oracle, (run, o), &chunks, "mid-year chunk");
+    finalize_both(&mut k, &mut oracle, (run, o), 3, "finalize-mid");
+    for p in [OPENING, P01, "FY2026-P02", "FY2026-P03"] {
+        assert_fold(&k, &oracle, p, k.db.frontier().unwrap(), oracle.known(), 2);
+    }
+    assert!(
+        !fold_period_at(&k.db, &k.book, P01, None)
+            .unwrap()
+            .cells
+            .is_empty(),
+        "detail on or after the opening date counts"
+    );
+}
+
+/// Plan §8.6 FullDetail sole source (ruling 3675), kernel against oracle: a
+/// book going live April 1 imports its whole history from inception
+/// (January 1); there is no Opening chunk, no opening lines and no
+/// `detail_base`, and every detail chunk counts once the run is finalized.
+/// Planted: a sole-source body with opening lines (100), one with a
+/// non-empty `detail_base` (100), and an Opening chunk staged into the
+/// sole-source run (132).
+#[test]
+fn a_sole_source_full_detail_run_is_its_own_opening() {
+    let ops = vec!["post".to_string(), "migrate".to_string()];
+    let (dr, cr) = (fa_reference::Side::Debit, fa_reference::Side::Credit);
+    let day = |m: u8, d: u8| DateDay::from_ymd(2026, m, d).unwrap();
+    let (mut k, mut oracle) = setup_with(Some((go_live(), GO_LIVE_PERIOD)));
+    let funded = usd_lines(&[("1000", 2_000), ("3000", -2_000)]);
+    let spent = usd_lines(&[("1000", 1_800), ("3000", -2_000), ("6000", 200)]);
+    let periods = vec![
+        (P01.to_string(), funded.clone()),
+        ("FY2026-P02".to_string(), funded.clone()),
+        ("FY2026-P03".to_string(), spent),
+    ];
+
+    for (key, bad) in [
+        (
+            "with-lines",
+            full_detail(
+                "sole-lines",
+                funded.clone(),
+                periods.clone(),
+                Vec::new(),
+                true,
+            ),
+        ),
+        (
+            "with-base",
+            full_detail(
+                "sole-base",
+                Vec::new(),
+                periods.clone(),
+                funded.clone(),
+                true,
+            ),
+        ),
+    ] {
+        let r = kernel_open(&mut k, &bad, key, &["post", "migrate"])
+            .expect_err("a sole source declares no opening");
+        assert_eq!((r.code, r.exit), ("FA-REF-100", exit::USAGE), "{key}: {r}");
+        assert!(r.message.contains("sole-source"), "{key}: {r}");
+        assert_eq!(
+            oracle.open_run(&bad, key.as_bytes(), &ops),
+            Err("FA-REF-100"),
+            "{key}"
+        );
+    }
+
+    let sole = full_detail("inception", Vec::new(), periods, Vec::new(), true);
+    let run = kernel_open(&mut k, &sole, "open-sole", &["post", "migrate"])
+        .expect("opens")
+        .run;
+    let o = oracle
+        .open_run(&sole, b"open-sole", &ops)
+        .expect("oracle opens");
+    let opening_chunk = period_chunk(
+        "sole-open",
+        Some(OPENING),
+        opening_date(),
+        vec![leg(dr, "1000", 2_000), leg(cr, "3000", 2_000)],
+    );
+    assert_eq!(
+        stage_both(
+            &mut k,
+            &mut oracle,
+            (run, o),
+            &opening_chunk,
+            0,
+            "an Opening chunk"
+        ),
+        Err("FA-REF-132")
+    );
+    let chunks = [
+        period_chunk(
+            "sole-jan",
+            Some(P01),
+            day(1, 2),
+            vec![leg(dr, "1000", 2_000), leg(cr, "3000", 2_000)],
+        ),
+        period_chunk(
+            "sole-mar",
+            Some("FY2026-P03"),
+            day(3, 9),
+            vec![leg(dr, "6000", 200), leg(cr, "1000", 200)],
+        ),
+    ];
+    stage_all(&mut k, &mut oracle, (run, o), &chunks, "sole-source chunk");
+    finalize_both(&mut k, &mut oracle, (run, o), 2, "finalize-sole");
+    for p in [OPENING, P01, "FY2026-P02", "FY2026-P03"] {
+        assert_fold(&k, &oracle, p, k.db.frontier().unwrap(), oracle.known(), 3);
+    }
+    assert!(
+        !fold_period_at(&k.db, &k.book, P01, None)
+            .unwrap()
+            .cells
+            .is_empty(),
+        "every detail chunk counts"
+    );
+    assert!(
+        fold_period_at(&k.db, &k.book, OPENING, None)
+            .unwrap()
+            .cells
+            .is_empty()
+    );
+}
+
+/// Ruling 3685, kernel against oracle: the legacy year-end close lands in
+/// its own Closing period, never re-dated. A book going live 2026-01-01
+/// imports FY2025 P&L detail. FY2025's special periods precede the opening
+/// date, so they are born Locked, keep their kind and admit only Migration:
+/// an Original there is refused 010 by the pre_opening rule (its cite, not
+/// the Locked matrix cell), and a transition is refused 040. Declared
+/// periods carry pre-closing trial balances; the chain walks the calendar
+/// (Opening, P01…P12, Adjustment, Closing). With the Closing chunk omitted,
+/// the chain at the opening date still carries the revenue, so the run is
+/// refused 131 with every mismatch naming the Opening period. With it
+/// present, the chain is post-closing and ties, and the detail and the close,
+/// dated before the opening date, stay out of every fold.
+#[test]
+fn a_prior_year_close_lands_in_its_closing_period_and_ties_the_opening() {
+    let ops = vec!["post".to_string(), "migrate".to_string()];
+    let (dr, cr) = (fa_reference::Side::Debit, fa_reference::Side::Credit);
+    let day = |y: i32, m: u8, d: u8| DateDay::from_ymd(y, m, d).unwrap();
+    let (mut k, mut oracle) = setup_with(Some((opening_date(), P01)));
+    create_year(&mut k, &mut oracle, 2025);
+    let close = "FY2025-CLOSE";
+
+    // An Original into the pre-opening Closing period: the rule's 010.
+    let original = Intent {
+        date: day(2025, 12, 31),
+        discriminator: Some(close.into()),
+        ..trunk_intent(
+            "into-the-close",
+            vec![leg(dr, "6000", 10), leg(cr, "1000", 10)],
+        )
+    };
+    let payload = chunk_payload(&k, VId(0), &original, Shape::NoRun, None);
+    let r = kernel_post(&mut k, payload, &["post"], false)
+        .expect_err("a pre-opening period admits only Migration");
+    assert_eq!((r.code, r.exit), ("FA-REF-010", exit::SAFETY), "{r}");
+    assert!(
+        r.cite.contains("periods before the book's opening date"),
+        "{r}"
+    );
+    assert_eq!(verdict_code(&oracle.post(&original)), Err("FA-REF-010"));
+
+    // Its transition: the rule's 040.
+    let opened = {
+        let ctx = k.ctx();
+        let (db, book) = (&mut k.db, &k.book);
+        let desc = sealed(book, "period");
+        k.runtime
+            .block_on(async move {
+                transition_period(
+                    db,
+                    &ctx,
+                    book,
+                    close,
+                    PeriodTransition::Open,
+                    PRINCIPAL,
+                    1,
+                    day(2025, 12, 31),
+                    b"open-the-close",
+                    desc,
+                    &capability(&["close"]),
+                    &[],
+                )
+                .await
+            })
+            .expect("kernel")
+    };
+    let r = opened.expect_err("a pre-opening period never transitions");
+    assert_eq!(r.code, "FA-REF-040", "{r}");
+    assert!(r.message.contains("before the book's opening date"), "{r}");
+    assert_eq!(
+        oracle.transition(close, PeriodTransition::Open),
+        Err("FA-REF-040")
+    );
+
+    // FY2025 earned 800 of revenue in March; the legacy close moved it to
+    // equity on 2025-12-31. Period balances are pre-closing; the opening
+    // balance is post-closing.
+    let earned = usd_lines(&[("1000", 800), ("4000", -800)]);
+    let periods: Vec<(String, TrialBalance)> = (1..=12)
+        .map(|m| {
+            let cum = if m < 3 { Vec::new() } else { earned.clone() };
+            (format!("FY2025-P{m:02}"), cum)
+        })
+        .collect();
+    let opening_lines = usd_lines(&[("1000", 800), ("3000", -800)]);
+    let opening_chunk = |key: &str| {
+        period_chunk(
+            key,
+            Some(OPENING),
+            opening_date(),
+            vec![leg(dr, "1000", 800), leg(cr, "3000", 800)],
+        )
+    };
+    let revenue = |key: &str| {
+        period_chunk(
+            key,
+            Some("FY2025-P03"),
+            day(2025, 3, 15),
+            vec![leg(dr, "1000", 800), leg(cr, "4000", 800)],
+        )
+    };
+    let the_close = |key: &str| {
+        period_chunk(
+            key,
+            Some(close),
+            day(2025, 12, 31),
+            vec![leg(dr, "4000", 800), leg(cr, "3000", 800)],
+        )
+    };
+
+    // Planted: the close omitted.
+    let omitted = full_detail(
+        "close-omitted",
+        opening_lines.clone(),
+        periods.clone(),
+        Vec::new(),
+        false,
+    );
+    let run = kernel_open(&mut k, &omitted, "open-omitted", &["post", "migrate"])
+        .expect("opens")
+        .run;
+    let o = oracle
+        .open_run(&omitted, b"open-omitted", &ops)
+        .expect("oracle opens");
+    stage_all(
+        &mut k,
+        &mut oracle,
+        (run, o),
+        &[opening_chunk("om-open"), revenue("om-rev")],
+        "close-omitted chunk",
+    );
+    let tie = tie_out(
+        &k.db,
+        &k.book,
+        &read_run(&k.db, run, None).unwrap().unwrap(),
+        k.db.frontier().unwrap(),
+    )
+    .expect("tie-out");
+    assert!(!tie.mismatches.is_empty());
+    assert!(
+        tie.mismatches
+            .iter()
+            .all(|l| l.period.as_deref() == Some(OPENING)),
+        "only the Opening/chain check fails: {:?}",
+        tie.mismatches
+    );
+    let r = kernel_plan(&k, run, kind::FINALIZE, "finalize-omitted").expect_err("unclosed");
+    assert_eq!((r.code, r.exit), ("FA-REF-131", exit::REFUSAL), "{r}");
+    assert_eq!(
+        oracle.finalize_run(o, 2, b"finalize-omitted", &ops, 2),
+        Err("FA-REF-131")
+    );
+    let abandon = kernel_plan(&k, run, kind::ABANDON, "abandon-omitted").expect("plans");
+    kernel_transition(&mut k, abandon, false).expect("abandons");
+    oracle
+        .abandon_run(o, 2, b"abandon-omitted", &ops)
+        .expect("oracle abandons");
+
+    // The close present, in its own Closing period: the run ties out.
+    let present = full_detail("close-present", opening_lines, periods, Vec::new(), false);
+    let run = kernel_open(&mut k, &present, "open-present", &["post", "migrate"])
+        .expect("opens")
+        .run;
+    let o = oracle
+        .open_run(&present, b"open-present", &ops)
+        .expect("oracle opens");
+    stage_all(
+        &mut k,
+        &mut oracle,
+        (run, o),
+        &[
+            opening_chunk("pr-open"),
+            revenue("pr-rev"),
+            the_close("pr-close"),
+        ],
+        "close-present chunk",
+    );
+    finalize_both(&mut k, &mut oracle, (run, o), 3, "finalize-present");
+    for p in [OPENING, "FY2025-P03", close] {
+        assert_fold(&k, &oracle, p, k.db.frontier().unwrap(), oracle.known(), 4);
+    }
+    for p in ["FY2025-P03", close] {
+        assert!(
+            fold_period_at(&k.db, &k.book, p, None)
+                .unwrap()
+                .cells
+                .is_empty(),
+            "{p}: summarized by the opening entry, not counted"
+        );
+    }
+}
+
+/// Stage `intent` into `run` on both sides: the chunk's entry reference and
+/// its index in the oracle's journal.
+fn stage_ref(
+    k: &mut Kernel,
+    oracle: &mut Oracle,
+    run: (VId, usize),
+    intent: &Intent,
+) -> (EntryRef, usize) {
+    let proposal = chunk_payload(k, run.0, intent, Shape::Chunk, None);
+    let posted = kernel_post(k, proposal, &["post", "migrate"], true).expect("the kernel stages");
+    let index = posted_index(&oracle.post_migration(run.1, intent)).expect("the oracle stages");
+    (posted.entry_ref(), index)
+}
+
+fn posted_index(v: &Verdict) -> Option<usize> {
+    match v {
+        Verdict::Posted { index, .. } => Some(*index),
+        Verdict::Recorded { .. } | Verdict::Refused { .. } => None,
+    }
+}
+
+/// The kernel proposal for `intent`, its `settles` (oracle journal indices)
+/// as settlements against the kernel entries `refs` names.
+fn settling_payload(
+    k: &Kernel,
+    run: VId,
+    intent: &Intent,
+    shape: Shape,
+    refs: &BTreeMap<usize, EntryRef>,
+) -> EntryPayload {
+    let mut proposal = chunk_payload(k, run, intent, shape, None);
+    for s in &intent.settles {
+        proposal.legs[s.leg].settles.push(Settlement {
+            target: *refs.get(&s.target).expect("a posted target"),
+            ordinal: u16::try_from(s.ordinal).expect("small ordinal"),
+            amount: Amount::new(usd(), s.mantissa),
+        });
+    }
+    proposal
+}
+
+/// A trunk receipt (cash 1000 against receivables 1200) applying `amount`
+/// to journal entry `target`'s leg `ordinal`.
+fn receipt(key: &str, target: usize, ordinal: usize, amount: i128) -> Intent {
+    Intent {
+        settles: vec![fa_reference::Settle {
+            leg: 1,
+            target,
+            ordinal,
+            mantissa: amount,
+        }],
+        ..trunk_intent(
+            key,
+            vec![
+                leg(fa_reference::Side::Debit, "1000", amount),
+                leg(fa_reference::Side::Credit, "1200", amount),
+            ],
+        )
+    }
+}
+
+/// Post the trunk `intent` on both sides; a posted entry joins `refs`.
+fn post_receipt(
+    k: &mut Kernel,
+    oracle: &mut Oracle,
+    intent: &Intent,
+    refs: &mut BTreeMap<usize, EntryRef>,
+) -> (Result<Posted, Refusal>, Verdict) {
+    let proposal = settling_payload(k, VId(0), intent, Shape::NoRun, refs);
+    let kernel = kernel_post(k, proposal, &["post"], false);
+    let model = oracle.post(intent);
+    if let (Ok(p), Some(i)) = (&kernel, posted_index(&model)) {
+        refs.insert(i, p.entry_ref());
+    }
+    (kernel, model)
+}
+
+/// Ruling 3733, kernel against oracle: open-item migration. A migrated leg
+/// is an open item iff its run is Finalized and its chunk counts (the
+/// migration predicate, the run state a point witness), and a chunk carries
+/// no settles (C2, the interim posture). A book going live 2026-01-01
+/// imports FY2025 receivables detail in a FullDetail run whose Opening
+/// chunk carries one leg per open invoice (the importer's shape, plan
+/// §8.6). Planted, each reaching one check: a detail chunk carrying a legacy
+/// application (071); a receipt against the Opening chunk while its run is
+/// staged (070, Open); against an abandoned run's chunk (070, Abandoned);
+/// against FY2025 detail the opening balances summarize (070); and an
+/// over-application of a migrated invoice (072). Once the run is Finalized,
+/// receipts settle the Opening legs, and the kernel's open items equal the
+/// oracle's leg for leg, with every applied mirror verified.
+#[test]
+fn migrated_legs_are_open_items_once_their_run_finalizes_and_their_chunk_counts() {
+    let ops = vec!["post".to_string(), "migrate".to_string()];
+    let (dr, cr) = (fa_reference::Side::Debit, fa_reference::Side::Credit);
+    let day = |y: i32, m: u8, d: u8| DateDay::from_ymd(y, m, d).unwrap();
+    let (mut k, mut oracle) = setup_with(Some((opening_date(), P01)));
+    create_year(&mut k, &mut oracle, 2025);
+    let mut refs: BTreeMap<usize, EntryRef> = BTreeMap::new();
+
+    // An abandoned OpeningOnly run's chunk: receivables 50.
+    let abandoned = RunSpec {
+        key: "c-abandoned".into(),
+        opening_date: opening_date(),
+        lines: usd_lines(&[("1200", 50), ("3000", -50)]),
+        periods: Vec::new(),
+        full_detail: None,
+    };
+    let run = kernel_open(&mut k, &abandoned, "open-abandoned", &["post", "migrate"])
+        .expect("opens")
+        .run;
+    let o = oracle
+        .open_run(&abandoned, b"open-abandoned", &ops)
+        .expect("oracle opens");
+    let (r, abandoned_chunk) = stage_ref(
+        &mut k,
+        &mut oracle,
+        (run, o),
+        &chunk_intent("ab-open", vec![leg(dr, "1200", 50), leg(cr, "3000", 50)]),
+    );
+    refs.insert(abandoned_chunk, r);
+    let plan = kernel_plan(&k, run, kind::ABANDON, "abandon-c").expect("plans");
+    kernel_transition(&mut k, plan, false).expect("abandons");
+    oracle
+        .abandon_run(o, 1, b"abandon-c", &ops)
+        .expect("oracle abandons");
+
+    // The FullDetail run: a legacy invoice of 300 in June 2025, the legacy
+    // close, and the opening receivables as two open invoices (100, 200).
+    let periods: Vec<(String, TrialBalance)> = (1..=12)
+        .map(|m| {
+            let cum = if m < 6 {
+                Vec::new()
+            } else {
+                usd_lines(&[("1200", 300), ("4000", -300)])
+            };
+            (format!("FY2025-P{m:02}"), cum)
+        })
+        .collect();
+    let spec = full_detail(
+        "c-run",
+        usd_lines(&[("1200", 300), ("3000", -300)]),
+        periods,
+        Vec::new(),
+        false,
+    );
+    let run = kernel_open(&mut k, &spec, "open-c", &["post", "migrate"])
+        .expect("opens")
+        .run;
+    let o = oracle
+        .open_run(&spec, b"open-c", &ops)
+        .expect("oracle opens");
+    let invoice = period_chunk(
+        "c-inv",
+        Some("FY2025-P06"),
+        day(2025, 6, 10),
+        vec![leg(dr, "1200", 300), leg(cr, "4000", 300)],
+    );
+    let (r, legacy_invoice) = stage_ref(&mut k, &mut oracle, (run, o), &invoice);
+    refs.insert(legacy_invoice, r);
+
+    // Planted (C2): a legacy payment applying to the legacy invoice.
+    let payment = Intent {
+        settles: vec![fa_reference::Settle {
+            leg: 1,
+            target: legacy_invoice,
+            ordinal: 0,
+            mantissa: 100,
+        }],
+        ..period_chunk(
+            "c-pay",
+            Some("FY2025-P07"),
+            day(2025, 7, 1),
+            vec![leg(dr, "1000", 100), leg(cr, "1200", 100)],
+        )
+    };
+    let proposal = settling_payload(&k, run, &payment, Shape::Chunk, &refs);
+    let r = kernel_post(&mut k, proposal, &["post", "migrate"], true)
+        .expect_err("a chunk carries no settles");
+    assert_eq!((r.code, r.exit), ("FA-REF-071", exit::REFUSAL), "{r}");
+    assert!(r.fix.contains("net of its legacy applications"), "{r}");
+    assert_eq!(
+        verdict_code(&oracle.post_migration(o, &payment)),
+        Err("FA-REF-071")
+    );
+
+    let close = period_chunk(
+        "c-close",
+        Some("FY2025-CLOSE"),
+        day(2025, 12, 31),
+        vec![leg(dr, "4000", 300), leg(cr, "3000", 300)],
+    );
+    let (r, i) = stage_ref(&mut k, &mut oracle, (run, o), &close);
+    refs.insert(i, r);
+    let (r, opening) = stage_ref(
+        &mut k,
+        &mut oracle,
+        (run, o),
+        &chunk_intent(
+            "c-open",
+            vec![
+                leg(dr, "1200", 100),
+                leg(dr, "1200", 200),
+                leg(cr, "3000", 300),
+            ],
+        ),
+    );
+    refs.insert(opening, r);
+
+    // Staged: nothing of the run is open yet.
+    let (kernel, model) = post_receipt(
+        &mut k,
+        &mut oracle,
+        &receipt("rc-staged", opening, 0, 100),
+        &mut refs,
+    );
+    let r = kernel.expect_err("a staged run's leg is not open");
+    assert_eq!((r.code, r.exit), ("FA-REF-070", exit::REFUSAL), "{r}");
+    assert!(r.message.contains("which is Open"), "{r}");
+    assert_eq!(verdict_code(&model), Err("FA-REF-070"));
+    // Abandoned: never open.
+    let (kernel, model) = post_receipt(
+        &mut k,
+        &mut oracle,
+        &receipt("rc-abandoned", abandoned_chunk, 0, 50),
+        &mut refs,
+    );
+    let r = kernel.expect_err("an abandoned run's leg is never open");
+    assert_eq!(r.code, "FA-REF-070", "{r}");
+    assert!(r.message.contains("which is Abandoned"), "{r}");
+    assert_eq!(verdict_code(&model), Err("FA-REF-070"));
+
+    finalize_both(&mut k, &mut oracle, (run, o), 3, "finalize-c");
+
+    // Not counting: the June invoice is summarized by the opening balances.
+    let (kernel, model) = post_receipt(
+        &mut k,
+        &mut oracle,
+        &receipt("rc-detail", legacy_invoice, 0, 100),
+        &mut refs,
+    );
+    let r = kernel.expect_err("summarized detail is not open");
+    assert_eq!(r.code, "FA-REF-070", "{r}");
+    assert!(
+        r.message
+            .contains("summarized by the run's opening balances"),
+        "{r}"
+    );
+    assert!(r.fix.contains("settle the Opening leg"), "{r}");
+    assert_eq!(verdict_code(&model), Err("FA-REF-070"));
+
+    // Counting: the Opening legs are open items.
+    let (kernel, model) = post_receipt(
+        &mut k,
+        &mut oracle,
+        &receipt("rc-a", opening, 0, 100),
+        &mut refs,
+    );
+    kernel.expect("invoice A clears");
+    assert!(matches!(model, Verdict::Posted { .. }));
+    let (kernel, model) = post_receipt(
+        &mut k,
+        &mut oracle,
+        &receipt("rc-b-over", opening, 1, 250),
+        &mut refs,
+    );
+    let r = kernel.expect_err("over-applied");
+    assert_eq!(r.code, "FA-REF-072", "{r}");
+    assert_eq!(verdict_code(&model), Err("FA-REF-072"));
+    let (kernel, model) = post_receipt(
+        &mut k,
+        &mut oracle,
+        &receipt("rc-b", opening, 1, 150),
+        &mut refs,
+    );
+    kernel.expect("invoice B part-pays");
+    assert!(matches!(model, Verdict::Posted { .. }));
+
+    // The open items, leg for leg: the Opening legs (A cleared, 50 of B
+    // open) and the receipts; neither the summarized detail nor the
+    // abandoned chunk.
+    let by_vid: BTreeMap<VId, usize> = refs.iter().map(|(i, r)| (r.vid, *i)).collect();
+    let items = fa_registers::open_items(&k.db, &k.book, None, None).expect("open items");
+    let kernel_items: BTreeMap<(usize, usize), (i128, i128, i128)> = items
+        .iter()
+        .map(|it| {
+            let index = *by_vid.get(&it.entry).expect("a posted entry");
+            (
+                (index, usize::from(it.ordinal)),
+                (it.original, it.applied, it.applied_out),
+            )
+        })
+        .collect();
+    assert_eq!(kernel_items, oracle.open_items());
+    let vid_of = |i: usize| refs.get(&i).expect("posted").vid;
+    let b = items
+        .iter()
+        .find(|it| it.entry == vid_of(opening) && it.ordinal == 1)
+        .expect("invoice B is an open item");
+    assert_eq!((b.original, b.applied, b.open), (200, 150, 50));
+    assert!(
+        items
+            .iter()
+            .all(|it| it.entry != vid_of(legacy_invoice) && it.entry != vid_of(abandoned_chunk)),
+        "summarized detail and abandoned chunks carry no open item"
+    );
+    assert!(
+        fa_registers::verify_open_items(&k.db, &k.book, None)
+            .expect("verify")
+            .is_green()
+    );
 }

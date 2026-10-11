@@ -178,6 +178,12 @@ impl Harness {
 }
 
 fn harness() -> Harness {
+    harness_with(None)
+}
+
+/// The fixture book, optionally with an opening date (plan §7.2): periods
+/// created before it are born Historical.
+fn harness_with(opening_date: Option<DateDay>) -> Harness {
     let runtime = RuntimeBuilder::new().build().expect("runtime");
     let root = runtime.request_cx_with_budget(Budget::INFINITE);
     let ctx = PurposeContexts::narrow_runtime_root(&root);
@@ -200,6 +206,7 @@ fn harness() -> Harness {
         calendar: calendar.clone(),
         time_zone_policy: None,
         entities: Vec::new(),
+        opening_date,
     };
     let symbols = SymbolTable::compiled();
     runtime
@@ -1130,12 +1137,15 @@ fn a_staged_migration_chunk_blocks_its_balance_proof_until_the_run_finalizes() {
                 mantissa: -5_000,
             },
         ],
+        periods: Vec::new(),
+        detail_base: Vec::new(),
+        sole_opening_source: false,
     };
     let proposal = open_proposal(
         &h.book,
         PRINCIPAL,
         &body,
-        h.evidence[0],
+        vec![h.evidence[0]],
         b"open-run",
         sealed(&h, "open"),
     )
@@ -1288,4 +1298,410 @@ fn a_staged_migration_chunk_blocks_its_balance_proof_until_the_run_finalizes() {
         .unwrap()
         .expect_err("the staged prefix never proves the chunk");
     assert_eq!(r.code, code::MIGRATION_STAGED);
+}
+
+/// fa-kjl acceptance example: a scratch replay with intervening system
+/// records (plan §15.2). The notary's checkpoints are maintenance: the
+/// `AccumulatorState` vertex and the head pointer its commit moves on the
+/// book root. A book whose posts are interleaved with two checkpoints
+/// replays into a scratch book that holds every entry, no checkpoint and no
+/// head pointer; neither checkpoint commit is paired, the map verifies, and
+/// the scratch book's March fold is the source's.
+#[test]
+fn a_scratch_replay_carries_no_notary_checkpoint_and_verifies() {
+    let mut h = harness();
+    h.post(h.rent, 1_000, b"r1");
+    let first = h.checkpoint();
+    h.post(h.utilities, 250, b"u1");
+    let second = h.checkpoint();
+    h.post(h.rent, 500, b"r2");
+    let head = h.db.frontier().unwrap();
+    // Positive controls: the source holds both checkpoints and its head
+    // pointer, so the scratch negatives below cannot pass vacuously.
+    assert_eq!(
+        h.db.vertices_at(head)
+            .unwrap()
+            .iter()
+            .filter(|v| v.labels.contains(&label::ACCUMULATOR_STATE))
+            .count(),
+        2,
+        "the source holds both checkpoints"
+    );
+    assert!(
+        fa_journal::rows::prop(
+            &h.db.vertex(book_root()).unwrap().expect("root"),
+            property::ACCUMULATOR_HEAD
+        )
+        .is_some(),
+        "the source's root points at its latest checkpoint"
+    );
+    let ctx = h.ctx();
+    let keys = DatabaseKeys::new(
+        [0x7a; 32],
+        DatabaseSecurityNamespaceId([0x7b; 32]),
+        [0x7c; 32],
+    );
+    let mut scratch = h
+        .runtime
+        .block_on(async { Database::open_memory(&ctx.commit(), keys).await })
+        .expect("a fresh scratch database");
+    let id = h.book.book_id;
+    let (db, runtime) = (&mut h.db, &h.runtime);
+    let map = runtime
+        .block_on(async { replay_into(db, &mut scratch, &ctx, id, Some(head)).await })
+        .expect("kernel")
+        .expect("replays");
+    for checkpoint in [first.recorded_at, second.recorded_at] {
+        assert!(
+            map.pairs.iter().all(|p| p.source_seq != checkpoint),
+            "a checkpoint commit is never paired"
+        );
+    }
+    let verified = fa_registers::replay::verify_replay(&h.db, &scratch, &h.book, &map)
+        .expect("kernel")
+        .expect("the map verifies");
+    assert_eq!(verified.pairs_checked, map.pairs.len());
+    let at = scratch.frontier().unwrap();
+    assert!(
+        scratch
+            .vertices_at(at)
+            .unwrap()
+            .iter()
+            .all(|v| !v.labels.contains(&label::ACCUMULATOR_STATE)),
+        "no checkpoint reaches the scratch book"
+    );
+    assert!(
+        fa_journal::rows::prop(
+            &scratch.vertex(book_root()).unwrap().expect("root"),
+            property::ACCUMULATOR_HEAD
+        )
+        .is_none(),
+        "nor a head pointer to one"
+    );
+    let fold = |db: &Database<MemVfs>| {
+        fa_registers::fold_period(db, &h.book, "FY2026-P03")
+            .expect("fold")
+            .cells
+    };
+    assert!(!fold(&h.db).is_empty(), "the source's March fold has cells");
+    assert_eq!(fold(&scratch), fold(&h.db));
+}
+
+/// Approvals of `digest` by the two Human approvers.
+fn approve_two(h: &mut Harness, digest: [u8; 32]) -> Vec<fa_model::ApprovalRef> {
+    [VId(8), VId(9)]
+        .into_iter()
+        .map(|who| {
+            let ctx = h.ctx();
+            let db = &mut h.db;
+            let book = &h.book;
+            let req = ApprovalRequest {
+                capability: Capability::embedded(who, &["approve"]).unwrap(),
+                approved_proposal_digest: digest,
+                role: 0,
+            };
+            h.runtime
+                .block_on(async move { record_approval(db, &ctx, book, req).await })
+                .expect("kernel")
+                .expect("approved")
+                .approval()
+        })
+        .collect()
+}
+
+fn seal_text(h: &Harness, text: &str) -> Erasable<String> {
+    Erasable::seal(&text.to_string(), None, &h.book.seal_key, [5; 32], [6; 24])
+}
+
+/// Walk FY2026's Opening period to Locked, where migration chunks land
+/// (Lock is dual-controlled and legal only from Closed).
+fn lock_opening(h: &mut Harness, opening: DateDay) {
+    for (i, t) in [
+        PeriodTransition::Open,
+        PeriodTransition::SoftClose,
+        PeriodTransition::Close,
+        PeriodTransition::Lock,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let key = format!("opening-{i}");
+        let approvals = if matches!(t, PeriodTransition::Lock) {
+            let digest = transition_proposal(
+                &h.book,
+                "FY2026-OPEN",
+                PeriodState::Closed,
+                PeriodState::Locked,
+                PRINCIPAL,
+                1,
+                opening,
+                key.as_bytes(),
+                seal_text(h, "period"),
+            )
+            .proposal_digest()
+            .unwrap();
+            approve_two(h, digest)
+        } else {
+            Vec::new()
+        };
+        let desc = seal_text(h, "period");
+        let ctx = h.ctx();
+        let (db, book) = (&mut h.db, &h.book);
+        h.runtime
+            .block_on(async move {
+                transition_period(
+                    db,
+                    &ctx,
+                    book,
+                    "FY2026-OPEN",
+                    t,
+                    PRINCIPAL,
+                    1,
+                    opening,
+                    key.as_bytes(),
+                    desc,
+                    &Capability::embedded(PRINCIPAL, &["close"]).unwrap(),
+                    &approvals,
+                )
+                .await
+            })
+            .expect("kernel")
+            .expect("transition");
+    }
+}
+
+/// Stage `Dr rent / Cr cash` of `cents` into `run` as a migration chunk in
+/// `period`, dated `date`, with its two approvals.
+fn stage_rent_chunk(
+    h: &mut Harness,
+    run: VId,
+    key: &[u8],
+    (period, date): (&str, DateDay),
+    cents: i128,
+) {
+    let legs = vec![
+        LegPayload::simple(Side::Debit, h.rent, Amount::new(h.usd, cents)),
+        LegPayload::simple(Side::Credit, h.cash, Amount::new(h.usd, cents)),
+    ];
+    let chunk = EntryPayload {
+        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        book_id: h.book.book_id,
+        branch_id: Id128::TRUNK,
+        class: EntryClass::MIGRATION,
+        effective_date: date,
+        document_date: None,
+        description: seal_text(h, "legacy rent"),
+        effective_period: Some(fa_model::PeriodRef {
+            calendar: h.book.calendar.id.clone(),
+            code: period.into(),
+        }),
+        unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
+        legs,
+        control: None,
+        base_totals: None,
+        idempotency_key: key.to_vec(),
+        origin: EntryOrigin::Migration {
+            run_ref: run,
+            source_system: "legacy-gl".into(),
+            source_id: seal_text(h, "JE-legacy"),
+            source_recorded_at_ns: None,
+            source_entered_by: None,
+            source_approved_by: None,
+            batch_oid: Oid([5; 32]),
+        },
+        principal_ref: PRINCIPAL,
+        session_ref: None,
+        evidence: h.evidence.clone(),
+        supersession: Vec::new(),
+        pending: None,
+        external_ids: Vec::new(),
+        extensions: Vec::new(),
+        tags: Vec::new(),
+    };
+    let approvals = approve_two(h, chunk.proposal_digest().unwrap());
+    let req = PostRequest {
+        proposal: chunk,
+        approvals,
+        plan_certificate: None,
+        capability: Capability::embedded(PRINCIPAL, &["post", "migrate"]).unwrap(),
+    };
+    let ctx = h.ctx();
+    let (db, book) = (&mut h.db, &h.book);
+    h.runtime
+        .block_on(async move { post(db, &ctx, book, req).await })
+        .expect("kernel")
+        .expect("the chunk stages");
+}
+
+/// fa-e00 interim under ruling 3675 F3 (WhiteCreek 3897): a finalized,
+/// non-sole FullDetail run's detail dated before its opening date is
+/// summarized by the Opening chunk, so no fold counts it — and no balance
+/// proof may either, since `fa-verify` cannot tell it from a counting
+/// chunk. A book going live 2026-01-01 imports a June 2025 rent payment as
+/// detail and the same balances as its Opening chunk. A planted state
+/// projection (Finalized, with no Finalize record) authorizes no proof:
+/// only the journal's leaves decide (WhiteCreek 3905). After Finalize the
+/// accumulator holds both chunks and the register counts the Opening chunk
+/// only; cash and rent refuse FA-REF-133 (the detail is dated before its
+/// run's Open record), while utilities proves and verifies.
+#[test]
+fn finalized_full_detail_history_before_the_opening_date_never_proves() {
+    let opening = DateDay::from_ymd(2026, 1, 1).unwrap();
+    let mut h = harness_with(Some(opening));
+    let ctx = h.ctx();
+    let (db, book) = (&mut h.db, &h.book);
+    h.runtime
+        .block_on(async move { create_periods(db, &ctx, book, 2025).await })
+        .expect("FY2025 periods, born Historical");
+    lock_opening(&mut h, opening);
+    h.post(h.utilities, 250, b"utilities");
+
+    let line = |code: &str, mantissa: i128| TrialBalanceLine {
+        account_code: code.into(),
+        unit: h.usd,
+        mantissa,
+    };
+    let paid = vec![line("1000", -300), line("6000", 300)];
+    let body = RunBody {
+        book_id: h.book.book_id,
+        run_key: "full-detail".into(),
+        source_system: "legacy-gl".into(),
+        mode: RunMode::FullDetail,
+        trial_balance: h.evidence[0].document_oid,
+        opening_date: opening,
+        lines: paid.clone(),
+        periods: (1..=12u8)
+            .map(|m| PeriodBalance {
+                period_code: format!("FY2025-P{m:02}"),
+                trial_balance: h.evidence[0].document_oid,
+                lines: if m < 6 { Vec::new() } else { paid.clone() },
+            })
+            .collect(),
+        detail_base: Vec::new(),
+        sole_opening_source: false,
+    };
+    let proposal = open_proposal(
+        &h.book,
+        PRINCIPAL,
+        &body,
+        vec![h.evidence[0]],
+        b"open-full-detail",
+        seal_text(&h, "open"),
+    )
+    .unwrap();
+    let req = RunControlRequest {
+        proposal,
+        capability: Capability::embedded(PRINCIPAL, &["post", "migrate"]).unwrap(),
+        approvals: Vec::new(),
+    };
+    let ctx = h.ctx();
+    let (db, book) = (&mut h.db, &h.book);
+    let run = h
+        .runtime
+        .block_on(async move { open_run(db, &ctx, book, &body, req).await })
+        .expect("kernel")
+        .expect("opened")
+        .run;
+    stage_rent_chunk(&mut h, run, b"opening", ("FY2026-OPEN", opening), 300);
+
+    // Planted drift (WhiteCreek 3905), while only the Opening chunk is
+    // staged so the missing Finalize record is the sole reason to refuse
+    // (MaroonSquirrel 3917): the run's state projection says Finalized with
+    // no Finalize record in the journal. Only the journal's leaves decide,
+    // so the proof still refuses; then the projection is restored, the June
+    // detail is staged, and the run finalizes for real.
+    let run_state = |from: i64, to: i64| {
+        let mut batch = WriteBatch::new(relation::DERIVED_FROM);
+        batch.compare_and_set_vertex_property(
+            run,
+            property::STATE,
+            Some(CanonicalScalar::Int(from)),
+            CanonicalScalar::Int(to),
+            WriteMismatchPolicy::AbortWrite,
+        );
+        batch
+    };
+    h.write_raw(run_state(0, 1));
+    let drifted = h.checkpoint();
+    for account in [h.cash, h.rent] {
+        let r = prove_balance(&h.db, &h.book, &drifted.state, account, h.usd.0, None)
+            .unwrap()
+            .expect_err("a state projection authorizes no proof");
+        assert_eq!(r.code, code::MIGRATION_STAGED, "{r}");
+        assert!(r.message.contains("no Finalize record"), "{r}");
+    }
+    h.write_raw(run_state(1, 0));
+    let june = DateDay::from_ymd(2025, 6, 10).unwrap();
+    stage_rent_chunk(&mut h, run, b"detail", ("FY2025-P06", june), 300);
+
+    let fin = plan_run_transition(
+        &h.db,
+        &h.book,
+        run,
+        fa_journal::migration::kind::FINALIZE,
+        PRINCIPAL,
+        b"finalize",
+        seal_text(&h, "finalize"),
+    )
+    .unwrap()
+    .expect("the chain ties out");
+    let approvals = approve_two(&mut h, fin.proposal_digest().unwrap());
+    let req = RunControlRequest {
+        proposal: fin,
+        capability: Capability::embedded(PRINCIPAL, &["post", "migrate"]).unwrap(),
+        approvals,
+    };
+    let ctx = h.ctx();
+    let (db, book) = (&mut h.db, &h.book);
+    h.runtime
+        .block_on(async move { transition_run(db, &ctx, book, req).await })
+        .expect("kernel")
+        .expect("finalized");
+
+    let active = h.checkpoint();
+    let trusted = outsider_checkpoint(&active);
+    let journal = Journal::read(&h.db, &h.book, Some(active.state.through_seq))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        journal
+            .leaves
+            .iter()
+            .filter(|l| l.envelope.class == EntryClass::MIGRATION)
+            .count(),
+        2,
+        "the accumulator keeps both chunks"
+    );
+    let register = fa_registers::balance_as_of(
+        &h.db,
+        &h.book,
+        DateDay::from_ymd(2026, 12, 31).unwrap(),
+        Some(active.state.through_seq),
+    )
+    .expect("register fold");
+    let rent = register
+        .rows
+        .iter()
+        .find(|r| r.account == h.rent && r.unit_id == h.usd.0)
+        .map(|r| (r.debits, r.credits));
+    assert_eq!(
+        rent,
+        Some((300, 0)),
+        "the register counts the Opening chunk only"
+    );
+    for account in [h.cash, h.rent] {
+        let r = prove_balance(&h.db, &h.book, &active.state, account, h.usd.0, None)
+            .unwrap()
+            .expect_err("summarized history never proves");
+        assert_eq!(
+            (r.code, r.exit),
+            (code::MIGRATION_STAGED, exit::REFUSAL),
+            "{r}"
+        );
+        assert!(r.message.contains("before its run's opening date"), "{r}");
+    }
+    let utilities = prove_balance(&h.db, &h.book, &active.state, h.utilities, h.usd.0, None)
+        .unwrap()
+        .expect("an account no chunk touches proves");
+    assert!(fa_verify::verify_balance(&utilities, &trusted).is_ok());
 }

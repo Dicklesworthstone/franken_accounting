@@ -22,8 +22,24 @@
 //! invisible; nothing is deleted, and a retry is a new run under a new key
 //! whose entry identities include the new run.
 //!
-//! Supported subset (plan §18.1): `OpeningOnly` runs. `PeriodBalances` and
-//! `FullDetail` decode and are refused until the Historical-period slice.
+//! **Modes** (plan §8.6). `OpeningOnly`: the opening balances, in the
+//! Opening period. `PeriodBalances` (the mid-year go-live): the opening
+//! balances at the fiscal-year start, then one or more chunks in each
+//! elapsed period before the book's opening date — those periods are born
+//! `Historical` (genesis) — and the body declares, per period, the legacy
+//! trial balance as of its end. Finalize ties out cumulatively: the opening
+//! chunks to the opening lines, and the opening plus every period through
+//! `p` to `p`'s lines. Both modes' chunks count in trunk folds once the run
+//! is Finalized. `FullDetail` (ruling 3675): legacy journal entries as
+//! detail chunks in a contiguous run of declared Historical periods ending
+//! at the book's opening date, anchored by `detail_base` (the trial balance
+//! at the start of the first declared period); one cumulative chain ties
+//! out `detail_base + Σ detail through p` to each `p`'s lines. Not sole
+//! source: the Opening chunks tie to `lines`, `lines` must equal the chain
+//! at the run's opening date, and a detail chunk counts in folds iff it is
+//! dated on or after the run's opening date (earlier detail is summarized by
+//! the Opening chunks and stays journaled for drill-down). Sole source: no
+//! Opening chunk, no `lines`, no `detail_base`; every detail chunk counts.
 //! The legacy system's own timestamps ride `EntryOrigin::Migration` as
 //! provenance and are never read as recorded time (doctrine 6).
 
@@ -53,7 +69,10 @@ use crate::rows::{bytes, edge_id, prop, scalar_bytes, scalar_text};
 
 /// Canonical bytes of a run body: `u16 version ‖ book_id[16] ‖ str run_key
 /// ‖ str source_system ‖ u8 mode ‖ trial_balance oid[32] ‖ i32 opening_date
-/// ‖ list(str account_code ‖ u32 unit ‖ i128 mantissa)`.
+/// ‖ list(str account_code ‖ u32 unit ‖ i128 mantissa)`, then for
+/// `PeriodBalances` and `FullDetail` `list(str period_code ‖ trial_balance
+/// oid[32] ‖ list(lines))`, then for `FullDetail` only `list(detail_base
+/// lines) ‖ u8 sole_opening_source`.
 pub const RUN_BODY_VERSION: u16 = 1;
 /// The run body's digest: the `_fa_digest` mirror and the `Open` record's
 /// `tie_out_digest`.
@@ -64,6 +83,9 @@ pub const TIE_OUT_DOMAIN: &[u8] = b"fa:migration-tie-out:v1";
 pub const MAX_RUN_KEY_BYTES: usize = 64;
 pub const MAX_ACCOUNT_CODE_BYTES: usize = 64;
 pub const MAX_TRIAL_BALANCE_LINES: usize = fa_model::limits::MAX_LEGS_PER_ENTRY;
+/// The elapsed periods one `PeriodBalances` run may declare.
+pub const MAX_RUN_PERIODS: usize = 256;
+pub const MAX_PERIOD_CODE_BYTES: usize = 64;
 
 /// `ControlPayload::MigrationControl.kind` (plan Appendix A).
 pub mod kind {
@@ -140,6 +162,17 @@ pub struct TrialBalanceLine {
     pub mantissa: i128,
 }
 
+/// One elapsed period of a `PeriodBalances` run (plan §8.6): the legacy
+/// trial balance as of the period's end — cumulative from the run's opening
+/// date — and the document that states it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeriodBalance {
+    pub period_code: String,
+    pub trial_balance: Oid,
+    /// Strictly ascending by `(account_code, unit)`, never zero.
+    pub lines: Vec<TrialBalanceLine>,
+}
+
 /// A run's immutable body.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunBody {
@@ -153,6 +186,39 @@ pub struct RunBody {
     pub opening_date: DateDay,
     /// Strictly ascending by `(account_code, unit)`.
     pub lines: Vec<TrialBalanceLine>,
+    /// `PeriodBalances`: every elapsed period from the opening date to the
+    /// book's opening date. `FullDetail`: a contiguous run of Historical
+    /// periods ending at the book's opening date. In calendar order; empty
+    /// for `OpeningOnly`.
+    pub periods: Vec<PeriodBalance>,
+    /// `FullDetail` only (empty otherwise): the legacy trial balance at the
+    /// start of the first declared period; empty for an import from legacy
+    /// inception.
+    pub detail_base: Vec<TrialBalanceLine>,
+    /// `FullDetail` only: the detail is the sole source of the opening
+    /// balances (no Opening chunk, no `lines`, no `detail_base`).
+    pub sole_opening_source: bool,
+}
+
+fn encode_lines(w: &mut Writer, lines: &[TrialBalanceLine]) {
+    w.list(lines, |w, l| {
+        w.str(&l.account_code).u32(l.unit.0).i128(l.mantissa);
+    });
+}
+
+fn decode_lines(
+    r: &mut Reader<'_>,
+    field: &'static str,
+) -> Result<Vec<TrialBalanceLine>, DecodeError> {
+    r.list(MAX_TRIAL_BALANCE_LINES, field, |r| {
+        Ok(TrialBalanceLine {
+            account_code: r
+                .str(MAX_ACCOUNT_CODE_BYTES, "run.line.account")?
+                .to_string(),
+            unit: UnitId(r.u32("run.line.unit")?),
+            mantissa: r.i128("run.line.mantissa")?,
+        })
+    })
 }
 
 impl RunBody {
@@ -169,10 +235,18 @@ impl RunBody {
             .str(&self.source_system)
             .u8(self.mode.tag())
             .fixed(&self.trial_balance.0)
-            .i32(self.opening_date.0)
-            .list(&self.lines, |w, l| {
-                w.str(&l.account_code).u32(l.unit.0).i128(l.mantissa);
+            .i32(self.opening_date.0);
+        encode_lines(&mut w, &self.lines);
+        if self.mode != RunMode::OpeningOnly {
+            w.list(&self.periods, |w, p| {
+                w.str(&p.period_code).fixed(&p.trial_balance.0);
+                encode_lines(w, &p.lines);
             });
+        }
+        if self.mode == RunMode::FullDetail {
+            encode_lines(&mut w, &self.detail_base);
+            w.u8(u8::from(self.sole_opening_source));
+        }
         w.finish().map_err(|e| KernelError::Model(e.into()))
     }
 
@@ -195,15 +269,29 @@ impl RunBody {
             };
             let trial_balance = Oid(r.fixed("run.trial_balance")?);
             let opening_date = DateDay(r.i32("run.opening_date")?);
-            let lines = r.list(MAX_TRIAL_BALANCE_LINES, "run.lines", |r| {
-                Ok(TrialBalanceLine {
-                    account_code: r
-                        .str(MAX_ACCOUNT_CODE_BYTES, "run.line.account")?
-                        .to_string(),
-                    unit: UnitId(r.u32("run.line.unit")?),
-                    mantissa: r.i128("run.line.mantissa")?,
-                })
-            })?;
+            let lines = decode_lines(&mut r, "run.lines")?;
+            let periods = if mode != RunMode::OpeningOnly {
+                r.list(MAX_RUN_PERIODS, "run.periods", |r| {
+                    Ok(PeriodBalance {
+                        period_code: r.str(MAX_PERIOD_CODE_BYTES, "run.period.code")?.to_string(),
+                        trial_balance: Oid(r.fixed("run.period.trial_balance")?),
+                        lines: decode_lines(r, "run.period.lines")?,
+                    })
+                })?
+            } else {
+                Vec::new()
+            };
+            let (detail_base, sole_opening_source) = if mode == RunMode::FullDetail {
+                let base = decode_lines(&mut r, "run.detail_base")?;
+                let sole = match r.u8("run.sole_opening_source")? {
+                    0 => false,
+                    1 => true,
+                    t => return Err(r.bad_tag("run.sole_opening_source", t)),
+                };
+                (base, sole)
+            } else {
+                (Vec::new(), false)
+            };
             r.finish()?;
             Ok(Self {
                 book_id,
@@ -213,6 +301,9 @@ impl RunBody {
                 trial_balance,
                 opening_date,
                 lines,
+                periods,
+                detail_base,
+                sole_opening_source,
             })
         })()
         .map_err(|e| KernelError::Model(e.into()))?;
@@ -253,60 +344,59 @@ impl RunBody {
         if self.source_system.len() > fa_model::limits::MAX_SYSTEM_BYTES {
             return Err(structure("source_system exceeds max_system_bytes".into()));
         }
-        if self.lines.is_empty() || self.lines.len() > MAX_TRIAL_BALANCE_LINES {
-            return Err(structure(format!(
-                "a trial balance declares 1..={MAX_TRIAL_BALANCE_LINES} lines"
-            )));
-        }
-        for (i, l) in self.lines.iter().enumerate() {
-            if l.account_code.is_empty() || l.account_code.len() > MAX_ACCOUNT_CODE_BYTES {
-                return Err(structure(format!(
-                    "line {i}: account_code must be 1..={MAX_ACCOUNT_CODE_BYTES} bytes"
-                )));
+        let sole = self.mode == RunMode::FullDetail && self.sole_opening_source;
+        if sole {
+            if !self.lines.is_empty() || !self.detail_base.is_empty() {
+                return Err(structure(
+                    "a sole-source FullDetail run declares no opening lines and no detail_base: its detail, from legacy inception, is the opening balances".into(),
+                ));
             }
-            if l.mantissa == 0 {
-                return Err(structure(format!(
-                    "line {i} (`{}`): a declared line is never zero; omit it",
-                    l.account_code
-                )));
-            }
+        } else {
+            check_lines(book, &self.lines, "the opening trial balance", false)?;
         }
-        if !fa_model::canon::strictly_ascending(&self.lines, |l| (l.account_code.clone(), l.unit)) {
+        if self.mode != RunMode::FullDetail
+            && (!self.detail_base.is_empty() || self.sole_opening_source)
+        {
             return Err(structure(
-                "lines must be strictly ascending by (account_code, unit)".into(),
+                "only a FullDetail run declares detail_base or sole_opening_source".into(),
             ));
         }
-        let mut per_unit: BTreeMap<UnitId, i128> = BTreeMap::new();
-        for l in &self.lines {
-            let slot = per_unit.entry(l.unit).or_insert(0);
-            *slot = slot.checked_add(l.mantissa).ok_or_else(|| {
-                structure(format!("unit {}: the declared lines overflow", l.unit.0))
-            })?;
-        }
-        if let Some((unit, net)) = per_unit.iter().find(|(_, net)| **net != 0) {
-            return Err(Refusal::new(
-                code::TIE_OUT_MISMATCH,
-                exit::REFUSAL,
-                format!(
-                    "the declared trial balance does not balance in {}: its lines net to {}",
-                    unit_name(book, *unit),
-                    show(book, *unit, *net)
-                ),
-                "plan §8.6 (opening balances post as balanced entries), FA-INV-01",
-                "declare the legacy trial balance exactly as the document states it; a legacy suspense balance is a line of its own",
-            ));
-        }
-        if self.mode != RunMode::OpeningOnly {
-            return Err(Refusal::new(
-                code::CLASS_NOT_IMPLEMENTED,
-                exit::REFUSAL,
-                format!(
-                    "migration mode {:?} is registered but this slice admits only OpeningOnly",
-                    self.mode
-                ),
-                "plan §18.1 (a slice is a subset of the final abstraction, never a substitute)",
-                "open an OpeningOnly run; PeriodBalances and FullDetail land with the Historical-period slice",
-            ));
+        match self.mode {
+            RunMode::OpeningOnly if !self.periods.is_empty() => {
+                return Err(structure("an OpeningOnly run declares no periods".into()));
+            }
+            RunMode::OpeningOnly => {}
+            RunMode::PeriodBalances | RunMode::FullDetail => {
+                if self.periods.is_empty() || self.periods.len() > MAX_RUN_PERIODS {
+                    return Err(structure(format!(
+                        "a PeriodBalances run declares 1..={MAX_RUN_PERIODS} elapsed periods"
+                    )));
+                }
+                let mut seen = std::collections::BTreeSet::new();
+                for p in &self.periods {
+                    if p.period_code.is_empty() || p.period_code.len() > MAX_PERIOD_CODE_BYTES {
+                        return Err(structure(format!(
+                            "a period code must be 1..={MAX_PERIOD_CODE_BYTES} bytes"
+                        )));
+                    }
+                    if !seen.insert(p.period_code.as_str()) {
+                        return Err(structure(format!(
+                            "period `{}` is declared twice",
+                            p.period_code
+                        )));
+                    }
+                    // A FullDetail cumulative balance may net to nothing.
+                    check_lines(
+                        book,
+                        &p.lines,
+                        &format!("the trial balance at the end of `{}`", p.period_code),
+                        self.mode == RunMode::FullDetail,
+                    )?;
+                }
+                if self.mode == RunMode::FullDetail {
+                    check_lines(book, &self.detail_base, "detail_base", true)?;
+                }
+            }
         }
         let fy_start = book
             .calendar
@@ -321,6 +411,87 @@ impl RunBody {
         }
         Ok(())
     }
+
+    /// Whether this run declares `period_code` as one of its elapsed periods.
+    #[must_use]
+    pub fn declares(&self, period_code: &str) -> bool {
+        self.periods.iter().any(|p| p.period_code == period_code)
+    }
+
+    /// Every trial balance document the body names, ascending and unique.
+    #[must_use]
+    pub fn documents(&self) -> Vec<Oid> {
+        let mut out: Vec<Oid> = std::iter::once(self.trial_balance)
+            .chain(self.periods.iter().map(|p| p.trial_balance))
+            .collect();
+        out.sort_by_key(|o| o.0);
+        out.dedup();
+        out
+    }
+}
+
+/// The law of one declared trial balance, decided from its lines alone:
+/// 1..=max lines, codes within bounds, strictly ascending by
+/// `(account_code, unit)`, never zero, and balanced in every unit.
+fn check_lines(
+    book: &BookContext,
+    lines: &[TrialBalanceLine],
+    what: &str,
+    allow_empty: bool,
+) -> Result<(), Refusal> {
+    let structure = |why: String| {
+        Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            format!("{what}: {why}"),
+            "plan §8.6, Appendix A MigrationRun",
+            "fix the named field of the run body and open again",
+        )
+    };
+    if (lines.is_empty() && !allow_empty) || lines.len() > MAX_TRIAL_BALANCE_LINES {
+        return Err(structure(format!(
+            "a trial balance declares 1..={MAX_TRIAL_BALANCE_LINES} lines"
+        )));
+    }
+    for (i, l) in lines.iter().enumerate() {
+        if l.account_code.is_empty() || l.account_code.len() > MAX_ACCOUNT_CODE_BYTES {
+            return Err(structure(format!(
+                "line {i}: account_code must be 1..={MAX_ACCOUNT_CODE_BYTES} bytes"
+            )));
+        }
+        if l.mantissa == 0 {
+            return Err(structure(format!(
+                "line {i} (`{}`): a declared line is never zero; omit it",
+                l.account_code
+            )));
+        }
+    }
+    if !fa_model::canon::strictly_ascending(lines, |l| (l.account_code.clone(), l.unit)) {
+        return Err(structure(
+            "lines must be strictly ascending by (account_code, unit)".into(),
+        ));
+    }
+    let mut per_unit: BTreeMap<UnitId, i128> = BTreeMap::new();
+    for l in lines {
+        let slot = per_unit.entry(l.unit).or_insert(0);
+        *slot = slot
+            .checked_add(l.mantissa)
+            .ok_or_else(|| structure(format!("unit {}: the declared lines overflow", l.unit.0)))?;
+    }
+    if let Some((unit, net)) = per_unit.iter().find(|(_, net)| **net != 0) {
+        return Err(Refusal::new(
+            code::TIE_OUT_MISMATCH,
+            exit::REFUSAL,
+            format!(
+                "{what} does not balance in {}: its lines net to {}",
+                unit_name(book, *unit),
+                show(book, *unit, *net)
+            ),
+            "plan §8.6 (opening balances post as balanced entries), FA-INV-01",
+            "declare the legacy trial balance exactly as the document states it; a legacy suspense balance is a line of its own",
+        ));
+    }
+    Ok(())
 }
 
 fn unit_name(book: &BookContext, unit: UnitId) -> String {
@@ -383,32 +554,118 @@ pub fn read_run<V: asupersync::fs::Vfs + Clone>(
     row.as_ref().map(run_from_row).transpose()
 }
 
+/// What [`visible_at`] needs of one run at one sequence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RunVisibility {
+    finalized: bool,
+    /// A non-sole `FullDetail` run counts only chunks dated on or after this
+    /// day (its opening date, ruling 3675); `None`: every chunk counts.
+    counts_from: Option<DateDay>,
+}
+
 /// The FA-INV-07 migration predicate: an entry whose origin names a run is
-/// selected at `at` iff that run is `Finalized` at `at`; every other entry
-/// is unaffected. `cache` memoizes run states for one scan at one `at`.
+/// selected at `at` iff that run is `Finalized` at `at` and, for a non-sole
+/// `FullDetail` run, the entry is dated on or after the run's opening date
+/// (earlier detail is summarized by the Opening chunks; it stays journaled
+/// for drill-down). Every other entry is unaffected. `cache` memoizes runs
+/// for one scan at one `at`.
 pub fn visible_at<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     entry: &Entry,
     at: CommitSeq,
-    cache: &mut BTreeMap<VId, bool>,
+    cache: &mut BTreeMap<VId, RunVisibility>,
 ) -> Result<bool, KernelError> {
     let EntryOrigin::Migration { run_ref, .. } = &entry.proposal.origin else {
         return Ok(true);
     };
-    if let Some(v) = cache.get(run_ref) {
-        return Ok(*v);
-    }
-    let row = db.vertex_at(*run_ref, at)?.ok_or_else(|| {
+    let run = match cache.get(run_ref) {
+        Some(v) => *v,
+        None => {
+            let row = db.vertex_at(*run_ref, at)?.ok_or_else(|| {
+                KernelError::Corrupt(format!(
+                    "a Migration entry names run {:032x}, which does not exist at {}",
+                    run_ref.0, at.0
+                ))
+            })?;
+            let run = run_from_row(&row)?;
+            let v = RunVisibility {
+                finalized: run.state == RunState::Finalized,
+                counts_from: counts_from(&run.body),
+            };
+            cache.insert(*run_ref, v);
+            v
+        }
+    };
+    Ok(run.finalized
+        && run
+            .counts_from
+            .is_none_or(|day| entry.proposal.effective_date >= day))
+}
+
+/// The day from which a run's chunks count (ruling 3675 F3): a non-sole
+/// `FullDetail` run's opening date; `None` for every other run (all its
+/// chunks count).
+fn counts_from(body: &RunBody) -> Option<DateDay> {
+    (body.mode == RunMode::FullDetail && !body.sole_opening_source).then_some(body.opening_date)
+}
+
+/// A migrated leg as a settlement target (ruling 3733 C1): it is an open
+/// item iff its run is `Finalized` and its chunk counts, exactly the
+/// [`visible_at`] predicate at the head. The run's state is read inside
+/// `txn` (a property-granular point read), so an `Abandon` that commits
+/// first is a first-committer-wins conflict. `entry` is the witnessed
+/// target at `target`; any other origin passes.
+pub(crate) fn witness_open_item<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    target: VId,
+    entry: &Entry,
+    leg: usize,
+) -> Outcome<()> {
+    let EntryOrigin::Migration { run_ref, .. } = &entry.proposal.origin else {
+        return Ok(Ok(()));
+    };
+    let row = txn.vertex(db, *run_ref)?.ok_or_else(|| {
         KernelError::Corrupt(format!(
-            "a Migration entry names run {:032x}, which does not exist at {}",
-            run_ref.0, at.0
+            "a Migration entry names run {:032x}, which does not exist",
+            run_ref.0
         ))
     })?;
-    let state = RunState::from_scalar(prop(&row, property::STATE))
+    let run = run_from_row(&row)?;
+    let state = RunState::from_scalar(txn.vertex_property(db, *run_ref, property::STATE)?.as_ref())
         .ok_or_else(|| KernelError::Corrupt(format!("run {:032x} state mirror", run_ref.0)))?;
-    let visible = state == RunState::Finalized;
-    cache.insert(*run_ref, visible);
-    Ok(visible)
+    if state != RunState::Finalized {
+        return Ok(Err(Refusal::new(
+            code::SETTLE_TARGET,
+            exit::REFUSAL,
+            format!(
+                "leg {leg}: entry {:032x} is a chunk of migration run `{}`, which is {}: nothing of it is open",
+                target.0,
+                run.body.run_key,
+                state.name()
+            ),
+            "plan §8.6 (a migrated leg is an open item once its run is Finalized), ruling 3733",
+            "finalize the run first; an abandoned run's chunks never open",
+        )));
+    }
+    if let Some(day) = counts_from(&run.body)
+        && entry.proposal.effective_date < day
+    {
+        return Ok(Err(Refusal::new(
+            code::SETTLE_TARGET,
+            exit::REFUSAL,
+            format!(
+                "leg {leg}: entry {:032x} is legacy detail dated {}, before run `{}`'s opening date {}: it is summarized by the run's opening balances",
+                target.0,
+                entry.proposal.effective_date.render(),
+                run.body.run_key,
+                day.render()
+            ),
+            "plan §8.6 (FullDetail detail before the run's opening date does not count), ruling 3733",
+            "settle the Opening leg that carries this balance",
+        )));
+    }
+    Ok(Ok(()))
 }
 
 /// One staged chunk of a run: a committed `Migration` entry naming it.
@@ -422,6 +679,9 @@ pub struct RunChunk {
 /// A line where the run's fold and its declared trial balance differ.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TieOutLine {
+    /// `None`: the opening trial balance. `Some(code)`: the cumulative trial
+    /// balance at the end of that declared period.
+    pub period: Option<String>,
     pub account_code: String,
     pub unit: UnitId,
     pub declared: i128,
@@ -439,9 +699,14 @@ pub struct TieOut {
     pub digest: [u8; 32],
 }
 
+type Fold = BTreeMap<(VId, UnitId), i128>;
+
 /// Fold the run's chunks as known at `at` (every chunk, visible or not: the
-/// tie-out is what Finalize would activate) and compare the fold with the
-/// declared lines exactly.
+/// tie-out is what Finalize would activate) and compare the folds with the
+/// declared lines exactly: the chunks outside the declared periods (the
+/// Opening period's) with the opening lines, and, for each declared period
+/// `p` in order, the opening plus every declared period through `p` with
+/// `p`'s cumulative lines.
 pub fn tie_out<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
@@ -449,7 +714,11 @@ pub fn tie_out<V: asupersync::fs::Vfs + Clone>(
     at: CommitSeq,
 ) -> Result<TieOut, KernelError> {
     let mut chunks = Vec::new();
-    let mut folded: BTreeMap<(VId, UnitId), i128> = BTreeMap::new();
+    // The fold of the run's own Opening period (its opening chunks), and of
+    // every other period by code.
+    let own_opening = own_opening_code(book, run)?;
+    let mut by_period: BTreeMap<String, Fold> = BTreeMap::new();
+    let mut opening: Fold = BTreeMap::new();
     for row in db.vertices_at(at)? {
         if !row.labels.contains(&label::ENTRY) {
             continue;
@@ -461,6 +730,10 @@ pub fn tie_out<V: asupersync::fs::Vfs + Clone>(
         if *run_ref != run.vid {
             continue;
         }
+        let folded = match &entry.proposal.effective_period {
+            Some(p) if p.code != own_opening => by_period.entry(p.code.clone()).or_default(),
+            _ => &mut opening,
+        };
         for leg in &entry.proposal.legs {
             let signed = match leg.side {
                 fa_money::Side::Debit => leg.amount.mantissa,
@@ -482,40 +755,39 @@ pub fn tie_out<V: asupersync::fs::Vfs + Clone>(
         });
     }
     chunks.sort_by_key(|c| (c.recorded_at, c.vid.0));
-    let mut declared: BTreeMap<(VId, UnitId), (String, i128)> = BTreeMap::new();
-    for l in &run.body.lines {
-        declared.insert(
-            (account_vid(book.book_id, &l.account_code), l.unit),
-            (l.account_code.clone(), l.mantissa),
-        );
+    let mut mismatches = compare(db, book, at, None, &run.body.lines, &opening)?;
+    if run.body.mode == RunMode::FullDetail {
+        mismatches.extend(full_detail_chain(db, book, at, run, &by_period)?);
+        return finish_tie_out(run, at, chunks, mismatches);
     }
-    let mut mismatches = Vec::new();
-    for ((account, unit), (code, want)) in &declared {
-        let got = folded.get(&(*account, *unit)).copied().unwrap_or(0);
-        if got != *want {
-            mismatches.push(TieOutLine {
-                account_code: code.clone(),
-                unit: *unit,
-                declared: *want,
-                folded: got,
-            });
+    let mut cumulative = opening;
+    for p in &run.body.periods {
+        if let Some(fold) = by_period.get(&p.period_code) {
+            for (key, v) in fold {
+                let slot = cumulative.entry(*key).or_insert(0);
+                *slot = slot
+                    .checked_add(*v)
+                    .ok_or_else(|| KernelError::Corrupt("a run's fold overflowed i128".into()))?;
+            }
         }
+        mismatches.extend(compare(
+            db,
+            book,
+            at,
+            Some(p.period_code.as_str()),
+            &p.lines,
+            &cumulative,
+        )?);
     }
-    for ((account, unit), got) in &folded {
-        if *got != 0 && !declared.contains_key(&(*account, *unit)) {
-            let code = match db.vertex_at(*account, at)? {
-                Some(row) => crate::rows::text(&row, property::CODE, "account.code")?,
-                None => format!("{:032x}", account.0),
-            };
-            mismatches.push(TieOutLine {
-                account_code: code,
-                unit: *unit,
-                declared: 0,
-                folded: *got,
-            });
-        }
-    }
-    mismatches.sort_by(|a, b| (&a.account_code, a.unit).cmp(&(&b.account_code, b.unit)));
+    finish_tie_out(run, at, chunks, mismatches)
+}
+
+fn finish_tie_out(
+    run: &Run,
+    at: CommitSeq,
+    chunks: Vec<RunChunk>,
+    mismatches: Vec<TieOutLine>,
+) -> Result<TieOut, KernelError> {
     let mut w = Writer::new();
     w.list(&chunks, |w, c| {
         w.u128(c.vid.0).fixed(&c.proposal_digest);
@@ -530,14 +802,214 @@ pub fn tie_out<V: asupersync::fs::Vfs + Clone>(
     })
 }
 
+/// The code of the run's own Opening period: the Opening period of the
+/// fiscal year that starts on the run's opening date.
+fn own_opening_code(book: &BookContext, run: &Run) -> Result<String, KernelError> {
+    book.calendar
+        .periods_for_year(book.calendar.fiscal_year_of(run.body.opening_date)?)?
+        .into_iter()
+        .find(|p| p.kind == fa_time::PeriodKind::Opening)
+        .map(|p| p.code)
+        .ok_or_else(|| KernelError::Corrupt("the run's fiscal year has no Opening period".into()))
+}
+
+/// The fiscal calendar's period order within a year (ruling 3685): the
+/// Opening period, the Normal periods, the adjustment periods, then the
+/// Closing period.
+fn calendar_rank(kind: fa_time::PeriodKind) -> u8 {
+    match kind {
+        fa_time::PeriodKind::Opening => 0,
+        fa_time::PeriodKind::Normal | fa_time::PeriodKind::Historical => 1,
+        fa_time::PeriodKind::Adjustment => 2,
+        fa_time::PeriodKind::Closing => 3,
+    }
+}
+
+/// A declared period's immutable start or end mirror, read inside `txn`.
+fn period_bound<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    code: &str,
+    key: fgdb_delta_types::PropertyKeyId,
+) -> Result<DateDay, KernelError> {
+    match txn.vertex_property(db, fa_model::period_vid(&book.calendar.id, code), key)? {
+        Some(CanonicalScalar::Int(d)) => i32::try_from(d)
+            .map(DateDay)
+            .map_err(|_| KernelError::Corrupt(format!("period `{code}` date mirror"))),
+        other => Err(KernelError::Corrupt(format!(
+            "declared period `{code}` date mirror: {other:?}"
+        ))),
+    }
+}
+
+/// Whether `period` lies inside a FullDetail run's declared run of periods,
+/// between the first declared period's start and the last one's end (the
+/// book's opening date): where legacy Opening, Adjustment and Closing
+/// detail lands (ruling 3685). Read inside the posting transaction.
+pub(crate) fn within_declared<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    body: &RunBody,
+    period: &fa_time::PeriodDef,
+) -> Result<bool, KernelError> {
+    let (Some(first), Some(last)) = (body.periods.first(), body.periods.last()) else {
+        return Ok(false);
+    };
+    let from = period_bound(txn, db, book, &first.period_code, property::PERIOD_START)?;
+    let to = period_bound(txn, db, book, &last.period_code, property::PERIOD_END)?;
+    Ok(period.start >= from && period.end <= to)
+}
+
+/// The FullDetail chain (ruling 3675 F2, 3685): from `detail_base`, every
+/// period between the first declared period's start and the last one's end
+/// in calendar order (special periods included, undeclared), each declared
+/// `p` compared with its lines; unless the run is the sole source, the
+/// Opening lines against the chain at the run's opening date (mismatches
+/// name the Opening period).
+fn full_detail_chain<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    at: CommitSeq,
+    run: &Run,
+    by_period: &BTreeMap<String, Fold>,
+) -> Result<Vec<TieOutLine>, KernelError> {
+    let (Some(first), Some(last)) = (run.body.periods.first(), run.body.periods.last()) else {
+        return Ok(Vec::new());
+    };
+    let row_of = |code: &str| -> Result<crate::rows::PeriodRow, KernelError> {
+        let row = db
+            .vertex_at(fa_model::period_vid(&book.calendar.id, code), at)?
+            .ok_or_else(|| KernelError::Corrupt(format!("declared period `{code}` is missing")))?;
+        crate::rows::PeriodRow::decode(&row)
+    };
+    let from = row_of(&first.period_code)?.start;
+    let to = row_of(&last.period_code)?.end;
+    let own_opening = own_opening_code(book, run)?;
+    let mut order = Vec::new();
+    for fy in book.calendar.fiscal_year_of(from)?..=book.calendar.fiscal_year_of(to)? {
+        for p in book.calendar.periods_for_year(fy)? {
+            if p.start >= from && p.end <= to && p.code != own_opening {
+                order.push(p);
+            }
+        }
+    }
+    order.sort_by_key(|p| (p.start, calendar_rank(p.kind)));
+    let mut chain: Fold = BTreeMap::new();
+    for l in &run.body.detail_base {
+        chain.insert(
+            (account_vid(book.book_id, &l.account_code), l.unit),
+            l.mantissa,
+        );
+    }
+    let mut out = Vec::new();
+    let mut opening_checked = run.body.sole_opening_source;
+    for q in &order {
+        if !opening_checked && q.start >= run.body.opening_date {
+            out.extend(compare(
+                db,
+                book,
+                at,
+                Some(own_opening.as_str()),
+                &run.body.lines,
+                &chain,
+            )?);
+            opening_checked = true;
+        }
+        if let Some(fold) = by_period.get(&q.code) {
+            for (key, v) in fold {
+                let slot = chain.entry(*key).or_insert(0);
+                *slot = slot
+                    .checked_add(*v)
+                    .ok_or_else(|| KernelError::Corrupt("a run's fold overflowed i128".into()))?;
+            }
+        }
+        if let Some(p) = run.body.periods.iter().find(|p| p.period_code == q.code) {
+            out.extend(compare(
+                db,
+                book,
+                at,
+                Some(q.code.as_str()),
+                &p.lines,
+                &chain,
+            )?);
+        }
+    }
+    if !opening_checked {
+        out.extend(compare(
+            db,
+            book,
+            at,
+            Some(own_opening.as_str()),
+            &run.body.lines,
+            &chain,
+        )?);
+    }
+    Ok(out)
+}
+
+/// The lines where `folded` differs from the `declared` trial balance,
+/// ascending by `(account_code, unit)`.
+fn compare<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    at: CommitSeq,
+    period: Option<&str>,
+    lines: &[TrialBalanceLine],
+    folded: &Fold,
+) -> Result<Vec<TieOutLine>, KernelError> {
+    let mut declared: BTreeMap<(VId, UnitId), (String, i128)> = BTreeMap::new();
+    for l in lines {
+        declared.insert(
+            (account_vid(book.book_id, &l.account_code), l.unit),
+            (l.account_code.clone(), l.mantissa),
+        );
+    }
+    let mut out = Vec::new();
+    for ((account, unit), (code, want)) in &declared {
+        let got = folded.get(&(*account, *unit)).copied().unwrap_or(0);
+        if got != *want {
+            out.push(TieOutLine {
+                period: period.map(str::to_string),
+                account_code: code.clone(),
+                unit: *unit,
+                declared: *want,
+                folded: got,
+            });
+        }
+    }
+    for ((account, unit), got) in folded {
+        if *got != 0 && !declared.contains_key(&(*account, *unit)) {
+            let code = match db.vertex_at(*account, at)? {
+                Some(row) => crate::rows::text(&row, property::CODE, "account.code")?,
+                None => format!("{:032x}", account.0),
+            };
+            out.push(TieOutLine {
+                period: period.map(str::to_string),
+                account_code: code,
+                unit: *unit,
+                declared: 0,
+                folded: *got,
+            });
+        }
+    }
+    out.sort_by(|a, b| (&a.account_code, a.unit).cmp(&(&b.account_code, b.unit)));
+    Ok(out)
+}
+
 fn mismatch_refusal(book: &BookContext, lines: &[TieOutLine]) -> Refusal {
     let named: Vec<String> = lines
         .iter()
         .map(|l| {
             format!(
-                "`{}` {}: declared {}, folded {}",
+                "`{}` {} {}: declared {}, folded {}",
                 l.account_code,
                 unit_name(book, l.unit),
+                l.period.as_ref().map_or_else(
+                    || "at the opening date".to_string(),
+                    |p| format!("through `{p}`")
+                ),
                 show(book, l.unit, l.declared),
                 show(book, l.unit, l.folded)
             )
@@ -604,16 +1076,20 @@ pub fn control_proposal(
     }
 }
 
-/// The `Open` proposal for `body`: dated on its opening date, citing its
-/// trial balance document under `role`.
+/// The `Open` proposal for `body`: dated on its opening date, citing every
+/// trial balance document the body names (`citations`, put in canonical
+/// order here).
 pub fn open_proposal(
     book: &BookContext,
     principal: VId,
     body: &RunBody,
-    trial_balance: EvidenceRef,
+    mut citations: Vec<EvidenceRef>,
     idempotency_key: &[u8],
     description: Erasable<String>,
 ) -> Result<EntryPayload, KernelError> {
+    citations.sort_by(|a, b| {
+        (a.document_oid.0, a.doc_commit, a.role).cmp(&(b.document_oid.0, b.doc_commit, b.role))
+    });
     let digest = body.digest()?;
     Ok(control_proposal(
         book,
@@ -625,7 +1101,7 @@ pub fn open_proposal(
         body.opening_date,
         idempotency_key,
         description,
-        vec![trial_balance],
+        citations,
     ))
 }
 
@@ -765,15 +1241,15 @@ pub async fn open_run<V: asupersync::fs::Vfs + Clone>(
         proposal.control,
         Some(ControlPayload::MigrationControl { tie_out_digest, .. }) if tie_out_digest == body_digest
     ) || proposal.effective_date != body.opening_date
-        || !proposal
-            .evidence
+        || !body
+            .documents()
             .iter()
-            .any(|e| e.document_oid == body.trial_balance)
+            .all(|d| proposal.evidence.iter().any(|e| e.document_oid == *d))
     {
         return Ok(Err(Refusal::new(
             code::STRUCTURE,
             exit::USAGE,
-            "an Open record binds its body's digest, is dated on the opening date, and cites the trial balance document",
+            "an Open record binds its body's digest, is dated on the opening date, and cites every trial balance document the body names",
             "plan §8.6, Appendix A ControlPayload::MigrationControl",
             "build the proposal with fa_journal::migration::open_proposal",
         )));
@@ -808,6 +1284,10 @@ pub async fn open_run<V: asupersync::fs::Vfs + Clone>(
         )));
     }
     if let Err(r) = authorize(&txn, db, book, &req, &proposal_digest, "Open")? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    if let Err(r) = check_history(&txn, db, book, body)? {
         txn.abort();
         return Ok(Err(r));
     }
@@ -1129,6 +1609,119 @@ fn authorize<V: asupersync::fs::Vfs + Clone>(
     )
 }
 
+/// A run's declared periods are exactly a contiguous run of the book's
+/// Historical periods (plan §8.6, §7.2), in calendar order, each already
+/// created and born `Historical`, ending at the book's opening date:
+/// `PeriodBalances` from the run's opening date; `FullDetail` from its
+/// first declared period, which for a non-sole run starts on or before the
+/// run's opening date (the chain must have a value there to tie the Opening
+/// chunks to, ruling 3675). Read inside the opening transaction; the book
+/// spec and a period's kind and dates are immutable.
+fn check_history<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    body: &RunBody,
+) -> Outcome<()> {
+    if body.mode == RunMode::OpeningOnly {
+        return Ok(Ok(()));
+    }
+    let structure = |what: String, fix: &str| {
+        Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            what,
+            "plan §8.6 (PeriodBalances: one entry per elapsed period), §7.2 (Historical periods precede the book's opening date)",
+            fix,
+        )
+    };
+    let root = txn
+        .vertex(db, crate::rows::book_root())?
+        .ok_or_else(|| KernelError::Corrupt("a run needs a book: no genesis row".into()))?;
+    let spec =
+        crate::genesis::BookSpec::decode(&bytes(&root, property::FA_PAYLOAD, "book._fa_payload")?)?;
+    let Some(go_live) = spec.opening_date else {
+        return Ok(Err(structure(
+            "the book declares no opening date, so no period is Historical".into(),
+            "declare the book's opening date at genesis, or open an OpeningOnly run",
+        )));
+    };
+    let start = if body.mode == RunMode::PeriodBalances {
+        body.opening_date
+    } else {
+        let first = body.periods.first().ok_or_else(|| {
+            KernelError::Corrupt("a checked FullDetail body declares periods".into())
+        })?;
+        match txn.vertex(
+            db,
+            fa_model::period_vid(&book.calendar.id, &first.period_code),
+        )? {
+            Some(row) => crate::rows::PeriodRow::decode(&row)?.start,
+            None => {
+                return Ok(Err(structure(
+                    format!("period `{}` does not exist yet", first.period_code),
+                    "create the fiscal year's periods first (they are born Historical before the opening date)",
+                )));
+            }
+        }
+    };
+    if body.mode == RunMode::FullDetail && !body.sole_opening_source && start > body.opening_date {
+        return Ok(Err(structure(
+            format!(
+                "the declared periods start on {}, after the run's opening date {}: the Opening chunks are tied to the detail chain at that date",
+                start.render(),
+                body.opening_date.render()
+            ),
+            "declare the periods from on or before the run's opening date, or declare the run the sole source",
+        )));
+    }
+    let mut expected = Vec::new();
+    let first = book.calendar.fiscal_year_of(start)?;
+    let last = book.calendar.fiscal_year_of(go_live)?;
+    for fy in first..=last {
+        for p in book.calendar.periods_for_year(fy)? {
+            if p.kind == fa_time::PeriodKind::Normal && p.start >= start && p.end <= go_live {
+                expected.push(p.code);
+            }
+        }
+    }
+    let named: Vec<&str> = body
+        .periods
+        .iter()
+        .map(|p| p.period_code.as_str())
+        .collect();
+    if named != expected.iter().map(String::as_str).collect::<Vec<_>>() {
+        return Ok(Err(structure(
+            format!(
+                "the run must declare exactly the elapsed periods from {} to the book's opening date {}: [{}], in order; it declares [{}]",
+                start.render(),
+                go_live.render(),
+                expected.join(", "),
+                named.join(", ")
+            ),
+            "list every elapsed period once, in calendar order, each with its trial balance as of its end",
+        )));
+    }
+    for code in &expected {
+        let pvid = fa_model::period_vid(&book.calendar.id, code);
+        let born = match txn.vertex(db, pvid)? {
+            Some(row) => crate::rows::PeriodRow::decode(&row)?.kind,
+            None => {
+                return Ok(Err(structure(
+                    format!("period `{code}` does not exist yet"),
+                    "create the fiscal year's periods first (they are born Historical before the opening date)",
+                )));
+            }
+        };
+        if born != fa_time::PeriodKind::Historical {
+            return Err(KernelError::Corrupt(format!(
+                "period `{code}` precedes the book's opening date but was born {born:?}"
+            )));
+        }
+    }
+    Ok(Ok(()))
+}
+
 fn control_vid(book: &BookContext, proposal: &EntryPayload) -> VId {
     entry_vid(
         book.book_id,
@@ -1280,6 +1873,9 @@ mod tests {
                     mantissa: -500,
                 },
             ],
+            periods: Vec::new(),
+            detail_base: Vec::new(),
+            sole_opening_source: false,
         }
     }
 

@@ -145,6 +145,56 @@ fn reused_key() -> Refusal {
     )
 }
 
+/// The refusal for a transition of a period whose born kind has a registered
+/// kind row (`admissibility.toml` `[[kind]]`, plan §7.2): a Historical
+/// period is born `Locked` and never transitions.
+fn kind_refusal(
+    row: &fgdb::VertexRow,
+    period_code: &str,
+    t: PeriodTransition,
+    opening_date: Option<fa_time::DateDay>,
+) -> Result<Option<Refusal>, KernelError> {
+    let period = crate::rows::PeriodRow::decode(row)?;
+    let born = period.kind;
+    let classes =
+        fa_registry::EntryClasses::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    let matrix = fa_registry::Admissibility::embedded(&classes)
+        .map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    // A Historical period (its `[[kind]]` row) or a special period before
+    // the book's opening date (`[[pre_opening]]`, ruling 3685) is born
+    // Locked and never transitions.
+    let (refusal, cite) = if let Some(rule) = matrix.kind_rule(born) {
+        (
+            rule.transition_refusal.clone(),
+            format!(
+                "plan §7.2, Appendix C (admissibility.toml kind {born:?}: born Locked, never transitions)"
+            ),
+        )
+    } else if let Some(rule) = matrix
+        .pre_opening()
+        .filter(|r| r.governs(born, period.end, opening_date))
+    {
+        (rule.transition_refusal.clone(), rule.cite.clone())
+    } else {
+        return Ok(None);
+    };
+    if refusal != code::TRANSITION {
+        return Err(KernelError::Corrupt(format!(
+            "admissibility.toml refuses a {born:?} transition with `{refusal}`, not {}",
+            code::TRANSITION
+        )));
+    }
+    Ok(Some(Refusal::new(
+        code::TRANSITION,
+        exit::SAFETY,
+        format!(
+            "period `{period_code}` is {born:?} (before the book's opening date) and cannot take {t:?}"
+        ),
+        cite,
+        "transition a live period; legacy history enters a period before the opening date only through a MigrationRun",
+    )))
+}
+
 fn illegal_transition(period_code: &str, from: PeriodState, t: PeriodTransition) -> Refusal {
     Refusal::new(
         code::TRANSITION,
@@ -283,6 +333,10 @@ pub fn plan_transition<V: asupersync::fs::Vfs + Clone>(
     };
     let from = state_from_scalar(crate::rows::prop(&row, property::STATE))
         .ok_or_else(|| KernelError::Corrupt(format!("period `{period_code}` state mirror")))?;
+    let opening_date = crate::genesis::read_book_spec(db)?.and_then(|s| s.opening_date);
+    if let Some(r) = kind_refusal(&row, period_code, t, opening_date)? {
+        return Ok(Err(r));
+    }
     let Ok(to) = transition(from, t) else {
         return Ok(Err(illegal_transition(period_code, from, t)));
     };
@@ -358,6 +412,11 @@ pub async fn transition_period<V: asupersync::fs::Vfs + Clone>(
     };
     let from = state_from_scalar(crate::rows::prop(&row, property::STATE))
         .ok_or_else(|| KernelError::Corrupt(format!("period `{period_code}` state mirror")))?;
+    let opening_date = crate::genesis::opening_date_in(&txn, db)?;
+    if let Some(r) = kind_refusal(&row, period_code, t, opening_date)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
     let Ok(to) = transition(from, t) else {
         txn.abort();
         return Ok(Err(illegal_transition(period_code, from, t)));
