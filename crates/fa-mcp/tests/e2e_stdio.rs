@@ -39,12 +39,46 @@ fn tmp(name: &str) -> PathBuf {
     }
 }
 
-/// The CLI's front door, captured: exit code and stdout.
+/// The CLI's front door, captured: exit code and stdout. A non-zero exit
+/// logs its one `error` line so a fixture refusal is readable in the log.
 fn cli(args: &[&str]) -> (u8, String) {
     let argv: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
     let (code, out) = fa_cli::entry::fa(&argv, true);
     log(format!("cli  $ fa {} -> exit {code}", args.join(" ")));
+    if code != 0 {
+        log(format!(
+            "cli    {}",
+            out.stdout.lines().last().unwrap_or("")
+        ));
+    }
     (code, out.stdout)
+}
+
+/// Record a source document and return its oid: the evidence an Original
+/// entry must cite (`evidence_policy.toml`: `min_documents = 1`).
+fn source_document(dir: &Path, book: &str) -> String {
+    let file = dir.join("source.txt");
+    std::fs::write(&file, "INVOICE (fa-mcp e2e source document)").unwrap();
+    let data = cli_data(&[
+        "document",
+        "add",
+        &file.display().to_string(),
+        "--kind",
+        "Invoice",
+        "--grade",
+        "HumanUpload",
+        "--book",
+        book,
+        "--json",
+    ]);
+    let doc = fa_cli::json::parse(&data).expect("document data");
+    let oid = doc
+        .get("oid")
+        .and_then(Json::as_str)
+        .expect("oid")
+        .to_string();
+    assert_eq!(oid.len(), 64, "{data}");
+    oid
 }
 
 /// The `data` payload of the CLI's one robot line, canonical.
@@ -265,11 +299,14 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         r#"{"class":"Original","effective_date":"2026-03-15","description":"March rent","idempotency_key":"inv-1001","legs":[{"side":"debit","account":"6000","amount":"1500.00 USD"},{"side":"credit","account":"1000","amount":"1500.00 USD"}]}"#,
     )
     .unwrap();
+    let oid = source_document(&dir, &b);
     assert_eq!(
         cli(&[
             "post",
             "--intent",
             &entry.display().to_string(),
+            "--evidence",
+            &oid,
             "--book",
             &b,
             "--json"
@@ -365,7 +402,11 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     // A write through the server: the entry is recorded (same key: `recorded`).
     let intent: JsonValue =
         fastmcp_rust::serde_json::from_str(&std::fs::read_to_string(&entry).unwrap()).unwrap();
-    let (is_error, text, _) = call_tool(&mut mcp, "fa_post_post", json!({"intent": intent}));
+    let (is_error, text, _) = call_tool(
+        &mut mcp,
+        "fa_post_post",
+        json!({"intent": intent, "evidence": [oid]}),
+    );
     assert!(!is_error, "{text}");
     let recorded: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
     let vid = recorded["vid"].as_str().expect("vid").to_string();
