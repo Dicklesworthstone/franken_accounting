@@ -39,6 +39,8 @@ const SWEEP_TRANSITIONS: &[&str] = &["Expire", "Reverse"];
 const SCHEDULE_TRANSITIONS: &[&str] = &["Cancel"];
 /// The control classes with no period state (book-scoped, plan §7.1).
 const IMPORT_TRANSITIONS: &[&str] = &["Import"];
+/// A legal hold's placement and release (plan §8.5).
+const HOLD_TRANSITIONS: &[&str] = &["Place", "Release"];
 const BOOK_SCOPED_CONTROLS: &[&str] = &[
     "PolicyControl",
     "TimeControl",
@@ -46,6 +48,7 @@ const BOOK_SCOPED_CONTROLS: &[&str] = &[
     "ScheduleControl",
     "MigrationControl",
     "ImportControl",
+    "HoldControl",
 ];
 /// A MigrationRun's lifecycle (plan §8.6).
 const MIGRATION_TRANSITIONS: &[&str] = &["Open", "Finalize", "Abandon"];
@@ -305,6 +308,7 @@ impl SodPolicy {
                         "ScheduleControl" => SCHEDULE_TRANSITIONS,
                         "MigrationControl" => MIGRATION_TRANSITIONS,
                         "ImportControl" => IMPORT_TRANSITIONS,
+                        "HoldControl" => HOLD_TRANSITIONS,
                         other => {
                             return Err(invalid(
                                 R,

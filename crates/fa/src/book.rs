@@ -857,6 +857,89 @@ impl Book {
         Ok(with_store!(&self.store, db => fa_journal::custody_chain(db, document))?)
     }
 
+    /// Place a legal hold (plan §8.5) over `subjects` — entries, documents or
+    /// parties of this book — on the authority of the document `authority`,
+    /// as the capability's holder. Each held subject is pinned against
+    /// erasure, garbage collection and retention expiry until the hold is
+    /// released.
+    pub fn place_legal_hold(
+        &mut self,
+        capability: &fa_journal::Capability,
+        subjects: Vec<VId>,
+        authority: &fa_model::Oid,
+        idempotency_key: &[u8],
+        effective_date: DateDay,
+        description: &str,
+    ) -> Outcome<fa_journal::LegalHoldPlaced> {
+        let req = fa_journal::LegalHoldRequest {
+            principal: capability.holder(),
+            subjects,
+            authority: *authority,
+            effective_date,
+            idempotency_key: idempotency_key.to_vec(),
+            description: self.seal_text(description)?,
+        };
+        let purposes = self.purposes();
+        let ctx = &self.ctx;
+        let runtime = &self.runtime;
+        Ok(with_store!(&mut self.store, db => runtime.block_on(async {
+            fa_journal::place_legal_hold(db, &purposes, ctx, capability, req).await
+        }))?)
+    }
+
+    /// Plan the release of `hold` by `principal` without committing: the
+    /// hold must be active. Approvers bind [`Book::legal_hold_release_digest`];
+    /// [`Book::release_legal_hold`] commits exactly the planned proposal.
+    pub fn plan_legal_hold_release(
+        &self,
+        hold: VId,
+        principal: VId,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::ReleasePlan> {
+        let description = self.seal_text(&format!("release of legal hold {:032x}", hold.0))?;
+        Ok(
+            with_store!(&self.store, db => fa_journal::plan_release(db, &self.ctx, hold, principal, effective_date, idempotency_key, description))?,
+        )
+    }
+
+    /// The digest an approval of a planned release binds.
+    pub fn legal_hold_release_digest(
+        &self,
+        plan: &fa_journal::ReleasePlan,
+    ) -> Result<[u8; 32], BookError> {
+        Ok(plan.proposal_digest(&self.ctx)?)
+    }
+
+    /// Commit a planned release under `capability`, citing `approvals` of
+    /// its digest (the `legal-hold-release` row: a Human other than the
+    /// preparer).
+    pub fn release_legal_hold(
+        &mut self,
+        plan: &fa_journal::ReleasePlan,
+        capability: &fa_journal::Capability,
+        approvals: &[fa_model::ApprovalRef],
+    ) -> Outcome<fa_journal::LegalHoldReleased> {
+        let purposes = self.purposes();
+        let ctx = &self.ctx;
+        let runtime = &self.runtime;
+        Ok(with_store!(&mut self.store, db => runtime.block_on(async {
+            fa_journal::release_legal_hold(db, &purposes, ctx, capability, plan, approvals).await
+        }))?)
+    }
+
+    /// The legal hold placed as `hold`, with its release if one is recorded.
+    pub fn legal_hold(&self, hold: VId) -> Result<Option<fa_journal::LegalHold>, BookError> {
+        let book = self.ctx.book_id;
+        Ok(with_store!(&self.store, db => fa_journal::read_legal_hold(db, book, hold))?)
+    }
+
+    /// The legal holds active on `subject`, ascending.
+    pub fn legal_holds_on(&self, subject: VId) -> Result<Vec<VId>, BookError> {
+        let book = self.ctx.book_id;
+        Ok(with_store!(&self.store, db => fa_journal::active_legal_holds(db, book, subject))?)
+    }
+
     /// The document at `oid`, verified against its commitment.
     pub fn read_document(&self, oid: &fa_model::Oid) -> Outcome<Option<fa_journal::Document>> {
         let purposes = self.purposes();
@@ -1795,6 +1878,79 @@ mod tests {
         std::fs::rename(&path, path.with_extension("moved")).unwrap();
         let r = book.read_document(&oid).unwrap().unwrap_err();
         assert_eq!((r.code, r.exit), ("FA-REF-116", 5), "{r}");
+    }
+
+    #[test]
+    fn a_legal_hold_through_the_facade_lifts_only_with_a_second_humans_approval() {
+        let book_id = Id128([0x48; 16]);
+        let (spec, _) = spec(book_id);
+        let mut book = Book::create_memory(
+            BookKeys::for_development(0x48),
+            spec,
+            Entropy::deterministic(0x48),
+        )
+        .expect("create");
+        let (counsel, approver) = (VId(1), VId(2));
+        let day = DateDay::from_ymd(2026, 3, 20).unwrap();
+        let doc = |bytes: &[u8]| fa_journal::Document {
+            book_id,
+            kind: 1,
+            mime: "text/plain".into(),
+            grade: 3,
+            retrieved_by: counsel,
+            bytes: bytes.to_vec(),
+        };
+        let order = book
+            .add_document(&doc(b"PRESERVATION ORDER (facade fixture)"))
+            .expect("kernel")
+            .expect("admitted");
+        let ledger = book
+            .add_document(&doc(b"GENERAL LEDGER EXPORT (facade fixture)"))
+            .expect("kernel")
+            .expect("admitted");
+        let holder = Capability::embedded(counsel, &["hold"]).expect("hold");
+        let placed = book
+            .place_legal_hold(
+                &holder,
+                vec![ledger.vid],
+                &order.oid,
+                b"hold",
+                day,
+                "litigation hold",
+            )
+            .expect("kernel")
+            .expect("placed");
+        assert_eq!(book.legal_holds_on(ledger.vid).unwrap(), vec![placed.hold]);
+        let plan = book
+            .plan_legal_hold_release(placed.hold, counsel, day, b"release")
+            .expect("kernel")
+            .expect("planned");
+        let digest = book.legal_hold_release_digest(&plan).unwrap();
+        let r = book
+            .release_legal_hold(&plan, &holder, &[])
+            .expect("kernel")
+            .unwrap_err();
+        assert_eq!(r.code, "FA-REF-012", "{r}");
+        let approval = book
+            .approve(
+                Capability::embedded(approver, &["approve"]).expect("approve"),
+                digest,
+            )
+            .expect("kernel")
+            .expect("approved")
+            .approval();
+        let released = book
+            .release_legal_hold(&plan, &holder, &[approval])
+            .expect("kernel")
+            .expect("released");
+        assert_eq!(book.legal_holds_on(ledger.vid).unwrap(), Vec::<VId>::new());
+        assert_eq!(
+            book.legal_hold(placed.hold)
+                .unwrap()
+                .expect("a hold")
+                .released,
+            Some((released.release, released.recorded_at))
+        );
     }
 
     #[test]

@@ -95,3 +95,9 @@ value = 256
 [[limit]]
 name = "max_import_documents"
 value = 1024
+[[limit]]
+name = "max_legal_hold_subjects"
+value = 1024
+[[limit]]
+name = "max_active_legal_holds"
+value = 1024

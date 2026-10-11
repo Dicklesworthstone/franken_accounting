@@ -574,6 +574,22 @@ cite = "plan §9.1 (a document's bytes are produced on request and verified agai
 fix = "restore the blob from the book's backup into its store; the commitment names exactly the bytes expected, and nothing substitutes for them"
 
 [[refusal]]
+code = "FA-REF-117"
+name = "LEGAL_HOLD_ACTIVE"
+owners = ["fa-journal"]
+exit = "safety"
+cite = "plan §8.5 (a legal hold pins every object in scope against erasure, GC and retention expiry until released); §14.6"
+fix = "nothing to run while the hold stands: it lifts only by a journaled HoldControl Release of that hold, approved by a Human principal other than the release's preparer"
+
+[[refusal]]
+code = "FA-REF-118"
+name = "LEGAL_HOLD_UNKNOWN"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §8.5 (a release names an active legal hold of this book)"
+fix = "name the vid a placement returned for a hold that is still active; a hold is released once"
+
+[[refusal]]
 code = "FA-REF-119"
 name = "NOT_CUSTODIAN"
 owners = ["fa-journal"]
@@ -679,7 +695,7 @@ exit = "verification"
 cite = "plan §15.2 (a scratch book's certificate carries its SeqMap; replay equals the source at every mapped sequence)"
 fix = "replay again with fa_journal::scratch::replay_into and verify the fresh map; a SeqMap is never edited"
 
-# ---- Balance assertions (140–149) -----------------------------------------
+# ---- Balance assertions (140); legal hold subjects (141; 110–119 is full) ---
 [[refusal]]
 code = "FA-REF-140"
 name = "REGISTER_CLAIM_FALSE"
@@ -687,3 +703,11 @@ owners = ["fa-journal"]
 exit = "refusal"
 cite = "plan §9.4 (a RegisterEquals binds the cell's value and fold digest at the sequence it was evaluated at)"
 fix = "evaluate the claim from the book (fa-registers register_equals) at the sequence you attest, and attest exactly that"
+
+[[refusal]]
+code = "FA-REF-141"
+name = "LEGAL_HOLD_SUBJECT"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §8.5 (a legal hold pins entries, documents and parties the book holds)"
+fix = "name the vids of entries, documents or parties recorded in this book"
