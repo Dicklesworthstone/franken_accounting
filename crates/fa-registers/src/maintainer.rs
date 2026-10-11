@@ -329,7 +329,18 @@ pub async fn prepare_advance<V: asupersync::fs::Vfs + Clone>(
                         }
                         fold.watermark = Some(fold.watermark.map_or(seq, |w| w.max(seq)));
                         if entry.proposal.class == EntryClass::PENDING {
-                            crate::add_entry(&mut pending, &entry, period)?;
+                            match crate::add_entry(&mut pending, &entry, period) {
+                                Ok(()) => {}
+                                // Later resolutions in this same suffix may
+                                // release an otherwise overflowing hold. The
+                                // literal fold selects unresolved holds at
+                                // the target frontier before adding them. A
+                                // truly oversized final column still fails.
+                                Err(RegisterError::Overflow) => {
+                                    return prepare_rebuild(db, book, period);
+                                }
+                                Err(error) => return Err(error),
+                            }
                         } else {
                             fold.entries =
                                 fold.entries.checked_add(1).ok_or(RegisterError::Overflow)?;
