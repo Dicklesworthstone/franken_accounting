@@ -28,11 +28,13 @@ use crate::book::{BookError, BookKeys, Entropy, Outcome};
 
 const BOOK_BLOB_STORE: u16 = 1;
 
-/// One book over a caller-supplied filesystem. Each operation takes the
-/// caller's purpose contexts, preserving its cancellation and budget.
-pub struct AsyncBook<V: Vfs + Clone> {
+/// One book over caller-supplied filesystems. Ordinary constructors use
+/// clones of the same VFS for both stores. The separate blob type permits
+/// an in-memory scratch journal to retain its source's external evidence.
+/// Each operation preserves the caller's cancellation and budget.
+pub struct AsyncBook<V: Vfs + Clone, B: Vfs + Clone = V> {
     db: Database<V>,
-    blobs: fa_journal::BlobStore<V>,
+    blobs: fa_journal::BlobStore<B>,
     context: BookContext,
     entropy: Entropy,
 }
@@ -123,7 +125,9 @@ impl<V: Vfs + Clone> AsyncBook<V> {
             entropy,
         })
     }
+}
 
+impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     #[must_use]
     pub fn context(&self) -> &BookContext {
         &self.context
@@ -452,8 +456,11 @@ impl<V: Vfs + Clone> AsyncBook<V> {
         cx: &PurposeContexts,
         oid: &fa_model::Oid,
     ) -> Outcome<Option<fa_journal::Document>> {
-        cx.query().checkpoint().map_err(BookError::Context)?;
-        Ok(fa_journal::fetch_document(&self.db, cx, &self.blobs, oid).await?)
+        let query = cx.query();
+        query.checkpoint().map_err(BookError::Context)?;
+        Ok(query
+            .with_restriction_async(fa_journal::fetch_document(&self.db, cx, &self.blobs, oid))
+            .await?)
     }
 
     pub fn document_record(
@@ -698,7 +705,7 @@ async fn sync_file<F: VfsFile>(file: &mut F) -> std::io::Result<()> {
     file.sync_all().await
 }
 
-impl<V: Vfs + Clone> fmt::Debug for AsyncBook<V> {
+impl<V: Vfs + Clone, B: Vfs + Clone> fmt::Debug for AsyncBook<V, B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
