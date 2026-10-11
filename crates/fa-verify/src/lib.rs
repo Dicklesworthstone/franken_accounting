@@ -46,6 +46,7 @@
 pub mod balance;
 pub mod blake3;
 pub mod checkpoint;
+pub mod cli;
 pub mod codec;
 pub mod document;
 pub mod ed25519;
