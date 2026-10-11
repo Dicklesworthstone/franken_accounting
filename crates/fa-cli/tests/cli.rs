@@ -3221,6 +3221,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         0
     );
     assert_eq!(run(true, &["verify", "open-items"]).0, 0);
+    assert_eq!(run(true, &["verify", "projections"]).0, 0);
     assert_eq!(run(true, &["verify", "availability"]).0, 0);
     let more = write(
         &dir,
@@ -4837,4 +4838,176 @@ fn instant_selected_cli_reports_retain_tick_evidence_and_replay() -> std::io::Re
         "instant resolution, reports and replay leave the journal frontier unchanged"
     );
     Ok(())
+}
+
+#[test]
+fn projection_verification_reports_drift_deterministically_without_writes() -> std::io::Result<()> {
+    use asupersync::runtime::RuntimeBuilder;
+    use asupersync::types::Budget;
+    use fa::{Book, BookKeys, Entropy};
+    use fa_journal::BookSpec;
+    use fa_model::Id128;
+    use fa_model::symbols::{label, property, relation};
+    use fgdb::{Database, DatabaseKeys, WriteBatch};
+    use fgdb_types::CanonicalScalar;
+    use fgdb_types::context::PurposeContexts;
+    use fgdb_types::ids::DatabaseSecurityNamespaceId;
+
+    let dir = tmp("verify-projections")?;
+    let book = dir.join("book");
+    let keys = BookKeys::for_development(91);
+    let handle = Book::create_dir(
+        &book,
+        keys.clone(),
+        BookSpec {
+            book_id: Id128([91; 16]),
+            name: "Projection verification".into(),
+            base_unit: fa_money::UnitRegistry::embedded()
+                .unwrap()
+                .lookup("USD")
+                .unwrap(),
+            calendar: fa_time::FiscalCalendar::monthly("fiscal", 1, 1).unwrap(),
+            time_zone_policy: None,
+            entities: Vec::new(),
+            opening_date: None,
+        },
+        Entropy::deterministic(91),
+    )
+    .unwrap();
+    keys.save(&book.join("book.keys")).unwrap();
+    drop(handle);
+    let ok = |args: &[&str]| {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        assert!(err.is_empty(), "{err}");
+        out
+    };
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let intent = write(
+        &dir,
+        "entry.json",
+        r#"{"effective_date":"2026-03-15","idempotency_key":"projection-entry","legs":[{"side":"debit","account":"6000","amount":"10.00 USD"},{"side":"credit","account":"1000","amount":"10.00 USD"}]}"#,
+    );
+    ok(&[
+        "post",
+        "--intent",
+        &intent,
+        "--evidence",
+        &evidence,
+        "--json",
+    ]);
+    let handle = Book::open_dir(&book, keys.clone(), Entropy::deterministic(91)).unwrap();
+    let prefix = handle.head().unwrap();
+    drop(handle);
+
+    let verify = ["verify", "projections", "--json"];
+    let green = ok(&verify);
+    assert_eq!(green.lines().count(), 1, "{green}");
+    assert_eq!(field(&green, "event"), Some("projections_verified"));
+    let data = doc(&green);
+    assert_eq!(int(&data, "known_at"), Some(i128::from(prefix.0)));
+    assert!(int(&data, "entries_checked").unwrap() >= 1);
+    assert_eq!(int(&data, "legs_checked"), Some(2));
+    assert_eq!(int(&data, "edges_checked"), Some(6));
+    assert!(arr(&data, "drift").is_empty());
+    assert_eq!(
+        int(robot_line(&green).get("coordinate").unwrap(), "known_at"),
+        Some(i128::from(prefix.0))
+    );
+    assert_eq!(ok(&verify), green, "the same prefix has the same report");
+    let handle = Book::open_dir(&book, keys.clone(), Entropy::deterministic(91)).unwrap();
+    assert_eq!(handle.head().unwrap(), prefix, "green verification wrote nothing");
+    drop(handle);
+
+    // Plant a bad scalar mirror through the real substrate while leaving
+    // the canonical payload and journal balances unchanged.
+    let runtime = RuntimeBuilder::new().build().unwrap();
+    let root = runtime.request_cx_with_budget(Budget::INFINITE);
+    let cx = PurposeContexts::narrow_runtime_root(&root);
+    let mut db = runtime
+        .block_on(Database::open(
+            &cx.commit(),
+            &book.join("store"),
+            DatabaseKeys::new([91; 32], DatabaseSecurityNamespaceId([92; 32]), [93; 32]),
+        ))
+        .unwrap();
+    let leg = db
+        .vertices()
+        .unwrap()
+        .into_iter()
+        .find(|row| row.labels.contains(&label::LEG))
+        .expect("posted leg")
+        .vid;
+    let mut batch = WriteBatch::new(relation::HAS_LEG);
+    batch.set_vertex_property(leg, property::SIDE, Some(CanonicalScalar::Int(99)));
+    let damaged_at = runtime.block_on(db.write(&cx.commit(), batch)).unwrap();
+    drop(db);
+
+    let (code, red, err) = fa(Some(&book), &verify);
+    assert_eq!(code, 8, "{red}\n{err}");
+    assert_eq!(red.lines().count(), 1, "{red}");
+    assert_eq!(field(&red, "event"), Some("error"));
+    let error = doc(&red);
+    assert_eq!(text(&error, "class"), "verification");
+    let detail = error.get("detail").expect("projection report");
+    assert_eq!(int(detail, "known_at"), Some(i128::from(damaged_at.0)));
+    assert_eq!(
+        int(robot_line(&red).get("coordinate").unwrap(), "known_at"),
+        Some(i128::from(damaged_at.0))
+    );
+    let leg_hex = format!("{:032x}", leg.0);
+    assert!(
+        arr(detail, "drift")
+            .iter()
+            .filter_map(Json::as_str)
+            .any(|finding| finding.contains(&leg_hex) && finding.contains("side mirror")),
+        "{red}"
+    );
+    let repeated = fa(Some(&book), &verify);
+    assert_eq!(repeated.0, 8, "{}\n{}", repeated.1, repeated.2);
+    assert_eq!(repeated.1, red, "red verification is deterministic too");
+    let handle = Book::open_dir(&book, keys, Entropy::deterministic(91)).unwrap();
+    assert_eq!(
+        handle.head().unwrap(),
+        damaged_at,
+        "red verification published nothing"
+    );
+    assert!(!handle.verify_projections(None).unwrap().is_green());
+    assert!(
+        handle
+            .verify_projections(Some(prefix))
+            .unwrap()
+            .is_green(),
+        "the earlier committed projection remains independently verifiable"
+    );
+    Ok(())
+}
+
+#[test]
+fn projection_verification_refuses_filters_and_extra_arguments_before_opening() {
+    let cases: &[&[&str]] = &[
+        &["verify", "projections", "--period", "FY2026-P03", "--json"],
+        &["verify", "projections", "--fiscal-year", "2026", "--json"],
+        &["verify", "projections", "--as-known-at", "HEAD", "--json"],
+        &["verify", "projections", "extra", "--json"],
+    ];
+    for args in cases {
+        let (code, out, err) = fa(None, args);
+        assert_eq!(code, 2, "args={args:?}\n{out}\n{err}");
+        assert_eq!(text(&doc(&out), "class"), "usage");
+        let envelope = robot_line(&out);
+        assert_eq!(envelope.get("book"), Some(&Json::Null));
+        assert_eq!(envelope.get("coordinate"), Some(&Json::Null));
+    }
+    let (code, help, err) = fa(None, &["verify", "--help", "--json"]);
+    assert_eq!(code, 0, "{help}\n{err}");
+    assert!(text(&doc(&help), "text").contains("verify projections"));
 }

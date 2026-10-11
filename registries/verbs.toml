@@ -253,14 +253,14 @@ example = "fa checkpoint create --grant witness --book ./books/myco --json"
 
 [[verb]]
 name = "verify"
-summary = "Verify derived state against the journal by refolding: registers, open-item applied mirrors, limited accounts' availability cells, or accumulator states (exit 8 on drift)."
+summary = "Verify derived state against the journal: leg projections, refolded registers, open-item applied mirrors, limited accounts' availability cells, or accumulator states (exit 8 on drift)."
 writes = false
-subcommands = ["registers", "open-items", "availability", "accumulator"]
+subcommands = ["registers", "open-items", "availability", "accumulator", "projections"]
 flags = ["--period", "--fiscal-year"]
 switches = []
-events = ["registers_verified", "open_items_verified", "availability_verified", "accumulator_verified"]
+events = ["registers_verified", "open_items_verified", "availability_verified", "accumulator_verified", "projections_verified"]
 exits = [0, 2, 4, 5, 8]
-usage = ["verify registers ((--period <code>)... | --fiscal-year N)", "verify open-items", "verify availability", "verify accumulator (every recorded checkpoint; no period filter)"]
+usage = ["verify registers ((--period <code>)... | --fiscal-year N)", "verify open-items", "verify availability", "verify accumulator (every recorded checkpoint; no period filter)", "verify projections (all entry payloads and leg topology at current head; no period filter)"]
 example = "fa verify registers --period FY2026-P03 --book ./books/myco"
 
 [[verb]]
@@ -626,6 +626,12 @@ name = "registers_verified"
 book = true
 doc = "Every selected period's stored registers equal the refold at verified_through. Stale means unread journal entries remain after that processed basis, not corruption; exit 8 still means a mismatch. Uninitialized empty caches have no verified_through."
 fields = ["periods:[register_check]"]
+
+[[event]]
+name = "projections_verified"
+book = true
+doc = "Every decoded entry payload at known_at agrees with its immutable leg mirrors and HAS_LEG, POSTS_TO, IN_UNIT and FOR topology, including Pending and unpublished migration entries. edges_checked counts expected edges. Drift is sorted; applied counters and settlement edges have their own fold checker. Verification writes nothing and does not rebuild projections."
+fields = ["known_at:seq","entries_checked:int","legs_checked:int","edges_checked:int","drift:[string]"]
 
 [[event]]
 name = "open_items_verified"
@@ -1012,7 +1018,7 @@ mistakes = ["Omitting `grant: [\"witness\"]` — the embedded posture self-issue
 cluster = "fa.book"
 name = "verify"
 verb = "verify"
-subcommands = ["registers", "open-items", "availability", "accumulator"]
+subcommands = ["registers", "open-items", "availability", "accumulator", "projections"]
 selector = "target"
 positionals = []
 required = []

@@ -115,6 +115,31 @@ an empty population, so a newly due schedule invalidates a prepared opening.
 The filesystem fault tests currently cover consistently anchored paths;
 relative-path alias handling in the substrate simulator is tracked by `fa-n4m`.
 
+### Leg projection verification
+
+`fa verify projections` compares stored leg mirrors and graph edges with the
+canonical entry payloads at one committed snapshot:
+
+```bash
+fa verify projections --book ./books/acme --json
+```
+
+The check derives leg identities from each entry, so a missing `HAS_LEG`
+edge cannot conceal a missing projection. It checks exact scalar mirrors,
+wide-amount fallback bytes, labels, and all `HAS_LEG`, `POSTS_TO`, `IN_UNIT`
+and dimension `FOR` edges. Pending and staged migration entries are included.
+The command returns deterministic counts on success or exit 8 with drift
+details, and never writes. The same target is available through
+`fa_book_verify` in MCP; `Book::verify_projections` and
+`AsyncBook::verify_projections` also accept an explicit historical sequence.
+
+Ordinary postings and scheduled reversals now publish unit and dimension
+edges together with the entry. Prefixes created by older versions can report
+those previously omitted edges as missing. Automatic projection rebuilding
+remains unfinished; verification reports that condition without repairing it.
+Applied counters and settlement edges retain their separate
+`fa verify open-items` check.
+
 ### Entry accumulator checkpoints
 
 The CLI can publish an unsigned checkpoint over the book's entry prefix and
@@ -130,8 +155,10 @@ trunk. Verification reports `verified_through`, the newest checked prefix,
 so later postings are covered only after another checkpoint. With no stored
 checkpoints it returns `status: "no_checkpoints"` and a null
 `verified_through`. A corrupt state or broken chain produces exit 8 and a
-finding; checkpoint creation refuses a corrupt predecessor. These states
-cover entries, including control entries. Signed transparency checkpoints,
+finding; checkpoint creation refuses a corrupt predecessor. Verification
+and proof generation also reject later rewrites or retirements of checkpointed
+entries, even when the original historical snapshot is still readable.
+These states cover entries, including control entries. Signed transparency checkpoints,
 document-receipt coverage and evidence bundles remain unfinished. The
 [CLI tests](./crates/fa-cli/tests/notary.rs) exercise persistence, later
 postings, authorization and real storage corruption.

@@ -3576,6 +3576,53 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 })
             }
         }
+        Some("projections") => {
+            if args.positional.len() != 2 {
+                return Err(usage(
+                    "unexpected verify projections argument",
+                    "fa verify projections --book <dir> [--json]",
+                ));
+            }
+            if args.flag("--period").is_some() || args.flag("--fiscal-year").is_some() {
+                return Err(usage(
+                    "verify projections checks every entry at the current head and takes no period filter",
+                    "fa verify projections --book <dir> [--json]",
+                ));
+            }
+            let book = ctx.books.open(args)?;
+            let v = book.verify_projections(None)?;
+            out.known_at(v.known_at);
+            let fields = vec![
+                ("known_at", Json::Int(i128::from(v.known_at.0))),
+                ("entries_checked", Json::Int(v.entries_checked as i128)),
+                ("legs_checked", Json::Int(v.legs_checked as i128)),
+                ("edges_checked", Json::Int(v.edges_checked as i128)),
+                ("drift", Json::Arr(v.drift.iter().map(s).collect())),
+            ];
+            if v.is_green() {
+                out.event(
+                    "projections_verified",
+                    fields,
+                    &format!(
+                        "leg projections verified against canonical payloads: {} entries, {} legs, {} edges at {}",
+                        v.entries_checked, v.legs_checked, v.edges_checked, v.known_at.0
+                    ),
+                );
+                Ok(())
+            } else {
+                Err(Fail::Verification {
+                    message: format!(
+                        "leg projections differ from canonical entry payloads: {}",
+                        v.drift.join("; ")
+                    ),
+                    detail: obj(fields),
+                    cite: Some("FA-INV-16 (leg projections equal entry payloads)".into()),
+                    fix: Some(
+                        "retain this finding with fa verify projections --json and the same --book; projection recovery is not implemented".into(),
+                    ),
+                })
+            }
+        }
         Some("availability") => {
             let book = ctx.books.open(args)?;
             let v = book.verify_availability()?;

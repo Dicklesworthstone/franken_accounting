@@ -983,6 +983,17 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    /// Verify the immutable leg projection at one committed prefix without writes.
+    pub fn verify_projections(
+        &self,
+        cx: &PurposeContexts,
+        known_at: Option<CommitSeq>,
+    ) -> Result<fa_journal::ProjectionVerification, BookError> {
+        self.query(cx, |db, book| {
+            Ok(fa_journal::verify_projections(db, book, known_at)?)
+        })
+    }
+
     pub fn verify_open_items(
         &self,
         cx: &PurposeContexts,

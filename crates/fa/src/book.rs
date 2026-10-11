@@ -1134,6 +1134,16 @@ impl Book {
         with_store!(&self.store, core => core.open_items(&self.purposes(), account, known_at))
     }
 
+    /// Compare immutable leg mirrors and topology with canonical entry payloads.
+    /// `None` selects the current head; an explicit sequence checks that prefix.
+    /// Drift is reported without changing the book.
+    pub fn verify_projections(
+        &self,
+        known_at: Option<CommitSeq>,
+    ) -> Result<fa_journal::ProjectionVerification, BookError> {
+        with_store!(&self.store, core => core.verify_projections(&self.purposes(), known_at))
+    }
+
     /// Compare every posted leg's `applied` mirror with the open-item fold.
     pub fn verify_open_items(&self) -> Result<OpenItemVerification, BookError> {
         with_store!(&self.store, core => core.verify_open_items(&self.purposes()))

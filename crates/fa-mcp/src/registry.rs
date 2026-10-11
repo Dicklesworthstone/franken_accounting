@@ -1958,4 +1958,39 @@ mod tests {
             "tb --period <code> --activity --as-known-at HEAD"
         );
     }
+
+    #[test]
+    fn projection_verification_is_a_read_only_target_with_a_cli_round_trip() {
+        let (mcp, reg) = embedded();
+        let tool = mcp
+            .tool_for("verify", Some("projections"))
+            .expect("projection verifier target");
+        assert_eq!(tool.wire_name(), "fa_book_verify");
+        assert!(!reg.verb("verify").unwrap().writes);
+        assert!(!tool.is_dangerous(reg));
+        let schema = tool.input_schema(&mcp, reg);
+        assert!(
+            schema["properties"]["target"]["enum"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("projections"))
+        );
+        let invocation = tool
+            .invocation(&mcp, reg, &json!({"target": "projections"}), Some("/b"))
+            .expect("read-only verification");
+        assert_eq!(
+            invocation.argv,
+            vec!["verify", "projections", "--book", "/b", "--json"]
+        );
+        assert!(invocation.stdin.is_none());
+        let call = mcp
+            .command_to_call(reg, "fa verify projections --book /b --json")
+            .expect("projection verification tool call");
+        assert_eq!(call.tool, "fa_book_verify");
+        assert_eq!(
+            call.arguments,
+            json!({"target": "projections", "book": "/b"})
+        );
+    }
+
 }
