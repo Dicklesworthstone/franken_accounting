@@ -1362,6 +1362,452 @@ fn an_invalid_final_chunk_is_abandoned_and_the_retry_finalizes() {
     assert_eq!(r.code, "FA-REF-130", "{r}");
 }
 
+fn empty_scratch(k: &Kernel) -> Database<MemVfs> {
+    let ctx = k.ctx();
+    k.runtime
+        .block_on(async { Database::open_memory(&ctx.commit(), db_keys()).await })
+        .expect("a fresh scratch database")
+}
+
+fn replay(
+    k: &mut Kernel,
+    target: &mut Database<MemVfs>,
+    prefix: CommitSeq,
+) -> Result<SeqMap, Refusal> {
+    let ctx = k.ctx();
+    let id = k.book.book_id;
+    let (db, runtime) = (&mut k.db, &k.runtime);
+    runtime
+        .block_on(async move { replay_into(db, target, &ctx, id, Some(prefix)).await })
+        .expect("kernel")
+}
+
+fn verify(k: &Kernel, target: &Database<MemVfs>, map: &SeqMap) -> Result<(), Refusal> {
+    fa_registers::replay::verify_replay(&k.db, target, &k.book, map)
+        .expect("kernel")
+        .map(|_| ())
+}
+
+/// A scratch book's fold of `period` at `scratch_seq` against the oracle.
+fn assert_scratch_fold(
+    k: &Kernel,
+    scratch: &Database<MemVfs>,
+    oracle: &Oracle,
+    period: &str,
+    scratch_seq: CommitSeq,
+    known: Known,
+) {
+    let codes: BTreeMap<VId, &str> = FREE
+        .iter()
+        .chain(["1500"].iter())
+        .map(|c| (account_vid(k.book.book_id, c), *c))
+        .collect();
+    let fold = fold_period_at(scratch, &k.book, period, Some(scratch_seq)).expect("scratch fold");
+    let got: BTreeMap<(String, u32), (i128, i128)> = fold
+        .cells
+        .iter()
+        .map(|c| {
+            (
+                (codes[&c.key.account].to_string(), c.key.unit_id),
+                (c.debits, c.credits),
+            )
+        })
+        .collect();
+    let want: BTreeMap<(String, u32), (i128, i128)> = oracle
+        .activity_known(&[period], known)
+        .into_iter()
+        .map(|(key, c)| {
+            (
+                key,
+                (c.debits.to_i128().unwrap(), c.credits.to_i128().unwrap()),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got, want,
+        "{period} at scratch {} vs {known:?}",
+        scratch_seq.0
+    );
+}
+
+fn kernel_post_req(k: &mut Kernel, req: PostRequest) -> Result<Posted, Refusal> {
+    let ctx = k.ctx();
+    let db = &mut k.db;
+    let book = &k.book;
+    k.runtime
+        .block_on(async move { post(db, &ctx, book, req).await })
+        .expect("kernel")
+}
+
+/// A raw substrate write (planted history fa itself never produces).
+fn write_raw(k: &mut Kernel, batch: WriteBatch) {
+    let ctx = k.ctx();
+    let db = &mut k.db;
+    k.runtime
+        .block_on(async move { db.write(&ctx.commit(), batch).await })
+        .expect("raw write");
+}
+
+/// Plan §15.2 against the oracle: a history of finalized and abandoned runs,
+/// trunk posts, an approval recorded for a not-yet-posted proposal, and
+/// maintenance commits (materialized registers) replays into a scratch book
+/// at several prefixes. Every map verifies; at every recorded coordinate the
+/// scratch fold at the translated sequence equals the oracle's; maintenance
+/// is never replayed; the approval binds the same proposal on both books.
+/// Planted: a gap, a non-monotone map, a wrong marker, shifted scratch
+/// sequences (135), and history a replay does not reproduce (134).
+#[test]
+fn scratch_replay_equals_the_source_at_every_mapped_seq() {
+    let (mut k, mut oracle) = setup();
+    let mut rng = Rng(0x005C_4A7C_4E00);
+    let ops = vec!["post".to_string(), "migrate".to_string()];
+    let mut checkpoints: Vec<(CommitSeq, Known)> = vec![(k.db.frontier().unwrap(), oracle.known())];
+    let mut maintenance_commits = Vec::new();
+    for r in 0..3 {
+        let (spec, chunks) = plan_run(&mut rng, &format!("replay-run-{r}"));
+        let run = kernel_open(
+            &mut k,
+            &spec,
+            &format!("replay-open-{r}"),
+            &["post", "migrate"],
+        )
+        .expect("opens")
+        .run;
+        let o = oracle
+            .open_run(&spec, format!("replay-open-{r}").as_bytes(), &ops)
+            .expect("oracle opens");
+        checkpoints.push((k.db.frontier().unwrap(), oracle.known()));
+        for (i, legs) in chunks.iter().enumerate() {
+            let key = format!("replay-{r}-{i}");
+            post_chunk(&mut k, run, &key, legs.clone());
+            assert!(matches!(
+                oracle.post_migration(o, &chunk_intent(&key, legs.clone())),
+                Verdict::Posted { .. }
+            ));
+            checkpoints.push((k.db.frontier().unwrap(), oracle.known()));
+            let amount = 100 + i128::try_from(i).unwrap();
+            let trunk = trunk_intent(
+                &format!("replay-t-{r}-{i}"),
+                vec![
+                    leg(fa_reference::Side::Debit, "6000", amount),
+                    leg(fa_reference::Side::Credit, "1000", amount),
+                ],
+            );
+            let proposal = EntryPayload {
+                origin: EntryOrigin::Intent {
+                    intent_oid: Oid([1; 32]),
+                    intent_kind: 1,
+                },
+                ..chunk_payload(&k, VId(0), &trunk, Shape::NoRun, None)
+            };
+            kernel_post(&mut k, proposal, &["post"], false).expect("trunk posts");
+            assert!(matches!(oracle.post(&trunk), Verdict::Posted { .. }));
+            checkpoints.push((k.db.frontier().unwrap(), oracle.known()));
+        }
+        let finalize = r != 1;
+        let control = if finalize {
+            kind::FINALIZE
+        } else {
+            kind::ABANDON
+        };
+        let close_key = format!("replay-close-{r}");
+        let plan = kernel_plan(&k, run, control, &close_key).expect("plans");
+        kernel_transition(&mut k, plan, finalize).expect("closes");
+        if finalize {
+            oracle
+                .finalize_run(o, chunks.len(), close_key.as_bytes(), &ops, 2)
+                .expect("oracle finalizes");
+        } else {
+            oracle
+                .abandon_run(o, chunks.len(), close_key.as_bytes(), &ops)
+                .expect("oracle abandons");
+        }
+        checkpoints.push((k.db.frontier().unwrap(), oracle.known()));
+        // Maintenance: materialize the Opening period's register.
+        let fold = fa_registers::fold_period(&k.db, &k.book, OPENING).expect("fold");
+        let ctx = k.ctx();
+        let (db, book) = (&mut k.db, &k.book);
+        let seq = k
+            .runtime
+            .block_on(async move { fa_registers::materialize(db, &ctx, book, &fold).await })
+            .expect("materialized");
+        maintenance_commits.push(seq);
+        checkpoints.push((seq, oracle.known()));
+        // Maintenance: the native register maintainer advances P01's cells
+        // and cursor (its first call creates the RegisterState vertex, later
+        // ones move its properties); once, a rebuild replaces them.
+        let ctx = k.ctx();
+        let (db, book) = (&mut k.db, &k.book);
+        let maintained = k
+            .runtime
+            .block_on(async move {
+                if r == 2 {
+                    fa_registers::rebuild(db, &ctx, book, P01).await
+                } else {
+                    fa_registers::advance(db, &ctx, book, P01).await
+                }
+            })
+            .expect("maintained");
+        assert!(maintained.wrote, "every round publishes");
+        maintenance_commits.push(maintained.published_at);
+        checkpoints.push((maintained.published_at, oracle.known()));
+    }
+    // An approval recorded for a proposal not yet posted anywhere.
+    let pending = trunk_intent(
+        "replay-approved",
+        vec![
+            leg(fa_reference::Side::Debit, "1200", 4_242),
+            leg(fa_reference::Side::Credit, "4000", 4_242),
+        ],
+    );
+    let approved_proposal = EntryPayload {
+        origin: EntryOrigin::Intent {
+            intent_oid: Oid([1; 32]),
+            intent_kind: 1,
+        },
+        ..chunk_payload(&k, VId(0), &pending, Shape::NoRun, None)
+    };
+    let approvals = approve(&mut k, approved_proposal.proposal_digest().unwrap());
+    let head = k.db.frontier().unwrap();
+    assert!(
+        k.db.vertices_at(head)
+            .unwrap()
+            .iter()
+            .any(|v| v.labels.contains(&fa_model::symbols::label::REGISTER_STATE)),
+        "the source holds the maintainer's state"
+    );
+
+    let mut refused: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let prefixes = [
+        checkpoints[checkpoints.len() / 3].0,
+        checkpoints[2 * checkpoints.len() / 3].0,
+        head,
+    ];
+    let mut last = None;
+    for prefix in prefixes {
+        let mut scratch = empty_scratch(&k);
+        let map = replay(&mut k, &mut scratch, prefix).expect("replays");
+        verify(&k, &scratch, &map).expect("the map verifies");
+        assert!(map.pairs.iter().all(|p| p.source_seq <= prefix));
+        for m in maintenance_commits.iter().filter(|m| **m <= prefix) {
+            assert!(
+                map.pairs.iter().all(|p| p.source_seq != *m),
+                "a maintenance-only commit is never replayed"
+            );
+        }
+        let at = scratch.frontier().unwrap();
+        assert!(
+            scratch
+                .vertices_at(at)
+                .unwrap()
+                .iter()
+                .all(|v| !v.labels.contains(&fa_model::symbols::label::REGISTER)),
+            "no materialized register reaches a scratch book"
+        );
+        assert!(
+            scratch
+                .vertices_at(at)
+                .unwrap()
+                .iter()
+                .all(|v| !v.labels.contains(&fa_model::symbols::label::REGISTER_STATE)),
+            "no maintainer state reaches a scratch book"
+        );
+        // The map answers only inside [0, source_prefix].
+        assert_eq!(
+            map.translate(map.source_prefix),
+            map.pairs.last().map(|p| p.scratch_seq)
+        );
+        assert_eq!(map.translate(CommitSeq(map.source_prefix.0 + 1)), None);
+        for (seq, known) in checkpoints.iter().filter(|(s, _)| *s <= prefix) {
+            let scratch_seq = map.translate(*seq).expect("after genesis");
+            assert_scratch_fold(&k, &scratch, &oracle, OPENING, scratch_seq, *known);
+            assert_scratch_fold(&k, &scratch, &oracle, P01, scratch_seq, *known);
+        }
+
+        // Planted maps (135).
+        let n = map.pairs.len();
+        let mut gap = map.clone();
+        gap.pairs.remove(n / 2);
+        let mut swapped = map.clone();
+        let (a, b) = (
+            swapped.pairs[n - 2].scratch_seq,
+            swapped.pairs[n - 1].scratch_seq,
+        );
+        swapped.pairs[n - 2].scratch_seq = b;
+        swapped.pairs[n - 1].scratch_seq = a;
+        let mut marker = map.clone();
+        marker.pairs[n / 2].source_marker[0] ^= 0xff;
+        let mut shifted = map.clone();
+        for p in &mut shifted.pairs {
+            p.scratch_seq = CommitSeq(p.scratch_seq.0.saturating_sub(1));
+        }
+        for bad in [&gap, &swapped, &marker, &shifted] {
+            let r = verify(&k, &scratch, bad).expect_err("a planted map");
+            assert_eq!((r.code, r.exit), ("FA-REF-135", exit::VERIFICATION), "{r}");
+            *refused.entry("FA-REF-135").or_default() += 1;
+        }
+        // At the head, a prefix moved past the source's frontier and nothing
+        // else changed: the commit set through it is the same, so only the
+        // frontier check sees it.
+        if prefix == head {
+            let mut future = map.clone();
+            future.source_prefix = CommitSeq(head.0 + 1);
+            let r = verify(&k, &scratch, &future).expect_err("a prefix past the frontier");
+            assert_eq!((r.code, r.exit), ("FA-REF-135", exit::VERIFICATION), "{r}");
+            assert!(r.message.contains("past the source frontier"), "{r}");
+            *refused.entry("FA-REF-135").or_default() += 1;
+        }
+        last = Some((scratch, map));
+    }
+
+    // The approval recorded before the replay binds the same proposal on the
+    // scratch book: posted there with it, and then on the source, the two
+    // entries are the same object.
+    let (mut scratch, _) = last.expect("a head replay");
+    let ctx = k.ctx();
+    let req = PostRequest {
+        proposal: approved_proposal.clone(),
+        approvals: approvals.clone(),
+        capability: capability(&["post"]),
+        plan_certificate: None,
+    };
+    let book = &k.book;
+    let on_scratch = k
+        .runtime
+        .block_on(async { post(&mut scratch, &ctx, book, req).await })
+        .expect("kernel")
+        .expect("the approval holds on the scratch book");
+    let req = PostRequest {
+        proposal: approved_proposal,
+        approvals,
+        capability: capability(&["post"]),
+        plan_certificate: None,
+    };
+    let on_source = kernel_post_req(&mut k, req).expect("and on the source");
+    assert_eq!(
+        on_scratch.entry_ref(),
+        on_source.entry_ref(),
+        "identity and digest preserved"
+    );
+
+    // History a replay does not reproduce (134): a deleted vertex (twice,
+    // different objects) and a removed property — none of which fa writes.
+    for planted in 0..3u128 {
+        let (mut src, _) = setup();
+        let mut w = WriteBatch::new(fa_model::symbols::relation::IN_BOOK);
+        if planted < 2 {
+            w.create_vertex(
+                VId(0xdead + planted),
+                vec![fa_model::symbols::label::DOCUMENT],
+                Vec::new(),
+            );
+        } else {
+            w.set_vertex_property(
+                fa_journal::rows::book_root(),
+                fa_model::symbols::property::NAME,
+                None,
+            );
+        }
+        write_raw(&mut src, w);
+        if planted < 2 {
+            let mut d = WriteBatch::new(fa_model::symbols::relation::IN_BOOK);
+            d.delete_vertex(VId(0xdead + planted));
+            write_raw(&mut src, d);
+        }
+        let mut scratch = empty_scratch(&src);
+        let at = src.db.frontier().unwrap();
+        let r = replay(&mut src, &mut scratch, at).expect_err("not reproducible");
+        assert_eq!((r.code, r.exit), ("FA-REF-134", exit::FOUNDATION), "{r}");
+        *refused.entry("FA-REF-134").or_default() += 1;
+    }
+    for code in ["FA-REF-134", "FA-REF-135"] {
+        let got = refused.get(code).copied().unwrap_or(0);
+        assert!(got >= 3, "{code} planted {got} times");
+    }
+
+    // The same families on maintenance are dropped, not refused: a
+    // RegisterState vertex with an edge, then a property removal and the
+    // edge's retirement, then the vertex's, replay to nothing.
+    let (mut src, _) = setup();
+    let before = src.db.frontier().unwrap();
+    let state = VId(0x5747_e000);
+    let root = fa_journal::rows::book_root();
+    let rel = fa_model::symbols::relation::IN_BOOK;
+    let eid = fa_journal::rows::edge_id(rel, state, root);
+    let mut w = WriteBatch::new(rel);
+    w.create_vertex(
+        state,
+        vec![fa_model::symbols::label::REGISTER_STATE],
+        Vec::new(),
+    );
+    w.set_vertex_property(
+        state,
+        fa_model::symbols::property::NAME,
+        Some(fgdb_types::CanonicalScalar::Int(1)),
+    );
+    w.add_edge(eid, state, root, Vec::new());
+    write_raw(&mut src, w);
+    let mut w = WriteBatch::new(rel);
+    w.set_vertex_property(state, fa_model::symbols::property::NAME, None);
+    w.delete_edge(eid);
+    write_raw(&mut src, w);
+    let mut w = WriteBatch::new(rel);
+    w.delete_vertex(state);
+    write_raw(&mut src, w);
+    let mut scratch = empty_scratch(&src);
+    let at = src.db.frontier().unwrap();
+    assert!(at > before);
+    let map = replay(&mut src, &mut scratch, at).expect("maintenance is dropped, not refused");
+    assert!(map.pairs.iter().all(|p| p.source_seq <= before));
+    verify(&src, &scratch, &map).expect("the map verifies");
+}
+
+/// A replay is about objects, not only totals: two books with the same
+/// postings under different idempotency keys fold to identical cells but
+/// hold different entries (their identities differ). One book's SeqMap
+/// verifies against its own scratch replay and refuses (135) against the
+/// other's, though every fold agrees — only the entry comparison sees it.
+#[test]
+fn a_scratch_book_with_equal_folds_but_other_entries_is_refused() {
+    let build = |suffix: &str| {
+        let (mut k, _) = setup();
+        for i in 0..3i128 {
+            let trunk = trunk_intent(
+                &format!("same-{suffix}-{i}"),
+                vec![
+                    leg(fa_reference::Side::Debit, "6000", 500 + i),
+                    leg(fa_reference::Side::Credit, "1000", 500 + i),
+                ],
+            );
+            let proposal = EntryPayload {
+                origin: EntryOrigin::Intent {
+                    intent_oid: Oid([1; 32]),
+                    intent_kind: 1,
+                },
+                ..chunk_payload(&k, VId(0), &trunk, Shape::NoRun, None)
+            };
+            kernel_post(&mut k, proposal, &["post"], false).expect("posts");
+        }
+        let mut scratch = empty_scratch(&k);
+        let head = k.db.frontier().unwrap();
+        let map = replay(&mut k, &mut scratch, head).expect("replays");
+        (k, scratch, map)
+    };
+    let (a, a_scratch, a_map) = build("a");
+    let (_b, b_scratch, _) = build("b");
+    verify(&a, &a_scratch, &a_map).expect("its own replay verifies");
+    let last = a_map.pairs.last().unwrap().scratch_seq;
+    let fold = |db: &Database<MemVfs>| {
+        fold_period_at(db, &a.book, P01, Some(last))
+            .expect("fold")
+            .cells
+    };
+    assert_eq!(fold(&a_scratch), fold(&b_scratch), "the folds agree");
+    let r = verify(&a, &b_scratch, &a_map).expect_err("other objects");
+    assert_eq!((r.code, r.exit), ("FA-REF-135", exit::VERIFICATION), "{r}");
+    assert!(r.message.contains("different entries"), "{r}");
+}
+
 #[test]
 fn maintainer_tracks_migration_visibility_across_activation_and_abandonment() {
     let (mut k, mut oracle) = setup();

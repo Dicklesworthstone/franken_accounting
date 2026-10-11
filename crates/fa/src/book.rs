@@ -25,7 +25,7 @@ use fa_registers::{
     TrialBalance, Verification,
 };
 use fa_time::{DateDay, PeriodDef, PeriodTransition};
-use fgdb::{DatabaseKeys, MemVfs};
+use fgdb::{Database, DatabaseKeys, MemVfs};
 use fgdb_crypto::{CryptoCx, DeterministicEntropy, EntropyError, SystemEntropy, derive_key};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::ids::DatabaseSecurityNamespaceId;
@@ -299,6 +299,7 @@ pub type Outcome<T> = Result<Result<T, Refusal>, BookError>;
 enum Store {
     Memory(AsyncBook<MemVfs>),
     Dir(AsyncBook<UnixVfs>),
+    ScratchDir(AsyncBook<MemVfs, UnixVfs>),
 }
 /// Dispatch to the same async implementation for either production VFS.
 macro_rules! with_store {
@@ -306,6 +307,7 @@ macro_rules! with_store {
         match $store {
             Store::Memory($db) => $body,
             Store::Dir($db) => $body,
+            Store::ScratchDir($db) => $body,
         }
     };
 }
@@ -576,6 +578,62 @@ impl Book {
         known_at: Option<CommitSeq>,
     ) -> Result<Option<fa_journal::Run>, BookError> {
         with_store!(&self.store, core => core.migration_run(&self.purposes(), run, known_at))
+    }
+
+    /// Replay this book's accounting history through `prefix` (head when
+    /// `None`) into a fresh in-memory scratch book (plan §15.2): the same
+    /// objects, byte for byte, one scratch commit per source commit that
+    /// carries any, under the scratch book's own commit sequences. Returns
+    /// the scratch book (its database opened with `keys`, sealing with
+    /// `entropy`) and the [`fa_journal::SeqMap`] binding the two histories.
+    /// External documents remain in the source's immutable blob store;
+    /// that store must remain available for subsequent scratch reads.
+    pub fn replay_into_scratch(
+        &mut self,
+        prefix: Option<CommitSeq>,
+        keys: BookKeys,
+        entropy: Entropy,
+    ) -> Outcome<(Book, fa_journal::SeqMap)> {
+        let (scratch_runtime, scratch_root) = Self::runtime_and_root()?;
+        let scratch_purposes = PurposeContexts::narrow_runtime_root(&scratch_root);
+        let db = scratch_runtime.block_on(async {
+            Database::open_memory(&scratch_purposes.commit(), keys.inner.clone()).await
+        })?;
+        let replayed = match &mut self.store {
+            Store::Memory(core) => scratch_runtime
+                .block_on(core.replay_into(&scratch_purposes, db, prefix, entropy))?
+                .map(|(copy, map)| (Store::Memory(copy), map)),
+            Store::Dir(core) => scratch_runtime
+                .block_on(core.replay_into(&scratch_purposes, db, prefix, entropy))?
+                .map(|(copy, map)| (Store::ScratchDir(copy), map)),
+            Store::ScratchDir(core) => scratch_runtime
+                .block_on(core.replay_into(&scratch_purposes, db, prefix, entropy))?
+                .map(|(copy, map)| (Store::ScratchDir(copy), map)),
+        };
+        let (store, map) = match replayed {
+            Ok(replayed) => replayed,
+            Err(r) => return Ok(Err(r)),
+        };
+        Ok(Ok((
+            Book {
+                runtime: scratch_runtime,
+                root: scratch_root,
+                store,
+            },
+            map,
+        )))
+    }
+
+    /// Verify `scratch` against the [`fa_journal::SeqMap`] of its replay
+    /// from this book (`fa_registers::replay::verify_replay`).
+    pub fn verify_replay(
+        &self,
+        scratch: &Book,
+        map: &fa_journal::SeqMap,
+    ) -> Outcome<fa_registers::replay::ReplayVerification> {
+        with_store!(&self.store, source => with_store!(&scratch.store, copy => {
+            source.verify_replay(&self.purposes(), copy, map)
+        }))
     }
 
     /// Record a document (plan §9.1): content-addressed; the same bytes of
@@ -1065,7 +1123,42 @@ mod tests {
                 Posted::AlreadyRecorded { .. }
             ));
             assert!(!book.advance_registers(&cx, &march).await.unwrap().wrote);
+            let source_head = book.head(&cx).unwrap();
+            let scratch_path = Path::new("./scratch-store");
+            let scratch_db = Database::create_with_vfs(
+                &cx.commit(),
+                vfs.clone(),
+                scratch_path.to_path_buf(),
+                BookKeys::for_development(0x63).inner,
+            )
+            .await
+            .unwrap();
+            let (scratch, map) = book
+                .replay_into(&cx, scratch_db, None, Entropy::deterministic(seed + 1))
+                .await
+                .unwrap()
+                .unwrap();
+            let verified = book.verify_replay(&cx, &scratch, &map).unwrap().unwrap();
+            assert_eq!(verified.pairs_checked, map.pairs.len());
+            assert_eq!(
+                scratch.fold_period(&cx, &march).unwrap().cells,
+                expected_cells
+            );
+            assert_eq!(
+                scratch
+                    .read_document(&cx, &evidence.document_oid)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap()
+                    .bytes,
+                source.bytes
+            );
+            assert_eq!(book.head(&cx).unwrap(), source_head);
             let events = vfs.events();
+            assert!(events.iter().any(|e| {
+                matches!(e.kind, FaultKind::Latency { .. }) && e.path.starts_with(scratch_path)
+            }));
             assert!(
                 events
                     .iter()
@@ -1387,6 +1480,100 @@ mod tests {
                 limit: None,
             },
         ]
+    }
+
+    /// Plan §15.2 through the facade: the scratch book (its own runtime and
+    /// store) folds as the source does and verifies against its SeqMap; a
+    /// scenario post lands in the scratch book only; a map with a pair
+    /// removed is FA-REF-135.
+    #[test]
+    fn a_scratch_replay_reproduces_the_book_and_scenario_posts_stay_in_it() {
+        let book_id = Id128([0x5c; 16]);
+        let (spec, usd) = spec(book_id);
+        let mut book = Book::create_memory(
+            BookKeys::for_development(0x5c),
+            spec,
+            Entropy::deterministic(0x5c),
+        )
+        .expect("create");
+        let principal = VId(1);
+        let day = DateDay::from_ymd(2026, 3, 15).unwrap();
+        book.install_chart(&chart(usd), principal, day, b"chart")
+            .expect("kernel")
+            .expect("installs");
+        let (_, periods) = book.create_periods(2026).expect("periods");
+        let march = periods
+            .iter()
+            .find(|p| p.contains(day) && p.kind == PeriodKind::Normal)
+            .unwrap()
+            .code
+            .clone();
+        book.transition_period(
+            &march,
+            PeriodTransition::Open,
+            principal,
+            1,
+            day,
+            b"open",
+            &Capability::embedded(principal, &["close"]).expect("close"),
+        )
+        .expect("kernel")
+        .expect("opens");
+        for key in [&b"rent-1"[..], b"rent-2"] {
+            post_rent(&mut book, usd, principal, day, key, 150_000)
+                .expect("kernel")
+                .expect("admitted");
+        }
+        // Maintained registers are maintenance: never replayed.
+        assert!(book.advance_registers(&march).expect("maintained").wrote);
+        let source_head = book.head().unwrap();
+
+        let (mut scratch, map) = book
+            .replay_into_scratch(
+                None,
+                BookKeys::for_development(0x5d),
+                Entropy::deterministic(0x5d),
+            )
+            .expect("kernel")
+            .expect("replays");
+        let verified = book
+            .verify_replay(&scratch, &map)
+            .expect("kernel")
+            .expect("verifies");
+        assert_eq!(verified.pairs_checked, map.pairs.len());
+        assert!(verified.entries_checked >= 2, "{verified:?}");
+        assert_eq!(
+            scratch.fold_period(&march).unwrap().cells,
+            book.fold_period(&march).unwrap().cells
+        );
+        let scratch_rows = scratch.purposes().query().with_restriction(|| {
+            with_store!(&scratch.store, core => core.db.vertices_at(core.db.frontier().unwrap()))
+        }).unwrap();
+        assert!(
+            scratch_rows
+                .iter()
+                .all(|v| !v.labels.contains(&fa_model::symbols::label::REGISTER_STATE)),
+            "no maintainer state reaches the scratch book"
+        );
+
+        post_rent(&mut scratch, usd, principal, day, b"what-if", 150_000)
+            .expect("kernel")
+            .expect("a scenario post");
+        assert_eq!(
+            book.head().unwrap(),
+            source_head,
+            "the source never sees a scenario"
+        );
+        assert_ne!(
+            scratch.fold_period(&march).unwrap().cells,
+            book.fold_period(&march).unwrap().cells
+        );
+        // The map still describes the replayed prefix; a removed pair does not.
+        assert!(book.verify_replay(&scratch, &map).unwrap().is_ok());
+        let mut gap = map.clone();
+        gap.pairs.remove(1);
+        let refused = book.verify_replay(&scratch, &gap).unwrap().unwrap_err();
+        assert_eq!((refused.code, refused.exit), ("FA-REF-135", 8), "{refused}");
     }
 
     #[test]

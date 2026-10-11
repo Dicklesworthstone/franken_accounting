@@ -2,8 +2,9 @@
 //!
 //! This is the shared implementation for the embedded async API and the
 //! synchronous production adapter. It owns no runtime or root context. Both
-//! database and document bytes use clones of the same supplied VFS, so the
-//! lab can observe and fault the complete durable I/O plane.
+//! Ordinary books use clones of the same supplied VFS for database and
+//! document bytes. Scratch books retain their source's blob store, so a
+//! caller can keep both stores on the same lab-controlled I/O plane.
 
 use core::fmt;
 use std::path::{Path, PathBuf};
@@ -33,7 +34,7 @@ const BOOK_BLOB_STORE: u16 = 1;
 /// an in-memory scratch journal to retain its source's external evidence.
 /// Each operation preserves the caller's cancellation and budget.
 pub struct AsyncBook<V: Vfs + Clone, B: Vfs + Clone = V> {
-    db: Database<V>,
+    pub(crate) db: Database<V>,
     blobs: fa_journal::BlobStore<B>,
     context: BookContext,
     entropy: Entropy,
@@ -372,6 +373,60 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     ) -> Result<Option<fa_journal::Run>, BookError> {
         self.query(cx, |db, _| {
             Ok(fa_journal::migration::read_run(db, run, known_at)?)
+        })
+    }
+
+    /// Replay the accounting prefix into a caller-created, empty database.
+    /// Execution stays on the caller's runtime and context. The scratch
+    /// book shares the source's immutable blob store, so its external
+    /// documents remain readable while that store is available. Its sealed
+    /// fields retain the source book's key; target database keys encrypt
+    /// only the new substrate storage.
+    pub async fn replay_into<W: Vfs + Clone>(
+        &mut self,
+        cx: &PurposeContexts,
+        mut target: Database<W>,
+        prefix: Option<CommitSeq>,
+        entropy: Entropy,
+    ) -> Outcome<(AsyncBook<W, B>, fa_journal::SeqMap)> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        let map = match fa_journal::scratch::replay_into(
+            &mut self.db,
+            &mut target,
+            cx,
+            self.context.book_id,
+            prefix,
+        )
+        .await?
+        {
+            Ok(map) => map,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        Ok(Ok((
+            AsyncBook {
+                db: target,
+                blobs: self.blobs.clone(),
+                context: self.context.clone(),
+                entropy,
+            },
+            map,
+        )))
+    }
+
+    /// Independently verify a replay's mapped accounting history.
+    pub fn verify_replay<W: Vfs + Clone, C: Vfs + Clone>(
+        &self,
+        cx: &PurposeContexts,
+        scratch: &AsyncBook<W, C>,
+        map: &fa_journal::SeqMap,
+    ) -> Outcome<fa_registers::replay::ReplayVerification> {
+        self.query(cx, |source, book| {
+            Ok(fa_registers::replay::verify_replay(
+                source,
+                &scratch.db,
+                book,
+                map,
+            )?)
         })
     }
 

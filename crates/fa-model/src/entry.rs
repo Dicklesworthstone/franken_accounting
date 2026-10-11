@@ -2049,7 +2049,7 @@ mod tests {
                 }
             );
         }
-        for id in [0, 7, 9, u16::MAX] {
+        for id in [0, 7, 10, u16::MAX] {
             assert!(
                 EntryOrigin::decode(&mut Reader::new(&origin(id))).is_err(),
                 "control_kind {id}"

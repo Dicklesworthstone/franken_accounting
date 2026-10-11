@@ -18,6 +18,7 @@ pub mod entity;
 pub mod explain;
 pub mod maintainer;
 pub mod open_items;
+pub mod replay;
 
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
