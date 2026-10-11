@@ -975,7 +975,7 @@ impl ToolSpec {
                 c => format!(" when {}", condition_phrase(c)),
             };
             let op = match &row.subcommand {
-                Some(s) => format!("`{}`", s),
+                Some(s) => format!("`{s}`"),
                 None => "this".to_string(),
             };
             d.push_str(&format!(

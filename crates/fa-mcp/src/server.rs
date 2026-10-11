@@ -96,6 +96,10 @@ pub struct Adapter {
     memory: Mutex<Memory>,
 }
 
+// The error of every fallible step is the structured error itself (plan
+// §15.4's `{type, message, recoverable, fix_hint, suggested_tool_calls, …}`),
+// built once per refusal on no hot path; boxing it would buy nothing.
+#[allow(clippy::result_large_err)]
 impl Adapter {
     pub fn new(config: ServerConfig) -> Result<Self, String> {
         let reg =
