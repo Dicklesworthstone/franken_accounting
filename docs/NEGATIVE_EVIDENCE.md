@@ -433,3 +433,19 @@ manifest was absent. Supplying its exact existing manifest changed the
 classification; the same Rust source then scanned with zero critical issues.
 No test assertion, scanner rule or exclusion changed. Both transcripts are
 retained; this static result does not establish runtime correctness.
+
+## 2026-10-11 — fa-ggi one rate applied to different foreign units
+
+`value_legs` documented one foreign unit but converted every non-base unit
+with the same supplied rate. A natively balanced pair of EUR 10 and a pair
+of GBP 10 would both be valued using an EUR/USD rate; native and base balance
+checks would still pass. This is a source-derived counterexample, not an
+observed committed FX posting: that posting path is still refused.
+
+The helper now rejects a second foreign unit with `MultipleForeignUnits`
+during its existing budgeted validation pass, before conversion. It names
+both units and the conflicting leg. Tests cover both unit orders and all
+rounding laws, with exact positive controls for each unit individually and
+base-unit legs remaining at par. This closes the helper's declared contract;
+it does not authenticate rates, provide a per-unit-rate API, or activate FX
+posting. Runtime verification is pending.

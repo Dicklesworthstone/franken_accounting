@@ -463,7 +463,7 @@ evidence_class = "invariant"
 first_gate = "G1"
 owner = "fa-p7r"
 checkers = ["fa-money::lib::allocation::tests::conserves_total_on_a_grid", "fa-money::lib::rounding::tests::registry_requires_exact_correspondence_with_executable_laws", "fa-money::lib::rounding::tests::error_bound_is_half_ulp_for_half_laws"]
-negatives = ["fa-money::lib::amount::tests::checked_arithmetic_refuses_overflow_and_unit_mixing", "fa-money::lib::amount::tests::over_scale_is_refused_not_rounded", "fa-money::lib::wide::tests::overflow_is_detected", "fa-money::lib::amount::tests::try_render_refuses_unknown_units_without_panicking_or_guessing_a_scale", "fa-model::lib::entry::tests::overflowing_leg_sums_are_refused_not_wrapped", "fa-money::lib::valuation::tests::native_imbalance_is_never_absorbed_as_rounding"]
+negatives = ["fa-money::lib::amount::tests::checked_arithmetic_refuses_overflow_and_unit_mixing", "fa-money::lib::amount::tests::over_scale_is_refused_not_rounded", "fa-money::lib::wide::tests::overflow_is_detected", "fa-money::lib::amount::tests::try_render_refuses_unknown_units_without_panicking_or_guessing_a_scale", "fa-model::lib::entry::tests::overflowing_leg_sums_are_refused_not_wrapped", "fa-money::lib::valuation::tests::native_imbalance_is_never_absorbed_as_rounding", "fa-money::lib::valuation::tests::one_rate_refuses_mixed_foreign_units_and_preserves_single_unit_values"]
 waiver = "forbidden"
 
 [[clause]]

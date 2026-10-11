@@ -53,6 +53,12 @@ pub enum ValuationError {
     UnbalancedUnit {
         unit: UnitId,
     },
+    /// One rate cannot describe two distinct foreign units.
+    MultipleForeignUnits {
+        first: UnitId,
+        second: UnitId,
+        ordinal: usize,
+    },
     /// The residual exceeded the selected law's bound.
     ResidualTooLarge {
         residual: i128,
@@ -72,6 +78,14 @@ impl fmt::Display for ValuationError {
             Self::UnbalancedUnit { unit } => write!(
                 f,
                 "native legs in {unit} do not balance; a valuation residual cannot repair them"
+            ),
+            Self::MultipleForeignUnits {
+                first,
+                second,
+                ordinal,
+            } => write!(
+                f,
+                "leg {ordinal} uses {second}, but the one-rate valuation already names foreign unit {first}; value each foreign unit under its own documented rate"
             ),
             Self::ResidualTooLarge { residual, bound } => {
                 write!(f, "valuation residual {residual} exceeds bound {bound}")
@@ -97,6 +111,8 @@ impl From<AmountError> for ValuationError {
 
 /// Value `legs` (all in one foreign unit) into `base` at `rate` (base units per
 /// foreign unit) under `law`. Legs already in `base` are valued at 1:1.
+/// Two distinct non-base units are refused before any conversion, even if
+/// both balance natively or have zero amounts: this API takes only one rate.
 /// Only converted legs may absorb a rounding residual: choose the largest
 /// base amount on the deficient side, breaking ties by lowest original ordinal.
 pub fn value_legs(
@@ -111,7 +127,7 @@ pub fn value_legs(
     if reg.get(base).is_none() {
         return Err(AmountError::UnknownUnit(base.to_string()).into());
     }
-    check_native_balance(budget, legs, reg)?;
+    check_native_balance(budget, legs, base, reg)?;
     let bytes = legs
         .len()
         .checked_mul(core::mem::size_of::<Amount>())
@@ -202,6 +218,7 @@ pub fn value_legs(
 fn check_native_balance(
     budget: &mut ArithmeticBudget<'_, impl Sized>,
     legs: &[LegValue],
+    base: UnitId,
     reg: &UnitRegistry,
 ) -> Result<(), ValuationError> {
     let bytes = legs
@@ -217,6 +234,7 @@ fn check_native_balance(
             crate::rate::RationalArithmeticError::AllocationFailure,
         ))
     })?;
+    let mut foreign = None;
     for (ordinal, leg) in legs.iter().enumerate() {
         budget
             .charge(crate::rate::Dimension::ComputeSteps, 1)
@@ -226,6 +244,19 @@ fn check_native_balance(
         }
         if reg.get(leg.amount.unit).is_none() {
             return Err(AmountError::UnknownUnit(leg.amount.unit.to_string()).into());
+        }
+        if leg.amount.unit != base {
+            if let Some(first) = foreign {
+                if first != leg.amount.unit {
+                    return Err(ValuationError::MultipleForeignUnits {
+                        first,
+                        second: leg.amount.unit,
+                        ordinal,
+                    });
+                }
+            } else {
+                foreign = Some(leg.amount.unit);
+            }
         }
         sorted.push(*leg);
     }
@@ -282,6 +313,64 @@ fn side_sum(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_rate_refuses_mixed_foreign_units_and_preserves_single_unit_values() {
+        let cx = asupersync::Cx::detached_cancel_context();
+        let reg = UnitRegistry::with_defaults();
+        let usd = reg.lookup("USD").unwrap();
+        let eur = reg.lookup("EUR").unwrap();
+        let gbp = reg.lookup("GBP").unwrap();
+        for law in RoundingLaw::ALL {
+            for (first, second) in [(eur, gbp), (gbp, eur)] {
+                for foreign_amount in [0, 1_000] {
+                    let mut budget = crate::test_budget(&cx);
+                    let rate = Rate::new(&mut budget, 11, 10).unwrap();
+                    let pair = |unit, mantissa| {
+                        [
+                            LegValue {
+                                side: Side::Debit,
+                                amount: Amount::new(unit, mantissa),
+                            },
+                            LegValue {
+                                side: Side::Credit,
+                                amount: Amount::new(unit, mantissa),
+                            },
+                        ]
+                    };
+                    let base_pair = pair(usd, 500);
+                    let first_pair = pair(first, foreign_amount);
+                    let second_pair = pair(second, foreign_amount);
+                    let legs = [base_pair, first_pair, second_pair].concat();
+                    // Every unit balances exactly. Applying the EUR rate to
+                    // GBP would still balance, concealing the wrong valuation.
+                    assert_eq!(
+                        value_legs(&mut budget, &legs, usd, &rate, law, &reg),
+                        Err(ValuationError::MultipleForeignUnits {
+                            first,
+                            second,
+                            ordinal: 4,
+                        }),
+                    );
+                    // Either foreign unit is lawful by itself under the rate
+                    // explicitly supplied for that call, alongside at-par USD.
+                    for foreign_pair in [first_pair, second_pair] {
+                        let lawful = [base_pair, foreign_pair].concat();
+                        let value =
+                            value_legs(&mut budget, &lawful, usd, &rate, law, &reg).unwrap();
+                        let expected = if foreign_amount == 0 { 0 } else { 1_100 };
+                        assert_eq!(
+                            value.base_amounts,
+                            [500, 500, expected, expected].map(|n| Amount::new(usd, n))
+                        );
+                        assert_eq!(value.base_debits, Amount::new(usd, 500 + expected));
+                        assert_eq!(value.base_credits, value.base_debits);
+                        assert_eq!(value.residual, None);
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn directed_rounding_accepts_its_larger_lawful_residual() {
