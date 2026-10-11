@@ -436,6 +436,69 @@ mod tests {
     }
 
     #[test]
+    fn mixed_base_rounding_residual_preserves_at_par_valuations() {
+        let cx = asupersync::Cx::detached_cancel_context();
+        let reg = UnitRegistry::with_defaults();
+        let eur = reg.lookup("EUR").unwrap();
+        let usd = reg.lookup("USD").unwrap();
+        for law in RoundingLaw::ALL {
+            for swap_sides in [false, true] {
+                let mut budget = crate::test_budget(&cx);
+                let half = Rate::new(&mut budget, 1, 2).unwrap();
+                let mut legs = [
+                    LegValue {
+                        side: Side::Debit,
+                        amount: Amount::new(usd, 100),
+                    },
+                    LegValue {
+                        side: Side::Credit,
+                        amount: Amount::new(usd, 100),
+                    },
+                    LegValue {
+                        side: Side::Debit,
+                        amount: Amount::new(eur, 1),
+                    },
+                    LegValue {
+                        side: Side::Debit,
+                        amount: Amount::new(eur, 1),
+                    },
+                    LegValue {
+                        side: Side::Credit,
+                        amount: Amount::new(eur, 2),
+                    },
+                ];
+                if swap_sides {
+                    for leg in &mut legs {
+                        leg.side = match leg.side {
+                            Side::Debit => Side::Credit,
+                            Side::Credit => Side::Debit,
+                        };
+                    }
+                }
+                let value = value_legs(&mut budget, &legs, usd, &half, law, &reg).unwrap();
+                // The base-currency pair is larger than every converted leg.
+                // Choosing it to absorb rounding would turn USD100 into USD101.
+                assert_eq!(value.base_amounts[0], legs[0].amount, "{law:?}");
+                assert_eq!(value.base_amounts[1], legs[1].amount, "{law:?}");
+                assert_eq!(value.base_amounts.len(), legs.len());
+                assert_eq!(value.base_debits, value.base_credits);
+                let (ordinal, _) = value
+                    .residual
+                    .expect("this half-rate vector rounds unevenly");
+                assert_eq!(legs[ordinal].amount.unit, eur);
+                if law == RoundingLaw::HalfUp {
+                    assert_eq!(value.residual, Some((4, 1)));
+                    assert_eq!(
+                        value.base_amounts,
+                        [100, 100, 1, 1, 2].map(|mantissa| Amount::new(usd, mantissa))
+                    );
+                    assert_eq!(value.base_debits, Amount::new(usd, 102));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn residual_bound_is_enforced_and_sides_are_ordered() {
         let cx = asupersync::Cx::detached_cancel_context();
         let mut budget = crate::test_budget(&cx);
