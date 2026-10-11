@@ -200,3 +200,14 @@ and final integration gate still require execution.
   and ordinary missing required inputs keep the generic error. The landing
   gate on that tree (538af18, run 3 on hz4) passed every step with 772
   tests green and reached origin/staging at 16:39:42Z on 2026-10-12.
+
+### Public register-cell subtraction (fa-645, 2026-10-11)
+
+Source review found unchecked subtraction in `Cell::net()`. Valid folded
+cells have nonnegative columns and a representable difference, but callers
+can construct public cells such as `(debits = i128::MAX, credits = -1)`.
+The method now returns `RegisterError::Overflow` for an unrepresentable
+difference, and its migration-test caller explicitly requires a valid net.
+New tests pin exact positive and negative boundaries, cancellation, and both
+overflow directions. No journal-produced cell overflow or enlargement of the
+register's column bound is claimed.

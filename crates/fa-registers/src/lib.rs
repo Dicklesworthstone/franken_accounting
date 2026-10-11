@@ -60,7 +60,7 @@ pub enum RegisterError {
     Kernel(KernelError),
     Read(fgdb::ReadError),
     Write(fgdb::WriteError),
-    /// A leg sum overflowed `i128` (the register ceiling).
+    /// A register sum or net overflowed `i128` (the register ceiling).
     Overflow,
     InvalidSelection(String),
     Encoding(fa_model::EncodeError),
@@ -76,7 +76,7 @@ impl fmt::Display for RegisterError {
             Self::Kernel(e) => write!(f, "{e}"),
             Self::Read(e) => write!(f, "substrate read: {e:?}"),
             Self::Write(e) => write!(f, "substrate write: {e:?}"),
-            Self::Overflow => write!(f, "a register sum overflowed"),
+            Self::Overflow => write!(f, "a register sum or net overflowed"),
             Self::InvalidSelection(e) => write!(f, "invalid report selection: {e}"),
             Self::Encoding(e) => write!(f, "register encoding: {e}"),
             Self::StaleFold => write!(
@@ -128,9 +128,14 @@ pub struct Cell {
 
 impl Cell {
     /// Debits minus credits (positive = debit balance).
-    #[must_use]
-    pub fn net(&self) -> i128 {
-        self.debits - self.credits
+    ///
+    /// A folded cell has non-negative columns, so its net fits in `i128`.
+    /// Publicly constructed cells may violate that premise; return overflow
+    /// rather than panic or wrap when their mathematical difference cannot fit.
+    pub fn net(&self) -> Result<i128, RegisterError> {
+        self.debits
+            .checked_sub(self.credits)
+            .ok_or(RegisterError::Overflow)
     }
 }
 
@@ -1298,6 +1303,43 @@ pub fn periods_for_balance(
 mod tests {
     use super::*;
     use fa_time::{DateDay, PeriodDef, PeriodKind};
+
+    #[test]
+    fn cell_net_preserves_exact_boundaries_and_refuses_overflow() {
+        let cell = |debits, credits| Cell {
+            key: CellKey {
+                account: VId(1),
+                unit_id: 1,
+                period: "P".into(),
+            },
+            debits,
+            credits,
+            entry_count: 0,
+        };
+        for (debits, credits, expected) in [
+            (0, 0, 0),
+            (i128::MAX, 0, i128::MAX),
+            (0, i128::MAX, -i128::MAX),
+            (i128::MAX, i128::MAX, 0),
+            (i128::MAX, i128::MAX - 1, 1),
+            (i128::MAX - 1, i128::MAX, -1),
+            (i128::MIN, 0, i128::MIN),
+            (-1, i128::MAX, i128::MIN),
+        ] {
+            let value = cell(debits, credits);
+            let original = value.clone();
+            assert_eq!(value.net().unwrap(), expected);
+            assert_eq!(value, original);
+        }
+        // These malformed public cells cannot come from a valid fold.
+        // Their subtraction must still fail consistently in every profile.
+        for (debits, credits) in [(i128::MAX, -1), (i128::MIN, 1), (0, i128::MIN)] {
+            let value = cell(debits, credits);
+            let original = value.clone();
+            assert!(matches!(value.net(), Err(RegisterError::Overflow)));
+            assert_eq!(value, original);
+        }
+    }
 
     fn period(code: &str, fy: i32, start: i32, end: i32) -> PeriodDef {
         PeriodDef {
