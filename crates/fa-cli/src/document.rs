@@ -14,7 +14,7 @@ use fa_model::{EvidenceRef, Oid};
 use fa_registry::evidence_policy::EvidencePolicy;
 
 use crate::args::{Args, nearest};
-use crate::cli::{Ctx, Fail, hex, principal, unhandled, usage};
+use crate::cli::{Ctx, Fail, hex, unhandled, usage};
 
 const ADD_EXAMPLE: &str = "fa document add invoice.pdf --kind Invoice --mime application/pdf --grade HumanUpload --book <dir> --json";
 const EVIDENCE_EXAMPLE: &str = r#""evidence": ["<document oid hex>"] or [{"document_oid": "<hex>", "doc_commit": "<hex>", "role": "Source"}], or --evidence <oid>"#;
@@ -100,6 +100,7 @@ fn add(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         named("provenance grade", grade_name, &names)
     })?;
     let mime = args.flag("--mime").unwrap_or("application/octet-stream");
+    let retrieved_by = ctx.principal(args);
     let bytes = ctx.files.read_bytes(path)?;
     let mut book = ctx.books.open(args)?;
     let doc = Document {
@@ -107,7 +108,7 @@ fn add(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         kind: kind.tag,
         mime: mime.to_string(),
         grade: grade.tag,
-        retrieved_by: principal(args),
+        retrieved_by,
         bytes,
     };
     let added = book.add_document(&doc)??;

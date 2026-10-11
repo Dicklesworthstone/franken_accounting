@@ -683,7 +683,9 @@ fn capabilities_and_robot_docs_are_in_tool() {
     assert!(forbidden.contains(&"approve") && forbidden.contains(&"restate"));
     let binding = model.get("binding").expect("binding");
     assert_eq!(text(binding, "profile"), "Human");
-    assert!(text(binding, "trust_boundary").contains("never authenticates"));
+    assert_eq!(text(binding, "posture"), "embedded-owner");
+    assert!(text(binding, "trust_boundary").contains("no authenticated session"));
+    assert!(text(binding, "trust_boundary").contains("does not authenticate the operator"));
     assert_eq!(text(model, "policy_oid").len(), 64);
     let (code, out, _) = fa(None, &["robot-docs", "exit-codes"]);
     assert_eq!(code, 0);

@@ -32,9 +32,9 @@ schema_version = 1
 discriminator = "event"
 version = 1
 payload = "data"
-fields = ["v:int", "book:hex?", "coordinate:coordinate?", "certificate:hex?", "warnings:[string]", "next_actions:[next_action]"]
+fields = ["v:int", "book:hex?", "coordinate:coordinate?", "certificate:hex?", "authority:authority", "warnings:[string]", "next_actions:[next_action]"]
 frames = ["fad_request", "fad_response"]
-description = "Robot mode (--json), plan Appendix D: stdout carries one JSON object per line and nothing else, {v, event, book, coordinate, data, certificate, warnings, next_actions}. `event` names the line's schema below and `data` holds exactly that schema's fields. `v` is the envelope version. `book` is the book's id and `coordinate` the (branch, known_at, effective) the line describes; both are never null on an event about a book (`book: true` below) and null on the others (version, help, an error before any book was opened). `certificate` is the replay certificate's oid on certified reports and replay, null on uncertified operations; dry-run plan certificates remain fa-we7. `warnings` lists what the command noticed but did not refuse (always present, usually empty). `next_actions` lists the commands an agent usually runs next, each with why (run them with the same --book). Keys are sorted, amounts are strings with their unit (never JSON numbers), recorded sequences are integers, dates are civil YYYY-MM-DD. The daemon's wire frames (fad_request, fad_response) are its protocol, not robot lines: flat, with their protocol `v`. stderr carries diagnostics only. The exit code is the verdict (fa robot-docs exit-codes): every non-zero exit emits exactly one `error` event, whose data carries the exit's `class` (exit_codes.toml), the `exit`, and the `refusal_id` (the refusal catalog code, or null)."
+description = "Robot mode (--json), plan Appendix D: stdout carries one JSON object per line, {v, event, book, coordinate, data, certificate, authority, warnings, next_actions}. `event` names the schema of `data`; `v` is the envelope version. `book` and `coordinate` (branch, known_at, effective) are non-null on book events and may be null before a book opens. `certificate` is the replay certificate oid for certified reports and replay, otherwise null; typed confirmation certificates remain fa-we7. `authority` declares embedded-owner or mcp-launch-config; MCP names its fixed principal, bounded launch template and exact ops, while owner ops are null because they are self-issued per command. Launch configuration does not authenticate the operator. `warnings` records non-refusal diagnostics. `next_actions` names follow-up commands and why; owner CLI calls use the same book, while MCP keeps its launch-bound book. Keys are sorted; amounts are exact strings with units, sequences are integers and dates are YYYY-MM-DD. Daemon wire frames are flat protocol objects without this envelope. stderr carries diagnostics; every nonzero command exit emits one error event containing class, exit and refusal_id."
 
 [global]
 flags = ["--book", "--keys", "--as", "--via"]
@@ -710,8 +710,13 @@ fields = ["name:string", "forbidden_ops:[string]"]
 
 [[shape]]
 name = "capability_binding"
-doc = "How the embedded posture binds a capability: --as names the principal, --grant self-issues ops; Human profile, no ceilings, no expiry."
-fields = ["flags:[string]", "profile:string", "ceilings:[string]", "expires_at:seq?", "trust_boundary:text"]
+doc = "The actual execution binding: embedded-owner self-issues Human operations per command; MCP uses one trusted launch capability and exposes no per-call identity or authority flags. Neither posture authenticates the operator."
+fields = ["flags:[string]", "posture:string", "profile:string", "ceilings:[string]", "expires_at:seq?", "trust_boundary:text"]
+
+[[shape]]
+name = "authority"
+doc = "Execution authority: mcp-launch-config names the fixed principal, launch template (agent or preparer), and exact bounded ops. Embedded-owner has Human profile and null ops because it self-issues per command; principal is null until parsed. Launch configuration does not authenticate the operator or supply issued tokens."
+fields = ["posture:string", "principal:string?", "profile:string", "ops:[string]?"]
 
 [[shape]]
 name = "envelope_doc"
@@ -879,9 +884,10 @@ fields = ["verb:string", "subcommand:string?", "condition:string", "safe:string"
 # names to [A-Za-z0-9_-]. A tool's arguments are the verb's value flags without
 # the dashes (`--as-known-at` → `as_known_at`), its switches as booleans, the
 # positionals named in `positionals` (a trailing `?` marks an optional one),
-# `selector` (which subcommand, when the tool covers several), `book` (the book
-# directory; the server's --book when absent), `as` and `keys` (the global
-# flags), and `yes` on a verb with a [[dangerous]] row. `stdin_property` is a
+# `selector` (which subcommand, when the tool covers several). Authority and
+# book selection are fixed at trusted launch: `as`, `grant`, `yes`, `keys`,
+# `book`, `principal`, `profile` and `via` are forbidden call properties.
+# `stdin_property` is a
 # JSON property the server forwards on stdin as the `-` argument of
 # `stdin_via` (a flag, or a positional's name); the flag or positional keeps
 # its string (path) form beside it. `required` names flags and positionals the
@@ -899,10 +905,10 @@ fields = ["verb:string", "subcommand:string?", "condition:string", "safe:string"
 [mcp]
 server = "fa-mcp"
 max_tools_per_cluster = 7
-# Host-only flags: the server sets --json itself and chooses the transport.
-hidden_flags = ["--json", "--via", "--no-color", "--help", "--version"]
+# The server fixes authority and book selection once; it never forwards caller grants.
+hidden_flags = ["--json", "--via", "--no-color", "--help", "--version", "--as", "--grant", "--yes", "--keys", "--book"]
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
-repeat_flags = ["--grant", "--evidence", "--approval", "--period"]
+repeat_flags = ["--evidence", "--approval", "--period"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
 integer_flags = ["--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing"]
 
@@ -990,9 +996,9 @@ name = "create"
 verb = "book"
 subcommands = ["create"]
 positionals = []
-required = ["--name", "book"]
-dont = ["Don't create a book inside an existing book directory; `book` names a new directory.", "Don't lose the key file the result names (`keys`): keys are never regenerated."]
-mistakes = ["Omitting `book`: creation needs the new directory, the server's default book is an existing one.", "Passing `base_unit` in lowercase (`usd`): unit codes are the registered spellings (USD, EUR, …)."]
+required = ["--name"]
+dont = ["The book path is fixed at launch; a call cannot select another directory. Agent and Preparer sessions cannot create books; ask the operator to prepare the book before launch.", "Don't lose the book's key file: keys are never regenerated."]
+mistakes = ["Passing a book or key path as a tool argument: both are forbidden.", "Passing `base_unit` in lowercase (`usd`): unit codes are the registered spellings (USD, EUR, …)."]
 
 [[mcp.tool]]
 cluster = "fa.book"
@@ -1010,9 +1016,9 @@ name = "checkpoint"
 verb = "checkpoint"
 subcommands = ["create"]
 positionals = []
-required = ["--grant"]
+required = []
 dont = ["Don't present the state as a signed checkpoint or an evidence bundle: it is unsigned and covers entries only."]
-mistakes = ["Omitting `grant: [\"witness\"]` — the embedded posture self-issues the op."]
+mistakes = ["Trying to self-issue witness permission: caller grants are forbidden, and Agent/Preparer launch profiles do not include witness."]
 
 [[mcp.tool]]
 cluster = "fa.book"
@@ -1118,7 +1124,7 @@ stdin_property = "intent"
 stdin_kind = "object"
 stdin_via = "--intent"
 required = []
-dont = ["Don't void a hold to tidy up: `disposition: \"voids\"` releases it for good and needs `yes`; `posts` draws legs from it.", "Don't draw a leg the hold does not have: each resolving leg is the same account and side as one hold leg, at most its reserved amount."]
+dont = ["Don't void a hold to tidy up: `disposition: \"voids\"` releases it for good and is unavailable through MCP until separate confirmation exists; `posts` draws legs from it.", "Don't draw a leg the hold does not have: each resolving leg is the same account and side as one hold leg, at most its reserved amount."]
 mistakes = ["A placeholder such as \"<vid>\" in `resolves` (the reserve result's `vid`).", "Resolving a hold twice (exit 6, FA-REF-062) or resolving a non-hold (FA-REF-060)."]
 
 # ---- fa.read ----------------------------------------------------------------
@@ -1141,7 +1147,7 @@ verb = "replay"
 subcommands = []
 positionals = ["file?"]
 stdin_property = "certificate"
-stdin_kind = "text"
+stdin_kind = "string"
 stdin_via = "file"
 required = ["file"]
 dont = ["Pass the retained oid (bare 64-hex or C: prefixed) or complete bytes hex string from report_certificate as certificate; alternatively pass its canonical binary file as file. Never edit the certificate or substitute the current known-at.", "A replay proves the retained closure produces the same result; it is not a witness signature or a judgment on the accounting treatment."]
@@ -1154,11 +1160,11 @@ verb = "certificate"
 subcommands = ["status"]
 positionals = ["file?"]
 stdin_property = "certificate"
-stdin_kind = "text"
+stdin_kind = "string"
 stdin_via = "file"
 required = ["file"]
 dont = ["Don't treat SupersededBy as a failed historical replay: later entries can change today's report while the original still verifies."]
-mistakes = ["Looking up an oid in a different book; pass the original book or supply the complete retained bytes."]
+mistakes = ["Looking up an oid in a different book; the operator must launch the server against the original book."]
 
 [[mcp.tool]]
 cluster = "fa.read"
@@ -1225,7 +1231,7 @@ selector = "transition"
 positionals = ["code"]
 flags = ["--to", "--reason", "--key", "--date", "--plan-out", "--plan", "--approval"]
 required = ["code"]
-dont = ["Don't reopen to admit an ordinary posting: only a lawfully classified adjustment or an authorized, case-bound reopen changes what a closed period reports.", "Don't approve your own plan: `plan_out` seals a proposal; `fa_time_approve` must run as a different principal (`as`).", "Don't close, lock or reopen without `yes` unless the operation is intended; the refusal names the reversible alternative (soft-close)."]
+dont = ["Don't reopen to admit an ordinary posting: only a lawfully classified adjustment or an authorized, case-bound reopen changes what a closed period reports.", "Don't approve your own plan: an independent approver needs their own authorized session; tool arguments cannot change this session's identity.", "Don't close, lock or reopen through MCP: dangerous confirmation is unavailable, and a plan or approval file cannot authorize a commit here."]
 mistakes = ["Passing `plan_out` together with `plan` or `approval` (a plan commits nothing; the commit cites the plan and its approvals).", "Passing `to` for a transition other than `reopen`."]
 
 [[mcp.tool]]
@@ -1236,7 +1242,7 @@ subcommands = []
 positionals = []
 required = ["--proposal"]
 dont = ["Don't approve a proposal you planned in this session: segregation of duties (FA-REF-008) needs another principal.", "Don't invent a digest: `proposal` is the `proposal_digest` a `period_transition` with `plan_out` returned."]
-mistakes = ["A placeholder such as \"<proposal_digest>\" in `proposal`.", "Omitting `as`: the default principal is `operator`, usually the planner."]
+mistakes = ["A placeholder such as \"<proposal_digest>\" in `proposal`.", "Trying to change principal or self-issue approve: this session is launch-bound, and Agent/Preparer profiles do not permit approval."]
 
 # ---- fa.evidence ------------------------------------------------------------
 

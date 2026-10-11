@@ -10,14 +10,14 @@
 //!   positionals — and derives every tool's wire name, JSON input schema and
 //!   Do / Don't / Discovery / Examples / Common-mistakes documentation from
 //!   the verb rows, the `[[dangerous]]` rows and the `[[next_action]]` rows;
-//! - [`dispatch`] runs every tool call through the same front door the `fa`
-//!   binary uses ([`fa_cli::entry::fa_with`]): directly under the book's
-//!   writer lease, or through the `fad` that holds it. A refusal is therefore
-//!   byte-identical whichever surface asked;
+//! - [`dispatch`] runs every call through [`fa_cli::entry::fa_with_authority`]
+//!   under one principal, profile, capability and book fixed at trusted launch.
+//!   The accounting handlers and kernel are shared with the CLI, while the
+//!   bound entrypoint refuses unauthenticated daemon forwarding;
 //! - [`errors`] maps the envelope's one `error` event into the structured
 //!   error `{type, message, recoverable, fix_hint, suggested_tool_calls, …}`:
 //!   the exit class is the type, the refusal's `fix` the hint, and every
-//!   `fa …` command the fix or the catalog names becomes a tool call;
+//!   `fa …` command that needs no caller authority override becomes a tool call;
 //! - [`detect`] runs the mistake detectors before anything is dispatched:
 //!   a JSON number where an amount string is required, an instant where a
 //!   civil date is required, a posting leg on a summary account, an intent
@@ -31,8 +31,10 @@
 //! A successful call returns the robot envelope's `data` as the first text
 //! content block (canonical JSON, exactly the bytes `fa --json` prints under
 //! `data`) and the rest of the envelope — book, coordinate, certificate,
-//! warnings, next actions as tool calls — as the second. A failure is a tool
-//! error (`isError`) whose text is the structured error.
+//! warnings, next actions as tool calls, and launch authority — as the second.
+//! A failure is a tool error (`isError`) whose text is the structured error,
+//! also labelled with the launch authority. Resource data remains first;
+//! its second JSON content block identifies the same authority.
 //!
 //! # No-claim boundary
 //!
@@ -41,10 +43,15 @@
 //! registered exclusion) and the error contract (the mapping from the
 //! envelope's `error` event, with planted refusals). It does not prove MCP
 //! conformance beyond what fastmcp's own suite proves, and it is not yet
-//! hosted by `fad`: the binary is a sibling of `fa` that runs each call under
-//! the book's writer lease or through the book's daemon, exactly as `fa`
-//! does. Hosting the server inside `fad` (one open book, one lease, plan
-//! §15.4) is a follow-up.
+//! hosted by `fad`: the binary is a sibling of `fa` that takes the book's
+//! writer lease and refuses when another process holds it. Launch configuration
+//! is trusted operator input, not authenticated capability issuance or a
+//! filesystem sandbox. Agent is the default profile and its accounting writes
+//! to trunk reach the kernel's FA-REF-013. The explicitly selected Preparer
+//! template permits ordinary posting. Both templates have bounded operations;
+//! neither accepts per-call identity, grants, book/key selection or dangerous
+//! confirmation. Authenticated daemon sessions and separate dangerous-operation
+//! confirmation remain follow-ups.
 
 #![forbid(unsafe_code)]
 

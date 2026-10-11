@@ -160,6 +160,7 @@ pub const ENVELOPE_FIELDS: &[&str] = &[
     "book",
     "coordinate",
     "certificate",
+    "authority",
     "warnings",
     "next_actions",
 ];
@@ -1147,11 +1148,16 @@ mod tests {
             ),
             (
                 "dead event",
-                with(|s| s.replace("events = [\"trial_balance\"]", "events = []")),
+                with(|s| s.replace("events = [\"approved\"]", "events = []")),
             ),
             (
                 "flag that is both a value flag and a switch",
-                with(|s| s.replace("switches = [\"--activity\"]", "switches = [\"--period\"]")),
+                with(|s| {
+                    s.replace(
+                        "switches = [\"--activity\", \"--certify\"]",
+                        "switches = [\"--period\"]",
+                    )
+                }),
             ),
             (
                 "duplicate verb",
@@ -1228,7 +1234,8 @@ mod tests {
     }
 
     const BOOK: &str = r#""0a1b""#;
-    const COORDINATE: &str = r#"{"branch":"trunk","effective":"all","known_at":7,"time_evidence":null}"#;
+    const COORDINATE: &str =
+        r#"{"branch":"trunk","effective":"all","known_at":7,"time_evidence":null}"#;
     const RECORDED: &str =
         r#"{"entry_digest":"ab01","moved":null,"recorded_at":7,"requested":null,"vid":"00ff"}"#;
 
@@ -1236,7 +1243,7 @@ mod tests {
     /// `event`, with `book` and `coordinate` as given (JSON text).
     fn line(event: &str, data: &str, book: &str, coordinate: &str) -> String {
         format!(
-            r#"{{"book":{book},"certificate":null,"coordinate":{coordinate},"data":{data},"event":"{event}","next_actions":[],"v":1,"warnings":[]}}"#
+            r#"{{"authority":{{"ops":null,"posture":"embedded-owner","principal":null,"profile":"Human"}},"book":{book},"certificate":null,"coordinate":{coordinate},"data":{data},"event":"{event}","next_actions":[],"v":1,"warnings":[]}}"#
         )
     }
 

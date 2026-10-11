@@ -22,11 +22,26 @@ use fastmcp_rust::{JsonMap, JsonValue, json};
 /// The registry text this build embeds (the same bytes `fa` embeds).
 pub const SOURCE: &str = fa_cli::verbs::SOURCE;
 
-/// The properties every tool carries beside its verb's own.
-const BOOK: &str = "book";
-const AS: &str = "as";
-const KEYS: &str = "keys";
-const YES: &str = "yes";
+/// Authority and transport are fixed at launch, never by a tool call.
+pub const FORBIDDEN_ARGUMENTS: &[&str] = &[
+    "as",
+    "grant",
+    "yes",
+    "keys",
+    "book",
+    "principal",
+    "profile",
+    "via",
+];
+
+/// Presence is forbidden, including `null` or `false`; it is never ignored.
+#[must_use]
+pub fn forbidden_argument(arguments: &JsonValue) -> Option<&'static str> {
+    FORBIDDEN_ARGUMENTS
+        .iter()
+        .copied()
+        .find(|argument| arguments.get(*argument).is_some())
+}
 
 /// The resources the server exposes (plan §15.4; only what exists today).
 pub const RESOURCES: &[(&str, &str)] = &[
@@ -36,11 +51,11 @@ pub const RESOURCES: &[(&str, &str)] = &[
     ),
     (
         "resource://fa/chart/{book}",
-        "a book's chart of accounts (`fa chart list`); `{book}` is the book directory, percent-encoded, or `default` for the served book",
+        "the launch-bound book's chart (`fa chart list`); `{book}` is `default` or the exact launch book path, percent-encoded; another book is refused",
     ),
     (
         "resource://fa/periods/{book}",
-        "a book's periods with their states (`fa period list`); `{book}` as above",
+        "the launch-bound book's periods (`fa period list`); `{book}` as above",
     ),
     (
         "resource://fa/laws",
@@ -210,6 +225,7 @@ impl McpRegistry {
     pub fn parse(text: &str, reg: &Registry) -> Result<Self, String> {
         let doc = toml::parse(text).map_err(|e| format!("verbs.toml: {e}"))?;
         let m = doc.tables.get("mcp").ok_or("verbs.toml: missing [mcp]")?;
+        let hidden_flags = get_strs(m, "hidden_flags", "mcp")?;
         let max = m
             .get("max_tools_per_cluster")
             .and_then(Value::as_int)
@@ -309,9 +325,22 @@ impl McpRegistry {
             let verb_row = reg
                 .verb(&verb)
                 .ok_or_else(|| format!("verbs.toml [mcp]: {what}: names unknown verb `{verb}`"))?;
-            let flags = opt_strs(t, "flags", &what)?.unwrap_or_else(|| verb_row.flags.clone());
-            let switches =
-                opt_strs(t, "switches", &what)?.unwrap_or_else(|| verb_row.switches.clone());
+            let flags = opt_strs(t, "flags", &what)?.unwrap_or_else(|| {
+                verb_row
+                    .flags
+                    .iter()
+                    .filter(|f| !hidden_flags.contains(f))
+                    .cloned()
+                    .collect()
+            });
+            let switches = opt_strs(t, "switches", &what)?.unwrap_or_else(|| {
+                verb_row
+                    .switches
+                    .iter()
+                    .filter(|f| !hidden_flags.contains(f))
+                    .cloned()
+                    .collect()
+            });
             tools.push(ToolSpec {
                 cluster,
                 name,
@@ -330,7 +359,7 @@ impl McpRegistry {
         let mcp = Self {
             server: get_str(m, "server", "mcp")?.to_string(),
             max_tools_per_cluster: max,
-            hidden_flags: get_strs(m, "hidden_flags", "mcp")?,
+            hidden_flags,
             repeat_flags: get_strs(m, "repeat_flags", "mcp")?,
             integer_flags: get_strs(m, "integer_flags", "mcp")?,
             clusters,
@@ -350,19 +379,21 @@ impl McpRegistry {
             .chain(&reg.global.switches)
             .map(String::as_str)
             .collect();
-        for g in ["--book", "--as", "--keys", "--yes"] {
-            if !global.contains(g) {
+        for g in ["--book", "--as", "--keys", "--yes", "--grant"] {
+            if !self.hidden_flags.iter().any(|h| h == g) {
                 return err(format!(
-                    "the global flag {g} this server exposes is not in [global]"
+                    "authority flag {g} must be hidden from MCP callers"
                 ));
             }
         }
+        let value_flags: BTreeSet<&str> = reg.value_flags().into_iter().collect();
         for h in &self.hidden_flags {
-            if !global.contains(h.as_str()) {
-                return err(format!("hidden flag {h} is not a [global] flag or switch"));
+            if !global.contains(h.as_str()) && !value_flags.contains(h.as_str()) {
+                return err(format!(
+                    "hidden flag {h} is not a registered flag or switch"
+                ));
             }
         }
-        let value_flags: BTreeSet<&str> = reg.value_flags().into_iter().collect();
         for f in self.repeat_flags.iter().chain(&self.integer_flags) {
             if !value_flags.contains(f.as_str()) {
                 return err(format!(
@@ -440,20 +471,25 @@ impl McpRegistry {
                 }
             }
             for f in &t.flags {
+                if self.hidden_flags.contains(f) {
+                    return err(format!("{what}: hidden flag {f} cannot be exposed"));
+                }
                 if !verb.flags.contains(f) {
                     return err(format!("{what}: {f} is not a flag of `{}`", t.verb));
                 }
             }
             for f in &t.switches {
+                if self.hidden_flags.contains(f) {
+                    return err(format!("{what}: hidden switch {f} cannot be exposed"));
+                }
                 if !verb.switches.contains(f) {
                     return err(format!("{what}: {f} is not a switch of `{}`", t.verb));
                 }
             }
             // Property names: unique, and never one of the server's own.
             let mut props: BTreeSet<String> = BTreeSet::new();
-            let reserved = [BOOK, AS, KEYS, YES];
             let mut add = |p: String| -> Result<(), String> {
-                if reserved.contains(&p.as_str()) || !props.insert(p.clone()) {
+                if FORBIDDEN_ARGUMENTS.contains(&p.as_str()) || !props.insert(p.clone()) {
                     return Err(format!(
                         "verbs.toml [mcp]: {what}: property `{p}` repeats or is reserved"
                     ));
@@ -488,11 +524,10 @@ impl McpRegistry {
             for r in &t.required {
                 let known = t.flags.contains(r)
                     || t.positionals.iter().any(|p| &p.name == r)
-                    || t.stdin.as_ref().is_some_and(|s| &s.property == r)
-                    || r == BOOK;
+                    || t.stdin.as_ref().is_some_and(|s| &s.property == r);
                 if !known {
                     return err(format!(
-                        "{what}: required `{r}` is not a flag, positional, stdin property or `book`"
+                        "{what}: required `{r}` is not an exposed flag, positional or stdin property"
                     ));
                 }
             }
@@ -618,6 +653,14 @@ impl McpRegistry {
             return None;
         }
         let parsed = args::parse(rest, &reg.value_flags(), &reg.switches()).ok()?;
+        if parsed
+            .flags
+            .keys()
+            .chain(&parsed.switches)
+            .any(|flag| FORBIDDEN_ARGUMENTS.contains(&property(flag).as_str()))
+        {
+            return None;
+        }
         let word = parsed.positional.first()?;
         let expanded: Vec<String> = match reg.alias(word) {
             Some(a) => a.expands.clone(),
@@ -643,9 +686,6 @@ impl McpRegistry {
         }
         for (flag, values) in &parsed.flags {
             let prop = match flag.as_str() {
-                "--book" => BOOK.to_string(),
-                "--as" => AS.to_string(),
-                "--keys" => KEYS.to_string(),
                 f if self.hidden_flags.iter().any(|h| h == f) => continue,
                 f if tool.flags.iter().any(|x| x == f) => {
                     if tool.stdin.as_ref().is_some_and(|s| s.via == f) {
@@ -670,9 +710,6 @@ impl McpRegistry {
         }
         for sw in &parsed.switches {
             match sw.as_str() {
-                "--yes" => {
-                    arguments.insert(YES.to_string(), JsonValue::Bool(true));
-                }
                 f if tool.switches.iter().any(|x| x == f) => {
                     arguments.insert(property(f), JsonValue::Bool(true));
                 }
@@ -723,7 +760,7 @@ impl McpRegistry {
     #[must_use]
     pub fn instructions(&self) -> String {
         let mut text = String::from(
-            "FrankenAccounting over MCP: every tool runs one `fa` verb through the same dispatcher the CLI and the daemon use, so a refusal is byte-identical whichever way it was asked. Start with `fa_orient_capabilities`. Rules: amounts are strings with their unit (\"1500.00 USD\"), never JSON numbers; dates are civil YYYY-MM-DD, never instants; recorded time is assigned by the journal; corrections are new entries (Reversal, Replacement, Reclassification) — nothing is edited in place; never balance an entry by inventing a leg, never re-date an entry to dodge the period law, never approve your own proposal, never cite a placeholder. A tool's first content block is the robot envelope's `data`; the second is the envelope (book, coordinate, warnings, next_actions as tool calls). A tool error carries {type, message, recoverable, fix_hint, suggested_tool_calls, exit, refusal_id, cite, detail}: do the fix.\n\nClusters:\n",
+            "FrankenAccounting over MCP: each call runs the accounting dispatcher under one trusted launch-bound principal, profile, capability and book. Start with `fa_orient_capabilities`. Tool arguments cannot contain as, grant, yes, keys, book, principal, profile or via; even null or false is refused as forbidden_argument. The Agent default reads but cannot publish accounting entries to trunk (FA-REF-013); an operator may explicitly launch the bounded Preparer profile. Dangerous commits remain unavailable through MCP until a separate confirmation exchange exists; planning does not authorize a commit. This is launch-time trust, not authenticated capability issuance or filesystem confinement. A book held by fad is refused until its transport can preserve this authority. Rules: amounts are strings with their unit (\"1500.00 USD\"), never JSON numbers; effective dates are civil YYYY-MM-DD; historical report instant selectors remain available; recorded time is assigned by the journal; corrections are new entries — nothing is edited in place; never invent balancing legs, re-date entries to dodge period law, approve your own proposal, or cite a placeholder. A tool's first content block is the robot envelope's data; the second adds book, coordinate, certificate, warnings, next_actions and authority. Resources retain their data first and return launch authority in a second JSON block. Tool errors carry {type, message, recoverable, fix_hint, suggested_tool_calls, exit, refusal_id, cite, detail, authority}. A different identity or stronger authority requires an operator to launch a separate appropriately bound session.\n\nClusters:\n",
         );
         for c in &self.clusters {
             let names: Vec<String> = self.tools_of(&c.name).map(ToolSpec::wire_name).collect();
@@ -759,8 +796,7 @@ impl ToolSpec {
         format!("{}_{}", self.cluster.replace('.', "_"), self.name)
     }
 
-    /// Whether any covered subcommand has a `[[dangerous]]` row (then the
-    /// tool takes `yes`).
+    /// Whether any covered subcommand has a `[[dangerous]]` row, for tool annotations.
     #[must_use]
     pub fn is_dangerous(&self, reg: &Registry) -> bool {
         if self.subcommands.is_empty() {
@@ -785,7 +821,7 @@ impl ToolSpec {
 
     /// Every property the input schema declares, in schema order.
     #[must_use]
-    pub fn property_names(&self, reg: &Registry) -> Vec<String> {
+    pub fn property_names(&self, _reg: &Registry) -> Vec<String> {
         let mut names = Vec::new();
         if let Some(sel) = &self.selector {
             names.push(sel.clone());
@@ -796,12 +832,6 @@ impl ToolSpec {
         }
         names.extend(self.flags.iter().map(|f| self.flag_property(f)));
         names.extend(self.switches.iter().map(|f| property(f)));
-        if self.is_dangerous(reg) {
-            names.push(YES.into());
-        }
-        names.push(BOOK.into());
-        names.push(AS.into());
-        names.push(KEYS.into());
         names
     }
 
@@ -893,22 +923,6 @@ impl ToolSpec {
                 json!({ "type": "boolean", "description": format!("`{f}` of `fa {}`", self.verb) }),
             );
         }
-        if self.is_dangerous(reg) {
-            let safes: Vec<String> = self
-                .dangerous_rows(reg)
-                .map(|d| format!("{}: {}", d.condition.text(), d.safe))
-                .collect();
-            props.insert(
-                YES.into(),
-                json!({
-                    "type": "boolean",
-                    "description": format!("confirm an operation that cannot be undone in practice (`--yes`, FA-REF-007). Without it the call is refused with the safe alternative. Conditions — {}", safes.join("; ")),
-                }),
-            );
-        }
-        props.insert(BOOK.into(), json!({ "type": "string", "description": "the book directory (`--book`); the server's own book when absent" }));
-        props.insert(AS.into(), json!({ "type": "string", "description": "the principal acting (`--as`; default operator)" }));
-        props.insert(KEYS.into(), json!({ "type": "string", "description": "the book's key file (`--keys`; default <book>/book.keys)" }));
         for r in &self.required {
             // A path flag or positional can be satisfied by the inline
             // property. Requiring only the path in the published schema
@@ -975,9 +989,12 @@ impl ToolSpec {
             ));
         }
         d.push_str("\n\nDo:\n");
-        for u in self.usage_lines(verb) {
-            d.push_str(&format!("- fa {u}\n"));
-        }
+        d.push_str(&format!(
+            "- Call `{}` with the properties its input schema names: {}. The schema marks required fields and inline/file alternatives.\n",
+            self.wire_name(),
+            self.property_names(reg).join(", "),
+        ));
+        d.push_str("- Use only the identity, capability, book and keys fixed at server launch; a call cannot select or expand them.\n");
         d.push_str("Don't:\n");
         for row in self.dangerous_rows(reg) {
             let when = match &row.condition {
@@ -989,7 +1006,7 @@ impl ToolSpec {
                 None => "this".to_string(),
             };
             d.push_str(&format!(
-                "- Don't run {op}{when} without `yes: true` unless it is intended; it cannot be undone in practice (FA-REF-007). The safe alternative: {}\n",
+                "- Don't commit {op}{when} through MCP: dangerous confirmation is unavailable (FA-REF-007). A plan is not confirmation and cannot bypass this boundary. The safe alternative: {}\n",
                 row.safe
             ));
         }
@@ -1040,7 +1057,10 @@ impl ToolSpec {
             d.push_str(&format!("- {} {}   ← {}\n", e.tool, e.arguments, e.command));
         }
         if examples.is_empty() {
-            d.push_str(&format!("- {} {{}}\n", self.wire_name()));
+            d.push_str(&format!(
+                "- `{}`: supply the required fields from its input schema.\n",
+                self.wire_name()
+            ));
         }
         d.push_str("Common mistakes:\n");
         for m in &self.mistakes {
@@ -1098,9 +1118,15 @@ impl ToolSpec {
         mcp: &McpRegistry,
         reg: &Registry,
         arguments: &JsonValue,
-        default_book: Option<&str>,
     ) -> Result<Invocation, ArgError> {
         let wire = self.wire_name();
+        if let Some(argument) = forbidden_argument(arguments) {
+            return Err(ArgError {
+                message: format!("{wire}: forbidden argument `{argument}`"),
+                fix: "omit it; authority and book selection are fixed by the trusted server launch"
+                    .into(),
+            });
+        }
         let empty = JsonMap::new();
         let obj = match arguments {
             JsonValue::Null => &empty,
@@ -1227,6 +1253,12 @@ impl ToolSpec {
                     });
                 }
                 (true, None) => argv.push("-".into()),
+                (false, Some(v)) if v.starts_with("--") => {
+                    return Err(ArgError {
+                        message: format!("{wire}: `{}` cannot be an option-shaped positional", p.name),
+                        fix: "supply the literal identifier; prefix a relative file name with ./ if it begins with --".into(),
+                    });
+                }
                 (false, Some(v)) => argv.push(v),
                 (false, None) if p.required => {
                     return Err(ArgError {
@@ -1329,26 +1361,12 @@ impl ToolSpec {
                 }
             }
         }
-        if self.is_dangerous(reg) {
-            match obj.get(YES) {
-                None | Some(JsonValue::Null) | Some(JsonValue::Bool(false)) => {}
-                Some(JsonValue::Bool(true)) => argv.push("--yes".into()),
-                Some(other) => {
-                    return Err(ArgError {
-                        message: format!("{wire}: `yes` must be a boolean, not {}", kind_of(other)),
-                        fix: "`yes`: true only when the operation is intended".into(),
-                    });
-                }
-            }
-        }
         // What the host must supply.
         for r in &self.required {
             let present = if r.starts_with("--") {
                 let via = self.stdin.as_ref().filter(|s| &s.via == r);
                 obj.contains_key(&self.flag_property(r))
                     || via.is_some_and(|s| obj.contains_key(&s.property))
-            } else if r == BOOK {
-                obj.contains_key(BOOK)
             } else {
                 obj.contains_key(r)
                     || self
@@ -1388,18 +1406,6 @@ impl ToolSpec {
                 fix: format!("`{}`: {{ … }}", s.property),
             });
         }
-        if let Some(a) = str_of(AS)? {
-            argv.push("--as".into());
-            argv.push(a);
-        }
-        if let Some(k) = str_of(KEYS)? {
-            argv.push("--keys".into());
-            argv.push(k);
-        }
-        if let Some(b) = str_of(BOOK)?.as_deref().or(default_book) {
-            argv.push("--book".into());
-            argv.push(b.to_string());
-        }
         argv.push("--json".into());
         Ok(Invocation { argv, stdin })
     }
@@ -1429,7 +1435,7 @@ fn kind_of(v: &JsonValue) -> &'static str {
 fn condition_phrase(c: &fa_cli::verbs::Condition) -> String {
     match c {
         fa_cli::verbs::Condition::Always => "always".into(),
-        fa_cli::verbs::Condition::Grant(op) => format!("`grant` includes `{op}`"),
+        fa_cli::verbs::Condition::Grant(op) => format!("the launch capability includes `{op}`"),
         fa_cli::verbs::Condition::Voids => "the intent's `disposition` is `voids`".into(),
         fa_cli::verbs::Condition::ExistingCells => {
             "the period already has materialized register cells".into()
@@ -1648,19 +1654,19 @@ mod tests {
         let tb = mcp.tool_by_wire("fa_read_trial_balance").expect("tb tool");
         let schema = tb.input_schema(&mcp, reg);
         let props = schema["properties"].as_object().expect("properties");
-        for p in [
-            "period",
-            "fiscal_year",
-            "as_of",
-            "as_known_at",
-            "activity",
-            "book",
-            "as",
-            "keys",
-        ] {
+        for p in ["period", "fiscal_year", "as_of", "as_known_at", "activity"] {
             assert!(props.contains_key(p), "{p}");
         }
-        assert!(!props.contains_key("yes"), "tb is not dangerous");
+        for tool in &mcp.tools {
+            let schema = tool.input_schema(&mcp, reg);
+            for property in FORBIDDEN_ARGUMENTS {
+                assert!(
+                    schema["properties"].get(*property).is_none(),
+                    "{} exposes {property}",
+                    tool.wire_name()
+                );
+            }
+        }
         assert_eq!(props["period"]["type"], json!(["string", "array"]));
         assert_eq!(props["fiscal_year"]["type"], json!(["string", "integer"]));
         assert_eq!(props["activity"]["type"], json!("boolean"));
@@ -1677,9 +1683,7 @@ mod tests {
             assert!(doc.contains(section), "{section} missing in:\n{doc}");
         }
         assert!(
-            doc.contains(
-                "fa_read_trial_balance {\"book\":\"./books/myco\",\"period\":[\"FY2026-P03\"]}"
-            ),
+            doc.contains("fa_read_trial_balance") && doc.contains("fixed at server launch"),
             "{doc}"
         );
         let period = mcp
@@ -1691,8 +1695,8 @@ mod tests {
             json!(["open", "soft-close", "close", "lock", "reopen"])
         );
         assert!(
-            schema["properties"].get("yes").is_some(),
-            "close/lock/reopen are dangerous"
+            schema["properties"].get("yes").is_none(),
+            "dangerous confirmation is unavailable through MCP"
         );
         assert!(
             schema["properties"].get("fiscal_year").is_none(),
@@ -1709,26 +1713,20 @@ mod tests {
         let schema = post.input_schema(&mcp, reg);
         assert_eq!(schema["properties"]["intent"]["type"], json!("object"));
         assert_eq!(schema["properties"]["intent_file"]["type"], json!("string"));
-        assert_eq!(
-            schema["properties"]["grant"]["type"],
-            json!(["string", "array"])
-        );
-        assert!(
-            schema["properties"].get("yes").is_some(),
-            "grant:post_closed is dangerous"
-        );
+        assert!(schema["properties"].get("grant").is_none());
+        assert!(schema["properties"].get("yes").is_none());
     }
 
     #[test]
     fn commands_become_tool_calls_and_back() {
         let (mcp, reg) = embedded();
         let call = mcp
-            .command_to_call(reg, "fa period soft-close FY2026-P03 --book ./b --json")
+            .command_to_call(reg, "fa period soft-close FY2026-P03 --json")
             .expect("a call");
         assert_eq!(call.tool, "fa_time_period_transition");
         assert_eq!(
             call.arguments,
-            json!({"transition": "soft-close", "code": "FY2026-P03", "book": "./b"})
+            json!({"transition": "soft-close", "code": "FY2026-P03"})
         );
         let call = mcp
             .command_to_call(reg, "fa trial-balance --period P1 --period P2 --activity")
@@ -1739,12 +1737,25 @@ mod tests {
             json!({"period": ["P1", "P2"], "activity": true})
         );
         let call = mcp
-            .command_to_call(reg, "fa post --intent entry.json --evidence ab --yes")
+            .command_to_call(reg, "fa post --intent entry.json --evidence ab")
             .expect("post");
         assert_eq!(
             call.arguments,
-            json!({"intent_file": "entry.json", "evidence": ["ab"], "yes": true})
+            json!({"intent_file": "entry.json", "evidence": ["ab"]})
         );
+        for command in [
+            "fa post --intent e.json --yes",
+            "fa post --intent e.json --grant post_closed",
+            "fa approve --proposal abc --as controller",
+            "fa tb --period P --book ./b",
+            "fa tb --period P --keys k",
+            "fa tb --period P --via fad",
+        ] {
+            assert!(
+                mcp.command_to_call(reg, command).is_none(),
+                "must not suggest authority override: {command}"
+            );
+        }
         assert!(mcp.command_to_call(reg, "fad status --book ./b").is_none());
         assert!(
             mcp.command_to_call(reg, "leave the period Closed")
@@ -1756,26 +1767,18 @@ mod tests {
         );
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[1].tool, "fa_time_period_status");
-        // Round trip: the call's invocation is the command's argv (plus --json, without --book's dir order).
+        // Round trip: the call's invocation is the command's argv plus --json.
         let tool = mcp.tool_by_wire("fa_time_period_transition").expect("tool");
         let inv = tool
             .invocation(
                 &mcp,
                 reg,
-                &json!({"transition": "soft-close", "code": "FY2026-P03", "book": "./b"}),
-                None,
+                &json!({"transition": "soft-close", "code": "FY2026-P03"}),
             )
             .expect("invocation");
         assert_eq!(
             inv.argv,
-            vec![
-                "period",
-                "soft-close",
-                "FY2026-P03",
-                "--book",
-                "./b",
-                "--json"
-            ]
+            vec!["period", "soft-close", "FY2026-P03", "--json"]
         );
         assert_eq!(inv.stdin, None);
     }
@@ -1808,7 +1811,7 @@ mod tests {
                 "MCP returns retained certificate identities and bytes: {wire}"
             );
             let invocation = tool
-                .invocation(&mcp, reg, &arguments, Some("/b"))
+                .invocation(&mcp, reg, &arguments)
                 .expect("inline report certification");
             assert_eq!(invocation.argv[0], verb);
             assert!(invocation.argv.iter().any(|arg| arg == "--certify"));
@@ -1816,7 +1819,7 @@ mod tests {
             let mut disallowed = arguments;
             disallowed["certificate_out"] = json!("/tmp/report.cert");
             assert!(
-                tool.invocation(&mcp, reg, &disallowed, Some("/b")).is_err(),
+                tool.invocation(&mcp, reg, &disallowed).is_err(),
                 "unregistered output path must refuse: {wire}"
             );
         }
@@ -1841,30 +1844,30 @@ mod tests {
                 "a host must accept inline bytes without a file: {schema}"
             );
             let inline = tool
-                .invocation(&mcp, reg, &json!({"certificate": "abcd"}), Some("/b"))
+                .invocation(&mcp, reg, &json!({"certificate": "abcd"}))
                 .expect("inline bytes");
             let mut expected = prefix.clone();
-            expected.extend(["-", "--book", "/b", "--json"]);
+            expected.extend(["-", "--json"]);
             assert_eq!(inline.argv, expected);
             assert_eq!(inline.stdin, Some(b"abcd".to_vec()));
             let digest = format!("C:{}", "b".repeat(64));
             let by_digest = tool
-                .invocation(&mcp, reg, &json!({"certificate": digest}), Some("/b"))
+                .invocation(&mcp, reg, &json!({"certificate": digest}))
                 .expect("retained digest");
             assert_eq!(by_digest.argv, expected);
             assert_eq!(by_digest.stdin, Some(digest.into_bytes()));
             let file = tool
-                .invocation(&mcp, reg, &json!({"file": "report.cert"}), Some("/b"))
+                .invocation(&mcp, reg, &json!({"file": "report.cert"}))
                 .expect("retained file");
             let mut expected = prefix;
-            expected.extend(["report.cert", "--book", "/b", "--json"]);
+            expected.extend(["report.cert", "--json"]);
             assert_eq!(file.argv, expected);
             assert!(file.stdin.is_none());
             for args in [
                 json!({}),
                 json!({"file": "report.cert", "certificate": "abcd"}),
             ] {
-                assert!(tool.invocation(&mcp, reg, &args, Some("/b")).is_err());
+                assert!(tool.invocation(&mcp, reg, &args).is_err());
             }
         }
     }
@@ -1874,31 +1877,19 @@ mod tests {
         let (mcp, reg) = embedded();
         let post = mcp.tool_by_wire("fa_post_post").expect("post");
         let inv = post
-            .invocation(&mcp, reg, &json!({"intent": {"idempotency_key": "k", "legs": []}, "grant": "post_closed", "yes": true}), Some("/b"))
+            .invocation(
+                &mcp,
+                reg,
+                &json!({"intent": {"idempotency_key": "k", "legs": []}}),
+            )
             .expect("ok");
-        assert_eq!(
-            inv.argv,
-            vec![
-                "post",
-                "--intent",
-                "-",
-                "--grant",
-                "post_closed",
-                "--yes",
-                "--book",
-                "/b",
-                "--json"
-            ]
-        );
+        assert_eq!(inv.argv, vec!["post", "--intent", "-", "--json"]);
         let stdin = String::from_utf8(inv.stdin.expect("stdin")).unwrap();
         assert!(stdin.contains("\"idempotency_key\":\"k\""));
         let inv = post
-            .invocation(&mcp, reg, &json!({"intent_file": "e.json"}), Some("/b"))
+            .invocation(&mcp, reg, &json!({"intent_file": "e.json"}))
             .expect("path form");
-        assert_eq!(
-            inv.argv,
-            vec!["post", "--intent", "e.json", "--book", "/b", "--json"]
-        );
+        assert_eq!(inv.argv, vec!["post", "--intent", "e.json", "--json"]);
         assert!(inv.stdin.is_none());
         for (what, args) in [
             (
@@ -1916,79 +1907,96 @@ mod tests {
                 json!({"intent": {}, "evidence": [1]}),
             ),
         ] {
-            assert!(
-                post.invocation(&mcp, reg, &args, Some("/b")).is_err(),
-                "{what}"
-            );
+            assert!(post.invocation(&mcp, reg, &args).is_err(), "{what}");
         }
         let e = post
-            .invocation(&mcp, reg, &json!({"intent": {}, "evidnce": ["x"]}), None)
+            .invocation(&mcp, reg, &json!({"intent": {}, "evidnce": ["x"]}))
             .unwrap_err();
         assert!(e.fix.contains("evidence"), "{e:?}");
         let explain = mcp
             .tool_by_wire("fa_read_explain_balance")
             .expect("explain");
         let e = explain
-            .invocation(&mcp, reg, &json!({"period": "P"}), Some("/b"))
+            .invocation(&mcp, reg, &json!({"period": "P"}))
             .unwrap_err();
         assert!(e.message.contains("`account` is required"), "{e:?}");
         let inv = explain
-            .invocation(
-                &mcp,
-                reg,
-                &json!({"period": "P", "account": "1000"}),
-                Some("/b"),
-            )
+            .invocation(&mcp, reg, &json!({"period": "P", "account": "1000"}))
             .expect("ok");
         assert_eq!(
             inv.argv,
-            vec![
-                "explain", "balance", "1000", "--period", "P", "--book", "/b", "--json"
-            ]
+            vec!["explain", "balance", "1000", "--period", "P", "--json"]
         );
         let docs = mcp.tool_by_wire("fa_orient_robot_docs").expect("docs");
         let inv = docs
-            .invocation(
-                &mcp,
-                reg,
-                &json!({"topic": "schema", "name": "posted"}),
-                None,
-            )
+            .invocation(&mcp, reg, &json!({"topic": "schema", "name": "posted"}))
             .expect("ok");
         assert_eq!(inv.argv, vec!["robot-docs", "schema", "posted", "--json"]);
         let e = docs
-            .invocation(&mcp, reg, &json!({"topic": "shema"}), None)
+            .invocation(&mcp, reg, &json!({"topic": "shema"}))
             .unwrap_err();
         assert!(e.fix.contains("schema"), "{e:?}");
         let chart = mcp.tool_by_wire("fa_chart_import_chart").expect("chart");
         let inv = chart
-            .invocation(
-                &mcp,
-                reg,
-                &json!({"chart": {"accounts": []}, "book": "/b"}),
-                None,
-            )
+            .invocation(&mcp, reg, &json!({"chart": {"accounts": []}}))
             .expect("ok");
-        assert_eq!(
-            inv.argv,
-            vec!["chart", "import", "-", "--book", "/b", "--json"]
-        );
+        assert_eq!(inv.argv, vec!["chart", "import", "-", "--json"]);
         let fy = mcp.tool_by_wire("fa_time_create_periods").expect("periods");
         let inv = fy
-            .invocation(&mcp, reg, &json!({"fiscal_year": 2026}), Some("/b"))
+            .invocation(&mcp, reg, &json!({"fiscal_year": 2026}))
             .expect("integer flag");
         assert_eq!(
             inv.argv,
-            vec![
-                "period",
-                "create",
-                "--fiscal-year",
-                "2026",
-                "--book",
-                "/b",
-                "--json"
-            ]
+            vec!["period", "create", "--fiscal-year", "2026", "--json"]
         );
+    }
+
+    #[test]
+    fn normalizer_never_builds_caller_authority_flags() {
+        let (mcp, reg) = embedded();
+        for tool in &mcp.tools {
+            for argument in FORBIDDEN_ARGUMENTS {
+                for value in [JsonValue::Null, json!(false), json!("operator")] {
+                    let mut arguments = json!({});
+                    arguments[*argument] = value;
+                    let error = tool
+                        .invocation(&mcp, reg, &arguments)
+                        .expect_err("forbidden presence");
+                    assert!(error.message.contains("forbidden argument"), "{error:?}");
+                }
+            }
+        }
+        let show = mcp.tool_by_wire("fa_read_show_entry").unwrap();
+        for value in [
+            "--as=operator",
+            "--grant=post_closed",
+            "--yes",
+            "--book=/other",
+            "--",
+        ] {
+            assert!(
+                show.invocation(&mcp, reg, &json!({"vid": value})).is_err(),
+                "{value}"
+            );
+        }
+        // A flag-like value remains data, never a parsed option.
+        let reverse = mcp.tool_by_wire("fa_post_reverse").unwrap();
+        let invocation = reverse
+            .invocation(
+                &mcp,
+                reg,
+                &json!({
+                    "vid": "ab".repeat(16), "reason": "Other", "description": "--as=controller",
+                }),
+            )
+            .unwrap();
+        let parsed =
+            fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+        assert_eq!(parsed.flag("--description"), Some("--as=controller"));
+        for flag in ["--as", "--grant", "--book", "--keys", "--via"] {
+            assert!(parsed.flag(flag).is_none());
+        }
+        assert!(!parsed.switch("--yes"));
     }
 
     #[test]
@@ -2032,21 +2040,14 @@ mod tests {
                 .contains(&json!("projections"))
         );
         let invocation = tool
-            .invocation(&mcp, reg, &json!({"target": "projections"}), Some("/b"))
+            .invocation(&mcp, reg, &json!({"target": "projections"}))
             .expect("read-only verification");
-        assert_eq!(
-            invocation.argv,
-            vec!["verify", "projections", "--book", "/b", "--json"]
-        );
+        assert_eq!(invocation.argv, vec!["verify", "projections", "--json"]);
         assert!(invocation.stdin.is_none());
         let call = mcp
-            .command_to_call(reg, "fa verify projections --book /b --json")
+            .command_to_call(reg, "fa verify projections --json")
             .expect("projection verification tool call");
         assert_eq!(call.tool, "fa_book_verify");
-        assert_eq!(
-            call.arguments,
-            json!({"target": "projections", "book": "/b"})
-        );
+        assert_eq!(call.arguments, json!({"target": "projections"}));
     }
-
 }

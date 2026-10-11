@@ -1,10 +1,11 @@
-//! End to end over stdio (bead fa-xex): the real `fa-mcp` binary is started
+//! End to end over stdio (beads fa-xex/fa-23r): the real `fa-mcp` binary is started
 //! on a temp book and spoken to as an MCP host would — newline-delimited
 //! JSON-RPC on its stdin/stdout — through `initialize`, `tools/list`,
 //! `tools/call` and `resources/read`. Every tool result's first content
 //! block must equal, byte for byte, the `data` payload the CLI's own front
 //! door (`fa_cli::entry::fa`, the function the `fa` binary's `main` calls)
-//! prints for the same verb with `--json`.
+//! prints for an operation admitted by the launch authority. Agent trunk
+//! posting and caller-selected authority must be refused without publication.
 //!
 //! Every request and response is printed with the prefix `fa-mcp-e2e:` so a
 //! reader can grep the transcript; the last line is the verdict.
@@ -100,13 +101,19 @@ struct Mcp {
 
 impl Mcp {
     fn start(book: &Path) -> Self {
+        Self::start_with(book, &[])
+    }
+
+    fn start_with(book: &Path, launch: &[&str]) -> Self {
         log(format!(
-            "spawn {} --book {}",
+            "spawn {} --book {} {}",
             env!("CARGO_BIN_EXE_fa-mcp"),
-            book.display()
+            book.display(),
+            launch.join(" "),
         ));
         let mut child = Command::new(env!("CARGO_BIN_EXE_fa-mcp"))
             .args(["--book", &book.display().to_string()])
+            .args(launch)
             .env_remove("FA_BOOK")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -134,6 +141,17 @@ impl Mcp {
             rx,
             next_id: 0,
         }
+    }
+
+    fn initialize(&mut self) -> JsonValue {
+        let init = self.result(
+            "initialize",
+            json!({"protocolVersion": PROTOCOL, "capabilities": {}, "clientInfo": {"name": "fa-mcp-e2e", "version": fa_mcp::VERSION}}),
+        );
+        assert!(init["protocolVersion"].is_string(), "{init}");
+        assert_eq!(init["serverInfo"]["name"], json!("fa-mcp"), "{init}");
+        self.notify("notifications/initialized", json!({}));
+        init
     }
 
     fn send(&mut self, message: &JsonValue) {
@@ -208,6 +226,16 @@ impl Mcp {
     }
 }
 
+impl Drop for Mcp {
+    fn drop(&mut self) {
+        // A failed assertion must not leave this test's server running.
+        if self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
 /// A tool call's outcome: the first content block's text and `isError`.
 fn call_tool(mcp: &mut Mcp, name: &str, arguments: JsonValue) -> (bool, String, JsonValue) {
     let result = mcp.result("tools/call", json!({"name": name, "arguments": arguments}));
@@ -235,6 +263,7 @@ fn structured_error(text: &str) -> JsonValue {
         "refusal_id",
         "cite",
         "detail",
+        "authority",
     ] {
         assert!(
             v.get(key).is_some(),
@@ -315,14 +344,10 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         0
     );
 
-    let mut mcp = Mcp::start(&book);
-    let init = mcp.result(
-        "initialize",
-        json!({"protocolVersion": PROTOCOL, "capabilities": {}, "clientInfo": {"name": "fa-mcp-e2e", "version": fa_mcp::VERSION}}),
-    );
-    assert!(init["protocolVersion"].is_string(), "{init}");
-    assert_eq!(init["serverInfo"]["name"], json!("fa-mcp"), "{init}");
-    mcp.notify("notifications/initialized", json!({}));
+    // This parity test deliberately uses the trusted Preparer template;
+    // default Agent behavior is exercised separately below.
+    let mut mcp = Mcp::start_with(&book, &["--profile", "preparer", "--principal", "operator"]);
+    mcp.initialize();
 
     // tools/list: exactly the registry's wire names, each with an object schema.
     let registry = fa_mcp::registry::McpRegistry::embedded().expect("[mcp]");
@@ -341,6 +366,12 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         for tool in page["tools"].as_array().expect("tools") {
             let name = tool["name"].as_str().expect("name").to_string();
             assert_eq!(tool["inputSchema"]["type"], json!("object"), "{name}");
+            for argument in fa_mcp::registry::FORBIDDEN_ARGUMENTS {
+                assert!(
+                    tool["inputSchema"]["properties"].get(*argument).is_none(),
+                    "{name} exposes {argument}"
+                );
+            }
             assert!(
                 tool["description"]
                     .as_str()
@@ -375,15 +406,28 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         listed.len()
     ));
 
-    // fa.orient: capabilities — equals the CLI's data byte for byte.
+    // Discovery shares the catalogue while declaring the actual binding.
     let (is_error, text, _) = call_tool(&mut mcp, "fa_orient_capabilities", json!({}));
     assert!(!is_error, "{text}");
-    let expected = cli_data(&["capabilities", "--json"]);
+    let mut actual: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    let mut expected: JsonValue =
+        fastmcp_rust::serde_json::from_str(&cli_data(&["capabilities", "--json"])).unwrap();
     assert_eq!(
-        text, expected,
-        "fa_orient_capabilities != fa capabilities --json (data)"
+        actual["capability"]["binding"]["posture"],
+        "mcp-launch-config"
     );
-    log("fa_orient_capabilities == fa capabilities --json: byte-identical data");
+    assert_eq!(actual["capability"]["binding"]["flags"], json!([]));
+    assert_eq!(
+        expected["capability"]["binding"]["posture"],
+        "embedded-owner"
+    );
+    actual["capability"]["binding"] = JsonValue::Null;
+    expected["capability"]["binding"] = JsonValue::Null;
+    assert_eq!(
+        actual, expected,
+        "capability catalogue differs beyond launch binding"
+    );
+    log("fa_orient_capabilities: same catalogue, actual launch-bound authority");
 
     // fa.read: the trial balance of the open period — equals the CLI's data.
     let (is_error, text, result) = call_tool(
@@ -406,6 +450,13 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     )
     .expect("envelope JSON");
     assert_eq!(envelope["events"], json!(["trial_balance"]));
+    assert_eq!(
+        envelope["authority"],
+        json!({
+            "posture": "mcp-launch-config", "principal": "operator", "profile": "preparer",
+            "ops": ["read", "post", "verify"],
+        })
+    );
     assert!(envelope["coordinate"]["known_at"].is_number(), "{envelope}");
     assert_eq!(
         envelope["coordinate"]["effective"],
@@ -589,10 +640,13 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         }
         let mut plain = command;
         plain.extend([
-            "--as-known-at", original_known_at.as_str(), "--book", b.as_str(), "--json",
+            "--as-known-at",
+            original_known_at.as_str(),
+            "--book",
+            b.as_str(),
+            "--json",
         ]);
-        let expected: JsonValue =
-            fastmcp_rust::serde_json::from_str(&cli_data(&plain)).unwrap();
+        let expected: JsonValue = fastmcp_rust::serde_json::from_str(&cli_data(&plain)).unwrap();
         assert_eq!(comparable, expected, "{wire}: original report parity");
         let envelope: JsonValue =
             fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap())
@@ -600,8 +654,11 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         assert_eq!(envelope["events"], json!([event, "report_certificate"]));
         assert_eq!(envelope["certificate"], json!(oid));
         for certificate in [oid.clone(), data[1]["bytes"].as_str().unwrap().to_string()] {
-            let (is_error, replayed, result) =
-                call_tool(&mut mcp, "fa_read_replay", json!({"certificate": certificate}));
+            let (is_error, replayed, result) = call_tool(
+                &mut mcp,
+                "fa_read_replay",
+                json!({"certificate": certificate}),
+            );
             assert!(!is_error, "{replayed}");
             assert_eq!(replayed, report_text);
             let replay_envelope: JsonValue =
@@ -611,7 +668,9 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
             assert_eq!(replay_envelope["coordinate"], envelope["coordinate"]);
         }
         let (is_error, status, _) = call_tool(
-            &mut mcp, "fa_read_certificate_status", json!({"certificate": oid}),
+            &mut mcp,
+            "fa_read_certificate_status",
+            json!({"certificate": oid}),
         );
         assert!(!is_error, "{status}");
         let status: JsonValue = fastmcp_rust::serde_json::from_str(&status).unwrap();
@@ -624,10 +683,16 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
             "fa_read_explain_balance",
             json!({"account": "9999", "period": "FY2026-P03", "certify": true}),
         ),
-        ("fa_read_open_items", json!({"account": "9999", "certify": true})),
+        (
+            "fa_read_open_items",
+            json!({"account": "9999", "certify": true}),
+        ),
     ] {
         let (is_error, text, _) = call_tool(&mut mcp, wire, arguments);
-        assert!(is_error, "{wire}: unknown account cannot become an empty certified report");
+        assert!(
+            is_error,
+            "{wire}: unknown account cannot become an empty certified report"
+        );
         assert_eq!(structured_error(&text)["exit"], json!(2), "{text}");
     }
 
@@ -705,7 +770,9 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     );
     for (oid, original, coordinate) in generic_certificates {
         let (is_error, status, _) = call_tool(
-            &mut mcp, "fa_read_certificate_status", json!({"certificate": oid}),
+            &mut mcp,
+            "fa_read_certificate_status",
+            json!({"certificate": oid}),
         );
         assert!(!is_error, "{status}");
         let status: JsonValue = fastmcp_rust::serde_json::from_str(&status).unwrap();
@@ -790,7 +857,7 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     assert_eq!(e["type"], json!("usage"));
     log("detector float_amount refused a JSON number before dispatch");
 
-    // A dangerous operation without `yes`: FA-REF-007 with the safe alternative as a tool call.
+    // Dangerous commits cannot be confirmed by this MCP session.
     let (is_error, text, _) = call_tool(
         &mut mcp,
         "fa_time_period_transition",
@@ -799,17 +866,20 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     assert!(is_error, "{text}");
     let e = structured_error(&text);
     assert_eq!(e["refusal_id"], json!("FA-REF-007"), "{e}");
-    assert_eq!(
-        e["suggested_tool_calls"][0]["tool"],
-        json!("fa_time_period_transition"),
-        "{e}"
+    assert!(
+        e["suggested_tool_calls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|call| {
+                call["tool"] == "fa_time_period_transition"
+                    && call["arguments"]["transition"] == "close"
+                    && call["arguments"].get("plan_out").is_some()
+            }),
+        "safe planning alternative: {e}"
     );
-    assert_eq!(
-        e["suggested_tool_calls"][0]["arguments"]["transition"],
-        json!("soft-close"),
-        "{e}"
-    );
-    log("FA-REF-007 mapped with the safe alternative as a suggested tool call");
+    assert!(!e["fix_hint"].as_str().unwrap().contains("--yes"));
+    log("FA-REF-007 mapped with planning for independent operator review");
 
     // Resources: the exit codes and the served book's periods equal the CLI's data.
     let read = mcp.result("resources/read", json!({"uri": "resource://fa/exit-codes"}));
@@ -825,12 +895,250 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     let read = mcp.result("resources/read", json!({"uri": "resource://fa/book"}));
     let text = read["contents"][0]["text"].as_str().expect("text");
     assert_eq!(text, cli_data(&["book", "info", "--book", &b, "--json"]));
+    let resource_envelope: JsonValue = fastmcp_rust::serde_json::from_str(
+        read["contents"][1]["text"]
+            .as_str()
+            .expect("resource authority"),
+    )
+    .unwrap();
+    assert_eq!(resource_envelope["authority"]["profile"], "preparer");
+    assert_eq!(resource_envelope["authority"]["principal"], "operator");
     log("resources exit-codes, periods/{book}, book == the CLI's data");
 
     let code = mcp.finish();
     log(format!("fa-mcp exited {code} after stdin closed"));
     assert_eq!(code, 0);
     log(
-        "VERDICT PASS: tools/list == registry; capabilities, tb, entry show, exit-codes, periods, book byte-identical to the CLI; refusal, detector and FA-REF-007 structured",
+        "VERDICT PASS: tools/list == registry; capabilities declares bound authority; tb, entry show, exit-codes, periods, book byte-identical to the CLI; refusal, detector and FA-REF-007 structured",
     );
+}
+
+#[test]
+fn default_agent_authority_survives_stdio_and_cannot_be_changed_by_a_call() {
+    let dir = tmp("agent-authority");
+    let book = dir.join("book");
+    let b = book.display().to_string();
+    cli_data(&[
+        "book",
+        "create",
+        "--book",
+        &b,
+        "--name",
+        "Agent boundary",
+        "--json",
+    ]);
+    let chart = dir.join("chart.json");
+    std::fs::write(
+        &chart,
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","leaf":true,"unit":"USD"}]}"#,
+    ).unwrap();
+    cli_data(&[
+        "chart",
+        "import",
+        &chart.display().to_string(),
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2026",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&["period", "open", "FY2026-P03", "--book", &b, "--json"]);
+    let oid = source_document(&dir, &b);
+    let intent = json!({
+        "class": "Original", "effective_date": "2026-03-15",
+        "description": "Agent boundary rent", "idempotency_key": "agent-rent",
+        "legs": [
+            {"side": "debit", "account": "6000", "amount": "10.00 USD"},
+            {"side": "credit", "account": "1000", "amount": "10.00 USD"},
+        ],
+    });
+    let authority = json!({
+        "posture": "mcp-launch-config", "principal": "mcp-agent", "profile": "agent",
+        "ops": ["read", "post", "verify"],
+    });
+    let mut mcp = Mcp::start(&book);
+    let init = mcp.initialize();
+    assert!(init["instructions"].as_str().unwrap().contains("mcp-agent"));
+
+    // Real Agent reads and immutable report retention remain usable.
+    let (error, text, result) = call_tool(
+        &mut mcp,
+        "fa_read_trial_balance",
+        json!({"period": "FY2026-P03", "certify": true}),
+    );
+    assert!(!error, "{text}");
+    let certified: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    let envelope: JsonValue =
+        fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(envelope["authority"], authority);
+    let (error, replayed, result) = call_tool(
+        &mut mcp,
+        "fa_read_replay",
+        json!({"certificate": certified[1]["oid"]}),
+    );
+    assert!(!error, "{replayed}");
+    assert_eq!(replayed, certified[0].to_string());
+    let envelope: JsonValue =
+        fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(envelope["authority"], authority);
+    let before = cli_data(&["book", "info", "--book", &b, "--json"]);
+
+    // Valid accounting/evidence reaches Profile::Agent in the kernel; this
+    // must not be replaced by a blanket adapter write ban or an owner call.
+    let (error, text, _) = call_tool(
+        &mut mcp,
+        "fa_post_post",
+        json!({"intent": intent, "evidence": [oid]}),
+    );
+    assert!(error, "an Agent must not post to trunk: {text}");
+    let refused = structured_error(&text);
+    assert_eq!(refused["refusal_id"], "FA-REF-013", "{refused}");
+    assert_eq!(refused["exit"], 7);
+    assert_eq!(refused["authority"], authority);
+
+    // Presence is refused even for null/false and before float detection.
+    for argument in fa_mcp::registry::FORBIDDEN_ARGUMENTS {
+        for value in [JsonValue::Null, json!(false), json!("operator")] {
+            let mut arguments = json!({"intent": {"amount": 1.25}});
+            arguments[*argument] = value;
+            let (error, text, _) = call_tool(&mut mcp, "fa_post_post", arguments);
+            assert!(error, "forbidden {argument}: {text}");
+            let refused = structured_error(&text);
+            assert_eq!(refused["type"], "forbidden_argument");
+            assert_eq!(refused["data"]["argument"], *argument);
+            assert_eq!(refused["authority"], authority);
+            assert!(refused.get("detector").is_none());
+            assert_eq!(refused["suggested_tool_calls"], json!([]));
+        }
+    }
+    let (error, text, _) = call_tool(
+        &mut mcp,
+        "fa_read_show_entry",
+        json!({"vid": "--as=operator"}),
+    );
+    assert!(error, "a positional cannot inject an authority flag");
+    assert_eq!(structured_error(&text)["detector"], "arguments");
+
+    // A real owner-produced plan cannot become implicit MCP confirmation.
+    let plan = dir.join("close.plan");
+    cli_data(&[
+        "period",
+        "close",
+        "FY2026-P03",
+        "--plan-out",
+        &plan.display().to_string(),
+        "--book",
+        &b,
+        "--json",
+    ]);
+    for arguments in [
+        json!({"transition": "close", "code": "FY2026-P03"}),
+        json!({"transition": "close", "code": "FY2026-P03", "plan": plan.display().to_string()}),
+    ] {
+        let (error, text, _) = call_tool(&mut mcp, "fa_time_period_transition", arguments);
+        assert!(error, "dangerous commit: {text}");
+        let refused = structured_error(&text);
+        assert_eq!(refused["refusal_id"], "FA-REF-007", "{refused}");
+        assert_eq!(refused["authority"], authority);
+    }
+
+    let resource = mcp.result("resources/read", json!({"uri": "resource://fa/book"}));
+    let resource_authority: JsonValue =
+        fastmcp_rust::serde_json::from_str(resource["contents"][1]["text"].as_str().unwrap())
+            .unwrap();
+    assert_eq!(resource_authority["authority"], authority);
+    let alien = mcp.request(
+        "resources/read",
+        json!({"uri": "resource://fa/chart/%2Fanother%2Fbook"}),
+    );
+    assert_eq!(
+        alien["error"]["data"]["type"], "forbidden_argument",
+        "{alien}"
+    );
+    assert_eq!(alien["error"]["data"]["authority"], authority);
+    assert_eq!(cli_data(&["book", "info", "--book", &b, "--json"]), before);
+    assert_eq!(mcp.finish(), 0);
+
+    // Trusted launch grants attenuate the whole set: read is not silently
+    // supplemented with the Preparer template's default post permission.
+    let mut read_only = Mcp::start_with(
+        &book,
+        &[
+            "--principal",
+            "reader",
+            "--profile",
+            "preparer",
+            "--grant",
+            "read",
+        ],
+    );
+    read_only.initialize();
+    let (error, text, result) = call_tool(&mut read_only, "fa_book_info", json!({}));
+    assert!(!error, "{text}");
+    let envelope: JsonValue =
+        fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(envelope["authority"]["ops"], json!(["read"]));
+    assert_eq!(envelope["authority"]["principal"], "reader");
+    let (error, text, _) = call_tool(
+        &mut read_only,
+        "fa_post_post",
+        json!({"intent": intent, "evidence": [oid]}),
+    );
+    assert!(error, "read-only Preparer cannot acquire Post: {text}");
+    assert_eq!(structured_error(&text)["exit"], 7);
+    assert_eq!(cli_data(&["book", "info", "--book", &b, "--json"]), before);
+    assert_eq!(read_only.finish(), 0);
+}
+
+#[test]
+fn launch_rejects_unbounded_grants_before_serving_stdio() {
+    let dir = tmp("launch-refusal");
+    for profile in ["agent", "preparer"] {
+        for grant in [
+            "approve",
+            "close",
+            "post_closed",
+            "migrate",
+            "witness",
+            "issue_capability",
+        ] {
+            let output = Command::new(env!("CARGO_BIN_EXE_fa-mcp"))
+                .args([
+                    "--book",
+                    &dir.display().to_string(),
+                    "--profile",
+                    profile,
+                    "--grant",
+                    grant,
+                ])
+                .env_remove("FA_BOOK")
+                .stdin(Stdio::null())
+                .output()
+                .expect("launch fa-mcp");
+            assert_eq!(
+                output.status.code(),
+                Some(7),
+                "{profile} {grant}: {output:?}"
+            );
+            assert!(
+                output.stdout.is_empty(),
+                "a refused launch must not start the protocol"
+            );
+            assert!(String::from_utf8_lossy(&output.stderr).contains("cannot hold"));
+        }
+    }
+    let missing = Command::new(env!("CARGO_BIN_EXE_fa-mcp"))
+        .env_remove("FA_BOOK")
+        .stdin(Stdio::null())
+        .output()
+        .expect("launch without book");
+    assert_eq!(missing.status.code(), Some(2));
+    assert!(missing.stdout.is_empty());
 }

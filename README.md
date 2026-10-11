@@ -173,6 +173,51 @@ collection, rebasing through portable read witnesses, atomic multi-intent
 batches, draft promotion and authenticated sessions remain unfinished
 under `fa-we7` and its dependent beads.
 
+### MCP launch authority
+
+Start the stdio server against a book the operator has already prepared:
+
+```bash
+# The default Agent session: read reports and verify the journal.
+fa-mcp --book ./books/acme --principal accounting-agent
+# A trusted operator can explicitly allow ordinary accounting posting.
+fa-mcp --book ./books/acme --principal rent-preparer --profile preparer
+# An explicit grant list is the entire selected set, not an addition to defaults.
+fa-mcp --book ./books/acme --principal report-reader --profile agent --grant read
+```
+
+The default principal is `mcp-agent`; the default profile is `agent`.
+Both profiles default to `read`, `post`, and `verify`. An explicit, nonempty
+`--grant` list selects only the named operations within the profile's ceiling.
+Agent permits `read`, `post`, `verify`, `reconcile`, `produce`, and `partial_view`;
+Preparer also permits `post_softclosed`. A grant outside that ceiling refuses
+startup. Preparer is a bounded Human template, not an unrestricted owner.
+
+An Agent's accounting posts to trunk reach the kernel and refuse with
+`FA-REF-013`; draft branches and promotion are still pending. An explicitly
+launched Preparer can make ordinary, evidence-backed posts under its own fixed
+principal. Book creation, chart/period preparation, document intake and approvals
+remain operator work. Both profiles can use the certified report and retained
+replay tools above when they hold `read`; certification retains metadata without
+posting an accounting entry. Register maintenance additionally requires `verify`.
+
+The server resolves `--book` or `FA_BOOK`, optional `--keys`, principal, profile,
+and operations once at launch. Tool calls cannot supply `as`, `grant`, `yes`,
+`keys`, `book`, `principal`, `profile`, or `via`, including null or false values.
+Resource reads use the same book. Successful responses and structured refusals
+identify the actual launch authority; report data remains in the first content
+block. A separate operator-controlled session is required to change identity
+or authority. Dangerous commits refuse with `FA-REF-007`; a plan or approval
+file cannot substitute for the separate confirmation exchange that remains
+unfinished.
+
+Each book operation takes the configured writer lease. If a running `fad` or
+another writer holds it, the server refuses instead of forwarding authority
+through the daemon's unauthenticated protocol. This is a trusted launch binding;
+authenticated capability issuance and daemon sessions remain unfinished. Host
+file arguments are not confined to a filesystem sandbox, so deployments must
+still control the server process's filesystem access.
+
 ### Embedded execution
 
 `AsyncBook<V>` accepts the caller's `PurposeContexts` for each operation and

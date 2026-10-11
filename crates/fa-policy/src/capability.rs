@@ -16,9 +16,10 @@
 //!
 //! **Trust boundary.** This crate decides whether a capability authorizes
 //! an act; it does not decide whether the caller holds the capability. In
-//! the embedded posture the calling process is the principal's own agent and
-//! [`Capability::embedded`] self-issues; the daemon/MCP posture binds the
-//! capability from an authenticated session before calling the kernel.
+//! the embedded posture [`Capability::embedded`] self-issues under the
+//! calling process's authority. MCP binds a capability from trusted launch
+//! configuration; it does not authenticate the named principal. Journaled
+//! issuance and authenticated holder-bound sessions remain separate work.
 
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};

@@ -25,8 +25,8 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use fa::{ReportOutput, ReportSelection, TrialBalanceSelection};
 use fa::book::{Book, BookError, BookKeys, Entropy};
+use fa::{ReportOutput, ReportSelection, TrialBalanceSelection};
 use fa_journal::BookContext;
 use fa_journal::{
     AccountSpec, BalanceLimit, BookSpec, Capability, PostRequest, Posted, Refusal, UnitPolicy, exit,
@@ -42,6 +42,7 @@ use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodState, PeriodTransition
 use fgdb_types::{CommitSeq, VId};
 
 use crate::args::{self, Args, UsageError, nearest};
+use crate::authority::{LaunchAuthority, owner_envelope};
 use crate::document;
 use crate::json::{self, Json, obj, s};
 use crate::notary;
@@ -220,6 +221,8 @@ struct Said {
     at: Option<At>,
     warnings: Vec<String>,
     time_selection: Option<fa::InstantSelection>,
+    authority: Option<Json>,
+    owner_principal: Option<String>,
 }
 
 /// Where a robot line sits (plan §4.8): the book's id, and the branch
@@ -233,7 +236,7 @@ pub struct At {
 }
 
 /// One robot-mode line (plan Appendix D): `{v, event, book, coordinate,
-/// data, certificate, warnings, next_actions}` with the event's fields under
+/// data, certificate, authority, warnings, next_actions}` with the event's fields under
 /// `data`; `book` and `coordinate` from `at` (null when no book backs the
 /// line); and the registry's next actions for the event. This ordinary
 /// constructor leaves `certificate` null; certified reports bind their
@@ -241,7 +244,24 @@ pub struct At {
 /// flat object, never a robot line.
 #[must_use]
 pub fn robot_line(event: &str, data: Json, at: Option<&At>, warnings: &[String]) -> Json {
-    robot_line_with_actions(event, data, at, warnings, &[], None, None)
+    robot_line_with_actions(
+        event,
+        data,
+        at,
+        warnings,
+        &[],
+        RobotMetadata {
+            certificate: None,
+            time_selection: None,
+            authority: owner_envelope(None),
+        },
+    )
+}
+
+struct RobotMetadata<'a> {
+    certificate: Option<&'a str>,
+    time_selection: Option<&'a fa::InstantSelection>,
+    authority: Json,
 }
 
 fn robot_line_with_actions(
@@ -250,8 +270,7 @@ fn robot_line_with_actions(
     at: Option<&At>,
     warnings: &[String],
     actions: &[(String, String)],
-    certificate: Option<&str>,
-    time_selection: Option<&fa::InstantSelection>,
+    metadata: RobotMetadata<'_>,
 ) -> Json {
     let mut next_actions: Vec<Json> = verbs::registry().map_or_else(
         |_| Vec::new(),
@@ -277,12 +296,18 @@ fn robot_line_with_actions(
                     ("branch", s("trunk")),
                     ("known_at", Json::Int(i128::from(a.known_at.0))),
                     ("effective", s(&a.effective)),
-                    ("time_evidence", time_selection.map_or(Json::Null, time_selection_json)),
+                    (
+                        "time_evidence",
+                        metadata
+                            .time_selection
+                            .map_or(Json::Null, time_selection_json),
+                    ),
                 ])
             }),
         ),
         (verbs::PAYLOAD, data),
-        ("certificate", certificate.map_or(Json::Null, s)),
+        ("certificate", metadata.certificate.map_or(Json::Null, s)),
+        ("authority", metadata.authority),
         ("warnings", Json::Arr(warnings.iter().map(s).collect())),
         ("next_actions", Json::Arr(next_actions)),
     ])
@@ -316,6 +341,15 @@ pub(crate) struct Out {
 impl Out {
     fn new(json: bool, capture: bool) -> Self {
         Self::styled(json, capture, Style::PLAIN)
+    }
+
+    fn with_authority(self, authority: Option<&LaunchAuthority>) -> Self {
+        self.said.borrow_mut().authority = authority.map(LaunchAuthority::envelope_json);
+        self
+    }
+
+    fn is_bound(&self) -> bool {
+        self.said.borrow().authority.is_some()
     }
 
     fn styled(json: bool, capture: bool, style: Style) -> Self {
@@ -453,8 +487,14 @@ impl Out {
                 said.at.as_ref(),
                 &said.warnings,
                 actions,
-                certificate,
-                said.time_selection.as_ref(),
+                RobotMetadata {
+                    certificate,
+                    time_selection: said.time_selection.as_ref(),
+                    authority: said
+                        .authority
+                        .clone()
+                        .unwrap_or_else(|| owner_envelope(said.owner_principal.as_deref())),
+                },
             );
             self.line(line.render());
         } else if !human.is_empty() {
@@ -649,21 +689,99 @@ pub(crate) struct Ctx<'a> {
     pub(crate) out: Out,
     pub(crate) books: BookSource<'a>,
     pub(crate) files: Files,
+    authority: Option<LaunchAuthority>,
+}
+
+impl Ctx<'_> {
+    pub(crate) fn principal(&self, args: &Args) -> VId {
+        self.authority
+            .as_ref()
+            .map_or_else(|| principal(args), LaunchAuthority::principal_vid)
+    }
+
+    /// A bound host reuses the launch capability verbatim. The handler's
+    /// implied ops exist only on the explicit embedded-owner route.
+    pub(crate) fn capability(&self, args: &Args, implied: &[&str]) -> Result<Capability, Fail> {
+        if let Some(authority) = &self.authority {
+            return Ok(authority.capability().clone());
+        }
+        let mut ops = implied.to_vec();
+        ops.extend(args.flag_all("--grant"));
+        Capability::embedded(self.principal(args), &ops).map_err(|e| {
+            usage(
+                e.to_string(),
+                "--grant takes a registered op name; `fa capabilities --json` lists them",
+            )
+        })
+    }
 }
 
 /// Run one `fa` command line. `capture` keeps the output for a response
 /// frame instead of writing it to stdio. Returns the exit code and, when
 /// captured, the output.
 pub fn run(argv: &[String], books: Books<'_>, files: Files, capture: bool) -> (u8, Captured) {
+    run_scoped(argv, books, files, None, capture)
+}
+
+/// Run under the immutable authority supplied by the host. Hosts opening
+/// a directory should use [`crate::entry::fa_with_authority`] for the
+/// writer lease as well. This route never self-issues an owner capability.
+pub fn run_with_authority(
+    argv: &[String],
+    books: Books<'_>,
+    files: Files,
+    authority: &LaunchAuthority,
+    capture: bool,
+) -> (u8, Captured) {
+    run_scoped(argv, books, files, Some(authority), capture)
+}
+
+fn run_scoped(
+    argv: &[String],
+    books: Books<'_>,
+    files: Files,
+    authority: Option<&LaunchAuthority>,
+    capture: bool,
+) -> (u8, Captured) {
     let json = argv.iter().any(|a| a == "--json");
     let reg = match registry() {
         Ok(r) => r,
-        Err(fail) => return finish_into(Out::new(json, capture), Err(fail)),
+        Err(fail) => {
+            return finish_into(Out::new(json, capture).with_authority(authority), Err(fail));
+        }
     };
-    let args = match args::parse(argv, &reg.value_flags(), &reg.switches()) {
+    let mut args = match args::parse(argv, &reg.value_flags(), &reg.switches()) {
         Ok(a) => a,
-        Err(e) => return finish_into(Out::new(json, capture), Err(Fail::Usage(e))),
+        Err(e) => {
+            return finish_into(
+                Out::new(json, capture).with_authority(authority),
+                Err(Fail::Usage(e)),
+            );
+        }
     };
+    if let Some(authority) = authority {
+        for flag in ["--as", "--grant", "--yes", "--book", "--keys", "--via"] {
+            if args.flags.contains_key(flag) || args.switch(flag) {
+                return usage_error_with_authority(
+                    argv,
+                    format!("{flag} cannot override launch-bound authority"),
+                    "identity, authority, book, keys and transport are fixed when the server starts; ask the operator to start a server with the profile you need",
+                    authority,
+                    capture,
+                );
+            }
+        }
+        // Bind parsed fields, not appended argv: a caller's `--` terminator
+        // or duplicate flag cannot turn the trusted paths into positionals.
+        args.flags.insert(
+            "--book".into(),
+            vec![authority.book().to_string_lossy().into_owned()],
+        );
+        if let Some(keys) = authority.keys() {
+            args.flags
+                .insert("--keys".into(), vec![keys.to_string_lossy().into_owned()]);
+        }
+    }
     let json = args.switch("--json");
     let style = Style::resolve(
         json,
@@ -672,13 +790,22 @@ pub fn run(argv: &[String], books: Books<'_>, files: Files, capture: bool) -> (u
         std::io::stdout().is_terminal(),
         |name| std::env::var(name).ok(),
     );
-    let out = Out::styled(json, capture, style);
+    let out = Out::styled(json, capture, style).with_authority(authority);
+    if authority.is_none() {
+        out.said.borrow_mut().owner_principal =
+            Some(args.flag("--as").unwrap_or("operator").to_string());
+    }
     let books = BookSource {
         books,
         said: Rc::clone(&out.said),
         cwd: files.cwd.clone(),
     };
-    let mut ctx = Ctx { out, books, files };
+    let mut ctx = Ctx {
+        out,
+        books,
+        files,
+        authority: authority.cloned(),
+    };
     let result = dispatch(&mut ctx, reg, &args);
     finish_into(ctx.out, result)
 }
@@ -693,6 +820,53 @@ fn finish_into(out: Out, result: Result<(), Fail>) -> (u8, Captured) {
 #[must_use]
 pub fn refuse(argv: &[String], refusal: Refusal, capture: bool) -> (u8, Captured) {
     host_failure(argv, Fail::Refusal(refusal), capture)
+}
+
+/// A host refusal that retains the launch binding before a book is opened.
+#[must_use]
+pub fn refuse_with_authority(
+    argv: &[String],
+    refusal: Refusal,
+    authority: &LaunchAuthority,
+    capture: bool,
+) -> (u8, Captured) {
+    host_failure_with_authority(argv, Fail::Refusal(refusal), authority, capture)
+}
+
+/// A bound host's usage error, including parsing and forbidden overrides.
+#[must_use]
+pub fn usage_error_with_authority(
+    argv: &[String],
+    message: impl Into<String>,
+    fix: impl Into<String>,
+    authority: &LaunchAuthority,
+    capture: bool,
+) -> (u8, Captured) {
+    host_failure_with_authority(argv, usage(message, fix), authority, capture)
+}
+
+/// A bound host's environment error; it never falls back to owner execution.
+#[must_use]
+pub fn environment_error_with_authority(
+    argv: &[String],
+    message: String,
+    authority: &LaunchAuthority,
+    capture: bool,
+) -> (u8, Captured) {
+    host_failure_with_authority(argv, Fail::Environment(message), authority, capture)
+}
+
+fn host_failure_with_authority(
+    argv: &[String],
+    fail: Fail,
+    authority: &LaunchAuthority,
+    capture: bool,
+) -> (u8, Captured) {
+    let json = argv.iter().any(|a| a == "--json");
+    finish_into(
+        Out::new(json, capture).with_authority(Some(authority)),
+        Err(fail),
+    )
 }
 
 /// A usage error (exit 2) raised by a host before any command runs.
@@ -932,7 +1106,8 @@ fn dispatch(ctx: &mut Ctx<'_>, reg: &Registry, args: &Args) -> Result<(), Fail> 
             }
         }
     }
-    gate_from_argv(out, reg, verb, args)?;
+    gate_from_argv(out, reg, verb, args, ctx.authority.as_ref())?;
+    admit_bound_command(ctx, verb, args)?;
     let handler = HANDLERS
         .iter()
         .find(|(name, _)| *name == verb.name)
@@ -944,6 +1119,66 @@ fn dispatch(ctx: &mut Ctx<'_>, reg: &Registry, args: &Args) -> Result<(), Fail> 
             ))
         })?;
     handler(ctx, args)
+}
+
+/// The current period planner returns before every publication. Only this
+/// concrete handler path may bypass dangerous-commit gating; an arbitrary
+/// `--plan` or `--plan-out` argument is never an MCP confirmation.
+fn period_plan_only(verb: &str, args: &Args) -> bool {
+    verb == "period"
+        && matches!(
+            args.positional.get(1).map(String::as_str),
+            Some("open" | "soft-close" | "close" | "lock" | "reopen")
+        )
+        && args.flag("--plan-out").is_some()
+        && args.flag("--plan").is_none()
+        && args.flag_all("--approval").is_empty()
+}
+
+/// Admit the concrete operation before handlers read input files or the
+/// book. Legacy facade mutations without a caller capability remain owner
+/// operations. Report certificates and derived register caches are metadata,
+/// not accounting entries; their actual dangerous rewrites are gated too.
+fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fail> {
+    let Some(authority) = &ctx.authority else {
+        return Ok(());
+    };
+    use fa_policy::Op;
+    let sub = args.positional.get(1).map(String::as_str);
+    let required: &[Op] = if period_plan_only(&verb.name, args) {
+        &[Op::Read]
+    } else {
+        match (verb.name.as_str(), sub) {
+            ("capabilities" | "robot-docs" | "help", _) => &[],
+            ("book", Some("info"))
+            | ("chart" | "period", Some("list"))
+            | ("tb" | "open-items" | "explain" | "replay" | "certificate" | "entry", _) => {
+                &[Op::Read]
+            }
+            ("verify" | "registers", _) => &[Op::Read, Op::Verify],
+            ("post" | "reverse" | "reserve" | "resolve", _) => &[Op::Post],
+            ("approve", _) => &[Op::Approve],
+            ("checkpoint", _) => &[Op::Witness],
+            _ => {
+                return Err(Refusal::new(
+                    fa_journal::refusal::code::CAPABILITY,
+                    exit::SAFETY,
+                    format!("`{}` is not admitted by the launch-bound MCP command surface", command_name(&verb.name, sub)),
+                    "plan §14.2–§14.4; fa-23r (authority before observation)",
+                    "ask the operator to perform this owner operation; document intake needs its provenance-authorized surface (fa-vwf), and period lock/reopen can be prepared with --plan-out",
+                ).into());
+            }
+        }
+    };
+    for op in required {
+        fa_policy::require(authority.capability(), *op, &command_name(&verb.name, sub))
+            .map_err(|denial| {
+                let mut refusal = fa_journal::policy::refusal(&denial);
+                refusal.fix = "identity and authority are fixed when the server starts; ask the operator to start a server with the profile and operations you need".into();
+                Fail::Refusal(refusal)
+            })?;
+    }
+    Ok(())
 }
 
 /// Whether the command line confirms an operation that cannot be undone in
@@ -984,11 +1219,37 @@ fn unconfirmed(d: &Dangerous) -> Fail {
     ))
 }
 
+fn unconfirmed_bound(d: &Dangerous) -> Fail {
+    let alternative = if d.verb == "period"
+        && matches!(d.subcommand.as_deref(), Some("lock" | "reopen" | "close"))
+    {
+        format!(
+            "prepare the operation with `fa period {} <code> --plan-out <file>`; an independent operator must review and commit it",
+            d.subcommand.as_deref().unwrap_or("lock")
+        )
+    } else {
+        d.safe.clone()
+    };
+    Refusal::new(
+        CONFIRMATION_REQUIRED,
+        exit::SAFETY,
+        format!("`{}` requires independent confirmation; MCP cannot commit this dangerous operation until confirm_plan is implemented", command_name(&d.verb, d.subcommand.as_deref())),
+        "plan §15.3; fa-23r; fa-we7 (typed confirmation plans)",
+        alternative,
+    ).into()
+}
+
 /// The dangerous operations the command line alone shows (verbs.toml
 /// `[[dangerous]]`: `always`, `grant:<op>`) are refused unless confirmed,
 /// before the handler opens the book. A confirmation on a command with no
 /// dangerous row is a warning, never a silent no-op.
-fn gate_from_argv(out: &Out, reg: &Registry, verb: &Verb, args: &Args) -> Result<(), Fail> {
+fn gate_from_argv(
+    out: &Out,
+    reg: &Registry,
+    verb: &Verb,
+    args: &Args,
+    authority: Option<&LaunchAuthority>,
+) -> Result<(), Fail> {
     let sub = if verb.subcommands.is_empty() {
         None
     } else {
@@ -996,10 +1257,10 @@ fn gate_from_argv(out: &Out, reg: &Registry, verb: &Verb, args: &Args) -> Result
     };
     let mut rows = reg.dangerous_for(&verb.name, sub).peekable();
     // Planning commits nothing: the commit from the plan is what confirms.
-    if args.flag("--plan-out").is_some() {
+    if period_plan_only(&verb.name, args) {
         return Ok(());
     }
-    if confirmed(args) {
+    if authority.is_none() && confirmed(args) {
         // `--plan` is a file argument wherever it appears; only a bare
         // `--yes` can confirm nothing.
         if rows.peek().is_none() && args.switch("--yes") {
@@ -1013,11 +1274,20 @@ fn gate_from_argv(out: &Out, reg: &Registry, verb: &Verb, args: &Args) -> Result
     for d in rows {
         let applies = match &d.condition {
             Condition::Always => true,
-            Condition::Grant(op) => args.flag_all("--grant").contains(&op.as_str()),
+            Condition::Grant(op) => match authority {
+                Some(authority) => {
+                    fa_policy::Op::from_name(op).is_some_and(|op| authority.capability().holds(op))
+                }
+                None => args.flag_all("--grant").contains(&op.as_str()),
+            },
             Condition::Voids | Condition::ExistingCells => false,
         };
         if applies {
-            return Err(unconfirmed(d));
+            return Err(if authority.is_some() {
+                unconfirmed_bound(d)
+            } else {
+                unconfirmed(d)
+            });
         }
     }
     Ok(())
@@ -1028,12 +1298,13 @@ fn gate_from_argv(out: &Out, reg: &Registry, verb: &Verb, args: &Args) -> Result
 /// write. A handler gating an operation verbs.toml does not list is a
 /// parity defect.
 pub(crate) fn gate(
+    out: &Out,
     args: &Args,
     verb: &str,
     subcommand: Option<&str>,
     condition: &Condition,
 ) -> Result<(), Fail> {
-    if confirmed(args) {
+    if !out.is_bound() && confirmed(args) {
         return Ok(());
     }
     let reg = registry()?;
@@ -1041,7 +1312,11 @@ pub(crate) fn gate(
         .dangerous_for(verb, subcommand)
         .find(|d| d.condition == *condition)
     {
-        Some(d) => Err(unconfirmed(d)),
+        Some(d) => Err(if out.is_bound() {
+            unconfirmed_bound(d)
+        } else {
+            unconfirmed(d)
+        }),
         None => Err(Fail::Internal(format!(
             "`{}` gates `{}`, which verbs.toml [[dangerous]] does not list",
             command_name(verb, subcommand),
@@ -1264,7 +1539,7 @@ fn capabilities_cmd(ctx: &mut Ctx<'_>, _args: &Args) -> Result<(), Fail> {
         ("stdout", s("data")),
         ("stderr", s("diagnostics")),
         ("tui", Json::Bool(false)),
-        ("capability", capability_model()?),
+        ("capability", capability_model(ctx.authority.as_ref())?),
         (
             "dangerous",
             Json::Arr(
@@ -1308,7 +1583,7 @@ fn capabilities_cmd(ctx: &mut Ctx<'_>, _args: &Args) -> Result<(), Fail> {
 /// The capability model this build enforces (plan §14.2, §14.4; fa-policy):
 /// the closed op vocabulary, the profiles and the ops each can never hold,
 /// the caveats' semantics, and the embedded posture's binding.
-fn capability_model() -> Result<Json, Fail> {
+fn capability_model(authority: Option<&LaunchAuthority>) -> Result<Json, Fail> {
     let steward = fa_journal::policy::steward().map_err(BookError::Kernel)?;
     let names = |ops: &[fa_policy::Op]| Json::Arr(ops.iter().map(|o| s(o.name())).collect());
     Ok(obj(vec![
@@ -1350,16 +1625,35 @@ fn capability_model() -> Result<Json, Fail> {
             obj(vec![
                 (
                     "flags",
-                    Json::Arr(vec![s("--as <principal>"), s("--grant <op>")]),
+                    Json::Arr(if authority.is_some() {
+                        Vec::new()
+                    } else {
+                        vec![s("--as <principal>"), s("--grant <op>")]
+                    }),
                 ),
-                ("profile", s(fa_policy::Profile::Human.name())),
+                (
+                    "posture",
+                    s(if authority.is_some() {
+                        "mcp-launch-config"
+                    } else {
+                        "embedded-owner"
+                    }),
+                ),
+                (
+                    "profile",
+                    s(authority
+                        .map_or(fa_policy::Profile::Human, |a| a.capability().profile())
+                        .name()),
+                ),
                 ("ceilings", Json::Arr(Vec::new())),
                 ("expires_at", Json::Null),
                 (
                     "trust_boundary",
-                    s(
-                        "embedded posture: the calling process is the principal's own agent; --as names the principal and --grant self-issues a Human-profile capability for it with no ceilings and no expiry. The daemon/MCP posture binds the capability from an authenticated session instead; the kernel never authenticates a caller.",
-                    ),
+                    s(if authority.is_some() {
+                        "MCP binds one capability from trusted operator launch configuration: fixed principal, profile, operations, book and key path. Requests cannot choose identity, grants, confirmation or daemon routing. Launch configuration does not authenticate the operator; issued tokens and authenticated daemon sessions remain fa-v62/fa-r3q. The envelope lists this session's actual launch template and ops."
+                    } else {
+                        "embedded-owner posture: the calling process supplies --as and self-issues Human-profile operations per command with --grant, without ceilings or expiry. The current fad argv route has the same owner posture and no authenticated session. MCP uses a separate launch-config binding and refuses this daemon route. The kernel evaluates supplied authority; it does not authenticate the operator."
+                    }),
                 ),
             ]),
         ),
@@ -1383,6 +1677,22 @@ fn robot_docs_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("examples") => EXAMPLES.to_string(),
         Some("schema") => return robot_schema(out, registry()?, args.positional.get(2)),
         _ => return Err(unhandled("robot-docs", topic.map(String::as_str))),
+    };
+    let text = match &ctx.authority {
+        Some(authority) => format!(
+            "This MCP server is bound at launch to principal `{}` under the `{}` template, with ops [{}]. Tool requests cannot override identity, grants, confirmation, book or keys. Dangerous commits require independent operator review until confirm_plan is available. The current daemon route cannot carry this authority and is refused. Launch configuration trusts the operator; it is not operator authentication. CLI --as/--grant/--yes examples below describe the operator's embedded-owner command line.\n\n{}",
+            authority.principal(),
+            authority.profile().name(),
+            authority
+                .capability()
+                .ops()
+                .iter()
+                .map(|op| op.name())
+                .collect::<Vec<_>>()
+                .join(", "),
+            text
+        ),
+        None => text,
     };
     out.event(
         "robot_docs",
@@ -1527,7 +1837,7 @@ fn robot_schema(out: &Out, reg: &Registry, name: Option<&String>) -> Result<(), 
 
 const GUIDE: &str = "fa robot-docs guide\n\
 \n\
-1. Every command accepts --json. Parse stdout line by line; each line is one JSON object {v, event, book, coordinate, data, certificate, warnings, next_actions}: `event` names the schema of `data`; `book` and `coordinate` say which book and (branch, known_at, effective) the line describes; `next_actions` are the commands usually run next (add the same --book).\n\
+1. Every command accepts --json. Parse stdout line by line; each line is one JSON object {v, event, book, coordinate, data, certificate, authority, warnings, next_actions}: `event` names the schema of `data`; `book` and `coordinate` say which book and (branch, known_at, effective) the line describes; `authority` declares the actual execution binding; `next_actions` are the commands usually run next (add the same --book in the owner's CLI).\n\
 2. Read the exit code before the output: 0 success (empty results are 0), 2 usage, 3 accounting-law refusal, 4 environment, 5 foundation/I-O, 6 conflict (retry with a fresh read), 7 safety block (period law, capability, an unconfirmed dangerous operation), 8 verification failure. 1 is never emitted.\n\
 3. Every non-zero exit is exactly one `error` line: data {class, exit, refusal_id, message, cite, fix, detail}. `refusal_id` (FA-REF-nnn) is the refusal catalog code when one applies. Do the `fix`; do not invent a leg, a date, or an approval. FA-REF-007 means the operation cannot be undone in practice: its fix names the safe alternative; add --yes only when the operation is intended (`fa capabilities --json` lists them under `dangerous`).\n\
 4. Amounts are strings with the unit: \"1500.00 USD\". Never floats. Dates are civil YYYY-MM-DD; recorded time is assigned by the journal, never supplied.\n\
@@ -1800,6 +2110,7 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 // ---------------------------------------------------------------------------
 
 fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let who = ctx.principal(args);
     let out = &ctx.out;
     match args.positional.get(1).map(String::as_str) {
         Some("import") => {
@@ -1925,7 +2236,7 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 )
                 .into_bytes(),
             };
-            let installed = book.install_chart(&accounts, principal(args), date, &key)??;
+            let installed = book.install_chart(&accounts, who, date, &key)??;
             out.at_book(&book)?;
             out.event(
                 "chart_installed",
@@ -2088,6 +2399,14 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "--reason 0",
                 )
             })?;
+            let who = ctx.principal(args);
+            let op = fa_journal::policy::steward()
+                .map_err(BookError::Kernel)?
+                .transition_op("PeriodControl", fa_journal::transition_name(transition))
+                .ok_or_else(|| {
+                    Fail::Internal(format!("no PeriodControl {t} rule in sod_policy.toml"))
+                })?;
+            let capability = ctx.capability(args, &[op.name()])?;
             let mut book = ctx.books.open(args)?;
             let current = book
                 .periods()?
@@ -2107,20 +2426,6 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     .map(|p| p.start)
                     .unwrap_or(DateDay(0)),
             )?;
-            // Embedded-posture binding (plan §14.2 trust boundary): the
-            // operator self-issues exactly the op the transition's registered
-            // rule names (`close`, or `reopen`). Transitions that need
-            // approvers are planned (`--plan-out`), approved (`fa approve`)
-            // and committed from the plan (`--plan`, `--approval`).
-            let who = principal(args);
-            let op = fa_journal::policy::steward()
-                .map_err(BookError::Kernel)?
-                .transition_op("PeriodControl", fa_journal::transition_name(transition))
-                .ok_or_else(|| {
-                    Fail::Internal(format!("no PeriodControl {t} rule in sod_policy.toml"))
-                })?;
-            let capability = Capability::embedded(who, &[op.name()])
-                .map_err(|e| Fail::Internal(format!("self-issued capability: {e}")))?;
             let approval_flags = args.flag_all("--approval");
             // A plan seals the description once (R4), so an approval
             // recorded by another principal, in another process, binds the
@@ -2248,15 +2553,7 @@ fn approve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         )
     })?;
     let digest = parse_digest(text, "--proposal")?;
-    let who = principal(args);
-    let mut ops = vec!["approve"];
-    ops.extend(args.flag_all("--grant"));
-    let capability = Capability::embedded(who, &ops).map_err(|e| {
-        usage(
-            e.to_string(),
-            "--grant takes a registered op name; `fa capabilities --json` lists them",
-        )
-    })?;
+    let capability = ctx.capability(args, &["approve"])?;
     let mut book = ctx.books.open(args)?;
     let approved = book.approve(capability, digest)??;
     ctx.out.at_book(&book)?;
@@ -2538,7 +2835,7 @@ fn reversal_reason(value: Option<&Json>) -> Result<Reason, Fail> {
         .map(|name| format!("did you mean `{name}`? "))
         .unwrap_or_default();
     Err(Refusal::new(
-        fa_journal::code::SUPERSESSION_REASON,
+        fa_journal::refusal::code::SUPERSESSION_REASON,
         exit::REFUSAL,
         match supplied {
             Some(name) => format!("reversal reason `{name}` is not registered"),
@@ -2588,6 +2885,8 @@ fn post_document(
     forced: Option<EntryClass>,
     doc: Json,
 ) -> Result<(), Fail> {
+    let who = ctx.principal(args);
+    let capability = ctx.capability(args, &["post"])?;
     let out = &ctx.out;
     let mut book = ctx.books.open(args)?;
     let ctx = book.context().clone();
@@ -2673,7 +2972,7 @@ fn post_document(
         };
         if reason.as_ref().is_some_and(|r| r.name == "Other") && description.trim().is_empty() {
             return Err(Refusal::new(
-                fa_journal::code::SUPERSESSION_REASON,
+                fa_journal::refusal::code::SUPERSESSION_REASON,
                 exit::REFUSAL,
                 "the reversal reason Other requires a description",
                 "plan §8.2 (Other(text)); registries/reason_codes.toml",
@@ -2751,7 +3050,7 @@ fn post_document(
                     ));
                 }
                 // A void releases the hold for good (verbs.toml [[dangerous]]).
-                gate(args, "resolve", None, &Condition::Voids)?;
+                gate(out, args, "resolve", None, &Condition::Voids)?;
                 control = Some(ControlPayload::ReservationRelease);
                 pending = Some(Pending {
                     timeout_ns: None,
@@ -2869,7 +3168,6 @@ fn post_document(
                 None
             }
         });
-    let who = principal(args);
     let proposal = EntryPayload {
         schema_minor: 0,
         book_id: ctx.book_id,
@@ -2900,17 +3198,6 @@ fn post_document(
         extensions: Vec::new(),
         tags: Vec::new(),
     };
-    let mut ops = vec!["post"];
-    ops.extend(args.flag_all("--grant"));
-    // Embedded-posture binding (plan §14.2 trust boundary): `--as` names the
-    // principal and `--grant` self-issues a Human-profile capability for it;
-    // an unregistered op name is a usage error, never a silently held string.
-    let capability = Capability::embedded(who, &ops).map_err(|e| {
-        usage(
-            e.to_string(),
-            "--grant takes a registered op name; `fa capabilities --json` lists them",
-        )
-    })?;
     let req = PostRequest {
         proposal,
         approvals: Vec::new(),
@@ -3050,7 +3337,10 @@ fn time_selection_json(time: &fa::InstantSelection) -> Json {
         obj(vec![
             ("entry", s(format!("{:032x}", entry.0))),
             ("recorded_at", Json::Int(i128::from(tick.recorded_at))),
-            ("observed_utc_ns", Json::Int(i128::from(tick.observed_utc_ns))),
+            (
+                "observed_utc_ns",
+                Json::Int(i128::from(tick.observed_utc_ns)),
+            ),
             ("source", Json::Int(i128::from(tick.source))),
             ("monotonic_ok", Json::Bool(tick.monotonic_ok)),
         ])
@@ -3065,7 +3355,10 @@ fn time_selection_json(time: &fa::InstantSelection) -> Json {
             Json::Int(i128::from(resolution.requested_utc_ns)),
         ),
         ("frontier", Json::Int(i128::from(resolution.frontier))),
-        ("resolved_seq", Json::Int(i128::from(resolution.resolved_seq))),
+        (
+            "resolved_seq",
+            Json::Int(i128::from(resolution.resolved_seq)),
+        ),
         ("precision", s(resolution.precision_grade())),
         ("source_grade", s(resolution.source_grade())),
         ("lower", tick(&resolution.lower, time.lower_entry)),
@@ -3201,7 +3494,9 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let (tb, certificate) = if args.switch("--certify") || args.flag("--certificate-out").is_some()
     {
         let certified = match requested_utc_ns {
-            Some(instant) => book.certify_trial_balance_at_instant(selection.clone(), instant)??,
+            Some(instant) => {
+                book.certify_trial_balance_at_instant(selection.clone(), instant)??
+            }
             None => book.certify_trial_balance(selection.clone(), known_at)??,
         };
         out.time_selection(certified.certificate.time_selection.as_ref());
@@ -3302,7 +3597,10 @@ fn render_trial_balance_with_units(
         .iter()
         .map(|(u, (d, c))| {
             Ok(obj(vec![
-                ("unit", s(registered_unit_code(fa_money::UnitId(*u), units)?)),
+                (
+                    "unit",
+                    s(registered_unit_code(fa_money::UnitId(*u), units)?),
+                ),
                 ("debits_pending", s(render(*u, *d)?)),
                 ("credits_pending", s(render(*u, *c)?)),
             ]))
@@ -3313,7 +3611,10 @@ fn render_trial_balance_with_units(
         .iter()
         .map(|(u, (d, c))| {
             Ok(obj(vec![
-                ("unit", s(registered_unit_code(fa_money::UnitId(*u), units)?)),
+                (
+                    "unit",
+                    s(registered_unit_code(fa_money::UnitId(*u), units)?),
+                ),
                 ("debits", s(render(*u, *d)?)),
                 ("credits", s(render(*u, *c)?)),
             ]))
@@ -3774,23 +4075,23 @@ fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .flag("--account")
         .map(|code| account_vid(book.context().book_id, code));
     let (known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
-    let (report, certificate) = if args.switch("--certify") || args.flag("--certificate-out").is_some()
-    {
-        let selection = ReportSelection::OpenItems { account };
-        let certified = match requested_utc_ns {
-            Some(instant) => book.certify_report_at_instant(selection, instant)??,
-            None => book.certify_report(selection, known_at)??,
+    let (report, certificate) =
+        if args.switch("--certify") || args.flag("--certificate-out").is_some() {
+            let selection = ReportSelection::OpenItems { account };
+            let certified = match requested_utc_ns {
+                Some(instant) => book.certify_report_at_instant(selection, instant)??,
+                None => book.certify_report(selection, known_at)??,
+            };
+            out.time_selection(certified.certificate.time_selection.as_ref());
+            let ReportOutput::OpenItems(report) = certified.report else {
+                return Err(Fail::Internal(
+                    "open-items certification returned another report kind".into(),
+                ));
+            };
+            (report, Some(certified.certificate))
+        } else {
+            (book.open_items_report(account, known_at)?, None)
         };
-        out.time_selection(certified.certificate.time_selection.as_ref());
-        let ReportOutput::OpenItems(report) = certified.report else {
-            return Err(Fail::Internal(
-                "open-items certification returned another report kind".into(),
-            ));
-        };
-        (report, Some(certified.certificate))
-    } else {
-        (book.open_items_report(account, known_at)?, None)
-    };
     validate_open_items_report(&report, &book.context().units)?;
     let retained = certificate
         .as_ref()
@@ -3857,7 +4158,10 @@ pub(crate) fn render_open_items(
     };
     let filter = report.account_filter.map(code_of).transpose()?;
     let render = |unit: u32, m: i128| {
-        render_amount(Amount::new(fa_money::UnitId(unit), m), &book.context().units)
+        render_amount(
+            Amount::new(fa_money::UnitId(unit), m),
+            &book.context().units,
+        )
     };
     let rows: Vec<Json> = items
         .iter()
@@ -3981,9 +4285,7 @@ fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let mut book = ctx.books.open(args)?;
     let (known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
     let account = account_vid(book.context().book_id, code);
-    let explain_error = |error| {
-        explanation_selection_error(&book, code, period, known_at, error)
-    };
+    let explain_error = |error| explanation_selection_error(&book, code, period, known_at, error);
     let (ex, certificate) = if args.switch("--certify") || args.flag("--certificate-out").is_some()
     {
         let selection = ReportSelection::ExplainBalance {
@@ -4098,7 +4400,11 @@ fn validate_balance_explanation_units(
         .iter()
         .map(|cell| cell.key.unit_id)
         .chain(ex.pending.iter().map(|cell| cell.key.unit_id))
-        .chain(ex.contributions.iter().map(|contribution| contribution.unit_id))
+        .chain(
+            ex.contributions
+                .iter()
+                .map(|contribution| contribution.unit_id),
+        )
         .chain(ex.history.iter().map(|change| change.unit_id))
     {
         registered_unit_code(fa_money::UnitId(unit), units)?;
@@ -4405,6 +4711,7 @@ fn registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         // replacement authorization. The rebuild below must
                         // independently fold valid journal payloads.
                         gate(
+                            out,
                             args,
                             "registers",
                             Some("materialize"),
@@ -4421,6 +4728,7 @@ fn registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         .any(|d| d.stored.is_some());
                 if existing {
                     gate(
+                        out,
                         args,
                         "registers",
                         Some("materialize"),
@@ -4643,12 +4951,22 @@ mod tests {
                 );
                 assert!(matches!(
                     &result,
-                    Err(Fail::Book(BookError::Kernel(fa_journal::KernelError::Corrupt(_))))
+                    Err(Fail::Book(BookError::Kernel(
+                        fa_journal::KernelError::Corrupt(_)
+                    )))
                 ));
                 let (code, captured) = finish_into(out, result);
                 assert_eq!(code, exit::FOUNDATION, "{location}: {}", captured.stderr);
-                assert!(captured.stderr.contains("unknown unit"), "{}", captured.stderr);
-                assert!(captured.stderr.contains("unit reconciliation"), "{}", captured.stderr);
+                assert!(
+                    captured.stderr.contains("unknown unit"),
+                    "{}",
+                    captured.stderr
+                );
+                assert!(
+                    captured.stderr.contains("unit reconciliation"),
+                    "{}",
+                    captured.stderr
+                );
                 if json {
                     assert_eq!(captured.stdout.lines().count(), 1, "{}", captured.stdout);
                     assert_eq!(
@@ -4662,7 +4980,11 @@ mod tests {
                     assert!(captured.stdout.contains(r#""certificate":null"#));
                     assert!(!captured.stdout.contains(r#""event":"trial_balance""#));
                 } else {
-                    assert!(captured.stdout.is_empty(), "{location}: {}", captured.stdout);
+                    assert!(
+                        captured.stdout.is_empty(),
+                        "{location}: {}",
+                        captured.stdout
+                    );
                 }
             }
         }
@@ -4682,13 +5004,8 @@ mod tests {
                 known_at: CommitSeq(10),
                 effective: "all".into(),
             });
-            let result = render_trial_balance_with_units(
-                &out,
-                &units,
-                &tb,
-                &selection,
-                Some(&certificate),
-            );
+            let result =
+                render_trial_balance_with_units(&out, &units, &tb, &selection, Some(&certificate));
             let (code, captured) = finish_into(out, result);
             assert_eq!(code, exit::SUCCESS, "{}", captured.stderr);
             assert!(captured.stderr.is_empty(), "{}", captured.stderr);
@@ -4704,7 +5021,9 @@ mod tests {
                 assert!(captured.stdout.contains(r#""net":"0.00 USD""#));
                 assert!(captured.stdout.contains(r#""known_at":9"#));
                 assert!(
-                    captured.stdout.contains(&format!(r#""certificate":"{certificate}""#)),
+                    captured
+                        .stdout
+                        .contains(&format!(r#""certificate":"{certificate}""#)),
                     "{}",
                     captured.stdout
                 );
@@ -4795,11 +5114,16 @@ mod tests {
         );
         let missing_units = fa_money::UnitRegistry::empty();
         let corrupt_amount = |_: &str, m: i128| -> Result<Json, Fail> {
-            Ok(s(render_amount(Amount::new(fa_money::UnitId(7), m), &missing_units)?))
+            Ok(s(render_amount(
+                Amount::new(fa_money::UnitId(7), m),
+                &missing_units,
+            )?))
         };
         assert!(matches!(
             availability_fields(&v, &corrupt_amount),
-            Err(Fail::Book(BookError::Kernel(fa_journal::KernelError::Corrupt(_))))
+            Err(Fail::Book(BookError::Kernel(
+                fa_journal::KernelError::Corrupt(_)
+            )))
         ));
     }
 

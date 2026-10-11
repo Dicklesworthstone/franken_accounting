@@ -12,11 +12,11 @@ use fa::{
     Book, CertificateStatus, ReportCertificate, ReportOutput, ReportSelection, RetainedCertificate,
     TrialBalanceSelection,
 };
-use fa_policy::{Capability, Op};
+use fa_policy::Op;
 
 use crate::args::Args;
 use crate::cli::{
-    Ctx, Fail, Files, Out, Stdin, hex, periods_selector, principal, render_balance_explanation,
+    Ctx, Fail, Files, Out, Stdin, hex, periods_selector, render_balance_explanation,
     render_open_items, render_trial_balance, unhandled, usage,
 };
 
@@ -297,9 +297,8 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
         ReportSelection::TrialBalance(selection) => {
             ctx.out.effective(match selection {
                 TrialBalanceSelection::AsOf(day) => format!("as-of:{day}"),
-                TrialBalanceSelection::Periods(periods) | TrialBalanceSelection::Activity(periods) => {
-                    periods_selector(periods)
-                }
+                TrialBalanceSelection::Periods(periods)
+                | TrialBalanceSelection::Activity(periods) => periods_selector(periods),
             });
         }
         ReportSelection::ExplainBalance { period, .. } => {
@@ -351,16 +350,12 @@ pub(crate) fn checkpoint_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail>
     }
     const EXAMPLE: &str = "fa checkpoint create --grant witness --book <dir> --json";
     arguments(args, EXAMPLE)?;
-    // The local CLI binds an explicit grant to its operator, like posting.
-    // Refuse missing authority before opening or observing the book; the
-    // facade independently enforces the same boundary for library callers.
-    let actor = principal(args);
-    let capability = Capability::embedded(actor, &args.flag_all("--grant"))
-        .map_err(|error| usage(error.to_string(), EXAMPLE))?;
-    // The book is not open yet, so its id (the `books` caveat's subject) is
-    // unknown here; a self-issued embedded capability is Human, the actor's,
-    // and carries no `books` caveat, so admission reduces to the op check.
-    // The facade's admission judges the whole intent, book included.
+    // Resolve the actor and capability from the execution posture. Bound
+    // hosts preserve their launch capability; only the embedded owner path
+    // constructs one from its explicit grants. Refuse a missing operation
+    // before opening the book; the facade judges scope and current authority.
+    let actor = ctx.principal(args);
+    let capability = ctx.capability(args, &[])?;
     fa_policy::require(&capability, Op::Witness, "writing this intent (`witness`)")
         .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
     let mut book = ctx.books.open(args)?;
