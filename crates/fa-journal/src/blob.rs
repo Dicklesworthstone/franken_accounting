@@ -145,7 +145,7 @@ impl<V: asupersync::fs::Vfs + Clone> BlobStore<V> {
             let (staged, mut file) = loop {
                 cx.checkpoint().map_err(io::Error::other)?;
                 let ticket = counter
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+                    .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
                     .map_err(|_| io::Error::other("blob staging-name counter exhausted"))?;
                 let staged = parent.join(format!("{locator}.{}-{ticket}.tmp", std::process::id()));
                 match self
