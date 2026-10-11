@@ -34,10 +34,10 @@ pub const ENTRY_DIGEST_DOMAIN: &[u8] = b"fa:entry:v1";
 
 /// The entry classes that are book-scoped and undated (`SchemaControl`,
 /// `PolicyControl`, `TimeControl`, `SweepControl`, `ScheduleControl`,
-/// `ImportControl`;
+/// `ImportControl`, `HoldControl`;
 /// `registries/entry_classes.toml`): their envelopes carry no effective day.
 /// Every other class is period-scoped and carries one.
-pub const UNDATED_CLASSES: [u16; 6] = [17, 18, 19, 20, 21, 23];
+pub const UNDATED_CLASSES: [u16; 7] = [17, 18, 19, 20, 21, 23, 24];
 
 /// Bounds for the selection lists (`max_legs_per_entry` bounds both).
 pub const MAX_ENVELOPE_LIST: usize = 4096;

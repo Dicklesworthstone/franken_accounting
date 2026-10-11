@@ -157,9 +157,12 @@ pub mod code {
     /// A document's bytes cannot be produced: its store holds no blob, cannot be read, or is not the store handed in.
     pub const BLOB_MISSING: &str = "FA-REF-116";
     /// A custody transfer names a principal that does not hold the document.
+    pub const LEGAL_HOLD_ACTIVE: &str = "FA-REF-117";
+    pub const LEGAL_HOLD_UNKNOWN: &str = "FA-REF-118";
     pub const NOT_CUSTODIAN: &str = "FA-REF-119";
     /// A RegisterEquals claim is not what its cell folds to at the claim's own sequence.
     pub const REGISTER_CLAIM_FALSE: &str = "FA-REF-140";
+    pub const LEGAL_HOLD_SUBJECT: &str = "FA-REF-141";
     /// The entry moves value out of a limited account below its lower bound
     /// (`net − pending_out − x < lower_bound`, plan §5.4).
     pub const AVAILABILITY_LOWER: &str = "FA-REF-090";

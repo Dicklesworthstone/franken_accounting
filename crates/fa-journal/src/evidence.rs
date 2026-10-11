@@ -1595,17 +1595,53 @@ pub fn supplements_of<V: asupersync::fs::Vfs + Clone>(
 // ---------------------------------------------------------------------------
 
 /// `ErasureCut`, a lawful erasure request for `subject`'s data: not available
-/// in this build, and refused before any read or write. The substrate's
-/// erasure tombstones are not live (Appendix H R-ERASE), so an append-only
-/// store cannot crypto-erase, and a FrankenAccounting-level tombstone that
-/// left the plaintext reachable would be a prohibited shortcut (§8.5).
-/// Per-Party subject keys are bead fa-v74; until then every erasable field is
-/// sealed under the book key. What an erasure must preserve — it never
-/// changes an amount, date, account, unit, or lineage — is proven on the real
-/// substrate today by fa-registers' `tests/erasure.rs`.
-#[must_use]
-pub fn erasure_cut(subject: VId) -> Refusal {
-    Refusal::new(
+/// in this build, so every request is refused and nothing is written. The
+/// substrate's erasure tombstones are not live (Appendix H R-ERASE), so an
+/// append-only store cannot crypto-erase, and a FrankenAccounting-level
+/// tombstone that left the plaintext reachable would be a prohibited
+/// shortcut (§8.5). Per-Party subject keys are bead fa-v74; until then every
+/// erasable field is sealed under the book key. What an erasure must
+/// preserve — it never changes an amount, date, account, unit, or lineage —
+/// is proven on the real substrate today by fa-registers' `tests/erasure.rs`.
+///
+/// The order is the one the live mechanism will keep: the `erase` op is
+/// admitted before any read (doctrine 8); a revoked capability is refused
+/// at the head before the subject is read (FA-REF-023, plan §14.2); then a
+/// legal hold active on the subject refuses it (FA-REF-117, §14.6); only
+/// then is the absence itself the answer (FA-REF-088).
+pub fn erasure_cut<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &fa_policy::Capability,
+    subject: VId,
+) -> Result<Refusal, KernelError> {
+    if let Err(d) = fa_policy::admit(
+        capability,
+        &fa_policy::Intent {
+            principal: capability.holder(),
+            trunk: true,
+            op: fa_policy::Op::Erase,
+            book: book.book_id,
+            legs: &[],
+        },
+    ) {
+        return Ok(crate::policy::refusal(&d));
+    }
+    if let Err(d) = fa_policy::current(capability, db.frontier()?) {
+        return Ok(crate::policy::refusal(&d));
+    }
+    if let Err(r) = crate::policy::capability_admitted(db, book, capability)? {
+        return Ok(r);
+    }
+    if let Some(held) = crate::legal_hold::pinned(
+        db,
+        book.book_id,
+        subject,
+        crate::legal_hold::Pinned::Erasure,
+    )? {
+        return Ok(held);
+    }
+    Ok(Refusal::new(
         code::ERASURE_ABSENT,
         exit::REFUSAL,
         format!(
@@ -1614,7 +1650,7 @@ pub fn erasure_cut(subject: VId) -> Refusal {
         ),
         "plan §8.5; Appendix H R-ERASE (the substrate's erasure tombstones are not live); per-Party subject keys: bead fa-v74",
         "nothing to run: erasure is not available in this build; every erasable field is sealed under the book key and stays unopenable to anyone without it",
-    )
+    ))
 }
 
 #[cfg(test)]

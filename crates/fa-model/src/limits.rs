@@ -38,6 +38,10 @@ pub const MAX_BATCH_ENTRIES: usize = 8190;
 pub const MAX_INTAKE_TEXT_BYTES: usize = 256;
 /// Documents in one import run (one transaction).
 pub const MAX_IMPORT_DOCUMENTS: usize = 1024;
+/// Subjects one legal hold pins (plan §8.5).
+pub const MAX_LEGAL_HOLD_SUBJECTS: usize = 1024;
+/// Legal holds active on one subject at once.
+pub const MAX_ACTIVE_LEGAL_HOLDS: usize = 1024;
 
 /// Every limit as `(name, value)`, in registry order.
 pub const ALL: &[(&str, u64)] = &[
@@ -75,6 +79,8 @@ pub const ALL: &[(&str, u64)] = &[
     ("max_batch_entries", MAX_BATCH_ENTRIES as u64),
     ("max_intake_text_bytes", MAX_INTAKE_TEXT_BYTES as u64),
     ("max_import_documents", MAX_IMPORT_DOCUMENTS as u64),
+    ("max_legal_hold_subjects", MAX_LEGAL_HOLD_SUBJECTS as u64),
+    ("max_active_legal_holds", MAX_ACTIVE_LEGAL_HOLDS as u64),
 ];
 
 #[cfg(test)]

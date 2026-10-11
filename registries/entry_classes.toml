@@ -160,6 +160,15 @@ name = "ImportControl"
 kind = "control"
 supersession = "none"
 
+# A legal hold's placement or release (plan §8.5; fa-txf): book-scoped and
+# undated; ControlPayload::HoldEvent, its scope in extension 4
+# `fa:legal-hold-scope:v1`.
+[[class]]
+tag = 24
+name = "HoldControl"
+kind = "control"
+supersession = "none"
+
 # ---- Control kinds (fa-g23) ---------------------------------------------------
 # `EntryOrigin::Control.control_kind`: the act that minted a control record. It
 # is durable in every control record's origin, so it is registered here rather
@@ -210,10 +219,11 @@ name = "import_run"
 class = "ImportControl"
 minted_by = "fa-journal import::import_run"
 
-[[reserved_control_kind]]
+[[control_kind]]
 id = 7
 name = "legal_hold"
-holder = "fa-txf C1: HoldControl (TopazOsprey; CobaltGull 3360)"
+class = "HoldControl"
+minted_by = "fa-journal legal_hold::place_legal_hold and release_legal_hold"
 
 [[control_kind]]
 id = 8

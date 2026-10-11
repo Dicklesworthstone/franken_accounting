@@ -3637,3 +3637,472 @@ fn a_document_past_the_inline_bound_is_refused_inline_and_admitted_by_a_store() 
     assert_eq!(added.size, u64::try_from(bound + 1).unwrap());
     assert_eq!(h.fetch(&store, &added.oid).unwrap(), Some(big));
 }
+
+// ---------------------------------------------------------------------------
+// Legal holds (fa-txf, plan §8.5, §14.6): a hold pins its subjects against
+// erasure until a second, Human principal approves its release; it never
+// pins the two-phase reservation sweep.
+// ---------------------------------------------------------------------------
+
+/// The Human approver of a hold's release (not its preparer).
+const RELEASE_APPROVER: VId = VId(71);
+
+impl Harness {
+    fn place_hold(
+        &mut self,
+        cap: &Capability,
+        subjects: Vec<VId>,
+        authority: Oid,
+        key: &[u8],
+    ) -> Result<LegalHoldPlaced, Refusal> {
+        let ctx = self.ctx();
+        let req = LegalHoldRequest {
+            principal: cap.holder(),
+            subjects,
+            authority,
+            effective_date: DateDay::from_ymd(2026, 3, 20).unwrap(),
+            idempotency_key: key.to_vec(),
+            description: self.statement("legal hold", 61),
+        };
+        let db = &mut self.db;
+        let book = &self.book;
+        self.runtime
+            .block_on(async move { place_legal_hold(db, &ctx, book, cap, req).await })
+            .expect("kernel")
+    }
+
+    fn plan_hold_release(&self, hold: VId, key: &[u8]) -> Result<ReleasePlan, Refusal> {
+        plan_release(
+            &self.db,
+            &self.book,
+            hold,
+            PRINCIPAL,
+            DateDay::from_ymd(2026, 3, 25).unwrap(),
+            key,
+            self.statement("hold release", 62),
+        )
+        .expect("kernel")
+    }
+
+    fn release_hold(
+        &mut self,
+        plan: &ReleasePlan,
+        approvals: &[fa_model::ApprovalRef],
+    ) -> Result<LegalHoldReleased, Refusal> {
+        let ctx = self.ctx();
+        let cap = Capability::embedded(plan.principal_ref, &["hold"]).expect("hold");
+        let db = &mut self.db;
+        let book = &self.book;
+        self.runtime
+            .block_on(
+                async move { release_legal_hold(db, &ctx, book, &cap, plan, approvals).await },
+            )
+            .expect("kernel")
+    }
+
+    fn approve_digest(
+        &mut self,
+        approver: VId,
+        digest: [u8; 32],
+    ) -> Result<fa_model::ApprovalRef, Refusal> {
+        let ctx = self.ctx();
+        let db = &mut self.db;
+        let book = &self.book;
+        let req = ApprovalRequest {
+            capability: Capability::embedded(approver, &["approve"]).expect("approve"),
+            approved_proposal_digest: digest,
+            role: 0,
+        };
+        self.runtime
+            .block_on(async move { record_approval(db, &ctx, book, req).await })
+            .expect("kernel")
+            .map(|a| a.approval())
+    }
+
+    fn erase(&self, cap: &Capability, subject: VId) -> Refusal {
+        fa_journal::evidence::erasure_cut(&self.db, &self.book, cap, subject).expect("kernel")
+    }
+
+    /// Revoke `revoked` (plan §14.2) under the issuer's capability.
+    fn revoke(&mut self, revoked: &Capability, n: u8) {
+        let ctx = self.ctx();
+        let req = RevocationRequest {
+            capability: Capability::embedded(PRINCIPAL, &["issue_capability"]).expect("issue"),
+            revoked: revoked.commitment().expect("commitment"),
+            effective_date: DateDay::from_ymd(2026, 3, 15).unwrap(),
+            idempotency_key: vec![b'r', n],
+            description: self.statement("revocation", n),
+        };
+        let db = &mut self.db;
+        let book = &self.book;
+        self.runtime
+            .block_on(async move { revoke_capability(db, &ctx, book, req).await })
+            .expect("kernel")
+            .expect("revoked");
+    }
+
+    fn holds_on(&self, subject: VId) -> Vec<VId> {
+        active_legal_holds(&self.db, self.book.book_id, subject).expect("kernel")
+    }
+
+    fn tick(&mut self, observed_utc_ns: u64, key: &[u8], nonce: u8) -> Ticked {
+        let ctx = self.ctx();
+        let req = TickRequest {
+            observed_utc_ns,
+            source: fa_journal::sweep::SOURCE_DAEMON_CLOCK,
+            monotonic_ok: true,
+            principal_ref: PRINCIPAL,
+            capability: Capability::embedded(PRINCIPAL, &["witness"]).expect("witness"),
+            idempotency_key: key.to_vec(),
+            description: self.statement("tick", nonce),
+        };
+        let db = &mut self.db;
+        let book = &self.book;
+        self.runtime
+            .block_on(async move { record_tick(db, &ctx, book, req).await })
+            .expect("kernel")
+            .expect("tick recorded")
+    }
+
+    fn sweep_expiry(&mut self) -> Swept {
+        let ctx = self.ctx();
+        let system = fa_journal::rows::system_principal(self.book.book_id);
+        let req = SweepRequest {
+            principal_ref: system,
+            capability: Capability::new(system, Profile::System, &[Op::Post], system)
+                .expect("a System capability"),
+            max_batch: 8,
+        };
+        let db = &mut self.db;
+        let book = &self.book;
+        let mut nonce = 70u8;
+        self.runtime
+            .block_on(async move {
+                let mut describe = |text: &str| {
+                    nonce += 1;
+                    Erasable::seal(
+                        &text.to_string(),
+                        None,
+                        &book.seal_key,
+                        [nonce; 32],
+                        [nonce; 24],
+                    )
+                };
+                sweep(db, &ctx, book, &req, &mut describe).await
+            })
+            .expect("kernel")
+            .expect("swept")
+    }
+}
+
+#[test]
+fn a_legal_hold_pins_its_subjects_until_a_second_human_approves_its_release() {
+    let mut h = harness();
+    let order = h.document(INVOICE, HUMAN_UPLOAD, b"PRESERVATION ORDER 2026-17");
+    h.add_document(&order).expect("admitted");
+    let invoice = h.document(INVOICE, HUMAN_UPLOAD, b"INVOICE 1717 (under hold)");
+    h.add_document(&invoice).expect("admitted");
+    let doc = document_vid(&invoice.oid());
+    let entry = h
+        .post(h.request(
+            h.proposal(h.rent_legs(25), b"held-entry", EntryClass::ORIGINAL),
+            &["post"],
+        ))
+        .expect("posted")
+        .entry_ref()
+        .vid;
+    let free = h
+        .post(h.request(
+            h.proposal(h.rent_legs(26), b"free-entry", EntryClass::ORIGINAL),
+            &["post"],
+        ))
+        .expect("posted")
+        .entry_ref()
+        .vid;
+    let counsel = Capability::embedded(PRINCIPAL, &["hold"]).expect("hold");
+    let eraser = Capability::embedded(PRINCIPAL, &["erase"]).expect("erase");
+
+    let placed = h
+        .place_hold(&counsel, vec![entry, doc], order.oid(), b"hold-1")
+        .expect("placed");
+    eprintln!(
+        "txf hold: placed {:032x} over {} subjects at seq {}",
+        placed.hold.0,
+        placed.subjects.len(),
+        placed.recorded_at.0
+    );
+    let mut both = vec![entry, doc];
+    both.sort_by_key(|v| v.0);
+    assert_eq!(placed.subjects, both, "the scope is canonical (ascending)");
+    assert!(!placed.already_recorded);
+    for s in &both {
+        assert_eq!(h.holds_on(*s), vec![placed.hold]);
+        assert!(
+            h.db.edge(edge_id(relation::HOLDS, placed.hold, *s))
+                .unwrap()
+                .is_some()
+        );
+    }
+    assert_eq!(h.holds_on(free), Vec::<VId>::new());
+    let read = read_legal_hold(&h.db, h.book.book_id, placed.hold)
+        .unwrap()
+        .expect("a placed hold");
+    assert_eq!(
+        (
+            read.authority,
+            read.issued_by,
+            &read.subjects,
+            read.released
+        ),
+        (order.oid(), PRINCIPAL, &both, None)
+    );
+    assert_eq!(read.placed_at, placed.recorded_at);
+
+    // The same placement again is its recorded outcome; the key under other
+    // content is an idempotency conflict.
+    let again = h
+        .place_hold(&counsel, vec![doc, entry], order.oid(), b"hold-1")
+        .expect("recorded");
+    assert!(again.already_recorded);
+    assert_eq!((again.hold, again.subjects), (placed.hold, both.clone()));
+    let r = h
+        .place_hold(&counsel, vec![entry], order.oid(), b"hold-1")
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-032", exit::CONFLICT), "{r}");
+
+    // Erasure of a held subject is refused naming the hold (exit 7); of an
+    // unheld one it is the registered absence; without `erase`, the
+    // capability refuses before anything is read.
+    let r = h.erase(&eraser, entry);
+    eprintln!(
+        "txf hold: erasure of a held entry -> {} {}",
+        r.code, r.message
+    );
+    assert_eq!((r.code, r.exit), ("FA-REF-117", exit::SAFETY), "{r}");
+    assert!(
+        r.message.contains(&format!("{:032x}", placed.hold.0)),
+        "{r}"
+    );
+    assert!(!r.fix.contains("fa "), "no verb exists to name: {}", r.fix);
+    assert_eq!(h.erase(&eraser, doc).code, "FA-REF-117");
+    let r = h.erase(&eraser, free);
+    assert_eq!((r.code, r.exit), ("FA-REF-088", exit::REFUSAL), "{r}");
+    assert_eq!(h.erase(&counsel, entry).code, "FA-REF-011");
+
+    // A second hold over one subject: both active there, ascending.
+    let second = h
+        .place_hold(&counsel, vec![entry], order.oid(), b"hold-2")
+        .expect("placed");
+    let mut two = vec![placed.hold, second.hold];
+    two.sort_by_key(|v| v.0);
+    assert_eq!(h.holds_on(entry), two);
+    assert_eq!(h.holds_on(doc), vec![placed.hold]);
+
+    // Every placement law refuses, and nothing is written.
+    // An Agent is refused on trunk before its ops are looked at.
+    let agent = Capability::new(PRINCIPAL, Profile::Agent, &[Op::Post], VId(1)).expect("agent");
+    let head = h.db.frontier().unwrap();
+    let cases: Vec<(&str, &Capability, Vec<VId>, Oid, &str)> = vec![
+        ("no subjects", &counsel, vec![], order.oid(), "FA-REF-100"),
+        (
+            "a repeated subject",
+            &counsel,
+            vec![entry, entry],
+            order.oid(),
+            "FA-REF-100",
+        ),
+        (
+            "a subject the book does not hold",
+            &counsel,
+            vec![entry, VId(0xdead)],
+            order.oid(),
+            "FA-REF-141",
+        ),
+        (
+            "a subject that is neither entry, document nor party",
+            &counsel,
+            vec![book_root()],
+            order.oid(),
+            "FA-REF-141",
+        ),
+        (
+            "an authority the book does not hold",
+            &counsel,
+            vec![entry],
+            Oid([9; 32]),
+            "FA-REF-081",
+        ),
+        (
+            "a capability without hold",
+            &eraser,
+            vec![entry],
+            order.oid(),
+            "FA-REF-011",
+        ),
+        (
+            "an Agent on trunk",
+            &agent,
+            vec![entry],
+            order.oid(),
+            "FA-REF-013",
+        ),
+    ];
+    for (i, (what, cap, subjects, authority, want)) in cases.into_iter().enumerate() {
+        let key = format!("refused-{i}");
+        let r = h
+            .place_hold(cap, subjects, authority, key.as_bytes())
+            .unwrap_err();
+        eprintln!("txf hold: {what} -> {} {}", r.code, r.message);
+        assert_eq!(r.code, want, "{what}: {r}");
+        assert_eq!(h.db.frontier().unwrap(), head, "{what}: nothing written");
+    }
+
+    // Release: planned, approved by a Human other than its preparer.
+    let plan = h
+        .plan_hold_release(placed.hold, b"release-1")
+        .expect("planned");
+    assert_eq!((plan.hold, plan.authority), (placed.hold, order.oid()));
+    let digest = plan.proposal_digest(&h.book).unwrap();
+    let r = h.release_hold(&plan, &[]).unwrap_err();
+    eprintln!(
+        "txf hold: release without approval -> {} {}",
+        r.code, r.message
+    );
+    assert_eq!(r.code, "FA-REF-012", "{r}");
+    let own = h.approve_digest(PRINCIPAL, digest).expect("recorded");
+    let r = h.release_hold(&plan, &[own]).unwrap_err();
+    eprintln!(
+        "txf hold: release approved by its preparer -> {} {}",
+        r.code, r.message
+    );
+    assert_eq!(r.code, "FA-REF-008", "{r}");
+    assert_eq!(h.holds_on(doc), vec![placed.hold], "nothing released");
+    let approval = h
+        .approve_digest(RELEASE_APPROVER, digest)
+        .expect("recorded");
+    let released = h.release_hold(&plan, &[approval]).expect("released");
+    eprintln!(
+        "txf hold: released {:032x} by {:032x} at seq {}",
+        released.hold.0, released.release.0, released.recorded_at.0
+    );
+    assert!(!released.already_recorded);
+    assert_eq!(
+        released.release,
+        fa_journal::legal_hold::release_vid(h.book.book_id, placed.hold)
+    );
+    assert_eq!(h.holds_on(doc), Vec::<VId>::new());
+    assert_eq!(h.holds_on(entry), vec![second.hold]);
+    assert_eq!(
+        read_legal_hold(&h.db, h.book.book_id, placed.hold)
+            .unwrap()
+            .expect("still a hold")
+            .released,
+        Some((released.release, released.recorded_at))
+    );
+    // The document is no longer pinned; the entry still is, by the second hold.
+    assert_eq!(h.erase(&eraser, doc).code, "FA-REF-088");
+    let r = h.erase(&eraser, entry);
+    assert_eq!(r.code, "FA-REF-117");
+    assert!(
+        r.message.contains(&format!("{:032x}", second.hold.0)),
+        "{r}"
+    );
+    assert!(
+        !r.message.contains(&format!("{:032x}", placed.hold.0)),
+        "{r}"
+    );
+
+    // The same release again is its recorded outcome; another release of the
+    // same hold, or a new plan for it, is refused.
+    let again = h.release_hold(&plan, &[approval]).expect("recorded");
+    assert!(again.already_recorded);
+    assert_eq!(again.release, released.release);
+    let other = ReleasePlan {
+        idempotency_key: b"release-2".to_vec(),
+        ..plan.clone()
+    };
+    let r = h.release_hold(&other, &[approval]).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-118", exit::REFUSAL), "{r}");
+    let r = h.plan_hold_release(placed.hold, b"release-3").unwrap_err();
+    assert_eq!(r.code, "FA-REF-118", "{r}");
+    // What is not a placed hold cannot be released.
+    for (what, vid) in [("a posting entry", free), ("an unknown vid", VId(0xbeef))] {
+        let r = h.plan_hold_release(vid, b"release-x").unwrap_err();
+        eprintln!("txf hold: release of {what} -> {} {}", r.code, r.message);
+        assert_eq!(r.code, "FA-REF-118", "{what}");
+    }
+    // A plan that names another authority is not this hold's, even approved.
+    let forged = ReleasePlan {
+        authority: invoice.oid(),
+        ..h.plan_hold_release(second.hold, b"release-4")
+            .expect("planned")
+    };
+    let digest = forged.proposal_digest(&h.book).unwrap();
+    let approval = h
+        .approve_digest(RELEASE_APPROVER, digest)
+        .expect("recorded");
+    let r = h.release_hold(&forged, &[approval]).unwrap_err();
+    assert_eq!(r.code, "FA-REF-118", "{r}");
+    assert_eq!(h.holds_on(entry), vec![second.hold]);
+
+    // A revoked eraser is refused at the head (023) before the subject is
+    // read, so it learns neither the hold nor the absence; before its
+    // revocation the same token saw the hold, and a live token still does
+    // (fa-bcd, CobaltGull 3429).
+    let gone = Capability::embedded(VId(12), &["erase"]).expect("erase");
+    assert_eq!(h.erase(&gone, entry).code, "FA-REF-117");
+    h.revoke(&gone, 68);
+    for subject in [entry, free] {
+        let r = h.erase(&gone, subject);
+        eprintln!("txf hold: a revoked eraser -> {} {}", r.code, r.message);
+        assert_eq!(r.code, "FA-REF-023", "{r}");
+        assert!(
+            !r.message.contains(&format!("{:032x}", second.hold.0)),
+            "{r}"
+        );
+    }
+    assert_eq!(h.erase(&eraser, entry).code, "FA-REF-117");
+}
+
+/// Ruling 3251: a hold pins the record, never the reservation. A Pending
+/// under hold still expires at its deadline, and the hold still stands on it.
+#[test]
+fn a_held_pending_still_expires_at_its_deadline() {
+    let mut h = harness();
+    let order = h.document(INVOICE, HUMAN_UPLOAD, b"PRESERVATION ORDER 2026-18");
+    h.add_document(&order).expect("admitted");
+    h.tick(1_000, b"tick-1", 63);
+    let mut timed = h.pending(h.rent_legs(10), b"timed-held");
+    timed.pending = Some(Pending {
+        timeout_ns: Some(10),
+        resolution_of: None,
+        disposition: None,
+    });
+    let pending = h
+        .post(h.request(timed, &["post"]))
+        .expect("admitted")
+        .entry_ref();
+    let counsel = Capability::embedded(PRINCIPAL, &["hold"]).expect("hold");
+    let placed = h
+        .place_hold(&counsel, vec![pending.vid], order.oid(), b"hold-pending")
+        .expect("placed");
+    h.tick(1_020, b"tick-2", 64);
+    let swept = h.sweep_expiry();
+    let expired: Vec<(EntryRef, EntryRef)> = swept
+        .expiry
+        .iter()
+        .flat_map(|b| b.expired.iter().cloned())
+        .collect();
+    eprintln!(
+        "txf hold: the sweep expired {} held Pending(s)",
+        expired.len()
+    );
+    assert_eq!(expired.len(), 1);
+    assert_eq!(expired[0].0, pending);
+    assert_eq!(expired[0].1.vid, resolution_vid(pending.vid));
+    assert!(h.db.vertex(resolution_vid(pending.vid)).unwrap().is_some());
+    // The record is still preserved: the hold stands, erasure is refused.
+    assert_eq!(h.holds_on(pending.vid), vec![placed.hold]);
+    let eraser = Capability::embedded(PRINCIPAL, &["erase"]).expect("erase");
+    assert_eq!(h.erase(&eraser, pending.vid).code, "FA-REF-117");
+}
