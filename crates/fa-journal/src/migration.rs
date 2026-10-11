@@ -1043,6 +1043,11 @@ fn check_control(
     if let Err(e) = proposal.validate() {
         return Err(structure(e.to_string()));
     }
+    if proposal.base_totals.is_some() {
+        return Err(structure(
+            "a migration control carries base_totals but has no legs to value".into(),
+        ));
+    }
     let shaped = proposal.class == EntryClass::MIGRATION_CONTROL
         && matches!(
             proposal.control,

@@ -1497,12 +1497,6 @@ impl EntryPayload {
             return Err(invalid("effective_period", "exceeds max_period_ref_bytes"));
         }
         if let Some(b) = &self.base_totals {
-            if self.legs.is_empty() {
-                return Err(invalid(
-                    "base_totals",
-                    "an entry without legs carries no functional-currency valuations",
-                ));
-            }
             if b.rate_doc_oids.len() > MAX_RATE_DOCS
                 || !strictly_ascending(&b.rate_doc_oids, |o| *o)
             {
@@ -2519,55 +2513,6 @@ mod tests {
                 ..
             }
         ));
-    }
-
-    #[test]
-    fn controls_and_reservation_releases_carry_no_base_totals() {
-        let mut control = proposal(vec![]);
-        control.class = EntryClass::POLICY_CONTROL;
-        control.control = Some(ControlPayload::PolicyActivation {
-            policy_oid: Oid([1; 32]),
-            effective_from: DateDay(1),
-            effective_to: DateDay(400),
-        });
-        let release = |disposition| {
-            let mut p = proposal(vec![]);
-            p.class = EntryClass::RESOLUTION;
-            p.control = Some(ControlPayload::ReservationRelease);
-            p.pending = Some(Pending {
-                timeout_ns: None,
-                resolution_of: Some(EntryRef {
-                    vid: VId(3),
-                    entry_digest: [3; 32],
-                }),
-                disposition: Some(disposition),
-            });
-            p
-        };
-        for mut p in [
-            control,
-            release(Disposition::Voids),
-            release(Disposition::Expires { at_tick: 7 }),
-        ] {
-            let entry = p.clone().seal(vec![], None).unwrap();
-            assert_eq!(Entry::decode(&entry.encode().unwrap()).unwrap(), entry);
-            p.base_totals = Some(BaseTotals {
-                unit_id: USD.0,
-                debits: 0,
-                credits: 0,
-                fx_law_oid: Oid([5; 32]),
-                rate_doc_oids: vec![Oid([6; 32])],
-                residual: None,
-            });
-            assert!(matches!(
-                p.validate(),
-                Err(EntryError::Invalid {
-                    what: "base_totals",
-                    ..
-                })
-            ));
-            assert!(p.seal(vec![], None).is_err());
-        }
     }
 
     #[test]

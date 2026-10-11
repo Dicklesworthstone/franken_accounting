@@ -1233,6 +1233,73 @@ fn activation_is_all_or_nothing_across_crash_points() {
     );
 }
 
+#[test]
+fn migration_controls_refuse_base_totals_without_consuming_their_keys() {
+    let (mut k, _) = setup();
+    let (spec, _) = plan_run(&mut Rng(0x00F1_7001), "valued-control");
+    let body = body_of(&k, &spec);
+    let totals = || fa_model::BaseTotals {
+        unit_id: usd().0,
+        debits: 0,
+        credits: 0,
+        fx_law_oid: Oid([0x91; 32]),
+        rate_doc_oids: vec![Oid([0x92; 32])],
+        residual: None,
+    };
+    let mut proposal = open_proposal(
+        &k.book,
+        PRINCIPAL,
+        &body,
+        k.tb,
+        b"valued-open",
+        sealed(&k.book, "open run"),
+    )
+    .unwrap();
+    proposal.base_totals = Some(totals());
+    let encoded = proposal.clone().seal(Vec::new(), None).unwrap();
+    assert_eq!(
+        fa_model::Entry::decode(&encoded.encode().unwrap()).unwrap(),
+        encoded,
+        "publication refusal preserves the existing durable decoder"
+    );
+    let head = k.db.frontier().unwrap();
+    let req = RunControlRequest {
+        proposal,
+        capability: capability(&["post", "migrate"]),
+        approvals: Vec::new(),
+    };
+    let ctx = k.ctx();
+    let refusal = k
+        .runtime
+        .block_on(open_run(&mut k.db, &ctx, &k.book, &body, req))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-100", exit::USAGE));
+    assert!(refusal.message.contains("base_totals"), "{refusal}");
+    assert_eq!(k.db.frontier().unwrap(), head);
+
+    let run = kernel_open(&mut k, &spec, "valued-open", &["post", "migrate"])
+        .expect("a native control with the same key opens")
+        .run;
+    let clean = kernel_plan(&k, run, kind::ABANDON, "valued-abandon").unwrap();
+    let mut valued = clean.clone();
+    valued.base_totals = Some(totals());
+    let head = k.db.frontier().unwrap();
+    let refusal = kernel_transition(&mut k, valued, false).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-100", exit::USAGE));
+    assert!(refusal.message.contains("base_totals"), "{refusal}");
+    assert_eq!(k.db.frontier().unwrap(), head);
+    assert_eq!(
+        read_run(&k.db, run, None).unwrap().unwrap().state,
+        RunState::Open
+    );
+    kernel_transition(&mut k, clean, false).expect("the same valid transition still works");
+    assert_eq!(
+        read_run(&k.db, run, None).unwrap().unwrap().state,
+        RunState::Abandoned
+    );
+}
+
 /// An invalid final chunk (fa-kjl acceptance): Finalize refuses and names
 /// the lines that do not tie out; the run is abandoned (its chunks stay
 /// journaled and invisible); a retry under a new run key reuses the chunk

@@ -61,14 +61,14 @@ under `fa-p7r`.
   Previously admitted unsupported aggregates are also refused on retry;
   the fix does not rewrite their journal objects.
 - **Control publications could carry valuations without legs.** Independent
-  review found that `activate_policy` validates then seals a caller's
-  control proposal without passing through the monetary posting guard.
-  The shared payload validator now rejects `base_totals` on any entry with
-  no legs, including control entries and reservation releases. The model
-  test preserves valid round trips; the policy regression checks a typed
-  structural refusal without advancing the head or policy epoch. Valid
-  encoded bytes and their digest golden vectors are unchanged. Previously
-  accepted malformed no-leg valuations fail validation and decoding.
+  review found that policy activation and migration run controls seal
+  caller-supplied proposals without passing through the monetary posting
+  guard. Their admission checks now reject `base_totals`, because those
+  controls have no monetary legs to value. Generated controls already set
+  it to `None`. Regression tests require typed refusals without advancing
+  the journal or lifecycle state, alongside ordinary positive operations.
+  These are publication guards: the durable decoder and digest golden
+  vectors are unchanged, so historical journal bytes remain inspectable.
 
 Runtime verification of the two aggregate-admission repairs remains pending;
 the exact before/after results and combined landing gate are tracked on

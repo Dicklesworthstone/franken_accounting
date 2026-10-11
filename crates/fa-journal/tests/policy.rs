@@ -936,9 +936,16 @@ fn only_the_enforced_policy_activates_and_only_from_its_date_onward() {
         rate_doc_oids: vec![Oid([0x92; 32])],
         residual: None,
     });
-    let r = h.activate(valued, controller(), Vec::new()).unwrap_err();
+    let digest = valued.proposal_digest().unwrap();
+    let bob = h.approve(BOB, digest).unwrap().approval();
+    let carol = h.approve(CAROL, digest).unwrap().approval();
+    let valued_head = h.db.frontier().unwrap();
+    let r = h
+        .activate(valued, controller(), vec![bob, carol])
+        .unwrap_err();
     assert_eq!((r.code, r.exit), ("FA-REF-100", exit::USAGE));
-    assert_eq!(h.db.frontier().unwrap(), head);
+    assert!(r.message.contains("base_totals"), "{r}");
+    assert_eq!(h.db.frontier().unwrap(), valued_head);
     assert_eq!(security_policy_epoch(&h.db).unwrap(), 0);
 
     // The embedded policy, over the same approvers, still activates.
