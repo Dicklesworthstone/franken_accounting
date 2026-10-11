@@ -402,6 +402,23 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(map) => map,
             Err(refusal) => return Ok(Err(refusal)),
         };
+        let query = cx.query();
+        query.checkpoint().map_err(BookError::Context)?;
+        let spec = query.with_restriction(|| fa_journal::genesis::read_book_spec(&target))?;
+        let Some(spec) = spec else {
+            return Ok(Err(fa_journal::Refusal::new(
+                fa_journal::refusal::code::STRUCTURE,
+                fa_journal::exit::USAGE,
+                "the replay prefix ends before the book's genesis",
+                "plan §15.2 (a scratch book replays trunk from genesis)",
+                "replay at or after the book's genesis commit, or omit the prefix to replay the head",
+            )));
+        };
+        if spec.book_id != self.context.book_id {
+            return Err(
+                KernelError::Corrupt("the replayed genesis names a different book".into()).into(),
+            );
+        }
         Ok(Ok((
             AsyncBook {
                 db: target,

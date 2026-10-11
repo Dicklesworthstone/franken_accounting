@@ -1559,6 +1559,24 @@ mod tests {
         assert!(book.advance_registers(&march).expect("maintained").wrote);
         let source_head = book.head().unwrap();
 
+        let before_genesis = book
+            .replay_into_scratch(
+                Some(CommitSeq(0)),
+                BookKeys::for_development(0x5c),
+                Entropy::deterministic(0x5c),
+            )
+            .expect("kernel")
+            .err()
+            .expect("a scratch Book requires its genesis");
+        assert_eq!(
+            (before_genesis.code, before_genesis.exit),
+            (
+                fa_journal::refusal::code::STRUCTURE,
+                fa_journal::exit::USAGE
+            )
+        );
+        assert_eq!(book.head().unwrap(), source_head);
+
         let (mut scratch, map) = book
             .replay_into_scratch(
                 None,
