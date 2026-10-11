@@ -309,3 +309,11 @@ class = "ImportControl"
 requirement = "control_record"
 min_documents = 0
 kinds = "any"
+
+# A hold names its authority document in its payload; the control record is
+# its evidence (fa-txf).
+[[minimum]]
+class = "HoldControl"
+requirement = "control_record"
+min_documents = 0
+kinds = "any"

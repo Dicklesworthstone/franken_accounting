@@ -122,6 +122,11 @@ name = "ImportReceipt"
 id = 37
 name = "CustodyTransfer"
 
+# fa-txf: one subject's active legal holds, moved by compare-and-set.
+[[label]]
+id = 39
+name = "LegalHoldCell"
+
 # ---- property keys --------------------------------------------------------
 [[property]]
 id = 1
@@ -297,6 +302,11 @@ name = "dimension_kind"
 id = 66
 name = "custody_len"
 
+# fa-txf: the legal holds active on a subject (ascending u128 hold vids).
+[[property]]
+id = 67
+name = "legal_holds"
+
 # ---- relations ------------------------------------------------------------
 [[relation]]
 id = 1
@@ -397,3 +407,8 @@ name = "CUSTODY_OF"
 [[relation]]
 id = 32
 name = "IMPORTED_BY"
+
+# fa-txf: a HoldControl Place entry -> each subject it pins.
+[[relation]]
+id = 34
+name = "HOLDS"

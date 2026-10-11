@@ -24,6 +24,7 @@ pub mod entity;
 pub mod evidence;
 pub mod genesis;
 pub mod import;
+pub mod legal_hold;
 pub mod limit;
 pub mod migration;
 pub mod period;
@@ -50,6 +51,10 @@ pub use genesis::{
 };
 pub use import::{
     ImportRecorded, ImportRequest, RunReceipt, import_run, verify_receipt, verify_receipt_in,
+};
+pub use legal_hold::{
+    LegalHold, LegalHoldPlaced, LegalHoldReleased, LegalHoldRequest, Pinned, ReleasePlan,
+    active_legal_holds, place_legal_hold, plan_release, read_legal_hold, release_legal_hold,
 };
 pub use limit::{
     BalanceLimit, Balanced, LimitCell, LimitScope, cell_account, limit_cell_vid, period_cell_vid,

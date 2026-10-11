@@ -88,7 +88,7 @@ fn kernel_and_oracle_agree_on_every_class_and_every_pair_of_documents() {
         .iter()
         .map(|(_, name, _)| (*name).to_string())
         .collect();
-    assert_eq!(class_names.len(), 23, "every registered class");
+    assert_eq!(class_names.len(), 24, "every registered class");
     class_names.push("NoSuchClass".into());
     for class in &class_names {
         for set in &sets {
@@ -1341,6 +1341,276 @@ fn every_read_of_an_external_document_agrees_with_a_literal_model() {
     eprintln!("txf external totals: {totals:?}");
 }
 
+impl Book {
+    fn place_hold(
+        &mut self,
+        subjects: Vec<VId>,
+        authority: Oid,
+        key: &[u8],
+    ) -> Result<LegalHoldPlaced, Refusal> {
+        let ctx = self.ctx();
+        let cap = Capability::embedded(VId(u128::from(PREPARER)), &["hold"]).expect("hold");
+        let req = LegalHoldRequest {
+            principal: VId(u128::from(PREPARER)),
+            subjects,
+            authority,
+            effective_date: DateDay::from_ymd(2026, 3, 20).unwrap(),
+            idempotency_key: key.to_vec(),
+            description: Erasable::seal(
+                &"legal hold".to_string(),
+                None,
+                &self.book.seal_key,
+                [31; 32],
+                [31; 24],
+            ),
+        };
+        let (db, book) = (&mut self.db, &self.book);
+        self.runtime
+            .block_on(async move { place_legal_hold(db, &ctx, book, &cap, req).await })
+            .expect("kernel")
+    }
+
+    /// Plan, optionally approve (by principal 8, a Human other than the
+    /// preparer), and commit a release of `hold`.
+    fn release_hold(&mut self, hold: VId, key: &[u8], approve: bool) -> Result<VId, Refusal> {
+        let description = Erasable::seal(
+            &"hold release".to_string(),
+            None,
+            &self.book.seal_key,
+            [32; 32],
+            [32; 24],
+        );
+        let plan = plan_release(
+            &self.db,
+            &self.book,
+            hold,
+            VId(u128::from(PREPARER)),
+            DateDay::from_ymd(2026, 3, 25).unwrap(),
+            key,
+            description,
+        )
+        .expect("kernel")?;
+        let mut approvals = Vec::new();
+        if approve {
+            let ctx = self.ctx();
+            let req = ApprovalRequest {
+                capability: Self::capability(8),
+                approved_proposal_digest: plan.proposal_digest(&self.book).unwrap(),
+                role: 0,
+            };
+            let (db, book) = (&mut self.db, &self.book);
+            let approved = self
+                .runtime
+                .block_on(async move { record_approval(db, &ctx, book, req).await })
+                .expect("kernel")
+                .expect("an approval");
+            approvals.push(approved.approval());
+        }
+        let ctx = self.ctx();
+        let cap = Capability::embedded(VId(u128::from(PREPARER)), &["hold"]).expect("hold");
+        let (db, book) = (&mut self.db, &self.book);
+        self.runtime
+            .block_on(
+                async move { release_legal_hold(db, &ctx, book, &cap, &plan, &approvals).await },
+            )
+            .expect("kernel")
+            .map(|r| r.release)
+    }
+
+    fn erase(&self, subject: VId) -> Refusal {
+        let cap = Capability::embedded(VId(u128::from(PREPARER)), &["erase"]).expect("erase");
+        fa_journal::evidence::erasure_cut(&self.db, &self.book, &cap, subject).expect("kernel")
+    }
+}
+
+/// Legal holds (fa-txf, plan §8.5) against a literal model: per hold its
+/// subject set and whether it is released; a subject is pinned exactly while
+/// some unreleased hold names it. Every placement, release and erasure on
+/// the real kernel agrees with the model, step by step, and at the end every
+/// subject's active holds and every hold's release state agree too.
+#[test]
+fn legal_holds_on_the_real_kernel_agree_with_a_literal_model() {
+    use std::collections::BTreeSet;
+    let mut totals: BTreeMap<&'static str, usize> = BTreeMap::new();
+    for seed in [0x51de_cafe_0bad_f00d_u64, 0x2468_ace0_1357_9bdf] {
+        let mut rng = Rng(seed);
+        let mut b = book();
+        let authority = Document {
+            book_id: b.book.book_id,
+            kind: 1,
+            mime: "text/plain".into(),
+            grade: 3,
+            retrieved_by: VId(7),
+            bytes: format!("PRESERVATION ORDER {seed:x}").into_bytes(),
+        };
+        b.add(&authority).expect("admitted");
+        // Holdable subjects: documents and posted entries.
+        let mut pool: Vec<VId> = Vec::new();
+        for i in 0..6u64 {
+            let doc = Document {
+                bytes: format!("INVOICE {seed:x}/{i}").into_bytes(),
+                ..authority.clone()
+            };
+            let added = b.add(&doc).expect("admitted");
+            pool.push(added.vid);
+            if i < 3 {
+                let proposal = b.proposal(
+                    EntryClass::ORIGINAL,
+                    format!("entry-{i}").as_bytes(),
+                    vec![doc.evidence_ref(1)],
+                );
+                pool.push(b.post(proposal).expect("posted").entry_ref().vid);
+            }
+        }
+        // Not holdable: a vid the book never wrote, and the book's root.
+        let bogus = [VId(0xdead_beef), fa_journal::rows::book_root()];
+        // The model: hold -> (subjects, released).
+        let mut model: BTreeMap<u128, (BTreeSet<u128>, bool)> = BTreeMap::new();
+        let active = |model: &BTreeMap<u128, (BTreeSet<u128>, bool)>, s: VId| -> Vec<VId> {
+            model
+                .iter()
+                .filter(|(_, (subjects, released))| !released && subjects.contains(&s.0))
+                .map(|(h, _)| VId(*h))
+                .collect()
+        };
+        let mut seen: BTreeMap<&'static str, usize> = BTreeMap::new();
+        for step in 0..150u64 {
+            let roll = rng.below(100);
+            if roll < 40 {
+                let n = 1 + rng.below(4);
+                let mut subjects: Vec<VId> = (0..n).map(|_| *rng.pick(&pool)).collect();
+                let twist = rng.below(10);
+                if twist == 0 {
+                    subjects.push(*rng.pick(&bogus));
+                }
+                if twist == 1 {
+                    subjects.clear();
+                }
+                let mut set: BTreeSet<u128> = BTreeSet::new();
+                let repeated = !subjects.iter().all(|s| set.insert(s.0));
+                let expected: Option<&'static str> = if subjects.is_empty() || repeated {
+                    Some("FA-REF-100")
+                } else if subjects.iter().any(|s| bogus.contains(s)) {
+                    Some("FA-REF-141")
+                } else {
+                    None
+                };
+                let key = format!("hold-{step}");
+                let got = b.place_hold(subjects.clone(), authority.oid(), key.as_bytes());
+                assert_eq!(
+                    outcome(&got),
+                    expected,
+                    "seed {seed:x} step {step}: place {subjects:?}: {got:?}"
+                );
+                if let Ok(placed) = got {
+                    assert_eq!(
+                        placed.subjects,
+                        set.iter().map(|s| VId(*s)).collect::<Vec<_>>(),
+                        "seed {seed:x} step {step}: the scope is the set, ascending"
+                    );
+                    assert!(model.insert(placed.hold.0, (set, false)).is_none());
+                }
+                *seen.entry(expected.unwrap_or("placed")).or_default() += 1;
+            } else if roll < 65 {
+                // Release a hold (active or not), or something that is none.
+                let target = if model.is_empty() || rng.below(6) == 0 {
+                    *rng.pick(&pool)
+                } else {
+                    let holds: Vec<u128> = model.keys().copied().collect();
+                    VId(*rng.pick(&holds))
+                };
+                let approve = rng.below(5) != 0;
+                let expected = match model.get(&target.0) {
+                    None | Some((_, true)) => Some("FA-REF-118"),
+                    Some((_, false)) if !approve => Some("FA-REF-012"),
+                    Some((_, false)) => None,
+                };
+                let key = format!("release-{step}");
+                let got = b.release_hold(target, key.as_bytes(), approve);
+                assert_eq!(
+                    outcome(&got),
+                    expected,
+                    "seed {seed:x} step {step}: release {target:?} (approved {approve}): {got:?}"
+                );
+                if got.is_ok() {
+                    model.get_mut(&target.0).expect("a modelled hold").1 = true;
+                }
+                *seen.entry(expected.unwrap_or("released")).or_default() += 1;
+            } else if roll < 90 {
+                let subject = if rng.below(4) == 0 {
+                    *rng.pick(&bogus)
+                } else {
+                    *rng.pick(&pool)
+                };
+                let holds = active(&model, subject);
+                let expected = if holds.is_empty() {
+                    "FA-REF-088"
+                } else {
+                    "FA-REF-117"
+                };
+                let r = b.erase(subject);
+                assert_eq!(
+                    r.code, expected,
+                    "seed {seed:x} step {step}: erasure of {subject:?} under {holds:?}: {r}"
+                );
+                for h in &holds {
+                    assert!(r.message.contains(&format!("{:032x}", h.0)), "{r}");
+                }
+                *seen.entry(expected).or_default() += 1;
+            } else {
+                let subject = *rng.pick(&pool);
+                assert_eq!(
+                    active_legal_holds(&b.db, b.book.book_id, subject).unwrap(),
+                    active(&model, subject),
+                    "seed {seed:x} step {step}: active holds on {subject:?}"
+                );
+                *seen.entry("cell read").or_default() += 1;
+            }
+        }
+        for subject in pool.iter().chain(&bogus) {
+            assert_eq!(
+                active_legal_holds(&b.db, b.book.book_id, *subject).unwrap(),
+                active(&model, *subject),
+                "seed {seed:x}: final holds on {subject:?}"
+            );
+        }
+        for (hold, (subjects, released)) in &model {
+            let read = read_legal_hold(&b.db, b.book.book_id, VId(*hold))
+                .unwrap()
+                .expect("a placed hold");
+            assert_eq!(
+                read.subjects,
+                subjects.iter().map(|s| VId(*s)).collect::<Vec<_>>()
+            );
+            assert_eq!(read.released.is_some(), *released, "seed {seed:x}");
+        }
+        eprintln!("txf hold seed {seed:x}: {seen:?}");
+        for key in [
+            "placed",
+            "released",
+            "FA-REF-117",
+            "FA-REF-088",
+            "FA-REF-118",
+        ] {
+            assert!(
+                seen.get(key).copied().unwrap_or(0) >= 3,
+                "seed {seed:x}: {key} reached {:?}: {seen:?}",
+                seen.get(key)
+            );
+        }
+        for (key, n) in seen {
+            *totals.entry(key).or_default() += n;
+        }
+    }
+    eprintln!("txf hold totals: {totals:?}");
+    for key in ["FA-REF-100", "FA-REF-141", "FA-REF-012", "cell read"] {
+        assert!(
+            totals.get(key).copied().unwrap_or(0) >= 1,
+            "{key} never reached: {totals:?}"
+        );
+    }
+}
+
 /// Every control record in `db`, its kind checked against the oracle's
 /// literal copy of the registry (fa-g23): the class the kind mints is the
 /// record's class. Returns the count per kind; logs each origin.
@@ -1380,7 +1650,8 @@ fn control_kinds_in(db: &Database<MemVfs>) -> BTreeMap<u16, usize> {
 
 /// fa-g23, the positive half: on a fresh book, every control record the
 /// kernel mints (chart install, period transitions, a tick, a capability
-/// revocation, an import run) carries the registry's number for its kind.
+/// revocation, an import run, a legal hold and its release) carries the
+/// registry's number for its kind.
 #[test]
 fn every_control_record_carries_its_registered_kind() {
     let mut b = book();
@@ -1424,6 +1695,7 @@ fn every_control_record_carries_its_registered_kind() {
         retrieved_by: VId(7),
         bytes: b"INVOICE (g23 import fixture)".to_vec(),
     };
+    let imported_oid = imported.oid();
     b.import(
         7,
         fa_model::IntakeSource::Connector {
@@ -1434,9 +1706,18 @@ fn every_control_record_carries_its_registered_kind() {
         vec![imported],
     )
     .expect("an import run");
+    let held = b
+        .place_hold(
+            vec![fa_journal::evidence::document_vid(&imported_oid)],
+            imported_oid,
+            b"g23-hold",
+        )
+        .expect("placed");
+    b.release_hold(held.hold, b"g23-release", true)
+        .expect("released");
     let seen = control_kinds_in(&b.db);
     eprintln!("g23 control kinds on a fresh book: {seen:?}");
-    for kind in [1, 2, 4, 6, 8] {
+    for kind in [1, 2, 4, 6, 7, 8] {
         assert!(seen.contains_key(&kind), "kind {kind} minted: {seen:?}");
     }
 }

@@ -330,7 +330,8 @@ fn key_loss_never_changes_an_amount_and_equivalence_is_never_guessed() {
 
     // ErasureCut is a registered absence: refused, nothing written.
     let head = h.db.frontier().unwrap();
-    let refused = erasure_cut(CUSTOMER);
+    let eraser = Capability::embedded(PRINCIPAL, &["erase"]).expect("erase");
+    let refused = erasure_cut(&h.db, &book, &eraser, CUSTOMER).expect("kernel");
     assert_eq!((refused.code, refused.exit), ("FA-REF-088", exit::REFUSAL));
     assert!(
         refused.cite.contains("R-ERASE") && refused.cite.contains("fa-v74"),
