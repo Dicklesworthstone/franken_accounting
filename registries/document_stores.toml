@@ -1,0 +1,31 @@
+# document_stores.toml — where a document's bytes may live outside the
+# journal (plan §9.1 `storage: External`; fa-txf part B).
+#
+# The pinned substrate has no object store (Appendix H), so a document's
+# bytes ride inline in its payload up to evidence_policy.toml's
+# `max_document_bytes`. A larger document is recorded with its public
+# commitment (`doc_commit`, its chunk-tree root and size) inline and its
+# bytes in a registered store the book owns; every read recomputes the
+# commitment from the bytes it fetched. A missing blob is FA-REF-116 (exit 5,
+# the environment failed to supply it); bytes that do not verify are
+# FA-REF-085 (exit 8). Never a silent null, never a substituted document.
+#
+# Kinds:
+#   content_addressed  the locator is the commitment's lowercase hex, so the
+#                      same bytes are one blob and a blob names what it holds
+#
+# Consumer: fa-registry `document_stores` (parser), fa-journal `blob` and
+# `evidence` (external intake and verified reads).
+# Gate: ids >= 1, unique; names unique; kinds closed; each store's bound is
+# at least the inline bound and at most the decoder's 64 MiB ceiling.
+#
+# Additive-only: a released store id is never reused while a document names it.
+
+schema_version = 1
+
+[[store]]
+id = 1
+name = "book-blobs"
+kind = "content_addressed"
+max_document_bytes = 67108864
+meaning = "the book's own blob directory (<book dir>/blobs, or in memory for a memory book)"

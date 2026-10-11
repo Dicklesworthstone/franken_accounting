@@ -24,7 +24,7 @@ name = "frankengraphdb"
 source = "git+https://github.com/Dicklesworthstone/frankengraphdb"
 rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
 version = "0.0.1 (unpublished, publish = false)"
-crates = ["fgdb", "fgdb-types", "fgdb-delta-types", "fgdb-gql", "fgdb-crypto", "fgdb-bigint"]
+crates = ["fgdb", "fgdb-types", "fgdb-delta-types", "fgdb-gql", "fgdb-crypto", "fgdb-bigint", "fgdb-sim"]
 role = "substrate: Chronicle commit stream, bounded WriteTxn with point-read witnesses, native GQL, certified reads"
 status_checked = "2026-10-09 (plan Appendix H rows)"
 

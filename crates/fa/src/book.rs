@@ -297,6 +297,26 @@ enum Store {
     Dir(Database<UnixVfs>),
 }
 
+/// The book's blob store (fa-txf part B): documents past the inline bound
+/// keep their bytes here, content-addressed, beside the database.
+enum Blobs {
+    Memory(fa_journal::BlobStore<MemVfs>),
+    Dir(fa_journal::BlobStore<UnixVfs>),
+}
+
+/// The registered store a book's own blobs live in (`document_stores.toml`).
+const BOOK_BLOB_STORE: u16 = 1;
+
+/// Run `$body` with `$bs` bound to the book's blob store, whichever VFS backs it.
+macro_rules! with_blobs {
+    ($blobs:expr, $bs:ident => $body:expr) => {
+        match $blobs {
+            Blobs::Memory($bs) => $body,
+            Blobs::Dir($bs) => $body,
+        }
+    };
+}
+
 /// Run `$body` with `$db` bound to the store's database, whichever VFS backs it.
 macro_rules! with_store {
     ($store:expr, $db:ident => $body:expr) => {
@@ -312,6 +332,7 @@ pub struct Book {
     runtime: Runtime,
     root: Cx,
     store: Store,
+    blobs: Blobs,
     ctx: BookContext,
     entropy: Entropy,
 }
@@ -359,10 +380,18 @@ impl Book {
         })?;
         let mut store = Store::Memory(db);
         let ctx = Self::genesis(&runtime, &root, &mut store, &keys, spec)?;
+        let blob_vfs = MemVfs::new().map_err(|e| BookError::Io(PathBuf::from("blobs"), e))?;
+        let blobs = Blobs::Memory(fa_journal::BlobStore::open(
+            BOOK_BLOB_STORE,
+            blob_vfs,
+            // MemVfs anchors a relative path at its own private root.
+            "blobs",
+        )?);
         Ok(Self {
             runtime,
             root,
             store,
+            blobs,
             ctx,
             entropy,
         })
@@ -384,10 +413,16 @@ impl Book {
         })?;
         let mut store = Store::Dir(db);
         let ctx = Self::genesis(&runtime, &root, &mut store, &keys, spec)?;
+        let blobs = Blobs::Dir(fa_journal::BlobStore::open(
+            BOOK_BLOB_STORE,
+            UnixVfs::new(),
+            dir.join("blobs"),
+        )?);
         Ok(Self {
             runtime,
             root,
             store,
+            blobs,
             ctx,
             entropy,
         })
@@ -410,10 +445,16 @@ impl Book {
             seal_key: keys.seal_key(),
             symbols: SymbolTable::compiled(),
         };
+        let blobs = Blobs::Dir(fa_journal::BlobStore::open(
+            BOOK_BLOB_STORE,
+            UnixVfs::new(),
+            dir.join("blobs"),
+        )?);
         Ok(Self {
             runtime,
             root,
             store: Store::Dir(db),
+            blobs,
             ctx,
             entropy,
         })
@@ -593,17 +634,27 @@ impl Book {
     }
 
     /// Record a document (plan §9.1): content-addressed; the same bytes of
-    /// the same kind are the recorded outcome.
+    /// the same kind are the recorded outcome. A document past the inline
+    /// bound (`evidence_policy.toml max_document_bytes`) keeps its bytes in
+    /// the book's blob store, its commitment inline.
     pub fn add_document(
         &mut self,
         doc: &fa_journal::Document,
     ) -> Outcome<fa_journal::DocumentAdded> {
+        let inline_bound =
+            fa_registry::evidence_policy::EvidencePolicy::embedded()?.max_document_bytes;
+        let external = u64::try_from(doc.bytes.len()).unwrap_or(u64::MAX) > inline_bound;
         let purposes = self.purposes();
         let ctx = &self.ctx;
         let runtime = &self.runtime;
-        Ok(
-            with_store!(&mut self.store, db => runtime.block_on(async { fa_journal::add_document(db, &purposes, ctx, doc).await }))?,
-        )
+        let blobs = &self.blobs;
+        Ok(if external {
+            with_store!(&mut self.store, db => with_blobs!(blobs, bs => runtime.block_on(async {
+                fa_journal::add_document_external(db, &purposes, ctx, bs, doc).await
+            })))?
+        } else {
+            with_store!(&mut self.store, db => runtime.block_on(async { fa_journal::add_document(db, &purposes, ctx, doc).await }))?
+        })
     }
 
     /// Record an import run (plan §9.3): the batch's documents and their
@@ -667,11 +718,23 @@ impl Book {
     }
 
     /// The document at `oid`, verified against its commitment.
-    pub fn read_document(
+    pub fn read_document(&self, oid: &fa_model::Oid) -> Outcome<Option<fa_journal::Document>> {
+        let purposes = self.purposes();
+        let runtime = &self.runtime;
+        Ok(
+            with_store!(&self.store, db => with_blobs!(&self.blobs, bs => runtime.block_on(async {
+                fa_journal::fetch_document(db, &purposes, bs, oid).await
+            })))?,
+        )
+    }
+
+    /// The document's verified record (kind, grade, size, commitment, and
+    /// where its bytes are) without fetching the bytes.
+    pub fn document_record(
         &self,
         oid: &fa_model::Oid,
-    ) -> Result<Option<fa_journal::Document>, BookError> {
-        Ok(with_store!(&self.store, db => fa_journal::read_document(db, oid))?)
+    ) -> Result<Option<fa_journal::DocumentRecord>, BookError> {
+        Ok(with_store!(&self.store, db => fa_journal::document_record(db, oid))?)
     }
 
     /// Record a `Reviewed` attestation over the document at `document`
@@ -1326,6 +1389,72 @@ mod tests {
             now.cells.iter().map(|c| c.credits).collect::<Vec<_>>(),
             vec![150_000]
         );
+    }
+
+    #[test]
+    fn a_document_past_the_inline_bound_lives_in_the_blob_store_and_every_read_verifies() {
+        let dir = std::env::temp_dir().join(format!("fa-blobs-{}", std::process::id()));
+        let keys = BookKeys::generate(&Entropy::deterministic(11)).unwrap();
+        let (spec, _usd) = spec(Id128([0x48; 16]));
+        let principal = VId(3);
+        let document = |bytes: Vec<u8>| fa_journal::Document {
+            book_id: spec.book_id,
+            kind: 1,
+            mime: "application/octet-stream".into(),
+            grade: 3,
+            retrieved_by: principal,
+            bytes,
+        };
+        let big = document(vec![b'q'; 16 * 1024 * 1024 + 1]);
+        let small = document(b"INVOICE (stays inline)".to_vec());
+        let (oid, locator) = {
+            let mut book =
+                Book::create_dir(&dir, keys.clone(), spec.clone(), Entropy::deterministic(11))
+                    .expect("create_dir");
+            let added = book.add_document(&big).expect("kernel").expect("admitted");
+            let record = book.document_record(&added.oid).unwrap().expect("held");
+            let locator = match record.storage {
+                fa_journal::Storage::External { store, locator } => Some((store, locator)),
+                fa_journal::Storage::Inline(_) => None,
+            };
+            let (store, locator) = locator.expect("routed to the blob store");
+            assert_eq!(store, BOOK_BLOB_STORE);
+            assert!(
+                dir.join("blobs")
+                    .join(&locator[..2])
+                    .join(&locator)
+                    .exists()
+            );
+            let inline = book
+                .add_document(&small)
+                .expect("kernel")
+                .expect("admitted");
+            assert!(matches!(
+                book.document_record(&inline.oid)
+                    .unwrap()
+                    .expect("held")
+                    .storage,
+                fa_journal::Storage::Inline(_)
+            ));
+            (added.oid, locator)
+        };
+        // Reopened, the document reads back byte-identically.
+        let book = Book::open_dir(&dir, keys, Entropy::deterministic(12)).expect("open_dir");
+        assert_eq!(
+            book.read_document(&oid).unwrap().unwrap(),
+            Some(big.clone())
+        );
+        // A byte changed on disk: refused (exit 8), never the changed bytes.
+        let path = dir.join("blobs").join(&locator[..2]).join(&locator);
+        let mut changed = big.bytes.clone();
+        changed[0] = b'Q';
+        std::fs::write(&path, &changed).unwrap();
+        let r = book.read_document(&oid).unwrap().unwrap_err();
+        assert_eq!((r.code, r.exit), ("FA-REF-085", 8), "{r}");
+        // The blob moved away: refused (exit 5), never a silent null.
+        std::fs::rename(&path, path.with_extension("moved")).unwrap();
+        let r = book.read_document(&oid).unwrap().unwrap_err();
+        assert_eq!((r.code, r.exit), ("FA-REF-116", 5), "{r}");
     }
 
     #[test]

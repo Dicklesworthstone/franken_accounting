@@ -561,6 +561,14 @@ cite = "plan §9.3 (an import receipt binds exactly the documents imported)"
 fix = "present the run's oids exactly as imported, in ascending order; a list that does not recompute the receipt is not the run's"
 
 [[refusal]]
+code = "FA-REF-116"
+name = "BLOB_MISSING"
+owners = ["fa-journal"]
+exit = "foundation"
+cite = "plan §9.1 (a document's bytes are produced on request and verified against its public commitment); registries/document_stores.toml"
+fix = "restore the blob from the book's backup into its store; the commitment names exactly the bytes expected, and nothing substitutes for them"
+
+[[refusal]]
 code = "FA-REF-119"
 name = "NOT_CUSTODIAN"
 owners = ["fa-journal"]
