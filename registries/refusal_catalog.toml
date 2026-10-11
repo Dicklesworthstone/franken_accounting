@@ -770,3 +770,13 @@ owners = ["fa"]
 exit = "verification"
 cite = "FA-INV-11 determinism and replay (plan §13.6: the same closure reproduces byte-identical output)"
 fix = "run `fa certificate status <certificate>` to see what was recorded since; re-certify with `fa tb … --json`; an altered certificate is never repaired"
+
+# 151 (OliveFortress, bead fa-y9z): the front door reports an unwinding panic
+# as one error event instead of exit 101 (plan §15.3, never silent).
+[[refusal]]
+code = "FA-REF-151"
+name = "INTERNAL_PANIC"
+owners = ["fa-cli"]
+exit = "foundation"
+cite = "plan §15.3 (never silent: every non-zero exit emits exactly one error event)"
+fix = "report the command line and this message; a write either committed before the panic or did not (run `fa verify registers` and `fa verify projections`)"
