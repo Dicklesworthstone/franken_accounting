@@ -1123,6 +1123,10 @@ fn register_advance_consumes_only_new_entries_and_refuses_damaged_cache() -> std
     let verification = ok(&words.collect::<Vec<_>>());
     assert_eq!(field(&verification, "event"), Some("registers_verified"));
 
+    // A separate valid cache will lag the next post. Mixed verification
+    // must not suggest advancing when another selected cache is corrupt.
+    ok(&["registers", "advance", "--period", "FY2026-P01", "--json"]);
+
     let second = write(
         &dir,
         "second.json",
@@ -1193,6 +1197,30 @@ fn register_advance_consumes_only_new_entries_and_refuses_damaged_cache() -> std
     assert_eq!(text(check, "cache_status"), "corrupt");
     assert_eq!(check.get("verified_through"), Some(&Json::Null));
     assert!(arr(&robot_line(&verification), "next_actions").is_empty());
+    let (code, mixed, err) = fa(
+        Some(&book),
+        &[
+            "verify",
+            "registers",
+            "--period",
+            "FY2026-P01",
+            "--period",
+            period,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 8, "{mixed}\n{err}");
+    let error = doc(&mixed);
+    let checks = arr(&error, "detail");
+    assert_eq!(checks.len(), 2);
+    assert_eq!(text(&checks[0], "period"), "FY2026-P01");
+    assert_eq!(text(&checks[0], "cache_status"), "verified");
+    assert_eq!(checks[0].get("stale"), Some(&Json::Bool(true)));
+    assert_eq!(int(&checks[0], "lag_entries"), Some(1));
+    assert_eq!(text(&checks[1], "cache_status"), "corrupt");
+    assert!(arr(&robot_line(&mixed), "next_actions").is_empty());
+    assert!(text(&error, "fix").contains("--period FY2026-P03 --yes --json"));
+    assert!(!text(&error, "fix").contains("FY2026-P01"));
     let (code, out, err) = fa(Some(&book), &advance);
     assert_eq!(code, 8, "{out}\n{err}");
     let refusal = doc(&out);
