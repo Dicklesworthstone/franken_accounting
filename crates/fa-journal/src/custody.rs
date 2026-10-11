@@ -430,7 +430,7 @@ pub fn witness_custody<V: asupersync::fs::Vfs + Clone>(
                     ..
                 },
             ) => {
-                if *digest_at_receipt != doc.doc_commit() {
+                if *digest_at_receipt != doc.doc_commit {
                     return Ok(Err(incomplete(
                         oid,
                         index,

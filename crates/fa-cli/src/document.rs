@@ -244,8 +244,8 @@ pub(crate) fn parse_evidence(
         let doc_commit = match commit_hex {
             Some(h) => hex32(&h, "evidence doc_commit")?,
             None => book
-                .read_document(&oid)?
-                .map_or([0u8; 32], |d| d.doc_commit()),
+                .document_record(&oid)?
+                .map_or([0u8; 32], |r| r.doc_commit),
         };
         refs.push(EvidenceRef {
             document_oid: oid,

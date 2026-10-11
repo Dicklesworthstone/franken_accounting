@@ -18,6 +18,7 @@
 #![forbid(unsafe_code)]
 
 pub mod attestation;
+pub mod blob;
 pub mod custody;
 pub mod entity;
 pub mod evidence;
@@ -35,8 +36,12 @@ pub mod sweep;
 pub use attestation::{
     AttestationClaim, Attested, read_attestation, record_manual_assertion, record_review,
 };
+pub use blob::BlobStore;
 pub use custody::{CustodyBody, CustodyEvent, CustodyMoved, custody_chain, transfer_custody};
-pub use evidence::{Document, DocumentAdded, add_document, read_document};
+pub use evidence::{
+    Document, DocumentAdded, DocumentRecord, Storage, add_document, add_document_external,
+    document_record, fetch_document, read_document,
+};
 pub use genesis::{
     AccountSpec, BookContext, BookSpec, ChartInstalled, LegalEntitySpec, TimeZonePolicy,
     UnitPolicy, create_book, create_periods, install_chart,

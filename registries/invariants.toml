@@ -419,11 +419,13 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-05"
 id = "external-retained"
-status = "dormant"
+status = "live"
 statement = "External evidence retains bytes unless an attested by-reference policy downgrades dependent certificates."
 evidence_class = "invariant"
 first_gate = "G2"
-activating = ["fa-txf"]
+owner = "fa-txf"
+checkers = ["fa-journal::tests/genesis.rs::an_external_document_reads_back_verified_and_a_missing_or_changed_blob_is_refused", "fa-registers::tests/evidence_oracle.rs::every_read_of_an_external_document_agrees_with_a_literal_model"]
+negatives = ["fa-journal::tests/genesis.rs::a_document_past_the_inline_bound_is_refused_inline_and_admitted_by_a_store"]
 waiver = "forbidden"
 
 [[clause]]

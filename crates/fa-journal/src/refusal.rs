@@ -154,6 +154,8 @@ pub mod code {
     pub const CUSTODY_INCOMPLETE: &str = "FA-REF-114";
     /// An import receipt does not recompute from the presented oids (tampered, missing, extra, or reordered).
     pub const RECEIPT_MISMATCH: &str = "FA-REF-115";
+    /// A document's bytes cannot be produced: its store holds no blob, cannot be read, or is not the store handed in.
+    pub const BLOB_MISSING: &str = "FA-REF-116";
     /// A custody transfer names a principal that does not hold the document.
     pub const NOT_CUSTODIAN: &str = "FA-REF-119";
     /// A RegisterEquals claim is not what its cell folds to at the claim's own sequence.
