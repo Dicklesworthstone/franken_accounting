@@ -43,7 +43,10 @@ const BOOK_SCOPED_CONTROLS: &[&str] = &[
     "TimeControl",
     "SweepControl",
     "ScheduleControl",
+    "MigrationControl",
 ];
+/// A MigrationRun's lifecycle (plan §8.6).
+const MIGRATION_TRANSITIONS: &[&str] = &["Open", "Finalize", "Abandon"];
 
 /// Which entry a rule governs. `state` is the period state the entry
 /// resolves to (for `PeriodControl`, the transition's from-state); `None`
@@ -298,6 +301,7 @@ impl SodPolicy {
                         "TimeControl" => TIME_TRANSITIONS,
                         "SweepControl" => SWEEP_TRANSITIONS,
                         "ScheduleControl" => SCHEDULE_TRANSITIONS,
+                        "MigrationControl" => MIGRATION_TRANSITIONS,
                         other => {
                             return Err(invalid(
                                 R,
@@ -560,6 +564,9 @@ mod tests {
                 ),
                 0,
             ),
+            (key("MigrationControl", None, None, Some("Open")), 0),
+            (key("MigrationControl", None, None, Some("Finalize")), 2),
+            (key("MigrationControl", None, None, Some("Abandon")), 0),
         ] {
             let (name, req) = p.requirement(&k);
             assert_ne!(name, "default", "{k:?} must be governed by a rule");
@@ -641,6 +648,14 @@ mod tests {
             (
                 format!("[[rule]]\nname = \"x\"\nclass = \"PolicyControl\"\nstate = \"Open\"\ntransition = \"Activate\"\npreparer_op = \"rule_change\"\napprovers = 2\n{OK_REQ}"),
                 "book-scoped",
+            ),
+            (
+                format!("[[rule]]\nname = \"x\"\nclass = \"MigrationControl\"\nstate = \"Locked\"\ntransition = \"Finalize\"\npreparer_op = \"migrate\"\napprovers = 2\n{OK_REQ}"),
+                "book-scoped",
+            ),
+            (
+                format!("[[rule]]\nname = \"x\"\nclass = \"MigrationControl\"\ntransition = \"Activate\"\npreparer_op = \"migrate\"\napprovers = 2\n{OK_REQ}"),
+                "not a MigrationControl transition",
             ),
             (
                 format!("[[rule]]\nname = \"x\"\nclass = \"PolicyControl\"\ntransition = \"Activate\"\napprovers = 2\n{OK_REQ}"),

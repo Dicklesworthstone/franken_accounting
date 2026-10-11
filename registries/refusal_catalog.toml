@@ -597,3 +597,36 @@ owners = ["fa-notary"]
 exit = "usage"
 cite = "plan §13.1 (a prefix cannot extend past the head)"
 fix = "select a sequence at or before the head"
+
+# ---- Migration runs and scratch replay (130–139) -------------------------
+[[refusal]]
+code = "FA-REF-130"
+name = "RUN_NOT_OPEN"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §8.6 (a MigrationRun is Open → Finalized | Abandoned; only an Open run takes chunks)"
+fix = "open a new run with a new run key (`{run}` is {state}); an abandoned run's entries stay journaled and invisible"
+
+[[refusal]]
+code = "FA-REF-131"
+name = "TIE_OUT_MISMATCH"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §8.6 (Finalize activates the run only when its fold equals the legacy trial balance)"
+fix = "post the missing chunks (or abandon the run and retry under a new run key) until every line ties out: {lines}"
+
+[[refusal]]
+code = "FA-REF-132"
+name = "MIGRATION_OUTSIDE_RUN"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §8.6, Appendix C (Migration: Opening and Historical periods only, inside an open MigrationRun)"
+fix = "post the chunk with a Migration origin whose run_ref names an open run, dated on that run's opening date in its Opening period"
+
+[[refusal]]
+code = "FA-REF-133"
+name = "MIGRATION_STAGED"
+owners = ["fa-notary"]
+exit = "refusal"
+cite = "plan §8.6, FA-INV-07 (a staged or abandoned chunk is invisible to every fold); ruling 3243"
+fix = "prove the balance at a checkpoint after the run is finalized; an abandoned run's accounts are provable once balance proofs carry the migration predicate (fa-e00)"

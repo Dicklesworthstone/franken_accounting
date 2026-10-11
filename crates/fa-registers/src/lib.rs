@@ -220,12 +220,16 @@ pub(crate) fn period_at<V: asupersync::fs::Vfs + Clone>(
 
 /// Read the authoritative payloads in a fixed historical snapshot. Derived
 /// IN_PERIOD edges are not an input: a damaged projection cannot hide a posting.
+/// The FA-INV-07 migration predicate applies here, once, for every fold:
+/// a chunk of a migration run is selected only where its run is Finalized
+/// at `seq` (`fa_journal::migration::visible_at`, plan §8.6).
 pub(crate) fn entries_at<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     seq: CommitSeq,
 ) -> Result<Vec<(VId, Entry, CommitSeq)>, RegisterError> {
     let mut entries = Vec::new();
+    let mut runs = BTreeMap::new();
     for row in db.vertices_at(seq)? {
         if !row.labels.contains(&label::ENTRY) {
             continue;
@@ -237,6 +241,9 @@ pub(crate) fn entries_at<V: asupersync::fs::Vfs + Clone>(
                 "entry coordinate does not belong to this trunk book".into(),
             )
             .into());
+        }
+        if !fa_journal::migration::visible_at(db, &entry, seq, &mut runs)? {
+            continue;
         }
         entries.push((row.vid, entry, row.created_at));
     }

@@ -28,7 +28,7 @@ use fa_journal::genesis::BookContext;
 use fa_journal::refusal::{Outcome, Refusal, exit};
 use fa_journal::rows::bytes;
 use fa_model::symbols::{label, property};
-use fa_model::{EncodeError, Entry, EntryClass, Id128, Writer};
+use fa_model::{ControlPayload, EncodeError, Entry, EntryClass, EntryOrigin, Id128, Writer};
 use fa_money::Side;
 use fgdb::Database;
 use fgdb_types::{CommitSeq, VId};
@@ -368,14 +368,68 @@ impl Journal {
             && through.is_none_or(|cutoff| e.effective_day.is_some_and(|d| d <= cutoff))
     }
 
+    /// The FA-INV-07 migration predicate over this prefix's own leaves: the
+    /// first leaf that would contribute to (account, unit) and is a chunk of
+    /// a migration run with no Finalize leaf in the prefix. The accumulator
+    /// keeps such leaves (they are journaled); a register fold does not count
+    /// them; and `fa-verify` decides its in-scope set from envelopes, which
+    /// do not carry the run — so the proof refuses rather than disagree with
+    /// the fold (ruling 3243; the format change is bead fa-e00).
+    fn staged_chunk(
+        &self,
+        account: VId,
+        unit: u32,
+        through: Option<i32>,
+    ) -> Result<Option<VId>, KernelError> {
+        let mut finalized = BTreeSet::new();
+        for leaf in self
+            .leaves
+            .iter()
+            .filter(|l| l.envelope.class == EntryClass::MIGRATION_CONTROL)
+        {
+            if let Some(ControlPayload::MigrationControl { run_ref, kind, .. }) =
+                Entry::decode(&leaf.payload)?.proposal.control
+                && kind == fa_journal::migration::kind::FINALIZE
+            {
+                finalized.insert(run_ref);
+            }
+        }
+        for leaf in self.leaves.iter().filter(|l| {
+            l.envelope.class == EntryClass::MIGRATION
+                && Self::contributes(l, account, unit, through)
+        }) {
+            if let EntryOrigin::Migration { run_ref, .. } =
+                Entry::decode(&leaf.payload)?.proposal.origin
+                && !finalized.contains(&run_ref)
+            {
+                return Ok(Some(leaf.vid));
+            }
+        }
+        Ok(None)
+    }
+
     /// The posted (debits, credits) of (account, unit) through the cutoff,
-    /// folded from the entry payloads with checked arithmetic.
+    /// folded from the entry payloads with checked arithmetic. Refused
+    /// (FA-REF-133) while a contributing migration chunk's run is not
+    /// finalized in this prefix.
     pub fn posted_balance(
         &self,
         account: VId,
         unit: u32,
         through: Option<i32>,
-    ) -> Result<(i128, i128), KernelError> {
+    ) -> Outcome<(i128, i128)> {
+        if let Some(chunk) = self.staged_chunk(account, unit, through)? {
+            return Ok(Err(Refusal::new(
+                code::MIGRATION_STAGED,
+                exit::REFUSAL,
+                format!(
+                    "the balance would count migration chunk {:032x}, whose run is not finalized in this prefix",
+                    chunk.0
+                ),
+                "plan §8.6, FA-INV-07 (a staged or abandoned chunk is invisible to every fold)",
+                "prove the balance at a checkpoint after the run is finalized; an abandoned run's accounts are provable once balance proofs carry the migration predicate (fa-e00)",
+            )));
+        }
         let (mut debits, mut credits) = (0i128, 0i128);
         for leaf in self
             .leaves
@@ -398,19 +452,17 @@ impl Journal {
                     .ok_or_else(|| corrupt("a posted balance overflowed i128"))?;
             }
         }
-        Ok((debits, credits))
+        Ok(Ok((debits, credits)))
     }
 
     /// The balance-recomputation proof of (account, unit) through the cutoff
     /// against this prefix's statement: the claim, every leaf envelope, and
     /// the payload of exactly the contributing leaves.
-    pub fn balance_proof(
-        &self,
-        account: VId,
-        unit: u32,
-        through: Option<i32>,
-    ) -> Result<Vec<u8>, KernelError> {
-        let (debits, credits) = self.posted_balance(account, unit, through)?;
+    pub fn balance_proof(&self, account: VId, unit: u32, through: Option<i32>) -> Outcome<Vec<u8>> {
+        let (debits, credits) = match self.posted_balance(account, unit, through)? {
+            Ok(sums) => sums,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
         let contributing: Vec<(u64, &Leaf)> = self
             .leaves
             .iter()
@@ -446,6 +498,6 @@ impl Journal {
         w.list(&records, |w, (i, len, payload)| {
             w.u64(*i).u32(*len).bytes(payload);
         });
-        w.finish().map_err(encode_failed)
+        Ok(Ok(w.finish().map_err(encode_failed)?))
     }
 }

@@ -675,11 +675,7 @@ pub fn prove_balance<V: asupersync::fs::Vfs + Clone>(
     effective_through: Option<i32>,
 ) -> Outcome<Vec<u8>> {
     match supported(db, book, state)? {
-        Ok(journal) => Ok(Ok(journal.balance_proof(
-            account,
-            unit,
-            effective_through,
-        )?)),
+        Ok(journal) => journal.balance_proof(account, unit, effective_through),
         Err(r) => Ok(Err(r)),
     }
 }

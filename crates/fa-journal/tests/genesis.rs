@@ -857,7 +857,6 @@ fn control_classes_unsupported_classes_and_structure_errors_are_refused_by_kind(
         EntryClass::REPLACEMENT,
         EntryClass::CLOSING,
         EntryClass::RESTATEMENT,
-        EntryClass::MIGRATION,
     ] {
         let r = h
             .post(h.request(
@@ -872,6 +871,16 @@ fn control_classes_unsupported_classes_and_structure_errors_are_refused_by_kind(
             r.fix
         );
     }
+    // Migration is enforced (fa-xo0): an entry naming no run is outside the
+    // run law, refused before any read.
+    let r = h
+        .post(h.request(
+            h.proposal(h.rent_legs(1), b"mig", EntryClass::MIGRATION),
+            &["post", "migrate"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-132", exit::REFUSAL), "{r}");
+    assert!(r.cite.contains("plan §8.6"), "{}", r.cite);
     // Adjusting is a plain posting class and is admitted.
     let posted = h
         .post(h.request(

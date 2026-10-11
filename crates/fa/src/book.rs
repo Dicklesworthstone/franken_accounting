@@ -599,6 +599,61 @@ impl Book {
         )
     }
 
+    /// Open a migration run (plan §8.6): journal its body — the legacy trial
+    /// balance as typed lines — and its `Open` record citing the trial
+    /// balance document. Chunks then post as `Migration` entries naming the
+    /// run and stay invisible until the run is finalized.
+    pub fn open_migration_run(
+        &mut self,
+        body: &fa_journal::RunBody,
+        req: fa_journal::RunControlRequest,
+    ) -> Outcome<fa_journal::RunControlled> {
+        let purposes = self.purposes();
+        let ctx = &self.ctx;
+        let runtime = &self.runtime;
+        Ok(
+            with_store!(&mut self.store, db => runtime.block_on(async { fa_journal::open_run(db, &purposes, ctx, body, req).await }))?,
+        )
+    }
+
+    /// Plan a run's `Finalize` (or `Abandon`) against the head: the proposal
+    /// whose digest the approvers approve. Its `tie_out_digest` binds the
+    /// chunks committed so far.
+    pub fn plan_migration_transition(
+        &self,
+        run: VId,
+        control_kind: u8,
+        principal: VId,
+        idempotency_key: &[u8],
+        description: Erasable<String>,
+    ) -> Outcome<fa_model::EntryPayload> {
+        Ok(
+            with_store!(&self.store, db => fa_journal::plan_run_transition(db, &self.ctx, run, control_kind, principal, idempotency_key, description))?,
+        )
+    }
+
+    /// Finalize or abandon a migration run (one control record).
+    pub fn transition_migration_run(
+        &mut self,
+        req: fa_journal::RunControlRequest,
+    ) -> Outcome<fa_journal::RunControlled> {
+        let purposes = self.purposes();
+        let ctx = &self.ctx;
+        let runtime = &self.runtime;
+        Ok(
+            with_store!(&mut self.store, db => runtime.block_on(async { fa_journal::transition_run(db, &purposes, ctx, req).await }))?,
+        )
+    }
+
+    /// The migration run at `run`, as of `known_at` (head when `None`).
+    pub fn migration_run(
+        &self,
+        run: VId,
+        known_at: Option<CommitSeq>,
+    ) -> Result<Option<fa_journal::Run>, BookError> {
+        Ok(with_store!(&self.store, db => fa_journal::read_run(db, run, known_at))?)
+    }
+
     /// Record a document (plan §9.1): content-addressed; the same bytes of
     /// the same kind are the recorded outcome.
     pub fn add_document(
