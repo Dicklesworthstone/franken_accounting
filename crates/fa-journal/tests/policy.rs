@@ -925,6 +925,22 @@ fn only_the_enforced_policy_activates_and_only_from_its_date_onward() {
     assert_eq!(r.code, "FA-REF-100");
     assert_eq!(h.db.frontier().unwrap(), head);
 
+    // Activation publishes through its own control path, not `post`. Its
+    // structural check must also reject FX claims with no legs to value.
+    let mut valued = h.activation(PREPARER, b"valued-control");
+    valued.base_totals = Some(fa_model::BaseTotals {
+        unit_id: h.usd.0,
+        debits: 10,
+        credits: 11,
+        fx_law_oid: Oid([0x91; 32]),
+        rate_doc_oids: vec![Oid([0x92; 32])],
+        residual: None,
+    });
+    let r = h.activate(valued, controller(), Vec::new()).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-100", exit::USAGE));
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(security_policy_epoch(&h.db).unwrap(), 0);
+
     // The embedded policy, over the same approvers, still activates.
     let done = h.activate_with_dual_control(b"embedded");
     assert_eq!((done.from_epoch, done.to_epoch), (0, 1));
