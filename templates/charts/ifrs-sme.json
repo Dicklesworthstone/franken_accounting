@@ -1,0 +1,55 @@
+{
+  "template": "ifrs-sme",
+  "version": 1,
+  "description": "IFRS for SMEs chart laid out by the statement of financial position (non-current and current assets, equity, non-current and current liabilities) and by function for income and expenses. Every leaf posts in the book's base unit. A starting point, not IFRS advice.",
+  "accounts": [
+    {"code": "1", "name": "Non-current assets", "type": "Asset", "leaf": false, "unit": "any"},
+    {"code": "1100", "name": "Property, plant and equipment", "type": "Asset", "unit": "base", "parent": "1"},
+    {"code": "1190", "name": "Accumulated depreciation and impairment of PPE (contra-asset)", "type": "Asset", "unit": "base", "parent": "1"},
+    {"code": "1200", "name": "Intangible assets", "type": "Asset", "unit": "base", "parent": "1"},
+    {"code": "1290", "name": "Accumulated amortisation and impairment of intangibles (contra-asset)", "type": "Asset", "unit": "base", "parent": "1"},
+    {"code": "1300", "name": "Investment property", "type": "Asset", "unit": "base", "parent": "1"},
+    {"code": "1400", "name": "Deferred tax assets", "type": "Asset", "unit": "base", "parent": "1"},
+
+    {"code": "2", "name": "Current assets", "type": "Asset", "leaf": false, "unit": "any"},
+    {"code": "2100", "name": "Inventories", "type": "Asset", "unit": "base", "parent": "2"},
+    {"code": "2200", "name": "Trade and other receivables", "type": "Asset", "unit": "base", "parent": "2"},
+    {"code": "2290", "name": "Loss allowance on receivables (contra-asset)", "type": "Asset", "unit": "base", "parent": "2"},
+    {"code": "2300", "name": "Prepayments", "type": "Asset", "unit": "base", "parent": "2"},
+    {"code": "2400", "name": "Current tax assets", "type": "Asset", "unit": "base", "parent": "2"},
+    {"code": "2500", "name": "Cash and cash equivalents", "type": "Asset", "unit": "base", "parent": "2"},
+
+    {"code": "3", "name": "Equity", "type": "Equity", "leaf": false, "unit": "any"},
+    {"code": "3100", "name": "Share capital", "type": "Equity", "unit": "base", "parent": "3"},
+    {"code": "3200", "name": "Share premium", "type": "Equity", "unit": "base", "parent": "3"},
+    {"code": "3300", "name": "Retained earnings", "type": "Equity", "unit": "base", "parent": "3"},
+    {"code": "3400", "name": "Other reserves", "type": "Equity", "unit": "base", "parent": "3"},
+
+    {"code": "4", "name": "Non-current liabilities", "type": "Liability", "leaf": false, "unit": "any"},
+    {"code": "4100", "name": "Borrowings (non-current)", "type": "Liability", "unit": "base", "parent": "4"},
+    {"code": "4200", "name": "Deferred tax liabilities", "type": "Liability", "unit": "base", "parent": "4"},
+    {"code": "4300", "name": "Provisions (non-current)", "type": "Liability", "unit": "base", "parent": "4"},
+
+    {"code": "5", "name": "Current liabilities", "type": "Liability", "leaf": false, "unit": "any"},
+    {"code": "5100", "name": "Trade and other payables", "type": "Liability", "unit": "base", "parent": "5"},
+    {"code": "5200", "name": "Borrowings (current)", "type": "Liability", "unit": "base", "parent": "5"},
+    {"code": "5300", "name": "Current tax liabilities", "type": "Liability", "unit": "base", "parent": "5"},
+    {"code": "5400", "name": "Provisions (current)", "type": "Liability", "unit": "base", "parent": "5"},
+    {"code": "5500", "name": "Contract liabilities (deferred income)", "type": "Liability", "unit": "base", "parent": "5"},
+
+    {"code": "6", "name": "Income", "type": "Revenue", "leaf": false, "unit": "any"},
+    {"code": "6100", "name": "Revenue", "type": "Revenue", "unit": "base", "parent": "6"},
+    {"code": "6200", "name": "Other income", "type": "Revenue", "unit": "base", "parent": "6"},
+    {"code": "6300", "name": "Finance income", "type": "Revenue", "unit": "base", "parent": "6"},
+
+    {"code": "7", "name": "Expenses", "type": "Expense", "leaf": false, "unit": "any"},
+    {"code": "7100", "name": "Cost of sales", "type": "Expense", "unit": "base", "parent": "7"},
+    {"code": "7200", "name": "Distribution costs", "type": "Expense", "unit": "base", "parent": "7"},
+    {"code": "7300", "name": "Administrative expenses", "type": "Expense", "unit": "base", "parent": "7"},
+    {"code": "7400", "name": "Employee benefits expense", "type": "Expense", "unit": "base", "parent": "7"},
+    {"code": "7500", "name": "Depreciation and amortisation expense", "type": "Expense", "unit": "base", "parent": "7"},
+    {"code": "7600", "name": "Other expenses", "type": "Expense", "unit": "base", "parent": "7"},
+    {"code": "7700", "name": "Finance costs", "type": "Expense", "unit": "base", "parent": "7"},
+    {"code": "7800", "name": "Income tax expense", "type": "Expense", "unit": "base", "parent": "7"}
+  ]
+}

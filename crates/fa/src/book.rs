@@ -1134,6 +1134,12 @@ impl Book {
         with_store!(&self.store, core => core.period_activity(&self.purposes(), periods, known_at))
     }
 
+    /// The genesis spec journaled on the book root (base unit, calendar,
+    /// opening date, entities).
+    pub fn spec(&self) -> Result<BookSpec, BookError> {
+        with_store!(&self.store, core => core.spec(&self.purposes()))
+    }
+
     /// The trial balance `request` selects at `known_at` (`None` = head),
     /// with its report certificate (plan §13.6, `fa tb --json`).
     pub fn certify_trial_balance(
