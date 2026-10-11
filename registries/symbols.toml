@@ -122,6 +122,11 @@ name = "ImportReceipt"
 id = 37
 name = "CustodyTransfer"
 
+# fa-txf: a document's redacted view, proven against its commitment.
+[[label]]
+id = 38
+name = "RedactedView"
+
 # fa-txf: one subject's active legal holds, moved by compare-and-set.
 [[label]]
 id = 39
@@ -407,6 +412,11 @@ name = "CUSTODY_OF"
 [[relation]]
 id = 32
 name = "IMPORTED_BY"
+
+# fa-txf: a RedactedView -> the document it projects.
+[[relation]]
+id = 33
+name = "REDACTS"
 
 # fa-txf: a HoldControl Place entry -> each subject it pins.
 [[relation]]

@@ -30,6 +30,7 @@ pub mod migration;
 pub mod period;
 pub mod policy;
 pub mod post;
+pub mod redaction;
 pub mod refusal;
 pub mod rows;
 pub mod schedule;
@@ -76,6 +77,10 @@ pub use policy::{
 };
 pub use post::{
     Capability, PostPreparation, PostRequest, Posted, PreparedPost, post, prepare_post,
+};
+pub use redaction::{
+    DocumentRead, RedactedView, ViewChunk, ViewDerived, derive_redacted_view, read_document_for,
+    redacted_view_vid,
 };
 pub use refusal::{KernelError, Refusal, exit};
 pub use rows::{AccountRow, PeriodRow};

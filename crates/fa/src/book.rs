@@ -851,6 +851,44 @@ impl Book {
         Ok(with_store!(&self.store, db => fa_journal::read_legal_hold(db, book, hold))?)
     }
 
+    /// Derive and record the redacted view of `oid` under the contract
+    /// governing its kind (plan §9.6); the capability holds `privileged`.
+    pub fn derive_redacted_view(
+        &mut self,
+        capability: &fa_journal::Capability,
+        oid: &fa_model::Oid,
+    ) -> Outcome<fa_journal::ViewDerived> {
+        let oid = *oid;
+        let purposes = self.purposes();
+        let ctx = &self.ctx;
+        let runtime = &self.runtime;
+        let blobs = &self.blobs;
+        Ok(
+            with_store!(&mut self.store, db => with_blobs!(blobs, bs => runtime.block_on(async {
+                fa_journal::derive_redacted_view(db, &purposes, ctx, capability, bs, oid).await
+            })))?,
+        )
+    }
+
+    /// Read `oid` as `capability` may see it: the verified bytes when it
+    /// reveals them or nothing is privileged, otherwise the redacted view.
+    pub fn read_document_for(
+        &mut self,
+        capability: &fa_journal::Capability,
+        oid: &fa_model::Oid,
+    ) -> Outcome<fa_journal::DocumentRead> {
+        let oid = *oid;
+        let purposes = self.purposes();
+        let ctx = &self.ctx;
+        let runtime = &self.runtime;
+        let blobs = &self.blobs;
+        Ok(
+            with_store!(&mut self.store, db => with_blobs!(blobs, bs => runtime.block_on(async {
+                fa_journal::read_document_for(db, &purposes, ctx, capability, bs, oid).await
+            })))?,
+        )
+    }
+
     /// The legal holds active on `subject`, ascending.
     pub fn legal_holds_on(&self, subject: VId) -> Result<Vec<VId>, BookError> {
         let book = self.ctx.book_id;
@@ -3659,6 +3697,56 @@ mod tests {
                 .expect("a hold")
                 .released,
             Some((released.release, released.recorded_at))
+        );
+    }
+
+    #[test]
+    fn a_bank_statement_through_the_facade_reads_redacted_until_privileged() {
+        let book_id = Id128([0x49; 16]);
+        let (spec, _) = spec(book_id);
+        let mut book = Book::create_memory(
+            BookKeys::for_development(0x49),
+            spec,
+            Entropy::deterministic(0x49),
+        )
+        .expect("create");
+        let statement = fa_journal::Document {
+            book_id,
+            kind: 5,
+            mime: "text/plain".into(),
+            grade: 3,
+            retrieved_by: VId(1),
+            bytes: b"ACCOUNT 0012-3456-7890 (facade fixture)
+"
+            .repeat(200),
+        };
+        let added = book
+            .add_document(&statement)
+            .expect("kernel")
+            .expect("admitted");
+        let reader = Capability::embedded(VId(2), &["read"]).expect("read");
+        let counsel = Capability::embedded(VId(1), &["read", "privileged"]).expect("privileged");
+        let r = book
+            .read_document_for(&reader, &added.oid)
+            .expect("kernel")
+            .unwrap_err();
+        assert_eq!(r.code, "FA-REF-142", "{r}");
+        book.derive_redacted_view(&counsel, &added.oid)
+            .expect("kernel")
+            .expect("derived");
+        let read = book
+            .read_document_for(&reader, &added.oid)
+            .expect("kernel")
+            .expect("a view");
+        assert!(
+            matches!(&read, fa_journal::DocumentRead::Redacted(v) if v.verify().is_ok()),
+            "{read:?}"
+        );
+        assert_eq!(
+            book.read_document_for(&counsel, &added.oid)
+                .expect("kernel")
+                .expect("the bytes"),
+            fa_journal::DocumentRead::Full(statement)
         );
     }
 

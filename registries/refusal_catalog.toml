@@ -711,7 +711,7 @@ exit = "verification"
 cite = "plan §15.2 (a scratch book's certificate carries its SeqMap; replay equals the source at every mapped sequence)"
 fix = "replay again with fa_journal::scratch::replay_into and verify the fresh map; a SeqMap is never edited"
 
-# ---- Balance assertions (140); legal hold subjects (141; 110–119 is full) ---
+# ---- Balance assertions (140); legal hold subjects (141); redaction (142–143) ---
 [[refusal]]
 code = "FA-REF-140"
 name = "REGISTER_CLAIM_FALSE"
@@ -727,3 +727,19 @@ owners = ["fa-journal"]
 exit = "refusal"
 cite = "plan §8.5 (a legal hold pins entries, documents and parties the book holds)"
 fix = "name the vids of entries, documents or parties recorded in this book"
+
+[[refusal]]
+code = "FA-REF-142"
+name = "REDACTED_VIEW_ABSENT"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §9.6 (a reader without the revealing op sees a governed document only through its redacted view); registries/redaction_contracts.toml"
+fix = "have a principal holding privileged derive the document's redacted view first; the bytes themselves are never served to this capability"
+
+[[refusal]]
+code = "FA-REF-143"
+name = "REDACTION_PROOF"
+owners = ["fa-journal"]
+exit = "verification"
+cite = "plan §9.6 (a redacted view proves it projects the document an entry cites); FA-INV-14 public-commitment"
+fix = "treat the stored view as untrusted: a view that does not rebuild its document's commitment is not that document's; a privileged principal re-derives it from the verified bytes"
