@@ -4312,20 +4312,7 @@ fn a_privileged_holder_derives_the_view_a_reader_gets_in_place_of_the_bytes() {
     // 023 before any other read, for a reader and for a deriver alike.
     let deriver = Capability::embedded(VId(11), &["privileged"]).expect("privileged");
     for (n, revoked) in [(66u8, &reader), (67, &deriver)] {
-        let ctx = h.ctx();
-        let req = RevocationRequest {
-            capability: Capability::embedded(PRINCIPAL, &["issue_capability"]).expect("issue"),
-            revoked: revoked.commitment().expect("commitment"),
-            effective_date: DateDay::from_ymd(2026, 3, 15).unwrap(),
-            idempotency_key: vec![b'r', n],
-            description: h.statement("revocation", n),
-        };
-        let db = &mut h.db;
-        let book = &h.book;
-        h.runtime
-            .block_on(async move { revoke_capability(db, &ctx, book, req).await })
-            .expect("kernel")
-            .expect("revoked");
+        h.revoke(revoked, n);
     }
     let head = h.db.frontier().unwrap();
     let r = h.read_for(&reader, &store, statement.oid()).unwrap_err();

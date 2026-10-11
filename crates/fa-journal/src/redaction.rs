@@ -34,7 +34,7 @@ use crate::evidence::{
     tree_root,
 };
 use crate::genesis::BookContext;
-use crate::policy::{capability_witness, refusal};
+use crate::policy::{capability_admitted, capability_witness, refusal};
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{edge_id, prop, scalar_bytes};
 
@@ -300,23 +300,6 @@ fn proof_failed(view: VId, why: &str) -> Refusal {
     )
 }
 
-/// Not revoked (plan §14.2), as a head check before any other read: the
-/// revocation witness in a transaction that is then aborted. The commit of a
-/// derivation witnesses it again, so a revocation landing in between is
-/// still caught.
-async fn not_revoked<V: asupersync::fs::Vfs + Clone>(
-    db: &mut Database<V>,
-    ctx: &PurposeContexts,
-    book: &BookContext,
-    capability: &Capability,
-) -> Outcome<()> {
-    let txn_cx = ctx.txn();
-    let txn = db.begin(&txn_cx)?;
-    let witnessed = capability_witness(&txn, db, book, capability)?;
-    txn.abort();
-    Ok(witnessed)
-}
-
 /// The view stored at `row`, checked against what the book records without
 /// reading the document's bytes (WhiteCreek 3428): it names `oid` and the
 /// contract; it proves `document_commit`, the commitment the book recorded
@@ -408,7 +391,9 @@ where
     if let Err(d) = fa_policy::current(capability, db.frontier()?) {
         return Ok(Err(refusal(&d)));
     }
-    if let Err(r) = not_revoked(db, ctx, book, capability).await? {
+    // Not revoked (plan §14.2): a head check before any other read
+    // (fa-bcd); a derivation's commit witnesses it again in its transaction.
+    if let Err(r) = capability_admitted(db, book, capability)? {
         return Ok(Err(r));
     }
     let doc = match fetch_document(db, ctx, store, &oid).await? {
@@ -571,7 +556,9 @@ where
     if let Err(d) = fa_policy::current(capability, db.frontier()?) {
         return Ok(Err(refusal(&d)));
     }
-    if let Err(r) = not_revoked(db, ctx, book, capability).await? {
+    // Not revoked (plan §14.2): a head check before any other read
+    // (fa-bcd); a derivation's commit witnesses it again in its transaction.
+    if let Err(r) = capability_admitted(db, book, capability)? {
         return Ok(Err(r));
     }
     let full = |r: Result<Option<Document>, Refusal>| match r {
