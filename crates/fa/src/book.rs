@@ -306,6 +306,9 @@ pub enum BookError {
     Registers(fa_registers::RegisterError),
     Registry(fa_registry::RegistryError),
     Entropy(EntropyError),
+    /// A certified read, a replay's execution, or a certificate's encoding
+    /// failed in the foundation (not a refusal: see `certificate`).
+    Certificate(String),
 }
 
 impl BookError {
@@ -323,7 +326,8 @@ impl BookError {
             | Self::Kernel(_)
             | Self::Registers(_)
             | Self::Registry(_)
-            | Self::Entropy(_) => fa_journal::exit::FOUNDATION,
+            | Self::Entropy(_)
+            | Self::Certificate(_) => fa_journal::exit::FOUNDATION,
         }
     }
 }
@@ -341,6 +345,7 @@ impl fmt::Display for BookError {
             Self::Registers(e) => write!(f, "{e}"),
             Self::Registry(e) => write!(f, "registry: {e}"),
             Self::Entropy(e) => write!(f, "entropy: {e:?}"),
+            Self::Certificate(e) => write!(f, "certificate: {e}"),
         }
     }
 }
@@ -1127,6 +1132,35 @@ impl Book {
         known_at: Option<CommitSeq>,
     ) -> Result<TrialBalance, BookError> {
         with_store!(&self.store, core => core.period_activity(&self.purposes(), periods, known_at))
+    }
+
+    /// The trial balance `request` selects at `known_at` (`None` = head),
+    /// with its report certificate (plan §13.6, `fa tb --json`).
+    pub fn certify_trial_balance(
+        &self,
+        request: &crate::certificate::TrialBalanceRequest,
+        known_at: Option<CommitSeq>,
+    ) -> Result<(TrialBalance, crate::certificate::ReportCertificate), BookError> {
+        with_store!(&self.store, core => core.certify_trial_balance(&self.purposes(), request, known_at))
+    }
+
+    /// Re-execute a report certificate (`fa replay`): every certified input
+    /// through `Database::replay`, then the fold at the certified known-at.
+    pub fn replay_certificate(
+        &self,
+        certificate: &crate::certificate::ReportCertificate,
+    ) -> Outcome<crate::certificate::Replayed> {
+        with_store!(&self.store, core => core.replay_certificate(&self.purposes(), certificate))
+    }
+
+    /// `Current | SupersededBy` for a report certificate (`fa certificate
+    /// status`): later entries inside its selector, and whether the same
+    /// report at the head differs.
+    pub fn certificate_status(
+        &self,
+        certificate: &crate::certificate::ReportCertificate,
+    ) -> Outcome<crate::certificate::CertificateStatus> {
+        with_store!(&self.store, core => core.certificate_status(&self.purposes(), certificate))
     }
 }
 

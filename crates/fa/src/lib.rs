@@ -18,9 +18,13 @@
 
 pub mod async_book;
 pub mod book;
+pub mod certificate;
 
 pub use async_book::AsyncBook;
 pub use book::{Book, BookError, BookKeys, Entropy, Outcome};
+pub use certificate::{
+    CertificateStatus, LaterEntry, Replayed, ReportCertificate, TrialBalanceRequest,
+};
 pub use fa_notary::{AccumulatorVerification, Checkpointed};
 pub use fa_policy::{Capability, Op, Profile};
 pub use fa_registers::Advance;

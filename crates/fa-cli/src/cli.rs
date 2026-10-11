@@ -40,6 +40,7 @@ use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodState, PeriodTransition
 use fgdb_types::{CommitSeq, VId};
 
 use crate::args::{self, Args, UsageError, nearest};
+use crate::certificate;
 use crate::document;
 use crate::json::{self, Json, obj, s};
 use crate::notary;
@@ -68,6 +69,8 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("explain", explain_cmd),
     ("checkpoint", notary::checkpoint_cmd),
     ("verify", verify_cmd),
+    ("replay", certificate::replay_cmd),
+    ("certificate", certificate::certificate_cmd),
     ("registers", registers_cmd),
     ("entry", entry_cmd),
     ("capabilities", capabilities_cmd),
@@ -190,6 +193,8 @@ impl Style {
 struct Said {
     at: Option<At>,
     warnings: Vec<String>,
+    /// The report certificate's id (lowercase hex) on a certified read.
+    certificate: Option<String>,
 }
 
 /// Where a robot line sits (plan §4.8): the book's id, and the branch
@@ -206,10 +211,23 @@ pub struct At {
 /// data, certificate, warnings, next_actions}` with the event's fields under
 /// `data`; `book` and `coordinate` from `at` (null when no book backs the
 /// line); the registry's next actions for the event; and the replay
-/// certificate, null until plan certificates land (fa-we7). A daemon wire
-/// frame is its own flat object, never a robot line.
+/// certificate (null on lines that carry none). A daemon wire frame is its
+/// own flat object, never a robot line.
 #[must_use]
 pub fn robot_line(event: &str, data: Json, at: Option<&At>, warnings: &[String]) -> Json {
+    certified_robot_line(event, data, at, warnings, None)
+}
+
+/// [`robot_line`] whose envelope `certificate` names a report certificate
+/// (its id as lowercase hex, plan §13.6): a certified read and its replay.
+#[must_use]
+pub fn certified_robot_line(
+    event: &str,
+    data: Json,
+    at: Option<&At>,
+    warnings: &[String],
+    certificate: Option<&str>,
+) -> Json {
     let next_actions = verbs::registry().map_or_else(
         |_| Vec::new(),
         |r| {
@@ -233,7 +251,7 @@ pub fn robot_line(event: &str, data: Json, at: Option<&At>, warnings: &[String])
             }),
         ),
         (verbs::PAYLOAD, data),
-        ("certificate", Json::Null),
+        ("certificate", certificate.map_or(Json::Null, s)),
         ("warnings", Json::Arr(warnings.iter().map(s).collect())),
         ("next_actions", Json::Arr(next_actions)),
     ])
@@ -308,6 +326,11 @@ impl Out {
         }
     }
 
+    /// Name the report certificate this command's lines describe.
+    pub(crate) fn certificate(&self, id: String) {
+        self.said.borrow_mut().certificate = Some(id);
+    }
+
     /// Something the command noticed but did not refuse: robot mode carries
     /// it in the envelope's `warnings`, human mode on stderr.
     pub(crate) fn warn(&self, text: impl Into<String>) {
@@ -347,7 +370,13 @@ impl Out {
     pub(crate) fn event(&self, name: &str, fields: Vec<(&str, Json)>, human: &str) {
         if self.json {
             let said = self.said.borrow();
-            let line = robot_line(name, obj(fields), said.at.as_ref(), &said.warnings);
+            let line = certified_robot_line(
+                name,
+                obj(fields),
+                said.at.as_ref(),
+                &said.warnings,
+                said.certificate.as_deref(),
+            );
             self.line(line.render());
         } else if !human.is_empty() {
             self.line(human);
@@ -2739,7 +2768,7 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
 /// `--as-known-at HEAD|<seq>` (at most once): `None` selects the head; an
 /// instant or any other spelling is refused, never converted.
 /// The envelope's effective selector for a period selection (plan §4.8).
-fn periods_selector(periods: &[String]) -> String {
+pub(crate) fn periods_selector(periods: &[String]) -> String {
     match periods {
         [] => "all".to_string(),
         [one] => format!("period:{one}"),
@@ -2818,7 +2847,7 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         return Err(usage("--as-of may be supplied only once", "fa tb --help"));
     }
     let known_at = known_at_flag(args)?;
-    let (periods, tb) = if let Some(date) = args.flag("--as-of") {
+    let (periods, request) = if let Some(date) = args.flag("--as-of") {
         if args.flag("--period").is_some()
             || args.flag("--fiscal-year").is_some()
             || args.switch("--activity")
@@ -2834,17 +2863,25 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 "--as-of YYYY-MM-DD",
             )
         })?;
-        (Vec::new(), book.balance_as_of(day, known_at)?)
+        (Vec::new(), fa::TrialBalanceRequest::AsOf { day })
     } else {
         let periods = selected_periods(args, &book)?;
-        let tb = if args.switch("--activity") {
-            book.period_activity(&periods, known_at)?
+        let request = if args.switch("--activity") {
+            fa::TrialBalanceRequest::Activity {
+                periods: periods.clone(),
+            }
         } else {
-            book.trial_balance_at(&periods, known_at)?
+            fa::TrialBalanceRequest::Stock {
+                periods: periods.clone(),
+            }
         };
-        (periods, tb)
+        (periods, request)
     };
+    // Every trial balance is certified (plan §13.6): the certificate names
+    // its closure and `fa replay` reproduces these bytes.
+    let (tb, certified) = book.certify_trial_balance(&request, known_at)?;
     out.known_at(tb.known_at);
+    out.certificate(certified.id_text()?);
     out.effective(match args.flag("--as-of") {
         Some(date) => format!("as-of:{date}"),
         None => periods_selector(&periods),
@@ -2917,6 +2954,7 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ("unit_totals", Json::Arr(totals)),
                 ("pending_unit_totals", Json::Arr(pending_totals)),
                 ("balanced", Json::Bool(tb.is_balanced())),
+                ("certificate", certificate::summary(&certified)?),
             ],
             "",
         );
@@ -2972,6 +3010,10 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ));
         }
         out.line(format!("balanced: {}", tb.is_balanced()));
+        out.line(format!(
+            "certificate {} (`fa tb … --json` carries its bytes; `fa replay` reproduces this report)",
+            certified.id_text()?
+        ));
     }
     Ok(())
 }

@@ -15,6 +15,7 @@
 #![forbid(unsafe_code)]
 
 pub mod args;
+mod certificate;
 pub mod cli;
 pub mod client;
 mod document;

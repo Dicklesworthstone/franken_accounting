@@ -1012,6 +1012,45 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(fa_registers::period_activity(db, book, periods, known_at)?)
         })
     }
+
+    /// The trial balance `request` selects, with its report certificate
+    /// (plan §13.6): every certified read runs at the report's known-at.
+    pub fn certify_trial_balance(
+        &self,
+        cx: &PurposeContexts,
+        request: &crate::certificate::TrialBalanceRequest,
+        known_at: Option<CommitSeq>,
+    ) -> Result<(TrialBalance, crate::certificate::ReportCertificate), BookError> {
+        let query = cx.query();
+        query.checkpoint().map_err(BookError::Context)?;
+        query.with_restriction(|| {
+            crate::certificate::certify(&self.db, &self.context, &query, request, known_at)
+        })
+    }
+
+    /// Re-execute a report certificate; `Ok(Err)` names what differs.
+    pub fn replay_certificate(
+        &self,
+        cx: &PurposeContexts,
+        certificate: &crate::certificate::ReportCertificate,
+    ) -> Outcome<crate::certificate::Replayed> {
+        let query = cx.query();
+        query.checkpoint().map_err(BookError::Context)?;
+        query.with_restriction(|| {
+            crate::certificate::replay(&self.db, &self.context, &query, certificate)
+        })
+    }
+
+    /// Whether a report certificate still describes this book at its head.
+    pub fn certificate_status(
+        &self,
+        cx: &PurposeContexts,
+        certificate: &crate::certificate::ReportCertificate,
+    ) -> Outcome<crate::certificate::CertificateStatus> {
+        self.query(cx, |db, book| {
+            crate::certificate::status(db, book, certificate)
+        })
+    }
 }
 
 /// Give relative paths an explicit current-directory anchor. This keeps

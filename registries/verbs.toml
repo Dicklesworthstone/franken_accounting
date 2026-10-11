@@ -34,7 +34,7 @@ version = 1
 payload = "data"
 fields = ["v:int", "book:hex?", "coordinate:coordinate?", "certificate:hex?", "warnings:[string]", "next_actions:[next_action]"]
 frames = ["fad_request", "fad_response"]
-description = "Robot mode (--json), plan Appendix D: stdout carries one JSON object per line and nothing else, {v, event, book, coordinate, data, certificate, warnings, next_actions}. `event` names the line's schema below and `data` holds exactly that schema's fields. `v` is the envelope version. `book` is the book's id and `coordinate` the (branch, known_at, effective) the line describes; both are never null on an event about a book (`book: true` below) and null on the others (version, help, an error before any book was opened). `certificate` is the replay certificate's oid, null until plan certificates land (fa-we7). `warnings` lists what the command noticed but did not refuse (always present, usually empty). `next_actions` lists the commands an agent usually runs next, each with why (run them with the same --book). Keys are sorted, amounts are strings with their unit (never JSON numbers), recorded sequences are integers, dates are civil YYYY-MM-DD. The daemon's wire frames (fad_request, fad_response) are its protocol, not robot lines: flat, with their protocol `v`. stderr carries diagnostics only. The exit code is the verdict (fa robot-docs exit-codes): every non-zero exit emits exactly one `error` event, whose data carries the exit's `class` (exit_codes.toml), the `exit`, and the `refusal_id` (the refusal catalog code, or null)."
+description = "Robot mode (--json), plan Appendix D: stdout carries one JSON object per line and nothing else, {v, event, book, coordinate, data, certificate, warnings, next_actions}. `event` names the line's schema below and `data` holds exactly that schema's fields. `v` is the envelope version. `book` is the book's id and `coordinate` the (branch, known_at, effective) the line describes; both are never null on an event about a book (`book: true` below) and null on the others (version, help, an error before any book was opened). `certificate` is the report certificate's id (lowercase hex, plan §13.6) on a certified read (`trial_balance`) and on `certificate_replayed` and `certificate_status`; null on every other line until plan certificates land (fa-we7). `warnings` lists what the command noticed but did not refuse (always present, usually empty). `next_actions` lists the commands an agent usually runs next, each with why (run them with the same --book). Keys are sorted, amounts are strings with their unit (never JSON numbers), recorded sequences are integers, dates are civil YYYY-MM-DD. The daemon's wire frames (fad_request, fad_response) are its protocol, not robot lines: flat, with their protocol `v`. stderr carries diagnostics only. The exit code is the verdict (fa robot-docs exit-codes): every non-zero exit emits exactly one `error` event, whose data carries the exit's `class` (exit_codes.toml), the `exit`, and the `refusal_id` (the refusal catalog code, or null)."
 
 [global]
 flags = ["--book", "--keys", "--as", "--via"]
@@ -228,6 +228,30 @@ usage = ["verify registers ((--period <code>)... | --fiscal-year N)", "verify op
 example = "fa verify registers --period FY2026-P03 --book ./books/myco"
 
 [[verb]]
+name = "replay"
+summary = "Reproduce a certified report from its certificate: every certified input through the substrate's replay, then the same fold at the certified known-at; exit 0 only on byte-identical output."
+writes = false
+subcommands = []
+flags = []
+switches = []
+events = ["certificate_replayed"]
+exits = [0, 2, 4, 5, 8]
+usage = ["replay <certificate-file|->", "The certificate is the hex of `certificate.bytes` from `fa tb --json`, in a file or on stdin. Exit 8 names the first input, registry epoch or row that differs."]
+example = "fa replay tb.cert --book ./books/myco --json"
+
+[[verb]]
+name = "certificate"
+summary = "Whether a report certificate still describes the book: Current, or SupersededBy the entries recorded since its known-at that its selector folds."
+writes = false
+subcommands = ["status"]
+flags = []
+switches = []
+events = ["certificate_status"]
+exits = [0, 2, 4, 5, 8]
+usage = ["certificate status <certificate-file|->", "SupersededBy is a status, not a failure: the certificate still replays at its known-at."]
+example = "fa certificate status tb.cert --book ./books/myco --json"
+
+[[verb]]
 name = "registers"
 summary = "Advance native posted/pending period registers from the journal delta, or explicitly rebuild them from a fresh fold. Reports remain journal folds."
 writes = true
@@ -401,6 +425,16 @@ after = "checkpoint_created"
 command = "fa verify accumulator --json"
 why = "recompute every checkpoint from the journal"
 
+[[next_action]]
+after = "trial_balance"
+command = "fa replay <certificate-file> --json"
+why = "reproduce this trial balance byte-for-byte from the hex in data.certificate.bytes"
+
+[[next_action]]
+after = "certificate_replayed"
+command = "fa certificate status <certificate-file> --json"
+why = "whether entries recorded since its known-at change what it selects"
+
 # ---------------------------------------------------------------------------
 # Events: every `event` a --json line can carry, with exactly its fields.
 # ---------------------------------------------------------------------------
@@ -542,7 +576,7 @@ fields = ["vid:hex", "entry_digest:hex", "recorded_at:seq", "requested:amount?",
 name = "trial_balance"
 book = true
 doc = "Stock (through `effective_through`) or activity (the selected periods), at the `known_at` snapshot."
-fields = ["periods:[string]", "known_at:seq", "effective_through:date?", "activity:bool", "mode:string", "rows:[tb_row]", "unit_totals:[unit_total]", "pending_unit_totals:[pending_unit_total]", "balanced:bool"]
+fields = ["periods:[string]", "known_at:seq", "effective_through:date?", "activity:bool", "mode:string", "rows:[tb_row]", "unit_totals:[unit_total]", "pending_unit_totals:[pending_unit_total]", "balanced:bool", "certificate:report_certificate"]
 
 [[event]]
 name = "open_items"
@@ -561,6 +595,18 @@ name = "accumulator_verified"
 book = true
 doc = "Every existing accumulator state was recomputed from its entry prefix and every stored state belongs to the chain. status is verified or no_checkpoints; no_checkpoints makes no verification claim and verified_through is null. Otherwise verified_through names the newest checked prefix, never an implicit current-head claim. signatures is unsigned and scope is entry_prefix. States are newest first."
 fields = ["status:string", "signatures:string", "scope:string", "states_checked:int", "broken:string?", "verified_through:seq?", "states:[accumulator_state_check]", "unchained:[hex]"]
+
+[[event]]
+name = "certificate_replayed"
+book = true
+doc = "The certificate reproduced: every certified input was replayed by the substrate (`Database::replay`) at `known_at`, and the report refolded to the certified output digest and rows. Any difference is exit 8 (FA-REF-162) naming the first input, registry epoch or row that differs; a certificate of another book is FA-REF-161."
+fields = ["certificate:hex", "definition:string", "known_at:seq", "inputs_replayed:[string]", "output_digest:hex", "rows:int", "status:string"]
+
+[[event]]
+name = "certificate_status"
+book = true
+doc = "`status` is Current or SupersededBy: `later_entries` are the entries recorded after `known_at` with an effective date inside the certified selector (oldest first), and `figures_changed` says whether the same report at `head` has other rows or totals. A superseded certificate still replays at its known-at."
+fields = ["certificate:hex", "definition:string", "known_at:seq", "head:seq", "status:string", "later_entries:[later_entry]", "figures_changed:bool"]
 
 [[event]]
 name = "registers_verified"
@@ -692,6 +738,21 @@ fields = ["unit:string", "debits:amount", "credits:amount"]
 name = "pending_unit_total"
 doc = "Pending totals of one unit."
 fields = ["unit:string", "debits_pending:amount", "credits_pending:amount"]
+
+[[shape]]
+name = "report_certificate"
+doc = "A report certificate (plan §13.6). `id` is the envelope's `certificate`; `bytes` is the canonical certificate as lowercase hex, which `fa replay` and `fa certificate status` read; `inputs` are the substrate's certified reads at `known_at`, whose `snapshot_identity` is the chain commitment there (the book root); `output_digest` binds the report's canonical bytes and `rows` counts the per-row digests a replay compares."
+fields = ["id:hex", "definition:string", "definition_version:int", "known_at:seq", "capability:string", "replay_scope:string", "inputs:[certified_input]", "output_digest:hex", "rows:int", "bytes:hex"]
+
+[[shape]]
+name = "certified_input"
+doc = "One certified native read in a certificate's closure (`Database::execute_certified`)."
+fields = ["name:string", "statement:string", "snapshot_seq:seq", "snapshot_identity:hex", "result_digest:hex"]
+
+[[shape]]
+name = "later_entry"
+doc = "An entry recorded after a certificate's known-at, with an effective date inside its selector."
+fields = ["entry:hex", "recorded_at:seq", "effective_date:date", "class:int"]
 
 [[shape]]
 name = "open_item"
@@ -1047,6 +1108,32 @@ positionals = []
 required = []
 dont = ["Don't pass an instant to `as_of`: a civil date, never a timestamp; instants are unsupported here.", "Don't mix `as_of` with `period`, `fiscal_year` or `activity`."]
 mistakes = ["Reading `activity` rows as stock: stock includes opening history, `activity: true` is the selected periods' movement.", "Expecting `as_known_at` to accept an instant: it takes `HEAD` or a recorded sequence."]
+
+[[mcp.tool]]
+cluster = "fa.read"
+name = "replay_certificate"
+verb = "replay"
+subcommands = []
+positionals = ["certificate?"]
+stdin_property = "certificate_hex"
+stdin_kind = "string"
+stdin_via = "certificate"
+required = []
+dont = ["Don't edit the hex: a certificate is never repaired; an altered one is refused (FA-REF-160 malformed, FA-REF-162 not reproduced).", "Don't replay against another book: the certificate names its book (FA-REF-161)."]
+mistakes = ["Passing the envelope's `certificate` id instead of `data.certificate.bytes`: replay needs the bytes.", "Reading a SupersededBy status as a failed replay: a superseded certificate still reproduces at its known-at."]
+
+[[mcp.tool]]
+cluster = "fa.read"
+name = "certificate_status"
+verb = "certificate"
+subcommands = ["status"]
+positionals = ["certificate?"]
+stdin_property = "certificate_hex"
+stdin_kind = "string"
+stdin_via = "certificate"
+required = []
+dont = ["Don't treat SupersededBy as an error: it names the later entries inside the selector; the certificate still replays."]
+mistakes = ["Expecting status to re-certify: run the trial balance again for a certificate at the head."]
 
 [[mcp.tool]]
 cluster = "fa.read"

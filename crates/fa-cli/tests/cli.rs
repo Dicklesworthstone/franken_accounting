@@ -2461,7 +2461,17 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         run(true, &["post", "--intent", &bad, "--evidence", &ev]).0,
         3
     );
-    assert_eq!(run(true, &["tb", "--period", "FY2026-P03"]).0, 0);
+    let (code, tb) = run(true, &["tb", "--period", "FY2026-P03"]);
+    assert_eq!(code, 0);
+    let tb = doc(&tb);
+    let bytes = tb.get("certificate").map_or("", |c| text(c, "bytes"));
+    assert!(
+        !bytes.is_empty(),
+        "fa tb --json carries the certificate bytes"
+    );
+    let certificate = write(&dir, "tb.cert", bytes);
+    assert_eq!(run(true, &["replay", &certificate]).0, 0);
+    assert_eq!(run(true, &["certificate", "status", &certificate]).0, 0);
     assert_eq!(run(true, &["open-items"]).0, 0);
     assert_eq!(run(true, &["entry", "show", &vid]).0, 0);
     assert_eq!(run(true, &["entry", "show", "00"]).0, 0);

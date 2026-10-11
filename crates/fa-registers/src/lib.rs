@@ -14,6 +14,7 @@
 
 pub mod assertion;
 pub mod availability;
+pub mod canonical;
 pub mod entity;
 pub mod explain;
 pub mod maintainer;
