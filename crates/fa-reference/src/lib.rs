@@ -23,6 +23,7 @@
 
 pub mod evidence;
 pub mod sod;
+mod temporal;
 
 /// The registered control kinds (`registries/entry_classes.toml`
 /// `[[control_kind]]`, fa-g23), written out literally: `(id, name, the
@@ -54,9 +55,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use fa_registry::sod_policy::{SodPolicy, SodRequirement};
 use fa_registry::{Admissibility, Decision, EntryClasses};
 use fa_time::period::transition;
-use fa_time::{
-    DateDay, FiscalCalendar, PeriodDef, PeriodKind, PeriodState, PeriodTransition, resolve_period,
-};
+use fa_time::{DateDay, FiscalCalendar, PeriodDef, PeriodKind, PeriodState, PeriodTransition};
 
 // ---------------------------------------------------------------------------
 // Own arithmetic: sign-magnitude, base 2^32 limbs, little-endian.
@@ -283,6 +282,8 @@ pub struct Intent {
     pub approvals: usize,
     /// For a Reversal: the journal index of the entry it reverses.
     pub reverses: Option<usize>,
+    /// Registered `supersession` reason; consulted only for a reversal.
+    pub supersession_reason: u16,
     /// For a Resolution: the pending entry it resolves and its disposition.
     pub resolves: Option<Resolve>,
     /// Applications (plan §5.7): `legs[leg]` applies `mantissa` to journal
@@ -362,6 +363,8 @@ pub mod code {
     pub const REVERSAL_TARGET: &str = "FA-REF-050";
     pub const REVERSAL_SHAPE: &str = "FA-REF-051";
     pub const ALREADY_REVERSED: &str = "FA-REF-052";
+    pub const REVERSAL_PERIOD: &str = "FA-REF-053";
+    pub const SUPERSESSION_REASON: &str = "FA-REF-054";
     pub const RESOLUTION_TARGET: &str = "FA-REF-060";
     pub const RESOLUTION_SHAPE: &str = "FA-REF-061";
     pub const ALREADY_RESOLVED: &str = "FA-REF-062";
@@ -558,6 +561,7 @@ struct Content {
     discriminator: Option<String>,
     legs: Vec<Leg>,
     reverses: Option<usize>,
+    supersession_reason: u16,
     resolves: Option<Resolve>,
     settles: Vec<Settle>,
     key: Vec<u8>,
@@ -587,6 +591,11 @@ impl Content {
             discriminator: i.discriminator.clone(),
             legs: i.legs.clone(),
             reverses: i.reverses,
+            supersession_reason: if i.reverses.is_some() {
+                i.supersession_reason
+            } else {
+                0
+            },
             resolves: i.resolves.clone(),
             settles: i.settles.clone(),
             key: i.key.clone(),
@@ -719,6 +728,7 @@ pub struct Oracle {
     migration_keys: BTreeMap<(usize, Vec<u8>), (usize, Content)>,
     classes: EntryClasses,
     matrix: Admissibility,
+    special_periods: temporal::SpecialPeriods,
     sod: SodPolicy,
     /// Tokens of revoked capabilities.
     revoked: BTreeSet<u64>,
@@ -755,6 +765,7 @@ impl Oracle {
             migration_keys: BTreeMap::new(),
             classes,
             matrix,
+            special_periods: temporal::SpecialPeriods::embedded(),
             sod,
             revoked: BTreeSet::new(),
             epoch: 0,
@@ -1142,6 +1153,7 @@ impl Oracle {
             ops: vec!["post".into()],
             approvals: 0,
             reverses: Some(target),
+            supersession_reason: 12,
             resolves: None,
             settles: Vec::new(),
         };
@@ -1345,6 +1357,7 @@ impl Oracle {
                         discriminator: None,
                         legs: Vec::new(),
                         reverses: None,
+                        supersession_reason: 0,
                         resolves: Some(Resolve {
                             target: h,
                             posts: None,
@@ -1573,9 +1586,7 @@ impl Oracle {
                 .ok()
                 .and_then(|fy| self.calendar.periods_for_year(fy).ok())
                 .and_then(|defs| {
-                    resolve_period(&defs, reverse_on, None)
-                        .ok()
-                        .map(|p| p.code.clone())
+                    temporal::resolve(&defs, reverse_on, None).map(|p| p.code.clone())
                 });
             let Some(p) = resolved else {
                 return Verdict::Refused {
@@ -1627,7 +1638,8 @@ impl Oracle {
                 code: code::PERIOD_RESOLVE,
             };
         };
-        let Ok(period) = resolve_period(&defs, intent.date, intent.discriminator.as_deref()) else {
+        let Some(period) = temporal::resolve(&defs, intent.date, intent.discriminator.as_deref())
+        else {
             return Verdict::Refused {
                 code: code::PERIOD_RESOLVE,
             };
@@ -1668,6 +1680,19 @@ impl Oracle {
                     code: code::IDEMPOTENCY_CONFLICT,
                 }
             };
+        }
+        if is_reversal {
+            let reasons =
+                fa_registry::reason_codes::ReasonCodes::embedded().expect("reason registry");
+            if !reasons
+                .rows
+                .iter()
+                .any(|row| row.scope == "supersession" && row.code == intent.supersession_reason)
+            {
+                return Verdict::Refused {
+                    code: code::SUPERSESSION_REASON,
+                };
+            }
         }
         // 4'. The run: known, Open, and the chunk on its opening date.
         if let Some(r) = run {
@@ -1727,6 +1752,11 @@ impl Oracle {
             && !rule.admits(&intent.class)
         {
             assert_eq!(rule.refusal, code::PERIOD_LAW, "registry drift");
+            return Verdict::Refused {
+                code: code::PERIOD_LAW,
+            };
+        }
+        if born.is_some_and(|kind| !self.special_periods.admits(kind, &intent.class)) {
             return Verdict::Refused {
                 code: code::PERIOD_LAW,
             };
@@ -1842,6 +1872,28 @@ impl Oracle {
             if !reversible {
                 return Verdict::Refused {
                     code: code::REVERSAL_TARGET,
+                };
+            }
+            let target_period = &self.periods[&original.period].0;
+            let current_period = &self.periods[&period].0;
+            // Independent of production's chronological_key: definition
+            // enumeration appends Opening, while chronological order puts
+            // it before the first Normal period.
+            let rank = |kind| match kind {
+                PeriodKind::Opening => 0,
+                PeriodKind::Normal | PeriodKind::Historical => 1,
+                PeriodKind::Adjustment => 2,
+                PeriodKind::Closing => 3,
+            };
+            let order = current_period
+                .start
+                .cmp(&target_period.start)
+                .then_with(|| rank(current_period.kind).cmp(&rank(target_period.kind)))
+                .then_with(|| current_period.fiscal_year.cmp(&target_period.fiscal_year))
+                .then_with(|| current_period.ordinal.cmp(&target_period.ordinal));
+            if order.is_lt() {
+                return Verdict::Refused {
+                    code: code::REVERSAL_PERIOD,
                 };
             }
             let swapped = original.legs.len() == intent.legs.len()
@@ -2871,6 +2923,7 @@ mod tests {
             ops: vec!["post".into()],
             approvals: 0,
             reverses,
+            supersession_reason: 1,
             resolves: None,
             settles: Vec::new(),
         };
@@ -3145,6 +3198,7 @@ mod tests {
             ops: vec!["post".into()],
             approvals: 0,
             reverses: None,
+            supersession_reason: 1,
             resolves,
             settles: Vec::new(),
         };
@@ -3275,6 +3329,7 @@ mod tests {
             ops: vec!["post".into()],
             approvals: 0,
             reverses: None,
+            supersession_reason: 1,
             resolves,
             settles: Vec::new(),
         };

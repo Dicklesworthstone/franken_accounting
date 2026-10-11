@@ -237,7 +237,7 @@ exit = "safety"
 cite = "plan §7.3 period state machine"
 fix = "pick a legal transition: Future→Open, Open→SoftClose, SoftClosed→Close|Reopen, Closed→Lock|Reopen"
 
-# ---- Supersession (050–052) ----------------------------------------------
+# ---- Supersession (050–054) ----------------------------------------------
 [[refusal]]
 code = "FA-REF-050"
 name = "REVERSAL_TARGET"
@@ -261,6 +261,22 @@ owners = ["fa-journal"]
 exit = "conflict"
 cite = "plan §4.9 (one reversal per target, by identity)"
 fix = "cite the existing reversal instead of posting another"
+
+[[refusal]]
+code = "FA-REF-053"
+name = "REVERSAL_PERIOD"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §8.1 (a reversal is in the target's period or a later period in fiscal-calendar order)"
+fix = "post the reversal in a permitted open period at or after the target's period; special-period ordinals also determine order"
+
+[[refusal]]
+code = "FA-REF-054"
+name = "SUPERSESSION_REASON"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §8.2 (corrections carry a registered reason_codes.toml supersession reason)"
+fix = "choose DataEntryError, WrongAccount, WrongPeriod, WrongAmount, Duplicate, EstimateChange, PolicyChange, Fraud, AuditAdjustment, RegulatoryDirective, Other, or ScheduledAccrualReversal; Other needs a description"
 
 # ---- Two-phase (060–062) -------------------------------------------------
 [[refusal]]

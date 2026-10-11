@@ -36,6 +36,7 @@ use fa_model::{
 };
 use fa_model::{ControlPayload, Disposition, Pending};
 use fa_money::{Amount, Side};
+use fa_registry::reason_codes::{Reason, ReasonCodes};
 use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodState, PeriodTransition};
 use fgdb_types::{CommitSeq, VId};
 
@@ -60,6 +61,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("period", period_cmd),
     ("approve", approve_cmd),
     ("post", post_cmd),
+    ("reverse", reverse_cmd),
     ("reserve", reserve_cmd),
     ("resolve", resolve_cmd),
     ("document", document::document_cmd),
@@ -1460,7 +1462,8 @@ const GUIDE: &str = "fa robot-docs guide\n\
 8. Two-phase: `fa reserve` posts a Pending (amounts in the pending columns, never posted); `fa resolve` names it with `resolves` and either posts a sub-vector (`legs`, each drawn from one hold leg — same account and side, at most the reserved amount; add `source_ordinal` when the hold has several such legs) or voids it (`disposition: \"voids\"`). The rest of the hold is released either way. One resolution per hold: a second is exit 6 (FA-REF-062); resolving a non-hold is FA-REF-060.\n\
 9. Explain before you trust: `fa explain balance <account> --period <code> --json` returns the account's register cells, the fold digest they belong to, every contributing leg with its entry and recorded_at, and the cells' known-at history; the legs re-add to the cells exactly. Add --as-known-at <seq> to see what was known then.\n\
 10. Schemas: `fa robot-docs schema --json` lists every event and its fields (generated from registries/verbs.toml); `fa robot-docs schema <event>` prints one. `fa <command> --help` prints that command's usage, flags, events and exits.\n\
-11. Application: a leg may carry `settles: [{entry, ordinal, amount}]` to apply itself to an open item — the opposite side on the same account and unit, at most the item's open amount (FA-REF-072 names what is open). `fa open-items --account <code>` lists items with their applications. Reversing a receipt reopens the invoice (its applications are undone, never re-entered); an invoice with live applications cannot be reversed until its receipts are (FA-REF-073).\n";
+11. Application: a leg may carry `settles: [{entry, ordinal, amount}]` to apply itself to an open item — the opposite side on the same account and unit, at most the item's open amount (FA-REF-072 names what is open). `fa open-items --account <code>` lists items with their applications. Reversing a receipt reopens the invoice (its applications are undone, never re-entered); an invoice with live applications cannot be reversed until its receipts are (FA-REF-073).\n\
+12. Corrections require a registered reason: `fa reverse <vid> --reason WrongAccount --json` derives the opposite legs and retains the target's date by default; --effective selects an explicit same-or-later admissible period. A Reversal passed to `fa post` likewise carries `reason`, for example \"WrongAmount\". `fa entry show <reversal vid> --json` reports the immutable supersession and its reason. Other requires a description; no reason code proves the explanation true.\n";
 
 const EXAMPLES: &str = "fa robot-docs examples\n\
 \n\
@@ -2380,6 +2383,112 @@ fn post_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     post_with(ctx, args, None)
 }
 
+/// Reverse an identified entry without making the operator re-enter its
+/// legs. The original effective date is the default, never today's date or
+/// the next open period; any explicit date still passes the kernel's law.
+fn reverse_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.len() != 2 {
+        return Err(usage(
+            "reverse needs exactly one entry vid",
+            "fa reverse <vid> --reason WrongAccount [--effective YYYY-MM-DD]",
+        ));
+    }
+    for flag in [
+        "--reason",
+        "--effective",
+        "--period",
+        "--key",
+        "--description",
+    ] {
+        if args.flag_all(flag).len() > 1 {
+            return Err(usage(
+                format!("reverse takes only one {flag}"),
+                "fa reverse <vid> --reason WrongAccount [--effective YYYY-MM-DD]",
+            ));
+        }
+    }
+    let target = args.positional[1]
+        .strip_prefix("E:")
+        .unwrap_or(&args.positional[1]);
+    let vid = parse_vid(target, "reverse target")?;
+    let key = args
+        .flag("--key")
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("reverse:{:032x}", vid.0));
+    let mut fields = vec![
+        ("class", s("Reversal")),
+        ("reverses", s(format!("{:032x}", vid.0))),
+        ("idempotency_key", s(key)),
+    ];
+    for (flag, field) in [
+        ("--reason", "reason"),
+        ("--effective", "effective_date"),
+        ("--period", "effective_period"),
+        ("--description", "description"),
+    ] {
+        if let Some(value) = args.flag(flag) {
+            fields.push((field, s(value)));
+        }
+    }
+    post_document(ctx, args, Some(EntryClass::REVERSAL), obj(fields))
+}
+
+/// Reason names and numeric codes have one registry-backed meaning. The
+/// reason is part of the sealed proposal and therefore part of retry
+/// identity; the caller's explanation belongs in its description.
+fn reversal_reason(value: Option<&Json>) -> Result<Reason, Fail> {
+    let reasons =
+        ReasonCodes::embedded().map_err(|e| Fail::Internal(format!("reason_codes.toml: {e}")))?;
+    let supplied = value.and_then(Json::as_str);
+    let reason = supplied.and_then(|text| {
+        reasons.rows.iter().find(|r| {
+            r.scope == "supersession"
+                && (r.name == text || text.parse::<u16>().ok() == Some(r.code))
+        })
+    });
+    if let Some(reason) = reason {
+        return Ok(reason.clone());
+    }
+    let names: Vec<&str> = reasons
+        .rows
+        .iter()
+        .filter(|r| r.scope == "supersession")
+        .map(|r| r.name.as_str())
+        .collect();
+    let suggestion = supplied
+        .and_then(|name| nearest(name, &names))
+        .map(|name| format!("did you mean `{name}`? "))
+        .unwrap_or_default();
+    Err(Refusal::new(
+        fa_journal::code::SUPERSESSION_REASON,
+        exit::REFUSAL,
+        match supplied {
+            Some(name) => format!("reversal reason `{name}` is not registered"),
+            None => "a reversal requires a registered reason string".to_string(),
+        },
+        "plan §8.2; registries/reason_codes.toml (scope supersession)",
+        format!(
+            "{suggestion}set `reason` in the reversal intent, or `fa reverse <vid> --reason <name>`; registered reasons: {}",
+            reasons.listing("supersession")
+        ),
+    )
+    .into())
+}
+
+fn lineage_json(link: &fa_model::Supersession, reasons: &ReasonCodes) -> Json {
+    obj(vec![
+        ("entry", s(format!("{:032x}", link.target.vid.0))),
+        ("kind", s(format!("{:?}", link.kind))),
+        ("reason_code", Json::Int(i128::from(link.reason_code))),
+        (
+            "reason",
+            reasons
+                .get("supersession", link.reason_code)
+                .map_or(Json::Null, |reason| s(&reason.name)),
+        ),
+    ])
+}
+
 fn reserve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     post_with(ctx, args, Some(EntryClass::PENDING))
 }
@@ -2389,10 +2498,19 @@ fn resolve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 }
 
 fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Result<(), Fail> {
-    let out = &ctx.out;
     let path = args.require("--intent", "entry.json (or - for stdin)")?;
     let text = ctx.files.read_text(path)?;
     let doc = parse_json(path, &text)?;
+    post_document(ctx, args, forced, doc)
+}
+
+fn post_document(
+    ctx: &mut Ctx<'_>,
+    args: &Args,
+    forced: Option<EntryClass>,
+    doc: Json,
+) -> Result<(), Fail> {
+    let out = &ctx.out;
     let mut book = ctx.books.open(args)?;
     let ctx = book.context().clone();
     let class_name = doc
@@ -2401,6 +2519,7 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
         .unwrap_or(match forced {
             Some(EntryClass::PENDING) => "Pending",
             Some(EntryClass::RESOLUTION) => "Resolution",
+            Some(EntryClass::REVERSAL) => "Reversal",
             _ => "Original",
         });
     let class = EntryClass::from_name(class_name).ok_or_else(|| {
@@ -2423,23 +2542,29 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
         return Err(usage(
             format!(
                 "`fa {}` posts a {} but the intent says class `{class_name}`",
-                if forced == Some(EntryClass::PENDING) {
-                    "reserve"
-                } else {
-                    "resolve"
-                },
+                args.positional
+                    .first()
+                    .map(String::as_str)
+                    .unwrap_or("post"),
                 forced.and_then(EntryClass::name).unwrap_or("?")
             ),
             "remove `class` from the intent, or use `fa post`",
         ));
     }
-    let date_s = req_str(&doc, "effective_date", "intent")?;
-    let effective_date = DateDay::parse(date_s).map_err(|e| {
-        usage(
-            format!("effective_date `{date_s}`: {e:?}"),
-            "effective_date: \"YYYY-MM-DD\"",
-        )
-    })?;
+    let typed_reversal = forced == Some(EntryClass::REVERSAL);
+    let supplied_date = if typed_reversal && doc.get("effective_date").is_none() {
+        None
+    } else {
+        let date_s = req_str(&doc, "effective_date", "intent")?;
+        Some(DateDay::parse(date_s).map_err(|e| {
+            usage(
+                format!("effective_date `{date_s}`: {e:?}"),
+                "effective_date: \"YYYY-MM-DD\"",
+            )
+        })?)
+    };
+    let mut target_date = None;
+    let mut target_period = None;
     let key = req_str(&doc, "idempotency_key", "intent")?;
     let description = doc.get("description").and_then(Json::as_str).unwrap_or("");
     // A Reversal names its target; its legs are the exact side-swap of the
@@ -2449,7 +2574,18 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
     let mut supersession = Vec::new();
     let mut pending = None;
     let mut control = None;
+    let mut reversal_detail = None;
     let legs: Vec<LegPayload> = if let Some(target_s) = doc.get("reverses").and_then(Json::as_str) {
+        let reason = reversal_reason(doc.get("reason"))?;
+        if reason.name == "Other" && description.trim().is_empty() {
+            return Err(Refusal::new(
+                fa_journal::code::SUPERSESSION_REASON,
+                exit::REFUSAL,
+                "the reversal reason Other requires a description",
+                "plan §8.2 (Other(text)); registries/reason_codes.toml",
+                "state the reason in the intent's description or use `fa reverse <vid> --reason Other --description <explanation>`",
+            ).into());
+        }
         let vid = parse_vid(target_s, "reverses")?;
         let Some((target, _)) = book.read_entry(vid)? else {
             return Err(usage(
@@ -2460,8 +2596,11 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
         supersession.push(fa_model::Supersession {
             target: target.entry_ref(vid),
             kind: fa_model::SupersessionKind::Reverses,
-            reason_code: 0,
+            reason_code: reason.code,
         });
+        target_date = Some(target.proposal.effective_date);
+        target_period = target.proposal.effective_period.clone();
+        reversal_detail = Some((format!("{:032x}", vid.0), reason));
         if doc.get("legs").is_some() {
             return Err(usage(
                 "a Reversal's legs are derived from the target; do not supply `legs`",
@@ -2616,12 +2755,25 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
     let unit_totals = EntryPayload::fold_unit_totals(&legs)
         .map_err(fa_journal::KernelError::Model)
         .map_err(BookError::Kernel)?;
+    let effective_date = supplied_date.or(target_date).ok_or_else(|| {
+        usage(
+            "a reversal needs its target's effective date",
+            "fa entry show <vid> --json",
+        )
+    })?;
     let effective_period = doc
         .get("effective_period")
         .and_then(Json::as_str)
         .map(|c| PeriodRef {
             calendar: ctx.calendar.id.clone(),
             code: c.to_string(),
+        })
+        .or_else(|| {
+            if supplied_date.is_none() {
+                target_period
+            } else {
+                None
+            }
         });
     let who = principal(args);
     let proposal = EntryPayload {
@@ -2721,6 +2873,28 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
             recorded_at,
             period,
         } => {
+            if typed_reversal {
+                let (target, reason) = reversal_detail.ok_or_else(|| {
+                    Fail::Internal("an admitted typed reversal has no supersession".into())
+                })?;
+                out.event(
+                    "reversed",
+                    vec![
+                        ("vid", s(format!("{:032x}", entry_ref.vid.0))),
+                        ("entry_digest", s(hex(&entry_ref.entry_digest))),
+                        ("recorded_at", Json::Int(i128::from(recorded_at.0))),
+                        ("period", s(&period)),
+                        ("target", s(&target)),
+                        ("reason_code", Json::Int(i128::from(reason.code))),
+                        ("reason", s(&reason.name)),
+                    ],
+                    &format!(
+                        "reversed {target} as {:032x} in {period}, recorded at {} · reason {}",
+                        entry_ref.vid.0, recorded_at.0, reason.name
+                    ),
+                );
+                return Ok(());
+            }
             out.event(
                 "posted",
                 vec![
@@ -3521,6 +3695,8 @@ fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             .unwrap_or_default()
     };
     let type_name = AccountType(account.account_type).name().unwrap_or("?");
+    let reasons =
+        ReasonCodes::embedded().map_err(|e| Fail::Internal(format!("reason_codes.toml: {e}")))?;
     // One row per unit with both columns, like a materialized register row.
     let mut by_unit: std::collections::BTreeMap<u32, [i128; 6]> = std::collections::BTreeMap::new();
     for c in &ex.cells {
@@ -3580,13 +3756,7 @@ fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         Json::Arr(
                             c.supersedes
                                 .iter()
-                                .map(|l| {
-                                    obj(vec![
-                                        ("entry", s(format!("{:032x}", l.target.vid.0))),
-                                        ("kind", s(format!("{:?}", l.kind))),
-                                        ("reason_code", Json::Int(i128::from(l.reason_code))),
-                                    ])
-                                })
+                                .map(|l| lineage_json(l, &reasons))
                                 .collect(),
                         ),
                     ),
@@ -3893,6 +4063,7 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         "proposal_digest",
                         "approvals",
                         "legs",
+                        "supersedes",
                     ] {
                         fields.push((absent, Json::Null));
                     }
@@ -3900,6 +4071,8 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     Ok(())
                 }
                 Some((entry, seq)) => {
+                    let reasons = ReasonCodes::embedded()
+                        .map_err(|e| Fail::Internal(format!("reason_codes.toml: {e}")))?;
                     let legs: Vec<Json> = entry
                         .proposal
                         .legs
@@ -3929,8 +4102,19 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         ("proposal_digest", s(hex(&entry.proposal_digest))),
                         ("approvals", Json::Int(entry.approvals.len() as i128)),
                         ("legs", Json::Arr(legs)),
+                        (
+                            "supersedes",
+                            Json::Arr(
+                                entry
+                                    .proposal
+                                    .supersession
+                                    .iter()
+                                    .map(|l| lineage_json(l, &reasons))
+                                    .collect(),
+                            ),
+                        ),
                     ];
-                    let human = format!(
+                    let mut human = format!(
                         "{} {} recorded at {} · {} legs · entry_digest {}",
                         entry.proposal.class.name().unwrap_or("?"),
                         entry.proposal.effective_date.render(),
@@ -3938,6 +4122,15 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         entry.proposal.legs.len(),
                         hex(&entry.entry_digest)
                     );
+                    for link in &entry.proposal.supersession {
+                        let reason = reasons
+                            .get("supersession", link.reason_code)
+                            .map_or("unregistered historical reason", |r| r.name.as_str());
+                        human.push_str(&format!(
+                            "\n{:?} {:032x} · reason {} ({reason})",
+                            link.kind, link.target.vid.0, link.reason_code
+                        ));
+                    }
                     out.event("entry", fields, &human);
                     Ok(())
                 }

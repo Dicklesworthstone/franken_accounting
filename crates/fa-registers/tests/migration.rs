@@ -330,6 +330,7 @@ fn chunk_intent(key: &str, legs: Vec<Leg>) -> Intent {
         ops: vec!["post".into(), "migrate".into()],
         approvals: 2,
         reverses: None,
+        supersession_reason: 1,
         resolves: None,
         settles: Vec::new(),
     }
@@ -345,6 +346,7 @@ fn trunk_intent(key: &str, legs: Vec<Leg>) -> Intent {
         ops: vec!["post".into()],
         approvals: 0,
         reverses: None,
+        supersession_reason: 1,
         resolves: None,
         settles: Vec::new(),
     }

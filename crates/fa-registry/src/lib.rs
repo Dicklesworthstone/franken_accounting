@@ -388,6 +388,22 @@ impl KindRule {
     }
 }
 
+/// A special period narrows posting classes without changing the period's
+/// transition law. Historical restrictions are applied separately.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpecialPeriodRule {
+    pub admits: Vec<String>,
+    pub refusal: String,
+    pub cite: String,
+}
+
+impl SpecialPeriodRule {
+    #[must_use]
+    pub fn admits(&self, class: &str) -> bool {
+        self.admits.iter().any(|c| c == class)
+    }
+}
+
 /// The rule for special periods before the book's opening date (plan §7.2,
 /// `[[pre_opening]]`, ruling 3685): a period of one of `kinds` ending on or
 /// before the opening date is born `born`, keeps its kind, admits only
@@ -443,6 +459,8 @@ pub struct Admissibility {
     cells: BTreeMap<(String, PeriodState), (Decision, Option<String>, Qualifier)>,
     /// Rules by period kind (`[[kind]]` rows).
     kinds: BTreeMap<String, KindRule>,
+    /// Explicit class allowlists for Opening, Adjustment and Closing.
+    special_periods: BTreeMap<String, SpecialPeriodRule>,
     /// The special periods before the book's opening date (`[[pre_opening]]`).
     pre_opening: Option<PreOpeningRule>,
     /// `Resolution(Expires)`, the expiry sweep's release, decided per state
@@ -593,6 +611,89 @@ impl Admissibility {
                 "the Historical kind has no row: what its periods admit is unregistered",
             ));
         }
+        let mut special_periods = BTreeMap::new();
+        for t in doc
+            .arrays
+            .get("special_period_classes")
+            .unwrap_or(&Vec::new())
+        {
+            let name = req_str(R, t, "kind")?;
+            if !matches!(
+                kind_from_name(name),
+                Some(PeriodKind::Opening | PeriodKind::Adjustment | PeriodKind::Closing)
+            ) {
+                return Err(invalid(
+                    R,
+                    format!("special_period_classes: `{name}` is not a special period kind"),
+                ));
+            }
+            let admits: Vec<String> = t
+                .get("admits")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    invalid(
+                        R,
+                        format!("special period `{name}`: `admits` must be a list"),
+                    )
+                })?
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| invalid(R, "special-period admission names classes"))
+                })
+                .collect::<Result<_, _>>()?;
+            let mut seen = std::collections::BTreeSet::new();
+            for class in &admits {
+                if classes
+                    .by_name(class)
+                    .is_none_or(|c| c.kind != ClassKind::Posting)
+                {
+                    return Err(invalid(
+                        R,
+                        format!(
+                            "special period `{name}` admits `{class}`, which is not a posting class"
+                        ),
+                    ));
+                }
+                if !seen.insert(class) {
+                    return Err(invalid(
+                        R,
+                        format!("special period `{name}` repeats class `{class}`"),
+                    ));
+                }
+            }
+            if admits.is_empty() {
+                return Err(invalid(
+                    R,
+                    format!("special period `{name}` has no admitted classes"),
+                ));
+            }
+            let refusal = req_str(R, t, "refusal")?.to_string();
+            if !is_refusal_code(&refusal) {
+                return Err(invalid(
+                    R,
+                    format!("special period `{name}`: `{refusal}` is not a refusal code"),
+                ));
+            }
+            let rule = SpecialPeriodRule {
+                admits,
+                refusal,
+                cite: req_str(R, t, "cite")?.to_string(),
+            };
+            if special_periods.insert(name.into(), rule).is_some() {
+                return Err(invalid(R, format!("special period `{name}` has two rows")));
+            }
+        }
+        for name in ["Opening", "Adjustment", "Closing"] {
+            if !special_periods.contains_key(name) {
+                return Err(invalid(
+                    R,
+                    format!("special period `{name}` has no class admission row"),
+                ));
+            }
+        }
         let tables = doc.arrays.get("pre_opening").map_or(&[][..], Vec::as_slice);
         let [t] = tables else {
             return Err(invalid(
@@ -665,6 +766,7 @@ impl Admissibility {
             cells,
             expires,
             kinds,
+            special_periods,
             pre_opening,
         })
     }
@@ -687,6 +789,19 @@ impl Admissibility {
             PeriodKind::Historical => "Historical",
         };
         self.kinds.get(name)
+    }
+
+    /// Class admission for live special periods (plan §7.3). The caller
+    /// also applies the ordinary state matrix and any pre-opening rule.
+    #[must_use]
+    pub fn special_period_rule(&self, kind: PeriodKind) -> Option<&SpecialPeriodRule> {
+        let name = match kind {
+            PeriodKind::Opening => "Opening",
+            PeriodKind::Adjustment => "Adjustment",
+            PeriodKind::Closing => "Closing",
+            PeriodKind::Normal | PeriodKind::Historical => return None,
+        };
+        self.special_periods.get(name)
     }
 
     pub fn decide(&self, class: &str, state: PeriodState) -> Option<&Decision> {
@@ -1126,6 +1241,66 @@ mod tests {
         let twice = ADMISSIBILITY.replace(row, &format!("{row}{row}"));
         let e = Admissibility::parse(&classes, &twice).unwrap_err();
         assert!(e.to_string().contains("two rows"), "{e}");
+    }
+
+    #[test]
+    fn special_period_class_rules_are_complete_and_distinct_from_transitions() {
+        let classes = EntryClasses::embedded().unwrap();
+        let matrix = Admissibility::embedded(&classes).unwrap();
+        for kind in [
+            PeriodKind::Opening,
+            PeriodKind::Adjustment,
+            PeriodKind::Closing,
+        ] {
+            let rule = matrix
+                .special_period_rule(kind)
+                .expect("registered special kind");
+            for class in classes.posting() {
+                let expected = matches!(
+                    class.name.as_str(),
+                    "Adjusting"
+                        | "Closing"
+                        | "Elimination"
+                        | "Revision"
+                        | "Restatement"
+                        | "Migration"
+                );
+                assert_eq!(
+                    rule.admits(&class.name),
+                    expected,
+                    "{kind:?} {}",
+                    class.name
+                );
+            }
+            assert_eq!(rule.refusal, "FA-REF-010");
+            assert!(
+                matrix.kind_rule(kind).is_none(),
+                "live special periods still transition"
+            );
+        }
+        for kind in [PeriodKind::Normal, PeriodKind::Historical] {
+            assert!(matrix.special_period_rule(kind).is_none());
+        }
+        for (from, to) in [
+            ("kind = \"Opening\"", "kind = \"Normal\""),
+            ("kind = \"Opening\"", "kind = \"Closing\""),
+            (
+                "[[special_period_classes]]\nkind = \"Opening\"",
+                "[[unused]]\nkind = \"Opening\"",
+            ),
+            (
+                "admits = [\"Adjusting\", \"Closing\"",
+                "admits = [\"PeriodControl\", \"Closing\"",
+            ),
+            (
+                "admits = [\"Adjusting\", \"Closing\"",
+                "admits = [\"Adjusting\", \"Adjusting\"",
+            ),
+        ] {
+            let changed = ADMISSIBILITY.replacen(from, to, 1);
+            assert_ne!(changed, ADMISSIBILITY);
+            assert!(Admissibility::parse(&classes, &changed).is_err(), "{to}");
+        }
     }
 
     /// Ruling 3685: the pre-opening rule is registered once. Every posting

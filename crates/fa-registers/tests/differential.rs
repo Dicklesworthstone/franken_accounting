@@ -77,6 +77,7 @@ fn maintenance_intent(class: &str, date: DateDay, amount: i128, key: &str) -> In
         ops: vec!["post".into()],
         approvals: 0,
         reverses: None,
+        supersession_reason: 1,
         resolves: None,
         settles: Vec::new(),
     }
@@ -106,6 +107,227 @@ fn maintained_matches_oracle(maintained: &fa_registers::Advance, oracle: &Oracle
                     expected.entry_count
                 )
             );
+        }
+    }
+}
+
+fn correction_outcome(
+    kernel: &mut Kernel,
+    oracle: &mut Oracle,
+    refs: &mut Vec<EntryRef>,
+    intent: &Intent,
+    expected: Result<&str, &'static str>,
+) -> Option<usize> {
+    let usd = kernel.book.units.lookup("USD").unwrap();
+    let head = kernel.db.frontier().unwrap();
+    let actual = kernel_post(kernel, intent, usd, refs);
+    let reference = oracle.post(intent);
+    match expected {
+        Ok(period) => {
+            let index = refs.len();
+            assert_eq!(
+                reference,
+                Verdict::Posted {
+                    index,
+                    period: period.into()
+                },
+                "{intent:?}"
+            );
+            let posted = actual.expect("kernel admits the specified lawful correction");
+            assert_eq!(posted.period(), Some(period));
+            refs.push(posted.entry_ref());
+            Some(index)
+        }
+        Err(code) => {
+            assert_eq!(reference, Verdict::Refused { code }, "{intent:?}");
+            assert_eq!(actual.unwrap_err().code, code, "{intent:?}");
+            assert_eq!(kernel.db.frontier().unwrap(), head, "refusal wrote nothing");
+            None
+        }
+    }
+}
+
+#[test]
+fn correction_period_order_and_reasons_match_independent_oracle_across_seeds() {
+    for seed in [7, 0x529a_4571, 0x9812_73bb] {
+        let (mut kernel, mut oracle, _) = setup();
+        let mut rng = Rng(seed);
+        for (step, period) in [
+            "FY2026-OPEN",
+            "FY2026-P01",
+            "FY2026-P03",
+            "FY2026-P04",
+            "FY2026-P05",
+            "FY2026-P12",
+            "FY2026-A1",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            open_period(&mut kernel, &mut oracle, period, step as u64);
+        }
+        let ctx = kernel.ctx();
+        kernel
+            .runtime
+            .block_on(create_periods(&mut kernel.db, &ctx, &kernel.book, 2027))
+            .unwrap();
+        oracle.create_periods(2027);
+        open_period(&mut kernel, &mut oracle, "FY2027-P01", 8);
+        let mut refs = Vec::new();
+        for n in 0..6 {
+            let amount = i128::from(rng.below(1_000_000)) + 1;
+            let original = maintenance_intent(
+                "Original",
+                DateDay::parse("2026-04-15").unwrap(),
+                amount,
+                &format!("order-original-{n}"),
+            );
+            let target = correction_outcome(
+                &mut kernel,
+                &mut oracle,
+                &mut refs,
+                &original,
+                Ok("FY2026-P04"),
+            )
+            .unwrap();
+            let mut reversal = original.clone();
+            reversal.class = "Reversal".into();
+            reversal.key = format!("order-reversal-{n}").into_bytes();
+            reversal.reverses = Some(target);
+            reversal.supersession_reason = if n % 2 == 0 { 2 } else { 4 };
+            for leg in &mut reversal.legs {
+                leg.side = leg.side.flipped();
+            }
+            reversal.date = DateDay::parse("2026-03-31").unwrap();
+            correction_outcome(
+                &mut kernel,
+                &mut oracle,
+                &mut refs,
+                &reversal,
+                Err("FA-REF-053"),
+            );
+            let chosen_reason = reversal.supersession_reason;
+            for invalid_reason in [0, u16::MAX] {
+                reversal.supersession_reason = invalid_reason;
+                correction_outcome(
+                    &mut kernel,
+                    &mut oracle,
+                    &mut refs,
+                    &reversal,
+                    Err("FA-REF-054"),
+                );
+            }
+            reversal.supersession_reason = chosen_reason;
+            let (day, period) = if n % 2 == 0 {
+                ("2026-04-01", "FY2026-P04")
+            } else {
+                ("2026-05-01", "FY2026-P05")
+            };
+            reversal.date = DateDay::parse(day).unwrap();
+            correction_outcome(&mut kernel, &mut oracle, &mut refs, &reversal, Ok(period));
+            reversal.supersession_reason = 9;
+            correction_outcome(
+                &mut kernel,
+                &mut oracle,
+                &mut refs,
+                &reversal,
+                Err("FA-REF-052"),
+            );
+        }
+        let mut opening = maintenance_intent(
+            "Adjusting",
+            DateDay::parse("2026-01-01").unwrap(),
+            i128::from(rng.below(10_000)) + 1,
+            "opening-order",
+        );
+        opening.discriminator = Some("FY2026-OPEN".into());
+        let target = correction_outcome(
+            &mut kernel,
+            &mut oracle,
+            &mut refs,
+            &opening,
+            Ok("FY2026-OPEN"),
+        )
+        .unwrap();
+        opening.class = "Reversal".into();
+        opening.key = b"reverse-opening-order".to_vec();
+        opening.reverses = Some(target);
+        opening.date = DateDay::parse("2026-01-02").unwrap();
+        opening.discriminator = None;
+        for leg in &mut opening.legs {
+            leg.side = leg.side.flipped();
+        }
+        correction_outcome(
+            &mut kernel,
+            &mut oracle,
+            &mut refs,
+            &opening,
+            Ok("FY2026-P01"),
+        );
+        let mut adjusted = maintenance_intent(
+            "Original",
+            DateDay::parse("2026-12-31").unwrap(),
+            i128::from(rng.below(10_000)) + 1,
+            "adjustment-order",
+        );
+        adjusted.discriminator = Some("FY2026-A1".into());
+        correction_outcome(
+            &mut kernel,
+            &mut oracle,
+            &mut refs,
+            &adjusted,
+            Err("FA-REF-010"),
+        );
+        adjusted.class = "Adjusting".into();
+        let target = correction_outcome(
+            &mut kernel,
+            &mut oracle,
+            &mut refs,
+            &adjusted,
+            Ok("FY2026-A1"),
+        )
+        .unwrap();
+        adjusted.class = "Reversal".into();
+        adjusted.key = b"reverse-adjustment-order".to_vec();
+        adjusted.reverses = Some(target);
+        for leg in &mut adjusted.legs {
+            leg.side = leg.side.flipped();
+        }
+        correction_outcome(
+            &mut kernel,
+            &mut oracle,
+            &mut refs,
+            &adjusted,
+            Err("FA-REF-010"),
+        );
+        adjusted.discriminator = None;
+        correction_outcome(
+            &mut kernel,
+            &mut oracle,
+            &mut refs,
+            &adjusted,
+            Err("FA-REF-053"),
+        );
+        adjusted.date = DateDay::parse("2027-01-01").unwrap();
+        correction_outcome(
+            &mut kernel,
+            &mut oracle,
+            &mut refs,
+            &adjusted,
+            Ok("FY2027-P01"),
+        );
+        for period in [
+            "FY2026-OPEN",
+            "FY2026-P01",
+            "FY2026-P03",
+            "FY2026-P04",
+            "FY2026-P05",
+            "FY2026-P12",
+            "FY2026-A1",
+            "FY2027-P01",
+        ] {
+            let maintained = maintain(&mut kernel, period);
+            maintained_matches_oracle(&maintained, &oracle, kernel.book.book_id);
         }
     }
 }
@@ -1123,7 +1345,7 @@ fn kernel_request(k: &Kernel, intent: &Intent, usd: UnitId, refs: &[EntryRef]) -
             vec![Supersession {
                 target: refs[i],
                 kind: SupersessionKind::Reverses,
-                reason_code: 0,
+                reason_code: intent.supersession_reason,
             }]
         })
         .unwrap_or_default();
@@ -1569,6 +1791,7 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                 ops: vec!["post".into(), "post_closed".into()],
                 approvals: 0,
                 reverses: Some(i),
+                supersession_reason: 1,
                 resolves: None,
                 settles: Vec::new(),
             });
@@ -1596,6 +1819,7 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                 ops: vec!["post".into(), "post_closed".into()],
                 approvals: 0,
                 reverses: None,
+                supersession_reason: 1,
                 resolves: None,
                 settles: vec![Settle {
                     leg: 1,
@@ -1620,6 +1844,7 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                 ops: vec!["post".into(), "post_closed".into()],
                 approvals: 0,
                 reverses: None,
+                supersession_reason: 1,
                 resolves: None,
                 settles: vec![Settle {
                     leg: 1,
@@ -1678,6 +1903,7 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                     ops,
                     approvals: 0,
                     reverses: None,
+                    supersession_reason: 1,
                     resolves: None,
                     settles: Vec::new(),
                 }
@@ -1731,6 +1957,7 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                     ops,
                     approvals: 0,
                     reverses: None,
+                    supersession_reason: 1,
                     resolves: None,
                     settles: vec![Settle {
                         leg: 1,
@@ -1809,6 +2036,7 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                     ops,
                     approvals: 0,
                     reverses: None,
+                    supersession_reason: 1,
                     resolves: Some(Resolve { target, posts }),
                     settles: Vec::new(),
                 }
@@ -1855,6 +2083,7 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                     ops,
                     approvals: 0,
                     reverses: Some(target),
+                    supersession_reason: 1,
                     resolves: None,
                     settles: Vec::new(),
                 }
@@ -1919,6 +2148,7 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                     ops,
                     approvals: 0,
                     reverses: None,
+                    supersession_reason: 1,
                     resolves: None,
                     settles: Vec::new(),
                 }
@@ -2384,6 +2614,7 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
         ops: vec!["post".into(), "post_closed".into()],
         approvals: 0,
         reverses: None,
+        supersession_reason: 1,
         resolves: None,
         settles: vec![Settle {
             leg: 1,
@@ -2481,6 +2712,7 @@ fn temporal_intent(
         ops: vec!["post".into()],
         approvals: 0,
         reverses: None,
+        supersession_reason: 1,
         resolves: None,
         settles: Vec::new(),
     }
@@ -2921,6 +3153,7 @@ fn kernel_and_oracle_agree_on_limited_accounts() {
             ops: vec!["post".into()],
             approvals: 0,
             reverses: None,
+            supersession_reason: 1,
             resolves: None,
             settles: Vec::new(),
         };
@@ -3199,6 +3432,7 @@ fn kernel_and_oracle_agree_on_limited_accounts() {
         ops: vec!["post".into()],
         approvals: 0,
         reverses: None,
+        supersession_reason: 1,
         resolves: None,
         settles: Vec::new(),
     };
@@ -3529,6 +3763,7 @@ fn kernel_and_oracle_agree_on_budget_caps_and_balancing() {
         ops: vec!["post".into()],
         approvals: 0,
         reverses: None,
+        supersession_reason: 1,
         resolves: None,
         settles: Vec::new(),
     };
@@ -4111,6 +4346,7 @@ fn kernel_and_oracle_agree_on_budget_caps_and_balancing() {
         ops: vec!["post".into()],
         approvals: 0,
         reverses: None,
+        supersession_reason: 1,
         resolves: None,
         settles: Vec::new(),
     };
@@ -4414,6 +4650,7 @@ fn kernel_and_oracle_agree_on_ticks_timed_holds_and_the_expiry_sweep() {
         ops: vec!["post".into()],
         approvals: 0,
         reverses: None,
+        supersession_reason: 1,
         resolves: None,
         settles: Vec::new(),
     };
@@ -4817,6 +5054,7 @@ fn timed_holds_anchor_on_a_witnessed_tick_and_posts_stop_at_the_deadline() {
         ops: vec!["post".into()],
         approvals: 0,
         reverses: None,
+        supersession_reason: 1,
         resolves,
         settles: Vec::new(),
     };
@@ -5041,6 +5279,7 @@ fn the_sweep_and_manual_resolution_race_by_identity_never_double_release() {
         ops: vec!["post".into()],
         approvals: 0,
         reverses: None,
+        supersession_reason: 1,
         resolves,
         settles: Vec::new(),
     };
@@ -5259,6 +5498,7 @@ fn a_crashed_sweep_leaves_nothing_partial_and_the_cursor_survives_restart() {
         ops: vec!["post".into()],
         approvals: 0,
         reverses: None,
+        supersession_reason: 1,
         resolves: None,
         settles: Vec::new(),
     };
@@ -5457,6 +5697,7 @@ fn an_entropy_failure_in_the_sweep_commits_nothing_and_the_retry_sweeps_the_same
         ops: vec!["post".into()],
         approvals: 0,
         reverses: None,
+        supersession_reason: 1,
         resolves: None,
         settles: Vec::new(),
     };
@@ -5561,6 +5802,7 @@ fn an_entropy_failure_in_the_reversal_sweep_commits_nothing_and_the_retry_mints_
         ops: vec!["post".into()],
         approvals: 0,
         reverses: None,
+        supersession_reason: 1,
         resolves: None,
         settles: Vec::new(),
     };
@@ -5705,6 +5947,7 @@ fn multi_unit_holds_post_partially_per_unit_and_expire_in_every_unit() {
         ops: vec!["post".into()],
         approvals: 0,
         reverses: None,
+        supersession_reason: 1,
         resolves,
         settles: Vec::new(),
     };
@@ -6062,6 +6305,7 @@ fn kernel_and_oracle_agree_on_scheduled_reversals() {
         ops: vec!["post".into()],
         approvals: 0,
         reverses: None,
+        supersession_reason: 1,
         resolves: None,
         settles: Vec::new(),
     };
@@ -6400,6 +6644,7 @@ fn a_manual_reversal_and_the_reversal_sweep_race_by_identity() {
         ops: vec!["post".into()],
         approvals: 0,
         reverses: None,
+        supersession_reason: 1,
         resolves: None,
         settles: Vec::new(),
     };
@@ -6636,6 +6881,7 @@ fn kernel_and_oracle_agree_on_the_per_entity_balance_law() {
         ops: vec!["post".into()],
         approvals: 0,
         reverses: None,
+        supersession_reason: 1,
         resolves: None,
         settles: Vec::new(),
     };
@@ -7028,6 +7274,7 @@ fn one_entity_books_and_entityless_books_keep_the_per_unit_law() {
         ops: vec!["post".into()],
         approvals: 0,
         reverses: None,
+        supersession_reason: 1,
         resolves: None,
         settles: Vec::new(),
     };
@@ -7156,6 +7403,7 @@ fn two_phase_sub_vectors_balance_per_entity() {
         ops: vec!["post".into()],
         approvals: 0,
         reverses: None,
+        supersession_reason: 1,
         resolves,
         settles: Vec::new(),
     };

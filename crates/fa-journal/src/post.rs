@@ -853,6 +853,41 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
         );
     }
 
+    // A fresh correction names a registered reason. Outcome recognition
+    // stays first: an identical retry never rewrites or reinterprets an old
+    // immutable entry, including a reversal recorded before this law.
+    if is_reversal {
+        let reasons = fa_registry::reason_codes::ReasonCodes::embedded()
+            .map_err(|e| KernelError::Corrupt(e.to_string()))?;
+        let reason = proposal.supersession[0].reason_code;
+        let registered = reasons.get("supersession", reason);
+        let described = registered.is_none_or(|row| {
+            row.name != "Other"
+                || proposal
+                    .description
+                    .open(&book.seal_key, 1024)
+                    .is_ok_and(|text| !text.trim().is_empty())
+        });
+        if registered.is_none() || !described {
+            txn.abort();
+            return Ok(Err(Refusal::new(
+                code::SUPERSESSION_REASON,
+                exit::REFUSAL,
+                if registered.is_none() {
+                    format!("supersession reason {reason} is not registered (zero is not a reason)")
+                } else {
+                    "supersession reason Other requires a nonempty description sealed for this book"
+                        .into()
+                },
+                "plan §8.2, reason_codes.toml scope supersession",
+                format!(
+                    "choose a registered reason: {}; for Other, supply --description with the particulars",
+                    reasons.listing("supersession")
+                ),
+            )));
+        }
+    }
+
     // 4'. The run (plan §8.6): its state is a point witness, so a Finalize
     //     or Abandon that commits first makes this chunk a first-committer-wins
     //     conflict. An Opening-period chunk is dated on the run's opening
@@ -1002,6 +1037,30 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
             ),
             rule.cite.clone(),
             "post this entry in a live period at or after the book's opening date; legacy history enters through a MigrationRun",
+        )));
+    }
+    if let Some(rule) = matrix.special_period_rule(born)
+        && !rule.admits(class_name)
+    {
+        if rule.refusal != code::PERIOD_LAW {
+            return Err(KernelError::Corrupt(format!(
+                "admissibility.toml special period {born:?} cites an unexpected refusal {}",
+                rule.refusal
+            )));
+        }
+        txn.abort();
+        return Ok(Err(Refusal::new(
+            code::PERIOD_LAW,
+            exit::SAFETY,
+            format!(
+                "`{}` is a {born:?} period and does not admit `{class_name}`",
+                period.code
+            ),
+            rule.cite.clone(),
+            format!(
+                "post `{class_name}` in a Normal period; this special period admits only {}",
+                rule.admits.join(", ")
+            ),
         )));
     }
     let family = match &resolution {
@@ -1459,6 +1518,43 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
                 ),
                 "plan §8.2 (a reversal negates posted legs)",
                 fix,
+            )));
+        }
+        let target_fy = book
+            .calendar
+            .fiscal_year_of(original.proposal.effective_date)?;
+        let target_periods = book.calendar.periods_for_year(target_fy)?;
+        let target_period = resolve_period(
+            &target_periods,
+            original.proposal.effective_date,
+            original
+                .proposal
+                .effective_period
+                .as_ref()
+                .map(|p| p.code.as_str()),
+        )
+        .map_err(|error| {
+            KernelError::Corrupt(format!(
+                "reversal target {:032x} has no fiscal period: {error:?}",
+                target.vid.0
+            ))
+        })?;
+        // Civil dates alone cannot decide this: the normal year-end period
+        // and its adjustment/closing periods share the same last day.
+        if period.chronological_key() < target_period.chronological_key() {
+            txn.abort();
+            return Ok(Err(Refusal::new(
+                code::REVERSAL_PERIOD,
+                exit::REFUSAL,
+                format!(
+                    "reversal period `{}` precedes target period `{}` in the fiscal calendar",
+                    period.code, target_period.code
+                ),
+                "plan §8.1 (Reversal: same or later period)",
+                format!(
+                    "post the reversal in `{}` if its class is permitted there, or a later open Normal period",
+                    target_period.code
+                ),
             )));
         }
         let swapped = original.proposal.legs.len() == proposal.legs.len()

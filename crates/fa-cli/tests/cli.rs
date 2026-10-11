@@ -1482,17 +1482,68 @@ fn reversals_by_target_and_idempotency_conflicts_follow_the_contract() -> std::i
     assert_eq!(code, 0, "{out}");
     let vid = field(&out, "vid").unwrap().to_string();
 
+    // An explanation is required before a correction can enter the journal.
+    // Every refusal leaves both the balances and the recorded frontier alone.
+    let before = report(&book, &["tb", "--period", "FY2026-P03", "--json"]);
+    for (reason, expected) in [
+        (None, "registered reason"),
+        (Some("WrongAcount"), "did you mean `WrongAccount`"),
+        (Some("0"), "not registered"),
+        (Some("65535"), "not registered"),
+        (Some("Other"), "requires a description"),
+    ] {
+        let mut args = vec!["reverse", vid.as_str(), "--json"];
+        if let Some(reason) = reason {
+            args.extend(["--reason", reason]);
+        }
+        let (code, out, err) = fa(Some(&book), &args);
+        assert_eq!(code, 3, "{args:?}\n{out}\n{err}");
+        assert_eq!(field(&out, "refusal_id"), Some("FA-REF-054"), "{out}");
+        assert!(out.contains(expected), "{expected}: {out}");
+    }
+    let missing_reason = write(
+        &dir,
+        "missing-reason.json",
+        &format!(
+            r#"{{"class":"Reversal","reverses":"{vid}","effective_date":"2026-03-16","idempotency_key":"missing-reason"}}"#
+        ),
+    );
+    let (code, out, err) = fa(
+        Some(&book),
+        &["post", "--intent", &missing_reason, "--json"],
+    );
+    assert_eq!(code, 3, "{out}\n{err}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-054"), "{out}");
+    assert!(
+        out.contains("WrongAccount") && out.contains("Duplicate"),
+        "{out}"
+    );
+    assert_eq!(
+        report(&book, &["tb", "--period", "FY2026-P03", "--json"]),
+        before,
+        "refused reasons must not publish anything"
+    );
+
     // Reverse by target: the CLI derives the side-swapped legs.
     let rev = write(
         &dir,
         "rev.json",
         &format!(
-            r#"{{"class":"Reversal","reverses":"{vid}","effective_date":"2026-03-16","description":"undo","idempotency_key":"rev-1"}}"#
+            r#"{{"class":"Reversal","reverses":"{vid}","reason":"DataEntryError","effective_date":"2026-03-16","description":"undo","idempotency_key":"rev-1"}}"#
         ),
     );
     let (code, out, err) = fa(Some(&book), &["post", "--intent", &rev, "--json"]);
     assert_eq!(code, 0, "{out}\n{err}");
     assert!(out.contains("\"event\":\"posted\""), "{out}");
+    let reversal_vid = field(&out, "vid").unwrap().to_string();
+    let (code, shown, err) = fa(Some(&book), &["entry", "show", &reversal_vid, "--json"]);
+    assert_eq!(code, 0, "{shown}\n{err}");
+    let shown = doc(&shown);
+    let lineage = arr(&shown, "supersedes");
+    assert_eq!(lineage.len(), 1);
+    assert_eq!(text(&lineage[0], "entry"), vid);
+    assert_eq!(int(&lineage[0], "reason_code"), Some(1));
+    assert_eq!(text(&lineage[0], "reason"), "DataEntryError");
     let (code, out, _) = fa(Some(&book), &["post", "--intent", &rev, "--json"]);
     assert_eq!(code, 0);
     assert!(out.contains("\"event\":\"recorded\""), "{out}");
@@ -1501,7 +1552,7 @@ fn reversals_by_target_and_idempotency_conflicts_follow_the_contract() -> std::i
         &dir,
         "rev2.json",
         &format!(
-            r#"{{"class":"Reversal","reverses":"{vid}","effective_date":"2026-03-17","idempotency_key":"rev-2"}}"#
+            r#"{{"class":"Reversal","reverses":"{vid}","reason":"WrongAmount","effective_date":"2026-03-17","idempotency_key":"rev-2"}}"#
         ),
     );
     let (code, out, _) = fa(Some(&book), &["post", "--intent", &rev2, "--json"]);
@@ -1541,6 +1592,67 @@ fn reversals_by_target_and_idempotency_conflicts_follow_the_contract() -> std::i
         out.contains("\"balanced\":true") && out.contains("\"net\":\"0.00 USD\""),
         "{out}"
     );
+
+    // The typed verb accepts the displayed E: handle, derives all legs,
+    // preserves the target's date by default, and retains its reason across
+    // a directory-book reopen and exact retry. Reversing a reversal is explicit.
+    let target = format!("E:{reversal_vid}");
+    let args = [
+        "reverse",
+        target.as_str(),
+        "--reason",
+        "WrongAccount",
+        "--json",
+    ];
+    let (code, out, err) = fa(Some(&book), &args);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert_eq!(field(&out, "event"), Some("reversed"));
+    assert_eq!(field(&out, "target"), Some(reversal_vid.as_str()));
+    assert_eq!(field(&out, "reason"), Some("WrongAccount"));
+    assert_eq!(field(&out, "reason_code"), Some("2"));
+    let typed_vid = field(&out, "vid").unwrap().to_string();
+    let digest = field(&out, "entry_digest").unwrap().to_string();
+    let (code, out, err) = fa(Some(&book), &args);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert_eq!(field(&out, "event"), Some("recorded"));
+    assert_eq!(field(&out, "entry_digest"), Some(digest.as_str()));
+    let (code, shown, err) = fa(Some(&book), &["entry", "show", &typed_vid, "--json"]);
+    assert_eq!(code, 0, "{shown}\n{err}");
+    let shown = doc(&shown);
+    assert_eq!(text(&shown, "effective_date"), "2026-03-16");
+    let lineage = arr(&shown, "supersedes");
+    assert_eq!(text(&lineage[0], "reason"), "WrongAccount");
+    assert_eq!(int(&lineage[0], "reason_code"), Some(2));
+    let (code, human, err) = fa(Some(&book), &["entry", "show", &typed_vid]);
+    assert_eq!(code, 0, "{human}\n{err}");
+    assert!(
+        human.contains("WrongAccount") && human.contains(&reversal_vid),
+        "{human}"
+    );
+    let (code, out, err) = fa(
+        Some(&book),
+        &["reverse", &reversal_vid, "--reason", "Duplicate", "--json"],
+    );
+    assert_eq!(
+        code, 6,
+        "a changed reason is not the same retry: {out}\n{err}"
+    );
+    let (code, out, err) = fa(
+        Some(&book),
+        &[
+            "reverse",
+            &typed_vid,
+            "--reason",
+            "Other",
+            "--description",
+            "Undo the correction after reviewing the source invoice",
+            "--effective",
+            "2026-03-20",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert_eq!(field(&out, "reason"), Some("Other"));
     Ok(())
 }
 
@@ -1842,7 +1954,7 @@ fn applications_settle_open_items_and_reversals_reopen_them() -> std::io::Result
         &dir,
         "rev-inv.json",
         &format!(
-            r#"{{"class":"Reversal","reverses":"{inv_vid}","effective_date":"2026-03-22","idempotency_key":"rev-inv"}}"#
+            r#"{{"class":"Reversal","reverses":"{inv_vid}","reason":"WrongAmount","effective_date":"2026-03-22","idempotency_key":"rev-inv"}}"#
         ),
     );
     let (code, out, _) = fa(Some(&book), &["post", "--intent", &rev_inv, "--json"]);
@@ -1854,7 +1966,7 @@ fn applications_settle_open_items_and_reversals_reopen_them() -> std::io::Result
         &dir,
         "rev-rcpt.json",
         &format!(
-            r#"{{"class":"Reversal","reverses":"{rcpt_vid}","effective_date":"2026-03-22","idempotency_key":"rev-rcpt"}}"#
+            r#"{{"class":"Reversal","reverses":"{rcpt_vid}","reason":"WrongAmount","effective_date":"2026-03-22","idempotency_key":"rev-rcpt"}}"#
         ),
     );
     let (code, out, err) = fa(Some(&book), &["post", "--intent", &rev_rcpt, "--json"]);
@@ -2248,7 +2360,7 @@ fn explain_balance_lists_every_leg_re_adds_to_the_cell_and_replays_its_history()
         "post",
         "rev.json",
         &format!(
-            r#"{{"class":"Reversal","reverses":"{extra}","effective_date":"2026-03-11","idempotency_key":"rev"}}"#
+            r#"{{"class":"Reversal","reverses":"{extra}","reason":"Duplicate","effective_date":"2026-03-11","idempotency_key":"rev"}}"#
         ),
     );
     let (hold, hold_at) = post(
@@ -2679,6 +2791,10 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(int(&checks[0], "lag_entries"), Some(0));
     let envelope = json::parse(&current).unwrap();
     assert!(arr(&envelope, "next_actions").is_empty());
+    assert_eq!(
+        run(true, &["reverse", &vid, "--reason", "WrongAccount"]).0,
+        0
+    );
     // A planned, approved lock (R4): `period_planned`, then `approved`.
     assert_eq!(run(true, &["period", "open", "FY2026-P04"]).0, 0);
     assert_eq!(run(true, &["period", "close", "FY2026-P04", "--yes"]).0, 0);

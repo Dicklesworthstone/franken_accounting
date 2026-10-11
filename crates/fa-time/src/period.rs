@@ -32,6 +32,22 @@ impl PeriodDef {
         day >= self.start && day < self.end
     }
 
+    /// Chronological fiscal order, distinct from definition enumeration.
+    /// Generation appends the Opening definition after normal periods, but
+    /// an opening at the same boundary precedes the normal posting period.
+    /// Shared year-end boundaries order Normal, Adjustment, then Closing;
+    /// multiple adjustment periods retain their registered ordinal order.
+    #[must_use]
+    pub fn chronological_key(&self) -> (DateDay, u8, i32, u16) {
+        let kind_order = match self.kind {
+            PeriodKind::Opening => 0,
+            PeriodKind::Normal | PeriodKind::Historical => 1,
+            PeriodKind::Adjustment => 2,
+            PeriodKind::Closing => 3,
+        };
+        (self.start, kind_order, self.fiscal_year, self.ordinal)
+    }
+
     /// Last civil day (inclusive).
     pub fn last_day(&self) -> DateDay {
         DateDay(self.end.0 - 1)
@@ -221,6 +237,24 @@ pub fn resolve_period<'a>(
 mod tests {
     use super::*;
     use crate::calendar::FiscalCalendar;
+
+    #[test]
+    fn chronological_order_places_opening_before_normal_and_adjustments_before_close() {
+        let calendar = FiscalCalendar::monthly("cal", 1, 2).unwrap();
+        let mut periods = calendar.periods_for_year(2026).unwrap();
+        periods.sort_by_key(PeriodDef::chronological_key);
+        let codes: Vec<&str> = periods.iter().map(|p| p.code.as_str()).collect();
+        let mut expected = vec!["FY2026-OPEN".to_string()];
+        expected.extend((1..=12).map(|ordinal| format!("FY2026-P{ordinal:02}")));
+        expected.extend(["FY2026-A1", "FY2026-A2", "FY2026-CLOSE"].map(str::to_string));
+        assert_eq!(
+            codes,
+            expected.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+        let next = calendar.periods_for_year(2027).unwrap();
+        let opening = next.iter().find(|p| p.kind == PeriodKind::Opening).unwrap();
+        assert!(periods.last().unwrap().chronological_key() < opening.chronological_key());
+    }
 
     /// fa-xwv's example: December 31 belongs to normal P12 by default, and to
     /// adjustment period A1 or the closing period only when named.

@@ -468,6 +468,58 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         "fa_post_post (same idempotency key) -> recorded; fa_read_show_entry == fa entry show --json",
     );
 
+    // The typed reversal is the same law-enforced correction as the CLI:
+    // missing and unknown reasons cannot post, and the persisted lineage
+    // records the exact registered name/code the caller selected.
+    let (is_error, text, _) = call_tool(&mut mcp, "fa_post_reverse", json!({"vid": vid}));
+    assert!(
+        is_error && text.contains("reason"),
+        "missing reason: {text}"
+    );
+    let (is_error, text, _) = call_tool(
+        &mut mcp,
+        "fa_post_reverse",
+        json!({"vid": vid, "reason": "WrongAcount"}),
+    );
+    assert!(is_error, "unregistered reason: {text}");
+    let e = structured_error(&text);
+    assert_eq!(e["refusal_id"], json!("FA-REF-054"), "{e}");
+    assert!(
+        e["fix_hint"].as_str().unwrap().contains("WrongAccount"),
+        "{e}"
+    );
+    let (is_error, text, _) = call_tool(
+        &mut mcp,
+        "fa_post_reverse",
+        json!({"vid": vid, "reason": "WrongAccount"}),
+    );
+    assert!(!is_error, "{text}");
+    let reversed: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(reversed["target"], json!(vid), "{reversed}");
+    assert_eq!(reversed["reason_code"], json!(2), "{reversed}");
+    assert_eq!(reversed["reason"], json!("WrongAccount"), "{reversed}");
+    let reversal_vid = reversed["vid"].as_str().unwrap();
+    let (is_error, text, _) =
+        call_tool(&mut mcp, "fa_read_show_entry", json!({"vid": reversal_vid}));
+    assert!(!is_error, "{text}");
+    assert_eq!(
+        text,
+        cli_data(&["entry", "show", reversal_vid, "--book", &b, "--json"])
+    );
+    let shown: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(shown["supersedes"][0]["reason"], json!("WrongAccount"));
+    assert_eq!(shown["supersedes"][0]["reason_code"], json!(2));
+    let (is_error, text, _) = call_tool(
+        &mut mcp,
+        "fa_post_reverse",
+        json!({"vid": vid, "reason": "WrongAccount"}),
+    );
+    assert!(!is_error, "retry: {text}");
+    let retried: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(retried["vid"], reversed["vid"]);
+    assert_eq!(retried["entry_digest"], reversed["entry_digest"]);
+    log("fa_post_reverse: reason refusals, exact retry and persisted lineage agree with the CLI");
+
     // A refusal from the dispatcher: structured, with the CLI's fix verbatim.
     let (is_error, text, _) = call_tool(
         &mut mcp,

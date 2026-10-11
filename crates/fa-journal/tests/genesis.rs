@@ -750,6 +750,203 @@ fn reversal_law_requires_a_witnessed_target_and_the_exact_side_swap() {
 }
 
 #[test]
+fn reversals_cannot_precede_the_target_period_but_may_use_an_earlier_day_in_it() {
+    let mut h = harness();
+    h.transition("FY2026-P04", PeriodTransition::Open, b"open-april-order")
+        .unwrap();
+    h.transition("FY2026-P05", PeriodTransition::Open, b"open-may-order")
+        .unwrap();
+    for (index, date) in ["2026-04-01", "2026-05-01"].into_iter().enumerate() {
+        let mut original = h.proposal(
+            h.rent_legs(700),
+            format!("ordered-original-{index}").as_bytes(),
+            EntryClass::ORIGINAL,
+        );
+        original.effective_date = DateDay::parse("2026-04-15").unwrap();
+        let target = h.post(h.request(original, &["post"])).unwrap().entry_ref();
+        let mut reversal =
+            h.reversal_of(target, 700, format!("ordered-reversal-{index}").as_bytes());
+        reversal.effective_date = DateDay::parse("2026-03-31").unwrap();
+        let head = h.db.frontier().unwrap();
+        let refusal = h.post(h.request(reversal.clone(), &["post"])).unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-053", exit::REFUSAL));
+        assert!(refusal.fix.contains("FY2026-P04"));
+        assert_eq!(
+            h.db.frontier().unwrap(),
+            head,
+            "an invalid reversal wrote nothing"
+        );
+        reversal.effective_date = DateDay::parse(date).unwrap();
+        let posted = h.post(h.request(reversal, &["post"])).unwrap();
+        assert!(matches!(posted, Posted::Committed { .. }), "{date}");
+    }
+}
+
+#[test]
+fn special_period_classes_and_reversal_order_are_enforced_even_on_shared_dates() {
+    let mut h = harness();
+    h.transition("FY2026-P12", PeriodTransition::Open, b"open-december-order")
+        .unwrap();
+    for (code, day) in [
+        ("FY2026-OPEN", "2026-01-01"),
+        ("FY2026-A1", "2026-12-31"),
+        ("FY2026-CLOSE", "2026-12-31"),
+    ] {
+        h.transition(code, PeriodTransition::Open, code.as_bytes())
+            .unwrap();
+        for class in [EntryClass::ORIGINAL, EntryClass::PENDING] {
+            let key = format!("special-{code}-{}", class.0);
+            let mut proposal = if class == EntryClass::PENDING {
+                h.pending(h.rent_legs(50), key.as_bytes())
+            } else {
+                h.proposal(h.rent_legs(50), key.as_bytes(), class)
+            };
+            proposal.effective_date = DateDay::parse(day).unwrap();
+            proposal.effective_period = Some(fa_model::PeriodRef {
+                calendar: "cal".into(),
+                code: code.into(),
+            });
+            let head = h.db.frontier().unwrap();
+            let refusal = h.post(h.request(proposal, &["post"])).unwrap_err();
+            assert_eq!((refusal.code, refusal.exit), ("FA-REF-010", exit::SAFETY));
+            assert!(refusal.message.contains(code));
+            assert_eq!(h.db.frontier().unwrap(), head);
+        }
+        let mut adjusting = h.proposal(
+            h.rent_legs(50),
+            format!("adjust-{code}").as_bytes(),
+            EntryClass::ADJUSTING,
+        );
+        adjusting.effective_date = DateDay::parse(day).unwrap();
+        adjusting.effective_period = Some(fa_model::PeriodRef {
+            calendar: "cal".into(),
+            code: code.into(),
+        });
+        let original = h.post(h.request(adjusting, &["post"])).unwrap().entry_ref();
+        if code == "FY2026-OPEN" {
+            h.transition("FY2026-P01", PeriodTransition::Open, b"open-january-order")
+                .unwrap();
+            let mut reversal = h.reversal_of(original, 50, b"reverse-opening-in-normal");
+            reversal.effective_date = DateDay::parse("2026-01-02").unwrap();
+            assert!(matches!(
+                h.post(h.request(reversal, &["post"])).unwrap(),
+                Posted::Committed { .. }
+            ));
+        }
+        if code == "FY2026-A1" {
+            // P12 and A1 share December 31; calendar ordinal, not date,
+            // prevents the reversal from predating the adjusting entry.
+            let mut reversal = h.reversal_of(original, 50, b"shared-day-reversal");
+            reversal.effective_date = DateDay::parse("2026-12-31").unwrap();
+            let head = h.db.frontier().unwrap();
+            let refusal = h.post(h.request(reversal.clone(), &["post"])).unwrap_err();
+            assert_eq!(refusal.code, "FA-REF-053");
+            assert_eq!(h.db.frontier().unwrap(), head);
+            reversal.effective_period = Some(fa_model::PeriodRef {
+                calendar: "cal".into(),
+                code: code.into(),
+            });
+            assert_eq!(
+                h.post(h.request(reversal.clone(), &["post"]))
+                    .unwrap_err()
+                    .code,
+                "FA-REF-010"
+            );
+            let ctx = h.ctx();
+            h.runtime
+                .block_on(create_periods(&mut h.db, &ctx, &h.book, 2027))
+                .unwrap();
+            h.transition(
+                "FY2027-P01",
+                PeriodTransition::Open,
+                b"open-next-year-order",
+            )
+            .unwrap();
+            reversal.effective_date = DateDay::parse("2027-01-01").unwrap();
+            reversal.effective_period = None;
+            assert!(matches!(
+                h.post(h.request(reversal, &["post"])).unwrap(),
+                Posted::Committed { .. }
+            ));
+        }
+    }
+}
+
+#[test]
+fn corrections_require_registered_reasons_and_other_requires_particulars() {
+    let mut h = harness();
+    let original = h
+        .post(h.request(
+            h.proposal(h.rent_legs(80), b"reason-original", EntryClass::ORIGINAL),
+            &["post"],
+        ))
+        .unwrap()
+        .entry_ref();
+    let before = read_entry(&h.db, original.vid).unwrap().unwrap();
+    let mut reversal = h.reversal_of(original, 80, b"reason-reversal");
+    for reason in [0, u16::MAX] {
+        reversal.supersession[0].reason_code = reason;
+        let head = h.db.frontier().unwrap();
+        let refusal = h.post(h.request(reversal.clone(), &["post"])).unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-054", exit::REFUSAL));
+        assert!(refusal.fix.contains("WrongAccount"));
+        assert_eq!(h.db.frontier().unwrap(), head);
+    }
+    reversal.supersession[0].reason_code = 11;
+    reversal.description = Erasable::seal(
+        &" \t\n".to_string(),
+        None,
+        &h.book.seal_key,
+        [11; 32],
+        [12; 24],
+    );
+    assert_eq!(
+        h.post(h.request(reversal.clone(), &["post"]))
+            .unwrap_err()
+            .code,
+        "FA-REF-054"
+    );
+    reversal.description = Erasable::seal(
+        &"Customer withdrew the order before fulfilment".to_string(),
+        None,
+        &h.book.seal_key,
+        [13; 32],
+        [14; 24],
+    );
+    let posted = h.post(h.request(reversal.clone(), &["post"])).unwrap();
+    assert_eq!(
+        read_entry(&h.db, posted.entry_ref().vid)
+            .unwrap()
+            .unwrap()
+            .0
+            .proposal
+            .supersession[0]
+            .reason_code,
+        11
+    );
+    assert_eq!(
+        read_entry(&h.db, original.vid).unwrap().unwrap(),
+        before,
+        "the original is immutable"
+    );
+    let head = h.db.frontier().unwrap();
+    assert!(matches!(
+        h.post(h.request(reversal.clone(), &["post"])).unwrap(),
+        Posted::AlreadyRecorded { .. }
+    ));
+    reversal.supersession[0].reason_code = 2;
+    assert_eq!(
+        h.post(h.request(reversal, &["post"])).unwrap_err().code,
+        "FA-REF-052"
+    );
+    assert_eq!(
+        h.db.frontier().unwrap(),
+        head,
+        "retry and changed reason wrote nothing"
+    );
+}
+
+#[test]
 fn a_period_never_opened_refuses_with_the_open_fix() {
     let mut h = harness();
     let mut proposal = h.proposal(h.rent_legs(100), b"apr-1", EntryClass::ORIGINAL);

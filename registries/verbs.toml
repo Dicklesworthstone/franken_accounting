@@ -128,8 +128,20 @@ flags = ["--intent", "--grant", "--evidence", "--balancing"]
 switches = []
 events = ["posted", "recorded"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["post --intent <file.json|-> [--grant <op>]... [--evidence <oid>]... [--balancing 0|1] [--as <principal>]   (--balancing: that leg moves at most what its account's limit admits; the event says what was requested and what moved)"]
+usage = ["post --intent <file.json|-> [--grant <op>]... [--evidence <oid>]... [--balancing 0|1] [--as <principal>]   (--balancing: that leg moves at most what its account's limit admits; the event says what was requested and what moved)", "A Reversal intent names reverses and a registered reason (for example, \"reason\": \"WrongAccount\"); its legs come from the target."]
 example = "fa post --intent entry.json --book ./books/myco --json"
+
+[[verb]]
+name = "reverse"
+summary = "Post the exact reversal of an entry with a registered reason, preserving the original entry and its lineage."
+writes = true
+subcommands = []
+flags = ["--reason", "--effective", "--period", "--key", "--description", "--grant", "--evidence"]
+switches = []
+events = ["reversed", "recorded"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["reverse <vid|E:vid> --reason <name|code> [--effective YYYY-MM-DD] [--period <code>] [--key K] [--description <text>] [--grant <op>]... [--evidence <oid>]...", "The default effective date and period are the target's; --effective never chooses an open period automatically. The default key is reverse:<target vid>. Repeating the same request returns the original outcome; changing a committed reversal is refused.", "Reasons are registered in reason_codes.toml (scope supersession): WrongAccount, WrongPeriod, WrongAmount, Duplicate, and the other listed codes. Other requires --description. A reason records the preparer's statement, not its truth."]
+example = "fa reverse <vid> --reason WrongAccount --book ./books/myco --json"
 
 [[verb]]
 name = "reserve"
@@ -337,6 +349,11 @@ condition = "grant:post_closed"
 safe = "leave the intent unposted; keep its true effective date and obtain the authorization or the admissible adjustment class the period-law refusal names (`fa period list --json` shows each period's state)"
 
 [[dangerous]]
+verb = "reverse"
+condition = "grant:post_closed"
+safe = "keep the intended reversal date and obtain the authority the period law requires; `fa period list --json` shows the target period's state"
+
+[[dangerous]]
 verb = "resolve"
 condition = "disposition:voids"
 safe = "resolve the hold with disposition `posts` to post what it held; a void releases it for good"
@@ -533,6 +550,12 @@ doc = "An entry committed; `recorded_at` is its CommitSeq, assigned by the journ
 fields = ["class:string", "vid:hex", "entry_digest:hex", "recorded_at:seq", "period:string", "requested:amount?", "moved:amount?"]
 
 [[event]]
+name = "reversed"
+book = true
+doc = "A typed reversal committed, negating the target's posted legs exactly and recording the preparer's registered reason. The original remains immutable; an exact retry emits recorded."
+fields = ["vid:hex", "entry_digest:hex", "recorded_at:seq", "period:string", "target:hex", "reason_code:int", "reason:string"]
+
+[[event]]
 name = "recorded"
 book = true
 doc = "The same idempotency key was already recorded with the same content; nothing new was written. For a balancing post the identity is the request (key, requested amount, leg): `requested`/`moved` are the recorded ones, whatever availability is now; null otherwise."
@@ -596,7 +619,7 @@ fields = ["period:string", "from:seq", "through:seq", "recorded_at:seq?", "entri
 name = "entry"
 book = true
 doc = "One committed entry; when `found` is false every other field but `vid` is null."
-fields = ["found:bool", "vid:string", "class:string?", "effective_date:date?", "recorded_at:seq?", "entry_digest:hex?", "proposal_digest:hex?", "approvals:int?", "legs:[entry_leg]?"]
+fields = ["found:bool", "vid:string", "class:string?", "effective_date:date?", "recorded_at:seq?", "entry_digest:hex?", "proposal_digest:hex?", "approvals:int?", "legs:[entry_leg]?", "supersedes:[lineage]?"]
 
 [[event]]
 name = "balance_explained"
@@ -755,8 +778,8 @@ fields = ["entry:hex", "entry_digest:hex", "class:string", "effective_date:date"
 
 [[shape]]
 name = "lineage"
-doc = "What an entry supersedes, and how."
-fields = ["entry:hex", "kind:string", "reason_code:int"]
+doc = "What an entry supersedes, how, and the preparer's stated reason. reason is null for a historical code outside the current registry; the recorded numeric code is always preserved."
+fields = ["entry:hex", "kind:string", "reason_code:int", "reason:string?"]
 
 [[shape]]
 name = "evidence_head"
@@ -1009,6 +1032,16 @@ stdin_via = "--intent"
 required = []
 dont = ["Don't balance an entry by inventing a leg: report the imbalance; a residual leg exists only where a law names the rounding account.", "Don't pick an effective date to dodge a closed period: the matrix decides; the refusal names the admissible class and capability.", "Don't \"fix\" a posted entry: post a Reversal (`reverses`), Replacement or Reclassification with a reason; the original stays.", "Don't fabricate evidence: cite a document recorded with `fa_evidence_import_document`, or make an explicit manual assertion."]
 mistakes = ["A JSON number in `amount` (write \"1500.00 USD\").", "An instant (\"2026-03-15T00:00:00Z\") in `effective_date` (write the civil date \"2026-03-15\").", "A placeholder such as \"<document oid>\" in `evidence`.", "Posting to a summary account (`leaf: false` in `fa_chart_list_accounts`).", "Re-submitting the same intent with a different `effective_date` after a period-law refusal.", "Expecting a second post with the same `idempotency_key` to post again: it returns the recorded outcome (`recorded`)."]
+
+[[mcp.tool]]
+cluster = "fa.post"
+name = "reverse"
+verb = "reverse"
+subcommands = []
+positionals = ["vid"]
+required = ["vid", "--reason"]
+dont = ["Don't re-enter the target's amounts: the reversal derives its exact opposite legs and preserves its evidence lineage.", "Don't pick an effective date to dodge the period law. The default is the target's date; a supplied date must be in the same or a later admissible period.", "Don't use Other without a description of the stated reason; a reason code does not attest that the explanation is true."]
+mistakes = ["Omitting reason or using an unregistered name (for example, use WrongAccount, WrongAmount or Duplicate).", "Trying to reverse an already reversed entry with a different reason: cite the existing reversal or explicitly reverse that reversal."]
 
 [[mcp.tool]]
 cluster = "fa.post"

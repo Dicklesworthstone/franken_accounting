@@ -108,6 +108,10 @@ pub mod code {
     pub const REVERSAL_SHAPE: &str = "FA-REF-051";
     /// The target is already reversed by another entry.
     pub const ALREADY_REVERSED: &str = "FA-REF-052";
+    /// A reversal cannot precede its target in the fiscal calendar's order.
+    pub const REVERSAL_PERIOD: &str = "FA-REF-053";
+    /// Corrections require a nonzero reason registered for supersession.
+    pub const SUPERSESSION_REASON: &str = "FA-REF-054";
     /// The named pending entry is missing, is not a `Pending`, or its handle digest mismatches.
     pub const RESOLUTION_TARGET: &str = "FA-REF-060";
     /// The posted sub-vector is not drawn leg-by-leg from the pending entry.

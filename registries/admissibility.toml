@@ -26,9 +26,30 @@
 # transitioning (`transition_refusal`); legacy closing entries land there.
 # Gate: an undecided cell fails CI; the Historical kind must have a row; the
 # pre_opening table must exist exactly once.
+# Live special periods additionally restrict posting classes under §7.3.
+# These rows do not block period transitions; the pre_opening rule above
+# still narrows legacy special periods to Migration alone.
 # Control classes are not period-scoped.
 
 schema_version = 1
+
+[[special_period_classes]]
+kind = "Opening"
+admits = ["Adjusting", "Closing", "Elimination", "Revision", "Restatement", "Migration"]
+refusal = "FA-REF-010"
+cite = "plan §7.3 (only registered classes target special periods)"
+
+[[special_period_classes]]
+kind = "Adjustment"
+admits = ["Adjusting", "Closing", "Elimination", "Revision", "Restatement", "Migration"]
+refusal = "FA-REF-010"
+cite = "plan §7.3 (only registered classes target special periods)"
+
+[[special_period_classes]]
+kind = "Closing"
+admits = ["Adjusting", "Closing", "Elimination", "Revision", "Restatement", "Migration"]
+refusal = "FA-REF-010"
+cite = "plan §7.3 (only registered classes target special periods)"
 
 # ---- Original -------------------------------------------------------------
 [[cell]]

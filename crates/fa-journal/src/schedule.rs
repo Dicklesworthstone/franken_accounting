@@ -750,9 +750,7 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
         supersession: vec![Supersession {
             target: schedule.target,
             kind: SupersessionKind::Reverses,
-            // No reason-code registry yet (plan §8.2 reason_codes.toml);
-            // 0 is "unspecified": the schedule is the reason.
-            reason_code: 0,
+            reason_code: fa_registry::reason_codes::SCHEDULED_ACCRUAL_REVERSAL,
         }],
         pending: None,
         external_ids: Vec::new(),
