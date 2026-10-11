@@ -29,6 +29,7 @@ pub mod limit;
 pub mod period;
 pub mod policy;
 pub mod post;
+pub mod redaction;
 pub mod refusal;
 pub mod rows;
 pub mod schedule;
@@ -70,6 +71,7 @@ pub use policy::{
     security_policy_epoch,
 };
 pub use post::{Capability, PostRequest, Posted, post};
+pub use redaction::{RedactedView, ViewChunk};
 pub use refusal::{KernelError, Refusal, exit};
 pub use rows::{AccountRow, PeriodRow};
 pub use schedule::{
