@@ -3691,6 +3691,24 @@ impl Harness {
         fa_journal::evidence::erasure_cut(&self.db, &self.book, cap, subject).expect("kernel")
     }
 
+    /// Revoke `revoked` (plan §14.2) under the issuer's capability.
+    fn revoke(&mut self, revoked: &Capability, n: u8) {
+        let ctx = self.ctx();
+        let req = RevocationRequest {
+            capability: Capability::embedded(PRINCIPAL, &["issue_capability"]).expect("issue"),
+            revoked: revoked.commitment().expect("commitment"),
+            effective_date: DateDay::from_ymd(2026, 3, 15).unwrap(),
+            idempotency_key: vec![b'r', n],
+            description: self.statement("revocation", n),
+        };
+        let db = &mut self.db;
+        let book = &self.book;
+        self.runtime
+            .block_on(async move { revoke_capability(db, &ctx, book, req).await })
+            .expect("kernel")
+            .expect("revoked");
+    }
+
     fn holds_on(&self, subject: VId) -> Vec<VId> {
         active_legal_holds(&self.db, self.book.book_id, subject).expect("kernel")
     }
@@ -3994,6 +4012,24 @@ fn a_legal_hold_pins_its_subjects_until_a_second_human_approves_its_release() {
     let r = h.release_hold(&forged, &[approval]).unwrap_err();
     assert_eq!(r.code, "FA-REF-118", "{r}");
     assert_eq!(h.holds_on(entry), vec![second.hold]);
+
+    // A revoked eraser is refused at the head (023) before the subject is
+    // read, so it learns neither the hold nor the absence; before its
+    // revocation the same token saw the hold, and a live token still does
+    // (fa-bcd, CobaltGull 3429).
+    let gone = Capability::embedded(VId(12), &["erase"]).expect("erase");
+    assert_eq!(h.erase(&gone, entry).code, "FA-REF-117");
+    h.revoke(&gone, 68);
+    for subject in [entry, free] {
+        let r = h.erase(&gone, subject);
+        eprintln!("txf hold: a revoked eraser -> {} {}", r.code, r.message);
+        assert_eq!(r.code, "FA-REF-023", "{r}");
+        assert!(
+            !r.message.contains(&format!("{:032x}", second.hold.0)),
+            "{r}"
+        );
+    }
+    assert_eq!(h.erase(&eraser, entry).code, "FA-REF-117");
 }
 
 /// Ruling 3251: a hold pins the record, never the reservation. A Pending
