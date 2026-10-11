@@ -34,7 +34,7 @@ source = "git+https://github.com/Dicklesworthstone/franken_networkx"
 rev = "9d710b1c33e99412c94de7fa4de2f7ce4954110f"
 version = "0.2.0 at that rev"
 crates = ["fnx-classes", "fnx-algorithms"]
-role = "forensic graph algorithms (Lantern); not yet linked — enters with fa-lantern"
+role = "graph algorithms linked transitively through fgdb -> fgdb-prism; direct forensic use in Lantern is planned"
 pinned_by = "frankengraphdb crates/fgdb-prism/Cargo.toml (same rev)"
 
 [[foundation]]
