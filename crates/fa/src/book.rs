@@ -1255,16 +1255,14 @@ mod tests {
 
         // Before the book's genesis there is no book to replay (WhiteCreek
         // 3500): the facade path is refused like the kernel's.
-        let Err(early) = book
+        let early = book
             .replay_into_scratch(
                 Some(CommitSeq(0)),
                 BookKeys::for_development(0x5d),
                 Entropy::deterministic(0x5d),
             )
             .expect("kernel")
-        else {
-            panic!("a pre-genesis prefix is refused");
-        };
+            .expect_err("a pre-genesis prefix is refused");
         assert_eq!((early.code, early.exit), ("FA-REF-100", 2), "{early}");
 
         let (mut scratch, map) = book
