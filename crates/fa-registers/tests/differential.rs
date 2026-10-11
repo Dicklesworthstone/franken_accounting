@@ -628,6 +628,152 @@ fn incremental_registers_consume_every_expiry_in_a_single_commit() {
     assert!(maintain(&mut k, &periods[2]).fold.pending.is_empty());
 }
 
+/// Public caller claims must agree with the independent model before any
+/// journal effect, including when the same identity is retried without them.
+#[test]
+fn public_post_provenance_and_envelope_claims_match_the_independent_oracle() {
+    use fa_reference::{ClaimedBaseTotals, ClaimedOrigin, PostClaims};
+
+    #[derive(Clone, Copy)]
+    enum Claim {
+        Native,
+        Certificate,
+        BaseTotals,
+        Rule,
+        Sweep,
+        Schedule,
+        Control,
+    }
+    let cases = [
+        Claim::Native,
+        Claim::Certificate,
+        Claim::BaseTotals,
+        Claim::Rule,
+        Claim::Sweep,
+        Claim::Schedule,
+        Claim::Control,
+    ];
+    let mut observed = [0; 7];
+    for seed in [0x51a9_u64, 0xb42d] {
+        let (mut k, mut oracle, periods) = setup();
+        open_period(&mut k, &mut oracle, &periods[2], 1);
+        let usd = k.book.units.lookup("USD").unwrap();
+        let date = DateDay::from_ymd(2026, 3, 15).unwrap();
+        let mut rng = Rng(seed);
+        for (kind, (case, count)) in cases.into_iter().zip(observed.iter_mut()).enumerate() {
+            *count += 1;
+            let amount = i128::from(rng.below(10_000) + 1);
+            let intent =
+                maintenance_intent("Original", date, amount, &format!("claims-{seed}-{kind}"));
+            let mut request = kernel_request(&k, &intent, usd, &[]);
+            let mut claims = PostClaims::default();
+            let oid = [rng.below(256) as u8; 32];
+            match case {
+                Claim::Native => {}
+                Claim::Certificate => {
+                    request.plan_certificate = Some(Oid(oid));
+                    claims.plan_certificate = Some(oid);
+                }
+                Claim::BaseTotals => {
+                    request.proposal.base_totals = Some(fa_model::BaseTotals {
+                        unit_id: usd.0,
+                        debits: amount,
+                        credits: amount,
+                        fx_law_oid: Oid(oid),
+                        rate_doc_oids: vec![Oid([0x91; 32])],
+                        residual: None,
+                    });
+                    claims.base_totals = Some(ClaimedBaseTotals {
+                        unit: usd.0,
+                        debits: amount,
+                        credits: amount,
+                    });
+                }
+                Claim::Rule => {
+                    request.proposal.origin = EntryOrigin::Rule {
+                        rule_version_oid: Oid(oid),
+                        event_ref: VId(u128::from(rng.next())),
+                        inputs_digest: [0x92; 32],
+                    };
+                    claims.origin = ClaimedOrigin::Rule;
+                }
+                Claim::Sweep => {
+                    request.proposal.origin = EntryOrigin::Sweep {
+                        sweep_kind: 1,
+                        tick_evidence_oid: Oid(oid),
+                    };
+                    claims.origin = ClaimedOrigin::Sweep;
+                }
+                Claim::Schedule => {
+                    request.proposal.origin = EntryOrigin::Schedule {
+                        schedule_ref: VId(u128::from(rng.next())),
+                        trigger: fa_model::ScheduleTrigger::Sweep {
+                            tick_ref: VId(u128::from(rng.next())),
+                        },
+                    };
+                    claims.origin = ClaimedOrigin::Schedule;
+                }
+                Claim::Control => {
+                    request.proposal.origin = EntryOrigin::Control {
+                        control_kind: fa_model::ControlKind::TIME_TICK,
+                        spec_body_digest: oid,
+                    };
+                    claims.origin = ClaimedOrigin::Control;
+                }
+            }
+            request.proposal.validate().expect("one encodable claim");
+            let before = k.db.frontier().unwrap();
+            let known = oracle.known();
+            let ctx = k.ctx();
+            let actual = k
+                .runtime
+                .block_on(post(&mut k.db, &ctx, &k.book, request))
+                .expect("kernel");
+            let expected = oracle.post_with_claims(&intent, &claims);
+            if kind == 0 {
+                assert!(matches!(actual, Ok(Posted::Committed { .. })), "{actual:?}");
+                assert!(matches!(expected, Verdict::Posted { .. }), "{expected:?}");
+            } else {
+                let refusal = actual.expect_err("unverified public claim");
+                assert_eq!(
+                    refusal.code, "FA-REF-102",
+                    "seed={seed} kind={kind}: {refusal}"
+                );
+                assert_eq!(
+                    expected,
+                    Verdict::Refused {
+                        code: fa_reference::code::CLASS_NOT_IMPLEMENTED
+                    }
+                );
+                assert_eq!(k.db.frontier().unwrap(), before, "refusal changes no state");
+                assert_eq!(oracle.known(), known, "oracle refusal changes no state");
+            }
+            // The same identity is usable after a refusal, and an ordinary
+            // successful request is still idempotent in both implementations.
+            let native = kernel_post(&mut k, &intent, usd, &[]).unwrap();
+            let model_native = oracle.post(&intent);
+            if kind == 0 {
+                assert!(matches!(native, Posted::AlreadyRecorded { .. }));
+                assert!(matches!(model_native, Verdict::Recorded { .. }));
+            } else {
+                assert!(matches!(native, Posted::Committed { .. }));
+                assert!(matches!(model_native, Verdict::Posted { .. }));
+            }
+            assert!(matches!(
+                kernel_post(&mut k, &intent, usd, &[]).unwrap(),
+                Posted::AlreadyRecorded { .. }
+            ));
+            assert!(matches!(oracle.post(&intent), Verdict::Recorded { .. }));
+            let maintained = maintain(&mut k, &periods[2]);
+            maintained_matches_oracle(&maintained, &oracle, k.book.book_id);
+        }
+    }
+    assert_eq!(
+        observed, [2; 7],
+        "every claim and the native control ran for both seeds"
+    );
+}
+
 /// xorshift64*: deterministic, dependency-free.
 struct Rng(u64);
 impl Rng {
