@@ -503,6 +503,48 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
         }
         _ => None,
     };
+    // Provenance and plan references are claims, not caller-selected labels.
+    // The public path admits authored intents and the migration path checked
+    // above. System entries are minted by their own internal constructors;
+    // Canon and verified dry-run certificates have not shipped yet. Refuse
+    // these fields before the first storage observation, including on retry.
+    if req.plan_certificate.is_some() {
+        return Ok(Err(Refusal::new(
+            code::CLASS_NOT_IMPLEMENTED,
+            exit::REFUSAL,
+            "plan_certificate names an unverified dry-run certificate",
+            "Appendix A Entry envelope; FA-INV-05; fa-we7",
+            "omit plan_certificate until the plan-certificate verifier is available (fa-we7)",
+        )));
+    }
+    let unsupported_origin = match &proposal.origin {
+        EntryOrigin::Intent { .. } | EntryOrigin::Migration { .. } => None,
+        EntryOrigin::Rule { .. } => Some((
+            "Rule",
+            "leave the rule-derived entry unposted until Canon verifies its rule, event and inputs (fa-c34)",
+        )),
+        EntryOrigin::Sweep { .. } => Some((
+            "Sweep",
+            "run the kernel expiry sweep under a committed tick; only that sweep may mint Sweep provenance",
+        )),
+        EntryOrigin::Schedule { .. } => Some((
+            "Schedule",
+            "register the scheduled effect and let the kernel scheduler mint it from its trigger",
+        )),
+        EntryOrigin::Control { .. } => Some((
+            "Control",
+            "use the typed control operation; public post cannot mint a control origin",
+        )),
+    };
+    if let Some((origin, fix)) = unsupported_origin {
+        return Ok(Err(Refusal::new(
+            code::CLASS_NOT_IMPLEMENTED,
+            exit::REFUSAL,
+            format!("entry.origin.{origin} cannot be supplied through public post"),
+            "Appendix A EntryOrigin; FA-INV-05 (registered origin)",
+            fix,
+        )));
+    }
     // 1c. Two-phase shape (plan §5.4). `validate` already fixed the arity;
     //     `Expires` is the system's void at timeout — the expiry sweep mints
     //     it under a committed tick, so a caller never posts one.

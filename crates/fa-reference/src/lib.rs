@@ -299,6 +299,38 @@ pub struct Settle {
     pub mantissa: i128,
 }
 
+/// Provenance asserted by a caller of the public posting path. Migration
+/// provenance is modelled by [`Oracle::post_migration`] and its verified run.
+/// The remaining system origins may only be minted internally.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ClaimedOrigin {
+    #[default]
+    Intent,
+    Rule,
+    Control,
+    Sweep,
+    Schedule,
+}
+
+/// A caller's unverified functional-currency aggregate. The model need only
+/// represent its unit and totals: no supplied law or rate can authorize it
+/// before the FX admission law exists.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaimedBaseTotals {
+    pub unit: u32,
+    pub debits: i128,
+    pub credits: i128,
+}
+
+/// Claims outside the reference model's ordinary authored intent. These are
+/// plain model values, independent of production payload and envelope types.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PostClaims {
+    pub origin: ClaimedOrigin,
+    pub plan_certificate: Option<[u8; 32]>,
+    pub base_totals: Option<ClaimedBaseTotals>,
+}
+
 /// A Resolution's target and disposition (plan §5.4): `posts = Some(ordinals)`
 /// posts `Intent.legs` as a sub-vector drawn from those pending legs;
 /// `posts = None` voids (releases) the whole hold.
@@ -1033,7 +1065,13 @@ impl Oracle {
     }
 
     pub fn post(&mut self, intent: &Intent) -> Verdict {
-        let v = self.post_inner(intent, None, None, None, None);
+        self.post_with_claims(intent, &PostClaims::default())
+    }
+
+    /// Post a caller's intent and envelope claims through the same model law.
+    /// Refusing a claim does not consume an idempotency key or move a balance.
+    pub fn post_with_claims(&mut self, intent: &Intent, claims: &PostClaims) -> Verdict {
+        let v = self.post_inner(intent, None, None, None, None, claims);
         // A manual Reversal of a scheduled target cancels the schedule by
         // lineage (plan §7.6): it can never fire.
         if matches!(v, Verdict::Posted { .. })
@@ -1048,7 +1086,14 @@ impl Oracle {
     /// An Adjusting entry that schedules its own reversal on `reverse_on`
     /// (plan §7.6, Appendix B `Accrue`/`Defer`).
     pub fn post_scheduled(&mut self, intent: &Intent, reverse_on: DateDay) -> Verdict {
-        self.post_inner(intent, None, None, Some(reverse_on), None)
+        self.post_inner(
+            intent,
+            None,
+            None,
+            Some(reverse_on),
+            None,
+            &PostClaims::default(),
+        )
     }
 
     /// The schedule of `target`, if it scheduled its reversal.
@@ -1100,7 +1145,7 @@ impl Oracle {
             resolves: None,
             settles: Vec::new(),
         };
-        match self.post_inner(&intent, None, None, None, None) {
+        match self.post_inner(&intent, None, None, None, None, &PostClaims::default()) {
             Verdict::Posted { index, .. } => {
                 if let Some((_, content)) = self.reversed.get_mut(&target) {
                     content.by_sweep = true;
@@ -1211,7 +1256,14 @@ impl Oracle {
                 code: code::STRUCTURE,
             };
         }
-        self.post_inner(intent, None, Some(timeout_ns), None, None)
+        self.post_inner(
+            intent,
+            None,
+            Some(timeout_ns),
+            None,
+            None,
+            &PostClaims::default(),
+        )
     }
 
     /// A timed hold's deadline.
@@ -1345,7 +1397,7 @@ impl Oracle {
                 code: code::BALANCING_SHAPE,
             };
         }
-        self.post_inner(intent, Some(leg), None, None, None)
+        self.post_inner(intent, Some(leg), None, None, None, &PostClaims::default())
     }
 
     fn post_inner(
@@ -1355,6 +1407,7 @@ impl Oracle {
         timeout: Option<u64>,
         auto_reverse: Option<DateDay>,
         run: Option<usize>,
+        claims: &PostClaims,
     ) -> Verdict {
         // 1. Structure.
         let Some(class) = self.classes.by_name(&intent.class) else {
@@ -1404,6 +1457,16 @@ impl Oracle {
         if (intent.class == "Migration") != run.is_some() {
             return Verdict::Refused {
                 code: code::MIGRATION_OUTSIDE_RUN,
+            };
+        }
+        // Unverified caller claims never become journal authority. System
+        // minting and checked migration use their separate model entry points.
+        if claims.plan_certificate.is_some()
+            || claims.origin != ClaimedOrigin::Intent
+            || claims.base_totals.is_some()
+        {
+            return Verdict::Refused {
+                code: code::CLASS_NOT_IMPLEMENTED,
             };
         }
         if is_reversal && intent.reverses.is_none() {
@@ -2223,7 +2286,7 @@ impl Oracle {
 
     /// Post a chunk into `run` (a `Migration` entry naming it).
     pub fn post_migration(&mut self, run: usize, intent: &Intent) -> Verdict {
-        self.post_inner(intent, None, None, None, Some(run))
+        self.post_inner(intent, None, None, None, Some(run), &PostClaims::default())
     }
 
     /// Finalize `run`, planned over `planned_chunks` chunks.

@@ -1392,6 +1392,89 @@ fn unchecked_base_totals_are_refused_before_publication() {
 }
 
 #[test]
+fn unverified_plan_and_origin_claims_are_refused_without_consuming_identity() {
+    let mut h = harness();
+    let frontier = h.db.frontier().unwrap();
+    let native = h.proposal(
+        h.rent_legs(10),
+        b"unverified-provenance",
+        EntryClass::ORIGINAL,
+    );
+    let origins = [
+        (
+            "Rule",
+            EntryOrigin::Rule {
+                rule_version_oid: Oid([0x71; 32]),
+                event_ref: VId(0x72),
+                inputs_digest: [0x73; 32],
+            },
+        ),
+        (
+            "Sweep",
+            EntryOrigin::Sweep {
+                sweep_kind: 1,
+                tick_evidence_oid: Oid([0x74; 32]),
+            },
+        ),
+        (
+            "Schedule",
+            EntryOrigin::Schedule {
+                schedule_ref: VId(0x75),
+                trigger: fa_model::ScheduleTrigger::Sweep {
+                    tick_ref: VId(0x76),
+                },
+            },
+        ),
+        (
+            "Control",
+            EntryOrigin::Control {
+                control_kind: fa_model::ControlKind::TIME_TICK,
+                spec_body_digest: [0x77; 32],
+            },
+        ),
+    ];
+    for (name, origin) in origins {
+        let mut proposal = native.clone();
+        proposal.origin = origin;
+        proposal
+            .validate()
+            .expect("the claim is structurally encodable");
+        let refusal = h.post(h.request(proposal, &["post"])).unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-102", exit::REFUSAL));
+        assert!(
+            refusal.message.contains(&format!("entry.origin.{name}")),
+            "{refusal}"
+        );
+        assert!(refusal.cite.contains("FA-INV-05"), "{refusal}");
+        assert!(!refusal.fix.is_empty(), "{refusal}");
+        assert_eq!(h.db.frontier().unwrap(), frontier, "{name}: no publication");
+    }
+    let mut certified = h.request(native.clone(), &["post"]);
+    certified.plan_certificate = Some(Oid([0x78; 32]));
+    let refusal = h.post(certified).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-102", exit::REFUSAL));
+    assert!(refusal.message.contains("plan_certificate"), "{refusal}");
+    assert!(refusal.fix.contains("fa-we7"), "{refusal}");
+    assert_eq!(
+        h.db.frontier().unwrap(),
+        frontier,
+        "no unchecked certificate"
+    );
+
+    let accepted = h
+        .post(h.request(native.clone(), &["post"]))
+        .expect("authored intent");
+    let (entry_ref, _) = committed(&accepted).expect("identity was not consumed");
+    let (stored, _) = read_entry(&h.db, entry_ref.vid).unwrap().unwrap();
+    assert_eq!(stored.proposal, native);
+    assert_eq!(stored.plan_certificate, None);
+    assert!(matches!(
+        h.post(h.request(native, &["post"])).unwrap(),
+        Posted::AlreadyRecorded { .. }
+    ));
+}
+
+#[test]
 fn rich_leg_fields_without_a_law_are_refused_not_admitted() {
     let mut h = harness();
     let frontier = h.db.frontier().unwrap();
