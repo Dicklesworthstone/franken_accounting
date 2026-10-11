@@ -547,6 +547,15 @@ pub async fn activate_policy<V: asupersync::fs::Vfs + Clone>(
             "build the proposal with fa_journal::activation_proposal",
         )));
     };
+    if proposal.base_totals.is_some() {
+        return Ok(Err(Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            "a policy activation carries base_totals but has no legs to value",
+            "plan §5.2 (functional-currency valuations belong to monetary legs)",
+            "remove base_totals; build the control with fa_journal::activation_proposal",
+        )));
+    }
     if effective_from != proposal.effective_date || effective_to != OPEN_END {
         return Ok(Err(Refusal::new(
             code::STRUCTURE,

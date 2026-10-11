@@ -24,5 +24,8 @@ fgdb = { workspace = true }
 fgdb-crypto = { workspace = true }
 fgdb-types = { workspace = true }
 
+[dev-dependencies]
+fgdb-sim = { workspace = true }
+
 [[example]]
 name = "open_book"

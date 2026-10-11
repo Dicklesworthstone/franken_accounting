@@ -570,6 +570,136 @@ fn self_approval_is_refused_and_a_distinct_human_approval_admits() {
 }
 
 #[test]
+fn balancing_approvals_bind_resolved_effects_and_preserve_request_identity() {
+    let mut h = harness();
+    let limited = AccountSpec {
+        code: "6100".into(),
+        name: "Limited expense".into(),
+        account_type: 5,
+        normal_balance: 0,
+        is_leaf: true,
+        unit_policy: UnitPolicy::Single(h.usd),
+        parent_code: None,
+        limit: Some(BalanceLimit {
+            lower: None,
+            upper: Some(40),
+            scope: LimitScope::Lifetime,
+        }),
+    };
+    let ctx = h.ctx();
+    let description = h.period_description();
+    h.runtime
+        .block_on(install_chart(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &[limited],
+            PREPARER,
+            DateDay::from_ymd(2026, 3, 1).unwrap(),
+            b"limited-chart",
+            description,
+        ))
+        .unwrap()
+        .unwrap();
+    h.close_march();
+    let cap = human(PREPARER, &["post", "post_closed"]);
+    let mut request = h.proposal(PREPARER, 100, b"approved-balancing", EntryClass::ADJUSTING);
+    request.legs[0].account_ref = account_vid(h.book.book_id, "6100");
+    request.schema_minor = fa_model::entry::EXTENSIONS_MINOR;
+    request.extensions.push((
+        fa_model::entry::BALANCING_EXTENSION,
+        fa_journal::limit::balancing_bytes(0, 100),
+    ));
+    let requested = h
+        .approve(ALICE, request.proposal_digest().unwrap())
+        .unwrap()
+        .approval();
+    let head = h.db.frontier().unwrap();
+    let refusal = h
+        .post(request.clone(), cap.clone(), vec![requested])
+        .expect_err("approval of 100 cannot bind the resolved posting of 40");
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-016", exit::SAFETY));
+    assert_eq!(h.db.frontier().unwrap(), head);
+
+    // The complete resolved proposal still records the original requested
+    // amount in its extension. Approving it permits the actual clamped post.
+    let mut resolved = request.clone();
+    for leg in &mut resolved.legs {
+        leg.amount.mantissa = 40;
+    }
+    resolved.unit_totals = EntryPayload::fold_unit_totals(&resolved.legs).unwrap();
+    let approved = h
+        .approve(ALICE, resolved.proposal_digest().unwrap())
+        .unwrap()
+        .approval();
+    let head = h.db.frontier().unwrap();
+    let mut changed = request.clone();
+    changed.effective_date = DateDay::from_ymd(2026, 3, 16).unwrap();
+    let refusal = h
+        .post(changed, cap.clone(), vec![approved])
+        .expect_err("changing the approved coordinate still refuses");
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-016", exit::SAFETY));
+    assert_eq!(h.db.frontier().unwrap(), head);
+
+    let posted = h
+        .post(request.clone(), cap.clone(), vec![approved])
+        .expect("resolved effects have a distinct human approval");
+    assert!(matches!(posted, Posted::Committed { .. }));
+    let (entry, _) = read_entry(&h.db, posted.entry_ref().vid).unwrap().unwrap();
+    assert_eq!(entry.proposal, resolved);
+    assert_eq!(entry.proposal_digest, approved.approved_digest);
+    assert_eq!(entry.approvals, vec![approved]);
+    assert_eq!(
+        fa_journal::limit::request_form(&entry.proposal).unwrap(),
+        Some(request.clone())
+    );
+    let head = h.db.frontier().unwrap();
+    let retry = h.post(request, cap, vec![approved]).unwrap();
+    assert!(matches!(retry, Posted::AlreadyRecorded { .. }));
+    assert_eq!(retry.entry_ref(), posted.entry_ref());
+    assert_eq!(h.db.frontier().unwrap(), head);
+}
+
+#[test]
+fn balancing_approval_binding_precedes_observation_and_unchanged_amounts_post() {
+    let mut h = harness();
+    h.close_march();
+    let cap = human(PREPARER, &["post", "post_closed"]);
+    let mut request = h.proposal(PREPARER, 100, b"unlimited-balancing", EntryClass::ADJUSTING);
+    request.schema_minor = fa_model::entry::EXTENSIONS_MINOR;
+    request.extensions.push((
+        fa_model::entry::BALANCING_EXTENSION,
+        fa_journal::limit::balancing_bytes(0, 100),
+    ));
+    let own_foreign = h.approve(PREPARER, [0xa9; 32]).unwrap().approval();
+    let head = h.db.frontier().unwrap();
+    // Neither existence nor the foreign record's self-approval status may
+    // be judged before its digest binds to this resolved proposal.
+    for foreign in [
+        own_foreign,
+        ApprovalRef {
+            approval_vid: VId(0xdead_beef),
+            approved_digest: [0xa9; 32],
+        },
+    ] {
+        let refusal = h
+            .post(request.clone(), cap.clone(), vec![foreign])
+            .unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-016", exit::SAFETY));
+        assert_eq!(h.db.frontier().unwrap(), head);
+    }
+    let approved = h
+        .approve(ALICE, request.proposal_digest().unwrap())
+        .unwrap()
+        .approval();
+    let posted = h.post(request.clone(), cap, vec![approved]).unwrap();
+    let (entry, _) = read_entry(&h.db, posted.entry_ref().vid).unwrap().unwrap();
+    assert_eq!(entry.proposal, request);
+    assert_eq!(entry.proposal_digest, approved.approved_digest);
+    assert_eq!(entry.approvals, vec![approved]);
+}
+
+#[test]
 fn approvals_attached_where_none_is_required_are_still_judged() {
     let mut h = harness();
     let orig = h.proposal(PREPARER, 5_000, b"o-1", EntryClass::ORIGINAL);
@@ -925,6 +1055,29 @@ fn only_the_enforced_policy_activates_and_only_from_its_date_onward() {
     let r = h.activate(shifted, controller(), Vec::new()).unwrap_err();
     assert_eq!(r.code, "FA-REF-100");
     assert_eq!(h.db.frontier().unwrap(), head);
+
+    // Activation publishes through its own control path, not `post`. Its
+    // structural check must also reject FX claims with no legs to value.
+    let mut valued = h.activation(PREPARER, b"valued-control");
+    valued.base_totals = Some(fa_model::BaseTotals {
+        unit_id: h.usd.0,
+        debits: 10,
+        credits: 11,
+        fx_law_oid: Oid([0x91; 32]),
+        rate_doc_oids: vec![Oid([0x92; 32])],
+        residual: None,
+    });
+    let digest = valued.proposal_digest().unwrap();
+    let bob = h.approve(BOB, digest).unwrap().approval();
+    let carol = h.approve(CAROL, digest).unwrap().approval();
+    let valued_head = h.db.frontier().unwrap();
+    let r = h
+        .activate(valued, controller(), vec![bob, carol])
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-100", exit::USAGE));
+    assert!(r.message.contains("base_totals"), "{r}");
+    assert_eq!(h.db.frontier().unwrap(), valued_head);
+    assert_eq!(security_policy_epoch(&h.db).unwrap(), 0);
 
     // The embedded policy, over the same approvers, still activates.
     let done = h.activate_with_dual_control(b"embedded");
@@ -1356,13 +1509,13 @@ impl Harness {
         let book = &self.book;
         self.runtime.block_on(async move {
             let mut describe = |text: &str| {
-                Erasable::seal(
+                Ok::<_, KernelError>(Erasable::seal(
                     &text.to_string(),
                     None,
                     &book.seal_key,
                     [0x5d; 32],
                     [0x5d; 24],
-                )
+                ))
             };
             let expiry = sweep_batch(db, &ctx, book, &req, &mut describe)
                 .await

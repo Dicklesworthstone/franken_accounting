@@ -463,6 +463,118 @@ fn a_grant_typo_is_a_usage_error_naming_the_op_never_a_silently_held_string() ->
     Ok(())
 }
 
+/// fa-40l (rulings 171/173): the Book boundary anchors caller spellings;
+/// the robot book remains its hex ID. Exercise the real binary from child
+/// working directories without changing this test process's cwd. This is
+/// a regression probe, not a claim that the old binary was executed here.
+#[test]
+fn book_path_aliases_have_byte_identical_robot_read_output() -> std::io::Result<()> {
+    let dir = tmp("book-path-aliases")?;
+    let caller = dir.join("caller");
+    std::fs::create_dir(&caller)?;
+    let book = dir.join("acme");
+    assert!(book.is_absolute(), "absolute alias: {}", book.display());
+
+    let run = |cwd: &Path, spelling: &Path, via_env: bool, args: &[&str]| -> Vec<u8> {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_fa"));
+        cmd.current_dir(cwd).env_remove("FA_BOOK");
+        if via_env {
+            cmd.env("FA_BOOK", spelling);
+        } else {
+            cmd.arg("--book").arg(spelling);
+        }
+        let out = cmd.args(args).output().expect("run fa in child cwd");
+        let code = out.status.code().unwrap_or(-1);
+        let stdout = std::str::from_utf8(&out.stdout).expect("robot stdout is UTF-8");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        check_robot_output(args, code, stdout);
+        assert_eq!(
+            code, 0,
+            "cwd={cwd:?} book={spelling:?} via_env={via_env} args={args:?}\nstdout={stdout}\nstderr={stderr}"
+        );
+        assert!(stderr.is_empty(), "success stderr: {stderr}");
+        out.stdout
+    };
+    let parent_alias = Path::new("../acme");
+    let created = run(
+        &caller,
+        parent_alias,
+        false,
+        &["book", "create", "--name", "Path Alias Co", "--json"],
+    );
+    let created_text = std::str::from_utf8(&created).unwrap();
+    assert_eq!(text(&robot_line(created_text), "event"), "book_created");
+    let created_data = doc(created_text);
+    assert_eq!(text(&created_data, "name"), "Path Alias Co");
+    let book_id = text(&created_data, "book_id").to_string();
+    assert_eq!(book_id.len(), 32, "book ID: {created_text}");
+    assert!(book_id.bytes().all(|b| b.is_ascii_hexdigit()));
+    assert_eq!(text(&robot_line(created_text), "book"), book_id);
+    assert!(book.join("book.keys").is_file() && book.join("store").is_dir());
+
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Alias Cash","type":"Asset","leaf":true,"unit":"USD"},{"code":"6000","name":"Alias Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    let installed = run(
+        &caller,
+        parent_alias,
+        false,
+        &["chart", "import", &chart, "--json"],
+    );
+    let installed_text = std::str::from_utf8(&installed).unwrap();
+    assert_eq!(
+        text(&robot_line(installed_text), "event"),
+        "chart_installed"
+    );
+    assert_eq!(int(&doc(installed_text), "accounts"), Some(2));
+
+    for (args, event) in [
+        (["book", "info", "--json"], "book"),
+        (["chart", "list", "--json"], "accounts"),
+    ] {
+        let absolute = run(&caller, &book, false, &args);
+        let stdout = std::str::from_utf8(&absolute).unwrap();
+        let envelope = robot_line(stdout);
+        assert_eq!(text(&envelope, "event"), event, "{stdout}");
+        assert_eq!(text(&envelope, "book"), book_id, "{stdout}");
+        let coordinate = envelope.get("coordinate").expect("book coordinate");
+        assert_eq!(text(coordinate, "branch"), "trunk", "{stdout}");
+        assert!(int(coordinate, "known_at").is_some_and(|seq| seq > 0));
+        let data = doc(stdout);
+        if event == "book" {
+            assert_eq!(text(&data, "book_id"), book_id, "{stdout}");
+            assert_eq!(int(&data, "accounts"), Some(2), "{stdout}");
+        } else {
+            let accounts = arr(&data, "accounts");
+            let actual: Vec<_> = accounts
+                .iter()
+                .map(|a| (text(a, "code"), text(a, "name"), text(a, "unit")))
+                .collect();
+            assert_eq!(
+                actual,
+                vec![("1000", "Alias Cash", "USD"), ("6000", "Alias Rent", "USD")],
+                "{stdout}"
+            );
+        }
+        for (cwd, spelling) in [
+            (caller.as_path(), parent_alias),
+            (dir.as_path(), Path::new("./acme")),
+            (caller.as_path(), book.as_path()),
+        ] {
+            for via_env in [false, true] {
+                let aliased = run(cwd, spelling, via_env, &args);
+                assert_eq!(
+                    aliased, absolute,
+                    "complete stdout differs: cwd={cwd:?} book={spelling:?} via_env={via_env} args={args:?}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Result<()> {
     let dir = tmp("genesis")?;
@@ -914,6 +1026,270 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Res
         !out.contains("\"event\"") && out.contains("accounts"),
         "{out}"
     );
+    Ok(())
+}
+
+/// Exercise the incremental engine through fresh binary invocations and a
+/// real persisted book. A full-fold rebuild on every call cannot satisfy
+/// the suffix decode count or the no-write retry below.
+#[test]
+fn register_advance_consumes_only_new_entries_and_refuses_damaged_cache() -> std::io::Result<()> {
+    use asupersync::runtime::RuntimeBuilder;
+    use asupersync::types::Budget;
+    use fa::{Book, BookKeys, Entropy};
+    use fa_journal::BookSpec;
+    use fa_model::Id128;
+    use fa_model::symbols::{property, relation};
+    use fgdb::{Database, DatabaseKeys, WriteBatch};
+    use fgdb_types::CanonicalScalar;
+    use fgdb_types::context::PurposeContexts;
+    use fgdb_types::ids::DatabaseSecurityNamespaceId;
+
+    let dir = tmp("register-advance")?;
+    let book = dir.join("book");
+    let book_id = Id128([57; 16]);
+    let keys = BookKeys::for_development(57);
+    let handle = Book::create_dir(
+        &book,
+        keys.clone(),
+        BookSpec {
+            book_id,
+            name: "Incremental registers".into(),
+            base_unit: fa_money::UnitRegistry::embedded()
+                .unwrap()
+                .lookup("USD")
+                .unwrap(),
+            calendar: fa_time::FiscalCalendar::monthly("fiscal", 1, 1).unwrap(),
+            time_zone_policy: None,
+            entities: Vec::new(),
+            opening_date: None,
+        },
+        Entropy::deterministic(57),
+    )
+    .unwrap();
+    keys.save(&book.join("book.keys")).unwrap();
+    drop(handle);
+    let ok = |args: &[&str]| {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        assert!(err.is_empty(), "{err}");
+        out
+    };
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    let period = "FY2026-P03";
+    ok(&["period", "open", period, "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let first = write(
+        &dir,
+        "first.json",
+        r#"{"effective_date":"2026-03-15","idempotency_key":"first","legs":[{"side":"debit","account":"6000","amount":"10.00 USD"},{"side":"credit","account":"1000","amount":"10.00 USD"}]}"#,
+    );
+    ok(&[
+        "post",
+        "--intent",
+        &first,
+        "--evidence",
+        &evidence,
+        "--json",
+    ]);
+    let advance = ["registers", "advance", "--period", period, "--json"];
+    let initial_output = ok(&advance);
+    let initial = doc(&initial_output);
+    assert_eq!(initial.get("wrote"), Some(&Json::Bool(true)));
+    assert_eq!(initial.get("rebuilt"), Some(&Json::Bool(false)));
+    assert_eq!(int(&initial, "entries"), Some(1));
+    assert_eq!(int(&initial, "cells"), Some(2));
+    assert_eq!(int(&initial, "from"), Some(0));
+    assert!(int(&initial, "entries_decoded").unwrap() > 0);
+    let first_through = int(&initial, "through").unwrap();
+    assert!(int(&initial, "recorded_at").unwrap() > first_through);
+    // Follow the emitted next action after filling its documented selector;
+    // a hint that omits the required period must fail through the real CLI.
+    let envelope = robot_line(&initial_output);
+    let actions = arr(&envelope, "next_actions");
+    assert_eq!(actions.len(), 1, "{initial_output}");
+    assert!(!text(&actions[0], "why").is_empty());
+    let command = text(&actions[0], "command").replace("<code>", period);
+    let mut words = command.split_whitespace();
+    assert_eq!(words.next(), Some("fa"), "{command}");
+    let verification = ok(&words.collect::<Vec<_>>());
+    assert_eq!(field(&verification, "event"), Some("registers_verified"));
+
+    let second = write(
+        &dir,
+        "second.json",
+        r#"{"effective_date":"2026-03-16","idempotency_key":"second","legs":[{"side":"debit","account":"6000","amount":"20.00 USD"},{"side":"credit","account":"1000","amount":"20.00 USD"}]}"#,
+    );
+    let posted = doc(&ok(&[
+        "post",
+        "--intent",
+        &second,
+        "--evidence",
+        &evidence,
+        "--json",
+    ]));
+    let current = doc(&ok(&advance));
+    assert_eq!(int(&current, "from"), Some(first_through));
+    assert_eq!(int(&current, "through"), int(&posted, "recorded_at"));
+    assert_eq!(int(&current, "entries_decoded"), Some(1));
+    assert_eq!(int(&current, "entries"), Some(2));
+    assert_eq!(current.get("wrote"), Some(&Json::Bool(true)));
+    assert_eq!(current.get("rebuilt"), Some(&Json::Bool(false)));
+    ok(&["verify", "registers", "--period", period, "--json"]);
+    let balance_before = report(&book, &["tb", "--period", period, "--json"]);
+    assert_cash_credits(&balance_before, "30.00 USD");
+    let no_op = doc(&ok(&advance));
+    assert_eq!(no_op.get("wrote"), Some(&Json::Bool(false)));
+    assert_eq!(no_op.get("recorded_at"), Some(&Json::Null));
+    assert_eq!(int(&no_op, "entries_decoded"), Some(0));
+    assert_eq!(int(&no_op, "from"), int(&current, "through"));
+    assert_eq!(int(&no_op, "through"), int(&current, "through"));
+    assert_eq!(text(&no_op, "fold_digest"), text(&current, "fold_digest"));
+    assert_eq!(
+        report(&book, &["tb", "--period", period, "--json"]),
+        balance_before
+    );
+    assert!(ok(&["registers", "advance", "--period", period]).contains("already current"));
+
+    // Mutate only disposable maintenance metadata via the real substrate.
+    // Advancing must preserve the evidence of damage instead of repairing it.
+    let runtime = RuntimeBuilder::new().build().unwrap();
+    let root = runtime.request_cx_with_budget(Budget::INFINITE);
+    let ctx = PurposeContexts::narrow_runtime_root(&root);
+    let mut db = runtime
+        .block_on(Database::open(
+            &ctx.commit(),
+            &book.join("store"),
+            DatabaseKeys::new([57; 32], DatabaseSecurityNamespaceId([58; 32]), [59; 32]),
+        ))
+        .unwrap();
+    let mut batch = WriteBatch::new(relation::DERIVED_FROM);
+    batch.set_vertex_property(
+        fa_registers::maintainer::state_vid(book_id, period),
+        property::FA_PAYLOAD,
+        Some(CanonicalScalar::bytes(vec![0xff]).unwrap()),
+    );
+    let damaged_at = runtime.block_on(db.write(&ctx.commit(), batch)).unwrap();
+    drop(db);
+    let damaged_balance = report(&book, &["tb", "--period", period, "--json"]);
+    assert_cash_credits(&damaged_balance, "30.00 USD");
+    let (code, out, err) = fa(Some(&book), &advance);
+    assert_eq!(code, 8, "{out}\n{err}");
+    let refusal = doc(&out);
+    assert_eq!(text(&refusal, "class"), "verification");
+    assert!(text(&refusal, "message").contains("register cache drift"));
+    assert!(text(&refusal, "fix").contains("fa verify registers --period FY2026-P03 --json"));
+    assert!(text(&refusal, "fix").contains("--yes"));
+    assert_eq!(
+        report(&book, &["tb", "--period", period, "--json"]),
+        damaged_balance
+    );
+    let reopened = Book::open_dir(&book, keys.clone(), Entropy::deterministic(57)).unwrap();
+    assert_eq!(
+        reopened.head().unwrap(),
+        damaged_at,
+        "refusal published nothing"
+    );
+    assert!(!reopened.verify_registers(period).unwrap().is_green());
+    drop(reopened);
+
+    // A fiscal-year selector includes the three special periods as well as
+    // the twelve normal periods, in canonical code order. The command
+    // publishes each preceding period before the damaged March refusal.
+    // Those successes remain durable; retrying must not duplicate writes.
+    let year_periods = [
+        "FY2026-A1",
+        "FY2026-CLOSE",
+        "FY2026-OPEN",
+        "FY2026-P01",
+        "FY2026-P02",
+        "FY2026-P03",
+        "FY2026-P04",
+        "FY2026-P05",
+        "FY2026-P06",
+        "FY2026-P07",
+        "FY2026-P08",
+        "FY2026-P09",
+        "FY2026-P10",
+        "FY2026-P11",
+        "FY2026-P12",
+    ];
+    let preceding = &year_periods[..5];
+    assert_eq!(year_periods[preceding.len()], period);
+    let yearly = ["registers", "advance", "--fiscal-year", "2026", "--json"];
+    let (code, partial, err) = fa(Some(&book), &yearly);
+    assert_eq!(code, 8, "{partial}\n{err}");
+    let lines: Vec<_> = partial.lines().collect();
+    assert_eq!(
+        lines.len(),
+        preceding.len() + 1,
+        "special periods, January, February, then March refusal: {partial}"
+    );
+    let mut last_published = None;
+    for (line, &earlier) in lines[..preceding.len()].iter().zip(preceding) {
+        assert_eq!(field(line, "event"), Some("registers_advanced"));
+        let data = doc(line);
+        assert_eq!(text(&data, "period"), earlier);
+        assert_eq!(data.get("wrote"), Some(&Json::Bool(true)));
+        last_published = int(&data, "recorded_at");
+        ok(&["verify", "registers", "--period", earlier, "--json"]);
+    }
+    let refusal_line = lines[preceding.len()];
+    let failed = json::parse(refusal_line).unwrap();
+    assert_eq!(field(refusal_line, "event"), Some("error"));
+    assert_eq!(
+        failed.get("coordinate").unwrap().get("effective"),
+        Some(&Json::Str(format!("period:{period}")))
+    );
+    assert_eq!(
+        text(doc(refusal_line).get("detail").unwrap(), "period"),
+        period
+    );
+    let reopened = Book::open_dir(&book, keys, Entropy::deterministic(57)).unwrap();
+    assert_eq!(
+        Some(i128::from(reopened.head().unwrap().0)),
+        last_published,
+        "the failing March period published nothing after February"
+    );
+    assert!(!reopened.verify_registers(period).unwrap().is_green());
+    drop(reopened);
+    assert_eq!(
+        fa(
+            Some(&book),
+            &["registers", "materialize", "--period", period, "--json"]
+        )
+        .0,
+        7
+    );
+    ok(&[
+        "registers",
+        "materialize",
+        "--period",
+        period,
+        "--yes",
+        "--json",
+    ]);
+    ok(&["verify", "registers", "--period", period, "--json"]);
+    assert_eq!(doc(&ok(&advance)).get("wrote"), Some(&Json::Bool(false)));
+    let resumed = ok(&yearly);
+    assert_eq!(resumed.lines().count(), year_periods.len(), "{resumed}");
+    for (index, (line, expected_period)) in resumed.lines().zip(year_periods).enumerate() {
+        assert_eq!(field(line, "event"), Some("registers_advanced"));
+        let data = doc(line);
+        assert_eq!(text(&data, "period"), expected_period);
+        let already_maintained = index <= preceding.len();
+        assert_eq!(data.get("wrote"), Some(&Json::Bool(!already_maintained)));
+        if already_maintained {
+            assert_eq!(data.get("recorded_at"), Some(&Json::Null));
+        }
+    }
+    ok(&["verify", "registers", "--fiscal-year", "2026", "--json"]);
     Ok(())
 }
 
@@ -2124,6 +2500,12 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         run(true, &["verify", "registers", "--period", "FY2026-P03"]).0,
         8
     );
+    let (code, out) = run(true, &["registers", "advance", "--period", "FY2026-P03"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        run(true, &["verify", "registers", "--period", "FY2026-P03"]).0,
+        0
+    );
     // A planned, approved lock (R4): `period_planned`, then `approved`.
     assert_eq!(run(true, &["period", "open", "FY2026-P04"]).0, 0);
     assert_eq!(run(true, &["period", "close", "FY2026-P04", "--yes"]).0, 0);
@@ -3328,4 +3710,82 @@ fn corrections_span_exactly_one_edit() {
         "two edits are not corrected: {out}"
     );
     assert!(fix.contains("fa --help"), "{out}");
+}
+
+/// fa-40l: a host that is not the `fa` binary (fa-mcp, an embedding) names
+/// the book and its keys file relative to its own working directory, which
+/// it hands over as `Files::cwd`; this process's directory is another. Every
+/// spelling opens the same book and reads byte-identically to the absolute
+/// one, through the public `fa_with`, with this process's cwd and
+/// environment untouched.
+#[test]
+fn a_hosts_relative_book_and_keys_resolve_against_its_files_cwd() -> std::io::Result<()> {
+    let client = tmp("host-cwd")?;
+    let nested = client.join("nested");
+    std::fs::create_dir(&nested)?;
+    std::fs::create_dir(client.join("keys"))?;
+    let book = client.join("acme");
+    let keys = client.join("keys").join("acme.keys");
+    let (b, k) = (book.display().to_string(), keys.display().to_string());
+    let host = |cwd: Option<&Path>, args: &[&str]| -> (u8, String, String) {
+        let argv: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
+        let files = fa_cli::cli::Files {
+            cwd: cwd.map(Path::to_path_buf),
+            stdin: fa_cli::cli::Stdin::Missing,
+        };
+        let (code, out) = fa_cli::entry::fa_with(&argv, files, true);
+        (code, out.stdout, out.stderr)
+    };
+    let (code, out, err) = host(
+        None,
+        &[
+            "book", "create", "--book", &b, "--keys", &k, "--name", "Host Co", "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}{err}");
+    // The keys live outside the book, so every read below resolves `--keys` too.
+    assert!(keys.is_file() && !book.join("book.keys").exists());
+    let absolute = host(
+        None,
+        &["book", "info", "--book", &b, "--keys", &k, "--json"],
+    );
+    assert_eq!(absolute.0, 0, "{absolute:?}");
+    assert_eq!(
+        text(&robot_line(&absolute.1), "event"),
+        "book",
+        "{absolute:?}"
+    );
+    for (cwd, book_arg, keys_arg) in [
+        (client.as_path(), "acme", "keys/acme.keys"),
+        (client.as_path(), "./acme", "./keys/acme.keys"),
+        (nested.as_path(), "../acme", "../keys/acme.keys"),
+        (nested.as_path(), b.as_str(), k.as_str()),
+    ] {
+        let aliased = host(
+            Some(cwd),
+            &[
+                "book", "info", "--book", book_arg, "--keys", keys_arg, "--json",
+            ],
+        );
+        assert_eq!(
+            aliased, absolute,
+            "cwd={cwd:?} book={book_arg} keys={keys_arg}"
+        );
+    }
+    // Without the host's cwd the same relative spelling names a path in this
+    // process's directory, where no such book or keys file exists.
+    let (code, out, _) = host(
+        None,
+        &[
+            "book",
+            "info",
+            "--book",
+            "acme",
+            "--keys",
+            "keys/acme.keys",
+            "--json",
+        ],
+    );
+    assert!(matches!(code, 4 | 5), "exit {code}: {out}");
+    Ok(())
 }

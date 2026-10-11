@@ -27,7 +27,9 @@ use fa_journal::KernelError;
 use fa_journal::genesis::BookContext;
 use fa_journal::rows::{AccountRow, PeriodRow, bytes, int, prop, scalar_bytes, scalar_text, text};
 use fa_model::symbols::{label, property, relation};
-use fa_model::{AccountType, Entry, EntryClass, Id128, Writer, period_vid};
+use fa_model::{
+    AccountType, ControlPayload, Entry, EntryClass, EntryOrigin, Id128, Writer, period_vid,
+};
 use fa_money::Side;
 use fa_time::DateDay;
 use fgdb::{Database, VertexRow, WriteBatch};
@@ -139,7 +141,8 @@ pub struct Fold {
     pub cells: Vec<Cell>,
     /// Outstanding reservations, keyed on the original Pending's period.
     pub pending: Vec<Cell>,
-    /// The highest contributing commit, including cross-period releases.
+    /// The highest contributing commit, including cross-period releases
+    /// and the finalization that activates staged migration chunks.
     pub watermark: Option<CommitSeq>,
     /// Posting entries contributing to `cells` (excludes reservations/releases).
     pub entries: u64,
@@ -250,6 +253,44 @@ pub(crate) fn entries_at<V: asupersync::fs::Vfs + Clone>(
         entries.push((row.vid, entry, row.created_at));
     }
     Ok(entries)
+}
+
+/// Visibility changes are contributions too. Resolve them from immutable
+/// control payloads without changing any entry's real creation sequence.
+pub(crate) fn migration_activations(
+    entries: &[(VId, Entry, CommitSeq)],
+) -> Result<BTreeMap<VId, CommitSeq>, RegisterError> {
+    let mut activated = BTreeMap::new();
+    for (_, entry, seq) in entries {
+        if let Some(ControlPayload::MigrationControl {
+            run_ref,
+            kind: fa_journal::migration::kind::FINALIZE,
+            ..
+        }) = &entry.proposal.control
+            && activated.insert(*run_ref, *seq).is_some()
+        {
+            return Err(KernelError::Corrupt("duplicate migration finalization".into()).into());
+        }
+    }
+    Ok(activated)
+}
+
+pub(crate) fn contribution_seq(
+    entry: &Entry,
+    created_at: CommitSeq,
+    activated: &BTreeMap<VId, CommitSeq>,
+) -> Result<CommitSeq, RegisterError> {
+    let EntryOrigin::Migration { run_ref, .. } = &entry.proposal.origin else {
+        return Ok(created_at);
+    };
+    let finalized_at = activated
+        .get(run_ref)
+        .copied()
+        .filter(|at| *at > created_at)
+        .ok_or_else(|| {
+            KernelError::Corrupt("visible migration chunk lacks a later finalization".into())
+        })?;
+    Ok(finalized_at)
 }
 
 pub(crate) fn entry_period(book: &BookContext, entry: &Entry) -> Result<String, RegisterError> {
@@ -372,6 +413,7 @@ pub fn fold_period_at<V: asupersync::fs::Vfs + Clone>(
     let mut count = 0u64;
     let entries = entries_at(db, book, seq)?;
     let resolved = resolutions(&entries)?;
+    let activated = migration_activations(&entries)?;
     for (vid, entry, created_at) in entries {
         if entry.proposal.legs.is_empty() {
             continue;
@@ -379,7 +421,8 @@ pub fn fold_period_at<V: asupersync::fs::Vfs + Clone>(
         if entry_period(book, &entry)? != period_code {
             continue;
         }
-        watermark = Some(watermark.map_or(created_at, |w: CommitSeq| w.max(created_at)));
+        let contribution = contribution_seq(&entry, created_at, &activated)?;
+        watermark = Some(watermark.map_or(contribution, |w: CommitSeq| w.max(contribution)));
         if entry.proposal.class == EntryClass::PENDING {
             if let Some(release) = resolved.get(&vid) {
                 watermark = Some(watermark.map_or(*release, |w| w.max(*release)));

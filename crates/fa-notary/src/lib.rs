@@ -50,9 +50,11 @@ pub mod code {
     pub const NOT_EXTENDED: &str = "FA-REF-124";
     /// The selected known-at sequence is beyond the head.
     pub const BEYOND_HEAD: &str = "FA-REF-125";
-    /// A balance proof would count a migration chunk whose run has no
-    /// Finalize in the prefix (staged or abandoned; plan §8.6). The proof
-    /// format cannot carry the migration predicate yet (bead fa-e00).
+    /// A balance proof would count a migration chunk with unsupported
+    /// visibility: its run has no Finalize in the prefix, or it predates
+    /// the run's opening date. The latter may be summarized history or
+    /// sole-source detail; v1 cannot authenticate that distinction (fa-e00).
+    /// Missing or contradictory migration records also fail closed.
     pub const MIGRATION_STAGED: &str = "FA-REF-133";
 }
 

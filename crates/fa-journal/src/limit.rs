@@ -909,16 +909,27 @@ pub fn admissible(
         let Some(upper) = limit.upper else {
             return Ok(None);
         };
-        net.checked_add(pending_in)
-            .map_or(0, |u| upper.saturating_sub(u))
+        inflow_room(upper, net, pending_in)
     } else {
         let Some(lower) = limit.lower else {
             return Ok(None);
         };
-        net.checked_sub(pending_out)
-            .map_or(0, |l| l.saturating_sub(lower))
+        outflow_room(lower, net, pending_out)
     };
-    Ok(Some(a.max(0)))
+    Ok(Some(a))
+}
+
+// Reservations are nonnegative. Combine them with the net first: an
+// overflow then lies beyond every representable bound. Clamp only the
+// resulting capacity to the domain of an individual requested amount.
+fn inflow_room(upper: i128, net: i128, pending_in: i128) -> i128 {
+    net.checked_add(pending_in)
+        .map_or(0, |occupied| upper.saturating_sub(occupied).max(0))
+}
+
+fn outflow_room(lower: i128, net: i128, pending_out: i128) -> i128 {
+    net.checked_sub(pending_out)
+        .map_or(0, |available| available.saturating_sub(lower).max(0))
 }
 
 /// What a balancing post moved (plan §5.5): the requested amount and the
@@ -985,6 +996,9 @@ fn balancing_shape(p: &EntryPayload, leg: u16) -> Option<String> {
 /// is judged too and nothing is silently exceeded. The identity binds the
 /// request: a retry with the same key, `R`, and leg returns the recorded
 /// outcome whatever availability is now; another `R` or leg is a conflict.
+/// Approvals bind the resolved proposal: its actual leg amounts and the
+/// original `fa:balancing:v1` request extension. A different resolved amount
+/// requires a new approval before it can be committed.
 pub async fn post_balancing<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
@@ -1064,11 +1078,9 @@ pub fn refusal(
             outflow,
             after,
         } => {
-            let available = net
-                .checked_sub(*pending_out)
-                .and_then(|l| l.checked_sub(*bound));
+            let available = outflow_room(*bound, *net, *pending_out);
             let fix = match available {
-                Some(a) if a > 0 => format!(
+                a if a > 0 => format!(
                     "move at most {} out of {account} (net − reserved outflows − lower bound), fund it first, or release one of its holds with a Resolution(Voids); a pending inflow never finances an outflow",
                     show(a)
                 ),
@@ -1099,11 +1111,9 @@ pub fn refusal(
             inflow,
             after,
         } => {
-            let room = bound
-                .checked_sub(*net)
-                .and_then(|r| r.checked_sub(*pending_in));
+            let room = inflow_room(*bound, *net, *pending_in);
             let fix = match room {
-                Some(r) if r > 0 => format!(
+                r if r > 0 => format!(
                     "move at most {} into {account} (upper bound − net − reserved inflows), or release one of its pending inflows with a Resolution(Voids) first",
                     show(r)
                 ),
@@ -1375,6 +1385,45 @@ mod tests {
             period_cell_vid(VId(1), "P02")
         );
         assert_ne!(period_cell_vid(VId(1), "P01"), limit_cell_vid(VId(1)));
+    }
+
+    #[test]
+    fn upper_refusal_names_the_exact_room_after_reserved_inflows() {
+        let units = UnitRegistry::embedded().unwrap();
+        let usd = units.lookup("USD").unwrap();
+        let upper = BalanceLimit {
+            lower: None,
+            upper: Some(i128::MAX),
+            scope: LimitScope::Lifetime,
+        };
+        // Upper - net would overflow, although subtracting the reserved
+        // inflows afterwards gives MAX - 10, a representable capacity.
+        let before = cell(0, 10, 20, 0);
+        let room = i128::MAX - 10;
+        assert_eq!(
+            admissible(&before, Side::Debit, &upper, Side::Debit).unwrap(),
+            Some(room)
+        );
+        let mut too_much = Movement::default();
+        too_much.post(Side::Debit, room + 1).unwrap();
+        let breach = apply(&before, Side::Debit, &upper, &too_much)
+            .unwrap()
+            .unwrap_err();
+        assert!(matches!(breach, Breach::Upper { .. }));
+        let refusal = refusal(&breach, "cash", None, usd, &units);
+        assert!(refusal.fix.contains(&format!(
+            "move at most {} into `cash`",
+            Amount::new(usd, room).render(&units)
+        )));
+        // The amount the refusal names is actually admissible, with the
+        // resulting net plus reservations exactly equal to the bound.
+        let mut corrected = Movement::default();
+        corrected.post(Side::Debit, room).unwrap();
+        let after = apply(&before, Side::Debit, &upper, &corrected)
+            .unwrap()
+            .unwrap();
+        let (net, _, pending_in) = after.availability(Side::Debit).unwrap();
+        assert_eq!(net.checked_add(pending_in), Some(i128::MAX));
     }
 
     #[test]

@@ -1226,8 +1226,19 @@ fn every_read_of_an_external_document_agrees_with_a_literal_model() {
     for seed in [0x1234_5678_9abc_def1_u64, 0x0fed_cba9_8765_4321] {
         let mut rng = Rng(seed);
         let mut b = book();
-        let store = BlobStore::open(1, fgdb::MemVfs::new().unwrap(), "blobs").unwrap();
-        let decoy = BlobStore::open(1, fgdb::MemVfs::new().unwrap(), "decoy").unwrap();
+        let open_store = |path: &str| {
+            let directory = b
+                .runtime
+                .block_on(fa_journal::blob::DurableDirectory::create(
+                    &b.ctx().commit(),
+                    fgdb::MemVfs::new().unwrap(),
+                    std::path::Path::new(path),
+                ))
+                .unwrap();
+            BlobStore::open(1, directory).unwrap()
+        };
+        let store = open_store("blobs");
+        let decoy = open_store("decoy");
         // The model: per document, its bytes, whether they are external, and
         // whether its blob currently holds other bytes.
         let mut model: Vec<(Document, bool, bool)> = Vec::new();

@@ -27,7 +27,7 @@ use fa_model::{
 use fa_policy::{Capability, Intent, Party};
 use fa_time::period::transition;
 use fa_time::{DateDay, PeriodState, PeriodTransition};
-use fgdb::{Database, WriteBatch, WriteMismatchPolicy, WriteTxnError};
+use fgdb::{Database, WriteBatch, WriteMismatchPolicy, WriteTxn, WriteTxnError};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
@@ -49,6 +49,94 @@ pub struct Transitioned {
     /// Schedules due in the opened period that the commit examined but did
     /// not mint, with why (live applications, the availability law).
     pub blocked: Vec<(EntryRef, String)>,
+}
+
+/// An authorized period transition staged against its original witnesses.
+/// Its capability and effects cannot be replaced after preparation. Dropping
+/// it abandons the staged write and releases the substrate's read pin.
+#[derive(Debug)]
+#[must_use]
+pub struct PreparedTransition {
+    txn: WriteTxn,
+    capability: Capability,
+    period: String,
+    from: PeriodState,
+    to: PeriodState,
+    control_entry: VId,
+    minted: Vec<(EntryRef, EntryRef)>,
+    blocked: Vec<(EntryRef, String)>,
+}
+
+impl PreparedTransition {
+    /// The committed prefix from which the transition's witnesses were read.
+    #[must_use]
+    pub fn basis(&self) -> CommitSeq {
+        self.txn.basis()
+    }
+
+    /// Release the prepared transaction without publishing any effects.
+    pub fn abort(self) {
+        self.txn.abort();
+    }
+
+    /// Commit with the original witnesses and a fresh check of the same
+    /// acting capability's expiry. A changed period, revocation, approval,
+    /// or policy epoch is judged by the ordinary transaction validator.
+    pub async fn commit<V: asupersync::fs::Vfs + Clone>(
+        self,
+        db: &mut Database<V>,
+        ctx: &PurposeContexts,
+    ) -> Outcome<Transitioned> {
+        let commit = ctx.commit();
+        commit.checkpoint().map_err(WriteTxnError::Interrupted)?;
+        let Self {
+            mut txn,
+            capability,
+            period,
+            from,
+            to,
+            control_entry,
+            minted,
+            blocked,
+        } = self;
+        if let Err(d) = fa_policy::current(&capability, db.frontier()?) {
+            txn.abort();
+            return Ok(Err(policy::refusal(&d)));
+        }
+        match txn.commit(db, &commit).await {
+            Ok(seq) => Ok(Ok(Transitioned {
+                period,
+                from,
+                to,
+                recorded_at: seq,
+                control_entry,
+                minted,
+                blocked,
+            })),
+            Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
+                Ok(Err(Refusal::new(
+                    code::CONFLICT,
+                    exit::CONFLICT,
+                    format!("a concurrent commit invalidated this transition's witness: {detail}"),
+                    "FG-LAW-FCW-01 (first committer wins)",
+                    "re-read the period and retry",
+                )))
+            }
+            Err(WriteTxnError::Write(fgdb::WriteError::CompareAndSetMismatch(_))) => {
+                Ok(Err(Refusal::new(
+                    code::PERIOD_MOVED,
+                    exit::CONFLICT,
+                    format!("period `{period}` is no longer {}", from.name()),
+                    "plan §7.3 (state changes are serialized through the period vertex)",
+                    "re-read the period state and choose the transition again",
+                )))
+            }
+            Err(WriteTxnError::Write(
+                fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
+            )) => Ok(Err(reused_key())),
+            Err(e) => Err(e.into()),
+        }
+    }
 }
 
 /// The registered name of a transition (the `transition` key of its
@@ -369,6 +457,44 @@ pub async fn transition_period<V: asupersync::fs::Vfs + Clone>(
     capability: &Capability,
     approvals: &[ApprovalRef],
 ) -> Outcome<Transitioned> {
+    match prepare_transition(
+        db,
+        ctx,
+        book,
+        period_code,
+        t,
+        principal_ref,
+        reason_code,
+        effective_date,
+        idempotency_key,
+        description,
+        capability,
+        approvals,
+    )? {
+        Ok(prepared) => prepared.commit(db, ctx).await,
+        Err(refusal) => Ok(Err(refusal)),
+    }
+}
+
+/// Stage the production transition without publishing it. Its witnesses
+/// remain pinned while another prepared operation is allowed to commit;
+/// [`PreparedTransition::commit`] validates those original witnesses.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    period_code: &str,
+    t: PeriodTransition,
+    principal_ref: VId,
+    reason_code: u16,
+    effective_date: DateDay,
+    idempotency_key: &[u8],
+    description: Erasable<String>,
+    capability: &Capability,
+    approvals: &[ApprovalRef],
+) -> Outcome<PreparedTransition> {
+    ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
     // 0. Authorization precedes observation (doctrine 8, FA-INV-10): decided
     //    from the capability and the request alone, before the period is read.
     let steward = policy::steward()?;
@@ -504,37 +630,14 @@ pub async fn transition_period<V: asupersync::fs::Vfs + Clone>(
     };
     batches.insert(0, batch);
     txn.write_ordered(db, batches)?;
-    match txn.commit(db, &ctx.commit()).await {
-        Ok(seq) => Ok(Ok(Transitioned {
-            period: period_code.to_string(),
-            from,
-            to,
-            recorded_at: seq,
-            control_entry: evid,
-            minted,
-            blocked,
-        })),
-        Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
-            Ok(Err(Refusal::new(
-                code::CONFLICT,
-                exit::CONFLICT,
-                format!("a concurrent commit invalidated this transition's witness: {detail}"),
-                "FG-LAW-FCW-01 (first committer wins)",
-                "re-read the period and retry",
-            )))
-        }
-        Err(WriteTxnError::Write(fgdb::WriteError::CompareAndSetMismatch(_))) => {
-            Ok(Err(Refusal::new(
-                code::PERIOD_MOVED,
-                exit::CONFLICT,
-                format!("period `{period_code}` is no longer {}", from.name()),
-                "plan §7.3 (state changes are serialized through the period vertex)",
-                "re-read the period state and choose the transition again",
-            )))
-        }
-        Err(WriteTxnError::Write(
-            fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
-        )) => Ok(Err(reused_key())),
-        Err(e) => Err(e.into()),
-    }
+    Ok(Ok(PreparedTransition {
+        txn,
+        capability: capability.clone(),
+        period: period_code.to_string(),
+        from,
+        to,
+        control_entry: evid,
+        minted,
+        blocked,
+    }))
 }
