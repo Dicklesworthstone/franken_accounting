@@ -82,12 +82,21 @@ of 40, the sealed proposal could contain 40 while its recorded approval still
 named the proposal for 100. Reconstructing the original request for an
 idempotent retry does not change the committed proposal's digest contract.
 
-The repair retains early checks of recorded approval identity, book, policy
-epoch and segregation of duties. For balancing, the approval set first has
-to agree on one recorded digest. After the limit law resolves the actual
-legs, every approval must bind that complete proposal before anything is
-staged. The request extension remains part of the approved proposal and the
-retry identity. Other posting classes retain their existing check order.
+For balancing, the repair resolves the actual legs before checking approvals.
+It then binds each cited digest to that complete proposal before reading the
+approval record and checking identity, book, policy epoch and segregation of
+duties. All these witnesses remain in the same posting transaction, before
+anything is staged. The request extension remains part of the approved
+proposal and retry identity. Other posting classes retain their existing
+check order; balancing account and limit refusals now precede approval errors.
+
+An initial private repair instead authenticated a caller-selected common
+approval digest early, then checked it against the resolved proposal. Review
+rejected that approach: it could expose existence, epoch or SoD information
+about an unrelated approval before refusing the post. It was replaced before
+runtime submission or landing. The additional regression distinguishes both
+a real foreign self-approval and a missing foreign approval from a correctly
+bound approval, and preserves the unlimited-account positive path.
 
 The regression uses a real capped account, a Closed-period Adjusting entry
 and a separately recorded Human approval. It pairs refusal of the old amount

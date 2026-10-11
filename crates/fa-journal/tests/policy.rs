@@ -661,6 +661,45 @@ fn balancing_approvals_bind_resolved_effects_and_preserve_request_identity() {
 }
 
 #[test]
+fn balancing_approval_binding_precedes_observation_and_unchanged_amounts_post() {
+    let mut h = harness();
+    h.close_march();
+    let cap = human(PREPARER, &["post", "post_closed"]);
+    let mut request = h.proposal(PREPARER, 100, b"unlimited-balancing", EntryClass::ADJUSTING);
+    request.schema_minor = fa_model::entry::EXTENSIONS_MINOR;
+    request.extensions.push((
+        fa_model::entry::BALANCING_EXTENSION,
+        fa_journal::limit::balancing_bytes(0, 100),
+    ));
+    let own_foreign = h.approve(PREPARER, [0xa9; 32]).unwrap().approval();
+    let head = h.db.frontier().unwrap();
+    // Neither existence nor the foreign record's self-approval status may
+    // be judged before its digest binds to this resolved proposal.
+    for foreign in [
+        own_foreign,
+        ApprovalRef {
+            approval_vid: VId(0xdead_beef),
+            approved_digest: [0xa9; 32],
+        },
+    ] {
+        let refusal = h
+            .post(request.clone(), cap.clone(), vec![foreign])
+            .unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-016", exit::SAFETY));
+        assert_eq!(h.db.frontier().unwrap(), head);
+    }
+    let approved = h
+        .approve(ALICE, request.proposal_digest().unwrap())
+        .unwrap()
+        .approval();
+    let posted = h.post(request.clone(), cap, vec![approved]).unwrap();
+    let (entry, _) = read_entry(&h.db, posted.entry_ref().vid).unwrap().unwrap();
+    assert_eq!(entry.proposal, request);
+    assert_eq!(entry.proposal_digest, approved.approved_digest);
+    assert_eq!(entry.approvals, vec![approved]);
+}
+
+#[test]
 fn approvals_attached_where_none_is_required_are_still_judged() {
     let mut h = harness();
     let orig = h.proposal(PREPARER, 5_000, b"o-1", EntryClass::ORIGINAL);

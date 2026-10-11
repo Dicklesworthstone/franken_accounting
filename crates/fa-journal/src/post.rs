@@ -1030,9 +1030,9 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
     //      approval is a witnessed Approval binding this proposal under the
     //      current epoch, and sod_policy.toml judges the set — on `admit`
     //      cells too, so an attached approval is never ignored. Balancing
-    //      effects are not resolved yet: first witness that the recorded
-    //      approvals agree on one digest, then bind that digest to the
-    //      actual resolved proposal immediately before sealing in step 8.
+    //      effects are not resolved yet, so that path performs the complete
+    //      approval check at step 8 instead. It must establish the final
+    //      digest before observing any cited approval record.
     //      The count is max(matrix, rule).
     let sod_key = fa_policy::sod::posting_key(
         class_name,
@@ -1047,22 +1047,19 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
         .extensions
         .iter()
         .any(|(tag, _)| *tag == fa_model::entry::BALANCING_EXTENSION);
-    let approval_set_digest = if balancing && let Some(first) = req.approvals.first() {
-        first.approved_digest
-    } else {
-        proposal.proposal_digest()?
-    };
-    if let Err(r) = policy::authorize_approvals(
-        &txn,
-        db,
-        book,
-        &req.approvals,
-        &approval_set_digest,
-        epoch,
-        &sod_key,
-        matrix_approvals,
-        preparer,
-    )? {
+    if !balancing
+        && let Err(r) = policy::authorize_approvals(
+            &txn,
+            db,
+            book,
+            &req.approvals,
+            &proposal.proposal_digest()?,
+            epoch,
+            &sod_key,
+            matrix_approvals,
+            preparer,
+        )?
+    {
         txn.abort();
         return Ok(Err(r));
     }
@@ -1730,15 +1727,19 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
         sealed.unit_totals = EntryPayload::fold_unit_totals(&sealed.legs)
             .map_err(|e| KernelError::Corrupt(format!("balancing unit totals: {e:?}")))?;
         let resolved_digest = sealed.proposal_digest()?;
-        if let Some(index) = req
-            .approvals
-            .iter()
-            .position(|approval| approval.approved_digest != resolved_digest)
-        {
+        if let Err(refusal) = policy::authorize_approvals(
+            &txn,
+            db,
+            book,
+            &req.approvals,
+            &resolved_digest,
+            epoch,
+            &sod_key,
+            matrix_approvals,
+            preparer,
+        )? {
             txn.abort();
-            return Ok(Err(policy::refusal(&fa_policy::Denial::ApprovalBinding {
-                index,
-            })));
+            return Ok(Err(refusal));
         }
     }
     let entry: Entry = sealed.seal(req.approvals.clone(), req.plan_certificate)?;
