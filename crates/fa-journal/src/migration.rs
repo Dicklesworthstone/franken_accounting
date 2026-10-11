@@ -61,8 +61,11 @@ pub const RUN_BODY_DOMAIN: &[u8] = b"fa:migration-run-body:v1";
 /// `H(domain ‖ body_digest ‖ list(chunk vid ‖ proposal_digest))`: the
 /// ordered chunk set a `Finalize` (or `Abandon`) binds.
 pub const TIE_OUT_DOMAIN: &[u8] = b"fa:migration-tie-out:v1";
-/// `EntryOrigin::Control.control_kind` of a run's control records.
-pub const MIGRATION_CONTROL_KIND: u16 = 4;
+/// `EntryOrigin::Control.control_kind` of a run's control records: 9,
+/// `migration_run`. fa-g23's control-kind registry assigns 1–5 and 8 and
+/// reserves 6–7; its rebase onto this registers the row and replaces this
+/// constant with the typed symbol.
+pub const MIGRATION_CONTROL_KIND: u16 = 9;
 pub const MAX_RUN_KEY_BYTES: usize = 64;
 pub const MAX_ACCOUNT_CODE_BYTES: usize = 64;
 pub const MAX_TRIAL_BALANCE_LINES: usize = fa_model::limits::MAX_LEGS_PER_ENTRY;
