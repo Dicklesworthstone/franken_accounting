@@ -15,7 +15,9 @@
 
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
-use fa_journal::evidence::{Document, add_document};
+use fa_journal::evidence::{
+    Document, EvidenceAttached, SupplementalEvidence, add_document, attach_evidence,
+};
 use fa_journal::policy::{
     ActivationRequest, ApprovalRequest, Approved, OPEN_END, PolicyActivated, RevocationRequest,
     Revoked, activate_policy, activation_proposal, approval_vid, epoch_witness, record_approval,
@@ -1287,4 +1289,233 @@ fn a_soft_closed_reopen_needs_one_approver_and_a_case_bound_reopen_fails_closed(
     assert_eq!((r.code, r.exit), ("FA-REF-008", exit::SAFETY));
     assert!(r.message.contains("case_preparer"), "{}", r.message);
     assert_eq!(h.march_state(), PeriodState::Closed);
+}
+
+// ---------------------------------------------------------------------------
+// Revocation on the writes that landed beside the admission slice (fa-bcd)
+// ---------------------------------------------------------------------------
+
+/// A refusal of a revoked token: FA-REF-023, exit 7, and nothing written.
+fn assert_revoked<T: std::fmt::Debug>(h: &Harness, before: CommitSeq, r: Result<T, Refusal>) {
+    let r = r.unwrap_err();
+    assert_eq!(
+        (r.code, r.exit),
+        ("FA-REF-023", exit::SAFETY),
+        "{}",
+        r.message
+    );
+    assert_eq!(h.db.frontier().unwrap(), before, "a revoked token wrote");
+}
+
+impl Harness {
+    fn seal(&self, text: &str, n: u8) -> Erasable<String> {
+        Erasable::seal(
+            &text.to_string(),
+            None,
+            &self.book.seal_key,
+            [n; 32],
+            [n; 24],
+        )
+    }
+
+    fn tick(&mut self, capability: Capability, ns: u64, key: &[u8]) -> Result<Ticked, Refusal> {
+        let ctx = self.ctx();
+        let req = TickRequest {
+            observed_utc_ns: ns,
+            source: fa_journal::sweep::SOURCE_DAEMON_CLOCK,
+            monotonic_ok: true,
+            principal_ref: PREPARER,
+            capability,
+            idempotency_key: key.to_vec(),
+            description: self.seal("tick", key[key.len() - 1]),
+        };
+        let db = &mut self.db;
+        let book = &self.book;
+        self.runtime
+            .block_on(async move { record_tick(db, &ctx, book, req).await })
+            .expect("kernel")
+    }
+
+    /// One expiry batch and one reversal batch under `capability`, run as
+    /// the book's System principal.
+    fn sweeps(
+        &mut self,
+        capability: Capability,
+    ) -> (
+        Result<Option<SweepBatch>, Refusal>,
+        Result<Option<ReversalBatch>, Refusal>,
+    ) {
+        let ctx = self.ctx();
+        let req = SweepRequest {
+            principal_ref: fa_journal::rows::system_principal(self.book.book_id),
+            capability,
+            max_batch: 8,
+        };
+        let db = &mut self.db;
+        let book = &self.book;
+        self.runtime.block_on(async move {
+            let mut describe = |text: &str| {
+                Erasable::seal(
+                    &text.to_string(),
+                    None,
+                    &book.seal_key,
+                    [0x5d; 32],
+                    [0x5d; 24],
+                )
+            };
+            let expiry = sweep_batch(db, &ctx, book, &req, &mut describe)
+                .await
+                .expect("kernel");
+            let reversals = sweep_reversals_batch(db, &ctx, book, &req, &mut describe)
+                .await
+                .expect("kernel");
+            (expiry, reversals)
+        })
+    }
+
+    fn review(&mut self, capability: Capability, document: Oid) -> Result<Attested, Refusal> {
+        let ctx = self.ctx();
+        let db = &mut self.db;
+        let book = &self.book;
+        self.runtime
+            .block_on(async move {
+                record_review(db, &ctx, book, &capability, ALICE, document, Vec::new()).await
+            })
+            .expect("kernel")
+    }
+
+    fn assert_manually(
+        &mut self,
+        capability: Capability,
+        proposal: &EntryPayload,
+    ) -> Result<Attested, Refusal> {
+        let ctx = self.ctx();
+        let statement = self.seal("the bank issues no document for this fee", 0x4a);
+        let db = &mut self.db;
+        let book = &self.book;
+        self.runtime
+            .block_on(async move {
+                record_manual_assertion(db, &ctx, book, &capability, proposal, 1, statement).await
+            })
+            .expect("kernel")
+    }
+
+    fn attach(
+        &mut self,
+        capability: Capability,
+        supplement: &SupplementalEvidence,
+    ) -> Result<EvidenceAttached, Refusal> {
+        let ctx = self.ctx();
+        let db = &mut self.db;
+        let book = &self.book;
+        self.runtime
+            .block_on(async move { attach_evidence(db, &ctx, book, &capability, supplement).await })
+            .expect("kernel")
+    }
+}
+
+/// A revoked token authorizes none of the Steward-checked writes that
+/// landed beside the admission slice: a tick, both sweeps (refused before
+/// their candidate scans, so even with nothing due a revoked System token
+/// learns nothing), a review, a ManualAssertion, and attached evidence each
+/// refuse FA-REF-023 and write nothing. Each write then succeeds under
+/// another capability of the same principal: the refusal is the
+/// revocation's, not the request's.
+#[test]
+fn a_revoked_capability_cannot_tick_sweep_attest_or_attach_evidence() {
+    let mut h = harness();
+    let issuer = human(ALICE, &["issue_capability"]);
+
+    // record_tick.
+    let ticker = human(PREPARER, &["witness"]);
+    h.revoke(&issuer, &ticker, b"rv-tick").expect("revoked");
+    let before = h.db.frontier().unwrap();
+    let r = h.tick(ticker, 1_000, b"tick-1");
+    assert_revoked(&h, before, r);
+    assert_eq!(latest_tick(&h.db).unwrap(), None);
+    h.tick(human(PREPARER, &["witness", "read"]), 1_000, b"tick-2")
+        .expect("an unrevoked capability ticks");
+
+    // sweep_batch and sweep_reversals_batch, as the System principal.
+    let system = fa_journal::rows::system_principal(h.book.book_id);
+    let sweeper = Capability::new(system, Profile::System, &[Op::Post], system).unwrap();
+    h.revoke(&issuer, &sweeper, b"rv-sweep").expect("revoked");
+    let before = h.db.frontier().unwrap();
+    let (expiry, reversals) = h.sweeps(sweeper);
+    assert_revoked(&h, before, expiry);
+    assert_revoked(&h, before, reversals);
+    let fresh = Capability::new(system, Profile::System, &[Op::Post, Op::Read], system).unwrap();
+    let (expiry, reversals) = h.sweeps(fresh);
+    assert_eq!(expiry.expect("admitted"), None, "nothing is due");
+    assert_eq!(reversals.expect("admitted"), None, "nothing is due");
+
+    // record_review over the setup document, by a reviewer who did not upload it.
+    let document = h.evidence[0].document_oid;
+    let reviewer = human(ALICE, &["approve"]);
+    h.revoke(&issuer, &reviewer, b"rv-review").expect("revoked");
+    let before = h.db.frontier().unwrap();
+    let r = h.review(reviewer, document);
+    assert_revoked(&h, before, r);
+    assert!(
+        !h.review(human(ALICE, &["approve", "read"]), document)
+            .expect("an unrevoked capability reviews")
+            .already_recorded
+    );
+
+    // record_manual_assertion over an Original with no document.
+    let poster = human(PREPARER, &["post"]);
+    h.revoke(&issuer, &poster, b"rv-post").expect("revoked");
+    let mut bare = h.proposal(PREPARER, 4_200, b"asserted", EntryClass::ORIGINAL);
+    bare.evidence.clear();
+    let before = h.db.frontier().unwrap();
+    let r = h.assert_manually(poster.clone(), &bare);
+    assert_revoked(&h, before, r);
+    let renewed = human(PREPARER, &["post", "read"]);
+    h.assert_manually(renewed.clone(), &bare)
+        .expect("an unrevoked capability asserts");
+
+    // attach_evidence to a committed entry, citing a second document.
+    let entry_ref = match h
+        .post(
+            h.proposal(PREPARER, 6_100, b"supported", EntryClass::ORIGINAL),
+            controller(),
+            Vec::new(),
+        )
+        .expect("posted")
+    {
+        Posted::Committed { entry_ref, .. } => Some(entry_ref),
+        Posted::AlreadyRecorded { .. } => None,
+    }
+    .expect("a new entry commits");
+    let receipt = Document {
+        book_id: h.book.book_id,
+        kind: 1,
+        mime: "text/plain".into(),
+        grade: 3,
+        retrieved_by: PREPARER,
+        bytes: b"RECEIPT 2026-0316 Policy Co: March rent paid (fixture supplement)".to_vec(),
+    };
+    let supplement = SupplementalEvidence {
+        book_id: h.book.book_id,
+        entry_ref,
+        documents: vec![receipt.evidence_ref(1)],
+        attached_by: PREPARER,
+    };
+    {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        h.runtime
+            .block_on(async move { add_document(db, &ctx, book, &receipt).await })
+            .expect("kernel")
+            .expect("document admitted");
+    }
+    let before = h.db.frontier().unwrap();
+    let r = h.attach(poster, &supplement);
+    assert_revoked(&h, before, r);
+    assert!(
+        !h.attach(renewed, &supplement)
+            .expect("an unrevoked capability attaches")
+            .already_recorded
+    );
 }

@@ -948,6 +948,10 @@ pub async fn sweep_reversals_batch<V: asupersync::fs::Vfs + Clone>(
 
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
+    if let Err(r) = policy::capability_witness(&txn, db, book, &req.capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
     let (_, witnessed_tick) = tick_witness(&txn, db)?;
     if witnessed_tick != Some(tick) {
         txn.abort();
