@@ -313,6 +313,11 @@ name = "custody_len"
 id = 67
 name = "legal_holds"
 
+# fa-k1u: commitment to the complete unit definitions journaled at genesis.
+[[property]]
+id = 68
+name = "unit_table_digest"
+
 # ---- relations ------------------------------------------------------------
 [[relation]]
 id = 1

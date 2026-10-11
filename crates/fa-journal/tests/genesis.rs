@@ -5285,3 +5285,207 @@ fn dimension_edges_are_published_with_legs_and_their_metadata_is_verified() {
             .is_green()
     );
 }
+
+#[test]
+fn journaled_units_are_runtime_truth_and_binary_extensions_do_not_install_units() {
+    let h = harness();
+    let mut supported = h.book.units.clone();
+    let extra = supported
+        .register(fa_money::Unit {
+            code: "FUTURE".into(),
+            version: 0,
+            scale: 4,
+            kind: fa_money::UnitKind::Custom,
+            rounding_default: fa_money::RoundingLaw::Floor,
+        })
+        .unwrap();
+    let loaded = genesis::read_units(&h.db, h.book.book_id, &supported).unwrap();
+    assert!(
+        loaded.get(extra).is_none(),
+        "binary additions must be journaled before use"
+    );
+    assert_eq!(
+        loaded.iter().collect::<Vec<_>>(),
+        h.book.units.iter().collect::<Vec<_>>()
+    );
+    for (id, unit) in loaded.iter() {
+        let vid = fa_model::unit_vid(
+            h.book.book_id,
+            &format!("{}@v{}", unit.code, unit.version),
+        );
+        let row = h.db.vertex(vid).unwrap().unwrap();
+        let bytes = rows::bytes(&row, property::FA_PAYLOAD, "unit.payload").unwrap();
+        let definition = fa_model::UnitDefinition::decode(&bytes).unwrap();
+        assert_eq!(definition.id, id);
+        assert_eq!(&definition.unit, unit);
+    }
+}
+
+#[test]
+fn unit_reconciliation_refuses_every_changed_historical_meaning() {
+    let h = harness();
+    for change in ["code", "version", "scale", "kind", "ISO", "rounding", "missing"] {
+        let mut supported = UnitRegistry::empty();
+        for (id, unit) in h.book.units.iter() {
+            if change == "missing" && id.0 + 1 == h.book.units.len() as u32 {
+                continue;
+            }
+            let mut unit = unit.clone();
+            if id == h.usd {
+                match change {
+                    "code" => unit.code = "CHANGED".into(),
+                    "version" => unit.version = 1,
+                    "scale" => unit.scale = 4,
+                    "kind" => unit.kind = fa_money::UnitKind::Custom,
+                    "ISO" => unit.kind = fa_money::UnitKind::Currency { iso4217: 978 },
+                    "rounding" => unit.rounding_default = fa_money::RoundingLaw::HalfUp,
+                    "missing" => {}
+                    _ => unreachable!(),
+                }
+            }
+            supported.register(unit).unwrap();
+        }
+        let before = h.db.frontier().unwrap();
+        let error = genesis::read_units(&h.db, h.book.book_id, &supported)
+            .unwrap_err()
+            .to_string();
+        let field = match change {
+            "ISO" | "kind" => "kind/ISO",
+            "rounding" => "default rounding law",
+            "missing" => "unsupported unit",
+            other => other,
+        };
+        assert!(error.contains(field), "{change}: {error}");
+        assert_eq!(h.db.frontier().unwrap(), before);
+    }
+}
+
+#[test]
+fn unit_payload_and_table_commitment_damage_are_refused_without_repair() {
+    for damage in [
+        "truncated",
+        "major",
+        "minor",
+        "missing_payload",
+        "payload_type",
+        "missing_table",
+        "table_type",
+        "table_digest",
+        "last_membership",
+        "book_id",
+        "code",
+        "version",
+        "id",
+        "scale",
+    ] {
+        let mut h = harness();
+        let uvid = fa_model::unit_vid(h.book.book_id, "USD@v0");
+        let row = h.db.vertex(uvid).unwrap().unwrap();
+        let mut payload = rows::bytes(&row, property::FA_PAYLOAD, "unit.payload").unwrap();
+        let mut batch = fgdb::WriteBatch::new(relation::IN_BOOK);
+        match damage {
+            "truncated" | "major" | "minor" => {
+                match damage {
+                    "truncated" => {
+                        payload.pop();
+                    }
+                    "major" => payload[4] = 2,
+                    "minor" => payload[6] = 1,
+                    _ => unreachable!(),
+                }
+                batch.set_vertex_property(
+                    uvid,
+                    property::FA_PAYLOAD,
+                    Some(CanonicalScalar::bytes(payload).unwrap()),
+                );
+            }
+            "missing_payload" => {
+                batch.set_vertex_property(uvid, property::FA_PAYLOAD, None);
+            }
+            "payload_type" => {
+                batch.set_vertex_property(
+                    uvid,
+                    property::FA_PAYLOAD,
+                    Some(CanonicalScalar::Int(1)),
+                );
+            }
+            "missing_table" => {
+                batch.set_vertex_property(book_root(), property::UNIT_TABLE_DIGEST, None);
+            }
+            "table_type" => {
+                batch.set_vertex_property(
+                    book_root(),
+                    property::UNIT_TABLE_DIGEST,
+                    Some(CanonicalScalar::Int(1)),
+                );
+            }
+            "table_digest" => {
+                batch.set_vertex_property(
+                    book_root(),
+                    property::UNIT_TABLE_DIGEST,
+                    Some(CanonicalScalar::bytes(vec![0; 32]).unwrap()),
+                );
+            }
+            "last_membership" => {
+                let (_, last) = h.book.units.iter().last().unwrap();
+                let last_vid = fa_model::unit_vid(
+                    h.book.book_id,
+                    &format!("{}@v{}", last.code, last.version),
+                );
+                batch.delete_edge(edge_id(relation::IN_BOOK, last_vid, book_root()));
+            }
+            "book_id" => {
+                batch.set_vertex_property(
+                    uvid,
+                    property::BOOK_ID,
+                    Some(CanonicalScalar::bytes(vec![0xff; 16]).unwrap()),
+                );
+            }
+            "code" => {
+                batch.set_vertex_property(
+                    uvid,
+                    property::CODE,
+                    Some(CanonicalScalar::ucs_basic_text("CHANGED").unwrap()),
+                );
+            }
+            "version" => {
+                batch.set_vertex_property(
+                    uvid,
+                    property::VERSION,
+                    Some(CanonicalScalar::Int(1)),
+                );
+            }
+            "id" => {
+                batch.set_vertex_property(
+                    uvid,
+                    property::UNIT_ID,
+                    Some(CanonicalScalar::Int(99)),
+                );
+            }
+            "scale" => {
+                batch.set_vertex_property(
+                    uvid,
+                    property::SCALE,
+                    Some(CanonicalScalar::Int(4)),
+                );
+            }
+            _ => unreachable!(),
+        }
+        h.write_raw(batch);
+        let before = h.db.frontier().unwrap();
+        let error = genesis::read_units(&h.db, h.book.book_id, &h.book.units)
+            .unwrap_err()
+            .to_string();
+        if damage.starts_with("missing") {
+            assert!(error.contains("pre-payload"), "{damage}: {error}");
+            assert!(error.contains("backfill"), "{damage}: {error}");
+        } else {
+            assert!(error.contains("unit"), "{damage}: {error}");
+        }
+        assert_eq!(
+            h.db.frontier().unwrap(),
+            before,
+            "{damage} must not repair silently"
+        );
+    }
+}

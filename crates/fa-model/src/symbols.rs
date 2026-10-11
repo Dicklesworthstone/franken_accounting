@@ -131,6 +131,7 @@ symbols!(
         (DIMENSION_KIND, "dimension_kind", 65),
         (CUSTODY_LEN, "custody_len", 66),
         (LEGAL_HOLDS, "legal_holds", 67),
+        (UNIT_TABLE_DIGEST, "unit_table_digest", 68),
     ]
 );
 

@@ -139,6 +139,17 @@ impl<V: Vfs + Clone> AsyncBook<V> {
         let spec = query
             .with_restriction(|| fa_journal::genesis::read_book_spec(&db))?
             .ok_or(BookError::NoBook)?;
+        let supported_units = fa_money::UnitRegistry::embedded()?;
+        let units = query.with_restriction(|| {
+            fa_journal::genesis::read_units(&db, spec.book_id, &supported_units)
+        })?;
+        if units.get(spec.base_unit).is_none() {
+            return Err(KernelError::Corrupt(format!(
+                "book.base_unit {} is absent from its journaled unit table",
+                spec.base_unit.0
+            ))
+            .into());
+        }
         let blob_directory = directory
             .child(&commit, "blobs")
             .await
@@ -149,7 +160,7 @@ impl<V: Vfs + Clone> AsyncBook<V> {
             context: BookContext {
                 book_id: spec.book_id,
                 calendar: spec.calendar,
-                units: fa_money::UnitRegistry::embedded()?,
+                units,
                 seal_key: keys.seal_key(),
                 symbols: SymbolTable::compiled(),
             },

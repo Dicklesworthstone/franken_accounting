@@ -40,6 +40,23 @@ Register verification compares both amount columns, counts, identity, period mem
 
 The embedded API's `Book::advance_registers(period)` consumes new committed entry payloads through `delta_since` for native posted/pending period cells. It publishes cells and the consumed cursor atomically; `Book::rebuild_registers(period)` replaces them from a fresh journal fold. Reopening rehydrates the delta window, and an actually retired cursor falls back to a full rebuild. Staged migration chunks stay invisible; finalizing a run triggers a full fold to include newly activated chunks older than the cursor. Pending-sum overflow also falls back to the final fold, so holds released later in the same suffix do not prevent advancement; a genuinely oversized final sum still fails. `verify_registers` also checks the maintenance state against its journal prefix. This slice still scans projection metadata and writes the period's cells; it makes no throughput claim. Reports retain their literal folds. Historical register checkpoints, cadence policies, other register families, supervised daemon maintenance and cached report reads remain unfinished.
 
+### Stored unit identity
+
+New books retain a versioned canonical definition for every unit: its numeric
+identifier, code, version, scale, kind, currency ISO number where applicable,
+and default rounding-law identifier. The book also commits to the complete
+unit table. Reopening reconstructs the runtime table from those stored
+definitions and checks them against the executable's supported registry.
+Changed definitions, missing members, corrupt payloads and unsupported unit
+identifiers fail with exit 5 before amounts are interpreted. Extra units in a
+newer executable are not silently installed into an older book.
+
+**Compatibility:** books created before canonical unit payloads and the table
+commitment were recorded are refused. Keep the creating executable for those
+books. An explicit, authorized backfill that journals the adopted definitions
+and their provenance is still pending; reopening never fills missing facts from
+the current binary. This does not implement unit evolution or redenomination.
+
 ### Certified trial balances and replay
 
 Retain the exact selector, known-at sequence, accounting journal prefix, registry

@@ -53,7 +53,7 @@ const INPUTS: &[(&str, &str)] = &[
         "Account",
         "code,name,account_type,normal_balance,posting,unit_policy,lower_bound,upper_bound,limit_scope,_fa_payload,book_id",
     ),
-    ("Book", "_fa_payload,book_id,base_unit,symbols_digest"),
+    ("Book", "_fa_payload,book_id,base_unit,symbols_digest,unit_table_digest"),
     ("Entry", "_fa_payload,_fa_digest"),
     ("FiscalCalendar", "_fa_payload,calendar_id"),
     ("MigrationRun", "_fa_payload,_fa_digest,state"),

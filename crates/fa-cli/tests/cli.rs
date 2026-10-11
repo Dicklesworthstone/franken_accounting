@@ -5011,3 +5011,160 @@ fn projection_verification_refuses_filters_and_extra_arguments_before_opening() 
     assert_eq!(code, 0, "{help}\n{err}");
     assert!(text(&doc(&help), "text").contains("verify projections"));
 }
+
+#[test]
+fn directory_reopen_refuses_changed_or_missing_unit_facts_through_facade_and_cli()
+-> std::io::Result<()> {
+    use asupersync::runtime::RuntimeBuilder;
+    use asupersync::types::Budget;
+    use fa::{Book, BookKeys, Entropy};
+    use fa_journal::BookSpec;
+    use fa_model::Id128;
+    use fa_model::symbols::{property, relation};
+    use fa_money::{RoundingLaw, UnitKind, UnitRegistry};
+    use fgdb::{Database, DatabaseKeys, WriteBatch};
+    use fgdb_types::CanonicalScalar;
+    use fgdb_types::context::PurposeContexts;
+    use fgdb_types::ids::DatabaseSecurityNamespaceId;
+
+    for damage in [
+        "kind",
+        "ISO",
+        "rounding",
+        "truncated",
+        "major",
+        "minor",
+        "missing_payload",
+        "missing_table",
+    ] {
+        let dir = tmp("unit-reopen")?;
+        let book = dir.join("book");
+        let book_id = Id128([57; 16]);
+        let keys = BookKeys::for_development(57);
+        let usd = UnitRegistry::embedded().unwrap().lookup("USD").unwrap();
+        let handle = Book::create_dir(
+            &book,
+            keys.clone(),
+            BookSpec {
+                book_id,
+                name: "Journaled unit identity".into(),
+                base_unit: usd,
+                calendar: fa_time::FiscalCalendar::monthly("fiscal", 1, 1).unwrap(),
+                time_zone_policy: None,
+                entities: Vec::new(),
+                opening_date: None,
+            },
+            Entropy::deterministic(57),
+        )
+        .unwrap();
+        let original = handle.context().units.get(usd).unwrap().clone();
+        keys.save(&book.join("book.keys")).unwrap();
+        drop(handle);
+
+        let reopened = Book::open_dir(&book, keys.clone(), Entropy::deterministic(57))
+            .unwrap();
+        assert_eq!(reopened.context().units.get(usd), Some(&original));
+        drop(reopened);
+        let (code, out, err) = fa(Some(&book), &["book", "info", "--json"]);
+        assert_eq!(code, 0, "before {damage}: {out}\n{err}");
+
+        let runtime = RuntimeBuilder::new().build().unwrap();
+        let root = runtime.request_cx_with_budget(Budget::INFINITE);
+        let ctx = PurposeContexts::narrow_runtime_root(&root);
+        let mut db = runtime
+            .block_on(Database::open(
+                &ctx.commit(),
+                &book.join("store"),
+                DatabaseKeys::new([57; 32], DatabaseSecurityNamespaceId([58; 32]), [59; 32]),
+            ))
+            .unwrap();
+        let vid = fa_model::unit_vid(book_id, "USD@v0");
+        let row = db.vertex(vid).unwrap().unwrap();
+        let payload = fa_journal::rows::bytes(&row, property::FA_PAYLOAD, "unit.payload")
+            .unwrap();
+        let mut definition = fa_model::UnitDefinition::decode(&payload).unwrap();
+        let mut batch = WriteBatch::new(relation::IN_BOOK);
+        match damage {
+            "kind" | "ISO" | "rounding" => {
+                match damage {
+                    "kind" => definition.unit.kind = UnitKind::Custom,
+                    "ISO" => definition.unit.kind = UnitKind::Currency { iso4217: 978 },
+                    "rounding" => definition.unit.rounding_default = RoundingLaw::HalfUp,
+                    _ => unreachable!(),
+                }
+                batch.set_vertex_property(
+                    vid,
+                    property::FA_PAYLOAD,
+                    Some(CanonicalScalar::bytes(definition.canonical_bytes().unwrap()).unwrap()),
+                );
+            }
+            "truncated" | "major" | "minor" => {
+                let mut damaged = payload;
+                match damage {
+                    "truncated" => {
+                        damaged.pop();
+                    }
+                    "major" => damaged[4] = 2,
+                    "minor" => damaged[6] = 1,
+                    _ => unreachable!(),
+                }
+                batch.set_vertex_property(
+                    vid,
+                    property::FA_PAYLOAD,
+                    Some(CanonicalScalar::bytes(damaged).unwrap()),
+                );
+            }
+            "missing_payload" => {
+                batch.set_vertex_property(vid, property::FA_PAYLOAD, None);
+            }
+            "missing_table" => {
+                batch.set_vertex_property(
+                    fa_journal::rows::book_root(),
+                    property::UNIT_TABLE_DIGEST,
+                    None,
+                );
+            }
+            _ => unreachable!(),
+        }
+        let damaged_at = runtime.block_on(db.write(&ctx.commit(), batch)).unwrap();
+        drop(db);
+
+        let error = Book::open_dir(&book, keys.clone(), Entropy::deterministic(57))
+            .err()
+            .expect("reopen must refuse changed historical unit facts");
+        assert_eq!(error.exit(), 5, "{damage}: {error}");
+        let expected = match damage {
+            "kind" | "ISO" => "kind/ISO",
+            "rounding" => "default rounding law",
+            "major" => "unit.schema_major",
+            "minor" => "unit.schema_minor",
+            "missing_payload" | "missing_table" => "pre-payload",
+            _ => "unit.",
+        };
+        assert!(
+            error.to_string().contains(expected),
+            "{damage}: expected {expected}: {error}"
+        );
+        let (code, out, err) = fa(Some(&book), &["book", "info", "--json"]);
+        assert_eq!(code, 5, "{damage}: {out}\n{err}");
+        assert!(out.contains(expected), "{damage}: {out}\n{err}");
+        if damage.starts_with("missing") {
+            assert!(out.contains("backfill"), "{out}");
+            assert!(out.contains("not available yet"), "{out}");
+        }
+
+        let db = runtime
+            .block_on(Database::open(
+                &ctx.commit(),
+                &book.join("store"),
+                DatabaseKeys::new([57; 32], DatabaseSecurityNamespaceId([58; 32]), [59; 32]),
+            ))
+            .unwrap();
+        assert_eq!(
+            db.frontier().unwrap(),
+            damaged_at,
+            "{damage}: facade and CLI refusals must preserve the journal"
+        );
+    }
+    Ok(())
+}
