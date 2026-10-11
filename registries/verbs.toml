@@ -86,12 +86,24 @@ name = "period"
 summary = "Create a fiscal year's periods, list them, or move one along the period state machine (journaled)."
 writes = true
 subcommands = ["create", "list", "open", "soft-close", "close", "lock", "reopen"]
-flags = ["--fiscal-year", "--to", "--reason", "--key", "--date"]
+flags = ["--fiscal-year", "--to", "--reason", "--key", "--date", "--plan-out", "--plan", "--approval"]
 switches = []
-events = ["periods_created", "periods", "period_transitioned"]
+events = ["periods_created", "periods", "period_transitioned", "period_planned"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["period create --fiscal-year N", "period list", "period open|soft-close|close|lock|reopen <code> [--to open|soft-closed] [--reason N] [--key K] [--date YYYY-MM-DD]"]
+usage = ["period create --fiscal-year N", "period list", "period open|soft-close|close|lock|reopen <code> [--to open|soft-closed] [--reason N] [--key K] [--date YYYY-MM-DD]", "period lock|reopen <code> --plan-out <file>   (writes the planned proposal and prints its proposal_digest; commits nothing)", "period lock|reopen <code> --plan <file> --approval <vid>...   (commits exactly the planned proposal, citing approvals of its digest)"]
 example = "fa period open FY2026-P03 --book ./books/myco --json"
+
+[[verb]]
+name = "approve"
+summary = "Record an approval of a planned proposal's digest under the caller's capability (journaled; bound to the current security policy epoch)."
+writes = true
+subcommands = []
+flags = ["--proposal", "--grant"]
+switches = []
+events = ["approved"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["approve --proposal <proposal_digest> [--as <principal>] [--grant <op>]...   (the digest is printed by `fa period <t> <code> --plan-out <file>`; a second approver is a second invocation as another principal)"]
+example = "fa approve --proposal <proposal_digest> --as controller --book ./books/myco --json"
 
 [[verb]]
 name = "post"
@@ -394,6 +406,16 @@ fields = ["periods:[period]"]
 name = "period_transitioned"
 doc = "A period moved along the state machine by a journaled control entry."
 fields = ["period:string", "from:string", "to:string", "control_entry:hex", "recorded_at:seq"]
+
+[[event]]
+name = "period_planned"
+doc = "A transition was planned and its sealed proposal written to a file; nothing was committed. Approvals bind proposal_digest."
+fields = ["period:string", "from:string", "to:string", "proposal_digest:hex", "plan:string"]
+
+[[event]]
+name = "approved"
+doc = "An approval of a proposal digest was recorded (or already existed: then nothing was written and security_policy_epoch is null)."
+fields = ["approval_vid:hex", "approved_digest:hex", "security_policy_epoch:int?", "recorded_at:seq", "already_recorded:bool"]
 
 [[event]]
 name = "posted"

@@ -253,6 +253,8 @@ impl Harness {
                         [7; 32],
                         [8; 24],
                     ),
+                    &Capability::embedded(PRINCIPAL, &["close"]).expect("close"),
+                    &[],
                 )
                 .await
             })
@@ -385,6 +387,8 @@ fn harness() -> Harness {
                     [3; 32],
                     [4; 24],
                 ),
+                &Capability::embedded(PRINCIPAL, &["close"]).expect("close"),
+                &[],
             )
             .await
         })

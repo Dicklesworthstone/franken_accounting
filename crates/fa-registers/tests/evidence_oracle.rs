@@ -442,6 +442,8 @@ fn book() -> Book {
                     [3; 32],
                     [4; 24],
                 ),
+                &Capability::embedded(principal, &["close"]).expect("close"),
+                &[],
             )
             .await
         })

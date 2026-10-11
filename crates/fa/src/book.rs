@@ -478,7 +478,13 @@ impl Book {
         )
     }
 
-    /// Move a period along the state machine, as a journaled control record.
+    /// Move a period along the state machine under `capability` (plan §14:
+    /// it must be `principal`'s and hold the transition's op). The facade
+    /// seals the description with fresh salt, so it cites no approvals:
+    /// transitions that need approvers (Lock, SoftClosed→Reopen) are planned
+    /// with [`Book::plan_transition`], approved with [`Book::approve`], and
+    /// committed with [`Book::transition_planned`].
+    #[allow(clippy::too_many_arguments)]
     pub fn transition_period(
         &mut self,
         period_code: &str,
@@ -487,13 +493,80 @@ impl Book {
         reason_code: u16,
         effective_date: DateDay,
         idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
     ) -> Outcome<Transitioned> {
         let description = self.seal_text(&format!("period {period_code}: {t:?}"))?;
         let purposes = self.purposes();
         let ctx = &self.ctx;
         let runtime = &self.runtime;
         Ok(with_store!(&mut self.store, db => runtime.block_on(async {
-            fa_journal::transition_period(db, &purposes, ctx, period_code, t, principal, reason_code, effective_date, idempotency_key, description).await
+            fa_journal::transition_period(db, &purposes, ctx, period_code, t, principal, reason_code, effective_date, idempotency_key, description, capability, &[]).await
+        }))?)
+    }
+
+    /// Plan a transition without committing (R4): the description is sealed
+    /// once, so approvers bind the plan's `proposal_digest` and
+    /// [`Book::transition_planned`] commits exactly that proposal. The
+    /// period is read at the head; authority is judged at the commit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn plan_transition(
+        &self,
+        period_code: &str,
+        t: PeriodTransition,
+        principal: VId,
+        reason_code: u16,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::TransitionPlan> {
+        let description = self.seal_text(&format!("period {period_code}: {t:?}"))?;
+        Ok(
+            with_store!(&self.store, db => fa_journal::plan_transition(db, &self.ctx, period_code, t, principal, reason_code, effective_date, idempotency_key, description))?,
+        )
+    }
+
+    /// The digest an approval of `plan` binds.
+    pub fn plan_digest(&self, plan: &fa_journal::TransitionPlan) -> Result<[u8; 32], BookError> {
+        Ok(plan.proposal_digest(&self.ctx)?)
+    }
+
+    /// Commit a planned transition under `capability`, citing `approvals`
+    /// of the plan's proposal digest. The kernel rebuilds the proposal from
+    /// the plan's inputs and the period's current state, so a period that
+    /// moved since the plan no longer matches its approvals (FA-REF-016).
+    pub fn transition_planned(
+        &mut self,
+        plan: &fa_journal::TransitionPlan,
+        t: PeriodTransition,
+        capability: &fa_journal::Capability,
+        approvals: &[fa_model::ApprovalRef],
+    ) -> Outcome<Transitioned> {
+        let description = plan.description.clone();
+        let purposes = self.purposes();
+        let ctx = &self.ctx;
+        let runtime = &self.runtime;
+        Ok(with_store!(&mut self.store, db => runtime.block_on(async {
+            fa_journal::transition_period(db, &purposes, ctx, &plan.period_code, t, plan.principal_ref, plan.reason_code, plan.effective_date, &plan.idempotency_key, description, capability, approvals).await
+        }))?)
+    }
+
+    /// Record an approval of `proposal_digest` under `capability` (plan
+    /// §14.3): a journaled object bound to the digest and the current
+    /// security policy epoch. The capability must hold `approve`.
+    pub fn approve(
+        &mut self,
+        capability: fa_journal::Capability,
+        proposal_digest: [u8; 32],
+    ) -> Outcome<fa_journal::Approved> {
+        let req = fa_journal::ApprovalRequest {
+            capability,
+            approved_proposal_digest: proposal_digest,
+            role: 0,
+        };
+        let purposes = self.purposes();
+        let ctx = &self.ctx;
+        let runtime = &self.runtime;
+        Ok(with_store!(&mut self.store, db => runtime.block_on(async {
+            fa_journal::record_approval(db, &purposes, ctx, req).await
         }))?)
     }
 
@@ -636,6 +709,7 @@ impl Book {
                 principal,
                 trunk: true,
                 op: fa_policy::Op::Witness,
+                book: self.ctx.book_id,
                 legs: &[],
             },
         ) {
@@ -952,9 +1026,17 @@ mod tests {
             .unwrap()
             .code
             .clone();
-        book.transition_period(&march, PeriodTransition::Open, principal, 1, day, b"open")
-            .expect("kernel")
-            .expect("opens");
+        book.transition_period(
+            &march,
+            PeriodTransition::Open,
+            principal,
+            1,
+            day,
+            b"open",
+            &Capability::embedded(principal, &["close"]).expect("close"),
+        )
+        .expect("kernel")
+        .expect("opens");
         assert_eq!(
             book.periods()
                 .unwrap()
@@ -1027,9 +1109,17 @@ mod tests {
             .unwrap()
             .code
             .clone();
-        book.transition_period(&march, PeriodTransition::Open, preparer, 1, day, b"open")
-            .expect("kernel")
-            .expect("opens");
+        book.transition_period(
+            &march,
+            PeriodTransition::Open,
+            preparer,
+            1,
+            day,
+            b"open",
+            &Capability::embedded(preparer, &["close"]).expect("close"),
+        )
+        .expect("kernel")
+        .expect("opens");
         let upload = fa_journal::Document {
             book_id,
             kind: 1,
@@ -1139,9 +1229,17 @@ mod tests {
             .install_chart(&chart(usd), principal, day, b"chart")
             .expect("kernel")
             .expect("installs");
-        book.transition_period(&march, PeriodTransition::Open, principal, 1, day, b"open")
-            .expect("kernel")
-            .expect("opens");
+        book.transition_period(
+            &march,
+            PeriodTransition::Open,
+            principal,
+            1,
+            day,
+            b"open",
+            &Capability::embedded(principal, &["close"]).expect("close"),
+        )
+        .expect("kernel")
+        .expect("opens");
         post_rent(&mut book, usd, principal, day, b"rent", 150_000)
             .expect("kernel")
             .expect("admitted");
@@ -1194,9 +1292,17 @@ mod tests {
                 .unwrap()
                 .code
                 .clone();
-            book.transition_period(&march, PeriodTransition::Open, principal, 1, day, b"open")
-                .expect("kernel")
-                .expect("opens");
+            book.transition_period(
+                &march,
+                PeriodTransition::Open,
+                principal,
+                1,
+                day,
+                b"open",
+                &Capability::embedded(principal, &["close"]).expect("close"),
+            )
+            .expect("kernel")
+            .expect("opens");
             entry_ref = post_rent(&mut book, usd, principal, day, b"rent", 150_000)
                 .expect("kernel")
                 .expect("admitted")

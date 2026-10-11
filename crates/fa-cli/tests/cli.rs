@@ -238,6 +238,141 @@ fn capabilities_and_robot_docs_are_in_tool() {
     assert_eq!(code, 0);
 }
 
+/// R4 (fa-llx): a Lock is dual-controlled, so the CLI plans it, a second
+/// principal approves the plan's digest, and the commit cites that approval.
+/// Without an approval it refuses 012; with the preparer's own approval, 008.
+#[test]
+fn a_lock_commits_from_its_plan_with_a_second_principals_approval() -> std::io::Result<()> {
+    let dir = tmp("approve-lock")?;
+    let book = dir.join("book");
+    assert_eq!(
+        fa(Some(&book), &["book", "create", "--name", "Approve Co"]).0,
+        0
+    );
+    assert_eq!(
+        fa(Some(&book), &["period", "create", "--fiscal-year", "2026"]).0,
+        0
+    );
+    let march = "FY2026-P03";
+    assert_eq!(fa(Some(&book), &["period", "open", march]).0, 0);
+    assert_eq!(fa(Some(&book), &["period", "close", march]).0, 0);
+    let (code, out, _) = fa(Some(&book), &["period", "lock", march, "--json"]);
+    assert_eq!(code, 7, "{out}");
+    assert!(out.contains("\"code\":\"FA-REF-012\""), "{out}");
+    let plan = dir.join("lock.plan").display().to_string();
+    let (code, out, _) = fa(
+        Some(&book),
+        &["period", "lock", march, "--plan-out", &plan, "--json"],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("\"event\":\"period_planned\""), "{out}");
+    assert!(out.contains("\"to\":\"Locked\""), "{out}");
+    let digest = field(&out, "proposal_digest")
+        .unwrap_or_default()
+        .to_string();
+    assert_eq!(digest.len(), 64, "{out}");
+    // Planning committed nothing.
+    let (_, out, _) = fa(Some(&book), &["period", "list", "--json"]);
+    assert!(!out.contains("Locked"), "{out}");
+    // An approval needs a plan to bind.
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "period",
+            "lock",
+            march,
+            "--approval",
+            &"0".repeat(32),
+            "--json",
+        ],
+    );
+    assert_eq!(code, 2, "{out}");
+    // The preparer's own approval is recorded, and refused as self-approval.
+    let (code, out, _) = fa(Some(&book), &["approve", "--proposal", &digest, "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let own = field(&out, "approval_vid").unwrap_or_default().to_string();
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "period",
+            "lock",
+            march,
+            "--plan",
+            &plan,
+            "--approval",
+            &own,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 7, "{out}");
+    assert!(out.contains("\"code\":\"FA-REF-008\""), "{out}");
+    // A second principal approves; the lock commits citing it.
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "approve",
+            "--proposal",
+            &digest,
+            "--as",
+            "controller",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("\"event\":\"approved\""), "{out}");
+    assert!(out.contains("\"already_recorded\":false"), "{out}");
+    let approval = field(&out, "approval_vid").unwrap_or_default().to_string();
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "approve",
+            "--proposal",
+            &digest,
+            "--as",
+            "controller",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("\"already_recorded\":true"), "{out}");
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "period",
+            "lock",
+            march,
+            "--plan",
+            &plan,
+            "--approval",
+            &approval,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("\"event\":\"period_transitioned\"") && out.contains("\"to\":\"Locked\""),
+        "{out}"
+    );
+    // The plan is spent: the period is Locked now, so replaying it is an
+    // illegal transition.
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "period",
+            "lock",
+            march,
+            "--plan",
+            &plan,
+            "--approval",
+            &approval,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 7, "{out}");
+    assert!(out.contains("\"code\":\"FA-REF-040\""), "{out}");
+    Ok(())
+}
+
 #[test]
 fn a_grant_typo_is_a_usage_error_naming_the_op_never_a_silently_held_string() -> std::io::Result<()>
 {
@@ -680,30 +815,63 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Res
     );
     let (code, _, _) = fa(Some(&book), &["period", "soft-close", march]);
     assert_eq!(code, 0);
-    let (code, _, _) = fa(Some(&book), &["period", "close", march]);
-    assert_eq!(code, 0);
+    // A SoftClosed period still takes a post under `post_softclosed`; it lands
+    // in March after the register was materialized, so the register is stale:
+    // a verification failure (exit 8).
     let (code, out, _) = fa(
         Some(&book),
-        &["post", "--intent", &late, "--evidence", &ev, "--json"],
+        &[
+            "post",
+            "--intent",
+            &late,
+            "--evidence",
+            &ev,
+            "--grant",
+            "post_softclosed",
+            "--json",
+        ],
     );
-    assert_eq!(code, 7, "{out}");
-    assert!(
-        out.contains("\"code\":\"FA-REF-010\"") && out.contains("Closed"),
-        "{out}"
-    );
-    // An illegal transition is a safety block too; a stale register after a post is a verification failure (exit 8).
-    let (code, out, _) = fa(Some(&book), &["period", "open", march, "--json"]);
-    assert_eq!(code, 7, "{out}");
-    let (code, _, _) = fa(Some(&book), &["period", "reopen", march, "--to", "open"]);
-    assert_eq!(code, 0);
-    let (code, _, _) = fa(Some(&book), &["post", "--intent", &late, "--evidence", &ev]);
-    assert_eq!(code, 0);
+    assert_eq!(code, 0, "{out}");
     let (code, out, err) = fa(
         Some(&book),
         &["verify", "registers", "--period", march, "--json"],
     );
     assert_eq!(code, 8, "{out}\n{err}");
     assert!(out.contains("\"event\":\"verification_failed\""), "{out}");
+    let (code, _, _) = fa(Some(&book), &["period", "close", march]);
+    assert_eq!(code, 0);
+    let later = write(
+        &dir,
+        "later.json",
+        r#"{"effective_date":"2026-03-21","idempotency_key":"inv-2002","legs":[{"side":"debit","account":"6000","amount":"1.00 USD"},{"side":"credit","account":"1000","amount":"1.00 USD"}]}"#,
+    );
+    let (code, out, _) = fa(
+        Some(&book),
+        &["post", "--intent", &later, "--evidence", &ev, "--json"],
+    );
+    assert_eq!(code, 7, "{out}");
+    assert!(
+        out.contains("\"code\":\"FA-REF-010\"") && out.contains("Closed"),
+        "{out}"
+    );
+    // An illegal transition is a safety block too.
+    let (code, out, _) = fa(Some(&book), &["period", "open", march, "--json"]);
+    assert_eq!(code, 7, "{out}");
+    // Reopening a Closed period is case-bound (Appendix C W(reopen, 2, case)):
+    // with no restatement case to decide the exclusion it is refused under
+    // SoD, never exempted (fa-llx).
+    let (code, out, _) = fa(
+        Some(&book),
+        &["period", "reopen", march, "--to", "open", "--json"],
+    );
+    assert_eq!(code, 7, "{out}");
+    assert!(
+        out.contains("\"code\":\"FA-REF-008\"")
+            && out.contains("case_preparer")
+            && out.contains("sod_policy.toml#period-reopen-closed")
+            && out.contains("fa-oz3"),
+        "{out}"
+    );
 
     // Human mode on the same book: plain text, no JSON.
     let (code, out, _) = fa(Some(&book), &["book", "info"]);
@@ -1869,6 +2037,37 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         run(true, &["verify", "registers", "--period", "FY2026-P03"]).0,
         8
     );
+    // A planned, approved lock (R4): `period_planned`, then `approved`.
+    assert_eq!(run(true, &["period", "open", "FY2026-P04"]).0, 0);
+    assert_eq!(run(true, &["period", "close", "FY2026-P04"]).0, 0);
+    let plan = dir.join("lock.plan").display().to_string();
+    let (code, out) = run(true, &["period", "lock", "FY2026-P04", "--plan-out", &plan]);
+    assert_eq!(code, 0, "{out}");
+    let digest = field(&out, "proposal_digest")
+        .unwrap_or_default()
+        .to_string();
+    let (code, out) = run(
+        true,
+        &["approve", "--proposal", &digest, "--as", "controller"],
+    );
+    assert_eq!(code, 0, "{out}");
+    let approval = field(&out, "approval_vid").unwrap_or_default().to_string();
+    assert_eq!(
+        run(
+            true,
+            &[
+                "period",
+                "lock",
+                "FY2026-P04",
+                "--plan",
+                &plan,
+                "--approval",
+                &approval
+            ]
+        )
+        .0,
+        0
+    );
     // The daemon's frames and its own output are fad's to emit (crates/fad tests).
     let declared: BTreeSet<String> = reg
         .events
@@ -2258,6 +2457,13 @@ fn policy_refusal_fixes_name_only_registered_verbs_and_flags() {
             cited: [0xab; 32],
             enforced: [0xcd; 32],
         },
+        Denial::OutOfScope {
+            caveat: "books",
+            value: "0101".into(),
+        },
+        Denial::Revoked {
+            revoked_at: CommitSeq(5),
+        },
     ];
     // Exhaustiveness: listing a variant above is enforced by this match.
     for d in &all {
@@ -2278,7 +2484,9 @@ fn policy_refusal_fixes_name_only_registered_verbs_and_flags() {
             | Denial::ApprovalBinding { .. }
             | Denial::UnknownApproval { .. }
             | Denial::StaleApproval { .. }
-            | Denial::UnsupportedPolicy { .. } => {}
+            | Denial::UnsupportedPolicy { .. }
+            | Denial::OutOfScope { .. }
+            | Denial::Revoked { .. } => {}
         }
     }
     let verb_names: BTreeSet<&str> = reg.verbs.iter().map(|v| v.name.as_str()).collect();

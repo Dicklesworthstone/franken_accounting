@@ -172,6 +172,72 @@ exclusions = ["preparer", "duplicate"]
 cite = "plan §8.6, Appendix C W(migrate, 2)"
 
 # ---- Period transitions -----------------------------------------------------
+# Every transition of the period state machine has a row; transition_period
+# picks the preparer op from the transition before reading the period, so all
+# rows of one transition name the same op. §14.2 has no `open` op: opening,
+# soft-closing, closing and locking are period-lifecycle acts under `close`;
+# reopening is `reopen`. Rows without approvers still validate any approval
+# attached.
+# `close` is the period-administration op of §14.2's closed vocabulary (it
+# has no `open` op).
+[[rule]]
+name = "period-open"
+class = "PeriodControl"
+state = "Future"
+transition = "Open"
+preparer_op = "close"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "Appendix C PeriodControl: Future -> Open only"
+
+# `close` is the period-administration op of §14.2's closed vocabulary (it
+# has no `open` op).
+[[rule]]
+name = "period-softclose"
+class = "PeriodControl"
+state = "Open"
+transition = "SoftClose"
+preparer_op = "close"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "Appendix C PeriodControl: Open -> SoftClose"
+
+# `close` is the period-administration op of §14.2's closed vocabulary (it
+# has no `open` op).
+[[rule]]
+name = "period-close-open"
+class = "PeriodControl"
+state = "Open"
+transition = "Close"
+preparer_op = "close"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "Appendix C PeriodControl: Open -> Close"
+
+# `close` is the period-administration op of §14.2's closed vocabulary (it
+# has no `open` op).
+[[rule]]
+name = "period-close-softclosed"
+class = "PeriodControl"
+state = "SoftClosed"
+transition = "Close"
+preparer_op = "close"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "Appendix C PeriodControl: SoftClosed -> Close"
+
 [[rule]]
 name = "period-reopen-softclosed"
 class = "PeriodControl"

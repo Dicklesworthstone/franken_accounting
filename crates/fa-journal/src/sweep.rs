@@ -431,6 +431,7 @@ pub async fn record_tick<V: asupersync::fs::Vfs + Clone>(
             principal: req.principal_ref,
             trunk: true,
             op,
+            book: book.book_id,
             legs: &[],
         },
     ) {
@@ -863,6 +864,7 @@ pub(crate) fn admit_sweep<V: asupersync::fs::Vfs + Clone>(
                 principal: req.principal_ref,
                 trunk: true,
                 op,
+                book: book.book_id,
                 legs: &[],
             },
         ) {

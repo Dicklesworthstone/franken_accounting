@@ -4,7 +4,7 @@
 //! They do not issue a signed TransparencyCheckpoint or an evidence bundle.
 
 use crate::json::{Json, obj, s};
-use fa_policy::{Capability, Intent, Op};
+use fa_policy::{Capability, Op};
 
 use crate::args::Args;
 use crate::cli::{Ctx, Fail, hex, principal, unhandled, usage};
@@ -41,16 +41,12 @@ pub(crate) fn checkpoint_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail>
     let actor = principal(args);
     let capability = Capability::embedded(actor, &args.flag_all("--grant"))
         .map_err(|error| usage(error.to_string(), EXAMPLE))?;
-    fa_policy::admit(
-        &capability,
-        &Intent {
-            principal: actor,
-            trunk: true,
-            op: Op::Witness,
-            legs: &[],
-        },
-    )
-    .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    // The book is not open yet, so its id (the `books` caveat's subject) is
+    // unknown here; a self-issued embedded capability is Human, the actor's,
+    // and carries no `books` caveat, so admission reduces to the op check.
+    // The facade's admission judges the whole intent, book included.
+    fa_policy::require(&capability, Op::Witness, "writing this intent (`witness`)")
+        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
     let mut book = ctx.books.open(args)?;
     let created = book.checkpoint(actor, &capability)??;
     let stored = &created.stored;

@@ -431,17 +431,160 @@ fn kernel_request(k: &Kernel, intent: &Intent, usd: UnitId, refs: &[EntryRef]) -
     }
 }
 
-fn kernel_transition(
+/// The date every generated transition is journaled on.
+fn transition_day() -> DateDay {
+    DateDay::from_ymd(2026, 1, 1).unwrap()
+}
+
+fn period_description(k: &Kernel) -> Erasable<String> {
+    Erasable::seal(
+        &"period".to_string(),
+        None,
+        &k.book.seal_key,
+        [3; 32],
+        [4; 24],
+    )
+}
+
+/// The digest of the PeriodControl proposal `kernel_transition_under`
+/// commits at `step`, so an approver can bind it.
+fn period_digest(
+    k: &Kernel,
+    code: &str,
+    from: PeriodState,
+    to: PeriodState,
+    step: u64,
+) -> [u8; 32] {
+    transition_proposal(
+        &k.book,
+        code,
+        from,
+        to,
+        PRINCIPAL,
+        1,
+        transition_day(),
+        format!("t-{step}").as_bytes(),
+        period_description(k),
+    )
+    .proposal_digest()
+    .expect("digest")
+}
+
+/// Record an approval of `digest` under `capability`.
+fn kernel_approve_as(
+    k: &mut Kernel,
+    capability: Capability,
+    digest: [u8; 32],
+) -> fa_model::ApprovalRef {
+    let ctx = k.ctx();
+    let db = &mut k.db;
+    let book = &k.book;
+    let req = ApprovalRequest {
+        capability,
+        approved_proposal_digest: digest,
+        role: 0,
+    };
+    k.runtime
+        .block_on(async move { record_approval(db, &ctx, book, req).await })
+        .expect("kernel")
+        .expect("approval recorded")
+        .approval()
+}
+
+/// A second Human (principal 70, never the preparer) approves `digest`.
+fn kernel_approve(k: &mut Kernel, digest: [u8; 32]) -> fa_model::ApprovalRef {
+    kernel_approve_as(
+        k,
+        Capability::embedded(VId(70), &["approve"]).expect("approve"),
+        digest,
+    )
+}
+
+/// Journal the revocation of `revoked` by an issuer holding `issue_capability`.
+fn kernel_revoke(k: &mut Kernel, revoked: &Capability, step: u64) {
+    let req = RevocationRequest {
+        capability: Capability::embedded(VId(90), &["issue_capability"]).expect("issuer"),
+        revoked: revoked.commitment().expect("commitment"),
+        effective_date: transition_day(),
+        idempotency_key: format!("revoke-{step}").into_bytes(),
+        description: Erasable::seal(
+            &"revoke".to_string(),
+            None,
+            &k.book.seal_key,
+            [5; 32],
+            [6; 24],
+        ),
+    };
+    let ctx = k.ctx();
+    let db = &mut k.db;
+    let book = &k.book;
+    let done = k
+        .runtime
+        .block_on(async move { revoke_capability(db, &ctx, book, req).await })
+        .expect("kernel")
+        .expect("revoked");
+    assert!(!done.already_recorded, "step {step}: a fresh token");
+}
+
+/// A dual-controlled activation of the embedded policy: the security policy
+/// epoch advances, so every earlier approval is stale.
+fn kernel_activate(k: &mut Kernel, step: u64) {
+    let key = format!("activate-{step}");
+    let proposal = activation_proposal(
+        &k.book,
+        PRINCIPAL,
+        fa_journal::policy::steward().expect("policy").policy_oid,
+        transition_day(),
+        key.as_bytes(),
+        Erasable::seal(
+            &"activate".to_string(),
+            None,
+            &k.book.seal_key,
+            [7; 32],
+            [8; 24],
+        ),
+    );
+    let digest = proposal.proposal_digest().expect("digest");
+    let approvals = vec![
+        kernel_approve_as(
+            k,
+            Capability::embedded(VId(71), &["approve"]).expect("approve"),
+            digest,
+        ),
+        kernel_approve_as(
+            k,
+            Capability::embedded(VId(72), &["approve"]).expect("approve"),
+            digest,
+        ),
+    ];
+    let req = ActivationRequest {
+        proposal,
+        capability: Capability::embedded(PRINCIPAL, &["post", "rule_change"]).expect("controller"),
+        approvals,
+    };
+    let ctx = k.ctx();
+    let db = &mut k.db;
+    let book = &k.book;
+    k.runtime
+        .block_on(async move { activate_policy(db, &ctx, book, req).await })
+        .expect("kernel")
+        .expect("activated");
+}
+
+/// One transition by `PRINCIPAL` under `capability`, citing `approvals`.
+fn kernel_transition_under(
     k: &mut Kernel,
     code: &str,
     t: PeriodTransition,
     step: u64,
+    capability: &Capability,
+    approvals: &[fa_model::ApprovalRef],
 ) -> Result<Transitioned, Refusal> {
+    let key = format!("t-{step}");
+    let description = period_description(k);
     let ctx = k.ctx();
     let db = &mut k.db;
     let book = &k.book;
-    let key = format!("t-{step}");
-    let day = DateDay::from_ymd(2026, 1, 1).unwrap();
     k.runtime
         .block_on(async move {
             transition_period(
@@ -452,19 +595,51 @@ fn kernel_transition(
                 t,
                 PRINCIPAL,
                 1,
-                day,
+                transition_day(),
                 key.as_bytes(),
-                Erasable::seal(
-                    &"period".to_string(),
-                    None,
-                    &book.seal_key,
-                    [3; 32],
-                    [4; 24],
-                ),
+                description,
+                capability,
+                approvals,
             )
             .await
         })
         .expect("kernel")
+}
+
+fn kernel_transition(
+    k: &mut Kernel,
+    code: &str,
+    t: PeriodTransition,
+    step: u64,
+) -> Result<Transitioned, Refusal> {
+    // Lock and Reopen are dual-controlled (sod_policy.toml, fa-llx): a second
+    // Human approves exactly the proposal this transition will commit, so the
+    // random walk keeps exercising Locked periods. The case-bound reopens
+    // still refuse, in both engines.
+    let from =
+        k.db.vertex(fa_model::period_vid(&k.book.calendar.id, code))
+            .expect("read")
+            .map(|row| PeriodRow::decode(&row).expect("period row").state);
+    let approvals = match (from, t) {
+        (Some(from), PeriodTransition::Lock | PeriodTransition::Reopen { .. }) => {
+            match fa_time::period::transition(from, t) {
+                Ok(to) => {
+                    let digest = period_digest(k, code, from, to, step);
+                    vec![kernel_approve(k, digest)]
+                }
+                Err(_) => Vec::new(),
+            }
+        }
+        _ => Vec::new(),
+    };
+    kernel_transition_under(
+        k,
+        code,
+        t,
+        step,
+        &Capability::embedded(PRINCIPAL, &["close", "reopen"]).expect("ops"),
+        &approvals,
+    )
 }
 
 #[test]
@@ -567,9 +742,19 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
     for step in 0..640u64 {
         if rng.chance(15) {
             let code = periods[1 + rng.below(3) as usize].clone(); // Feb, Mar, Apr
+            // Closed and Locked are absorbing until restatement cases land
+            // (fa-llx: Closed/Locked -> Reopen is case-bound, fa-oz3), so
+            // only February closes and locks. For March and April the close
+            // and lock draws become an approved SoftClosed -> Reopen, so they
+            // stay mostly Open and keep taking posts and holds. The draw
+            // itself is unchanged.
+            let closable = code == periods[1];
             let t = match rng.below(5) {
                 0 => PeriodTransition::Open,
                 1 => PeriodTransition::SoftClose,
+                2 | 3 if !closable => PeriodTransition::Reopen {
+                    to: PeriodState::Open,
+                },
                 2 => PeriodTransition::Close,
                 3 => PeriodTransition::Lock,
                 _ => PeriodTransition::Reopen {
@@ -1404,10 +1589,14 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
         .position(|r| r.vid == victim.entry)
         .expect("victim is a posted entry");
     // The corruption check lives behind the period law, so post into a
-    // period both engines agree is Open: reopen March deterministically
-    // (both engines, refusals ignored in lockstep) before the probe.
+    // period both engines agree is Open. The random walk may leave March
+    // Closed or Locked, and reopening those is case-bound (fa-llx, fa-oz3),
+    // so take May, which the walk never touches, through Open, SoftClose and
+    // an approved SoftClosed -> Reopen in both engines.
+    let may = periods[4].clone();
     for (n, t) in [
         PeriodTransition::Open,
+        PeriodTransition::SoftClose,
         PeriodTransition::Reopen {
             to: PeriodState::Open,
         },
@@ -1415,18 +1604,21 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
     .into_iter()
     .enumerate()
     {
-        let kernel = kernel_transition(&mut k, &periods[2], t, 9_000 + n as u64);
-        let model = oracle.transition(&periods[2], t);
-        assert_eq!(kernel.is_ok(), model.is_ok(), "reopen March for the probe");
+        let kernel = kernel_transition(&mut k, &may, t, 9_000 + n as u64);
+        let model = oracle.transition(&may, t);
+        assert!(
+            kernel.is_ok() && model.is_ok(),
+            "May {t:?} for the probe: kernel {kernel:?} oracle {model:?}"
+        );
     }
     assert_eq!(
-        oracle.period_state(&periods[2]),
+        oracle.period_state(&may),
         Some(PeriodState::Open),
-        "March must be Open for the corruption probe"
+        "May must be Open for the corruption probe"
     );
     let receipt = Intent {
         class: "Original".into(),
-        date: dates[1],
+        date: DateDay::from_ymd(2026, 5, 15).unwrap(),
         discriminator: None,
         legs: vec![
             Leg {
@@ -6091,4 +6283,393 @@ fn two_phase_sub_vectors_balance_per_entity() {
             .unwrap()
             .is_green()
     );
+}
+
+/// The authority a step of the period-authority walk acts under.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Variant {
+    /// `close` and `reopen`, no caveats.
+    Sound,
+    /// Sound, with caveats that admit: this book (and another) and an
+    /// expiry bound after the admission point.
+    Scoped,
+    /// Holds only the op the transition does not need.
+    WithoutOp,
+    /// A `books` caveat naming only another book.
+    WrongBook,
+    /// Expires at the admission point.
+    Expired,
+    /// A fresh token, journaled as revoked before it is used.
+    Revoked,
+    /// Another principal's token.
+    NotHolder,
+}
+
+/// The approvals a step cites (only for a transition legal from the
+/// period's state, so there is a proposal to approve).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mode {
+    Unapproved,
+    /// A second Human under the current epoch.
+    Fresh,
+    /// The preparer approves its own proposal.
+    SelfApproved,
+    /// A second Human, then a policy activation supersedes the epoch.
+    Stale,
+}
+
+struct Seen {
+    variant: Variant,
+    mode: Mode,
+    t: PeriodTransition,
+    from: PeriodState,
+    outcome: String,
+}
+
+/// Period authority (fa-llx; plan §14.2, Appendix C PeriodControl): a seeded
+/// walk of transitions under varied capabilities and approvals, applied to
+/// the kernel and to the oracle's literal authority model. Every step must
+/// agree on the outcome and the refusal code. The capability defects are
+/// planted three times each at the start (admission precedes any read, so
+/// they do not depend on state); a script then takes January..March through
+/// every approval defect and every positive; then the walk is random over
+/// April..December. Every negative and every positive is floored: coverage
+/// by construction, not by seed luck.
+#[test]
+fn kernel_and_oracle_agree_on_period_authority() {
+    let (mut k, mut oracle, periods) = setup();
+    let book = u128::from_le_bytes(k.book.book_id.0);
+    let elsewhere = Id128([0xee; 16]);
+    let other_book = u128::from_le_bytes(elsewhere.0);
+    let reopen = PeriodTransition::Reopen {
+        to: PeriodState::Open,
+    };
+    let any = [
+        PeriodTransition::Open,
+        PeriodTransition::SoftClose,
+        PeriodTransition::Close,
+        PeriodTransition::Lock,
+        reopen,
+    ];
+    let planted = [
+        (Variant::WithoutOp, PeriodTransition::Close),
+        (Variant::WithoutOp, reopen),
+        (Variant::WrongBook, PeriodTransition::Open),
+        (Variant::Expired, PeriodTransition::SoftClose),
+        (Variant::Revoked, PeriodTransition::Close),
+        (Variant::NotHolder, PeriodTransition::Lock),
+    ];
+    // Scripted on January..March, three times over: every approval defect
+    // and every positive, in the order the period law reaches them.
+    let script: Vec<(usize, PeriodTransition, Variant, Mode)> = (0..3)
+        .flat_map(|p| {
+            [
+                (p, PeriodTransition::Open, Variant::Sound, Mode::Unapproved),
+                (
+                    p,
+                    PeriodTransition::SoftClose,
+                    Variant::Sound,
+                    Mode::Unapproved,
+                ),
+                (p, reopen, Variant::Sound, Mode::Unapproved),
+                (p, reopen, Variant::Sound, Mode::SelfApproved),
+                (p, reopen, Variant::Sound, Mode::Stale),
+                (p, reopen, Variant::Sound, Mode::Fresh),
+                (
+                    p,
+                    PeriodTransition::Close,
+                    Variant::Scoped,
+                    Mode::Unapproved,
+                ),
+                (p, reopen, Variant::Sound, Mode::Fresh),
+                (p, PeriodTransition::Lock, Variant::Sound, Mode::Unapproved),
+                (p, PeriodTransition::Lock, Variant::Sound, Mode::Fresh),
+                (p, PeriodTransition::Close, Variant::Sound, Mode::Unapproved),
+                (p, reopen, Variant::Sound, Mode::Fresh),
+            ]
+        })
+        .collect();
+    let mut rng = Rng(0xC105_ED0F_FA11_5EED);
+    let mut seen: Vec<Seen> = Vec::new();
+    for step in 0..480u64 {
+        let i = step as usize;
+        let phase1 = 3 * planted.len();
+        let (code, variant, t, scripted) = if i < phase1 {
+            let (variant, t) = planted[i % planted.len()];
+            let code = periods[rng.below(periods.len() as u64) as usize].clone();
+            (code, variant, t, None)
+        } else if i < phase1 + script.len() {
+            let (p, t, variant, mode) = script[i - phase1];
+            (periods[p].clone(), variant, t, Some(mode))
+        } else {
+            // Random on April..December, biased toward the period's next
+            // natural transition.
+            let code = periods[3 + rng.below(periods.len() as u64 - 3) as usize].clone();
+            let natural = match oracle.period_state(&code).expect("created period") {
+                PeriodState::Future => PeriodTransition::Open,
+                PeriodState::Open if rng.chance(50) => PeriodTransition::SoftClose,
+                PeriodState::Open => PeriodTransition::Close,
+                PeriodState::SoftClosed if rng.chance(40) => reopen,
+                PeriodState::SoftClosed => PeriodTransition::Close,
+                PeriodState::Closed if rng.chance(70) => PeriodTransition::Lock,
+                PeriodState::Closed | PeriodState::Locked => reopen,
+            };
+            let t = if rng.chance(75) {
+                natural
+            } else {
+                any[rng.below(any.len() as u64) as usize]
+            };
+            let variant = match rng.below(20) {
+                0 => Variant::WithoutOp,
+                1 => Variant::WrongBook,
+                2 => Variant::Expired,
+                3 => Variant::Revoked,
+                4 => Variant::NotHolder,
+                5..=7 => Variant::Scoped,
+                _ => Variant::Sound,
+            };
+            (code, variant, t, None)
+        };
+        let from = oracle.period_state(&code).expect("created period");
+        let dual = matches!(t, PeriodTransition::Lock | PeriodTransition::Reopen { .. });
+        let legal = fa_time::period::transition(from, t).ok();
+        let mode = match (scripted, legal) {
+            (Some(mode), _) => mode,
+            (None, None) => Mode::Unapproved,
+            (None, Some(_)) if !dual => {
+                if rng.chance(5) {
+                    Mode::Stale
+                } else if rng.chance(10) {
+                    Mode::Fresh
+                } else {
+                    Mode::Unapproved
+                }
+            }
+            (None, Some(_)) => match rng.below(10) {
+                0 => Mode::Unapproved,
+                1 => Mode::SelfApproved,
+                2 => Mode::Stale,
+                _ => Mode::Fresh,
+            },
+        };
+
+        // Approvals first (they commit), so the admission point is read last.
+        let mut approvals = Vec::new();
+        let mut recorded = Vec::new();
+        if let Some(to) = legal {
+            let digest = period_digest(&k, &code, from, to, step);
+            let approver = |p: u128| fa_reference::sod::Approval {
+                principal: p,
+                profile: "Human".into(),
+                op: "approve".into(),
+            };
+            match mode {
+                Mode::Unapproved => {}
+                Mode::Fresh | Mode::Stale => {
+                    approvals.push(kernel_approve(&mut k, digest));
+                    recorded.push(fa_reference::Recorded {
+                        approval: approver(70),
+                        epoch: oracle.epoch(),
+                    });
+                    if mode == Mode::Stale {
+                        kernel_activate(&mut k, step);
+                        oracle.activate_policy();
+                    }
+                }
+                Mode::SelfApproved => {
+                    approvals.push(kernel_approve_as(
+                        &mut k,
+                        Capability::embedded(PRINCIPAL, &["approve"]).expect("approve"),
+                        digest,
+                    ));
+                    recorded.push(fa_reference::Recorded {
+                        approval: approver(PRINCIPAL.0),
+                        epoch: oracle.epoch(),
+                    });
+                }
+            }
+        }
+        let both = Capability::embedded(PRINCIPAL, &["close", "reopen"]).expect("ops");
+        let mut authority = fa_reference::Authority {
+            token: 0,
+            holder: PRINCIPAL.0,
+            profile: "Human".into(),
+            ops: vec!["close".into(), "reopen".into()],
+            books: None,
+            expires_at: None,
+        };
+        let revoked_bound = u64::MAX - step;
+        let capability = match variant {
+            Variant::Revoked => {
+                let doomed = both.expiring_at(CommitSeq(revoked_bound));
+                kernel_revoke(&mut k, &doomed, step);
+                oracle.revoke(step + 1);
+                authority.token = step + 1;
+                authority.expires_at = Some(revoked_bound);
+                doomed
+            }
+            _ => both,
+        };
+        let at = k.db.frontier().expect("frontier");
+        let capability = match variant {
+            Variant::Sound | Variant::Revoked => capability,
+            Variant::Scoped => {
+                authority.books = Some(vec![book, other_book]);
+                authority.expires_at = Some(at.0 + 1);
+                capability
+                    .for_books(&[k.book.book_id, elsewhere])
+                    .expect("books")
+                    .expiring_at(CommitSeq(at.0 + 1))
+            }
+            Variant::WithoutOp => {
+                let other = if matches!(t, PeriodTransition::Reopen { .. }) {
+                    "close"
+                } else {
+                    "reopen"
+                };
+                authority.ops = vec![other.into()];
+                Capability::embedded(PRINCIPAL, &[other]).expect("op")
+            }
+            Variant::WrongBook => {
+                authority.books = Some(vec![other_book]);
+                capability.for_books(&[elsewhere]).expect("books")
+            }
+            Variant::Expired => {
+                authority.expires_at = Some(at.0);
+                capability.expiring_at(at)
+            }
+            Variant::NotHolder => {
+                authority.holder = 8;
+                Capability::embedded(VId(8), &["close", "reopen"]).expect("ops")
+            }
+        };
+
+        let kernel = kernel_transition_under(&mut k, &code, t, step, &capability, &approvals);
+        let model =
+            oracle.transition_under(&code, t, PRINCIPAL.0, &authority, book, at.0, &recorded);
+        assert_eq!(
+            kernel.is_ok(),
+            model.is_ok(),
+            "step {step}: {code} {t:?} from {from:?} {variant:?} {mode:?}: kernel {kernel:?} oracle {model:?}"
+        );
+        let outcome = match (&kernel, &model) {
+            (Ok(tr), Ok(m)) => {
+                assert_eq!((tr.from, tr.to), *m, "step {step}: {code} {t:?}");
+                "ok".to_string()
+            }
+            (Err(r), Err(c)) => {
+                assert_eq!(
+                    r.code, *c,
+                    "step {step}: {code} {t:?} from {from:?} {variant:?} {mode:?}: {}",
+                    r.message
+                );
+                r.code.to_string()
+            }
+            _ => String::new(),
+        };
+        seen.push(Seen {
+            variant,
+            mode,
+            t,
+            from,
+            outcome,
+        });
+    }
+
+    let n = |f: &dyn Fn(&Seen) -> bool| seen.iter().filter(|s| f(s)).count();
+    let is_reopen = |t: PeriodTransition| matches!(t, PeriodTransition::Reopen { .. });
+    let floors = [
+        (
+            "open",
+            n(&|s| s.outcome == "ok" && s.t == PeriodTransition::Open),
+        ),
+        (
+            "soft-close",
+            n(&|s| s.outcome == "ok" && s.t == PeriodTransition::SoftClose),
+        ),
+        (
+            "close",
+            n(&|s| s.outcome == "ok" && s.t == PeriodTransition::Close),
+        ),
+        (
+            "lock (approved)",
+            n(&|s| s.outcome == "ok" && s.t == PeriodTransition::Lock),
+        ),
+        (
+            "reopen soft-closed (approved)",
+            n(&|s| s.outcome == "ok" && is_reopen(s.t)),
+        ),
+        (
+            "admitting caveats",
+            n(&|s| s.outcome == "ok" && s.variant == Variant::Scoped),
+        ),
+        (
+            "close without close",
+            n(
+                &|s| {
+                    s.outcome == "FA-REF-011" && s.variant == Variant::WithoutOp && !is_reopen(s.t)
+                },
+            ),
+        ),
+        (
+            "reopen without reopen",
+            n(&|s| s.outcome == "FA-REF-011" && s.variant == Variant::WithoutOp && is_reopen(s.t)),
+        ),
+        (
+            "wrong book",
+            n(&|s| s.outcome == "FA-REF-011" && s.variant == Variant::WrongBook),
+        ),
+        (
+            "not the holder",
+            n(&|s| s.outcome == "FA-REF-011" && s.variant == Variant::NotHolder),
+        ),
+        (
+            "expired",
+            n(&|s| s.outcome == "FA-REF-014" && s.variant == Variant::Expired),
+        ),
+        (
+            "revoked",
+            n(&|s| s.outcome == "FA-REF-023" && s.variant == Variant::Revoked),
+        ),
+        (
+            "stale approval",
+            n(&|s| s.outcome == "FA-REF-022" && s.mode == Mode::Stale),
+        ),
+        (
+            "dual control without an approver",
+            n(&|s| s.outcome == "FA-REF-012" && s.mode == Mode::Unapproved),
+        ),
+        (
+            "self-approval",
+            n(&|s| {
+                s.outcome == "FA-REF-008"
+                    && s.mode == Mode::SelfApproved
+                    && !case_bound(s.t, s.from)
+            }),
+        ),
+        (
+            "case-bound reopen",
+            n(&|s| s.outcome == "FA-REF-008" && case_bound(s.t, s.from)),
+        ),
+        ("illegal transition", n(&|s| s.outcome == "FA-REF-040")),
+    ];
+    for (name, count) in floors {
+        assert!(
+            count >= 3,
+            "floor `{name}`: {count} of {} steps",
+            seen.len()
+        );
+    }
+    assert_eq!(
+        security_policy_epoch(&k.db).expect("epoch"),
+        oracle.epoch(),
+        "both engines saw the same activations"
+    );
+}
+
+/// Closed/Locked -> Reopen: `W(reopen, 2, case)`, refused until restatement
+/// cases land (fa-oz3).
+fn case_bound(t: PeriodTransition, from: PeriodState) -> bool {
+    matches!(t, PeriodTransition::Reopen { .. })
+        && matches!(from, PeriodState::Closed | PeriodState::Locked)
 }

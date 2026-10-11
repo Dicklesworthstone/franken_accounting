@@ -232,6 +232,8 @@ fn harness() -> Harness {
                     [3; 32],
                     [4; 24],
                 ),
+                &Capability::embedded(PRINCIPAL, &["close"]).expect("close"),
+                &[],
             )
             .await
         })

@@ -42,10 +42,14 @@ pub use limit::{
     BalanceLimit, Balanced, LimitCell, LimitScope, cell_account, limit_cell_vid, period_cell_vid,
     post_balancing,
 };
-pub use period::{Transitioned, transition_period};
+pub use period::{
+    TransitionPlan, Transitioned, plan_transition, transition_name, transition_period,
+    transition_proposal,
+};
 pub use policy::{
-    ActivationRequest, ApprovalRequest, Approved, PolicyActivated, activate_policy,
-    activation_proposal, record_approval, security_policy_epoch,
+    ActivationRequest, ApprovalRequest, Approved, PolicyActivated, RevocationRequest, Revoked,
+    activate_policy, activation_proposal, record_approval, revoke_capability,
+    security_policy_epoch,
 };
 pub use post::{Capability, PostRequest, Posted, post};
 pub use refusal::{KernelError, Refusal, exit};

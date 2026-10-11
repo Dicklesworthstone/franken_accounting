@@ -347,6 +347,7 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
             principal: proposal.principal_ref,
             trunk: proposal.branch_id == Id128::TRUNK,
             op: fa_policy::Op::Post,
+            book: book.book_id,
             legs: &explicit,
         },
     ) {
@@ -599,6 +600,12 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     // From here every read is a witness of this transaction.
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
+    // The capability is not revoked (plan §14.2): the first read, so a
+    // revoked token learns nothing about the book, not even a recorded outcome.
+    if let Err(r) = policy::capability_witness(&txn, db, book, &req.capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
 
     // 4. Identity (plan §4.9, FA-INV-09): derived from the key, from the
     //    reversed target, or from the resolved pending entry; an existing row

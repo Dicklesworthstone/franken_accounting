@@ -17,9 +17,9 @@ use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
 use fa_journal::evidence::{Document, add_document};
 use fa_journal::policy::{
-    ActivationRequest, ApprovalRequest, Approved, OPEN_END, PolicyActivated, activate_policy,
-    activation_proposal, approval_vid, epoch_witness, record_approval, security_policy_epoch,
-    steward,
+    ActivationRequest, ApprovalRequest, Approved, OPEN_END, PolicyActivated, RevocationRequest,
+    Revoked, activate_policy, activation_proposal, approval_vid, epoch_witness, record_approval,
+    revocation_vid, revoke_capability, security_policy_epoch, steward,
 };
 use fa_journal::post::read_entry;
 use fa_journal::rows::book_root;
@@ -31,7 +31,7 @@ use fa_model::{
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_policy::{Capability, Op, Profile};
-use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodTransition};
+use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodState, PeriodTransition};
 use fgdb::{Database, DatabaseKeys, MemVfs, WriteBatch, WriteTxnError};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::ids::DatabaseSecurityNamespaceId;
@@ -123,7 +123,45 @@ impl Harness {
     }
 
     fn transition(&mut self, t: PeriodTransition, key: &[u8]) {
+        self.transition_with(t, key, &period_cap(), &[])
+            .expect("transition");
+    }
+
+    fn period_description(&self) -> Erasable<String> {
+        Erasable::seal(
+            &"period".to_string(),
+            None,
+            &self.book.seal_key,
+            [3; 32],
+            [4; 24],
+        )
+    }
+
+    /// The exact PeriodControl proposal a March transition by the preparer
+    /// commits; approvers approve its digest.
+    fn period_proposal(&self, from: PeriodState, to: PeriodState, key: &[u8]) -> EntryPayload {
+        transition_proposal(
+            &self.book,
+            &self.march,
+            from,
+            to,
+            PREPARER,
+            1,
+            DateDay::from_ymd(2026, 3, 1).unwrap(),
+            key,
+            self.period_description(),
+        )
+    }
+
+    fn transition_with(
+        &mut self,
+        t: PeriodTransition,
+        key: &[u8],
+        capability: &Capability,
+        approvals: &[ApprovalRef],
+    ) -> Result<Transitioned, Refusal> {
         let ctx = self.ctx();
+        let description = self.period_description();
         let db = &mut self.db;
         let book = &self.book;
         let code = self.march.clone();
@@ -140,18 +178,52 @@ impl Harness {
                     1,
                     day,
                     key,
-                    Erasable::seal(
-                        &"period".to_string(),
-                        None,
-                        &book.seal_key,
-                        [3; 32],
-                        [4; 24],
-                    ),
+                    description,
+                    capability,
+                    approvals,
                 )
                 .await
             })
             .expect("kernel")
-            .expect("transition");
+    }
+
+    fn revoke(
+        &mut self,
+        issuer: &Capability,
+        revoked: &Capability,
+        key: &[u8],
+    ) -> Result<Revoked, Refusal> {
+        let ctx = self.ctx();
+        let req = RevocationRequest {
+            capability: issuer.clone(),
+            revoked: revoked.commitment().unwrap(),
+            effective_date: DateDay::from_ymd(2026, 3, 1).unwrap(),
+            idempotency_key: key.to_vec(),
+            description: Erasable::seal(
+                &"revoke".to_string(),
+                None,
+                &self.book.seal_key,
+                [5; 32],
+                [6; 24],
+            ),
+        };
+        let db = &mut self.db;
+        let book = &self.book;
+        self.runtime
+            .block_on(async move { revoke_capability(db, &ctx, book, req).await })
+            .expect("kernel")
+    }
+
+    fn march_state(&self) -> PeriodState {
+        PeriodRow::decode(
+            &self
+                .db
+                .vertex(fa_model::period_vid("cal", &self.march))
+                .unwrap()
+                .expect("period row"),
+        )
+        .unwrap()
+        .state
     }
 
     fn close_march(&mut self) {
@@ -237,6 +309,11 @@ fn human(principal: VId, ops: &[&str]) -> Capability {
 
 fn controller() -> Capability {
     human(PREPARER, &["post", "rule_change"])
+}
+
+/// The preparer's period-control capability (`close` and `reopen`).
+fn period_cap() -> Capability {
+    human(PREPARER, &["close", "reopen"])
 }
 
 fn harness() -> Harness {
@@ -922,4 +999,292 @@ fn an_identical_activation_retry_is_its_recorded_outcome() {
     assert_eq!(r.code, "FA-REF-032");
     assert_eq!(h.db.frontier().unwrap(), head);
     assert_eq!(security_policy_epoch(&h.db).unwrap(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// PeriodControl under Steward (period.rs: admission before any read, the
+// revocation and epoch witnesses, SoD keyed on (PeriodControl, from, t))
+// ---------------------------------------------------------------------------
+
+#[test]
+fn period_control_is_admitted_under_close_and_a_lock_needs_a_distinct_human_approver() {
+    let mut h = harness();
+    assert_eq!(
+        h.march_state(),
+        PeriodState::Open,
+        "opened under `close` in setup"
+    );
+    h.transition(PeriodTransition::SoftClose, b"sc");
+    h.transition(PeriodTransition::Close, b"c");
+    assert_eq!(h.march_state(), PeriodState::Closed);
+
+    let lock = h.period_proposal(PeriodState::Closed, PeriodState::Locked, b"lock");
+    let digest = lock.proposal_digest().unwrap();
+    // Lock needs one approval (sod_policy.toml period-lock).
+    let r = h
+        .transition_with(PeriodTransition::Lock, b"lock", &period_cap(), &[])
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-012", exit::SAFETY));
+    assert_eq!(r.cite, "sod_policy.toml#period-lock");
+    // The preparer approving its own lock.
+    let own = h.approve(PREPARER, digest).unwrap().approval();
+    let r = h
+        .transition_with(PeriodTransition::Lock, b"lock", &period_cap(), &[own])
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-008", exit::SAFETY));
+    // An approval of a different transition does not transfer.
+    let other = h
+        .period_proposal(PeriodState::Closed, PeriodState::Locked, b"other-lock")
+        .proposal_digest()
+        .unwrap();
+    let elsewhere = h.approve(ALICE, other).unwrap().approval();
+    let r = h
+        .transition_with(PeriodTransition::Lock, b"lock", &period_cap(), &[elsewhere])
+        .unwrap_err();
+    assert_eq!(r.code, "FA-REF-016");
+    assert_eq!(h.march_state(), PeriodState::Closed, "nothing moved");
+    // A distinct Human approver over this exact proposal: locked, and the
+    // transcript rides in the control entry's envelope.
+    let alice = h.approve(ALICE, digest).unwrap().approval();
+    let done = h
+        .transition_with(PeriodTransition::Lock, b"lock", &period_cap(), &[alice])
+        .expect("locked under dual control");
+    assert_eq!(
+        (done.from, done.to),
+        (PeriodState::Closed, PeriodState::Locked)
+    );
+    let (entry, _) = read_entry(&h.db, done.control_entry).unwrap().unwrap();
+    assert_eq!(entry.approvals, vec![alice]);
+    assert_eq!(entry.proposal_digest, digest);
+}
+
+#[test]
+fn close_without_close_and_reopen_without_reopen_are_refused_before_any_read() {
+    let mut h = harness();
+    let head = h.db.frontier().unwrap();
+    let poster = human(PREPARER, &["post"]);
+    let r = h
+        .transition_with(PeriodTransition::Close, b"c", &poster, &[])
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-011", exit::SAFETY));
+    assert!(r.message.contains("`close`"), "{}", r.message);
+    // Admission precedes observation: a period that does not exist is still
+    // the capability refusal, not the unknown-period one.
+    let ctx = h.ctx();
+    let description = h.period_description();
+    let db = &mut h.db;
+    let book = &h.book;
+    let unknown = h
+        .runtime
+        .block_on(async move {
+            transition_period(
+                db,
+                &ctx,
+                book,
+                "FY2099-P01",
+                PeriodTransition::Close,
+                PREPARER,
+                1,
+                DateDay::from_ymd(2026, 3, 1).unwrap(),
+                b"nowhere",
+                description,
+                &poster,
+                &[],
+            )
+            .await
+        })
+        .expect("kernel")
+        .unwrap_err();
+    assert_eq!(unknown.code, "FA-REF-011");
+    // Reopen needs `reopen`, which `close` alone does not give.
+    h.transition(PeriodTransition::SoftClose, b"sc");
+    let closer = human(PREPARER, &["close"]);
+    let r = h
+        .transition_with(
+            PeriodTransition::Reopen {
+                to: PeriodState::Open,
+            },
+            b"reopen",
+            &closer,
+            &[],
+        )
+        .unwrap_err();
+    assert_eq!(r.code, "FA-REF-011");
+    assert!(r.message.contains("`reopen`"), "{}", r.message);
+    // Another principal's capability, and an Agent's, are refused too.
+    let r = h
+        .transition_with(
+            PeriodTransition::Close,
+            b"c2",
+            &human(ALICE, &["close"]),
+            &[],
+        )
+        .unwrap_err();
+    assert!(r.message.contains("held by principal"), "{}", r.message);
+    let agent = Capability::new(PREPARER, Profile::Agent, &[Op::Read], AGENT).unwrap();
+    assert_eq!(
+        h.transition_with(PeriodTransition::Close, b"c3", &agent, &[])
+            .unwrap_err()
+            .code,
+        "FA-REF-013"
+    );
+    assert_eq!(h.march_state(), PeriodState::SoftClosed);
+    assert!(
+        h.db.frontier().unwrap() > head,
+        "only the SoftClose committed"
+    );
+}
+
+#[test]
+fn expired_out_of_scope_and_revoked_capabilities_cannot_transition_post_or_approve() {
+    let mut h = harness();
+    // Expired at the admission point.
+    let expired = period_cap().expiring_at(h.db.frontier().unwrap());
+    let r = h
+        .transition_with(PeriodTransition::SoftClose, b"sc", &expired, &[])
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-014", exit::SAFETY));
+    // Confined to another book.
+    let elsewhere = period_cap().for_books(&[Id128([0xee; 16])]).unwrap();
+    let r = h
+        .transition_with(PeriodTransition::SoftClose, b"sc", &elsewhere, &[])
+        .unwrap_err();
+    assert_eq!(r.code, "FA-REF-011");
+    assert!(r.message.contains("`books` caveat"), "{}", r.message);
+    // The same caveat naming this book admits.
+    let here = period_cap().for_books(&[h.book.book_id]).unwrap();
+    h.transition_with(PeriodTransition::SoftClose, b"sc", &here, &[])
+        .expect("in scope");
+
+    // Revocation: only `issue_capability` revokes, and it is journaled once.
+    let doomed = period_cap();
+    let r = h
+        .revoke(&human(ALICE, &["approve"]), &doomed, b"rv-0")
+        .unwrap_err();
+    assert_eq!(r.code, "FA-REF-011");
+    let issuer = human(ALICE, &["issue_capability"]);
+    let done = h.revoke(&issuer, &doomed, b"rv-1").expect("revoked");
+    assert!(!done.already_recorded);
+    assert_eq!(
+        done.control_entry,
+        revocation_vid(h.book.book_id, &doomed.commitment().unwrap())
+    );
+    let (entry, _) = read_entry(&h.db, done.control_entry).unwrap().unwrap();
+    assert_eq!(entry.proposal.class, EntryClass::POLICY_CONTROL);
+    assert!(matches!(
+        entry.proposal.control,
+        Some(ControlPayload::CapabilityEvent { kind: 1, .. })
+    ));
+    assert!(
+        h.revoke(&issuer, &doomed, b"rv-2")
+            .unwrap()
+            .already_recorded
+    );
+    // The revoked token can no longer transition, post, or approve.
+    let r = h
+        .transition_with(PeriodTransition::Close, b"c", &doomed, &[])
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-023", exit::SAFETY));
+    let doomed_poster = human(PREPARER, &["post"]);
+    h.revoke(&issuer, &doomed_poster, b"rv-3").unwrap();
+    let orig = h.proposal(PREPARER, 5_000, b"after-revoke", EntryClass::ORIGINAL);
+    assert_eq!(
+        h.post(orig, doomed_poster, Vec::new()).unwrap_err().code,
+        "FA-REF-023"
+    );
+    let doomed_approver = human(BOB, &["approve"]);
+    h.revoke(&issuer, &doomed_approver, b"rv-4").unwrap();
+    assert_eq!(
+        h.approve_with(doomed_approver, [0x11; 32])
+            .unwrap_err()
+            .code,
+        "FA-REF-023"
+    );
+    // A different capability of the same principal is unaffected.
+    h.transition_with(
+        PeriodTransition::Close,
+        b"c",
+        &human(PREPARER, &["close", "reopen", "read"]),
+        &[],
+    )
+    .expect("an unrevoked capability still closes");
+}
+
+/// `vid(revocation) = H("fa:vid:capability-revocation:v1" ‖ book ‖
+/// commitment)`, low 16 bytes little-endian: a fixed vector, so the identity
+/// a revocation is found at can never drift silently.
+#[test]
+fn the_revocation_identity_is_a_fixed_vector() {
+    assert_eq!(
+        revocation_vid(Id128([9; 16]), &[0x42; 32]),
+        VId(0x6f1e_9e5f_89a7_35a8_f0e4_3225_d409_761e)
+    );
+    assert_ne!(
+        revocation_vid(Id128([9; 16]), &[0x42; 32]),
+        revocation_vid(Id128([8; 16]), &[0x42; 32]),
+        "the book is bound"
+    );
+}
+
+#[test]
+fn a_lock_approval_from_a_superseded_epoch_is_stale() {
+    let mut h = harness();
+    h.close_march();
+    let digest = h
+        .period_proposal(PeriodState::Closed, PeriodState::Locked, b"lock")
+        .proposal_digest()
+        .unwrap();
+    let before = h.approve(ALICE, digest).unwrap().approval();
+    h.activate_with_dual_control(b"policy-1");
+    let r = h
+        .transition_with(PeriodTransition::Lock, b"lock", &period_cap(), &[before])
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-022", exit::CONFLICT));
+    let after = h.approve(ALICE, digest).unwrap().approval();
+    h.transition_with(PeriodTransition::Lock, b"lock", &period_cap(), &[after])
+        .expect("re-approved under the current epoch");
+}
+
+#[test]
+fn a_soft_closed_reopen_needs_one_approver_and_a_case_bound_reopen_fails_closed() {
+    let mut h = harness();
+    h.transition(PeriodTransition::SoftClose, b"sc");
+    let reopen = PeriodTransition::Reopen {
+        to: PeriodState::Open,
+    };
+    let r = h
+        .transition_with(reopen, b"ro", &period_cap(), &[])
+        .unwrap_err();
+    assert_eq!(r.cite, "sod_policy.toml#period-reopen-softclosed");
+    let digest = h
+        .period_proposal(PeriodState::SoftClosed, PeriodState::Open, b"ro")
+        .proposal_digest()
+        .unwrap();
+    let alice = h.approve(ALICE, digest).unwrap().approval();
+    h.transition_with(reopen, b"ro", &period_cap(), &[alice])
+        .expect("reopened under one approver");
+    assert_eq!(h.march_state(), PeriodState::Open);
+    // A control entry's identity derives from its key: reusing `sc` for the
+    // next soft-close is refused before staging, and nothing moves.
+    let r = h
+        .transition_with(PeriodTransition::SoftClose, b"sc", &period_cap(), &[])
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-100", exit::USAGE));
+    assert_eq!(h.march_state(), PeriodState::Open);
+    // Closed -> Reopen is case-bound (Appendix C W(reopen, 2, case)): with two
+    // distinct Human approvers it still refuses, because no case exists to
+    // decide the case_preparer exclusion. Fail closed, never exempt.
+    h.transition(PeriodTransition::Close, b"c-after-reopen");
+    let digest = h
+        .period_proposal(PeriodState::Closed, PeriodState::Open, b"ro-closed")
+        .proposal_digest()
+        .unwrap();
+    let a = h.approve(ALICE, digest).unwrap().approval();
+    let b = h.approve(BOB, digest).unwrap().approval();
+    let r = h
+        .transition_with(reopen, b"ro-closed", &period_cap(), &[a, b])
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-008", exit::SAFETY));
+    assert!(r.message.contains("case_preparer"), "{}", r.message);
+    assert_eq!(h.march_state(), PeriodState::Closed);
 }

@@ -274,10 +274,46 @@ impl Harness {
         t: PeriodTransition,
         key: &[u8],
     ) -> Result<Transitioned, Refusal> {
+        let day = DateDay::from_ymd(2026, 3, 1).unwrap();
+        let seal_key = self.book.seal_key.clone();
+        let description =
+            || Erasable::seal(&"period".to_string(), None, &seal_key, [3; 32], [4; 24]);
+        // Lock and Reopen are dual-controlled (sod_policy.toml, fa-llx): a
+        // second Human approves exactly the proposal this transition commits.
+        // An unknown period has no row and no proposal to approve.
+        let from = self
+            .db
+            .vertex(period_vid("cal", code))
+            .unwrap()
+            .map(|row| PeriodRow::decode(&row).unwrap().state);
+        let legal = from.and_then(|from| {
+            fa_time::period::transition(from, t)
+                .ok()
+                .map(|to| (from, to))
+        });
+        let approvals = match (t, legal) {
+            (PeriodTransition::Lock | PeriodTransition::Reopen { .. }, Some((from, to))) => {
+                let digest = transition_proposal(
+                    &self.book,
+                    code,
+                    from,
+                    to,
+                    PRINCIPAL,
+                    1,
+                    day,
+                    key,
+                    description(),
+                )
+                .proposal_digest()
+                .expect("digest");
+                vec![self.approve_transition(digest)]
+            }
+            _ => Vec::new(),
+        };
+        let description = description();
         let ctx = self.ctx();
         let db = &mut self.db;
         let book = &self.book;
-        let day = DateDay::from_ymd(2026, 3, 1).unwrap();
         self.runtime
             .block_on(async move {
                 transition_period(
@@ -290,17 +326,30 @@ impl Harness {
                     1,
                     day,
                     key,
-                    Erasable::seal(
-                        &"period".to_string(),
-                        None,
-                        &book.seal_key,
-                        [3; 32],
-                        [4; 24],
-                    ),
+                    description,
+                    &Capability::embedded(PRINCIPAL, &["close", "reopen"]).expect("ops"),
+                    &approvals,
                 )
                 .await
             })
             .expect("kernel")
+    }
+
+    /// A Human approver other than the preparer records an approval of `digest`.
+    fn approve_transition(&mut self, digest: [u8; 32]) -> fa_model::ApprovalRef {
+        let ctx = self.ctx();
+        let db = &mut self.db;
+        let book = &self.book;
+        let req = ApprovalRequest {
+            capability: Capability::embedded(VId(70), &["approve"]).expect("approve"),
+            approved_proposal_digest: digest,
+            role: 0,
+        };
+        self.runtime
+            .block_on(async move { record_approval(db, &ctx, book, req).await })
+            .expect("kernel")
+            .expect("approval recorded")
+            .approval()
     }
 
     fn period_state(&self, code: &str) -> PeriodState {

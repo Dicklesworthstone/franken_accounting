@@ -1023,6 +1023,7 @@ pub async fn attach_evidence<V: asupersync::fs::Vfs + Clone>(
             principal: supplement.attached_by,
             trunk: true,
             op: fa_policy::Op::Post,
+            book: book.book_id,
             legs: &[],
         },
     ) {

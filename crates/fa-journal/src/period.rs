@@ -5,12 +5,26 @@
 //! `state` mirror. The compare-and-set is the witness: a post that read the
 //! old state in its own transaction and a close that moves it are
 //! first-committer-wins rivals, never a cron job's finding.
+//!
+//! **Authority (plan §14, Appendix C PeriodControl, FA-INV-10).** A
+//! transition is a Steward-checked write: before the period is read, the
+//! capability must be the preparer's, hold the transition's op (from the
+//! `sod_policy.toml` rows: `close` for Open/SoftClose/Close/Lock, `reopen`
+//! for Reopen — §14.2 has no `open` op), name this book, and be current at
+//! the admission point; an Agent never holds either op. Inside the
+//! transaction the capability's revocation and the security policy epoch are
+//! point witnesses, and the rule for `(PeriodControl, from, transition)`
+//! judges the approvals, which bind [`transition_proposal`]'s digest. Lock
+//! and SoftClosed→Reopen need one Human approver; Closed/Locked→Reopen is
+//! case-bound and refuses until restatement cases land.
 
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    ControlPayload, EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable, Id128, PeriodRef,
-    entry_mirrors, entry_vid, period_vid,
+    ApprovalRef, ControlPayload, DecodeError, EncodeError, EntryClass, EntryOrigin, EntryPayload,
+    EntryRef, Erasable, Id128, PeriodRef, Reader, Writer, entry_mirrors, entry_vid, limits,
+    period_vid,
 };
+use fa_policy::{Capability, Intent, Party};
 use fa_time::period::transition;
 use fa_time::{DateDay, PeriodState, PeriodTransition};
 use fgdb::{Database, WriteBatch, WriteMismatchPolicy, WriteTxnError};
@@ -18,6 +32,7 @@ use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
 use crate::genesis::BookContext;
+use crate::policy;
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{edge_id, state_from_scalar};
 
@@ -36,57 +51,37 @@ pub struct Transitioned {
     pub blocked: Vec<(EntryRef, String)>,
 }
 
-/// Move one period along the state machine, journaled.
+/// The registered name of a transition (the `transition` key of its
+/// `sod_policy.toml` rows).
+#[must_use]
+pub fn transition_name(t: PeriodTransition) -> &'static str {
+    match t {
+        PeriodTransition::Open => "Open",
+        PeriodTransition::SoftClose => "SoftClose",
+        PeriodTransition::Close => "Close",
+        PeriodTransition::Lock => "Lock",
+        PeriodTransition::Reopen { .. } => "Reopen",
+    }
+}
+
+/// The `PeriodControl` proposal a transition commits, deterministic in its
+/// inputs, so an approver can compute the `proposal_digest` it approves:
+/// the same period, from/to states, preparer, reason, date, key and
+/// description bytes the preparer will submit.
 #[allow(clippy::too_many_arguments)]
-pub async fn transition_period<V: asupersync::fs::Vfs + Clone>(
-    db: &mut Database<V>,
-    ctx: &PurposeContexts,
+#[must_use]
+pub fn transition_proposal(
     book: &BookContext,
     period_code: &str,
-    t: PeriodTransition,
+    from: PeriodState,
+    to: PeriodState,
     principal_ref: VId,
     reason_code: u16,
     effective_date: DateDay,
     idempotency_key: &[u8],
     description: Erasable<String>,
-) -> Outcome<Transitioned> {
-    let pvid = period_vid(&book.calendar.id, period_code);
-    let txn_cx = ctx.txn();
-    let mut txn = db.begin(&txn_cx)?;
-
-    let Some(row) = txn.vertex(db, pvid)? else {
-        txn.abort();
-        return Ok(Err(Refusal::new(
-            code::PERIOD_UNKNOWN,
-            exit::SAFETY,
-            format!(
-                "period `{period_code}` does not exist in calendar `{}`",
-                book.calendar.id
-            ),
-            "plan §7.3 (periods are created per fiscal year)",
-            format!("fa period create --fiscal-year <FY> (then transition `{period_code}`)"),
-        )));
-    };
-    let from = state_from_scalar(crate::rows::prop(&row, property::STATE))
-        .ok_or_else(|| KernelError::Corrupt(format!("period `{period_code}` state mirror")))?;
-    let to = match transition(from, t) {
-        Ok(s) => s,
-        Err(_) => {
-            txn.abort();
-            return Ok(Err(Refusal::new(
-                code::TRANSITION,
-                exit::SAFETY,
-                format!(
-                    "period `{period_code}` is {} and cannot take {t:?}",
-                    from.name()
-                ),
-                "plan §7.3 period state machine",
-                "pick a legal transition: Future→Open, Open→SoftClose, SoftClosed→Close|Reopen, Closed→Lock|Reopen",
-            )));
-        }
-    };
-
-    let proposal = EntryPayload {
+) -> EntryPayload {
+    EntryPayload {
         schema_minor: fa_model::entry::SCHEMA_MINOR,
         book_id: book.book_id,
         branch_id: Id128::TRUNK,
@@ -124,13 +119,296 @@ pub async fn transition_period<V: asupersync::fs::Vfs + Clone>(
         external_ids: Vec::new(),
         extensions: Vec::new(),
         tags: Vec::new(),
+    }
+}
+
+fn unknown_period(book: &BookContext, period_code: &str) -> Refusal {
+    Refusal::new(
+        code::PERIOD_UNKNOWN,
+        exit::SAFETY,
+        format!(
+            "period `{period_code}` does not exist in calendar `{}`",
+            book.calendar.id
+        ),
+        "plan §7.3 (periods are created per fiscal year)",
+        format!("fa period create --fiscal-year <FY> (then transition `{period_code}`)"),
+    )
+}
+
+fn reused_key() -> Refusal {
+    Refusal::new(
+        code::STRUCTURE,
+        exit::USAGE,
+        "a control entry with this idempotency key already exists",
+        "plan §4.9",
+        "use a fresh idempotency key",
+    )
+}
+
+fn illegal_transition(period_code: &str, from: PeriodState, t: PeriodTransition) -> Refusal {
+    Refusal::new(
+        code::TRANSITION,
+        exit::SAFETY,
+        format!(
+            "period `{period_code}` is {} and cannot take {t:?}",
+            from.name()
+        ),
+        "plan §7.3 period state machine",
+        "pick a legal transition: Future→Open, Open→SoftClose, SoftClosed→Close|Reopen, Closed→Lock|Reopen",
+    )
+}
+
+/// A planned transition (R4): the inputs [`transition_period`] rebuilds its
+/// proposal from, with the description sealed once. Approvers bind
+/// [`TransitionPlan::proposal_digest`]; the committing process passes the
+/// same inputs back, so the digest matches, or the approval binding refuses
+/// (FA-REF-016) when the period has moved since the plan was made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransitionPlan {
+    pub period_code: String,
+    pub from: PeriodState,
+    pub to: PeriodState,
+    pub principal_ref: VId,
+    pub reason_code: u16,
+    pub effective_date: DateDay,
+    pub idempotency_key: Vec<u8>,
+    pub description: Erasable<String>,
+}
+
+/// The plan file's leading domain tag; the format is versioned after it.
+pub const PLAN_DOMAIN: &[u8; 14] = b"fa:period-plan";
+const PLAN_VERSION: u16 = 1;
+
+impl TransitionPlan {
+    /// The proposal this plan commits.
+    #[must_use]
+    pub fn proposal(&self, book: &BookContext) -> EntryPayload {
+        transition_proposal(
+            book,
+            &self.period_code,
+            self.from,
+            self.to,
+            self.principal_ref,
+            self.reason_code,
+            self.effective_date,
+            &self.idempotency_key,
+            self.description.clone(),
+        )
+    }
+
+    /// The digest an approval of this plan binds.
+    pub fn proposal_digest(&self, book: &BookContext) -> Result<[u8; 32], KernelError> {
+        Ok(self.proposal(book).proposal_digest()?)
+    }
+
+    /// `"fa:period-plan" ‖ u16 version ‖ str period ‖ u8 from ‖ u8 to ‖
+    /// u128 principal ‖ u16 reason ‖ i32 date ‖ bytes key ‖ erasable
+    /// description`.
+    pub fn encode(&self) -> Result<Vec<u8>, EncodeError> {
+        let mut w = Writer::new();
+        w.fixed(PLAN_DOMAIN)
+            .u16(PLAN_VERSION)
+            .str(&self.period_code)
+            .u8(self.from.tag())
+            .u8(self.to.tag())
+            .u128(self.principal_ref.0)
+            .u16(self.reason_code)
+            .i32(self.effective_date.0)
+            .bytes(&self.idempotency_key);
+        self.description.encode(&mut w);
+        w.finish()
+    }
+
+    /// Decode a plan; refuses another format, an unknown version or state
+    /// tag, a transition the state machine does not have, and trailing bytes.
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        let mut r = Reader::new(bytes);
+        let domain: [u8; 14] = r.fixed("plan.domain")?;
+        if domain != *PLAN_DOMAIN {
+            return Err(r.invalid("plan.domain"));
+        }
+        if r.u16("plan.version")? != PLAN_VERSION {
+            return Err(r.invalid("plan.version"));
+        }
+        let period_code = r
+            .str(limits::MAX_PERIOD_REF_BYTES, "plan.period")?
+            .to_string();
+        let mut state = |what: &'static str| {
+            let tag = r.u8(what)?;
+            PeriodState::from_tag(tag).ok_or_else(|| r.bad_tag(what, tag))
+        };
+        let from = state("plan.from")?;
+        let to = state("plan.to")?;
+        let plan = Self {
+            period_code,
+            from,
+            to,
+            principal_ref: VId(r.u128("plan.principal")?),
+            reason_code: r.u16("plan.reason")?,
+            effective_date: DateDay(r.i32("plan.date")?),
+            idempotency_key: r
+                .bytes(limits::MAX_IDEMPOTENCY_KEY_BYTES, "plan.key")?
+                .to_vec(),
+            description: Erasable::decode(&mut r, limits::MAX_DESCRIPTION_BYTES)?,
+        };
+        r.finish()?;
+        Ok(plan)
+    }
+
+    /// Whether `t` takes this plan's `from` to its `to`.
+    #[must_use]
+    pub fn is_for(&self, t: PeriodTransition) -> bool {
+        matches!(transition(self.from, t), Ok(to) if to == self.to)
+    }
+}
+
+/// Plan a transition without committing (R4): the period is read at the
+/// head and the same unknown-period and state-machine refusals as
+/// [`transition_period`] apply. Authority is not judged here; the commit
+/// judges it, before any read.
+#[allow(clippy::too_many_arguments)]
+pub fn plan_transition<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    period_code: &str,
+    t: PeriodTransition,
+    principal_ref: VId,
+    reason_code: u16,
+    effective_date: DateDay,
+    idempotency_key: &[u8],
+    description: Erasable<String>,
+) -> Outcome<TransitionPlan> {
+    let Some(row) = db.vertex(period_vid(&book.calendar.id, period_code))? else {
+        return Ok(Err(unknown_period(book, period_code)));
     };
-    let entry = proposal.seal(Vec::new(), None)?;
+    let from = state_from_scalar(crate::rows::prop(&row, property::STATE))
+        .ok_or_else(|| KernelError::Corrupt(format!("period `{period_code}` state mirror")))?;
+    let Ok(to) = transition(from, t) else {
+        return Ok(Err(illegal_transition(period_code, from, t)));
+    };
+    Ok(Ok(TransitionPlan {
+        period_code: period_code.to_string(),
+        from,
+        to,
+        principal_ref,
+        reason_code,
+        effective_date,
+        idempotency_key: idempotency_key.to_vec(),
+        description,
+    }))
+}
+
+/// Move one period along the state machine, journaled, under `capability`
+/// and the cited `approvals` (see the module docs for the authority law).
+#[allow(clippy::too_many_arguments)]
+pub async fn transition_period<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    period_code: &str,
+    t: PeriodTransition,
+    principal_ref: VId,
+    reason_code: u16,
+    effective_date: DateDay,
+    idempotency_key: &[u8],
+    description: Erasable<String>,
+    capability: &Capability,
+    approvals: &[ApprovalRef],
+) -> Outcome<Transitioned> {
+    // 0. Authorization precedes observation (doctrine 8, FA-INV-10): decided
+    //    from the capability and the request alone, before the period is read.
+    let steward = policy::steward()?;
+    let name = transition_name(t);
+    let op = steward
+        .transition_op("PeriodControl", name)
+        .ok_or_else(|| {
+            KernelError::Corrupt(format!(
+                "sod_policy.toml registers no PeriodControl {name} rule; the transition is refused, never unconstrained"
+            ))
+        })?;
+    if let Err(d) = fa_policy::admit(
+        capability,
+        &Intent {
+            principal: principal_ref,
+            trunk: true,
+            op,
+            book: book.book_id,
+            legs: &[],
+        },
+    ) {
+        return Ok(Err(policy::refusal(&d)));
+    }
+    if let Err(d) = fa_policy::current(capability, db.frontier()?) {
+        return Ok(Err(policy::refusal(&d)));
+    }
+
+    let pvid = period_vid(&book.calendar.id, period_code);
+    let txn_cx = ctx.txn();
+    let mut txn = db.begin(&txn_cx)?;
+    // Current authority: not revoked, under the witnessed policy epoch.
+    if let Err(r) = policy::capability_witness(&txn, db, book, capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    let epoch = policy::epoch_witness(&txn, db)?;
+
+    let Some(row) = txn.vertex(db, pvid)? else {
+        txn.abort();
+        return Ok(Err(unknown_period(book, period_code)));
+    };
+    let from = state_from_scalar(crate::rows::prop(&row, property::STATE))
+        .ok_or_else(|| KernelError::Corrupt(format!("period `{period_code}` state mirror")))?;
+    let Ok(to) = transition(from, t) else {
+        txn.abort();
+        return Ok(Err(illegal_transition(period_code, from, t)));
+    };
+
+    let proposal = transition_proposal(
+        book,
+        period_code,
+        from,
+        to,
+        principal_ref,
+        reason_code,
+        effective_date,
+        idempotency_key,
+        description,
+    );
+    // Segregation of duties for this transition from this state (plan §14.3):
+    // every cited approval is a witnessed Approval of exactly this proposal
+    // under the current epoch, judged by the registered rule.
+    let key = fa_policy::sod::control_key("PeriodControl", Some(from), name);
+    let preparer = Party {
+        principal: principal_ref,
+        profile: capability.profile(),
+    };
+    if let Err(r) = policy::authorize_approvals(
+        &txn,
+        db,
+        book,
+        approvals,
+        &proposal.proposal_digest()?,
+        epoch,
+        &key,
+        0,
+        preparer,
+    )? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    let entry = proposal.seal(approvals.to_vec(), None)?;
     let evid = entry_vid(
         book.book_id,
         &principal_ref.0.to_le_bytes(),
         idempotency_key,
     );
+    // The control entry's identity derives from the key, so an existing one
+    // is a reused key: refused here, before staging (the substrate would
+    // reject the batch as AlreadyLive), and the absent read is a witness.
+    if txn.vertex(db, evid)?.is_some() {
+        txn.abort();
+        return Ok(Err(reused_key()));
+    }
 
     let mut batch = WriteBatch::new(relation::IN_PERIOD);
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
@@ -147,9 +425,10 @@ pub async fn transition_period<V: asupersync::fs::Vfs + Clone>(
     // has reached — so a scheduled reversal never meets a Future period.
     let (minted, blocked, mut batches) = if t == PeriodTransition::Open {
         // The trigger is this transition's own control entry; the minted
-        // reversals are the book's (its System principal). Executor
-        // capability admission arrives with fa-llx's start-of-function hunk;
-        // until then the hook rechecks the Reversal row, SoD and epoch.
+        // reversals are the book's (its System principal). The executor is
+        // this transition, admitted under `close` at the head of this
+        // function (fa-llx); the hook still rechecks the Reversal row, SoD
+        // and epoch for each minted entry.
         match crate::schedule::mint_on_open(&txn, db, book, period_code, evid)? {
             Ok(mints) => {
                 let minted = mints.minted.clone();
@@ -196,13 +475,7 @@ pub async fn transition_period<V: asupersync::fs::Vfs + Clone>(
         }
         Err(WriteTxnError::Write(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
-        )) => Ok(Err(Refusal::new(
-            code::STRUCTURE,
-            exit::USAGE,
-            "a control entry with this idempotency key already exists",
-            "plan §4.9",
-            "use a fresh idempotency key",
-        ))),
+        )) => Ok(Err(reused_key())),
         Err(e) => Err(e.into()),
     }
 }

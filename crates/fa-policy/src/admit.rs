@@ -2,6 +2,7 @@
 //! observation"): decided from the capability and the intent's explicit
 //! inputs alone, before the kernel reads anything from storage.
 
+use fa_model::Id128;
 use fa_money::UnitId;
 use fgdb_types::{CommitSeq, VId};
 
@@ -20,12 +21,14 @@ pub struct Intent<'a> {
     /// The op the write needs before any read: `post` for a posting entry,
     /// the control row's preparer op for a control.
     pub op: Op,
+    /// The book the intent writes (the `books` caveat is judged against it).
+    pub book: Id128,
     pub legs: &'a [(UnitId, i128)],
 }
 
 /// Admit or deny an intent before any storage observation. Order: the
 /// capability is the actor's; an Agent never writes trunk; the op is held;
-/// every leg is within its unit's ceiling.
+/// the book is in scope; every leg is within its unit's ceiling.
 pub fn admit(cap: &Capability, intent: &Intent<'_>) -> Result<(), Denial> {
     if cap.holder() != intent.principal {
         return Err(Denial::NotHolder {
@@ -41,6 +44,7 @@ pub fn admit(cap: &Capability, intent: &Intent<'_>) -> Result<(), Denial> {
         intent.op,
         &format!("writing this intent (`{}`)", intent.op),
     )?;
+    scope(cap, intent.book)?;
     if !cap.ceilings().is_empty() {
         for (leg, (unit, mantissa)) in intent.legs.iter().enumerate() {
             match cap.ceilings().get(unit) {
@@ -72,6 +76,19 @@ pub fn current(cap: &Capability, at: CommitSeq) -> Result<(), Denial> {
     }
 }
 
+/// The capability's `books` caveat admits `book` (plan §14.2): caveats are
+/// conjunctive, so a token confined to other books authorizes nothing here.
+pub fn scope(cap: &Capability, book: Id128) -> Result<(), Denial> {
+    if cap.admits_book(book) {
+        Ok(())
+    } else {
+        Err(Denial::OutOfScope {
+            caveat: "books",
+            value: book.to_hex(),
+        })
+    }
+}
+
 /// The capability holds `op`; `what` names the act for the refusal.
 pub fn require(cap: &Capability, op: Op, what: &str) -> Result<(), Denial> {
     if cap.holds(op) {
@@ -90,12 +107,14 @@ mod tests {
 
     const USD: UnitId = UnitId(0);
     const EUR: UnitId = UnitId(1);
+    const BOOK: Id128 = Id128([4; 16]);
 
     fn intent(principal: VId, legs: &[(UnitId, i128)]) -> Intent<'_> {
         Intent {
             principal,
             trunk: true,
             op: Op::Post,
+            book: BOOK,
             legs,
         }
     }
@@ -151,6 +170,37 @@ mod tests {
             admit(&cap, &intent(VId(1), &[(EUR, 1), (EUR, 1)])).unwrap_err(),
             Denial::UnboundedUnit { leg: 0, unit: EUR }
         );
+    }
+
+    #[test]
+    fn a_books_caveat_refuses_other_books_after_the_op_check() {
+        let legs = [(USD, 10), (USD, 10)];
+        let scoped = Capability::embedded(VId(1), &["post"])
+            .unwrap()
+            .for_books(&[BOOK])
+            .unwrap();
+        assert_eq!(admit(&scoped, &intent(VId(1), &legs)), Ok(()));
+        let elsewhere = Intent {
+            book: Id128([5; 16]),
+            ..intent(VId(1), &legs)
+        };
+        let d = admit(&scoped, &elsewhere).unwrap_err();
+        assert_eq!(
+            (d.code(), d.kind(), d.exit()),
+            ("FA-REF-011", "out_of_scope", 7)
+        );
+        assert!(
+            d.message().contains(&Id128([5; 16]).to_hex()),
+            "{}",
+            d.message()
+        );
+        // The op is judged first: a reader confined elsewhere is told about the op.
+        let reader = Capability::embedded(VId(1), &["read"])
+            .unwrap()
+            .for_books(&[BOOK])
+            .unwrap();
+        assert_eq!(admit(&reader, &elsewhere).unwrap_err().kind(), "missing_op");
+        assert_eq!(scope(&scoped, BOOK), Ok(()));
     }
 
     #[test]

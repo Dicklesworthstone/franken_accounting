@@ -42,6 +42,8 @@ pub mod code {
     /// A policy activation names policy content this build does not embed,
     /// so it could journal rules the kernel would not enforce.
     pub const UNSUPPORTED_POLICY: &str = "FA-REF-019";
+    /// The capability was revoked by a journaled `CapabilityEvent`.
+    pub const REVOKED: &str = "FA-REF-023";
 }
 
 /// Exit classes (`registries/exit_codes.toml`); `tests/policy.rs` checks them.
@@ -133,13 +135,24 @@ pub enum Denial {
         cited: [u8; 32],
         enforced: [u8; 32],
     },
+    /// A caveat (`books`, …) confines the capability elsewhere.
+    OutOfScope {
+        caveat: &'static str,
+        value: String,
+    },
+    /// A journaled revocation names this capability's commitment.
+    Revoked {
+        revoked_at: CommitSeq,
+    },
 }
 
 impl Denial {
     #[must_use]
     pub fn code(&self) -> &'static str {
         match self {
-            Self::NotHolder { .. } | Self::MissingOp { .. } => code::CAPABILITY,
+            Self::NotHolder { .. } | Self::MissingOp { .. } | Self::OutOfScope { .. } => {
+                code::CAPABILITY
+            }
             Self::AgentOnTrunk => code::AGENT_TRUNK,
             Self::Expired { .. } => code::EXPIRED,
             Self::CeilingExceeded { .. } | Self::UnboundedUnit { .. } => code::CEILING,
@@ -154,6 +167,7 @@ impl Denial {
             Self::UnknownApproval { .. } => code::UNKNOWN_APPROVAL,
             Self::StaleApproval { .. } => code::STALE_APPROVAL,
             Self::UnsupportedPolicy { .. } => code::UNSUPPORTED_POLICY,
+            Self::Revoked { .. } => code::REVOKED,
         }
     }
 
@@ -179,6 +193,8 @@ impl Denial {
             Self::UnknownApproval { .. } => "unknown_approval",
             Self::StaleApproval { .. } => "stale_approval",
             Self::UnsupportedPolicy { .. } => "unsupported_policy",
+            Self::OutOfScope { .. } => "out_of_scope",
+            Self::Revoked { .. } => "revoked",
         }
     }
 
@@ -271,6 +287,13 @@ impl Denial {
                 hex(cited),
                 hex(enforced)
             ),
+            Self::OutOfScope { caveat, value } => {
+                format!("the capability's `{caveat}` caveat does not admit {value}")
+            }
+            Self::Revoked { revoked_at } => format!(
+                "the capability was revoked at commit sequence {}",
+                revoked_at.0
+            ),
         }
     }
 
@@ -301,6 +324,12 @@ impl Denial {
             Self::StaleApproval { .. } => "FA-INV-10 current-policy".into(),
             Self::UnsupportedPolicy { .. } => {
                 "plan §14.2 (authority is evaluated against current policy); a journaled activation must name the rules the kernel enforces".into()
+            }
+            Self::OutOfScope { .. } => {
+                "plan §14.2 (caveats are conjunctive and attenuable only)".into()
+            }
+            Self::Revoked { .. } => {
+                "plan §14.2 (revocation is a journaled control entry; authority is evaluated against current policy at commit)".into()
             }
         }
     }
@@ -340,6 +369,9 @@ impl Denial {
             Self::HumanApproversRequired { .. } => {
                 "add approvals from Human principals over the same proposal digest".into()
             }
+            Self::UnsupportedExclusion { exclusion, .. } if exclusion == "case_preparer" => {
+                "a restatement case decides this exclusion and none can exist yet: restatement cases land with fa-oz3 (Palimpsest slice 2); nothing was written".into()
+            }
             Self::UnsupportedExclusion { .. } => {
                 "this class lands with the case slice that can decide the exclusion; nothing was written".into()
             }
@@ -359,6 +391,12 @@ impl Denial {
                 "activate the policy this build enforces ({}, `fa capabilities --json` capability.policy_oid); different rules need a build that embeds them",
                 hex(enforced)
             ),
+            Self::OutOfScope { caveat, .. } => format!(
+                "use a capability whose `{caveat}` caveat names this target"
+            ),
+            Self::Revoked { .. } => {
+                "obtain a fresh capability from the book's steward; a revoked token is never reinstated".into()
+            }
         }
     }
 }

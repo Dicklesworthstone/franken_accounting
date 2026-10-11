@@ -268,6 +268,8 @@ fn harness() -> Harness {
                 day,
                 b"open",
                 Erasable::seal(&"open".to_string(), None, &book.seal_key, [3; 32], [4; 24]),
+                &Capability::embedded(PRINCIPAL, &["close"]).expect("close"),
+                &[],
             )
             .await
         })

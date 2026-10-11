@@ -23,14 +23,29 @@
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 
-use fa_model::{DecodeError, EncodeError, Reader, Writer, domain_digest};
+use fa_model::{DecodeError, EncodeError, Id128, Reader, Writer, domain_digest};
 use fa_money::UnitId;
 use fgdb_types::{CommitSeq, VId};
 
 use crate::op::Op;
 
 pub const CAPABILITY_DOMAIN: &[u8] = b"fa:capability:v1";
+/// v1: no caveats beyond ops, ceilings and expiry. v2: v1's fields then a
+/// sorted, tagged caveat list (CobaltGull 3251), so each later caveat of
+/// plan §14.2 (`redaction`, `accounts`, `periods`, `known_at`, `branch`,
+/// `partial_view`) is an additive tag, not a new version. A capability
+/// without caveats still encodes as v1, so every commitment minted before
+/// caveats existed is unchanged.
 const CAPABILITY_VERSION: u16 = 1;
+const CAPABILITY_VERSION_CAVEATS: u16 = 2;
+/// Caveat tags. A decoder refuses a tag it does not know: a restriction it
+/// cannot read is one it cannot enforce, so the token fails closed.
+pub const CAVEAT_BOOKS: u8 = 1;
+/// Books one capability may name, bounded so a decoder never allocates on a claim.
+pub const MAX_BOOKS: usize = 256;
+/// Caveats per capability and bytes per caveat payload, bounded likewise.
+pub const MAX_CAVEATS: usize = 16;
+pub const MAX_CAVEAT_BYTES: usize = 8 * 1024;
 /// Ceilings per capability, bounded so a decoder never allocates on a claim.
 pub const MAX_CEILINGS: usize = 256;
 
@@ -129,6 +144,12 @@ pub enum CapabilityError {
         max_mantissa: i128,
     },
     TooManyCeilings,
+    /// A books caveat names no book, or more than [`MAX_BOOKS`].
+    BadBooks,
+    /// A v2 capability carries a caveat tag this build does not know.
+    UnknownCaveat {
+        tag: u8,
+    },
     Decode(DecodeError),
     Encode(EncodeError),
 }
@@ -155,6 +176,11 @@ impl fmt::Display for CapabilityError {
                 unit.0
             ),
             Self::TooManyCeilings => write!(f, "more than {MAX_CEILINGS} ceilings"),
+            Self::BadBooks => write!(f, "a books caveat names 1..={MAX_BOOKS} books"),
+            Self::UnknownCaveat { tag } => write!(
+                f,
+                "caveat tag {tag} is not known to this build, so the capability cannot be enforced and is refused"
+            ),
             Self::Decode(e) => write!(f, "{e}"),
             Self::Encode(e) => write!(f, "{e}"),
         }
@@ -176,6 +202,9 @@ pub struct Capability {
     ceilings: BTreeMap<UnitId, i128>,
     expires_at: Option<CommitSeq>,
     issuer: VId,
+    /// `books ⊆ {…}` (plan §14.2): `None` is no caveat (every book); a
+    /// set admits only the books it names.
+    books: Option<BTreeSet<Id128>>,
 }
 
 impl Capability {
@@ -197,6 +226,7 @@ impl Capability {
             ceilings: BTreeMap::new(),
             expires_at: None,
             issuer,
+            books: None,
         })
     }
 
@@ -242,6 +272,34 @@ impl Capability {
         self
     }
 
+    /// Confine the capability to `books`. Caveats only narrow: a second call
+    /// intersects, and an empty result is refused rather than becoming a
+    /// token that admits nothing silently.
+    pub fn for_books(mut self, books: &[Id128]) -> Result<Self, CapabilityError> {
+        let named: BTreeSet<Id128> = books.iter().copied().collect();
+        let next: BTreeSet<Id128> = match self.books.take() {
+            Some(held) => held.intersection(&named).copied().collect(),
+            None => named,
+        };
+        if next.is_empty() || next.len() > MAX_BOOKS {
+            return Err(CapabilityError::BadBooks);
+        }
+        self.books = Some(next);
+        Ok(self)
+    }
+
+    /// The books caveat, when the capability carries one.
+    #[must_use]
+    pub fn books(&self) -> Option<&BTreeSet<Id128>> {
+        self.books.as_ref()
+    }
+
+    /// Whether the capability may act on `book`.
+    #[must_use]
+    pub fn admits_book(&self, book: Id128) -> bool {
+        self.books.as_ref().is_none_or(|b| b.contains(&book))
+    }
+
     #[must_use]
     pub fn holder(&self) -> VId {
         self.holder
@@ -279,12 +337,19 @@ impl Capability {
 
     /// `u16 version ‖ u128 holder ‖ u8 profile ‖ list(u8 op tag, ascending)
     /// ‖ list(u32 unit ‖ i128 max, ascending by unit) ‖ opt(u64 expires_at)
-    /// ‖ u128 issuer`.
+    /// ‖ u128 issuer`, then, in v2 only, `‖ list(u8 tag ‖ bytes payload)`,
+    /// non-empty and strictly ascending by tag. `books` (tag 1) carries
+    /// `list(id128 book, ascending)`.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, CapabilityError> {
         let ops: Vec<u8> = self.ops.iter().map(|op| op.tag()).collect();
         let ceilings: Vec<(UnitId, i128)> = self.ceilings.iter().map(|(u, m)| (*u, *m)).collect();
         let mut w = Writer::with_capacity(64 + ops.len() + ceilings.len() * 20);
-        w.u16(CAPABILITY_VERSION)
+        let version = if self.books.is_some() {
+            CAPABILITY_VERSION_CAVEATS
+        } else {
+            CAPABILITY_VERSION
+        };
+        w.u16(version)
             .u128(self.holder.0)
             .u8(self.profile.tag())
             .list(&ops, |w, t| {
@@ -297,6 +362,18 @@ impl Capability {
                 w.u64(s.0);
             })
             .u128(self.issuer.0);
+        if let Some(books) = &self.books {
+            let books: Vec<Id128> = books.iter().copied().collect();
+            let mut payload = Writer::with_capacity(4 + books.len() * 16);
+            payload.list(&books, |w, b| {
+                w.fixed(&b.0);
+            });
+            let payload = payload.finish().map_err(CapabilityError::Encode)?;
+            let caveats = [(CAVEAT_BOOKS, payload)];
+            w.list(&caveats, |w, (tag, payload)| {
+                w.u8(*tag).bytes(payload);
+            });
+        }
         w.finish().map_err(CapabilityError::Encode)
     }
 
@@ -316,7 +393,7 @@ impl Capability {
         let version = r
             .u16("capability.version")
             .map_err(CapabilityError::Decode)?;
-        if version != CAPABILITY_VERSION {
+        if version != CAPABILITY_VERSION && version != CAPABILITY_VERSION_CAVEATS {
             return Err(CapabilityError::Decode(r.invalid("capability.version")));
         }
         let holder = VId(r
@@ -356,14 +433,59 @@ impl Capability {
         let issuer = VId(r
             .u128("capability.issuer")
             .map_err(CapabilityError::Decode)?);
+        let mut books = None;
+        if version == CAPABILITY_VERSION_CAVEATS {
+            let caveats = r
+                .list(MAX_CAVEATS, "capability.caveats", |r| {
+                    Ok((
+                        r.u8("caveat.tag")?,
+                        r.bytes(MAX_CAVEAT_BYTES, "caveat.payload")?.to_vec(),
+                    ))
+                })
+                .map_err(CapabilityError::Decode)?;
+            // A v2 without caveats is not canonical: it encodes as v1.
+            if caveats.is_empty() {
+                return Err(CapabilityError::Decode(r.invalid("capability.caveats")));
+            }
+            if !caveats.windows(2).all(|w| w[0].0 < w[1].0) {
+                return Err(CapabilityError::Decode(r.unsorted("capability.caveats")));
+            }
+            for (tag, payload) in &caveats {
+                match *tag {
+                    CAVEAT_BOOKS => books = Some(decode_books(payload)?),
+                    tag => return Err(CapabilityError::UnknownCaveat { tag }),
+                }
+            }
+        }
         r.finish().map_err(CapabilityError::Decode)?;
         let mut cap = Self::new(holder, profile, &ops, issuer)?;
         for (unit, max) in ceilings {
             cap = cap.with_ceiling(unit, max)?;
         }
         cap.expires_at = expires_at;
+        if let Some(books) = books {
+            cap = cap.for_books(&books)?;
+        }
         Ok(cap)
     }
+}
+
+/// The `books` caveat payload: `list(id128 book, ascending)`, non-empty.
+fn decode_books(payload: &[u8]) -> Result<Vec<Id128>, CapabilityError> {
+    let mut r = Reader::new(payload);
+    let books = r
+        .list(MAX_BOOKS, "capability.books", |r| {
+            r.fixed("capability.book").map(Id128)
+        })
+        .map_err(CapabilityError::Decode)?;
+    if books.is_empty() {
+        return Err(CapabilityError::BadBooks);
+    }
+    if !books.windows(2).all(|w| w[0] < w[1]) {
+        return Err(CapabilityError::Decode(r.unsorted("capability.books")));
+    }
+    r.finish().map_err(CapabilityError::Decode)?;
+    Ok(books)
 }
 
 #[cfg(test)]
@@ -440,6 +562,132 @@ mod tests {
             }
         );
         assert!(e.to_string().contains("did you mean `post_closed`"));
+    }
+
+    /// Golden canonical bytes for both minors, written from the documented
+    /// layout: v1 carries no `books` caveat and decodes as unrestricted; v2
+    /// appends the ascending book list (plan Appendix A additive minor).
+    #[test]
+    fn capability_bytes_are_golden_for_both_minors() {
+        fn hex(s: &str) -> Vec<u8> {
+            (0..s.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("hex"))
+                .collect()
+        }
+        let v1 = hex(concat!(
+            "0100",                             // version 1
+            "01000000000000000000000000000000", // holder VId(1)
+            "00",                               // profile Human
+            "01000000",                         // one op:
+            "06",                               //   close
+            "00000000",                         // no ceilings
+            "00",                               // no expiry
+            "01000000000000000000000000000000", // issuer VId(1)
+        ));
+        let cap = Capability::embedded(VId(1), &["close"]).unwrap();
+        assert_eq!(cap.canonical_bytes().unwrap(), v1);
+        let decoded = Capability::decode(&v1).unwrap();
+        assert_eq!(decoded, cap);
+        assert!(decoded.books().is_none() && decoded.admits_book(Id128([7; 16])));
+        let v2 = hex(concat!(
+            "0200",                             // version 2
+            "01000000000000000000000000000000", // holder VId(1)
+            "00",                               // profile Human
+            "01000000",                         // one op:
+            "06",                               //   close
+            "00000000",                         // no ceilings
+            "00",                               // no expiry
+            "01000000000000000000000000000000", // issuer VId(1)
+            "01000000",                         // one caveat:
+            "01",                               //   tag 1, books
+            "14000000",                         //   20 payload bytes:
+            "01000000",                         //     one book,
+            "02020202020202020202020202020202", //     Id128([2; 16])
+        ));
+        let scoped = cap.for_books(&[Id128([2; 16])]).unwrap();
+        assert_eq!(scoped.canonical_bytes().unwrap(), v2);
+        assert_eq!(Capability::decode(&v2).unwrap(), scoped);
+        assert!(!scoped.admits_book(Id128([7; 16])));
+        // Two caveats: books, then tag 2 (`redaction`, fa-txf), which this
+        // build does not know yet. The token fails closed rather than
+        // decoding as less restricted than it was issued.
+        let v2_two = hex(concat!(
+            "0200",                             // version 2
+            "01000000000000000000000000000000", // holder VId(1)
+            "00",                               // profile Human
+            "01000000",                         // one op:
+            "06",                               //   close
+            "00000000",                         // no ceilings
+            "00",                               // no expiry
+            "01000000000000000000000000000000", // issuer VId(1)
+            "02000000",                         // two caveats:
+            "01",                               //   tag 1, books
+            "14000000",                         //   20 payload bytes:
+            "01000000",                         //     one book,
+            "02020202020202020202020202020202", //     Id128([2; 16])
+            "02",                               //   tag 2
+            "00000000",                         //   empty payload
+        ));
+        assert_eq!(
+            Capability::decode(&v2_two),
+            Err(CapabilityError::UnknownCaveat { tag: 2 })
+        );
+        // Tags are strictly ascending, and a v2 names at least one caveat.
+        let mut swapped = v2.clone();
+        swapped.truncate(v2.len() - 29); // drop the caveat list
+        swapped.extend_from_slice(&hex(concat!(
+            "02000000",
+            "02",
+            "00000000",
+            "01",
+            "14000000",
+            "01000000",
+            "02020202020202020202020202020202",
+        )));
+        assert!(matches!(
+            Capability::decode(&swapped),
+            Err(CapabilityError::Decode(_))
+        ));
+        let mut bare = v2.clone();
+        bare.truncate(v2.len() - 29); // drop the caveat list
+        bare.extend_from_slice(&0u32.to_le_bytes());
+        assert!(matches!(
+            Capability::decode(&bare),
+            Err(CapabilityError::Decode(_))
+        ));
+    }
+
+    #[test]
+    fn the_books_caveat_narrows_round_trips_and_keeps_v1_bytes_when_absent() {
+        let plain = Capability::embedded(VId(3), &["post"]).unwrap();
+        // Without the caveat the bytes are v1: commitments minted earlier are unchanged.
+        assert_eq!(&plain.canonical_bytes().unwrap()[..2], &1u16.to_le_bytes());
+        assert!(plain.admits_book(Id128([1; 16])));
+        let scoped = plain
+            .clone()
+            .for_books(&[Id128([2; 16]), Id128([1; 16])])
+            .unwrap();
+        let bytes = scoped.canonical_bytes().unwrap();
+        assert_eq!(&bytes[..2], &2u16.to_le_bytes());
+        assert_eq!(Capability::decode(&bytes).unwrap(), scoped);
+        assert_ne!(scoped.commitment().unwrap(), plain.commitment().unwrap());
+        assert!(scoped.admits_book(Id128([1; 16])) && !scoped.admits_book(Id128([3; 16])));
+        // Narrowing intersects; an empty intersection is refused, never a silent no-op token.
+        let narrowed = scoped.clone().for_books(&[Id128([2; 16])]).unwrap();
+        assert!(!narrowed.admits_book(Id128([1; 16])));
+        assert_eq!(
+            scoped.for_books(&[Id128([9; 16])]),
+            Err(CapabilityError::BadBooks)
+        );
+        // A books caveat naming no book does not decode.
+        let mut empty = plain.canonical_bytes().unwrap();
+        empty[..2].copy_from_slice(&2u16.to_le_bytes());
+        empty.extend_from_slice(&1u32.to_le_bytes()); // one caveat
+        empty.push(CAVEAT_BOOKS);
+        empty.extend_from_slice(&4u32.to_le_bytes()); // a 4-byte payload:
+        empty.extend_from_slice(&0u32.to_le_bytes()); //   zero books
+        assert_eq!(Capability::decode(&empty), Err(CapabilityError::BadBooks));
     }
 
     #[test]

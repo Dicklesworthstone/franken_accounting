@@ -26,7 +26,7 @@ pub mod denial;
 pub mod op;
 pub mod sod;
 
-pub use admit::{Intent, admit, current, require};
+pub use admit::{Intent, admit, current, require, scope};
 pub use approval::Approval;
 pub use capability::{Capability, CapabilityError, Profile};
 pub use denial::Denial;
@@ -76,6 +76,16 @@ impl Steward {
         self.sod
             .rule(key)
             .and_then(|r| r.preparer_op.as_deref())
+            .and_then(Op::from_name)
+    }
+
+    /// The op a control's preparer needs for `transition`, from the SoD rows
+    /// (every row of one transition agrees, so this is decidable before the
+    /// from-state is read). `None` when no row registers the transition: the
+    /// kernel refuses it rather than treating it as unconstrained.
+    pub fn transition_op(&self, class: &str, transition: &str) -> Option<Op> {
+        self.sod
+            .transition_op(class, transition)
             .and_then(Op::from_name)
     }
 

@@ -173,7 +173,7 @@ exit = "safety"
 cite = "plan §7.3 (periods are created per fiscal year)"
 fix = "fa period create --fiscal-year <FY>, then transition the period"
 
-# ---- Policy currency (022) -----------------------------------------------
+# ---- Policy currency (022–023) -------------------------------------------
 [[refusal]]
 code = "FA-REF-022"
 name = "STALE_APPROVAL"
@@ -181,6 +181,14 @@ owners = ["fa-policy"]
 exit = "conflict"
 cite = "FA-INV-10 current-policy"
 fix = "re-approve under the current policy epoch"
+
+[[refusal]]
+code = "FA-REF-023"
+name = "REVOKED"
+owners = ["fa-policy"]
+exit = "safety"
+cite = "plan §14.2 (revocation is a journaled control entry; authority is evaluated against current policy at commit)"
+fix = "obtain a fresh capability from the book's steward; a revoked token is never reinstated"
 
 # ---- Concurrency and identity (030–033) ----------------------------------
 [[refusal]]

@@ -544,13 +544,18 @@ pub fn self_review_refusal(document: &Oid, principal: VId) -> Refusal {
 /// function also reads the reviewer's registered profile and refuses one
 /// that is not Human; identity inequality with the uploader is checked in
 /// the recording transaction either way.
-fn human_reviewer(capability: &Capability, reviewer: VId) -> Result<(), Refusal> {
+fn human_reviewer(
+    capability: &Capability,
+    reviewer: VId,
+    book: &BookContext,
+) -> Result<(), Refusal> {
     fa_policy::admit(
         capability,
         &fa_policy::Intent {
             principal: reviewer,
             trunk: true,
             op: Op::Approve,
+            book: book.book_id,
             legs: &[],
         },
     )
@@ -739,7 +744,7 @@ pub async fn record_review<V: asupersync::fs::Vfs + Clone>(
             "list each compared document once, sorted, and not the reviewed document itself",
         )));
     }
-    if let Err(r) = human_reviewer(capability, reviewer) {
+    if let Err(r) = human_reviewer(capability, reviewer, book) {
         return Ok(Err(r));
     }
     if let Err(d) = fa_policy::current(capability, db.frontier()?) {
@@ -871,6 +876,7 @@ pub async fn record_manual_assertion<V: asupersync::fs::Vfs + Clone>(
             principal: proposal.principal_ref,
             trunk: true,
             op: Op::Post,
+            book: book.book_id,
             legs: &[],
         },
     ) {

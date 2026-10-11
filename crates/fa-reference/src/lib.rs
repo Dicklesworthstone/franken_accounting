@@ -12,6 +12,12 @@
 //!
 //! Boundary: `std`, `fa-time`, and the registries. No `fa-money`, no
 //! `fa-model`, no substrate.
+//!
+//! Period authority (plan §14.2, Appendix C PeriodControl) is modelled the
+//! same way: an [`Authority`] is the plan's caveat list in plain values, the
+//! admission point is an explicit input, revocations and the security policy
+//! epoch are the oracle's own state, and the transition's SoD rule is looked
+//! up literally in `sod_policy.toml` and judged by [`sod::verdict`].
 
 #![forbid(unsafe_code)]
 
@@ -20,6 +26,7 @@ pub mod sod;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use fa_registry::sod_policy::{SodPolicy, SodRequirement};
 use fa_registry::{Admissibility, Decision, EntryClasses};
 use fa_time::period::transition;
 use fa_time::{DateDay, FiscalCalendar, PeriodDef, PeriodState, PeriodTransition, resolve_period};
@@ -281,10 +288,15 @@ pub mod code {
     pub const UNIT_POLICY: &str = "FA-REF-003";
     pub const UNKNOWN_ACCOUNT: &str = "FA-REF-004";
     pub const PERIOD_LAW: &str = "FA-REF-010";
+    pub const SOD: &str = "FA-REF-008";
     pub const CAPABILITY: &str = "FA-REF-011";
     pub const APPROVALS: &str = "FA-REF-012";
+    pub const AGENT_TRUNK: &str = "FA-REF-013";
+    pub const EXPIRED: &str = "FA-REF-014";
     pub const PERIOD_RESOLVE: &str = "FA-REF-020";
     pub const PERIOD_UNKNOWN: &str = "FA-REF-021";
+    pub const STALE_APPROVAL: &str = "FA-REF-022";
+    pub const REVOKED: &str = "FA-REF-023";
     pub const IDEMPOTENCY_CONFLICT: &str = "FA-REF-032";
     pub const TRANSITION: &str = "FA-REF-040";
     pub const REVERSAL_TARGET: &str = "FA-REF-050";
@@ -443,6 +455,28 @@ pub struct Cell {
     pub entry_count: u64,
 }
 
+/// A capability as plan §14.2 states it, in plain values: who holds it,
+/// under which profile, the ops it carries, the books it is confined to
+/// (`None`: no `books` caveat), and its expiry bound (an admission point
+/// `at >= expires_at` is expired). `token` names it for revocation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Authority {
+    pub token: u64,
+    pub holder: u128,
+    pub profile: String,
+    pub ops: Vec<String>,
+    pub books: Option<Vec<u128>>,
+    pub expires_at: Option<u64>,
+}
+
+/// An approval as recorded: the approver, profile and op, and the security
+/// policy epoch that was current when it was recorded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Recorded {
+    pub approval: sod::Approval,
+    pub epoch: u64,
+}
+
 pub struct Oracle {
     calendar: FiscalCalendar,
     accounts: BTreeMap<String, Account>,
@@ -475,12 +509,18 @@ pub struct Oracle {
     schedule_cursor: Option<(usize, usize)>,
     classes: EntryClasses,
     matrix: Admissibility,
+    sod: SodPolicy,
+    /// Tokens of revoked capabilities.
+    revoked: BTreeSet<u64>,
+    /// The security policy epoch: the number of activations so far.
+    epoch: u64,
 }
 
 impl Oracle {
     pub fn new(calendar: FiscalCalendar) -> Self {
         let classes = EntryClasses::embedded().expect("entry_classes.toml");
         let matrix = Admissibility::embedded(&classes).expect("admissibility.toml");
+        let sod = SodPolicy::embedded(&classes, &matrix).expect("sod_policy.toml");
         Self {
             calendar,
             accounts: BTreeMap::new(),
@@ -499,6 +539,9 @@ impl Oracle {
             schedule_cursor: None,
             classes,
             matrix,
+            sod,
+            revoked: BTreeSet::new(),
+            epoch: 0,
         }
     }
 
@@ -583,6 +626,24 @@ impl Oracle {
         self.journal.get(index)
     }
 
+    /// Revoke the capability named `token` (plan §14.2: a journaled
+    /// `CapabilityEvent`): every later act under it is refused.
+    pub fn revoke(&mut self, token: u64) {
+        self.revoked.insert(token);
+    }
+
+    /// Activate a policy: the epoch advances, so every approval recorded
+    /// before it is stale.
+    pub fn activate_policy(&mut self) {
+        self.epoch += 1;
+    }
+
+    #[must_use]
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// [`Oracle::transition_minting`] without its mint lists.
     pub fn transition(
         &mut self,
         code: &str,
@@ -595,18 +656,122 @@ impl Oracle {
     /// A transition, and for `Open` the scheduled reversals dated in the
     /// period whose date the latest tick has reached, minted in it (plan
     /// §7.6 rule (b)): `(from, to, minted (target, reversal), blocked)`.
+    /// The period law as the walks drive it: an authority holding `close`
+    /// and `reopen`, with as many distinct Human approvals as the
+    /// transition's rule asks for (the differential's kernel side records
+    /// exactly those). A case-bound reopen still refuses: its rule names an
+    /// exclusion no case object can decide yet.
     #[allow(clippy::type_complexity)]
     pub fn transition_minting(
         &mut self,
         code: &str,
         t: PeriodTransition,
     ) -> Result<(PeriodState, PeriodState, Vec<(usize, usize)>, Vec<usize>), &'static str> {
-        let Some((_, state)) = self.periods.get_mut(code) else {
+        const PREPARER: u128 = 1;
+        let full = Authority {
+            token: u64::MAX,
+            holder: PREPARER,
+            profile: "Human".into(),
+            ops: vec!["close".into(), "reopen".into()],
+            books: None,
+            expires_at: None,
+        };
+        let mut approvals = Vec::new();
+        if let Some((_, from)) = self.periods.get(code)
+            && transition(*from, t).is_ok()
+        {
+            let req = self.period_rule(*from, t);
+            for i in 0..req.approvers {
+                approvals.push(Recorded {
+                    approval: sod::Approval {
+                        principal: PREPARER + 1 + u128::from(i),
+                        profile: "Human".into(),
+                        op: req.approver_op.clone(),
+                    },
+                    epoch: self.epoch,
+                });
+            }
+        }
+        self.transition_minting_under(code, t, PREPARER, &full, 0, 0, &approvals)
+    }
+
+    /// A period transition by `actor` under `authority` at admission point
+    /// `at` on book `book`, citing `approvals` (plan §14, Appendix C
+    /// PeriodControl). The authority is judged before the period is looked
+    /// at: holder, Agent, op (`reopen` for a reopen, `close` for every other
+    /// transition: §14.2 has no `open` op), books, expiry, revocation. Then
+    /// the state machine; then each approval's epoch; then the SoD rule for
+    /// (PeriodControl, from, transition).
+    #[allow(clippy::too_many_arguments)]
+    pub fn transition_under(
+        &mut self,
+        code: &str,
+        t: PeriodTransition,
+        actor: u128,
+        authority: &Authority,
+        book: u128,
+        at: u64,
+        approvals: &[Recorded],
+    ) -> Result<(PeriodState, PeriodState), &'static str> {
+        self.transition_minting_under(code, t, actor, authority, book, at, approvals)
+            .map(|(from, to, _, _)| (from, to))
+    }
+
+    /// [`Oracle::transition_under`] with the `Open` mints of
+    /// [`Oracle::transition_minting`].
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    pub fn transition_minting_under(
+        &mut self,
+        code: &str,
+        t: PeriodTransition,
+        actor: u128,
+        authority: &Authority,
+        book: u128,
+        at: u64,
+        approvals: &[Recorded],
+    ) -> Result<(PeriodState, PeriodState, Vec<(usize, usize)>, Vec<usize>), &'static str> {
+        if authority.holder != actor {
+            return Err(code::CAPABILITY);
+        }
+        if authority.profile == "Agent" {
+            return Err(code::AGENT_TRUNK);
+        }
+        let op = match t {
+            PeriodTransition::Reopen { .. } => "reopen",
+            _ => "close",
+        };
+        if !authority.ops.iter().any(|o| o == op) {
+            return Err(code::CAPABILITY);
+        }
+        if let Some(books) = &authority.books
+            && !books.contains(&book)
+        {
+            return Err(code::CAPABILITY);
+        }
+        if let Some(bound) = authority.expires_at
+            && at >= bound
+        {
+            return Err(code::EXPIRED);
+        }
+        if self.revoked.contains(&authority.token) {
+            return Err(code::REVOKED);
+        }
+        let Some((_, state)) = self.periods.get(code) else {
             return Err(code::PERIOD_UNKNOWN);
         };
-        let to = transition(*state, t).map_err(|_| code::TRANSITION)?;
         let from = *state;
-        *state = to;
+        let to = transition(from, t).map_err(|_| code::TRANSITION)?;
+        if approvals.iter().any(|a| a.epoch != self.epoch) {
+            return Err(code::STALE_APPROVAL);
+        }
+        let req = self.period_rule(from, t);
+        let literal: Vec<sod::Approval> = approvals.iter().map(|a| a.approval.clone()).collect();
+        if let Some((refusal, _kind)) = sod::verdict(req, 0, actor, &authority.profile, &literal) {
+            return Err(refusal);
+        }
+        if let Some((_, state)) = self.periods.get_mut(code) {
+            *state = to;
+        }
         let (mut minted, mut blocked) = (Vec::new(), Vec::new());
         if t == PeriodTransition::Open
             && let Some(today) = self.today()
@@ -628,6 +793,28 @@ impl Oracle {
             }
         }
         Ok((from, to, minted, blocked))
+    }
+
+    /// The `sod_policy.toml` row for `(PeriodControl, from, transition)`,
+    /// found by a literal scan; the default requirement when none matches.
+    fn period_rule(&self, from: PeriodState, t: PeriodTransition) -> &SodRequirement {
+        let name = match t {
+            PeriodTransition::Open => "Open",
+            PeriodTransition::SoftClose => "SoftClose",
+            PeriodTransition::Close => "Close",
+            PeriodTransition::Lock => "Lock",
+            PeriodTransition::Reopen { .. } => "Reopen",
+        };
+        for rule in &self.sod.rules {
+            if rule.key.class == "PeriodControl"
+                && rule.key.state == Some(from)
+                && rule.key.disposition.is_none()
+                && rule.key.transition.as_deref() == Some(name)
+            {
+                return &rule.requirement;
+            }
+        }
+        &self.sod.default
     }
 
     pub fn post(&mut self, intent: &Intent) -> Verdict {
@@ -2005,6 +2192,118 @@ mod tests {
             o.transition(&march, PeriodTransition::Lock),
             Err(code::TRANSITION)
         );
+    }
+
+    /// Period authority in the obvious way (plan §14.2, Appendix C): the
+    /// authority is judged before the period exists for the oracle, Lock and
+    /// SoftClosed→Reopen need one Human approver who is not the preparer,
+    /// a stale approval refuses before the rule, and a case-bound reopen
+    /// fails closed.
+    #[test]
+    fn period_authority_in_the_obvious_way() {
+        let cal = FiscalCalendar::monthly("cal", 1, 1).unwrap();
+        let mut o = Oracle::new(cal);
+        o.create_periods(2026);
+        let march = "FY2026-P03";
+        let full = Authority {
+            token: 1,
+            holder: 7,
+            profile: "Human".into(),
+            ops: vec!["close".into(), "reopen".into()],
+            books: Some(vec![9]),
+            expires_at: Some(10),
+        };
+        let human = |p: u128, epoch: u64| Recorded {
+            approval: sod::Approval {
+                principal: p,
+                profile: "Human".into(),
+                op: "approve".into(),
+            },
+            epoch,
+        };
+        let open = PeriodTransition::Open;
+        // Authority first: an unknown period is never reached.
+        let reopen_only = Authority {
+            ops: vec!["reopen".into()],
+            ..full.clone()
+        };
+        let cases: [(Authority, u128, u128, u64, &str); 5] = [
+            (full.clone(), 8, 9, 0, code::CAPABILITY),
+            (reopen_only, 7, 9, 0, code::CAPABILITY),
+            (full.clone(), 7, 4, 0, code::CAPABILITY),
+            (full.clone(), 7, 9, 10, code::EXPIRED),
+            (
+                Authority {
+                    profile: "Agent".into(),
+                    ..full.clone()
+                },
+                7,
+                9,
+                0,
+                code::AGENT_TRUNK,
+            ),
+        ];
+        for (authority, actor, book, at, want) in cases {
+            assert_eq!(
+                o.transition_under("FY2099-P01", open, actor, &authority, book, at, &[]),
+                Err(want),
+                "{authority:?} actor {actor} book {book} at {at}"
+            );
+        }
+        let under = |o: &mut Oracle, t, approvals: &[Recorded]| {
+            o.transition_under(march, t, 7, &full, 9, 3, approvals)
+        };
+        assert_eq!(
+            under(&mut o, open, &[]),
+            Ok((PeriodState::Future, PeriodState::Open))
+        );
+        assert_eq!(
+            under(&mut o, PeriodTransition::Close, &[]),
+            Ok((PeriodState::Open, PeriodState::Closed))
+        );
+        assert_eq!(
+            under(&mut o, PeriodTransition::Lock, &[]),
+            Err(code::APPROVALS)
+        );
+        assert_eq!(
+            under(&mut o, PeriodTransition::Lock, &[human(7, 0)]),
+            Err(code::SOD)
+        );
+        let early = human(8, 0);
+        o.activate_policy();
+        assert_eq!(
+            under(&mut o, PeriodTransition::Lock, &[early]),
+            Err(code::STALE_APPROVAL)
+        );
+        assert_eq!(
+            under(&mut o, PeriodTransition::Lock, &[human(8, 1)]),
+            Ok((PeriodState::Closed, PeriodState::Locked))
+        );
+        let reopen = PeriodTransition::Reopen {
+            to: PeriodState::Open,
+        };
+        assert_eq!(
+            under(&mut o, reopen, &[human(8, 1), human(9, 1)]),
+            Err(code::SOD),
+            "Locked -> Reopen is case-bound and fails closed"
+        );
+        assert_eq!(
+            under(&mut o, PeriodTransition::Close, &[]),
+            Err(code::TRANSITION)
+        );
+        o.revoke(1);
+        assert_eq!(under(&mut o, reopen, &[]), Err(code::REVOKED));
+        // The main walk's entry point: the rule's approvers are supplied, a
+        // case-bound reopen still refuses.
+        let april = "FY2026-P04";
+        assert!(o.transition(april, open).is_ok());
+        assert!(o.transition(april, PeriodTransition::SoftClose).is_ok());
+        assert_eq!(
+            o.transition(april, reopen),
+            Ok((PeriodState::SoftClosed, PeriodState::Open))
+        );
+        assert!(o.transition(april, PeriodTransition::Close).is_ok());
+        assert_eq!(o.transition(april, reopen), Err(code::SOD));
     }
 
     /// The fa-ctf example (plan §5.4): cash 100 with a floor of 0; a pending

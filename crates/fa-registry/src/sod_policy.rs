@@ -26,7 +26,9 @@ pub const PROFILES: &[&str] = &["Human", "Agent", "System"];
 pub const EXCLUSIONS: &[&str] = &["preparer", "duplicate", "case_preparer", "session_lineage"];
 
 /// Transitions a control rule may key on, per control class.
-const PERIOD_TRANSITIONS: &[&str] = &["Lock", "Reopen"];
+/// Every PeriodControl transition has a row (`transition_period` refuses
+/// one that does not), so the vocabulary is the state machine's.
+const PERIOD_TRANSITIONS: &[&str] = &["Open", "SoftClose", "Close", "Lock", "Reopen"];
 const POLICY_TRANSITIONS: &[&str] = &["Activate"];
 /// A TimeEvidence tick (plan §7.1a).
 const TIME_TRANSITIONS: &[&str] = &["Tick"];
@@ -361,7 +363,38 @@ impl SodPolicy {
                 ));
             }
         }
+        // Admission picks a control's op from the transition alone, before
+        // the from-state is read; so every row of one transition agrees on it.
+        let mut ops: std::collections::BTreeMap<(&str, &str), (&str, &str)> =
+            std::collections::BTreeMap::new();
+        for r in &rules {
+            let (Some(t), Some(op)) = (r.key.transition.as_deref(), r.preparer_op.as_deref())
+            else {
+                continue;
+            };
+            match ops.insert((r.key.class.as_str(), t), (op, r.name.as_str())) {
+                Some((other, name)) if other != op => {
+                    return Err(invalid(
+                        R,
+                        format!(
+                            "rules `{name}` and `{}` name different preparer ops (`{other}`, `{op}`) for {} {t}",
+                            r.name, r.key.class
+                        ),
+                    ));
+                }
+                _ => {}
+            }
+        }
         Ok(Self { default, rules })
+    }
+
+    /// The preparer op every rule of `class`'s `transition` names, when one
+    /// is registered (the parser guarantees they agree).
+    pub fn transition_op(&self, class: &str, transition: &str) -> Option<&str> {
+        self.rules
+            .iter()
+            .find(|r| r.key.class == class && r.key.transition.as_deref() == Some(transition))
+            .and_then(|r| r.preparer_op.as_deref())
     }
 
     /// The rule for exactly this key, if one is registered.
@@ -491,11 +524,60 @@ mod tests {
             (key("SweepControl", None, None, Some("Expire")), 0),
             (key("ScheduleControl", None, None, Some("Cancel")), 0),
             (key("SweepControl", None, None, Some("Reverse")), 0),
+            (
+                key(
+                    "PeriodControl",
+                    Some(PeriodState::Future),
+                    None,
+                    Some("Open"),
+                ),
+                0,
+            ),
+            (
+                key(
+                    "PeriodControl",
+                    Some(PeriodState::Open),
+                    None,
+                    Some("SoftClose"),
+                ),
+                0,
+            ),
+            (
+                key(
+                    "PeriodControl",
+                    Some(PeriodState::Open),
+                    None,
+                    Some("Close"),
+                ),
+                0,
+            ),
+            (
+                key(
+                    "PeriodControl",
+                    Some(PeriodState::SoftClosed),
+                    None,
+                    Some("Close"),
+                ),
+                0,
+            ),
         ] {
             let (name, req) = p.requirement(&k);
             assert_ne!(name, "default", "{k:?} must be governed by a rule");
             assert_eq!(req.approvers, approvers, "{name}");
         }
+        for (t, op) in [
+            ("Open", "close"),
+            ("SoftClose", "close"),
+            ("Close", "close"),
+            ("Lock", "close"),
+            ("Reopen", "reopen"),
+        ] {
+            assert_eq!(p.transition_op("PeriodControl", t), Some(op), "{t}");
+        }
+        assert_eq!(
+            p.transition_op("PolicyControl", "Activate"),
+            Some("rule_change")
+        );
         // An Open-period Original falls to the default.
         assert_eq!(
             p.requirement(&key("Original", Some(PeriodState::Open), None, None))
@@ -591,6 +673,10 @@ mod tests {
             (
                 format!("[[rule]]\nname = \"x\"\nclass = \"Reversal\"\nstate = \"Closed\"\napprovers = 300\n{OK_REQ}"),
                 "outside 0..=255",
+            ),
+            (
+                format!("[[rule]]\nname = \"x\"\nclass = \"PeriodControl\"\nstate = \"Open\"\ntransition = \"Close\"\npreparer_op = \"close\"\napprovers = 0\n{OK_REQ}[[rule]]\nname = \"y\"\nclass = \"PeriodControl\"\nstate = \"SoftClosed\"\ntransition = \"Close\"\npreparer_op = \"reopen\"\napprovers = 0\n{OK_REQ}"),
+                "different preparer ops",
             ),
         ];
         for (body, want) in cases {

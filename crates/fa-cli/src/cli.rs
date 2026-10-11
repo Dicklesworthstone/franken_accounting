@@ -52,6 +52,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("book", book_cmd),
     ("chart", chart_cmd),
     ("period", period_cmd),
+    ("approve", approve_cmd),
     ("post", post_cmd),
     ("reserve", reserve_cmd),
     ("resolve", resolve_cmd),
@@ -1588,8 +1589,105 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     .map(|p| p.start)
                     .unwrap_or(DateDay(0)),
             )?;
-            let tr =
-                book.transition_period(code, transition, principal(args), reason, date, &key)??;
+            // Embedded-posture binding (plan §14.2 trust boundary): the
+            // operator self-issues exactly the op the transition's registered
+            // rule names (`close`, or `reopen`). Transitions that need
+            // approvers are planned (`--plan-out`), approved (`fa approve`)
+            // and committed from the plan (`--plan`, `--approval`).
+            let who = principal(args);
+            let op = fa_journal::policy::steward()
+                .map_err(BookError::Kernel)?
+                .transition_op("PeriodControl", fa_journal::transition_name(transition))
+                .ok_or_else(|| {
+                    Fail::Internal(format!("no PeriodControl {t} rule in sod_policy.toml"))
+                })?;
+            let capability = Capability::embedded(who, &[op.name()])
+                .map_err(|e| Fail::Internal(format!("self-issued capability: {e}")))?;
+            let approval_flags = args.flag_all("--approval");
+            // A plan seals the description once (R4), so an approval
+            // recorded by another principal, in another process, binds the
+            // proposal the commit rebuilds from the plan's inputs. Plan files
+            // resolve against the caller's working directory, as every file
+            // argument does (a daemon writes and reads the client's).
+            if let Some(path) = args.flag("--plan-out") {
+                if args.flag("--plan").is_some() || !approval_flags.is_empty() {
+                    return Err(usage(
+                        "--plan-out writes a plan and commits nothing",
+                        format!(
+                            "commit it with `fa period {t} {code} --plan <file> [--approval <vid>]...`"
+                        ),
+                    ));
+                }
+                let plan = book.plan_transition(code, transition, who, reason, date, &key)??;
+                let digest = book.plan_digest(&plan)?;
+                let bytes = plan
+                    .encode()
+                    .map_err(|e| Fail::Internal(format!("plan encoding: {e}")))?;
+                let target = ctx.files.resolve(path);
+                std::fs::write(&target, bytes).map_err(|e| BookError::Io(target.clone(), e))?;
+                out.event(
+                    "period_planned",
+                    vec![
+                        ("period", s(&plan.period_code)),
+                        ("from", s(plan.from.name())),
+                        ("to", s(plan.to.name())),
+                        ("proposal_digest", s(hex(&digest))),
+                        ("plan", s(path)),
+                    ],
+                    &format!(
+                        "{}: planned {} → {}; approvals bind proposal {}; commit with --plan {path}",
+                        plan.period_code,
+                        plan.from.name(),
+                        plan.to.name(),
+                        hex(&digest)
+                    ),
+                );
+                return Ok(());
+            }
+            let tr = match args.flag("--plan") {
+                Some(path) => {
+                    let bytes = ctx.files.read_bytes(path)?;
+                    let plan = fa_journal::TransitionPlan::decode(&bytes).map_err(|e| {
+                        usage(
+                            format!("{path} is not a period plan: {e}"),
+                            format!("write one with `fa period {t} {code} --plan-out <file>`"),
+                        )
+                    })?;
+                    if plan.period_code != *code || !plan.is_for(transition) {
+                        return Err(usage(
+                            format!(
+                                "{path} plans `{}` {} → {}, not `{t} {code}`",
+                                plan.period_code,
+                                plan.from.name(),
+                                plan.to.name()
+                            ),
+                            "commit a plan with the subcommand and period it was made for",
+                        ));
+                    }
+                    let digest = book.plan_digest(&plan)?;
+                    let approvals = approval_flags
+                        .iter()
+                        .map(|v| {
+                            Ok(fa_model::ApprovalRef {
+                                approval_vid: parse_vid(v, "--approval")?,
+                                approved_digest: digest,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, Fail>>()?;
+                    book.transition_planned(&plan, transition, &capability, &approvals)??
+                }
+                None if !approval_flags.is_empty() => {
+                    return Err(usage(
+                        "--approval binds a planned proposal",
+                        format!(
+                            "plan first with `fa period {t} {code} --plan-out <file>`, approve its proposal_digest with `fa approve --proposal`, then commit with `--plan <file> --approval <vid>`"
+                        ),
+                    ));
+                }
+                None => {
+                    book.transition_period(code, transition, who, reason, date, &key, &capability)??
+                }
+            };
             out.event(
                 "period_transitioned",
                 vec![
@@ -1611,6 +1709,87 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         }
         other => Err(unhandled("period", other)),
     }
+}
+
+// ---------------------------------------------------------------------------
+// approve
+// ---------------------------------------------------------------------------
+
+/// `fa approve --proposal <digest>` (R4): record an Approval binding a
+/// planned proposal's digest under the caller's capability (embedded
+/// posture: `--as` names the principal; `approve` is implied and `--grant`
+/// adds ops, as for `post`). A second approver is a second invocation as a
+/// second principal; the commit cites each approval's vid.
+fn approve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let text = args.flag("--proposal").ok_or_else(|| {
+        usage(
+            "approve needs --proposal <digest>",
+            "fa approve --proposal <proposal_digest> (64 hex, printed by `fa period <t> <code> --plan-out <file>`)",
+        )
+    })?;
+    let digest = parse_digest(text, "--proposal")?;
+    let who = principal(args);
+    let mut ops = vec!["approve"];
+    ops.extend(args.flag_all("--grant"));
+    let capability = Capability::embedded(who, &ops).map_err(|e| {
+        usage(
+            e.to_string(),
+            "--grant takes a registered op name; `fa capabilities --json` lists them",
+        )
+    })?;
+    let mut book = ctx.books.open(args)?;
+    let approved = book.approve(capability, digest)??;
+    let approval = approved.approval();
+    let recorded_at = approved.recorded_at();
+    let (epoch, already) = match approved {
+        fa_journal::Approved::Recorded {
+            security_policy_epoch,
+            ..
+        } => (Json::Int(i128::from(security_policy_epoch)), false),
+        fa_journal::Approved::AlreadyRecorded { .. } => (Json::Null, true),
+    };
+    ctx.out.event(
+        "approved",
+        vec![
+            (
+                "approval_vid",
+                s(format!("{:032x}", approval.approval_vid.0)),
+            ),
+            ("approved_digest", s(hex(&approval.approved_digest))),
+            ("security_policy_epoch", epoch),
+            ("recorded_at", Json::Int(i128::from(recorded_at.0))),
+            ("already_recorded", Json::Bool(already)),
+        ],
+        &format!(
+            "approval {:032x} of proposal {} ({})",
+            approval.approval_vid.0,
+            hex(&approval.approved_digest),
+            if already {
+                "already recorded"
+            } else {
+                "recorded"
+            }
+        ),
+    );
+    Ok(())
+}
+
+/// A 64-hex digest from a flag.
+fn parse_digest(text: &str, what: &str) -> Result<[u8; 32], Fail> {
+    let bad = || {
+        usage(
+            format!("{what} `{text}` is not a 64-hex digest"),
+            format!("{what} <proposal_digest printed by --plan-out>"),
+        )
+    };
+    if text.len() != 64 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(bad());
+    }
+    let mut digest = [0u8; 32];
+    for (i, byte) in digest.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&text[2 * i..2 * i + 2], 16).map_err(|_| bad())?;
+    }
+    Ok(digest)
 }
 
 fn kind_name(k: PeriodKind) -> &'static str {

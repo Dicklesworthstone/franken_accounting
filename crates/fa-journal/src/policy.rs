@@ -17,6 +17,14 @@
 //! policy; and an approval recorded under an earlier epoch is refused as
 //! stale, never silently honoured.
 //!
+//! **Revocation is journaled.** [`revoke_capability`] commits a
+//! PolicyControl entry carrying `ControlPayload::CapabilityEvent { Revoke }`
+//! at an identity derived from the revoked capability's commitment, so the
+//! kernel's [`capability_witness`] is one point read: present means revoked,
+//! and an absent read is a witness a concurrent revocation invalidates.
+//! Every Steward-checked write (post, transitions, approvals, activations)
+//! takes it right after its transaction opens, before any other read.
+//!
 //! **Approvals are objects.** [`record_approval`] writes an `Approval`
 //! vertex (`fa:approval:v1`) whose identity derives from (book, approver,
 //! approved proposal digest, epoch); a transcript's `ApprovalRef` must name
@@ -238,7 +246,9 @@ pub async fn record_approval<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: ApprovalRequest,
 ) -> Outcome<Approved> {
-    if let Err(d) = fa_policy::require(&req.capability, Op::Approve, "recording an approval") {
+    if let Err(d) = fa_policy::require(&req.capability, Op::Approve, "recording an approval")
+        .and_then(|()| fa_policy::scope(&req.capability, book.book_id))
+    {
         return Ok(Err(refusal(&d)));
     }
     let at = db.frontier()?;
@@ -247,6 +257,10 @@ pub async fn record_approval<V: asupersync::fs::Vfs + Clone>(
     }
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
+    if let Err(r) = capability_witness(&txn, db, book, &req.capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
     let epoch = epoch_witness(&txn, db)?;
     let approval = match Approval::by(
         &req.capability,
@@ -570,6 +584,7 @@ pub async fn activate_policy<V: asupersync::fs::Vfs + Clone>(
             principal: proposal.principal_ref,
             trunk: true,
             op,
+            book: book.book_id,
             legs: &[],
         },
     ) {
@@ -582,6 +597,10 @@ pub async fn activate_policy<V: asupersync::fs::Vfs + Clone>(
     let proposal_digest = proposal.proposal_digest()?;
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
+    if let Err(r) = capability_witness(&txn, db, book, &req.capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
     let evid = entry_vid(
         book.book_id,
         &proposal.principal_ref.0.to_le_bytes(),
@@ -664,6 +683,182 @@ pub async fn activate_policy<V: asupersync::fs::Vfs + Clone>(
             Some(row) => recorded_or_conflict(db, book, &row, proposal, &proposal_digest),
             None => Err(KernelError::Corrupt(
                 "identity spent but no live row".into(),
+            )),
+        },
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// `vid(revocation of C) = H("fa:vid:capability-revocation:v1" ‖ book ‖
+/// commitment(C))`: one revocation per capability by identity, found by a
+/// point read.
+#[must_use]
+pub fn revocation_vid(book: Id128, commitment: &[u8; 32]) -> VId {
+    let mut h = Hasher::new();
+    h.update(b"fa:vid:capability-revocation:v1");
+    h.update(&book.0);
+    h.update(commitment);
+    let d = h.finalize();
+    let mut lo = [0u8; 16];
+    lo.copy_from_slice(&d.0[..16]);
+    VId(u128::from_le_bytes(lo))
+}
+
+/// The capability is not revoked, as a point witness of `txn` (plan §14.2:
+/// authority is evaluated against current policy at commit). A revocation
+/// committed after this read makes the transaction a first-committer-wins
+/// conflict.
+pub fn capability_witness<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+) -> Outcome<()> {
+    let commitment = capability.commitment().map_err(capability_error)?;
+    match txn.vertex(db, revocation_vid(book.book_id, &commitment))? {
+        Some(row) => Ok(Err(refusal(&Denial::Revoked {
+            revoked_at: row.created_at,
+        }))),
+        None => Ok(Ok(())),
+    }
+}
+
+/// `ControlPayload::CapabilityEvent.kind` for a revocation (Issue = 0,
+/// Revoke = 1, Attenuate = 2; plan Appendix A).
+pub const CAPABILITY_EVENT_REVOKE: u8 = 1;
+
+/// Revoke a capability by its commitment.
+#[derive(Clone, Debug)]
+pub struct RevocationRequest {
+    /// The revoker's capability: it must hold `issue_capability` (which no
+    /// Agent- or System-profile capability can).
+    pub capability: Capability,
+    /// The commitment of the capability being revoked.
+    pub revoked: [u8; 32],
+    pub effective_date: DateDay,
+    pub idempotency_key: Vec<u8>,
+    pub description: Erasable<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Revoked {
+    pub control_entry: VId,
+    pub recorded_at: CommitSeq,
+    /// The capability was already revoked; nothing was written.
+    pub already_recorded: bool,
+}
+
+/// Journal a revocation (plan §14.2: "issuance and revocation are journaled
+/// control entries"): a PolicyControl entry carrying a `CapabilityEvent`
+/// with `kind = Revoke`, at [`revocation_vid`], in one commit. A revocation
+/// carries no caveats, so its `caveats_digest` is zero. The revoked token is
+/// refused by every later Steward-checked write; recorded approvals it made
+/// stay in history (plan §14.2) but no longer authorize anything new.
+pub async fn revoke_capability<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    req: RevocationRequest,
+) -> Outcome<Revoked> {
+    if let Err(d) = fa_policy::admit(
+        &req.capability,
+        &Intent {
+            principal: req.capability.holder(),
+            trunk: true,
+            op: Op::IssueCapability,
+            book: book.book_id,
+            legs: &[],
+        },
+    ) {
+        return Ok(Err(refusal(&d)));
+    }
+    if let Err(d) = fa_policy::current(&req.capability, db.frontier()?) {
+        return Ok(Err(refusal(&d)));
+    }
+    let proposal = EntryPayload {
+        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        book_id: book.book_id,
+        branch_id: Id128::TRUNK,
+        class: EntryClass::POLICY_CONTROL,
+        effective_date: req.effective_date,
+        document_date: None,
+        description: req.description,
+        effective_period: None,
+        legs: Vec::new(),
+        control: Some(ControlPayload::CapabilityEvent {
+            commitment: req.revoked,
+            kind: CAPABILITY_EVENT_REVOKE,
+            caveats_digest: [0; 32],
+        }),
+        unit_totals: Vec::new(),
+        base_totals: None,
+        idempotency_key: req.idempotency_key,
+        origin: EntryOrigin::Control {
+            control_kind: 4,
+            spec_body_digest: req.revoked,
+        },
+        principal_ref: req.capability.holder(),
+        session_ref: None,
+        evidence: Vec::new(),
+        supersession: Vec::new(),
+        pending: None,
+        external_ids: Vec::new(),
+        extensions: Vec::new(),
+        tags: Vec::new(),
+    };
+    if proposal.validate().is_err() {
+        return Ok(Err(Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            "the revocation is not a valid PolicyControl entry (a non-empty idempotency key is required)",
+            "Appendix A ControlPayload::CapabilityEvent",
+            "supply a non-empty idempotency key",
+        )));
+    }
+    let vid = revocation_vid(book.book_id, &req.revoked);
+    let txn_cx = ctx.txn();
+    let mut txn = db.begin(&txn_cx)?;
+    if let Err(r) = capability_witness(&txn, db, book, &req.capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    if let Some(row) = txn.vertex(db, vid)? {
+        txn.abort();
+        return Ok(Ok(Revoked {
+            control_entry: vid,
+            recorded_at: row.created_at,
+            already_recorded: true,
+        }));
+    }
+    let entry = proposal.seal(Vec::new(), None)?;
+    let mut batch = WriteBatch::new(relation::IN_BOOK);
+    batch.create_vertex(vid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    txn.write(db, batch)?;
+    match txn.commit(db, &ctx.commit()).await {
+        Ok(seq) => Ok(Ok(Revoked {
+            control_entry: vid,
+            recorded_at: seq,
+            already_recorded: false,
+        })),
+        Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
+            Ok(Err(Refusal::new(
+                code::CONFLICT,
+                exit::CONFLICT,
+                format!("a concurrent commit invalidated this revocation's witness: {detail}"),
+                "FG-LAW-FCW-01 (first committer wins)",
+                "retry; if the capability is already revoked the retry says so",
+            )))
+        }
+        Err(WriteTxnError::Write(
+            fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
+        )) => match db.vertex(vid)? {
+            Some(row) => Ok(Ok(Revoked {
+                control_entry: vid,
+                recorded_at: row.created_at,
+                already_recorded: true,
+            })),
+            None => Err(KernelError::Corrupt(
+                "revocation identity spent but no live row".into(),
             )),
         },
         Err(e) => Err(e.into()),
