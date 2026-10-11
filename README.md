@@ -34,11 +34,45 @@ fa registers materialize --book ./books/acme --period FY2026-P03 --json
 
 Omitting `--as-known-at` selects the current head; the response records the resolved sequence. A later backdated entry appears at head but cannot change a report at an earlier sequence. Instant selectors require TimeEvidence and are currently refused. These reports are exact payload folds; report certificates and independent offline verification are still pending. The [persistent CLI tests](./crates/fa-cli/tests/cli.rs) exercise book creation, chart installation, posting, reporting, refusals and recovery with the actual binary.
 
-Reports show posted and pending amounts separately. A hold reserves its original period; a later partial posting releases the entire hold and posts only the explicitly selected sub-vector in the resolution's period. A void releases the hold without posting. Earlier recorded snapshots still show the unresolved reservation. Limited accounts reserve pending outflows; pending inflows cannot fund spending. `fa verify availability` compares each limited account's expected cell, including its account binding, with a journal fold. Timed expiry remains unfinished.
+Reports show posted and pending amounts separately. A hold reserves its original period; a later partial posting releases the entire hold and posts only the explicitly selected sub-vector in the resolution's period. A void releases the hold without posting. Earlier recorded snapshots still show the unresolved reservation. Limited accounts reserve pending outflows; pending inflows cannot fund spending. `fa verify availability` compares each limited account's expected cell, including its account binding, with a journal fold. Library sweeps expire holds using committed ticks; daemon scheduling and full timing simulation remain unfinished.
 
 Register verification compares both amount columns, counts, identity, period membership, watermark and fold checksum against the journal payloads. Rebuilding repairs derived rows and retires phantom cells without changing journal entries. Existing register caches from before the pending-column format must be rebuilt; their missing columns are reported as drift rather than assumed to be zero.
 
-The embedded API's `Book::advance_registers(period)` consumes new committed entry payloads through `delta_since` for native posted/pending period cells. It publishes cells and the consumed cursor atomically; `Book::rebuild_registers(period)` replaces them from a fresh journal fold. Reopening rehydrates the delta window, and an actually retired cursor falls back to a full rebuild. `verify_registers` also checks the maintenance state against its journal prefix. This slice still scans projection metadata and writes the period's cells; it makes no throughput claim. Reports retain their literal folds. Historical register checkpoints, cadence policies, other register families, supervised daemon maintenance and cached report reads remain unfinished.
+The embedded API's `Book::advance_registers(period)` consumes new committed entry payloads through `delta_since` for native posted/pending period cells. It publishes cells and the consumed cursor atomically; `Book::rebuild_registers(period)` replaces them from a fresh journal fold. Reopening rehydrates the delta window, and an actually retired cursor falls back to a full rebuild. Staged migration chunks stay invisible; finalizing a run triggers a full fold to include newly activated chunks older than the cursor. Pending-sum overflow also falls back to the final fold, so holds released later in the same suffix do not prevent advancement; a genuinely oversized final sum still fails. `verify_registers` also checks the maintenance state against its journal prefix. This slice still scans projection metadata and writes the period's cells; it makes no throughput claim. Reports retain their literal folds. Historical register checkpoints, cadence policies, other register families, supervised daemon maintenance and cached report reads remain unfinished.
+
+### Embedded execution
+
+`AsyncBook<V>` accepts the caller's `PurposeContexts` for each operation and
+uses the supplied filesystem for both the journal and external document bytes.
+It owns no runtime. The `Book` convenience API creates a production runtime
+for its synchronous operations and delegates to the same implementation. This lets a host application or the
+lab runtime supply cancellation, budgets, scheduling and filesystem faults
+without a second accounting implementation.
+
+Tick recording, bounded expiry and reversal sweeps, and their backlog reads
+also use this async core. The `Book` timing adapters accept the caller's
+context. The kernel takes automatic effects only from a corroborated committed
+tick; a failed description seal aborts the current batch without advancing
+its cursor. These are committed-tick semantics, not a guarantee of clock accuracy.
+
+The lab smoke tests cover a posted entry, exact expected register cells,
+external evidence, virtual sync latency, crash/reopen, idempotency, caller
+cancellation, tick-driven expiry and reversal, and an injected write failure.
+The timing test calls the library; it does not run the daemon scheduler.
+The full registered crash-point
+matrix, concurrency exploration and 1,000-seed Genesis campaign remain open
+under `fa-0fl`; these smoke tests do not establish that broader claim.
+
+The posting and period kernels also expose owned prepared transactions.
+Their ordinary entrypoints prepare and commit through the same code.
+Preparation retains the substrate's original witnesses; commit rechecks the
+acting capability's expiry at the current frontier and validates those
+witnesses without refreshing them. This permits controlled interleavings
+between preparation and publication while preserving the accounting laws.
+Period opening also witnesses the population of reversal schedules, including
+an empty population, so a newly due schedule invalidates a prepared opening.
+The filesystem fault tests currently cover consistently anchored paths;
+relative-path alias handling in the substrate simulator is tracked by `fa-n4m`.
 
 ### Entry accumulator checkpoints
 

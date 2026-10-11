@@ -50,8 +50,6 @@ pub use genesis::{
     AccountSpec, BookContext, BookSpec, ChartInstalled, LegalEntitySpec, TimeZonePolicy,
     UnitPolicy, create_book, create_periods, install_chart,
 };
-// `import::read_run` stays module-qualified: `migration::read_run` reads a
-// different object (CobaltGull 3474).
 pub use import::{
     ImportRecorded, ImportRequest, RunReceipt, import_run, verify_receipt, verify_receipt_in,
 };
@@ -69,15 +67,17 @@ pub use migration::{
     transition_run, visible_at,
 };
 pub use period::{
-    TransitionPlan, Transitioned, plan_transition, transition_name, transition_period,
-    transition_proposal,
+    PreparedTransition, TransitionPlan, Transitioned, plan_transition, prepare_transition,
+    transition_name, transition_period, transition_proposal,
 };
 pub use policy::{
     ActivationRequest, ApprovalRequest, Approved, PolicyActivated, RevocationRequest, Revoked,
     activate_policy, activation_proposal, record_approval, revoke_capability,
     security_policy_epoch,
 };
-pub use post::{Capability, PostRequest, Posted, post};
+pub use post::{
+    Capability, PostPreparation, PostRequest, Posted, PreparedPost, post, prepare_post,
+};
 pub use redaction::{
     DocumentRead, RedactedView, ViewChunk, ViewDerived, derive_redacted_view, read_document_for,
     redacted_view_vid,

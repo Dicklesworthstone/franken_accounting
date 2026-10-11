@@ -53,7 +53,7 @@ use fa_money::Side;
 use fa_registry::evidence_policy::EvidencePolicy;
 use fa_registry::{Admissibility, Decision, EntryClasses};
 use fa_time::resolve_period;
-use fgdb::{Database, VertexRow, WriteBatch, WriteMismatchPolicy, WriteTxnError};
+use fgdb::{Database, VertexRow, WriteBatch, WriteMismatchPolicy, WriteTxn, WriteTxnError};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
@@ -132,6 +132,91 @@ impl Posted {
         match self {
             Self::Committed { period, .. } => Some(period),
             Self::AlreadyRecorded { .. } => None,
+        }
+    }
+}
+
+/// An admitted retry is already complete; a fresh post retains the actual
+/// substrate transaction until its caller chooses to commit or abort it.
+#[derive(Debug)]
+#[must_use]
+pub enum PostPreparation {
+    AlreadyRecorded(Posted),
+    Ready(Box<PreparedPost>),
+}
+
+/// A sealed post and its original read witnesses. Fields stay private so a
+/// caller cannot replace the acting capability, proposal, or transaction.
+/// Dropping this value abandons the staged write and releases its pin.
+#[derive(Debug)]
+#[must_use]
+pub struct PreparedPost {
+    txn: WriteTxn,
+    request: PostRequest,
+    entry_ref: EntryRef,
+    period: String,
+    identity: Identity,
+    seal_key: SealKey,
+}
+
+impl PreparedPost {
+    /// The committed prefix against which all laws and witnesses were read.
+    #[must_use]
+    pub fn basis(&self) -> CommitSeq {
+        self.txn.basis()
+    }
+
+    /// Release the prepared transaction without publishing any effects.
+    pub fn abort(self) {
+        self.txn.abort();
+    }
+
+    /// Publish once through the ordinary substrate validator. Expiry is
+    /// judged again at the current frontier, without refreshing any of the
+    /// preparation's revocation, policy, period, or accounting witnesses.
+    pub async fn commit<V: asupersync::fs::Vfs + Clone>(
+        self,
+        db: &mut Database<V>,
+        ctx: &PurposeContexts,
+    ) -> Outcome<Posted> {
+        let commit = ctx.commit();
+        commit.checkpoint().map_err(WriteTxnError::Interrupted)?;
+        let Self {
+            mut txn,
+            request,
+            entry_ref,
+            period,
+            identity,
+            seal_key,
+        } = self;
+        if let Err(d) = fa_policy::current(&request.capability, db.frontier()?) {
+            txn.abort();
+            return Ok(Err(policy::refusal(&d)));
+        }
+        match txn.commit(db, &commit).await {
+            Ok(seq) => Ok(Ok(Posted::Committed {
+                entry_ref,
+                recorded_at: seq,
+                period,
+            })),
+            Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
+                Ok(Err(Refusal::new(
+                    code::CONFLICT,
+                    exit::CONFLICT,
+                    format!("a concurrent commit invalidated a witness this post read: {detail}"),
+                    "FG-LAW-FCW-01 (first committer wins)",
+                    "re-plan and retry; if a close or a policy activation won, the period-law or stale-approval refusal will say so",
+                )))
+            }
+            Err(WriteTxnError::Write(
+                fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
+            )) => match db.vertex(entry_ref.vid)? {
+                Some(row) => recorded_or_conflict(&row, &request.proposal, &seal_key, identity),
+                None => Err(KernelError::Corrupt(
+                    "identity spent but no live row".into(),
+                )),
+            },
+            Err(e) => Err(e.into()),
         }
     }
 }
@@ -250,7 +335,7 @@ fn not_implemented(class_name: &str) -> Refusal {
         "settles on a two-phase entry" | "re-application by reversing a reversal" => {
             "the full application-netting law (plan §5.7, §8.2; fa-06a)"
         }
-        "leg.base_amount" => "the FX law slice (fa-p7r)",
+        "leg.base_amount" | "base_totals" => "the FX law slice (fa-p7r)",
         "leg.dimension_set" => "the dimension registry slice (plan §4.3)",
         "Replacement" | "Reclassification" => "fa-omi (supersession beyond exact reversal)",
         "Revision" | "Restatement" | "PriorPeriodAdjustment" => {
@@ -282,6 +367,24 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: PostRequest,
 ) -> Outcome<Posted> {
+    match prepare_post(db, ctx, book, req)? {
+        Err(refusal) => Ok(Err(refusal)),
+        Ok(PostPreparation::AlreadyRecorded(posted)) => Ok(Ok(posted)),
+        Ok(PostPreparation::Ready(prepared)) => prepared.commit(db, ctx).await,
+    }
+}
+
+/// Run the production posting pipeline through staging, retaining its
+/// witnesses at one prefix without publishing a commit. Another prepared
+/// operation may commit before this one; the ordinary validator decides
+/// whether the original witnesses still hold.
+pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    req: PostRequest,
+) -> Outcome<PostPreparation> {
+    ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
     let proposal = &req.proposal;
 
     // 1. Structure (fa-model's rules). Usage error: the payload is malformed.
@@ -435,9 +538,12 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
             "release the hold now with Resolution(Voids), or let the expiry sweep expire it once a tick reaches its deadline",
         )));
     }
-    // 1d. Rich leg fields this slice does not enforce are refused, never
-    //     admitted unchecked: a leg that settles, converts, or carries
-    //     dimensions waits for the law that reads it.
+    // 1d. FX valuations this slice does not enforce are refused, never
+    //     admitted unchecked. The aggregate is itself a claim about a law
+    //     and its rate documents, even when no leg carries a base amount.
+    if proposal.base_totals.is_some() {
+        return Ok(Err(not_implemented("base_totals")));
+    }
     for leg in &proposal.legs {
         if leg.base_amount.is_some() {
             return Ok(Err(not_implemented("leg.base_amount")));
@@ -699,7 +805,10 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     };
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        return recorded_or_conflict(&row, proposal, &book.seal_key, identity);
+        return Ok(
+            recorded_or_conflict(&row, proposal, &book.seal_key, identity)?
+                .map(PostPreparation::AlreadyRecorded),
+        );
     }
 
     // 4'. The run (plan §8.6): its state is a point witness, so a Finalize
@@ -920,8 +1029,11 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     // 5''. Segregation of duties (plan §14.3, FA-INV-10 `sod`): every cited
     //      approval is a witnessed Approval binding this proposal under the
     //      current epoch, and sod_policy.toml judges the set — on `admit`
-    //      cells too, so an attached approval is never ignored. The count is
-    //      max(matrix, rule).
+    //      cells too, so an attached approval is never ignored. Balancing
+    //      effects are not resolved yet, so that path performs the complete
+    //      approval check at step 8 instead. It must establish the final
+    //      digest before observing any cited approval record.
+    //      The count is max(matrix, rule).
     let sod_key = fa_policy::sod::posting_key(
         class_name,
         state,
@@ -931,17 +1043,23 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
         principal: proposal.principal_ref,
         profile: req.capability.profile(),
     };
-    if let Err(r) = policy::authorize_approvals(
-        &txn,
-        db,
-        book,
-        &req.approvals,
-        &proposal.proposal_digest()?,
-        epoch,
-        &sod_key,
-        matrix_approvals,
-        preparer,
-    )? {
+    let balancing = proposal
+        .extensions
+        .iter()
+        .any(|(tag, _)| *tag == fa_model::entry::BALANCING_EXTENSION);
+    if !balancing
+        && let Err(r) = policy::authorize_approvals(
+            &txn,
+            db,
+            book,
+            &req.approvals,
+            &proposal.proposal_digest()?,
+            epoch,
+            &sod_key,
+            matrix_approvals,
+            preparer,
+        )?
+    {
         txn.abort();
         return Ok(Err(r));
     }
@@ -1608,6 +1726,21 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
         sealed.legs.clone_from(legs);
         sealed.unit_totals = EntryPayload::fold_unit_totals(&sealed.legs)
             .map_err(|e| KernelError::Corrupt(format!("balancing unit totals: {e:?}")))?;
+        let resolved_digest = sealed.proposal_digest()?;
+        if let Err(refusal) = policy::authorize_approvals(
+            &txn,
+            db,
+            book,
+            &req.approvals,
+            &resolved_digest,
+            epoch,
+            &sod_key,
+            matrix_approvals,
+            preparer,
+        )? {
+            txn.abort();
+            return Ok(Err(refusal));
+        }
     }
     let entry: Entry = sealed.seal(req.approvals.clone(), req.plan_certificate)?;
     let mut has_leg = WriteBatch::new(relation::HAS_LEG);
@@ -1739,35 +1872,14 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     batches.retain(|b| !b.is_empty());
     txn.write_ordered(db, batches)?;
 
-    match txn.commit(db, &ctx.commit()).await {
-        Ok(seq) => Ok(Ok(Posted::Committed {
-            entry_ref: entry.entry_ref(evid),
-            recorded_at: seq,
-            period: period.code,
-        })),
-        Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
-            Ok(Err(Refusal::new(
-                code::CONFLICT,
-                exit::CONFLICT,
-                format!("a concurrent commit invalidated a witness this post read: {detail}"),
-                "FG-LAW-FCW-01 (first committer wins)",
-                "re-plan and retry; if a close or a policy activation won, the period-law or stale-approval refusal will say so",
-            )))
-        }
-        Err(WriteTxnError::Write(
-            fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
-        )) => {
-            // Lost the identity race: the recorded outcome if it is the same
-            // intent, a conflict if it is not.
-            match db.vertex(evid)? {
-                Some(row) => recorded_or_conflict(&row, proposal, &book.seal_key, identity),
-                None => Err(KernelError::Corrupt(
-                    "identity spent but no live row".into(),
-                )),
-            }
-        }
-        Err(e) => Err(e.into()),
-    }
+    Ok(Ok(PostPreparation::Ready(Box::new(PreparedPost {
+        txn,
+        request: req,
+        entry_ref: entry.entry_ref(evid),
+        period: period.code,
+        identity,
+        seal_key: book.seal_key.clone(),
+    }))))
 }
 
 /// Read a committed entry back by its derived identity.

@@ -676,8 +676,8 @@ code = "FA-REF-133"
 name = "MIGRATION_STAGED"
 owners = ["fa-notary"]
 exit = "refusal"
-cite = "plan §8.6, FA-INV-07 (a staged or abandoned chunk is invisible to every fold); ruling 3243"
-fix = "prove the balance at a checkpoint after the run is finalized; an abandoned run's accounts are provable once balance proofs carry the migration predicate (fa-e00)"
+cite = "plan §8.6, FA-INV-07 (migration visibility includes finalized state and pre-opening detail policy); ruling 3243"
+fix = "finalize a staged run before proving its balance; for abandoned or pre-opening migration history use inclusion proofs until balance proofs carry authenticated migration visibility witnesses (fa-e00)"
 
 [[refusal]]
 code = "FA-REF-134"
@@ -695,7 +695,7 @@ exit = "verification"
 cite = "plan §15.2 (a scratch book's certificate carries its SeqMap; replay equals the source at every mapped sequence)"
 fix = "replay again with fa_journal::scratch::replay_into and verify the fresh map; a SeqMap is never edited"
 
-# ---- Balance assertions (140); legal hold subjects (141); redaction (142–143) ---
+# ---- Balance assertions (140); legal hold subjects (141); redaction (142–143); tick corroboration (144) ---
 [[refusal]]
 code = "FA-REF-140"
 name = "REGISTER_CLAIM_FALSE"
@@ -727,3 +727,18 @@ owners = ["fa-journal"]
 exit = "verification"
 cite = "plan §9.6 (a redacted view proves it projects the document an entry cites); FA-INV-14 public-commitment"
 fix = "treat the stored view as untrusted: a view that does not rebuild its document's commitment is not that document's; a privileged principal re-derives it from the verified bytes"
+
+# 144 (CobaltGull 3599, bead fa-ffo):
+# automatic effects take time only from a corroborated committed tick. The
+# expiry and scheduled-reversal sweeps refuse under a latest tick whose
+# TimeTick payload records monotonic_ok false, and an Open's scheduled
+# reversals reach no date under it. One kernel rule for every caller (the
+# library, fad, a period transition); it claims committed-tick semantics
+# only, nothing about an observed instant against true UTC (3602, 3604).
+[[refusal]]
+code = "FA-REF-144"
+name = "TICK_UNCORROBORATED"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §5.4, §7.1a, §7.6 (automatic effects take time only from a corroborated committed tick)"
+fix = "journal a newer TimeEvidence tick that its source's monotonic clock corroborates (Book::record_tick or AsyncBook::record_tick with monotonic_ok true, by the caller that holds the clock), then rerun the sweep under it (Book::sweep or AsyncBook::sweep)"

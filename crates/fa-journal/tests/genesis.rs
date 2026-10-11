@@ -1347,6 +1347,51 @@ fn reversal_targets_are_posted_entries_and_non_entries_are_typed_refusals() {
 }
 
 #[test]
+fn unchecked_base_totals_are_refused_before_publication() {
+    let mut h = harness();
+    let frontier = h.db.frontier().unwrap();
+    let native = h.proposal(
+        h.rent_legs(10),
+        b"unchecked-fx-totals",
+        EntryClass::ORIGINAL,
+    );
+    // Even balanced claimed totals are unsupported without a registered FX
+    // law and witnessed rate documents. None of these claims has leg values.
+    for (debits, credits) in [(10, 10), (10, 11), (-1, -1)] {
+        let mut proposal = native.clone();
+        proposal.base_totals = Some(fa_model::BaseTotals {
+            unit_id: h.usd.0,
+            debits,
+            credits,
+            fx_law_oid: Oid([0x91; 32]),
+            rate_doc_oids: vec![Oid([0x92; 32])],
+            residual: Some(fa_model::Residual {
+                leg_ordinal: 0,
+                amount: Amount::new(h.usd, 1),
+            }),
+        });
+        proposal.validate().expect("structurally encodable claim");
+        let refusal = h.post(h.request(proposal, &["post"])).unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-102", exit::REFUSAL));
+        assert!(refusal.message.contains("base_totals"), "{refusal}");
+        assert!(refusal.fix.contains("fa-p7r"), "{refusal}");
+        assert_eq!(
+            h.db.frontier().unwrap(),
+            frontier,
+            "no unchecked FX publication"
+        );
+    }
+    // Refusing an unsupported valuation must neither disable ordinary native
+    // posting nor consume its idempotency key.
+    let posted = h
+        .post(h.request(native.clone(), &["post"]))
+        .expect("native post");
+    let (entry_ref, _) = committed(&posted).expect("fresh native commit");
+    let (stored, _) = read_entry(&h.db, entry_ref.vid).unwrap().unwrap();
+    assert_eq!(stored.proposal, native);
+}
+
+#[test]
 fn rich_leg_fields_without_a_law_are_refused_not_admitted() {
     let mut h = harness();
     let frontier = h.db.frontier().unwrap();
@@ -1376,6 +1421,155 @@ fn settle(target: EntryRef, ordinal: u16, usd: UnitId, cents: i128) -> Settlemen
         target,
         ordinal,
         amount: Amount::new(usd, cents),
+    }
+}
+
+#[test]
+fn prepared_receipts_compete_for_the_same_open_amount_in_both_commit_orders() {
+    // Two real substrate transactions retain the same application witness.
+    // This enumerates these two commit orders, not a lab/DPOR campaign.
+    let prepare = |h: &mut Harness, proposal: EntryPayload| {
+        let ctx = h.ctx();
+        let request = h.request(proposal, &["post"]);
+        match prepare_post(&mut h.db, &ctx, &h.book, request)
+            .expect("prepare kernel")
+            .expect("receipt admitted at its basis")
+        {
+            PostPreparation::Ready(prepared) => Some(prepared),
+            PostPreparation::AlreadyRecorded(_) => None,
+        }
+        .expect("a distinct receipt must be fresh")
+    };
+    let commit = |h: &mut Harness, prepared: Box<PreparedPost>| {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        h.runtime
+            .block_on(async move { prepared.commit(db, &ctx).await })
+            .expect("commit kernel")
+    };
+    for winner_index in [0, 1] {
+        let mut h = harness();
+        let usd = h.usd;
+        let invoice = h
+            .post(h.request(h.invoice(10_000, b"race-invoice"), &["post"]))
+            .expect("invoice committed")
+            .entry_ref();
+        let basis = h.db.frontier().unwrap();
+        let keys: [&[u8]; 2] = [b"race-receipt-a", b"race-receipt-b"];
+        let proposals = keys.map(|key| h.receipt(6_000, vec![settle(invoice, 0, usd, 6_000)], key));
+        let identities = keys.map(|key| entry_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), key));
+        assert_ne!(identities[0], identities[1]);
+
+        // Preparation checks the complete target reference, not just its vid.
+        let mut stale = proposals[0].clone();
+        stale.legs[1].settles[0].target.entry_digest[0] ^= 1;
+        let request = h.request(stale, &["post"]);
+        let ctx = h.ctx();
+        let refused = prepare_post(&mut h.db, &ctx, &h.book, request)
+            .expect("stale-reference kernel")
+            .unwrap_err();
+        assert_eq!((refused.code, refused.exit), ("FA-REF-070", exit::REFUSAL));
+        assert_eq!(h.db.frontier().unwrap(), basis);
+
+        let first = prepare(&mut h, proposals[0].clone());
+        let second = prepare(&mut h, proposals[1].clone());
+        assert_eq!(first.basis(), basis);
+        assert_eq!(second.basis(), basis);
+        assert_eq!(
+            h.db.frontier().unwrap(),
+            basis,
+            "preparation publishes nothing"
+        );
+        assert_eq!(h.applied_to(invoice.vid, 0), 0);
+        for vid in identities {
+            assert!(read_entry(&h.db, vid).unwrap().is_none());
+        }
+        let (winner, loser) = if winner_index == 0 {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        let loser_index = 1 - winner_index;
+        let won = commit(&mut h, winner).expect("first prepared receipt commits");
+        assert!(matches!(won, Posted::Committed { .. }));
+        assert_eq!(won.entry_ref().vid, identities[winner_index]);
+        let after_winner = h.db.frontier().unwrap();
+        assert_eq!(after_winner.0, basis.0 + 1);
+        assert_eq!(won.recorded_at(), after_winner);
+        assert_eq!(h.applied_to(invoice.vid, 0), 6_000);
+
+        let refused = commit(&mut h, loser).expect_err("stale application witness conflicts");
+        assert_eq!((refused.code, refused.exit), ("FA-REF-030", exit::CONFLICT));
+        assert_eq!(h.db.frontier().unwrap(), after_winner, "no second commit");
+        assert_eq!(h.applied_to(invoice.vid, 0), 6_000, "no double application");
+        let loser_vid = identities[loser_index];
+        assert!(read_entry(&h.db, loser_vid).unwrap().is_none());
+        for ordinal in [0, 1] {
+            assert!(h.db.vertex(leg_vid(loser_vid, ordinal)).unwrap().is_none());
+        }
+        assert!(
+            h.db.edge(edge_id(
+                relation::SETTLES,
+                leg_vid(loser_vid, 1),
+                leg_vid(invoice.vid, 0),
+            ))
+            .unwrap()
+            .is_none()
+        );
+        let (stored, recorded_at) = read_entry(&h.db, won.entry_ref().vid)
+            .unwrap()
+            .expect("winning entry");
+        assert_eq!(stored.entry_digest, won.entry_ref().entry_digest);
+        assert_eq!(recorded_at, after_winner);
+        assert_eq!(
+            stored.proposal.legs[1].settles,
+            vec![settle(invoice, 0, usd, 6_000)]
+        );
+        let edge =
+            h.db.edge(edge_id(
+                relation::SETTLES,
+                leg_vid(won.entry_ref().vid, 1),
+                leg_vid(invoice.vid, 0),
+            ))
+            .unwrap()
+            .expect("winning settlement edge");
+        assert!(edge.props.iter().any(|(key, value)| {
+            *key == property::AMOUNT_BYTES
+                && *value == CanonicalScalar::bytes(6_000i128.to_le_bytes().to_vec()).unwrap()
+        }));
+
+        let again = h
+            .post(h.request(proposals[winner_index].clone(), &["post"]))
+            .expect("winner retry is already recorded");
+        assert!(matches!(again, Posted::AlreadyRecorded { .. }));
+        assert_eq!(again.entry_ref(), won.entry_ref());
+        assert_eq!(again.recorded_at(), won.recorded_at());
+        assert_eq!(h.db.frontier().unwrap(), after_winner);
+        assert_eq!(h.applied_to(invoice.vid, 0), 6_000);
+
+        let refused = h
+            .post(h.request(proposals[loser_index].clone(), &["post"]))
+            .expect_err("a fresh 60 receipt exceeds the remaining 40");
+        assert_eq!((refused.code, refused.exit), ("FA-REF-072", exit::REFUSAL));
+        assert!(refused.message.contains("only 4000 is open"));
+        assert_eq!(h.db.frontier().unwrap(), after_winner);
+        assert_eq!(h.applied_to(invoice.vid, 0), 6_000);
+
+        // The failed receipt's key was never consumed, so its corrected
+        // 40 receipt can commit and settle the invoice exactly once.
+        let remainder = h.receipt(
+            4_000,
+            vec![settle(invoice, 0, usd, 4_000)],
+            keys[loser_index],
+        );
+        let completed = h
+            .post(h.request(remainder, &["post"]))
+            .expect("remaining 40 commits");
+        assert!(matches!(completed, Posted::Committed { .. }));
+        assert_eq!(completed.entry_ref().vid, loser_vid);
+        assert_eq!(completed.recorded_at().0, after_winner.0 + 1);
+        assert_eq!(h.db.frontier().unwrap(), completed.recorded_at());
+        assert_eq!(h.applied_to(invoice.vid, 0), 10_000);
     }
 }
 
@@ -3198,15 +3392,28 @@ fn an_import_run_records_its_documents_under_a_receipt_that_recomputes() {
 // blob store, the commitment inline, every read verified.
 // ---------------------------------------------------------------------------
 
-fn blob_store(root: &str) -> BlobStore<fgdb::MemVfs> {
-    BlobStore::open(1, fgdb::MemVfs::new().expect("memvfs"), root).expect("store 1")
+fn blob_store_in<V: asupersync::fs::Vfs + Clone>(h: &Harness, vfs: V, root: &str) -> BlobStore<V> {
+    let directory = h
+        .runtime
+        .block_on(fa_journal::blob::DurableDirectory::create(
+            &h.ctx().commit(),
+            vfs,
+            std::path::Path::new(root),
+        ))
+        .expect("durable store directory");
+    BlobStore::open(1, directory).expect("store 1")
+}
+
+fn blob_store(h: &Harness, root: &str) -> BlobStore<fgdb::MemVfs> {
+    blob_store_in(h, fgdb::MemVfs::new().expect("memvfs"), root)
 }
 
 /// A blob store over the substrate's lab VFS, rooted three directories deep.
 fn fault_store(
+    h: &Harness,
     vfs: &fgdb_sim::vfs::FaultVfs<fgdb::MemVfs>,
 ) -> BlobStore<fgdb_sim::vfs::FaultVfs<fgdb::MemVfs>> {
-    BlobStore::open(1, vfs.clone(), "deep/nested/blobs").expect("store 1")
+    blob_store_in(h, vfs.clone(), "deep/nested/blobs")
 }
 
 fn lab_vfs(plan: fgdb_sim::vfs::FaultPlan) -> fgdb_sim::vfs::FaultVfs<fgdb::MemVfs> {
@@ -3240,6 +3447,145 @@ impl Harness {
     }
 }
 
+/// Directory durability moved to the store constructor. Existing names may
+/// still owe fences after an interrupted mkdir chain. The unfenced control
+/// loses that chain; both creating and reopening an anchor must preserve it.
+#[test]
+fn a_durable_store_anchor_fences_preexisting_unsynced_ancestors() {
+    use asupersync::fs::Vfs;
+    use fa_journal::blob::DurableDirectory;
+    use fgdb_sim::vfs::{FaultPlan, Trigger};
+    let h = harness();
+    let ctx = h.ctx();
+    for mode in ["unfenced", "create", "open"] {
+        let vfs = lab_vfs(FaultPlan {
+            dirent_loss: Trigger::Always,
+            ..FaultPlan::faultless()
+        });
+        h.runtime.block_on(async {
+            let path = std::path::Path::new("./deep/nested/blobs");
+            ctx.commit()
+                .with_restriction_async(vfs.create_dir_all(path))
+                .await
+                .unwrap();
+            assert!(
+                vfs.pending_dirent_ops() >= 3,
+                "{mode}: unfenced mkdir chain"
+            );
+            let anchor = match mode {
+                "create" => Some(
+                    DurableDirectory::create(&ctx.commit(), vfs.clone(), path)
+                        .await
+                        .unwrap(),
+                ),
+                "open" => Some(
+                    DurableDirectory::open_existing(&ctx.commit(), vfs.clone(), path)
+                        .await
+                        .unwrap(),
+                ),
+                _ => None,
+            };
+            if let Some(anchor) = &anchor {
+                assert!(anchor.path().is_absolute());
+                assert_eq!(vfs.pending_dirent_ops(), 0, "{mode}: every ancestor fenced");
+            }
+            vfs.crash().await.unwrap();
+            let observed = ctx.query().with_restriction_async(vfs.metadata(path)).await;
+            if anchor.is_some() {
+                assert!(
+                    observed.unwrap().is_dir(),
+                    "{mode}: the full chain survives"
+                );
+            } else {
+                assert_eq!(
+                    observed.unwrap_err().kind(),
+                    std::io::ErrorKind::NotFound,
+                    "the unfenced control proves the crash loses these names"
+                );
+            }
+        });
+    }
+}
+
+/// A symlink can skip the target's own ancestors in the caller's lexical
+/// chain. Use the real host VFS beneath FaultVfs so symlink resolution is
+/// real and a directory crash can expose the missing target-parent fence.
+#[cfg(unix)]
+#[test]
+fn a_symlinked_store_anchor_fences_the_canonical_target_ancestors() {
+    use asupersync::fs::{OpenOptions, UnixVfs, Vfs, VfsFile};
+    use fa_journal::blob::DurableDirectory;
+    use fgdb_sim::vfs::{FaultPlan, FaultVfs, Trigger};
+    let h = harness();
+    let ctx = h.ctx();
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let base =
+        std::env::temp_dir().join(format!("fa-symlink-anchor-{}-{suffix}", std::process::id()));
+    for canonical_fences in [false, true] {
+        let root = base.join(if canonical_fences {
+            "fenced"
+        } else {
+            "lexical-only"
+        });
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("real/deep");
+        let alias = root.join("alias");
+        let path = alias.join("store");
+        let vfs = FaultVfs::new(
+            UnixVfs::new(),
+            FaultPlan {
+                dirent_loss: Trigger::Always,
+                ..FaultPlan::faultless()
+            },
+        );
+        h.runtime.block_on(async {
+            ctx.commit()
+                .with_restriction_async(vfs.create_dir_all(&target))
+                .await
+                .unwrap();
+            assert_eq!(vfs.pending_dirent_ops(), 2, "target ancestors owe fences");
+            std::os::unix::fs::symlink(&target, &alias).unwrap();
+            if canonical_fences {
+                let anchor = DurableDirectory::create(&ctx.commit(), vfs.clone(), &path)
+                    .await
+                    .unwrap();
+                assert_eq!(anchor.path(), target.join("store"));
+                assert_eq!(vfs.pending_dirent_ops(), 0);
+            } else {
+                // The old barrier: sync only the lexical chain. Opening
+                // alias syncs deep, but never syncs real's entry for deep.
+                ctx.commit()
+                    .with_restriction_async(async {
+                        vfs.create_dir_all(&path).await.unwrap();
+                        for ancestor in path.ancestors() {
+                            vfs.open(ancestor, &OpenOptions::new().read(true))
+                                .await
+                                .unwrap()
+                                .sync_all()
+                                .await
+                                .unwrap();
+                        }
+                    })
+                    .await;
+                assert_eq!(vfs.pending_dirent_ops(), 1, "the skipped target parent");
+            }
+            vfs.crash().await.unwrap();
+            let observed = ctx
+                .query()
+                .with_restriction_async(vfs.metadata(&path))
+                .await;
+            if canonical_fences {
+                assert!(observed.unwrap().is_dir(), "the canonical chain survives");
+            } else {
+                assert_eq!(observed.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+            }
+        });
+    }
+}
+
 /// The publication fence under the substrate's lab VFS (WhiteCreek 3440,
 /// CobaltGull 3452). With `dirent_loss = Always` a crash rolls back every
 /// namespace change whose parent directory was never honestly synced: the
@@ -3247,13 +3593,6 @@ impl Harness {
 /// blob, published through `put` and only then journaled, owes nothing when
 /// intake returns and reads back after the crash; the faultless plan is the
 /// harness's control.
-///
-/// No claim beyond the spelling used: the store creates and fences its
-/// directories under one anchored spelling (`./deep/nested/blobs`), and this
-/// proves exactly that. It proves nothing about alias spellings of one
-/// directory (created as `a/b`, synced as `./a`): at the pinned rev FaultVfs
-/// keys namespace debts by literal path, so an alias never settles its debt
-/// (bead fa-n4m: upstream fix, joint fgdb/fgdb-sim re-pin, re-run).
 #[test]
 fn an_external_blob_survives_a_crash_that_loses_every_unsynced_name() {
     use fgdb_sim::vfs::{FaultPlan, Trigger};
@@ -3269,7 +3608,7 @@ fn an_external_blob_survives_a_crash_that_loses_every_unsynced_name() {
     ] {
         let mut h = harness();
         let vfs = lab_vfs(plan);
-        let store = fault_store(&vfs);
+        let store = fault_store(&h, &vfs);
         let doc = h.document(
             INVOICE,
             HUMAN_UPLOAD,
@@ -3284,7 +3623,7 @@ fn an_external_blob_survives_a_crash_that_loses_every_unsynced_name() {
             "{what}: nothing owes a sync once intake returns"
         );
         h.runtime.block_on(vfs.crash()).expect("crash");
-        let reopened = fault_store(&vfs);
+        let reopened = fault_store(&h, &vfs);
         let read = h.fetch_from(&reopened, &doc.oid());
         eprintln!(
             "txf fence: {what} -> crash generation {}, read {:?}",
@@ -3309,7 +3648,7 @@ fn a_lying_directory_sync_loses_the_blob_and_the_read_says_so() {
         dirent_lie: Trigger::Always,
         ..FaultPlan::faultless()
     });
-    let store = fault_store(&vfs);
+    let store = fault_store(&h, &vfs);
     let doc = h.document(
         INVOICE,
         HUMAN_UPLOAD,
@@ -3324,7 +3663,9 @@ fn a_lying_directory_sync_loses_the_blob_and_the_read_says_so() {
         "the lying syncs settled nothing"
     );
     h.runtime.block_on(vfs.crash()).expect("crash");
-    let r = h.fetch_from(&fault_store(&vfs), &doc.oid()).unwrap_err();
+    let r = h
+        .fetch_from(&fault_store(&h, &vfs), &doc.oid())
+        .unwrap_err();
     eprintln!(
         "txf fence: lying directory syncs, then a crash -> {} {}",
         r.code, r.message
@@ -3335,10 +3676,10 @@ fn a_lying_directory_sync_loses_the_blob_and_the_read_says_so() {
 /// Ordering, and the retry WhiteCreek 3459 named. A publication the lab VFS
 /// refuses — the first write (ENOSPC) or the sync write-back (a zero space
 /// budget) — never reaches the journal: intake is FA-REF-116 and nothing is
-/// written. Then the retry, after a first put interrupted between its
-/// `mkdir`s and its syncs at depth three: it finds the directories present,
-/// fences the whole ancestor chain anyway, and its blob survives a crash
-/// that loses every unsynced name.
+/// written. Then the retry, after a first put interrupted between creating
+/// its shard and syncing it: it finds the shard present, fences it and the
+/// established store anyway, and its blob survives a crash that loses every
+/// unsynced name. Constructor-level ancestor recovery is exercised above.
 #[test]
 fn a_blob_not_made_durable_never_reaches_the_journal_and_a_retry_fences_the_chain() {
     use fgdb_sim::vfs::{FaultPlan, Trigger};
@@ -3359,7 +3700,7 @@ fn a_blob_not_made_durable_never_reaches_the_journal_and_a_retry_fences_the_chai
         ),
     ] {
         let mut h = harness();
-        let store = fault_store(&lab_vfs(plan));
+        let store = fault_store(&h, &lab_vfs(plan));
         let doc = h.document(
             INVOICE,
             HUMAN_UPLOAD,
@@ -3386,7 +3727,7 @@ fn a_blob_not_made_durable_never_reaches_the_journal_and_a_retry_fences_the_chai
         dirent_loss: Trigger::Always,
         ..FaultPlan::faultless()
     });
-    let store = fault_store(&vfs);
+    let store = fault_store(&h, &vfs);
     let doc = h.document(
         INVOICE,
         HUMAN_UPLOAD,
@@ -3407,17 +3748,20 @@ fn a_blob_not_made_durable_never_reaches_the_journal_and_a_retry_fences_the_chai
         "the retry fenced every name the interrupted put left owing"
     );
     h.runtime.block_on(vfs.crash()).expect("crash");
-    assert_eq!(h.fetch_from(&fault_store(&vfs), &doc.oid()), Ok(Some(doc)));
+    assert_eq!(
+        h.fetch_from(&fault_store(&h, &vfs), &doc.oid()),
+        Ok(Some(doc))
+    );
 }
 
 /// The publication fence (WhiteCreek 3440/3445) on a root nested three
-/// directories deep that does not exist yet: `put` creates and syncs every
-/// directory it needs, publishes under its own staged name, and a second put
-/// of the same locator (same bytes, content-addressed) is harmless.
+/// directories deep that does not exist yet: the anchor creates and fences
+/// its chain, `put` creates and fences its shard, publishes under its own
+/// staged name, and a second put of the same locator is harmless.
 #[test]
 fn a_blob_publishes_into_a_fresh_nested_root_and_republishes_harmlessly() {
     let h = harness();
-    let store = blob_store("deep/nested/blobs");
+    let store = blob_store(&h, "deep/nested/blobs");
     let bytes = b"BLOB (publication fixture)".to_vec();
     let locator = fa_journal::blob::locator_of(&[7; 32]);
     let ctx = h.ctx();
@@ -3452,16 +3796,19 @@ fn a_blob_publishes_into_a_fresh_nested_root_and_republishes_harmlessly() {
 /// rename), so the root must sit under the working directory, and changing
 /// this process's working directory would race the other tests. The test
 /// re-runs itself in a child process whose working directory is a fresh
-/// temporary directory. The child publishes under `nested/store`; the
-/// parent reads the bytes back by absolute path, so a child that ran
-/// nothing cannot pass.
+/// temporary directory. The child opens `nested/store`, changes cwd, then
+/// publishes; the parent reads the original absolute path, so a child that
+/// ran nothing or a store that followed the changed cwd cannot pass.
 #[test]
 fn a_blob_publishes_through_a_relative_unix_root_without_changing_cwd() {
     const CHILD: &str = "FA_RELATIVE_BLOB_ROOT_CHILD";
     let locator = fa_journal::blob::locator_of(&[0x73; 32]);
     if std::env::var_os(CHILD).is_some() {
         let h = harness();
-        let store = BlobStore::open(1, asupersync::fs::UnixVfs::new(), "nested/store").unwrap();
+        let store = blob_store_in(&h, asupersync::fs::UnixVfs::new(), "nested/store");
+        let later = std::env::current_dir().unwrap().join("later-cwd");
+        std::fs::create_dir(&later).unwrap();
+        std::env::set_current_dir(&later).unwrap();
         let ctx = h.ctx();
         h.runtime.block_on(async {
             store
@@ -3503,6 +3850,8 @@ fn a_blob_publishes_through_a_relative_unix_root_without_changing_cwd() {
         std::fs::read(&published).expect("the child published under its relative root"),
         b"relative host blob"
     );
+    assert!(base.join("later-cwd").is_dir());
+    assert!(!base.join("later-cwd/nested").exists());
     assert_eq!(std::env::current_dir().unwrap(), cwd);
 }
 
@@ -3536,7 +3885,7 @@ impl Harness {
 #[test]
 fn an_external_document_reads_back_verified_and_a_missing_or_changed_blob_is_refused() {
     let mut h = harness();
-    let store = blob_store("blobs");
+    let store = blob_store(&h, "blobs");
     let doc = h.document(
         INVOICE,
         HUMAN_UPLOAD,
@@ -3581,7 +3930,7 @@ fn an_external_document_reads_back_verified_and_a_missing_or_changed_blob_is_ref
     assert!(h.add_document(&doc).expect("recorded").already_recorded);
 
     // A store that holds no such blob: exit 5, never a silent null.
-    let empty = blob_store("elsewhere");
+    let empty = blob_store(&h, "elsewhere");
     let r = h.fetch(&empty, &added.oid).unwrap_err();
     eprintln!("txf external: a missing blob -> {} {}", r.code, r.message);
     assert_eq!((r.code, r.exit), ("FA-REF-116", exit::FOUNDATION), "{r}");
@@ -3633,7 +3982,7 @@ fn a_document_past_the_inline_bound_is_refused_inline_and_admitted_by_a_store() 
     );
     assert_eq!(r.code, "FA-REF-083", "{r}");
     assert!(r.fix.contains("blob store"), "{}", r.fix);
-    let store = blob_store("blobs");
+    let store = blob_store(&h, "blobs");
     let added = h.add_external(&store, &big).expect("admitted by the store");
     assert_eq!(added.size, u64::try_from(bound + 1).unwrap());
     assert_eq!(h.fetch(&store, &added.oid).unwrap(), Some(big));
@@ -3781,13 +4130,13 @@ impl Harness {
             .block_on(async move {
                 let mut describe = |text: &str| {
                     nonce += 1;
-                    Erasable::seal(
+                    Ok(Erasable::seal(
                         &text.to_string(),
                         None,
                         &book.seal_key,
                         [nonce; 32],
                         [nonce; 24],
-                    )
+                    ))
                 };
                 sweep(db, &ctx, book, &req, &mut describe).await
             })
@@ -4157,7 +4506,7 @@ fn redacted(read: DocumentRead) -> Option<RedactedView> {
 #[test]
 fn a_privileged_holder_derives_the_view_a_reader_gets_in_place_of_the_bytes() {
     let mut h = harness();
-    let store = blob_store("blobs");
+    let store = blob_store(&h, "blobs");
     let account = b"ACCOUNT 0012-3456-7890";
     let mut bytes = b"STATEMENT OF ACCOUNT; HOLDER J. DOE; ".to_vec();
     bytes.extend_from_slice(account);

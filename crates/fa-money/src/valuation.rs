@@ -5,8 +5,9 @@
 //! under the law, after checking exact native balance. The base sums differ
 //! by at most `n × ½ ulp` for half laws, or less than `n ulp` for directed laws; that
 //! difference is **not a leg**: it is absorbed into the valuation of one
-//! designated leg — the largest-base-amount leg on the side that needs it,
-//! ties by ordinal — so no unit's per-unit balance is touched and the base
+//! designated converted leg — the largest base amount on the side that
+//! needs it, ties by ordinal — so base-unit legs retain their at-par values,
+//! no unit's per-unit balance is touched and the base
 //! sums balance exactly.
 //!
 //! The counterexample that fixes the rule (fa-p7r): EUR `Dr 0.01, Dr 0.01 /
@@ -57,8 +58,10 @@ pub enum ValuationError {
         residual: i128,
         bound: i128,
     },
-    /// No leg on the deficient side can absorb the residual (empty side).
-    NoLegToAbsorb,
+    /// No converted leg on the deficient side can absorb this law's residual.
+    NoLegToAbsorb {
+        law: RoundingLaw,
+    },
 }
 
 impl fmt::Display for ValuationError {
@@ -73,8 +76,12 @@ impl fmt::Display for ValuationError {
             Self::ResidualTooLarge { residual, bound } => {
                 write!(f, "valuation residual {residual} exceeds bound {bound}")
             }
-            Self::NoLegToAbsorb => {
-                f.write_str("no leg on the deficient side can absorb the residual")
+            Self::NoLegToAbsorb { law } => {
+                write!(
+                    f,
+                    "no converted leg on the deficient side can absorb the {} residual",
+                    law.name()
+                )
             }
         }
     }
@@ -90,6 +97,8 @@ impl From<AmountError> for ValuationError {
 
 /// Value `legs` (all in one foreign unit) into `base` at `rate` (base units per
 /// foreign unit) under `law`. Legs already in `base` are valued at 1:1.
+/// Only converted legs may absorb a rounding residual: choose the largest
+/// base amount on the deficient side, breaking ties by lowest original ordinal.
 pub fn value_legs(
     budget: &mut ArithmeticBudget<'_, impl Sized>,
     legs: &[LegValue],
@@ -155,11 +164,12 @@ pub fn value_legs(
             });
         }
         let deficient = if diff > 0 { Side::Credit } else { Side::Debit };
-        // Largest base amount on the deficient side; ties by ordinal (lowest).
+        // Base-unit legs stay at par. Among converted legs on the deficient
+        // side, choose the largest base amount; ties by ordinal (lowest).
         let target = legs
             .iter()
             .enumerate()
-            .filter(|(_, l)| l.side == deficient)
+            .filter(|(_, l)| l.side == deficient && l.amount.unit != base)
             .max_by(|(ia, _), (ib, _)| {
                 base_amounts[*ia]
                     .mantissa
@@ -167,7 +177,9 @@ pub fn value_legs(
                     .then(ib.cmp(ia))
             })
             .map(|(i, _)| i)
-            .ok_or(ValuationError::NoLegToAbsorb)?;
+            // Native balance with nonnegative legs makes this absence
+            // unreachable for a nonzero residual; keep a law-naming refusal.
+            .ok_or(ValuationError::NoLegToAbsorb { law })?;
         let adj = diff.abs();
         base_amounts[target] = base_amounts[target].checked_add(Amount::new(base, adj))?;
         residual = Some((target, adj));
@@ -433,6 +445,69 @@ mod tests {
         let v = value_legs(&mut budget, &legs, usd, &rate, RoundingLaw::HalfEven, &reg).unwrap();
         assert_eq!(v.residual, None);
         assert_eq!(v.base_debits.mantissa, 220_000);
+    }
+
+    #[test]
+    fn mixed_base_rounding_residual_preserves_at_par_valuations() {
+        let cx = asupersync::Cx::detached_cancel_context();
+        let reg = UnitRegistry::with_defaults();
+        let eur = reg.lookup("EUR").unwrap();
+        let usd = reg.lookup("USD").unwrap();
+        for law in RoundingLaw::ALL {
+            for swap_sides in [false, true] {
+                let mut budget = crate::test_budget(&cx);
+                let half = Rate::new(&mut budget, 1, 2).unwrap();
+                let mut legs = [
+                    LegValue {
+                        side: Side::Debit,
+                        amount: Amount::new(usd, 100),
+                    },
+                    LegValue {
+                        side: Side::Credit,
+                        amount: Amount::new(usd, 100),
+                    },
+                    LegValue {
+                        side: Side::Debit,
+                        amount: Amount::new(eur, 1),
+                    },
+                    LegValue {
+                        side: Side::Debit,
+                        amount: Amount::new(eur, 1),
+                    },
+                    LegValue {
+                        side: Side::Credit,
+                        amount: Amount::new(eur, 2),
+                    },
+                ];
+                if swap_sides {
+                    for leg in &mut legs {
+                        leg.side = match leg.side {
+                            Side::Debit => Side::Credit,
+                            Side::Credit => Side::Debit,
+                        };
+                    }
+                }
+                let value = value_legs(&mut budget, &legs, usd, &half, law, &reg).unwrap();
+                // The base-currency pair is larger than every converted leg.
+                // Choosing it to absorb rounding would turn USD100 into USD101.
+                assert_eq!(value.base_amounts[0], legs[0].amount, "{law:?}");
+                assert_eq!(value.base_amounts[1], legs[1].amount, "{law:?}");
+                assert_eq!(value.base_amounts.len(), legs.len());
+                assert_eq!(value.base_debits, value.base_credits);
+                let (ordinal, _) = value
+                    .residual
+                    .expect("this half-rate vector rounds unevenly");
+                assert_eq!(legs[ordinal].amount.unit, eur);
+                if law == RoundingLaw::HalfUp {
+                    assert_eq!(value.residual, Some((4, 1)));
+                    assert_eq!(
+                        value.base_amounts,
+                        [100, 100, 1, 1, 2].map(|mantissa| Amount::new(usd, mantissa))
+                    );
+                    assert_eq!(value.base_debits, Amount::new(usd, 102));
+                }
+            }
+        }
     }
 
     #[test]

@@ -23,7 +23,8 @@ use fgdb::Database;
 use fgdb_types::{CommitSeq, VId};
 
 use crate::{
-    Cell, RegisterError, entries_at, entry_period, fold_period_at, resolutions, resolve_known_at,
+    Cell, RegisterError, contribution_seq, entries_at, entry_period, fold_period_at,
+    migration_activations, resolutions, resolve_known_at,
 };
 
 /// Which column of the register a contributing leg lands in.
@@ -58,6 +59,9 @@ pub struct Contribution {
     pub effective_date: DateDay,
     /// The entry's recorded sequence (its creating commit), never user-supplied.
     pub recorded_at: CommitSeq,
+    /// The first sequence at which this leg contributes: its creating
+    /// commit, or the later Finalize that activates a migration chunk.
+    pub visible_at: CommitSeq,
     pub ordinal: u16,
     pub side: Side,
     pub unit_id: u32,
@@ -144,6 +148,7 @@ pub fn explain_balance<V: asupersync::fs::Vfs + Clone>(
         })?;
     let entries = entries_at(db, book, seq)?;
     let resolved = resolutions(&entries)?;
+    let activated = migration_activations(&entries)?;
     let mut contributions = Vec::new();
     for (vid, entry, recorded_at) in &entries {
         if entry.proposal.legs.is_empty() || entry_period(book, entry)? != period_code {
@@ -167,6 +172,7 @@ pub fn explain_balance<V: asupersync::fs::Vfs + Clone>(
                 class: entry.proposal.class,
                 effective_date: entry.proposal.effective_date,
                 recorded_at: *recorded_at,
+                visible_at: contribution_seq(entry, *recorded_at, &activated)?,
                 ordinal: u16::try_from(ordinal)
                     .map_err(|_| KernelError::Corrupt("leg ordinal exceeds u16".into()))?,
                 side: leg.side,
@@ -270,8 +276,9 @@ fn bump(
 }
 
 /// Running cell values at every sequence that touched them. A posted leg
-/// enters the posted column when recorded; a reservation enters the pending
-/// column when recorded and leaves it when its Resolution is recorded.
+/// enters the posted column when visible (a migration chunk only at its
+/// Finalize); a reservation enters the pending column when recorded and
+/// leaves it when its Resolution is recorded.
 fn history(contributions: &[Contribution]) -> Result<Vec<CellChange>, RegisterError> {
     let mut deltas: BTreeMap<(CommitSeq, u32), [i128; 4]> = BTreeMap::new();
     for c in contributions {
@@ -280,7 +287,7 @@ fn history(contributions: &[Contribution]) -> Result<Vec<CellChange>, RegisterEr
             Side::Credit => 1,
         };
         match c.column {
-            Column::Posted => bump(&mut deltas, c.recorded_at, c.unit_id, side, c.mantissa)?,
+            Column::Posted => bump(&mut deltas, c.visible_at, c.unit_id, side, c.mantissa)?,
             Column::Pending => bump(&mut deltas, c.recorded_at, c.unit_id, side + 2, c.mantissa)?,
             Column::Released => {
                 let at = c.released_at.ok_or_else(|| {
@@ -327,6 +334,7 @@ mod tests {
             },
             effective_date: DateDay(0),
             recorded_at: CommitSeq(at),
+            visible_at: CommitSeq(at),
             ordinal: 0,
             side,
             unit_id: 1,

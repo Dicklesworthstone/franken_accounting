@@ -13,12 +13,11 @@
 //!
 //! A blob is published durably before anything names it (WhiteCreek 3440):
 //! the bytes go to a staged file of the call's own that is synced, the file
-//! is renamed into place, and then every directory on the blob's ancestor
-//! chain is synced, the blob's own first — the barrier fgdb-chronicle's
-//! `sync_created_entry` uses, extended to the whole chain so directories an
-//! interrupted earlier put created are fenced too. A relative root is
-//! anchored at `.` when the store opens, so every directory is created and
-//! synced under one nonempty spelling (WhiteCreek 3508). Only after
+//! is renamed into place, and then its shard and store directories are
+//! synced. The store owns a canonical [`DurableDirectory`], whose constructor
+//! already fenced its ancestors. This binds open handles independently of
+//! later changes to the process working directory and keeps subsequent
+//! fences inside the supplied VFS namespace. Only after
 //! `put` returns does the kernel commit the journal row that names the blob,
 //! so a crash cannot leave a reference to a lost blob. A reader never sees a
 //! partial blob, and a blob orphaned by a refused or failed intake is
@@ -26,7 +25,7 @@
 //! the caller's purpose context (`CommitCx` to publish, `QueryCx` to read).
 
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use asupersync::fs::{OpenOptions, Vfs, VfsFile};
@@ -36,6 +35,107 @@ use fgdb_types::context::{CommitCx, QueryCx};
 
 use crate::evidence::hex;
 use crate::refusal::KernelError;
+
+/// A canonical directory whose namespace and ancestors have been synced
+/// through the supplied VFS. Private fields prevent an unchecked pathname
+/// from claiming this durability boundary. As with any filesystem fence,
+/// this records successful sync requests; it cannot detect lying storage.
+#[derive(Clone, Debug)]
+pub struct DurableDirectory<V> {
+    vfs: V,
+    path: PathBuf,
+}
+
+impl<V: Vfs + Clone> DurableDirectory<V> {
+    /// Create a directory and fence its ancestors, including those left by
+    /// an interrupted earlier constructor. Relative paths start at the
+    /// VFS's existing `.` namespace boundary; absolute paths are fenced
+    /// through their filesystem root. Confined VFS callers must start with
+    /// a namespace-relative path, then use [`Self::child`] for descendants.
+    /// An inaccessible ancestor is an error, never a shortened fence.
+    pub async fn create(cx: &CommitCx, vfs: V, path: &Path) -> io::Result<Self> {
+        Self::establish(cx, vfs, path, true).await
+    }
+
+    /// Bind an existing directory without creating a missing one. Existence
+    /// alone is not durability: this also fences its ancestor chain.
+    pub async fn open_existing(cx: &CommitCx, vfs: V, path: &Path) -> io::Result<Self> {
+        Self::establish(cx, vfs, path, false).await
+    }
+
+    async fn establish(cx: &CommitCx, vfs: V, path: &Path, create: bool) -> io::Result<Self> {
+        let canonical = cx
+            .with_restriction_async(async {
+                cx.checkpoint().map_err(io::Error::other)?;
+                let rooted = if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    Path::new(".").join(path)
+                };
+                if create {
+                    vfs.create_dir_all(&rooted).await?;
+                }
+                if !vfs.metadata(&rooted).await?.is_dir() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotADirectory,
+                        "durability anchor is not a directory",
+                    ));
+                }
+                let mut crossed_symlink = false;
+                for ancestor in rooted.ancestors().filter(|p| !p.as_os_str().is_empty()) {
+                    cx.checkpoint().map_err(io::Error::other)?;
+                    crossed_symlink |= vfs.symlink_metadata(ancestor).await?.is_symlink();
+                    sync_directory(&vfs, ancestor).await?;
+                }
+                let canonical = vfs.canonicalize(&rooted).await?;
+                if crossed_symlink {
+                    // Lexical parent handles fence names created through the
+                    // link, but not the target's own ancestors above it.
+                    // Bind those too before retaining the canonical path.
+                    for ancestor in canonical.ancestors() {
+                        cx.checkpoint().map_err(io::Error::other)?;
+                        sync_directory(&vfs, ancestor).await?;
+                    }
+                }
+                Ok::<_, io::Error>(canonical)
+            })
+            .await?;
+        Ok(Self {
+            vfs,
+            path: canonical,
+        })
+    }
+
+    /// The bound path, suitable for another store on the same VFS.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Create and fence one child beneath this established boundary.
+    /// Fixed layout components need no recursive ancestor creation.
+    pub async fn child(&self, cx: &CommitCx, name: &str) -> io::Result<Self> {
+        let mut components = Path::new(name).components();
+        if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "directory child must be one normal path component",
+            ));
+        }
+        let path = self.path.join(name);
+        cx.with_restriction_async(async {
+            cx.checkpoint().map_err(io::Error::other)?;
+            ensure_directory(&self.vfs, &path).await?;
+            sync_directory(&self.vfs, &path).await?;
+            sync_directory(&self.vfs, &self.path).await
+        })
+        .await?;
+        Ok(Self {
+            vfs: self.vfs.clone(),
+            path,
+        })
+    }
+}
 
 /// One registered store over a VFS.
 #[derive(Clone, Debug)]
@@ -57,8 +157,8 @@ fn is_locator(s: &str) -> bool {
 }
 
 impl<V: asupersync::fs::Vfs + Clone> BlobStore<V> {
-    /// The registered store `id` over `vfs`, rooted at `dir`.
-    pub fn open(id: u16, vfs: V, dir: impl Into<PathBuf>) -> Result<Self, KernelError> {
+    /// The registered store `id` in an established durable directory.
+    pub fn open(id: u16, directory: DurableDirectory<V>) -> Result<Self, KernelError> {
         let stores = DocumentStores::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
         let store = stores.get(id).ok_or_else(|| {
             KernelError::Corrupt(format!(
@@ -71,20 +171,11 @@ impl<V: asupersync::fs::Vfs + Clone> BlobStore<V> {
                 store.kind
             )));
         }
-        let dir = dir.into();
-        // Anchor relative roots before creating any names: the host VFS
-        // cannot open an empty path, and the lab VFS must see the same
-        // spelling for a pending entry's parent and its durability fence.
-        let dir = if dir.is_absolute() || dir.starts_with(".") {
-            dir
-        } else {
-            Path::new(".").join(dir)
-        };
         Ok(Self {
             id,
             max_document_bytes: store.max_document_bytes,
-            vfs,
-            dir,
+            vfs: directory.vfs,
+            dir: directory.path,
         })
     }
 
@@ -114,16 +205,12 @@ impl<V: asupersync::fs::Vfs + Clone> BlobStore<V> {
     /// 1. the directories the blob needs are created;
     /// 2. the bytes go to a staged file whose name is this call's own
     ///    (`<locator>.<pid>-<n>.tmp`, opened create-new), so two puts never
-    ///    share an inode, and the file is synced; a name left by an
-    ///    interrupted process with a reused pid is preserved and the next
-    ///    `n` tried, and an exhausted counter fails rather than wraps;
+    ///    share an inode, and the file is synced;
     /// 3. the staged file is renamed into place (content-addressed: a
     ///    concurrent put of the same locator renames the same bytes);
-    /// 4. every directory on the blob's ancestor chain is synced, the blob's
-    ///    own first and the root's anchor (`.` or `/`) last — whichever call
-    ///    created them, so
-    ///    a retry after an interrupted put (whose directories exist but were
-    ///    never synced) fences them too (WhiteCreek 3459).
+    /// 4. the shard and established store directories are synced, whichever
+    ///    call created them, so a retry after an interrupted put fences its
+    ///    existing but unsynced shard too (WhiteCreek 3459).
     pub async fn put(&self, cx: &CommitCx, locator: &str, bytes: &[u8]) -> io::Result<()> {
         static STAGED: AtomicU64 = AtomicU64::new(0);
         self.put_with_counter(cx, locator, bytes, &STAGED).await
@@ -146,7 +233,7 @@ impl<V: asupersync::fs::Vfs + Clone> BlobStore<V> {
             .unwrap_or_else(|| self.dir.clone());
         cx.with_restriction_async(async {
             cx.checkpoint().map_err(io::Error::other)?;
-            self.vfs.create_dir_all(&parent).await?;
+            ensure_directory(&self.vfs, &parent).await?;
             let (staged, mut file) = loop {
                 cx.checkpoint().map_err(io::Error::other)?;
                 let ticket = counter
@@ -170,9 +257,8 @@ impl<V: asupersync::fs::Vfs + Clone> BlobStore<V> {
             sync_file(&mut file).await?;
             drop(file);
             self.vfs.rename(&staged, &path).await?;
-            for dir in parent.ancestors().filter(|p| !p.as_os_str().is_empty()) {
-                sync_directory(&self.vfs, dir).await?;
-            }
+            sync_directory(&self.vfs, &parent).await?;
+            sync_directory(&self.vfs, &self.dir).await?;
             Ok(())
         })
         .await
@@ -203,6 +289,25 @@ impl<V: asupersync::fs::Vfs + Clone> BlobStore<V> {
             Ok(Some(bytes))
         })
         .await
+    }
+}
+
+/// Create one layout directory, retaining an interrupted attempt's directory
+/// but refusing a file or symlink in its place. Its caller still fences it.
+async fn ensure_directory<V: Vfs>(vfs: &V, path: &Path) -> io::Result<()> {
+    match vfs.create_dir(path).await {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            if vfs.symlink_metadata(path).await?.is_dir() {
+                Ok(())
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::NotADirectory,
+                    "store layout requires a directory",
+                ))
+            }
+        }
+        Err(e) => Err(e),
     }
 }
 
@@ -242,9 +347,19 @@ mod tests {
 
     #[test]
     fn only_registered_content_addressed_stores_open() {
-        let vfs = fgdb::MemVfs::new().expect("memvfs");
-        assert!(BlobStore::open(1, vfs.clone(), "/blobs").is_ok());
-        assert!(BlobStore::open(2, vfs, "/blobs").is_err());
+        let runtime = asupersync::runtime::RuntimeBuilder::new().build().unwrap();
+        let root = runtime.request_cx_with_budget(asupersync::Budget::INFINITE);
+        let ctx = fgdb_types::context::PurposeContexts::narrow_runtime_root(&root);
+        let vfs = ctx.commit().with_restriction(fgdb::MemVfs::new).unwrap();
+        let directory = runtime
+            .block_on(DurableDirectory::create(
+                &ctx.commit(),
+                vfs,
+                Path::new("blobs"),
+            ))
+            .unwrap();
+        assert!(BlobStore::open(1, directory.clone()).is_ok());
+        assert!(BlobStore::open(2, directory).is_err());
     }
 
     #[test]
@@ -253,7 +368,14 @@ mod tests {
         let root = runtime.request_cx_with_budget(asupersync::Budget::INFINITE);
         let ctx = fgdb_types::context::PurposeContexts::narrow_runtime_root(&root);
         let vfs = ctx.commit().with_restriction(fgdb::MemVfs::new).unwrap();
-        let store = BlobStore::open(1, vfs.clone(), "nested/blobs").unwrap();
+        let directory = runtime
+            .block_on(DurableDirectory::create(
+                &ctx.commit(),
+                vfs.clone(),
+                Path::new("nested/blobs"),
+            ))
+            .unwrap();
+        let store = BlobStore::open(1, directory).unwrap();
         let locator = locator_of(&[0x72; 32]);
         let parent = store
             .path(&locator)
