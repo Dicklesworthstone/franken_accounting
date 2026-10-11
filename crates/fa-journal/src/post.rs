@@ -908,8 +908,11 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
     // 5''. Segregation of duties (plan §14.3, FA-INV-10 `sod`): every cited
     //      approval is a witnessed Approval binding this proposal under the
     //      current epoch, and sod_policy.toml judges the set — on `admit`
-    //      cells too, so an attached approval is never ignored. The count is
-    //      max(matrix, rule).
+    //      cells too, so an attached approval is never ignored. Balancing
+    //      effects are not resolved yet: first witness that the recorded
+    //      approvals agree on one digest, then bind that digest to the
+    //      actual resolved proposal immediately before sealing in step 8.
+    //      The count is max(matrix, rule).
     let sod_key = fa_policy::sod::posting_key(
         class_name,
         state,
@@ -919,12 +922,21 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
         principal: proposal.principal_ref,
         profile: req.capability.profile(),
     };
+    let balancing = proposal
+        .extensions
+        .iter()
+        .any(|(tag, _)| *tag == fa_model::entry::BALANCING_EXTENSION);
+    let approval_set_digest = if balancing && let Some(first) = req.approvals.first() {
+        first.approved_digest
+    } else {
+        proposal.proposal_digest()?
+    };
     if let Err(r) = policy::authorize_approvals(
         &txn,
         db,
         book,
         &req.approvals,
-        &proposal.proposal_digest()?,
+        &approval_set_digest,
         epoch,
         &sod_key,
         matrix_approvals,
@@ -1590,6 +1602,17 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
         sealed.legs.clone_from(legs);
         sealed.unit_totals = EntryPayload::fold_unit_totals(&sealed.legs)
             .map_err(|e| KernelError::Corrupt(format!("balancing unit totals: {e:?}")))?;
+        let resolved_digest = sealed.proposal_digest()?;
+        if let Some(index) = req
+            .approvals
+            .iter()
+            .position(|approval| approval.approved_digest != resolved_digest)
+        {
+            txn.abort();
+            return Ok(Err(policy::refusal(&fa_policy::Denial::ApprovalBinding {
+                index,
+            })));
+        }
     }
     let entry: Entry = sealed.seal(req.approvals.clone(), req.plan_certificate)?;
     let mut has_leg = WriteBatch::new(relation::HAS_LEG);

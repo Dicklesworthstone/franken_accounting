@@ -73,3 +73,25 @@ under `fa-p7r`.
 Runtime verification of the two aggregate-admission repairs remains pending;
 the exact before/after results and combined landing gate are tracked on
 `fa-p7r`. Their source review is not a passing test or full FX-law coverage.
+
+## 2026-10-11 — fa-syy approval binding after balancing
+
+The posting kernel checked approvals against requested legs before resolving
+the balancing extension. With a requested expense of 100 and an account cap
+of 40, the sealed proposal could contain 40 while its recorded approval still
+named the proposal for 100. Reconstructing the original request for an
+idempotent retry does not change the committed proposal's digest contract.
+
+The repair retains early checks of recorded approval identity, book, policy
+epoch and segregation of duties. For balancing, the approval set first has
+to agree on one recorded digest. After the limit law resolves the actual
+legs, every approval must bind that complete proposal before anything is
+staged. The request extension remains part of the approved proposal and the
+retry identity. Other posting classes retain their existing check order.
+
+The regression uses a real capped account, a Closed-period Adjusting entry
+and a separately recorded Human approval. It pairs refusal of the old amount
+and changed effective date with a successful posting of approved resolved
+effects and an identical-request retry. Runtime before/after verification
+and the combined landing gate remain pending on `fa-syy`; source inspection
+does not prove the regression has executed.

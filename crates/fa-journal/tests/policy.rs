@@ -606,7 +606,7 @@ fn balancing_approvals_bind_resolved_effects_and_preserve_request_identity() {
     request.legs[0].account_ref = account_vid(h.book.book_id, "6100");
     request.schema_minor = fa_model::entry::EXTENSIONS_MINOR;
     request.extensions.push((
-        fa_journal::limit::BALANCING_EXTENSION,
+        fa_model::entry::BALANCING_EXTENSION,
         fa_journal::limit::balancing_bytes(0, 100),
     ));
     let requested = h

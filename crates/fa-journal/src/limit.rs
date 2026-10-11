@@ -996,6 +996,9 @@ fn balancing_shape(p: &EntryPayload, leg: u16) -> Option<String> {
 /// is judged too and nothing is silently exceeded. The identity binds the
 /// request: a retry with the same key, `R`, and leg returns the recorded
 /// outcome whatever availability is now; another `R` or leg is a conflict.
+/// Approvals bind the resolved proposal: its actual leg amounts and the
+/// original `fa:balancing:v1` request extension. A different resolved amount
+/// requires a new approval before it can be committed.
 pub async fn post_balancing<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
