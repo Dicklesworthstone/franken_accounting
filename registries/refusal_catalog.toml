@@ -272,6 +272,17 @@ exit = "refusal"
 cite = "plan §12.1 / FA-INV-04 mapping-partition (exact statement over the journal)"
 fix = "select balance-sheet or income-statement with an existing period; correct the named mapping or input and recompute from the journal without adding a balancing entry"
 
+# ---- Front door (153) -----------------------------------------------------
+# The `fa` binary reports an unwinding panic as one error event instead of
+# exit 101 (bead fa-y9z; plan §15.3, never silent).
+[[refusal]]
+code = "FA-REF-153"
+name = "INTERNAL_PANIC"
+owners = ["fa-cli"]
+exit = "foundation"
+cite = "plan §15.3 (never silent: every non-zero exit emits exactly one error event)"
+fix = "report the command line and this message; a write either committed before the panic or did not (run `fa verify registers` and `fa verify projections`)"
+
 # ---- Supersession (050–054) ----------------------------------------------
 [[refusal]]
 code = "FA-REF-050"
