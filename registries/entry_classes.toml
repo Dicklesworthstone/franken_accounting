@@ -5,6 +5,9 @@
 #
 # Consumer: fa-journal (laws step), fa-registry admissibility check, fa-cli.
 # Gate: an entry whose class tag is not here is unencodable.
+#
+# The `[[control_kind]]` table at the end registers
+# `EntryOrigin::Control.control_kind` (fa-g23).
 
 schema_version = 1
 
@@ -140,3 +143,63 @@ tag = 21
 name = "ScheduleControl"
 kind = "control"
 supersession = "none"
+
+# ---- Control kinds (fa-g23) ---------------------------------------------------
+# `EntryOrigin::Control.control_kind`: the act that minted a control record. It
+# is durable in every control record's origin, so it is registered here rather
+# than chosen per module (two modules once both minted 4). Each kind names the
+# one control class it mints and the code that mints it. An origin naming an
+# unregistered kind is unencodable (fa-model decode), and the kernel's staging
+# cross-check (fa-model `entry_mirrors`) refuses a record whose kind mints
+# another class. Ids are unique and dense from 1 over rows and reservations
+# together; a reservation holds an id for a class that has not landed, and its
+# row replaces it. Consumers: fa-model `ControlKind` (gate
+# `code_control_kinds_match_registry`), fa-registry `ControlKinds`, the
+# fa-reference mirror.
+# Additive-only: an id is never renumbered or reused.
+
+[[control_kind]]
+id = 1
+name = "chart_install"
+class = "SchemaControl"
+minted_by = "fa-journal genesis::install_chart"
+
+[[control_kind]]
+id = 2
+name = "period_transition"
+class = "PeriodControl"
+minted_by = "fa-journal period::transition_proposal"
+
+[[control_kind]]
+id = 3
+name = "policy_activation"
+class = "PolicyControl"
+minted_by = "fa-journal policy::activation_proposal"
+
+[[control_kind]]
+id = 4
+name = "time_tick"
+class = "TimeControl"
+minted_by = "fa-journal sweep::tick_proposal"
+
+[[control_kind]]
+id = 5
+name = "schedule_cancel"
+class = "ScheduleControl"
+minted_by = "fa-journal schedule::cancellation"
+
+[[reserved_control_kind]]
+id = 6
+name = "import_run"
+holder = "fa-txf part A: ImportControl (TopazOsprey; CobaltGull 3360)"
+
+[[reserved_control_kind]]
+id = 7
+name = "legal_hold"
+holder = "fa-txf C1: HoldControl (TopazOsprey; CobaltGull 3360)"
+
+[[control_kind]]
+id = 8
+name = "capability_revocation"
+class = "PolicyControl"
+minted_by = "fa-journal policy::revoke_capability"

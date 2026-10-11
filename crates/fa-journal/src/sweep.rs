@@ -76,9 +76,6 @@ pub const SOURCE_DAEMON_CLOCK: u8 = 0;
 /// sweep (scheduled reversals take the next kind).
 pub const SWEEP_EXPIRY: u8 = 1;
 
-/// The `EntryOrigin::Control.control_kind` of a tick.
-const CONTROL_KIND_TICK: u16 = 4;
-
 const NS_PER_DAY: u64 = 86_400_000_000_000;
 
 /// One committed TimeEvidence tick: the observed instant and the
@@ -359,7 +356,7 @@ pub fn tick_proposal(book: &BookContext, req: &TickRequest) -> EntryPayload {
         base_totals: None,
         idempotency_key: req.idempotency_key.clone(),
         origin: EntryOrigin::Control {
-            control_kind: CONTROL_KIND_TICK,
+            control_kind: fa_model::ControlKind::TIME_TICK,
             spec_body_digest: fgdb_crypto::hash(&req.observed_utc_ns.to_le_bytes()).0,
         },
         principal_ref: req.principal_ref,

@@ -14,7 +14,7 @@ use fa_time::DateDay;
 use fgdb_delta_types::PropertyKeyId;
 use fgdb_types::{CanonicalDecimal, CanonicalScalar};
 
-use crate::entry::{Entry, LegPayload};
+use crate::entry::{Entry, EntryOrigin, LegPayload};
 use crate::symbols::property;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,6 +24,12 @@ pub enum MirrorError {
     UnknownUnit(u32),
     /// A mirror value could not be built as a substrate scalar.
     Scalar(&'static str),
+    /// A control record whose `control_kind` mints another class
+    /// (registries/entry_classes.toml `[[control_kind]]`; fa-g23).
+    ControlKind {
+        class: u16,
+        kind: u16,
+    },
 }
 
 impl fmt::Display for MirrorError {
@@ -32,6 +38,14 @@ impl fmt::Display for MirrorError {
             Self::Entry(e) => write!(f, "{e}"),
             Self::UnknownUnit(u) => write!(f, "unit {u} is not registered"),
             Self::Scalar(what) => write!(f, "cannot build the `{what}` mirror as a scalar"),
+            Self::ControlKind { class, kind } => write!(
+                f,
+                "control_kind {kind} mints {}, not class {class}: a control record carries its class's registered kind",
+                crate::ControlKind::from_id(*kind)
+                    .and_then(crate::ControlKind::class)
+                    .and_then(crate::EntryClass::name)
+                    .unwrap_or("no class")
+            ),
         }
     }
 }
@@ -48,6 +62,16 @@ fn bytes(what: &'static str, b: Vec<u8>) -> Result<CanonicalScalar, MirrorError>
 pub fn entry_mirrors(entry: &Entry) -> Result<Vec<(PropertyKeyId, CanonicalScalar)>, MirrorError> {
     let payload = entry.encode().map_err(MirrorError::Entry)?;
     let p = &entry.proposal;
+    // The staging cross-check (fa-g23): a control record carries the kind
+    // registered for its class, and only a control class carries one.
+    if let EntryOrigin::Control { control_kind, .. } = &p.origin
+        && control_kind.class() != Some(p.class)
+    {
+        return Err(MirrorError::ControlKind {
+            class: p.class.0,
+            kind: control_kind.id(),
+        });
+    }
     let mut props = vec![
         (property::FA_PAYLOAD, bytes("_fa_payload", payload)?),
         (

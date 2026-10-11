@@ -387,7 +387,7 @@ pub fn activation_proposal(
         base_totals: None,
         idempotency_key: idempotency_key.to_vec(),
         origin: EntryOrigin::Control {
-            control_kind: 3,
+            control_kind: fa_model::ControlKind::POLICY_ACTIVATION,
             spec_body_digest: policy_oid,
         },
         principal_ref: principal,
@@ -794,7 +794,7 @@ pub async fn revoke_capability<V: asupersync::fs::Vfs + Clone>(
         base_totals: None,
         idempotency_key: req.idempotency_key,
         origin: EntryOrigin::Control {
-            control_kind: 4,
+            control_kind: fa_model::ControlKind::CAPABILITY_REVOCATION,
             spec_body_digest: req.revoked,
         },
         principal_ref: req.capability.holder(),

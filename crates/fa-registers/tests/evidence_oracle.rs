@@ -763,3 +763,85 @@ fn cite(
         .collect();
     (chosen.into_iter().map(|(e, _)| e).collect(), citations)
 }
+
+/// Every control record in `db`, its kind checked against the oracle's
+/// literal copy of the registry (fa-g23): the class the kind mints is the
+/// record's class. Returns the count per kind; logs each origin.
+fn control_kinds_in(db: &Database<MemVfs>) -> BTreeMap<u16, usize> {
+    let mut seen: BTreeMap<u16, usize> = BTreeMap::new();
+    for row in db.vertices().expect("scan") {
+        if !row.labels.contains(&fa_model::symbols::label::ENTRY) {
+            continue;
+        }
+        let (entry, _) = fa_journal::post::read_entry(db, row.vid)
+            .expect("kernel")
+            .expect("an entry");
+        if let EntryOrigin::Control {
+            control_kind,
+            spec_body_digest,
+        } = &entry.proposal.origin
+        {
+            let class = entry.proposal.class.name().expect("a registered class");
+            eprintln!(
+                "g23 control record {:032x}: control_kind {} ({}) on {class}, spec_body_digest {}",
+                row.vid.0,
+                control_kind.id(),
+                control_kind.name(),
+                fa_journal::evidence::hex(spec_body_digest)
+            );
+            assert_eq!(
+                fa_reference::control_kind_class(control_kind.id()),
+                Some(class),
+                "control record {:032x}",
+                row.vid.0
+            );
+            *seen.entry(control_kind.id()).or_default() += 1;
+        }
+    }
+    seen
+}
+
+/// fa-g23, the positive half: on a fresh book, every control record the
+/// kernel mints (chart install, period transitions, a tick, a capability
+/// revocation) carries the registry's number for its kind.
+#[test]
+fn every_control_record_carries_its_registered_kind() {
+    let mut b = book();
+    let seal = |b: &Book, text: &str, n: u8| {
+        Erasable::seal(&text.to_string(), None, &b.book.seal_key, [n; 32], [n; 24])
+    };
+    let tick = TickRequest {
+        observed_utc_ns: 1_000,
+        source: fa_journal::sweep::SOURCE_DAEMON_CLOCK,
+        monotonic_ok: true,
+        principal_ref: VId(7),
+        capability: Capability::embedded(VId(7), &["witness"]).expect("witness"),
+        idempotency_key: b"g23-tick".to_vec(),
+        description: seal(&b, "tick", 41),
+    };
+    let revoked = Capability::embedded(VId(9), &["post"]).expect("post");
+    let revocation = RevocationRequest {
+        capability: Capability::embedded(VId(7), &["issue_capability"]).expect("issue"),
+        revoked: revoked.commitment().expect("commitment"),
+        effective_date: DateDay::from_ymd(2026, 3, 15).unwrap(),
+        idempotency_key: b"g23-revoke".to_vec(),
+        description: seal(&b, "revocation", 42),
+    };
+    let ctx = b.ctx();
+    let (db, book) = (&mut b.db, &b.book);
+    b.runtime.block_on(async {
+        record_tick(db, &ctx, book, tick)
+            .await
+            .expect("kernel")
+            .expect("tick");
+        revoke_capability(db, &ctx, book, revocation)
+            .await
+            .expect("kernel")
+            .expect("revoked");
+    });
+    let seen = control_kinds_in(&b.db);
+    eprintln!("g23 control kinds on a fresh book: {seen:?}");
+    for kind in [1, 2, 4, 8] {
+        assert!(seen.contains_key(&kind), "kind {kind} minted: {seen:?}");
+    }
+}
