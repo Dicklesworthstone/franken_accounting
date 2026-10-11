@@ -30,6 +30,7 @@ pub mod migration;
 pub mod period;
 pub mod policy;
 pub mod post;
+pub mod projections;
 pub mod redaction;
 pub mod refusal;
 pub mod rows;
@@ -78,6 +79,7 @@ pub use policy::{
 pub use post::{
     Capability, PostPreparation, PostRequest, Posted, PreparedPost, post, prepare_post,
 };
+pub use projections::{ProjectionVerification, verify_projections};
 pub use redaction::{
     DocumentRead, RedactedView, ViewChunk, ViewDerived, derive_redacted_view, read_document_for,
     redacted_view_vid,

@@ -2219,6 +2219,11 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                 "step {step}: disagreement on {intent:?}"
             ),
         }
+        let projections = verify_projections(&k.db, &k.book, None).unwrap();
+        assert!(
+            projections.is_green(),
+            "step {step}: leg projections differ from payloads: {projections:?}"
+        );
         // Planted evidence negatives (fa-lp6): a committed Original, Adjusting
         // or Pending without applications, copied under a fresh key and
         // citing nothing, only the agent's upload, a document never recorded,
@@ -6524,6 +6529,11 @@ fn kernel_and_oracle_agree_on_scheduled_reversals() {
                 }
             }
         }
+        let projections = verify_projections(&k.db, &k.book, None).unwrap();
+        assert!(
+            projections.is_green(),
+            "step {step}: scheduled leg projections: {projections:?}"
+        );
         // Every step: the reached schedules and every limit cell agree.
         let reached = oracle.reached_reversals();
         assert_eq!(kernel_reached(&k, &refs), reached, "step {step}: reached");
@@ -7169,6 +7179,11 @@ fn kernel_and_oracle_agree_on_the_per_entity_balance_law() {
                 "step {step}: disagreement on {intent:?}"
             ),
         }
+        let projections = verify_projections(&k.db, &k.book, None).unwrap();
+        assert!(
+            projections.is_green(),
+            "step {step}: dimension projections: {projections:?}"
+        );
         // The per-entity register agrees with the literal fold.
         if step % 40 == 0 {
             let (kernel_fold, digest) = kernel_entity_fold(&k, &march, None);

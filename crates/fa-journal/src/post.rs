@@ -47,7 +47,7 @@ use fa_model::SealKey;
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
     ApprovalRef, Disposition, Entry, EntryClass, EntryOrigin, EntryPayload, EntryRef, Pending,
-    SupersessionKind, entry_mirrors, entry_vid, leg_mirrors, migration_entry_vid, period_vid,
+    SupersessionKind, entry_mirrors, entry_vid, migration_entry_vid, period_vid,
 };
 use fa_money::Side;
 use fa_registry::evidence_policy::EvidencePolicy;
@@ -1882,29 +1882,9 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
     }
     let entry: Entry = sealed.seal(req.approvals.clone(), req.plan_certificate)?;
     let mut has_leg = WriteBatch::new(relation::HAS_LEG);
-    let mut posts_to = WriteBatch::new(relation::POSTS_TO);
     let mut in_period = WriteBatch::new(relation::IN_PERIOD);
     has_leg.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
-    for (i, leg) in entry.proposal.legs.iter().enumerate() {
-        let ordinal =
-            u16::try_from(i).map_err(|_| KernelError::Corrupt("more than u16 legs".into()))?;
-        let lvid = leg_vid(evid, ordinal);
-        let mut mirrors = leg_mirrors(leg, ordinal, entry.proposal.effective_date, &book.units)?;
-        mirrors.push((property::APPLIED, mantissa_scalar("applied", 0)?));
-        has_leg.create_vertex(lvid, vec![label::LEG], mirrors);
-        has_leg.add_edge(
-            edge_id(relation::HAS_LEG, evid, lvid),
-            evid,
-            lvid,
-            vec![(property::ORDINAL, CanonicalScalar::Int(i64::from(ordinal)))],
-        );
-        posts_to.add_edge(
-            edge_id(relation::POSTS_TO, lvid, accounts[i].vid),
-            lvid,
-            accounts[i].vid,
-            vec![],
-        );
-    }
+    let leg_edges = crate::projections::stage_legs(&mut has_leg, evid, &entry, book)?;
     in_period.add_edge(edge_id(relation::IN_PERIOD, evid, pvid), evid, pvid, vec![]);
     for m in &judged.moves {
         m.before.stage(&m.after, m.cell, &mut has_leg)?;
@@ -1937,7 +1917,8 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
-    let mut batches = vec![has_leg, posts_to, in_period];
+    let mut batches = vec![has_leg, in_period];
+    batches.extend(leg_edges);
     if let Some(target) = reversal_target {
         let mut supersedes = WriteBatch::new(relation::SUPERSEDES);
         supersedes.add_edge(

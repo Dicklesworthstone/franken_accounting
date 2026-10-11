@@ -377,6 +377,10 @@ fn committed(p: &Posted) -> Option<(EntryRef, String)> {
 }
 
 fn harness() -> Harness {
+    harness_with_entities(Vec::new())
+}
+
+fn harness_with_entities(entities: Vec<LegalEntitySpec>) -> Harness {
     let runtime = RuntimeBuilder::new().build().expect("runtime");
     let root = runtime.request_cx_with_budget(Budget::INFINITE);
     let ctx = PurposeContexts::narrow_runtime_root(&root);
@@ -399,7 +403,7 @@ fn harness() -> Harness {
         base_unit: usd,
         calendar: calendar.clone(),
         time_zone_policy: None,
-        entities: Vec::new(),
+        entities,
         opening_date: None,
     };
     let symbols = SymbolTable::compiled();
@@ -4986,4 +4990,298 @@ fn a_privileged_holder_derives_the_view_a_reader_gets_in_place_of_the_bytes() {
     );
     assert_eq!(r.code, "FA-REF-023", "{r}");
     assert_eq!(h.db.frontier().unwrap(), head, "nothing written");
+}
+
+
+fn assert_leg_projections(h: &Harness) -> ProjectionVerification {
+    let report = verify_projections(&h.db, &h.book, None).expect("projection snapshot");
+    assert!(report.is_green(), "{report:?}");
+    report
+}
+
+#[test]
+fn projection_verification_covers_posted_pending_resolved_reversed_and_control_entries() {
+    let mut h = harness();
+    let empty = assert_leg_projections(&h);
+    assert!(empty.entries_checked > 0, "the setup journals controls");
+    assert_eq!((empty.legs_checked, empty.edges_checked), (0, 0));
+
+    let invoice = h
+        .post(h.request(h.invoice(1_200, b"projection-invoice"), &["post"]))
+        .unwrap()
+        .entry_ref();
+    let first = assert_leg_projections(&h);
+    assert_eq!((first.legs_checked, first.edges_checked), (2, 6));
+    let unit = fa_model::unit_vid(h.book.book_id, "USD@v0");
+    for ordinal in 0..2 {
+        let lvid = leg_vid(invoice.vid, ordinal);
+        let edge = h
+            .db
+            .edge(edge_id(relation::IN_UNIT, lvid, unit))
+            .unwrap()
+            .expect("a currency link is created with each leg");
+        assert_eq!(edge.entry.src, lvid);
+        assert_eq!(edge.entry.dst, unit);
+        assert!(edge.props.is_empty());
+        assert_eq!(
+            h.db.vertex(lvid).unwrap().unwrap().created_at,
+            h.db.vertex(invoice.vid).unwrap().unwrap().created_at,
+            "payload and Leg are published by the same transaction"
+        );
+    }
+
+    let receipt = h.receipt(
+        500,
+        vec![Settlement {
+            target: invoice,
+            ordinal: 0,
+            amount: Amount::new(h.usd, 500),
+        }],
+        b"projection-receipt",
+    );
+    let receipt = h.post(h.request(receipt, &["post"])).unwrap().entry_ref();
+    assert_eq!(h.applied_to(invoice.vid, 0), 500);
+    assert_eq!(assert_leg_projections(&h).legs_checked, 4);
+
+    let reversal = h.reversal_of_entry(receipt, b"projection-reversal");
+    h.post(h.request(reversal, &["post"])).unwrap();
+    assert_eq!(h.applied_to(invoice.vid, 0), 0);
+    assert_eq!(assert_leg_projections(&h).legs_checked, 6);
+
+    let pending = h.pending(h.rent_legs(900), b"projection-hold");
+    let hold = h.post(h.request(pending, &["post"])).unwrap().entry_ref();
+    assert_eq!(assert_leg_projections(&h).legs_checked, 8);
+    let resolution = h.resolution_posts(
+        hold,
+        h.rent_legs(400),
+        vec![0, 1],
+        b"projection-resolution",
+    );
+    h.post(h.request(resolution, &["post"])).unwrap();
+    assert_eq!(assert_leg_projections(&h).legs_checked, 10);
+
+    let pending = h.pending(h.rent_legs(700), b"projection-void-hold");
+    let hold = h.post(h.request(pending, &["post"])).unwrap().entry_ref();
+    let before_void = assert_leg_projections(&h);
+    let void = h.resolution_voids(hold, b"projection-void");
+    h.post(h.request(void, &["post"])).unwrap();
+    let after_void = assert_leg_projections(&h);
+    assert_eq!(after_void.entries_checked, before_void.entries_checked + 1);
+    assert_eq!(after_void.legs_checked, before_void.legs_checked);
+    assert_eq!(after_void.edges_checked, before_void.edges_checked);
+}
+
+#[test]
+fn projection_verifier_detects_every_scalar_mirror_and_preserves_known_at() {
+    let mut h = harness();
+    let proposal = h.proposal(h.rent_legs(12_345), b"projection-mirrors", EntryClass::ORIGINAL);
+    let posted = h.post(h.request(proposal, &["post"])).unwrap();
+    let entry = posted.entry_ref();
+    let prefix = posted.recorded_at();
+    let payload = read_entry(&h.db, entry.vid).unwrap().unwrap();
+    assert_leg_projections(&h);
+    let lvid = leg_vid(entry.vid, 0);
+    let pristine = h.db.vertex(lvid).unwrap().unwrap();
+    let cases = vec![
+        (
+            property::FA_EFFECTIVE_DAY,
+            Some(CanonicalScalar::Int(i64::from(h.day().0) + 1)),
+            "_fa_effective_day",
+        ),
+        (property::SIDE, Some(CanonicalScalar::Int(1)), "side"),
+        (
+            property::ACCOUNT_REF,
+            Some(CanonicalScalar::bytes(h.cash.0.to_le_bytes().to_vec()).unwrap()),
+            "account_ref",
+        ),
+        (property::UNIT_ID, Some(CanonicalScalar::Int(999)), "unit_id"),
+        (property::AMOUNT, Some(CanonicalScalar::Null), "amount"),
+        (
+            property::AMOUNT_BYTES,
+            Some(CanonicalScalar::bytes(12_345_i128.to_le_bytes().to_vec()).unwrap()),
+            "amount_bytes",
+        ),
+        (property::ORDINAL, Some(CanonicalScalar::Int(7)), "ordinal"),
+        (property::AMOUNT, None, "amount"),
+    ];
+    for (key, value, field) in cases {
+        let mut corrupt = fgdb::WriteBatch::new(relation::HAS_LEG);
+        corrupt.set_vertex_property(lvid, key, value);
+        h.write_raw(corrupt);
+        let report = verify_projections(&h.db, &h.book, None).unwrap();
+        assert!(!report.is_green(), "{field} was not detected");
+        assert!(
+            report.drift.iter().any(|message| {
+                message.contains(&format!("{:032x}", lvid.0))
+                    && message.contains(&format!("{field} mirror"))
+            }),
+            "{report:?}"
+        );
+        assert!(
+            verify_projections(&h.db, &h.book, Some(prefix))
+                .unwrap()
+                .is_green(),
+            "current drift must not contaminate the earlier snapshot"
+        );
+        assert_eq!(read_entry(&h.db, entry.vid).unwrap().unwrap(), payload);
+        let mut restore = fgdb::WriteBatch::new(relation::HAS_LEG);
+        restore.set_vertex_property(
+            lvid,
+            key,
+            fa_journal::rows::prop(&pristine, key).cloned(),
+        );
+        h.write_raw(restore);
+        assert_leg_projections(&h);
+    }
+}
+
+#[test]
+fn projection_verifier_checks_the_exact_wide_amount_fallback() {
+    let mut h = harness();
+    let proposal = h.proposal(
+        h.rent_legs(i128::MAX),
+        b"projection-wide",
+        EntryClass::ORIGINAL,
+    );
+    let posted = h.post(h.request(proposal, &["post"])).unwrap();
+    let lvid = leg_vid(posted.entry_ref().vid, 0);
+    let row = h.db.vertex(lvid).unwrap().unwrap();
+    assert_eq!(
+        fa_journal::rows::prop(&row, property::AMOUNT),
+        Some(&CanonicalScalar::Null)
+    );
+    assert_eq!(
+        fa_journal::rows::bytes(&row, property::AMOUNT_BYTES, "wide amount").unwrap(),
+        i128::MAX.to_le_bytes()
+    );
+    assert_leg_projections(&h);
+    let mut missing = fgdb::WriteBatch::new(relation::HAS_LEG);
+    missing.set_vertex_property(lvid, property::AMOUNT_BYTES, None);
+    h.write_raw(missing);
+    let report = verify_projections(&h.db, &h.book, None).unwrap();
+    assert!(!report.is_green());
+    assert!(
+        report
+            .drift
+            .iter()
+            .any(|message| message.contains("amount_bytes mirror")),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn projection_verifier_rejects_missing_extra_and_misdirected_topology() {
+    use fa_model::symbols::label;
+    use fgdb_types::EId;
+
+    for plant in 0..7 {
+        let mut h = harness();
+        let p = h.proposal(h.rent_legs(100), b"projection-topology", EntryClass::ORIGINAL);
+        let posted = h.post(h.request(p, &["post"])).unwrap();
+        let entry = posted.entry_ref().vid;
+        let lvid = leg_vid(entry, 0);
+        let mut corrupt = match plant {
+            0 | 1 | 4 | 5 => fgdb::WriteBatch::new(relation::HAS_LEG),
+            2 | 3 => fgdb::WriteBatch::new(relation::POSTS_TO),
+            _ => fgdb::WriteBatch::new(relation::IN_UNIT),
+        };
+        match plant {
+            0 => {
+                corrupt.delete_edge(edge_id(relation::HAS_LEG, entry, lvid));
+            }
+            1 => {
+                corrupt.set_edge_property(
+                    edge_id(relation::HAS_LEG, entry, lvid),
+                    property::ORDINAL,
+                    Some(CanonicalScalar::Int(9)),
+                );
+            }
+            2 => {
+                corrupt.add_edge(
+                    edge_id(relation::POSTS_TO, lvid, h.cash),
+                    lvid,
+                    h.cash,
+                    vec![],
+                );
+            }
+            3 => {
+                corrupt.add_edge(EId(0xe17e), lvid, h.rent, vec![]);
+            }
+            4 => {
+                let extra = VId(0x1e6);
+                let props = h.db.vertex(lvid).unwrap().unwrap().props;
+                corrupt.create_vertex(extra, vec![label::LEG], props);
+                corrupt.add_edge(
+                    edge_id(relation::HAS_LEG, entry, extra),
+                    entry,
+                    extra,
+                    vec![(property::ORDINAL, CanonicalScalar::Int(2))],
+                );
+            }
+            5 => {
+                corrupt.set_vertex_label(lvid, label::LEG, false);
+            }
+            _ => {
+                let unit = fa_model::unit_vid(h.book.book_id, "USD@v0");
+                corrupt.delete_edge(edge_id(relation::IN_UNIT, lvid, unit));
+            }
+        }
+        h.write_raw(corrupt);
+        let report = verify_projections(&h.db, &h.book, None).unwrap();
+        assert!(!report.is_green(), "topology plant {plant}: {report:?}");
+        assert!(
+            verify_projections(&h.db, &h.book, Some(posted.recorded_at()))
+                .unwrap()
+                .is_green()
+        );
+    }
+}
+
+#[test]
+fn dimension_edges_are_published_with_legs_and_their_metadata_is_verified() {
+    let mut h = harness_with_entities(vec![LegalEntitySpec {
+        code: "co".into(),
+        name: "Test legal entity".into(),
+    }]);
+    let entity = fa_model::entity_value_vid(h.book.book_id, "co");
+    let mut p = h.proposal(h.rent_legs(100), b"projection-entity", EntryClass::ORIGINAL);
+    for leg in &mut p.legs {
+        leg.dimension_set = vec![(fa_model::LEGAL_ENTITY_DIMENSION, entity)];
+    }
+    let posted = h.post(h.request(p, &["post"])).unwrap();
+    let report = assert_leg_projections(&h);
+    assert_eq!((report.legs_checked, report.edges_checked), (2, 8));
+    let lvid = leg_vid(posted.entry_ref().vid, 0);
+    let eid = edge_id(relation::FOR, lvid, entity);
+    let edge = h.db.edge(eid).unwrap().expect("the dimension projection");
+    assert_eq!(edge.entry.src, lvid);
+    assert_eq!(edge.entry.dst, entity);
+    assert_eq!(
+        edge.props,
+        vec![(
+            property::DIMENSION_ID,
+            CanonicalScalar::Int(i64::from(fa_model::LEGAL_ENTITY_DIMENSION)),
+        )]
+    );
+    let mut corrupt = fgdb::WriteBatch::new(relation::FOR);
+    corrupt.set_edge_property(
+        eid,
+        property::DIMENSION_ID,
+        Some(CanonicalScalar::Int(999)),
+    );
+    h.write_raw(corrupt);
+    let report = verify_projections(&h.db, &h.book, None).unwrap();
+    assert!(!report.is_green());
+    assert!(
+        report
+            .drift
+            .iter()
+            .any(|message| message.contains("FOR edge") && message.contains("properties")),
+        "{report:?}"
+    );
+    assert!(
+        verify_projections(&h.db, &h.book, Some(posted.recorded_at()))
+            .unwrap()
+            .is_green()
+    );
 }
