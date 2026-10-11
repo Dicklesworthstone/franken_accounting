@@ -15,8 +15,8 @@ use fa_model::{
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_registers::{
-    Cell, CellKey, Fold, RegisterError, balance_as_of, fold_period, fold_period_at, materialize,
-    register_vid, trial_balance, trial_balance_at, verify_period,
+    CacheStatus, Cell, CellKey, Fold, RegisterError, balance_as_of, fold_period, fold_period_at,
+    materialize, register_vid, trial_balance, trial_balance_at, verify_period,
 };
 use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodTransition};
 use fgdb::{Database, DatabaseKeys, MemVfs, WriteBatch};
@@ -462,17 +462,30 @@ fn materialize_then_verify_is_green_and_a_tampered_register_is_drift() {
     let v = verify_period(&h.db, &h.book, &h.march).unwrap();
     assert!(v.is_green(), "{v:?}");
     assert_eq!(v.cells_checked, 2);
+    assert_eq!(v.cache_status, CacheStatus::Verified);
+    let basis = v.verified_through.expect("materialized prefix");
+    assert!(
+        basis < h.db.frontier().unwrap(),
+        "publication is not an entry"
+    );
+    assert!(!v.stale);
+    assert_eq!(v.lag_entries, 0);
 
-    // A later post makes the stored registers stale: verify says so, the
-    // journal is untouched, and re-materializing restores green.
+    // A later post makes the cache stale without invalidating its checked prefix.
     h.post_rent(5, b"r2");
     let v = verify_period(&h.db, &h.book, &h.march).unwrap();
-    assert!(!v.is_green() && v.drift.len() == 2, "{v:?}");
+    assert!(v.is_green() && v.stale, "{v:?}");
+    assert_eq!(v.verified_through, Some(basis));
+    assert_eq!(v.lag_entries, 1);
+    assert!(v.drift.is_empty());
+    assert_eq!(v.refold_digest, fold.fold_digest);
     let fold = fold_period(&h.db, &h.book, &h.march).unwrap();
     h.runtime
         .block_on(async { materialize(&mut h.db, &ctx, &h.book, &fold).await })
         .expect("re-materialize");
-    assert!(verify_period(&h.db, &h.book, &h.march).unwrap().is_green());
+    let current = verify_period(&h.db, &h.book, &h.march).unwrap();
+    assert!(current.is_green() && !current.stale, "{current:?}");
+    assert_eq!(current.lag_entries, 0);
 
     // Tamper with a stored register directly: drift names the cell with both values.
     let cash_key = fold
@@ -494,6 +507,8 @@ fn materialize_then_verify_is_green_and_a_tampered_register_is_drift() {
         .expect("tamper write");
     let v = verify_period(&h.db, &h.book, &h.march).unwrap();
     assert!(!v.is_green());
+    assert_eq!(v.cache_status, CacheStatus::Corrupt);
+    assert_eq!(v.verified_through, None);
     assert_eq!(v.drift.len(), 1);
     assert_eq!(v.drift[0].key, cash_key);
     assert_eq!(v.drift[0].stored, Some((0, 999, 2)));
@@ -538,11 +553,86 @@ fn empty_period_verifies_and_rebuild_does_not_invent_cells_or_postings() {
         "empty journal and empty stored set must agree: {v:?}"
     );
     assert_eq!(v.cells_checked, 0);
+    assert_eq!(v.cache_status, CacheStatus::Uninitialized);
+    assert_eq!(v.verified_through, None);
     let fold = h.materialize_march();
     assert!(fold.cells.is_empty());
     assert_eq!(fold.entries, 0);
     assert_eq!(fold.watermark, None);
     assert_eq!(h.db.frontier().unwrap(), before, "no empty rebuild write");
+    let ctx = h.ctx();
+    let advanced = h
+        .runtime
+        .block_on(fa_registers::advance(&mut h.db, &ctx, &h.book, &h.march))
+        .unwrap();
+    let v = verify_period(&h.db, &h.book, &h.march).unwrap();
+    assert!(v.is_green() && !v.stale, "{v:?}");
+    assert_eq!(v.cache_status, CacheStatus::Verified);
+    assert_eq!(v.verified_through, Some(advanced.through));
+    assert_eq!(v.lag_entries, 0);
+    assert_eq!(advanced.fold.watermark, None);
+    assert!(advanced.published_at > advanced.through);
+    // The twin: a real Entry after publication creates lag, even though
+    // the verified empty prefix still has no monetary watermark.
+    h.post_rent(7, b"after-empty-advance");
+    let v = verify_period(&h.db, &h.book, &h.march).unwrap();
+    assert!(v.is_green() && v.stale, "{v:?}");
+    assert_eq!(v.verified_through, Some(advanced.through));
+    assert_eq!(v.lag_entries, 1);
+}
+
+#[test]
+fn prefix_verification_refuses_rewritten_or_retired_journal_entries() {
+    for retire in [false, true] {
+        let mut h = harness();
+        let posted = h.post_rent(13, b"immutable-prefix");
+        h.materialize_march();
+        let before = verify_period(&h.db, &h.book, &h.march).unwrap();
+        assert!(before.is_green() && !before.stale);
+        let mut write = WriteBatch::new(relation::IN_PERIOD);
+        if retire {
+            write.set_vertex_label(posted.entry_ref().vid, label::ENTRY, false);
+        } else {
+            write.set_vertex_property(
+                posted.entry_ref().vid,
+                property::FA_PAYLOAD,
+                Some(CanonicalScalar::bytes(vec![0xff]).unwrap()),
+            );
+        }
+        h.write_derived(write);
+        let v = verify_period(&h.db, &h.book, &h.march).unwrap();
+        assert!(!v.is_green(), "retire={retire}: {v:?}");
+        assert_eq!(v.cache_status, CacheStatus::Corrupt);
+        assert_eq!(v.verified_through, None);
+        assert!(
+            v.projection_errors
+                .iter()
+                .any(|error| error.contains("changed or disappeared"))
+        );
+    }
+}
+
+#[test]
+fn a_missing_cache_header_cannot_certify_surviving_cells() {
+    let mut h = harness();
+    h.post_rent(17, b"missing-header");
+    h.materialize_march();
+    assert!(verify_period(&h.db, &h.book, &h.march).unwrap().is_green());
+    let mut write = WriteBatch::new(relation::IN_PERIOD);
+    write.delete_vertex(fa_registers::maintainer::state_vid(
+        h.book.book_id,
+        &h.march,
+    ));
+    h.write_derived(write);
+    let v = verify_period(&h.db, &h.book, &h.march).unwrap();
+    assert!(!v.is_green());
+    assert_eq!(v.cache_status, CacheStatus::Corrupt);
+    assert_eq!(v.verified_through, None);
+    assert!(
+        v.projection_errors
+            .iter()
+            .any(|error| error.contains("maintenance header"))
+    );
 }
 
 #[test]

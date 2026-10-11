@@ -210,13 +210,28 @@ pub struct At {
 /// frame is its own flat object, never a robot line.
 #[must_use]
 pub fn robot_line(event: &str, data: Json, at: Option<&At>, warnings: &[String]) -> Json {
-    let next_actions = verbs::registry().map_or_else(
+    robot_line_with_actions(event, data, at, warnings, &[])
+}
+
+fn robot_line_with_actions(
+    event: &str,
+    data: Json,
+    at: Option<&At>,
+    warnings: &[String],
+    actions: &[(String, String)],
+) -> Json {
+    let mut next_actions: Vec<Json> = verbs::registry().map_or_else(
         |_| Vec::new(),
         |r| {
             r.next_actions_for(event)
                 .map(|n| obj(vec![("command", s(&n.command)), ("why", s(&n.why))]))
                 .collect()
         },
+    );
+    next_actions.extend(
+        actions
+            .iter()
+            .map(|(command, why)| obj(vec![("command", s(command)), ("why", s(why))])),
     );
     obj(vec![
         ("v", Json::Int(verbs::ENVELOPE_VERSION)),
@@ -345,9 +360,25 @@ impl Out {
     /// One event: in robot mode the Appendix D line with `fields` as its
     /// `data`, otherwise the human text (nothing when it is empty).
     pub(crate) fn event(&self, name: &str, fields: Vec<(&str, Json)>, human: &str) {
+        self.event_with_actions(name, fields, human, &[]);
+    }
+
+    fn event_with_actions(
+        &self,
+        name: &str,
+        fields: Vec<(&str, Json)>,
+        human: &str,
+        actions: &[(String, String)],
+    ) {
         if self.json {
             let said = self.said.borrow();
-            let line = robot_line(name, obj(fields), said.at.as_ref(), &said.warnings);
+            let line = robot_line_with_actions(
+                name,
+                obj(fields),
+                said.at.as_ref(),
+                &said.warnings,
+                actions,
+            );
             self.line(line.render());
         } else if !human.is_empty() {
             self.line(human);
@@ -3091,8 +3122,25 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let mut all_green = true;
             let mut details = Vec::new();
             let mut diagnostics = Vec::new();
+            let mut actions = Vec::new();
             for p in &periods {
-                let v = book.verify_registers(p)?;
+                let v = match book.verify_registers(p) {
+                    Ok(v) => v,
+                    Err(BookError::Registers(fa_registers::RegisterError::ProjectionDrift(
+                        why,
+                    )))
+                    | Err(BookError::Registers(fa_registers::RegisterError::Kernel(
+                        fa_journal::KernelError::Corrupt(why),
+                    ))) => {
+                        return Err(Fail::Verification {
+                            message: format!("register verification failed in {p}: {why}"),
+                            detail: obj(vec![("period", s(p)), ("problem", s(&why))]),
+                            cite: Some("FA-INV-04 (registers are derived from the journal)".into()),
+                            fix: None,
+                        });
+                    }
+                    Err(error) => return Err(error.into()),
+                };
                 diagnostics.extend(v.projection_errors.iter().map(|e| format!("{p}: {e}")));
                 if !v.drift.is_empty() {
                     diagnostics.push(format!("{p}: {} posted cells differ", v.drift.len()));
@@ -3104,9 +3152,39 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     ));
                 }
                 all_green &= v.is_green();
+                if v.is_green() && v.stale {
+                    out.warn(format!(
+                        "{p}: verified cache has {} unread journal entries; run fa registers advance --period {p} --json",
+                        v.lag_entries
+                    ));
+                    actions.push((
+                        format!("fa registers advance --period {p} --json"),
+                        "consume unread journal entries after the verified cache prefix".into(),
+                    ));
+                }
+                if v.cache_status == fa_registers::CacheStatus::Uninitialized {
+                    out.warn(format!(
+                        "{p}: register cache is uninitialized; no processed prefix is certified"
+                    ));
+                }
                 details.push(obj(vec![
                     ("period", s(p)),
                     ("green", Json::Bool(v.is_green())),
+                    (
+                        "cache_status",
+                        s(match v.cache_status {
+                            fa_registers::CacheStatus::Uninitialized => "uninitialized",
+                            fa_registers::CacheStatus::Verified => "verified",
+                            fa_registers::CacheStatus::Corrupt => "corrupt",
+                        }),
+                    ),
+                    (
+                        "verified_through",
+                        v.verified_through
+                            .map_or(Json::Null, |s| Json::Int(i128::from(s.0))),
+                    ),
+                    ("stale", Json::Bool(v.stale)),
+                    ("lag_entries", Json::Int(v.lag_entries as i128)),
                     ("cells_checked", Json::Int(v.cells_checked as i128)),
                     ("refold_digest", s(hex(&v.refold_digest))),
                     (
@@ -3122,10 +3200,11 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ]));
             }
             if all_green {
-                out.event(
+                out.event_with_actions(
                     "registers_verified",
                     vec![("periods", Json::Arr(details))],
                     &format!("registers verified by refold: {} green", periods.join(", ")),
+                    &actions,
                 );
                 Ok(())
             } else {
