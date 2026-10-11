@@ -3438,6 +3438,43 @@ fn a_blob_publishes_into_a_fresh_nested_root_and_republishes_harmlessly() {
     });
 }
 
+#[test]
+fn a_blob_publishes_through_a_relative_unix_root_without_changing_cwd() {
+    let h = harness();
+    let cwd = std::env::current_dir().unwrap();
+    let mut relative = std::path::PathBuf::new();
+    for _ in cwd
+        .components()
+        .filter(|c| matches!(c, std::path::Component::Normal(_)))
+    {
+        relative.push("..");
+    }
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "fa-relative-blobs-{}-{suffix}/nested/store",
+        std::process::id()
+    ));
+    relative.push(root.strip_prefix("/").unwrap());
+    assert!(relative.is_relative());
+    let store = BlobStore::open(1, asupersync::fs::UnixVfs::new(), relative).unwrap();
+    let locator = fa_journal::blob::locator_of(&[0x73; 32]);
+    let ctx = h.ctx();
+    h.runtime.block_on(async {
+        store
+            .put(&ctx.commit(), &locator, b"relative host blob")
+            .await
+            .expect("every directory sync uses a nonempty pathname");
+        assert_eq!(
+            store.get(&ctx.query(), &locator, 64).await.unwrap(),
+            Some(b"relative host blob".to_vec())
+        );
+    });
+    assert_eq!(std::env::current_dir().unwrap(), cwd);
+}
+
 impl Harness {
     fn add_external(
         &mut self,
