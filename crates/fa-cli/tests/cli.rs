@@ -3852,6 +3852,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(false, &["capabilities"]).0, 0);
     assert_eq!(run(false, &["robot-docs", "guide"]).0, 0);
     assert_eq!(run(false, &["robot-docs", "schema"]).0, 0);
+    assert_eq!(run(false, &["chart", "templates"]).0, 0);
     assert_eq!(run(false, &["nosuchverb"]).0, 2);
     assert_eq!(run(true, &["book", "info"]).0, 4);
     assert_eq!(run(true, &["book", "create", "--name", "Events Co"]).0, 0);

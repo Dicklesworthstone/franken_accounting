@@ -49,6 +49,7 @@ use crate::authority::{LaunchAuthority, owner_envelope};
 use crate::document;
 use crate::json::{self, Json, obj, s};
 use crate::notary;
+use crate::templates;
 use crate::verbs::{self, Condition, Dangerous, Registry, Verb};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -2150,6 +2151,7 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         }
         Some("info") => {
             let book = ctx.books.open(args)?;
+            let base_unit = book.spec()?.base_unit;
             let ctx = book.context();
             let periods = book.periods()?;
             let mut by_state: Vec<(String, i128)> = Vec::new();
@@ -2159,15 +2161,17 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     None => by_state.push((p.state.name().to_string(), 1)),
                 }
             }
+            // The base unit journaled at genesis, not a guess.
             let unit = ctx
                 .units
-                .get(ctx.units.lookup("USD").unwrap_or(fa_money::UnitId(0)))
+                .get(base_unit)
                 .map(|u| u.code.clone())
                 .unwrap_or_default();
             out.event(
                 "book",
                 vec![
                     ("book_id", s(ctx.book_id.to_hex())),
+                    ("base_unit", s(&unit)),
                     ("calendar", s(&ctx.calendar.id)),
                     ("periods", Json::Int(periods.len() as i128)),
                     (
@@ -2209,15 +2213,40 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     match args.positional.get(1).map(String::as_str) {
         Some("import") => {
-            let path = args.positional.get(2).ok_or_else(|| {
-                usage(
-                    "chart import needs a file",
-                    "fa chart import chart.json --book <dir>",
-                )
-            })?;
-            let text = ctx.files.read_text(path)?;
+            // A chart comes from a file (or `-`), or from an embedded
+            // template (plan §4.3, fa-48m): exactly one of the two.
+            let template = match args.flag("--template") {
+                None => None,
+                Some(name) => Some(templates::find(name).ok_or_else(|| {
+                    let known: Vec<&str> = templates::TEMPLATES.iter().map(|t| t.name).collect();
+                    usage(
+                        format!("unknown chart template `{name}`"),
+                        format!("fa chart templates --json lists them: {}", known.join(", ")),
+                    )
+                })?),
+            };
+            let (path, text) = match (template, args.positional.get(2)) {
+                (Some(_), Some(file)) => {
+                    return Err(usage(
+                        format!("chart import takes a file or --template, not both (got `{file}`)"),
+                        "fa chart import --template us-gaap-smb --book <dir>",
+                    ));
+                }
+                (Some(t), None) => (format!("template:{}", t.name), t.text.to_string()),
+                (None, Some(file)) => (file.clone(), ctx.files.read_text(file)?),
+                (None, None) => {
+                    return Err(usage(
+                        "chart import needs a file or --template <name>",
+                        "fa chart import chart.json --book <dir>  (or --template us-gaap-smb)",
+                    ));
+                }
+            };
+            let path = &path;
             let doc = parse_json(path, &text)?;
             let mut book = ctx.books.open(args)?;
+            // `"unit": "base"` is the book's own base unit, journaled at
+            // genesis, so one chart document serves a book in any currency.
+            let base_unit = book.spec()?.base_unit;
             let units = &book.context().units;
             let rows = doc.get("accounts").and_then(Json::as_arr).ok_or_else(|| {
                 usage(
@@ -2246,10 +2275,11 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 let unit_policy = match row.get("unit").and_then(Json::as_str) {
                     None | Some("any") => UnitPolicy::AnyUnit,
                     Some("any-currency") => UnitPolicy::AnyCurrency,
+                    Some("base") => UnitPolicy::Single(base_unit),
                     Some(u) => UnitPolicy::Single(units.lookup(u).ok_or_else(|| {
                         usage(
                             format!("{what}: unknown unit `{u}`"),
-                            "unit: USD|EUR|…|any|any-currency",
+                            "unit: USD|EUR|…|base|any|any-currency",
                         )
                     })?),
                 };
@@ -2325,11 +2355,7 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let date = date_flag(args, DateDay(0))?;
             let key = match args.flag("--key") {
                 Some(k) => k.as_bytes().to_vec(),
-                None => format!(
-                    "chart:{}",
-                    hex(&fa_model::domain_digest(b"fa:chart:v1", &[text.as_bytes()])[..8])
-                )
-                .into_bytes(),
+                None => templates::chart_key(&text).into_bytes(),
             };
             let installed = book.install_chart(&accounts, who, date, &key)??;
             out.at_book(&book)?;
@@ -2345,11 +2371,46 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         "recorded_at",
                         Json::Int(i128::from(installed.recorded_at.0)),
                     ),
+                    ("template", template.map_or(Json::Null, |t| s(t.name))),
                 ],
                 &format!(
-                    "installed {} accounts (control entry {:032x}, recorded at {})",
-                    installed.accounts, installed.control_entry.0, installed.recorded_at.0
+                    "installed {} accounts{} (control entry {:032x}, recorded at {})",
+                    installed.accounts,
+                    template.map_or_else(String::new, |t| format!(" from template {}", t.name)),
+                    installed.control_entry.0,
+                    installed.recorded_at.0
                 ),
+            );
+            Ok(())
+        }
+        Some("templates") => {
+            if let Some(extra) = args.positional.get(2) {
+                return Err(usage(
+                    format!("unexpected argument `{extra}`"),
+                    "fa chart templates --json",
+                ));
+            }
+            let mut items = Vec::with_capacity(templates::TEMPLATES.len());
+            let mut human = Vec::with_capacity(templates::TEMPLATES.len());
+            for template in templates::TEMPLATES {
+                let listed = templates::listing(template).map_err(Fail::Internal)?;
+                human.push(format!(
+                    "{:<22} v{}  {:>3} accounts ({} leaves)  {}",
+                    listed.name, listed.version, listed.accounts, listed.leaves, listed.description
+                ));
+                items.push(obj(vec![
+                    ("name", s(listed.name)),
+                    ("version", Json::Int(listed.version)),
+                    ("description", s(&listed.description)),
+                    ("accounts", Json::Int(listed.accounts as i128)),
+                    ("leaves", Json::Int(listed.leaves as i128)),
+                    ("key", s(&listed.key)),
+                ]));
+            }
+            out.event(
+                "chart_templates",
+                vec![("templates", Json::Arr(items))],
+                &human.join("\n"),
             );
             Ok(())
         }

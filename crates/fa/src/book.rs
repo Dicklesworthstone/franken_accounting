@@ -1447,6 +1447,12 @@ impl Book {
     ) -> Result<TrialBalance, BookError> {
         with_store!(&self.store, core => core.period_activity(&self.purposes(), periods, known_at))
     }
+
+    /// The genesis spec journaled on the book root (base unit, calendar,
+    /// opening date, entities).
+    pub fn spec(&self) -> Result<BookSpec, BookError> {
+        with_store!(&self.store, core => core.spec(&self.purposes()))
+    }
 }
 
 impl fmt::Debug for Book {

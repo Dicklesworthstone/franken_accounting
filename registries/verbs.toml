@@ -88,14 +88,14 @@ example = "fa book create --book ./books/myco --name \"My Co\" --json"
 
 [[verb]]
 name = "chart"
-summary = "Install a chart of accounts as one journaled schema effect, or list it."
+summary = "Install a chart of accounts as one journaled schema effect (from a file or an embedded template), list it, or list the templates."
 writes = true
-subcommands = ["import", "list"]
-flags = ["--date", "--key"]
+subcommands = ["import", "list", "templates"]
+flags = ["--date", "--key", "--template"]
 switches = []
-events = ["chart_installed", "accounts"]
+events = ["chart_installed", "accounts", "chart_templates"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["chart import <chart.json> [--date YYYY-MM-DD] [--key K]   (an account may carry lower_bound/upper_bound: \"0.00\" in its unit and normal-balance sign)", "chart list"]
+usage = ["chart import (<chart.json> | --template <name>) [--date YYYY-MM-DD] [--key K]   (an account may carry lower_bound/upper_bound: \"0.00\" in its unit and normal-balance sign; \"unit\": \"base\" is the book's base unit)", "chart list", "chart templates   (us-gaap-smb, ifrs-sme, us-bank-call-report: starting points, not GAAP, IFRS or regulatory advice)"]
 example = "fa chart import chart.json --book ./books/myco --json"
 
 [[verb]]
@@ -578,14 +578,20 @@ fields = ["book_id:hex", "dir:string", "keys:string", "name:string", "base_unit:
 [[event]]
 name = "book"
 book = true
-doc = "A book's identity and size."
-fields = ["book_id:hex", "calendar:string", "periods:int", "periods_by_state:object", "accounts:int", "units_registered:int"]
+doc = "A book's identity and size. `base_unit` is the base unit journaled at genesis."
+fields = ["book_id:hex", "base_unit:string", "calendar:string", "periods:int", "periods_by_state:object", "accounts:int", "units_registered:int"]
 
 [[event]]
 name = "chart_installed"
 book = true
-doc = "A chart installed by one journaled control entry."
-fields = ["accounts:int", "control_entry:hex", "recorded_at:seq"]
+doc = "A chart installed by one journaled control entry. `template` names the embedded template it came from, or is null for a chart file; either way the control entry's idempotency key is the chart text's content digest."
+fields = ["accounts:int", "control_entry:hex", "recorded_at:seq", "template:string?"]
+
+[[event]]
+name = "chart_templates"
+book = false
+doc = "The chart templates this build embeds (plan §4.3): each one's name, version, description, account and leaf counts, and `key`, the idempotency key `fa chart import --template <name>` journals (the template text's content digest)."
+fields = ["templates:[chart_template]"]
 
 [[event]]
 name = "accounts"
@@ -922,6 +928,11 @@ doc = "Pending totals of one unit."
 fields = ["unit:string", "debits_pending:amount", "credits_pending:amount"]
 
 [[shape]]
+name = "chart_template"
+doc = "One embedded chart template."
+fields = ["name:string", "version:int", "description:string", "accounts:int", "leaves:int", "key:string"]
+
+[[shape]]
 name = "open_item"
 doc = "One live posted leg and what has been applied to and from it."
 fields = ["entry:hex", "ordinal:int", "account:string", "side:string", "effective_date:date", "recorded_at:seq", "original:amount", "applied:amount", "applied_out:amount", "open:amount", "applications:[application]"]
@@ -1235,7 +1246,17 @@ stdin_kind = "object"
 stdin_via = "file"
 required = []
 dont = ["Don't post to a summary account afterwards: only leaves (`leaf: true`) accept legs.", "Don't edit an installed chart in place; a chart change is a new journaled schema effect."]
-mistakes = ["Passing a host path as `file`: supply the chart object inline as `chart`; this does not grant chart-installation authority.", "Giving `lower_bound`/`upper_bound` as numbers: bounds are amounts, strings in the account's unit (\"0.00\")."]
+mistakes = ["Passing a host path as `file`: supply the chart object inline as `chart`; this does not grant chart-installation authority.", "Passing `template` with `chart`: a template is the whole chart.", "Giving `lower_bound`/`upper_bound` as numbers: bounds are amounts, strings in the account's unit (\"0.00\")."]
+
+[[mcp.tool]]
+cluster = "fa.chart"
+name = "chart_templates"
+verb = "chart"
+subcommands = ["templates"]
+positionals = []
+required = []
+dont = ["Don't treat a template as advice: it is a starting chart to adapt, not GAAP, IFRS or a regulatory mapping."]
+mistakes = ["Importing a template into a book that already has those accounts: the codes are identities, so the second import is refused."]
 
 [[mcp.tool]]
 cluster = "fa.chart"

@@ -24,5 +24,6 @@ pub mod json;
 pub mod lease;
 pub(crate) mod notary;
 mod proof;
+mod templates;
 pub mod verbs;
 pub mod wire;
