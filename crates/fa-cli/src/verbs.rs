@@ -1210,8 +1210,8 @@ mod tests {
                 "a next action that names a book path",
                 with(|s| {
                     s.replace(
-                        "command = \"fa tb --json\"",
-                        "command = \"fa tb --book ./b --json\"",
+                        "command = \"fa tb --period <code> --json\"",
+                        "command = \"fa tb --period <code> --book ./b --json\"",
                     )
                 }),
             ),
