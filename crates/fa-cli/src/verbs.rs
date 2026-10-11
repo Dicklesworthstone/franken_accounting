@@ -1116,7 +1116,12 @@ mod tests {
     }
 
     fn with(edit: impl Fn(&str) -> String) -> Result<Registry, String> {
-        Registry::parse(&edit(SOURCE))
+        let edited = edit(SOURCE);
+        assert_ne!(
+            edited, SOURCE,
+            "a planted mutation must change the registry text"
+        );
+        Registry::parse(&edited)
     }
 
     #[test]
@@ -1186,7 +1191,11 @@ mod tests {
             ),
             (
                 "a dangerous verb that cannot exit 7",
-                with(|s| s.replace("exits = [0, 2, 4, 5, 7]", "exits = [0, 2, 4, 5]")),
+                with(|s| {
+                    let exits = "exits = [0, 2, 4, 5, 7, 8]";
+                    assert_eq!(s.matches(exits).count(), 1, "the registers exit row");
+                    s.replacen(exits, "exits = [0, 2, 4, 5, 8]", 1)
+                }),
             ),
             (
                 "a dangerous row with an unknown condition",
@@ -1214,8 +1223,8 @@ mod tests {
         for (what, result) in cases {
             assert!(result.is_err(), "{what} was accepted");
         }
-        // The edits above really changed the source (else this test is void).
-        assert!(with(|s| s.to_string()).is_ok());
+        // The unchanged source is the valid positive control.
+        assert!(Registry::parse(SOURCE).is_ok());
     }
 
     const BOOK: &str = r#""0a1b""#;

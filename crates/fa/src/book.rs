@@ -1322,7 +1322,7 @@ mod tests {
                 },
                 principal_ref: principal,
                 session_ref: None,
-                evidence: vec![evidence.clone()],
+                evidence: vec![evidence],
                 supersession: Vec::new(),
                 pending: None,
                 external_ids: Vec::new(),
@@ -2844,7 +2844,7 @@ mod tests {
             .expect("the child created a reopenable book under its relative path");
         assert_eq!(reopened.context().book_id, Id128([0x64; 16]));
         assert!(reopened.head().unwrap().0 > 0);
-        for byte in [b'c', b'o'] {
+        for byte in *b"co" {
             let source = document(byte);
             assert_eq!(
                 reopened.read_document(&source.oid()).unwrap().unwrap(),
