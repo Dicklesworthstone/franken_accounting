@@ -2647,7 +2647,7 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
         },
         principal_ref: who,
         session_ref: None,
-        evidence: document::parse_evidence(&doc, args, &book)?,
+        evidence: document::parse_evidence(&doc, args, &mut book)?,
         supersession,
         pending,
         external_ids: Vec::new(),

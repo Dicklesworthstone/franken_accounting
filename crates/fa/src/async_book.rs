@@ -746,6 +746,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     }
 
     /// Read verified full or redacted evidence after capability admission.
+    /// Document bytes have no ungated facade method (FA-INV-10, plan §9.6).
+    ///
+    /// ```
+    /// let _ = fa::AsyncBook::<fgdb::MemVfs>::read_document_for;
+    /// ```
+    ///
+    /// ```compile_fail,E0599
+    /// let _ = fa::AsyncBook::<fgdb::MemVfs>::read_document;
+    /// ```
     pub async fn read_document_for(
         &mut self,
         cx: &PurposeContexts,
@@ -766,24 +775,58 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             .await?)
     }
 
-    pub async fn read_document(
-        &self,
+    /// The public commitment mirror, bound to this book and document oid.
+    /// Only public label/identity/digest fields are observed; inline bytes
+    /// are neither read nor decoded. This does not verify the byte payload.
+    ///
+    /// ```
+    /// let _ = fa::AsyncBook::<fgdb::MemVfs>::document_commitment;
+    /// ```
+    ///
+    /// ```compile_fail,E0599
+    /// let _ = fa::AsyncBook::<fgdb::MemVfs>::document_record;
+    /// ```
+    pub fn document_commitment(
+        &mut self,
         cx: &PurposeContexts,
         oid: &fa_model::Oid,
-    ) -> Outcome<Option<fa_journal::Document>> {
+    ) -> Result<Option<[u8; 32]>, BookError> {
+        use fa_model::symbols::{label, property};
+        use fgdb_types::CanonicalScalar;
+
         let query = cx.query();
         query.checkpoint().map_err(BookError::Context)?;
-        Ok(query
-            .with_restriction_async(fa_journal::fetch_document(&self.db, cx, &self.blobs, oid))
-            .await?)
-    }
-
-    pub fn document_record(
-        &self,
-        cx: &PurposeContexts,
-        oid: &fa_model::Oid,
-    ) -> Result<Option<fa_journal::DocumentRecord>, BookError> {
-        self.query(cx, |db, _| Ok(fa_journal::document_record(db, oid)?))
+        query.with_restriction(|| {
+            let db = &mut self.db;
+            let book = &self.context;
+            let txn_cx = cx.txn();
+            let txn = db.begin(&txn_cx).map_err(KernelError::from)?;
+            let vid = fa_journal::evidence::document_vid(oid);
+            let is_document = txn.vertex_has_label(db, vid, label::DOCUMENT).map_err(KernelError::from)?;
+            if is_document.is_none() {
+                txn.abort();
+                return Ok(None);
+            }
+            let book_id = txn.vertex_property(db, vid, property::BOOK_ID).map_err(KernelError::from)?;
+            let digest = txn.vertex_property(db, vid, property::FA_DIGEST).map_err(KernelError::from)?;
+            txn.abort();
+            let malformed = || BookError::Kernel(KernelError::Corrupt(
+                "FA-REF-085 document commitment mirror has invalid identity or digest".into(),
+            ));
+            if is_document != Some(true)
+                || !matches!(book_id, Some(CanonicalScalar::Bytes(b)) if b.as_slice() == book.book_id.0)
+            {
+                return Err(malformed());
+            }
+            let Some(CanonicalScalar::Bytes(bytes)) = digest else {
+                return Err(malformed());
+            };
+            let commit: [u8; 32] = bytes.as_slice().try_into().map_err(|_| malformed())?;
+            if fa_journal::evidence::document_oid(book.book_id, &commit) != *oid {
+                return Err(malformed());
+            }
+            Ok(Some(commit))
+        })
     }
 
     pub async fn record_review(

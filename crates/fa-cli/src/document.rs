@@ -168,7 +168,7 @@ fn add(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 pub(crate) fn parse_evidence(
     intent: &Json,
     args: &Args,
-    book: &fa::book::Book,
+    book: &mut fa::book::Book,
 ) -> Result<Vec<EvidenceRef>, Fail> {
     let policy = policy()?;
     let mut cited: Vec<(String, Option<String>, Role)> = Vec::new();
@@ -244,9 +244,7 @@ pub(crate) fn parse_evidence(
         };
         let doc_commit = match commit_hex {
             Some(h) => hex32(&h, "evidence doc_commit")?,
-            None => book
-                .document_record(&oid)?
-                .map_or([0u8; 32], |r| r.doc_commit),
+            None => book.document_commitment(&oid)?.unwrap_or([0u8; 32]),
         };
         refs.push(EvidenceRef {
             document_oid: oid,

@@ -852,6 +852,15 @@ impl Book {
 
     /// Read `oid` as `capability` may see it: the verified bytes when it
     /// reveals them or nothing is privileged, otherwise the redacted view.
+    /// Document bytes have no ungated facade method (FA-INV-10, plan §9.6).
+    ///
+    /// ```
+    /// let _ = fa::Book::read_document_for;
+    /// ```
+    ///
+    /// ```compile_fail,E0599
+    /// let _ = fa::Book::read_document;
+    /// ```
     pub fn read_document_for(
         &mut self,
         capability: &fa_journal::Capability,
@@ -868,19 +877,25 @@ impl Book {
         with_store!(&self.store, core => core.legal_holds_on(&self.purposes(), subject))
     }
 
-    /// The document at `oid`, verified against its commitment.
-    pub fn read_document(&self, oid: &fa_model::Oid) -> Outcome<Option<fa_journal::Document>> {
-        let purposes = self.purposes();
-        with_store!(&self.store, core => self.runtime.block_on(core.read_document(&purposes, oid)))
-    }
-
-    /// The document's verified record (kind, grade, size, commitment, and
-    /// where its bytes are) without fetching the bytes.
-    pub fn document_record(
-        &self,
+    /// The document's public commitment, without reading its byte payload.
+    /// This is an identity-checked mirror for citation completion, not a
+    /// payload verification; the posting kernel verifies cited documents.
+    ///
+    /// ```
+    /// let _ = fa::Book::document_commitment;
+    /// ```
+    ///
+    /// An ungated record would expose `Storage::Inline` bytes:
+    ///
+    /// ```compile_fail,E0599
+    /// let _ = fa::Book::document_record;
+    /// ```
+    pub fn document_commitment(
+        &mut self,
         oid: &fa_model::Oid,
-    ) -> Result<Option<fa_journal::DocumentRecord>, BookError> {
-        with_store!(&self.store, core => core.document_record(&self.purposes(), oid))
+    ) -> Result<Option<[u8; 32]>, BookError> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => core.document_commitment(&purposes, oid))
     }
 
     /// Record a `Reviewed` attestation over the document at `document`
@@ -1153,6 +1168,17 @@ mod tests {
     use fa_time::{FiscalCalendar, PeriodKind};
     use fgdb_sim::vfs::{FaultKind, FaultPlan, FaultVfs, Trigger};
 
+    /// Storage-layout verification only: tests already own the book's keys
+    /// and inspect its private database. Never exposed through the facade.
+    fn storage_record(book: &Book, oid: &Oid) -> fa_journal::DocumentRecord {
+        let query = book.purposes().query();
+        query.checkpoint().unwrap();
+        query.with_restriction(|| {
+            with_store!(&book.store, core => fa_journal::document_record(&core.db, oid)
+                .unwrap().expect("stored document"))
+        })
+    }
+
     fn under_lab<T, Fut>(seed: u64, test: impl FnOnce(Cx) -> Fut + Send + 'static) -> T
     where
         Fut: std::future::Future<Output = T> + Send + 'static,
@@ -1388,13 +1414,13 @@ mod tests {
             assert_eq!(entry.entry_digest, posted.entry_ref().entry_digest);
             assert_eq!(book.fold_period(&cx, &march).unwrap(), before);
             assert!(book.verify_registers(&cx, &march).unwrap().is_green());
+            let reader = Capability::embedded(principal, &["read", "privileged"]).unwrap();
             let document = book
-                .read_document(&cx, &evidence.document_oid)
+                .read_document_for(&cx, &reader, &evidence.document_oid)
                 .await
                 .unwrap()
-                .unwrap()
                 .unwrap();
-            assert_eq!(document.bytes, source.bytes);
+            assert_eq!(document, fa_journal::DocumentRead::Full(source.clone()));
             assert!(matches!(
                 book.post(&cx, request).await.unwrap().unwrap(),
                 Posted::AlreadyRecorded { .. }
@@ -1416,7 +1442,7 @@ mod tests {
             .await
             .unwrap();
             let replay_events_start = vfs.events().len();
-            let (scratch, map) = book
+            let (mut scratch, map) = book
                 .replay_into(&cx, scratch_db, None, Entropy::deterministic(seed + 1))
                 .await
                 .unwrap()
@@ -1429,13 +1455,11 @@ mod tests {
             );
             assert_eq!(
                 scratch
-                    .read_document(&cx, &evidence.document_oid)
+                    .read_document_for(&cx, &reader, &evidence.document_oid)
                     .await
                     .unwrap()
-                    .unwrap()
-                    .unwrap()
-                    .bytes,
-                source.bytes
+                    .unwrap(),
+                fa_journal::DocumentRead::Full(source)
             );
             assert_eq!(book.head(&cx).unwrap(), source_head);
             let events = vfs.events();
@@ -2771,6 +2795,7 @@ mod tests {
         // a child invocation matching zero tests from satisfying the oracle.
         const CHILD: &str = "FA_RELATIVE_BOOK_ROOT_CHILD";
         let keys = BookKeys::for_development(0x64);
+        let reader = Capability::embedded(VId(3), &["read", "privileged"]).unwrap();
         let document = |byte| fa_journal::Document {
             book_id: Id128([0x64; 16]),
             kind: 1,
@@ -2791,12 +2816,14 @@ mod tests {
             let first = document(b'c');
             let added = book.add_document(&first).unwrap().unwrap();
             assert!(matches!(
-                book.document_record(&added.oid).unwrap().unwrap().storage,
+                storage_record(&book, &added.oid).storage,
                 fa_journal::Storage::External { .. }
             ));
             assert_eq!(
-                book.read_document(&added.oid).unwrap().unwrap(),
-                Some(first)
+                book.read_document_for(&reader, &added.oid)
+                    .unwrap()
+                    .unwrap(),
+                fa_journal::DocumentRead::Full(first)
             );
             let head = book.head().unwrap();
             drop(book);
@@ -2809,12 +2836,14 @@ mod tests {
             let second = document(b'o');
             let added = book.add_document(&second).unwrap().unwrap();
             assert!(matches!(
-                book.document_record(&added.oid).unwrap().unwrap().storage,
+                storage_record(&book, &added.oid).storage,
                 fa_journal::Storage::External { .. }
             ));
             assert_eq!(
-                book.read_document(&added.oid).unwrap().unwrap(),
-                Some(second)
+                book.read_document_for(&reader, &added.oid)
+                    .unwrap()
+                    .unwrap(),
+                fa_journal::DocumentRead::Full(second)
             );
             return;
         }
@@ -2840,15 +2869,19 @@ mod tests {
             String::from_utf8_lossy(&child.stdout),
             String::from_utf8_lossy(&child.stderr)
         );
-        let reopened = Book::open_dir(&dir.join("nested/book"), keys, Entropy::deterministic(31))
-            .expect("the child created a reopenable book under its relative path");
+        let mut reopened =
+            Book::open_dir(&dir.join("nested/book"), keys, Entropy::deterministic(31))
+                .expect("the child created a reopenable book under its relative path");
         assert_eq!(reopened.context().book_id, Id128([0x64; 16]));
         assert!(reopened.head().unwrap().0 > 0);
         for byte in *b"co" {
             let source = document(byte);
             assert_eq!(
-                reopened.read_document(&source.oid()).unwrap().unwrap(),
-                Some(source),
+                reopened
+                    .read_document_for(&reader, &source.oid())
+                    .unwrap()
+                    .unwrap(),
+                fa_journal::DocumentRead::Full(source),
                 "an absolute reopen reads bytes attached after a cwd change"
             );
         }
@@ -3650,7 +3683,7 @@ mod tests {
                 Book::create_dir(&dir, keys.clone(), spec.clone(), Entropy::deterministic(11))
                     .expect("create_dir");
             let added = book.add_document(&big).expect("kernel").expect("admitted");
-            let record = book.document_record(&added.oid).unwrap().expect("held");
+            let record = storage_record(&book, &added.oid);
             let locator = match record.storage {
                 fa_journal::Storage::External { store, locator } => Some((store, locator)),
                 fa_journal::Storage::Inline(_) => None,
@@ -3668,30 +3701,28 @@ mod tests {
                 .expect("kernel")
                 .expect("admitted");
             assert!(matches!(
-                book.document_record(&inline.oid)
-                    .unwrap()
-                    .expect("held")
-                    .storage,
+                storage_record(&book, &inline.oid).storage,
                 fa_journal::Storage::Inline(_)
             ));
             (added.oid, locator)
         };
         // Reopened, the document reads back byte-identically.
-        let book = Book::open_dir(&dir, keys, Entropy::deterministic(12)).expect("open_dir");
+        let mut book = Book::open_dir(&dir, keys, Entropy::deterministic(12)).expect("open_dir");
+        let reader = Capability::embedded(principal, &["read", "privileged"]).unwrap();
         assert_eq!(
-            book.read_document(&oid).unwrap().unwrap(),
-            Some(big.clone())
+            book.read_document_for(&reader, &oid).unwrap().unwrap(),
+            fa_journal::DocumentRead::Full(big.clone())
         );
         // A byte changed on disk: refused (exit 8), never the changed bytes.
         let path = dir.join("blobs").join(&locator[..2]).join(&locator);
         let mut changed = big.bytes.clone();
         changed[0] = b'Q';
         std::fs::write(&path, &changed).unwrap();
-        let r = book.read_document(&oid).unwrap().unwrap_err();
+        let r = book.read_document_for(&reader, &oid).unwrap().unwrap_err();
         assert_eq!((r.code, r.exit), ("FA-REF-085", 8), "{r}");
         // The blob moved away: refused (exit 5), never a silent null.
         std::fs::rename(&path, path.with_extension("moved")).unwrap();
-        let r = book.read_document(&oid).unwrap().unwrap_err();
+        let r = book.read_document_for(&reader, &oid).unwrap().unwrap_err();
         assert_eq!((r.code, r.exit), ("FA-REF-116", 5), "{r}");
     }
 
@@ -3794,6 +3825,11 @@ mod tests {
             .expect("admitted");
         let reader = Capability::embedded(VId(2), &["read"]).expect("read");
         let counsel = Capability::embedded(VId(1), &["read", "privileged"]).expect("privileged");
+        assert_eq!(
+            book.document_commitment(&added.oid).unwrap(),
+            Some(statement.doc_commit())
+        );
+        assert_eq!(book.document_commitment(&Oid([0xee; 32])).unwrap(), None);
         let r = book
             .read_document_for(&reader, &added.oid)
             .expect("kernel")
@@ -3816,6 +3852,67 @@ mod tests {
                 .expect("the bytes"),
             fa_journal::DocumentRead::Full(statement)
         );
+    }
+
+    #[test]
+    fn public_document_commitment_does_not_decode_bytes_or_trust_a_rebound_digest() {
+        use fa_model::symbols::{property, relation};
+        use fgdb::WriteBatch;
+        use fgdb_types::CanonicalScalar;
+
+        let book_id = Id128([0x4b; 16]);
+        let (spec, _) = spec(book_id);
+        let mut book = Book::create_memory(
+            BookKeys::for_development(0x4b),
+            spec,
+            Entropy::deterministic(0x4b),
+        )
+        .unwrap();
+        let document = fa_journal::Document {
+            book_id,
+            kind: 5,
+            mime: "text/plain".into(),
+            grade: 3,
+            retrieved_by: VId(1),
+            bytes: b"privileged inline bytes".to_vec(),
+        };
+        let added = book.add_document(&document).unwrap().unwrap();
+        assert_eq!(
+            book.document_commitment(&added.oid).unwrap(),
+            Some(document.doc_commit())
+        );
+        let ctx = book.purposes();
+        let vid = fa_journal::evidence::document_vid(&added.oid);
+        let mut batch = WriteBatch::new(relation::DERIVED_FROM);
+        batch.set_vertex_property(
+            vid,
+            property::FA_PAYLOAD,
+            Some(CanonicalScalar::bytes(vec![0xff]).unwrap()),
+        );
+        with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&ctx.commit(), batch))).unwrap();
+        // The public mirror lookup neither fetches nor decodes a private
+        // payload. Its result is not a byte-verification certificate.
+        assert_eq!(
+            book.document_commitment(&added.oid).unwrap(),
+            Some(document.doc_commit())
+        );
+        let counsel = Capability::embedded(VId(1), &["read", "privileged"]).unwrap();
+        let refusal = book
+            .read_document_for(&counsel, &added.oid)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refusal.code, "FA-REF-085");
+        let mut batch = WriteBatch::new(relation::DERIVED_FROM);
+        batch.set_vertex_property(
+            vid,
+            property::FA_DIGEST,
+            Some(CanonicalScalar::bytes(vec![0; 32]).unwrap()),
+        );
+        with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&ctx.commit(), batch))).unwrap();
+        assert!(matches!(
+            book.document_commitment(&added.oid),
+            Err(BookError::Kernel(KernelError::Corrupt(_)))
+        ));
     }
 
     #[test]
