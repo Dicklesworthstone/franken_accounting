@@ -497,7 +497,16 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     let certified_report = certified[0].to_string();
     assert_eq!(
         certified_report,
-        cli_data(&["tb", "--period", "FY2026-P03", "--book", &b, "--json"])
+        cli_data(&[
+            "tb",
+            "--period",
+            "FY2026-P03",
+            "--as-known-at",
+            &certified[1]["known_at"].to_string(),
+            "--book",
+            &b,
+            "--json",
+        ])
     );
     let certificate_hex = certified[1]["bytes"].as_str().unwrap().to_string();
     let certificate_oid = certified[1]["oid"].as_str().unwrap().to_string();
@@ -505,6 +514,7 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     assert_eq!(certified[1]["file"], JsonValue::Null);
     assert_eq!(certified[1]["replay_scope"], json!("fa-fold-over-prefix"));
     assert_eq!(certified[1]["authority"], json!("embedded-owner"));
+    assert!(certified[1]["recorded_at"].as_u64() > certified[1]["known_at"].as_u64());
     let envelope: JsonValue =
         fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
     assert_eq!(
@@ -524,10 +534,16 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     assert_eq!(replay_envelope["events"], json!(["trial_balance"]));
     assert_eq!(replay_envelope["certificate"], json!(certificate_oid));
     assert_eq!(replay_envelope["coordinate"], envelope["coordinate"]);
+    for digest in [&certificate_oid, &format!("C:{certificate_oid}")] {
+        let (is_error, replayed, _) =
+            call_tool(&mut mcp, "fa_read_replay", json!({"certificate": digest}));
+        assert!(!is_error, "{replayed}");
+        assert_eq!(replayed, certified_report);
+    }
     let (is_error, status, _) = call_tool(
         &mut mcp,
         "fa_read_certificate_status",
-        json!({"certificate": certificate_hex}),
+        json!({"certificate": certificate_oid}),
     );
     assert!(!is_error, "{status}");
     let current: JsonValue = fastmcp_rust::serde_json::from_str(&status).unwrap();

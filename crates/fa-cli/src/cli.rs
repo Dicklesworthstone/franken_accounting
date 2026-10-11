@@ -1515,7 +1515,7 @@ const GUIDE: &str = "fa robot-docs guide\n\
 10. Schemas: `fa robot-docs schema --json` lists every event and its fields (generated from registries/verbs.toml); `fa robot-docs schema <event>` prints one. `fa <command> --help` prints that command's usage, flags, events and exits.\n\
 11. Application: a leg may carry `settles: [{entry, ordinal, amount}]` to apply itself to an open item — the opposite side on the same account and unit, at most the item's open amount (FA-REF-072 names what is open). `fa open-items --account <code>` lists items with their applications. Reversing a receipt reopens the invoice (its applications are undone, never re-entered); an invoice with live applications cannot be reversed until its receipts are (FA-REF-073).\n\
 12. Corrections require a registered reason: `fa reverse <vid> --reason WrongAccount --json` derives the opposite legs and retains the target's date by default; --effective selects an explicit same-or-later admissible period. A Reversal passed to `fa post` likewise carries `reason`, for example \"WrongAmount\". `fa entry show <reversal vid> --json` reports the immutable supersession and its reason. Other requires a description; no reason code proves the explanation true.\n\
-13. Retain a report for replay: `fa tb --period FY2026-P03 --certificate-out report.cert --json` emits trial_balance and report_certificate, binding the selector, known-at and native history. The new file is never overwritten. `fa replay report.cert --json` reproduces the original report, and `fa certificate status report.cert --json` names later relevant entries without changing it. Use --certify for inline hex bytes, then feed those complete bytes to `fa replay -`; MCP exposes the same inline workflow. Scope is fa-fold-over-prefix with embedded-owner authority.\n";
+13. Retain a report for replay: `fa tb --period FY2026-P03 --certify --json` retains its certificate in the book and emits trial_balance and report_certificate, binding the selector, known-at and native history. `fa replay C:<oid> --json` reproduces the original report, and `fa certificate status C:<oid> --json` names later relevant entries without changing it. --certificate-out report.cert also writes a new external copy, never overwriting one. File and complete inline hex remain accepted; MCP accepts the returned oid or bytes as certificate. Certification writes metadata, never accounting entries; uncertified reads do not write. Scope is fa-fold-over-prefix with embedded-owner authority.\n";
 
 const EXAMPLES: &str = "fa robot-docs examples\n\
 \n\
@@ -3133,7 +3133,7 @@ fn selected_periods(args: &Args, book: &Book) -> Result<Vec<String>, Fail> {
 
 fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
-    let book = ctx.books.open(args)?;
+    let mut book = ctx.books.open(args)?;
     if args.positional.len() != 1 {
         return Err(usage("unexpected trial-balance argument", "fa tb --help"));
     }
@@ -3190,14 +3190,16 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     };
     let retained = certificate
         .as_ref()
-        .map(|certificate| notary::retain_report_certificate(&ctx.files, args, certificate))
+        .map(|certificate| {
+            notary::retain_report_certificate(&mut book, &ctx.files, args, certificate)
+        })
         .transpose()?;
     let digest = certificate
         .as_ref()
         .map(|certificate| hex(&certificate.digest));
     render_trial_balance(out, &book, &tb, &selection, digest.as_deref())?;
-    if let (Some(certificate), Some(retained)) = (certificate.as_ref(), retained) {
-        notary::emit_report_certificate(out, args, certificate, &retained);
+    if let (Some(certificate), Some((bytes, retained))) = (certificate.as_ref(), retained) {
+        notary::emit_report_certificate(out, args, certificate, &bytes, &retained);
     }
     Ok(())
 }

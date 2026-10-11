@@ -824,6 +824,10 @@ impl ToolSpec {
         }
         for p in &self.positionals {
             let doc = match &self.stdin {
+                Some(s) if s.via == p.name && s.property == "certificate" => format!(
+                    "a retained certificate oid (C: followed by 64 hex digits, or bare), or a canonical certificate file path; alternatively pass `{}` inline",
+                    s.property
+                ),
                 Some(s) if s.via == p.name => format!(
                     "a path (relative to the server's working directory); or pass `{}` inline instead",
                     s.property
@@ -841,6 +845,10 @@ impl ToolSpec {
         if let Some(s) = &self.stdin {
             let (ty, what) = match s.kind {
                 StdinKind::Object => ("object", "the document, inline"),
+                StdinKind::Text if s.property == "certificate" => (
+                    "string",
+                    "a retained certificate oid (C: prefixed or bare 64-hex), or the complete canonical bytes in hex",
+                ),
                 StdinKind::Text => ("string", "the text, inline"),
             };
             let alt = if s.via.starts_with("--") {
@@ -1773,7 +1781,7 @@ mod tests {
     }
 
     #[test]
-    fn certificate_tools_accept_a_retained_file_or_inline_bytes() {
+    fn certificate_tools_accept_a_retained_file_digest_or_inline_bytes() {
         let (mcp, reg) = embedded();
         for (wire, prefix) in [
             ("fa_read_replay", vec!["replay"]),
@@ -1797,6 +1805,12 @@ mod tests {
             expected.extend(["-", "--book", "/b", "--json"]);
             assert_eq!(inline.argv, expected);
             assert_eq!(inline.stdin, Some(b"abcd".to_vec()));
+            let digest = format!("C:{}", "b".repeat(64));
+            let by_digest = tool
+                .invocation(&mcp, reg, &json!({"certificate": digest}), Some("/b"))
+                .expect("retained digest");
+            assert_eq!(by_digest.argv, expected);
+            assert_eq!(by_digest.stdin, Some(digest.into_bytes()));
             let file = tool
                 .invocation(&mcp, reg, &json!({"file": "report.cert"}), Some("/b"))
                 .expect("retained file");

@@ -1117,6 +1117,31 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    /// Retain verified canonical certificate bytes in this book's substrate.
+    /// The public content digest resolves the immutable artifact after reopen.
+    /// This lazy write has its own sequence; the report keeps its original
+    /// known-at coordinate and no journal Entry is created.
+    pub async fn retain_certificate(
+        &mut self,
+        cx: &PurposeContexts,
+        certificate: &crate::ReportCertificate,
+    ) -> Outcome<crate::RetainedCertificate> {
+        crate::certificate_store::retain(&mut self.db, cx, &self.context, certificate).await
+    }
+
+    /// Load a retained certificate by its full public content digest.
+    /// Loading checks its immutable storage record; report replay separately
+    /// verifies the historical input closure.
+    pub fn read_certificate(
+        &self,
+        cx: &PurposeContexts,
+        digest: &[u8; 32],
+    ) -> Outcome<crate::ReportCertificate> {
+        self.query(cx, |db, book| {
+            crate::certificate_store::read(db, &cx.query(), book, digest)
+        })
+    }
+
     pub fn trial_balance_at(
         &self,
         cx: &PurposeContexts,

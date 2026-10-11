@@ -1066,6 +1066,22 @@ impl Book {
         with_store!(&self.store, core => core.certificate_status(&self.purposes(), certificate))
     }
 
+    /// Persist a certificate lazily as an immutable object in this book.
+    /// Exact retries return the original storage sequence without a write.
+    /// The report's known-at coordinate does not change when it is retained.
+    pub fn retain_certificate(
+        &mut self,
+        certificate: &crate::ReportCertificate,
+    ) -> Outcome<crate::RetainedCertificate> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.retain_certificate(&purposes, certificate)))
+    }
+
+    /// Load a retained artifact by its full public certificate digest.
+    pub fn read_certificate(&self, digest: &[u8; 32]) -> Outcome<crate::ReportCertificate> {
+        with_store!(&self.store, core => core.read_certificate(&self.purposes(), digest))
+    }
+
     /// Materialize a period's registers from a fresh fold.
     pub fn materialize_registers(
         &mut self,
@@ -3666,6 +3682,212 @@ mod tests {
     }
 
     #[test]
+    fn retained_certificates_are_idempotent_without_changing_the_certified_report() {
+        use crate::{CertificateStatus, TrialBalanceSelection};
+        let (mut book, _, day, _) = certified_fixture();
+        let certified = book
+            .certify_trial_balance(TrialBalanceSelection::AsOf(day), None)
+            .unwrap()
+            .unwrap();
+        let original_bytes = certified.certificate.canonical_bytes().unwrap();
+        let original_at = certified.certificate.known_at;
+        let retained = book
+            .retain_certificate(&certified.certificate)
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained.digest, certified.certificate.digest);
+        assert!(retained.recorded_at > original_at);
+        assert_eq!(book.head().unwrap(), retained.recorded_at);
+        assert_eq!(
+            book.read_certificate(&retained.digest)
+                .unwrap()
+                .unwrap()
+                .canonical_bytes()
+                .unwrap(),
+            original_bytes
+        );
+        assert_eq!(
+            book.retain_certificate(&certified.certificate)
+                .unwrap()
+                .unwrap(),
+            retained,
+            "retention retries return the original storage outcome"
+        );
+        assert_eq!(book.head().unwrap(), retained.recorded_at);
+        assert_eq!(
+            book.replay_trial_balance(&certified.certificate)
+                .unwrap()
+                .unwrap(),
+            certified.report
+        );
+        assert_eq!(
+            book.certificate_status(&certified.certificate)
+                .unwrap()
+                .unwrap(),
+            CertificateStatus::Current {
+                checked_at: retained.recorded_at,
+            }
+        );
+        let after = book
+            .certify_trial_balance(TrialBalanceSelection::AsOf(day), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after.certificate.journal_root,
+            certified.certificate.journal_root
+        );
+        assert_eq!(
+            after.certificate.journal_leaves,
+            certified.certificate.journal_leaves,
+            "retaining a report creates no accounting Entry"
+        );
+        let original_again = book
+            .certify_trial_balance(TrialBalanceSelection::AsOf(day), Some(original_at))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            original_again.certificate.canonical_bytes().unwrap(),
+            original_bytes
+        );
+
+        let before_refusal = book.head().unwrap();
+        let mut altered = certified.certificate.clone();
+        altered.output[0] ^= 1;
+        let refusal = book.retain_certificate(&altered).unwrap().unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
+        assert_eq!(book.head().unwrap(), before_refusal);
+        assert_eq!(
+            book.read_certificate(&[0xe7; 32]).unwrap().unwrap_err().code,
+            "FA-REF-150"
+        );
+
+        let (foreign_spec, _) = spec(Id128([0xd1; 16]));
+        let mut foreign = Book::create_memory(
+            BookKeys::for_development(0xd1),
+            foreign_spec,
+            Entropy::deterministic(209),
+        )
+        .unwrap();
+        let foreign_head = foreign.head().unwrap();
+        let refusal = foreign
+            .retain_certificate(&certified.certificate)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
+        assert_eq!(foreign.head().unwrap(), foreign_head);
+    }
+
+    #[test]
+    fn retained_certificate_rewrites_and_retirements_are_refused_without_repairing_history() {
+        use crate::TrialBalanceSelection;
+        use fa_model::symbols::{label, property, relation};
+        use fgdb_types::CanonicalScalar;
+
+        for mutation in 0..5 {
+            let (mut book, _, day, _) = certified_fixture();
+            let certificate = book
+                .certify_trial_balance(TrialBalanceSelection::AsOf(day), None)
+                .unwrap()
+                .unwrap()
+                .certificate;
+            let retained = book.retain_certificate(&certificate).unwrap().unwrap();
+            let vid = crate::certificate_store::certificate_vid(
+                book.context().book_id,
+                &retained.digest,
+            );
+            let mut change = fgdb::WriteBatch::new(relation::HAS_LEG);
+            match mutation {
+                0 => change.set_vertex_property(
+                    vid,
+                    property::FA_PAYLOAD,
+                    Some(CanonicalScalar::bytes(b"rewritten certificate".to_vec()).unwrap()),
+                ),
+                1 => change.set_vertex_property(
+                    vid,
+                    property::FA_DIGEST,
+                    Some(CanonicalScalar::bytes(vec![0x71; 32]).unwrap()),
+                ),
+                2 => change.set_vertex_property(
+                    vid,
+                    property::BOOK_ID,
+                    Some(CanonicalScalar::bytes(vec![0x72; 16]).unwrap()),
+                ),
+                3 => change.set_vertex_label(vid, label::CERTIFICATE, false),
+                _ => change.delete_vertex(vid),
+            }
+            let purposes = book.purposes();
+            with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&purposes.commit(), change)))
+                .unwrap();
+            let after_tamper = book.head().unwrap();
+            let refusal = book.read_certificate(&retained.digest).unwrap().unwrap_err();
+            assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
+            let refusal = book.retain_certificate(&certificate).unwrap().unwrap_err();
+            assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
+            assert_eq!(book.head().unwrap(), after_tamper);
+            let original = with_store!(&book.store, core => core.db.vertex_at(vid, retained.recorded_at))
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                fa_journal::rows::bytes(&original, property::FA_PAYLOAD, "retained certificate")
+                    .unwrap(),
+                certificate.canonical_bytes().unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn retained_certificate_cannot_be_rebound_from_an_earlier_unrelated_record() {
+        use crate::TrialBalanceSelection;
+        use fa_model::symbols::{label, property, relation};
+        use fgdb_types::CanonicalScalar;
+
+        let (mut book, _, day, _) = certified_fixture();
+        let certificate = book
+            .certify_trial_balance(TrialBalanceSelection::AsOf(day), None)
+            .unwrap()
+            .unwrap()
+            .certificate;
+        let vid = crate::certificate_store::certificate_vid(
+            book.context().book_id,
+            &certificate.digest,
+        );
+        let mut properties = vec![
+            (
+                property::FA_PAYLOAD,
+                CanonicalScalar::bytes(b"unrelated original payload".to_vec()).unwrap(),
+            ),
+            (
+                property::FA_DIGEST,
+                CanonicalScalar::bytes(certificate.digest.to_vec()).unwrap(),
+            ),
+            (
+                property::BOOK_ID,
+                CanonicalScalar::bytes(book.context().book_id.0.to_vec()).unwrap(),
+            ),
+        ];
+        properties.sort_by_key(|(key, _)| key.0);
+        let purposes = book.purposes();
+        let mut create = fgdb::WriteBatch::new(relation::DERIVED_FROM);
+        create.create_vertex(vid, vec![label::CERTIFICATE], properties);
+        with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&purposes.commit(), create)))
+            .unwrap();
+        let mut replace = fgdb::WriteBatch::new(relation::DERIVED_FROM);
+        replace.set_vertex_property(
+            vid,
+            property::FA_PAYLOAD,
+            Some(CanonicalScalar::bytes(certificate.canonical_bytes().unwrap()).unwrap()),
+        );
+        with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&purposes.commit(), replace)))
+            .unwrap();
+        let after_rebind = book.head().unwrap();
+        let refusal = book.read_certificate(&certificate.digest).unwrap().unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
+        let refusal = book.retain_certificate(&certificate).unwrap().unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
+        assert_eq!(book.head().unwrap(), after_rebind);
+    }
+
+    #[test]
     fn certificate_binds_selectors_registry_native_inputs_and_exact_amounts() {
         use crate::{ReportCertificate, TrialBalanceSelection};
         let (book, _, day, _) = certified_fixture();
@@ -4286,8 +4508,15 @@ mod tests {
                 .expect("kernel")
                 .expect("admitted");
         }
-        // Maintained registers are maintenance: never replayed.
+        // Maintained registers and source-bound report artifacts are not
+        // accounting inputs to a scratch book.
         assert!(book.advance_registers(&march).expect("maintained").wrote);
+        let certificate = book
+            .certify_trial_balance(crate::TrialBalanceSelection::AsOf(day), None)
+            .unwrap()
+            .unwrap()
+            .certificate;
+        let retained = book.retain_certificate(&certificate).unwrap().unwrap();
         let source_head = book.head().unwrap();
 
         let before_genesis = book
@@ -4321,6 +4550,23 @@ mod tests {
             .expect("verifies");
         assert_eq!(verified.pairs_checked, map.pairs.len());
         assert!(verified.entries_checked >= 2, "{verified:?}");
+        assert!(
+            !map.pairs
+                .iter()
+                .any(|pair| pair.source_seq == retained.recorded_at),
+            "retaining a source-bound certificate is not a scratch accounting commit"
+        );
+        let refusal = scratch.read_certificate(&retained.digest).unwrap().unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
+        assert_eq!(
+            book.read_certificate(&retained.digest)
+                .unwrap()
+                .unwrap()
+                .canonical_bytes()
+                .unwrap(),
+            certificate.canonical_bytes().unwrap(),
+            "the source retains its original certificate"
+        );
         assert_eq!(
             scratch.fold_period(&march).unwrap().cells,
             book.fold_period(&march).unwrap().cells
@@ -4331,8 +4577,11 @@ mod tests {
         assert!(
             scratch_rows
                 .iter()
-                .all(|v| !v.labels.contains(&fa_model::symbols::label::REGISTER_STATE)),
-            "no maintainer state reaches the scratch book"
+                .all(|v| {
+                    !v.labels.contains(&fa_model::symbols::label::REGISTER_STATE)
+                        && !v.labels.contains(&fa_model::symbols::label::CERTIFICATE)
+                }),
+            "no maintainer state or source-bound certificate reaches the scratch book"
         );
 
         post_rent(&mut scratch, usd, principal, day, b"what-if", 150_000)
@@ -4882,6 +5131,8 @@ mod tests {
         let day = DateDay::from_ymd(2026, 3, 15).unwrap();
         let march;
         let entry_ref;
+        let certified_report;
+        let retained_certificate;
         {
             let mut book =
                 Book::create_dir(&dir, keys.clone(), spec.clone(), Entropy::deterministic(7))
@@ -4915,6 +5166,14 @@ mod tests {
                 .expect("kernel")
                 .expect("admitted")
                 .entry_ref();
+            certified_report = book
+                .certify_trial_balance(crate::TrialBalanceSelection::AsOf(day), None)
+                .unwrap()
+                .unwrap();
+            retained_certificate = book
+                .retain_certificate(&certified_report.certificate)
+                .unwrap()
+                .unwrap();
         }
         // A wrong key does not open the store.
         assert!(
@@ -4928,6 +5187,20 @@ mod tests {
         let mut book = Book::open_dir(&dir, keys, Entropy::deterministic(8)).expect("open_dir");
         assert_eq!(book.context().book_id, book_id);
         assert_eq!(book.context().calendar, spec.calendar);
+        let certificate = book
+            .read_certificate(&retained_certificate.digest)
+            .unwrap()
+            .expect("the retained certificate survived reopen");
+        assert_eq!(certificate, certified_report.certificate);
+        assert_eq!(
+            book.replay_trial_balance(&certificate).unwrap().unwrap(),
+            certified_report.report
+        );
+        assert_eq!(
+            book.retain_certificate(&certificate).unwrap().unwrap(),
+            retained_certificate
+        );
+        assert_eq!(book.head().unwrap(), retained_certificate.recorded_at);
         let (entry, _) = book
             .read_entry(entry_ref.vid)
             .unwrap()

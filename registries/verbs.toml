@@ -181,14 +181,14 @@ example = "fa document add invoice.pdf --kind Invoice --mime application/pdf --g
 
 [[verb]]
 name = "tb"
-summary = "Trial balance: stock or period activity at a known-at frontier, optionally with a retained-history replay certificate."
-writes = false
+summary = "Trial balance: stock or period activity at a known-at frontier; opt-in certification retains an immutable certificate in the book."
+writes = true
 subcommands = []
 flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at", "--certificate-out"]
 switches = ["--activity", "--certify"]
 events = ["trial_balance", "report_certificate"]
 exits = [0, 2, 3, 4, 5, 8]
-usage = ["tb ((--period <code>)... | --fiscal-year N) [--activity] [--as-known-at HEAD|<seq>|<RFC3339>]", "tb --as-of YYYY-MM-DD [--as-known-at HEAD|<seq>|<RFC3339>]", "Add --certify to emit a report_certificate with complete canonical bytes as hex; --certificate-out <new-file> implies certification and also saves canonical binary bytes without replacing any existing file.", "Stock balances include opening history; --activity is selected-period movement. Known-at instants resolve from retained TimeEvidence and report the observed frontier and tick brackets; as-of remains a civil date. Certificates preserve the original instant resolution, with embedded-owner authority and fa-fold-over-prefix replay scope; no witness signature or physical timestamp claim."]
+usage = ["tb ((--period <code>)... | --fiscal-year N) [--activity] [--as-known-at HEAD|<seq>|<RFC3339>]", "tb --as-of YYYY-MM-DD [--as-known-at HEAD|<seq>|<RFC3339>]", "Add --certify to retain a content-addressed certificate in the book and emit its complete canonical bytes as hex; --certificate-out <new-file> implies certification and also saves canonical binary bytes without replacing any existing file. Uncertified reports do not write; retention advances the metadata frontier while the report's known-at remains fixed.", "Stock balances include opening history; --activity is selected-period movement. Known-at instants resolve from retained TimeEvidence and report the observed frontier and tick brackets; as-of remains a civil date. Certificates preserve the original instant resolution, with embedded-owner authority and fa-fold-over-prefix replay scope; no witness signature or physical timestamp claim."]
 example = "fa tb --period FY2026-P03 --book ./books/myco --json"
 
 [[verb]]
@@ -200,7 +200,7 @@ flags = []
 switches = []
 events = ["trial_balance"]
 exits = [0, 2, 3, 4, 5, 8]
-usage = ["replay <certificate-file|->", "The file holds canonical binary certificate bytes; stdin also accepts the complete bytes hex string from a report_certificate event. The certificate fixes the selector and known-at; replay never substitutes today's frontier."]
+usage = ["replay <C:oid|oid|certificate-file|->", "A 64-hex oid resolves the immutable certificate retained in this book. A file holds canonical binary certificate bytes; stdin also accepts the oid or complete bytes hex string from a report_certificate event. Prefix a 64-hex filename with ./ to read it as a file. The certificate fixes the selector and known-at; replay never substitutes today's frontier."]
 example = "fa replay trial-balance.cert --book ./books/myco --json"
 
 [[verb]]
@@ -212,7 +212,7 @@ flags = []
 switches = []
 events = ["certificate_status"]
 exits = [0, 2, 3, 4, 5, 8]
-usage = ["certificate status <certificate-file|->", "Current or SupersededBy is evaluated against the current book after the original certificate verifies; supersession does not erase the historical report, which still replays."]
+usage = ["certificate status <C:oid|oid|certificate-file|->", "A 64-hex oid resolves the certificate retained in this book; file and inline bytes are also accepted. Current or SupersededBy is evaluated against the current book after the original certificate verifies; supersession does not erase the historical report, which still replays."]
 example = "fa certificate status trial-balance.cert --book ./books/myco --json"
 
 [[verb]]
@@ -594,8 +594,8 @@ fields = ["periods:[string]", "known_at:seq", "effective_through:date?", "activi
 [[event]]
 name = "report_certificate"
 book = true
-doc = "The retained certificate for the preceding trial_balance. bytes is the complete canonical certificate in hex; save it or pass it to fa replay - on stdin. output_digest commits the exact binary fa:trial-balance:v1 result. File retention is optional and never writes to the accounting journal. The explicit replay_scope and authority limit the claim."
-fields = ["oid:hex", "known_at:seq", "bytes:hex", "file:string?", "replay_command:string", "replay_scope:string", "authority:string", "output_format:string", "output_digest:hex", "native_inputs:int", "journal_root:hex", "journal_leaves:int"]
+doc = "The certificate retained in this book for the preceding trial_balance. oid resolves through fa replay or certificate status; recorded_at is the immutable certificate object's sequence, distinct from the report's known_at. bytes is the complete canonical certificate in hex and file is an optional external copy. output_digest commits the exact binary fa:trial-balance:v1 result. Retention advances the metadata frontier without posting accounting entries. The explicit replay_scope and authority limit the claim."
+fields = ["oid:hex", "known_at:seq", "recorded_at:seq", "bytes:hex", "file:string?", "replay_command:string", "replay_scope:string", "authority:string", "output_format:string", "output_digest:hex", "native_inputs:int", "journal_root:hex", "journal_leaves:int"]
 
 [[event]]
 name = "certificate_status"
@@ -1131,7 +1131,7 @@ subcommands = []
 positionals = []
 flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at"]
 required = []
-dont = ["Don't pass an instant to `as_of`: a civil date, never a timestamp; instants are unsupported here.", "Don't mix `as_of` with `period`, `fiscal_year` or `activity`.", "Use certify: true to receive the report and its complete certificate as two data items; retain the certificate's bytes string for replay. MCP certification returns bytes inline and exposes no certificate_out host-file write."]
+dont = ["Don't pass an instant to `as_of`: a civil date, never a timestamp; instants are unsupported here.", "Don't mix `as_of` with `period`, `fiscal_year` or `activity`.", "Use certify: true to retain the certificate in the book and receive the report and complete certificate as two data items. Replay accepts its oid or bytes string. Certification writes metadata only; MCP exposes no certificate_out host-file write."]
 mistakes = ["Reading `activity` rows as stock: stock includes opening history, `activity: true` is the selected periods' movement.", "Treating a known-at instant as an exact physical commit timestamp: it is a retained TimeEvidence bucket, with its frontier and brackets in the coordinate."]
 
 [[mcp.tool]]
@@ -1144,8 +1144,8 @@ stdin_property = "certificate"
 stdin_kind = "text"
 stdin_via = "file"
 required = ["file"]
-dont = ["Pass the complete bytes hex string from report_certificate as certificate, or its canonical binary file as file; never edit the certificate or substitute the current known-at.", "A replay proves the retained closure produces the same result; it is not a witness signature or a judgment on the accounting treatment."]
-mistakes = ["Passing the certificate oid alone: this slice retains certificate bytes explicitly, not in a journal certificate store.", "Passing both file and certificate."]
+dont = ["Pass the retained oid (bare 64-hex or C: prefixed) or complete bytes hex string from report_certificate as certificate; alternatively pass its canonical binary file as file. Never edit the certificate or substitute the current known-at.", "A replay proves the retained closure produces the same result; it is not a witness signature or a judgment on the accounting treatment."]
+mistakes = ["Looking up an oid in a different book; use the book where certification retained it.", "Passing both file and certificate."]
 
 [[mcp.tool]]
 cluster = "fa.read"
@@ -1158,7 +1158,7 @@ stdin_kind = "text"
 stdin_via = "file"
 required = ["file"]
 dont = ["Don't treat SupersededBy as a failed historical replay: later entries can change today's report while the original still verifies."]
-mistakes = ["Passing an oid instead of the retained certificate bytes or file."]
+mistakes = ["Looking up an oid in a different book; pass the original book or supply the complete retained bytes."]
 
 [[mcp.tool]]
 cluster = "fa.read"

@@ -63,7 +63,7 @@ Retain the exact selector, known-at sequence, accounting journal prefix, registr
 versions and native read closure behind a trial balance:
 
 ```bash
-# Saves canonical binary certificate bytes to a new file; never overwrites it.
+# Retains the certificate in the book and saves a new external copy.
 fa tb --book ./books/acme --period FY2026-P03 --certificate-out march.cert --json
 # Verifies the retained inputs and reproduces the original trial_balance line.
 fa replay march.cert --book ./books/acme --json
@@ -81,15 +81,20 @@ scheduling remains unfinished.
 
 The original call emits two robot lines, `trial_balance` and `report_certificate`,
 with the certificate digest in their envelopes. `--certificate-out` implies
-certification. Use `--certify` to receive the certificate entirely on stdout;
-the second line's `bytes` field is its complete canonical encoding as hex.
+certification. `--certify` retains an immutable, content-addressed certificate in
+the book; repeated retention of the same certificate reuses its recorded sequence.
+The second line's `bytes` field is its complete canonical encoding as hex.
 `fa replay -` and `fa certificate status -` accept those hex bytes, or canonical
-binary bytes, on stdin. Retain the file or complete bytes: this slice does not
-resolve a certificate from its digest alone. MCP exposes the same flow through
+binary bytes, on stdin. Replay and status also accept the retained `oid`, either
+as 64 hex digits or with a `C:` prefix, from the original book: `fa replay C:<oid>`
+and `fa certificate status C:<oid>`. The optional file
+or complete bytes remains useful as an external copy. MCP exposes the same flow through
 `fa_read_trial_balance` with `certify: true`, followed by `fa_read_replay` or
-`fa_read_certificate_status` with the returned hex string as `certificate`.
+`fa_read_certificate_status` with the returned `oid` or `bytes` as `certificate`.
 
-Certification, replay and status append nothing to the accounting journal.
+Certification writes a metadata object and advances the book frontier; it posts
+no accounting entry and does not change balances. Uncertified reports, replay and
+status do not publish anything.
 The certificate fixes the original `--as-known-at` sequence, including a resolved
 HEAD, so later backdated entries can supersede its current status while its
 historical report still replays exactly. Stock, `--as-of` and `--activity`

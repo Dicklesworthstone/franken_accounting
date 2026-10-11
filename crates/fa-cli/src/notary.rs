@@ -8,7 +8,7 @@ use std::io::{Read, Write};
 
 use crate::json::{Json, obj, s};
 use fa::certificate::{AUTHORITY, MAX_CERTIFICATE_BYTES, OUTPUT_FORMAT, REPLAY_SCOPE};
-use fa::{CertificateStatus, ReportCertificate, TrialBalanceSelection};
+use fa::{Book, CertificateStatus, ReportCertificate, RetainedCertificate, TrialBalanceSelection};
 use fa_policy::{Capability, Op};
 
 use crate::args::Args;
@@ -23,14 +23,43 @@ fn certificate_invalid(message: impl Into<String>) -> Fail {
         fa_journal::exit::VERIFICATION,
         message,
         "plan §13.6 / FA-INV-11 (the retained certificate must decode and replay exactly)",
-        "pass the canonical certificate file or its complete `bytes` hex string from the report_certificate event; keep the original book and registry versions",
+        "pass the retained certificate's C:<oid>, its canonical file, or its complete `bytes` hex string from the report_certificate event; keep the original book and registry versions",
     ).into()
 }
 
-/// A retained certificate may be read as its canonical binary file or as
-/// the hex text emitted on stdout. Bound the read before allocating for it;
-/// the library then independently checks its wire size, digest and closure.
-fn read_report_certificate(files: &Files, path: &str) -> Result<ReportCertificate, Fail> {
+fn certificate_digest(text: &str) -> Result<Option<[u8; 32]>, Fail> {
+    let explicit = text.strip_prefix("C:");
+    let digits = explicit.unwrap_or(text);
+    if digits.len() != 64 || !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return if explicit.is_some() {
+            Err(certificate_invalid(
+                "C: must be followed by a complete 64-hex certificate digest",
+            ))
+        } else {
+            Ok(None)
+        };
+    }
+    let mut digest = [0; 32];
+    for (byte, pair) in digest.iter_mut().zip(digits.as_bytes().chunks_exact(2)) {
+        let pair = std::str::from_utf8(pair)
+            .map_err(|_| certificate_invalid("invalid certificate digest hex"))?;
+        *byte = u8::from_str_radix(pair, 16)
+            .map_err(|_| certificate_invalid("invalid certificate digest hex"))?;
+    }
+    Ok(Some(digest))
+}
+
+/// Resolve a retained digest, canonical binary file, or inline hex input.
+/// A bare 64-hex argument is a digest; prefix a filename with ./ if it has
+/// that shape. Bound file/stdin reads before allocating for them.
+fn read_report_certificate(
+    book: &Book,
+    files: &Files,
+    path: &str,
+) -> Result<ReportCertificate, Fail> {
+    if let Some(digest) = certificate_digest(path)? {
+        return Ok(book.read_certificate(&digest)??);
+    }
     let limit = MAX_CERTIFICATE_BYTES * 2 + 2; // hex plus a final CRLF
     let read = |reader: &mut dyn Read| -> Result<Vec<u8>, Fail> {
         let mut bytes = Vec::new();
@@ -77,10 +106,15 @@ fn read_report_certificate(files: &Files, path: &str) -> Result<ReportCertificat
             "report certificate input exceeds its bounded wire size",
         ));
     }
-    if bytes.starts_with(fa::certificate::CERTIFICATE_FORMAT) {
+    if bytes.starts_with(b"fa:report-certificate:") {
         return ReportCertificate::decode(&bytes).map_err(Into::into);
     }
     let text = std::str::from_utf8(&bytes).ok().map(str::trim);
+    if let Some(text) = text
+        && let Some(digest) = certificate_digest(text)?
+    {
+        return Ok(book.read_certificate(&digest)??);
+    }
     let Some(text) = text.filter(|text| {
         !text.is_empty() && text.len() % 2 == 0 && text.bytes().all(|b| b.is_ascii_hexdigit())
     }) else {
@@ -106,13 +140,15 @@ fn read_report_certificate(files: &Files, path: &str) -> Result<ReportCertificat
     ReportCertificate::decode(&decoded).map_err(Into::into)
 }
 
-/// Save a requested certificate without replacing any existing artifact.
-/// This never writes to the accounting journal and never changes its frontier.
+/// Save an optional external copy, then retain the immutable certificate in
+/// the book. A duplicate certificate reuses its original recorded sequence.
+/// The metadata write advances the book frontier, never the accounting fold.
 pub(crate) fn retain_report_certificate(
+    book: &mut Book,
     files: &Files,
     args: &Args,
     certificate: &ReportCertificate,
-) -> Result<Vec<u8>, Fail> {
+) -> Result<(Vec<u8>, RetainedCertificate), Fail> {
     let bytes = certificate
         .canonical_bytes()
         .map_err(|e| Fail::Internal(format!("encode report certificate: {e}")))?;
@@ -147,7 +183,8 @@ pub(crate) fn retain_report_certificate(
             ))
         })?;
     }
-    Ok(bytes)
+    let retained = book.retain_certificate(certificate)??;
+    Ok((bytes, retained))
 }
 
 fn quoted_word(text: &str) -> String {
@@ -159,6 +196,7 @@ pub(crate) fn emit_report_certificate(
     args: &Args,
     certificate: &ReportCertificate,
     bytes: &[u8],
+    retained: &RetainedCertificate,
 ) {
     let digest = hex(&certificate.digest);
     let encoded = hex(bytes);
@@ -170,14 +208,15 @@ pub(crate) fn emit_report_certificate(
                 .map(|path| format!(" {flag} {}", quoted_word(path)))
         })
         .collect();
-    let command = format!(
-        "fa replay {}{environment} --json",
-        file.map_or_else(|| "-".to_string(), quoted_word)
-    );
+    let command = format!("fa replay C:{digest}{environment} --json");
     let human = match file {
-        Some(path) => format!("Retained report certificate {digest} in {path}\n{command}"),
+        Some(path) => format!(
+            "Retained report certificate {digest} in the book at sequence {} and in {path}\n{command}",
+            retained.recorded_at.0
+        ),
         None => format!(
-            "Report certificate {digest} ({REPLAY_SCOPE}, {AUTHORITY})\nCertificate bytes (hex): {encoded}\nFeed these hex bytes to: {command}"
+            "Retained report certificate {digest} in the book at sequence {} ({REPLAY_SCOPE}, {AUTHORITY})\n{command}\nCertificate bytes (hex): {encoded}",
+            retained.recorded_at.0
         ),
     };
     out.event_with_certificate(
@@ -185,6 +224,7 @@ pub(crate) fn emit_report_certificate(
         vec![
             ("oid", s(&digest)),
             ("known_at", Json::Int(i128::from(certificate.known_at.0))),
+            ("recorded_at", Json::Int(i128::from(retained.recorded_at.0))),
             ("bytes", s(encoded)),
             ("file", file.map_or(Json::Null, s)),
             ("replay_command", s(command)),
@@ -207,12 +247,12 @@ pub(crate) fn emit_report_certificate(
 pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.positional.len() != 2 {
         return Err(usage(
-            "replay needs exactly one certificate file or -",
-            "fa replay <certificate-file|-> --book <dir> --json",
+            "replay needs exactly one certificate digest, file or -",
+            "fa replay <C:oid|oid|certificate-file|-> --book <dir> --json",
         ));
     }
-    let certificate = read_report_certificate(&ctx.files, &args.positional[1])?;
     let book = ctx.books.open(args)?;
+    let certificate = read_report_certificate(&book, &ctx.files, &args.positional[1])?;
     let report = book.replay_trial_balance(&certificate)??;
     ctx.out.time_selection(certificate.time_selection.as_ref());
     render_trial_balance(
@@ -227,12 +267,12 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.positional.get(1).map(String::as_str) != Some("status") || args.positional.len() != 3 {
         return Err(usage(
-            "certificate status needs exactly one certificate file or -",
-            "fa certificate status <certificate-file|-> --book <dir> --json",
+            "certificate status needs exactly one certificate digest, file or -",
+            "fa certificate status <C:oid|oid|certificate-file|-> --book <dir> --json",
         ));
     }
-    let certificate = read_report_certificate(&ctx.files, &args.positional[2])?;
     let book = ctx.books.open(args)?;
+    let certificate = read_report_certificate(&book, &ctx.files, &args.positional[2])?;
     let status = book.certificate_status(&certificate)??;
     let (name, checked_at, later_entries) = match status {
         CertificateStatus::Current { checked_at } => ("Current", checked_at, Vec::new()),

@@ -209,6 +209,7 @@ fn retained_trial_balances_replay_exactly_and_report_later_relevant_entries() ->
     );
     ok(&["post", "--intent", &rent, "--evidence", &evidence, "--json"]);
     let before = report(&book, &["tb", "--period", "FY2026-P03", "--json"]);
+    let known_at = int(&doc(&before), "known_at").unwrap().to_string();
     let mut retained = Vec::new();
 
     for (name, selector) in [
@@ -219,7 +220,13 @@ fn retained_trial_balances_replay_exactly_and_report_later_relevant_entries() ->
         let path = dir.join(format!("{name}.cert")).display().to_string();
         let mut args = vec!["tb"];
         args.extend(selector);
-        args.extend(["--certificate-out", path.as_str(), "--json"]);
+        args.extend([
+            "--as-known-at",
+            known_at.as_str(),
+            "--certificate-out",
+            path.as_str(),
+            "--json",
+        ]);
         let certified = ok(&args);
         let lines: Vec<&str> = certified.lines().collect();
         assert_eq!(lines.len(), 2, "report and its retained certificate");
@@ -235,22 +242,35 @@ fn retained_trial_balances_replay_exactly_and_report_later_relevant_entries() ->
         assert_eq!(text(&certificate, "replay_scope"), "fa-fold-over-prefix");
         assert_eq!(text(&certificate, "authority"), "embedded-owner");
         assert_eq!(text(&certificate, "output_format"), "fa:trial-balance:v1");
+        assert!(int(&certificate, "recorded_at") > int(&certificate, "known_at"));
+        assert!(text(&certificate, "replay_command").contains(&format!("C:{oid}")));
         assert!(int(&certificate, "native_inputs").is_some_and(|n| n > 0));
         let bytes = std::fs::read(&path)?;
         let decoded = fa::ReportCertificate::decode(&bytes).expect("retained canonical bytes");
         assert_eq!(decoded.canonical_bytes().unwrap(), bytes);
         let replayed = ok(&["replay", &path, "--json"]);
         assert_eq!(replayed, original, "{name}: complete robot line replays");
+        assert_eq!(ok(&["replay", oid, "--json"]), original);
+        assert_eq!(ok(&["replay", &format!("C:{oid}"), "--json"]), original);
         let status = ok(&["certificate", "status", &path, "--json"]);
         let status = doc(&status);
         assert_eq!(text(&status, "status"), "Current");
         assert_eq!(int(&status, "known_at"), int(&certificate, "known_at"));
-        assert_eq!(int(&status, "checked_at"), int(&certificate, "known_at"));
+        assert_eq!(int(&status, "checked_at"), int(&certificate, "recorded_at"));
         assert!(arr(&status, "later_entries").is_empty());
+        assert_eq!(
+            doc(&ok(&[
+                "certificate",
+                "status",
+                &format!("C:{oid}"),
+                "--json"
+            ])),
+            status,
+        );
 
         if name == "stock" {
             // Human-copyable hex and actual process stdin use the same decoder
-            // as a saved binary certificate, without needing a certificate store.
+            // as a saved binary certificate, independently of digest lookup.
             let mut child = Command::new(env!("CARGO_BIN_EXE_fa"))
                 .arg("--book")
                 .arg(&book)
@@ -282,6 +302,34 @@ fn retained_trial_balances_replay_exactly_and_report_later_relevant_entries() ->
             assert!(out.contains("never overwritten"), "{out}");
             assert_eq!(std::fs::read(&path)?, bytes);
 
+            let frontier = report(&book, &["tb", "--period", "FY2026-P03", "--json"]);
+            let repeated = ok(&[
+                "tb",
+                "--period",
+                "FY2026-P03",
+                "--as-known-at",
+                known_at.as_str(),
+                "--certify",
+                "--json",
+            ]);
+            let repeated = doc(repeated.lines().nth(1).unwrap());
+            assert_eq!(text(&repeated, "oid"), oid);
+            assert_eq!(
+                int(&repeated, "recorded_at"),
+                int(&certificate, "recorded_at")
+            );
+            assert_eq!(
+                report(&book, &["tb", "--period", "FY2026-P03", "--json"]),
+                frontier,
+                "retaining identical bytes reuses the stored object without publishing",
+            );
+
+            for missing in ["C:abcd".to_string(), format!("C:{}", "f".repeat(64))] {
+                let (code, out, _) = fa(Some(&book), &["replay", &missing, "--json"]);
+                assert_eq!(code, 8, "{out}");
+                assert!(out.contains("FA-REF-150"), "{out}");
+            }
+
             let mut damaged = bytes.clone();
             *damaged.last_mut().unwrap() ^= 1;
             let tampered = dir.join("tampered.cert");
@@ -307,12 +355,22 @@ fn retained_trial_balances_replay_exactly_and_report_later_relevant_entries() ->
             assert_eq!(code, 8, "{out}");
             assert!(out.contains("different book"), "{out}");
         }
-        retained.push((path, original));
+        retained.push((oid.to_string(), original));
     }
     assert_eq!(
-        report(&book, &["tb", "--period", "FY2026-P03", "--json"]),
+        report(
+            &book,
+            &[
+                "tb",
+                "--period",
+                "FY2026-P03",
+                "--as-known-at",
+                known_at.as_str(),
+                "--json",
+            ]
+        ),
         before,
-        "certification, status, replay and failed retention never publish journal writes"
+        "certificate metadata never changes the certified accounting fold"
     );
 
     let later = write(
@@ -329,15 +387,15 @@ fn retained_trial_balances_replay_exactly_and_report_later_relevant_entries() ->
         "--json",
     ]);
     let later_vid = field(&posted, "vid").unwrap();
-    for (path, original) in retained {
-        let status = doc(&ok(&["certificate", "status", &path, "--json"]));
+    for (oid, original) in retained {
+        let status = doc(&ok(&["certificate", "status", &oid, "--json"]));
         assert_eq!(text(&status, "status"), "SupersededBy");
         assert_eq!(
             arr(&status, "later_entries"),
             &[Json::Str(later_vid.to_string())]
         );
         assert!(int(&status, "checked_at") > int(&status, "known_at"));
-        assert_eq!(ok(&["replay", &path, "--json"]), original);
+        assert_eq!(ok(&["replay", &oid, "--json"]), original);
     }
     assert_cash_credits(
         &report(&book, &["tb", "--period", "FY2026-P03", "--json"]),
@@ -4677,15 +4735,15 @@ fn instant_selected_cli_reports_retain_tick_evidence_and_replay() -> std::io::Re
     let first_vid = text(&first, "vid").to_string();
     assert!(first_seq > i128::from(lower.recorded_at.0));
 
-    let check_coordinate = |line: &str, frontier: CommitSeq, upper: Option<&Ticked>| {
+    let check_coordinate = |line: &str, frontier: CommitSeq, upper: Option<&Ticked>, expected_seq: CommitSeq| {
         let envelope = json::parse(line).unwrap();
         let coordinate = envelope.get("coordinate").unwrap();
-        assert_eq!(int(coordinate, "known_at"), Some(first_seq), "{line}");
+        assert_eq!(int(coordinate, "known_at"), Some(i128::from(expected_seq.0)), "{line}");
         let time = coordinate.get("time_evidence").unwrap();
         assert_eq!(text(time, "requested_instant"), CANONICAL_INSTANT, "{line}");
         assert_eq!(int(time, "requested_utc_ns"), Some(i128::from(REQUESTED_NS)));
         assert_eq!(int(time, "frontier"), Some(i128::from(frontier.0)));
-        assert_eq!(int(time, "resolved_seq"), Some(first_seq));
+        assert_eq!(int(time, "resolved_seq"), Some(i128::from(expected_seq.0)));
         assert_eq!(text(time, "precision"), "tick_bucket", "{line}");
         assert_eq!(text(time, "source_grade"), "corroborated_daemon_clock", "{line}");
         let observation = time.get("lower").unwrap();
@@ -4725,6 +4783,13 @@ fn instant_selected_cli_reports_retain_tick_evidence_and_replay() -> std::io::Re
     };
 
     let open_frontier = head();
+    let uncertified = report(
+        &book,
+        &["tb", "--period", PERIOD, "--as-known-at", INSTANT, "--json"],
+    );
+    assert_cash_credits(&uncertified, "100.00 USD");
+    check_coordinate(uncertified.trim_end(), open_frontier, None, open_frontier);
+    assert_eq!(head(), open_frontier, "uncertified instant reads never publish");
     let path = dir.join("open-bucket.cert").display().to_string();
     let certified = ok(&[
         "tb",
@@ -4740,21 +4805,29 @@ fn instant_selected_cli_reports_retain_tick_evidence_and_replay() -> std::io::Re
     assert_eq!(lines.len(), 2, "trial balance plus retained certificate");
     assert_eq!(field(lines[0], "event"), Some("trial_balance"));
     assert_cash_credits(lines[0], "100.00 USD");
-    check_coordinate(lines[0], open_frontier, None);
-    check_coordinate(lines[1], open_frontier, None);
+    check_coordinate(lines[0], open_frontier, None, open_frontier);
+    check_coordinate(lines[1], open_frontier, None, open_frontier);
     let retained_line = format!("{}\n", lines[0]);
-    let retained = fa::ReportCertificate::decode(&std::fs::read(&path)?).unwrap();
+    let bytes = std::fs::read(&path)?;
+    assert!(bytes.starts_with(fa::certificate::INSTANT_CERTIFICATE_FORMAT));
+    let retained = fa::ReportCertificate::decode(&bytes).unwrap();
+    let stored = doc(lines[1]);
+    let oid = text(&stored, "oid");
+    let stored_at = CommitSeq(u64::try_from(int(&stored, "recorded_at").unwrap()).unwrap());
+    assert_eq!(stored_at.0, open_frontier.0 + 1, "only certificate metadata is published");
+    assert_eq!(open().read_certificate(&retained.digest).unwrap().unwrap(), retained);
     let bound_time = retained.time_selection.as_ref().unwrap();
     assert_eq!(bound_time.resolution.frontier, open_frontier.0);
     assert_eq!(bound_time.resolution.requested_utc_ns, REQUESTED_NS);
     assert!(bound_time.resolution.upper.is_none());
-    assert_eq!(head(), open_frontier, "certifying an instant never posts a tick");
+    assert_eq!(head(), stored_at, "retention adds the certificate, not a new clock tick");
 
     let upper = tick(UPPER_NS);
+    let closed_seq = CommitSeq(upper.recorded_at.0.checked_sub(1).unwrap());
     assert_eq!(
-        i128::from(upper.recorded_at.0.checked_sub(1).unwrap()),
-        first_seq,
-        "the next tick closes the selected bucket before its own commit"
+        closed_seq,
+        stored_at,
+        "the next tick closes the bucket after certificate metadata and before its own commit"
     );
     let later_file = write(
         &dir,
@@ -4777,7 +4850,7 @@ fn instant_selected_cli_reports_retain_tick_evidence_and_replay() -> std::io::Re
         &["tb", "--period", PERIOD, "--as-known-at", INSTANT, "--json"],
     );
     assert_cash_credits(&selected, "100.00 USD");
-    check_coordinate(selected.trim_end(), current_frontier, Some(&upper));
+    check_coordinate(selected.trim_end(), current_frontier, Some(&upper), closed_seq);
     let equivalent = report(
         &book,
         &[
@@ -4799,7 +4872,7 @@ fn instant_selected_cli_reports_retain_tick_evidence_and_replay() -> std::io::Re
         INSTANT,
         "--json",
     ]);
-    check_coordinate(items_out.trim_end(), current_frontier, Some(&upper));
+    check_coordinate(items_out.trim_end(), current_frontier, Some(&upper), closed_seq);
     let items = doc(&items_out);
     assert_eq!(int(&items, "count"), Some(1));
     let item = &arr(&items, "items")[0];
@@ -4816,7 +4889,7 @@ fn instant_selected_cli_reports_retain_tick_evidence_and_replay() -> std::io::Re
         INSTANT,
         "--json",
     ]);
-    check_coordinate(explained.trim_end(), current_frontier, Some(&upper));
+    check_coordinate(explained.trim_end(), current_frontier, Some(&upper), closed_seq);
     let explanation = doc(&explained);
     assert_eq!(arr(&explanation, "contributions").len(), 1);
     assert_eq!(text(&arr(&explanation, "contributions")[0], "entry"), first_vid);
@@ -4827,7 +4900,9 @@ fn instant_selected_cli_reports_retain_tick_evidence_and_replay() -> std::io::Re
         replay, retained_line,
         "replay retains the original frontier and open bracket after later ticks"
     );
-    check_coordinate(replay.trim_end(), open_frontier, None);
+    check_coordinate(replay.trim_end(), open_frontier, None, open_frontier);
+    assert_eq!(ok(&["replay", oid, "--json"]), retained_line);
+    assert_eq!(ok(&["replay", &format!("C:{oid}"), "--json"]), retained_line);
     assert_cash_credits(
         &report(&book, &["tb", "--period", PERIOD, "--json"]),
         "125.00 USD",

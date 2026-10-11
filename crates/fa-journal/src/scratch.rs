@@ -56,11 +56,15 @@ pub const SCOPE_ACCOUNTING_OBJECTS_ONLY: u8 = 1;
 /// nothing and a scratch book never points at a checkpoint it lacks.
 const MAINTENANCE_PROPERTIES: [PropertyKeyId; 1] = [property::ACCUMULATOR_HEAD];
 
-/// Labels whose vertices are maintenance or checkpoints, never replayed.
-const MAINTENANCE: [LabelId; 3] = [
+/// Labels excluded from accounting-object replay: maintenance, checkpoints,
+/// and report certificates whose native snapshot identities bind the source
+/// database. A scratch report must issue its own certificate; the source's
+/// retained artifact remains unchanged in its original book.
+const MAINTENANCE: [LabelId; 4] = [
     label::REGISTER,
     label::ACCUMULATOR_STATE,
     label::REGISTER_STATE,
+    label::CERTIFICATE,
 ];
 
 /// One replayed source commit and the scratch commit that reproduces it.
