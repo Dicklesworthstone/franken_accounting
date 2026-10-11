@@ -994,6 +994,20 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    /// Resolve open items and their displayed account metadata at one sequence.
+    pub fn open_items_report(
+        &self,
+        cx: &PurposeContexts,
+        account: Option<VId>,
+        known_at: Option<CommitSeq>,
+    ) -> Result<crate::OpenItemsReport, BookError> {
+        self.query(cx, |db, book| {
+            Ok(fa_registers::open_items::open_items_report(
+                db, book, account, known_at,
+            )?)
+        })
+    }
+
     /// Verify the immutable leg projection at one committed prefix without writes.
     pub fn verify_projections(
         &self,
@@ -1059,6 +1073,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    /// Certify any supported report against one retained historical sequence.
+    pub fn certify_report(
+        &self,
+        cx: &PurposeContexts,
+        selection: crate::ReportSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CertifiedReport> {
+        self.query(cx, |db, book| {
+            crate::certificate::certify_report(db, &cx.query(), book, selection, known_at)
+        })
+    }
+
     /// Resolve a UTC instant from the journal's retained TimeEvidence at HEAD.
     /// The returned frontier and brackets describe the precision of the read.
     pub fn resolve_known_at_instant(
@@ -1092,6 +1118,35 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 selection,
                 requested_utc_ns,
             )
+        })
+    }
+
+    /// Certify any supported report with its original TimeEvidence resolution.
+    pub fn certify_report_at_instant(
+        &self,
+        cx: &PurposeContexts,
+        selection: crate::ReportSelection,
+        requested_utc_ns: u64,
+    ) -> Outcome<crate::CertifiedReport> {
+        self.query(cx, |db, book| {
+            crate::certificate::certify_report_instant(
+                db,
+                &cx.query(),
+                book,
+                selection,
+                requested_utc_ns,
+            )
+        })
+    }
+
+    /// Replay the exact historical output of any supported certificate family.
+    pub fn replay_report(
+        &self,
+        cx: &PurposeContexts,
+        certificate: &crate::ReportCertificate,
+    ) -> Outcome<crate::ReportOutput> {
+        self.query(cx, |db, book| {
+            crate::certificate::replay_report(db, &cx.query(), book, certificate)
         })
     }
 

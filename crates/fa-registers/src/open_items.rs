@@ -15,8 +15,9 @@ pub mod history;
 use std::collections::{BTreeMap, BTreeSet};
 
 use fa_journal::genesis::BookContext;
-use fa_journal::rows::{applied, leg_vid};
-use fa_model::{Entry, EntryClass, SupersessionKind};
+use fa_journal::rows::{AccountRow, applied, leg_vid};
+use fa_model::symbols::label;
+use fa_model::{EncodeError, Entry, EntryClass, SupersessionKind, Writer};
 use fa_money::Side;
 use fa_time::DateDay;
 use fgdb::Database;
@@ -57,6 +58,59 @@ pub struct OpenItem {
     pub applications: Vec<Application>,
 }
 
+/// Exact literal output format for an open-item report.
+pub const OUTPUT_FORMAT: &[u8] = b"fa:open-items:v1";
+
+/// Open items and the account metadata used to render them, all from one
+/// historical snapshot. Only displayed accounts and the explicit filter are
+/// retained; unrelated chart rows do not change the report.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenItemsReport {
+    pub known_at: CommitSeq,
+    pub account_filter: Option<VId>,
+    pub accounts: BTreeMap<VId, AccountRow>,
+    pub items: Vec<OpenItem>,
+}
+
+impl OpenItemsReport {
+    /// Bind exact mantissas, the complete application history and historical
+    /// account metadata. Reversed applications remain visible with live=false.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, EncodeError> {
+        let mut w = Writer::new();
+        w.fixed(OUTPUT_FORMAT)
+            .u64(self.known_at.0)
+            .opt(self.account_filter.as_ref(), |w, account| {
+                w.u128(account.0);
+            });
+        let accounts: Vec<_> = self.accounts.iter().collect();
+        w.list(&accounts, |w, (vid, account)| {
+            w.u128(vid.0);
+            crate::report::account(w, account);
+        })
+        .list(&self.items, |w, item| {
+            w.u128(item.entry.0)
+                .u16(item.ordinal)
+                .u128(item.account.0)
+                .u32(item.unit_id)
+                .u8(crate::report::side(item.side))
+                .i32(item.effective_date.0)
+                .u64(item.recorded_at.0)
+                .i128(item.original)
+                .i128(item.applied)
+                .i128(item.applied_out)
+                .i128(item.open)
+                .list(&item.applications, |w, application| {
+                    w.u128(application.entry.0)
+                        .u16(application.ordinal)
+                        .i128(application.amount)
+                        .u64(application.recorded_at.0)
+                        .bool(application.live);
+                });
+        });
+        w.finish()
+    }
+}
+
 /// One leg whose stored `applied` mirror disagrees with the fold.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppliedDrift {
@@ -85,7 +139,8 @@ impl OpenItemVerification {
 /// `Migration` chunk reaches here only when the migration predicate selects
 /// it (its run Finalized, the chunk counting), so its legs are open items
 /// exactly then (ruling 3733 C1).
-fn carries_open_items(entry: &Entry) -> bool {
+#[must_use]
+pub fn carries_open_items(entry: &Entry) -> bool {
     matches!(
         entry.proposal.class,
         EntryClass::ORIGINAL | EntryClass::ADJUSTING | EntryClass::MIGRATION
@@ -121,8 +176,54 @@ pub fn open_items<V: asupersync::fs::Vfs + Clone>(
     known_at: Option<CommitSeq>,
 ) -> Result<Vec<OpenItem>, RegisterError> {
     let seq = resolve_known_at(db, known_at)?;
+    if let Some(account) = account {
+        account_at(db, account, seq)?;
+    }
     let entries = entries_at(db, book, seq)?;
     fold_open_items(&entries, account)
+}
+
+fn account_at<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    account: VId,
+    seq: CommitSeq,
+) -> Result<AccountRow, RegisterError> {
+    let row = db
+        .vertex_at(account, seq)?
+        .filter(|row| row.labels.contains(&label::ACCOUNT))
+        .ok_or_else(|| {
+            RegisterError::InvalidSelection(format!(
+                "unknown account {:032x} at sequence {}",
+                account.0, seq.0
+            ))
+        })?;
+    Ok(AccountRow::decode(&row)?)
+}
+
+/// Retain the literal fold and its account display metadata at the same
+/// known-at coordinate. An unknown historical account is a selection error.
+pub fn open_items_report<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    account: Option<VId>,
+    known_at: Option<CommitSeq>,
+) -> Result<OpenItemsReport, RegisterError> {
+    let seq = resolve_known_at(db, known_at)?;
+    let items = open_items(db, book, account, Some(seq))?;
+    let accounts = items
+        .iter()
+        .map(|item| item.account)
+        .chain(account)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .map(|vid| account_at(db, vid, seq).map(|row| (vid, row)))
+        .collect::<Result<_, _>>()?;
+    Ok(OpenItemsReport {
+        known_at: seq,
+        account_filter: account,
+        accounts,
+        items,
+    })
 }
 
 // One payload fold shared by known-at-only and effective-cutoff readers.
@@ -274,6 +375,66 @@ pub fn verify_open_items<V: asupersync::fs::Vfs + Clone>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_output_distinguishes_application_history_even_when_open_amount_is_equal() {
+        let account = AccountRow {
+            vid: VId(9),
+            code: "AR".into(),
+            name: "Receivables at the selected snapshot".into(),
+            account_type: 1,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: fa_journal::UnitPolicy::Single(fa_money::UnitId(1)),
+            limit: None,
+            created_at: CommitSeq(2),
+        };
+        let mut report = OpenItemsReport {
+            known_at: CommitSeq(8),
+            account_filter: Some(account.vid),
+            accounts: BTreeMap::from([(account.vid, account)]),
+            items: vec![OpenItem {
+                entry: VId(10),
+                ordinal: 0,
+                account: VId(9),
+                unit_id: 1,
+                side: Side::Debit,
+                effective_date: DateDay(20_000),
+                recorded_at: CommitSeq(3),
+                original: 9_007_199_254_740_993,
+                applied: 0,
+                applied_out: 0,
+                open: 9_007_199_254_740_993,
+                applications: vec![Application {
+                    entry: VId(11),
+                    ordinal: 1,
+                    amount: 9_007_199_254_740_993,
+                    recorded_at: CommitSeq(5),
+                    live: false,
+                }],
+            }],
+        };
+        let original = report.canonical_bytes().unwrap();
+        assert!(original.starts_with(OUTPUT_FORMAT));
+        assert!(original.windows(16).any(|bytes| {
+            bytes == 9_007_199_254_740_993i128.to_le_bytes().as_slice()
+        }));
+        // An undone application remains part of the certified history even
+        // though it contributes zero to the current applied/open amounts.
+        let history = report.items[0].applications.pop().unwrap();
+        assert_ne!(report.canonical_bytes().unwrap(), original);
+        report.items[0].applications.push(history);
+        assert_eq!(report.canonical_bytes().unwrap(), original);
+        report.items[0].applications[0].recorded_at = CommitSeq(6);
+        assert_ne!(report.canonical_bytes().unwrap(), original);
+        report.items[0].applications[0].recorded_at = CommitSeq(5);
+        report.accounts.get_mut(&VId(9)).unwrap().name = "Later account name".into();
+        assert_ne!(report.canonical_bytes().unwrap(), original);
+        report.accounts.get_mut(&VId(9)).unwrap().name =
+            "Receivables at the selected snapshot".into();
+        report.account_filter = None;
+        assert_ne!(report.canonical_bytes().unwrap(), original);
+    }
 
     /// Parity over a chain of any length: 65 links reverse the original,
     /// 66 revive it; a cycle is corruption, never a stack overflow or a

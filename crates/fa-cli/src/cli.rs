@@ -25,7 +25,7 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use fa::TrialBalanceSelection;
+use fa::{ReportOutput, ReportSelection, TrialBalanceSelection};
 use fa::book::{Book, BookError, BookKeys, Entropy};
 use fa_journal::BookContext;
 use fa_journal::{
@@ -1539,7 +1539,7 @@ const GUIDE: &str = "fa robot-docs guide\n\
 10. Schemas: `fa robot-docs schema --json` lists every event and its fields (generated from registries/verbs.toml); `fa robot-docs schema <event>` prints one. `fa <command> --help` prints that command's usage, flags, events and exits.\n\
 11. Application: a leg may carry `settles: [{entry, ordinal, amount}]` to apply itself to an open item — the opposite side on the same account and unit, at most the item's open amount (FA-REF-072 names what is open). `fa open-items --account <code>` lists items with their applications. Reversing a receipt reopens the invoice (its applications are undone, never re-entered); an invoice with live applications cannot be reversed until its receipts are (FA-REF-073).\n\
 12. Corrections require a registered reason: `fa reverse <vid> --reason WrongAccount --json` derives the opposite legs and retains the target's date by default; --effective selects an explicit same-or-later admissible period. A Reversal passed to `fa post` likewise carries `reason`, for example \"WrongAmount\". `fa entry show <reversal vid> --json` reports the immutable supersession and its reason. Other requires a description; no reason code proves the explanation true.\n\
-13. Retain a report for replay: `fa tb --period FY2026-P03 --certify --json` retains its certificate in the book and emits trial_balance and report_certificate, binding the selector, known-at and native history. `fa replay C:<oid> --json` reproduces the original report, and `fa certificate status C:<oid> --json` names later relevant entries without changing it. --certificate-out report.cert also writes a new external copy, never overwriting one. File and complete inline hex remain accepted; MCP accepts the returned oid or bytes as certificate. Certification writes metadata, never accounting entries; uncertified reads do not write. Scope is fa-fold-over-prefix with embedded-owner authority.\n";
+13. Retain a report for replay: `fa tb --period FY2026-P03 --certify --json`, `fa explain balance 1000 --period FY2026-P03 --certify --json`, and `fa open-items --account 1000 --certify --json` retain the report's certificate in the book. Each emits its original report event followed by report_certificate, binding the selector, known-at, historical account metadata and native history. `fa replay C:<oid> --json` reproduces the original report, and `fa certificate status C:<oid> --json` names later relevant entries without changing it. --certificate-out report.cert also writes a new external copy, never overwriting one. File and complete inline hex remain accepted; MCP accepts the returned oid or bytes as certificate. Certification writes metadata, never accounting entries; uncertified reads do not write. Scope is fa-fold-over-prefix with embedded-owner authority.\n";
 
 const EXAMPLES: &str = "fa robot-docs examples\n\
 \n\
@@ -3757,42 +3757,115 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 
 fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
-    let book = ctx.books.open(args)?;
+    let mut book = ctx.books.open(args)?;
     if args.positional.len() != 1 {
         return Err(usage(
             "unexpected open-items argument",
-            "fa open-items [--account <code>] [--as-known-at HEAD|<seq>] --book <dir>",
+            "fa open-items [--account <code>] [--as-known-at HEAD|<seq>|<RFC3339>] --book <dir>",
         ));
     }
-    let ctx = book.context().clone();
+    if args.flag_all("--certificate-out").len() > 1 {
+        return Err(usage(
+            "--certificate-out may be supplied only once",
+            "fa open-items --help",
+        ));
+    }
     let account = args
         .flag("--account")
-        .map(|code| account_vid(ctx.book_id, code));
-    let (known_at, _) = known_at_flag(args, &book, out)?;
-    let items = book.open_items(account, known_at)?;
-    if let Some(seq) = known_at {
-        out.known_at(seq);
-    }
-    let codes: std::collections::BTreeMap<VId, String> = book
-        .accounts()?
-        .into_iter()
-        .map(|a| (a.vid, a.code))
-        .collect();
-    let code_of = |vid: VId| {
-        codes
-            .get(&vid)
-            .cloned()
-            .unwrap_or_else(|| format!("{:032x}", vid.0))
+        .map(|code| account_vid(book.context().book_id, code));
+    let (known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
+    let (report, certificate) = if args.switch("--certify") || args.flag("--certificate-out").is_some()
+    {
+        let selection = ReportSelection::OpenItems { account };
+        let certified = match requested_utc_ns {
+            Some(instant) => book.certify_report_at_instant(selection, instant)??,
+            None => book.certify_report(selection, known_at)??,
+        };
+        out.time_selection(certified.certificate.time_selection.as_ref());
+        let ReportOutput::OpenItems(report) = certified.report else {
+            return Err(Fail::Internal(
+                "open-items certification returned another report kind".into(),
+            ));
+        };
+        (report, Some(certified.certificate))
+    } else {
+        (book.open_items_report(account, known_at)?, None)
     };
-    let render =
-        |unit: u32, m: i128| render_amount(Amount::new(fa_money::UnitId(unit), m), &ctx.units);
+    validate_open_items_report(&report, &book.context().units)?;
+    let retained = certificate
+        .as_ref()
+        .map(|certificate| {
+            notary::retain_report_certificate(&mut book, &ctx.files, args, certificate)
+        })
+        .transpose()?;
+    let digest = certificate
+        .as_ref()
+        .map(|certificate| hex(&certificate.digest));
+    render_open_items(out, &book, &report, digest.as_deref())?;
+    if let (Some(certificate), Some((bytes, retained))) = (certificate.as_ref(), retained) {
+        notary::emit_report_certificate(out, args, certificate, &bytes, &retained);
+    }
+    Ok(())
+}
+
+/// Refuse corrupt presentation inputs before retaining or emitting a report.
+fn validate_open_items_report(
+    report: &fa_registers::open_items::OpenItemsReport,
+    units: &fa_money::UnitRegistry,
+) -> Result<(), Fail> {
+    for account in report
+        .items
+        .iter()
+        .map(|item| item.account)
+        .chain(report.account_filter)
+    {
+        if !report.accounts.contains_key(&account) {
+            return Err(Fail::Internal(format!(
+                "open-items report omits account {:032x} at sequence {}",
+                account.0, report.known_at.0
+            )));
+        }
+    }
+    for item in &report.items {
+        registered_unit_code(fa_money::UnitId(item.unit_id), units)?;
+    }
+    Ok(())
+}
+
+/// Account labels and item history belong to the same resolved snapshot.
+/// Replay uses this renderer without observing the present chart.
+pub(crate) fn render_open_items(
+    out: &Out,
+    book: &Book,
+    report: &fa_registers::open_items::OpenItemsReport,
+    certificate: Option<&str>,
+) -> Result<(), Fail> {
+    validate_open_items_report(report, &book.context().units)?;
+    out.known_at(report.known_at);
+    let items = &report.items;
+    let code_of = |vid: VId| {
+        report
+            .accounts
+            .get(&vid)
+            .map(|account| account.code.as_str())
+            .ok_or_else(|| {
+                Fail::Internal(format!(
+                    "open-items report omits account {:032x} at sequence {}",
+                    vid.0, report.known_at.0
+                ))
+            })
+    };
+    let filter = report.account_filter.map(code_of).transpose()?;
+    let render = |unit: u32, m: i128| {
+        render_amount(Amount::new(fa_money::UnitId(unit), m), &book.context().units)
+    };
     let rows: Vec<Json> = items
         .iter()
         .map(|i| {
             Ok(obj(vec![
                 ("entry", s(format!("{:032x}", i.entry.0))),
                 ("ordinal", Json::Int(i128::from(i.ordinal))),
-                ("account", s(code_of(i.account))),
+                ("account", s(code_of(i.account)?)),
                 (
                     "side",
                     s(if i.side == Side::Debit {
@@ -3828,24 +3901,25 @@ fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         })
         .collect::<Result<_, Fail>>()?;
     if out.json {
-        out.event(
+        out.event_with_certificate(
             "open_items",
             vec![
-                ("account", args.flag("--account").map_or(Json::Null, s)),
+                ("account", filter.map_or(Json::Null, s)),
                 ("count", Json::Int(items.len() as i128)),
                 ("items", Json::Arr(rows)),
             ],
             "",
+            certificate,
         );
     } else {
         out.line(out.style().header(&format!(
             "{:<10} {:<34} {:>3} {:<6} {:>18} {:>18} {:>18} {:>18}",
             "account", "entry", "leg", "side", "original", "applied", "applied_out", "open"
         )));
-        for i in &items {
+        for i in items {
             out.line(format!(
                 "{:<10} {:<34} {:>3} {:<6} {:>18} {:>18} {:>18} {:>18}",
-                code_of(i.account),
+                code_of(i.account)?,
                 format!("{:032x}", i.entry.0),
                 i.ordinal,
                 if i.side == Side::Debit {
@@ -3897,57 +3971,152 @@ fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "fa explain balance <account> --period <code>; fa tb for several periods",
         ));
     }
-    let period = args.require("--period", "FY2026-P03")?;
-    let book = ctx.books.open(args)?;
-    let (known_at, _) = known_at_flag(args, &book, out)?;
-    let periods = book.periods()?;
-    if !periods.iter().any(|p| p.code == period) {
-        let codes: Vec<&str> = periods.iter().map(|p| p.code.as_str()).collect();
+    if args.flag_all("--certificate-out").len() > 1 {
         return Err(usage(
+            "--certificate-out may be supplied only once",
+            "fa explain balance --help",
+        ));
+    }
+    let period = args.require("--period", "FY2026-P03")?;
+    let mut book = ctx.books.open(args)?;
+    let (known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
+    let account = account_vid(book.context().book_id, code);
+    let explain_error = |error| {
+        explanation_selection_error(&book, code, period, known_at, error)
+    };
+    let (ex, certificate) = if args.switch("--certify") || args.flag("--certificate-out").is_some()
+    {
+        let selection = ReportSelection::ExplainBalance {
+            account,
+            period: period.to_string(),
+        };
+        let certified = match requested_utc_ns {
+            Some(instant) => book.certify_report_at_instant(selection, instant),
+            None => book.certify_report(selection, known_at),
+        }
+        .map_err(explain_error)??;
+        out.time_selection(certified.certificate.time_selection.as_ref());
+        let ReportOutput::ExplainBalance(ex) = certified.report else {
+            return Err(Fail::Internal(
+                "explanation certification returned another report kind".into(),
+            ));
+        };
+        (*ex, Some(certified.certificate))
+    } else {
+        (
+            book.explain_balance(account, period, known_at)
+                .map_err(explain_error)?,
+            None,
+        )
+    };
+    validate_balance_explanation_units(&ex, &book.context().units)?;
+    let retained = certificate
+        .as_ref()
+        .map(|certificate| {
+            notary::retain_report_certificate(&mut book, &ctx.files, args, certificate)
+        })
+        .transpose()?;
+    let digest = certificate
+        .as_ref()
+        .map(|certificate| hex(&certificate.digest));
+    render_balance_explanation(out, &book, &ex, digest.as_deref())?;
+    if let (Some(certificate), Some((bytes, retained))) = (certificate.as_ref(), retained) {
+        notary::emit_report_certificate(out, args, certificate, &bytes, &retained);
+    }
+    Ok(())
+}
+
+/// Suggestions may consult today's chart only after the historical read has
+/// refused. Successful reports resolve identity and metadata at known-at.
+fn explanation_selection_error(
+    book: &Book,
+    code: &str,
+    period: &str,
+    known_at: Option<CommitSeq>,
+    error: BookError,
+) -> Fail {
+    if !matches!(
+        &error,
+        BookError::Registers(fa_registers::RegisterError::InvalidSelection(_))
+    ) {
+        return error.into();
+    }
+    if let Ok(periods) = book.periods()
+        && !periods.iter().any(|row| row.code == period)
+    {
+        let codes: Vec<&str> = periods.iter().map(|row| row.code.as_str()).collect();
+        return usage(
             format!("no period `{period}` in this book"),
             match nearest(period, &codes) {
-                Some(n) => format!("did you mean --period {n}? (fa period list)"),
+                Some(near) => format!("did you mean --period {near}? (fa period list)"),
                 None => "fa period list --book <dir>".to_string(),
             },
-        ));
+        );
     }
-    let accounts = book.accounts()?;
-    let Some(account) = accounts.iter().find(|a| &a.code == code) else {
-        let codes: Vec<&str> = accounts.iter().map(|a| a.code.as_str()).collect();
-        return Err(usage(
-            format!("no account `{code}` in this book's chart"),
-            match nearest(code, &codes) {
-                Some(n) => format!("did you mean `{n}`? (fa chart list)"),
-                None => "fa chart list --book <dir>".to_string(),
-            },
-        ));
-    };
-    // Today's chart names the account; whether it existed is decided at the
-    // requested coordinate (the register layer refuses it independently).
-    if let Some(seq) = known_at
-        && seq < account.created_at
+    if let Ok(accounts) = book.accounts() {
+        let Some(account) = accounts.iter().find(|row| row.code == code) else {
+            let codes: Vec<&str> = accounts.iter().map(|row| row.code.as_str()).collect();
+            return usage(
+                format!("no account `{code}` in this book's chart"),
+                match nearest(code, &codes) {
+                    Some(near) => format!("did you mean `{near}`? (fa chart list)"),
+                    None => "fa chart list --book <dir>".to_string(),
+                },
+            );
+        };
+        if let Some(seq) = known_at
+            && seq < account.created_at
+        {
+            return usage(
+                format!(
+                    "account `{code}` does not exist as known at {}: the chart created it at sequence {}",
+                    seq.0, account.created_at.0
+                ),
+                format!("--as-known-at {} or later (or HEAD)", account.created_at.0),
+            );
+        }
+        if !account.is_leaf {
+            return usage(
+                format!(
+                    "account `{code}` is a summary account: registers hold leaf cells, and a summary roll-up is not available yet"
+                ),
+                "explain one of its leaf accounts (fa chart list --book <dir>)",
+            );
+        }
+    }
+    error.into()
+}
+
+/// Cells, released contributions, and historical changes can name different
+/// units. Validate every one before retaining the explanation's certificate.
+fn validate_balance_explanation_units(
+    ex: &fa_registers::explain::BalanceExplanation,
+    units: &fa_money::UnitRegistry,
+) -> Result<(), Fail> {
+    for unit in ex
+        .cells
+        .iter()
+        .map(|cell| cell.key.unit_id)
+        .chain(ex.pending.iter().map(|cell| cell.key.unit_id))
+        .chain(ex.contributions.iter().map(|contribution| contribution.unit_id))
+        .chain(ex.history.iter().map(|change| change.unit_id))
     {
-        return Err(usage(
-            format!(
-                "account `{code}` does not exist as known at {}: the chart created it at sequence {}",
-                seq.0, account.created_at.0
-            ),
-            format!("--as-known-at {} or later (or HEAD)", account.created_at.0),
-        ));
+        registered_unit_code(fa_money::UnitId(unit), units)?;
     }
-    let ex = book.explain_balance(account.vid, period, known_at)?;
+    Ok(())
+}
+
+/// Original and replay share the exact contribution and history rendering.
+pub(crate) fn render_balance_explanation(
+    out: &Out,
+    book: &Book,
+    ex: &fa_registers::explain::BalanceExplanation,
+    certificate: Option<&str>,
+) -> Result<(), Fail> {
+    validate_balance_explanation_units(ex, &book.context().units)?;
     out.known_at(ex.known_at);
-    out.effective(format!("period:{period}"));
-    // Name, type, and leafness as they stood at `known_at`.
+    out.effective(format!("period:{}", ex.period));
     let account = &ex.account_row;
-    if !account.is_leaf {
-        return Err(usage(
-            format!(
-                "account `{code}` is a summary account: registers hold leaf cells, and a summary roll-up is not available yet"
-            ),
-            "explain one of its leaf accounts (fa chart list --book <dir>)",
-        ));
-    }
     let units = &book.context().units;
     let render = |unit: u32, m: i128| render_amount(Amount::new(fa_money::UnitId(unit), m), units);
     let unit_code = |unit: u32| registered_unit_code(fa_money::UnitId(unit), units);
@@ -4051,7 +4220,7 @@ fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         })
         .collect::<Result<_, Fail>>()?;
     if out.json {
-        out.event(
+        out.event_with_certificate(
             "balance_explained",
             vec![
                 ("account", s(&account.code)),
@@ -4066,7 +4235,7 @@ fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         .map_or(Json::Null, |w| Json::Int(i128::from(w.0))),
                 ),
                 ("fold_digest", s(hex(&ex.fold_digest))),
-                ("certificate", Json::Null),
+                ("certificate", certificate.map_or(Json::Null, s)),
                 ("cells", Json::Arr(cells)),
                 ("contributions", Json::Arr(contributions)),
                 ("history", Json::Arr(history)),
@@ -4077,6 +4246,7 @@ fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ),
             ],
             "",
+            certificate,
         );
         return Ok(());
     }

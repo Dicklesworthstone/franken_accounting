@@ -347,7 +347,10 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
                     .is_some_and(|d| d.contains("Do:")),
                 "{name}"
             );
-            if name == "fa_read_trial_balance" {
+            if matches!(
+                name.as_str(),
+                "fa_read_trial_balance" | "fa_read_explain_balance" | "fa_read_open_items"
+            ) {
                 assert_eq!(
                     tool["inputSchema"]["properties"]["certify"]["type"],
                     json!("boolean")
@@ -550,6 +553,84 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     assert_eq!(current["status"], json!("Current"));
     assert_eq!(current["later_entries"], json!([]));
 
+    // The other report families use the same retained-object transport and
+    // retain their original account/period snapshot across subsequent writes.
+    let original_known_at = certified[1]["known_at"].to_string();
+    let mut generic_certificates = Vec::new();
+    for (wire, arguments, command, event, output_format) in [
+        (
+            "fa_read_explain_balance",
+            json!({"account": "1000", "period": "FY2026-P03", "as_known_at": original_known_at, "certify": true}),
+            vec!["explain", "balance", "1000", "--period", "FY2026-P03"],
+            "balance_explained",
+            "fa:balance-explanation:v1",
+        ),
+        (
+            "fa_read_open_items",
+            json!({"account": "1000", "as_known_at": original_known_at, "certify": true}),
+            vec!["open-items", "--account", "1000"],
+            "open_items",
+            "fa:open-items:v1",
+        ),
+    ] {
+        let (is_error, text, result) = call_tool(&mut mcp, wire, arguments);
+        assert!(!is_error, "{wire}: {text}");
+        let data: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+        assert_eq!(data.as_array().unwrap().len(), 2);
+        let oid = data[1]["oid"].as_str().unwrap().to_string();
+        assert_eq!(data[1]["output_format"], json!(output_format));
+        assert_eq!(data[1]["known_at"], certified[1]["known_at"]);
+        assert_eq!(data[1]["file"], JsonValue::Null);
+        let report_text = data[0].to_string();
+        let mut comparable = data[0].clone();
+        if event == "balance_explained" {
+            assert_eq!(comparable["certificate"], json!(oid));
+            comparable["certificate"] = JsonValue::Null;
+        }
+        let mut plain = command;
+        plain.extend([
+            "--as-known-at", original_known_at.as_str(), "--book", b.as_str(), "--json",
+        ]);
+        let expected: JsonValue =
+            fastmcp_rust::serde_json::from_str(&cli_data(&plain)).unwrap();
+        assert_eq!(comparable, expected, "{wire}: original report parity");
+        let envelope: JsonValue =
+            fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(envelope["events"], json!([event, "report_certificate"]));
+        assert_eq!(envelope["certificate"], json!(oid));
+        for certificate in [oid.clone(), data[1]["bytes"].as_str().unwrap().to_string()] {
+            let (is_error, replayed, result) =
+                call_tool(&mut mcp, "fa_read_replay", json!({"certificate": certificate}));
+            assert!(!is_error, "{replayed}");
+            assert_eq!(replayed, report_text);
+            let replay_envelope: JsonValue =
+                fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap())
+                    .unwrap();
+            assert_eq!(replay_envelope["events"], json!([event]));
+            assert_eq!(replay_envelope["coordinate"], envelope["coordinate"]);
+        }
+        let (is_error, status, _) = call_tool(
+            &mut mcp, "fa_read_certificate_status", json!({"certificate": oid}),
+        );
+        assert!(!is_error, "{status}");
+        let status: JsonValue = fastmcp_rust::serde_json::from_str(&status).unwrap();
+        assert_eq!(status["status"], json!("Current"));
+        assert_eq!(status["later_entries"], json!([]));
+        generic_certificates.push((oid, report_text, envelope["coordinate"].clone()));
+    }
+    for (wire, arguments) in [
+        (
+            "fa_read_explain_balance",
+            json!({"account": "9999", "period": "FY2026-P03", "certify": true}),
+        ),
+        ("fa_read_open_items", json!({"account": "9999", "certify": true})),
+    ] {
+        let (is_error, text, _) = call_tool(&mut mcp, wire, arguments);
+        assert!(is_error, "{wire}: unknown account cannot become an empty certified report");
+        assert_eq!(structured_error(&text)["exit"], json!(2), "{text}");
+    }
+
     // The typed reversal is the same law-enforced correction as the CLI:
     // missing and unknown reasons cannot post, and the persisted lineage
     // records the exact registered name/code the caller selected.
@@ -622,6 +703,24 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         replayed, certified_report,
         "later reversal leaves original report replayable"
     );
+    for (oid, original, coordinate) in generic_certificates {
+        let (is_error, status, _) = call_tool(
+            &mut mcp, "fa_read_certificate_status", json!({"certificate": oid}),
+        );
+        assert!(!is_error, "{status}");
+        let status: JsonValue = fastmcp_rust::serde_json::from_str(&status).unwrap();
+        assert_eq!(status["status"], json!("SupersededBy"));
+        assert_eq!(status["later_entries"], json!([reversal_vid]));
+        assert_eq!(status["known_at"], certified[1]["known_at"]);
+        let (is_error, replayed, result) =
+            call_tool(&mut mcp, "fa_read_replay", json!({"certificate": oid}));
+        assert!(!is_error, "{replayed}");
+        assert_eq!(replayed, original, "historical report survives reversal");
+        let envelope: JsonValue =
+            fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(envelope["coordinate"], coordinate);
+    }
     let retained_hex = dir.join("report.hex");
     std::fs::write(&retained_hex, &certificate_hex).unwrap();
     assert_eq!(

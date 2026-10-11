@@ -1781,6 +1781,48 @@ mod tests {
     }
 
     #[test]
+    fn report_tools_expose_inline_certification_without_external_output_paths() {
+        let (mcp, reg) = embedded();
+        for (wire, arguments, verb) in [
+            (
+                "fa_read_trial_balance",
+                json!({"period": "P", "certify": true}),
+                "tb",
+            ),
+            (
+                "fa_read_explain_balance",
+                json!({"account": "1000", "period": "P", "certify": true}),
+                "explain",
+            ),
+            (
+                "fa_read_open_items",
+                json!({"account": "1000", "certify": true}),
+                "open-items",
+            ),
+        ] {
+            let tool = mcp.tool_by_wire(wire).expect("certifiable report");
+            let schema = tool.input_schema(&mcp, reg);
+            assert_eq!(schema["properties"]["certify"]["type"], json!("boolean"));
+            assert!(
+                schema["properties"].get("certificate_out").is_none(),
+                "MCP returns retained certificate identities and bytes: {wire}"
+            );
+            let invocation = tool
+                .invocation(&mcp, reg, &arguments, Some("/b"))
+                .expect("inline report certification");
+            assert_eq!(invocation.argv[0], verb);
+            assert!(invocation.argv.iter().any(|arg| arg == "--certify"));
+            assert!(invocation.stdin.is_none());
+            let mut disallowed = arguments;
+            disallowed["certificate_out"] = json!("/tmp/report.cert");
+            assert!(
+                tool.invocation(&mcp, reg, &disallowed, Some("/b")).is_err(),
+                "unregistered output path must refuse: {wire}"
+            );
+        }
+    }
+
+    #[test]
     fn certificate_tools_accept_a_retained_file_digest_or_inline_bytes() {
         let (mcp, reg) = embedded();
         for (wire, prefix) in [

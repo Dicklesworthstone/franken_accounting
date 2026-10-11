@@ -13,7 +13,7 @@
 
 </div>
 
-> **Status (2026-10-11): implementation in progress.** The Rust workspace includes the embedded library, persistent CLI, book writer-lease daemon and registered MCP tools, exact money and calendar primitives, chart installation, period transitions, posting and reasoned reversal, register folds and verification, and an independent arithmetic oracle. Trial balances support stock balances, period activity, civil-date cutoffs, historical commit-sequence snapshots, and retained certificates that replay through native certified reads. Gate G0 and the full Genesis acceptance criteria remain open. Signed outsider evidence bundles, certificates for other report families, and the broader workflows below remain design targets.
+> **Status (2026-10-11): implementation in progress.** The Rust workspace includes the embedded library, persistent CLI, book writer-lease daemon and registered MCP tools, exact money and calendar primitives, chart installation, period transitions, posting and reasoned reversal, register folds and verification, and an independent arithmetic oracle. Trial balances support stock balances, period activity, civil-date cutoffs, and historical commit-sequence snapshots. Trial balances, leaf-account balance explanations, and open-items reports support retained certificates that replay their exact historical results through native certified reads. Gate G0 and the full Genesis acceptance criteria remain open. Signed outsider evidence bundles and the broader workflows below remain design targets.
 
 > **A note on tense.** The rest of this README is written in the **present tense, as if the entire design in [`COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md`](./COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md) is fully realized**: the 1.0 target state. This is deliberate — it describes the *finished* system so it gets trued-up in place as milestones land (§19's gates G1→G4) rather than rewritten later. Where the plan stages something as future work, this README says so plainly.
 
@@ -52,8 +52,9 @@ identifiers fail with exit 5 before amounts are interpreted. Extra units in a
 newer executable are not silently installed into an older book.
 
 Financial CLI output checks every amount's unit and returns exit 5 for an
-unknown identity. Trial-balance unit checks also run before retaining
-certificate metadata in the book or creating a requested certificate file.
+unknown identity. Unit checks for trial balances, explanations and open-items
+reports also run before retaining certificate metadata in the book or creating
+a requested certificate file.
 Library callers can use `Amount::try_render` to
 propagate the same typed error; the compatibility `render` method labels an
 unknown value as a raw mantissa without guessing its scale.
@@ -64,10 +65,11 @@ books. An explicit, authorized backfill that journals the adopted definitions
 and their provenance is still pending; reopening never fills missing facts from
 the current binary. This does not implement unit evolution or redenomination.
 
-### Certified trial balances and replay
+### Certified reports and replay
 
 Retain the exact selector, known-at sequence, accounting journal prefix, registry
-versions and native read closure behind a trial balance:
+versions and native read closure behind a trial balance, leaf-account balance
+explanation, or open-items report:
 
 ```bash
 # Retains the certificate in the book and saves a new external copy.
@@ -76,6 +78,14 @@ fa tb --book ./books/acme --period FY2026-P03 --certificate-out march.cert --jso
 fa replay march.cert --book ./books/acme --json
 # Reports Current or SupersededBy, with the later relevant entry identities.
 fa certificate status march.cert --book ./books/acme --json
+
+# Explain one leaf account, retaining its cells, contributions and history.
+fa explain balance 1000 --period FY2026-P03 --as-known-at 42 \
+  --certify --book ./books/acme --json
+# Retain item balances, their applications and account metadata at that snapshot.
+fa open-items --account 1000 --as-known-at 42 \
+  --certificate-out cash-items.cert --book ./books/acme --json
+fa replay cash-items.cert --book ./books/acme --json
 ```
 
 Instant-selected certificates also retain their requested instant, observed frontier,
@@ -86,8 +96,10 @@ instant selector is available on `open-items` and `explain balance`. Ticks are
 currently journaled through the existing library API; automatic daemon tick
 scheduling remains unfinished.
 
-The original call emits two robot lines, `trial_balance` and `report_certificate`,
-with the certificate digest in their envelopes. `--certificate-out` implies
+The original call emits two robot lines: `trial_balance`, `balance_explained`,
+or `open_items`, followed by `report_certificate`, with the certificate digest
+in both envelopes. The certificate records the report's canonical output format
+and digest. `--certificate-out` implies
 certification. `--certify` retains an immutable, content-addressed certificate in
 the book; repeated retention of the same certificate reuses its recorded sequence.
 The second line's `bytes` field is its complete canonical encoding as hex.
@@ -96,19 +108,30 @@ binary bytes, on stdin. Replay and status also accept the retained `oid`, either
 as 64 hex digits or with a `C:` prefix, from the original book: `fa replay C:<oid>`
 and `fa certificate status C:<oid>`. The optional file
 or complete bytes remains useful as an external copy. MCP exposes the same flow through
-`fa_read_trial_balance` with `certify: true`, followed by `fa_read_replay` or
-`fa_read_certificate_status` with the returned `oid` or `bytes` as `certificate`.
+`fa_read_trial_balance`, `fa_read_explain_balance`, or `fa_read_open_items` with
+`certify: true`, followed by `fa_read_replay` or `fa_read_certificate_status` with
+the returned `oid` or `bytes` as `certificate`.
 
 Certification writes a metadata object and advances the book frontier; it posts
 no accounting entry and does not change balances. Uncertified reports, replay and
 status do not publish anything.
 The certificate fixes the original `--as-known-at` sequence, including a resolved
 HEAD, so later backdated entries can supersede its current status while its
-historical report still replays exactly. Stock, `--as-of` and `--activity`
+historical report still replays exactly. Before returning `Current`, status also
+compares the current report's content with the original. Changes without a later
+contributing entry, such as newly created earlier fiscal periods in an as-of
+report, refuse with `FA-REF-150`; the original historical report remains replayable.
+Stock, `--as-of` and `--activity`
 trial balances are supported. The declared scope is `fa-fold-over-prefix` with
 `embedded-owner` authority: unsigned replay against retained native history.
-Signed witness claims, independent offline bundles, and certificates for
-`explain balance`, open items and other report families remain unfinished.
+Balance explanations bind historical account metadata, evidence references,
+reversal lineage, cell history, and the whole-period fold. Open-items certificates
+bind the optional account filter, historical account metadata, and application
+and reversal lineage. An account absent at the selected snapshot refuses instead
+of producing an empty result. All three report families support commit-sequence
+and RFC3339 instant selectors; replay preserves the original coordinate even
+after later postings or ticks arrive. Signed witness claims, independent offline
+bundles, and certificates for additional report families remain unfinished.
 
 ### Embedded execution
 

@@ -3,8 +3,8 @@
 //! every leg that contributes to them with its entry and recorded sequence,
 //! and the cell's known-at history (when it last changed, and by what).
 //!
-//! A certified-read precursor, not a certificate: the explanation reads the
-//! same immutable payloads at the same snapshot as [`fold_period_at`], applies
+//! The literal explanation reads the same immutable payloads at the same
+//! snapshot as [`fold_period_at`], applies
 //! the fold's own selection (legless entries and other periods contribute
 //! nothing; a released reservation is in neither column), and must re-add to
 //! the fold's cells exactly. A disagreement is corruption, never an
@@ -16,7 +16,7 @@ use fa_journal::KernelError;
 use fa_journal::genesis::BookContext;
 use fa_journal::rows::AccountRow;
 use fa_model::symbols::label;
-use fa_model::{EntryClass, EvidenceRef, Supersession};
+use fa_model::{EncodeError, EntryClass, EvidenceRef, Supersession, Writer};
 use fa_money::Side;
 use fa_time::DateDay;
 use fgdb::Database;
@@ -112,7 +112,78 @@ pub struct BalanceExplanation {
     pub history: Vec<CellChange>,
 }
 
+/// Exact literal output format for a balance explanation.
+pub const OUTPUT_FORMAT: &[u8] = b"fa:balance-explanation:v1";
+
 impl BalanceExplanation {
+    /// Exact replay output includes every explanation field: the whole-period
+    /// fold commitment, historical account metadata, contributions and lineage,
+    /// committed evidence heads, and each point in the known-at history.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, EncodeError> {
+        let mut w = Writer::new();
+        w.fixed(OUTPUT_FORMAT).u128(self.account.0);
+        crate::report::account(&mut w, &self.account_row);
+        w.str(&self.period)
+            .u64(self.known_at.0)
+            .fixed(&self.fold_digest)
+            .opt(self.watermark.as_ref(), |w, seq| {
+                w.u64(seq.0);
+            });
+        for cells in [&self.cells, &self.pending] {
+            w.list(cells, |w, cell| {
+                w.u128(cell.key.account.0)
+                    .u32(cell.key.unit_id)
+                    .str(&cell.key.period)
+                    .i128(cell.debits)
+                    .i128(cell.credits)
+                    .u64(cell.entry_count);
+            });
+        }
+        w.list(&self.contributions, |w, contribution| {
+            w.u128(contribution.entry.0)
+                .fixed(&contribution.entry_digest)
+                .u16(contribution.class.0)
+                .i32(contribution.effective_date.0)
+                .u64(contribution.recorded_at.0)
+                .u64(contribution.visible_at.0)
+                .u16(contribution.ordinal)
+                .u8(crate::report::side(contribution.side))
+                .u32(contribution.unit_id)
+                .i128(contribution.mantissa)
+                .u8(match contribution.column {
+                    Column::Posted => 0,
+                    Column::Pending => 1,
+                    Column::Released => 2,
+                })
+                .opt(contribution.released_at.as_ref(), |w, seq| {
+                    w.u64(seq.0);
+                })
+                .opt(contribution.resolves.as_ref(), |w, vid| {
+                    w.u128(vid.0);
+                })
+                .list(&contribution.supersedes, |w, supersession| {
+                    w.u128(supersession.target.vid.0)
+                        .fixed(&supersession.target.entry_digest)
+                        .u8(supersession.kind as u8)
+                        .u16(supersession.reason_code);
+                })
+                .list(&contribution.evidence, |w, evidence| {
+                    w.fixed(&evidence.document_oid.0)
+                        .fixed(&evidence.doc_commit)
+                        .u8(evidence.role);
+                });
+        })
+        .list(&self.history, |w, change| {
+            w.u64(change.recorded_at.0)
+                .u32(change.unit_id)
+                .i128(change.debits)
+                .i128(change.credits)
+                .i128(change.debits_pending)
+                .i128(change.credits_pending);
+        });
+        w.finish()
+    }
+
     /// The last recorded sequence that touched the account's cells here.
     #[must_use]
     pub fn last_changed_at(&self) -> Option<CommitSeq> {
@@ -146,6 +217,12 @@ pub fn explain_balance<V: asupersync::fs::Vfs + Clone>(
                 account.0, seq.0
             ))
         })?;
+    if !account_row.is_leaf {
+        return Err(RegisterError::InvalidSelection(format!(
+            "account `{}` is a summary; explain a leaf account's balance",
+            account_row.code
+        )));
+    }
     let entries = entries_at(db, book, seq)?;
     let resolved = resolutions(&entries)?;
     let activated = migration_activations(&entries)?;
@@ -358,6 +435,67 @@ mod tests {
             credits,
             entry_count,
         }
+    }
+
+    #[test]
+    fn exact_output_binds_whole_fold_history_lineage_and_evidence() {
+        let mut contribution = leg(1, 5, Side::Debit, 100, Column::Posted);
+        contribution.class = EntryClass::REVERSAL;
+        contribution.supersedes.push(Supersession {
+            target: fa_model::EntryRef {
+                vid: VId(99),
+                entry_digest: [4; 32],
+            },
+            kind: fa_model::SupersessionKind::Reverses,
+            reason_code: 1,
+        });
+        contribution.evidence.push(EvidenceRef {
+            document_oid: fa_model::Oid([7; 32]),
+            doc_commit: [8; 32],
+            role: 1,
+        });
+        let report = BalanceExplanation {
+            account: VId(9),
+            account_row: AccountRow {
+                vid: VId(9),
+                code: "AR".into(),
+                name: "Receivables".into(),
+                account_type: 1,
+                normal_balance: 0,
+                is_leaf: true,
+                unit_policy: fa_journal::UnitPolicy::Single(fa_money::UnitId(1)),
+                limit: None,
+                created_at: CommitSeq(2),
+            },
+            period: "P".into(),
+            known_at: CommitSeq(5),
+            fold_digest: [3; 32],
+            watermark: Some(CommitSeq(5)),
+            cells: vec![cell(100, 0, 1)],
+            pending: Vec::new(),
+            history: history(std::slice::from_ref(&contribution)).unwrap(),
+            contributions: vec![contribution],
+        };
+        let original = report.canonical_bytes().unwrap();
+        assert!(original.starts_with(OUTPUT_FORMAT));
+        let mut changed = report.clone();
+        changed.fold_digest[0] ^= 1;
+        assert_ne!(changed.canonical_bytes().unwrap(), original);
+        let mut changed = report.clone();
+        changed.watermark = Some(CommitSeq(6));
+        assert_ne!(changed.canonical_bytes().unwrap(), original);
+        let mut changed = report.clone();
+        changed.history[0].recorded_at = CommitSeq(4);
+        assert_ne!(changed.canonical_bytes().unwrap(), original);
+        let mut changed = report.clone();
+        changed.contributions[0].supersedes[0].reason_code = 2;
+        assert_ne!(changed.canonical_bytes().unwrap(), original);
+        let mut changed = report.clone();
+        changed.contributions[0].evidence[0].doc_commit[0] ^= 1;
+        assert_ne!(changed.canonical_bytes().unwrap(), original);
+        let mut changed = report;
+        changed.contributions[0].visible_at = CommitSeq(6);
+        assert_ne!(changed.canonical_bytes().unwrap(), original);
     }
 
     #[test]

@@ -193,12 +193,12 @@ example = "fa tb --period FY2026-P03 --book ./books/myco --json"
 
 [[verb]]
 name = "replay"
-summary = "Verify a retained report certificate's complete native read closure and reproduce its original trial balance."
+summary = "Verify a retained report certificate's complete native read closure and reproduce its original trial balance, balance explanation, or open-items report."
 writes = false
 subcommands = []
 flags = []
 switches = []
-events = ["trial_balance"]
+events = ["trial_balance", "balance_explained", "open_items"]
 exits = [0, 2, 3, 4, 5, 8]
 usage = ["replay <C:oid|oid|certificate-file|->", "A 64-hex oid resolves the immutable certificate retained in this book. A file holds canonical binary certificate bytes; stdin also accepts the oid or complete bytes hex string from a report_certificate event. Prefix a 64-hex filename with ./ to read it as a file. The certificate fixes the selector and known-at; replay never substitutes today's frontier."]
 example = "fa replay trial-balance.cert --book ./books/myco --json"
@@ -217,26 +217,26 @@ example = "fa certificate status trial-balance.cert --book ./books/myco --json"
 
 [[verb]]
 name = "open-items"
-summary = "Open items (plan §5.7): each live posted leg, its applications, and its open amount."
-writes = false
+summary = "Open items (plan §5.7): each live posted leg, its applications, and its open amount, with account metadata at the selected historical snapshot."
+writes = true
 subcommands = []
-flags = ["--account", "--as-known-at"]
-switches = []
-events = ["open_items"]
-exits = [0, 2, 4, 5]
-usage = ["open-items [--account <code>] [--as-known-at HEAD|<seq>|<RFC3339>]"]
+flags = ["--account", "--as-known-at", "--certificate-out"]
+switches = ["--certify"]
+events = ["open_items", "report_certificate"]
+exits = [0, 2, 3, 4, 5, 8]
+usage = ["open-items [--account <code>] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]", "Without certification this is a pure read. --certify retains an immutable report certificate in the book; --certificate-out also creates a new external copy. Unknown account filters refuse, including accounts absent at the selected known-at. Replay fixes that snapshot, account metadata, and application/reversal lineage."]
 example = "fa open-items --account 1200 --book ./books/myco --json"
 
 [[verb]]
 name = "explain"
-summary = "Explain a balance: the account's register cells in a period, the fold they belong to, every contributing leg with its recorded sequence, and the cell's known-at history."
-writes = false
+summary = "Explain a leaf account's balance: its register cells in a period, the fold they belong to, every contributing leg with its recorded sequence, and the cell's known-at history."
+writes = true
 subcommands = ["balance"]
-flags = ["--period", "--as-known-at"]
-switches = []
-events = ["balance_explained"]
-exits = [0, 2, 4, 5]
-usage = ["explain balance <account code> --period <code> [--as-known-at HEAD|<seq>|<RFC3339>]"]
+flags = ["--period", "--as-known-at", "--certificate-out"]
+switches = ["--certify"]
+events = ["balance_explained", "report_certificate"]
+exits = [0, 2, 3, 4, 5, 8]
+usage = ["explain balance <account code> --period <code> [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]", "Without certification this is a pure read. --certify retains the exact explanation and native read closure in the book; --certificate-out also creates a new external copy. The certificate binds historical account metadata, contributing entries, evidence references, lineage, cell history, and the whole-period fold."]
 example = "fa explain balance 1000 --period FY2026-P03 --book ./books/myco --json"
 
 [[verb]]
@@ -594,7 +594,7 @@ fields = ["periods:[string]", "known_at:seq", "effective_through:date?", "activi
 [[event]]
 name = "report_certificate"
 book = true
-doc = "The certificate retained in this book for the preceding trial_balance. oid resolves through fa replay or certificate status; recorded_at is the immutable certificate object's sequence, distinct from the report's known_at. bytes is the complete canonical certificate in hex and file is an optional external copy. output_digest commits the exact binary fa:trial-balance:v1 result. Retention advances the metadata frontier without posting accounting entries. The explicit replay_scope and authority limit the claim."
+doc = "The certificate retained in this book for the preceding trial_balance, balance_explained, or open_items report. oid resolves through fa replay or certificate status; recorded_at is the immutable certificate object's sequence, distinct from the report's known_at. bytes is the complete canonical certificate in hex and file is an optional external copy. output_digest commits the exact binary result named by output_format. Retention advances the metadata frontier without posting accounting entries. The explicit replay_scope and authority limit the claim."
 fields = ["oid:hex", "known_at:seq", "recorded_at:seq", "bytes:hex", "file:string?", "replay_command:string", "replay_scope:string", "authority:string", "output_format:string", "output_digest:hex", "native_inputs:int", "journal_root:hex", "journal_leaves:int"]
 
 [[event]]
@@ -606,7 +606,7 @@ fields = ["oid:hex", "status:string", "known_at:seq", "checked_at:seq", "later_e
 [[event]]
 name = "open_items"
 book = true
-doc = "Open items, optionally on one account, at the `known_at` snapshot."
+doc = "Open items, optionally on one account, at the `known_at` snapshot, with historical account metadata and each item's applications and reversal lineage. An unknown account filter refuses. With --certify the envelope identifies the retained certificate emitted next."
 fields = ["account:string?", "count:int", "items:[open_item]"]
 
 [[event]]
@@ -666,7 +666,7 @@ fields = ["found:bool", "vid:string", "class:string?", "effective_date:date?", "
 [[event]]
 name = "balance_explained"
 book = true
-doc = "An account's register cells in one period at the `known_at` snapshot: the cells (one per unit, both columns), the fold they belong to (its digest and watermark), every contributing leg with its entry and recorded sequence, and the cells' known-at history. The legs re-add to the cells exactly or the command fails. A certified-read precursor: `certificate` is null until the notary lands."
+doc = "A leaf account's register cells in one period at the `known_at` snapshot: the cells (one per unit, both columns), the fold they belong to (its digest and watermark), every contributing leg with its entry and recorded sequence, and the cells' known-at history. The legs re-add to the cells exactly or the command fails. With --certify, `certificate` identifies the retained native-read certificate emitted next; otherwise it is null."
 fields = ["account:string", "account_vid:hex", "name:string", "type:string", "period:string", "known_at:seq", "watermark:seq?", "fold_digest:hex", "certificate:hex?", "cells:[explained_cell]", "contributions:[contribution]", "history:[cell_change]", "last_changed_at:seq?"]
 
 # ---------------------------------------------------------------------------
@@ -1166,6 +1166,7 @@ name = "explain_balance"
 verb = "explain"
 subcommands = ["balance"]
 positionals = ["account"]
+flags = ["--period", "--as-known-at"]
 required = ["--period", "account"]
 dont = ["Don't trust a register cell you have not explained: the contributions re-add to the cells exactly, or the command fails."]
 mistakes = ["Explaining a summary account (registers hold leaf cells; explain one of its leaves).", "Passing more than one `period` (exactly one)."]
@@ -1176,6 +1177,7 @@ name = "open_items"
 verb = "open-items"
 subcommands = []
 positionals = []
+flags = ["--account", "--as-known-at"]
 required = []
 dont = ["Don't apply more than an item's `open` amount; FA-REF-072 names what is open."]
 mistakes = ["Passing an account name as `account` (it takes the account code)."]

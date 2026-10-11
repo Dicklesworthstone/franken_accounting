@@ -1031,6 +1031,16 @@ impl Book {
         with_store!(&self.store, core => core.certify_trial_balance(&self.purposes(), selection, known_at))
     }
 
+    /// Certify a trial balance, balance explanation or open-item report at one
+    /// retained sequence. Creating the certificate does not write to the book.
+    pub fn certify_report(
+        &self,
+        selection: crate::ReportSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CertifiedReport> {
+        with_store!(&self.store, core => core.certify_report(&self.purposes(), selection, known_at))
+    }
+
     /// Resolve a UTC instant from retained ticks without reading a clock.
     /// Keep the returned frontier and brackets with the resolved sequence.
     pub fn resolve_known_at_instant(
@@ -1048,6 +1058,25 @@ impl Book {
         requested_utc_ns: u64,
     ) -> Outcome<crate::CertifiedTrialBalance> {
         with_store!(&self.store, core => core.certify_trial_balance_at_instant(&self.purposes(), selection, requested_utc_ns))
+    }
+
+    /// Certify any supported report with the original TimeEvidence frontier
+    /// and tick brackets attached to its resolved historical sequence.
+    pub fn certify_report_at_instant(
+        &self,
+        selection: crate::ReportSelection,
+        requested_utc_ns: u64,
+    ) -> Outcome<crate::CertifiedReport> {
+        with_store!(&self.store, core => core.certify_report_at_instant(&self.purposes(), selection, requested_utc_ns))
+    }
+
+    /// Replay the report family and exact historical output selected by a
+    /// certificate, including its account metadata and any time resolution.
+    pub fn replay_report(
+        &self,
+        certificate: &crate::ReportCertificate,
+    ) -> Outcome<crate::ReportOutput> {
+        with_store!(&self.store, core => core.replay_report(&self.purposes(), certificate))
     }
 
     /// Reproduce the report at the certificate's fixed known-at sequence,
@@ -1148,6 +1177,17 @@ impl Book {
         known_at: Option<CommitSeq>,
     ) -> Result<Vec<OpenItem>, BookError> {
         with_store!(&self.store, core => core.open_items(&self.purposes(), account, known_at))
+    }
+
+    /// Fold open items together with the account metadata visible at the same
+    /// sequence. The resolved coordinate and optional account filter are part
+    /// of the report, so historical rendering never consults today's chart.
+    pub fn open_items_report(
+        &self,
+        account: Option<VId>,
+        known_at: Option<CommitSeq>,
+    ) -> Result<crate::OpenItemsReport, BookError> {
+        with_store!(&self.store, core => core.open_items_report(&self.purposes(), account, known_at))
     }
 
     /// Compare immutable leg mirrors and topology with canonical entry payloads.
@@ -3682,6 +3722,450 @@ mod tests {
     }
 
     #[test]
+    fn generic_certificates_replay_exact_reports_and_retain_each_report_family() {
+        use crate::{CertificateStatus, ReportCertificate, ReportOutput, ReportSelection};
+        let (mut book, _, day, _) = certified_fixture();
+        let cash = account_vid(book.context().book_id, "1000");
+        let at = book.head().unwrap();
+        let expected = [
+            ReportOutput::ExplainBalance(Box::new(
+                book.explain_balance(cash, "FY2026-P03", Some(at)).unwrap(),
+            )),
+            ReportOutput::OpenItems(book.open_items_report(Some(cash), Some(at)).unwrap()),
+            ReportOutput::OpenItems(book.open_items_report(None, Some(at)).unwrap()),
+        ];
+        let selections = [
+            ReportSelection::ExplainBalance {
+                account: cash,
+                period: "FY2026-P03".into(),
+            },
+            ReportSelection::OpenItems {
+                account: Some(cash),
+            },
+            ReportSelection::OpenItems { account: None },
+        ];
+        let mut certified = Vec::new();
+        for (selection, expected) in selections.into_iter().zip(expected) {
+            let result = book
+                .certify_report(selection.clone(), Some(at))
+                .unwrap()
+                .unwrap();
+            assert_eq!(result.report, expected);
+            assert_eq!(result.report.known_at(), at);
+            assert_eq!(result.certificate.known_at, at);
+            assert_eq!(result.certificate.selection, selection);
+            assert_eq!(result.certificate.output, result.report.canonical_bytes().unwrap());
+            assert_eq!(result.certificate.output_format(), selection.output_format());
+            assert!(result.certificate.time_selection.is_none());
+            let bytes = result.certificate.canonical_bytes().unwrap();
+            assert!(bytes.starts_with(crate::certificate::REPORT_CERTIFICATE_FORMAT));
+            assert_eq!(ReportCertificate::decode(&bytes).unwrap(), result.certificate);
+            assert_eq!(
+                book.replay_report(&result.certificate).unwrap().unwrap(),
+                result.report
+            );
+            assert_eq!(
+                book.replay_trial_balance(&result.certificate)
+                    .unwrap()
+                    .unwrap_err()
+                    .code,
+                crate::certificate::code::CERTIFICATE_INVALID,
+                "the typed trial-balance API must refuse a different report family"
+            );
+            certified.push(result);
+        }
+        assert_eq!(book.head().unwrap(), at, "certification and replay are reads");
+        assert_ne!(
+            certified[1].certificate.digest,
+            certified[2].certificate.digest,
+            "the account filter is part of the certificate identity"
+        );
+        for result in certified {
+            let retained = book.retain_certificate(&result.certificate).unwrap().unwrap();
+            let loaded = book.read_certificate(&retained.digest).unwrap().unwrap();
+            assert_eq!(loaded, result.certificate);
+            assert_eq!(book.replay_report(&loaded).unwrap().unwrap(), result.report);
+            assert_eq!(
+                book.retain_certificate(&loaded).unwrap().unwrap(),
+                retained
+            );
+            assert_eq!(book.head().unwrap(), retained.recorded_at);
+            assert_eq!(
+                book.certificate_status(&loaded).unwrap().unwrap(),
+                CertificateStatus::Current {
+                    checked_at: retained.recorded_at,
+                }
+            );
+        }
+        // Trial-balance callers retain the original sequence wire version.
+        let trial = book
+            .certify_report(crate::TrialBalanceSelection::AsOf(day).into(), Some(at))
+            .unwrap()
+            .unwrap();
+        assert!(
+            trial.certificate.canonical_bytes().unwrap()
+                .starts_with(crate::certificate::CERTIFICATE_FORMAT)
+        );
+        assert_eq!(
+            trial.report,
+            ReportOutput::TrialBalance(book.balance_as_of(day, Some(at)).unwrap())
+        );
+    }
+
+    #[test]
+    fn report_status_respects_account_filters_and_the_complete_explanation_fold() {
+        use crate::{CertificateStatus, ReportSelection};
+        let (mut book, usd, day, original) = certified_fixture();
+        let book_id = book.context().book_id;
+        let cash = account_vid(book_id, "1000");
+        let explanation = book
+            .certify_report(
+                ReportSelection::ExplainBalance {
+                    account: cash,
+                    period: "FY2026-P03".into(),
+                },
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        let filtered = book
+            .certify_report(ReportSelection::OpenItems { account: Some(cash) }, None)
+            .unwrap()
+            .unwrap();
+        let all = book
+            .certify_report(ReportSelection::OpenItems { account: None }, None)
+            .unwrap()
+            .unwrap();
+        let accounts = [
+            AccountSpec {
+                code: "2000".into(),
+                name: "Other asset".into(),
+                account_type: 1,
+                normal_balance: 0,
+                is_leaf: true,
+                unit_policy: UnitPolicy::Single(usd),
+                parent_code: None,
+                limit: None,
+            },
+            AccountSpec {
+                code: "7000".into(),
+                name: "Other expense".into(),
+                account_type: 5,
+                normal_balance: 0,
+                is_leaf: true,
+                unit_policy: UnitPolicy::Single(usd),
+                parent_code: None,
+                limit: None,
+            },
+        ];
+        book.install_chart(&accounts, VId(1), day, b"additional-report-accounts")
+            .unwrap()
+            .unwrap();
+        for result in [&explanation, &filtered, &all] {
+            assert!(
+                matches!(
+                    book.certificate_status(&result.certificate).unwrap().unwrap(),
+                    CertificateStatus::Current { .. }
+                ),
+                "unrelated accounts with no contributions do not change rendered reports"
+            );
+        }
+        let mut proposal = book.read_entry(original).unwrap().unwrap().0.proposal;
+        proposal.idempotency_key = b"other-accounts-same-period".to_vec();
+        for leg in &mut proposal.legs {
+            leg.account_ref = if leg.account_ref == cash {
+                account_vid(book_id, "2000")
+            } else {
+                account_vid(book_id, "7000")
+            };
+        }
+        let later = book
+            .post(PostRequest {
+                proposal,
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: Capability::embedded(VId(1), &["post"]).unwrap(),
+            })
+            .unwrap()
+            .unwrap()
+            .entry_ref()
+            .vid;
+        assert!(
+            matches!(
+                book.certificate_status(&filtered.certificate).unwrap().unwrap(),
+                CertificateStatus::Current { .. }
+            ),
+            "the filtered open-item report excludes other accounts"
+        );
+        for result in [&explanation, &all] {
+            assert!(
+                matches!(
+                    book.certificate_status(&result.certificate).unwrap().unwrap(),
+                    CertificateStatus::SupersededBy { later_entries, .. }
+                        if later_entries == vec![later]
+                ),
+                "an explanation binds the whole period fold; unfiltered open items include every account"
+            );
+        }
+        for result in [&explanation, &filtered, &all] {
+            assert_eq!(
+                book.replay_report(&result.certificate).unwrap().unwrap(),
+                result.report,
+                "a superseded report still replays its exact original output"
+            );
+        }
+        let april = post_rent(
+            &mut book,
+            usd,
+            VId(1),
+            DateDay::from_ymd(2026, 4, 15).unwrap(),
+            b"april-open-item",
+            150_000,
+        )
+        .unwrap()
+        .unwrap()
+        .entry_ref()
+        .vid;
+        assert!(
+            matches!(
+                book.certificate_status(&explanation.certificate).unwrap().unwrap(),
+                CertificateStatus::SupersededBy { later_entries, .. }
+                    if later_entries == vec![later]
+            ),
+            "an April posting does not add to the March explanation's affected entries"
+        );
+        assert!(
+            matches!(
+                book.certificate_status(&filtered.certificate).unwrap().unwrap(),
+                CertificateStatus::SupersededBy { later_entries, .. }
+                    if later_entries == vec![april]
+            ),
+            "open items have no effective-date cutoff"
+        );
+    }
+
+    #[test]
+    fn report_replay_keeps_historical_account_metadata_and_status_refuses_rebinding() {
+        use crate::{ReportOutput, ReportSelection};
+        use fa_model::symbols::{property, relation};
+        let (mut book, _, _, _) = certified_fixture();
+        let cash = account_vid(book.context().book_id, "1000");
+        let at = book.head().unwrap();
+        let mut results = Vec::new();
+        for selection in [
+            ReportSelection::ExplainBalance {
+                account: cash,
+                period: "FY2026-P03".into(),
+            },
+            ReportSelection::OpenItems { account: Some(cash) },
+            ReportSelection::OpenItems { account: None },
+        ] {
+            results.push(book.certify_report(selection, Some(at)).unwrap().unwrap());
+        }
+        // This raw rewrite plants corruption; no supported chart operation
+        // currently changes an existing account's immutable identity.
+        let contexts = book.purposes();
+        let mut change = fgdb::WriteBatch::new(relation::HAS_LEG);
+        change.set_vertex_property(
+            cash,
+            property::NAME,
+            Some(fa_journal::rows::scalar_text("changed account name", "Changed Cash").unwrap()),
+        );
+        with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&contexts.commit(), change)))
+            .unwrap();
+        let after = book.head().unwrap();
+        assert!(after > at);
+        assert_eq!(
+            book.open_items_report(Some(cash), None).unwrap().accounts[&cash].name,
+            "Changed Cash"
+        );
+        assert_eq!(
+            book.open_items_report(Some(cash), Some(at)).unwrap().accounts[&cash].name,
+            "Cash"
+        );
+        assert_eq!(
+            book.explain_balance(cash, "FY2026-P03", Some(at)).unwrap().account_row.name,
+            "Cash"
+        );
+        for result in results {
+            let replayed = book.replay_report(&result.certificate).unwrap().unwrap();
+            assert_eq!(replayed, result.report);
+            match &replayed {
+                ReportOutput::ExplainBalance(report) => assert_eq!(report.account_row.name, "Cash"),
+                ReportOutput::OpenItems(report) => assert_eq!(report.accounts[&cash].name, "Cash"),
+                ReportOutput::TrialBalance(_) => panic!("selected a non-trial-balance report"),
+            }
+            let refusal = book.certificate_status(&result.certificate).unwrap().unwrap_err();
+            assert_eq!(refusal.code, crate::certificate::code::CERTIFICATE_INVALID);
+            assert_eq!(refusal.exit, fa_journal::exit::VERIFICATION);
+        }
+        assert_eq!(book.head().unwrap(), after, "replay and status do not repair the chart");
+    }
+
+    #[test]
+    fn certification_requires_genesis_and_the_historical_runtime_context() {
+        use crate::{ReportSelection, TrialBalanceSelection};
+        let (book, _, day, _) = certified_fixture();
+        let cash = account_vid(book.context().book_id, "1000");
+        let at = book.head().unwrap();
+        for selection in [
+            TrialBalanceSelection::AsOf(day).into(),
+            ReportSelection::ExplainBalance {
+                account: cash,
+                period: "FY2026-P03".into(),
+            },
+            ReportSelection::OpenItems { account: Some(cash) },
+            ReportSelection::OpenItems { account: None },
+        ] {
+            let error = book
+                .certify_report(selection, Some(CommitSeq(0)))
+                .unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    BookError::Registers(fa_registers::RegisterError::InvalidSelection(_))
+                ),
+                "{error}"
+            );
+        }
+        let certificate = book
+            .certify_report(TrialBalanceSelection::AsOf(day).into(), Some(at))
+            .unwrap()
+            .unwrap()
+            .certificate;
+        let mut context = book.context().clone();
+        context.calendar = FiscalCalendar::monthly("different-calendar", 1, 1).unwrap();
+        let purposes = book.purposes();
+        let error = with_store!(&book.store, core => crate::certificate::certify_report(
+            &core.db,
+            &purposes.query(),
+            &context,
+            TrialBalanceSelection::AsOf(day).into(),
+            Some(at),
+        ))
+        .unwrap_err();
+        assert!(error.to_string().contains("context differs"), "{error}");
+        let refusal = with_store!(&book.store, core => crate::certificate::replay_report(
+            &core.db,
+            &purposes.query(),
+            &context,
+            &certificate,
+        ))
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(refusal.code, crate::certificate::code::CERTIFICATE_INVALID);
+        assert_eq!(book.head().unwrap(), at);
+    }
+
+    #[test]
+    fn generic_instant_certificates_preserve_the_original_sequence_and_tick_brackets() {
+        use crate::{ReportCertificate, ReportSelection};
+        let (mut book, usd, day, _) = certified_fixture();
+        let cash = account_vid(book.context().book_id, "1000");
+        let base = fa_time::UtcInstant::parse("2026-03-15T00:00:00Z")
+            .unwrap()
+            .unix_ns();
+        let lower = certificate_tick(&mut book, base + 100, true);
+        post_rent(&mut book, usd, VId(1), day, b"generic-inside-bucket", 150_000)
+            .unwrap()
+            .unwrap();
+        let selected_at = book.head().unwrap();
+        let upper = certificate_tick(&mut book, base + 110, true);
+        post_rent(&mut book, usd, VId(1), day, b"generic-after-bucket", 150_000)
+            .unwrap()
+            .unwrap();
+        let frontier = book.head().unwrap();
+        let mut results = Vec::new();
+        for selection in [
+            ReportSelection::ExplainBalance {
+                account: cash,
+                period: "FY2026-P03".into(),
+            },
+            ReportSelection::OpenItems { account: Some(cash) },
+        ] {
+            let result = book
+                .certify_report_at_instant(selection.clone(), base + 105)
+                .unwrap()
+                .unwrap();
+            let time = result.certificate.time_selection.as_ref().unwrap();
+            assert_eq!(time.resolution.frontier, frontier.0);
+            assert_eq!(time.resolution.resolved_seq, selected_at.0);
+            assert_eq!(time.lower_entry, lower.tick.entry);
+            assert_eq!(time.upper_entry, Some(upper.tick.entry));
+            assert_eq!(result.certificate.known_at, selected_at);
+            assert_eq!(
+                result.report,
+                book.certify_report(selection, Some(selected_at)).unwrap().unwrap().report
+            );
+            let encoded = result.certificate.canonical_bytes().unwrap();
+            assert!(encoded.starts_with(crate::certificate::REPORT_CERTIFICATE_FORMAT));
+            assert_eq!(ReportCertificate::decode(&encoded).unwrap(), result.certificate);
+            results.push(result);
+        }
+        assert_eq!(book.head().unwrap(), frontier);
+        certificate_tick(&mut book, base + 120, true);
+        for result in results {
+            let retained = book.retain_certificate(&result.certificate).unwrap().unwrap();
+            let loaded = book.read_certificate(&retained.digest).unwrap().unwrap();
+            assert_eq!(loaded, result.certificate);
+            assert_eq!(book.replay_report(&loaded).unwrap().unwrap(), result.report);
+            let mut altered = loaded;
+            altered.time_selection.as_mut().unwrap().resolution.requested_utc_ns += 1;
+            let refusal = book.replay_report(&altered).unwrap().unwrap_err();
+            assert_eq!(refusal.code, crate::certificate::code::CERTIFICATE_INVALID);
+            assert_eq!(book.head().unwrap(), retained.recorded_at);
+        }
+    }
+
+    #[test]
+    fn certificate_status_detects_period_catalog_changes_without_a_new_entry() {
+        use crate::{CertificateStatus, TrialBalanceSelection};
+        let (mut book, _, day, _) = certified_fixture();
+        let certified = book
+            .certify_trial_balance(TrialBalanceSelection::AsOf(day), None)
+            .unwrap()
+            .unwrap();
+        let original_at = certified.certificate.known_at;
+        // Period creation is supported and commits metadata without an Entry.
+        // An as-of report displays every discovered period through its cutoff.
+        book.create_periods(2025).unwrap();
+        let after = book.head().unwrap();
+        assert!(after > original_at);
+        let current = book
+            .certify_trial_balance(TrialBalanceSelection::AsOf(day), None)
+            .unwrap()
+            .unwrap();
+        assert_ne!(current.report.periods, certified.report.periods);
+        assert_eq!(
+            current.certificate.journal_root,
+            certified.certificate.journal_root
+        );
+        assert_eq!(
+            current.certificate.journal_leaves,
+            certified.certificate.journal_leaves,
+            "no later accounting Entry can explain this period-membership change"
+        );
+        let refusal = book
+            .certificate_status(&certified.certificate)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refusal.code, crate::certificate::code::CERTIFICATE_INVALID);
+        assert_eq!(refusal.exit, fa_journal::exit::VERIFICATION);
+        assert_eq!(
+            book.replay_trial_balance(&certified.certificate)
+                .unwrap()
+                .unwrap(),
+            certified.report,
+            "metadata changes do not rewrite the original historical report"
+        );
+        assert_eq!(
+            book.certificate_status(&current.certificate).unwrap().unwrap(),
+            CertificateStatus::Current { checked_at: after }
+        );
+        assert_eq!(book.head().unwrap(), after);
+    }
+
+    #[test]
     fn retained_certificates_are_idempotent_without_changing_the_certified_report() {
         use crate::{CertificateStatus, TrialBalanceSelection};
         let (mut book, _, day, _) = certified_fixture();
@@ -3915,7 +4399,7 @@ mod tests {
             let mut altered = original.clone();
             match tamper {
                 0 => altered.known_at = CommitSeq(altered.known_at.0 + 1),
-                1 => altered.selection = TrialBalanceSelection::AsOf(DateDay(day.0 - 1)),
+                1 => altered.selection = TrialBalanceSelection::AsOf(DateDay(day.0 - 1)).into(),
                 2 => altered.registry_digest[0] ^= 1,
                 3 => altered.inputs[0].result_digest.0[0] ^= 1,
                 4 => {
@@ -4855,6 +5339,28 @@ mod tests {
             "{refused}"
         );
         assert_eq!(refused.exit(), fa_journal::exit::USAGE);
+        let historical_items = book.open_items_report(Some(cash), Some(before_chart));
+        assert!(matches!(
+            historical_items,
+            Err(BookError::Registers(fa_registers::RegisterError::InvalidSelection(_)))
+        ));
+        for selection in [
+            crate::ReportSelection::ExplainBalance {
+                account: cash,
+                period: march.clone(),
+            },
+            crate::ReportSelection::OpenItems { account: Some(cash) },
+        ] {
+            assert!(matches!(
+                book.certify_report(selection, Some(before_chart)),
+                Err(BookError::Registers(fa_registers::RegisterError::InvalidSelection(_)))
+            ));
+        }
+        let empty_items = book
+            .open_items_report(Some(cash), Some(installed.recorded_at))
+            .unwrap();
+        assert_eq!(empty_items.accounts[&cash].name, "Cash");
+        assert!(empty_items.items.is_empty());
         let then = book
             .explain_balance(cash, &march, Some(installed.recorded_at))
             .unwrap();

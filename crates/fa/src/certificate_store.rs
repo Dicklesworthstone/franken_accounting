@@ -233,7 +233,7 @@ pub(crate) async fn retain<V: Vfs + Clone>(
             recorded_at: row.created_at,
         }));
     }
-    if let Err(refusal) = crate::certificate::replay(db, &query_cx, book, certificate)? {
+    if let Err(refusal) = crate::certificate::replay_report(db, &query_cx, book, certificate)? {
         txn.abort();
         return Ok(Err(refusal));
     }

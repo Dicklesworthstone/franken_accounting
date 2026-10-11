@@ -405,6 +405,214 @@ fn retained_trial_balances_replay_exactly_and_report_later_relevant_entries() ->
 }
 
 #[test]
+fn certified_explanations_and_open_items_replay_before_settlements_and_reversals()
+-> std::io::Result<()> {
+    use fa::{Book, BookKeys, Entropy};
+
+    let dir = tmp("certified-report-families")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        assert!(err.is_empty(), "{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Historical Reports", "--json"]);
+    let keys = BookKeys::load(&book.join("book.keys")).unwrap();
+    let head = || {
+        Book::open_dir(&book, keys.clone(), Entropy::production())
+            .unwrap()
+            .head()
+            .unwrap()
+    };
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let before_chart = head().0.to_string();
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"1200","name":"Receivables","type":"Asset","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let invoice = write(
+        &dir,
+        "invoice.json",
+        r#"{"effective_date":"2026-03-10","idempotency_key":"certified-invoice","legs":[{"side":"debit","account":"1200","amount":"500.00 USD"},{"side":"credit","account":"4000","amount":"500.00 USD"}]}"#,
+    );
+    let posted = doc(&ok(&[
+        "post", "--intent", &invoice, "--evidence", &evidence, "--json",
+    ]));
+    let invoice_vid = text(&posted, "vid").to_string();
+    let known_at = int(&posted, "recorded_at").unwrap().to_string();
+    let mut retained = Vec::new();
+
+    for (name, command, event, output_format) in [
+        (
+            "explanation",
+            vec!["explain", "balance", "1200", "--period", "FY2026-P03"],
+            "balance_explained",
+            "fa:balance-explanation:v1",
+        ),
+        (
+            "receivable-items",
+            vec!["open-items", "--account", "1200"],
+            "open_items",
+            "fa:open-items:v1",
+        ),
+        (
+            "all-items",
+            vec!["open-items"],
+            "open_items",
+            "fa:open-items:v1",
+        ),
+        (
+            "empty-cash",
+            vec!["open-items", "--account", "1000"],
+            "open_items",
+            "fa:open-items:v1",
+        ),
+    ] {
+        let mut args = command.clone();
+        args.extend(["--as-known-at", known_at.as_str(), "--json"]);
+        let frontier = head();
+        let plain = ok(&args);
+        assert_eq!(head(), frontier, "{name}: ordinary historical read wrote");
+        let path = dir.join(format!("{name}.cert")).display().to_string();
+        args.extend(["--certificate-out", path.as_str()]);
+        let certified = ok(&args);
+        let lines: Vec<&str> = certified.lines().collect();
+        assert_eq!(lines.len(), 2, "{certified}");
+        assert_eq!(field(lines[0], "event"), Some(event));
+        assert_eq!(field(lines[1], "event"), Some("report_certificate"));
+        let certificate = doc(lines[1]);
+        let oid = text(&certificate, "oid");
+        assert_eq!(field(lines[0], "certificate"), Some(oid));
+        assert_eq!(field(lines[1], "certificate"), Some(oid));
+        assert_eq!(text(&certificate, "output_format"), output_format);
+        assert_eq!(int(&certificate, "known_at").unwrap().to_string(), known_at);
+        assert_eq!(int(&certificate, "recorded_at"), Some(i128::from(frontier.0 + 1)));
+        assert_eq!(head().0, frontier.0 + 1, "only retention publishes");
+
+        let data = doc(lines[0]);
+        let mut comparable = data.clone();
+        if event == "balance_explained" {
+            assert_eq!(text(&data, "certificate"), oid);
+            let Json::Obj(fields) = &mut comparable else {
+                panic!("explanation data must be an object");
+            };
+            fields.iter_mut().find(|(key, _)| key == "certificate").unwrap().1 = Json::Null;
+            assert_eq!(text(&arr(&data, "cells")[0], "debits"), "500.00 USD");
+            assert_eq!(arr(&data, "contributions").len(), 1);
+            assert_eq!(text(&arr(&data, "contributions")[0], "entry"), invoice_vid);
+            assert_eq!(arr(&arr(&data, "contributions")[0], "evidence").len(), 1);
+        } else {
+            let expected_count = match name {
+                "all-items" => 2,
+                "empty-cash" => 0,
+                _ => 1,
+            };
+            assert_eq!(int(&data, "count"), Some(expected_count));
+            if name == "receivable-items" {
+                let item = &arr(&data, "items")[0];
+                assert_eq!(text(item, "entry"), invoice_vid);
+                assert_eq!(text(item, "open"), "500.00 USD");
+                assert!(arr(item, "applications").is_empty());
+            }
+            if name == "empty-cash" {
+                assert_eq!(text(&data, "account"), "1000");
+            }
+        }
+        assert_eq!(comparable, doc(&plain), "{name}: certification changed report data");
+        let bytes = std::fs::read(&path)?;
+        assert!(bytes.starts_with(b"fa:report-certificate:v3"));
+        let decoded = fa::ReportCertificate::decode(&bytes).unwrap();
+        assert_eq!(decoded.canonical_bytes().unwrap(), bytes);
+        let original = format!("{}\n", lines[0]);
+        for input in [path.as_str(), oid, &format!("C:{oid}")] {
+            assert_eq!(ok(&["replay", input, "--json"]), original, "{name}");
+        }
+        let current = doc(&ok(&["certificate", "status", oid, "--json"]));
+        assert_eq!(text(&current, "status"), "Current");
+        assert!(arr(&current, "later_entries").is_empty());
+        let stored_at = head();
+        let mut retry = command;
+        retry.extend(["--as-known-at", known_at.as_str(), "--certify", "--json"]);
+        let retry = ok(&retry);
+        assert_eq!(text(&doc(&retry), "oid"), oid);
+        assert_eq!(head(), stored_at, "exact retained retry is idempotent");
+        retained.push((oid.to_string(), original));
+    }
+
+    // Refuse unknown and not-yet-created identities before retaining a result.
+    // A known empty account above is deliberately distinct from either case.
+    let frontier = head();
+    for (account, sequence) in [("9999", known_at.as_str()), ("1200", before_chart.as_str())] {
+        for command in [
+            vec!["explain", "balance", account, "--period", "FY2026-P03"],
+            vec!["open-items", "--account", account],
+        ] {
+            for certified in [false, true] {
+                let mut args = command.clone();
+                args.extend(["--as-known-at", sequence, "--json"]);
+                if certified {
+                    args.push("--certify");
+                }
+                let (code, out, err) = fa(Some(&book), &args);
+                assert_eq!(code, 2, "args={args:?}\n{out}\n{err}");
+                assert_eq!(out.lines().count(), 1, "{out}");
+                assert_eq!(field(&out, "event"), Some("error"));
+                assert_eq!(field(&out, "certificate"), Some("null"));
+                assert_eq!(head(), frontier, "refusal cannot retain a certificate");
+            }
+        }
+    }
+
+    let receipt = write(
+        &dir,
+        "receipt.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-20","idempotency_key":"certified-receipt","legs":[{{"side":"debit","account":"1000","amount":"200.00 USD"}},{{"side":"credit","account":"1200","amount":"200.00 USD","settles":[{{"entry":"{invoice_vid}","ordinal":0,"amount":"200.00 USD"}}]}}]}}"#
+        ),
+    );
+    let posted = doc(&ok(&[
+        "post", "--intent", &receipt, "--evidence", &evidence, "--json",
+    ]));
+    let receipt_vid = text(&posted, "vid").to_string();
+    let applied = doc(&ok(&["open-items", "--account", "1200", "--json"]));
+    let invoice_item = arr(&applied, "items")
+        .iter()
+        .find(|item| text(item, "entry") == invoice_vid)
+        .unwrap();
+    assert_eq!(text(invoice_item, "open"), "300.00 USD");
+    assert_eq!(arr(invoice_item, "applications")[0].get("live"), Some(&Json::Bool(true)));
+    let reversed = doc(&ok(&[
+        "reverse", &receipt_vid, "--reason", "WrongAmount", "--json",
+    ]));
+    let reversal_vid = text(&reversed, "vid").to_string();
+    let reopened = doc(&ok(&["open-items", "--account", "1200", "--json"]));
+    let invoice_item = arr(&reopened, "items")
+        .iter()
+        .find(|item| text(item, "entry") == invoice_vid)
+        .unwrap();
+    assert_eq!(text(invoice_item, "open"), "500.00 USD");
+    assert_eq!(arr(invoice_item, "applications")[0].get("live"), Some(&Json::Bool(false)));
+
+    let frontier = head();
+    for (oid, original) in retained {
+        let status = doc(&ok(&["certificate", "status", &oid, "--json"]));
+        assert_eq!(text(&status, "status"), "SupersededBy");
+        let later = arr(&status, "later_entries");
+        assert_eq!(later.len(), 2, "{status:?}");
+        assert!(later.contains(&Json::Str(receipt_vid.clone())));
+        assert!(later.contains(&Json::Str(reversal_vid.clone())));
+        assert_eq!(ok(&["replay", &oid, "--json"]), original);
+    }
+    assert_eq!(head(), frontier, "historical replay and status never write");
+    Ok(())
+}
+
+#[test]
 fn bare_fa_prints_triage_and_exits_zero_without_a_tui() {
     let (code, out, err) = fa(None, &[]);
     assert_eq!(code, 0);
@@ -4912,6 +5120,64 @@ fn instant_selected_cli_reports_retain_tick_evidence_and_replay() -> std::io::Re
         current_frontier,
         "instant resolution, reports and replay leave the journal frontier unchanged"
     );
+
+    // Generic certificates retain the same resolved bucket. Each independent
+    // certification observes its own frontier and publishes only its metadata.
+    let mut generic = Vec::new();
+    for (name, command, event) in [
+        (
+            "explanation",
+            vec!["explain", "balance", "1000", "--period", PERIOD],
+            "balance_explained",
+        ),
+        (
+            "open-items",
+            vec!["open-items", "--account", "1000"],
+            "open_items",
+        ),
+    ] {
+        let observed = head();
+        let path = dir.join(format!("instant-{name}.cert")).display().to_string();
+        let mut args = command;
+        args.extend([
+            "--as-known-at", INSTANT, "--certificate-out", path.as_str(), "--json",
+        ]);
+        let certified = ok(&args);
+        let lines: Vec<&str> = certified.lines().collect();
+        assert_eq!(lines.len(), 2, "{certified}");
+        assert_eq!(field(lines[0], "event"), Some(event));
+        assert_eq!(field(lines[1], "event"), Some("report_certificate"));
+        check_coordinate(lines[0], observed, Some(&upper), closed_seq);
+        check_coordinate(lines[1], observed, Some(&upper), closed_seq);
+        let data = doc(lines[0]);
+        if event == "balance_explained" {
+            assert_eq!(arr(&data, "contributions").len(), 1);
+            assert_eq!(text(&arr(&data, "cells")[0], "credits"), "100.00 USD");
+        } else {
+            assert_eq!(int(&data, "count"), Some(1));
+            assert_eq!(text(&arr(&data, "items")[0], "entry"), first_vid);
+            assert_eq!(text(&arr(&data, "items")[0], "open"), "100.00 USD");
+        }
+        let stored = doc(lines[1]);
+        assert_eq!(int(&stored, "recorded_at"), Some(i128::from(observed.0 + 1)));
+        assert_eq!(head().0, observed.0 + 1, "retention cannot record a new tick");
+        let bytes = std::fs::read(&path)?;
+        assert!(bytes.starts_with(b"fa:report-certificate:v3"));
+        let certificate = fa::ReportCertificate::decode(&bytes).unwrap();
+        let time = certificate.time_selection.as_ref().unwrap();
+        assert_eq!(time.resolution.frontier, observed.0);
+        assert_eq!(time.resolution.resolved_seq, closed_seq.0);
+        let original = format!("{}\n", lines[0]);
+        assert_eq!(ok(&["replay", &path, "--json"]), original);
+        generic.push((text(&stored, "oid").to_string(), original, observed));
+    }
+    let retained_frontier = head();
+    for (oid, original, observed) in generic {
+        let replayed = ok(&["replay", &oid, "--json"]);
+        assert_eq!(replayed, original);
+        check_coordinate(replayed.trim_end(), observed, Some(&upper), closed_seq);
+    }
+    assert_eq!(head(), retained_frontier, "generic replay never publishes");
     Ok(())
 }
 

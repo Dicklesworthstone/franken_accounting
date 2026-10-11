@@ -7,14 +7,17 @@
 use std::io::{Read, Write};
 
 use crate::json::{Json, obj, s};
-use fa::certificate::{AUTHORITY, MAX_CERTIFICATE_BYTES, OUTPUT_FORMAT, REPLAY_SCOPE};
-use fa::{Book, CertificateStatus, ReportCertificate, RetainedCertificate, TrialBalanceSelection};
+use fa::certificate::{AUTHORITY, MAX_CERTIFICATE_BYTES, REPLAY_SCOPE};
+use fa::{
+    Book, CertificateStatus, ReportCertificate, ReportOutput, ReportSelection, RetainedCertificate,
+    TrialBalanceSelection,
+};
 use fa_policy::{Capability, Op};
 
 use crate::args::Args;
 use crate::cli::{
-    Ctx, Fail, Files, Out, Stdin, hex, periods_selector, principal, render_trial_balance,
-    unhandled, usage,
+    Ctx, Fail, Files, Out, Stdin, hex, periods_selector, principal, render_balance_explanation,
+    render_open_items, render_trial_balance, unhandled, usage,
 };
 
 fn certificate_invalid(message: impl Into<String>) -> Fail {
@@ -230,7 +233,7 @@ pub(crate) fn emit_report_certificate(
             ("replay_command", s(command)),
             ("replay_scope", s(REPLAY_SCOPE)),
             ("authority", s(AUTHORITY)),
-            ("output_format", s(OUTPUT_FORMAT)),
+            ("output_format", s(certificate.output_format())),
             ("output_digest", s(hex(&certificate.output_digest))),
             ("native_inputs", Json::Int(certificate.inputs.len() as i128)),
             ("journal_root", s(hex(&certificate.journal_root))),
@@ -253,15 +256,23 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     let book = ctx.books.open(args)?;
     let certificate = read_report_certificate(&book, &ctx.files, &args.positional[1])?;
-    let report = book.replay_trial_balance(&certificate)??;
+    let report = book.replay_report(&certificate)??;
     ctx.out.time_selection(certificate.time_selection.as_ref());
-    render_trial_balance(
-        &ctx.out,
-        &book,
-        &report,
-        &certificate.selection,
-        Some(&hex(&certificate.digest)),
-    )
+    let digest = hex(&certificate.digest);
+    match (&report, &certificate.selection) {
+        (ReportOutput::TrialBalance(report), ReportSelection::TrialBalance(selection)) => {
+            render_trial_balance(&ctx.out, &book, report, selection, Some(&digest))
+        }
+        (ReportOutput::ExplainBalance(report), ReportSelection::ExplainBalance { .. }) => {
+            render_balance_explanation(&ctx.out, &book, report, Some(&digest))
+        }
+        (ReportOutput::OpenItems(report), ReportSelection::OpenItems { .. }) => {
+            render_open_items(&ctx.out, &book, report, Some(&digest))
+        }
+        _ => Err(certificate_invalid(
+            "replayed report kind differs from the retained certificate selector",
+        )),
+    }
 }
 
 pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
@@ -282,12 +293,20 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
         } => ("SupersededBy", checked_at, later_entries),
     };
     ctx.out.known_at(checked_at);
-    ctx.out.effective(match &certificate.selection {
-        TrialBalanceSelection::AsOf(day) => format!("as-of:{day}"),
-        TrialBalanceSelection::Periods(periods) | TrialBalanceSelection::Activity(periods) => {
-            periods_selector(periods)
+    match &certificate.selection {
+        ReportSelection::TrialBalance(selection) => {
+            ctx.out.effective(match selection {
+                TrialBalanceSelection::AsOf(day) => format!("as-of:{day}"),
+                TrialBalanceSelection::Periods(periods) | TrialBalanceSelection::Activity(periods) => {
+                    periods_selector(periods)
+                }
+            });
         }
-    });
+        ReportSelection::ExplainBalance { period, .. } => {
+            ctx.out.effective(format!("period:{period}"));
+        }
+        ReportSelection::OpenItems { .. } => {}
+    }
     let digest = hex(&certificate.digest);
     ctx.out.event_with_certificate(
         "certificate_status",
