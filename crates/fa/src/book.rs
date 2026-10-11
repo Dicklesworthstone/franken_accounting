@@ -1080,6 +1080,13 @@ impl Book {
         with_store!(&self.store, core => core.verify_open_items(&self.purposes()))
     }
 
+    /// FA-INV-16: compare every derived Leg vertex and its HAS_LEG/POSTS_TO
+    /// edges with what its entry's payload derives (`fa verify projections`).
+    /// A finding is drift in derived state, never a repair.
+    pub fn verify_projections(&self) -> Result<fa_registers::ProjectionVerification, BookError> {
+        with_store!(&self.store, core => core.verify_projections(&self.purposes()))
+    }
+
     /// Refold every limited account's `LimitCell` from the journal and
     /// compare it with the stored cell (`fa verify availability`, plan
     /// §5.4–5.5). Drift is a finding, never a repair.

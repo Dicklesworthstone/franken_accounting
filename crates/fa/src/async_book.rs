@@ -957,6 +957,17 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    /// FA-INV-16: every derived Leg vertex and its HAS_LEG/POSTS_TO edges
+    /// equal what its entry's payload derives (`fa verify projections`).
+    pub fn verify_projections(
+        &self,
+        cx: &PurposeContexts,
+    ) -> Result<fa_registers::ProjectionVerification, BookError> {
+        self.query(cx, |db, book| {
+            Ok(fa_registers::verify_projections(db, book)?)
+        })
+    }
+
     pub fn verify_availability(
         &self,
         cx: &PurposeContexts,

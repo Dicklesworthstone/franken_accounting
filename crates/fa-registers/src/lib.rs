@@ -19,6 +19,7 @@ pub mod entity;
 pub mod explain;
 pub mod maintainer;
 pub mod open_items;
+pub mod projections;
 pub mod replay;
 
 use core::fmt;
@@ -52,6 +53,7 @@ pub use maintainer::{
 pub use open_items::{
     Application, AppliedDrift, OpenItem, OpenItemVerification, open_items, verify_open_items,
 };
+pub use projections::{ProjectionVerification, verify_projections};
 
 pub const FOLD_DIGEST_DOMAIN: &[u8] = b"fa:register-fold:v2";
 

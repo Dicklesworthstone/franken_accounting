@@ -16,7 +16,7 @@ use fa_model::{
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_registers::{
     Cell, CellKey, Fold, RegisterError, balance_as_of, fold_period, fold_period_at, materialize,
-    register_vid, trial_balance, trial_balance_at, verify_period,
+    register_vid, trial_balance, trial_balance_at, verify_period, verify_projections,
 };
 use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodTransition};
 use fgdb::{Database, DatabaseKeys, MemVfs, WriteBatch};
@@ -1380,4 +1380,126 @@ fn a_limit_cell_rebound_to_another_account_fails_closed_and_verify_names_both() 
         post_raw(&mut h, a, cash, 1, b"fund-a-unbound"),
         Err(KernelError::Corrupt(_))
     ));
+}
+
+/// FA-INV-16 (fa-avx): projections equal payloads, and each planted
+/// departure from a payload, made through the substrate API as a test
+/// adversary would, is a finding naming the entry, the leg and what differs.
+#[test]
+fn projections_equal_payloads_and_each_planted_departure_is_named() {
+    let posted = |h: &mut Harness| h.post_rent(1_000, b"p1").entry_ref().vid;
+    let mut h = harness();
+    let entry = posted(&mut h);
+    h.post_rent(250, b"p2");
+    let clean = verify_projections(&h.db, &h.book).unwrap();
+    assert!(clean.is_green(), "{clean:?}");
+    assert_eq!(clean.legs_checked, 4, "two posts of two legs: {clean:?}");
+    assert!(clean.entries_checked >= 2, "{clean:?}");
+
+    type Plant = fn(VId) -> Vec<WriteBatch>;
+    let plants: [(&str, Plant, &str); 5] = [
+        (
+            "a leg's amount mirror rewritten",
+            |entry| {
+                let mut b = WriteBatch::new(relation::HAS_LEG);
+                b.set_vertex_property(
+                    fa_journal::rows::leg_vid(entry, 0),
+                    property::AMOUNT,
+                    Some(CanonicalScalar::Int(7)),
+                );
+                vec![b]
+            },
+            "leg 0: property",
+        ),
+        (
+            "a leg's side mirror flipped",
+            |entry| {
+                let mut b = WriteBatch::new(relation::HAS_LEG);
+                b.set_vertex_property(
+                    fa_journal::rows::leg_vid(entry, 1),
+                    property::SIDE,
+                    Some(CanonicalScalar::Int(0)),
+                );
+                vec![b]
+            },
+            "leg 1: property",
+        ),
+        (
+            "a HAS_LEG edge removed",
+            |entry| {
+                let mut b = WriteBatch::new(relation::HAS_LEG);
+                b.delete_edge(edge_id(
+                    relation::HAS_LEG,
+                    entry,
+                    fa_journal::rows::leg_vid(entry, 0),
+                ));
+                vec![b]
+            },
+            "leg 0: no HAS_LEG edge",
+        ),
+        (
+            "a HAS_LEG ordinal rewritten",
+            |entry| {
+                let mut b = WriteBatch::new(relation::HAS_LEG);
+                b.set_edge_property(
+                    edge_id(
+                        relation::HAS_LEG,
+                        entry,
+                        fa_journal::rows::leg_vid(entry, 1),
+                    ),
+                    property::ORDINAL,
+                    Some(CanonicalScalar::Int(5)),
+                );
+                vec![b]
+            },
+            "leg 1: HAS_LEG ordinal",
+        ),
+        (
+            "a leg relabeled",
+            |entry| {
+                let mut b = WriteBatch::new(relation::HAS_LEG);
+                b.set_vertex_label(fa_journal::rows::leg_vid(entry, 0), label::LEG, false);
+                vec![b]
+            },
+            "leg 0: the vertex is not labeled Leg",
+        ),
+    ];
+    for (what, plant, expected) in plants {
+        let mut h = harness();
+        let entry = posted(&mut h);
+        let ctx = h.ctx();
+        for batch in plant(entry) {
+            h.runtime
+                .block_on(async { h.db.write(&ctx.commit(), batch).await })
+                .expect("tamper write");
+        }
+        let v = verify_projections(&h.db, &h.book).unwrap();
+        eprintln!("[projections] {what}: {:?}", v.findings);
+        assert!(!v.is_green(), "{what} must be found");
+        let name = format!("entry {:032x} {expected}", entry.0);
+        assert!(
+            v.findings.iter().any(|f| f.starts_with(&name)),
+            "{what}: expected a finding starting `{name}`: {:?}",
+            v.findings
+        );
+    }
+
+    // A POSTS_TO edge removed: the finding names the leg and its account.
+    let mut h = harness();
+    let entry = posted(&mut h);
+    let ctx = h.ctx();
+    let leg = fa_journal::rows::leg_vid(entry, 0);
+    let mut b = WriteBatch::new(relation::POSTS_TO);
+    b.delete_edge(edge_id(relation::POSTS_TO, leg, h.rent));
+    h.runtime
+        .block_on(async { h.db.write(&ctx.commit(), b).await })
+        .expect("tamper write");
+    let v = verify_projections(&h.db, &h.book).unwrap();
+    assert!(
+        v.findings
+            .iter()
+            .any(|f| f.contains("leg 0: no POSTS_TO edge to account")),
+        "{:?}",
+        v.findings
+    );
 }

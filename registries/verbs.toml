@@ -217,14 +217,14 @@ example = "fa checkpoint create --grant witness --book ./books/myco --json"
 
 [[verb]]
 name = "verify"
-summary = "Verify derived state against the journal by refolding: registers, open-item applied mirrors, limited accounts' availability cells, or accumulator states (exit 8 on drift)."
+summary = "Verify derived state against the journal by refolding: registers, open-item applied mirrors, limited accounts' availability cells, accumulator states, or derived leg projections (exit 8 on drift)."
 writes = false
-subcommands = ["registers", "open-items", "availability", "accumulator"]
+subcommands = ["registers", "open-items", "availability", "accumulator", "projections"]
 flags = ["--period", "--fiscal-year"]
 switches = []
-events = ["registers_verified", "open_items_verified", "availability_verified", "accumulator_verified"]
+events = ["registers_verified", "open_items_verified", "availability_verified", "accumulator_verified", "projections_verified"]
 exits = [0, 2, 4, 5, 8]
-usage = ["verify registers ((--period <code>)... | --fiscal-year N)", "verify open-items", "verify availability", "verify accumulator (every recorded checkpoint; no period filter)"]
+usage = ["verify registers ((--period <code>)... | --fiscal-year N)", "verify open-items", "verify availability", "verify accumulator (every recorded checkpoint; no period filter)", "verify projections (every entry's Leg vertices and HAS_LEG/POSTS_TO edges against its payload, FA-INV-16)"]
 example = "fa verify registers --period FY2026-P03 --book ./books/myco"
 
 [[verb]]
@@ -613,6 +613,12 @@ name = "certificate_status"
 book = true
 doc = "`status` is Current or SupersededBy: `later_entries` are the entries recorded after `known_at` with an effective date inside the certified selector (oldest first), and `figures_changed` says whether the same report at `head` has other rows or totals. A superseded certificate still replays at its known-at."
 fields = ["certificate:hex", "definition:string", "known_at:seq", "head:seq", "status:string", "later_entries:[later_entry]", "figures_changed:bool"]
+
+[[event]]
+name = "projections_verified"
+book = true
+doc = "FA-INV-16: every live entry's derived Leg vertices (their payload-derived mirrors), its HAS_LEG edges with their ordinals and its POSTS_TO edges equal what the payload derives, each written in the entry's commit. A leg's `applied` mirror is the open-item fold's (`fa verify open-items`). Any finding is exit 8 with the same fields in the error's detail."
+fields = ["entries_checked:int", "legs_checked:int", "findings:[string]"]
 
 [[event]]
 name = "registers_verified"
@@ -1015,7 +1021,7 @@ mistakes = ["Omitting `grant: [\"witness\"]` — the embedded posture self-issue
 cluster = "fa.book"
 name = "verify"
 verb = "verify"
-subcommands = ["registers", "open-items", "availability", "accumulator"]
+subcommands = ["registers", "open-items", "availability", "accumulator", "projections"]
 selector = "target"
 positionals = []
 required = []

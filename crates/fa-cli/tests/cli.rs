@@ -2473,6 +2473,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     let certificate = write(&dir, "tb.cert", bytes);
     assert_eq!(run(true, &["replay", &certificate]).0, 0);
     assert_eq!(run(true, &["certificate", "status", &certificate]).0, 0);
+    assert_eq!(run(true, &["verify", "projections"]).0, 0);
     assert_eq!(run(true, &["open-items"]).0, 0);
     assert_eq!(run(true, &["entry", "show", &vid]).0, 0);
     assert_eq!(run(true, &["entry", "show", "00"]).0, 0);

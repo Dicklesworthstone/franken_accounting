@@ -3289,6 +3289,43 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 })
             }
         }
+        Some("projections") => {
+            if let Some(extra) = args.positional.get(2) {
+                return Err(usage(
+                    format!("unexpected argument `{extra}`"),
+                    "fa verify projections --book <dir> --json",
+                ));
+            }
+            let book = ctx.books.open(args)?;
+            let v = book.verify_projections()?;
+            let fields = vec![
+                ("entries_checked", Json::Int(v.entries_checked as i128)),
+                ("legs_checked", Json::Int(v.legs_checked as i128)),
+                ("findings", Json::Arr(v.findings.iter().map(s).collect())),
+            ];
+            if v.is_green() {
+                out.event(
+                    "projections_verified",
+                    fields,
+                    &format!(
+                        "projections verified against payloads: {} entries, {} legs, every Leg vertex and HAS_LEG/POSTS_TO edge equals its payload",
+                        v.entries_checked, v.legs_checked
+                    ),
+                );
+                Ok(())
+            } else {
+                Err(Fail::Verification {
+                    message: format!(
+                        "{} derived projections differ from their entry payloads; first: {}",
+                        v.findings.len(),
+                        v.findings.first().map_or("", String::as_str)
+                    ),
+                    detail: obj(fields),
+                    cite: Some("FA-INV-16 (derived legs equal the inline legs)".into()),
+                    fix: None,
+                })
+            }
+        }
         Some("open-items") => {
             let book = ctx.books.open(args)?;
             let v = book.verify_open_items()?;
