@@ -790,7 +790,7 @@ where
                     &format!("its bytes are in store {id}, not store {}", store.id()),
                 )));
             }
-            match store.get(&ctx.query(), locator).await {
+            match store.get(&ctx.query(), locator, record.size).await {
                 Ok(Some(bytes)) => bytes,
                 Ok(None) => {
                     return Ok(Err(blob_missing(

@@ -1,11 +1,9 @@
 //! `Book`: the handle to one FrankenAccounting book on FrankenGraphDB.
 //!
-//! The facade owns what the kernel (`fa-journal`) deliberately does not: the
-//! asupersync runtime, the root `Cx` it was granted, the substrate
-//! `Database` (in memory or in a directory), the book's seal key, and an
-//! entropy capability. Every call narrows the root `Cx` to the substrate's
-//! purpose contexts (plan §1 constraint 3) and runs the kernel's single
-//! transaction to completion.
+//! The synchronous production adapter owns an asupersync runtime and root
+//! context. Every operation delegates to [`AsyncBook`], narrowing that root
+//! to the same purpose contexts that an async or lab caller supplies itself.
+//! Database, document storage, keys and entropy belong to the async core.
 //!
 //! A directory book is `<dir>/store` (the substrate's database directory)
 //! plus the key file the operator keeps: three 64-hex lines, mode 0600.
@@ -21,24 +19,26 @@ use fa_journal::{
     AccountSpec, BookContext, BookSpec, ChartInstalled, KernelError, PostRequest, Posted, Refusal,
     Transitioned,
 };
-use fa_model::{Entry, Erasable, SealKey, SymbolTable};
+use fa_model::{Entry, Erasable, SealKey};
 use fa_registers::{
     AvailabilityVerification, BalanceExplanation, Fold, OpenItem, OpenItemVerification,
     TrialBalance, Verification,
 };
 use fa_time::{DateDay, PeriodDef, PeriodTransition};
-use fgdb::{Database, DatabaseKeys, MemVfs};
+use fgdb::{DatabaseKeys, MemVfs};
 use fgdb_crypto::{CryptoCx, DeterministicEntropy, EntropyError, SystemEntropy, derive_key};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::ids::DatabaseSecurityNamespaceId;
 use fgdb_types::{CommitSeq, VId};
+
+use crate::AsyncBook;
 
 /// The three secrets a book directory needs: the object-identity key, the
 /// security namespace, and the data-encryption key (the substrate's
 /// `DatabaseKeys`). On disk these are the three 64-hex lines of the key file.
 #[derive(Clone)]
 pub struct BookKeys {
-    inner: DatabaseKeys,
+    pub(crate) inner: DatabaseKeys,
     namespace: [u8; 32],
 }
 
@@ -143,7 +143,7 @@ impl BookKeys {
     /// The book key erasable fields without a subject are sealed under:
     /// `KDF(DEK, "fa:erasable:book:v1")`, domain-separated from every
     /// substrate use of the DEK.
-    fn seal_key(&self) -> SealKey {
+    pub(crate) fn seal_key(&self) -> SealKey {
         SealKey(derive_key("fa:erasable:book:v1", self.inner.dek()))
     }
 }
@@ -216,6 +216,7 @@ impl fmt::Debug for Entropy {
 #[derive(Debug)]
 pub enum BookError {
     Runtime(String),
+    Context(Box<asupersync::error::Error>),
     Open(fgdb::OpenError),
     Io(PathBuf, std::io::Error),
     KeyFile(String),
@@ -238,9 +239,11 @@ impl BookError {
             Self::Runtime(_) | Self::Open(_) | Self::Io(..) | Self::KeyFile(_) | Self::NoBook => {
                 fa_journal::exit::ENVIRONMENT
             }
-            Self::Kernel(_) | Self::Registers(_) | Self::Registry(_) | Self::Entropy(_) => {
-                fa_journal::exit::FOUNDATION
-            }
+            Self::Context(_)
+            | Self::Kernel(_)
+            | Self::Registers(_)
+            | Self::Registry(_)
+            | Self::Entropy(_) => fa_journal::exit::FOUNDATION,
         }
     }
 }
@@ -249,6 +252,7 @@ impl fmt::Display for BookError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Runtime(e) => write!(f, "runtime: {e}"),
+            Self::Context(e) => write!(f, "execution context: {e}"),
             Self::Open(e) => write!(f, "open: {e:?}"),
             Self::Io(p, e) => write!(f, "{}: {e}", p.display()),
             Self::KeyFile(e) => write!(f, "key file: {e}"),
@@ -293,31 +297,10 @@ impl From<EntropyError> for BookError {
 pub type Outcome<T> = Result<Result<T, Refusal>, BookError>;
 
 enum Store {
-    Memory(Database<MemVfs>),
-    Dir(Database<UnixVfs>),
+    Memory(AsyncBook<MemVfs>),
+    Dir(AsyncBook<UnixVfs>),
 }
-
-/// The book's blob store (fa-txf part B): documents past the inline bound
-/// keep their bytes here, content-addressed, beside the database.
-enum Blobs {
-    Memory(fa_journal::BlobStore<MemVfs>),
-    Dir(fa_journal::BlobStore<UnixVfs>),
-}
-
-/// The registered store a book's own blobs live in (`document_stores.toml`).
-const BOOK_BLOB_STORE: u16 = 1;
-
-/// Run `$body` with `$bs` bound to the book's blob store, whichever VFS backs it.
-macro_rules! with_blobs {
-    ($blobs:expr, $bs:ident => $body:expr) => {
-        match $blobs {
-            Blobs::Memory($bs) => $body,
-            Blobs::Dir($bs) => $body,
-        }
-    };
-}
-
-/// Run `$body` with `$db` bound to the store's database, whichever VFS backs it.
+/// Dispatch to the same async implementation for either production VFS.
 macro_rules! with_store {
     ($store:expr, $db:ident => $body:expr) => {
         match $store {
@@ -332,9 +315,6 @@ pub struct Book {
     runtime: Runtime,
     root: Cx,
     store: Store,
-    blobs: Blobs,
-    ctx: BookContext,
-    entropy: Entropy,
 }
 
 impl Book {
@@ -346,26 +326,6 @@ impl Book {
         Ok((runtime, root))
     }
 
-    fn genesis(
-        runtime: &Runtime,
-        root: &Cx,
-        store: &mut Store,
-        keys: &BookKeys,
-        spec: BookSpec,
-    ) -> Result<BookContext, BookError> {
-        let purposes = PurposeContexts::narrow_runtime_root(root);
-        let units = fa_money::UnitRegistry::embedded()?;
-        let symbols = SymbolTable::compiled();
-        with_store!(store, db => runtime.block_on(async { fa_journal::create_book(db, &purposes, &spec, &units, &symbols).await }))?;
-        Ok(BookContext {
-            book_id: spec.book_id,
-            calendar: spec.calendar,
-            units,
-            seal_key: keys.seal_key(),
-            symbols,
-        })
-    }
-
     /// Create an in-memory book: open the substrate, journal the book vertex
     /// and its units, and return the handle.
     pub fn create_memory(
@@ -375,25 +335,22 @@ impl Book {
     ) -> Result<Self, BookError> {
         let (runtime, root) = Self::runtime_and_root()?;
         let purposes = PurposeContexts::narrow_runtime_root(&root);
-        let db = runtime.block_on(async {
-            Database::open_memory(&purposes.commit(), keys.inner.clone()).await
-        })?;
-        let mut store = Store::Memory(db);
-        let ctx = Self::genesis(&runtime, &root, &mut store, &keys, spec)?;
-        let blob_vfs = MemVfs::new().map_err(|e| BookError::Io(PathBuf::from("blobs"), e))?;
-        let blobs = Blobs::Memory(fa_journal::BlobStore::open(
-            BOOK_BLOB_STORE,
-            blob_vfs,
-            // MemVfs anchors a relative path at its own private root.
-            "blobs",
-        )?);
+        let vfs = purposes
+            .commit()
+            .with_restriction(MemVfs::new)
+            .map_err(|e| BookError::Io(PathBuf::from("book"), e))?;
+        let core = runtime.block_on(AsyncBook::create_with_vfs(
+            &purposes,
+            vfs,
+            Path::new("book"),
+            keys,
+            spec,
+            entropy,
+        ))?;
         Ok(Self {
             runtime,
             root,
-            store,
-            blobs,
-            ctx,
-            entropy,
+            store: Store::Memory(core),
         })
     }
 
@@ -404,27 +361,20 @@ impl Book {
         spec: BookSpec,
         entropy: Entropy,
     ) -> Result<Self, BookError> {
-        std::fs::create_dir_all(dir).map_err(|e| BookError::Io(dir.to_path_buf(), e))?;
         let (runtime, root) = Self::runtime_and_root()?;
         let purposes = PurposeContexts::narrow_runtime_root(&root);
-        let store_path = dir.join("store");
-        let db = runtime.block_on(async {
-            Database::create(&purposes.commit(), &store_path, keys.inner.clone()).await
-        })?;
-        let mut store = Store::Dir(db);
-        let ctx = Self::genesis(&runtime, &root, &mut store, &keys, spec)?;
-        let blobs = Blobs::Dir(fa_journal::BlobStore::open(
-            BOOK_BLOB_STORE,
+        let core = runtime.block_on(AsyncBook::create_with_vfs(
+            &purposes,
             UnixVfs::new(),
-            dir.join("blobs"),
-        )?);
+            dir,
+            keys,
+            spec,
+            entropy,
+        ))?;
         Ok(Self {
             runtime,
             root,
-            store,
-            blobs,
-            ctx,
-            entropy,
+            store: Store::Dir(core),
         })
     }
 
@@ -433,67 +383,39 @@ impl Book {
     pub fn open_dir(dir: &Path, keys: BookKeys, entropy: Entropy) -> Result<Self, BookError> {
         let (runtime, root) = Self::runtime_and_root()?;
         let purposes = PurposeContexts::narrow_runtime_root(&root);
-        let store_path = dir.join("store");
-        let db = runtime.block_on(async {
-            Database::open(&purposes.commit(), &store_path, keys.inner.clone()).await
-        })?;
-        let spec = fa_journal::genesis::read_book_spec(&db)?.ok_or(BookError::NoBook)?;
-        let ctx = BookContext {
-            book_id: spec.book_id,
-            calendar: spec.calendar,
-            units: fa_money::UnitRegistry::embedded()?,
-            seal_key: keys.seal_key(),
-            symbols: SymbolTable::compiled(),
-        };
-        let blobs = Blobs::Dir(fa_journal::BlobStore::open(
-            BOOK_BLOB_STORE,
+        let core = runtime.block_on(AsyncBook::open_with_vfs(
+            &purposes,
             UnixVfs::new(),
-            dir.join("blobs"),
-        )?);
+            dir,
+            keys,
+            entropy,
+        ))?;
         Ok(Self {
             runtime,
             root,
-            store: Store::Dir(db),
-            blobs,
-            ctx,
-            entropy,
+            store: Store::Dir(core),
         })
     }
 
     #[must_use]
     pub fn context(&self) -> &BookContext {
-        &self.ctx
+        with_store!(&self.store, core => core.context())
     }
 
     /// The book's head: the latest recorded sequence, which a read at head
     /// observes and a write's result follows (the robot envelope's
     /// `coordinate.known_at`, plan Appendix D). Read-only.
     pub fn head(&self) -> Result<CommitSeq, BookError> {
-        Ok(with_store!(&self.store, db => db.frontier()).map_err(KernelError::from)?)
+        with_store!(&self.store, core => core.head(&self.purposes()))
     }
 
     fn purposes(&self) -> PurposeContexts {
         PurposeContexts::narrow_runtime_root(&self.root)
     }
 
-    fn salt_and_nonce(&self) -> Result<([u8; 32], [u8; 24]), BookError> {
-        let mut salt = [0u8; 32];
-        let mut nonce = [0u8; 24];
-        self.entropy.fill(&mut salt)?;
-        self.entropy.fill(&mut nonce)?;
-        Ok((salt, nonce))
-    }
-
     /// Seal a description or memo under the book key with fresh salt and nonce.
     pub fn seal_text(&self, text: &str) -> Result<Erasable<String>, BookError> {
-        let (salt, nonce) = self.salt_and_nonce()?;
-        Ok(Erasable::seal(
-            &text.to_string(),
-            None,
-            &self.ctx.seal_key,
-            salt,
-            nonce,
-        ))
+        with_store!(&self.store, core => core.seal_text(&self.purposes(), text))
     }
 
     /// Install a chart as one journaled schema effect (plan §4.3).
@@ -504,13 +426,10 @@ impl Book {
         effective_date: DateDay,
         idempotency_key: &[u8],
     ) -> Outcome<ChartInstalled> {
-        let description = self.seal_text(&format!("chart install: {} accounts", accounts.len()))?;
         let purposes = self.purposes();
-        let ctx = &self.ctx;
-        let runtime = &self.runtime;
-        Ok(
-            with_store!(&mut self.store, db => runtime.block_on(async { fa_journal::install_chart(db, &purposes, ctx, accounts, principal, effective_date, idempotency_key, description).await }))?,
-        )
+        with_store!(&mut self.store, core => self.runtime.block_on(core.install_chart(
+            &purposes, accounts, principal, effective_date, idempotency_key,
+        )))
     }
 
     /// Create one fiscal year's periods in state `Future`.
@@ -519,11 +438,7 @@ impl Book {
         fiscal_year: i32,
     ) -> Result<(CommitSeq, Vec<PeriodDef>), BookError> {
         let purposes = self.purposes();
-        let ctx = &self.ctx;
-        let runtime = &self.runtime;
-        Ok(
-            with_store!(&mut self.store, db => runtime.block_on(async { fa_journal::create_periods(db, &purposes, ctx, fiscal_year).await }))?,
-        )
+        with_store!(&mut self.store, core => self.runtime.block_on(core.create_periods(&purposes, fiscal_year)))
     }
 
     /// Move a period along the state machine under `capability` (plan §14:
@@ -543,13 +458,10 @@ impl Book {
         idempotency_key: &[u8],
         capability: &fa_journal::Capability,
     ) -> Outcome<Transitioned> {
-        let description = self.seal_text(&format!("period {period_code}: {t:?}"))?;
         let purposes = self.purposes();
-        let ctx = &self.ctx;
-        let runtime = &self.runtime;
-        Ok(with_store!(&mut self.store, db => runtime.block_on(async {
-            fa_journal::transition_period(db, &purposes, ctx, period_code, t, principal, reason_code, effective_date, idempotency_key, description, capability, &[]).await
-        }))?)
+        with_store!(&mut self.store, core => self.runtime.block_on(core.transition_period(
+            &purposes, period_code, t, principal, reason_code, effective_date, idempotency_key, capability,
+        )))
     }
 
     /// Plan a transition without committing (R4): the description is sealed
@@ -566,15 +478,14 @@ impl Book {
         effective_date: DateDay,
         idempotency_key: &[u8],
     ) -> Outcome<fa_journal::TransitionPlan> {
-        let description = self.seal_text(&format!("period {period_code}: {t:?}"))?;
-        Ok(
-            with_store!(&self.store, db => fa_journal::plan_transition(db, &self.ctx, period_code, t, principal, reason_code, effective_date, idempotency_key, description))?,
-        )
+        with_store!(&self.store, core => core.plan_transition(
+            &self.purposes(), period_code, t, principal, reason_code, effective_date, idempotency_key,
+        ))
     }
 
     /// The digest an approval of `plan` binds.
     pub fn plan_digest(&self, plan: &fa_journal::TransitionPlan) -> Result<[u8; 32], BookError> {
-        Ok(plan.proposal_digest(&self.ctx)?)
+        with_store!(&self.store, core => core.plan_digest(plan))
     }
 
     /// Commit a planned transition under `capability`, citing `approvals`
@@ -588,13 +499,10 @@ impl Book {
         capability: &fa_journal::Capability,
         approvals: &[fa_model::ApprovalRef],
     ) -> Outcome<Transitioned> {
-        let description = plan.description.clone();
         let purposes = self.purposes();
-        let ctx = &self.ctx;
-        let runtime = &self.runtime;
-        Ok(with_store!(&mut self.store, db => runtime.block_on(async {
-            fa_journal::transition_period(db, &purposes, ctx, &plan.period_code, t, plan.principal_ref, plan.reason_code, plan.effective_date, &plan.idempotency_key, description, capability, approvals).await
-        }))?)
+        with_store!(&mut self.store, core => self.runtime.block_on(core.transition_planned(
+            &purposes, plan, t, capability, approvals,
+        )))
     }
 
     /// Record an approval of `proposal_digest` under `capability` (plan
@@ -605,27 +513,14 @@ impl Book {
         capability: fa_journal::Capability,
         proposal_digest: [u8; 32],
     ) -> Outcome<fa_journal::Approved> {
-        let req = fa_journal::ApprovalRequest {
-            capability,
-            approved_proposal_digest: proposal_digest,
-            role: 0,
-        };
         let purposes = self.purposes();
-        let ctx = &self.ctx;
-        let runtime = &self.runtime;
-        Ok(with_store!(&mut self.store, db => runtime.block_on(async {
-            fa_journal::record_approval(db, &purposes, ctx, req).await
-        }))?)
+        with_store!(&mut self.store, core => self.runtime.block_on(core.approve(&purposes, capability, proposal_digest)))
     }
 
     /// Post one entry under the accounting laws (plan §5).
     pub fn post(&mut self, req: PostRequest) -> Outcome<Posted> {
         let purposes = self.purposes();
-        let ctx = &self.ctx;
-        let runtime = &self.runtime;
-        Ok(
-            with_store!(&mut self.store, db => runtime.block_on(async { fa_journal::post(db, &purposes, ctx, req).await }))?,
-        )
+        with_store!(&mut self.store, core => self.runtime.block_on(core.post(&purposes, req)))
     }
 
     /// Post with a balancing leg (plan §5.5): leg `leg` moves at most what its
@@ -633,11 +528,7 @@ impl Book {
     /// request is the entry's identity (`fa post --balancing`).
     pub fn post_balancing(&mut self, req: PostRequest, leg: u16) -> Outcome<fa_journal::Balanced> {
         let purposes = self.purposes();
-        let ctx = &self.ctx;
-        let runtime = &self.runtime;
-        Ok(
-            with_store!(&mut self.store, db => runtime.block_on(async { fa_journal::post_balancing(db, &purposes, ctx, req, leg).await }))?,
-        )
+        with_store!(&mut self.store, core => self.runtime.block_on(core.post_balancing(&purposes, req, leg)))
     }
 
     /// Open a migration run (plan §8.6): journal its body — the legacy trial
@@ -650,11 +541,7 @@ impl Book {
         req: fa_journal::RunControlRequest,
     ) -> Outcome<fa_journal::RunControlled> {
         let purposes = self.purposes();
-        let ctx = &self.ctx;
-        let runtime = &self.runtime;
-        Ok(
-            with_store!(&mut self.store, db => runtime.block_on(async { fa_journal::open_run(db, &purposes, ctx, body, req).await }))?,
-        )
+        with_store!(&mut self.store, core => self.runtime.block_on(core.open_migration_run(&purposes, body, req)))
     }
 
     /// Plan a run's `Finalize` (or `Abandon`) against the head: the proposal
@@ -668,9 +555,9 @@ impl Book {
         idempotency_key: &[u8],
         description: Erasable<String>,
     ) -> Outcome<fa_model::EntryPayload> {
-        Ok(
-            with_store!(&self.store, db => fa_journal::plan_run_transition(db, &self.ctx, run, control_kind, principal, idempotency_key, description))?,
-        )
+        with_store!(&self.store, core => core.plan_migration_transition(
+            &self.purposes(), run, control_kind, principal, idempotency_key, description,
+        ))
     }
 
     /// Finalize or abandon a migration run (one control record).
@@ -679,11 +566,7 @@ impl Book {
         req: fa_journal::RunControlRequest,
     ) -> Outcome<fa_journal::RunControlled> {
         let purposes = self.purposes();
-        let ctx = &self.ctx;
-        let runtime = &self.runtime;
-        Ok(
-            with_store!(&mut self.store, db => runtime.block_on(async { fa_journal::transition_run(db, &purposes, ctx, req).await }))?,
-        )
+        with_store!(&mut self.store, core => self.runtime.block_on(core.transition_migration_run(&purposes, req)))
     }
 
     /// The migration run at `run`, as of `known_at` (head when `None`).
@@ -692,7 +575,7 @@ impl Book {
         run: VId,
         known_at: Option<CommitSeq>,
     ) -> Result<Option<fa_journal::Run>, BookError> {
-        Ok(with_store!(&self.store, db => fa_journal::read_run(db, run, known_at))?)
+        with_store!(&self.store, core => core.migration_run(&self.purposes(), run, known_at))
     }
 
     /// Record a document (plan §9.1): content-addressed; the same bytes of
@@ -703,20 +586,8 @@ impl Book {
         &mut self,
         doc: &fa_journal::Document,
     ) -> Outcome<fa_journal::DocumentAdded> {
-        let inline_bound =
-            fa_registry::evidence_policy::EvidencePolicy::embedded()?.max_document_bytes;
-        let external = u64::try_from(doc.bytes.len()).unwrap_or(u64::MAX) > inline_bound;
         let purposes = self.purposes();
-        let ctx = &self.ctx;
-        let runtime = &self.runtime;
-        let blobs = &self.blobs;
-        Ok(if external {
-            with_store!(&mut self.store, db => with_blobs!(blobs, bs => runtime.block_on(async {
-                fa_journal::add_document_external(db, &purposes, ctx, bs, doc).await
-            })))?
-        } else {
-            with_store!(&mut self.store, db => runtime.block_on(async { fa_journal::add_document(db, &purposes, ctx, doc).await }))?
-        })
+        with_store!(&mut self.store, core => self.runtime.block_on(core.add_document(&purposes, doc)))
     }
 
     /// Record an import run (plan §9.3): the batch's documents and their
@@ -732,25 +603,15 @@ impl Book {
         description: &str,
         documents: Vec<fa_journal::Document>,
     ) -> Outcome<fa_journal::ImportRecorded> {
-        let req = fa_journal::ImportRequest {
-            principal: capability.holder(),
-            source,
-            idempotency_key: idempotency_key.to_vec(),
-            effective_date,
-            description: self.seal_text(description)?,
-            documents,
-        };
         let purposes = self.purposes();
-        let ctx = &self.ctx;
-        let runtime = &self.runtime;
-        Ok(with_store!(&mut self.store, db => runtime.block_on(async {
-            fa_journal::import_run(db, &purposes, ctx, capability, req).await
-        }))?)
+        with_store!(&mut self.store, core => self.runtime.block_on(core.import_run(
+            &purposes, capability, source, idempotency_key, effective_date, description, documents,
+        )))
     }
 
     /// The receipt of the import run whose control entry is `run`.
     pub fn read_run(&self, run: VId) -> Result<Option<fa_journal::RunReceipt>, BookError> {
-        Ok(with_store!(&self.store, db => fa_journal::read_run(db, run))?)
+        with_store!(&self.store, core => core.read_run(&self.purposes(), run))
     }
 
     /// Hand the document at `document` on from the capability's holder (its
@@ -761,14 +622,10 @@ impl Book {
         document: &fa_model::Oid,
         to: VId,
     ) -> Outcome<fa_journal::CustodyMoved> {
-        let from = capability.holder();
-        let document = *document;
         let purposes = self.purposes();
-        let ctx = &self.ctx;
-        let runtime = &self.runtime;
-        Ok(with_store!(&mut self.store, db => runtime.block_on(async {
-            fa_journal::transfer_custody(db, &purposes, ctx, capability, document, from, to).await
-        }))?)
+        with_store!(&mut self.store, core => self.runtime.block_on(core.transfer_custody(
+            &purposes, capability, document, to,
+        )))
     }
 
     /// The document's chain of custody, verified, oldest first.
@@ -776,18 +633,13 @@ impl Book {
         &self,
         document: &fa_model::Oid,
     ) -> Result<Vec<(fa_journal::CustodyEvent, CommitSeq)>, BookError> {
-        Ok(with_store!(&self.store, db => fa_journal::custody_chain(db, document))?)
+        with_store!(&self.store, core => core.custody_chain(&self.purposes(), document))
     }
 
     /// The document at `oid`, verified against its commitment.
     pub fn read_document(&self, oid: &fa_model::Oid) -> Outcome<Option<fa_journal::Document>> {
         let purposes = self.purposes();
-        let runtime = &self.runtime;
-        Ok(
-            with_store!(&self.store, db => with_blobs!(&self.blobs, bs => runtime.block_on(async {
-                fa_journal::fetch_document(db, &purposes, bs, oid).await
-            })))?,
-        )
+        with_store!(&self.store, core => self.runtime.block_on(core.read_document(&purposes, oid)))
     }
 
     /// The document's verified record (kind, grade, size, commitment, and
@@ -796,7 +648,7 @@ impl Book {
         &self,
         oid: &fa_model::Oid,
     ) -> Result<Option<fa_journal::DocumentRecord>, BookError> {
-        Ok(with_store!(&self.store, db => fa_journal::document_record(db, oid))?)
+        with_store!(&self.store, core => core.document_record(&self.purposes(), oid))
     }
 
     /// Record a `Reviewed` attestation over the document at `document`
@@ -809,14 +661,10 @@ impl Book {
         document: &fa_model::Oid,
         against: Vec<fa_model::Oid>,
     ) -> Outcome<fa_journal::Attested> {
-        let reviewer = capability.holder();
-        let document = *document;
         let purposes = self.purposes();
-        let ctx = &self.ctx;
-        let runtime = &self.runtime;
-        Ok(with_store!(&mut self.store, db => runtime.block_on(async {
-            fa_journal::record_review(db, &purposes, ctx, capability, reviewer, document, against).await
-        }))?)
+        with_store!(&mut self.store, core => self.runtime.block_on(core.record_review(
+            &purposes, capability, document, against,
+        )))
     }
 
     /// Record the preparer's `ManualAssertion` over `proposal` (plan §9.2):
@@ -830,33 +678,30 @@ impl Book {
         reason_code: u16,
         statement: &str,
     ) -> Outcome<fa_journal::Attested> {
-        let statement = self.seal_text(statement)?;
         let purposes = self.purposes();
-        let ctx = &self.ctx;
-        let runtime = &self.runtime;
-        Ok(with_store!(&mut self.store, db => runtime.block_on(async {
-            fa_journal::record_manual_assertion(db, &purposes, ctx, capability, proposal, reason_code, statement).await
-        }))?)
+        with_store!(&mut self.store, core => self.runtime.block_on(core.record_manual_assertion(
+            &purposes, capability, proposal, reason_code, statement,
+        )))
     }
 
     /// Read a committed entry back by its derived identity, verifying its digests.
     pub fn read_entry(&self, vid: VId) -> Result<Option<(Entry, CommitSeq)>, BookError> {
-        Ok(with_store!(&self.store, db => fa_journal::post::read_entry(db, vid))?)
+        with_store!(&self.store, core => core.read_entry(&self.purposes(), vid))
     }
 
     /// Every period of the book in calendar order, with its current state.
     pub fn periods(&self) -> Result<Vec<PeriodRow>, BookError> {
-        Ok(with_store!(&self.store, db => fa_journal::genesis::list_periods(db))?)
+        with_store!(&self.store, core => core.periods(&self.purposes()))
     }
 
     /// Every account of the chart, sorted by code.
     pub fn accounts(&self) -> Result<Vec<AccountRow>, BookError> {
-        Ok(with_store!(&self.store, db => fa_journal::genesis::list_accounts(db))?)
+        with_store!(&self.store, core => core.accounts(&self.purposes()))
     }
 
     /// The register fold of one period (plan §5.3).
     pub fn fold_period(&self, period_code: &str) -> Result<Fold, BookError> {
-        Ok(with_store!(&self.store, db => fa_registers::fold_period(db, &self.ctx, period_code))?)
+        with_store!(&self.store, core => core.fold_period(&self.purposes(), period_code))
     }
 
     /// Materialize a period's registers from a fresh fold.
@@ -865,18 +710,12 @@ impl Book {
         period_code: &str,
     ) -> Result<(Fold, CommitSeq), BookError> {
         let purposes = self.purposes();
-        let ctx = &self.ctx;
-        let runtime = &self.runtime;
-        Ok(with_store!(&mut self.store, db => {
-            let fold = fa_registers::fold_period(db, ctx, period_code)?;
-            let seq = runtime.block_on(async { fa_registers::materialize(db, &purposes, ctx, &fold).await })?;
-            Ok::<_, fa_registers::RegisterError>((fold, seq))
-        })?)
+        with_store!(&mut self.store, core => self.runtime.block_on(core.materialize_registers(&purposes, period_code)))
     }
 
     /// Refold a period and compare it to its stored registers (`fa verify registers`).
     pub fn verify_registers(&self, period_code: &str) -> Result<Verification, BookError> {
-        Ok(with_store!(&self.store, db => fa_registers::verify_period(db, &self.ctx, period_code))?)
+        with_store!(&self.store, core => core.verify_registers(&self.purposes(), period_code))
     }
 
     /// Incrementally maintain native posted/pending period registers from
@@ -888,11 +727,7 @@ impl Book {
         period_code: &str,
     ) -> Result<fa_registers::Advance, BookError> {
         let purposes = self.purposes();
-        let ctx = &self.ctx;
-        let runtime = &self.runtime;
-        Ok(with_store!(&mut self.store, db => runtime.block_on(async {
-            fa_registers::advance(db, &purposes, ctx, period_code).await
-        }))?)
+        with_store!(&mut self.store, core => self.runtime.block_on(core.advance_registers(&purposes, period_code)))
     }
 
     /// Replace native posted/pending period registers and their maintenance
@@ -903,11 +738,7 @@ impl Book {
         period_code: &str,
     ) -> Result<fa_registers::Advance, BookError> {
         let purposes = self.purposes();
-        let ctx = &self.ctx;
-        let runtime = &self.runtime;
-        Ok(with_store!(&mut self.store, db => runtime.block_on(async {
-            fa_registers::rebuild(db, &purposes, ctx, period_code).await
-        }))?)
+        with_store!(&mut self.store, core => self.runtime.block_on(core.rebuild_registers(&purposes, period_code)))
     }
 
     /// Publish an unsigned accumulator state for this book's entry prefix.
@@ -919,28 +750,8 @@ impl Book {
         principal: VId,
         capability: &fa_policy::Capability,
     ) -> Outcome<fa_notary::Checkpointed> {
-        if let Err(denial) = fa_policy::admit(
-            capability,
-            &fa_policy::Intent {
-                principal,
-                trunk: true,
-                op: fa_policy::Op::Witness,
-                book: self.ctx.book_id,
-                legs: &[],
-            },
-        ) {
-            return Ok(Err(fa_journal::policy::refusal(&denial)));
-        }
-        let at = with_store!(&self.store, db => db.frontier()).map_err(KernelError::from)?;
-        if let Err(denial) = fa_policy::current(capability, at) {
-            return Ok(Err(fa_journal::policy::refusal(&denial)));
-        }
         let purposes = self.purposes();
-        let ctx = &self.ctx;
-        let runtime = &self.runtime;
-        Ok(with_store!(&mut self.store, db => runtime.block_on(async {
-            fa_notary::checkpoint(db, &purposes, ctx).await
-        }))?)
+        with_store!(&mut self.store, core => self.runtime.block_on(core.checkpoint(&purposes, principal, capability)))
     }
 
     /// Recompute every accumulator state from its journal prefix.
@@ -948,7 +759,7 @@ impl Book {
     /// methods; scoped session admission is not implemented here. The result
     /// verifies entry prefixes, without signatures or document-receipt claims.
     pub fn verify_accumulator(&self) -> Result<fa_notary::AccumulatorVerification, BookError> {
-        Ok(with_store!(&self.store, db => fa_notary::verify_accumulator(db, &self.ctx))?)
+        with_store!(&self.store, core => core.verify_accumulator(&self.purposes()))
     }
 
     /// Open items (plan §5.7): every leg of a live posted entry, optionally
@@ -958,21 +769,19 @@ impl Book {
         account: Option<VId>,
         known_at: Option<CommitSeq>,
     ) -> Result<Vec<OpenItem>, BookError> {
-        Ok(
-            with_store!(&self.store, db => fa_registers::open_items(db, &self.ctx, account, known_at))?,
-        )
+        with_store!(&self.store, core => core.open_items(&self.purposes(), account, known_at))
     }
 
     /// Compare every posted leg's `applied` mirror with the open-item fold.
     pub fn verify_open_items(&self) -> Result<OpenItemVerification, BookError> {
-        Ok(with_store!(&self.store, db => fa_registers::verify_open_items(db, &self.ctx, None))?)
+        with_store!(&self.store, core => core.verify_open_items(&self.purposes()))
     }
 
     /// Refold every limited account's `LimitCell` from the journal and
     /// compare it with the stored cell (`fa verify availability`, plan
     /// §5.4–5.5). Drift is a finding, never a repair.
     pub fn verify_availability(&self) -> Result<AvailabilityVerification, BookError> {
-        Ok(with_store!(&self.store, db => fa_registers::verify_availability(db, &self.ctx, None))?)
+        with_store!(&self.store, core => core.verify_availability(&self.purposes()))
     }
 
     /// Explain an account's register cells in one period (`fa explain
@@ -985,9 +794,7 @@ impl Book {
         period_code: &str,
         known_at: Option<CommitSeq>,
     ) -> Result<BalanceExplanation, BookError> {
-        Ok(
-            with_store!(&self.store, db => fa_registers::explain_balance(db, &self.ctx, account, period_code, known_at))?,
-        )
+        with_store!(&self.store, core => core.explain_balance(&self.purposes(), account, period_code, known_at))
     }
 
     /// Stock balances from inception through the latest selected period's end.
@@ -1002,9 +809,7 @@ impl Book {
         periods: &[String],
         known_at: Option<CommitSeq>,
     ) -> Result<TrialBalance, BookError> {
-        Ok(
-            with_store!(&self.store, db => fa_registers::trial_balance_at(db, &self.ctx, periods, known_at))?,
-        )
+        with_store!(&self.store, core => core.trial_balance_at(&self.purposes(), periods, known_at))
     }
 
     /// Stock balances through an inclusive civil date, including opening history.
@@ -1013,9 +818,7 @@ impl Book {
         day: DateDay,
         known_at: Option<CommitSeq>,
     ) -> Result<TrialBalance, BookError> {
-        Ok(
-            with_store!(&self.store, db => fa_registers::balance_as_of(db, &self.ctx, day, known_at))?,
-        )
+        with_store!(&self.store, core => core.balance_as_of(&self.purposes(), day, known_at))
     }
 
     /// Literal movements in the selected periods, with each period counted once.
@@ -1025,9 +828,7 @@ impl Book {
         periods: &[String],
         known_at: Option<CommitSeq>,
     ) -> Result<TrialBalance, BookError> {
-        Ok(
-            with_store!(&self.store, db => fa_registers::period_activity(db, &self.ctx, periods, known_at))?,
-        )
+        with_store!(&self.store, core => core.period_activity(&self.purposes(), periods, known_at))
     }
 }
 
@@ -1036,7 +837,8 @@ impl fmt::Debug for Book {
         write!(
             f,
             "Book({:?}, calendar {})",
-            self.ctx.book_id, self.ctx.calendar.id
+            self.context().book_id,
+            self.context().calendar.id
         )
     }
 }
@@ -1044,10 +846,380 @@ impl fmt::Debug for Book {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use asupersync::lab::{AutoAdvanceTermination, LabConfig, LabRuntime};
+    use asupersync::types::CancelKind;
     use fa_journal::{Capability, UnitPolicy};
     use fa_model::{EntryClass, EntryOrigin, EntryPayload, Id128, LegPayload, Oid, account_vid};
     use fa_money::{Amount, Side};
     use fa_time::{FiscalCalendar, PeriodKind};
+    use fgdb_sim::vfs::{FaultKind, FaultPlan, FaultVfs, Trigger};
+
+    fn under_lab<T, Fut>(seed: u64, test: impl FnOnce(Cx) -> Fut + Send + 'static) -> T
+    where
+        Fut: std::future::Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let mut runtime = LabRuntime::new(LabConfig::new(seed).with_auto_advance());
+        let root = runtime.state.create_root_region(Budget::INFINITE);
+        let (task, mut handle) = runtime
+            .state
+            .create_task(root, Budget::INFINITE, async move {
+                test(Cx::current().expect("ambient lab context")).await
+            })
+            .expect("spawn lab task");
+        runtime
+            .scheduler
+            .lock()
+            .schedule(task, Budget::INFINITE.priority);
+        let advanced = runtime.run_with_auto_advance();
+        assert!(
+            matches!(advanced.termination, AutoAdvanceTermination::Quiescent),
+            "lab must quiesce: {advanced:?}"
+        );
+        let report = runtime.report();
+        assert!(report.lab_test_passed(), "lab oracles: {report:?}");
+        handle
+            .try_join()
+            .expect("join lab task")
+            .expect("task finished")
+    }
+
+    /// A bounded lifecycle smoke test of the real facade, not the full
+    /// fa-0fl crash-point/DPOR campaign. Every filesystem sync is delayed by
+    /// the lab timer, and every unfenced directory entry is lost at crash.
+    fn lab_lifecycle(seed: u64) -> (Fold, [u8; 32], Vec<String>) {
+        under_lab(seed, move |root| async move {
+            let cx = PurposeContexts::narrow_runtime_root(&root);
+            let backing = cx.commit().with_restriction(MemVfs::new).unwrap();
+            let vfs = FaultVfs::with_clock(
+                backing,
+                FaultPlan {
+                    seed,
+                    latency: Trigger::Always,
+                    latency_micros: 7,
+                    dirent_loss: Trigger::Always,
+                    ..FaultPlan::faultless()
+                },
+                root,
+            );
+            let keys = BookKeys::for_development(0x61);
+            let book_id = Id128([0x61; 16]);
+            let (spec, usd) = spec(book_id);
+            let dir = Path::new("nested/lab-book");
+            let mut book = AsyncBook::create_with_vfs(
+                &cx,
+                vfs.clone(),
+                dir,
+                keys.clone(),
+                spec,
+                Entropy::deterministic(seed),
+            )
+            .await
+            .expect("create under the caller's lab");
+            let principal = VId(1);
+            let day = DateDay::from_ymd(2026, 3, 15).unwrap();
+            book.install_chart(&cx, &chart(usd), principal, day, b"chart")
+                .await
+                .unwrap()
+                .unwrap();
+            let (_, periods) = book.create_periods(&cx, 2026).await.unwrap();
+            let march = periods
+                .iter()
+                .find(|p| p.contains(day) && p.kind == PeriodKind::Normal)
+                .unwrap()
+                .code
+                .clone();
+            book.transition_period(
+                &cx,
+                &march,
+                PeriodTransition::Open,
+                principal,
+                1,
+                day,
+                b"open",
+                &Capability::embedded(principal, &["close"]).unwrap(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let inline_bound = fa_registry::evidence_policy::EvidencePolicy::embedded()
+                .unwrap()
+                .max_document_bytes;
+            let source = fa_journal::Document {
+                book_id,
+                kind: 1,
+                mime: "application/octet-stream".into(),
+                grade: 3,
+                retrieved_by: principal,
+                bytes: vec![0x61; usize::try_from(inline_bound).unwrap() + 1],
+            };
+            book.add_document(&cx, &source).await.unwrap().unwrap();
+            let evidence = source.evidence_ref(1);
+            let legs = vec![
+                LegPayload::simple(
+                    Side::Debit,
+                    account_vid(book_id, "6000"),
+                    Amount::new(usd, 150_000),
+                ),
+                LegPayload::simple(
+                    Side::Credit,
+                    account_vid(book_id, "1000"),
+                    Amount::new(usd, 150_000),
+                ),
+            ];
+            let proposal = EntryPayload {
+                schema_minor: 0,
+                book_id,
+                branch_id: Id128::TRUNK,
+                class: EntryClass::ORIGINAL,
+                effective_date: day,
+                document_date: None,
+                description: book.seal_text(&cx, "lab rent").unwrap(),
+                effective_period: None,
+                unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
+                legs,
+                control: None,
+                base_totals: None,
+                idempotency_key: b"lab-rent".to_vec(),
+                origin: EntryOrigin::Intent {
+                    intent_oid: Oid([1; 32]),
+                    intent_kind: 1,
+                },
+                principal_ref: principal,
+                session_ref: None,
+                evidence: vec![evidence.clone()],
+                supersession: Vec::new(),
+                pending: None,
+                external_ids: Vec::new(),
+                extensions: Vec::new(),
+                tags: Vec::new(),
+            };
+            let request = PostRequest {
+                proposal,
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: Capability::embedded(principal, &["post"]).unwrap(),
+            };
+            let posted = book.post(&cx, request.clone()).await.unwrap().unwrap();
+            let before = book.advance_registers(&cx, &march).await.unwrap().fold;
+            assert_eq!(before.entries, 1);
+            assert_eq!(before.period, march);
+            assert_eq!(before.watermark, Some(posted.recorded_at()));
+            assert!(before.pending.is_empty());
+            let mut expected_cells = vec![
+                fa_registers::Cell {
+                    key: fa_registers::CellKey {
+                        account: account_vid(book_id, "6000"),
+                        unit_id: usd.0,
+                        period: march.clone(),
+                    },
+                    debits: 150_000,
+                    credits: 0,
+                    entry_count: 1,
+                },
+                fa_registers::Cell {
+                    key: fa_registers::CellKey {
+                        account: account_vid(book_id, "1000"),
+                        unit_id: usd.0,
+                        period: march.clone(),
+                    },
+                    debits: 0,
+                    credits: 150_000,
+                    entry_count: 1,
+                },
+            ];
+            expected_cells.sort_by(|a, b| a.key.cmp(&b.key));
+            assert_eq!(before.cells, expected_cells);
+            assert_eq!(before, book.fold_period(&cx, &march).unwrap());
+            assert!(book.verify_registers(&cx, &march).unwrap().is_green());
+            assert!(
+                book.trial_balance(&cx, std::slice::from_ref(&march))
+                    .unwrap()
+                    .is_balanced()
+            );
+            drop(book);
+            cx.commit()
+                .with_restriction_async(vfs.crash())
+                .await
+                .unwrap();
+            let mut book =
+                AsyncBook::open_with_vfs(&cx, vfs.clone(), dir, keys, Entropy::deterministic(seed))
+                    .await
+                    .expect("reopen after losing every unfenced name");
+            let (entry, _) = book
+                .read_entry(&cx, posted.entry_ref().vid)
+                .unwrap()
+                .unwrap();
+            assert_eq!(entry.entry_digest, posted.entry_ref().entry_digest);
+            assert_eq!(book.fold_period(&cx, &march).unwrap(), before);
+            assert!(book.verify_registers(&cx, &march).unwrap().is_green());
+            let document = book
+                .read_document(&cx, &evidence.document_oid)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(document.bytes, source.bytes);
+            assert!(matches!(
+                book.post(&cx, request).await.unwrap().unwrap(),
+                Posted::AlreadyRecorded { .. }
+            ));
+            assert!(!book.advance_registers(&cx, &march).await.unwrap().wrote);
+            let events = vfs.events();
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e.kind, FaultKind::Latency { .. })
+                        && e.path.to_string_lossy().contains("store"))
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e.kind, FaultKind::Latency { .. })
+                        && e.path.to_string_lossy().contains("blobs"))
+            );
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| matches!(e.kind, FaultKind::DirentLoss { .. }))
+            );
+            // Staging filenames deliberately carry a process-local unique
+            // counter; compare fault kinds and durable accounting outputs.
+            (
+                before,
+                entry.entry_digest,
+                events.iter().map(|e| format!("{:?}", e.kind)).collect(),
+            )
+        })
+    }
+
+    #[test]
+    fn async_book_runs_and_replays_under_the_callers_lab_and_fault_vfs() {
+        assert_eq!(lab_lifecycle(19), lab_lifecycle(19));
+    }
+
+    #[test]
+    fn async_book_honors_caller_cancellation_before_reads_and_writes() {
+        under_lab(23, |root| async move {
+            let cx = PurposeContexts::narrow_runtime_root(&root);
+            let backing = cx.commit().with_restriction(MemVfs::new).unwrap();
+            let vfs = FaultVfs::with_clock(
+                backing,
+                FaultPlan {
+                    latency: Trigger::Always,
+                    latency_micros: 1,
+                    ..FaultPlan::faultless()
+                },
+                root.clone(),
+            );
+            let (spec, _) = spec(Id128([0x62; 16]));
+            let mut book = AsyncBook::create_with_vfs(
+                &cx,
+                vfs.clone(),
+                Path::new("cancelled-book"),
+                BookKeys::for_development(0x62),
+                spec.clone(),
+                Entropy::deterministic(23),
+            )
+            .await
+            .unwrap();
+            let events = vfs.events().len();
+            root.cancel_with(CancelKind::User, Some("caller cancelled"));
+            assert!(matches!(book.head(&cx), Err(BookError::Context(_))));
+            assert!(matches!(
+                book.create_periods(&cx, 2026).await,
+                Err(BookError::Context(_))
+            ));
+            assert!(matches!(
+                book.seal_text(&cx, "cancelled"),
+                Err(BookError::Context(_))
+            ));
+            assert!(matches!(
+                AsyncBook::create_with_vfs(
+                    &cx,
+                    vfs.clone(),
+                    Path::new("must-not-create"),
+                    BookKeys::for_development(0x62),
+                    spec,
+                    Entropy::deterministic(23),
+                )
+                .await,
+                Err(BookError::Context(_))
+            ));
+            assert_eq!(
+                vfs.events().len(),
+                events,
+                "cancelled calls perform no syncs"
+            );
+        });
+    }
+
+    #[test]
+    fn async_book_database_creation_observes_injected_write_failure() {
+        under_lab(29, |root| async move {
+            let cx = PurposeContexts::narrow_runtime_root(&root);
+            let backing = cx.commit().with_restriction(MemVfs::new).unwrap();
+            let vfs = FaultVfs::new(
+                backing,
+                FaultPlan {
+                    write_enospc: Trigger::Always,
+                    ..FaultPlan::faultless()
+                },
+            );
+            let (spec, _) = spec(Id128([0x63; 16]));
+            assert!(
+                AsyncBook::create_with_vfs(
+                    &cx,
+                    vfs.clone(),
+                    Path::new("enospc-book"),
+                    BookKeys::for_development(0x63),
+                    spec,
+                    Entropy::deterministic(29),
+                )
+                .await
+                .is_err()
+            );
+            assert!(
+                vfs.events()
+                    .iter()
+                    .any(|e| matches!(e.kind, FaultKind::WriteEnospc { .. }))
+            );
+        });
+    }
+
+    #[test]
+    fn directory_book_accepts_a_relative_host_path_without_changing_cwd() {
+        // Reach a unique host temporary directory through a relative path;
+        // no process-global chdir and no deletion of test artifacts.
+        let cwd = std::env::current_dir().unwrap();
+        let mut relative = PathBuf::new();
+        for _ in cwd
+            .components()
+            .filter(|c| matches!(c, std::path::Component::Normal(_)))
+        {
+            relative.push("..");
+        }
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("fa-relative-{}-{suffix}", std::process::id()));
+        relative.push(dir.strip_prefix("/").unwrap());
+        assert!(relative.is_relative());
+        let (spec, _) = spec(Id128([0x64; 16]));
+        let keys = BookKeys::for_development(0x64);
+        let book =
+            Book::create_dir(&relative, keys.clone(), spec, Entropy::deterministic(31)).unwrap();
+        let head = book.head().unwrap();
+        drop(book);
+        assert_eq!(
+            Book::open_dir(&relative, keys, Entropy::deterministic(31))
+                .unwrap()
+                .head()
+                .unwrap(),
+            head
+        );
+    }
 
     #[test]
     fn keys_never_print_and_round_trip_through_the_key_file() {
@@ -1084,7 +1256,7 @@ mod tests {
             Entropy::deterministic(45),
         )
         .unwrap();
-        let before = with_store!(&book.store, db => db.frontier()).unwrap();
+        let before = book.head().unwrap();
         let principal = VId(45);
         let witness = PolicyCapability::embedded(principal, &["witness"]).unwrap();
         let reader = PolicyCapability::embedded(principal, &["read"]).unwrap();
@@ -1098,10 +1270,7 @@ mod tests {
         ] {
             let refusal = book.checkpoint(actor, &cap).unwrap().unwrap_err();
             assert_eq!((refusal.code, refusal.exit), (code, 7));
-            assert_eq!(
-                with_store!(&book.store, db => db.frontier()).unwrap(),
-                before
-            );
+            assert_eq!(book.head().unwrap(), before);
         }
         assert!(book.verify_accumulator().unwrap().states.is_empty());
         let published = book.checkpoint(principal, &witness).unwrap().unwrap();

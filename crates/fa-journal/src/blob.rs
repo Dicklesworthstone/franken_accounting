@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use asupersync::fs::{OpenOptions, Vfs, VfsFile};
-use asupersync::io::AsyncWriteExt;
+use asupersync::io::{AsyncReadExt, AsyncWriteExt};
 use fa_registry::document_stores::DocumentStores;
 use fgdb_types::context::{CommitCx, QueryCx};
 
@@ -140,16 +140,29 @@ impl<V: asupersync::fs::Vfs + Clone> BlobStore<V> {
         .await
     }
 
-    /// The bytes under `locator`, or `None` when the store has none. Under
-    /// `cx`'s read authority.
-    pub async fn get(&self, cx: &QueryCx, locator: &str) -> io::Result<Option<Vec<u8>>> {
+    /// The bytes under `locator`, at most `limit + 1` of them, or `None`
+    /// when the store has none. Under `cx`'s read authority. The caller
+    /// passes the size its record names, so a blob larger than that comes
+    /// back one byte too long — enough to refuse it as drift — without ever
+    /// being read whole (WhiteCreek 3464): allocation is bounded by the
+    /// record, never by the file.
+    pub async fn get(
+        &self,
+        cx: &QueryCx,
+        locator: &str,
+        limit: u64,
+    ) -> io::Result<Option<Vec<u8>>> {
         let path = self.path(locator)?;
         cx.with_restriction_async(async {
-            match self.vfs.read(&path).await {
-                Ok(bytes) => Ok(Some(bytes)),
-                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-                Err(e) => Err(e),
-            }
+            let handle = match self.vfs.open(&path, &OpenOptions::new().read(true)).await {
+                Ok(handle) => handle,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+                Err(e) => return Err(e),
+            };
+            let mut bytes = Vec::new();
+            let mut bounded = handle.take(limit.saturating_add(1));
+            bounded.read_to_end(&mut bytes).await?;
+            Ok(Some(bytes))
         })
         .await
     }

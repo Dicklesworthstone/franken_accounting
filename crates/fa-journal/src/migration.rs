@@ -31,9 +31,9 @@ use std::collections::BTreeMap;
 
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    ApprovalRef, ControlPayload, DecodeError, Entry, EntryClass, EntryOrigin, EntryPayload,
-    Erasable, EvidenceRef, Id128, Oid, Reader, Writer, account_vid, domain_digest, entry_mirrors,
-    entry_vid, migration_run_vid,
+    ApprovalRef, ControlKind, ControlPayload, DecodeError, Entry, EntryClass, EntryOrigin,
+    EntryPayload, Erasable, EvidenceRef, Id128, Oid, Reader, Writer, account_vid, domain_digest,
+    entry_mirrors, entry_vid, migration_run_vid,
 };
 use fa_money::UnitId;
 use fa_policy::{Capability, Intent, Party};
@@ -61,8 +61,6 @@ pub const RUN_BODY_DOMAIN: &[u8] = b"fa:migration-run-body:v1";
 /// `H(domain ‖ body_digest ‖ list(chunk vid ‖ proposal_digest))`: the
 /// ordered chunk set a `Finalize` (or `Abandon`) binds.
 pub const TIE_OUT_DOMAIN: &[u8] = b"fa:migration-tie-out:v1";
-/// `EntryOrigin::Control.control_kind` of a run's control records.
-pub const MIGRATION_CONTROL_KIND: u16 = 4;
 pub const MAX_RUN_KEY_BYTES: usize = 64;
 pub const MAX_ACCOUNT_CODE_BYTES: usize = 64;
 pub const MAX_TRIAL_BALANCE_LINES: usize = fa_model::limits::MAX_LEGS_PER_ENTRY;
@@ -592,7 +590,7 @@ pub fn control_proposal(
         base_totals: None,
         idempotency_key: idempotency_key.to_vec(),
         origin: EntryOrigin::Control {
-            control_kind: MIGRATION_CONTROL_KIND,
+            control_kind: ControlKind::MIGRATION_RUN,
             spec_body_digest: body_digest,
         },
         principal_ref: principal,

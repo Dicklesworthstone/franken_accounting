@@ -36,6 +36,7 @@ pub const CONTROL_KINDS: &[(u16, &str, &str)] = &[
     (5, "schedule_cancel", "ScheduleControl"),
     (6, "import_run", "ImportControl"),
     (8, "capability_revocation", "PolicyControl"),
+    (9, "migration_run", "MigrationControl"),
 ];
 
 /// The control class a record of kind `id` must carry, per the oracle's copy.

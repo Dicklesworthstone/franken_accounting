@@ -187,6 +187,7 @@ impl ControlKind {
     pub const SCHEDULE_CANCEL: Self = Self(5);
     pub const IMPORT_RUN: Self = Self(6);
     pub const CAPABILITY_REVOCATION: Self = Self(8);
+    pub const MIGRATION_RUN: Self = Self(9);
 
     /// Every registered kind: `(kind, name, the control class it mints)`.
     pub const ALL: &'static [(Self, &'static str, EntryClass)] = &[
@@ -216,6 +217,11 @@ impl ControlKind {
             Self::CAPABILITY_REVOCATION,
             "capability_revocation",
             EntryClass::POLICY_CONTROL,
+        ),
+        (
+            Self::MIGRATION_RUN,
+            "migration_run",
+            EntryClass::MIGRATION_CONTROL,
         ),
     ];
 

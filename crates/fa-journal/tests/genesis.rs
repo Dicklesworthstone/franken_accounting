@@ -3058,7 +3058,7 @@ fn an_import_run_records_its_documents_under_a_receipt_that_recomputes() {
         .unwrap_err();
     assert_eq!(r.code, "FA-REF-115", "{r}");
     assert_eq!(
-        read_run(&h.db, run.receipt.run).unwrap(),
+        fa_journal::import::read_run(&h.db, run.receipt.run).unwrap(),
         Some(run.receipt.clone())
     );
 
@@ -3423,12 +3423,15 @@ fn a_blob_publishes_into_a_fresh_nested_root_and_republishes_harmlessly() {
             .await
             .expect("republished");
         assert_eq!(
-            store.get(&ctx.query(), &locator).await.expect("read"),
+            store
+                .get(&ctx.query(), &locator, bytes.len() as u64)
+                .await
+                .expect("read"),
             Some(bytes.clone())
         );
         let other = fa_journal::blob::locator_of(&[8; 32]);
         assert_eq!(
-            store.get(&ctx.query(), &other).await.expect("read"),
+            store.get(&ctx.query(), &other, 64).await.expect("read"),
             None,
             "a blob never published reads as absent, not as an error"
         );
@@ -3524,6 +3527,25 @@ fn an_external_document_reads_back_verified_and_a_missing_or_changed_blob_is_ref
     let r = h.fetch(&store, &added.oid).unwrap_err();
     eprintln!("txf external: a changed blob -> {} {}", r.code, r.message);
     assert_eq!((r.code, r.exit), ("FA-REF-085", exit::VERIFICATION), "{r}");
+    // A blob replaced by more bytes than the record names (WhiteCreek 3464):
+    // drift, exit 8, and the store never reads past the recorded size + 1.
+    let mut longer = doc.bytes.clone();
+    longer.extend_from_slice(b" and then some more bytes than the record names");
+    h.runtime
+        .block_on(async { store.put(&h.ctx().commit(), &locator, &longer).await })
+        .expect("overwrite the blob outside every law");
+    let r = h.fetch(&store, &added.oid).unwrap_err();
+    eprintln!(
+        "txf external: an oversized blob -> {} {}",
+        r.code, r.message
+    );
+    assert_eq!((r.code, r.exit), ("FA-REF-085", exit::VERIFICATION), "{r}");
+    let read = h
+        .runtime
+        .block_on(async { store.get(&h.ctx().query(), &locator, 10).await })
+        .expect("read")
+        .expect("present");
+    assert_eq!(read, longer[..11], "a read stops at limit + 1 bytes");
     // Restoring the right bytes restores the read.
     h.runtime
         .block_on(async { store.put(&h.ctx().commit(), &locator, &doc.bytes).await })

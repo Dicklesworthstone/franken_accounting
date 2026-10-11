@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
 use fa_journal::evidence::{Document, add_document};
-use fa_journal::migration::kind;
+use fa_journal::migration::{kind, read_run};
 use fa_journal::*;
 use fa_model::{
     ApprovalRef, EntryClass, EntryOrigin, EntryPayload, Erasable, EvidenceRef, Id128, LegPayload,

@@ -40,6 +40,21 @@ Register verification compares both amount columns, counts, identity, period mem
 
 The embedded API's `Book::advance_registers(period)` consumes new committed entry payloads through `delta_since` for native posted/pending period cells. It publishes cells and the consumed cursor atomically; `Book::rebuild_registers(period)` replaces them from a fresh journal fold. Reopening rehydrates the delta window, and an actually retired cursor falls back to a full rebuild. Staged migration chunks stay invisible; finalizing a run triggers a full fold to include newly activated chunks older than the cursor. `verify_registers` also checks the maintenance state against its journal prefix. This slice still scans projection metadata and writes the period's cells; it makes no throughput claim. Reports retain their literal folds. Historical register checkpoints, cadence policies, other register families, supervised daemon maintenance and cached report reads remain unfinished.
 
+### Embedded execution
+
+`AsyncBook<V>` accepts the caller's `PurposeContexts` for each operation and
+uses the supplied filesystem for both the journal and external document bytes.
+It owns no runtime. The synchronous `Book` API creates a production runtime
+and delegates to the same implementation. This lets a host application or the
+lab runtime supply cancellation, budgets, scheduling and filesystem faults
+without a second accounting implementation.
+
+The lab smoke tests cover a posted entry, exact expected register cells,
+external evidence, virtual sync latency, crash/reopen, idempotency, caller
+cancellation and an injected write failure. The full registered crash-point
+matrix, concurrency exploration and 1,000-seed Genesis campaign remain open
+under `fa-0fl`; these smoke tests do not establish that broader claim.
+
 ### Entry accumulator checkpoints
 
 The CLI can publish an unsigned checkpoint over the book's entry prefix and
