@@ -156,3 +156,146 @@ mod tests {
         assert!(resolve(&definitions, day, None).is_none());
     }
 }
+
+#[cfg(test)]
+mod instant_tests {
+    use std::collections::BTreeMap;
+
+    use fa_time::{
+        InstantResolution, InstantResolutionError, TimeObservation, resolve_instant,
+    };
+
+    /// Deliberately literal oracle: at every commit position, look up its
+    /// latest retained observation and apply the request's time predicate.
+    /// This walks the commit domain instead of deriving a bucket's end from
+    /// the next tick. The fixtures keep that domain small; the production
+    /// resolver must also support sparse u64 sequence numbers.
+    fn literal_resolution(
+        ticks: &[TimeObservation],
+        requested_utc_ns: u64,
+        frontier: u64,
+    ) -> Result<InstantResolution, InstantResolutionError> {
+        let visible: Vec<_> = ticks
+            .iter()
+            .copied()
+            .filter(|tick| tick.recorded_at <= frontier)
+            .collect();
+        for pair in visible.windows(2) {
+            if pair[0].recorded_at >= pair[1].recorded_at {
+                return Err(InstantResolutionError::SequenceOrder {
+                    previous: pair[0].recorded_at,
+                    next: pair[1].recorded_at,
+                });
+            }
+            if pair[0].observed_utc_ns >= pair[1].observed_utc_ns {
+                return Err(InstantResolutionError::ObservationOrder {
+                    previous_utc_ns: pair[0].observed_utc_ns,
+                    next_utc_ns: pair[1].observed_utc_ns,
+                    recorded_at: pair[1].recorded_at,
+                });
+            }
+        }
+        if let Some(tick) = visible.iter().find(|tick| tick.source != 0) {
+            return Err(InstantResolutionError::UnsupportedSource {
+                recorded_at: tick.recorded_at,
+                source: tick.source,
+            });
+        }
+        let by_sequence: BTreeMap<_, _> = visible
+            .iter()
+            .map(|tick| (tick.recorded_at, *tick))
+            .collect();
+        let first = visible
+            .first()
+            .copied()
+            .ok_or(InstantResolutionError::NoTicks { frontier })?;
+        let mut selected = None;
+        for seq in 0..=frontier {
+            if let Some((_, observation)) = by_sequence.range(..=seq).next_back()
+                && observation.observed_utc_ns <= requested_utc_ns
+            {
+                selected = Some((seq, *observation));
+            }
+        }
+        let (resolved_seq, lower) =
+            selected.ok_or(InstantResolutionError::BeforeFirstTick {
+                requested_utc_ns,
+                first,
+            })?;
+        let upper = by_sequence
+            .values()
+            .find(|tick| tick.recorded_at > resolved_seq)
+            .copied();
+        Ok(InstantResolution {
+            requested_utc_ns,
+            frontier,
+            resolved_seq,
+            lower,
+            upper,
+        })
+    }
+
+    fn observation(recorded_at: u64, observed_utc_ns: u64) -> TimeObservation {
+        TimeObservation {
+            recorded_at,
+            observed_utc_ns,
+            source: 0,
+            monotonic_ok: true,
+        }
+    }
+
+    #[test]
+    fn instant_resolution_matches_a_literal_commit_walk() {
+        // Every subset of seven possible tick positions, with non-tick
+        // commits before/between/after observations. Time advances by an
+        // independent ordinal, not by sequence. Both corroboration grades
+        // appear, and every possible frontier cuts a different prefix.
+        for mask in 0u16..(1 << 7) {
+            let mut ticks = Vec::new();
+            let mut observed_utc_ns = 4;
+            for recorded_at in 1..=7 {
+                if mask & (1 << (recorded_at - 1)) != 0 {
+                    let mut tick = observation(recorded_at, observed_utc_ns);
+                    tick.monotonic_ok = (recorded_at + u64::from(mask)) % 3 != 0;
+                    ticks.push(tick);
+                    observed_utc_ns += 3;
+                }
+            }
+            for frontier in 0..=9 {
+                for requested_utc_ns in 0..=26 {
+                    assert_eq!(
+                        resolve_instant(&ticks, requested_utc_ns, frontier),
+                        literal_resolution(&ticks, requested_utc_ns, frontier),
+                        "mask {mask}, instant {requested_utc_ns}, frontier {frontier}",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn literal_oracle_checks_the_plan_frontier_vectors_and_negative_histories() {
+        let ticks = [observation(10, 100), observation(13, 110)];
+        for (frontier, expected) in [(11, 11), (12, 12), (13, 12)] {
+            let result = literal_resolution(&ticks, 105, frontier).unwrap();
+            assert_eq!(result.resolved_seq, expected);
+            assert_eq!(resolve_instant(&ticks, 105, frontier), Ok(result));
+        }
+        for ticks in [
+            vec![],
+            vec![observation(10, 106)],
+            vec![observation(10, 100), observation(9, 110)],
+            vec![observation(10, 100), observation(10, 110)],
+            vec![observation(10, 100), observation(13, 100)],
+            vec![observation(10, 100), observation(13, 90)],
+            vec![TimeObservation {
+                source: 2,
+                ..observation(10, 100)
+            }],
+        ] {
+            let reference = literal_resolution(&ticks, 105, 20);
+            assert!(reference.is_err(), "negative fixture unexpectedly resolved");
+            assert_eq!(resolve_instant(&ticks, 105, 20), reference, "{ticks:?}");
+        }
+    }
+}
