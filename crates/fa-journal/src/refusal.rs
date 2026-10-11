@@ -196,6 +196,10 @@ pub mod code {
     /// run, a date other than the run's opening date, or a period other than
     /// its Opening period; or migration provenance on another class.
     pub const MIGRATION_OUTSIDE_RUN: &str = "FA-REF-132";
+    /// A scratch replay met history it does not reproduce: a row family fa
+    /// never writes, a property removal, a source window that does not reach
+    /// genesis, or a divergence (plan §15.2).
+    pub const REPLAY_UNSUPPORTED: &str = "FA-REF-134";
 }
 
 /// A foundation failure. Exit 5; never partial.

@@ -29,6 +29,7 @@ pub mod post;
 pub mod refusal;
 pub mod rows;
 pub mod schedule;
+pub mod scratch;
 pub mod sweep;
 
 pub use attestation::{
@@ -64,6 +65,7 @@ pub use schedule::{
     DueReversal, ReversalBatch, ReversalStatus, Schedule, ScheduleVerification, due_reversals,
     sweep_reversals_batch, verify_schedules, with_auto_reverse,
 };
+pub use scratch::{SeqMap, SeqPair, replay_into};
 pub use sweep::{
     DueHold, Op, Profile, SweepBatch, SweepRequest, Swept, Tick, TickRequest, Ticked, due_holds,
     latest_tick, record_tick, sweep, sweep_batch,
