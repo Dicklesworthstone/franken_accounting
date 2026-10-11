@@ -16,7 +16,9 @@
 //! is renamed into place, and then every directory on the blob's ancestor
 //! chain is synced, the blob's own first — the barrier fgdb-chronicle's
 //! `sync_created_entry` uses, extended to the whole chain so directories an
-//! interrupted earlier put created are fenced too. Only after
+//! interrupted earlier put created are fenced too. A relative root is
+//! anchored at `.` when the store opens, so every directory is created and
+//! synced under one nonempty spelling (WhiteCreek 3508). Only after
 //! `put` returns does the kernel commit the journal row that names the blob,
 //! so a crash cannot leave a reference to a lost blob. A reader never sees a
 //! partial blob, and a blob orphaned by a refused or failed intake is
@@ -69,11 +71,20 @@ impl<V: asupersync::fs::Vfs + Clone> BlobStore<V> {
                 store.kind
             )));
         }
+        let dir = dir.into();
+        // Anchor relative roots before creating any names: the host VFS
+        // cannot open an empty path, and the lab VFS must see the same
+        // spelling for a pending entry's parent and its durability fence.
+        let dir = if dir.is_absolute() || dir.starts_with(".") {
+            dir
+        } else {
+            Path::new(".").join(dir)
+        };
         Ok(Self {
             id,
             max_document_bytes: store.max_document_bytes,
             vfs,
-            dir: dir.into(),
+            dir,
         })
     }
 
@@ -103,36 +114,63 @@ impl<V: asupersync::fs::Vfs + Clone> BlobStore<V> {
     /// 1. the directories the blob needs are created;
     /// 2. the bytes go to a staged file whose name is this call's own
     ///    (`<locator>.<pid>-<n>.tmp`, opened create-new), so two puts never
-    ///    share an inode, and the file is synced;
+    ///    share an inode, and the file is synced; a name left by an
+    ///    interrupted process with a reused pid is preserved and the next
+    ///    `n` tried, and an exhausted counter fails rather than wraps;
     /// 3. the staged file is renamed into place (content-addressed: a
     ///    concurrent put of the same locator renames the same bytes);
     /// 4. every directory on the blob's ancestor chain is synced, the blob's
-    ///    own first and the VFS root last — whichever call created them, so
+    ///    own first and the root's anchor (`.` or `/`) last — whichever call
+    ///    created them, so
     ///    a retry after an interrupted put (whose directories exist but were
     ///    never synced) fences them too (WhiteCreek 3459).
     pub async fn put(&self, cx: &CommitCx, locator: &str, bytes: &[u8]) -> io::Result<()> {
         static STAGED: AtomicU64 = AtomicU64::new(0);
+        self.put_with_counter(cx, locator, bytes, &STAGED).await
+    }
+
+    // The counter chooses names only. Supplying it separately lets the
+    // regression reproduce a restarted process without changing global
+    // state or racing other tests; production uses the one static above.
+    async fn put_with_counter(
+        &self,
+        cx: &CommitCx,
+        locator: &str,
+        bytes: &[u8],
+        counter: &AtomicU64,
+    ) -> io::Result<()> {
         let path = self.path(locator)?;
         let parent = path
             .parent()
             .map(PathBuf::from)
             .unwrap_or_else(|| self.dir.clone());
-        let staged = parent.join(format!(
-            "{locator}.{}-{}.tmp",
-            std::process::id(),
-            STAGED.fetch_add(1, Ordering::Relaxed)
-        ));
         cx.with_restriction_async(async {
+            cx.checkpoint().map_err(io::Error::other)?;
             self.vfs.create_dir_all(&parent).await?;
-            let mut file = self
-                .vfs
-                .open(&staged, &OpenOptions::new().write(true).create_new(true))
-                .await?;
+            let (staged, mut file) = loop {
+                cx.checkpoint().map_err(io::Error::other)?;
+                let ticket = counter
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+                    .map_err(|_| io::Error::other("blob staging-name counter exhausted"))?;
+                let staged = parent.join(format!("{locator}.{}-{ticket}.tmp", std::process::id()));
+                match self
+                    .vfs
+                    .open(&staged, &OpenOptions::new().write(true).create_new(true))
+                    .await
+                {
+                    Ok(file) => break (staged, file),
+                    // An interrupted process with a reused PID may have
+                    // left this name behind. Preserve it and try a new
+                    // exclusive name, never truncate the old inode.
+                    Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                    Err(e) => return Err(e),
+                }
+            };
             file.write_all(bytes).await?;
             sync_file(&mut file).await?;
             drop(file);
             self.vfs.rename(&staged, &path).await?;
-            for dir in parent.ancestors() {
+            for dir in parent.ancestors().filter(|p| !p.as_os_str().is_empty()) {
                 sync_directory(&self.vfs, dir).await?;
             }
             Ok(())
@@ -175,10 +213,8 @@ async fn sync_file<F: VfsFile>(file: &mut F) -> io::Result<()> {
 }
 
 /// Make the entries of `directory` durable: open it read-only and sync it
-/// (fgdb-chronicle `sync_directory`). The path is spelled exactly as
-/// `Path::ancestors` gives it — for a relative store root the last one is
-/// the empty path, the VFS root — because a directory's pending entries are
-/// owed to that spelling.
+/// (fgdb-chronicle `sync_directory`). Relative roots are anchored at `.`
+/// before publication; fence each nonempty ancestor with its exact spelling.
 async fn sync_directory<V: Vfs>(vfs: &V, directory: &Path) -> io::Result<()> {
     let handle = vfs.open(directory, &OpenOptions::new().read(true)).await?;
     handle.sync_all().await
@@ -209,5 +245,73 @@ mod tests {
         let vfs = fgdb::MemVfs::new().expect("memvfs");
         assert!(BlobStore::open(1, vfs.clone(), "/blobs").is_ok());
         assert!(BlobStore::open(2, vfs, "/blobs").is_err());
+    }
+
+    #[test]
+    fn an_orphaned_staging_name_is_preserved_and_publication_retries() {
+        let runtime = asupersync::runtime::RuntimeBuilder::new().build().unwrap();
+        let root = runtime.request_cx_with_budget(asupersync::Budget::INFINITE);
+        let ctx = fgdb_types::context::PurposeContexts::narrow_runtime_root(&root);
+        let vfs = ctx.commit().with_restriction(fgdb::MemVfs::new).unwrap();
+        let store = BlobStore::open(1, vfs.clone(), "nested/blobs").unwrap();
+        let locator = locator_of(&[0x72; 32]);
+        let parent = store
+            .path(&locator)
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let orphan = parent.join(format!("{locator}.{}-0.tmp", std::process::id()));
+        let counter = AtomicU64::new(0);
+        runtime.block_on(async {
+            ctx.commit()
+                .with_restriction_async(async {
+                    vfs.create_dir_all(&parent).await.unwrap();
+                    let mut file = vfs
+                        .open(&orphan, &OpenOptions::new().write(true).create_new(true))
+                        .await
+                        .unwrap();
+                    file.write_all(b"interrupted old bytes").await.unwrap();
+                    sync_file(&mut file).await.unwrap();
+                })
+                .await;
+            store
+                .put_with_counter(&ctx.commit(), &locator, b"complete new bytes", &counter)
+                .await
+                .unwrap();
+            assert_eq!(
+                counter.load(Ordering::Relaxed),
+                2,
+                "the collision was retried"
+            );
+            assert_eq!(
+                store.get(&ctx.query(), &locator, 64).await.unwrap(),
+                Some(b"complete new bytes".to_vec())
+            );
+            ctx.query()
+                .with_restriction_async(async {
+                    let mut file = vfs
+                        .open(&orphan, &OpenOptions::new().read(true))
+                        .await
+                        .unwrap();
+                    let mut old = Vec::new();
+                    file.read_to_end(&mut old).await.unwrap();
+                    assert_eq!(old, b"interrupted old bytes");
+                })
+                .await;
+
+            let exhausted = AtomicU64::new(u64::MAX);
+            let error = store
+                .put_with_counter(&ctx.commit(), &locator, b"must not replace", &exhausted)
+                .await
+                .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::Other);
+            assert_eq!(exhausted.load(Ordering::Relaxed), u64::MAX);
+            assert_eq!(
+                store.get(&ctx.query(), &locator, 64).await.unwrap(),
+                Some(b"complete new bytes".to_vec()),
+                "counter exhaustion never overwrites an existing blob"
+            );
+        });
     }
 }
