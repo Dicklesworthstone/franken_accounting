@@ -288,6 +288,12 @@ impl Journal {
         self.leaves.iter().position(|l| l.vid == vid)
     }
 
+    /// The accumulator inclusion path of leaf `index` in this prefix.
+    #[must_use]
+    pub fn leaf_path(&self, index: usize) -> Option<Vec<Digest>> {
+        self.tree.inclusion_path(index, self.leaves.len())
+    }
+
     /// The inclusion proof of entry `vid` against this prefix's statement,
     /// with the entry's own payload when `with_record`. `None` when the
     /// entry is not in the prefix.

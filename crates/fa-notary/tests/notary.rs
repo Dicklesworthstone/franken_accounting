@@ -17,9 +17,11 @@ use fa_model::{
     SealKey, SymbolTable, Writer, account_vid,
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
+use fa_notary::checkpoint::checkpoint_vid;
 use fa_notary::{
-    AccumulatorState, Journal, StoredState, chain, checkpoint, code, latest, prove_balance,
-    prove_consistency, prove_inclusion, prove_prefix, state_oid, state_vid, verify_accumulator,
+    AccumulatorState, Journal, SigningKey, StoredState, chain, checkpoint, code, latest,
+    prove_balance, prove_consistency, prove_inclusion, prove_prefix, state_oid, state_vid,
+    verify_accumulator,
 };
 use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodState, PeriodTransition};
 use fa_verify::{RecordCheck, VerifyError};
@@ -42,6 +44,8 @@ struct Harness {
     /// A real source document recorded at setup; every posting cites it
     /// (the evidence minimum). Documents are not entries, so not leaves.
     evidence: Vec<EvidenceRef>,
+    /// The book's checkpoint signer.
+    signer: SigningKey,
 }
 
 impl Harness {
@@ -122,22 +126,27 @@ impl Harness {
     }
 
     fn checkpoint(&mut self) -> StoredState {
+        self.checkpointed().stored
+    }
+
+    fn checkpointed(&mut self) -> fa_notary::Checkpointed {
         let ctx = self.ctx();
         let db = &mut self.db;
         let book = &self.book;
+        let signer = &self.signer;
         self.runtime
-            .block_on(async move { checkpoint(db, &ctx, book).await })
+            .block_on(async move { checkpoint(db, &ctx, book, signer).await })
             .expect("kernel")
             .expect("checkpoint admitted")
-            .stored
     }
 
     fn checkpoint_refusal(&mut self) -> Refusal {
         let ctx = self.ctx();
         let db = &mut self.db;
         let book = &self.book;
+        let signer = &self.signer;
         self.runtime
-            .block_on(async move { checkpoint(db, &ctx, book).await })
+            .block_on(async move { checkpoint(db, &ctx, book, signer).await })
             .expect("kernel")
             .expect_err("checkpoint refused")
     }
@@ -304,6 +313,7 @@ fn harness_with(opening_date: Option<DateDay>) -> Harness {
         utilities: account_vid(book_id, "7000"),
         book,
         usd,
+        signer: SigningKey::from_seed(&[0x5a; 32]),
     }
 }
 
@@ -622,7 +632,7 @@ fn recomputation_finds_a_forged_state_and_blocks_checkpoints_over_it() {
     let a = h.checkpoint();
     h.post(h.rent, 41, b"x2");
     let b = h.checkpoint();
-    let green = verify_accumulator(&h.db, &h.book).unwrap();
+    let green = verify_accumulator(&h.db, &h.ctx(), &h.book, &h.signer).unwrap();
     assert!(green.is_green(), "{green:?}");
     assert_eq!(green.states.len(), 2);
 
@@ -654,7 +664,7 @@ fn recomputation_finds_a_forged_state_and_blocks_checkpoints_over_it() {
     );
     h.write_raw(batch);
 
-    let found = verify_accumulator(&h.db, &h.book).unwrap();
+    let found = verify_accumulator(&h.db, &h.ctx(), &h.book, &h.signer).unwrap();
     assert!(!found.is_green());
     assert!(found.states[0].finding.is_some(), "{found:?}");
     assert!(found.states[1..].iter().all(|s| s.finding.is_none()));
@@ -687,7 +697,7 @@ fn recomputation_finds_a_forged_state_and_blocks_checkpoints_over_it() {
         )],
     );
     h.write_raw(batch);
-    let found = verify_accumulator(&h.db, &h.book).unwrap();
+    let found = verify_accumulator(&h.db, &h.ctx(), &h.book, &h.signer).unwrap();
     assert_eq!(found.unchained, vec![state_vid(&ooid)]);
 }
 
@@ -745,7 +755,8 @@ fn a_rewritten_state_or_dangling_head_is_a_finding_and_blocks_checkpoints() {
         Some(CanonicalScalar::bytes(rewritten.canonical_bytes().unwrap()).unwrap()),
     );
     h.write_raw(batch);
-    let found = verify_accumulator(&h.db, &h.book).expect("a finding, not an error");
+    let found =
+        verify_accumulator(&h.db, &h.ctx(), &h.book, &h.signer).expect("a finding, not an error");
     assert!(!found.is_green());
     assert!(
         found
@@ -770,7 +781,7 @@ fn a_rewritten_state_or_dangling_head_is_a_finding_and_blocks_checkpoints() {
         Some(CanonicalScalar::bytes(vec![0xee; 32]).unwrap()),
     );
     h.write_raw(batch);
-    let found = verify_accumulator(&h.db, &h.book).unwrap();
+    let found = verify_accumulator(&h.db, &h.ctx(), &h.book, &h.signer).unwrap();
     assert!(
         found
             .broken
@@ -779,10 +790,13 @@ fn a_rewritten_state_or_dangling_head_is_a_finding_and_blocks_checkpoints() {
         "{found:?}"
     );
     assert!(found.states.is_empty());
+    let mut unchained = found.unchained.clone();
+    unchained.sort_by_key(|v| v.0);
+    let mut expected = vec![a.vid, b.vid, checkpoint_vid(&a.oid), checkpoint_vid(&b.oid)];
+    expected.sort_by_key(|v| v.0);
     assert_eq!(
-        found.unchained.len(),
-        2,
-        "both real states are now unreachable"
+        unchained, expected,
+        "both real states and their checkpoints are now unreachable"
     );
     let refused = h.checkpoint_refusal();
     assert_eq!(refused.code, code::ACCUMULATOR_DRIFT);
@@ -805,7 +819,7 @@ fn checkpoint_refuses_a_predecessor_with_a_falsely_advanced_sequence() {
     advanced.prev_state_oid = Some(a.oid);
     h.plant_state(&advanced, Some(a.oid));
 
-    let found = verify_accumulator(&h.db, &h.book).unwrap();
+    let found = verify_accumulator(&h.db, &h.ctx(), &h.book, &h.signer).unwrap();
     assert!(found.states[0].finding.is_some(), "{found:?}");
     let refused = h.checkpoint_refusal();
     assert_eq!(refused.code, code::ACCUMULATOR_DRIFT);
@@ -835,7 +849,7 @@ fn checkpoint_refuses_a_predecessor_that_claims_its_own_recording_commit() {
     );
     h.post(h.rent, 2, b"g2");
 
-    let found = verify_accumulator(&h.db, &h.book).unwrap();
+    let found = verify_accumulator(&h.db, &h.ctx(), &h.book, &h.signer).unwrap();
     assert!(
         found.states[0]
             .finding
@@ -1804,11 +1818,13 @@ fn full_detail_proof_boundary_preserves_inclusion_and_supported_balances() {
 
 /// fa-kjl acceptance example: a scratch replay with intervening system
 /// records (plan §15.2). The notary's checkpoints are maintenance: the
-/// `AccumulatorState` vertex and the head pointer its commit moves on the
-/// book root. A book whose posts are interleaved with two checkpoints
-/// replays into a scratch book that holds every entry, no checkpoint and no
-/// head pointer; neither checkpoint commit is paired, the map verifies, and
-/// the scratch book's March fold is the source's.
+/// `AccumulatorState` vertex, the signed `TransparencyCheckpoint` beside it
+/// (it signs the source's prefix by sequence numbers a scratch book does
+/// not share), and the head pointer their commit moves on the book root. A
+/// book whose posts are interleaved with two checkpoints replays into a
+/// scratch book that holds every entry, no checkpoint and no head pointer;
+/// neither checkpoint commit is paired, the map verifies, and the scratch
+/// book's March fold is the source's.
 #[test]
 fn a_scratch_replay_carries_no_notary_checkpoint_and_verifies() {
     let mut h = harness();
@@ -1820,15 +1836,17 @@ fn a_scratch_replay_carries_no_notary_checkpoint_and_verifies() {
     let head = h.db.frontier().unwrap();
     // Positive controls: the source holds both checkpoints and its head
     // pointer, so the scratch negatives below cannot pass vacuously.
-    assert_eq!(
-        h.db.vertices_at(head)
-            .unwrap()
-            .iter()
-            .filter(|v| v.labels.contains(&label::ACCUMULATOR_STATE))
-            .count(),
-        2,
-        "the source holds both checkpoints"
-    );
+    for checkpoint_label in [label::ACCUMULATOR_STATE, label::TRANSPARENCY_CHECKPOINT] {
+        assert_eq!(
+            h.db.vertices_at(head)
+                .unwrap()
+                .iter()
+                .filter(|v| v.labels.contains(&checkpoint_label))
+                .count(),
+            2,
+            "the source holds both checkpoints"
+        );
+    }
     assert!(
         fa_journal::rows::prop(
             &h.db.vertex(book_root()).unwrap().expect("root"),
@@ -1869,8 +1887,9 @@ fn a_scratch_replay_carries_no_notary_checkpoint_and_verifies() {
             .vertices_at(at)
             .unwrap()
             .iter()
-            .all(|v| !v.labels.contains(&label::ACCUMULATOR_STATE)),
-        "no checkpoint reaches the scratch book"
+            .all(|v| !v.labels.contains(&label::ACCUMULATOR_STATE)
+                && !v.labels.contains(&label::TRANSPARENCY_CHECKPOINT)),
+        "no checkpoint, signed or not, reaches the scratch book"
     );
     assert!(
         fa_journal::rows::prop(
@@ -1887,4 +1906,527 @@ fn a_scratch_replay_carries_no_notary_checkpoint_and_verifies() {
     };
     assert!(!fold(&h.db).is_empty(), "the source's March fold has cells");
     assert_eq!(fold(&scratch), fold(&h.db));
+}
+
+// ---- signed checkpoints and ScopeIndexComplete (fa-l3c slice 3) ------------
+
+/// What an outsider does with a checkpoint's bytes and the book's public
+/// key.
+fn signed_checkpoint(h: &Harness, c: &fa_notary::Checkpointed) -> fa_verify::SignedCheckpoint {
+    fa_verify::verify_checkpoint(&c.checkpoint.bytes, &[h.signer.public_key()])
+        .expect("the book's key signed the checkpoint")
+}
+
+fn day(d: u8) -> i32 {
+    DateDay::from_ymd(2026, 3, d).unwrap().0
+}
+
+/// The checkpoint beside each state is signed by the book's key, binds the
+/// state, the prefix's scope-index root and the substrate's chain
+/// commitment, and every forgery an outsider could be handed is refused:
+/// another key, a flipped bit, a signature over another body, and a body
+/// altered under its original signature.
+#[test]
+fn checkpoints_are_signed_by_the_book_key_and_forgeries_are_refused() {
+    use fa_notary::checkpoint::signer_key_id;
+    use fa_verify::{CheckpointError, verify_checkpoint};
+
+    let mut h = harness();
+    h.post(h.rent, 5, b"k1");
+    h.post(h.utilities, 7, b"k2");
+    let c = h.checkpointed();
+    let signed = signed_checkpoint(&h, &c);
+    assert_eq!(signed.checkpoint, outsider_checkpoint(&c.stored));
+    assert_eq!(signed.state_oid, c.stored.oid.0);
+    assert_eq!(signed.oid, c.checkpoint.oid.0);
+    assert_eq!(
+        signed.signed_by,
+        vec![signer_key_id(&h.signer.public_key())]
+    );
+    assert!(signed.not_judged.is_empty());
+    assert_eq!(signed.witness_policy_oid, None);
+    assert_eq!(signed.time_evidence_oid, None);
+    let journal = Journal::read(&h.db, &h.book, Some(c.stored.state.through_seq))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        signed.scope_index_root,
+        fa_notary::ScopeIndex::of(&journal).root()
+    );
+    // The chain commitment is the substrate's at the state's sequence: a
+    // later checkpoint commits another.
+    h.post(h.rent, 9, b"k3");
+    let next = h.checkpointed();
+    let later = signed_checkpoint(&h, &next);
+    assert_ne!(
+        later.substrate_chain_commitment,
+        signed.substrate_chain_commitment
+    );
+
+    let cp = &c.checkpoint.checkpoint;
+    let trusted = [h.signer.public_key()];
+    let other = SigningKey::from_seed(&[0x33; 32]);
+    let message = cp.body.signed_message().unwrap();
+    let refused = |forged: &fa_notary::TransparencyCheckpoint, what: &str| {
+        let result = verify_checkpoint(&forged.canonical_bytes().unwrap(), &trusted);
+        assert!(
+            matches!(
+                result,
+                Err(VerifyError::Checkpoint(CheckpointError::Signature { .. }))
+            ),
+            "{what}: {result:?}"
+        );
+    };
+    // 1. Not signed by a trusted key at all.
+    assert_eq!(
+        verify_checkpoint(&c.checkpoint.bytes, &[other.public_key()]),
+        Err(VerifyError::Checkpoint(CheckpointError::NoTrustedSignature))
+    );
+    // 2. Another key's signature under the book key's id.
+    let mut swapped = cp.clone();
+    swapped.signatures[0].bytes = other.sign(&message).to_vec();
+    refused(&swapped, "another key");
+    // 3. One flipped bit, in R and in S.
+    for at in [3, 40] {
+        let mut flipped = cp.clone();
+        flipped.signatures[0].bytes[at] ^= 0x10;
+        refused(&flipped, "a flipped bit");
+    }
+    // 4. The book key's signature over another body.
+    let mut other_body = cp.body.clone();
+    other_body.scope_index_root[0] ^= 1;
+    let mut spliced = cp.clone();
+    spliced.signatures[0].bytes = h
+        .signer
+        .sign(&other_body.signed_message().unwrap())
+        .to_vec();
+    refused(&spliced, "a signature over another body");
+    // 5. The body altered under its original signature, field by field.
+    let mut altered = cp.clone();
+    altered.body.scope_index_root[31] ^= 1;
+    refused(&altered, "scope_index_root altered");
+    let mut altered = cp.clone();
+    altered.body.substrate_chain_commitment[0] ^= 1;
+    refused(&altered, "chain commitment altered");
+    let mut altered = cp.clone();
+    altered.body.statement.leaf_count += 1;
+    refused(&altered, "leaf count altered");
+}
+
+/// A checkpoint rewritten in the store — re-signed by someone without the
+/// book's key — is a finding, blocks further checkpoints with FA-REF-127,
+/// and is never handed out.
+#[test]
+fn a_tampered_stored_checkpoint_is_a_finding_and_refused() {
+    use fa_notary::checkpoint::{checkpoint_oid, checkpoint_vid};
+
+    let mut h = harness();
+    h.post(h.rent, 5, b"t1");
+    let c = h.checkpointed();
+    let mut forged_body = c.checkpoint.checkpoint.body.clone();
+    forged_body.scope_index_root = [0x77; 32];
+    let insider = SigningKey::from_seed(&[0x44; 32]);
+    let forged = fa_notary::TransparencyCheckpoint::sign(forged_body, &[&insider]).unwrap();
+    let bytes = forged.canonical_bytes().unwrap();
+    let scalar = |b: Vec<u8>| CanonicalScalar::bytes(b).unwrap();
+    let mut batch = WriteBatch::new(relation::CHECKPOINTS);
+    batch.set_vertex_property(
+        checkpoint_vid(&c.stored.oid),
+        property::FA_PAYLOAD,
+        Some(scalar(bytes.clone())),
+    );
+    batch.set_vertex_property(
+        checkpoint_vid(&c.stored.oid),
+        property::FA_DIGEST,
+        Some(scalar(checkpoint_oid(&bytes).0.to_vec())),
+    );
+    h.write_raw(batch);
+
+    let found = verify_accumulator(&h.db, &h.ctx(), &h.book, &h.signer).unwrap();
+    assert!(!found.is_green());
+    assert!(
+        found.states[0]
+            .finding
+            .as_deref()
+            .is_some_and(|f| f.contains("checkpoint is not what")),
+        "{found:?}"
+    );
+    let refusal = fa_notary::stored_checkpoint(&h.db, &h.ctx(), &h.book, &c.stored, &h.signer)
+        .unwrap()
+        .expect_err("a tampered checkpoint is never handed out");
+    assert_eq!(refusal.code, code::CHECKPOINT_INVALID);
+    assert_eq!(refusal.exit, exit::VERIFICATION);
+    h.post(h.rent, 6, b"t2");
+    let refused = h.checkpoint_refusal();
+    assert_eq!(refused.code, code::CHECKPOINT_INVALID);
+    assert_eq!(refused.exit, exit::VERIFICATION);
+}
+
+/// A history over three accounts and many days: every exact-account
+/// interval — empty, first day, last day, one day, the whole range, and an
+/// account with no entries — proves complete against the signed root, and
+/// the listed leaves are exactly a brute-force filter of the verified
+/// complete prefix. With the prefix, the index is recomputed and the
+/// premise is `Recomputed`; without it, the premise names the signer.
+#[test]
+fn scope_proofs_list_exactly_the_brute_force_filter() {
+    use fa_notary::ScopeRequest;
+    use fa_verify::{IndexDerivation, ScopeClaim, verify_scope};
+
+    let mut h = harness();
+    let mut n = 0u8;
+    for d in [2u8, 2, 5, 9, 9, 9, 14, 20, 27, 31] {
+        for (i, account) in [h.rent, h.utilities].into_iter().enumerate() {
+            if (d as usize + i).is_multiple_of(3) {
+                continue;
+            }
+            n += 1;
+            let class = if n.is_multiple_of(5) {
+                EntryClass::PENDING
+            } else {
+                EntryClass::ORIGINAL
+            };
+            h.post_on(account, 100 + i128::from(n), &[b'p', n], d, class);
+        }
+    }
+    let c = h.checkpointed();
+    let signed = signed_checkpoint(&h, &c);
+    let prefix_proof = prove_prefix(&h.db, &h.book, &c.stored.state)
+        .unwrap()
+        .unwrap();
+    let prefix = fa_verify::verify_prefix(&prefix_proof, &signed.checkpoint).unwrap();
+    let unused = VId(0xdead_beef);
+    let intervals = [
+        (day(1), day(31)),
+        (day(2), day(2)),
+        (day(31), day(31)),
+        (day(9), day(14)),
+        (day(15), day(19)),
+        (day(3), day(4)),
+        (i32::MIN, i32::MAX),
+        (day(28), day(30)),
+    ];
+    let mut proved = 0;
+    for account in [h.rent, h.utilities, h.cash, unused] {
+        for (from, to) in intervals {
+            let expected: Vec<u64> = prefix
+                .envelopes
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| {
+                    e.effective_day.is_some_and(|d| from <= d && d <= to)
+                        && e.account_vids.binary_search(&account.0).is_ok()
+                })
+                .map(|(i, _)| i as u64)
+                .collect();
+            let proof = fa_notary::prove_scope(
+                &h.db,
+                &h.book,
+                &c.stored.state,
+                &ScopeRequest::Account { account, from, to },
+            )
+            .unwrap()
+            .unwrap();
+            let claim = ScopeClaim {
+                account: account.0,
+                from,
+                to,
+            };
+            let report = verify_scope(&proof, &signed, &claim, None).expect("scope verifies");
+            let listed: Vec<u64> = report.leaves.iter().map(|(i, _)| *i).collect();
+            let mut sorted = expected.clone();
+            sorted.sort_by_key(|i| prefix.envelopes[*i as usize].effective_day);
+            assert_eq!(listed, sorted, "{account:?} [{from}, {to}]");
+            assert_eq!(report.scope, "scope_index_complete");
+            assert_eq!(
+                report.index_derivation,
+                IndexDerivation::Signed {
+                    by: signed.signed_by.clone()
+                }
+            );
+            let recomputed = verify_scope(&proof, &signed, &claim, Some(&prefix_proof)).unwrap();
+            assert_eq!(recomputed.index_derivation, IndexDerivation::Recomputed);
+            proved += 1;
+        }
+    }
+    assert_eq!(proved, 32);
+}
+
+/// A scope proof parsed into its fields so a test can plant a defect and
+/// re-encode it, exactly as a dishonest producer could.
+#[derive(Clone)]
+struct ScopeProof {
+    statement: [u8; 80],
+    count: u64,
+    account: u128,
+    from: i32,
+    to: i32,
+    lo: u64,
+    items: Vec<ScopeItem>,
+    left: Option<Neighbour>,
+    right: Option<Neighbour>,
+}
+
+type Path = Vec<[u8; 32]>;
+/// day, leaf index, scope path, envelope bytes, accumulator path.
+type ScopeItem = (i32, u64, Path, Vec<u8>, Path);
+/// account, day, leaf index, scope path.
+type Neighbour = (u128, i32, u64, Path);
+
+impl ScopeProof {
+    fn parse(bytes: &[u8]) -> Self {
+        let mut r = fa_model::Reader::new(bytes);
+        assert_eq!(r.bytes(64, "format").unwrap(), b"fa:scope-proof:v1");
+        let path = |r: &mut fa_model::Reader<'_>| r.list(64, "path", |r| r.fixed("node")).unwrap();
+        let statement = r.fixed("statement").unwrap();
+        let count = r.u64("count").unwrap();
+        let account = r.u128("account").unwrap();
+        let from = r.i32("from").unwrap();
+        let to = r.i32("to").unwrap();
+        let lo = r.u64("lo").unwrap();
+        let n = r.count(1 << 20, "items").unwrap();
+        let mut items = Vec::new();
+        for _ in 0..n {
+            let d = r.i32("day").unwrap();
+            let i = r.u64("leaf").unwrap();
+            let p = path(&mut r);
+            let e = r.bytes(1 << 20, "envelope").unwrap().to_vec();
+            let a = path(&mut r);
+            items.push((d, i, p, e, a));
+        }
+        let side = |r: &mut fa_model::Reader<'_>| {
+            r.opt("side", |r| {
+                Ok((
+                    r.u128("a")?,
+                    r.i32("d")?,
+                    r.u64("i")?,
+                    r.list(64, "path", |r| r.fixed("node"))?,
+                ))
+            })
+            .unwrap()
+        };
+        let left = side(&mut r);
+        let right = side(&mut r);
+        r.finish().unwrap();
+        Self {
+            statement,
+            count,
+            account,
+            from,
+            to,
+            lo,
+            items,
+            left,
+            right,
+        }
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        let mut w = Writer::new();
+        let path = |w: &mut Writer, p: &Vec<[u8; 32]>| {
+            w.list(p, |w, d| {
+                w.fixed(d);
+            });
+        };
+        w.bytes(b"fa:scope-proof:v1")
+            .fixed(&self.statement)
+            .u64(self.count)
+            .u128(self.account)
+            .i32(self.from)
+            .i32(self.to)
+            .u64(self.lo);
+        w.list(&self.items, |w, (d, i, p, e, a)| {
+            w.i32(*d).u64(*i);
+            path(w, p);
+            w.bytes(e);
+            path(w, a);
+        });
+        for side in [&self.left, &self.right] {
+            w.opt(side.as_ref(), |w, (a, d, i, p)| {
+                w.u128(*a).i32(*d).u64(*i);
+                path(w, p);
+            });
+        }
+        w.finish().unwrap()
+    }
+}
+
+/// Planted defects a dishonest producer could try, each refused: a dropped
+/// in-scope tuple, a run claimed empty, an interval widened over its left
+/// neighbour, two envelopes swapped, a proof against another checkpoint, an
+/// index root the book key signed but that the journal does not derive, and
+/// a scope the index cannot prove (FA-REF-126).
+#[test]
+fn planted_scope_defects_are_refused() {
+    use fa_notary::ScopeRequest;
+    use fa_verify::{ScopeClaim, verify_scope};
+
+    let mut h = harness();
+    for (i, d) in [3u8, 7, 7, 8, 12, 12, 19].into_iter().enumerate() {
+        h.post_on(
+            h.rent,
+            50 + i as i128,
+            &[b'd', i as u8],
+            d,
+            EntryClass::ORIGINAL,
+        );
+        h.post_on(
+            h.utilities,
+            60 + i as i128,
+            &[b'u', i as u8],
+            d,
+            EntryClass::ORIGINAL,
+        );
+    }
+    let c = h.checkpointed();
+    let signed = signed_checkpoint(&h, &c);
+    let prove = |h: &Harness, state: &AccumulatorState, from: i32, to: i32| {
+        fa_notary::prove_scope(
+            &h.db,
+            &h.book,
+            state,
+            &ScopeRequest::Account {
+                account: h.rent,
+                from,
+                to,
+            },
+        )
+        .unwrap()
+        .unwrap()
+    };
+    let honest = prove(&h, &c.stored.state, day(7), day(12));
+    let asked = ScopeClaim {
+        account: h.rent.0,
+        from: day(7),
+        to: day(12),
+    };
+    let parsed = ScopeProof::parse(&honest);
+    assert_eq!(parsed.items.len(), 5, "rent on days 7, 7, 8, 12, 12");
+    assert!(
+        verify_scope(&parsed.encode(), &signed, &asked, None).is_ok(),
+        "re-encoding is faithful"
+    );
+    // Each planted proof is checked as the scope it claims, so the
+    // defect itself, not a mismatch with the question, is what is refused.
+    let refused = |p: &ScopeProof, what: &str| {
+        let claim = ScopeClaim {
+            account: p.account,
+            from: p.from,
+            to: p.to,
+        };
+        let result = verify_scope(&p.encode(), &signed, &claim, None);
+        assert!(result.is_err(), "{what} was accepted");
+        result.unwrap_err()
+    };
+
+    // 1. A dropped in-scope tuple, from the middle and from each end.
+    for at in [2, 0, 4] {
+        let mut p = parsed.clone();
+        p.items.remove(at);
+        if at == 0 {
+            p.lo += 1;
+        }
+        let e = refused(&p, "a dropped tuple");
+        assert!(
+            matches!(e, VerifyError::ScopeRoot | VerifyError::ScopeRun),
+            "{e}"
+        );
+    }
+    // 2. The whole run claimed empty, neighbours kept.
+    let mut p = parsed.clone();
+    p.items.clear();
+    let e = refused(&p, "a run claimed empty");
+    assert!(
+        matches!(e, VerifyError::ScopeRoot | VerifyError::ScopeRun),
+        "{e}"
+    );
+    // 3. The interval widened so its left neighbour (rent, day 3) falls in.
+    let mut p = parsed.clone();
+    assert_eq!(
+        p.left.as_ref().map(|l| (l.0, l.1)),
+        Some((h.rent.0, day(3)))
+    );
+    p.from = day(3);
+    assert_eq!(refused(&p, "a widened interval"), VerifyError::ScopeRun);
+    // ... and on the right (rent, day 19).
+    let mut p = parsed.clone();
+    p.to = day(19);
+    assert_eq!(refused(&p, "a widened interval"), VerifyError::ScopeRun);
+    // 4. Two envelopes swapped between tuples of different days.
+    let mut p = parsed.clone();
+    let (first, last) = (p.items[0].3.clone(), p.items[4].3.clone());
+    p.items[0].3 = last;
+    p.items[4].3 = first;
+    let e = refused(&p, "swapped envelopes");
+    assert!(
+        matches!(e, VerifyError::ScopeTuple { .. } | VerifyError::Inclusion),
+        "{e}"
+    );
+    // 5. A proof against another checkpoint: a later prefix's proof does
+    //    not verify against the earlier signed checkpoint.
+    h.post_on(h.rent, 99, b"late", 8, EntryClass::ORIGINAL);
+    let later = h.checkpointed();
+    let late_proof = prove(&h, &later.stored.state, day(7), day(12));
+    assert!(matches!(
+        verify_scope(&late_proof, &signed, &asked, None),
+        Err(VerifyError::NotTrusted { .. })
+    ));
+    // The earlier proof claims nothing past its prefix: the late entry is
+    // not listed, and the report names the earlier checkpoint.
+    let report = verify_scope(&honest, &signed, &asked, None).unwrap();
+    assert_eq!(report.checkpoint.through_seq, c.stored.state.through_seq.0);
+    assert_eq!(report.leaves.len(), 5);
+    // A proof answers only the scope it was asked for: under another
+    // question, even one with the same answer, it is refused.
+    let mut other_question = asked;
+    other_question.to = day(13);
+    assert_eq!(
+        verify_scope(&honest, &signed, &other_question, None),
+        Err(VerifyError::ScopeClaim)
+    );
+    // 6. An index root the book's own key signed but the journal does not
+    //    derive: the signature verifies, the scope paths do not open it,
+    //    and recomputation from the complete prefix names the mismatch.
+    let mut lying = c.checkpoint.checkpoint.body.clone();
+    lying.scope_index_root = [0x5c; 32];
+    let lying = fa_notary::TransparencyCheckpoint::sign(lying, &[&h.signer]).unwrap();
+    let lying =
+        fa_verify::verify_checkpoint(&lying.canonical_bytes().unwrap(), &[h.signer.public_key()])
+            .expect("the book key did sign it");
+    assert_eq!(
+        verify_scope(&honest, &lying, &asked, None),
+        Err(VerifyError::ScopeRoot)
+    );
+    let prefix_proof = prove_prefix(&h.db, &h.book, &c.stored.state)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        fa_verify::recompute_index(&prefix_proof, &lying),
+        Err(VerifyError::ScopeIndexDerivation)
+    );
+    assert_eq!(fa_verify::recompute_index(&prefix_proof, &signed), Ok(()));
+    // 7. Scopes the index cannot prove are refused, naming the prefix.
+    for request in [
+        ScopeRequest::Book {
+            from: day(1),
+            to: day(31),
+        },
+        ScopeRequest::Accounts {
+            accounts: vec![h.rent, h.utilities],
+            from: day(1),
+            to: day(31),
+        },
+        ScopeRequest::Account {
+            account: h.rent,
+            from: day(12),
+            to: day(7),
+        },
+    ] {
+        let refusal = fa_notary::prove_scope(&h.db, &h.book, &c.stored.state, &request)
+            .unwrap()
+            .expect_err("unsupported scope");
+        assert_eq!(refusal.code, code::SCOPE_UNSUPPORTED);
+        assert_eq!(refusal.exit, exit::REFUSAL);
+        assert!(refusal.fix.contains("prove_prefix"), "{}", refusal.fix);
+    }
 }

@@ -646,6 +646,22 @@ exit = "usage"
 cite = "plan §13.1 (a prefix cannot extend past the head)"
 fix = "select a sequence at or before the head"
 
+[[refusal]]
+code = "FA-REF-126"
+name = "SCOPE_UNSUPPORTED"
+owners = ["fa-notary"]
+exit = "refusal"
+cite = "plan §13.1 (ScopeIndexComplete is admissible only for an exact-account effective-day interval)"
+fix = "prove the complete prefix (SeqRangeComplete) and apply the predicate to its envelopes, or claim membership only"
+
+[[refusal]]
+code = "FA-REF-127"
+name = "CHECKPOINT_INVALID"
+owners = ["fa-notary"]
+exit = "verification"
+cite = "FA-INV-14 (a checkpoint is recomputed from the journal prefix and the book's key)"
+fix = "run `fa verify accumulator` and preserve the store for investigation; no proof is issued against it"
+
 # ---- Migration runs and scratch replay (130–139) -------------------------
 [[refusal]]
 code = "FA-REF-130"

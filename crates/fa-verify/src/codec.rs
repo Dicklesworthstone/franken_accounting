@@ -50,7 +50,7 @@ impl<'a> Reader<'a> {
         Self { buf, at: 0 }
     }
 
-    fn remaining(&self) -> usize {
+    pub(crate) fn remaining(&self) -> usize {
         self.buf.len() - self.at
     }
 

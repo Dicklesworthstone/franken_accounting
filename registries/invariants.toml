@@ -833,11 +833,27 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-14"
 id = "scope-index-complete"
-status = "dormant"
+status = "live"
 statement = "Every checkpoint binds a scope-index root the verifier recomputes, and ScopeIndexComplete proofs are sound for their labeled scope."
 evidence_class = "invariant"
 first_gate = "G2"
-activating = ["fa-l3c"]
+owner = "fa-l3c"
+checkers = ["fa-notary::tests/notary.rs::scope_proofs_list_exactly_the_brute_force_filter"]
+negatives = ["fa-notary::tests/notary.rs::planted_scope_defects_are_refused", "fa-notary::tests/notary.rs::a_tampered_stored_checkpoint_is_a_finding_and_refused"]
+depends = ["FA-INV-14.leaf-envelope", "FA-INV-14.seq-range-complete"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-14"
+id = "signed"
+status = "live"
+statement = "Every checkpoint is signed by the book's key over a transcript that excludes the signatures; a checkpoint the journal and the book's key do not reproduce is found and never handed out, and another key, a flipped bit, another body's signature, or an altered body is refused by the independent verifier."
+evidence_class = "invariant"
+first_gate = "G2"
+owner = "fa-l3c"
+checkers = ["fa-notary::tests/notary.rs::checkpoints_are_signed_by_the_book_key_and_forgeries_are_refused", "fa-notary::tests/differential.rs::the_signer_and_the_verifier_agree_on_generated_messages", "fa-notary::lib::sign::ed25519::tests::rfc8032_vectors_sign_exactly", "fa-verify::lib::ed25519::tests::rfc8032_vectors_verify"]
+negatives = ["fa-notary::tests/notary.rs::a_tampered_stored_checkpoint_is_a_finding_and_refused", "fa-verify::lib::ed25519::tests::single_bit_forgeries_are_refused", "fa-verify::lib::ed25519::tests::a_non_reduced_s_is_refused"]
+depends = ["FA-INV-14.consistency"]
 waiver = "forbidden"
 
 [[clause]]

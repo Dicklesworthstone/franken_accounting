@@ -264,3 +264,73 @@ fn odd_sized_consistency_equals_the_pinned_vectors() {
         drift.join("\n")
     );
 }
+
+const CHECKPOINT_FIXTURE: &str = include_str!("../../fa-verify/tests/fixtures/checkpoint_v1.txt");
+
+fn checkpoint_fixture(name: &str) -> String {
+    CHECKPOINT_FIXTURE
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .find_map(|l| l.strip_prefix(name)?.strip_prefix(' ').map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// The signed checkpoint and scope-proof formats (fa-l3c slice 3): a
+/// checkpoint over the pinned 4-leaf state, signed with a fixed key, and
+/// three scope proofs over its index, must equal
+/// `crates/fa-verify/tests/fixtures/checkpoint_v1.txt` byte for byte.
+#[test]
+fn checkpoint_formats_equal_the_pinned_vectors() {
+    use fa_notary::checkpoint::CheckpointBody;
+    use fa_notary::{ScopeIndex, SigningKey, TransparencyCheckpoint};
+
+    let full = Journal::from_records(BOOK, CommitSeq(6), records()).unwrap();
+    let first_two: Vec<_> = records().into_iter().filter(|(_, _, s)| s.0 <= 4).collect();
+    let early = Journal::from_records(BOOK, CommitSeq(4), first_two).unwrap();
+    let old_bytes = AccumulatorState::of_journal(&early, None)
+        .canonical_bytes()
+        .unwrap();
+    let state = AccumulatorState::of_journal(&full, Some(state_oid(&old_bytes)));
+    let index = ScopeIndex::of(&full);
+    assert_eq!(index.tuples().len(), 5, "rent ×2, fx ×1, cash ×2");
+    let key = SigningKey::from_seed(&[0x11; 32]);
+    let body = CheckpointBody {
+        statement: full.statement(),
+        state_oid: state.oid().unwrap(),
+        scope_index_root: index.root(),
+        substrate_chain_commitment: [0xc0; 32],
+        witness_policy_oid: None,
+        time_evidence_oid: None,
+    };
+    let checkpoint = TransparencyCheckpoint::sign(body, &[&key]).unwrap();
+    let bytes = checkpoint.canonical_bytes().unwrap();
+    assert_eq!(TransparencyCheckpoint::decode(&bytes).unwrap(), checkpoint);
+
+    let actual = [
+        ("public_key", hex(&key.public_key())),
+        ("checkpoint", hex(&bytes)),
+        (
+            "scope",
+            hex(&index.proof(&full, 0x10, 20_527, 20_527).unwrap()),
+        ),
+        (
+            "scope_empty",
+            hex(&index.proof(&full, 0x20, 20_528, 20_600).unwrap()),
+        ),
+        (
+            "scope_last",
+            hex(&index.proof(&full, 0x30, i32::MIN, i32::MAX).unwrap()),
+        ),
+    ];
+    let mut drift = Vec::new();
+    for (name, bytes) in &actual {
+        if checkpoint_fixture(name) != *bytes {
+            drift.push(format!("{name} {bytes}"));
+        }
+    }
+    assert!(
+        drift.is_empty(),
+        "checkpoint bytes differ from the pinned v1 vectors:\n{}",
+        drift.join("\n")
+    );
+}

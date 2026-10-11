@@ -226,6 +226,21 @@ impl BookKeys {
     pub(crate) fn seal_key(&self) -> SealKey {
         SealKey(derive_key("fa:erasable:book:v1", self.inner.dek()))
     }
+
+    /// The book's checkpoint signing key (plan §13.2): an Ed25519 seed
+    /// `KDF(k_oid ‖ namespace, "fa:checkpoint-signing-seed:v1")`, so the key
+    /// file format is unchanged and the signing key is domain-separated
+    /// from every other use of the book's secrets.
+    pub(crate) fn checkpoint_signing_key(&self) -> fa_notary::SigningKey {
+        let mut material = [0u8; 64];
+        material[..32].copy_from_slice(self.inner.k_oid());
+        material[32..].copy_from_slice(&self.namespace);
+        let mut seed = derive_key("fa:checkpoint-signing-seed:v1", &material);
+        let key = fa_notary::SigningKey::from_seed(&seed);
+        fgdb_crypto::zeroize::scrub_slice(&mut material);
+        fgdb_crypto::zeroize::scrub_slice(&mut seed);
+        key
+    }
 }
 
 impl fmt::Debug for BookKeys {
@@ -665,9 +680,10 @@ impl Book {
     /// objects, byte for byte, one scratch commit per source commit that
     /// carries any, under the scratch book's own commit sequences. Returns
     /// the scratch book (its database opened with `keys`, sealing with
-    /// `entropy`) and the [`fa_journal::SeqMap`] binding the two histories.
-    /// External documents remain in the source's immutable blob store;
-    /// that store must remain available for subsequent scratch reads.
+    /// `entropy`, its checkpoints signed with `keys`' checkpoint key) and
+    /// the [`fa_journal::SeqMap`] binding the two histories. External
+    /// documents remain in the source's immutable blob store; that store
+    /// must remain available for subsequent scratch reads.
     pub fn replay_into_scratch(
         &mut self,
         prefix: Option<CommitSeq>,
@@ -681,13 +697,13 @@ impl Book {
         })?;
         let replayed = match &mut self.store {
             Store::Memory(core) => scratch_runtime
-                .block_on(core.replay_into(&scratch_purposes, db, prefix, entropy))?
+                .block_on(core.replay_into(&scratch_purposes, db, &keys, prefix, entropy))?
                 .map(|(copy, map)| (Store::Memory(copy), map)),
             Store::Dir(core) => scratch_runtime
-                .block_on(core.replay_into(&scratch_purposes, db, prefix, entropy))?
+                .block_on(core.replay_into(&scratch_purposes, db, &keys, prefix, entropy))?
                 .map(|(copy, map)| (Store::ScratchDir(copy), map)),
             Store::ScratchDir(core) => scratch_runtime
-                .block_on(core.replay_into(&scratch_purposes, db, prefix, entropy))?
+                .block_on(core.replay_into(&scratch_purposes, db, &keys, prefix, entropy))?
                 .map(|(copy, map)| (Store::ScratchDir(copy), map)),
         };
         let (store, map) = match replayed {
@@ -1039,7 +1055,16 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.rebuild_registers(&purposes, period_code)))
     }
 
-    /// Publish an unsigned accumulator state for this book's entry prefix.
+    /// The public key this book's transparency checkpoints are signed with
+    /// (Ed25519, plan §13.2). An outsider is given it out of band and
+    /// passes it to `fa_verify::verify_checkpoint`.
+    #[must_use]
+    pub fn checkpoint_public_key(&self) -> [u8; 32] {
+        with_store!(&self.store, core => core.checkpoint_public_key())
+    }
+
+    /// Publish an accumulator state for this book's entry prefix and the
+    /// transparency checkpoint beside it, signed with the book's key.
     /// `witness` authorizes publication, not changing its recomputed contents.
     /// Admission precedes storage observation; Agent profiles cannot publish
     /// on trunk. Expiry is checked at the single-writer admission frontier.
@@ -1052,10 +1077,12 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.checkpoint(&purposes, principal, capability)))
     }
 
-    /// Recompute every accumulator state from its journal prefix.
+    /// Recompute every accumulator state from its journal prefix, and every
+    /// checkpoint from the same prefix and the book's key.
     /// This reads the whole open embedded book, like the other current read
     /// methods; scoped session admission is not implemented here. The result
-    /// verifies entry prefixes, without signatures or document-receipt claims.
+    /// verifies entry prefixes and the book's own checkpoint signatures, not
+    /// witnesses or document-receipt claims.
     pub fn verify_accumulator(&self) -> Result<fa_notary::AccumulatorVerification, BookError> {
         with_store!(&self.store, core => core.verify_accumulator(&self.purposes()))
     }
@@ -1417,7 +1444,13 @@ mod tests {
             .unwrap();
             let replay_events_start = vfs.events().len();
             let (scratch, map) = book
-                .replay_into(&cx, scratch_db, None, Entropy::deterministic(seed + 1))
+                .replay_into(
+                    &cx,
+                    scratch_db,
+                    &BookKeys::for_development(0x63),
+                    None,
+                    Entropy::deterministic(seed + 1),
+                )
                 .await
                 .unwrap()
                 .unwrap();
@@ -1890,7 +1923,13 @@ mod tests {
                 .unwrap();
                 let replay_events_start = vfs.events().len();
                 let (scratch, map) = book
-                    .replay_into(&cx, scratch_db, None, Entropy::deterministic(seed + 100))
+                    .replay_into(
+                        &cx,
+                        scratch_db,
+                        &BookKeys::for_development(0x6a),
+                        None,
+                        Entropy::deterministic(seed + 100),
+                    )
                     .await
                     .unwrap()
                     .unwrap();

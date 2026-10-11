@@ -62,7 +62,8 @@ const MAX_PATH: usize = 64;
 /// A prefix proof lists every leaf; the bound only guards allocation (the
 /// reader also refuses a count the input cannot hold).
 const MAX_PREFIX_LEAVES: usize = 1 << 24;
-const MAX_ENVELOPE_BYTES: usize = 1 + 16 + 16 + 8 + 4 + 32 + 2 + 5 + 4 + 4 + 4096 * (16 + 4);
+pub(crate) const MAX_ENVELOPE_BYTES: usize =
+    1 + 16 + 16 + 8 + 4 + 32 + 2 + 5 + 4 + 4 + 4096 * (16 + 4);
 
 /// What a checkpoint commits: the root over the first `leaf_count` leaves
 /// of one book branch's journal, which are exactly the records committed at
@@ -174,6 +175,25 @@ pub enum VerifyError {
         debits: i128,
         credits: i128,
     },
+    /// The checkpoint's signatures do not verify ([`crate::checkpoint`]).
+    Checkpoint(crate::checkpoint::CheckpointError),
+    /// The scope proof answers another scope than the one asked.
+    ScopeClaim,
+    /// The scope proof's paths do not open the checkpoint's signed
+    /// scope-index root.
+    ScopeRoot,
+    /// The scope proof does not show a gap-free run: positions not
+    /// consecutive, a neighbour missing or inside the interval, or a run
+    /// claimed to touch an end of the index it does not touch.
+    ScopeRun,
+    /// An in-scope tuple is outside the interval, out of order, or not
+    /// what its leaf envelope says (the account or the effective day).
+    ScopeTuple {
+        leaf_index: u64,
+    },
+    /// The scope index recomputed from the complete prefix is not the one
+    /// the checkpoint signs.
+    ScopeIndexDerivation,
 }
 
 impl fmt::Display for VerifyError {
@@ -249,6 +269,27 @@ impl fmt::Display for VerifyError {
                 f,
                 "the journal refolds to debits {debits}, credits {credits}, not the claimed amounts"
             ),
+            Self::Checkpoint(e) => write!(f, "checkpoint: {e}"),
+            Self::ScopeClaim => write!(
+                f,
+                "the scope proof answers another scope than the one asked"
+            ),
+            Self::ScopeRoot => write!(
+                f,
+                "the scope paths do not open the checkpoint's signed scope-index root"
+            ),
+            Self::ScopeRun => write!(
+                f,
+                "the scope proof does not show a gap-free run with its neighbours outside the interval"
+            ),
+            Self::ScopeTuple { leaf_index } => write!(
+                f,
+                "the scope tuple for leaf {leaf_index} is outside the interval, out of order, or not what its envelope says"
+            ),
+            Self::ScopeIndexDerivation => write!(
+                f,
+                "the scope index recomputed from the complete prefix is not the one the checkpoint signs"
+            ),
         }
     }
 }
@@ -314,7 +355,7 @@ pub(crate) fn trusted(proof: Checkpoint, trusted: &Checkpoint) -> Result<Checkpo
     Ok(proof)
 }
 
-fn read_path(r: &mut Reader<'_>) -> Result<Vec<Digest>, DecodeError> {
+pub(crate) fn read_path(r: &mut Reader<'_>) -> Result<Vec<Digest>, DecodeError> {
     let n = r.count(MAX_PATH, 32, "proof.path")?;
     let mut path = Vec::with_capacity(n);
     for _ in 0..n {
@@ -323,7 +364,7 @@ fn read_path(r: &mut Reader<'_>) -> Result<Vec<Digest>, DecodeError> {
     Ok(path)
 }
 
-fn within(envelope: &LeafEnvelope, cp: &Checkpoint) -> Result<(), VerifyError> {
+pub(crate) fn within(envelope: &LeafEnvelope, cp: &Checkpoint) -> Result<(), VerifyError> {
     if envelope.book_id != cp.book_id || envelope.branch_id != cp.branch_id {
         return Err(VerifyError::Coordinate);
     }

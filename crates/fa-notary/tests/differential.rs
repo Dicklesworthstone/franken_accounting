@@ -199,3 +199,54 @@ fn an_empty_checkpoint_extends_only_to_the_honest_empty_root() {
             .is_ok()
     );
 }
+
+/// The interim signer (`fa_notary::sign`) against the verifier's own
+/// SHA-512 and Ed25519 (`fa_verify`): two implementations sharing no code.
+/// Every signature over generated messages verifies; the same signature
+/// over a message with one byte changed, under another seed's key, or with
+/// one bit flipped does not; and the two SHA-512s agree at every length
+/// through three blocks.
+#[test]
+fn the_signer_and_the_verifier_agree_on_generated_messages() {
+    use fa_notary::sign::{SigningKey, sha512 as producer_sha512};
+    for len in 0..=400usize {
+        let input = bytes(len, 1000 + len as u64);
+        assert_eq!(
+            producer_sha512::sha512(&[&input]),
+            fa_verify::sha512::sha512(&[&input]),
+            "SHA-512 at length {len}"
+        );
+    }
+    let mut accepted = 0;
+    for seed in 0..12u64 {
+        let mut key_seed = [0u8; 32];
+        key_seed.copy_from_slice(&bytes(32, 7_000 + seed));
+        let key = SigningKey::from_seed(&key_seed);
+        let other = SigningKey::from_seed(&{
+            let mut s = key_seed;
+            s[0] ^= 1;
+            s
+        });
+        let pk = key.public_key();
+        for len in [0usize, 1, 31, 32, 33, 64, 111, 112, 127, 128, 129, 300] {
+            let message = bytes(len, seed * 1_000 + len as u64);
+            let sig = key.sign(&message);
+            assert_eq!(
+                fa_verify::ed25519::verify(&pk, &message, &sig),
+                Ok(()),
+                "seed {seed} length {len}"
+            );
+            accepted += 1;
+            if !message.is_empty() {
+                let mut changed = message.clone();
+                changed[len / 2] ^= 0x01;
+                assert!(fa_verify::ed25519::verify(&pk, &changed, &sig).is_err());
+            }
+            assert!(fa_verify::ed25519::verify(&other.public_key(), &message, &sig).is_err());
+            let mut flipped = sig;
+            flipped[(seed as usize * 5 + len) % 64] ^= 0x04;
+            assert!(fa_verify::ed25519::verify(&pk, &message, &flipped).is_err());
+        }
+    }
+    assert_eq!(accepted, 144);
+}

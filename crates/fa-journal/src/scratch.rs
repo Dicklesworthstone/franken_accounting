@@ -57,9 +57,13 @@ pub const SCOPE_ACCOUNTING_OBJECTS_ONLY: u8 = 1;
 const MAINTENANCE_PROPERTIES: [PropertyKeyId; 1] = [property::ACCUMULATOR_HEAD];
 
 /// Labels whose vertices are maintenance or checkpoints, never replayed.
-const MAINTENANCE: [LabelId; 3] = [
+/// A `TransparencyCheckpoint` signs the source's prefix by its sequence
+/// numbers, which a scratch book does not share; it is written in the same
+/// commit as the `AccumulatorState` it signs.
+const MAINTENANCE: [LabelId; 4] = [
     label::REGISTER,
     label::ACCUMULATOR_STATE,
+    label::TRANSPARENCY_CHECKPOINT,
     label::REGISTER_STATE,
 ];
 

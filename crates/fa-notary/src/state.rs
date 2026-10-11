@@ -19,8 +19,11 @@
 //! is a projection of the chain, never more authoritative than the journal
 //! the states are recomputed from ([`verify_accumulator`], FA-INV-14).
 //!
-//! States are unsigned. Signed, witnessed `TransparencyCheckpoint`s (plan
-//! §13.5) are not implemented; fa-verify's reports say `Unsigned`.
+//! A state is unsigned itself: the signed object is the
+//! [`TransparencyCheckpoint`] journaled beside it in the same transaction,
+//! one per state at a vertex derived from the state's oid, linked
+//! `CHECKPOINTS` → the state. Both are recomputed by
+//! [`verify_accumulator`].
 
 use std::collections::BTreeSet;
 
@@ -30,12 +33,18 @@ use fa_journal::refusal::{Outcome, Refusal, exit};
 use fa_journal::rows::{book_root, bytes, edge_id, prop};
 use fa_model::symbols::{label, property, relation};
 use fa_model::{DecodeError, EncodeError, Id128, Oid, Reader, Writer};
-use fgdb::{Database, VertexRow, WriteBatch, WriteMismatchPolicy, WriteTxnError};
+use fgdb::{Database, QueryError, VertexRow, WriteBatch, WriteMismatchPolicy, WriteTxnError};
 use fgdb_crypto::Hasher;
+use fgdb_gql::{GqlParameters, GqlQueryPolicy};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
+use crate::checkpoint::{
+    CheckpointBody, SignError, TransparencyCheckpoint, checkpoint_oid, checkpoint_vid,
+};
 use crate::journal::Journal;
+use crate::scope::{ScopeIndex, ScopeRequest};
+use crate::sign::CheckpointSigner;
 use crate::tree::Digest;
 use crate::{Statement, code};
 
@@ -220,6 +229,150 @@ fn load<V: asupersync::fs::Vfs + Clone>(
     stored(&row, oid)
 }
 
+/// A checkpoint as stored: its object, oid, vertex, and canonical bytes
+/// (for outsiders: `fa_verify::verify_checkpoint`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredCheckpoint {
+    pub oid: Oid,
+    pub vid: VId,
+    pub checkpoint: TransparencyCheckpoint,
+    pub bytes: Vec<u8>,
+}
+
+/// The substrate's chain commitment at `at`: the Chronicle marker-chain
+/// hash a certified read at that sequence names (`snapshot_identity`). The
+/// read itself is a fixed count; only its certificate is used.
+fn chain_commitment<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    at: CommitSeq,
+) -> Result<Digest, KernelError> {
+    const READ: &str = "MATCH (n:Entry) FOR SYSTEM_TIME AS OF SEQ $at RETURN COUNT(*) AS c";
+    let refused = |what: String| {
+        KernelError::Corrupt(format!("the chain-commitment read at {}: {what}", at.0))
+    };
+    let params = GqlParameters::new()
+        .with_uint64("at", at.0)
+        .map_err(|e| refused(format!("{e:?}")))?;
+    let policy = GqlQueryPolicy::new(1 << 24, 1, 1 << 26, 1 << 20);
+    match db.execute_certified(&ctx.query(), READ, &params, book.symbols.clone(), policy) {
+        Ok((_, certificate)) => Ok(certificate.snapshot_identity.0),
+        Err(QueryError::Read(e)) => Err(KernelError::Read(e)),
+        Err(e) => Err(refused(format!("{e:?}"))),
+    }
+}
+
+/// The checkpoint the journal prefix of `state` (journaled as `state_oid`)
+/// and the book's signer reproduce.
+fn expected_checkpoint<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    journal: &Journal,
+    state_oid: &Oid,
+    signer: &dyn CheckpointSigner,
+) -> Result<TransparencyCheckpoint, KernelError> {
+    let body = CheckpointBody {
+        statement: journal.statement(),
+        state_oid: *state_oid,
+        scope_index_root: ScopeIndex::of(journal).root(),
+        substrate_chain_commitment: chain_commitment(db, ctx, book, journal.through_seq)?,
+        witness_policy_oid: None,
+        time_evidence_oid: None,
+    };
+    TransparencyCheckpoint::sign(body, &[signer]).map_err(|e| match e {
+        SignError::Encode(e) => KernelError::Model(fa_model::EntryError::Encode(e)),
+        // Unreachable for a key derived from BookKeys (a clamped scalar
+        // times the base point has order L); a foreign signer with an
+        // untrustable key is a configuration fault, never a signature.
+        SignError::UntrustableKey { .. } => KernelError::Corrupt(e.to_string()),
+    })
+}
+
+/// The checkpoint vertex of `state_oid` as stored at `at`, or a finding:
+/// absent, mislabeled, not hashing to the oid it records, or undecodable.
+fn load_checkpoint<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    state_oid: &Oid,
+    at: CommitSeq,
+) -> Result<Result<StoredCheckpoint, String>, KernelError> {
+    let vid = checkpoint_vid(state_oid);
+    let Some(row) = db.vertex_at(vid, at)? else {
+        return Ok(Err(format!(
+            "the state {} has no checkpoint",
+            hex(&state_oid.0)
+        )));
+    };
+    if !row.labels.contains(&label::TRANSPARENCY_CHECKPOINT) {
+        return Ok(Err(format!(
+            "vertex {:032x} at the checkpoint id is not a TransparencyCheckpoint",
+            vid.0
+        )));
+    }
+    let payload = bytes(&row, property::FA_PAYLOAD, "checkpoint.payload")?;
+    let oid = checkpoint_oid(&payload);
+    match prop(&row, property::FA_DIGEST) {
+        Some(CanonicalScalar::Bytes(d)) if d.as_slice() == oid.0 => {}
+        _ => {
+            return Ok(Err(format!(
+                "checkpoint {:032x} does not hash to the digest it records",
+                vid.0
+            )));
+        }
+    }
+    match TransparencyCheckpoint::decode(&payload) {
+        Ok(checkpoint) => Ok(Ok(StoredCheckpoint {
+            oid,
+            vid,
+            checkpoint,
+            bytes: payload,
+        })),
+        Err(e) => Ok(Err(format!("checkpoint {:032x}: {e}", vid.0))),
+    }
+}
+
+/// The refusal for a checkpoint the journal and the book's key do not
+/// reproduce.
+fn checkpoint_invalid(message: String) -> Refusal {
+    Refusal::new(
+        code::CHECKPOINT_INVALID,
+        exit::VERIFICATION,
+        message,
+        "FA-INV-14 (a checkpoint is recomputed from the journal prefix and the book's key)",
+        "run `fa verify accumulator` and preserve the store for investigation; no proof is issued against it",
+    )
+}
+
+/// The stored checkpoint of the journaled `state`, after recomputing it —
+/// statement, scope-index root, chain commitment, and the signature (Ed25519
+/// is deterministic) — and comparing byte for byte. Refused (FA-REF-127,
+/// exit 8) when the store holds anything else.
+pub fn stored_checkpoint<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    state: &StoredState,
+    signer: &dyn CheckpointSigner,
+) -> Outcome<StoredCheckpoint> {
+    let journal = match supported(db, book, &state.state)? {
+        Ok(j) => j,
+        Err(r) => return Ok(Err(r)),
+    };
+    let stored = match load_checkpoint(db, &state.oid, db.frontier()?)? {
+        Ok(s) => s,
+        Err(finding) => return Ok(Err(checkpoint_invalid(finding))),
+    };
+    let expected = expected_checkpoint(db, ctx, book, &journal, &state.oid, signer)?;
+    if stored.checkpoint != expected {
+        return Ok(Err(checkpoint_invalid(format!(
+            "the checkpoint of the state through {} is not what the journal and the book's key reproduce",
+            state.state.through_seq.0
+        ))));
+    }
+    Ok(Ok(stored))
+}
+
 /// The latest journaled state as known at `known_at` (default: head).
 pub fn latest<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
@@ -295,20 +448,23 @@ fn drift(message: String) -> Refusal {
     )
 }
 
-/// A published state.
+/// A published state and the signed checkpoint beside it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Checkpointed {
     pub stored: StoredState,
+    pub checkpoint: StoredCheckpoint,
 }
 
 /// Recompute the accumulator over the whole journal at the head and journal
-/// it as the next `AccumulatorState`, after checking that the journal still
-/// extends the previous state (a rewritten history is refused with exit 8,
-/// never papered over by a new root).
+/// it as the next `AccumulatorState` with its `TransparencyCheckpoint`
+/// signed by `signer`, after checking that the journal still extends the
+/// previous state and reproduces its checkpoint (a rewritten history or a
+/// forged checkpoint is refused with exit 8, never papered over).
 pub async fn checkpoint<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
+    signer: &dyn CheckpointSigner,
 ) -> Outcome<Checkpointed> {
     let through = db.frontier()?;
     let journal = match Journal::read(db, book, Some(through))? {
@@ -374,12 +530,30 @@ pub async fn checkpoint<V: asupersync::fs::Vfs + Clone>(
                 stored_prev.recorded_at.0, prev.through_seq.0
             ))));
         }
-        if let Err(refusal) = supported(db, book, prev)? {
+        let prev_journal = match supported(db, book, prev)? {
+            Ok(j) => j,
+            Err(refusal) => {
+                txn.abort();
+                return Ok(Err(drift(format!(
+                    "the last accumulator state is not what the journal reproduces: {}",
+                    refusal.message
+                ))));
+            }
+        };
+        let finding = match load_checkpoint(db, &stored_prev.oid, through)? {
+            Err(finding) => Some(finding),
+            Ok(stored_cp) => {
+                let expected =
+                    expected_checkpoint(db, ctx, book, &prev_journal, &stored_prev.oid, signer)?;
+                (stored_cp.checkpoint != expected).then(|| {
+                    "the last checkpoint is not what the journal and the book's key reproduce"
+                        .to_string()
+                })
+            }
+        };
+        if let Some(finding) = finding {
             txn.abort();
-            return Ok(Err(drift(format!(
-                "the last accumulator state is not what the journal reproduces: {}",
-                refusal.message
-            ))));
+            return Ok(Err(checkpoint_invalid(finding)));
         }
         let extends = prev.book_id == journal.book_id
             && prev.branch_id == journal.branch_id
@@ -434,7 +608,35 @@ pub async fn checkpoint<V: asupersync::fs::Vfs + Clone>(
             vec![],
         );
     }
-    txn.write(db, batch)?;
+
+    // The signed checkpoint beside the state, in the same transaction.
+    let cp = expected_checkpoint(db, ctx, book, &journal, &oid, signer)?;
+    let cp_bytes = cp.canonical_bytes().map_err(fa_model::EntryError::Encode)?;
+    let cp_oid = checkpoint_oid(&cp_bytes);
+    let cvid = checkpoint_vid(&oid);
+    let mut cprops = vec![
+        (
+            property::FA_PAYLOAD,
+            CanonicalScalar::bytes(cp_bytes.clone())
+                .map_err(|_| KernelError::Scalar("checkpoint.payload"))?,
+        ),
+        (property::FA_DIGEST, oid_scalar(&cp_oid)?),
+        (
+            property::BOOK_ID,
+            CanonicalScalar::bytes(book.book_id.0.to_vec())
+                .map_err(|_| KernelError::Scalar("book_id"))?,
+        ),
+    ];
+    cprops.sort_by_key(|(k, _)| k.0);
+    let mut checkpoints = WriteBatch::new(relation::CHECKPOINTS);
+    checkpoints.create_vertex(cvid, vec![label::TRANSPARENCY_CHECKPOINT], cprops);
+    checkpoints.add_edge(
+        edge_id(relation::CHECKPOINTS, cvid, svid),
+        cvid,
+        svid,
+        vec![],
+    );
+    txn.write_ordered(db, vec![batch, checkpoints])?;
     match txn.commit(db, &ctx.commit()).await {
         Ok(seq) => Ok(Ok(Checkpointed {
             stored: StoredState {
@@ -443,6 +645,12 @@ pub async fn checkpoint<V: asupersync::fs::Vfs + Clone>(
                 recorded_at: seq,
                 state,
                 bytes: payload,
+            },
+            checkpoint: StoredCheckpoint {
+                oid: cp_oid,
+                vid: cvid,
+                checkpoint: cp,
+                bytes: cp_bytes,
             },
         })),
         Err(WriteTxnError::Write(
@@ -480,7 +688,8 @@ pub struct AccumulatorVerification {
     /// not the object its oid names, or a cycle. Tampering is a finding,
     /// never a read error.
     pub broken: Option<String>,
-    /// State vertices the chain does not reach (a forged or orphaned state).
+    /// State or checkpoint vertices the chain does not reach (a forged or
+    /// orphaned object).
     pub unchained: Vec<VId>,
 }
 
@@ -494,44 +703,58 @@ impl AccumulatorVerification {
 }
 
 /// FA-INV-14 by recomputation: every state on the chain is rebuilt from the
-/// journal prefix it names and must match field for field; each extends its
+/// journal prefix it names and must match field for field; its checkpoint
+/// is rebuilt from the same prefix and signed again by `signer` (Ed25519 is
+/// deterministic) and must match byte for byte; each state extends its
 /// predecessor; each was recorded after the prefix it covers; and every
-/// state vertex in the store is on the chain.
+/// state and checkpoint vertex in the store is on the chain.
 pub fn verify_accumulator<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
+    ctx: &PurposeContexts,
     book: &BookContext,
+    signer: &dyn CheckpointSigner,
 ) -> Result<AccumulatorVerification, KernelError> {
     let at = db.frontier()?;
     let (chain, broken) = walk(db, at)?;
     let mut states = Vec::with_capacity(chain.len());
     for (i, s) in chain.iter().enumerate() {
         let st = &s.state;
-        let mut finding = None;
-        if st.book_id != book.book_id || st.branch_id != Id128::TRUNK {
-            finding = Some("the state names another book or branch".to_string());
+        let mut finding = if st.book_id != book.book_id || st.branch_id != Id128::TRUNK {
+            Some("the state names another book or branch".to_string())
         } else if s.recorded_at <= st.through_seq {
-            finding = Some(format!(
+            Some(format!(
                 "recorded at {} but claims a prefix through {}",
                 s.recorded_at.0, st.through_seq.0
-            ));
+            ))
         } else {
             match Journal::read(db, book, Some(st.through_seq))? {
-                Err(r) => finding = Some(r.message),
+                Err(r) => Some(r.message),
                 Ok(journal) => {
                     let expected = AccumulatorState::of_journal(&journal, st.prev_state_oid);
-                    if expected != *st {
-                        finding = Some(format!(
+                    if expected == *st {
+                        match load_checkpoint(db, &s.oid, at)? {
+                            Err(f) => Some(f),
+                            Ok(stored_cp) => {
+                                let expected =
+                                    expected_checkpoint(db, ctx, book, &journal, &s.oid, signer)?;
+                                (stored_cp.checkpoint != expected).then(|| {
+                                    "its checkpoint is not what the journal and the book's key reproduce (signature, scope-index root, chain commitment, or statement)".to_string()
+                                })
+                            }
+                        }
+                    } else {
+                        Some(format!(
                             "recomputed {} leaves with root {} from the journal through {}; the state claims {} leaves with root {}",
                             expected.leaf_count,
                             hex(&expected.root),
                             st.through_seq.0,
                             st.leaf_count,
                             hex(&st.root)
-                        ));
+                        ))
                     }
                 }
             }
-        }
+        };
         if finding.is_none()
             && let Some(prev) = chain.get(i + 1)
             && (prev.state.through_seq >= st.through_seq
@@ -551,12 +774,17 @@ pub fn verify_accumulator<V: asupersync::fs::Vfs + Clone>(
             finding,
         });
     }
-    let on_chain: BTreeSet<VId> = chain.iter().map(|s| s.vid).collect();
+    let on_chain: BTreeSet<VId> = chain
+        .iter()
+        .flat_map(|s| [s.vid, checkpoint_vid(&s.oid)])
+        .collect();
     let unchained = db
         .vertices_at(at)?
         .into_iter()
         .filter(|row| {
-            row.labels.contains(&label::ACCUMULATOR_STATE) && !on_chain.contains(&row.vid)
+            (row.labels.contains(&label::ACCUMULATOR_STATE)
+                || row.labels.contains(&label::TRANSPARENCY_CHECKPOINT))
+                && !on_chain.contains(&row.vid)
         })
         .map(|row| row.vid)
         .collect();
@@ -659,6 +887,23 @@ pub fn prove_prefix<V: asupersync::fs::Vfs + Clone>(
 ) -> Outcome<Vec<u8>> {
     match supported(db, book, state)? {
         Ok(journal) => Ok(Ok(journal.prefix_proof()?)),
+        Err(r) => Ok(Err(r)),
+    }
+}
+
+/// The `ScopeIndexComplete` proof `request` asks for against the journaled
+/// `state` (plan §13.1): one account's effective-day interval. Other scopes
+/// are refused with FA-REF-126, naming the complete prefix as the honest
+/// alternative. The proof is checked against the checkpoint beside `state`,
+/// whose scope-index root it opens.
+pub fn prove_scope<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    state: &AccumulatorState,
+    request: &ScopeRequest,
+) -> Outcome<Vec<u8>> {
+    match supported(db, book, state)? {
+        Ok(journal) => crate::scope::prove(&journal, request),
         Err(r) => Ok(Err(r)),
     }
 }

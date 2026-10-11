@@ -54,10 +54,22 @@ fn split(n: usize) -> usize {
 pub fn root_of(leaves: &[Digest]) -> Digest {
     match leaves.len() {
         0 => empty_root(),
-        1 => leaves[0],
+        _ => root_of_with(node_hash, leaves),
+    }
+}
+
+/// The root over one or more `leaves` of a tree of the same shape whose
+/// interior nodes hash with `node` (the caller defines the empty tree).
+#[must_use]
+pub fn root_of_with(node_hash: fn(&Digest, &Digest) -> Digest, leaves: &[Digest]) -> Digest {
+    match leaves.len() {
+        0 | 1 => leaves.first().copied().unwrap_or([0; 32]),
         n => {
             let k = split(n);
-            node_hash(&root_of(&leaves[..k]), &root_of(&leaves[k..]))
+            node_hash(
+                &root_of_with(node_hash, &leaves[..k]),
+                &root_of_with(node_hash, &leaves[k..]),
+            )
         }
     }
 }
@@ -78,6 +90,19 @@ pub fn bag_peaks(peaks: &[Digest]) -> Digest {
 /// shape does not fit that position and size.
 #[must_use]
 pub fn root_from_inclusion(
+    leaf_index: u64,
+    tree_size: u64,
+    leaf: &Digest,
+    path: &[Digest],
+) -> Option<Digest> {
+    root_from_inclusion_with(node_hash, leaf_index, tree_size, leaf, path)
+}
+
+/// [`root_from_inclusion`] for a tree of the same shape whose interior
+/// nodes hash with `node` (the scope index's domain, for one).
+#[must_use]
+pub fn root_from_inclusion_with(
+    node_hash: fn(&Digest, &Digest) -> Digest,
     leaf_index: u64,
     tree_size: u64,
     leaf: &Digest,

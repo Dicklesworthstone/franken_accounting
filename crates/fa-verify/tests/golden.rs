@@ -221,3 +221,106 @@ fn the_pinned_balance_proof_refolds_cash() {
     assert_eq!((report.claim.debits, report.claim.credits), (0, 120_550));
     assert_eq!(report.contributing, vec![2, 3]);
 }
+
+const CHECKPOINT_FIXTURE: &str = include_str!("fixtures/checkpoint_v1.txt");
+
+fn checkpoint_vector(name: &str) -> Vec<u8> {
+    let line = CHECKPOINT_FIXTURE
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .find_map(|l| l.strip_prefix(name)?.strip_prefix(' '))
+        .unwrap_or("");
+    assert!(!line.is_empty(), "fixture has no `{name}` vector");
+    unhex(line)
+}
+
+/// The pinned scope proofs, the scope each answers, and its in-scope
+/// leaves (the fixture header describes them).
+fn pinned_scopes() -> [(&'static str, fa_verify::ScopeClaim, Vec<u64>); 3] {
+    let claim = |account, from, to| fa_verify::ScopeClaim { account, from, to };
+    [
+        ("scope", claim(0x10, 20_527, 20_527), vec![2, 3]),
+        ("scope_empty", claim(0x20, 20_528, 20_600), vec![]),
+        ("scope_last", claim(0x30, i32::MIN, i32::MAX), vec![2, 3]),
+    ]
+}
+
+fn pinned_key() -> [u8; 32] {
+    checkpoint_vector("public_key")
+        .try_into()
+        .expect("a 32-byte key")
+}
+
+/// The pinned checkpoint is signed by the pinned key, names the pinned
+/// state of `accumulator_v1.txt`, and every pinned scope proof verifies
+/// against it: the run at the start of the index, an empty run between two
+/// neighbours, and the run at the end, each with the index recomputed from
+/// the pinned complete prefix.
+#[test]
+fn the_pinned_checkpoint_is_signed_and_its_scopes_verify() {
+    use fa_verify::{IndexDerivation, verify_checkpoint, verify_scope};
+
+    let signed = verify_checkpoint(&checkpoint_vector("checkpoint"), &[pinned_key()])
+        .expect("the pinned key signed the pinned checkpoint");
+    let state = verify_state(&vector("state")).unwrap();
+    assert_eq!(signed.checkpoint, state.checkpoint);
+    assert_eq!(signed.state_oid, state.oid);
+    assert_eq!(signed.substrate_chain_commitment, [0xc0; 32]);
+    assert_eq!(signed.witness_policy_oid, None);
+    assert_eq!(signed.time_evidence_oid, None);
+    let prefix = vector("prefix");
+    for (name, claim, leaves) in pinned_scopes() {
+        let proof = checkpoint_vector(name);
+        let signed_only = verify_scope(&proof, &signed, &claim, None).expect(name);
+        assert_eq!(signed_only.account, claim.account, "{name}");
+        assert_eq!(
+            signed_only
+                .leaves
+                .iter()
+                .map(|(i, _)| *i)
+                .collect::<Vec<_>>(),
+            leaves,
+            "{name}"
+        );
+        assert_eq!(
+            signed_only.index_derivation,
+            IndexDerivation::Signed {
+                by: signed.signed_by.clone()
+            }
+        );
+        let recomputed = verify_scope(&proof, &signed, &claim, Some(&prefix)).expect(name);
+        assert_eq!(recomputed.index_derivation, IndexDerivation::Recomputed);
+    }
+}
+
+/// Every flipped bit of every pinned scope proof is refused, and so is a
+/// flipped bit at every seventh position of the checkpoint (each such check
+/// is a full signature verification) and at every bit of its last byte.
+#[test]
+fn every_pinned_checkpoint_vector_refuses_flipped_bits() {
+    use fa_verify::{verify_checkpoint, verify_scope};
+
+    let checkpoint = checkpoint_vector("checkpoint");
+    let key = pinned_key();
+    let signed = verify_checkpoint(&checkpoint, &[key]).unwrap();
+    let last = checkpoint.len() * 8 - 8;
+    for bit in (0..checkpoint.len() * 8).filter(|b| b % 7 == 0 || *b >= last) {
+        let mut forged = checkpoint.clone();
+        forged[bit / 8] ^= 1 << (bit % 8);
+        assert!(
+            verify_checkpoint(&forged, &[key]).is_err(),
+            "checkpoint bit {bit} accepted"
+        );
+    }
+    for (name, claim, _) in pinned_scopes() {
+        let proof = checkpoint_vector(name);
+        for bit in 0..proof.len() * 8 {
+            let mut forged = proof.clone();
+            forged[bit / 8] ^= 1 << (bit % 8);
+            assert!(
+                verify_scope(&forged, &signed, &claim, None).is_err(),
+                "{name} bit {bit} accepted"
+            );
+        }
+    }
+}

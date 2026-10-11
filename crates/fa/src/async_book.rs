@@ -66,6 +66,8 @@ pub struct AsyncBook<V: Vfs + Clone, B: Vfs + Clone = V> {
     blobs: fa_journal::BlobStore<B>,
     context: BookContext,
     entropy: Entropy,
+    /// Signs this book's transparency checkpoints (derived from its keys).
+    signer: fa_notary::SigningKey,
 }
 
 impl<V: Vfs + Clone> AsyncBook<V> {
@@ -112,6 +114,7 @@ impl<V: Vfs + Clone> AsyncBook<V> {
                 symbols,
             },
             entropy,
+            signer: keys.checkpoint_signing_key(),
         })
     }
 
@@ -154,6 +157,7 @@ impl<V: Vfs + Clone> AsyncBook<V> {
                 symbols: SymbolTable::compiled(),
             },
             entropy,
+            signer: keys.checkpoint_signing_key(),
         })
     }
 }
@@ -503,11 +507,16 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// book shares the source's immutable blob store, so its external
     /// documents remain readable while that store is available. Its sealed
     /// fields retain the source book's key; target database keys encrypt
-    /// only the new substrate storage.
+    /// only the new substrate storage. `keys` are the keys `target` was
+    /// opened with: the scratch book signs its own checkpoints with their
+    /// checkpoint key, never with the source's unless the caller passes the
+    /// source's keys, since a checkpoint over a scenario prefix is not the
+    /// book's.
     pub async fn replay_into<W: Vfs + Clone>(
         &mut self,
         cx: &PurposeContexts,
         mut target: Database<W>,
+        keys: &BookKeys,
         prefix: Option<CommitSeq>,
         entropy: Entropy,
     ) -> Outcome<(AsyncBook<W, B>, fa_journal::SeqMap)> {
@@ -530,6 +539,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 blobs: self.blobs.clone(),
                 context: self.context.clone(),
                 entropy,
+                signer: keys.checkpoint_signing_key(),
             },
             map,
         )))
@@ -919,14 +929,25 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })? {
             return Ok(Err(refusal));
         }
-        Ok(fa_notary::checkpoint(&mut self.db, cx, &self.context).await?)
+        Ok(fa_notary::checkpoint(&mut self.db, cx, &self.context, &self.signer).await?)
     }
 
+    /// Recompute every accumulator state from its journal prefix, and every
+    /// checkpoint from the same prefix and this book's key.
     pub fn verify_accumulator(
         &self,
         cx: &PurposeContexts,
     ) -> Result<fa_notary::AccumulatorVerification, BookError> {
-        self.query(cx, |db, book| Ok(fa_notary::verify_accumulator(db, book)?))
+        self.query(cx, |db, book| {
+            Ok(fa_notary::verify_accumulator(db, cx, book, &self.signer)?)
+        })
+    }
+
+    /// The public key this book's transparency checkpoints are signed with
+    /// (Ed25519, plan §13.2), for an outsider to verify them with.
+    #[must_use]
+    pub fn checkpoint_public_key(&self) -> [u8; 32] {
+        self.signer.public_key()
     }
 
     pub fn open_items(
