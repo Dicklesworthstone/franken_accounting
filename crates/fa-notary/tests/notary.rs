@@ -1009,3 +1009,257 @@ fn balance_proofs_refold_exactly_the_register_balances_and_refuse_tampering() {
         "another entry's record under an in-scope index"
     );
 }
+
+/// fa-xo0 interim (ruling 3243): the accumulator keeps a staged migration
+/// chunk (it is journaled), but a balance proof never counts it — the
+/// register fold does not, and `fa-verify` cannot yet see the run — so a
+/// proof touching a staged chunk's account refuses FA-REF-133 while every
+/// other account proves; once the run's Finalize is in the prefix, the same
+/// account proves and verifies, and the earlier prefix still refuses.
+#[test]
+fn a_staged_migration_chunk_blocks_its_balance_proof_until_the_run_finalizes() {
+    let mut h = harness();
+    let opening = DateDay::from_ymd(2026, 1, 1).unwrap();
+    for (i, t) in [
+        PeriodTransition::Open,
+        PeriodTransition::SoftClose,
+        PeriodTransition::Close,
+        PeriodTransition::Lock,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        let key = format!("opening-{i}");
+        let desc = Erasable::seal(
+            &"opening".to_string(),
+            None,
+            &book.seal_key,
+            [3; 32],
+            [4; 24],
+        );
+        h.runtime
+            .block_on(async move {
+                transition_period(
+                    db,
+                    &ctx,
+                    book,
+                    "FY2026-OPEN",
+                    t,
+                    PRINCIPAL,
+                    1,
+                    opening,
+                    key.as_bytes(),
+                    desc,
+                )
+                .await
+            })
+            .expect("kernel")
+            .expect("transition");
+    }
+    let sealed = |h: &Harness, text: &str| {
+        Erasable::seal(&text.to_string(), None, &h.book.seal_key, [5; 32], [6; 24])
+    };
+    let approve = |h: &mut Harness, digest: [u8; 32]| -> Vec<fa_model::ApprovalRef> {
+        [VId(8), VId(9)]
+            .into_iter()
+            .map(|who| {
+                let ctx = h.ctx();
+                let db = &mut h.db;
+                let book = &h.book;
+                let req = ApprovalRequest {
+                    capability: Capability::embedded(who, &["approve"]).unwrap(),
+                    approved_proposal_digest: digest,
+                    role: 0,
+                };
+                h.runtime
+                    .block_on(async move { record_approval(db, &ctx, book, req).await })
+                    .expect("kernel")
+                    .expect("approved")
+                    .approval()
+            })
+            .collect()
+    };
+    let preparer = Capability::embedded(PRINCIPAL, &["post", "migrate"]).unwrap();
+
+    // Open a run over cash and rent: Dr cash 5,000 / Cr rent 5,000.
+    let body = RunBody {
+        book_id: h.book.book_id,
+        run_key: "go-live".into(),
+        source_system: "legacy-gl".into(),
+        mode: RunMode::OpeningOnly,
+        trial_balance: h.evidence[0].document_oid,
+        opening_date: opening,
+        lines: vec![
+            TrialBalanceLine {
+                account_code: "1000".into(),
+                unit: h.usd,
+                mantissa: 5_000,
+            },
+            TrialBalanceLine {
+                account_code: "6000".into(),
+                unit: h.usd,
+                mantissa: -5_000,
+            },
+        ],
+    };
+    let proposal = open_proposal(
+        &h.book,
+        PRINCIPAL,
+        &body,
+        h.evidence[0],
+        b"open-run",
+        sealed(&h, "open"),
+    )
+    .unwrap();
+    let req = RunControlRequest {
+        proposal,
+        capability: preparer.clone(),
+        approvals: Vec::new(),
+    };
+    let ctx = h.ctx();
+    let (db, book) = (&mut h.db, &h.book);
+    let run = h
+        .runtime
+        .block_on(async move { open_run(db, &ctx, book, &body, req).await })
+        .expect("kernel")
+        .expect("opened")
+        .run;
+
+    // The chunk: staged, invisible.
+    let legs = vec![
+        LegPayload::simple(Side::Debit, h.cash, Amount::new(h.usd, 5_000)),
+        LegPayload::simple(Side::Credit, h.rent, Amount::new(h.usd, 5_000)),
+    ];
+    let chunk = EntryPayload {
+        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        book_id: h.book.book_id,
+        branch_id: Id128::TRUNK,
+        class: EntryClass::MIGRATION,
+        effective_date: opening,
+        document_date: None,
+        description: sealed(&h, "opening balances"),
+        effective_period: Some(fa_model::PeriodRef {
+            calendar: h.book.calendar.id.clone(),
+            code: "FY2026-OPEN".into(),
+        }),
+        unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
+        legs,
+        control: None,
+        base_totals: None,
+        idempotency_key: b"chunk-0".to_vec(),
+        origin: EntryOrigin::Migration {
+            run_ref: run,
+            source_system: "legacy-gl".into(),
+            source_id: sealed(&h, "JE-1"),
+            source_recorded_at_ns: Some(-1_000_000_000_000_000_000),
+            source_entered_by: None,
+            source_approved_by: None,
+            batch_oid: Oid([5; 32]),
+        },
+        principal_ref: PRINCIPAL,
+        session_ref: None,
+        evidence: h.evidence.clone(),
+        supersession: Vec::new(),
+        pending: None,
+        external_ids: Vec::new(),
+        extensions: Vec::new(),
+        tags: Vec::new(),
+    };
+    let approvals = approve(&mut h, chunk.proposal_digest().unwrap());
+    let req = PostRequest {
+        proposal: chunk,
+        approvals,
+        plan_certificate: None,
+        capability: preparer.clone(),
+    };
+    let ctx = h.ctx();
+    let (db, book) = (&mut h.db, &h.book);
+    h.runtime
+        .block_on(async move { post(db, &ctx, book, req).await })
+        .expect("kernel")
+        .expect("the chunk stages");
+    h.post(h.utilities, 250, b"after-chunk");
+
+    let staged = h.checkpoint();
+    let staged_trusted = outsider_checkpoint(&staged);
+    let journal = Journal::read(&h.db, &h.book, Some(staged.state.through_seq))
+        .unwrap()
+        .unwrap();
+    assert!(
+        journal
+            .leaves
+            .iter()
+            .any(|l| l.envelope.class == EntryClass::MIGRATION),
+        "the accumulator keeps the staged chunk"
+    );
+    for account in [h.cash, h.rent] {
+        let r = prove_balance(&h.db, &h.book, &staged.state, account, h.usd.0, None)
+            .unwrap()
+            .expect_err("a staged chunk's account does not prove");
+        assert_eq!(
+            (r.code, r.exit),
+            (code::MIGRATION_STAGED, exit::REFUSAL),
+            "{r}"
+        );
+    }
+    // An account the chunk does not touch proves as before.
+    let utilities = prove_balance(&h.db, &h.book, &staged.state, h.utilities, h.usd.0, None)
+        .unwrap()
+        .expect("unaffected account proves");
+    assert!(fa_verify::verify_balance(&utilities, &staged_trusted).is_ok());
+
+    // Finalize (two approvals over the planned proposal).
+    let fin = plan_run_transition(
+        &h.db,
+        &h.book,
+        run,
+        fa_journal::migration::kind::FINALIZE,
+        PRINCIPAL,
+        b"finalize",
+        sealed(&h, "finalize"),
+    )
+    .unwrap()
+    .expect("ties out");
+    let approvals = approve(&mut h, fin.proposal_digest().unwrap());
+    let req = RunControlRequest {
+        proposal: fin,
+        capability: preparer,
+        approvals,
+    };
+    let ctx = h.ctx();
+    let (db, book) = (&mut h.db, &h.book);
+    h.runtime
+        .block_on(async move { transition_run(db, &ctx, book, req).await })
+        .expect("kernel")
+        .expect("finalized");
+
+    let active = h.checkpoint();
+    let trusted = outsider_checkpoint(&active);
+    let register = fa_registers::balance_as_of(
+        &h.db,
+        &h.book,
+        DateDay::from_ymd(2026, 12, 31).unwrap(),
+        Some(active.state.through_seq),
+    )
+    .expect("register fold");
+    for account in [h.cash, h.rent] {
+        let proof = prove_balance(&h.db, &h.book, &active.state, account, h.usd.0, None)
+            .unwrap()
+            .expect("a finalized run's account proves");
+        let report = fa_verify::verify_balance(&proof, &trusted).expect("refold matches");
+        let expected = register
+            .rows
+            .iter()
+            .find(|r| r.account == account && r.unit_id == h.usd.0)
+            .map_or((0, 0), |r| (r.debits, r.credits));
+        assert_eq!((report.claim.debits, report.claim.credits), expected);
+    }
+    // The earlier prefix holds no Finalize leaf: it still refuses.
+    let r = prove_balance(&h.db, &h.book, &staged.state, h.cash, h.usd.0, None)
+        .unwrap()
+        .expect_err("the staged prefix never proves the chunk");
+    assert_eq!(r.code, code::MIGRATION_STAGED);
+}

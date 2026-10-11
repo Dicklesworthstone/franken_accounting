@@ -292,3 +292,12 @@ class = "ScheduleControl"
 requirement = "control_record"
 min_documents = 0
 kinds = "any"
+
+# A MigrationRun's Open record names the legacy trial balance in its body and
+# cites it: the migration module resolves that document inside the opening
+# transaction (plan §8.6), so the class itself rests on its control record.
+[[minimum]]
+class = "MigrationControl"
+requirement = "control_record"
+min_documents = 0
+kinds = "any"

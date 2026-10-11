@@ -106,6 +106,8 @@ impl EntryClass {
     pub const TIME_CONTROL: Self = Self(19);
     pub const SWEEP_CONTROL: Self = Self(20);
     pub const SCHEDULE_CONTROL: Self = Self(21);
+    /// A `MigrationRun`'s lifecycle (plan §8.6): Open, Finalize, Abandon.
+    pub const MIGRATION_CONTROL: Self = Self(22);
 
     /// `(tag, name, is_control)` for every registered class.
     pub const ALL: &[(u16, &str, bool)] = &[
@@ -130,6 +132,7 @@ impl EntryClass {
         (19, "TimeControl", true),
         (20, "SweepControl", true),
         (21, "ScheduleControl", true),
+        (22, "MigrationControl", true),
     ];
 
     #[must_use]

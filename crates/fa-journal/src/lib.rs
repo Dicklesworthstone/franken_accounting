@@ -22,6 +22,7 @@ pub mod entity;
 pub mod evidence;
 pub mod genesis;
 pub mod limit;
+pub mod migration;
 pub mod period;
 pub mod policy;
 pub mod post;
@@ -41,6 +42,11 @@ pub use genesis::{
 pub use limit::{
     BalanceLimit, Balanced, LimitCell, LimitScope, cell_account, limit_cell_vid, period_cell_vid,
     post_balancing,
+};
+pub use migration::{
+    Run, RunBody, RunChunk, RunControlRequest, RunControlled, RunMode, RunState, TieOut,
+    TrialBalanceLine, open_proposal, open_run, plan_run_transition, read_run, tie_out,
+    transition_run, visible_at,
 };
 pub use period::{
     TransitionPlan, Transitioned, plan_transition, transition_name, transition_period,

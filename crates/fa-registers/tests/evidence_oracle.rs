@@ -87,7 +87,7 @@ fn kernel_and_oracle_agree_on_every_class_and_every_pair_of_documents() {
         .iter()
         .map(|(_, name, _)| (*name).to_string())
         .collect();
-    assert_eq!(class_names.len(), 21, "every registered class");
+    assert_eq!(class_names.len(), 22, "every registered class");
     class_names.push("NoSuchClass".into());
     for class in &class_names {
         for set in &sets {
@@ -751,7 +751,7 @@ fn cite(
             }
         }
     }
-    chosen.sort_by(|a, b| a.0.cmp(&b.0));
+    chosen.sort_by_key(|a| a.0);
     chosen.dedup_by(|a, b| a.0 == b.0);
     let citations = chosen
         .iter()

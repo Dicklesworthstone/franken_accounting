@@ -140,3 +140,11 @@ tag = 21
 name = "ScheduleControl"
 kind = "control"
 supersession = "none"
+
+# A MigrationRun's lifecycle (plan §8.6): Open, Finalize, Abandon. Book-scoped;
+# Finalize is the one record that makes a run's staged entries visible.
+[[class]]
+tag = 22
+name = "MigrationControl"
+kind = "control"
+supersession = "none"
