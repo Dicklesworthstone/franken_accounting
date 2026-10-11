@@ -976,6 +976,7 @@ mod tests {
     where
         Fut: std::future::Future<Output = ()> + Send + 'static,
     {
+        use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
 
         // The runtime gives cancellation precedence over a successful task
