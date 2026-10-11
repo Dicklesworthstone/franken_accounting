@@ -433,7 +433,7 @@ fn a_redacted_view_changes_no_amount_entry_or_evidence_link() {
             fold_period(&h.db, &book, &h.march).expect("fold"),
             // The rows, not the coordinate: `known_at` is the head, which the
             // view's own commit advances.
-            trial_balance(&h.db, &book, &[h.march.clone()])
+            trial_balance(&h.db, &book, std::slice::from_ref(&h.march))
                 .expect("trial balance")
                 .rows,
             vids.iter()
