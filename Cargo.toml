@@ -25,6 +25,7 @@ members = [
     "crates/fa-notary",
     "crates/fa-policy",
     "crates/fad",
+    "crates/fa-mcp",
 ]
 
 [workspace.package]
@@ -56,6 +57,13 @@ fgdb-bigint = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev
 # (fa-txf B, CobaltGull 3452/3462; fa-0fl reuses it).
 fgdb-sim = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf", version = "=0.0.1" }
 
+# The MCP framework (plan §2.4, §18.4): crates.io, exact version, consumed by
+# the fa-mcp posture only. Its registry pin of asupersync `=0.5.0` resolves
+# to the git revision above through [patch.crates-io] below, so fastmcp and
+# the substrate link one `Cx` (§0.4 decision 9); `cargo metadata` shows one
+# asupersync package id.
+fastmcp-rust = { version = "=0.12.0" }
+
 # Exact rate coefficients and cooperatively metered arithmetic (fa-pri).
 fsym-bigint = { git = "https://github.com/Dicklesworthstone/frankensympy", rev = "bd1ad68a3a06e0a0ed6ee4a9bc76d85dc9e67e2e", version = "=0.1.0" }
 fsym-rational = { git = "https://github.com/Dicklesworthstone/frankensympy", rev = "bd1ad68a3a06e0a0ed6ee4a9bc76d85dc9e67e2e", version = "=0.1.0" }
@@ -76,3 +84,9 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 debug = "line-tables-only"
+
+# fastmcp-rust pins `asupersync = "=0.5.0"` from the registry; the substrate
+# pins the git revision. Without this patch two `asupersync` crates — two `Cx`
+# types — would link (plan §2.4, §18.4). The git revision is 0.5.0.
+[patch.crates-io]
+asupersync = { git = "https://github.com/Dicklesworthstone/asupersync", rev = "78b64636e99fea4ea2d868096576021dd3b8e519" }

@@ -34,11 +34,13 @@ exceptions = [
   { crate = "fa-time@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fa-verify@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fad@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fa-mcp@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fsym-bigint@0.1.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fsym-budget@0.1.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fsym-modular@0.1.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fsym-rational@0.1.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "asupersync", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "asupersync-macros", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fgdb", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fgdb-types", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fgdb-delta-types", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
@@ -72,6 +74,27 @@ exceptions = [
   { crate = "franken-decision", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "franken-evidence", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "franken-kernel", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  # fastmcp-rust 0.12.0 (crates.io; the fa-mcp posture, plan §2.4): the owner's
+  # MIT-with-rider text, byte-identical to this repository's LICENSE.
+  { crate = "fastmcp-rust@0.12.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fastmcp-core@0.12.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fastmcp-protocol@0.12.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fastmcp-transport@0.12.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fastmcp-server@0.12.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fastmcp-client@0.12.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fastmcp-derive@0.12.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fastmcp-console@0.12.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  # The fa-mcp posture's TLS closure (fastmcp-transport enables asupersync's
+  # `tls`/`tls-webpki-roots`; fastmcp-protocol's `jose` needs ring): permissive
+  # licenses this file does not allow globally, admitted for these exact
+  # crates only. Not a first-party dependency path.
+  { crate = "ring", allow = ["ISC"] },
+  { crate = "rustls-webpki", allow = ["ISC"] },
+  { crate = "untrusted", allow = ["ISC"] },
+  { crate = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
+  # fastmcp-client → dirs → dirs-sys → option-ext (MPL-2.0, file-scoped
+  # copyleft on an unmodified crate); fa-mcp posture only.
+  { crate = "option-ext", allow = ["MPL-2.0"] },
 ]
 
 # These packages declare license-file rather than an SPDX expression. The
@@ -140,6 +163,11 @@ license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
 
 [[licenses.clarify]]
 crate = "fad@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fa-mcp@0.0.1"
 expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
 
@@ -285,6 +313,46 @@ crate = "fsym-rational@0.1.0"
 expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
 
+[[licenses.clarify]]
+crate = "fastmcp-rust@0.12.0"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fastmcp-core@0.12.0"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fastmcp-protocol@0.12.0"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fastmcp-transport@0.12.0"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fastmcp-server@0.12.0"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fastmcp-client@0.12.0"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fastmcp-derive@0.12.0"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fastmcp-console@0.12.0"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "LICENSE", hash = 0x3e2e0c66 }]
+
 [bans]
 multiple-versions = "deny"
 wildcards = "deny"
@@ -301,6 +369,23 @@ skip = [
   { crate = "rand_core@0.6.4", reason = "rand_chacha, signatory and signature need 0.6; fnx and asupersync crypto use 0.10.1" },
   { crate = "sha2@0.10.9", reason = "ed25519-dalek needs 0.10; pinned asupersync uses 0.11.0" },
   { crate = "syn@2.0.119", reason = "prost, pin-project and curve25519 derives need syn 2; serde and thiserror derives use 3.0.6" },
+  # The fa-mcp posture (fastmcp-rust 0.12.0, plan §2.4) — exact older releases
+  # its pinned closure needs beside the workspace's current ones.
+  { crate = "io-lifetimes@2.0.4", reason = "fs-set-times 0.20.3 (cap-primitives, fastmcp-server) needs 2; cap-std 4.0.3 uses 3.0.1" },
+  { crate = "signal-hook@0.3.18", reason = "crossterm 0.29 and signal-hook-mio (rich_rust, fastmcp-console) need 0.3; asupersync uses 0.4.5" },
+  { crate = "synstructure@0.13.2", reason = "asn1-rs-derive 0.6 (x509-parser, asupersync tls) needs 0.13; yoke/zerofrom derives use 0.14.0" },
+  { crate = "windows-sys@0.52.0", reason = "ring 0.17.14 (fastmcp-protocol jose, rustls) needs 0.52; the workspace uses 0.61.2" },
+  { crate = "windows-sys@0.59.0", reason = "fs-set-times 0.20.3 and winx 0.36.4 (cap-primitives, fastmcp-server) need 0.59; the workspace uses 0.61.2" },
+  { crate = "windows-sys@0.60.2", reason = "io-extras 0.19 (cap-std, fastmcp-server) needs 0.60; the workspace uses 0.61.2" },
+  { crate = "windows-targets@0.52.6", reason = "windows-sys 0.52.0/0.59.0 above need 0.52; windows-sys 0.60.2 uses 0.53.5" },
+  { crate = "windows_aarch64_gnullvm@0.52.6", reason = "windows-targets 0.52.6 above" },
+  { crate = "windows_aarch64_msvc@0.52.6", reason = "windows-targets 0.52.6 above" },
+  { crate = "windows_i686_gnu@0.52.6", reason = "windows-targets 0.52.6 above" },
+  { crate = "windows_i686_gnullvm@0.52.6", reason = "windows-targets 0.52.6 above" },
+  { crate = "windows_i686_msvc@0.52.6", reason = "windows-targets 0.52.6 above" },
+  { crate = "windows_x86_64_gnu@0.52.6", reason = "windows-targets 0.52.6 above" },
+  { crate = "windows_x86_64_gnullvm@0.52.6", reason = "windows-targets 0.52.6 above" },
+  { crate = "windows_x86_64_msvc@0.52.6", reason = "windows-targets 0.52.6 above" },
 ]
 deny = [
   # Runtimes other than asupersync.
@@ -316,15 +401,22 @@ deny = [
   { name = "sqlx" },
   { name = "rocksdb" },
   { name = "fsqlite" },
-  # Accounting code imports the pinned FrankenSymPy boundary, never num-*.
-  # Wrappers name actual immediate parents; Cargo.lock pins their versions.
-  { name = "chrono" },
-  { name = "time" },
+  # Accounting code imports the pinned FrankenSymPy boundary, never num-*,
+  # and no first-party crate imports chrono or time: civil dates are fa-time's
+  # and recorded time is the journal's. Wrappers name actual immediate parents
+  # (never a first-party crate); Cargo.lock pins their versions. The chrono and
+  # time wrappers are the fa-mcp posture (fastmcp-rust 0.12.0, plan §2.4,
+  # §18.4): fastmcp-server imports chrono; fastmcp-console and its rich_rust
+  # import time; asupersync's `tls` feature (enabled by fastmcp-transport)
+  # reaches time through x509-parser and asn1-rs. A direct first-party use of
+  # either stays banned (crates/fa-mcp/tests/deny_rows.rs pins these lists).
+  { name = "chrono", wrappers = ["fastmcp-server"], reason = "fa-mcp posture: fastmcp-server 0.12.0 only" },
+  { name = "time", wrappers = ["fastmcp-console", "rich_rust", "x509-parser", "asn1-rs"], reason = "fa-mcp posture: fastmcp-console 0.12.0 → rich_rust, and asupersync tls → x509-parser/asn1-rs only" },
   { name = "rust_decimal" },
   { name = "bigdecimal" },
-  { name = "num-bigint", wrappers = ["fsym-bigint"], reason = "FrankenSymPy bd1ad68 integer containment only; num-rational's optional bigint feature is disabled" },
+  { name = "num-bigint", wrappers = ["fsym-bigint", "num-rational", "der-parser"], reason = "FrankenSymPy bd1ad68 integer containment; and the fa-mcp posture: rich_rust enables num-rational's bigint feature, der-parser (x509-parser, asupersync tls) needs it" },
   { name = "num-integer", wrappers = ["fsym-bigint", "num-bigint", "num-rational"], reason = "FrankenSymPy bd1ad68 exact arithmetic closure only" },
-  { name = "num-rational", wrappers = ["fsym-rational"], reason = "FrankenSymPy bd1ad68 rational containment only" },
+  { name = "num-rational", wrappers = ["fsym-rational", "rich_rust"], reason = "FrankenSymPy bd1ad68 rational containment; and the fa-mcp posture: rich_rust (fastmcp-console)" },
   # Columnar/dataframe/graph/search stacks banned by the substrate's closure.
   { name = "arrow" },
   { name = "polars" },

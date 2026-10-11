@@ -182,7 +182,8 @@ planned = false
 name = "fa-mcp"
 layer = "surface"
 path = "crates/fa-mcp"
-planned = true
+planned = false
+allowlist = ["fa-cli", "fa", "fa-registry"]
 
 [[crate]]
 name = "fa-reference"
