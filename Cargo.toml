@@ -52,6 +52,10 @@ fgdb-delta-types = { git = "https://github.com/Dicklesworthstone/frankengraphdb"
 fgdb-gql = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf", version = "=0.0.1" }
 fgdb-crypto = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf", version = "=0.0.1" }
 fgdb-bigint = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf", version = "=0.0.1" }
+# The substrate's lab VFS (fault injection, crash simulation), at the same
+# rev: a dev-only edge of fa-journal's tests, never in a shipped closure
+# (fa-txf B, CobaltGull 3452/3462; fa-0fl reuses it).
+fgdb-sim = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf", version = "=0.0.1" }
 
 # The MCP framework (plan §2.4, §18.4): crates.io, exact version, consumed by
 # the fa-mcp posture only. Its registry pin of asupersync `=0.5.0` resolves

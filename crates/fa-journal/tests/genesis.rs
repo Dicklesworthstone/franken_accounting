@@ -11,8 +11,9 @@
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
 use fa_journal::evidence::{
-    Document, DocumentAdded, EvidenceAttached, SupplementalEvidence, add_document, attach_evidence,
-    document_vid, read_document, supplements_of,
+    Document, DocumentAdded, EvidenceAttached, Storage, SupplementalEvidence, add_document,
+    add_document_external, attach_evidence, document_record, document_vid, fetch_document,
+    read_document, supplements_of,
 };
 use fa_journal::post::read_entry;
 use fa_journal::rows::{applied, book_root, edge_id, leg_vid, resolution_vid, reversal_vid};
@@ -1646,7 +1647,10 @@ fn documents_are_content_addressed_idempotent_and_verified_on_read() {
     assert_eq!(row.labels, vec![fa_model::symbols::label::DOCUMENT]);
     assert_eq!(row.created_at, added.recorded_at);
     // Reading verifies the bytes against the commitment and returns them.
-    assert_eq!(read_document(&h.db, &added.oid).unwrap(), Some(doc.clone()));
+    assert_eq!(
+        read_document(&h.db, &added.oid).unwrap().unwrap(),
+        Some(doc.clone())
+    );
     // The same bytes of the same kind are the recorded outcome, whatever grade
     // the second intake declares: the first intake's grade stands.
     let again = h
@@ -1666,7 +1670,10 @@ fn documents_are_content_addressed_idempotent_and_verified_on_read() {
     assert_ne!(receipt.oid, added.oid);
     assert_ne!(receipt.doc_commit, added.doc_commit);
     // An oid this book never recorded reads as absent.
-    assert_eq!(read_document(&h.db, &Oid([0xee; 32])).unwrap(), None);
+    assert_eq!(
+        read_document(&h.db, &Oid([0xee; 32])).unwrap().unwrap(),
+        None
+    );
 }
 
 #[test]
@@ -1954,7 +1961,7 @@ fn a_document_whose_mirrors_drift_from_its_payload_is_refused_and_an_untouched_o
         assert!(h.db.vertex(evid).unwrap().is_none());
         // Reading it back, or re-adding the same bytes, never vouches for it.
         assert!(
-            matches!(read_document(&h.db, &doc.oid()), Err(KernelError::Corrupt(ref why)) if why.contains("FA-REF-085")),
+            matches!(read_document(&h.db, &doc.oid()), Ok(Err(ref r)) if r.code == "FA-REF-085"),
             "{:?}",
             read_document(&h.db, &doc.oid())
         );
@@ -1970,7 +1977,7 @@ fn a_document_whose_mirrors_drift_from_its_payload_is_refused_and_an_untouched_o
         Posted::Committed { .. }
     ));
     assert_eq!(
-        read_document(&h.db, &intact.oid()).unwrap(),
+        read_document(&h.db, &intact.oid()).unwrap().unwrap(),
         Some(intact.clone())
     );
 }
@@ -3183,4 +3190,450 @@ fn an_import_run_records_its_documents_under_a_receipt_that_recomputes() {
         custody_chain(&h.db, &one[0].oid()).unwrap().is_empty(),
         "nothing written"
     );
+}
+
+// ---------------------------------------------------------------------------
+// External document storage (fa-txf part B, plan §9.1): bytes in the book's
+// blob store, the commitment inline, every read verified.
+// ---------------------------------------------------------------------------
+
+fn blob_store(root: &str) -> BlobStore<fgdb::MemVfs> {
+    BlobStore::open(1, fgdb::MemVfs::new().expect("memvfs"), root).expect("store 1")
+}
+
+/// A blob store over the substrate's lab VFS, rooted three directories deep.
+fn fault_store(
+    vfs: &fgdb_sim::vfs::FaultVfs<fgdb::MemVfs>,
+) -> BlobStore<fgdb_sim::vfs::FaultVfs<fgdb::MemVfs>> {
+    BlobStore::open(1, vfs.clone(), "deep/nested/blobs").expect("store 1")
+}
+
+fn lab_vfs(plan: fgdb_sim::vfs::FaultPlan) -> fgdb_sim::vfs::FaultVfs<fgdb::MemVfs> {
+    fgdb_sim::vfs::FaultVfs::new(fgdb::MemVfs::new().expect("memvfs"), plan)
+}
+
+impl Harness {
+    fn add_external_to<V: asupersync::fs::Vfs + Clone>(
+        &mut self,
+        store: &BlobStore<V>,
+        doc: &Document,
+    ) -> Result<DocumentAdded, Refusal> {
+        let ctx = self.ctx();
+        let db = &mut self.db;
+        let book = &self.book;
+        self.runtime
+            .block_on(async move { add_document_external(db, &ctx, book, store, doc).await })
+            .expect("kernel")
+    }
+
+    fn fetch_from<V: asupersync::fs::Vfs + Clone>(
+        &self,
+        store: &BlobStore<V>,
+        oid: &Oid,
+    ) -> Result<Option<Document>, Refusal> {
+        let ctx = self.ctx();
+        let db = &self.db;
+        self.runtime
+            .block_on(async move { fetch_document(db, &ctx, store, oid).await })
+            .expect("kernel")
+    }
+}
+
+/// The publication fence under the substrate's lab VFS (WhiteCreek 3440,
+/// CobaltGull 3452). With `dirent_loss = Always` a crash rolls back every
+/// namespace change whose parent directory was never honestly synced: the
+/// classic fsync-the-file, forget-the-directory loss. An external document's
+/// blob, published through `put` and only then journaled, owes nothing when
+/// intake returns and reads back after the crash; the faultless plan is the
+/// harness's control.
+///
+/// No claim beyond the spelling used: the store creates and fences its
+/// directories under one anchored spelling (`./deep/nested/blobs`), and this
+/// proves exactly that. It proves nothing about alias spellings of one
+/// directory (created as `a/b`, synced as `./a`): at the pinned rev FaultVfs
+/// keys namespace debts by literal path, so an alias never settles its debt
+/// (bead fa-n4m: upstream fix, joint fgdb/fgdb-sim re-pin, re-run).
+#[test]
+fn an_external_blob_survives_a_crash_that_loses_every_unsynced_name() {
+    use fgdb_sim::vfs::{FaultPlan, Trigger};
+    for (what, plan) in [
+        ("faultless (the control)", FaultPlan::faultless()),
+        (
+            "every unsynced name lost",
+            FaultPlan {
+                dirent_loss: Trigger::Always,
+                ..FaultPlan::faultless()
+            },
+        ),
+    ] {
+        let mut h = harness();
+        let vfs = lab_vfs(plan);
+        let store = fault_store(&vfs);
+        let doc = h.document(
+            INVOICE,
+            HUMAN_UPLOAD,
+            format!("INVOICE 991 (crash fixture: {what}) ")
+                .repeat(150)
+                .as_bytes(),
+        );
+        h.add_external_to(&store, &doc).expect("recorded");
+        assert_eq!(
+            vfs.pending_dirent_ops(),
+            0,
+            "{what}: nothing owes a sync once intake returns"
+        );
+        h.runtime.block_on(vfs.crash()).expect("crash");
+        let reopened = fault_store(&vfs);
+        let read = h.fetch_from(&reopened, &doc.oid());
+        eprintln!(
+            "txf fence: {what} -> crash generation {}, read {:?}",
+            vfs.generation(),
+            read.as_ref().map(|d| d.as_ref().map(|d| d.bytes.len()))
+        );
+        assert_eq!(read, Ok(Some(doc)), "{what}");
+    }
+}
+
+/// The planted negative: the same intake through a lab VFS whose directory
+/// syncs lie. The names stay pending, the crash takes them, and the journal
+/// row then names a blob that is gone: the read is FA-REF-116 (exit 5),
+/// never a silent null. This is what the fence prevents, and proves the
+/// crash test above can see an unfenced publication.
+#[test]
+fn a_lying_directory_sync_loses_the_blob_and_the_read_says_so() {
+    use fgdb_sim::vfs::{FaultPlan, Trigger};
+    let mut h = harness();
+    let vfs = lab_vfs(FaultPlan {
+        dirent_loss: Trigger::Always,
+        dirent_lie: Trigger::Always,
+        ..FaultPlan::faultless()
+    });
+    let store = fault_store(&vfs);
+    let doc = h.document(
+        INVOICE,
+        HUMAN_UPLOAD,
+        "INVOICE 992 (lying directory syncs) "
+            .repeat(150)
+            .as_bytes(),
+    );
+    h.add_external_to(&store, &doc)
+        .expect("recorded: the lie reported success");
+    assert!(
+        vfs.pending_dirent_ops() > 0,
+        "the lying syncs settled nothing"
+    );
+    h.runtime.block_on(vfs.crash()).expect("crash");
+    let r = h.fetch_from(&fault_store(&vfs), &doc.oid()).unwrap_err();
+    eprintln!(
+        "txf fence: lying directory syncs, then a crash -> {} {}",
+        r.code, r.message
+    );
+    assert_eq!((r.code, r.exit), ("FA-REF-116", exit::FOUNDATION), "{r}");
+}
+
+/// Ordering, and the retry WhiteCreek 3459 named. A publication the lab VFS
+/// refuses — the first write (ENOSPC) or the sync write-back (a zero space
+/// budget) — never reaches the journal: intake is FA-REF-116 and nothing is
+/// written. Then the retry, after a first put interrupted between its
+/// `mkdir`s and its syncs at depth three: it finds the directories present,
+/// fences the whole ancestor chain anyway, and its blob survives a crash
+/// that loses every unsynced name.
+#[test]
+fn a_blob_not_made_durable_never_reaches_the_journal_and_a_retry_fences_the_chain() {
+    use fgdb_sim::vfs::{FaultPlan, Trigger};
+    for (what, plan) in [
+        (
+            "the first write refused",
+            FaultPlan {
+                write_enospc: Trigger::Always,
+                ..FaultPlan::faultless()
+            },
+        ),
+        (
+            "the sync write-back refused",
+            FaultPlan {
+                space_budget: Some(0),
+                ..FaultPlan::faultless()
+            },
+        ),
+    ] {
+        let mut h = harness();
+        let store = fault_store(&lab_vfs(plan));
+        let doc = h.document(
+            INVOICE,
+            HUMAN_UPLOAD,
+            format!("INVOICE 993 ({what}) ").repeat(150).as_bytes(),
+        );
+        let head = h.db.frontier().unwrap();
+        let r = h.add_external_to(&store, &doc).unwrap_err();
+        eprintln!("txf fence: {what} -> {} {}", r.code, r.message);
+        assert_eq!(
+            (r.code, r.exit),
+            ("FA-REF-116", exit::FOUNDATION),
+            "{what}: {r}"
+        );
+        assert_eq!(h.db.frontier().unwrap(), head, "{what}: nothing journaled");
+        assert!(
+            h.db.vertex(document_vid(&doc.oid())).unwrap().is_none(),
+            "{what}: no row names the blob"
+        );
+    }
+
+    let mut h = harness();
+    let vfs = lab_vfs(FaultPlan {
+        write_enospc: Trigger::At(1),
+        dirent_loss: Trigger::Always,
+        ..FaultPlan::faultless()
+    });
+    let store = fault_store(&vfs);
+    let doc = h.document(
+        INVOICE,
+        HUMAN_UPLOAD,
+        "INVOICE 994 (interrupted, then retried) "
+            .repeat(150)
+            .as_bytes(),
+    );
+    let r = h.add_external_to(&store, &doc).unwrap_err();
+    assert_eq!(r.code, "FA-REF-116", "the interrupted first put: {r}");
+    assert!(
+        vfs.pending_dirent_ops() > 0,
+        "the interrupted put left its directories unsynced"
+    );
+    h.add_external_to(&store, &doc).expect("the retry records");
+    assert_eq!(
+        vfs.pending_dirent_ops(),
+        0,
+        "the retry fenced every name the interrupted put left owing"
+    );
+    h.runtime.block_on(vfs.crash()).expect("crash");
+    assert_eq!(h.fetch_from(&fault_store(&vfs), &doc.oid()), Ok(Some(doc)));
+}
+
+/// The publication fence (WhiteCreek 3440/3445) on a root nested three
+/// directories deep that does not exist yet: `put` creates and syncs every
+/// directory it needs, publishes under its own staged name, and a second put
+/// of the same locator (same bytes, content-addressed) is harmless.
+#[test]
+fn a_blob_publishes_into_a_fresh_nested_root_and_republishes_harmlessly() {
+    let h = harness();
+    let store = blob_store("deep/nested/blobs");
+    let bytes = b"BLOB (publication fixture)".to_vec();
+    let locator = fa_journal::blob::locator_of(&[7; 32]);
+    let ctx = h.ctx();
+    h.runtime.block_on(async {
+        store
+            .put(&ctx.commit(), &locator, &bytes)
+            .await
+            .expect("published");
+        store
+            .put(&ctx.commit(), &locator, &bytes)
+            .await
+            .expect("republished");
+        assert_eq!(
+            store
+                .get(&ctx.query(), &locator, bytes.len() as u64)
+                .await
+                .expect("read"),
+            Some(bytes.clone())
+        );
+        let other = fa_journal::blob::locator_of(&[8; 32]);
+        assert_eq!(
+            store.get(&ctx.query(), &other, 64).await.expect("read"),
+            None,
+            "a blob never published reads as absent, not as an error"
+        );
+    });
+}
+
+/// A store over the host VFS at a relative root (WhiteCreek 3508): every
+/// directory the publication fence syncs has a nonempty spelling. The host
+/// VFS refuses a `..` component (asupersync `validate_safe_path`, at
+/// rename), so the root must sit under the working directory, and changing
+/// this process's working directory would race the other tests. The test
+/// re-runs itself in a child process whose working directory is a fresh
+/// temporary directory. The child publishes under `nested/store`; the
+/// parent reads the bytes back by absolute path, so a child that ran
+/// nothing cannot pass.
+#[test]
+fn a_blob_publishes_through_a_relative_unix_root_without_changing_cwd() {
+    const CHILD: &str = "FA_RELATIVE_BLOB_ROOT_CHILD";
+    let locator = fa_journal::blob::locator_of(&[0x73; 32]);
+    if std::env::var_os(CHILD).is_some() {
+        let h = harness();
+        let store = BlobStore::open(1, asupersync::fs::UnixVfs::new(), "nested/store").unwrap();
+        let ctx = h.ctx();
+        h.runtime.block_on(async {
+            store
+                .put(&ctx.commit(), &locator, b"relative host blob")
+                .await
+                .expect("every directory sync uses a nonempty pathname");
+            assert_eq!(
+                store.get(&ctx.query(), &locator, 64).await.unwrap(),
+                Some(b"relative host blob".to_vec())
+            );
+        });
+        return;
+    }
+    let cwd = std::env::current_dir().unwrap();
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let base =
+        std::env::temp_dir().join(format!("fa-relative-blobs-{}-{suffix}", std::process::id()));
+    std::fs::create_dir_all(&base).unwrap();
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "a_blob_publishes_through_a_relative_unix_root_without_changing_cwd",
+            "--exact",
+        ])
+        .env(CHILD, "1")
+        .current_dir(&base)
+        .output()
+        .unwrap();
+    assert!(
+        child.status.success(),
+        "the child failed:\n{}{}",
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr)
+    );
+    let published = base.join("nested/store").join(&locator[..2]).join(&locator);
+    assert_eq!(
+        std::fs::read(&published).expect("the child published under its relative root"),
+        b"relative host blob"
+    );
+    assert_eq!(std::env::current_dir().unwrap(), cwd);
+}
+
+impl Harness {
+    fn add_external(
+        &mut self,
+        store: &BlobStore<fgdb::MemVfs>,
+        doc: &Document,
+    ) -> Result<DocumentAdded, Refusal> {
+        let ctx = self.ctx();
+        let db = &mut self.db;
+        let book = &self.book;
+        self.runtime
+            .block_on(async move { add_document_external(db, &ctx, book, store, doc).await })
+            .expect("kernel")
+    }
+
+    fn fetch(
+        &self,
+        store: &BlobStore<fgdb::MemVfs>,
+        oid: &Oid,
+    ) -> Result<Option<Document>, Refusal> {
+        let ctx = self.ctx();
+        let db = &self.db;
+        self.runtime
+            .block_on(async move { fetch_document(db, &ctx, store, oid).await })
+            .expect("kernel")
+    }
+}
+
+#[test]
+fn an_external_document_reads_back_verified_and_a_missing_or_changed_blob_is_refused() {
+    let mut h = harness();
+    let store = blob_store("blobs");
+    let doc = h.document(
+        INVOICE,
+        HUMAN_UPLOAD,
+        &b"INVOICE 990 (external storage fixture) ".repeat(200),
+    );
+    let added = h.add_external(&store, &doc).expect("recorded");
+    eprintln!(
+        "txf external: recorded {} ({} bytes) in store {} at {:?}",
+        fa_journal::evidence::hex(&added.oid.0),
+        added.size,
+        store.id(),
+        added.recorded_at
+    );
+    // The journal holds the commitment and the locator, not the bytes.
+    let record = document_record(&h.db, &added.oid).unwrap().expect("held");
+    assert_eq!(
+        record.storage,
+        Storage::External {
+            store: 1,
+            locator: fa_journal::blob::locator_of(&doc.doc_commit()),
+        }
+    );
+    assert_eq!(
+        (record.size, record.doc_commit),
+        (added.size, doc.doc_commit())
+    );
+    // Read back byte-identically, the commitment recomputed from the bytes.
+    assert_eq!(h.fetch(&store, &added.oid).unwrap(), Some(doc.clone()));
+    // Without its store a read is a typed refusal naming the store, never null.
+    let r = read_document(&h.db, &added.oid).unwrap().unwrap_err();
+    eprintln!(
+        "txf external: read without the store -> {} {}",
+        r.code, r.message
+    );
+    assert_eq!((r.code, r.exit), ("FA-REF-116", exit::FOUNDATION), "{r}");
+    // Citing it needs no bytes: the evidence law reads the record.
+    assert!(matches!(
+        h.post_citing(&doc, b"txf-external"),
+        Ok(Posted::Committed { .. })
+    ));
+    // The same bytes again (inline or external) are the recorded outcome.
+    assert!(h.add_document(&doc).expect("recorded").already_recorded);
+
+    // A store that holds no such blob: exit 5, never a silent null.
+    let empty = blob_store("elsewhere");
+    let r = h.fetch(&empty, &added.oid).unwrap_err();
+    eprintln!("txf external: a missing blob -> {} {}", r.code, r.message);
+    assert_eq!((r.code, r.exit), ("FA-REF-116", exit::FOUNDATION), "{r}");
+    // A blob whose bytes changed: drift, exit 8, never the changed bytes.
+    let locator = fa_journal::blob::locator_of(&doc.doc_commit());
+    let mut changed = doc.bytes.clone();
+    changed[0] ^= 0x20;
+    h.runtime
+        .block_on(async { store.put(&h.ctx().commit(), &locator, &changed).await })
+        .expect("overwrite the blob outside every law");
+    let r = h.fetch(&store, &added.oid).unwrap_err();
+    eprintln!("txf external: a changed blob -> {} {}", r.code, r.message);
+    assert_eq!((r.code, r.exit), ("FA-REF-085", exit::VERIFICATION), "{r}");
+    // A blob replaced by more bytes than the record names (WhiteCreek 3464):
+    // drift, exit 8, and the store never reads past the recorded size + 1.
+    let mut longer = doc.bytes.clone();
+    longer.extend_from_slice(b" and then some more bytes than the record names");
+    h.runtime
+        .block_on(async { store.put(&h.ctx().commit(), &locator, &longer).await })
+        .expect("overwrite the blob outside every law");
+    let r = h.fetch(&store, &added.oid).unwrap_err();
+    eprintln!(
+        "txf external: an oversized blob -> {} {}",
+        r.code, r.message
+    );
+    assert_eq!((r.code, r.exit), ("FA-REF-085", exit::VERIFICATION), "{r}");
+    let read = h
+        .runtime
+        .block_on(async { store.get(&h.ctx().query(), &locator, 10).await })
+        .expect("read")
+        .expect("present");
+    assert_eq!(read, longer[..11], "a read stops at limit + 1 bytes");
+    // Restoring the right bytes restores the read.
+    h.runtime
+        .block_on(async { store.put(&h.ctx().commit(), &locator, &doc.bytes).await })
+        .expect("restore");
+    assert_eq!(h.fetch(&store, &added.oid).unwrap(), Some(doc));
+}
+
+#[test]
+fn a_document_past_the_inline_bound_is_refused_inline_and_admitted_by_a_store() {
+    let mut h = harness();
+    let bound = 16 * 1024 * 1024;
+    let big = h.document(INVOICE, HUMAN_UPLOAD, &vec![b'x'; bound + 1]);
+    let r = h.add_document(&big).unwrap_err();
+    eprintln!(
+        "txf external: inline past the bound -> {} {}",
+        r.code, r.message
+    );
+    assert_eq!(r.code, "FA-REF-083", "{r}");
+    assert!(r.fix.contains("blob store"), "{}", r.fix);
+    let store = blob_store("blobs");
+    let added = h.add_external(&store, &big).expect("admitted by the store");
+    assert_eq!(added.size, u64::try_from(bound + 1).unwrap());
+    assert_eq!(h.fetch(&store, &added.oid).unwrap(), Some(big));
 }

@@ -1213,6 +1213,123 @@ fn custody_and_import_receipts_on_the_real_kernel_agree_with_the_oracle() {
     eprintln!("custody-oracle totals: {totals:?}");
 }
 
+// ---------------------------------------------------------------------------
+// External storage on the real substrate (fa-txf part B)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn every_read_of_an_external_document_agrees_with_a_literal_model() {
+    use fa_journal::BlobStore;
+    use fa_journal::evidence::{add_document_external, fetch_document};
+    let mut totals: BTreeMap<&'static str, usize> = BTreeMap::new();
+    for seed in [0x1234_5678_9abc_def1_u64, 0x0fed_cba9_8765_4321] {
+        let mut rng = Rng(seed);
+        let mut b = book();
+        let store = BlobStore::open(1, fgdb::MemVfs::new().unwrap(), "blobs").unwrap();
+        let decoy = BlobStore::open(1, fgdb::MemVfs::new().unwrap(), "decoy").unwrap();
+        // The model: per document, its bytes, whether they are external, and
+        // whether its blob currently holds other bytes.
+        let mut model: Vec<(Document, bool, bool)> = Vec::new();
+        let mut seen: BTreeMap<&'static str, usize> = BTreeMap::new();
+        for step in 0..120u64 {
+            let roll = rng.below(100);
+            if roll < 30 || model.is_empty() {
+                let external = rng.below(2) == 0;
+                let doc = Document {
+                    book_id: b.book.book_id,
+                    kind: 1,
+                    mime: "text/plain".into(),
+                    grade: 3,
+                    retrieved_by: VId(7),
+                    bytes: format!("INVOICE {seed:x}/{step} ")
+                        .repeat(1 + usize::try_from(rng.below(40)).unwrap())
+                        .into_bytes(),
+                };
+                let ctx = b.ctx();
+                let (db, book) = (&mut b.db, &b.book);
+                let added = if external {
+                    b.runtime.block_on(async {
+                        add_document_external(db, &ctx, book, &store, &doc).await
+                    })
+                } else {
+                    b.runtime
+                        .block_on(async { add_document(db, &ctx, book, &doc).await })
+                };
+                added.expect("kernel").expect("intake");
+                model.push((doc, external, false));
+                *seen
+                    .entry(if external { "external" } else { "inline" })
+                    .or_default() += 1;
+            } else if roll < 45 {
+                // Change, or restore, an external document's blob.
+                let externals: Vec<usize> = (0..model.len()).filter(|i| model[*i].1).collect();
+                if externals.is_empty() {
+                    continue;
+                }
+                let i = externals
+                    [usize::try_from(rng.below(u64::try_from(externals.len()).unwrap())).unwrap()];
+                let (doc, _, changed) = &mut model[i];
+                let locator = fa_journal::blob::locator_of(&doc.doc_commit());
+                let bytes = if *changed {
+                    doc.bytes.clone()
+                } else {
+                    let mut x = doc.bytes.clone();
+                    x[0] ^= 0x01;
+                    x
+                };
+                b.runtime
+                    .block_on(async { store.put(&b.ctx().commit(), &locator, &bytes).await })
+                    .expect("blob write");
+                *changed = !*changed;
+            } else {
+                // A read, from the book's store or from a decoy that holds nothing.
+                let i = usize::try_from(rng.below(u64::try_from(model.len()).unwrap())).unwrap();
+                let (doc, external, changed) = &model[i];
+                let use_decoy = rng.below(3) == 0;
+                let expected: Option<&'static str> = match (external, use_decoy, changed) {
+                    (false, _, _) => None,
+                    (true, true, _) => Some("FA-REF-116"),
+                    (true, false, true) => Some("FA-REF-085"),
+                    (true, false, false) => None,
+                };
+                let ctx = b.ctx();
+                let db = &b.db;
+                let from = if use_decoy { &decoy } else { &store };
+                let oid = doc.oid();
+                let got = b
+                    .runtime
+                    .block_on(async { fetch_document(db, &ctx, from, &oid).await })
+                    .expect("kernel");
+                assert_eq!(
+                    got.as_ref().err().map(|r| r.code),
+                    expected,
+                    "seed {seed:x} step {step}: read of {i} (external {external}, decoy {use_decoy}, changed {changed}): {got:?}"
+                );
+                if expected.is_none() {
+                    assert_eq!(got.unwrap(), Some(doc.clone()), "seed {seed:x} step {step}");
+                }
+                *seen
+                    .entry(expected.unwrap_or(if *external {
+                        "external read"
+                    } else {
+                        "inline read"
+                    }))
+                    .or_default() += 1;
+            }
+        }
+        eprintln!("txf external seed {seed:x}: {seen:?}");
+        for key in ["external read", "inline read", "FA-REF-085", "FA-REF-116"] {
+            assert!(
+                seen.get(key).copied().unwrap_or(0) >= 3,
+                "seed {seed:x}: {key} reached {:?}: {seen:?}",
+                seen.get(key)
+            );
+            *totals.entry(key).or_default() += seen[key];
+        }
+    }
+    eprintln!("txf external totals: {totals:?}");
+}
+
 /// Every control record in `db`, its kind checked against the oracle's
 /// literal copy of the registry (fa-g23): the class the kind mints is the
 /// record's class. Returns the count per kind; logs each origin.
