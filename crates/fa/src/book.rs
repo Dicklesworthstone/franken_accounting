@@ -15,6 +15,7 @@ use asupersync::fs::{OpenOptions, UnixVfs, Vfs};
 use asupersync::io::AsyncWriteExt;
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
+use fa_journal::blob::DurableDirectory;
 use fa_journal::rows::{AccountRow, PeriodRow};
 use fa_journal::{
     AccountSpec, BookContext, BookSpec, ChartInstalled, KernelError, PostRequest, Posted, Refusal,
@@ -87,7 +88,7 @@ impl BookKeys {
     /// must exist; its whole ancestor chain is fenced, including directories
     /// the caller created before this operation. This also covers a key file
     /// kept outside the book directory.
-    pub async fn save_with_vfs<V: Vfs>(
+    pub async fn save_with_vfs<V: Vfs + Clone>(
         &self,
         cx: &CommitCx,
         vfs: &V,
@@ -95,6 +96,41 @@ impl BookKeys {
     ) -> Result<(), BookError> {
         cx.checkpoint().map_err(BookError::Context)?;
         let path = rooted_path(path);
+        let parent = path.parent().ok_or_else(|| {
+            BookError::Io(
+                path.clone(),
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "key path has no parent"),
+            )
+        })?;
+        let name = path.file_name().ok_or_else(|| {
+            BookError::Io(
+                path.clone(),
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "key path has no file name",
+                ),
+            )
+        })?;
+        // `file_name` normalizes trailing separators and `.` components. They
+        // designate a directory to the filesystem and must not become a file
+        // when we bind the parent to its canonical path.
+        if !path
+            .as_os_str()
+            .as_encoded_bytes()
+            .ends_with(name.as_encoded_bytes())
+        {
+            return Err(BookError::Io(
+                path.clone(),
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "key path must end with a file name",
+                ),
+            ));
+        }
+        let directory = DurableDirectory::open_existing(cx, vfs.clone(), parent)
+            .await
+            .map_err(|e| BookError::Io(parent.to_path_buf(), e))?;
+        let path = directory.path().join(name);
         let text = format!(
             "{}\n{}\n{}\n",
             hex(self.inner.k_oid()),
@@ -121,20 +157,14 @@ impl BookKeys {
             sync_file(&mut file)
                 .await
                 .map_err(|e| BookError::Io(path.clone(), e))?;
-            for directory in path
-                .ancestors()
-                .skip(1)
-                .filter(|p| !p.as_os_str().is_empty())
-            {
-                cx.checkpoint().map_err(BookError::Context)?;
-                let mut handle = vfs
-                    .open(directory, &OpenOptions::new().read(true))
-                    .await
-                    .map_err(|e| BookError::Io(directory.to_path_buf(), e))?;
-                sync_file(&mut handle)
-                    .await
-                    .map_err(|e| BookError::Io(directory.to_path_buf(), e))?;
-            }
+            cx.checkpoint().map_err(BookError::Context)?;
+            let mut handle = vfs
+                .open(directory.path(), &OpenOptions::new().read(true))
+                .await
+                .map_err(|e| BookError::Io(directory.path().to_path_buf(), e))?;
+            sync_file(&mut handle)
+                .await
+                .map_err(|e| BookError::Io(directory.path().to_path_buf(), e))?;
             Ok(())
         })
         .await
@@ -2717,6 +2747,94 @@ mod tests {
                     );
                 }
             }
+        });
+    }
+
+    #[test]
+    fn key_save_refuses_directory_spellings_without_creating_a_key_file() {
+        under_lab(43, |root| async move {
+            let cx = PurposeContexts::narrow_runtime_root(&root);
+            let vfs = cx.commit().with_restriction(MemVfs::new).unwrap();
+            let keys = BookKeys::for_development(0x69);
+            for path in [
+                "./new.keys/",
+                "./new.keys/.",
+                "./new.keys//./",
+                ".",
+                "..",
+                "",
+            ] {
+                assert!(matches!(
+                    keys.save_with_vfs(&cx.commit(), &vfs, Path::new(path)).await,
+                    Err(BookError::Io(_, error))
+                        if error.kind() == std::io::ErrorKind::InvalidInput
+                ));
+                assert_eq!(
+                    cx.query()
+                        .with_restriction_async(vfs.metadata(Path::new("./new.keys")))
+                        .await
+                        .unwrap_err()
+                        .kind(),
+                    std::io::ErrorKind::NotFound
+                );
+            }
+            let path = Path::new("./new.keys");
+            keys.save_with_vfs(&cx.commit(), &vfs, path).await.unwrap();
+            let loaded = BookKeys::load_with_vfs(&cx.query(), &vfs, path)
+                .await
+                .unwrap();
+            assert_eq!(loaded.inner.k_oid(), keys.inner.k_oid());
+            assert_eq!(loaded.namespace(), keys.namespace());
+            assert_eq!(loaded.inner.dek(), keys.inner.dek());
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn key_save_fences_a_symlinked_directorys_canonical_ancestors() {
+        let (runtime, root) = Book::runtime_and_root().unwrap();
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        let keys = BookKeys::for_development(0x68);
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root_dir =
+            std::env::temp_dir().join(format!("fa-key-symlink-{}-{suffix}", std::process::id()));
+        std::fs::create_dir_all(&root_dir).unwrap();
+        let target = root_dir.join("real/deep");
+        let alias = root_dir.join("alias");
+        let path = alias.join("book.keys");
+        let vfs = FaultVfs::new(
+            UnixVfs::new(),
+            FaultPlan {
+                dirent_loss: Trigger::Always,
+                ..FaultPlan::faultless()
+            },
+        );
+        runtime.block_on(async {
+            cx.commit()
+                .with_restriction_async(vfs.create_dir_all(&target))
+                .await
+                .unwrap();
+            assert_eq!(vfs.pending_dirent_ops(), 2);
+            cx.commit()
+                .with_restriction(|| std::os::unix::fs::symlink(&target, &alias))
+                .unwrap();
+            keys.save_with_vfs(&cx.commit(), &vfs, &path).await.unwrap();
+            // Fencing only alias and its lexical ancestors misses real's
+            // entry for deep. A key save must bind that target parent too.
+            assert_eq!(vfs.pending_dirent_ops(), 0);
+            cx.commit()
+                .with_restriction_async(vfs.crash())
+                .await
+                .unwrap();
+            let loaded = BookKeys::load_with_vfs(&cx.query(), &vfs, &path)
+                .await
+                .expect("the exact keys survive a directory-loss crash");
+            assert_eq!(loaded.inner.k_oid(), keys.inner.k_oid());
+            assert_eq!(loaded.namespace(), keys.namespace());
+            assert_eq!(loaded.inner.dek(), keys.inner.dek());
         });
     }
 
