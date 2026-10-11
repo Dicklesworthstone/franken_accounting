@@ -3586,40 +3586,63 @@ fn a_blob_publishes_into_a_fresh_nested_root_and_republishes_harmlessly() {
     });
 }
 
+/// A store over the host VFS at a relative root (WhiteCreek 3508): every
+/// directory the publication fence syncs has a nonempty spelling. The host
+/// VFS refuses a `..` component (asupersync `validate_safe_path`, at
+/// rename), so the root must sit under the working directory, and changing
+/// this process's working directory would race the other tests. The test
+/// re-runs itself in a child process whose working directory is a fresh
+/// temporary directory. The child publishes under `nested/store`; the
+/// parent reads the bytes back by absolute path, so a child that ran
+/// nothing cannot pass.
 #[test]
 fn a_blob_publishes_through_a_relative_unix_root_without_changing_cwd() {
-    let h = harness();
-    let cwd = std::env::current_dir().unwrap();
-    let mut relative = std::path::PathBuf::new();
-    for _ in cwd
-        .components()
-        .filter(|c| matches!(c, std::path::Component::Normal(_)))
-    {
-        relative.push("..");
+    const CHILD: &str = "FA_RELATIVE_BLOB_ROOT_CHILD";
+    let locator = fa_journal::blob::locator_of(&[0x73; 32]);
+    if std::env::var_os(CHILD).is_some() {
+        let h = harness();
+        let store = BlobStore::open(1, asupersync::fs::UnixVfs::new(), "nested/store").unwrap();
+        let ctx = h.ctx();
+        h.runtime.block_on(async {
+            store
+                .put(&ctx.commit(), &locator, b"relative host blob")
+                .await
+                .expect("every directory sync uses a nonempty pathname");
+            assert_eq!(
+                store.get(&ctx.query(), &locator, 64).await.unwrap(),
+                Some(b"relative host blob".to_vec())
+            );
+        });
+        return;
     }
+    let cwd = std::env::current_dir().unwrap();
     let suffix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let root = std::env::temp_dir().join(format!(
-        "fa-relative-blobs-{}-{suffix}/nested/store",
-        std::process::id()
-    ));
-    relative.push(root.strip_prefix("/").unwrap());
-    assert!(relative.is_relative());
-    let store = BlobStore::open(1, asupersync::fs::UnixVfs::new(), relative).unwrap();
-    let locator = fa_journal::blob::locator_of(&[0x73; 32]);
-    let ctx = h.ctx();
-    h.runtime.block_on(async {
-        store
-            .put(&ctx.commit(), &locator, b"relative host blob")
-            .await
-            .expect("every directory sync uses a nonempty pathname");
-        assert_eq!(
-            store.get(&ctx.query(), &locator, 64).await.unwrap(),
-            Some(b"relative host blob".to_vec())
-        );
-    });
+    let base =
+        std::env::temp_dir().join(format!("fa-relative-blobs-{}-{suffix}", std::process::id()));
+    std::fs::create_dir_all(&base).unwrap();
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "a_blob_publishes_through_a_relative_unix_root_without_changing_cwd",
+            "--exact",
+        ])
+        .env(CHILD, "1")
+        .current_dir(&base)
+        .output()
+        .unwrap();
+    assert!(
+        child.status.success(),
+        "the child failed:\n{}{}",
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr)
+    );
+    let published = base.join("nested/store").join(&locator[..2]).join(&locator);
+    assert_eq!(
+        std::fs::read(&published).expect("the child published under its relative root"),
+        b"relative host blob"
+    );
     assert_eq!(std::env::current_dir().unwrap(), cwd);
 }
 
