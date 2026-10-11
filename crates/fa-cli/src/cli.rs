@@ -21,7 +21,9 @@
 //! byte-identical across the two hosts by construction.
 
 use core::cell::RefCell;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use fa::book::{Book, BookError, BookKeys, Entropy};
 use fa_journal::BookContext;
@@ -41,9 +43,13 @@ use crate::args::{self, Args, UsageError, nearest};
 use crate::document;
 use crate::json::{self, Json, obj, s};
 use crate::notary;
-use crate::verbs::{self, Registry, Verb};
+use crate::verbs::{self, Condition, Dangerous, Registry, Verb};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Plan Appendix D FA-REF-007: an operation that cannot be undone in
+/// practice was not confirmed (`--yes`, or a `--plan` file), exit 7.
+pub(crate) const CONFIRMATION_REQUIRED: &str = "FA-REF-007";
 
 type Handler = fn(&mut Ctx<'_>, &Args) -> Result<(), Fail>;
 
@@ -129,21 +135,182 @@ pub struct Captured {
     pub stderr: String,
 }
 
+/// Human-mode styling (plan §15.3, Appendix D determinism), resolved once
+/// per command: off under `--no-color`, `NO_COLOR` (non-empty), `CI` (set,
+/// and not `false`/`0`), `TERM=dumb`, a stdout that is not a terminal, a
+/// daemon capture, or robot mode. Styling never changes a byte of data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Style {
+    color: bool,
+}
+
+impl Style {
+    /// No styling at all.
+    pub const PLAIN: Self = Self { color: false };
+
+    #[must_use]
+    pub fn resolve(
+        json: bool,
+        no_color: bool,
+        capture: bool,
+        stdout_is_terminal: bool,
+        env: impl Fn(&str) -> Option<String>,
+    ) -> Self {
+        let set = |name: &str| env(name).filter(|v| !v.is_empty());
+        let off = json
+            || no_color
+            || capture
+            || !stdout_is_terminal
+            || set("NO_COLOR").is_some()
+            || set("CI").is_some_and(|v| v != "false" && v != "0")
+            || set("TERM").is_some_and(|v| v == "dumb");
+        Self { color: !off }
+    }
+
+    /// A human table's header line.
+    #[must_use]
+    pub fn header(self, text: &str) -> String {
+        if self.color {
+            format!("\x1b[1m{text}\x1b[0m")
+        } else {
+            text.to_string()
+        }
+    }
+}
+
+/// What a command's envelope says beyond its event (plan Appendix D): the
+/// book and coordinate it describes and the warnings it raised. Shared by
+/// the command's [`Out`] and its book source, so opening a book sets it.
+#[derive(Debug, Default)]
+struct Said {
+    at: Option<At>,
+    warnings: Vec<String>,
+}
+
+/// Where a robot line sits (plan §4.8): the book's id, and the branch
+/// (trunk; drafts and scenarios land later), recorded sequence and
+/// effective selector it describes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct At {
+    pub book: String,
+    pub known_at: CommitSeq,
+    pub effective: String,
+}
+
+/// One robot-mode line (plan Appendix D): `{v, event, book, coordinate,
+/// data, certificate, warnings, next_actions}` with the event's fields under
+/// `data`; `book` and `coordinate` from `at` (null when no book backs the
+/// line); the registry's next actions for the event; and the replay
+/// certificate, null until plan certificates land (fa-we7). A daemon wire
+/// frame is its own flat object, never a robot line.
+#[must_use]
+pub fn robot_line(event: &str, data: Json, at: Option<&At>, warnings: &[String]) -> Json {
+    let next_actions = verbs::registry().map_or_else(
+        |_| Vec::new(),
+        |r| {
+            r.next_actions_for(event)
+                .map(|n| obj(vec![("command", s(&n.command)), ("why", s(&n.why))]))
+                .collect()
+        },
+    );
+    obj(vec![
+        ("v", Json::Int(verbs::ENVELOPE_VERSION)),
+        ("event", s(event)),
+        ("book", at.map_or(Json::Null, |a| s(&a.book))),
+        (
+            "coordinate",
+            at.map_or(Json::Null, |a| {
+                obj(vec![
+                    ("branch", s("trunk")),
+                    ("known_at", Json::Int(i128::from(a.known_at.0))),
+                    ("effective", s(&a.effective)),
+                ])
+            }),
+        ),
+        (verbs::PAYLOAD, data),
+        ("certificate", Json::Null),
+        ("warnings", Json::Arr(warnings.iter().map(s).collect())),
+        ("next_actions", Json::Arr(next_actions)),
+    ])
+}
+
+/// Point `said`'s coordinate at `book`'s head now, keeping a narrowed
+/// effective selector (`all` otherwise).
+fn stamp(said: &RefCell<Said>, book: &Book) -> Result<(), Fail> {
+    let head = book.head()?;
+    let mut said = said.borrow_mut();
+    let effective = said
+        .at
+        .as_ref()
+        .map_or_else(|| "all".to_string(), |a| a.effective.clone());
+    said.at = Some(At {
+        book: book.context().book_id.to_hex(),
+        known_at: head,
+        effective,
+    });
+    Ok(())
+}
+
 pub(crate) struct Out {
     json: bool,
+    style: Style,
     sink: Sink,
+    said: Rc<RefCell<Said>>,
 }
 
 impl Out {
     fn new(json: bool, capture: bool) -> Self {
+        Self::styled(json, capture, Style::PLAIN)
+    }
+
+    fn styled(json: bool, capture: bool, style: Style) -> Self {
         Self {
             json,
+            style,
             sink: if capture {
                 Sink::Capture(RefCell::new(Captured::default()))
             } else {
                 Sink::Stdio
             },
+            said: Rc::new(RefCell::new(Said::default())),
         }
+    }
+
+    /// The command's resolved human styling.
+    pub(crate) fn style(&self) -> Style {
+        self.style
+    }
+
+    /// Point the envelope coordinate at `book`'s head now, keeping a
+    /// narrowed effective selector (`all` otherwise). Every book a command
+    /// opens passes through here, and every write calls it again so the
+    /// coordinate names the head the write produced.
+    pub(crate) fn at_book(&self, book: &Book) -> Result<(), Fail> {
+        stamp(&self.said, book)
+    }
+
+    /// Narrow the coordinate's effective selector (`period:<code>`, …).
+    pub(crate) fn effective(&self, selector: String) {
+        if let Some(a) = self.said.borrow_mut().at.as_mut() {
+            a.effective = selector;
+        }
+    }
+
+    /// Pin the coordinate's recorded sequence (an `--as-known-at` read).
+    pub(crate) fn known_at(&self, seq: CommitSeq) {
+        if let Some(a) = self.said.borrow_mut().at.as_mut() {
+            a.known_at = seq;
+        }
+    }
+
+    /// Something the command noticed but did not refuse: robot mode carries
+    /// it in the envelope's `warnings`, human mode on stderr.
+    pub(crate) fn warn(&self, text: impl Into<String>) {
+        let text = text.into();
+        if !self.json {
+            self.diag(format!("warning: {text}"));
+        }
+        self.said.borrow_mut().warnings.push(text);
     }
 
     /// One line of data on stdout.
@@ -170,10 +337,13 @@ impl Out {
         }
     }
 
-    pub(crate) fn event(&self, name: &str, mut fields: Vec<(&str, Json)>, human: &str) {
+    /// One event: in robot mode the Appendix D line with `fields` as its
+    /// `data`, otherwise the human text (nothing when it is empty).
+    pub(crate) fn event(&self, name: &str, fields: Vec<(&str, Json)>, human: &str) {
         if self.json {
-            fields.push(("event", s(name)));
-            self.line(obj(fields).render());
+            let said = self.said.borrow();
+            let line = robot_line(name, obj(fields), said.at.as_ref(), &said.warnings);
+            self.line(line.render());
         } else if !human.is_empty() {
             self.line(human);
         }
@@ -253,6 +423,26 @@ impl Books<'_> {
     }
 }
 
+/// A command's book source: its [`Books`], stamping the envelope coordinate
+/// on every book it opens (plan Appendix D), so no handler can emit a book
+/// event without one.
+pub(crate) struct BookSource<'a> {
+    books: Books<'a>,
+    said: Rc<RefCell<Said>>,
+}
+
+impl BookSource<'_> {
+    pub(crate) fn open(&mut self, args: &Args) -> Result<BookRef<'_>, Fail> {
+        let book = self.books.open(args)?;
+        stamp(&self.said, &book)?;
+        Ok(book)
+    }
+
+    fn is_held(&self) -> bool {
+        self.books.is_held()
+    }
+}
+
 fn same_dir(a: &Path, b: &Path) -> bool {
     match (a.canonicalize(), b.canonicalize()) {
         (Ok(a), Ok(b)) => a == b,
@@ -329,7 +519,7 @@ impl Files {
 /// Everything a command runs against.
 pub(crate) struct Ctx<'a> {
     pub(crate) out: Out,
-    pub(crate) books: Books<'a>,
+    pub(crate) books: BookSource<'a>,
     pub(crate) files: Files,
 }
 
@@ -346,11 +536,20 @@ pub fn run(argv: &[String], books: Books<'_>, files: Files, capture: bool) -> (u
         Ok(a) => a,
         Err(e) => return finish_into(Out::new(json, capture), Err(Fail::Usage(e))),
     };
-    let mut ctx = Ctx {
-        out: Out::new(args.switch("--json"), capture),
+    let json = args.switch("--json");
+    let style = Style::resolve(
+        json,
+        args.switch("--no-color"),
+        capture,
+        std::io::stdout().is_terminal(),
+        |name| std::env::var(name).ok(),
+    );
+    let out = Out::styled(json, capture, style);
+    let books = BookSource {
         books,
-        files,
+        said: Rc::clone(&out.said),
     };
+    let mut ctx = Ctx { out, books, files };
     let result = dispatch(&mut ctx, reg, &args);
     finish_into(ctx.out, result)
 }
@@ -406,91 +605,113 @@ fn registry() -> Result<&'static Registry, Fail> {
     verbs::registry().map_err(|e| Fail::Internal(format!("the embedded verb registry: {e}")))
 }
 
+/// An exit code's class: its name in exit_codes.toml (`usage`, `refusal`,
+/// `environment`, `foundation`, `conflict`, `safety`, `verification`). An
+/// exit the registry lacks is spelled `exit-<n>`, never a guessed class.
+fn exit_class(exit: u8) -> String {
+    fa_registry::ExitCodes::embedded()
+        .ok()
+        .and_then(|codes| {
+            codes
+                .rows
+                .into_iter()
+                .find(|row| row.code == exit)
+                .map(|row| row.name)
+        })
+        .unwrap_or_else(|| format!("exit-{exit}"))
+}
+
+/// The verdict of a command: success, or exactly one `error` event (plan
+/// Appendix D: `class`, `exit`, `refusal_id`) on stdout in robot mode and
+/// one diagnostic on stderr.
 fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
-    match result {
-        Ok(()) => exit::SUCCESS,
-        Err(Fail::Usage(e)) => {
-            out.event(
-                "usage_error",
-                vec![
-                    ("exit", Json::Int(i128::from(exit::USAGE))),
-                    ("message", s(&e.message)),
-                    ("fix", s(&e.fix)),
-                ],
-                "",
-            );
-            out.diag(format!("usage: {}\n  fix: {}", e.message, e.fix));
-            exit::USAGE
-        }
-        Err(Fail::Refusal(r)) => {
-            out.event(
-                "refusal",
-                vec![
-                    ("code", s(r.code)),
-                    ("exit", Json::Int(i128::from(r.exit))),
-                    ("message", s(&r.message)),
-                    ("cite", s(&r.cite)),
-                    ("fix", s(&r.fix)),
-                ],
-                "",
-            );
-            out.diag(format!("refused {r}"));
-            r.exit
-        }
+    struct Failure {
+        exit: u8,
+        refusal_id: Option<&'static str>,
+        message: String,
+        cite: Option<String>,
+        fix: Option<String>,
+        detail: Json,
+        diag: String,
+    }
+    let failure = match result {
+        Ok(()) => return exit::SUCCESS,
+        Err(Fail::Usage(e)) => Failure {
+            exit: exit::USAGE,
+            refusal_id: None,
+            diag: format!("usage: {}\n  fix: {}", e.message, e.fix),
+            message: e.message,
+            cite: None,
+            fix: Some(e.fix),
+            detail: Json::Null,
+        },
+        Err(Fail::Refusal(r)) => Failure {
+            exit: r.exit,
+            refusal_id: Some(r.code),
+            diag: format!("refused {r}"),
+            message: r.message,
+            cite: Some(r.cite),
+            fix: Some(r.fix),
+            detail: Json::Null,
+        },
         Err(Fail::Book(e)) => {
             let code = e.exit();
-            out.event(
-                "error",
-                vec![
-                    ("exit", Json::Int(i128::from(code))),
-                    ("message", s(e.to_string())),
-                ],
-                "",
-            );
-            out.diag(format!("error (exit {code}): {e}"));
-            code
+            Failure {
+                exit: code,
+                refusal_id: None,
+                diag: format!("error (exit {code}): {e}"),
+                message: e.to_string(),
+                cite: None,
+                fix: None,
+                detail: Json::Null,
+            }
         }
-        Err(Fail::Verification(message, detail)) => {
-            out.event(
-                "verification_failed",
-                vec![
-                    ("exit", Json::Int(i128::from(exit::VERIFICATION))),
-                    ("message", s(&message)),
-                    ("detail", detail),
-                ],
-                "",
-            );
-            out.diag(format!(
+        Err(Fail::Verification(message, detail)) => Failure {
+            exit: exit::VERIFICATION,
+            refusal_id: None,
+            diag: format!(
                 "verification failed (exit {}): {message}",
                 exit::VERIFICATION
-            ));
-            exit::VERIFICATION
-        }
-        Err(Fail::Internal(message)) => {
-            out.event(
-                "error",
-                vec![
-                    ("exit", Json::Int(i128::from(exit::FOUNDATION))),
-                    ("message", s(&message)),
-                ],
-                "",
-            );
-            out.diag(format!("error (exit {}): {message}", exit::FOUNDATION));
-            exit::FOUNDATION
-        }
-        Err(Fail::Environment(message)) => {
-            out.event(
-                "error",
-                vec![
-                    ("exit", Json::Int(i128::from(exit::ENVIRONMENT))),
-                    ("message", s(&message)),
-                ],
-                "",
-            );
-            out.diag(format!("error (exit {}): {message}", exit::ENVIRONMENT));
-            exit::ENVIRONMENT
-        }
-    }
+            ),
+            message,
+            cite: None,
+            fix: None,
+            detail,
+        },
+        Err(Fail::Internal(message)) => Failure {
+            exit: exit::FOUNDATION,
+            refusal_id: None,
+            diag: format!("error (exit {}): {message}", exit::FOUNDATION),
+            message,
+            cite: None,
+            fix: None,
+            detail: Json::Null,
+        },
+        Err(Fail::Environment(message)) => Failure {
+            exit: exit::ENVIRONMENT,
+            refusal_id: None,
+            diag: format!("error (exit {}): {message}", exit::ENVIRONMENT),
+            message,
+            cite: None,
+            fix: None,
+            detail: Json::Null,
+        },
+    };
+    out.event(
+        "error",
+        vec![
+            ("class", s(exit_class(failure.exit))),
+            ("exit", Json::Int(i128::from(failure.exit))),
+            ("refusal_id", failure.refusal_id.map_or(Json::Null, s)),
+            ("message", s(&failure.message)),
+            ("cite", failure.cite.map_or(Json::Null, s)),
+            ("fix", failure.fix.map_or(Json::Null, s)),
+            ("detail", failure.detail),
+        ],
+        "",
+    );
+    out.diag(failure.diag);
+    failure.exit
 }
 
 fn dispatch(ctx: &mut Ctx<'_>, reg: &Registry, args: &Args) -> Result<(), Fail> {
@@ -575,6 +796,7 @@ fn dispatch(ctx: &mut Ctx<'_>, reg: &Registry, args: &Args) -> Result<(), Fail> 
             }
         }
     }
+    gate_from_argv(out, reg, verb, args)?;
     let handler = HANDLERS
         .iter()
         .find(|(name, _)| *name == verb.name)
@@ -586,6 +808,110 @@ fn dispatch(ctx: &mut Ctx<'_>, reg: &Registry, args: &Args) -> Result<(), Fail> 
             ))
         })?;
     handler(ctx, args)
+}
+
+/// Whether the command line confirms an operation that cannot be undone in
+/// practice: `--yes`, or a `--plan` file (whose exact proposal the kernel
+/// checks at commit).
+pub(crate) fn confirmed(args: &Args) -> bool {
+    args.switch("--yes") || args.flag("--plan").is_some()
+}
+
+fn command_name(verb: &str, subcommand: Option<&str>) -> String {
+    match subcommand {
+        Some(sub) => format!("fa {verb} {sub}"),
+        None => format!("fa {verb}"),
+    }
+}
+
+/// The FA-REF-007 refusal for an unconfirmed dangerous operation: what it
+/// is, that nothing was written, and its safe alternative (verbs.toml).
+fn unconfirmed(d: &Dangerous) -> Fail {
+    let when = match &d.condition {
+        Condition::Always => String::new(),
+        Condition::Grant(op) => format!(" with --grant {op}"),
+        Condition::Voids => " voiding a hold".to_string(),
+        Condition::ExistingCells => " over cells already materialized".to_string(),
+    };
+    Fail::Refusal(Refusal::new(
+        CONFIRMATION_REQUIRED,
+        exit::SAFETY,
+        format!(
+            "`{}`{when} cannot be undone in practice and was not confirmed; nothing was written",
+            command_name(&d.verb, d.subcommand.as_deref())
+        ),
+        "plan §15.3 (dangerous operations are gated and name a safe alternative) · Appendix D FA-REF-007",
+        format!(
+            "{}; or, when this is intended, rerun the same command with --yes",
+            d.safe
+        ),
+    ))
+}
+
+/// The dangerous operations the command line alone shows (verbs.toml
+/// `[[dangerous]]`: `always`, `grant:<op>`) are refused unless confirmed,
+/// before the handler opens the book. A confirmation on a command with no
+/// dangerous row is a warning, never a silent no-op.
+fn gate_from_argv(out: &Out, reg: &Registry, verb: &Verb, args: &Args) -> Result<(), Fail> {
+    let sub = if verb.subcommands.is_empty() {
+        None
+    } else {
+        args.positional.get(1).map(String::as_str)
+    };
+    let mut rows = reg.dangerous_for(&verb.name, sub).peekable();
+    // Planning commits nothing: the commit from the plan is what confirms.
+    if args.flag("--plan-out").is_some() {
+        return Ok(());
+    }
+    if confirmed(args) {
+        // `--plan` is a file argument wherever it appears; only a bare
+        // `--yes` can confirm nothing.
+        if rows.peek().is_none() && args.switch("--yes") {
+            out.warn(format!(
+                "--yes confirms nothing here: `{}` is not an operation that needs confirmation",
+                command_name(&verb.name, sub)
+            ));
+        }
+        return Ok(());
+    }
+    for d in rows {
+        let applies = match &d.condition {
+            Condition::Always => true,
+            Condition::Grant(op) => args.flag_all("--grant").contains(&op.as_str()),
+            Condition::Voids | Condition::ExistingCells => false,
+        };
+        if applies {
+            return Err(unconfirmed(d));
+        }
+    }
+    Ok(())
+}
+
+/// A handler-decided dangerous operation (`disposition:voids`,
+/// `existing-cells`) that applies: refused unless confirmed, before any
+/// write. A handler gating an operation verbs.toml does not list is a
+/// parity defect.
+pub(crate) fn gate(
+    args: &Args,
+    verb: &str,
+    subcommand: Option<&str>,
+    condition: &Condition,
+) -> Result<(), Fail> {
+    if confirmed(args) {
+        return Ok(());
+    }
+    let reg = registry()?;
+    match reg
+        .dangerous_for(verb, subcommand)
+        .find(|d| d.condition == *condition)
+    {
+        Some(d) => Err(unconfirmed(d)),
+        None => Err(Fail::Internal(format!(
+            "`{}` gates `{}`, which verbs.toml [[dangerous]] does not list",
+            command_name(verb, subcommand),
+            condition.text()
+        ))),
+    }
 }
 
 /// Every supplied flag must be global or belong to the verb (verbs.toml).
@@ -767,6 +1093,8 @@ fn capabilities_cmd(ctx: &mut Ctx<'_>, _args: &Args) -> Result<(), Fail> {
         .collect();
     let classes = fa_registry::EntryClasses::embedded().map_err(BookError::Registry)?;
     let class_names: Vec<Json> = classes.rows.iter().map(|c| s(&c.name)).collect();
+    let invariants =
+        fa_registry::invariants::Invariants::embedded().map_err(BookError::Registry)?;
     let fields = vec![
         ("version", s(VERSION)),
         (
@@ -801,6 +1129,37 @@ fn capabilities_cmd(ctx: &mut Ctx<'_>, _args: &Args) -> Result<(), Fail> {
         ("stderr", s("diagnostics")),
         ("tui", Json::Bool(false)),
         ("capability", capability_model()?),
+        (
+            "dangerous",
+            Json::Arr(
+                reg.dangerous
+                    .iter()
+                    .map(|d| {
+                        obj(vec![
+                            ("verb", s(&d.verb)),
+                            ("subcommand", d.subcommand.as_ref().map_or(Json::Null, s)),
+                            ("condition", s(d.condition.text())),
+                            ("safe", s(&d.safe)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+        // The invariant clauses this build enforces (fa-37f, MaroonSquirrel
+        // 3229): `live` have a running checker; `gate_g1` is Gate G1's set.
+        (
+            "invariants",
+            obj(vec![
+                (
+                    "live",
+                    Json::Arr(invariants.live_clause_ids().iter().map(s).collect()),
+                ),
+                (
+                    "gate_g1",
+                    Json::Arr(invariants.gate_g1.iter().map(s).collect()),
+                ),
+            ]),
+        ),
     ];
     if out.json {
         out.event("capabilities", fields, "");
@@ -942,6 +1301,12 @@ fn robot_schema(out: &Out, reg: &Registry, name: Option<&String>) -> Result<(), 
                     "envelope",
                     obj(vec![
                         ("discriminator", s(&reg.envelope.discriminator)),
+                        ("version", Json::Int(reg.envelope.version)),
+                        ("fields", field_docs(&reg.envelope.fields)),
+                        (
+                            "frames",
+                            Json::Arr(reg.envelope.frames.iter().map(s).collect()),
+                        ),
                         ("description", s(&reg.envelope.description)),
                         (
                             "types",
@@ -958,6 +1323,7 @@ fn robot_schema(out: &Out, reg: &Registry, name: Option<&String>) -> Result<(), 
                                 obj(vec![
                                     ("name", s(&e.name)),
                                     ("doc", s(&e.doc)),
+                                    ("book", Json::Bool(e.book)),
                                     (
                                         "verbs",
                                         Json::Arr(
@@ -1025,9 +1391,9 @@ fn robot_schema(out: &Out, reg: &Registry, name: Option<&String>) -> Result<(), 
 
 const GUIDE: &str = "fa robot-docs guide\n\
 \n\
-1. Every command accepts --json. Parse stdout line by line; each line is one JSON object with an `event` field.\n\
-2. Read the exit code before the output: 0 success (empty results are 0), 2 usage, 3 accounting-law refusal, 4 environment, 5 foundation/I-O, 6 conflict (retry with a fresh read), 7 safety block (period law, capability), 8 verification failure. 1 is never emitted.\n\
-3. A refusal is data: {event:\"refusal\", code:\"FA-REF-nnn\", exit, message, cite, fix}. Do the `fix`; do not invent a leg, a date, or an approval.\n\
+1. Every command accepts --json. Parse stdout line by line; each line is one JSON object {v, event, book, coordinate, data, certificate, warnings, next_actions}: `event` names the schema of `data`; `book` and `coordinate` say which book and (branch, known_at, effective) the line describes; `next_actions` are the commands usually run next (add the same --book).\n\
+2. Read the exit code before the output: 0 success (empty results are 0), 2 usage, 3 accounting-law refusal, 4 environment, 5 foundation/I-O, 6 conflict (retry with a fresh read), 7 safety block (period law, capability, an unconfirmed dangerous operation), 8 verification failure. 1 is never emitted.\n\
+3. Every non-zero exit is exactly one `error` line: data {class, exit, refusal_id, message, cite, fix, detail}. `refusal_id` (FA-REF-nnn) is the refusal catalog code when one applies. Do the `fix`; do not invent a leg, a date, or an approval. FA-REF-007 means the operation cannot be undone in practice: its fix names the safe alternative; add --yes only when the operation is intended (`fa capabilities --json` lists them under `dangerous`).\n\
 4. Amounts are strings with the unit: \"1500.00 USD\". Never floats. Dates are civil YYYY-MM-DD; recorded time is assigned by the journal, never supplied.\n\
 5. Corrections are new entries (Reversal, Replacement, Reclassification) that cite the original; nothing is edited in place.\n\
 6. Idempotency: every intent carries idempotency_key; resubmitting returns the recorded outcome (event \"recorded\"), never a duplicate.\n\
@@ -1210,6 +1576,7 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 },
                 entropy,
             )?;
+            out.at_book(&book)?;
             out.event(
                 "book_created",
                 vec![
@@ -1412,6 +1779,7 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 .into_bytes(),
             };
             let installed = book.install_chart(&accounts, principal(args), date, &key)??;
+            out.at_book(&book)?;
             out.event(
                 "chart_installed",
                 vec![
@@ -1506,6 +1874,7 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 .map_err(|_| usage("--fiscal-year must be a year", "--fiscal-year 2026"))?;
             let mut book = ctx.books.open(args)?;
             let (seq, periods) = book.create_periods(fy)?;
+            out.at_book(&book)?;
             let codes: Vec<Json> = periods.iter().map(|p| s(&p.code)).collect();
             out.event("periods_created", vec![("fiscal_year", Json::Int(i128::from(fy))), ("periods", Json::Arr(codes)), ("recorded_at", Json::Int(i128::from(seq.0)))], &format!("created {} periods for FY{fy} (all Future; open them with `fa period open <code>`)", periods.len()));
             Ok(())
@@ -1688,6 +2057,8 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     book.transition_period(code, transition, who, reason, date, &key, &capability)??
                 }
             };
+            out.at_book(&book)?;
+            out.effective(format!("period:{}", tr.period));
             out.event(
                 "period_transitioned",
                 vec![
@@ -1739,6 +2110,7 @@ fn approve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     })?;
     let mut book = ctx.books.open(args)?;
     let approved = book.approve(capability, digest)??;
+    ctx.out.at_book(&book)?;
     let approval = approved.approval();
     let recorded_at = approved.recorded_at();
     let (epoch, already) = match approved {
@@ -2077,6 +2449,8 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
                         "remove `legs`, or set disposition to \"posts\"",
                     ));
                 }
+                // A void releases the hold for good (verbs.toml [[dangerous]]).
+                gate(args, "resolve", None, &Condition::Voids)?;
                 control = Some(ControlPayload::ReservationRelease);
                 pending = Some(Pending {
                     timeout_ns: None,
@@ -2272,6 +2646,7 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
     let balancing_text = amounts.as_ref().map_or(String::new(), |(r, m)| {
         format!(" · balancing: requested {r}, moved {m}")
     });
+    out.at_book(&book)?;
     match posted {
         Posted::Committed {
             entry_ref,
@@ -2326,6 +2701,15 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
 
 /// `--as-known-at HEAD|<seq>` (at most once): `None` selects the head; an
 /// instant or any other spelling is refused, never converted.
+/// The envelope's effective selector for a period selection (plan §4.8).
+fn periods_selector(periods: &[String]) -> String {
+    match periods {
+        [] => "all".to_string(),
+        [one] => format!("period:{one}"),
+        many => format!("periods:{}", many.join(",")),
+    }
+}
+
 fn known_at_flag(args: &Args) -> Result<Option<CommitSeq>, Fail> {
     if args.flag_all("--as-known-at").len() > 1 {
         return Err(usage(
@@ -2423,6 +2807,11 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         };
         (periods, tb)
     };
+    out.known_at(tb.known_at);
+    out.effective(match args.flag("--as-of") {
+        Some(date) => format!("as-of:{date}"),
+        None => periods_selector(&periods),
+    });
     let units = &book.context().units;
     let render = |unit: u32, m: i128| Amount::new(fa_money::UnitId(unit), m).render(units);
     let rows: Vec<Json> = tb
@@ -2507,7 +2896,7 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 tb.known_at.0
             ));
         }
-        out.line(format!(
+        out.line(out.style().header(&format!(
             "{:<10} {:<28} {:>22} {:>22} {:>22} {:>22}",
             "code",
             "account",
@@ -2515,7 +2904,7 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "posted credits",
             "pending debits",
             "pending credits"
-        ));
+        )));
         for r in &tb.rows {
             out.line(format!(
                 "{:<10} {:<28} {:>22} {:>22} {:>22} {:>22}",
@@ -2661,6 +3050,7 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("registers") => {
             let book = ctx.books.open(args)?;
             let periods = selected_periods(args, &book)?;
+            out.effective(periods_selector(&periods));
             let mut all_green = true;
             let mut details = Vec::new();
             let mut diagnostics = Vec::new();
@@ -2814,6 +3204,9 @@ fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .map(|code| account_vid(ctx.book_id, code));
     let known_at = known_at_flag(args)?;
     let items = book.open_items(account, known_at)?;
+    if let Some(seq) = known_at {
+        out.known_at(seq);
+    }
     let codes: std::collections::BTreeMap<VId, String> = book
         .accounts()?
         .into_iter()
@@ -2878,10 +3271,10 @@ fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "",
         );
     } else {
-        out.line(format!(
+        out.line(out.style().header(&format!(
             "{:<10} {:<34} {:>3} {:<6} {:>18} {:>18} {:>18} {:>18}",
             "account", "entry", "leg", "side", "original", "applied", "applied_out", "open"
-        ));
+        )));
         for i in &items {
             out.line(format!(
                 "{:<10} {:<34} {:>3} {:<6} {:>18} {:>18} {:>18} {:>18}",
@@ -2976,6 +3369,8 @@ fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
     let ex = book.explain_balance(account.vid, period, known_at)?;
+    out.known_at(ex.known_at);
+    out.effective(format!("period:{period}"));
     // Name, type, and leafness as they stood at `known_at`.
     let account = &ex.account_row;
     if !account.is_leaf {
@@ -3143,7 +3538,7 @@ fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if by_unit.is_empty() {
         out.line("nothing posted or pending: every leg below is a released reservation");
     } else {
-        out.line(format!(
+        out.line(out.style().header(&format!(
             "{:<6} {:>20} {:>20} {:>20} {:>7} {:>20} {:>20}",
             "unit",
             "posted debits",
@@ -3152,7 +3547,7 @@ fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "entries",
             "pending debits",
             "pending credits"
-        ));
+        )));
         for (u, [d, c, n, pd, pc, _]) in &by_unit {
             out.line(format!(
                 "{:<6} {:>20} {:>20} {:>20} {:>7} {:>20} {:>20}",
@@ -3167,10 +3562,10 @@ fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         }
     }
     out.line("contributions (by recorded sequence)");
-    out.line(format!(
+    out.line(out.style().header(&format!(
         "{:>9} {:<32} {:>3} {:<12} {:<10} {:<6} {:>20} column",
         "recorded", "entry", "leg", "class", "effective", "side", "amount"
-    ));
+    )));
     for c in &ex.contributions {
         out.line(format!(
             "{:>9} {:<32} {:>3} {:<12} {:<10} {:<6} {:>20} {}{}",
@@ -3198,8 +3593,29 @@ fn registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("materialize") => {
             let mut book = ctx.books.open(args)?;
             let periods = selected_periods(args, &book)?;
+            // Rematerializing over cells a period already has rewrites them
+            // (verbs.toml [[dangerous]]): every period is checked, and the
+            // whole command refused, before anything is written.
+            for p in &periods {
+                let v = book.verify_registers(p)?;
+                let existing = v.stored_digest.is_some()
+                    || v.drift
+                        .iter()
+                        .chain(&v.pending_drift)
+                        .any(|d| d.stored.is_some());
+                if existing {
+                    gate(
+                        args,
+                        "registers",
+                        Some("materialize"),
+                        &Condition::ExistingCells,
+                    )?;
+                }
+            }
             for p in &periods {
                 let (fold, seq) = book.materialize_registers(p)?;
+                out.at_book(&book)?;
+                out.effective(format!("period:{p}"));
                 out.event(
                     "registers_materialized",
                     vec![
@@ -3391,9 +3807,13 @@ mod tests {
         };
         let rendered = availability_fields(&v, &amount);
         assert!(rendered.is_ok(), "every amount renders");
-        let mut fields = rendered.unwrap_or_default();
-        fields.push(("event", s("availability_verified")));
-        let line = obj(fields).render();
+        let at = At {
+            book: "0a1b".into(),
+            known_at: CommitSeq(9),
+            effective: "all".into(),
+        };
+        let data = obj(rendered.unwrap_or_default());
+        let line = robot_line("availability_verified", data, Some(&at), &[]).render();
         assert_eq!(reg.check_line(&line), Ok("availability_verified"), "{line}");
         assert!(
             line.contains(&format!(r#""stored_account":"{:032x}""#, 2))
@@ -3405,5 +3825,55 @@ mod tests {
                 && line.contains(r#""net":"40.00 USD""#),
             "{line}"
         );
+    }
+
+    /// Styling is resolved once (plan Appendix D determinism): only a
+    /// terminal with nothing asking for plain output is styled; robot mode,
+    /// a daemon capture, --no-color, NO_COLOR, CI and TERM=dumb never are,
+    /// and an empty NO_COLOR or CI=false/0 asks for nothing.
+    #[test]
+    fn styling_is_off_unless_a_terminal_asks_for_nothing_plain() {
+        let none = |_: &str| None::<String>;
+        let styled = Style::resolve(false, false, false, true, none);
+        assert_eq!(styled.header("code"), "\u{1b}[1mcode\u{1b}[0m");
+        let only = |name: &'static str, value: &'static str| {
+            move |k: &str| (k == name).then(|| value.to_string())
+        };
+        for (what, style) in [
+            ("robot mode", Style::resolve(true, false, false, true, none)),
+            ("--no-color", Style::resolve(false, true, false, true, none)),
+            (
+                "a daemon capture",
+                Style::resolve(false, false, true, true, none),
+            ),
+            (
+                "not a terminal",
+                Style::resolve(false, false, false, false, none),
+            ),
+            (
+                "NO_COLOR",
+                Style::resolve(false, false, false, true, only("NO_COLOR", "1")),
+            ),
+            (
+                "CI",
+                Style::resolve(false, false, false, true, only("CI", "true")),
+            ),
+            (
+                "TERM=dumb",
+                Style::resolve(false, false, false, true, only("TERM", "dumb")),
+            ),
+        ] {
+            assert_eq!(style, Style::PLAIN, "{what}");
+            assert_eq!(style.header("code"), "code", "{what}");
+        }
+        for (name, value) in [
+            ("NO_COLOR", ""),
+            ("CI", "false"),
+            ("CI", "0"),
+            ("TERM", "xterm-256color"),
+        ] {
+            let style = Style::resolve(false, false, false, true, only(name, value));
+            assert_eq!(style, styled, "{name}={value}");
+        }
     }
 }

@@ -257,7 +257,7 @@ fn one_daemon_per_book_and_fa_gets_byte_identical_answers_through_it() {
     // A second daemon for the same book is refused: the lease is held.
     let (code, out, err) = fad(&["serve", "--book", &b, "--json"]);
     assert_eq!(code, 6, "{out}\n{err}");
-    assert_eq!(field(&out, "code"), Some("FA-REF-018"), "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-018"), "{out}");
     assert!(Lease::holder(&book, &registry().expect("verbs.toml").daemon.lease).is_some());
 
     // The same questions through the daemon: the same bytes and exit codes.
@@ -277,7 +277,7 @@ fn one_daemon_per_book_and_fa_gets_byte_identical_answers_through_it() {
         "--json",
     ]);
     assert_eq!(code, 6, "{out}");
-    assert_eq!(field(&out, "code"), Some("FA-REF-018"));
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-018"));
     // A write through the daemon.
     let more = write(
         &dir,

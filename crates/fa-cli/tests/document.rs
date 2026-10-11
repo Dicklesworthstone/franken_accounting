@@ -74,8 +74,8 @@ fn ok(book: &Path, args: &[&str]) -> String {
 fn refused(book: &Path, args: &[&str], code: &str, exit: i32) -> String {
     let (got, out, err) = fa(book, args);
     assert_eq!(got, exit, "args={args:?}\nstdout={out}\nstderr={err}");
-    assert_eq!(field(&out, "event"), Some("refusal"), "{out}");
-    assert_eq!(field(&out, "code"), Some(code), "{out}");
+    assert_eq!(field(&out, "event"), Some("error"), "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some(code), "{out}");
     out
 }
 
@@ -280,7 +280,8 @@ fn documents_are_recorded_once_and_entries_must_cite_them() -> std::io::Result<(
             &["post", "--intent", &with_role(key, extra), "--json"],
         );
         assert_eq!(code, 2, "{key}: {out}");
-        assert_eq!(field(&out, "event"), Some("usage_error"), "{key}: {out}");
+        assert_eq!(field(&out, "event"), Some("error"), "{key}: {out}");
+        assert_eq!(field(&out, "class"), Some("usage"), "{key}: {out}");
     }
     let (_, out, _) = fa(
         &book,

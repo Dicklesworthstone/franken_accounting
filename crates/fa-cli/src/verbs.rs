@@ -98,8 +98,12 @@ impl Type {
     }
 }
 
+/// A registry name: lowercase ASCII letters, digits and `_`, starting with
+/// a letter (`gate_g1`).
 fn is_name(s: &str) -> bool {
-    !s.is_empty() && s.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') && !s.starts_with('_')
+    s.bytes().next().is_some_and(|b| b.is_ascii_lowercase())
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -115,6 +119,9 @@ pub struct Field {
 pub struct Schema {
     pub name: String,
     pub doc: String,
+    /// An event that is always about one book: its envelope `coordinate` is
+    /// never null. False for every shape.
+    pub book: bool,
     pub fields: Vec<Field>,
 }
 
@@ -146,9 +153,39 @@ pub struct Alias {
     pub expands: Vec<String>,
 }
 
+/// The top-level fields every robot-mode line carries beside its `event`
+/// and its `data` (plan Appendix D), in the order the binary writes them.
+pub const ENVELOPE_FIELDS: &[&str] = &[
+    "v",
+    "book",
+    "coordinate",
+    "certificate",
+    "warnings",
+    "next_actions",
+];
+
+/// The envelope version this binary writes (every line's `v`); the
+/// registry's `[envelope] version` must agree.
+pub const ENVELOPE_VERSION: i128 = 1;
+
+/// The key that holds a line's event fields (the registry's `payload`).
+pub const PAYLOAD: &str = "data";
+
+/// The envelope fields an event about a book never leaves null.
+const BOOK_FIELDS: &[&str] = &["book", "coordinate"];
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Envelope {
     pub discriminator: String,
+    /// Every line's `v`.
+    pub version: i128,
+    /// The key holding the event's own fields ([`PAYLOAD`]).
+    pub payload: String,
+    /// [`ENVELOPE_FIELDS`], with their types.
+    pub fields: Vec<Field>,
+    /// Events that are wire frames (the daemon's protocol), not robot-mode
+    /// lines: flat, with no envelope.
+    pub frames: Vec<String>,
     pub description: String,
 }
 
@@ -158,7 +195,74 @@ pub struct Global {
     pub switches: Vec<String>,
     /// Events emitted outside any one verb (errors, `--version`, triage, help).
     pub events: Vec<String>,
+    /// The largest edit distance a "did you mean" correction spans.
+    pub correction_distance: usize,
     pub usage: String,
+}
+
+/// When a dangerous operation needs confirmation (closed vocabulary).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Condition {
+    /// Every invocation.
+    Always,
+    /// The command self-issues this op with `--grant`.
+    Grant(String),
+    /// The intent's disposition voids a hold.
+    Voids,
+    /// The period already has materialized register cells.
+    ExistingCells,
+}
+
+impl Condition {
+    fn parse(text: &str) -> Option<Self> {
+        match text {
+            "always" => Some(Self::Always),
+            "disposition:voids" => Some(Self::Voids),
+            "existing-cells" => Some(Self::ExistingCells),
+            other => other
+                .strip_prefix("grant:")
+                .filter(|op| is_name(op))
+                .map(|op| Self::Grant(op.to_string())),
+        }
+    }
+
+    /// The registry spelling.
+    #[must_use]
+    pub fn text(&self) -> String {
+        match self {
+            Self::Always => "always".into(),
+            Self::Grant(op) => format!("grant:{op}"),
+            Self::Voids => "disposition:voids".into(),
+            Self::ExistingCells => "existing-cells".into(),
+        }
+    }
+
+    /// Whether dispatch decides it from the command line alone, before the
+    /// handler opens the book; the others are decided by their handler.
+    #[must_use]
+    pub fn from_argv(&self) -> bool {
+        matches!(self, Self::Always | Self::Grant(_))
+    }
+}
+
+/// An operation that cannot be undone in practice (plan §15.3, Appendix D
+/// FA-REF-007): refused with exit 7 unless confirmed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Dangerous {
+    pub verb: String,
+    /// `None` for a verb without subcommands.
+    pub subcommand: Option<String>,
+    pub condition: Condition,
+    /// The reversible or read-only alternative the refusal names.
+    pub safe: String,
+}
+
+/// A command an agent usually runs after `after` (Appendix D `next_actions`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NextAction {
+    pub after: String,
+    pub command: String,
+    pub why: String,
 }
 
 /// The `fad` daemon's contract (plan §15.3, Appendix D): where its socket
@@ -190,6 +294,8 @@ pub struct Registry {
     pub daemon: Daemon,
     pub verbs: Vec<Verb>,
     pub aliases: Vec<Alias>,
+    pub dangerous: Vec<Dangerous>,
+    pub next_actions: Vec<NextAction>,
     pub events: Vec<Schema>,
     pub shapes: Vec<Schema>,
 }
@@ -230,6 +336,27 @@ fn table<'a>(doc: &'a toml::Document, name: &str) -> Result<&'a Table, String> {
         .ok_or_else(|| format!("verbs.toml: missing [{name}]"))
 }
 
+/// A `fields = ["name:type", …]` list.
+fn parse_fields(t: &Table, what: &str) -> Result<Vec<Field>, String> {
+    let mut fields: Vec<Field> = Vec::new();
+    for spec in get_strs(t, "fields", what)? {
+        let (field, type_text) = spec
+            .split_once(':')
+            .ok_or_else(|| format!("verbs.toml: {what}: field `{spec}` is not name:type"))?;
+        if !is_name(field) || fields.iter().any(|f| f.name == field) {
+            return Err(format!(
+                "verbs.toml: {what}: invalid or duplicate field `{field}`"
+            ));
+        }
+        fields.push(Field {
+            name: field.to_string(),
+            type_text: type_text.to_string(),
+            ty: Type::parse(type_text).map_err(|e| format!("verbs.toml: {what}: {e}"))?,
+        });
+    }
+    Ok(fields)
+}
+
 fn schemas(doc: &toml::Document, kind: &str) -> Result<Vec<Schema>, String> {
     let mut out: Vec<Schema> = Vec::new();
     for t in doc.arrays.get(kind).map(Vec::as_slice).unwrap_or_default() {
@@ -238,26 +365,18 @@ fn schemas(doc: &toml::Document, kind: &str) -> Result<Vec<Schema>, String> {
         if !is_name(&name) || out.iter().any(|s| s.name == name) {
             return Err(format!("verbs.toml: {what}: invalid or duplicate name"));
         }
-        let mut fields: Vec<Field> = Vec::new();
-        for spec in get_strs(t, "fields", &what)? {
-            let (field, type_text) = spec
-                .split_once(':')
-                .ok_or_else(|| format!("verbs.toml: {what}: field `{spec}` is not name:type"))?;
-            if !is_name(field) || fields.iter().any(|f| f.name == field) {
-                return Err(format!(
-                    "verbs.toml: {what}: invalid or duplicate field `{field}`"
-                ));
-            }
-            fields.push(Field {
-                name: field.to_string(),
-                type_text: type_text.to_string(),
-                ty: Type::parse(type_text).map_err(|e| format!("verbs.toml: {what}: {e}"))?,
-            });
-        }
+        let book = match t.get("book") {
+            None => false,
+            Some(v) if kind == "event" => v
+                .as_bool()
+                .ok_or_else(|| format!("verbs.toml: {what}: `book` must be a bool"))?,
+            Some(_) => return Err(format!("verbs.toml: {what}: only an event names `book`")),
+        };
         out.push(Schema {
             doc: get_str(t, "doc", &what)?.to_string(),
+            book,
+            fields: parse_fields(t, &what)?,
             name,
-            fields,
         });
     }
     Ok(out)
@@ -273,6 +392,13 @@ impl Registry {
         let env = table(&doc, "envelope")?;
         let envelope = Envelope {
             discriminator: get_str(env, "discriminator", "envelope")?.to_string(),
+            version: env
+                .get("version")
+                .and_then(Value::as_int)
+                .ok_or("verbs.toml: envelope: missing integer `version`")?,
+            payload: get_str(env, "payload", "envelope")?.to_string(),
+            fields: parse_fields(env, "envelope")?,
+            frames: get_strs(env, "frames", "envelope")?,
             description: get_str(env, "description", "envelope")?.to_string(),
         };
         let g = table(&doc, "global")?;
@@ -280,6 +406,11 @@ impl Registry {
             flags: get_strs(g, "flags", "global")?,
             switches: get_strs(g, "switches", "global")?,
             events: get_strs(g, "events", "global")?,
+            correction_distance: g
+                .get("correction_distance")
+                .and_then(Value::as_int)
+                .and_then(|d| usize::try_from(d).ok())
+                .ok_or("verbs.toml: global: missing integer `correction_distance`")?,
             usage: get_str(g, "usage", "global")?.to_string(),
         };
         let mut verbs: Vec<Verb> = Vec::new();
@@ -326,6 +457,49 @@ impl Registry {
             let expands = get_strs(t, "expands", &format!("alias {name}"))?;
             aliases.push(Alias { name, expands });
         }
+        let mut dangerous = Vec::new();
+        for t in doc
+            .arrays
+            .get("dangerous")
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            let verb = get_str(t, "verb", "dangerous")?.to_string();
+            let what = format!("dangerous {verb}");
+            let condition = get_str(t, "condition", &what)?;
+            dangerous.push(Dangerous {
+                subcommand: match t.get("subcommand") {
+                    None => None,
+                    Some(v) => Some(
+                        v.as_str()
+                            .ok_or_else(|| {
+                                format!("verbs.toml: {what}: `subcommand` must be a string")
+                            })?
+                            .to_string(),
+                    ),
+                },
+                condition: Condition::parse(condition).ok_or_else(|| {
+                    format!("verbs.toml: {what}: unknown condition `{condition}`")
+                })?,
+                safe: get_str(t, "safe", &what)?.to_string(),
+                verb,
+            });
+        }
+        let mut next_actions = Vec::new();
+        for t in doc
+            .arrays
+            .get("next_action")
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            let after = get_str(t, "after", "next_action")?.to_string();
+            let what = format!("next_action after {after}");
+            next_actions.push(NextAction {
+                command: get_str(t, "command", &what)?.to_string(),
+                why: get_str(t, "why", &what)?.to_string(),
+                after,
+            });
+        }
         let d = table(&doc, "daemon")?;
         let int = |key: &str| {
             d.get(key)
@@ -353,6 +527,8 @@ impl Registry {
             daemon,
             verbs,
             aliases,
+            dangerous,
+            next_actions,
             events: schemas(&doc, "event")?,
             shapes: schemas(&doc, "shape")?,
         };
@@ -492,7 +668,84 @@ impl Registry {
                 ));
             }
         }
-        for schema in self.events.iter().chain(&self.shapes) {
+        // The envelope (plan Appendix D): this binary's version, exactly the
+        // fields it writes, the event's fields under `data`, `book` and
+        // `coordinate` nullable (a book event tightens both), and frames that
+        // are bookless events.
+        let env = &self.envelope;
+        let env_names: Vec<&str> = env.fields.iter().map(|f| f.name.as_str()).collect();
+        if env.version != ENVELOPE_VERSION || env_names != ENVELOPE_FIELDS || env.payload != PAYLOAD
+        {
+            return Err(format!(
+                "verbs.toml: envelope: version {ENVELOPE_VERSION} (this binary's), payload `{PAYLOAD}`, and exactly the fields {ENVELOPE_FIELDS:?}"
+            ));
+        }
+        for name in BOOK_FIELDS {
+            if !env
+                .fields
+                .iter()
+                .any(|f| f.name == *name && matches!(f.ty, Type::Nullable(_)))
+            {
+                return Err(format!("verbs.toml: envelope: `{name}` must be nullable"));
+            }
+        }
+        for frame in &env.frames {
+            if !self.event(frame).is_some_and(|e| !e.book) {
+                return Err(format!(
+                    "verbs.toml: envelope frame `{frame}` is not a bookless event"
+                ));
+            }
+        }
+        if self.global.correction_distance > 2 {
+            return Err("verbs.toml: global: correction_distance is at most 2".into());
+        }
+        // A dangerous operation is a real verb (and one of its subcommands
+        // exactly when it has them) that can exit 7, with a safe
+        // alternative; one row per (verb, subcommand, condition).
+        let mut dangerous_rows = BTreeSet::new();
+        for d in &self.dangerous {
+            let verb = self
+                .verb(&d.verb)
+                .ok_or_else(|| format!("verbs.toml: dangerous names unknown verb `{}`", d.verb))?;
+            let subcommand_ok = match &d.subcommand {
+                None => verb.subcommands.is_empty(),
+                Some(s) => verb.subcommands.contains(s),
+            };
+            if !subcommand_ok
+                || !verb.exits.contains(&7)
+                || d.safe.is_empty()
+                || !dangerous_rows.insert((
+                    d.verb.as_str(),
+                    d.subcommand.as_deref(),
+                    d.condition.text(),
+                ))
+            {
+                return Err(format!(
+                    "verbs.toml: dangerous {} {:?}: a subcommand exactly when the verb has them, exit 7 among its exits, a safe alternative, no repeat",
+                    d.verb, d.subcommand
+                ));
+            }
+        }
+        for n in &self.next_actions {
+            if self.event(&n.after).is_none()
+                || env.frames.contains(&n.after)
+                || !n.command.starts_with("fa ")
+                || n.command.contains("--book")
+                || n.why.is_empty()
+            {
+                return Err(format!(
+                    "verbs.toml: next_action after `{}`: a robot-mode event, an `fa …` command without --book, and why",
+                    n.after
+                ));
+            }
+        }
+        let envelope_schema = self.envelope_schema();
+        for schema in self
+            .events
+            .iter()
+            .chain(&self.shapes)
+            .chain([&envelope_schema])
+        {
             let mut refs = Vec::new();
             for f in &schema.fields {
                 f.ty.shapes(&mut refs);
@@ -504,8 +757,10 @@ impl Registry {
                 ));
             }
         }
+        let mut roots: Vec<&Schema> = self.events.iter().collect();
+        roots.push(&envelope_schema);
         let reachable: BTreeSet<&str> = self
-            .closure(&self.events.iter().collect::<Vec<_>>())
+            .closure(&roots)
             .iter()
             .map(|s| s.name.as_str())
             .collect();
@@ -520,6 +775,84 @@ impl Registry {
             ));
         }
         Ok(())
+    }
+
+    /// The envelope's fields as a schema (shape reachability, docs).
+    fn envelope_schema(&self) -> Schema {
+        Schema {
+            name: "envelope".into(),
+            doc: self.envelope.description.clone(),
+            book: false,
+            fields: self.envelope.fields.clone(),
+        }
+    }
+
+    /// Whether `event` is a wire frame (no envelope).
+    #[must_use]
+    pub fn is_frame(&self, event: &str) -> bool {
+        self.envelope.frames.iter().any(|f| f == event)
+    }
+
+    /// The top-level envelope fields one robot-mode line of `event` carries
+    /// beside `event` and `data`, with `book` and `coordinate` never null on
+    /// an event about a book. A wire frame carries none.
+    #[must_use]
+    pub fn envelope_fields(&self, event: &Schema) -> Vec<Field> {
+        if self.is_frame(&event.name) {
+            return Vec::new();
+        }
+        self.envelope
+            .fields
+            .iter()
+            .map(|f| match &f.ty {
+                Type::Nullable(inner) if event.book && BOOK_FIELDS.contains(&f.name.as_str()) => {
+                    Field {
+                        name: f.name.clone(),
+                        type_text: f.type_text.trim_end_matches('?').to_string(),
+                        ty: (**inner).clone(),
+                    }
+                }
+                _ => f.clone(),
+            })
+            .collect()
+    }
+
+    /// The dangerous-operation rows for one verb and subcommand (`None` for
+    /// a verb without subcommands), in registry order.
+    pub fn dangerous_for<'a>(
+        &'a self,
+        verb: &'a str,
+        subcommand: Option<&'a str>,
+    ) -> impl Iterator<Item = &'a Dangerous> + 'a {
+        self.dangerous
+            .iter()
+            .filter(move |d| d.verb == verb && d.subcommand.as_deref() == subcommand)
+    }
+
+    /// The commands an agent usually runs after `event`, in registry order.
+    pub fn next_actions_for<'a>(
+        &'a self,
+        event: &'a str,
+    ) -> impl Iterator<Item = &'a NextAction> + 'a {
+        self.next_actions.iter().filter(move |n| n.after == event)
+    }
+
+    /// The operations in `required` (verb, subcommand, condition) that have
+    /// no dangerous row: the dangerous-operation table test fails on any.
+    #[must_use]
+    pub fn ungated<'a>(
+        &self,
+        required: &[(&'a str, Option<&'a str>, &'a str)],
+    ) -> Vec<(&'a str, Option<&'a str>, &'a str)> {
+        required
+            .iter()
+            .copied()
+            .filter(|(verb, sub, condition)| {
+                !self
+                    .dangerous_for(verb, *sub)
+                    .any(|d| d.condition.text() == *condition)
+            })
+            .collect()
     }
 
     #[must_use]
@@ -602,9 +935,12 @@ impl Registry {
             .collect()
     }
 
-    /// Check one robot-mode stdout line: a JSON object whose discriminator
-    /// names a declared event, carrying exactly that event's fields, each of
-    /// its declared type. Returns the event name.
+    /// Check one robot-mode stdout line (plan Appendix D): a JSON object
+    /// whose discriminator names a declared event, carrying exactly the
+    /// envelope's fields (`v` the envelope version; `book` and `coordinate`
+    /// set on an event about a book) and, under `data`, exactly that event's
+    /// fields, each of its declared type. A wire frame is flat: its own
+    /// fields beside the discriminator. Returns the event name.
     pub fn check_line<'a>(&'a self, line: &str) -> Result<&'a str, String> {
         let value = json::parse(line).map_err(|e| format!("not JSON ({e}): {line}"))?;
         let Json::Obj(fields) = &value else {
@@ -622,8 +958,37 @@ impl Registry {
             .filter(|(k, _)| *k != self.envelope.discriminator)
             .cloned()
             .collect();
-        self.check_fields(&event.fields, &rest, name)
+        if self.is_frame(name) {
+            self.check_fields(&event.fields, &rest, name)
+                .map_err(|e| format!("{e}\n  in: {line}"))?;
+            return Ok(&event.name);
+        }
+        let mut top = self.envelope_fields(event);
+        top.push(Field {
+            name: self.envelope.payload.clone(),
+            type_text: "object".into(),
+            ty: Type::Object,
+        });
+        self.check_fields(&top, &rest, name)
             .map_err(|e| format!("{e}\n  in: {line}"))?;
+        let Some(Json::Obj(data)) = value.get(&self.envelope.payload) else {
+            return Err(format!(
+                "{name}.{} is not an object\n  in: {line}",
+                self.envelope.payload
+            ));
+        };
+        self.check_fields(
+            &event.fields,
+            data,
+            &format!("{name}.{}", self.envelope.payload),
+        )
+        .map_err(|e| format!("{e}\n  in: {line}"))?;
+        if value.get("v") != Some(&Json::Int(self.envelope.version)) {
+            return Err(format!(
+                "{name}.v is not the envelope version {}\n  in: {line}",
+                self.envelope.version
+            ));
+        }
         Ok(&event.name)
     }
 
@@ -736,17 +1101,32 @@ mod tests {
                 );
             }
         }
-        for e in &r.events {
-            if e.name == "usage_error" || e.name == "refusal" || e.name == "error" {
-                assert!(e.fields.iter().any(|f| f.name == "exit"), "{}", e.name);
-            }
+        // One error event for every non-zero exit (Appendix D), and every
+        // exit class the binary can name is a row of exit_codes.toml.
+        let error = r.event("error").expect("the error event");
+        for field in ["class", "exit", "refusal_id"] {
+            assert!(error.fields.iter().any(|f| f.name == field), "{field}");
         }
+        for gone in ["usage_error", "refusal", "verification_failed"] {
+            assert!(r.event(gone).is_none(), "{gone} is folded into error");
+        }
+        assert!(exits.rows.iter().any(|row| row.name == "usage"));
         assert!(r.value_flags().contains(&"--book"));
         assert!(r.switches().contains(&"--json"));
     }
 
     fn with(edit: impl Fn(&str) -> String) -> Result<Registry, String> {
         Registry::parse(&edit(SOURCE))
+    }
+
+    #[test]
+    fn registry_names_are_lowercase_words_with_digits_after_the_first_letter() {
+        for good in ["gate_g1", "fad_request", "v", "next_actions"] {
+            assert!(is_name(good), "{good}");
+        }
+        for bad in ["", "1gate", "_x", "Gate", "gate-g1", "gate g1"] {
+            assert!(!is_name(bad), "{bad:?}");
+        }
     }
 
     #[test]
@@ -780,6 +1160,56 @@ mod tests {
                 "exit 1",
                 with(|s| s.replace("exits = [0, 2, 4, 5]", "exits = [0, 1]")),
             ),
+            (
+                "an envelope without warnings",
+                with(|s| s.replace("\"warnings:[string]\", ", "")),
+            ),
+            (
+                "a payload key other than data",
+                with(|s| s.replace("payload = \"data\"", "payload = \"body\"")),
+            ),
+            (
+                "a non-nullable envelope coordinate",
+                with(|s| s.replace("\"coordinate:coordinate?\"", "\"coordinate:coordinate\"")),
+            ),
+            (
+                "a non-nullable envelope book",
+                with(|s| s.replace("\"book:hex?\", \"coordinate", "\"book:hex\", \"coordinate")),
+            ),
+            (
+                "an envelope version this binary does not write",
+                with(|s| s.replace("version = 1\npayload", "version = 2\npayload")),
+            ),
+            (
+                "a dangerous row naming an unknown verb",
+                with(|s| s.replace("verb = \"resolve\"", "verb = \"resolv\"")),
+            ),
+            (
+                "a dangerous verb that cannot exit 7",
+                with(|s| s.replace("exits = [0, 2, 4, 5, 7]", "exits = [0, 2, 4, 5]")),
+            ),
+            (
+                "a dangerous row with an unknown condition",
+                with(|s| {
+                    s.replace(
+                        "condition = \"existing-cells\"",
+                        "condition = \"sometimes\"",
+                    )
+                }),
+            ),
+            (
+                "a next action that names a book path",
+                with(|s| {
+                    s.replace(
+                        "command = \"fa tb --json\"",
+                        "command = \"fa tb --book ./b --json\"",
+                    )
+                }),
+            ),
+            (
+                "a correction distance past 2",
+                with(|s| s.replace("correction_distance = 1", "correction_distance = 3")),
+            ),
         ];
         for (what, result) in cases {
             assert!(result.is_err(), "{what} was accepted");
@@ -788,32 +1218,154 @@ mod tests {
         assert!(with(|s| s.to_string()).is_ok());
     }
 
+    const BOOK: &str = r#""0a1b""#;
+    const COORDINATE: &str = r#"{"branch":"trunk","effective":"all","known_at":7}"#;
+    const RECORDED: &str =
+        r#"{"entry_digest":"ab01","moved":null,"recorded_at":7,"requested":null,"vid":"00ff"}"#;
+
+    /// One robot line (plan Appendix D): `data` (a JSON object) under
+    /// `event`, with `book` and `coordinate` as given (JSON text).
+    fn line(event: &str, data: &str, book: &str, coordinate: &str) -> String {
+        format!(
+            r#"{{"book":{book},"certificate":null,"coordinate":{coordinate},"data":{data},"event":"{event}","next_actions":[],"v":1,"warnings":[]}}"#
+        )
+    }
+
+    /// A line about the book `BOOK` at `COORDINATE`.
+    fn booked(event: &str, data: &str) -> String {
+        line(event, data, BOOK, COORDINATE)
+    }
+
+    /// The envelope (plan Appendix D) is part of every line's schema: an
+    /// event about a book without its book or coordinate, payload fields
+    /// outside `data`, a line without the envelope, a stale `v`, or a
+    /// malformed next action fails `check_line`; a bookless event says null;
+    /// the daemon's wire frames are flat.
+    #[test]
+    fn the_envelope_is_checked_on_every_line() {
+        let r = registry().expect("verbs.toml");
+        assert_eq!(r.check_line(&booked("recorded", RECORDED)), Ok("recorded"));
+        // Planted negative: a handler that emits a book event without its
+        // coordinate (null, or no key at all), or without its book, fails
+        // the schema test.
+        let null_coordinate = line("recorded", RECORDED, BOOK, "null");
+        assert!(r.check_line(&null_coordinate).is_err(), "{null_coordinate}");
+        let no_coordinate =
+            booked("recorded", RECORDED).replace(&format!(r#""coordinate":{COORDINATE},"#), "");
+        assert!(!no_coordinate.contains("coordinate"));
+        assert!(r.check_line(&no_coordinate).is_err(), "{no_coordinate}");
+        let null_book = line("recorded", RECORDED, "null", COORDINATE);
+        assert!(r.check_line(&null_book).is_err(), "{null_book}");
+        // The payload lives under `data`, nowhere else.
+        let flat = r#"{"entry_digest":"ab01","event":"recorded","moved":null,"recorded_at":7,"requested":null,"vid":"00ff"}"#;
+        assert!(r.check_line(flat).is_err(), "a line without the envelope");
+        let no_data = booked("recorded", RECORDED).replace(&format!(r#""data":{RECORDED},"#), "");
+        assert!(!no_data.contains("data"));
+        assert!(r.check_line(&no_data).is_err(), "{no_data}");
+        let beside = booked("recorded", RECORDED).replace(r#""v":1"#, r#""v":1,"vid":"00ff""#);
+        assert!(r.check_line(&beside).is_err(), "{beside}");
+        let stale = booked("recorded", RECORDED).replace(r#""v":1"#, r#""v":2"#);
+        assert!(r.check_line(&stale).is_err(), "{stale}");
+        let half_action = booked("recorded", RECORDED).replace(
+            r#""next_actions":[]"#,
+            r#""next_actions":[{"command":"fa tb --json"}]"#,
+        );
+        assert!(r.check_line(&half_action).is_err(), "{half_action}");
+        let with_action = booked("recorded", RECORDED).replace(
+            r#""next_actions":[]"#,
+            r#""next_actions":[{"command":"fa tb --json","why":"the trial balance"}]"#,
+        );
+        assert_eq!(r.check_line(&with_action), Ok("recorded"));
+        // A bookless event: null is the honest book and coordinate; the one
+        // error event carries the exit's class and the refusal id.
+        let usage = r#"{"class":"usage","cite":null,"detail":null,"exit":2,"fix":"fa --help","message":"unknown command","refusal_id":null}"#;
+        assert_eq!(
+            r.check_line(&line("error", usage, "null", "null")),
+            Ok("error")
+        );
+        let refusal = r#"{"class":"safety","cite":"Appendix D FA-REF-007","detail":null,"exit":7,"fix":"fa period soft-close FY2026-P03","message":"not confirmed","refusal_id":"FA-REF-007"}"#;
+        assert_eq!(r.check_line(&booked("error", refusal)), Ok("error"));
+        let classless = r#"{"cite":null,"detail":null,"exit":2,"fix":"fa --help","message":"unknown command","refusal_id":null}"#;
+        assert!(
+            r.check_line(&line("error", classless, "null", "null"))
+                .is_err()
+        );
+        // Wire frames are the daemon's protocol: flat, no envelope.
+        let frame = r#"{"event":"fad_response","exit":0,"op":"run","stderr":"","stdout":"","v":1}"#;
+        assert_eq!(r.check_line(frame), Ok("fad_response"));
+        let wrapped = line(
+            "fad_response",
+            r#"{"exit":0,"op":"run","stderr":"","stdout":"","v":1}"#,
+            "null",
+            "null",
+        );
+        assert!(r.check_line(&wrapped).is_err(), "{wrapped}");
+        // Every book event's envelope says so; no bookless one does.
+        for e in &r.events {
+            let types: Vec<(String, String)> = r
+                .envelope_fields(e)
+                .into_iter()
+                .filter(|f| BOOK_FIELDS.contains(&f.name.as_str()))
+                .map(|f| (f.name, f.type_text))
+                .collect();
+            let want: Vec<(String, String)> = match (r.is_frame(&e.name), e.book) {
+                (true, _) => Vec::new(),
+                (false, true) => vec![
+                    ("book".into(), "hex".into()),
+                    ("coordinate".into(), "coordinate".into()),
+                ],
+                (false, false) => vec![
+                    ("book".into(), "hex?".into()),
+                    ("coordinate".into(), "coordinate?".into()),
+                ],
+            };
+            assert_eq!(types, want, "{}", e.name);
+        }
+    }
+
     #[test]
     fn check_line_admits_exactly_the_schema() {
         let r = registry().expect("verbs.toml");
-        let good = r#"{"entry_digest":"ab01","event":"recorded","moved":null,"recorded_at":7,"requested":null,"vid":"00ff"}"#;
-        assert_eq!(r.check_line(good), Ok("recorded"));
-        let balanced = r#"{"entry_digest":"ab01","event":"recorded","moved":"20.00 USD","recorded_at":7,"requested":"50.00 USD","vid":"00ff"}"#;
-        assert_eq!(r.check_line(balanced), Ok("recorded"));
-        for bad in [
+        assert_eq!(r.check_line(&booked("recorded", RECORDED)), Ok("recorded"));
+        let balanced = r#"{"entry_digest":"ab01","moved":"20.00 USD","recorded_at":7,"requested":"50.00 USD","vid":"00ff"}"#;
+        assert_eq!(r.check_line(&booked("recorded", balanced)), Ok("recorded"));
+        for (event, data) in [
             // a missing field, an extra field, a wrong type, a negative
-            // sequence, an uppercase hex, a non-amount, an unknown event,
-            // not an object
-            r#"{"entry_digest":"ab01","event":"recorded","moved":null,"requested":null,"vid":"00ff"}"#,
-            r#"{"entry_digest":"ab01","event":"recorded","extra":1,"moved":null,"recorded_at":7,"requested":null,"vid":"00ff"}"#,
-            r#"{"entry_digest":"ab01","event":"recorded","moved":null,"recorded_at":"7","requested":null,"vid":"00ff"}"#,
-            r#"{"entry_digest":"ab01","event":"recorded","moved":null,"recorded_at":-1,"requested":null,"vid":"00ff"}"#,
-            r#"{"entry_digest":"AB01","event":"recorded","moved":null,"recorded_at":7,"requested":null,"vid":"00ff"}"#,
-            r#"{"entry_digest":"ab01","event":"recorded","moved":20,"recorded_at":7,"requested":null,"vid":"00ff"}"#,
-            r#"{"event":"recorded_twice"}"#,
-            r#"["recorded"]"#,
+            // sequence, an uppercase hex, a non-amount, an unknown event
+            (
+                "recorded",
+                r#"{"entry_digest":"ab01","moved":null,"requested":null,"vid":"00ff"}"#,
+            ),
+            (
+                "recorded",
+                r#"{"entry_digest":"ab01","extra":1,"moved":null,"recorded_at":7,"requested":null,"vid":"00ff"}"#,
+            ),
+            (
+                "recorded",
+                r#"{"entry_digest":"ab01","moved":null,"recorded_at":"7","requested":null,"vid":"00ff"}"#,
+            ),
+            (
+                "recorded",
+                r#"{"entry_digest":"ab01","moved":null,"recorded_at":-1,"requested":null,"vid":"00ff"}"#,
+            ),
+            (
+                "recorded",
+                r#"{"entry_digest":"AB01","moved":null,"recorded_at":7,"requested":null,"vid":"00ff"}"#,
+            ),
+            (
+                "recorded",
+                r#"{"entry_digest":"ab01","moved":20,"recorded_at":7,"requested":null,"vid":"00ff"}"#,
+            ),
+            ("recorded_twice", "{}"),
         ] {
-            assert!(r.check_line(bad).is_err(), "admitted {bad}");
+            let bad = booked(event, data);
+            assert!(r.check_line(&bad).is_err(), "admitted {bad}");
         }
-        let nested = r#"{"accounts":[{"code":"1000","leaf":true,"limit_scope":"lifetime","lower_bound":"0.00 USD","name":"Cash","type":"Asset","unit":"USD","upper_bound":null}],"event":"accounts"}"#;
-        assert_eq!(r.check_line(nested), Ok("accounts"));
-        let nested_bad = r#"{"accounts":[{"code":"1000","leaf":"yes","limit_scope":null,"lower_bound":null,"name":"Cash","type":"Asset","unit":"USD","upper_bound":null}],"event":"accounts"}"#;
-        assert!(r.check_line(nested_bad).is_err());
+        assert!(r.check_line(r#"["recorded"]"#).is_err());
+        let nested = r#"{"accounts":[{"code":"1000","leaf":true,"limit_scope":"lifetime","lower_bound":"0.00 USD","name":"Cash","type":"Asset","unit":"USD","upper_bound":null}]}"#;
+        assert_eq!(r.check_line(&booked("accounts", nested)), Ok("accounts"));
+        let nested_bad = r#"{"accounts":[{"code":"1000","leaf":"yes","limit_scope":null,"lower_bound":null,"name":"Cash","type":"Asset","unit":"USD","upper_bound":null}]}"#;
+        assert!(r.check_line(&booked("accounts", nested_bad)).is_err());
         for (amount, ok) in [
             ("1500.00 USD", true),
             ("-2100.00 USD", true),

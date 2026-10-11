@@ -21,10 +21,6 @@
 
 schema_version = 1
 
-[[reserved]]
-code = "FA-REF-007"
-holder = "fa-cli CONFIRMATION_REQUIRED: a dangerous operation without --yes or a plan (Appendix D; JadePeak, fa-12x, approved 3232)"
-
 # ---- Folio: balance law, chart, units, entities (001–005) ---------------
 [[refusal]]
 code = "FA-REF-001"
@@ -65,6 +61,15 @@ owners = ["fa-journal"]
 exit = "refusal"
 cite = "plan §4.1, §5.2 (legal_entity is a mandatory balancing dimension in a multi-entity book; FA-INV-01 per-entity)"
 fix = "add the legal-entity dimension to leg {i}: one of {entities}"
+
+# ---- Teller: dangerous operations (007) ----------------------------------
+[[refusal]]
+code = "FA-REF-007"
+name = "CONFIRMATION_REQUIRED"
+owners = ["fa-cli"]
+exit = "safety"
+cite = "plan §15.3 (dangerous operations are gated and name a safe alternative); Appendix D FA-REF-007; verbs.toml [[dangerous]]"
+fix = "{safe}; or, when the operation is intended, rerun the same command with --yes"
 
 # ---- Steward: authority, SoD, approvals (008–019) ------------------------
 [[refusal]]

@@ -15,7 +15,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use fa_cli::json::{self, Json};
 use fa_cli::verbs::registry;
 
-const ERROR_EVENTS: &[&str] = &["usage_error", "refusal", "error", "verification_failed"];
+/// The one event a non-zero exit emits (plan Appendix D).
+const ERROR_EVENTS: &[&str] = &["error"];
+
+/// An exit code's class: its name in exit_codes.toml.
+fn exit_class(code: i32) -> String {
+    let exits = fa_registry::ExitCodes::embedded().expect("exit_codes.toml");
+    let row = exits.rows.iter().find(|row| i32::from(row.code) == code);
+    assert!(row.is_some(), "exit {code} is not in exit_codes.toml");
+    row.map(|row| row.name.clone()).unwrap_or_default()
+}
 
 /// The robot-mode contract over one call's stdout; returns its event names.
 fn check_robot_output(args: &[&str], code: i32, stdout: &str) -> Vec<String> {
@@ -56,6 +65,11 @@ fn check_robot_output(args: &[&str], code: i32, stdout: &str) -> Vec<String> {
             field(last, "exit"),
             Some(code.to_string().as_str()),
             "the error event names the exit code: args={args:?}"
+        );
+        assert_eq!(
+            field(last, "class"),
+            Some(exit_class(code).as_str()),
+            "the error event names the exit's class: args={args:?}"
         );
     }
     events
@@ -190,7 +204,8 @@ fn typos_are_usage_errors_with_a_suggestion_and_exit_2_never_1() {
     let (code, out, _) = fa(None, &["perod", "--json"]);
     assert_eq!(code, 2);
     assert!(
-        out.contains("\"event\":\"usage_error\"") && out.contains("fa period"),
+        (out.contains("\"event\":\"error\"") && out.contains("\"class\":\"usage\""))
+            && out.contains("fa period"),
         "{out}"
     );
     let (code, _, err) = fa(None, &["tb"]);
@@ -211,6 +226,14 @@ fn capabilities_and_robot_docs_are_in_tool() {
     // The capability model (fa-llx): the closed op vocabulary, the profiles
     // and what each can never hold, and the embedded binding's trust boundary.
     let caps = doc(&out);
+    // The invariant clauses this build enforces (fa-37f, MaroonSquirrel 3229).
+    let invariants = caps.get("invariants").expect("invariants section");
+    let live: Vec<&str> = arr(invariants, "live")
+        .iter()
+        .filter_map(Json::as_str)
+        .collect();
+    assert!(live.contains(&"FA-INV-01.per-unit"), "{live:?}");
+    assert_eq!(arr(invariants, "gate_g1").len(), 18, "{out}");
     let model = caps.get("capability").expect("capability section");
     let ops: Vec<&str> = arr(model, "ops").iter().filter_map(Json::as_str).collect();
     assert_eq!(ops.len(), 21, "{ops:?}");
@@ -255,10 +278,11 @@ fn a_lock_commits_from_its_plan_with_a_second_principals_approval() -> std::io::
     );
     let march = "FY2026-P03";
     assert_eq!(fa(Some(&book), &["period", "open", march]).0, 0);
-    assert_eq!(fa(Some(&book), &["period", "close", march]).0, 0);
-    let (code, out, _) = fa(Some(&book), &["period", "lock", march, "--json"]);
+    assert_eq!(fa(Some(&book), &["period", "close", march, "--yes"]).0, 0);
+    // Confirmed with --yes, so the kernel's verdict is what refuses it.
+    let (code, out, _) = fa(Some(&book), &["period", "lock", march, "--yes", "--json"]);
     assert_eq!(code, 7, "{out}");
-    assert!(out.contains("\"code\":\"FA-REF-012\""), "{out}");
+    assert!(out.contains("\"refusal_id\":\"FA-REF-012\""), "{out}");
     let plan = dir.join("lock.plan").display().to_string();
     let (code, out, _) = fa(
         Some(&book),
@@ -283,6 +307,7 @@ fn a_lock_commits_from_its_plan_with_a_second_principals_approval() -> std::io::
             march,
             "--approval",
             &"0".repeat(32),
+            "--yes",
             "--json",
         ],
     );
@@ -305,7 +330,7 @@ fn a_lock_commits_from_its_plan_with_a_second_principals_approval() -> std::io::
         ],
     );
     assert_eq!(code, 7, "{out}");
-    assert!(out.contains("\"code\":\"FA-REF-008\""), "{out}");
+    assert!(out.contains("\"refusal_id\":\"FA-REF-008\""), "{out}");
     // A second principal approves; the lock commits citing it.
     let (code, out, _) = fa(
         Some(&book),
@@ -369,7 +394,7 @@ fn a_lock_commits_from_its_plan_with_a_second_principals_approval() -> std::io::
         ],
     );
     assert_eq!(code, 7, "{out}");
-    assert!(out.contains("\"code\":\"FA-REF-040\""), "{out}");
+    assert!(out.contains("\"refusal_id\":\"FA-REF-040\""), "{out}");
     Ok(())
 }
 
@@ -413,7 +438,10 @@ fn a_grant_typo_is_a_usage_error_naming_the_op_never_a_silently_held_string() ->
         ],
     );
     assert_eq!(code, 2, "{out}");
-    assert!(out.contains("\"event\":\"usage_error\""), "{out}");
+    assert!(
+        (out.contains("\"event\":\"error\"") && out.contains("\"class\":\"usage\"")),
+        "{out}"
+    );
     assert!(out.contains("did you mean `post_closed`"), "{out}");
     // Nothing was posted; the corrected grant posts.
     let (code, out, _) = fa(
@@ -426,6 +454,7 @@ fn a_grant_typo_is_a_usage_error_naming_the_op_never_a_silently_held_string() ->
             &ev,
             "--grant",
             "post_closed",
+            "--yes",
             "--json",
         ],
     );
@@ -527,8 +556,9 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Res
     );
     assert_eq!(code, 3, "{out}\n{err}");
     assert!(
-        out.contains("\"event\":\"refusal\"")
-            && out.contains("\"code\":\"FA-REF-001\"")
+        out.contains("\"event\":\"error\"")
+            && out.contains("\"class\":\"refusal\"")
+            && out.contains("\"refusal_id\":\"FA-REF-001\"")
             && out.contains("\"fix\":\""),
         "{out}"
     );
@@ -837,8 +867,11 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Res
         &["verify", "registers", "--period", march, "--json"],
     );
     assert_eq!(code, 8, "{out}\n{err}");
-    assert!(out.contains("\"event\":\"verification_failed\""), "{out}");
-    let (code, _, _) = fa(Some(&book), &["period", "close", march]);
+    assert!(
+        out.contains("\"event\":\"error\"") && out.contains("\"class\":\"verification\""),
+        "{out}"
+    );
+    let (code, _, _) = fa(Some(&book), &["period", "close", march, "--yes"]);
     assert_eq!(code, 0);
     let later = write(
         &dir,
@@ -851,7 +884,7 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Res
     );
     assert_eq!(code, 7, "{out}");
     assert!(
-        out.contains("\"code\":\"FA-REF-010\"") && out.contains("Closed"),
+        out.contains("\"refusal_id\":\"FA-REF-010\"") && out.contains("Closed"),
         "{out}"
     );
     // An illegal transition is a safety block too.
@@ -859,14 +892,15 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Res
     assert_eq!(code, 7, "{out}");
     // Reopening a Closed period is case-bound (Appendix C W(reopen, 2, case)):
     // with no restatement case to decide the exclusion it is refused under
-    // SoD, never exempted (fa-llx).
+    // SoD, never exempted (fa-llx). Confirmed with --yes, so the kernel's
+    // verdict, not the confirmation gate, is what refuses it.
     let (code, out, _) = fa(
         Some(&book),
-        &["period", "reopen", march, "--to", "open", "--json"],
+        &["period", "reopen", march, "--to", "open", "--yes", "--json"],
     );
     assert_eq!(code, 7, "{out}");
     assert!(
-        out.contains("\"code\":\"FA-REF-008\"")
+        out.contains("\"refusal_id\":\"FA-REF-008\"")
             && out.contains("case_preparer")
             && out.contains("sod_policy.toml#period-reopen-closed")
             && out.contains("fa-oz3"),
@@ -939,7 +973,7 @@ fn reversals_by_target_and_idempotency_conflicts_follow_the_contract() -> std::i
     );
     let (code, out, _) = fa(Some(&book), &["post", "--intent", &rev2, "--json"]);
     assert_eq!(code, 6, "{out}");
-    assert!(out.contains("\"code\":\"FA-REF-052\""), "{out}");
+    assert!(out.contains("\"refusal_id\":\"FA-REF-052\""), "{out}");
     // Same idempotency key, different content: conflict (exit 6), nothing invented.
     let changed = write(
         &dir,
@@ -951,7 +985,7 @@ fn reversals_by_target_and_idempotency_conflicts_follow_the_contract() -> std::i
         &["post", "--intent", &changed, "--evidence", &ev, "--json"],
     );
     assert_eq!(code, 6, "{out}");
-    assert!(out.contains("\"code\":\"FA-REF-032\""), "{out}");
+    assert!(out.contains("\"refusal_id\":\"FA-REF-032\""), "{out}");
     // An unsupported class is refused with the bead that lands it (exit 3).
     let repl = write(
         &dir,
@@ -964,7 +998,7 @@ fn reversals_by_target_and_idempotency_conflicts_follow_the_contract() -> std::i
     );
     assert_eq!(code, 3, "{out}");
     assert!(
-        out.contains("\"code\":\"FA-REF-102\"") && out.contains("fa-omi"),
+        out.contains("\"refusal_id\":\"FA-REF-102\"") && out.contains("fa-omi"),
         "{out}"
     );
     // The pair nets to zero.
@@ -1116,9 +1150,12 @@ fn two_phase_reserve_and_resolve_follow_the_contract() -> std::io::Result<()> {
             r#"{{"resolves":"{hold_vid}","disposition":"voids","effective_date":"2026-03-21","idempotency_key":"void-77"}}"#
         ),
     );
-    let (code, out, _) = fa(Some(&book), &["resolve", "--intent", &void, "--json"]);
+    let (code, out, _) = fa(
+        Some(&book),
+        &["resolve", "--intent", &void, "--yes", "--json"],
+    );
     assert_eq!(code, 6, "{out}");
-    assert_eq!(field(&out, "code"), Some("FA-REF-062"), "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-062"), "{out}");
     let not_a_hold = write(
         &dir,
         "res2.json",
@@ -1126,9 +1163,12 @@ fn two_phase_reserve_and_resolve_follow_the_contract() -> std::io::Result<()> {
             r#"{{"resolves":"{res_vid}","disposition":"voids","effective_date":"2026-03-21","idempotency_key":"void-78"}}"#
         ),
     );
-    let (code, out, _) = fa(Some(&book), &["resolve", "--intent", &not_a_hold, "--json"]);
+    let (code, out, _) = fa(
+        Some(&book),
+        &["resolve", "--intent", &not_a_hold, "--yes", "--json"],
+    );
     assert_eq!(code, 3, "{out}");
-    assert_eq!(field(&out, "code"), Some("FA-REF-060"), "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-060"), "{out}");
 
     // A second hold, voided: reservation released, nothing posted.
     let hold_2 = write(
@@ -1173,7 +1213,10 @@ fn two_phase_reserve_and_resolve_follow_the_contract() -> std::io::Result<()> {
             r#"{{"resolves":"{hold_2_vid}","disposition":"voids","effective_date":"2026-03-22","idempotency_key":"void-79"}}"#
         ),
     );
-    let (code, out, err) = fa(Some(&book), &["resolve", "--intent", &void_2, "--json"]);
+    let (code, out, err) = fa(
+        Some(&book),
+        &["resolve", "--intent", &void_2, "--yes", "--json"],
+    );
     assert_eq!(code, 0, "{out}\n{err}");
     let tb = report(&book, &["tb", "--period", "FY2026-P03", "--json"]);
     let rent = row(&tb, "6000");
@@ -1260,7 +1303,7 @@ fn applications_settle_open_items_and_reversals_reopen_them() -> std::io::Result
         &["post", "--intent", &over, "--evidence", &ev, "--json"],
     );
     assert_eq!(code, 3, "{out}");
-    assert_eq!(field(&out, "code"), Some("FA-REF-072"), "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-072"), "{out}");
     assert!(out.contains("20000"), "{out}");
     let rev_inv = write(
         &dir,
@@ -1271,7 +1314,7 @@ fn applications_settle_open_items_and_reversals_reopen_them() -> std::io::Result
     );
     let (code, out, _) = fa(Some(&book), &["post", "--intent", &rev_inv, "--json"]);
     assert_eq!(code, 3, "{out}");
-    assert_eq!(field(&out, "code"), Some("FA-REF-073"), "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-073"), "{out}");
 
     // Reversing the receipt reopens the invoice; the mirrors verify.
     let rev_rcpt = write(
@@ -1303,11 +1346,15 @@ fn applications_settle_open_items_and_reversals_reopen_them() -> std::io::Result
 // fa-9xt: the verb registry, the robot-mode schema, and `fa explain balance`
 // ---------------------------------------------------------------------------
 
-/// The last stdout line, parsed (robot mode prints one result line here).
+/// The last stdout line's event fields (its `data`; robot mode prints one
+/// result line here).
 fn doc(out: &str) -> Json {
     let parsed = json::parse(out.lines().last().unwrap_or_default());
     assert!(parsed.is_ok(), "not JSON: {out}");
-    parsed.unwrap_or(Json::Null)
+    let line = parsed.unwrap_or(Json::Null);
+    let data = line.get("data").cloned();
+    assert!(data.is_some(), "no data: {out}");
+    data.unwrap_or(Json::Null)
 }
 
 fn arr<'a>(j: &'a Json, key: &str) -> &'a [Json] {
@@ -1391,6 +1438,16 @@ fn verbs_toml_is_the_single_verb_registry_and_the_binary_agrees() -> std::io::Re
             if verb.name == "checkpoint" {
                 call.extend(["--grant", "witness"]);
             }
+            // A dangerous operation's gate answers before its handler (exit
+            // 7; the dangerous-operation tests cover it): confirm it so the
+            // probe reaches the handler.
+            if reg
+                .dangerous_for(&verb.name, call.get(1).copied())
+                .next()
+                .is_some()
+            {
+                call.push("--yes");
+            }
             call.push("--json");
             let (code, out, err) = fa(Some(&nowhere), &call);
             assert!(
@@ -1465,6 +1522,36 @@ fn robot_docs_schema_prints_the_envelope_and_every_event_from_the_registry() {
     let envelope = schema.get("envelope").cloned().unwrap_or(Json::Null);
     assert_eq!(text(&envelope, "discriminator"), "event");
     assert!(text(&envelope, "description").contains("one JSON object per line"));
+    // The envelope (Appendix D): its version, the fields every line carries
+    // beside `event` and `data`, and the wire frames that carry none.
+    assert_eq!(int(&envelope, "version"), Some(reg.envelope.version));
+    assert_eq!(
+        arr(&envelope, "fields")
+            .iter()
+            .map(|f| (text(f, "name"), text(f, "type")))
+            .collect::<Vec<_>>(),
+        reg.envelope
+            .fields
+            .iter()
+            .map(|f| (f.name.as_str(), f.type_text.as_str()))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        arr(&envelope, "frames")
+            .iter()
+            .filter_map(Json::as_str)
+            .collect::<Vec<_>>(),
+        vec!["fad_request", "fad_response"]
+    );
+    for e in arr(&schema, "events") {
+        let declared = reg.event(text(e, "name")).map(|d| d.book);
+        assert_eq!(
+            e.get("book"),
+            declared.map(Json::Bool).as_ref(),
+            "{}",
+            text(e, "name")
+        );
+    }
     let fields_of = |item: &Json| -> Vec<(String, String)> {
         arr(item, "fields")
             .iter()
@@ -2039,7 +2126,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     // A planned, approved lock (R4): `period_planned`, then `approved`.
     assert_eq!(run(true, &["period", "open", "FY2026-P04"]).0, 0);
-    assert_eq!(run(true, &["period", "close", "FY2026-P04"]).0, 0);
+    assert_eq!(run(true, &["period", "close", "FY2026-P04", "--yes"]).0, 0);
     let plan = dir.join("lock.plan").display().to_string();
     let (code, out) = run(true, &["period", "lock", "FY2026-P04", "--plan-out", &plan]);
     assert_eq!(code, 0, "{out}");
@@ -2155,7 +2242,7 @@ fn balance_bounds_refuse_breaches_and_availability_verifies_by_refold() -> std::
         &["post", "--intent", &big, "--evidence", &ev, "--json"],
     );
     assert_eq!(code, 3, "{out}\n{err}");
-    assert_eq!(field(&out, "code"), Some("FA-REF-090"), "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-090"), "{out}");
     let rent = intent("rent.json", "rent", "6000", "1000", "60.00");
     ok(&["post", "--intent", &rent, "--evidence", &ev, "--json"]);
     // A reservation is an outflow too: 40 available, 50 is refused, 30 holds.
@@ -2165,7 +2252,7 @@ fn balance_bounds_refuse_breaches_and_availability_verifies_by_refold() -> std::
         &["reserve", "--intent", &hold, "--evidence", &ev, "--json"],
     );
     assert_eq!(code, 3, "{out}");
-    assert_eq!(field(&out, "code"), Some("FA-REF-090"), "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-090"), "{out}");
     let small = intent("small.json", "small", "6000", "1000", "30.00");
     ok(&["reserve", "--intent", &small, "--evidence", &ev, "--json"]);
 
@@ -2253,7 +2340,7 @@ fn explain_balance_resolves_the_account_as_known_at_the_requested_sequence() -> 
     );
     assert_eq!(code, 2, "{out}\n{err}");
     let refused = doc(&out);
-    assert_eq!(text(&refused, "event"), "usage_error", "{out}");
+    assert_eq!(text(&refused, "class"), "usage", "{out}");
     assert!(
         text(&refused, "message").contains(&format!("as known at {before_chart}"))
             && text(&refused, "fix").contains(&format!("--as-known-at {with_chart}")),
@@ -2334,7 +2421,7 @@ fn human_explain_shows_released_only_history_and_an_untouched_account_is_empty()
             r#"{{"resolves":"{hold_vid}","disposition":"voids","effective_date":"2026-03-21","idempotency_key":"void"}}"#
         ),
     );
-    let voided = doc(&ok(&["resolve", "--intent", &void, "--json"]));
+    let voided = doc(&ok(&["resolve", "--intent", &void, "--yes", "--json"]));
     let void_at = int(&voided, "recorded_at").unwrap_or(-1);
 
     let ex = doc(&ok(&[
@@ -2603,7 +2690,7 @@ fn budget_caps_bound_each_period_and_balancing_moves_what_the_limit_admits() -> 
         &["post", "--intent", &over, "--evidence", &ev, "--json"],
     );
     assert_eq!(code, 3, "{out}");
-    assert_eq!(field(&out, "code"), Some("FA-REF-091"), "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-091"), "{out}");
     let april = intent("a30.json", "a30", "2026-04-06", "6000", "1000", "30.00");
     ok(&["post", "--intent", &april, "--evidence", &ev, "--json"]);
 
@@ -2659,7 +2746,7 @@ fn budget_caps_bound_each_period_and_balancing_moves_what_the_limit_admits() -> 
         ],
     );
     assert_eq!(code, 6, "{out}");
-    assert_eq!(field(&out, "code"), Some("FA-REF-032"), "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-032"), "{out}");
     let tb = ok(&["tb", "--period", "FY2026-P03", "--activity", "--json"]);
     let rent = tb
         .split('{')
@@ -2682,7 +2769,7 @@ fn budget_caps_bound_each_period_and_balancing_moves_what_the_limit_admits() -> 
         ],
     );
     assert_eq!(code, 2, "{out}");
-    assert_eq!(field(&out, "code"), Some("FA-REF-093"), "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-093"), "{out}");
     let (code, out, _) = fa(
         Some(&book),
         &["post", "--intent", &ask, "--balancing", "debit", "--json"],
@@ -2724,4 +2811,521 @@ fn budget_caps_bound_each_period_and_balancing_moves_what_the_limit_admits() -> 
         .unwrap_or_default();
     assert_eq!(field(cash_row, "period"), Some("null"), "{verified}");
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// fa-12x slice 1: the plan Appendix D envelope, dangerous-operation gating,
+// styling and determinism, correction distance.
+// ---------------------------------------------------------------------------
+
+/// The whole last stdout line, parsed (envelope and data).
+fn robot_line(out: &str) -> Json {
+    let parsed = json::parse(out.lines().last().unwrap_or_default());
+    assert!(parsed.is_ok(), "not JSON: {out}");
+    parsed.unwrap_or(Json::Null)
+}
+
+/// `fa` with extra environment variables (robot output checked as `fa`).
+fn fa_env(dir: Option<&Path>, args: &[&str], env: &[(&str, &str)]) -> (i32, String, String) {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_fa"));
+    if let Some(d) = dir {
+        cmd.arg("--book").arg(d);
+    }
+    cmd.args(args);
+    cmd.env_remove("FA_BOOK");
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().expect("run fa");
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    if args.contains(&"--json") {
+        check_robot_output(args, code, &stdout);
+    }
+    (
+        code,
+        stdout,
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// A book with a chart (Cash, Rent), FY2026 created and March open, plus one
+/// source document; returns the book, the document's oid, and the fixture
+/// directory.
+fn envelope_book(name: &str) -> std::io::Result<(PathBuf, String, PathBuf)> {
+    let dir = tmp(name)?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+    };
+    ok(&["book", "create", "--name", "Envelope Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let ev = source_doc(&dir, &book);
+    Ok((book, ev, dir))
+}
+
+/// Every robot line carries the plan Appendix D envelope: `v`; `book` and
+/// `coordinate` (branch, the recorded sequence the line describes, its
+/// effective selector) on a line about a book, null on a bookless one; the
+/// certificate (null until fa-we7); warnings; and the registry's next
+/// actions. A write's coordinate is the head that write produced; a read's
+/// is the coordinate it selected.
+#[test]
+fn every_robot_line_carries_the_appendix_d_envelope() -> std::io::Result<()> {
+    // Bookless lines say null.
+    let (code, out, _) = fa(None, &["--version", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let version = robot_line(&out);
+    assert_eq!(version.get("v"), Some(&Json::Int(1)), "{out}");
+    for key in ["book", "coordinate", "certificate"] {
+        assert_eq!(version.get(key), Some(&Json::Null), "{key}: {out}");
+    }
+    assert_eq!(arr(&version, "warnings").len(), 0, "{out}");
+
+    let dir = tmp("envelope")?;
+    let book = dir.join("book");
+    let (code, out, _) = fa(
+        Some(&book),
+        &["book", "create", "--name", "Envelope Co", "--json"],
+    );
+    assert_eq!(code, 0, "{out}");
+    let created = robot_line(&out);
+    let book_id = text(&doc(&out), "book_id").to_string();
+    assert_eq!(text(&created, "book"), book_id, "{out}");
+    let at_create = created.get("coordinate").cloned().unwrap_or(Json::Null);
+    assert_eq!(text(&at_create, "branch"), "trunk", "{out}");
+    assert_eq!(text(&at_create, "effective"), "all", "{out}");
+    let created_at = int(&at_create, "known_at").unwrap_or(-1);
+    assert!(created_at > 0, "the head the create produced: {out}");
+    // next_actions come from verbs.toml, command and why, without --book.
+    let next = arr(&created, "next_actions");
+    assert_eq!(
+        next.first()
+            .map(|n| (text(n, "command"), !text(n, "why").is_empty())),
+        Some(("fa chart import <chart.json> --json", true)),
+        "{out}"
+    );
+
+    // A write's coordinate moves to the head it produced.
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    let (code, out, _) = fa(Some(&book), &["chart", "import", &chart, "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let installed = robot_line(&out);
+    let installed_at = int(
+        &installed.get("coordinate").cloned().unwrap_or(Json::Null),
+        "known_at",
+    )
+    .unwrap_or(-1);
+    assert!(installed_at > created_at, "{out}");
+    assert_eq!(text(&installed, "book"), book_id);
+    let (code, _, _) = fa(
+        Some(&book),
+        &["period", "create", "--fiscal-year", "2026", "--json"],
+    );
+    assert_eq!(code, 0);
+    let (code, out, _) = fa(Some(&book), &["period", "open", "FY2026-P03", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let opened = robot_line(&out);
+    assert_eq!(
+        text(
+            &opened.get("coordinate").cloned().unwrap_or(Json::Null),
+            "effective"
+        ),
+        "period:FY2026-P03",
+        "{out}"
+    );
+
+    // A read names what it selected: the period and the recorded sequence.
+    // Select the head the March open produced, then move the head on (open
+    // April), so the selected sequence is strictly earlier than the head.
+    let opened_at = int(
+        &opened.get("coordinate").cloned().unwrap_or(Json::Null),
+        "known_at",
+    )
+    .unwrap_or(-1);
+    assert!(opened_at > installed_at, "{out}");
+    let (code, out, _) = fa(Some(&book), &["period", "open", "FY2026-P04", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let head = int(
+        &robot_line(&out)
+            .get("coordinate")
+            .cloned()
+            .unwrap_or(Json::Null),
+        "known_at",
+    )
+    .unwrap_or(-1);
+    assert!(head > opened_at, "{out}");
+    let at = opened_at.to_string();
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "tb",
+            "--period",
+            "FY2026-P03",
+            "--as-known-at",
+            &at,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let read = robot_line(&out);
+    let coordinate = read.get("coordinate").cloned().unwrap_or(Json::Null);
+    assert_eq!(text(&coordinate, "effective"), "period:FY2026-P03", "{out}");
+    assert_eq!(int(&coordinate, "known_at"), Some(opened_at), "{out}");
+    assert_eq!(int(&doc(&out), "known_at"), Some(opened_at), "{out}");
+
+    // An error about this book carries the book; one before any book is
+    // opened does not.
+    let (code, out, _) = fa(Some(&book), &["tb", "--period", "FY2099-P01", "--json"]);
+    assert_ne!(code, 0, "{out}");
+    let refused = robot_line(&out);
+    assert_eq!(text(&refused, "event"), "error", "{out}");
+    assert_eq!(text(&refused, "book"), book_id, "{out}");
+    let (code, out, _) = fa(None, &["nosuchverb", "--json"]);
+    assert_eq!(code, 2, "{out}");
+    assert_eq!(robot_line(&out).get("book"), Some(&Json::Null), "{out}");
+    Ok(())
+}
+
+/// The plan's dangerous operations, each with the command line that does it
+/// (verb, subcommand, condition as verbs.toml spells them).
+const DANGEROUS: &[(&str, Option<&str>, &str)] = &[
+    ("period", Some("close"), "always"),
+    ("period", Some("lock"), "always"),
+    ("period", Some("reopen"), "always"),
+    ("post", None, "grant:post_closed"),
+    ("resolve", None, "disposition:voids"),
+    ("registers", Some("materialize"), "existing-cells"),
+];
+
+/// Every operation the plan calls dangerous has a `[[dangerous]]` row
+/// (verbs.toml); the planted negative removes the lock row and the table
+/// test names exactly that operation as ungated.
+#[test]
+fn the_dangerous_operation_table_names_every_dangerous_operation() {
+    let reg = registry().expect("verbs.toml");
+    assert_eq!(reg.ungated(DANGEROUS), Vec::new());
+    assert_eq!(reg.dangerous.len(), DANGEROUS.len(), "no stray rows");
+    let lock = "[[dangerous]]\nverb = \"period\"\nsubcommand = \"lock\"\n";
+    let start = fa_cli::verbs::SOURCE.find(lock);
+    assert!(start.is_some(), "the lock row is in verbs.toml");
+    let start = start.unwrap_or_default();
+    let end = fa_cli::verbs::SOURCE[start..]
+        .find("\n\n")
+        .map_or(fa_cli::verbs::SOURCE.len(), |n| start + n + 2);
+    let mut planted = fa_cli::verbs::SOURCE.to_string();
+    planted.replace_range(start..end, "");
+    let without_lock = fa_cli::verbs::Registry::parse(&planted);
+    assert!(without_lock.is_ok(), "{without_lock:?}");
+    assert_eq!(
+        without_lock
+            .map(|r| r.ungated(DANGEROUS))
+            .unwrap_or_default(),
+        vec![("period", Some("lock"), "always")]
+    );
+}
+
+/// A dangerous operation without --yes is refused with FA-REF-007 (exit 7,
+/// class safety) naming its safe alternative, and nothing is written; with
+/// --yes it proceeds to its own law (which may still refuse it, never with
+/// 007). `fa capabilities --json` lists the operations; --yes on a command
+/// that needs no confirmation is a warning, never a silent no-op.
+#[test]
+fn dangerous_operations_need_yes_and_name_the_safe_alternative() -> std::io::Result<()> {
+    let (book, ev, dir) = envelope_book("dangerous")?;
+    let fa_b = |args: &[&str]| fa(Some(&book), args);
+    let unconfirmed = |args: &[&str], safe: &str| {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 7, "args={args:?}\n{out}\n{err}");
+        let data = doc(&out);
+        assert_eq!(text(&data, "class"), "safety", "{out}");
+        assert_eq!(text(&data, "refusal_id"), "FA-REF-007", "{out}");
+        assert!(text(&data, "fix").contains(safe), "{args:?}: {out}");
+        assert!(
+            text(&data, "message").contains("nothing was written"),
+            "{out}"
+        );
+    };
+    let confirmed = |args: &[&str]| {
+        let (code, out, err) = fa(Some(&book), args);
+        assert!(
+            !out.contains("\"refusal_id\":\"FA-REF-007\""),
+            "args={args:?}: --yes confirms\n{out}\n{err}"
+        );
+        (code, out)
+    };
+    let state = |period: &str| -> String {
+        let (code, out, _) = fa(Some(&book), &["period", "list", "--json"]);
+        assert_eq!(code, 0, "{out}");
+        let row = out
+            .split('{')
+            .find(|r| field(r, "code") == Some(period))
+            .unwrap_or_default()
+            .to_string();
+        field(&row, "state").unwrap_or_default().to_string()
+    };
+
+    // One posting, its registers materialized once (not dangerous).
+    let entry = write(
+        &dir,
+        "rent.json",
+        r#"{"effective_date":"2026-03-05","description":"March rent","idempotency_key":"rent-1","legs":[{"side":"debit","account":"6000","amount":"50.00 USD"},{"side":"credit","account":"1000","amount":"50.00 USD"}]}"#,
+    );
+    let (code, out, _) = fa_b(&["post", "--intent", &entry, "--evidence", &ev, "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let (code, out, _) = fa_b(&[
+        "registers",
+        "materialize",
+        "--period",
+        "FY2026-P03",
+        "--json",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    // Rematerializing over those cells is dangerous.
+    unconfirmed(
+        &[
+            "registers",
+            "materialize",
+            "--period",
+            "FY2026-P03",
+            "--json",
+        ],
+        "fa verify registers",
+    );
+    let (code, out) = confirmed(&[
+        "registers",
+        "materialize",
+        "--period",
+        "FY2026-P03",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(code, 0, "{out}");
+
+    // Voiding a hold.
+    let hold = write(
+        &dir,
+        "hold.json",
+        r#"{"effective_date":"2026-03-10","description":"PO hold","idempotency_key":"hold-1","legs":[{"side":"debit","account":"6000","amount":"20.00 USD"},{"side":"credit","account":"1000","amount":"20.00 USD"}]}"#,
+    );
+    let (code, out, _) = fa_b(&["reserve", "--intent", &hold, "--evidence", &ev, "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let hold_vid = field(&out, "vid").unwrap_or_default().to_string();
+    let void = write(
+        &dir,
+        "void.json",
+        &format!(
+            r#"{{"resolves":"{hold_vid}","disposition":"voids","effective_date":"2026-03-11","idempotency_key":"void-1"}}"#
+        ),
+    );
+    unconfirmed(
+        &["resolve", "--intent", &void, "--json"],
+        "disposition `posts`",
+    );
+    let tb = report(&book, &["tb", "--period", "FY2026-P03", "--json"]);
+    assert!(
+        tb.contains("\"debits_pending\":\"20.00 USD\""),
+        "still held: {tb}"
+    );
+    let (code, out) = confirmed(&["resolve", "--intent", &void, "--yes", "--json"]);
+    assert_eq!(code, 0, "{out}");
+
+    // Closing: refused, still SoftClosed; then closed with --yes.
+    let (code, out, _) = fa_b(&["period", "soft-close", "FY2026-P03", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    unconfirmed(
+        &["period", "close", "FY2026-P03", "--json"],
+        "fa period soft-close",
+    );
+    assert_eq!(state("FY2026-P03"), "SoftClosed");
+    let (code, out) = confirmed(&["period", "close", "FY2026-P03", "--yes", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(state("FY2026-P03"), "Closed");
+
+    // Posting into the closed period under post_closed.
+    let late = write(
+        &dir,
+        "late.json",
+        r#"{"effective_date":"2026-03-20","description":"late","idempotency_key":"late-1","legs":[{"side":"debit","account":"6000","amount":"1.00 USD"},{"side":"credit","account":"1000","amount":"1.00 USD"}]}"#,
+    );
+    unconfirmed(
+        &[
+            "post",
+            "--intent",
+            &late,
+            "--evidence",
+            &ev,
+            "--grant",
+            "post_closed",
+            "--json",
+        ],
+        "keep its true effective date",
+    );
+    confirmed(&[
+        "post",
+        "--intent",
+        &late,
+        "--evidence",
+        &ev,
+        "--grant",
+        "post_closed",
+        "--yes",
+        "--json",
+    ]);
+
+    // Locking and reopening: refused unconfirmed, the state unchanged; with
+    // --yes each reaches its own law.
+    unconfirmed(
+        &["period", "lock", "FY2026-P03", "--json"],
+        "leave the period Closed",
+    );
+    unconfirmed(
+        &["period", "reopen", "FY2026-P03", "--to", "open", "--json"],
+        "never re-date an entry",
+    );
+    // A safe alternative never suggests changing an entry's true effective
+    // date to escape the period law (AGENTS.md; CobaltGull 3384).
+    for d in &registry().expect("verbs.toml").dangerous {
+        let safe = d.safe.to_lowercase();
+        assert!(
+            !safe.contains("date the entry in") && !safe.contains("dated in an open period"),
+            "{} {:?}: {}",
+            d.verb,
+            d.subcommand,
+            d.safe
+        );
+    }
+    assert_eq!(state("FY2026-P03"), "Closed");
+    confirmed(&[
+        "period",
+        "reopen",
+        "FY2026-P03",
+        "--to",
+        "open",
+        "--yes",
+        "--json",
+    ]);
+    confirmed(&["period", "lock", "FY2026-P03", "--yes", "--json"]);
+
+    // Human mode names the safe alternative on stderr.
+    let (code, _, err) = fa_b(&["period", "close", "FY2026-P04"]);
+    assert_eq!(code, 7, "{err}");
+    assert!(
+        err.contains("FA-REF-007") && err.contains("fa period soft-close"),
+        "{err}"
+    );
+
+    // capabilities lists them; --yes on a command that needs none warns.
+    let (code, out, _) = fa(None, &["capabilities", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let listed: Vec<(String, String)> = arr(&doc(&out), "dangerous")
+        .iter()
+        .map(|d| {
+            (
+                text(d, "verb").to_string(),
+                text(d, "condition").to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(listed.len(), DANGEROUS.len(), "{out}");
+    for (verb, _, condition) in DANGEROUS {
+        assert!(
+            listed.iter().any(|(v, c)| v == verb && c == condition),
+            "{verb} {condition}: {out}"
+        );
+    }
+    let (code, out, _) = fa_b(&["tb", "--period", "FY2026-P03", "--yes", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let warnings = arr(&robot_line(&out), "warnings")
+        .iter()
+        .filter_map(Json::as_str)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("--yes confirms nothing") && w.contains("fa tb")),
+        "{out}"
+    );
+    let (code, _, err) = fa_b(&["tb", "--period", "FY2026-P03", "--yes"]);
+    assert_eq!(code, 0);
+    assert!(err.contains("warning: --yes confirms nothing"), "{err}");
+    Ok(())
+}
+
+/// Styling and determinism (plan Appendix D): with NO_COLOR, CI or TERM=dumb
+/// (and always off a terminal) human output carries no escape bytes, and
+/// SOURCE_DATE_EPOCH changes no byte of robot or human output (no data path
+/// reads a clock).
+#[test]
+fn no_styling_off_a_terminal_and_no_clock_in_any_output() -> std::io::Result<()> {
+    let (book, _, _) = envelope_book("style")?;
+    for env in [
+        vec![("NO_COLOR", "1")],
+        vec![("CI", "true")],
+        vec![("TERM", "dumb")],
+        vec![],
+    ] {
+        let (code, out, err) = fa_env(Some(&book), &["tb", "--period", "FY2026-P03"], &env);
+        assert_eq!(code, 0, "{env:?}: {err}");
+        assert!(out.contains("posted debits"), "{out}");
+        assert!(
+            !out.contains('\u{1b}') && !err.contains('\u{1b}'),
+            "{env:?}: {out}"
+        );
+    }
+    let (code, styled_off, _) = fa_env(
+        Some(&book),
+        &["tb", "--period", "FY2026-P03", "--no-color"],
+        &[],
+    );
+    assert_eq!(code, 0, "{styled_off}");
+    assert!(!styled_off.contains('\u{1b}'), "{styled_off}");
+    for args in [
+        vec!["tb", "--period", "FY2026-P03", "--json"],
+        vec!["tb", "--period", "FY2026-P03"],
+        vec!["period", "list", "--json"],
+        vec!["capabilities", "--json"],
+    ] {
+        let (_, early, _) = fa_env(Some(&book), &args, &[("SOURCE_DATE_EPOCH", "0")]);
+        let (_, late, _) = fa_env(Some(&book), &args, &[("SOURCE_DATE_EPOCH", "1900000000")]);
+        let (_, unset, _) = fa(Some(&book), &args);
+        assert_eq!(early, late, "{args:?}");
+        assert_eq!(early, unset, "{args:?}");
+    }
+    Ok(())
+}
+
+/// Correction spans the registry's distance (1): one edit gets a "did you
+/// mean", two edits get the plain help pointer; a guess is never run.
+#[test]
+fn corrections_span_exactly_one_edit() {
+    let (code, out, _) = fa(None, &["psot", "--json"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(
+        text(&doc(&out), "fix").contains("did you mean `fa post`"),
+        "{out}"
+    );
+    let (code, out, _) = fa(None, &["tb", "--jsno"]);
+    assert_eq!(code, 2, "{out}");
+    let (code, out, _) = fa(None, &["pzzt", "--json"]);
+    assert_eq!(code, 2, "{out}");
+    let fix = text(&doc(&out), "fix").to_string();
+    assert!(
+        !fix.contains("did you mean"),
+        "two edits are not corrected: {out}"
+    );
+    assert!(fix.contains("fa --help"), "{out}");
 }

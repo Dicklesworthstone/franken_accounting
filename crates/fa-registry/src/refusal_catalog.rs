@@ -440,12 +440,6 @@ mod tests {
                 "declared under 2 names",
             ),
             (
-                "a declared reserved code (the confirmation gate before its row lands)",
-                vec![decl("fa-cli", "CONFIRMATION_REQUIRED", "FA-REF-007")],
-                vec![],
-                "declares reserved",
-            ),
-            (
                 "an undeclared owner",
                 vec![decl("fa-notary", "UNBALANCED", "FA-REF-001")],
                 vec![],
@@ -471,6 +465,24 @@ mod tests {
                 "{what}: expected `{expect}` in {findings:?}"
             );
         }
+        // A reserved code declared before its row lands. The live catalog
+        // may hold no reservation at all, so the negative plants its own on
+        // an unused code.
+        let exits = ExitCodes::embedded().unwrap();
+        let reserving = RefusalCatalog::from_text(
+            &format!(
+                "{REFUSAL_CATALOG}\n[[reserved]]\ncode = \"FA-REF-029\"\nholder = \"planted reservation\"\n"
+            ),
+            &exits,
+        )
+        .unwrap();
+        let mut decls = base.clone();
+        decls.push(decl("fa-cli", "PLANTED", "FA-REF-029"));
+        let findings = audit(&reserving, &decls, &[]);
+        assert!(
+            findings.iter().any(|f| f.contains("declares reserved")),
+            "a declared reserved code: {findings:?}"
+        );
         // A row whose owner never declares it.
         base.retain(|d| d.code != "FA-REF-087");
         let findings = audit(&catalog, &base, &[]);
@@ -539,11 +551,6 @@ mod tests {
                 "name = \"NOT_A_LEAF\"\nowners = [\"fa-journal\"]",
                 "name = \"NOT_A_LEAF\"\nowners = []",
             ),
-            (
-                "a reserved code with a row",
-                "code = \"FA-REF-007\"\nholder",
-                "code = \"FA-REF-001\"\nholder",
-            ),
         ] {
             let text = good.replacen(from, to, 1);
             assert_ne!(text, good, "{what}: the planted edit did not apply");
@@ -552,5 +559,18 @@ mod tests {
                 "{what} must be refused"
             );
         }
+        // A reserved code that already has a row: planted as its own
+        // reservation, independent of whatever the live catalog reserves.
+        let reserved_row =
+            format!("{good}\n[[reserved]]\ncode = \"FA-REF-001\"\nholder = \"planted\"\n");
+        assert!(
+            RefusalCatalog::from_text(&reserved_row, &exits).is_err(),
+            "a reserved code with a row must be refused"
+        );
+        // The same planted reservation on an unused code is admitted, so
+        // the refusal above is about the row, not the planting.
+        let reserved_free =
+            format!("{good}\n[[reserved]]\ncode = \"FA-REF-029\"\nholder = \"planted\"\n");
+        assert!(RefusalCatalog::from_text(&reserved_free, &exits).is_ok());
     }
 }

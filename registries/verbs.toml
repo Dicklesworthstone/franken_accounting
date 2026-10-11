@@ -18,18 +18,32 @@
 # with data-dependent keys) · any · <shape> (an object with exactly the
 # shape's fields) · [T] (an array of T) · T? (T or null). Every field is
 # always present; absence is spelled null.
+#
+# Envelope (plan Appendix D, bead fa-12x): every robot-mode line carries the
+# `[envelope]` fields beside its event's own fields, except the daemon's wire
+# frames. An event marked `book = true` is always about one book, so its
+# `coordinate` is never null; the robot-schema fixture pin
+# (registries/robot_schema/<version>.jsonl) holds `fa robot-docs schema --json`
+# byte for byte.
 
 schema_version = 1
 
 [envelope]
 discriminator = "event"
-description = "Robot mode (--json): stdout carries one JSON object per line and nothing else. Every object has an `event` field naming its schema below, plus exactly that schema's fields; keys are sorted, amounts are strings with their unit (never JSON numbers), recorded sequences are integers, dates are civil YYYY-MM-DD. stderr carries diagnostics only. The exit code is the verdict (fa robot-docs exit-codes); every non-zero exit emits one of the error events (usage_error, refusal, error, verification_failed)."
+version = 1
+payload = "data"
+fields = ["v:int", "book:hex?", "coordinate:coordinate?", "certificate:hex?", "warnings:[string]", "next_actions:[next_action]"]
+frames = ["fad_request", "fad_response"]
+description = "Robot mode (--json), plan Appendix D: stdout carries one JSON object per line and nothing else, {v, event, book, coordinate, data, certificate, warnings, next_actions}. `event` names the line's schema below and `data` holds exactly that schema's fields. `v` is the envelope version. `book` is the book's id and `coordinate` the (branch, known_at, effective) the line describes; both are never null on an event about a book (`book: true` below) and null on the others (version, help, an error before any book was opened). `certificate` is the replay certificate's oid, null until plan certificates land (fa-we7). `warnings` lists what the command noticed but did not refuse (always present, usually empty). `next_actions` lists the commands an agent usually runs next, each with why (run them with the same --book). Keys are sorted, amounts are strings with their unit (never JSON numbers), recorded sequences are integers, dates are civil YYYY-MM-DD. The daemon's wire frames (fad_request, fad_response) are its protocol, not robot lines: flat, with their protocol `v`. stderr carries diagnostics only. The exit code is the verdict (fa robot-docs exit-codes): every non-zero exit emits exactly one `error` event, whose data carries the exit's `class` (exit_codes.toml), the `exit`, and the `refusal_id` (the refusal catalog code, or null)."
 
 [global]
 flags = ["--book", "--keys", "--as", "--via"]
 switches = ["--json", "--help", "--version", "--no-color", "--yes"]
-events = ["version", "triage", "help", "usage_error", "refusal", "error", "verification_failed"]
-usage = "--book <dir> (or FA_BOOK) · --keys <file> (default <dir>/book.keys) · --json · --as <principal> (default operator) · --via fad|direct (default: through the book's fad when one holds its writer lease) · --help (also `fa <verb> --help`)"
+events = ["version", "triage", "help", "error"]
+# A mistyped verb, subcommand or flag within this edit distance gets a
+# "did you mean"; correction only ever suggests, it never runs the guess.
+correction_distance = 1
+usage = "--book <dir> (or FA_BOOK) · --keys <file> (default <dir>/book.keys) · --json · --as <principal> (default operator) · --via fad|direct (default: through the book's fad when one holds its writer lease) · --yes (confirm an operation that cannot be undone; `fa capabilities --json` lists them) · --no-color (also NO_COLOR, CI, TERM=dumb, or stdout not a terminal) · --help (also `fa <verb> --help`)"
 
 # The fad daemon (plan §15.3, Appendix D, bead fa-i8j). One fad per book
 # directory holds the book's writer lease (an OS lock on <dir>/<lease>, so a
@@ -221,8 +235,8 @@ subcommands = ["materialize"]
 flags = ["--period", "--fiscal-year"]
 switches = []
 events = ["registers_materialized"]
-exits = [0, 2, 4, 5]
-usage = ["registers materialize ((--period <code>)... | --fiscal-year N)"]
+exits = [0, 2, 4, 5, 7]
+usage = ["registers materialize ((--period <code>)... | --fiscal-year N)   (over a period that already has cells: --yes)"]
 example = "fa registers materialize --period FY2026-P03 --book ./books/myco"
 
 [[verb]]
@@ -288,12 +302,107 @@ expands = ["explain", "balance"]
 name = "journal"
 expands = ["post"]
 
+# Operations that cannot be undone in practice (plan §15.3, Appendix D
+# FA-REF-007). Without --yes, or a --plan file naming the exact proposal,
+# they are refused with exit 7 before anything is written, and the refusal's
+# fix is `safe`: a reversible or read-only alternative that exists today.
+# `fa capabilities --json` lists them. `condition` (closed vocabulary):
+# always · grant:<op> (the command self-issues that op with --grant) ·
+# disposition:voids (the intent voids a hold) · existing-cells (the period
+# already has materialized register cells). Gate: every operation the plan
+# names dangerous has a row (fa-cli dangerous-operation test), and every row
+# is refused without --yes and admitted with it.
+
+[[dangerous]]
+verb = "period"
+subcommand = "close"
+condition = "always"
+safe = "`fa period soft-close <code>` stops ordinary postings and stays reopenable without approvals"
+
+[[dangerous]]
+verb = "period"
+subcommand = "lock"
+condition = "always"
+safe = "leave the period Closed (`fa period list --json` shows every state); a Closed period already refuses ordinary postings"
+
+[[dangerous]]
+verb = "period"
+subcommand = "reopen"
+condition = "always"
+safe = "only a lawfully classified adjustment or an authorized reopen (case-bound, `fa approve`) changes what a closed period reports; never re-date an entry to avoid the period law (`fa period list --json` shows each period's state)"
+
+[[dangerous]]
+verb = "post"
+condition = "grant:post_closed"
+safe = "leave the intent unposted; keep its true effective date and obtain the authorization or the admissible adjustment class the period-law refusal names (`fa period list --json` shows each period's state)"
+
+[[dangerous]]
+verb = "resolve"
+condition = "disposition:voids"
+safe = "resolve the hold with disposition `posts` to post what it held; a void releases it for good"
+
+[[dangerous]]
+verb = "registers"
+subcommand = "materialize"
+condition = "existing-cells"
+safe = "`fa verify registers --period <code> --json` checks the existing cells against the journal without rewriting them"
+
+# What an agent usually runs next after an event (plan Appendix D
+# `next_actions`): every listed event's lines carry these, in order. The
+# commands omit --book; run them with the same --book (or FA_BOOK).
+
+[[next_action]]
+after = "triage"
+command = "fa capabilities --json"
+why = "every verb, exit code and dangerous operation this build knows"
+
+[[next_action]]
+after = "book_created"
+command = "fa chart import <chart.json> --json"
+why = "a new book has no accounts; install the chart"
+
+[[next_action]]
+after = "chart_installed"
+command = "fa period create --fiscal-year <N> --json"
+why = "entries post into periods; create the fiscal year's"
+
+[[next_action]]
+after = "periods_created"
+command = "fa period open <code> --json"
+why = "a Future period admits no postings until it is opened"
+
+[[next_action]]
+after = "document"
+command = "fa post --intent <entry.json> --evidence <oid> --json"
+why = "cite the document in an entry"
+
+[[next_action]]
+after = "posted"
+command = "fa tb --json"
+why = "the trial balance with this entry folded in"
+
+[[next_action]]
+after = "recorded"
+command = "fa entry show <vid> --json"
+why = "this idempotency key already recorded that entry; nothing new was written"
+
+[[next_action]]
+after = "registers_materialized"
+command = "fa verify registers --json"
+why = "prove the materialized cells equal the journal's refold"
+
+[[next_action]]
+after = "checkpoint_created"
+command = "fa verify accumulator --json"
+why = "recompute every checkpoint from the journal"
+
 # ---------------------------------------------------------------------------
 # Events: every `event` a --json line can carry, with exactly its fields.
 # ---------------------------------------------------------------------------
 
 [[event]]
 name = "document"
+book = true
 doc = "A document the book holds. `oid` locates it; `doc_commit` = BLAKE3(\"fa:doc:v1\" ‖ kind ‖ length ‖ 4 KiB-chunk Merkle root) is its public commitment; `evidence` is the citation for an intent's `evidence` list (or pass --evidence <oid>). On a repeat intake `already_recorded` is true and kind/grade are the book's. `self_sourced` (AgentUpload) will need a reviewer's attestation before promotion; not yet enforced."
 fields = ["oid:hex", "doc_commit:hex", "kind:string", "grade:string", "self_sourced:bool", "size:int", "recorded_at:seq", "already_recorded:bool", "evidence:evidence_ref"]
 
@@ -304,11 +413,12 @@ fields = ["v:int", "op:string", "argv:[string]", "cwd:string?", "stdin:hex?"]
 
 [[event]]
 name = "fad_response"
-doc = "fad's answer to one fad_request: the command's exit code and its stdout and stderr, byte for byte as `fa` would have written them (the stdout lines are themselves robot-mode events when the request asked for --json). A protocol fault is answered with exit 2 and a usage_error line, then the connection closes."
+doc = "fad's answer to one fad_request: the command's exit code and its stdout and stderr, byte for byte as `fa` would have written them (the stdout lines are themselves robot-mode events when the request asked for --json). A protocol fault is answered with exit 2 and an `error` line (class usage), then the connection closes."
 fields = ["v:int", "op:string", "exit:int", "stdout:text", "stderr:text"]
 
 [[event]]
 name = "fad_serving"
+book = true
 doc = "`fad serve`: the writer lease is held and the socket is listening."
 fields = ["book_id:hex", "dir:string", "socket:string", "pid:int", "protocol:int", "max_frame_bytes:int"]
 
@@ -338,29 +448,14 @@ doc = "`fa --help`, `fa help [<verb>]`, `fa <verb> --help`: usage as text; `verb
 fields = ["verb:string?", "text:text"]
 
 [[event]]
-name = "usage_error"
-doc = "Exit 2: a bad flag, verb, argument or intent document; `fix` is the exact correction."
-fields = ["exit:int", "message:string", "fix:string"]
-
-[[event]]
-name = "refusal"
-doc = "A lawful refusal (exit 3, 6 or 7): the refusal code, the law or matrix cell it cites, and the fix. Do the fix; never invent a leg, a date, or an approval."
-fields = ["code:string", "exit:int", "message:string", "cite:string", "fix:string"]
-
-[[event]]
 name = "error"
-doc = "Exit 4 (environment: no book, bad key file) or 5 (foundation/I-O failure)."
-fields = ["exit:int", "message:string"]
-
-[[event]]
-name = "verification_failed"
-doc = "Exit 8: derived state differs from the journal's refold; `detail` is the verify event's payload (the per-period checks for registers, the leg drift for open items)."
-fields = ["exit:int", "message:string", "detail:any"]
+doc = "Every non-zero exit emits exactly one (plan Appendix D). `class` names the exit (exit_codes.toml): usage (2: a bad flag, verb, argument or intent document), refusal (3: an accounting-law refusal), environment (4: no book, a bad key file), foundation (5: a foundation or I-O failure), conflict (6), safety (7: period law, capability, SoD, an unconfirmed dangerous operation), verification (8: derived state differs from the journal's refold). `refusal_id` is the refusal catalog code (FA-REF-nnn) when the failure is a catalog refusal, else null; `cite` is the law, matrix cell or policy row it cites (null otherwise); `fix` is the exact next step (null when none applies): do it, and never invent a leg, a date, or an approval. FA-REF-007 means the operation cannot be undone in practice: `fix` names the safe alternative; rerun with --yes only when the operation is intended. `detail` is a verification failure's payload (the per-period checks for registers, the leg drift for open items), null otherwise."
+fields = ["class:string", "exit:int", "refusal_id:string?", "message:string", "cite:string?", "fix:string?", "detail:any"]
 
 [[event]]
 name = "capabilities"
 doc = "What this build can do."
-fields = ["version:string", "verbs:[string]", "aliases:[alias]", "exit_codes:[exit_code]", "entry_classes:[string]", "robot_mode:robot_mode", "stdout:string", "stderr:string", "tui:bool", "capability:capability_model"]
+fields = ["version:string", "verbs:[string]", "aliases:[alias]", "exit_codes:[exit_code]", "entry_classes:[string]", "robot_mode:robot_mode", "stdout:string", "stderr:string", "tui:bool", "capability:capability_model", "dangerous:[dangerous_op]", "invariants:invariant_clauses"]
 
 [[event]]
 name = "robot_docs"
@@ -374,106 +469,127 @@ fields = ["envelope:envelope_doc", "events:[event_doc]", "shapes:[shape_doc]"]
 
 [[event]]
 name = "book_created"
+book = true
 doc = "A new book directory: the store and the key file (keep it; keys are never regenerated)."
 fields = ["book_id:hex", "dir:string", "keys:string", "name:string", "base_unit:string", "calendar:string"]
 
 [[event]]
 name = "book"
+book = true
 doc = "A book's identity and size."
 fields = ["book_id:hex", "calendar:string", "periods:int", "periods_by_state:object", "accounts:int", "units_registered:int"]
 
 [[event]]
 name = "chart_installed"
+book = true
 doc = "A chart installed by one journaled control entry."
 fields = ["accounts:int", "control_entry:hex", "recorded_at:seq"]
 
 [[event]]
 name = "accounts"
+book = true
 doc = "The chart, sorted by code."
 fields = ["accounts:[account]"]
 
 [[event]]
 name = "periods_created"
+book = true
 doc = "A fiscal year's periods, all Future."
 fields = ["fiscal_year:int", "periods:[string]", "recorded_at:seq"]
 
 [[event]]
 name = "periods"
+book = true
 doc = "Every period in calendar order with its current state."
 fields = ["periods:[period]"]
 
 [[event]]
 name = "period_transitioned"
+book = true
 doc = "A period moved along the state machine by a journaled control entry."
 fields = ["period:string", "from:string", "to:string", "control_entry:hex", "recorded_at:seq"]
 
 [[event]]
 name = "period_planned"
+book = true
 doc = "A transition was planned and its sealed proposal written to a file; nothing was committed. Approvals bind proposal_digest."
 fields = ["period:string", "from:string", "to:string", "proposal_digest:hex", "plan:string"]
 
 [[event]]
 name = "approved"
+book = true
 doc = "An approval of a proposal digest was recorded (or already existed: then nothing was written and security_policy_epoch is null)."
 fields = ["approval_vid:hex", "approved_digest:hex", "security_policy_epoch:int?", "recorded_at:seq", "already_recorded:bool"]
 
 [[event]]
 name = "posted"
+book = true
 doc = "An entry committed; `recorded_at` is its CommitSeq, assigned by the journal. With --balancing, `requested` is the amount asked for and `moved` what the balancing leg's account admitted (the legs posted at `moved`); both null otherwise."
 fields = ["class:string", "vid:hex", "entry_digest:hex", "recorded_at:seq", "period:string", "requested:amount?", "moved:amount?"]
 
 [[event]]
 name = "recorded"
+book = true
 doc = "The same idempotency key was already recorded with the same content; nothing new was written. For a balancing post the identity is the request (key, requested amount, leg): `requested`/`moved` are the recorded ones, whatever availability is now; null otherwise."
 fields = ["vid:hex", "entry_digest:hex", "recorded_at:seq", "requested:amount?", "moved:amount?"]
 
 [[event]]
 name = "trial_balance"
+book = true
 doc = "Stock (through `effective_through`) or activity (the selected periods), at the `known_at` snapshot."
 fields = ["periods:[string]", "known_at:seq", "effective_through:date?", "activity:bool", "mode:string", "rows:[tb_row]", "unit_totals:[unit_total]", "pending_unit_totals:[pending_unit_total]", "balanced:bool"]
 
 [[event]]
 name = "open_items"
+book = true
 doc = "Open items, optionally on one account, at the `known_at` snapshot."
 fields = ["account:string?", "count:int", "items:[open_item]"]
 
 [[event]]
 name = "checkpoint_created"
+book = true
 doc = "An unsigned AccumulatorState over every entry in the named book/branch prefix through through_seq, recorded in a later commit. prev_state_oid links its predecessor. The scope excludes document receipts, attestations, signatures, and bundles."
 fields = ["book:hex", "branch:hex", "oid:hex", "recorded_at:seq", "through_seq:seq", "leaf_count:int", "root:hex", "prev_state_oid:hex?", "signatures:string", "scope:string"]
 
 [[event]]
 name = "accumulator_verified"
+book = true
 doc = "Every existing accumulator state was recomputed from its entry prefix and every stored state belongs to the chain. status is verified or no_checkpoints; no_checkpoints makes no verification claim and verified_through is null. Otherwise verified_through names the newest checked prefix, never an implicit current-head claim. signatures is unsigned and scope is entry_prefix. States are newest first."
 fields = ["status:string", "signatures:string", "scope:string", "states_checked:int", "broken:string?", "verified_through:seq?", "states:[accumulator_state_check]", "unchained:[hex]"]
 
 [[event]]
 name = "registers_verified"
+book = true
 doc = "Every selected period's stored registers equal the refold."
 fields = ["periods:[register_check]"]
 
 [[event]]
 name = "open_items_verified"
+book = true
 doc = "Every posted leg's applied mirror equals the open-item fold."
 fields = ["known_at:seq", "legs_checked:int", "drift:[applied_drift]"]
 
 [[event]]
 name = "availability_verified"
+book = true
 doc = "Every limited account's expected LimitCell (the vertex at its derived identity) equals the refold from the journal — sums, generation, and its account_ref binding (plan §5.4–5.5); each account's availability in its normal-balance sign. Scope: only those expected cells are examined; LimitCell vertices that no limited account's identity references are not checked and not reported."
 fields = ["known_at:seq", "accounts_checked:int", "cells_checked:int", "accounts:[account_availability]", "drift:[availability_drift]"]
 
 [[event]]
 name = "registers_materialized"
+book = true
 doc = "A period's registers written from a fresh fold (derived state)."
 fields = ["period:string", "cells:int", "pending_cells:int", "entries:int", "watermark:seq?", "fold_digest:hex", "recorded_at:seq"]
 
 [[event]]
 name = "entry"
+book = true
 doc = "One committed entry; when `found` is false every other field but `vid` is null."
 fields = ["found:bool", "vid:string", "class:string?", "effective_date:date?", "recorded_at:seq?", "entry_digest:hex?", "proposal_digest:hex?", "approvals:int?", "legs:[entry_leg]?"]
 
 [[event]]
 name = "balance_explained"
+book = true
 doc = "An account's register cells in one period at the `known_at` snapshot: the cells (one per unit, both columns), the fold they belong to (its digest and watermark), every contributing leg with its entry and recorded sequence, and the cells' known-at history. The legs re-add to the cells exactly or the command fails. A certified-read precursor: `certificate` is null until the notary lands."
 fields = ["account:string", "account_vid:hex", "name:string", "type:string", "period:string", "known_at:seq", "watermark:seq?", "fold_digest:hex", "certificate:hex?", "cells:[explained_cell]", "contributions:[contribution]", "history:[cell_change]", "last_changed_at:seq?"]
 
@@ -523,13 +639,13 @@ fields = ["flags:[string]", "profile:string", "ceilings:[string]", "expires_at:s
 
 [[shape]]
 name = "envelope_doc"
-doc = "The robot-mode envelope."
-fields = ["discriminator:string", "description:text", "types:[string]"]
+doc = "The robot-mode envelope: its version, the fields every line carries beside its event's own, and the wire frames that carry none."
+fields = ["discriminator:string", "version:int", "fields:[field_doc]", "frames:[string]", "description:text", "types:[string]"]
 
 [[shape]]
 name = "event_doc"
-doc = "One event's schema and the verbs that emit it (empty for the global events)."
-fields = ["name:string", "doc:text", "verbs:[string]", "fields:[field_doc]"]
+doc = "One event's schema and the verbs that emit it (empty for the global events). `book` is true when the event is always about one book (its envelope `coordinate` is never null); `fields` are the event's own, beside the envelope's."
+fields = ["name:string", "doc:text", "book:bool", "verbs:[string]", "fields:[field_doc]"]
 
 [[shape]]
 name = "shape_doc"
@@ -640,3 +756,23 @@ fields = ["document_oid:hex", "doc_commit:hex", "role:int"]
 name = "cell_change"
 doc = "The cell in one unit as known after `recorded_at`, at every sequence that touched it."
 fields = ["recorded_at:seq", "unit:string", "debits:amount", "credits:amount", "debits_pending:amount", "credits_pending:amount"]
+
+[[shape]]
+name = "coordinate"
+doc = "What a line describes (plan §4.8), beside the envelope's `book` (the book id): the branch (`trunk`; drafts and scenarios land later), `known_at` (the recorded sequence: the head when read, or the one --as-known-at selected; after a write, the head that write produced), and `effective` (`all`, `period:<code>`, `periods:<code>,<code>…`, or `as-of:<YYYY-MM-DD>`)."
+fields = ["branch:string", "known_at:seq", "effective:string"]
+
+[[shape]]
+name = "next_action"
+doc = "A command an agent usually runs next, and why. It omits --book: run it with the same --book."
+fields = ["command:string", "why:string"]
+
+[[shape]]
+name = "invariant_clauses"
+doc = "The invariant clauses this build enforces (registries/invariants.toml, fa-37f): `live` lists the clause ids whose checker runs (FA-INV-nn.clause), `gate_g1` the clauses Gate G1 requires; a dormant G1 clause is a G1 blocker."
+fields = ["live:[string]", "gate_g1:[string]"]
+
+[[shape]]
+name = "dangerous_op"
+doc = "An operation that cannot be undone in practice: refused with FA-REF-007 (exit 7) unless --yes (or a --plan file) confirms it. `subcommand` is null for a verb without subcommands; `condition` says when it applies; `safe` is the alternative the refusal names."
+fields = ["verb:string", "subcommand:string?", "condition:string", "safe:string"]

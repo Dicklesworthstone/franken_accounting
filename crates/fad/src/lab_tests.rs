@@ -206,7 +206,8 @@ fn oversized_and_non_canonical_frames_get_a_structured_refusal_and_close() {
         assert_eq!(replies[0].exit, 2, "{what}");
         let reg = fa_cli::verbs::registry().expect("verbs.toml");
         let line = replies[0].stdout.trim_end();
-        assert_eq!(reg.check_line(line), Ok("usage_error"), "{what}: {line}");
+        assert_eq!(reg.check_line(line), Ok("error"), "{what}: {line}");
+        assert!(line.contains(r#""class":"usage""#), "{what}: {line}");
         assert!(line.contains("fad refused the frame"), "{what}: {line}");
     }
 }
@@ -230,6 +231,7 @@ fn an_oversized_answer_is_refused_whole_with_advice_that_works() {
     assert!(!line.contains("xxxx"), "never a cut answer: {line}");
     let reg = fa_cli::verbs::registry().expect("verbs.toml");
     assert_eq!(reg.check_line(line), Ok("error"), "{line}");
+    assert!(line.contains(r#""class":"foundation""#), "{line}");
     let advice = format!(
         "narrow the command, or stop the daemon with `fad stop --book {BOOK}` and run it directly"
     );

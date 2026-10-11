@@ -41,19 +41,28 @@ fn parsed(text: &str) -> Json {
     json::parse(text.trim()).expect("one JSON object")
 }
 
+/// `key` of a robot line's event fields (its `data`, plan Appendix D), or of
+/// a nested object (which has no `data`).
+fn get<'a>(value: &'a Json, key: &str) -> Option<&'a Json> {
+    value
+        .get("data")
+        .and_then(|data| data.get(key))
+        .or_else(|| value.get(key))
+}
+
 fn text<'a>(value: &'a Json, key: &str) -> &'a str {
-    value.get(key).and_then(Json::as_str).expect(key)
+    get(value, key).and_then(Json::as_str).expect(key)
 }
 
 fn integer(value: &Json, key: &str) -> i128 {
-    match value.get(key) {
+    match get(value, key) {
         Some(Json::Int(n)) => *n,
         other => panic!("{key}: expected an integer, got {other:?}"),
     }
 }
 
 fn array<'a>(value: &'a Json, key: &str) -> &'a [Json] {
-    value.get(key).and_then(Json::as_arr).expect(key)
+    get(value, key).and_then(Json::as_arr).expect(key)
 }
 
 fn fixture() -> PathBuf {
@@ -87,7 +96,7 @@ fn checkpoints_and_verification_survive_reopen_and_include_later_postings() {
     let initial = parsed(&ok(&book, &["verify", "accumulator", "--json"]));
     assert_eq!(text(&initial, "status"), "no_checkpoints");
     assert_eq!(integer(&initial, "states_checked"), 0);
-    assert_eq!(initial.get("verified_through"), Some(&Json::Null));
+    assert_eq!(get(&initial, "verified_through"), Some(&Json::Null));
     assert!(array(&initial, "states").is_empty());
 
     let first = parsed(&ok(
@@ -98,7 +107,7 @@ fn checkpoints_and_verification_survive_reopen_and_include_later_postings() {
     assert_eq!(text(&first, "signatures"), "unsigned");
     assert_eq!(text(&first, "scope"), "entry_prefix");
     assert_eq!(integer(&first, "leaf_count"), 0);
-    assert_eq!(first.get("prev_state_oid"), Some(&Json::Null));
+    assert_eq!(get(&first, "prev_state_oid"), Some(&Json::Null));
     assert!(integer(&first, "recorded_at") > integer(&first, "through_seq"));
     let once = parsed(&ok(&book, &["verify", "accumulator", "--json"]));
     assert_eq!(text(&once, "status"), "verified");
@@ -174,7 +183,7 @@ fn checkpoints_and_verification_survive_reopen_and_include_later_postings() {
     assert_eq!(text(&verified, "status"), "verified");
     assert_eq!(text(&verified, "signatures"), "unsigned");
     assert_eq!(text(&verified, "scope"), "entry_prefix");
-    assert_eq!(verified.get("broken"), Some(&Json::Null));
+    assert_eq!(get(&verified, "broken"), Some(&Json::Null));
     assert_eq!(integer(&verified, "states_checked"), 2);
     assert_eq!(
         integer(&verified, "verified_through"),
@@ -220,7 +229,8 @@ fn accumulator_commands_refuse_extra_arguments_and_period_filters_before_opening
         let (code, out, err) = run(&missing_book, &args);
         assert_eq!(code, 2, "args={args:?}\n{out}\n{err}");
         let failure = parsed(&out);
-        assert_eq!(text(&failure, "event"), "usage_error");
+        assert_eq!(text(&failure, "event"), "error");
+        assert_eq!(text(&failure, "class"), "usage");
         assert!(!text(&failure, "fix").is_empty());
     }
     assert!(
@@ -234,8 +244,9 @@ fn accumulator_commands_refuse_extra_arguments_and_period_filters_before_opening
         let (code, out, err) = run(&missing_book, &args);
         assert_eq!(code, 7, "args={args:?}\n{out}\n{err}");
         let refusal = parsed(&out);
-        assert_eq!(text(&refusal, "event"), "refusal");
-        assert_eq!(text(&refusal, "code"), "FA-REF-011");
+        assert_eq!(text(&refusal, "event"), "error");
+        assert_eq!(text(&refusal, "class"), "safety");
+        assert_eq!(text(&refusal, "refusal_id"), "FA-REF-011");
         assert!(text(&refusal, "message").contains("witness"));
     }
     assert!(
@@ -347,8 +358,9 @@ fn assert_corruption_refused(corrupt_head: bool) {
     let (code, failed, diagnostics) = run(&book, &["verify", "accumulator", "--json"]);
     assert_eq!(code, 8, "{failed}\n{diagnostics}");
     let report = parsed(&failed);
-    assert_eq!(text(&report, "event"), "verification_failed");
-    let detail = report.get("detail").expect("failure detail");
+    assert_eq!(text(&report, "event"), "error");
+    assert_eq!(text(&report, "class"), "verification");
+    let detail = get(&report, "detail").expect("failure detail");
     assert_eq!(text(detail, "status"), "failed");
     assert_eq!(detail.get("verified_through"), Some(&Json::Null));
     if corrupt_head {
@@ -376,7 +388,7 @@ fn assert_corruption_refused(corrupt_head: bool) {
     );
     assert_eq!(code, 8, "{blocked}\n{diagnostics}");
     assert_eq!(
-        text(&parsed(&blocked), "code"),
+        text(&parsed(&blocked), "refusal_id"),
         fa_notary::code::ACCUMULATOR_DRIFT
     );
     let (code, unchanged, diagnostics) = run(&book, &["verify", "accumulator", "--json"]);

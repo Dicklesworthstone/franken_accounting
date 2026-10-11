@@ -219,7 +219,13 @@ impl Server<'_> {
                 Response {
                     op: Op::Status,
                     exit: 0,
-                    stdout: line(json, &self.status_event(), &self.status_text()),
+                    stdout: line(
+                        json,
+                        "fad_status",
+                        self.status_data(),
+                        self.at().as_ref(),
+                        &self.status_text(),
+                    ),
                     stderr: String::new(),
                 },
                 Next::Continue,
@@ -228,7 +234,13 @@ impl Server<'_> {
                 Response {
                     op: Op::Stop,
                     exit: 0,
-                    stdout: line(json, &self.stopped_event(), &self.stopped_text()),
+                    stdout: line(
+                        json,
+                        "fad_stopped",
+                        self.stopped_data(),
+                        None,
+                        &self.stopped_text(),
+                    ),
                     stderr: String::new(),
                 },
                 Next::Stop,
@@ -236,10 +248,21 @@ impl Server<'_> {
         }
     }
 
+    /// The served book at its head, for the envelope of the daemon's own
+    /// lines about it (null when the head cannot be read).
     #[must_use]
-    pub fn status_event(&self) -> Json {
+    pub fn at(&self) -> Option<cli::At> {
+        self.book.head().ok().map(|known_at| cli::At {
+            book: self.book.context().book_id.to_hex(),
+            known_at,
+            effective: "all".into(),
+        })
+    }
+
+    /// `fad_status` data for a serving daemon.
+    #[must_use]
+    pub fn status_data(&self) -> Json {
         obj(vec![
-            ("event", s("fad_status")),
             ("serving", Json::Bool(true)),
             ("dir", s(self.dir.display().to_string())),
             ("socket", s(self.socket.display().to_string())),
@@ -261,10 +284,10 @@ impl Server<'_> {
         )
     }
 
+    /// `fad_stopped` data: the requests answered before the lease was released.
     #[must_use]
-    pub fn stopped_event(&self) -> Json {
+    pub fn stopped_data(&self) -> Json {
         obj(vec![
-            ("event", s("fad_stopped")),
             ("dir", s(self.dir.display().to_string())),
             ("requests", Json::Int(i128::from(self.requests))),
         ])
@@ -279,11 +302,13 @@ impl Server<'_> {
     }
 }
 
-/// One stdout line: the event in robot mode, the text otherwise.
+/// One stdout line of the daemon's own: in robot mode the plan Appendix D
+/// line (`data` the event's fields; `book` and `coordinate` when `at` names
+/// the served book), the text otherwise.
 #[must_use]
-pub fn line(json: bool, event: &Json, text: &str) -> String {
+pub fn line(json: bool, event: &str, data: Json, at: Option<&cli::At>, text: &str) -> String {
     if json {
-        format!("{}\n", event.render())
+        format!("{}\n", cli::robot_line(event, data, at, &[]).render())
     } else {
         format!("{text}\n")
     }

@@ -49,6 +49,7 @@ pub(crate) fn checkpoint_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail>
         .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
     let mut book = ctx.books.open(args)?;
     let created = book.checkpoint(actor, &capability)??;
+    ctx.out.at_book(&book)?;
     let stored = &created.stored;
     let state = &stored.state;
     ctx.out.event(

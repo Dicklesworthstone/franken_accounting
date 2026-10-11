@@ -145,6 +145,14 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
     let cx = runtime.request_cx_with_budget(Budget::INFINITE);
     let limits = Limits::from_registry(d);
     let book_id = book.context().book_id.to_hex();
+    let at = match book.head() {
+        Ok(known_at) => cli::At {
+            book: book_id.clone(),
+            known_at,
+            effective: "all".into(),
+        },
+        Err(e) => return cli::book_error(argv, e, false).0,
+    };
     let result: Result<u64, String> = runtime.block_on(async {
         let region = cx
             .open_child_region(ChildRegionSpec::inherit())
@@ -154,7 +162,6 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
             .await
             .map_err(|e| format!("bind {}: {e}", socket.display()))?;
         let serving = obj(vec![
-            ("event", s("fad_serving")),
             ("book_id", s(&book_id)),
             ("dir", s(dir.display().to_string())),
             ("socket", s(socket.display().to_string())),
@@ -169,7 +176,9 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
             "{}",
             line(
                 json,
-                &serving,
+                "fad_serving",
+                serving,
+                Some(&at),
                 &format!(
                     "fad serving {} (book {book_id}) on {}; stop with `fad stop --book {}`",
                     dir.display(),
@@ -203,7 +212,6 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
     match result {
         Ok(requests) => {
             let stopped = obj(vec![
-                ("event", s("fad_stopped")),
                 ("dir", s(dir.display().to_string())),
                 ("requests", Json::Int(i128::from(requests))),
             ]);
@@ -211,7 +219,9 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
                 "{}",
                 line(
                     json,
-                    &stopped,
+                    "fad_stopped",
+                    stopped,
+                    None,
                     &format!(
                         "fad for {} stopped after {requests} requests; the writer lease is released",
                         dir.display()
@@ -238,8 +248,7 @@ fn request(op: Op, json: bool) -> Request {
 }
 
 fn not_serving(dir: &Path, socket: &Path, holder: Option<String>, json: bool) -> u8 {
-    let event = obj(vec![
-        ("event", s("fad_status")),
+    let data = obj(vec![
         ("serving", Json::Bool(false)),
         ("dir", s(dir.display().to_string())),
         ("socket", s(socket.display().to_string())),
@@ -255,7 +264,7 @@ fn not_serving(dir: &Path, socket: &Path, holder: Option<String>, json: bool) ->
             dir.display()
         ),
     };
-    print!("{}", line(json, &event, &text));
+    print!("{}", line(json, "fad_status", data, None, &text));
     0
 }
 

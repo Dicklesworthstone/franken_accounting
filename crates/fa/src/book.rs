@@ -424,6 +424,13 @@ impl Book {
         &self.ctx
     }
 
+    /// The book's head: the latest recorded sequence, which a read at head
+    /// observes and a write's result follows (the robot envelope's
+    /// `coordinate.known_at`, plan Appendix D). Read-only.
+    pub fn head(&self) -> Result<CommitSeq, BookError> {
+        Ok(with_store!(&self.store, db => db.frontier()).map_err(KernelError::from)?)
+    }
+
     fn purposes(&self) -> PurposeContexts {
         PurposeContexts::narrow_runtime_root(&self.root)
     }

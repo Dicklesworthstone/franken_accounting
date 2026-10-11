@@ -14,7 +14,7 @@
 #
 # NOT COVERED YET (explicitly; a 0 exit here is not whole-chain G0 closure):
 #   the AGENTS file-coverage closure, the claims lint, verb parity
-#   (verbs.toml vs CLI vs MCP), the robot-schema fixture pin, a registry
+#   (verbs.toml vs CLI vs MCP), a registry
 #   schema checker (the registries are validated by the fa-registry and
 #   fa-model tests, not by this script), and a forbidden-deps check that
 #   distinguishes permitted foundation transitive paths from new paths
@@ -137,6 +137,11 @@ if [ "$QUICK" -eq 0 ]; then
     "$ROOT/registries/invariants.toml" "$LOG_DIR/test.log"
   run_gate "invariants-negative" "$ROOT/scripts/tests/invariants_negative.sh" \
     "$ROOT/registries/invariants.toml" "$LOG_DIR/test.log" "$LOG_DIR/invariants-negative"
+  # The robot-schema fixture pin (plan Appendix D, bead fa-12x): `fa
+  # robot-docs schema --json` equals registries/robot_schema/<v>.jsonl byte
+  # for byte. Its own target, so a missing pin is a failure, never zero
+  # matched tests.
+  cargo_build "robot-schema" test -p fa-cli --test robot_schema
   if cargo deny --version >/dev/null 2>&1; then
     run_step "deny" cargo deny check
   else

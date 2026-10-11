@@ -111,6 +111,7 @@ fn add(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         bytes,
     };
     let added = book.add_document(&doc)??;
+    out.at_book(&book)?;
     // On a repeat intake the book's record stands: report its kind and grade.
     let kind_out = policy
         .kind_by_tag(added.kind)
