@@ -954,8 +954,8 @@ statement = "Derived Leg vertices and edges equal the inline legs, are written i
 evidence_class = "invariant"
 first_gate = "G1"
 owner = "fa-op5"
-checkers = ["fa-journal::tests/genesis.rs::balanced_entry_commits_with_mirrors_and_edges_in_one_transaction", "fa-model::lib::mirrors::tests::leg_amount_mirrors_as_decimal_when_representable_else_bytes"]
-negatives = ["fa-registers::tests/registers.rs::missing_entry_period_projection_does_not_hide_journal_contributions", "fa-registers::tests/registers.rs::recovery_refuses_to_rewrite_an_account_forged_as_a_register"]
+checkers = ["fa-registers::tests/registers.rs::projections_equal_payloads_and_each_planted_departure_is_named", "fa-journal::tests/genesis.rs::balanced_entry_commits_with_mirrors_and_edges_in_one_transaction"]
+negatives = ["fa-registers::tests/registers.rs::projections_equal_payloads_and_each_planted_departure_is_named", "fa-registers::tests/registers.rs::missing_entry_period_projection_does_not_hide_journal_contributions"]
 waiver = "forbidden"
 
 [[clause]]

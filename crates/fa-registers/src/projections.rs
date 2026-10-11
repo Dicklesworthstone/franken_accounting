@@ -127,10 +127,25 @@ pub fn verify_projections<V: asupersync::fs::Vfs + Clone>(
         let legs = &entry.proposal.legs;
         let seq = row.created_at;
         let before = seq.0.checked_sub(1).map(CommitSeq);
-        let expected_edges = has_leg.get(&row.vid).copied().unwrap_or(0);
-        if expected_edges != legs.len() {
+        // A missing HAS_LEG edge is named per leg below; only an edge the
+        // payload has no leg for is reported here, so one departure is one
+        // finding.
+        let stored_edges = has_leg.get(&row.vid).copied().unwrap_or(0);
+        let named_edges = legs
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| {
+                u16::try_from(*i).is_ok_and(|ordinal| {
+                    let lvid = leg_vid(row.vid, ordinal);
+                    db.edge(edge_id(relation::HAS_LEG, row.vid, lvid))
+                        .is_ok_and(|e| e.is_some_and(|e| e.entry.retired_at.is_none()))
+                })
+            })
+            .count();
+        if stored_edges > named_edges {
             out.findings.push(format!(
-                "{what}: {expected_edges} HAS_LEG edges for {} inline legs",
+                "{what}: {} HAS_LEG edges beyond its {} inline legs",
+                stored_edges - named_edges,
                 legs.len()
             ));
         }

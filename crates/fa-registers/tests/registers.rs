@@ -1477,9 +1477,15 @@ fn projections_equal_payloads_and_each_planted_departure_is_named() {
         eprintln!("[projections] {what}: {:?}", v.findings);
         assert!(!v.is_green(), "{what} must be found");
         let name = format!("entry {:032x} {expected}", entry.0);
+        assert_eq!(
+            v.findings.len(),
+            1,
+            "{what}: one departure is exactly one finding: {:?}",
+            v.findings
+        );
         assert!(
-            v.findings.iter().any(|f| f.starts_with(&name)),
-            "{what}: expected a finding starting `{name}`: {:?}",
+            v.findings[0].starts_with(&name),
+            "{what}: expected the finding to start `{name}`: {:?}",
             v.findings
         );
     }
@@ -1495,10 +1501,12 @@ fn projections_equal_payloads_and_each_planted_departure_is_named() {
         .block_on(async { h.db.write(&ctx.commit(), b).await })
         .expect("tamper write");
     let v = verify_projections(&h.db, &h.book).unwrap();
+    assert_eq!(v.findings.len(), 1, "{:?}", v.findings);
     assert!(
-        v.findings
-            .iter()
-            .any(|f| f.contains("leg 0: no POSTS_TO edge to account")),
+        v.findings[0].starts_with(&format!(
+            "entry {:032x} leg 0: no POSTS_TO edge to account",
+            entry.0
+        )),
         "{:?}",
         v.findings
     );
