@@ -163,6 +163,8 @@ pub mod code {
     /// A RegisterEquals claim is not what its cell folds to at the claim's own sequence.
     pub const REGISTER_CLAIM_FALSE: &str = "FA-REF-140";
     pub const LEGAL_HOLD_SUBJECT: &str = "FA-REF-141";
+    pub const REDACTED_VIEW_ABSENT: &str = "FA-REF-142";
+    pub const REDACTION_PROOF: &str = "FA-REF-143";
     /// The entry moves value out of a limited account below its lower bound
     /// (`net − pending_out − x < lower_bound`, plan §5.4).
     pub const AVAILABILITY_LOWER: &str = "FA-REF-090";
