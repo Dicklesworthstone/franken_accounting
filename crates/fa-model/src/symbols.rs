@@ -63,6 +63,7 @@ symbols!(
         (REVERSAL_SCHEDULE, "ReversalSchedule", 35),
         (IMPORT_RECEIPT, "ImportReceipt", 36),
         (CUSTODY_TRANSFER, "CustodyTransfer", 37),
+        (LEGAL_HOLD_CELL, "LegalHoldCell", 39),
         (REGISTER_STATE, "RegisterState", 41),
     ]
 );
@@ -128,6 +129,7 @@ symbols!(
         (DIMENSION_ID, "dimension_id", 64),
         (DIMENSION_KIND, "dimension_kind", 65),
         (CUSTODY_LEN, "custody_len", 66),
+        (LEGAL_HOLDS, "legal_holds", 67),
     ]
 );
 
@@ -167,6 +169,7 @@ symbols!(
         (SUPPLEMENTS, "SUPPLEMENTS", 30),
         (CUSTODY_OF, "CUSTODY_OF", 31),
         (IMPORTED_BY, "IMPORTED_BY", 32),
+        (HOLDS, "HOLDS", 34),
     ]
 );
 

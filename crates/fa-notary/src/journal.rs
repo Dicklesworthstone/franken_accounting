@@ -70,6 +70,7 @@ pub fn is_undated(class: EntryClass) -> bool {
             | EntryClass::SWEEP_CONTROL
             | EntryClass::SCHEDULE_CONTROL
             | EntryClass::IMPORT_CONTROL
+            | EntryClass::HOLD_CONTROL
     )
 }
 

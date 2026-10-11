@@ -418,3 +418,31 @@ approver_profiles = ["Human"]
 agent_prepared_human_approvers = 0
 exclusions = ["preparer", "duplicate"]
 cite = "plan §9.3 (an ImportReceipt for every document the book ingests); fa-txf"
+
+# ---- Legal holds (book-scoped; fa-txf) ---------------------------------------
+# Placing a hold pins its subjects against erasure, GC and retention expiry
+# (plan §8.5), never against the two-phase reservation sweep. Releasing one
+# un-pins them, so it takes a second, Human principal's approval.
+[[rule]]
+name = "legal-hold-place"
+class = "HoldControl"
+transition = "Place"
+preparer_op = "hold"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §8.5 (a LegalHold pins every object in scope against erasure, GC and retention expiry)"
+
+[[rule]]
+name = "legal-hold-release"
+class = "HoldControl"
+transition = "Release"
+preparer_op = "hold"
+approvers = 1
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 1
+exclusions = ["preparer", "duplicate"]
+cite = "plan §8.5 (a hold's release is journaled and authorized); §14.6"
