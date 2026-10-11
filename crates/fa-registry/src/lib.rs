@@ -207,6 +207,134 @@ impl EntryClasses {
 }
 
 // ---------------------------------------------------------------------------
+// Control kinds (fa-g23)
+// ---------------------------------------------------------------------------
+
+/// One registered `EntryOrigin::Control.control_kind`: the act that mints a
+/// control record of `class`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ControlKindRow {
+    pub id: u16,
+    pub name: String,
+    pub class: String,
+    pub minted_by: String,
+}
+
+/// An id held for a control class that has not landed yet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReservedControlKind {
+    pub id: u16,
+    pub name: String,
+    pub holder: String,
+}
+
+/// The `[[control_kind]]` table of `entry_classes.toml`.
+#[derive(Clone, Debug, Default)]
+pub struct ControlKinds {
+    pub rows: Vec<ControlKindRow>,
+    pub reserved: Vec<ReservedControlKind>,
+}
+
+impl ControlKinds {
+    pub fn embedded(classes: &EntryClasses) -> Result<Self, RegistryError> {
+        Self::parse(classes, ENTRY_CLASSES)
+    }
+
+    /// The laws: ids (rows and reservations together) are unique and dense
+    /// from 1; names are unique; every row names a registered control class
+    /// and the code that mints it.
+    pub fn parse(classes: &EntryClasses, text: &str) -> Result<Self, RegistryError> {
+        const R: &str = "entry_classes.toml";
+        let doc = load(R, text)?;
+        let id_of = |t: &Table| -> Result<u16, RegistryError> {
+            let id = req_int(R, t, "id")?;
+            u16::try_from(id).map_err(|_| invalid(R, format!("control kind id {id} out of range")))
+        };
+        let mut rows = Vec::new();
+        for t in doc.arrays.get("control_kind").unwrap_or(&Vec::new()) {
+            let row = ControlKindRow {
+                id: id_of(t)?,
+                name: req_str(R, t, "name")?.to_string(),
+                class: req_str(R, t, "class")?.to_string(),
+                minted_by: req_str(R, t, "minted_by")?.to_string(),
+            };
+            match classes.by_name(&row.class) {
+                Some(c) if c.kind == ClassKind::Control => {}
+                Some(_) => {
+                    return Err(invalid(
+                        R,
+                        format!(
+                            "control kind `{}` names `{}`, a posting class",
+                            row.name, row.class
+                        ),
+                    ));
+                }
+                None => {
+                    return Err(invalid(
+                        R,
+                        format!(
+                            "control kind `{}` names unregistered class `{}`",
+                            row.name, row.class
+                        ),
+                    ));
+                }
+            }
+            if row.minted_by.trim().is_empty() {
+                return Err(invalid(
+                    R,
+                    format!("control kind `{}` names no minting code", row.name),
+                ));
+            }
+            rows.push(row);
+        }
+        let mut reserved = Vec::new();
+        for t in doc
+            .arrays
+            .get("reserved_control_kind")
+            .unwrap_or(&Vec::new())
+        {
+            reserved.push(ReservedControlKind {
+                id: id_of(t)?,
+                name: req_str(R, t, "name")?.to_string(),
+                holder: req_str(R, t, "holder")?.to_string(),
+            });
+        }
+        if rows.is_empty() {
+            return Err(invalid(R, "no control kinds"));
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        let mut names = std::collections::BTreeSet::new();
+        for (id, name) in rows
+            .iter()
+            .map(|r| (r.id, r.name.as_str()))
+            .chain(reserved.iter().map(|r| (r.id, r.name.as_str())))
+        {
+            if !ids.insert(id) {
+                return Err(invalid(R, format!("duplicate control kind id {id}")));
+            }
+            if !names.insert(name) {
+                return Err(invalid(R, format!("duplicate control kind `{name}`")));
+            }
+        }
+        if let Some((missing, _)) = (1u16..).zip(&ids).find(|(want, got)| want != *got) {
+            return Err(invalid(
+                R,
+                format!("control kind ids are not dense from 1: {missing} is missing"),
+            ));
+        }
+        Ok(Self { rows, reserved })
+    }
+
+    pub fn by_id(&self, id: u16) -> Option<&ControlKindRow> {
+        self.rows.iter().find(|r| r.id == id)
+    }
+
+    pub fn by_name(&self, name: &str) -> Option<&ControlKindRow> {
+        self.rows.iter().find(|r| r.name == name)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Admissibility matrix
 // ---------------------------------------------------------------------------
 
@@ -572,6 +700,7 @@ impl Symbols {
 pub struct Registries {
     pub exit_codes: ExitCodes,
     pub entry_classes: EntryClasses,
+    pub control_kinds: ControlKinds,
     pub admissibility: Admissibility,
     pub units: Vec<UnitRow>,
     pub rounding_laws: Vec<RoundingLawRow>,
@@ -581,10 +710,12 @@ pub struct Registries {
 impl Registries {
     pub fn embedded() -> Result<Self, RegistryError> {
         let entry_classes = EntryClasses::embedded()?;
+        let control_kinds = ControlKinds::embedded(&entry_classes)?;
         let admissibility = Admissibility::embedded(&entry_classes)?;
         Ok(Self {
             exit_codes: ExitCodes::embedded()?,
             entry_classes,
+            control_kinds,
             admissibility,
             units: units_embedded()?,
             rounding_laws: rounding_laws_embedded()?,
@@ -596,6 +727,95 @@ impl Registries {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// fa-g23: the eight control kinds are registered (6 and 7 held for
+    /// their classes), and the laws refuse a planted duplicate id, a gap, a
+    /// repeated name, a posting class, an unregistered class, a reservation
+    /// colliding with a row, and an empty table.
+    #[test]
+    fn control_kinds_are_dense_unique_and_name_control_classes() {
+        let classes = EntryClasses::embedded().unwrap();
+        let kinds = ControlKinds::embedded(&classes).unwrap();
+        let mut all: Vec<(u16, &str)> = kinds
+            .rows
+            .iter()
+            .map(|r| (r.id, r.name.as_str()))
+            .chain(kinds.reserved.iter().map(|r| (r.id, r.name.as_str())))
+            .collect();
+        all.sort_unstable();
+        assert_eq!(
+            all,
+            [
+                (1, "chart_install"),
+                (2, "period_transition"),
+                (3, "policy_activation"),
+                (4, "time_tick"),
+                (5, "schedule_cancel"),
+                (6, "import_run"),
+                (7, "legal_hold"),
+                (8, "capability_revocation"),
+            ]
+        );
+        assert_eq!(
+            kinds
+                .by_name("capability_revocation")
+                .map(|r| (r.id, r.class.as_str())),
+            Some((8, "PolicyControl"))
+        );
+        assert_eq!(
+            kinds.by_id(4).map(|r| r.class.as_str()),
+            Some("TimeControl")
+        );
+        let row = |id: u16, name: &str, class: &str| {
+            format!(
+                "[[control_kind]]\nid = {id}\nname = \"{name}\"\nclass = \"{class}\"\nminted_by = \"test\"\n"
+            )
+        };
+        let cases = [
+            (
+                format!(
+                    "{}{}",
+                    row(1, "a", "PeriodControl"),
+                    row(1, "b", "TimeControl")
+                ),
+                "duplicate control kind id 1",
+            ),
+            (
+                format!(
+                    "{}{}",
+                    row(1, "a", "PeriodControl"),
+                    row(3, "b", "TimeControl")
+                ),
+                "2 is missing",
+            ),
+            (row(2, "a", "PeriodControl"), "1 is missing"),
+            (
+                format!(
+                    "{}{}",
+                    row(1, "a", "PeriodControl"),
+                    row(2, "a", "TimeControl")
+                ),
+                "duplicate control kind `a`",
+            ),
+            (row(1, "a", "Original"), "a posting class"),
+            (row(1, "a", "NoSuchControl"), "unregistered class"),
+            (
+                format!(
+                    "{}[[reserved_control_kind]]\nid = 1\nname = \"b\"\nholder = \"x\"\n",
+                    row(1, "a", "PeriodControl")
+                ),
+                "duplicate control kind id 1",
+            ),
+            (String::new(), "no control kinds"),
+        ];
+        for (text, want) in cases {
+            let text = format!("schema_version = 1\n{text}");
+            let err = ControlKinds::parse(&classes, &text)
+                .expect_err(want)
+                .to_string();
+            assert!(err.contains(want), "{want}: {err}");
+        }
+    }
 
     /// fa-ctf: the expiry sweep's `Resolution(Expires)` is decided by its
     /// own registered rows — every state but Future admits (plan §5.4,

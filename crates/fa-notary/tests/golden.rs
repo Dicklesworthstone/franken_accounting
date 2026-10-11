@@ -56,7 +56,7 @@ fn control(class: EntryClass, control: ControlPayload, key: &[u8]) -> Entry {
     let mut p = payload(class, Vec::new(), key);
     p.control = Some(control);
     p.origin = EntryOrigin::Control {
-        control_kind: 1,
+        control_kind: fa_model::ControlKind::CHART_INSTALL,
         spec_body_digest: [9; 32],
     };
     p.seal(Vec::new(), None).unwrap()
