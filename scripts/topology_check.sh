@@ -5,6 +5,7 @@
 #
 # Usage: scripts/topology_check.sh <workspace_topology.toml> <cargo-metadata.json>
 #   (the JSON is `cargo metadata --no-deps --format-version 1` of the tree)
+#   or: scripts/topology_check.sh --facade-bytes <source.rs> [<source.rs>...]
 #
 # Plan §18.1: a crate may depend only on its own or lower layers; fa-reference
 # and fa-verify have registered allowlists; no crate exists without its row.
@@ -27,6 +28,50 @@ set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/gate_verdict.sh
 . "$ROOT/scripts/lib/gate_verdict.sh"
+
+# fa-087: a literal document-byte return type on a public facade signature
+# must take a Capability. This narrow source guard complements the compiler's
+# pinned missing-method doctests; it is not a Rust type/alias analysis.
+check_facade_bytes() {
+  local file bad
+  for file in "$@"; do
+    if [ ! -r "$file" ]; then
+      gate_unrun "facade-bytes — cannot read $file"
+      continue
+    fi
+    bad="$(awk '
+      /^[[:space:]]*pub[[:space:]]+(async[[:space:]]+|const[[:space:]]+)?fn[[:space:]]/ {
+        signature = $0; start = NR; collecting = 1
+      }
+      collecting && NR != start { signature = signature " " $0 }
+      collecting && /[;{]/ {
+        sub(/[;{].*$/, "", signature)
+        returns = signature; sub(/^.*->[[:space:]]*/, "", returns)
+        args = signature; sub(/->[[:space:]]*.*/, "", args)
+        if (signature ~ /->/ && returns ~ /(^|[^[:alnum:]_])(Document|DocumentRead|DocumentRecord|Storage)([^[:alnum:]_]|$)/ && args !~ /(^|[^[:alnum:]_])Capability([^[:alnum:]_]|$)/)
+          print start ": " signature
+        collecting = 0
+      }
+    ' "$file")" || {
+      gate_unrun "facade-bytes — could not inspect $file"
+      continue
+    }
+    if [ -n "$bad" ]; then
+      gate_fail "facade-bytes — $file exposes a document-byte type without Capability: $bad"
+    else
+      gate_pass "facade-bytes — $file has no ungated literal document-byte return type"
+    fi
+  done
+}
+
+if [ "${1:-}" = "--facade-bytes" ]; then
+  shift
+  gate_init "facade-bytes"
+  [ "$#" -gt 0 ] || gate_abort_unrun "facade-bytes — no source files provided"
+  check_facade_bytes "$@"
+  gate_verdict
+  exit $?
+fi
 
 if [ "$#" -ne 2 ]; then
   printf 'FAIL topology_check.sh: usage: topology_check.sh <workspace_topology.toml> <cargo-metadata.json>\n'
@@ -130,5 +175,7 @@ while IFS=$'\t' read -r name _ planned _; do
     gate_fail "topology — row \`$name\` says planned = false but no such crate exists"
   fi
 done <<<"$ROWS"
+
+check_facade_bytes "$ROOT/crates/fa/src/book.rs" "$ROOT/crates/fa/src/async_book.rs"
 
 gate_verdict

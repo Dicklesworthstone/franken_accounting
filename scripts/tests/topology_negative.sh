@@ -88,4 +88,39 @@ else
   expect_fail "allowlist breach" "fa-reference" "allowlist"
 fi
 
+# fa-087: preserve the gate's literal-signature boundary with independent
+# positive and planted-negative source fixtures. No fixture is compiled here;
+# the facade's positive/compile_fail doctests run in the workspace test gate.
+cat >"$WORK/facade-safe.rs" <<'RUST'
+pub fn read_document_for(capability: &Capability) -> Document { body() }
+pub async fn read_document_for_async(
+    capability: &fa_journal::Capability,
+) -> Outcome<fa_journal::DocumentRead> { body() }
+pub fn document_commitment() -> Option<[u8; 32]> { body() }
+pub(crate) fn verification_only() -> DocumentRecord { body() }
+RUST
+OUT="$WORK/facade-safe.transcript"
+bash "$CHECK" --facade-bytes "$WORK/facade-safe.rs" >"$OUT" 2>"$WORK/facade-safe.stderr"
+RC=$?
+if [ "$RC" -eq 0 ]; then
+  gate_pass "facade-bytes — capability-gated, commitment-only and private controls pass"
+else
+  gate_fail "facade-bytes — positive signature controls failed (exit $RC); see $OUT"
+fi
+
+cat >"$WORK/facade-raw.rs" <<'RUST'
+pub fn leaked_document() -> Option<fa_journal::Document> { body() }
+RUST
+cat >"$WORK/facade-record.rs" <<'RUST'
+pub async fn leaked_inline_record(
+    oid: &Oid,
+) -> Result<Option<fa_journal::DocumentRecord>, Error> { body() }
+RUST
+for case in facade-raw facade-record; do
+  OUT="$WORK/$case.transcript"
+  bash "$CHECK" --facade-bytes "$WORK/$case.rs" >"$OUT" 2>"$WORK/$case.stderr"
+  RC=$?
+  expect_fail "$case byte return" "facade-bytes" "without Capability"
+done
+
 gate_verdict
