@@ -541,16 +541,7 @@ where
     V: asupersync::fs::Vfs + Clone,
     B: asupersync::fs::Vfs + Clone,
 {
-    if let Err(d) = fa_policy::admit(
-        capability,
-        &Intent {
-            principal: capability.holder(),
-            trunk: true,
-            op: Op::Read,
-            book: book.book_id,
-            legs: &[],
-        },
-    ) {
+    if let Err(d) = fa_policy::admit_read(capability, capability.holder(), book.book_id) {
         return Ok(Err(refusal(&d)));
     }
     if let Err(d) = fa_policy::current(capability, db.frontier()?) {
@@ -623,9 +614,18 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::blob::DurableDirectory;
     use crate::evidence::doc_commit;
-    use fa_model::Id128;
+    use crate::genesis::{BookSpec, create_book};
+    use asupersync::runtime::{Runtime, RuntimeBuilder};
+    use fa_model::{Erasable, Id128, SealKey, SymbolTable};
+    use fa_money::UnitRegistry;
+    use fa_policy::Profile;
+    use fa_time::{DateDay, FiscalCalendar};
+    use fgdb::{DatabaseKeys, MemVfs};
     use fgdb_types::VId;
+    use fgdb_types::ids::DatabaseSecurityNamespaceId;
+    use std::path::Path;
 
     fn doc(size: usize) -> Document {
         Document {
@@ -639,6 +639,235 @@ mod tests {
     }
 
     const C: u64 = CHUNK_BYTES as u64;
+
+    struct ReadFixture {
+        runtime: Runtime,
+        contexts: PurposeContexts,
+        db: Database<MemVfs>,
+        book: BookContext,
+        store: BlobStore<MemVfs>,
+    }
+
+    impl ReadFixture {
+        fn new() -> Self {
+            let runtime = RuntimeBuilder::new().build().unwrap();
+            let root = runtime.request_cx_with_budget(asupersync::Budget::INFINITE);
+            let contexts = PurposeContexts::narrow_runtime_root(&root);
+            let keys = DatabaseKeys::new(
+                [0x5a; 32],
+                DatabaseSecurityNamespaceId([0x5b; 32]),
+                [0x5c; 32],
+            );
+            let mut db = runtime
+                .block_on(Database::open_memory(&contexts.commit(), keys))
+                .unwrap();
+            let units = UnitRegistry::with_defaults();
+            let calendar = FiscalCalendar::monthly("read-policy", 1, 1).unwrap();
+            let spec = BookSpec {
+                book_id: Id128([5; 16]),
+                name: "Read admission".into(),
+                base_unit: units.lookup("USD").unwrap(),
+                calendar: calendar.clone(),
+                time_zone_policy: None,
+                entities: Vec::new(),
+                opening_date: None,
+            };
+            let symbols = SymbolTable::compiled();
+            runtime
+                .block_on(create_book(&mut db, &contexts, &spec, &units, &symbols))
+                .unwrap();
+            let book = BookContext {
+                book_id: spec.book_id,
+                calendar,
+                units,
+                seal_key: SealKey([0x11; 32]),
+                symbols,
+            };
+            let vfs = contexts.commit().with_restriction(MemVfs::new).unwrap();
+            let directory = runtime
+                .block_on(DurableDirectory::create(
+                    &contexts.commit(),
+                    vfs,
+                    Path::new("read-blobs"),
+                ))
+                .unwrap();
+            let store = BlobStore::open(1, directory).unwrap();
+            Self {
+                runtime,
+                contexts,
+                db,
+                book,
+                store,
+            }
+        }
+
+        fn add(&mut self, document: &Document) {
+            self.runtime
+                .block_on(crate::evidence::add_document(
+                    &mut self.db,
+                    &self.contexts,
+                    &self.book,
+                    document,
+                ))
+                .unwrap()
+                .unwrap();
+        }
+
+        fn read(&mut self, capability: &Capability, oid: Oid) -> Result<DocumentRead, Refusal> {
+            self.runtime
+                .block_on(
+                    self.contexts
+                        .query()
+                        .with_restriction_async(read_document_for(
+                            &mut self.db,
+                            &self.contexts,
+                            &self.book,
+                            capability,
+                            &self.store,
+                            oid,
+                        )),
+                )
+                .unwrap()
+        }
+
+        fn reader(&self) -> Capability {
+            Capability::new(VId(31), Profile::Agent, &[Op::Read], VId(1))
+                .unwrap()
+                .for_books(&[self.book.book_id])
+                .unwrap()
+        }
+    }
+
+    #[test]
+    fn an_agent_reads_public_documents_and_only_the_governed_redacted_view() {
+        let mut f = ReadFixture::new();
+        let reader = f.reader();
+        let invoice = Document { kind: 1, ..doc(19) };
+        f.add(&invoice);
+        let head = f.db.frontier().unwrap();
+        assert_eq!(
+            f.read(&reader, invoice.oid()).unwrap(),
+            DocumentRead::Full(invoice)
+        );
+        assert_eq!(f.db.frontier().unwrap(), head, "a read records no write");
+
+        let statement = doc(CHUNK_BYTES + 19);
+        f.add(&statement);
+        assert_eq!(
+            f.read(&reader, statement.oid()).unwrap_err().code,
+            code::REDACTED_VIEW_ABSENT
+        );
+        let privileged = Capability::embedded(VId(7), &["privileged"]).unwrap();
+        f.runtime
+            .block_on(derive_redacted_view(
+                &mut f.db,
+                &f.contexts,
+                &f.book,
+                &privileged,
+                &f.store,
+                statement.oid(),
+            ))
+            .unwrap()
+            .unwrap();
+        let head = f.db.frontier().unwrap();
+        let DocumentRead::Redacted(view) = f.read(&reader, statement.oid()).unwrap() else {
+            panic!("an Agent without privileged must not receive the full statement");
+        };
+        assert_eq!(view.verify(), Ok(()));
+        assert_eq!(view.doc_commit, statement.doc_commit());
+        assert_eq!(view.chunks.len(), 2);
+        assert!(matches!(view.chunks[0], ViewChunk::Withheld(_)));
+        assert_eq!(
+            view.disclosed().collect::<Vec<_>>(),
+            vec![(C, &statement.bytes[CHUNK_BYTES..])]
+        );
+        assert_eq!(f.db.frontier().unwrap(), head);
+    }
+
+    #[test]
+    fn excluded_missing_and_expired_read_authority_refuses_before_payload_inspection() {
+        let mut f = ReadFixture::new();
+        let invoice = Document { kind: 1, ..doc(23) };
+        f.add(&invoice);
+        let reader = f.reader();
+        let mut poison = WriteBatch::new(relation::CUSTODY_OF);
+        poison.set_vertex_property(
+            document_vid(&invoice.oid()),
+            property::FA_PAYLOAD,
+            scalar_bytes("_fa_payload", vec![0xff]).unwrap(),
+        );
+        f.runtime
+            .block_on(f.db.write(&f.contexts.commit(), poison))
+            .unwrap();
+        let head = f.db.frontier().unwrap();
+        let excluded = Capability::new(VId(31), Profile::Agent, &[Op::Read], VId(1))
+            .unwrap()
+            .for_books(&[Id128([6; 16])])
+            .unwrap();
+        let missing = Capability::new(VId(31), Profile::Agent, &[Op::Post], VId(1)).unwrap();
+        let expired = reader.clone().expiring_at(head);
+        for (capability, expected) in [
+            (excluded, "FA-REF-011"),
+            (missing, "FA-REF-011"),
+            (expired, "FA-REF-014"),
+        ] {
+            assert_eq!(
+                f.read(&capability, invoice.oid()).unwrap_err().code,
+                expected
+            );
+            assert_eq!(f.db.frontier().unwrap(), head);
+        }
+        assert_eq!(
+            f.read(&reader, invoice.oid()).unwrap_err().code,
+            code::DOCUMENT_DRIFT,
+            "the malformed payload is observable only after admission"
+        );
+    }
+
+    #[test]
+    fn a_read_uses_current_expiry_and_revocation_even_for_an_older_document() {
+        let mut f = ReadFixture::new();
+        let invoice = Document { kind: 1, ..doc(29) };
+        f.add(&invoice);
+        let reader = f.reader();
+        let head = f.db.frontier().unwrap();
+        let expiring = reader.clone().expiring_at(CommitSeq(head.0 + 1));
+        assert!(f.read(&expiring, invoice.oid()).is_ok());
+        f.add(&Document { kind: 1, ..doc(31) });
+        assert_eq!(
+            f.read(&expiring, invoice.oid()).unwrap_err().code,
+            "FA-REF-014"
+        );
+        assert!(f.read(&reader, invoice.oid()).is_ok());
+        let request = crate::policy::RevocationRequest {
+            capability: Capability::embedded(VId(7), &["issue_capability"]).unwrap(),
+            revoked: reader.commitment().unwrap(),
+            effective_date: DateDay::from_ymd(2026, 1, 1).unwrap(),
+            idempotency_key: b"revoke-reader".to_vec(),
+            description: Erasable::seal(
+                &"revoke document access".to_string(),
+                None,
+                &f.book.seal_key,
+                [0x12; 32],
+                [0x13; 24],
+            ),
+        };
+        f.runtime
+            .block_on(crate::policy::revoke_capability(
+                &mut f.db,
+                &f.contexts,
+                &f.book,
+                request,
+            ))
+            .unwrap()
+            .unwrap();
+        let head = f.db.frontier().unwrap();
+        assert_eq!(
+            f.read(&reader, invoice.oid()).unwrap_err().code,
+            "FA-REF-023"
+        );
+        assert_eq!(f.db.frontier().unwrap(), head);
+    }
 
     #[test]
     fn a_view_rebuilds_the_commitment_and_discloses_only_untouched_chunks() {
