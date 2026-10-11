@@ -1389,9 +1389,10 @@ fn prepared_receipts_compete_for_the_same_open_amount_in_both_commit_orders() {
             .expect("prepare kernel")
             .expect("receipt admitted at its basis")
         {
-            PostPreparation::Ready(prepared) => prepared,
-            PostPreparation::AlreadyRecorded(_) => panic!("a distinct receipt must be fresh"),
+            PostPreparation::Ready(prepared) => Some(prepared),
+            PostPreparation::AlreadyRecorded(_) => None,
         }
+        .expect("a distinct receipt must be fresh")
     };
     let commit = |h: &mut Harness, prepared: Box<PreparedPost>| {
         let ctx = h.ctx();

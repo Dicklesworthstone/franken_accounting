@@ -1490,11 +1490,10 @@ mod tests {
             .unwrap()
             .unwrap()
         {
-            fa_journal::post::PostPreparation::Ready(prepared) => prepared,
-            fa_journal::post::PostPreparation::AlreadyRecorded(_) => {
-                panic!("fixture must prepare a fresh transaction")
-            }
+            fa_journal::post::PostPreparation::Ready(prepared) => Some(prepared),
+            fa_journal::post::PostPreparation::AlreadyRecorded(_) => None,
         }
+        .expect("fixture must prepare a fresh transaction")
     }
 
     fn prepare_fixture_transition(
@@ -1678,17 +1677,21 @@ mod tests {
             (Ok(Posted::Committed { recorded_at, .. }), Err(refusal)) => {
                 assert_eq!(*recorded_at, CommitSeq(basis.0 + 1));
                 assert_eq!((refusal.code, refusal.exit), ("FA-REF-030", 6));
-                true
+                Some(true)
             }
             (Err(refusal), Ok(closed)) => {
                 assert_eq!(closed.recorded_at, CommitSeq(basis.0 + 1));
                 assert_eq!((refusal.code, refusal.exit), ("FA-REF-030", 6));
-                false
+                Some(false)
             }
-            outcomes => {
-                panic!("seed {seed}: expected one commit and one witness conflict: {outcomes:?}")
-            }
+            _ => None,
         };
+        assert!(
+            post_won.is_some(),
+            "seed {seed}: expected one commit and one witness conflict: {:?}",
+            (&post, &close)
+        );
+        let post_won = post_won.expect("the asserted outcome identifies one winner");
         let (verify, mut verify_handle) = runtime
             .state
             .create_task(region, Budget::INFINITE, async move {
