@@ -167,6 +167,13 @@ fn load<V: asupersync::fs::Vfs + Clone>(
     if through > db.frontier()? {
         return Err(drift("maintenance cursor exceeds book frontier"));
     }
+    match crate::period_at(db, book, period, through) {
+        Ok(_) => {}
+        Err(RegisterError::InvalidSelection(_)) => {
+            return Err(drift("maintenance cursor predates its period"));
+        }
+        Err(error) => return Err(error),
+    }
     for row in crate::stored_registers(db, book, &fold)?.values() {
         let account: [u8; 16] = bytes(row, property::ACCOUNT_REF, "register.account")?
             .try_into()
