@@ -2495,7 +2495,7 @@ fn a_preparers_manual_assertion_stands_in_for_a_document_only_where_registered()
             reason_code,
             statement,
         } => Some((*reason_code, statement.clone())),
-        AttestationClaim::Reviewed { .. } => None,
+        AttestationClaim::Reviewed { .. } | AttestationClaim::RegisterEquals(_) => None,
     };
     let (reason_code, statement) = manual.expect("a ManualAssertion");
     assert_eq!(reason_code, 1);
@@ -2576,6 +2576,7 @@ fn forged_attestations_are_refused_where_the_kernel_relies_on_them() {
         },
         subject: Subject::Document(agents.oid()),
         principal: PRINCIPAL,
+        evidence_refs: Vec::new(),
     });
     let r = h.post_citing(&agents, b"g21-forged-self").unwrap_err();
     eprintln!(
@@ -2596,6 +2597,7 @@ fn forged_attestations_are_refused_where_the_kernel_relies_on_them() {
         },
         subject: Subject::Proposal(p.proposal_digest().unwrap()),
         principal: PRINCIPAL,
+        evidence_refs: Vec::new(),
     });
     let r = h.post(h.request(p, &["post"])).unwrap_err();
     eprintln!(
@@ -2620,6 +2622,7 @@ fn forged_attestations_are_refused_where_the_kernel_relies_on_them() {
         },
         subject: Subject::Proposal(p.proposal_digest().unwrap()),
         principal: REVIEWER,
+        evidence_refs: Vec::new(),
     });
     let r = h.post(h.request(p, &["post"])).unwrap_err();
     eprintln!(
