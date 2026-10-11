@@ -17,9 +17,11 @@
 //! Interim postures, stated rather than hidden (the pinned substrate has no
 //! object store, Appendix H):
 //! - the canonical bytes ride inline in the Document's `fa:document:v1`
-//!   payload, bounded by `max_document_bytes`; `External` storage, parsed
-//!   projections, redaction contracts and the `ImportReceipt` chain are later
-//!   slices;
+//!   payload up to `max_document_bytes`; past it they live in the book's
+//!   blob store behind the inline commitment (`blob`,
+//!   `document_stores.toml`). Custody and import runs (`custody`, `import`),
+//!   legal holds (`legal_hold`) and redacted views (`redaction`) are their
+//!   own modules; parsed projections are a later slice;
 //! - `document_oid = H("fa:oid:document:v1" ‖ book_id ‖ doc_commit)` is a
 //!   book-scoped locator, because the substrate's keyed `ObjectId` (`K_oid`)
 //!   is not exposed through the embedded handle;
