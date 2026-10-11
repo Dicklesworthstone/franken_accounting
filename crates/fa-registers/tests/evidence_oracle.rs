@@ -751,7 +751,7 @@ fn cite(
             }
         }
     }
-    chosen.sort_by(|a, b| a.0.cmp(&b.0));
+    chosen.sort_by_key(|a| a.0);
     chosen.dedup_by(|a, b| a.0 == b.0);
     let citations = chosen
         .iter()

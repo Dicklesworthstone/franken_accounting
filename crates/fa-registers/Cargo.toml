@@ -19,6 +19,7 @@ asupersync = { workspace = true }
 fgdb = { workspace = true }
 fgdb-types = { workspace = true }
 fgdb-crypto = { workspace = true }
+fgdb-delta-types = { workspace = true }
 
 [dev-dependencies]
 fa-reference = { path = "../fa-reference", version = "=0.0.1" }

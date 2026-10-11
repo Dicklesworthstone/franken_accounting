@@ -20,3 +20,4 @@ pub mod book;
 pub use book::{Book, BookError, BookKeys, Entropy, Outcome};
 pub use fa_notary::{AccumulatorVerification, Checkpointed};
 pub use fa_policy::{Capability, Op, Profile};
+pub use fa_registers::Advance;

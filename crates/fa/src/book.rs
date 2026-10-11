@@ -694,6 +694,37 @@ impl Book {
         Ok(with_store!(&self.store, db => fa_registers::verify_period(db, &self.ctx, period_code))?)
     }
 
+    /// Incrementally maintain native posted/pending period registers from
+    /// committed Entry payloads. Cells and the consumed cursor publish in
+    /// one commit. A retired delta cursor rebuilds from the journal; detected
+    /// cache drift is an error requiring an explicit rebuild.
+    pub fn advance_registers(
+        &mut self,
+        period_code: &str,
+    ) -> Result<fa_registers::Advance, BookError> {
+        let purposes = self.purposes();
+        let ctx = &self.ctx;
+        let runtime = &self.runtime;
+        Ok(with_store!(&mut self.store, db => runtime.block_on(async {
+            fa_registers::advance(db, &purposes, ctx, period_code).await
+        }))?)
+    }
+
+    /// Replace native posted/pending period registers and their maintenance
+    /// cursor by a fresh journal fold, atomically. Authoritative objects are
+    /// never changed. Reports continue to use their independent literal fold.
+    pub fn rebuild_registers(
+        &mut self,
+        period_code: &str,
+    ) -> Result<fa_registers::Advance, BookError> {
+        let purposes = self.purposes();
+        let ctx = &self.ctx;
+        let runtime = &self.runtime;
+        Ok(with_store!(&mut self.store, db => runtime.block_on(async {
+            fa_registers::rebuild(db, &purposes, ctx, period_code).await
+        }))?)
+    }
+
     /// Publish an unsigned accumulator state for this book's entry prefix.
     /// `witness` authorizes publication, not changing its recomputed contents.
     /// Admission precedes storage observation; Agent profiles cannot publish
@@ -1303,6 +1334,10 @@ mod tests {
             )
             .expect("kernel")
             .expect("opens");
+            let empty = book
+                .advance_registers(&march)
+                .expect("initialize maintainer");
+            assert!(empty.fold.cells.is_empty());
             entry_ref = post_rent(&mut book, usd, principal, day, b"rent", 150_000)
                 .expect("kernel")
                 .expect("admitted")
@@ -1325,6 +1360,18 @@ mod tests {
             .unwrap()
             .expect("the entry survived reopen");
         assert_eq!(entry.entry_digest, entry_ref.entry_digest);
+        let advanced = book
+            .advance_registers(&march)
+            .expect("advance after reopen");
+        assert_eq!(advanced.entries_decoded, 1);
+        assert_eq!(advanced.fold, book.fold_period(&march).unwrap());
+        assert!(book.verify_registers(&march).unwrap().is_green());
+        assert!(!book.advance_registers(&march).unwrap().wrote);
+        let rebuilt = book
+            .rebuild_registers(&march)
+            .expect("rebuild through facade");
+        assert_eq!(rebuilt.fold, advanced.fold);
+        assert!(book.verify_registers(&march).unwrap().is_green());
         // The journal is still open for business, and the same key is still recorded.
         let again = post_rent(&mut book, usd, principal, day, b"rent", 150_000)
             .expect("kernel")

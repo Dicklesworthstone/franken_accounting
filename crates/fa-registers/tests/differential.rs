@@ -32,6 +32,530 @@ use fgdb_types::{CommitSeq, VId};
 
 const PRINCIPAL: VId = VId(7);
 
+fn maintain(k: &mut Kernel, period: &str) -> fa_registers::Advance {
+    let ctx = k.ctx();
+    let result = k
+        .runtime
+        .block_on(fa_registers::advance(&mut k.db, &ctx, &k.book, period))
+        .expect("advance registers");
+    assert_eq!(result.fold, fold_period(&k.db, &k.book, period).unwrap());
+    assert!(
+        fa_registers::verify_period(&k.db, &k.book, period)
+            .unwrap()
+            .is_green()
+    );
+    result
+}
+
+fn maintenance_intent(class: &str, date: DateDay, amount: i128, key: &str) -> Intent {
+    let unit = UnitRegistry::with_defaults().lookup("USD").unwrap().0;
+    Intent {
+        class: class.into(),
+        date,
+        discriminator: None,
+        legs: if amount == 0 {
+            Vec::new()
+        } else {
+            vec![
+                Leg {
+                    side: fa_reference::Side::Debit,
+                    account: "6000".into(),
+                    unit,
+                    entity: None,
+                    mantissa: amount,
+                },
+                Leg {
+                    side: fa_reference::Side::Credit,
+                    account: "1000".into(),
+                    unit,
+                    entity: None,
+                    mantissa: amount,
+                },
+            ]
+        },
+        key: key.as_bytes().to_vec(),
+        ops: vec!["post".into()],
+        approvals: 0,
+        reverses: None,
+        resolves: None,
+        settles: Vec::new(),
+    }
+}
+
+fn maintained_matches_oracle(maintained: &fa_registers::Advance, oracle: &Oracle, book: Id128) {
+    for (cells, expected) in [
+        (&maintained.fold.cells, oracle.fold(&maintained.period)),
+        (
+            &maintained.fold.pending,
+            oracle.pending_fold(&maintained.period),
+        ),
+    ] {
+        assert_eq!(cells.len(), expected.len());
+        for ((code, unit), expected) in expected {
+            let cell = cells
+                .iter()
+                .find(|cell| {
+                    cell.key.account == account_vid(book, &code) && cell.key.unit_id == unit
+                })
+                .expect("oracle cell exists in maintained result");
+            assert_eq!(
+                (cell.debits, cell.credits, cell.entry_count),
+                (
+                    expected.debits.to_i128().unwrap(),
+                    expected.credits.to_i128().unwrap(),
+                    expected.entry_count
+                )
+            );
+        }
+    }
+}
+
+#[test]
+fn incremental_registers_consume_only_new_entries_and_release_the_original_period() {
+    let (mut k, mut oracle, periods) = setup();
+    open_period(&mut k, &mut oracle, &periods[2], 1);
+    open_period(&mut k, &mut oracle, &periods[3], 2);
+    let usd = k.book.units.lookup("USD").unwrap();
+    let march = DateDay::from_ymd(2026, 3, 15).unwrap();
+    let april = DateDay::from_ymd(2026, 4, 15).unwrap();
+    maintain(&mut k, &periods[2]);
+    maintain(&mut k, &periods[3]);
+    let mut refs = Vec::new();
+    for n in 1..=24 {
+        let i = maintenance_intent("Original", march, n, &format!("inc-{n}"));
+        refs.push(kernel_post(&mut k, &i, usd, &refs).unwrap().entry_ref());
+        assert!(matches!(oracle.post(&i), Verdict::Posted { .. }));
+        let result = maintain(&mut k, &periods[2]);
+        maintained_matches_oracle(&result, &oracle, k.book.book_id);
+        assert_eq!(
+            result.entries_decoded, 1,
+            "prior entries must not be decoded again"
+        );
+        assert_eq!(result.fold.entries, n as u64);
+        let head = k.db.frontier().unwrap();
+        assert!(!maintain(&mut k, &periods[2]).wrote);
+        assert_eq!(
+            k.db.frontier().unwrap(),
+            head,
+            "no self-generated maintenance loop"
+        );
+    }
+    // A reversal contributes opposite legs without removing the original.
+    let mut reversal = maintenance_intent("Reversal", march, 1, "undo-first");
+    for leg in &mut reversal.legs {
+        leg.side = match leg.side {
+            fa_reference::Side::Debit => fa_reference::Side::Credit,
+            fa_reference::Side::Credit => fa_reference::Side::Debit,
+        };
+    }
+    reversal.reverses = Some(0);
+    refs.push(
+        kernel_post(&mut k, &reversal, usd, &refs)
+            .unwrap()
+            .entry_ref(),
+    );
+    assert!(matches!(oracle.post(&reversal), Verdict::Posted { .. }));
+    let reversed = maintain(&mut k, &periods[2]);
+    maintained_matches_oracle(&reversed, &oracle, k.book.book_id);
+    assert_eq!(reversed.entries_decoded, 1);
+    assert_eq!(reversed.fold.entries, 25);
+    assert_eq!(reversed.fold.cells.len(), 2);
+    assert!(
+        reversed
+            .fold
+            .cells
+            .iter()
+            .all(|c| c.debits + c.credits == 301)
+    );
+    // Several holds arrive before one advance; the two columns remain distinct.
+    let first_hold = refs.len();
+    for n in 0..3 {
+        let i = maintenance_intent("Pending", march, 80, &format!("hold-{n}"));
+        refs.push(kernel_post(&mut k, &i, usd, &refs).unwrap().entry_ref());
+        assert!(matches!(oracle.post(&i), Verdict::Posted { .. }));
+    }
+    let held = maintain(&mut k, &periods[2]);
+    assert_eq!(held.entries_decoded, 3);
+    maintained_matches_oracle(&held, &oracle, k.book.book_id);
+    assert_eq!(held.fold.pending.len(), 2);
+    assert!(
+        held.fold
+            .pending
+            .iter()
+            .all(|c| c.debits + c.credits == 240)
+    );
+    let mut partial = maintenance_intent("Resolution", april, 60, "partial");
+    partial.resolves = Some(Resolve {
+        target: first_hold,
+        posts: Some(vec![0, 1]),
+    });
+    refs.push(
+        kernel_post(&mut k, &partial, usd, &refs)
+            .unwrap()
+            .entry_ref(),
+    );
+    assert!(matches!(oracle.post(&partial), Verdict::Posted { .. }));
+    let released = maintain(&mut k, &periods[2]);
+    maintained_matches_oracle(&released, &oracle, k.book.book_id);
+    assert_eq!(released.fold.pending.len(), 2);
+    assert!(
+        released
+            .fold
+            .pending
+            .iter()
+            .all(|c| c.debits + c.credits == 160)
+    );
+    let posted = maintain(&mut k, &periods[3]);
+    maintained_matches_oracle(&posted, &oracle, k.book.book_id);
+    assert_eq!(posted.fold.cells.len(), 2);
+    assert_eq!(posted.fold.entries, 1);
+    assert!(posted.fold.cells.iter().all(|c| c.debits + c.credits == 60));
+    // Empty-legged cross-period voids release the full remaining reservations.
+    for target in [first_hold + 1, first_hold + 2] {
+        let mut void = maintenance_intent("Resolution", april, 0, &format!("void-{target}"));
+        void.resolves = Some(Resolve {
+            target,
+            posts: None,
+        });
+        refs.push(kernel_post(&mut k, &void, usd, &refs).unwrap().entry_ref());
+        assert!(matches!(oracle.post(&void), Verdict::Posted { .. }));
+    }
+    assert!(maintain(&mut k, &periods[2]).fold.pending.is_empty());
+    maintained_matches_oracle(&maintain(&mut k, &periods[2]), &oracle, k.book.book_id);
+    maintained_matches_oracle(&maintain(&mut k, &periods[3]), &oracle, k.book.book_id);
+    // Recovery replaces the derived values but leaves the exact fold unchanged.
+    let before = fold_period(&k.db, &k.book, &periods[2]).unwrap();
+    let ctx = k.ctx();
+    let rebuilt = k
+        .runtime
+        .block_on(fa_registers::rebuild(&mut k.db, &ctx, &k.book, &periods[2]))
+        .unwrap();
+    assert!(rebuilt.rebuilt);
+    assert_eq!(rebuilt.fold, before);
+    assert_eq!(maintain(&mut k, &periods[2]).fold, before);
+}
+
+#[test]
+fn incremental_registers_reject_stale_or_foreign_preparation_and_recover_after_reopen() {
+    let chart: Vec<ChartRow> = ACCOUNTS
+        .iter()
+        .map(|(code, ty, leaf)| (*code, *ty, *leaf, 0, None))
+        .collect();
+    let (mut k, mut oracle, periods, vfs) = setup_store(&chart);
+    open_period(&mut k, &mut oracle, &periods[2], 1);
+    let usd = k.book.units.lookup("USD").unwrap();
+    let march = DateDay::from_ymd(2026, 3, 15).unwrap();
+    maintain(&mut k, &periods[2]);
+    let ctx = k.ctx();
+    let before = k.db.frontier().unwrap();
+    let abandoned = k
+        .runtime
+        .block_on(fa_registers::prepare_advance(
+            &mut k.db,
+            &ctx,
+            &k.book,
+            &periods[2],
+        ))
+        .unwrap();
+    drop(abandoned);
+    assert_eq!(
+        k.db.frontier().unwrap(),
+        before,
+        "preparation never publishes cells/cursor"
+    );
+    let stale = k
+        .runtime
+        .block_on(fa_registers::prepare_advance(
+            &mut k.db,
+            &ctx,
+            &k.book,
+            &periods[2],
+        ))
+        .unwrap();
+    kernel_post(
+        &mut k,
+        &maintenance_intent("Original", march, 17, "after-plan"),
+        usd,
+        &[],
+    )
+    .unwrap();
+    let posted = k.db.frontier().unwrap();
+    let result = k.runtime.block_on(fa_registers::publish_advance(
+        &mut k.db, &ctx, &k.book, stale,
+    ));
+    assert!(matches!(
+        result,
+        Err(fa_registers::RegisterError::StaleFold)
+    ));
+    assert_eq!(k.db.frontier().unwrap(), posted);
+    // Drop the actual substrate handle with an unconsumed posting and reopen.
+    let Kernel {
+        runtime,
+        root,
+        db,
+        book,
+        evidence,
+        agent_evidence,
+    } = k;
+    drop(db);
+    let db = runtime
+        .block_on(Database::open_with_vfs(
+            &ctx.commit(),
+            vfs.clone(),
+            vfs.database_dir(),
+            db_keys(),
+        ))
+        .unwrap();
+    let mut k = Kernel {
+        runtime,
+        root,
+        db,
+        book,
+        evidence,
+        agent_evidence,
+    };
+    let advanced = maintain(&mut k, &periods[2]);
+    assert_eq!(advanced.entries_decoded, 1);
+    assert_eq!(advanced.fold.entries, 1);
+
+    // Same book id and same numeric frontier do not identify the same journal.
+    let (mut other, mut other_oracle, other_periods) = setup();
+    open_period(&mut other, &mut other_oracle, &other_periods[2], 1);
+    maintain(&mut other, &other_periods[2]);
+    kernel_post(
+        &mut other,
+        &maintenance_intent("Original", march, 999, "after-plan"),
+        usd,
+        &[],
+    )
+    .unwrap();
+    maintain(&mut other, &other_periods[2]);
+    assert_eq!(other.db.frontier().unwrap(), k.db.frontier().unwrap());
+    assert_ne!(
+        other.db.partition_root().unwrap(),
+        k.db.partition_root().unwrap()
+    );
+    let foreign = k
+        .runtime
+        .block_on(fa_registers::prepare_advance(
+            &mut k.db,
+            &ctx,
+            &k.book,
+            &periods[2],
+        ))
+        .unwrap();
+    let other_ctx = other.ctx();
+    let before = other.db.frontier().unwrap();
+    let result = other.runtime.block_on(fa_registers::publish_advance(
+        &mut other.db,
+        &other_ctx,
+        &other.book,
+        foreign,
+    ));
+    assert!(matches!(
+        result,
+        Err(fa_registers::RegisterError::StaleFold)
+    ));
+    assert_eq!(other.db.frontier().unwrap(), before);
+    maintain(&mut other, &other_periods[2]);
+}
+
+#[test]
+fn incremental_registers_verify_corruption_and_rebuild_without_changing_journal() {
+    use fa_model::symbols::{property, relation};
+    let (mut k, mut oracle, periods) = setup();
+    open_period(&mut k, &mut oracle, &periods[2], 1);
+    let usd = k.book.units.lookup("USD").unwrap();
+    let march = DateDay::from_ymd(2026, 3, 15).unwrap();
+    let posted = kernel_post(
+        &mut k,
+        &maintenance_intent("Original", march, 123, "fund"),
+        usd,
+        &[],
+    )
+    .unwrap();
+    let good = maintain(&mut k, &periods[2]).fold;
+    let ctx = k.ctx();
+    let state = fa_registers::maintainer::state_vid(k.book.book_id, &periods[2]);
+    for forged_checksum in [false, true] {
+        let row = k.db.vertex(state).unwrap().unwrap();
+        let mut payload = rows::bytes(&row, property::FA_PAYLOAD, "state").unwrap();
+        // Change the entry counter while leaving every amount and fold digest intact.
+        assert_eq!(payload[14], 1, "this fixture has a contribution watermark");
+        payload[23] ^= 1;
+        let mut write = WriteBatch::new(relation::IN_PERIOD);
+        write.set_vertex_property(
+            state,
+            property::FA_PAYLOAD,
+            Some(rows::scalar_bytes("state", payload.clone()).unwrap()),
+        );
+        if forged_checksum {
+            let mut h = fgdb_crypto::Hasher::new();
+            h.update(b"fa:register-state-payload:v1");
+            h.update(&k.book.book_id.0);
+            h.update(&(periods[2].len() as u64).to_le_bytes());
+            h.update(periods[2].as_bytes());
+            h.update(&payload);
+            write.set_vertex_property(
+                state,
+                property::FA_DIGEST,
+                Some(rows::scalar_bytes("digest", h.finalize().0.to_vec()).unwrap()),
+            );
+        }
+        k.runtime
+            .block_on(k.db.write(&ctx.commit(), write))
+            .unwrap();
+        assert!(
+            !fa_registers::verify_period(&k.db, &k.book, &periods[2])
+                .unwrap()
+                .is_green(),
+            "neither a broken checksum nor a coherently forged counter is proof"
+        );
+        if !forged_checksum {
+            let frontier = k.db.frontier().unwrap();
+            assert!(
+                k.runtime
+                    .block_on(fa_registers::advance(&mut k.db, &ctx, &k.book, &periods[2]))
+                    .is_err()
+            );
+            assert_eq!(k.db.frontier().unwrap(), frontier);
+        }
+        let result = k
+            .runtime
+            .block_on(fa_registers::rebuild(&mut k.db, &ctx, &k.book, &periods[2]))
+            .unwrap();
+        assert_eq!(result.fold, good);
+        maintain(&mut k, &periods[2]);
+    }
+    // An omitted/changed amount is caught independently, then repaired from truth.
+    let rvid = fa_registers::register_vid(k.book.book_id, &good.cells[0].key);
+    let mut write = WriteBatch::new(relation::IN_PERIOD);
+    write.set_vertex_property(
+        rvid,
+        property::DEBITS_POSTED,
+        Some(rows::scalar_bytes("amount", 999i128.to_le_bytes().to_vec()).unwrap()),
+    );
+    k.runtime
+        .block_on(k.db.write(&ctx.commit(), write))
+        .unwrap();
+    assert!(
+        !fa_registers::verify_period(&k.db, &k.book, &periods[2])
+            .unwrap()
+            .is_green()
+    );
+    assert!(
+        k.runtime
+            .block_on(fa_registers::advance(&mut k.db, &ctx, &k.book, &periods[2]))
+            .is_err()
+    );
+    // The existing materialize API repairs both cells and maintenance state.
+    k.runtime
+        .block_on(fa_registers::materialize(&mut k.db, &ctx, &k.book, &good))
+        .unwrap();
+    assert_eq!(
+        fa_journal::post::read_entry(&k.db, posted.entry_ref().vid)
+            .unwrap()
+            .unwrap()
+            .0
+            .entry_digest,
+        posted.entry_ref().entry_digest,
+        "repair never edits the committed posting"
+    );
+    maintain(&mut k, &periods[2]);
+
+    // Forge a cursor across a real unconsumed posting, recomputing the state
+    // checksum. Integrity alone is not verification of the omitted contribution.
+    kernel_post(
+        &mut k,
+        &maintenance_intent("Original", march, 7, "skipped"),
+        usd,
+        &[],
+    )
+    .unwrap();
+    let frontier = k.db.frontier().unwrap();
+    let row = k.db.vertex(state).unwrap().unwrap();
+    let mut payload = rows::bytes(&row, property::FA_PAYLOAD, "state").unwrap();
+    payload[6..14].copy_from_slice(&frontier.0.to_le_bytes());
+    let mut h = fgdb_crypto::Hasher::new();
+    h.update(b"fa:register-state-payload:v1");
+    h.update(&k.book.book_id.0);
+    h.update(&(periods[2].len() as u64).to_le_bytes());
+    h.update(periods[2].as_bytes());
+    h.update(&payload);
+    let mut write = WriteBatch::new(relation::IN_PERIOD);
+    write.set_vertex_property(
+        state,
+        property::FA_PAYLOAD,
+        Some(rows::scalar_bytes("state", payload).unwrap()),
+    );
+    write.set_vertex_property(
+        state,
+        property::FA_DIGEST,
+        Some(rows::scalar_bytes("digest", h.finalize().0.to_vec()).unwrap()),
+    );
+    k.runtime
+        .block_on(k.db.write(&ctx.commit(), write))
+        .unwrap();
+    let verified = fa_registers::verify_period(&k.db, &k.book, &periods[2]).unwrap();
+    assert!(!verified.is_green());
+    assert!(
+        verified
+            .projection_errors
+            .iter()
+            .any(|e| e.contains("journal prefix"))
+    );
+    let repaired = k
+        .runtime
+        .block_on(fa_registers::rebuild(&mut k.db, &ctx, &k.book, &periods[2]))
+        .unwrap();
+    assert_eq!(repaired.fold.entries, 2);
+    assert_eq!(repaired.fold.cells.len(), 2);
+    assert!(
+        repaired
+            .fold
+            .cells
+            .iter()
+            .all(|c| c.debits + c.credits == 130)
+    );
+    maintain(&mut k, &periods[2]);
+}
+
+#[test]
+fn incremental_registers_consume_every_expiry_in_a_single_commit() {
+    let (mut k, mut oracle, periods) = setup();
+    open_period(&mut k, &mut oracle, &periods[2], 1);
+    let usd = k.book.units.lookup("USD").unwrap();
+    let march = DateDay::from_ymd(2026, 3, 15).unwrap();
+    kernel_tick(&mut k, 100, "initial").unwrap();
+    for n in 0..5 {
+        kernel_post_timed(
+            &mut k,
+            &maintenance_intent("Pending", march, 80, &format!("timed-{n}")),
+            usd,
+            &[],
+            10,
+        )
+        .unwrap();
+    }
+    let held = maintain(&mut k, &periods[2]);
+    assert_eq!(held.fold.pending.len(), 2);
+    assert!(held.fold.pending.iter().all(|c| c.entry_count == 5));
+    kernel_tick(&mut k, 110, "due").unwrap();
+    let batch = kernel_sweep(&mut k, 3).unwrap().unwrap();
+    assert_eq!(batch.expired.len(), 3);
+    let partial = maintain(&mut k, &periods[2]);
+    assert_eq!(partial.fold.pending.len(), 2);
+    assert!(
+        partial
+            .fold
+            .pending
+            .iter()
+            .all(|c| c.entry_count == 2 && c.debits + c.credits == 160)
+    );
+    assert_eq!(kernel_sweep(&mut k, 3).unwrap().unwrap().expired.len(), 2);
+    assert!(maintain(&mut k, &periods[2]).fold.pending.is_empty());
+}
+
 /// xorshift64*: deterministic, dependency-free.
 struct Rng(u64);
 impl Rng {

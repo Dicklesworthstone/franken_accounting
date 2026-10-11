@@ -15,6 +15,7 @@
 pub mod availability;
 pub mod entity;
 pub mod explain;
+pub mod maintainer;
 pub mod open_items;
 
 use core::fmt;
@@ -40,6 +41,9 @@ pub use entity::{
     check_register_equals, fold_period_by_entity, register_equals, verify_entities,
 };
 pub use explain::{BalanceExplanation, explain_balance};
+pub use maintainer::{
+    Advance, PreparedAdvance, advance, prepare_advance, publish_advance, rebuild,
+};
 pub use open_items::{
     Application, AppliedDrift, OpenItem, OpenItemVerification, open_items, verify_open_items,
 };
@@ -57,6 +61,8 @@ pub enum RegisterError {
     Encoding(fa_model::EncodeError),
     /// A caller supplied an old or modified projection instead of the current fold.
     StaleFold,
+    /// Derived cells or their maintenance metadata disagree. Rebuild from the journal.
+    ProjectionDrift(String),
 }
 
 impl fmt::Display for RegisterError {
@@ -71,6 +77,10 @@ impl fmt::Display for RegisterError {
             Self::StaleFold => write!(
                 f,
                 "register fold changed; refold the journal before materializing"
+            ),
+            Self::ProjectionDrift(what) => write!(
+                f,
+                "register projection drift: {what}; rebuild from the journal"
             ),
         }
     }
@@ -414,6 +424,31 @@ pub async fn materialize<V: asupersync::fs::Vfs + Clone>(
     if fold_period(db, book, &fold.period)? != *fold {
         return Err(RegisterError::StaleFold);
     }
+    // Preserve the existing empty-materialization no-op. Explicit advance
+    // initializes maintenance metadata even for an empty period; materialize
+    // only needs that state when there are cells, repairs, or an existing cursor.
+    if fold.cells.is_empty()
+        && fold.pending.is_empty()
+        && db
+            .vertex(maintainer::state_vid(book.book_id, &fold.period))?
+            .is_none()
+        && materialize_batch(db, book, fold)?.is_empty()
+    {
+        return Ok(db.frontier()?);
+    }
+    let prepared = maintainer::prepare_fold(db, book, fold.clone())?;
+    Ok(maintainer::publish_advance(db, ctx, book, prepared)
+        .await?
+        .published_at)
+}
+
+/// Build the projection write without publishing it, so maintenance can
+/// publish its cursor in the same transaction. Callers validate the fold.
+fn materialize_batch<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    fold: &Fold,
+) -> Result<WriteBatch, RegisterError> {
     let pvid = period_vid(&book.calendar.id, &fold.period);
     let mut batch = WriteBatch::new(relation::IN_PERIOD);
     let expected: BTreeSet<_> = fold
@@ -526,11 +561,7 @@ pub async fn materialize<V: asupersync::fs::Vfs + Clone>(
         lo.copy_from_slice(&h.finalize().0[..16]);
         batch.ensure_edge_by_triple(fgdb_types::EId(u128::from_le_bytes(lo)), rvid, pvid, vec![]);
     }
-    if batch.is_empty() {
-        // Nothing to materialize: the period has no posting entries.
-        return Ok(db.frontier()?);
-    }
-    Ok(db.write(&ctx.commit(), batch).await?)
+    Ok(batch)
 }
 
 /// One stored cell that disagrees with the refold.
@@ -633,10 +664,23 @@ pub fn verify_period<V: asupersync::fs::Vfs + Clone>(
     period_code: &str,
 ) -> Result<Verification, RegisterError> {
     let fold = fold_period(db, book, period_code)?;
+    let mut result = verify_projection(db, book, &fold)?;
+    if let Some(error) = maintainer::verify_state(db, book, period_code)? {
+        result.projection_errors.push(error);
+    }
+    Ok(result)
+}
+
+fn verify_projection<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    fold: &Fold,
+) -> Result<Verification, RegisterError> {
+    let period_code = &fold.period;
     let mut drift = Vec::new();
     let mut pending_drift = Vec::new();
     let mut projection_errors = Vec::new();
-    let mut candidates = stored_registers(db, book, &fold)?;
+    let mut candidates = stored_registers(db, book, fold)?;
     let pvid = period_vid(&book.calendar.id, period_code);
     let linked: BTreeSet<_> = db
         .in_neighbours(pvid, relation::IN_PERIOD)?
@@ -644,7 +688,7 @@ pub fn verify_period<V: asupersync::fs::Vfs + Clone>(
         .collect();
     let edges = db.edges()?;
     let mut stored_digest: Option<Option<[u8; 32]>> = None;
-    let columns = fold_columns(&fold);
+    let columns = fold_columns(fold);
     for (key, (posted, pending)) in &columns {
         let rvid = register_vid(book.book_id, key);
         let (stored, stored_pending) = match candidates.remove(&rvid) {
