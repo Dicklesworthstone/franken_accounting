@@ -1341,6 +1341,73 @@ fn activation_is_all_or_nothing_across_crash_points() {
     );
 }
 
+#[test]
+fn migration_controls_refuse_base_totals_without_consuming_their_keys() {
+    let (mut k, _) = setup();
+    let (spec, _) = plan_run(&mut Rng(0x00F1_7001), "valued-control");
+    let body = body_of(&k, &spec);
+    let totals = || fa_model::BaseTotals {
+        unit_id: usd().0,
+        debits: 0,
+        credits: 0,
+        fx_law_oid: Oid([0x91; 32]),
+        rate_doc_oids: vec![Oid([0x92; 32])],
+        residual: None,
+    };
+    let mut proposal = open_proposal(
+        &k.book,
+        PRINCIPAL,
+        &body,
+        vec![k.tb],
+        b"valued-open",
+        sealed(&k.book, "open run"),
+    )
+    .unwrap();
+    proposal.base_totals = Some(totals());
+    let encoded = proposal.clone().seal(Vec::new(), None).unwrap();
+    assert_eq!(
+        fa_model::Entry::decode(&encoded.encode().unwrap()).unwrap(),
+        encoded,
+        "publication refusal preserves the existing durable decoder"
+    );
+    let head = k.db.frontier().unwrap();
+    let req = RunControlRequest {
+        proposal,
+        capability: capability(&["post", "migrate"]),
+        approvals: Vec::new(),
+    };
+    let ctx = k.ctx();
+    let refusal = k
+        .runtime
+        .block_on(open_run(&mut k.db, &ctx, &k.book, &body, req))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-100", exit::USAGE));
+    assert!(refusal.message.contains("base_totals"), "{refusal}");
+    assert_eq!(k.db.frontier().unwrap(), head);
+
+    let run = kernel_open(&mut k, &spec, "valued-open", &["post", "migrate"])
+        .expect("a native control with the same key opens")
+        .run;
+    let clean = kernel_plan(&k, run, kind::ABANDON, "valued-abandon").unwrap();
+    let mut valued = clean.clone();
+    valued.base_totals = Some(totals());
+    let head = k.db.frontier().unwrap();
+    let refusal = kernel_transition(&mut k, valued, false).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-100", exit::USAGE));
+    assert!(refusal.message.contains("base_totals"), "{refusal}");
+    assert_eq!(k.db.frontier().unwrap(), head);
+    assert_eq!(
+        read_run(&k.db, run, None).unwrap().unwrap().state,
+        RunState::Open
+    );
+    kernel_transition(&mut k, clean, false).expect("the same valid transition still works");
+    assert_eq!(
+        read_run(&k.db, run, None).unwrap().unwrap().state,
+        RunState::Abandoned
+    );
+}
+
 /// An invalid final chunk (fa-kjl acceptance): Finalize refuses and names
 /// the lines that do not tie out; the run is abandoned (its chunks stay
 /// journaled and invisible); a retry under a new run key reuses the chunk
@@ -1937,6 +2004,138 @@ fn a_scratch_book_with_equal_folds_but_other_entries_is_refused() {
     let r = verify(&a, &b_scratch, &a_map).expect_err("other objects");
     assert_eq!((r.code, r.exit), ("FA-REF-135", exit::VERIFICATION), "{r}");
     assert!(r.message.contains("different entries"), "{r}");
+}
+
+#[test]
+fn maintainer_tracks_migration_visibility_across_activation_and_abandonment() {
+    let (mut k, mut oracle) = setup();
+    let mut rng = Rng(0x00A6_71A7_E001);
+    let ops = vec!["post".to_string(), "migrate".to_string()];
+    let advance = |k: &mut Kernel| {
+        let ctx = k.ctx();
+        k.runtime
+            .block_on(fa_registers::advance(&mut k.db, &ctx, &k.book, OPENING))
+            .expect("the maintainer advances")
+    };
+    let mut baseline = advance(&mut k).fold;
+    for r in 0..3 {
+        let key = format!("maintained-run-{r}");
+        let open_key = format!("maintained-open-{r}");
+        let (spec, chunks) = plan_run(&mut rng, &key);
+        let run = kernel_open(&mut k, &spec, &open_key, &["post", "migrate"])
+            .expect("opens")
+            .run;
+        let o = oracle
+            .open_run(&spec, open_key.as_bytes(), &ops)
+            .expect("oracle opens");
+        for (i, legs) in chunks.iter().enumerate() {
+            let chunk_key = format!("maintained-{r}-{i}");
+            post_chunk(&mut k, run, &chunk_key, legs.clone());
+            assert!(matches!(
+                oracle.post_migration(o, &chunk_intent(&chunk_key, legs.clone())),
+                Verdict::Posted { .. }
+            ));
+            // One run leaves every chunk in the unread suffix; another
+            // consumes each invisible chunk before its later activation.
+            if r != 2 {
+                let staged = advance(&mut k);
+                assert!(!staged.rebuilt);
+                assert_eq!(staged.fold, baseline, "Open chunks never contribute");
+                assert!(
+                    fa_registers::verify_period(&k.db, &k.book, OPENING)
+                        .unwrap()
+                        .is_green()
+                );
+            }
+        }
+        let before = k.db.frontier().unwrap();
+        let known_before = oracle.known();
+        let finalize = r != 0;
+        let kind = if finalize {
+            kind::FINALIZE
+        } else {
+            kind::ABANDON
+        };
+        let close_key = format!("maintained-close-{r}");
+        let plan = kernel_plan(&k, run, kind, &close_key).expect("plans");
+        let transition = kernel_transition(&mut k, plan, finalize).expect("closes");
+        if finalize {
+            oracle
+                .finalize_run(o, chunks.len(), close_key.as_bytes(), &ops, 2)
+                .expect("oracle finalizes");
+        } else {
+            oracle
+                .abandon_run(o, chunks.len(), close_key.as_bytes(), &ops)
+                .expect("oracle abandons");
+        }
+        let published = advance(&mut k);
+        assert_eq!(published.rebuilt, finalize);
+        if finalize {
+            assert_eq!(published.fold.watermark, Some(transition.recorded_at));
+            assert_eq!(
+                published.fold,
+                fold_period_at(&k.db, &k.book, OPENING, published.fold.watermark).unwrap(),
+                "the contributing watermark includes migration activation"
+            );
+            let account = account_vid(k.book.book_id, &spec.lines[0].0);
+            let explanation = fa_registers::explain_balance(&k.db, &k.book, account, OPENING, None)
+                .expect("the activation has an explanation");
+            assert_eq!(explanation.last_changed_at(), Some(transition.recorded_at));
+            for contribution in &explanation.contributions {
+                let (entry, recorded_at) = fa_journal::post::read_entry(&k.db, contribution.entry)
+                    .unwrap()
+                    .expect("the entry is still journaled");
+                assert_eq!(contribution.recorded_at, recorded_at);
+                if matches!(entry.proposal.origin, EntryOrigin::Migration { run_ref, .. } if run_ref == run)
+                {
+                    assert_eq!(contribution.visible_at, transition.recorded_at);
+                    assert!(contribution.recorded_at < contribution.visible_at);
+                }
+            }
+            for change in &explanation.history {
+                let historical =
+                    fold_period_at(&k.db, &k.book, OPENING, Some(change.recorded_at)).unwrap();
+                let amounts = historical
+                    .cells
+                    .iter()
+                    .find(|c| c.key.account == account && c.key.unit_id == change.unit_id)
+                    .map_or((0, 0), |c| (c.debits, c.credits));
+                assert_eq!((change.debits, change.credits), amounts);
+            }
+        }
+        let entity = fa_registers::fold_period_by_entity(&k.db, &k.book, OPENING, None)
+            .expect("entity fold");
+        assert_eq!(entity.watermark, published.fold.watermark);
+        if let Some(at) = entity.watermark {
+            let historical = fa_registers::fold_period_by_entity(&k.db, &k.book, OPENING, Some(at))
+                .expect("entity fold at its watermark");
+            assert_eq!(historical.cells, entity.cells);
+            assert_eq!(historical.pending, entity.pending);
+            assert_eq!(historical.fold_digest, entity.fold_digest);
+        }
+        assert_eq!(
+            published.fold,
+            fold_period_at(&k.db, &k.book, OPENING, None).unwrap()
+        );
+        assert_fold(&k, &oracle, OPENING, before, known_before, r);
+        assert_fold(
+            &k,
+            &oracle,
+            OPENING,
+            k.db.frontier().unwrap(),
+            oracle.known(),
+            r,
+        );
+        assert!(
+            fa_registers::verify_period(&k.db, &k.book, OPENING)
+                .unwrap()
+                .is_green()
+        );
+        let repeated = advance(&mut k);
+        assert!(!repeated.wrote, "activation contributes exactly once");
+        assert_eq!(repeated.fold, published.fold);
+        baseline = published.fold;
+    }
 }
 
 const GO_LIVE_PERIOD: &str = "FY2026-P04";

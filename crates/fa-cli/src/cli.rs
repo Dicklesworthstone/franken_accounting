@@ -87,7 +87,12 @@ pub(crate) enum Fail {
     Usage(UsageError),
     Refusal(Refusal),
     Book(BookError),
-    Verification(String, Json),
+    Verification {
+        message: String,
+        detail: Json,
+        cite: Option<String>,
+        fix: Option<String>,
+    },
     /// The registry and this binary disagree (a parity defect), or the
     /// embedded registry is unreadable: a foundation failure, exit 5.
     Internal(String),
@@ -392,11 +397,15 @@ impl core::ops::DerefMut for BookRef<'_> {
 }
 
 impl Books<'_> {
-    pub(crate) fn open(&mut self, args: &Args) -> Result<BookRef<'_>, Fail> {
-        let dir = book_dir(args)?;
+    /// Open the book `args` names, its path (and `--keys`) resolved against
+    /// the caller's working directory `cwd` ([`Files::cwd`]): a daemon
+    /// compares the client's book, not a path in its own directory, with
+    /// the one it holds.
+    pub(crate) fn open(&mut self, args: &Args, cwd: Option<&Path>) -> Result<BookRef<'_>, Fail> {
+        let dir = book_dir(args, cwd)?;
         match self {
             Self::Dir => {
-                let keys = BookKeys::load(&keys_path(args, &dir))?;
+                let keys = BookKeys::load(&keys_path(args, &dir, cwd))?;
                 Ok(BookRef::Owned(Box::new(Book::open_dir(
                     &dir,
                     keys,
@@ -429,11 +438,13 @@ impl Books<'_> {
 pub(crate) struct BookSource<'a> {
     books: Books<'a>,
     said: Rc<RefCell<Said>>,
+    /// The command's [`Files::cwd`], which its book path is relative to.
+    cwd: Option<PathBuf>,
 }
 
 impl BookSource<'_> {
     pub(crate) fn open(&mut self, args: &Args) -> Result<BookRef<'_>, Fail> {
-        let book = self.books.open(args)?;
+        let book = self.books.open(args, self.cwd.as_deref())?;
         stamp(&self.said, &book)?;
         Ok(book)
     }
@@ -450,9 +461,10 @@ fn same_dir(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// How a command reads the files and stdin its arguments name: relative to
-/// the caller's working directory, which for a daemon request is the
-/// client's, never the daemon's.
+/// How a command reads the files and stdin its arguments name, and finds
+/// the book (`--book`, `FA_BOOK`) and keys file (`--keys`) it opens:
+/// relative to the caller's working directory, which for a daemon request
+/// is the client's, never the daemon's.
 #[derive(Clone, Debug, Default)]
 pub struct Files {
     /// `None`: the process's own working directory.
@@ -473,12 +485,20 @@ pub enum Stdin {
     Missing,
 }
 
+/// `path` relative to the caller's working directory `cwd` (`None`: this
+/// process's own); an absolute path stays itself. Lexical, reading nothing
+/// on disk, so a directory `fa book create` has yet to make resolves like
+/// any other. The one resolver for a command's files, book and keys.
+fn resolve_in(cwd: Option<&Path>, path: &str) -> PathBuf {
+    match cwd {
+        Some(cwd) => cwd.join(path),
+        None => PathBuf::from(path),
+    }
+}
+
 impl Files {
     fn resolve(&self, path: &str) -> PathBuf {
-        match &self.cwd {
-            Some(cwd) => cwd.join(path),
-            None => PathBuf::from(path),
-        }
+        resolve_in(self.cwd.as_deref(), path)
     }
 
     /// The bytes of `path`, or of stdin when `path` is `-`.
@@ -548,6 +568,7 @@ pub fn run(argv: &[String], books: Books<'_>, files: Files, capture: bool) -> (u
     let books = BookSource {
         books,
         said: Rc::clone(&out.said),
+        cwd: files.cwd.clone(),
     };
     let mut ctx = Ctx { out, books, files };
     let result = dispatch(&mut ctx, reg, &args);
@@ -666,16 +687,23 @@ fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
                 detail: Json::Null,
             }
         }
-        Err(Fail::Verification(message, detail)) => Failure {
+        Err(Fail::Verification {
+            message,
+            detail,
+            cite,
+            fix,
+        }) => Failure {
             exit: exit::VERIFICATION,
             refusal_id: None,
             diag: format!(
-                "verification failed (exit {}): {message}",
-                exit::VERIFICATION
+                "verification failed (exit {}): {message}{}",
+                exit::VERIFICATION,
+                fix.as_ref()
+                    .map_or_else(String::new, |hint| format!("\n  fix: {hint}"))
             ),
             message,
-            cite: None,
-            fix: None,
+            cite,
+            fix,
             detail,
         },
         Err(Fail::Internal(message)) => Failure {
@@ -1453,25 +1481,33 @@ fa robot-docs schema balance_explained --json\n";
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-fn book_dir(args: &Args) -> Result<PathBuf, Fail> {
+/// The book directory `--book` (else `FA_BOOK`) names, resolved against the
+/// caller's working directory `cwd` (fa-40l). The front door leases and
+/// routes by this path, and a command opens it, so every spelling of one
+/// directory reaches the same book.
+pub(crate) fn named_book(args: &Args, cwd: Option<&Path>) -> Option<PathBuf> {
     if let Some(d) = args.flag("--book") {
-        return Ok(PathBuf::from(d));
+        return Some(resolve_in(cwd, d));
     }
-    if let Ok(d) = std::env::var("FA_BOOK")
-        && !d.is_empty()
-    {
-        return Ok(PathBuf::from(d));
-    }
-    Err(usage(
-        "no book directory",
-        "--book <dir> (or export FA_BOOK=<dir>)",
-    ))
+    std::env::var("FA_BOOK")
+        .ok()
+        .filter(|d| !d.is_empty())
+        .map(|d| resolve_in(cwd, &d))
 }
 
-fn keys_path(args: &Args, dir: &Path) -> PathBuf {
+fn book_dir(args: &Args, cwd: Option<&Path>) -> Result<PathBuf, Fail> {
+    named_book(args, cwd).ok_or_else(|| {
+        usage(
+            "no book directory",
+            "--book <dir> (or export FA_BOOK=<dir>)",
+        )
+    })
+}
+
+/// `--keys`, resolved against `cwd` like the book; else `<dir>/book.keys`.
+fn keys_path(args: &Args, dir: &Path, cwd: Option<&Path>) -> PathBuf {
     args.flag("--keys")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| dir.join("book.keys"))
+        .map_or_else(|| dir.join("book.keys"), |k| resolve_in(cwd, k))
 }
 
 pub(crate) fn principal(args: &Args) -> VId {
@@ -1517,7 +1553,7 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "run `fa book create --book <new dir> --name \"My Co\"` without a daemon for that directory",
                 ));
             }
-            let dir = book_dir(args)?;
+            let dir = book_dir(args, ctx.files.cwd.as_deref())?;
             let name = args.require("--name", "\"My Co\"")?;
             let units = fa_money::UnitRegistry::embedded().map_err(BookError::Registry)?;
             let base = args.flag("--base-unit").unwrap_or("USD");
@@ -1560,7 +1596,7 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let mut id = [0u8; 16];
             entropy.fill(&mut id).map_err(BookError::Entropy)?;
             let book_id = Id128(id);
-            let keys_file = keys_path(args, &dir);
+            let keys_file = keys_path(args, &dir, ctx.files.cwd.as_deref());
             std::fs::create_dir_all(&dir).map_err(|e| BookError::Io(dir.clone(), e))?;
             keys.save(&keys_file)?;
             let book = Book::create_dir(
@@ -3093,8 +3129,8 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 );
                 Ok(())
             } else {
-                Err(Fail::Verification(
-                    format!(
+                Err(Fail::Verification {
+                    message: format!(
                         "stored registers differ from the refold in {}{}",
                         periods.join(", "),
                         if diagnostics.is_empty() {
@@ -3103,8 +3139,10 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                             format!("; {}", diagnostics.join("; "))
                         }
                     ),
-                    Json::Arr(details),
-                ))
+                    detail: Json::Arr(details),
+                    cite: None,
+                    fix: None,
+                })
             }
         }
         Some("availability") => {
@@ -3137,13 +3175,15 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 );
                 Ok(())
             } else {
-                Err(Fail::Verification(
-                    format!(
+                Err(Fail::Verification {
+                    message: format!(
                         "{} limited accounts' stored cells differ from the refold",
                         v.drift.len()
                     ),
-                    obj(fields),
-                ))
+                    detail: obj(fields),
+                    cite: None,
+                    fix: None,
+                })
             }
         }
         Some("open-items") => {
@@ -3177,13 +3217,15 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 );
                 Ok(())
             } else {
-                Err(Fail::Verification(
-                    format!(
+                Err(Fail::Verification {
+                    message: format!(
                         "{} applied mirrors differ from the open-item fold",
                         v.drift.len()
                     ),
-                    obj(fields),
-                ))
+                    detail: obj(fields),
+                    cite: None,
+                    fix: None,
+                })
             }
         }
         other => Err(unhandled("verify", other)),
@@ -3591,6 +3633,74 @@ fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 fn registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     match args.positional.get(1).map(String::as_str) {
+        Some("advance") => {
+            let mut book = ctx.books.open(args)?;
+            let periods = selected_periods(args, &book)?;
+            for p in &periods {
+                out.effective(format!("period:{p}"));
+                let advanced = match book.advance_registers(p) {
+                    Ok(advanced) => advanced,
+                    Err(BookError::Registers(fa_registers::RegisterError::ProjectionDrift(
+                        why,
+                    ))) => {
+                        return Err(Fail::Verification {
+                            message: format!("register cache drift in {p}: {why}"),
+                            detail: obj(vec![("period", s(p)), ("problem", s(&why))]),
+                            cite: Some("FA-INV-04 (registers are derived from the journal)".into()),
+                            fix: Some(format!(
+                                "run `fa verify registers --period {p} --json` with the same --book and retain the finding; if repair is intended, run `fa registers materialize --period {p} --yes --json`"
+                            )),
+                        });
+                    }
+                    Err(error) => return Err(error.into()),
+                };
+                let fold = &advanced.fold;
+                out.at_book(&book)?;
+                out.event(
+                    "registers_advanced",
+                    vec![
+                        ("period", s(p)),
+                        ("from", Json::Int(i128::from(advanced.from.0))),
+                        ("through", Json::Int(i128::from(advanced.through.0))),
+                        (
+                            "recorded_at",
+                            if advanced.wrote {
+                                Json::Int(i128::from(advanced.published_at.0))
+                            } else {
+                                Json::Null
+                            },
+                        ),
+                        ("entries_decoded", Json::Int(advanced.entries_decoded as i128)),
+                        ("rebuilt", Json::Bool(advanced.rebuilt)),
+                        ("wrote", Json::Bool(advanced.wrote)),
+                        ("cells", Json::Int(fold.cells.len() as i128)),
+                        ("pending_cells", Json::Int(fold.pending.len() as i128)),
+                        ("entries", Json::Int(fold.entries as i128)),
+                        (
+                            "watermark",
+                            fold.watermark
+                                .map_or(Json::Null, |w| Json::Int(i128::from(w.0))),
+                        ),
+                        ("fold_digest", s(hex(&fold.fold_digest))),
+                    ],
+                    &format!(
+                        "{p}: registers through {}, {} entries decoded, {} posted cells, {} pending cells ({})",
+                        advanced.through.0,
+                        advanced.entries_decoded,
+                        fold.cells.len(),
+                        fold.pending.len(),
+                        if !advanced.wrote {
+                            "already current"
+                        } else if advanced.rebuilt {
+                            "rebuilt from journal"
+                        } else {
+                            "advanced"
+                        }
+                    ),
+                );
+            }
+            Ok(())
+        }
         Some("materialize") => {
             let mut book = ctx.books.open(args)?;
             let periods = selected_periods(args, &book)?;

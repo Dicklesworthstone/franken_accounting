@@ -236,6 +236,78 @@ fn incremental_registers_consume_only_new_entries_and_release_the_original_perio
 }
 
 #[test]
+fn incremental_pending_overflow_can_resolve_before_the_consumed_frontier() {
+    for cached_hold in [false, true] {
+        let (mut k, mut oracle, periods) = setup();
+        let period = &periods[2];
+        open_period(&mut k, &mut oracle, period, 1);
+        let usd = k.book.units.lookup("USD").unwrap();
+        let date = DateDay::from_ymd(2026, 3, 15).unwrap();
+        let mut refs = Vec::new();
+        let large = maintenance_intent("Pending", date, i128::MAX, "large-hold");
+        refs.push(kernel_post(&mut k, &large, usd, &refs).unwrap().entry_ref());
+        assert!(matches!(oracle.post(&large), Verdict::Posted { .. }));
+        if cached_hold {
+            maintained_matches_oracle(&maintain(&mut k, period), &oracle, k.book.book_id);
+        }
+        let small = maintenance_intent("Pending", date, 1, "small-hold");
+        refs.push(kernel_post(&mut k, &small, usd, &refs).unwrap().entry_ref());
+        assert!(matches!(oracle.post(&small), Verdict::Posted { .. }));
+
+        // Unlimited accounts admit both holds. While both are live, the
+        // final pending column cannot be represented: refuse without moving
+        // the cells or cursor, rather than saturating or wrapping the sum.
+        let before = k.db.frontier().unwrap();
+        let ctx = k.ctx();
+        let overflow = k
+            .runtime
+            .block_on(fa_registers::advance(&mut k.db, &ctx, &k.book, period));
+        assert!(matches!(
+            overflow,
+            Err(fa_registers::RegisterError::Overflow)
+        ));
+        assert_eq!(k.db.frontier().unwrap(), before);
+
+        let mut release = maintenance_intent("Resolution", date, 0, "release-large-hold");
+        release.resolves = Some(Resolve {
+            target: 0,
+            posts: None,
+        });
+        refs.push(
+            kernel_post(&mut k, &release, usd, &refs)
+                .unwrap()
+                .entry_ref(),
+        );
+        assert!(matches!(oracle.post(&release), Verdict::Posted { .. }));
+
+        // The unread suffix briefly exceeds i128, but at its actual target
+        // frontier only the one-unit hold contributes. Both a cold rebuild
+        // and advancement from a cached large hold must reach that result.
+        let recovered = maintain(&mut k, period);
+        assert!(recovered.rebuilt);
+        maintained_matches_oracle(&recovered, &oracle, k.book.book_id);
+        assert_eq!(recovered.fold.pending.len(), 2);
+        assert!(
+            recovered
+                .fold
+                .pending
+                .iter()
+                .all(|cell| cell.debits + cell.credits == 1)
+        );
+        assert!(!maintain(&mut k, period).wrote);
+
+        release.key = b"release-small-hold".to_vec();
+        release.resolves.as_mut().unwrap().target = 1;
+        kernel_post(&mut k, &release, usd, &refs).unwrap();
+        assert!(matches!(oracle.post(&release), Verdict::Posted { .. }));
+        let empty = maintain(&mut k, period);
+        assert!(!empty.rebuilt);
+        assert!(empty.fold.pending.is_empty());
+        maintained_matches_oracle(&empty, &oracle, k.book.book_id);
+    }
+}
+
+#[test]
 fn incremental_registers_reject_stale_or_foreign_preparation_and_recover_after_reopen() {
     let chart: Vec<ChartRow> = ACCOUNTS
         .iter()
@@ -4003,7 +4075,7 @@ fn kernel_sweep_raw(k: &mut Kernel, req: &SweepRequest) -> Result<Option<SweepBa
     let book = &k.book;
     k.runtime
         .block_on(async move {
-            let mut describe = |text: &str| fresh_seal(&book.seal_key, text);
+            let mut describe = |text: &str| Ok::<_, KernelError>(fresh_seal(&book.seal_key, text));
             sweep_batch(db, &ctx, book, req, &mut describe).await
         })
         .expect("kernel")
@@ -5156,6 +5228,232 @@ fn a_crashed_sweep_leaves_nothing_partial_and_the_cursor_survives_restart() {
     );
 }
 
+/// A sweep `describe` whose `fail_at`-th call (0-based) reports the
+/// caller's entropy source unavailable; every other call seals as usual.
+fn failing_describe(
+    seal_key: &SealKey,
+    fail_at: usize,
+) -> impl FnMut(&str) -> Result<Erasable<String>, KernelError> + '_ {
+    let mut calls = 0usize;
+    move |text: &str| {
+        let n = calls;
+        calls += 1;
+        if n == fail_at {
+            Err(KernelError::Entropy(
+                fgdb_crypto::EntropyError::Unavailable {
+                    source_id: "differential",
+                    detail: "the entropy device failed".into(),
+                },
+            ))
+        } else {
+            Ok(fresh_seal(seal_key, text))
+        }
+    }
+}
+
+fn kernel_sweep_failing(
+    k: &mut Kernel,
+    max_batch: usize,
+    fail_at: usize,
+) -> Result<Result<Option<SweepBatch>, Refusal>, KernelError> {
+    let req = sweeper(k, max_batch);
+    let ctx = k.ctx();
+    let db = &mut k.db;
+    let book = &k.book;
+    k.runtime.block_on(async move {
+        let mut describe = failing_describe(&book.seal_key, fail_at);
+        sweep_batch(db, &ctx, book, &req, &mut describe).await
+    })
+}
+
+fn kernel_sweep_reversals_failing(
+    k: &mut Kernel,
+    max_batch: usize,
+    fail_at: usize,
+) -> Result<Result<Option<ReversalBatch>, Refusal>, KernelError> {
+    let req = sweeper(k, max_batch);
+    let ctx = k.ctx();
+    let db = &mut k.db;
+    let book = &k.book;
+    k.runtime.block_on(async move {
+        let mut describe = failing_describe(&book.seal_key, fail_at);
+        sweep_reversals_batch(db, &ctx, book, &req, &mut describe).await
+    })
+}
+
+/// The sweep's seals come from the caller's entropy, which can fail
+/// (WhiteCreek 3300, GrayPike 3303/3304). A failure sealing the first
+/// expiry, and one sealing the cursor after the batch's expiries were
+/// prepared, both abort the open transaction: nothing commits, the cursor
+/// does not move, the backlog is unchanged, and the retry sweeps exactly
+/// the batch the oracle sweeps — also from a persisted cursor.
+#[test]
+fn an_entropy_failure_in_the_sweep_commits_nothing_and_the_retry_sweeps_the_same_holds() {
+    let (mut k, mut oracle, periods) = setup_with(BUDGETED);
+    let usd = k.book.units.lookup("USD").unwrap();
+    open_period(&mut k, &mut oracle, &periods[2], 1);
+    let march = DateDay::from_ymd(2026, 3, 15).unwrap();
+    let leg = |side: fa_reference::Side, account: &str, mantissa: i128| Leg {
+        side,
+        account: account.into(),
+        unit: usd.0,
+        entity: None,
+        mantissa,
+    };
+    let dr = fa_reference::Side::Debit;
+    let cr = fa_reference::Side::Credit;
+    let intent = |class: &str, legs: Vec<Leg>, key: &str| Intent {
+        class: class.into(),
+        date: march,
+        discriminator: None,
+        legs,
+        key: key.as_bytes().to_vec(),
+        ops: vec!["post".into()],
+        approvals: 0,
+        reverses: None,
+        resolves: None,
+        settles: Vec::new(),
+    };
+    let mut refs: Vec<EntryRef> = Vec::new();
+    let fund = intent(
+        "Original",
+        vec![leg(dr, "1000", 5_000), leg(cr, "3000", 5_000)],
+        "fund",
+    );
+    refs.push(
+        kernel_post(&mut k, &fund, usd, &refs)
+            .expect("funds")
+            .entry_ref(),
+    );
+    assert!(matches!(oracle.post(&fund), Verdict::Posted { .. }));
+    kernel_tick(&mut k, 50, "t0").expect("tick");
+    oracle.record_tick(50).unwrap();
+    for n in 0..5 {
+        let i = intent(
+            "Pending",
+            vec![leg(dr, "6100", 10 + n), leg(cr, "1000", 10 + n)],
+            &format!("H{n}"),
+        );
+        refs.push(
+            kernel_post_timed(&mut k, &i, usd, &refs, 5)
+                .expect("hold")
+                .entry_ref(),
+        );
+        assert!(matches!(oracle.post_timed(&i, 5), Verdict::Posted { .. }));
+    }
+    kernel_tick(&mut k, 60, "t1").expect("due tick");
+    oracle.record_tick(60).unwrap();
+    let due = kernel_due(&k, &refs);
+    assert_eq!(due, oracle.due());
+    let frontier = k.db.frontier().unwrap();
+    // Call 0 seals the first expiry's description; call 2 the cursor's,
+    // after both of the batch's expiries were prepared.
+    for fail_at in [0, 2] {
+        let r = kernel_sweep_failing(&mut k, 2, fail_at);
+        assert!(
+            matches!(r, Err(KernelError::Entropy(_))),
+            "fail_at {fail_at}: {r:?}"
+        );
+        assert_eq!(k.db.frontier().unwrap(), frontier, "fail_at {fail_at}");
+        assert_eq!(kernel_due(&k, &refs), due, "fail_at {fail_at}");
+        for hold in &refs[1..] {
+            assert!(
+                k.db.vertex(rows::resolution_vid(hold.vid))
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+    let first = sweep_both(&mut k, &mut oracle, &mut refs, 2, 1).expect("the retried batch");
+    assert_eq!(
+        first.expired.iter().map(|(h, _)| *h).collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    assert_eq!(first.remaining_due, 3);
+    // From the persisted cursor: a failure at the next cursor's seal.
+    let frontier = k.db.frontier().unwrap();
+    let due = kernel_due(&k, &refs);
+    let r = kernel_sweep_failing(&mut k, 2, 2);
+    assert!(matches!(r, Err(KernelError::Entropy(_))), "{r:?}");
+    assert_eq!(k.db.frontier().unwrap(), frontier);
+    assert_eq!(kernel_due(&k, &refs), due);
+    let second = sweep_both(&mut k, &mut oracle, &mut refs, 2, 2).expect("second batch");
+    assert_eq!(
+        second.expired.iter().map(|(h, _)| *h).collect::<Vec<_>>(),
+        vec![3, 4]
+    );
+    assert_cell_in(&k, &oracle, "1000", None, 3);
+    assert_cell_in(&k, &oracle, "6100", Some(periods[2].as_str()), 3);
+}
+
+/// The reversal sweep seals one description, its cursor's, after the
+/// batch's reversals were minted into the open transaction: a failure
+/// there commits nothing, and the retry mints what the oracle mints.
+#[test]
+fn an_entropy_failure_in_the_reversal_sweep_commits_nothing_and_the_retry_mints_the_same() {
+    let (mut k, mut oracle, periods) = setup_with(BUDGETED);
+    oracle.declare_time_zone();
+    let usd = k.book.units.lookup("USD").unwrap();
+    open_period(&mut k, &mut oracle, &periods[2], 1);
+    let leg = |side: fa_reference::Side, account: &str, mantissa: i128| Leg {
+        side,
+        account: account.into(),
+        unit: usd.0,
+        entity: None,
+        mantissa,
+    };
+    let march = |d: u8| DateDay::from_ymd(2026, 3, d).unwrap();
+    let accrual = |key: &str| Intent {
+        class: "Adjusting".into(),
+        date: march(2),
+        discriminator: None,
+        legs: vec![
+            leg(fa_reference::Side::Debit, "6000", 50),
+            leg(fa_reference::Side::Credit, "3000", 50),
+        ],
+        key: key.as_bytes().to_vec(),
+        ops: vec!["post".into()],
+        approvals: 0,
+        reverses: None,
+        resolves: None,
+        settles: Vec::new(),
+    };
+    let mut refs: Vec<EntryRef> = Vec::new();
+    kernel_tick(&mut k, noon(march(1)), "t0").expect("tick");
+    oracle.record_tick(noon(march(1))).unwrap();
+    for key in ["A", "B"] {
+        let i = accrual(key);
+        refs.push(
+            kernel_post_scheduled(&mut k, &i, usd, &refs, march(10))
+                .expect("scheduled")
+                .entry_ref(),
+        );
+        assert!(matches!(
+            oracle.post_scheduled(&i, march(10)),
+            Verdict::Posted { .. }
+        ));
+    }
+    kernel_tick(&mut k, noon(march(10)), "t1").expect("the date's tick");
+    oracle.record_tick(noon(march(10))).unwrap();
+    let reached = kernel_reached(&k, &refs);
+    let frontier = k.db.frontier().unwrap();
+    let r = kernel_sweep_reversals_failing(&mut k, 5, 0);
+    assert!(matches!(r, Err(KernelError::Entropy(_))), "{r:?}");
+    assert_eq!(k.db.frontier().unwrap(), frontier);
+    assert_eq!(kernel_reached(&k, &refs), reached);
+    for target in &refs {
+        assert!(
+            k.db.vertex(rows::reversal_vid(target.vid))
+                .unwrap()
+                .is_none()
+        );
+    }
+    let batch =
+        reversal_sweep_both(&mut k, &mut oracle, &mut refs, 5, 1).expect("the retried batch");
+    assert_eq!(batch.minted.len(), 2);
+    assert_eq!(batch.remaining, 0);
+}
+
 /// Plan §5.4 per-leg sub-vectors across units: a USD+EUR hold posts a
 /// partial sub-vector balanced per unit, an unbalanced one is refused per
 /// unit, and a timed multi-unit hold the sweep expires releases both units'
@@ -5467,7 +5765,7 @@ fn kernel_sweep_reversals(
     let book = &k.book;
     k.runtime
         .block_on(async move {
-            let mut describe = |text: &str| fresh_seal(&book.seal_key, text);
+            let mut describe = |text: &str| Ok::<_, KernelError>(fresh_seal(&book.seal_key, text));
             sweep_reversals_batch(db, &ctx, book, &req, &mut describe).await
         })
         .expect("kernel")

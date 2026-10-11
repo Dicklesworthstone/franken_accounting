@@ -229,14 +229,14 @@ example = "fa verify registers --period FY2026-P03 --book ./books/myco"
 
 [[verb]]
 name = "registers"
-summary = "Materialize a period's registers from a fresh fold (derived state; rebuilt on demand)."
+summary = "Advance native posted/pending period registers from the journal delta, or explicitly rebuild them from a fresh fold. Reports remain journal folds."
 writes = true
-subcommands = ["materialize"]
+subcommands = ["materialize", "advance"]
 flags = ["--period", "--fiscal-year"]
 switches = []
-events = ["registers_materialized"]
-exits = [0, 2, 4, 5, 7]
-usage = ["registers materialize ((--period <code>)... | --fiscal-year N)   (over a period that already has cells: --yes)"]
+events = ["registers_materialized", "registers_advanced"]
+exits = [0, 2, 4, 5, 7, 8]
+usage = ["registers materialize ((--period <code>)... | --fiscal-year N)   (over a period that already has cells: --yes)", "registers advance ((--period <code>)... | --fiscal-year N)   (each period publishes atomically; damaged cache is refused)"]
 example = "fa registers materialize --period FY2026-P03 --book ./books/myco"
 
 [[verb]]
@@ -390,6 +390,11 @@ why = "this idempotency key already recorded that entry; nothing new was written
 after = "registers_materialized"
 command = "fa verify registers --json"
 why = "prove the materialized cells equal the journal's refold"
+
+[[next_action]]
+after = "registers_advanced"
+command = "fa verify registers --period <code> --json"
+why = "prove the maintained cells equal the journal's refold"
 
 [[next_action]]
 after = "checkpoint_created"
@@ -580,6 +585,12 @@ name = "registers_materialized"
 book = true
 doc = "A period's registers written from a fresh fold (derived state)."
 fields = ["period:string", "cells:int", "pending_cells:int", "entries:int", "watermark:seq?", "fold_digest:hex", "recorded_at:seq"]
+
+[[event]]
+name = "registers_advanced"
+book = true
+doc = "Native posted/pending period registers advanced through the journal prefix. Cells and cursor publish atomically per period; wrote=false changes nothing and recorded_at is null. entries_decoded counts incremental decoding only; rebuilt=true reports a full journal refold instead. Damaged cache is refused. This is maintenance metadata, not a certified RegisterCheckpoint."
+fields = ["period:string", "from:seq", "through:seq", "recorded_at:seq?", "entries_decoded:int", "rebuilt:bool", "wrote:bool", "cells:int", "pending_cells:int", "entries:int", "watermark:seq?", "fold_digest:hex"]
 
 [[event]]
 name = "entry"
@@ -948,6 +959,16 @@ positionals = []
 required = []
 dont = ["Don't rematerialize a period that already has cells to \"fix\" a drift; verify first (`fa_book_verify`, target `registers`) and keep the finding."]
 mistakes = ["Expecting the fold to change: registers are derived state; the journal is unchanged by this."]
+
+[[mcp.tool]]
+cluster = "fa.book"
+name = "advance_registers"
+verb = "registers"
+subcommands = ["advance"]
+positionals = []
+required = []
+dont = ["Don't treat the cursor or digest as a certified checkpoint; reports still fold the journal.", "Don't silently rebuild a damaged cache: verify and retain the finding, then explicitly materialize with yes if repair is intended."]
+mistakes = ["Expecting a second advance to write when no journal input changed: wrote=false is success.", "Assuming a fiscal-year advance is one transaction: each period publishes atomically on its own."]
 
 # ---- fa.chart ---------------------------------------------------------------
 

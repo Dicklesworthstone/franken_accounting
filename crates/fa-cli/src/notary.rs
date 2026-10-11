@@ -133,8 +133,8 @@ pub(crate) fn verify_accumulator(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), F
             .iter()
             .filter(|state| state.finding.is_some())
             .count();
-        return Err(Fail::Verification(
-            format!(
+        return Err(Fail::Verification {
+            message: format!(
                 "entry accumulator differs from the journal: {findings} state findings, {} unchained states{}",
                 result.unchained.len(),
                 result
@@ -142,8 +142,10 @@ pub(crate) fn verify_accumulator(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), F
                     .as_ref()
                     .map_or_else(String::new, |why| format!("; broken chain: {why}")),
             ),
-            obj(fields),
-        ));
+            detail: obj(fields),
+            cite: None,
+            fix: None,
+        });
     }
     let human = match through {
         None => "No accumulator checkpoints to verify; run `fa checkpoint create --grant witness`."

@@ -12,6 +12,9 @@ taken_on = "2026-10-10"
 
 [[foundation]]
 name = "asupersync"
+package_patterns = ["asupersync", "asupersync-*", "franken-decision", "franken-evidence", "franken-kernel"]
+production_postures = ["fa", "fa-cli", "fad", "fa-mcp"]
+production_features = []
 source = "git+https://github.com/Dicklesworthstone/asupersync"
 rev = "78b64636e99fea4ea2d868096576021dd3b8e519"
 version = "0.5.0"
@@ -21,6 +24,9 @@ pinned_by = "frankengraphdb crates/fgdb/Cargo.toml (same rev)"
 
 [[foundation]]
 name = "frankengraphdb"
+package_patterns = ["fgdb", "fgdb-*"]
+production_postures = ["fa", "fa-cli", "fad", "fa-mcp"]
+production_features = []
 source = "git+https://github.com/Dicklesworthstone/frankengraphdb"
 rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
 version = "0.0.1 (unpublished, publish = false)"
@@ -30,15 +36,21 @@ status_checked = "2026-10-09 (plan Appendix H rows)"
 
 [[foundation]]
 name = "franken_networkx"
+package_patterns = ["fnx-*"]
+production_postures = ["fa", "fa-cli", "fad", "fa-mcp"]
+production_features = []
 source = "git+https://github.com/Dicklesworthstone/franken_networkx"
 rev = "9d710b1c33e99412c94de7fa4de2f7ce4954110f"
 version = "0.2.0 at that rev"
 crates = ["fnx-classes", "fnx-algorithms"]
-role = "forensic graph algorithms (Lantern); not yet linked — enters with fa-lantern"
+role = "graph algorithms linked transitively through fgdb -> fgdb-prism; direct forensic use in Lantern is planned"
 pinned_by = "frankengraphdb crates/fgdb-prism/Cargo.toml (same rev)"
 
 [[foundation]]
 name = "fastmcp-rust"
+package_patterns = ["fastmcp-*"]
+production_postures = ["fa-mcp"]
+production_features = []
 source = "registry+https://github.com/rust-lang/crates.io-index"
 version = "=0.12.0"
 checksum = "f87848d809e71ed158b932460660079f91fb2a358a4204c77f5d8b10307cba2f"
@@ -49,6 +61,9 @@ verification = "fa-mcp parity test (every verb a tool or a registered exclusion)
 
 [[foundation]]
 name = "frankensympy"
+package_patterns = ["fsym-*"]
+production_postures = ["fa", "fa-cli", "fad", "fa-mcp"]
+production_features = []
 source = "git+https://github.com/Dicklesworthstone/frankensympy"
 rev = "bd1ad68a3a06e0a0ed6ee4a9bc76d85dc9e67e2e"
 version = "0.1.0 (unpublished)"
@@ -57,3 +72,58 @@ transitive_suite_crates = ["fsym-modular"]
 transitive_arithmetic = ["num-bigint 0.4.8", "num-integer 0.1.47", "num-rational 0.4.2", "num-traits", "serde"]
 role = "fa-money arbitrary-size nonnegative Rate, exact conversion intermediates, cancellation-first work metering; no CAS runtime"
 verification = "independent fgdb-bigint rounding differential, canonical rate bytes, resource and cancellation refusals; rerun all on pin changes"
+
+# Resolved-production gate (fa-lbh / fa-c23). Each posture is resolved alone
+# with its default features, normal + build edges, on the current host.
+# These are intentional feature ceilings, not workspace metadata's feature
+# union. New features require an explicit policy review; dev-only features
+# do not enter these ceilings. cargo deny still owns third-party wrapper paths.
+[production_gate]
+postures = ["fa", "fa-cli", "fad", "fa-mcp"]
+required_singletons = ["asupersync", "fgdb-types", "fnx-classes"]
+forbidden_packages = ["fgdb-sim", "fsci-stats"]
+
+# fnx-runtime's empty default feature is enabled by fnx-algorithms at the
+# pinned revision. Its optional asupersync/ftui integrations are not admitted.
+[[production_feature]]
+packages = ["fnx-runtime"]
+postures = ["fa", "fa-cli", "fad", "fa-mcp"]
+allowed = ["default"]
+
+# fastmcp 0.12 defaults select legacy protocol + tasks. Its client enables
+# TLS/webpki and its normal runtime edges enable asupersync's default macros
+# and nightly Outcome support. Embedded, CLI and local-RPC fad stay empty.
+[[production_feature]]
+packages = ["asupersync"]
+postures = ["fa-mcp"]
+allowed = ["default", "nightly-outcome-try", "proc-macros", "tls", "tls-webpki-roots"]
+
+[[production_feature]]
+packages = ["fastmcp-rust"]
+postures = ["fa-mcp"]
+allowed = ["default", "fastmcp-console", "legacy-2024-11-05", "tasks"]
+
+[[production_feature]]
+packages = ["fastmcp-client", "fastmcp-server"]
+postures = ["fa-mcp"]
+allowed = ["legacy-2024-11-05", "tasks"]
+
+[[production_feature]]
+packages = ["fastmcp-console"]
+postures = ["fa-mcp"]
+allowed = ["default", "legacy-2024-11-05", "renderers", "tasks"]
+
+[[production_feature]]
+packages = ["fastmcp-protocol"]
+postures = ["fa-mcp"]
+allowed = ["default", "jose", "legacy-2024-11-05", "tasks"]
+
+[[production_feature]]
+packages = ["fastmcp-transport"]
+postures = ["fa-mcp"]
+allowed = ["legacy-2024-11-05"]
+
+[[production_feature]]
+packages = ["fastmcp-derive"]
+postures = ["fa-mcp"]
+allowed = ["tasks"]

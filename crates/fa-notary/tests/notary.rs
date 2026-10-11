@@ -1017,6 +1017,27 @@ fn balance_proofs_refold_exactly_the_register_balances_and_refuse_tampering() {
     );
 }
 
+fn approve_two(h: &mut Harness, digest: [u8; 32]) -> Vec<fa_model::ApprovalRef> {
+    [VId(8), VId(9)]
+        .into_iter()
+        .map(|who| {
+            let ctx = h.ctx();
+            let db = &mut h.db;
+            let book = &h.book;
+            let req = ApprovalRequest {
+                capability: Capability::embedded(who, &["approve"]).unwrap(),
+                approved_proposal_digest: digest,
+                role: 0,
+            };
+            h.runtime
+                .block_on(async move { record_approval(db, &ctx, book, req).await })
+                .expect("kernel")
+                .expect("approved")
+                .approval()
+        })
+        .collect()
+}
+
 /// fa-xo0 interim (ruling 3243): the accumulator keeps a staged migration
 /// chunk (it is journaled), but a balance proof never counts it — the
 /// register fold does not, and `fa-verify` cannot yet see the run — so a
@@ -1029,26 +1050,6 @@ fn a_staged_migration_chunk_blocks_its_balance_proof_until_the_run_finalizes() {
     let opening = DateDay::from_ymd(2026, 1, 1).unwrap();
     let sealed = |h: &Harness, text: &str| {
         Erasable::seal(&text.to_string(), None, &h.book.seal_key, [5; 32], [6; 24])
-    };
-    let approve = |h: &mut Harness, digest: [u8; 32]| -> Vec<fa_model::ApprovalRef> {
-        [VId(8), VId(9)]
-            .into_iter()
-            .map(|who| {
-                let ctx = h.ctx();
-                let db = &mut h.db;
-                let book = &h.book;
-                let req = ApprovalRequest {
-                    capability: Capability::embedded(who, &["approve"]).unwrap(),
-                    approved_proposal_digest: digest,
-                    role: 0,
-                };
-                h.runtime
-                    .block_on(async move { record_approval(db, &ctx, book, req).await })
-                    .expect("kernel")
-                    .expect("approved")
-                    .approval()
-            })
-            .collect()
     };
     for (i, t) in [
         PeriodTransition::Open,
@@ -1086,7 +1087,7 @@ fn a_staged_migration_chunk_blocks_its_balance_proof_until_the_run_finalizes() {
             )
             .proposal_digest()
             .unwrap();
-            approve(&mut h, digest)
+            approve_two(&mut h, digest)
         } else {
             Vec::new()
         };
@@ -1204,7 +1205,7 @@ fn a_staged_migration_chunk_blocks_its_balance_proof_until_the_run_finalizes() {
         extensions: Vec::new(),
         tags: Vec::new(),
     };
-    let approvals = approve(&mut h, chunk.proposal_digest().unwrap());
+    let approvals = approve_two(&mut h, chunk.proposal_digest().unwrap());
     let req = PostRequest {
         proposal: chunk,
         approvals,
@@ -1259,7 +1260,7 @@ fn a_staged_migration_chunk_blocks_its_balance_proof_until_the_run_finalizes() {
     )
     .unwrap()
     .expect("ties out");
-    let approvals = approve(&mut h, fin.proposal_digest().unwrap());
+    let approvals = approve_two(&mut h, fin.proposal_digest().unwrap());
     let req = RunControlRequest {
         proposal: fin,
         capability: preparer,
@@ -1298,115 +1299,6 @@ fn a_staged_migration_chunk_blocks_its_balance_proof_until_the_run_finalizes() {
         .unwrap()
         .expect_err("the staged prefix never proves the chunk");
     assert_eq!(r.code, code::MIGRATION_STAGED);
-}
-
-/// fa-kjl acceptance example: a scratch replay with intervening system
-/// records (plan §15.2). The notary's checkpoints are maintenance: the
-/// `AccumulatorState` vertex and the head pointer its commit moves on the
-/// book root. A book whose posts are interleaved with two checkpoints
-/// replays into a scratch book that holds every entry, no checkpoint and no
-/// head pointer; neither checkpoint commit is paired, the map verifies, and
-/// the scratch book's March fold is the source's.
-#[test]
-fn a_scratch_replay_carries_no_notary_checkpoint_and_verifies() {
-    let mut h = harness();
-    h.post(h.rent, 1_000, b"r1");
-    let first = h.checkpoint();
-    h.post(h.utilities, 250, b"u1");
-    let second = h.checkpoint();
-    h.post(h.rent, 500, b"r2");
-    let head = h.db.frontier().unwrap();
-    // Positive controls: the source holds both checkpoints and its head
-    // pointer, so the scratch negatives below cannot pass vacuously.
-    assert_eq!(
-        h.db.vertices_at(head)
-            .unwrap()
-            .iter()
-            .filter(|v| v.labels.contains(&label::ACCUMULATOR_STATE))
-            .count(),
-        2,
-        "the source holds both checkpoints"
-    );
-    assert!(
-        fa_journal::rows::prop(
-            &h.db.vertex(book_root()).unwrap().expect("root"),
-            property::ACCUMULATOR_HEAD
-        )
-        .is_some(),
-        "the source's root points at its latest checkpoint"
-    );
-    let ctx = h.ctx();
-    let keys = DatabaseKeys::new(
-        [0x7a; 32],
-        DatabaseSecurityNamespaceId([0x7b; 32]),
-        [0x7c; 32],
-    );
-    let mut scratch = h
-        .runtime
-        .block_on(async { Database::open_memory(&ctx.commit(), keys).await })
-        .expect("a fresh scratch database");
-    let id = h.book.book_id;
-    let (db, runtime) = (&mut h.db, &h.runtime);
-    let map = runtime
-        .block_on(async { replay_into(db, &mut scratch, &ctx, id, Some(head)).await })
-        .expect("kernel")
-        .expect("replays");
-    for checkpoint in [first.recorded_at, second.recorded_at] {
-        assert!(
-            map.pairs.iter().all(|p| p.source_seq != checkpoint),
-            "a checkpoint commit is never paired"
-        );
-    }
-    let verified = fa_registers::replay::verify_replay(&h.db, &scratch, &h.book, &map)
-        .expect("kernel")
-        .expect("the map verifies");
-    assert_eq!(verified.pairs_checked, map.pairs.len());
-    let at = scratch.frontier().unwrap();
-    assert!(
-        scratch
-            .vertices_at(at)
-            .unwrap()
-            .iter()
-            .all(|v| !v.labels.contains(&label::ACCUMULATOR_STATE)),
-        "no checkpoint reaches the scratch book"
-    );
-    assert!(
-        fa_journal::rows::prop(
-            &scratch.vertex(book_root()).unwrap().expect("root"),
-            property::ACCUMULATOR_HEAD
-        )
-        .is_none(),
-        "nor a head pointer to one"
-    );
-    let fold = |db: &Database<MemVfs>| {
-        fa_registers::fold_period(db, &h.book, "FY2026-P03")
-            .expect("fold")
-            .cells
-    };
-    assert!(!fold(&h.db).is_empty(), "the source's March fold has cells");
-    assert_eq!(fold(&scratch), fold(&h.db));
-}
-
-/// Approvals of `digest` by the two Human approvers.
-fn approve_two(h: &mut Harness, digest: [u8; 32]) -> Vec<fa_model::ApprovalRef> {
-    [VId(8), VId(9)]
-        .into_iter()
-        .map(|who| {
-            let ctx = h.ctx();
-            let db = &mut h.db;
-            let book = &h.book;
-            let req = ApprovalRequest {
-                capability: Capability::embedded(who, &["approve"]).unwrap(),
-                approved_proposal_digest: digest,
-                role: 0,
-            };
-            h.runtime
-                .block_on(async move { record_approval(db, &ctx, book, req).await })
-                .expect("kernel")
-                .expect("approved")
-                .approval()
-        })
-        .collect()
 }
 
 fn seal_text(h: &Harness, text: &str) -> Erasable<String> {
@@ -1704,4 +1596,295 @@ fn finalized_full_detail_history_before_the_opening_date_never_proves() {
         .unwrap()
         .expect("an account no chunk touches proves");
     assert!(fa_verify::verify_balance(&utilities, &trusted).is_ok());
+}
+
+/// fa-e00 supplemental controls. A finalized sole-source run counts its
+/// prior-year detail in registers, but v1 leaves cannot authenticate that
+/// mode: the producer conservatively refuses. Detail on/after OPEN still
+/// proves, and raw inclusion never depends on balance visibility.
+#[test]
+fn full_detail_proof_boundary_preserves_inclusion_and_supported_balances() {
+    let opening = DateDay::from_ymd(2026, 1, 1).unwrap();
+    for (detail_year, sole_source) in [(2025, true), (2026, false), (2026, true)] {
+        let prior_year = detail_year < 2026;
+        // February's go-live makes January Historical and its Opening
+        // born Locked, while March remains Normal for the shared harness.
+        let go_live = if prior_year {
+            opening
+        } else {
+            DateDay::from_ymd(2026, 2, 1).unwrap()
+        };
+        let mut h = harness_with(Some(go_live));
+        if prior_year {
+            let ctx = h.ctx();
+            let (db, book) = (&mut h.db, &h.book);
+            h.runtime
+                .block_on(async move { create_periods(db, &ctx, book, 2025).await })
+                .expect("FY2025 periods, born Historical");
+        }
+        let line = |code: &str, mantissa| TrialBalanceLine {
+            account_code: code.into(),
+            unit: h.usd,
+            mantissa,
+        };
+        let opening_lines = vec![line("1000", -300), line("6000", 300)];
+        let counted = if sole_source { 300 } else { 500 };
+        let paid = vec![line("1000", -counted), line("6000", counted)];
+        let body = RunBody {
+            book_id: h.book.book_id,
+            run_key: "supplement-full-detail".into(),
+            source_system: "legacy-gl".into(),
+            mode: RunMode::FullDetail,
+            trial_balance: h.evidence[0].document_oid,
+            opening_date: opening,
+            lines: if sole_source {
+                Vec::new()
+            } else {
+                opening_lines.clone()
+            },
+            periods: (1..=if prior_year { 12 } else { 1 })
+                .map(|m| PeriodBalance {
+                    period_code: format!("FY{detail_year}-P{m:02}"),
+                    trial_balance: h.evidence[0].document_oid,
+                    lines: paid.clone(),
+                })
+                .collect(),
+            detail_base: if sole_source {
+                Vec::new()
+            } else {
+                opening_lines
+            },
+            sole_opening_source: sole_source,
+        };
+        let proposal = open_proposal(
+            &h.book,
+            PRINCIPAL,
+            &body,
+            h.evidence.clone(),
+            b"open-supplement",
+            seal_text(&h, "open"),
+        )
+        .unwrap();
+        let req = RunControlRequest {
+            proposal,
+            capability: Capability::embedded(PRINCIPAL, &["post", "migrate"]).unwrap(),
+            approvals: Vec::new(),
+        };
+        let ctx = h.ctx();
+        let (db, book) = (&mut h.db, &h.book);
+        let run = h
+            .runtime
+            .block_on(async move { open_run(db, &ctx, book, &body, req).await })
+            .expect("kernel")
+            .expect("opens real run")
+            .run;
+        if !sole_source {
+            // Opening ends before February go-live; no Planned-period
+            // shortcut or raw state edit substitutes for its birth law.
+            stage_rent_chunk(&mut h, run, b"opening", ("FY2026-OPEN", opening), 300);
+        }
+        let detail_day = DateDay::from_ymd(detail_year, 1, 15).unwrap();
+        let period = format!("FY{detail_year}-P01");
+        stage_rent_chunk(
+            &mut h,
+            run,
+            b"detail",
+            (&period, detail_day),
+            if sole_source { 300 } else { 200 },
+        );
+        let fin = plan_run_transition(
+            &h.db,
+            &h.book,
+            run,
+            fa_journal::migration::kind::FINALIZE,
+            PRINCIPAL,
+            b"finalize-supplement",
+            seal_text(&h, "finalize"),
+        )
+        .unwrap()
+        .expect("real chain ties out");
+        let approvals = approve_two(&mut h, fin.proposal_digest().unwrap());
+        let req = RunControlRequest {
+            proposal: fin,
+            capability: Capability::embedded(PRINCIPAL, &["post", "migrate"]).unwrap(),
+            approvals,
+        };
+        let ctx = h.ctx();
+        let (db, book) = (&mut h.db, &h.book);
+        h.runtime
+            .block_on(async move { transition_run(db, &ctx, book, req).await })
+            .expect("kernel")
+            .expect("finalizes");
+        let active = h.checkpoint();
+        let trusted = outsider_checkpoint(&active);
+        let journal = Journal::read(&h.db, &h.book, Some(active.state.through_seq))
+            .unwrap()
+            .unwrap();
+        let chunks: Vec<_> = journal
+            .leaves
+            .iter()
+            .filter(|l| l.envelope.class == EntryClass::MIGRATION)
+            .collect();
+        assert_eq!(chunks.len(), if sole_source { 1 } else { 2 });
+        for leaf in chunks {
+            let proof = prove_inclusion(&h.db, &h.book, &active.state, leaf.vid, true)
+                .unwrap()
+                .expect("raw historical record still proves");
+            let report = fa_verify::verify_inclusion(&proof, &trusted).expect("inclusion verifies");
+            assert_eq!(report.record, RecordCheck::Recomputed);
+            assert_eq!(report.envelope.encode(), leaf.envelope_bytes);
+        }
+        for cutoff in [None, Some(DateDay::from_ymd(detail_year, 1, 31).unwrap().0)] {
+            let register = fa_registers::balance_as_of(
+                &h.db,
+                &h.book,
+                cutoff.map_or(DateDay::from_ymd(2026, 12, 31).unwrap(), DateDay),
+                Some(active.state.through_seq),
+            )
+            .expect("register fold");
+            let rent = register
+                .rows
+                .iter()
+                .find(|r| r.account == h.rent && r.unit_id == h.usd.0)
+                .expect("the finalized detail counts in the register");
+            assert_eq!((rent.debits, rent.credits), (counted, 0));
+            if prior_year {
+                let r = journal
+                    .posted_balance(h.rent, h.usd.0, cutoff)
+                    .unwrap()
+                    .expect_err("v1 cannot authenticate sole-source mode");
+                assert_eq!((r.code, r.exit), (code::MIGRATION_STAGED, exit::REFUSAL));
+                assert!(r.message.contains("before its run's opening date"));
+                let r = journal
+                    .balance_proof(h.rent, h.usd.0, cutoff)
+                    .unwrap()
+                    .expect_err("v1 producer remains conservative");
+                assert_eq!((r.code, r.exit), (code::MIGRATION_STAGED, exit::REFUSAL));
+                assert!(r.message.contains("before its run's opening date"));
+                let r = prove_balance(&h.db, &h.book, &active.state, h.rent, h.usd.0, cutoff)
+                    .unwrap()
+                    .expect_err("checkpoint proof also refuses");
+                assert_eq!((r.code, r.exit), (code::MIGRATION_STAGED, exit::REFUSAL));
+                assert!(r.message.contains("before its run's opening date"));
+            } else {
+                assert_eq!(
+                    journal
+                        .posted_balance(h.rent, h.usd.0, cutoff)
+                        .unwrap()
+                        .unwrap(),
+                    (counted, 0)
+                );
+                let proof = prove_balance(&h.db, &h.book, &active.state, h.rent, h.usd.0, cutoff)
+                    .unwrap()
+                    .expect("on/after-opening finalized detail proves");
+                let report =
+                    fa_verify::verify_balance(&proof, &trusted).expect("independent refold");
+                assert_eq!((report.claim.debits, report.claim.credits), (counted, 0));
+            }
+        }
+        // No detail selected: the prior-year sole source proves zero;
+        // the mid-year nonsole run proves its Opening chunk alone, dated
+        // exactly on OPEN. The sole-source same-year run also proves zero.
+        let cutoff = Some(DateDay::from_ymd(detail_year, 1, 1).unwrap().0);
+        let expected = if sole_source { (0, 0) } else { (300, 0) };
+        assert_eq!(
+            journal
+                .posted_balance(h.rent, h.usd.0, cutoff)
+                .unwrap()
+                .unwrap(),
+            expected
+        );
+        let proof = prove_balance(&h.db, &h.book, &active.state, h.rent, h.usd.0, cutoff)
+            .unwrap()
+            .expect("cutoff selects no excluded history");
+        let report = fa_verify::verify_balance(&proof, &trusted).expect("cutoff balance verifies");
+        assert_eq!((report.claim.debits, report.claim.credits), expected);
+    }
+}
+
+/// fa-kjl acceptance example: a scratch replay with intervening system
+/// records (plan §15.2). The notary's checkpoints are maintenance: the
+/// `AccumulatorState` vertex and the head pointer its commit moves on the
+/// book root. A book whose posts are interleaved with two checkpoints
+/// replays into a scratch book that holds every entry, no checkpoint and no
+/// head pointer; neither checkpoint commit is paired, the map verifies, and
+/// the scratch book's March fold is the source's.
+#[test]
+fn a_scratch_replay_carries_no_notary_checkpoint_and_verifies() {
+    let mut h = harness();
+    h.post(h.rent, 1_000, b"r1");
+    let first = h.checkpoint();
+    h.post(h.utilities, 250, b"u1");
+    let second = h.checkpoint();
+    h.post(h.rent, 500, b"r2");
+    let head = h.db.frontier().unwrap();
+    // Positive controls: the source holds both checkpoints and its head
+    // pointer, so the scratch negatives below cannot pass vacuously.
+    assert_eq!(
+        h.db.vertices_at(head)
+            .unwrap()
+            .iter()
+            .filter(|v| v.labels.contains(&label::ACCUMULATOR_STATE))
+            .count(),
+        2,
+        "the source holds both checkpoints"
+    );
+    assert!(
+        fa_journal::rows::prop(
+            &h.db.vertex(book_root()).unwrap().expect("root"),
+            property::ACCUMULATOR_HEAD
+        )
+        .is_some(),
+        "the source's root points at its latest checkpoint"
+    );
+    let ctx = h.ctx();
+    let keys = DatabaseKeys::new(
+        [0x7a; 32],
+        DatabaseSecurityNamespaceId([0x7b; 32]),
+        [0x7c; 32],
+    );
+    let mut scratch = h
+        .runtime
+        .block_on(async { Database::open_memory(&ctx.commit(), keys).await })
+        .expect("a fresh scratch database");
+    let id = h.book.book_id;
+    let (db, runtime) = (&mut h.db, &h.runtime);
+    let map = runtime
+        .block_on(async { replay_into(db, &mut scratch, &ctx, id, Some(head)).await })
+        .expect("kernel")
+        .expect("replays");
+    for checkpoint in [first.recorded_at, second.recorded_at] {
+        assert!(
+            map.pairs.iter().all(|p| p.source_seq != checkpoint),
+            "a checkpoint commit is never paired"
+        );
+    }
+    let verified = fa_registers::replay::verify_replay(&h.db, &scratch, &h.book, &map)
+        .expect("kernel")
+        .expect("the map verifies");
+    assert_eq!(verified.pairs_checked, map.pairs.len());
+    let at = scratch.frontier().unwrap();
+    assert!(
+        scratch
+            .vertices_at(at)
+            .unwrap()
+            .iter()
+            .all(|v| !v.labels.contains(&label::ACCUMULATOR_STATE)),
+        "no checkpoint reaches the scratch book"
+    );
+    assert!(
+        fa_journal::rows::prop(
+            &scratch.vertex(book_root()).unwrap().expect("root"),
+            property::ACCUMULATOR_HEAD
+        )
+        .is_none(),
+        "nor a head pointer to one"
+    );
+    let fold = |db: &Database<MemVfs>| {
+        fa_registers::fold_period(db, &h.book, "FY2026-P03")
+            .expect("fold")
+            .cells
+    };
+    assert!(!fold(&h.db).is_empty(), "the source's March fold has cells");
+    assert_eq!(fold(&scratch), fold(&h.db));
 }

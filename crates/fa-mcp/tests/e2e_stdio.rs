@@ -399,6 +399,54 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     );
     log("fa_read_trial_balance == fa tb --period FY2026-P03 --json: byte-identical data");
 
+    // The real MCP transport reaches the same incremental maintainer as
+    // the CLI. A subsequent no-op has byte-identical data on both surfaces.
+    let (is_error, text, result) = call_tool(
+        &mut mcp,
+        "fa_book_advance_registers",
+        json!({"period": "FY2026-P03"}),
+    );
+    assert!(!is_error, "{text}");
+    let advanced: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(advanced["entries"], json!(1));
+    assert_eq!(advanced["cells"], json!(2));
+    assert_eq!(advanced["wrote"], json!(true));
+    assert_eq!(advanced["rebuilt"], json!(false));
+    let envelope: JsonValue =
+        fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(envelope["events"], json!(["registers_advanced"]));
+    let (is_error, no_op, _) = call_tool(
+        &mut mcp,
+        "fa_book_advance_registers",
+        json!({"period": "FY2026-P03"}),
+    );
+    assert!(!is_error, "{no_op}");
+    let data: JsonValue = fastmcp_rust::serde_json::from_str(&no_op).unwrap();
+    assert_eq!(data["wrote"], json!(false));
+    assert_eq!(data["recorded_at"], JsonValue::Null);
+    assert_eq!(data["entries_decoded"], json!(0));
+    assert_eq!(
+        no_op,
+        cli_data(&[
+            "registers",
+            "advance",
+            "--period",
+            "FY2026-P03",
+            "--book",
+            &b,
+            "--json"
+        ])
+    );
+    let (is_error, verified, _) = call_tool(
+        &mut mcp,
+        "fa_book_verify",
+        json!({"target": "registers", "period": "FY2026-P03"}),
+    );
+    assert!(!is_error, "{verified}");
+    log(
+        "fa_book_advance_registers: maintained, independently verified, then byte-identical CLI no-op",
+    );
+
     // A write through the server: the entry is recorded (same key: `recorded`).
     let intent: JsonValue =
         fastmcp_rust::serde_json::from_str(&std::fs::read_to_string(&entry).unwrap()).unwrap();

@@ -466,6 +466,32 @@ fn stdin_and_relative_paths_travel_with_the_request() {
         (0, Some("posted")),
         "{r:?}"
     );
+    // The book is a path in the client's directory too (fa-40l): a relative
+    // `--book` resolves against the request's cwd, never the daemon's, and
+    // answers exactly as the absolute spelling does. Checked once the daemon
+    // has stopped, so a failure leaves no daemon running.
+    let nested = dir.join("nested");
+    std::fs::create_dir(&nested).expect("nested dir");
+    let tb = |spelling: &str, cwd: Option<&Path>| {
+        let r = call(
+            &["tb", "--period", "FY2026-P03", "--book", spelling, "--json"],
+            cwd,
+            None,
+        );
+        (r.exit, r.stdout, r.stderr)
+    };
+    let absolute = tb(&b, None);
+    let spelled: Vec<_> = [
+        (dir.as_path(), "book"),
+        (dir.as_path(), "./book"),
+        (nested.as_path(), "../book"),
+    ]
+    .into_iter()
+    .map(|(cwd, spelling)| (cwd.to_path_buf(), spelling, tb(spelling, Some(cwd))))
+    .collect();
+    // Without the client's cwd that relative path is in the daemon's own
+    // directory, which holds no book.
+    let unrooted = tb("book", None);
     // Another book's directory is not this daemon's to serve.
     let other = tmp("other");
     let r = call(
@@ -485,6 +511,12 @@ fn stdin_and_relative_paths_travel_with_the_request() {
     let (code, _, _) = fad(&["stop", "--book", &b, "--json"]);
     assert_eq!(code, 0);
     assert_eq!(daemon.finish().0, 0);
+    assert_eq!(absolute.0, 0, "{absolute:?}");
+    for (cwd, spelling, answer) in spelled {
+        assert_eq!(answer, absolute, "cwd={cwd:?} book={spelling}");
+    }
+    assert_eq!(unrooted.0, 2, "{unrooted:?}");
+    assert!(unrooted.1.contains("this fad serves"), "{unrooted:?}");
 }
 
 #[test]

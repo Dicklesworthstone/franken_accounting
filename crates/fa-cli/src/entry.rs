@@ -15,7 +15,6 @@
 //! held.
 
 use std::io::{IsTerminal, Read, Write};
-use std::path::PathBuf;
 
 use crate::args;
 use crate::cli::{self, Books, Captured, Files, Stdin};
@@ -52,13 +51,9 @@ pub fn fa_with(argv: &[String], files: Files, capture: bool) -> (u8, Captured) {
             capture,
         );
     }
-    let dir = parsed.flag("--book").map(PathBuf::from).or_else(|| {
-        std::env::var("FA_BOOK")
-            .ok()
-            .filter(|d| !d.is_empty())
-            .map(PathBuf::from)
-    });
-    let Some(dir) = dir else {
+    // The lease, the socket and the forwarded command all name the book the
+    // command will open: its path in the caller's working directory.
+    let Some(dir) = cli::named_book(&parsed, files.cwd.as_deref()) else {
         return cli::run(argv, Books::Dir, files, capture);
     };
     if via == Some("fad") {

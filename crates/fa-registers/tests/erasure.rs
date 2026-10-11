@@ -456,7 +456,15 @@ fn a_redacted_view_changes_no_amount_entry_or_evidence_link() {
     let before = snapshot(&h);
     assert_eq!(before.3, [true, true], "both entries cite the statement");
 
-    let store = fa_journal::BlobStore::open(1, MemVfs::new().unwrap(), "blobs").unwrap();
+    let directory = h
+        .runtime
+        .block_on(fa_journal::blob::DurableDirectory::create(
+            &ctx.commit(),
+            MemVfs::new().unwrap(),
+            std::path::Path::new("blobs"),
+        ))
+        .unwrap();
+    let store = fa_journal::BlobStore::open(1, directory).unwrap();
     let counsel = Capability::embedded(PRINCIPAL, &["privileged"]).expect("privileged");
     let derived = {
         let db = &mut h.db;

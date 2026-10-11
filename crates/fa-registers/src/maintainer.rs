@@ -16,7 +16,7 @@ use fa_journal::KernelError;
 use fa_journal::genesis::BookContext;
 use fa_journal::rows::{bytes, prop, scalar_bytes, scalar_text};
 use fa_model::symbols::{label, property};
-use fa_model::{Entry, EntryClass, Id128, Reader, Writer};
+use fa_model::{ControlPayload, Entry, EntryClass, Id128, Reader, Writer};
 use fa_money::Side;
 use fgdb::{Database, WriteMismatchPolicy};
 use fgdb_crypto::Hasher;
@@ -265,6 +265,7 @@ pub async fn prepare_advance<V: asupersync::fs::Vfs + Clone>(
         .map(|c| (c.key.clone(), c))
         .collect();
     let mut entries_decoded = 0usize;
+    let mut migration_runs = BTreeMap::new();
     for batch in db.delta_since(from)? {
         let seq = batch.commit_seq();
         for coordinate in batch.coordinate_entries() {
@@ -298,6 +299,26 @@ pub async fn prepare_advance<V: asupersync::fs::Vfs + Clone>(
                         entries_decoded = entries_decoded
                             .checked_add(1)
                             .ok_or(RegisterError::Overflow)?;
+                        if matches!(
+                            entry.proposal.control,
+                            Some(ControlPayload::MigrationControl {
+                                kind: fa_journal::migration::kind::FINALIZE,
+                                ..
+                            })
+                        ) {
+                            // Finalization activates chunks whose creation may
+                            // precede our cursor. Rebuild at this basis rather
+                            // than omit those newly visible old contributions.
+                            return prepare_rebuild(db, book, period);
+                        }
+                        if !fa_journal::migration::visible_at(
+                            db,
+                            &entry,
+                            basis,
+                            &mut migration_runs,
+                        )? {
+                            continue;
+                        }
                         if entry.proposal.class == EntryClass::RESOLUTION {
                             release(db, book, *vid, &entry, seq, &mut fold, &mut pending)?;
                         }
@@ -308,7 +329,18 @@ pub async fn prepare_advance<V: asupersync::fs::Vfs + Clone>(
                         }
                         fold.watermark = Some(fold.watermark.map_or(seq, |w| w.max(seq)));
                         if entry.proposal.class == EntryClass::PENDING {
-                            crate::add_entry(&mut pending, &entry, period)?;
+                            match crate::add_entry(&mut pending, &entry, period) {
+                                Ok(()) => {}
+                                // Later resolutions in this same suffix may
+                                // release an otherwise overflowing hold. The
+                                // literal fold selects unresolved holds at
+                                // the target frontier before adding them. A
+                                // truly oversized final column still fails.
+                                Err(RegisterError::Overflow) => {
+                                    return prepare_rebuild(db, book, period);
+                                }
+                                Err(error) => return Err(error),
+                            }
                         } else {
                             fold.entries =
                                 fold.entries.checked_add(1).ok_or(RegisterError::Overflow)?;

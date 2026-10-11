@@ -34,6 +34,12 @@
 //! availability law. A schedule that does not pass is **blocked**: reported,
 //! never minted, and never stalling a batch. A person reverses it by hand.
 //!
+//! Both moments take time only from a corroborated committed tick (sweep.rs
+//! `corroborated_at_head`): under a latest tick whose source's monotonic
+//! clock did not corroborate it, the reversal sweep refuses (FA-REF-144) and
+//! an `Open` mints nothing, so the schedule waits for the next corroborated
+//! tick.
+//!
 //! **Cancellation by lineage.** A manual Reversal of a scheduled target
 //! takes that identity first. Its commit journals a `ScheduleControl` entry
 //! carrying `ScheduleCancelled { schedule_ref, cause_ref }` at
@@ -69,8 +75,8 @@ use crate::rows::{
     state_from_scalar, system_principal,
 };
 use crate::sweep::{
-    CellRun, Cursor, SweepRequest, Tick, admit_sweep, conflict, cursor_proposal, decode_entry,
-    latest_tick, root_row, tick_witness,
+    CellRun, Cursor, SweepRequest, Tick, admit_sweep, conflict, corroborated_at_head,
+    cursor_proposal, decode_entry, latest_tick, root_row, tick_corroborated, tick_witness,
 };
 
 /// `fa:auto-reverse:v1` rule 1: the exact negation (`supersession_kinds`
@@ -810,9 +816,10 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
 }
 
 /// Inside the `Open` transition of `period` (plan §7.6 rule (b), R5): mint
-/// the live schedules dated in it whose date the latest committed tick has
-/// reached (at most `max_batch_entries`; any rest is the sweep's, the period
-/// being Open). Every read is a witness of the transition's transaction;
+/// the live schedules dated in it whose date the latest committed tick —
+/// when its source's monotonic clock corroborated it — has reached (at
+/// most `max_batch_entries`; any rest is the sweep's, the period being
+/// Open). Every read is a witness of the transition's transaction;
 /// minted reversals are dated in the period being opened, which they find
 /// Open.
 pub(crate) fn mint_on_open<V: asupersync::fs::Vfs + Clone>(
@@ -838,16 +845,29 @@ pub(crate) fn mint_on_open<V: asupersync::fs::Vfs + Clone>(
     let (_, Some(tick)) = tick_witness(txn, db)? else {
         return Ok(Ok(mints));
     };
+    // An uncorroborated latest tick reaches no date (automatic effects take
+    // time only from a corroborated committed tick, sweep.rs
+    // `corroborated_at_head`): the schedules stay Waiting for the reversal
+    // sweep under the next corroborated tick, rule (a).
+    let tick_row = txn
+        .vertex(db, tick.entry)?
+        .ok_or_else(|| KernelError::Corrupt("the latest tick's entry is missing".into()))?;
+    if !tick_corroborated(&tick_row)? {
+        return Ok(Ok(mints));
+    }
     let today = policy.civil_date(tick.observed_utc_ns);
     let mut due: Vec<Schedule> = Vec::new();
-    for row in db.vertices()? {
+    // The candidate population is itself a dependency, including when it
+    // is empty. A schedule posted after preparation must invalidate Open
+    // instead of being silently omitted from its automatic reversals.
+    for row in txn.vertices(db)? {
         if !row.labels.contains(&label::REVERSAL_SCHEDULE) {
             continue;
         }
         let s = decode_schedule(&row)?;
         if s.period == period
             && s.reverse_on <= today
-            && db.vertex(reversal_vid(s.target.vid))?.is_none()
+            && txn.vertex(db, reversal_vid(s.target.vid))?.is_none()
         {
             due.push(s);
         }
@@ -911,7 +931,7 @@ pub async fn sweep_reversals_batch<V: asupersync::fs::Vfs + Clone>(
     ctx: &PurposeContexts,
     book: &BookContext,
     req: &SweepRequest,
-    describe: &mut dyn FnMut(&str) -> fa_model::Erasable<String>,
+    describe: &mut crate::sweep::Describe<'_>,
 ) -> Outcome<Option<ReversalBatch>> {
     let sweep_key = fa_policy::sod::control_key("SweepControl", None, "Reverse");
     if let Err(r) = admit_sweep(db, book, req, &sweep_key)? {
@@ -920,6 +940,11 @@ pub async fn sweep_reversals_batch<V: asupersync::fs::Vfs + Clone>(
     let (Some(policy), Some(tick)) = (book_policy(db)?, latest_tick(db)?) else {
         return Ok(Ok(None));
     };
+    // Automatic effects take time only from a corroborated committed tick;
+    // the transaction below witnesses that this tick is still the latest.
+    if let Err(r) = corroborated_at_head(db, tick)? {
+        return Ok(Err(r));
+    }
     let root = root_row(db, None)?.ok_or_else(|| KernelError::Corrupt("no book root".into()))?;
     let cursor = Cursor::from_scalar(prop(&root, property::SCHEDULE_CURSOR))?;
     let mut due: Vec<Schedule> = due_reversals(db, book)?
@@ -1022,6 +1047,20 @@ pub async fn sweep_reversals_batch<V: asupersync::fs::Vfs + Clone>(
             "its cursor is already journaled",
         )));
     }
+    // A failing `describe` (the caller's entropy) aborts the open
+    // transaction: nothing is committed and the cursor does not move.
+    let description = match describe(&format!(
+        "reversal sweep at tick {} ns: {} minted, {} blocked, {remaining} after this batch",
+        tick.observed_utc_ns,
+        mints.minted.len(),
+        mints.blocked.len()
+    )) {
+        Ok(sealed) => sealed,
+        Err(e) => {
+            txn.abort();
+            return Err(e);
+        }
+    };
     let cursor_entry = cursor_proposal(
         book,
         req.principal_ref,
@@ -1030,12 +1069,7 @@ pub async fn sweep_reversals_batch<V: asupersync::fs::Vfs + Clone>(
         cvid,
         tick,
         tick_digest,
-        describe(&format!(
-            "reversal sweep at tick {} ns: {} minted, {} blocked, {remaining} after this batch",
-            tick.observed_utc_ns,
-            mints.minted.len(),
-            mints.blocked.len()
-        )),
+        description,
     )?;
     if let Err(r) = policy::authorize_approvals(
         &txn,
