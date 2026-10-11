@@ -158,7 +158,9 @@ pub struct ReportCertificate {
     pub row_digests: Vec<[u8; 32]>,
 }
 
-fn malformed(why: impl Into<String>) -> Refusal {
+/// The refusal for text that is not a well-formed report certificate
+/// (FA-REF-148, usage).
+pub fn malformed(why: impl Into<String>) -> Refusal {
     Refusal::new(
         code::CERTIFICATE_MALFORMED,
         exit::USAGE,

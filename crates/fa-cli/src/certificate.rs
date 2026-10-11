@@ -11,7 +11,7 @@ use fa::{ReportCertificate, TrialBalanceRequest};
 
 use crate::args::Args;
 use crate::cli::{Ctx, Fail, hex, periods_selector, unhandled, usage};
-use crate::json::{Json, obj, s};
+use crate::json::{self, Json, obj, s};
 
 /// The certificate summary in `fa tb --json`: its id, closure, digests, and
 /// the bytes `fa replay` reads.
@@ -61,8 +61,10 @@ fn selector(request: &TrialBalanceRequest) -> String {
     }
 }
 
-/// The certificate named by positional `index`: a file holding its hex,
-/// or `-` for stdin. Nothing else may follow it.
+/// The certificate named by positional `index`: a file (or `-` for stdin)
+/// holding its hex, or holding the saved `fa tb --json` line that carries
+/// it (`fa tb … --json > tb.json && fa replay tb.json`). Nothing else may
+/// follow it.
 fn read(
     ctx: &Ctx<'_>,
     args: &Args,
@@ -74,11 +76,33 @@ fn read(
     }
     let Some(source) = args.positional.get(index) else {
         return Err(usage(
-            "name the certificate: a file holding the hex of `certificate.bytes` from `fa tb --json`, or `-` for stdin",
+            "name the certificate: a file (or `-` for stdin) holding the hex of `certificate.bytes`, or the saved `fa tb --json` line",
             example,
         ));
     };
     let text = ctx.files.read_text(source)?;
+    let trimmed = text.trim_start();
+    if trimmed.starts_with('{') {
+        // A saved robot line: exactly one trial_balance line, whose
+        // certificate bytes are the certificate. Anything else is refused
+        // as malformed, never searched for a plausible certificate.
+        let bytes = json::parse(trimmed.trim_end())
+            .ok()
+            .filter(|line| line.get("event").and_then(Json::as_str) == Some("trial_balance"))
+            .and_then(|line| {
+                line.get("data")
+                    .and_then(|d| d.get("certificate"))
+                    .and_then(|c| c.get("bytes"))
+                    .and_then(Json::as_str)
+                    .map(str::to_string)
+            });
+        let Some(bytes) = bytes else {
+            return Err(Fail::Refusal(fa::certificate::malformed(format!(
+                "`{source}` holds JSON, but not one `fa tb --json` line with data.certificate.bytes"
+            ))));
+        };
+        return ReportCertificate::from_text(&bytes).map_err(Fail::Refusal);
+    }
     ReportCertificate::from_text(&text).map_err(Fail::Refusal)
 }
 

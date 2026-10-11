@@ -236,7 +236,7 @@ flags = []
 switches = []
 events = ["certificate_replayed"]
 exits = [0, 2, 4, 5, 8]
-usage = ["replay <certificate-file|->", "The certificate is the hex of `certificate.bytes` from `fa tb --json`, in a file or on stdin. Exit 8 names the first input, registry epoch or row that differs."]
+usage = ["replay <certificate-file|->", "The file (or stdin) holds the hex of `certificate.bytes`, or the saved `fa tb --json` line itself (`fa tb … --json > tb.json && fa replay tb.json`). Exit 8 names the first input, registry epoch or row that differs."]
 example = "fa replay tb.cert --book ./books/myco --json"
 
 [[verb]]

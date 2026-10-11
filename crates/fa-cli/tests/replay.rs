@@ -275,6 +275,11 @@ fn a_certified_trial_balance_replays_byte_for_byte_after_reopen_and_on_a_copy() 
     );
     assert_eq!(integer(&replayed, "known_at"), integer(&first, "known_at"));
 
+    // The saved `fa tb --json` line replays as it is.
+    let saved = write(&dir, "tb.json", &first_line);
+    let from_line = parsed(&ok(&book, &["replay", &saved, "--json"]));
+    assert_eq!(from_line.get("certificate"), first.get("certificate"));
+
     // The same bytes on stdin, and in human mode.
     let (code, stdout, stderr) = run_with(&book, &["replay", "-", "--json"], Some(&hex));
     assert_eq!(code, 0, "{stdout}\n{stderr}");
@@ -433,6 +438,12 @@ fn an_altered_certificate_or_another_history_does_not_reproduce() {
         let (id, message) = refusal_of(&stdout);
         assert_eq!((code, id.as_str()), (2, "FA-REF-148"), "{name}: {message}");
     }
+
+    // JSON that is not one trial_balance line is malformed, never searched.
+    let not_tb = write(&dir, "not-tb.json", r#"{"event":"posted","data":{}}"#);
+    let (code, stdout, _) = run(&book, &["replay", &not_tb, "--json"]);
+    let (id, message) = refusal_of(&stdout);
+    assert_eq!((code, id.as_str()), (2, "FA-REF-148"), "{message}");
 
     // The fork has the same keys but has not reached the known-at yet.
     let file = write(&dir, "tb.cert", &hex);
