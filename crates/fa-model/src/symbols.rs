@@ -63,6 +63,7 @@ symbols!(
         (REVERSAL_SCHEDULE, "ReversalSchedule", 35),
         (IMPORT_RECEIPT, "ImportReceipt", 36),
         (CUSTODY_TRANSFER, "CustodyTransfer", 37),
+        (REDACTED_VIEW, "RedactedView", 38),
         (LEGAL_HOLD_CELL, "LegalHoldCell", 39),
         (REGISTER_STATE, "RegisterState", 41),
     ]
@@ -169,6 +170,7 @@ symbols!(
         (SUPPLEMENTS, "SUPPLEMENTS", 30),
         (CUSTODY_OF, "CUSTODY_OF", 31),
         (IMPORTED_BY, "IMPORTED_BY", 32),
+        (REDACTS, "REDACTS", 33),
         (HOLDS, "HOLDS", 34),
     ]
 );
