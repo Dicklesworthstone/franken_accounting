@@ -1361,3 +1361,135 @@ fn an_invalid_final_chunk_is_abandoned_and_the_retry_finalizes() {
         .expect_err("an abandoned run is closed");
     assert_eq!(r.code, "FA-REF-130", "{r}");
 }
+
+#[test]
+fn maintainer_tracks_migration_visibility_across_activation_and_abandonment() {
+    let (mut k, mut oracle) = setup();
+    let mut rng = Rng(0x00A6_71A7_E001);
+    let ops = vec!["post".to_string(), "migrate".to_string()];
+    let advance = |k: &mut Kernel| {
+        let ctx = k.ctx();
+        k.runtime
+            .block_on(fa_registers::advance(&mut k.db, &ctx, &k.book, OPENING))
+            .expect("the maintainer advances")
+    };
+    let mut baseline = advance(&mut k).fold;
+    for r in 0..3 {
+        let key = format!("maintained-run-{r}");
+        let open_key = format!("maintained-open-{r}");
+        let (spec, chunks) = plan_run(&mut rng, &key);
+        let run = kernel_open(&mut k, &spec, &open_key, &["post", "migrate"])
+            .expect("opens")
+            .run;
+        let o = oracle
+            .open_run(&spec, open_key.as_bytes(), &ops)
+            .expect("oracle opens");
+        for (i, legs) in chunks.iter().enumerate() {
+            let chunk_key = format!("maintained-{r}-{i}");
+            post_chunk(&mut k, run, &chunk_key, legs.clone());
+            assert!(matches!(
+                oracle.post_migration(o, &chunk_intent(&chunk_key, legs.clone())),
+                Verdict::Posted { .. }
+            ));
+            // One run leaves every chunk in the unread suffix; another
+            // consumes each invisible chunk before its later activation.
+            if r != 2 {
+                let staged = advance(&mut k);
+                assert!(!staged.rebuilt);
+                assert_eq!(staged.fold, baseline, "Open chunks never contribute");
+                assert!(
+                    fa_registers::verify_period(&k.db, &k.book, OPENING)
+                        .unwrap()
+                        .is_green()
+                );
+            }
+        }
+        let before = k.db.frontier().unwrap();
+        let known_before = oracle.known();
+        let finalize = r != 0;
+        let kind = if finalize {
+            kind::FINALIZE
+        } else {
+            kind::ABANDON
+        };
+        let close_key = format!("maintained-close-{r}");
+        let plan = kernel_plan(&k, run, kind, &close_key).expect("plans");
+        let transition = kernel_transition(&mut k, plan, finalize).expect("closes");
+        if finalize {
+            oracle
+                .finalize_run(o, chunks.len(), close_key.as_bytes(), &ops, 2)
+                .expect("oracle finalizes");
+        } else {
+            oracle
+                .abandon_run(o, chunks.len(), close_key.as_bytes(), &ops)
+                .expect("oracle abandons");
+        }
+        let published = advance(&mut k);
+        assert_eq!(published.rebuilt, finalize);
+        if finalize {
+            assert_eq!(published.fold.watermark, Some(transition.recorded_at));
+            assert_eq!(
+                published.fold,
+                fold_period_at(&k.db, &k.book, OPENING, published.fold.watermark).unwrap(),
+                "the contributing watermark includes migration activation"
+            );
+            let account = account_vid(k.book.book_id, &spec.lines[0].0);
+            let explanation = fa_registers::explain_balance(&k.db, &k.book, account, OPENING, None)
+                .expect("the activation has an explanation");
+            assert_eq!(explanation.last_changed_at(), Some(transition.recorded_at));
+            for contribution in &explanation.contributions {
+                let (entry, recorded_at) = fa_journal::post::read_entry(&k.db, contribution.entry)
+                    .unwrap()
+                    .expect("the entry is still journaled");
+                assert_eq!(contribution.recorded_at, recorded_at);
+                if matches!(entry.proposal.origin, EntryOrigin::Migration { run_ref, .. } if run_ref == run)
+                {
+                    assert_eq!(contribution.visible_at, transition.recorded_at);
+                    assert!(contribution.recorded_at < contribution.visible_at);
+                }
+            }
+            for change in &explanation.history {
+                let historical =
+                    fold_period_at(&k.db, &k.book, OPENING, Some(change.recorded_at)).unwrap();
+                let amounts = historical
+                    .cells
+                    .iter()
+                    .find(|c| c.key.account == account && c.key.unit_id == change.unit_id)
+                    .map_or((0, 0), |c| (c.debits, c.credits));
+                assert_eq!((change.debits, change.credits), amounts);
+            }
+        }
+        let entity = fa_registers::fold_period_by_entity(&k.db, &k.book, OPENING, None)
+            .expect("entity fold");
+        assert_eq!(entity.watermark, published.fold.watermark);
+        if let Some(at) = entity.watermark {
+            let historical = fa_registers::fold_period_by_entity(&k.db, &k.book, OPENING, Some(at))
+                .expect("entity fold at its watermark");
+            assert_eq!(historical.cells, entity.cells);
+            assert_eq!(historical.pending, entity.pending);
+            assert_eq!(historical.fold_digest, entity.fold_digest);
+        }
+        assert_eq!(
+            published.fold,
+            fold_period_at(&k.db, &k.book, OPENING, None).unwrap()
+        );
+        assert_fold(&k, &oracle, OPENING, before, known_before, r);
+        assert_fold(
+            &k,
+            &oracle,
+            OPENING,
+            k.db.frontier().unwrap(),
+            oracle.known(),
+            r,
+        );
+        assert!(
+            fa_registers::verify_period(&k.db, &k.book, OPENING)
+                .unwrap()
+                .is_green()
+        );
+        let repeated = advance(&mut k);
+        assert!(!repeated.wrote, "activation contributes exactly once");
+        assert_eq!(repeated.fold, published.fold);
+        baseline = published.fold;
+    }
+}

@@ -15,6 +15,7 @@
 pub mod availability;
 pub mod entity;
 pub mod explain;
+pub mod maintainer;
 pub mod open_items;
 
 use core::fmt;
@@ -24,7 +25,9 @@ use fa_journal::KernelError;
 use fa_journal::genesis::BookContext;
 use fa_journal::rows::{AccountRow, PeriodRow, bytes, int, prop, scalar_bytes, scalar_text, text};
 use fa_model::symbols::{label, property, relation};
-use fa_model::{AccountType, Entry, EntryClass, Id128, Writer, period_vid};
+use fa_model::{
+    AccountType, ControlPayload, Entry, EntryClass, EntryOrigin, Id128, Writer, period_vid,
+};
 use fa_money::Side;
 use fa_time::DateDay;
 use fgdb::{Database, VertexRow, WriteBatch};
@@ -40,6 +43,9 @@ pub use entity::{
     check_register_equals, fold_period_by_entity, register_equals, verify_entities,
 };
 pub use explain::{BalanceExplanation, explain_balance};
+pub use maintainer::{
+    Advance, PreparedAdvance, advance, prepare_advance, publish_advance, rebuild,
+};
 pub use open_items::{
     Application, AppliedDrift, OpenItem, OpenItemVerification, open_items, verify_open_items,
 };
@@ -57,6 +63,8 @@ pub enum RegisterError {
     Encoding(fa_model::EncodeError),
     /// A caller supplied an old or modified projection instead of the current fold.
     StaleFold,
+    /// Derived cells or their maintenance metadata disagree. Rebuild from the journal.
+    ProjectionDrift(String),
 }
 
 impl fmt::Display for RegisterError {
@@ -71,6 +79,10 @@ impl fmt::Display for RegisterError {
             Self::StaleFold => write!(
                 f,
                 "register fold changed; refold the journal before materializing"
+            ),
+            Self::ProjectionDrift(what) => write!(
+                f,
+                "register projection drift: {what}; rebuild from the journal"
             ),
         }
     }
@@ -127,7 +139,8 @@ pub struct Fold {
     pub cells: Vec<Cell>,
     /// Outstanding reservations, keyed on the original Pending's period.
     pub pending: Vec<Cell>,
-    /// The highest contributing commit, including cross-period releases.
+    /// The highest contributing commit, including cross-period releases
+    /// and the finalization that activates staged migration chunks.
     pub watermark: Option<CommitSeq>,
     /// Posting entries contributing to `cells` (excludes reservations/releases).
     pub entries: u64,
@@ -238,6 +251,44 @@ pub(crate) fn entries_at<V: asupersync::fs::Vfs + Clone>(
         entries.push((row.vid, entry, row.created_at));
     }
     Ok(entries)
+}
+
+/// Visibility changes are contributions too. Resolve them from immutable
+/// control payloads without changing any entry's real creation sequence.
+pub(crate) fn migration_activations(
+    entries: &[(VId, Entry, CommitSeq)],
+) -> Result<BTreeMap<VId, CommitSeq>, RegisterError> {
+    let mut activated = BTreeMap::new();
+    for (_, entry, seq) in entries {
+        if let Some(ControlPayload::MigrationControl {
+            run_ref,
+            kind: fa_journal::migration::kind::FINALIZE,
+            ..
+        }) = &entry.proposal.control
+            && activated.insert(*run_ref, *seq).is_some()
+        {
+            return Err(KernelError::Corrupt("duplicate migration finalization".into()).into());
+        }
+    }
+    Ok(activated)
+}
+
+pub(crate) fn contribution_seq(
+    entry: &Entry,
+    created_at: CommitSeq,
+    activated: &BTreeMap<VId, CommitSeq>,
+) -> Result<CommitSeq, RegisterError> {
+    let EntryOrigin::Migration { run_ref, .. } = &entry.proposal.origin else {
+        return Ok(created_at);
+    };
+    let finalized_at = activated
+        .get(run_ref)
+        .copied()
+        .filter(|at| *at > created_at)
+        .ok_or_else(|| {
+            KernelError::Corrupt("visible migration chunk lacks a later finalization".into())
+        })?;
+    Ok(finalized_at)
 }
 
 pub(crate) fn entry_period(book: &BookContext, entry: &Entry) -> Result<String, RegisterError> {
@@ -360,6 +411,7 @@ pub fn fold_period_at<V: asupersync::fs::Vfs + Clone>(
     let mut count = 0u64;
     let entries = entries_at(db, book, seq)?;
     let resolved = resolutions(&entries)?;
+    let activated = migration_activations(&entries)?;
     for (vid, entry, created_at) in entries {
         if entry.proposal.legs.is_empty() {
             continue;
@@ -367,7 +419,8 @@ pub fn fold_period_at<V: asupersync::fs::Vfs + Clone>(
         if entry_period(book, &entry)? != period_code {
             continue;
         }
-        watermark = Some(watermark.map_or(created_at, |w: CommitSeq| w.max(created_at)));
+        let contribution = contribution_seq(&entry, created_at, &activated)?;
+        watermark = Some(watermark.map_or(contribution, |w: CommitSeq| w.max(contribution)));
         if entry.proposal.class == EntryClass::PENDING {
             if let Some(release) = resolved.get(&vid) {
                 watermark = Some(watermark.map_or(*release, |w| w.max(*release)));
@@ -421,6 +474,31 @@ pub async fn materialize<V: asupersync::fs::Vfs + Clone>(
     if fold_period(db, book, &fold.period)? != *fold {
         return Err(RegisterError::StaleFold);
     }
+    // Preserve the existing empty-materialization no-op. Explicit advance
+    // initializes maintenance metadata even for an empty period; materialize
+    // only needs that state when there are cells, repairs, or an existing cursor.
+    if fold.cells.is_empty()
+        && fold.pending.is_empty()
+        && db
+            .vertex(maintainer::state_vid(book.book_id, &fold.period))?
+            .is_none()
+        && materialize_batch(db, book, fold)?.is_empty()
+    {
+        return Ok(db.frontier()?);
+    }
+    let prepared = maintainer::prepare_fold(db, book, fold.clone())?;
+    Ok(maintainer::publish_advance(db, ctx, book, prepared)
+        .await?
+        .published_at)
+}
+
+/// Build the projection write without publishing it, so maintenance can
+/// publish its cursor in the same transaction. Callers validate the fold.
+fn materialize_batch<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    fold: &Fold,
+) -> Result<WriteBatch, RegisterError> {
     let pvid = period_vid(&book.calendar.id, &fold.period);
     let mut batch = WriteBatch::new(relation::IN_PERIOD);
     let expected: BTreeSet<_> = fold
@@ -533,11 +611,7 @@ pub async fn materialize<V: asupersync::fs::Vfs + Clone>(
         lo.copy_from_slice(&h.finalize().0[..16]);
         batch.ensure_edge_by_triple(fgdb_types::EId(u128::from_le_bytes(lo)), rvid, pvid, vec![]);
     }
-    if batch.is_empty() {
-        // Nothing to materialize: the period has no posting entries.
-        return Ok(db.frontier()?);
-    }
-    Ok(db.write(&ctx.commit(), batch).await?)
+    Ok(batch)
 }
 
 /// One stored cell that disagrees with the refold.
@@ -640,10 +714,23 @@ pub fn verify_period<V: asupersync::fs::Vfs + Clone>(
     period_code: &str,
 ) -> Result<Verification, RegisterError> {
     let fold = fold_period(db, book, period_code)?;
+    let mut result = verify_projection(db, book, &fold)?;
+    if let Some(error) = maintainer::verify_state(db, book, period_code)? {
+        result.projection_errors.push(error);
+    }
+    Ok(result)
+}
+
+fn verify_projection<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    fold: &Fold,
+) -> Result<Verification, RegisterError> {
+    let period_code = &fold.period;
     let mut drift = Vec::new();
     let mut pending_drift = Vec::new();
     let mut projection_errors = Vec::new();
-    let mut candidates = stored_registers(db, book, &fold)?;
+    let mut candidates = stored_registers(db, book, fold)?;
     let pvid = period_vid(&book.calendar.id, period_code);
     let linked: BTreeSet<_> = db
         .in_neighbours(pvid, relation::IN_PERIOD)?
@@ -651,7 +738,7 @@ pub fn verify_period<V: asupersync::fs::Vfs + Clone>(
         .collect();
     let edges = db.edges()?;
     let mut stored_digest: Option<Option<[u8; 32]>> = None;
-    let columns = fold_columns(&fold);
+    let columns = fold_columns(fold);
     for (key, (posted, pending)) in &columns {
         let rvid = register_vid(book.book_id, key);
         let (stored, stored_pending) = match candidates.remove(&rvid) {

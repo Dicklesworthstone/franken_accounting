@@ -27,8 +27,8 @@ use fgdb_crypto::Hasher;
 use fgdb_types::{CommitSeq, VId};
 
 use crate::{
-    RegisterError, entries_at, entry_period, fold_period_at, period_at, resolutions,
-    resolve_known_at,
+    RegisterError, contribution_seq, entries_at, entry_period, fold_period_at,
+    migration_activations, period_at, resolutions, resolve_known_at,
 };
 
 pub const ENTITY_FOLD_DIGEST_DOMAIN: &[u8] = b"fa:register-entity-fold:v1";
@@ -170,11 +170,13 @@ pub fn fold_period_by_entity<V: asupersync::fs::Vfs + Clone>(
     let mut watermark: Option<CommitSeq> = None;
     let entries = entries_at(db, book, seq)?;
     let resolved = resolutions(&entries)?;
+    let activated = migration_activations(&entries)?;
     for (vid, entry, created_at) in &entries {
         if entry.proposal.legs.is_empty() || entry_period(book, entry)? != period_code {
             continue;
         }
-        watermark = Some(watermark.map_or(*created_at, |w| w.max(*created_at)));
+        let contribution = contribution_seq(entry, *created_at, &activated)?;
+        watermark = Some(watermark.map_or(contribution, |w| w.max(contribution)));
         if entry.proposal.class == EntryClass::PENDING {
             if let Some(release) = resolved.get(vid) {
                 watermark = Some(watermark.map_or(*release, |w| w.max(*release)));

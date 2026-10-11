@@ -108,6 +108,9 @@ name = "SupplementalEvidence"
 [[label]]
 id = 35
 name = "ReversalSchedule"
+[[label]]
+id = 41
+name = "RegisterState"
 
 # ---- property keys --------------------------------------------------------
 [[property]]

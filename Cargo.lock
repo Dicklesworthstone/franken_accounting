@@ -636,6 +636,7 @@ dependencies = [
  "fa-time",
  "fgdb",
  "fgdb-crypto",
+ "fgdb-delta-types",
  "fgdb-types",
 ]
 
