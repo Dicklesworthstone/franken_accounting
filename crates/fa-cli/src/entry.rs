@@ -18,7 +18,7 @@ use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 
 use crate::args;
-use crate::cli::{self, Books, Captured, Files};
+use crate::cli::{self, Books, Captured, Files, Stdin};
 use crate::client::{self, ClientError};
 use crate::lease::{Lease, LeaseError};
 use crate::verbs;
@@ -27,12 +27,21 @@ use crate::wire::{Op, Request};
 /// Run one `fa` command line. With `capture`, the output is returned instead
 /// of written to stdio.
 pub fn fa(argv: &[String], capture: bool) -> (u8, Captured) {
+    fa_with(argv, Files::default(), capture)
+}
+
+/// [`fa`] with the files and stdin the command's arguments resolve against
+/// (`fa_cli::cli::Files`): a host that is not the `fa` binary (fa-mcp) hands
+/// a forwarded stdin here instead of the process's own, so `-` never reads
+/// the host's transport. Through a daemon, the forwarded bytes travel in the
+/// request.
+pub fn fa_with(argv: &[String], files: Files, capture: bool) -> (u8, Captured) {
     let Ok(reg) = verbs::registry() else {
         // `cli::run` reports the unreadable registry itself.
-        return cli::run(argv, Books::Dir, Files::default(), capture);
+        return cli::run(argv, Books::Dir, files, capture);
     };
     let Ok(parsed) = args::parse(argv, &reg.value_flags(), &reg.switches()) else {
-        return cli::run(argv, Books::Dir, Files::default(), capture);
+        return cli::run(argv, Books::Dir, files, capture);
     };
     let via = parsed.flag("--via");
     if let Some(other) = via.filter(|v| *v != "fad" && *v != "direct") {
@@ -50,25 +59,25 @@ pub fn fa(argv: &[String], capture: bool) -> (u8, Captured) {
             .map(PathBuf::from)
     });
     let Some(dir) = dir else {
-        return cli::run(argv, Books::Dir, Files::default(), capture);
+        return cli::run(argv, Books::Dir, files, capture);
     };
     if via == Some("fad") {
-        return through_daemon(argv, &dir, None, capture);
+        return through_daemon(argv, &dir, None, &files, capture);
     }
     let note = format!("fa pid={}", std::process::id());
     match Lease::acquire(&dir, &reg.daemon.lease, &note) {
         Ok(lease) => {
-            let result = cli::run(argv, Books::Dir, Files::default(), capture);
+            let result = cli::run(argv, Books::Dir, files, capture);
             drop(lease);
             result
         }
         // The directory does not exist (yet): nothing to lease or serve.
-        Err(LeaseError::Io { .. }) => cli::run(argv, Books::Dir, Files::default(), capture),
+        Err(LeaseError::Io { .. }) => cli::run(argv, Books::Dir, files, capture),
         Err(held @ LeaseError::Held { .. }) => {
             if via == Some("direct") {
                 cli::refuse(argv, held.refusal(&dir), capture)
             } else {
-                through_daemon(argv, &dir, Some(held), capture)
+                through_daemon(argv, &dir, Some(held), &files, capture)
             }
         }
     }
@@ -104,32 +113,40 @@ fn through_daemon(
     argv: &[String],
     dir: &std::path::Path,
     held: Option<LeaseError>,
+    files: &Files,
     capture: bool,
 ) -> (u8, Captured) {
     let Ok(reg) = verbs::registry() else {
-        return cli::run(argv, Books::Dir, Files::default(), capture);
+        return cli::run(argv, Books::Dir, files.clone(), capture);
     };
     let forwarded = for_daemon(argv, dir);
-    // stdin travels only when an argument asks for it and something is piped.
-    let stdin = if forwarded.iter().any(|a| a == "-") && !std::io::stdin().is_terminal() {
-        let mut bytes = Vec::new();
-        if let Err(e) = std::io::stdin().read_to_end(&mut bytes) {
-            return cli::usage_error(
-                argv,
-                format!("stdin: {e}"),
-                "pipe the document to stdin",
-                capture,
-            );
+    // stdin travels only when an argument asks for it: the host's forwarded
+    // bytes, or this process's stdin when something is piped to it. A host
+    // that forwarded none (Missing) sends none, and the daemon refuses `-`.
+    let wants_stdin = forwarded.iter().any(|a| a == "-");
+    let stdin = match &files.stdin {
+        Stdin::Forwarded(bytes) if wants_stdin => Some(bytes.clone()),
+        Stdin::Process if wants_stdin && !std::io::stdin().is_terminal() => {
+            let mut bytes = Vec::new();
+            if let Err(e) = std::io::stdin().read_to_end(&mut bytes) {
+                return cli::usage_error(
+                    argv,
+                    format!("stdin: {e}"),
+                    "pipe the document to stdin",
+                    capture,
+                );
+            }
+            Some(bytes)
         }
-        Some(bytes)
-    } else {
-        None
+        _ => None,
     };
     let request = Request {
         op: Op::Run,
         argv: forwarded,
-        cwd: std::env::current_dir()
-            .ok()
+        cwd: files
+            .cwd
+            .clone()
+            .or_else(|| std::env::current_dir().ok())
             .map(|d| d.display().to_string()),
         stdin,
     };

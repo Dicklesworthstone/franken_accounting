@@ -1,0 +1,29 @@
+[package]
+name = "fa-mcp"
+version = "0.0.1"
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "The FrankenAccounting MCP server (plan §1 posture (c), §2.4, §15.4, Appendix D): the verb registry as tool clusters over fastmcp, every call dispatched through the same `fa_cli` front door as the `fa` binary and the `fad` daemon, the robot envelope's `data` as the result, structured errors with fix hints, and mistake detectors before dispatch. Bead fa-xex."
+publish = false
+
+[lints]
+workspace = true
+
+[lib]
+name = "fa_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fa-mcp"
+path = "src/main.rs"
+
+[dependencies]
+asupersync = { workspace = true }
+fa-cli = { path = "../fa-cli", version = "=0.0.1" }
+fa-registry = { path = "../fa-registry", version = "=0.0.1" }
+# The MCP framework (plan §2.4, §18.4): crates.io, exact version, fa-mcp
+# posture only. Its registry pin of asupersync =0.5.0 resolves to the
+# workspace's git revision through [patch.crates-io] in the root manifest, so
+# fastmcp and the substrate share one `Cx`.
+fastmcp-rust = { workspace = true }

@@ -41,7 +41,11 @@ pinned_by = "frankengraphdb crates/fgdb-prism/Cargo.toml (same rev)"
 name = "fastmcp-rust"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 version = "=0.12.0"
-role = "MCP framework; fa-mcp posture only; not yet linked — enters with fa-mcp, together with [patch.crates-io] asupersync to the rev above"
+checksum = "f87848d809e71ed158b932460660079f91fb2a358a4204c77f5d8b10307cba2f"
+crates = ["fastmcp-rust", "fastmcp-core", "fastmcp-protocol", "fastmcp-transport", "fastmcp-server", "fastmcp-client", "fastmcp-derive", "fastmcp-console"]
+role = "MCP framework; linked by fa-mcp (fa-xex) only, together with [patch.crates-io] asupersync to the rev above so the graph holds one asupersync package id"
+transitive_confined = ["serde", "serde_json", "chrono (fastmcp-server)", "time (fastmcp-console -> rich_rust; asupersync tls -> x509-parser, asn1-rs)", "ring (fastmcp-protocol jose; rustls)", "cap-std, cap-fs-ext (fastmcp-server)", "num-rational, num-bigint (rich_rust; der-parser)"]
+verification = "fa-mcp parity test (every verb a tool or a registered exclusion), the stdio end-to-end test against the CLI's data, cargo deny bans/licenses with the wrapper rows; rerun all on pin changes"
 
 [[foundation]]
 name = "frankensympy"

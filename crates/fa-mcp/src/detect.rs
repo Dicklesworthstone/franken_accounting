@@ -1,0 +1,780 @@
+//! The mistake detectors (plan §15.4): what an agent gets wrong often enough
+//! that the server refuses it before dispatch, with the fix. Each detector
+//! returns the structured error (usage class, `detector` named) or nothing;
+//! none of them changes a call, and none of them decides accounting law —
+//! the kernel's refusal stays the verdict for whatever passes.
+//!
+//! - [`floats`]: a JSON number where an amount string is required — any
+//!   non-integer number anywhere, and any number under an `amount` key;
+//! - [`instants`]: an instant (`2026-03-15T00:00:00Z`, an epoch) where a civil
+//!   `YYYY-MM-DD` date is required; never silently converted (FA-REF-015);
+//! - [`placeholders`]: `<document oid>`, `TODO`, `…`, `YOUR_BOOK` and the like
+//!   in an argument, naming the tool that returns the real value;
+//! - [`summary_account`]: a posting leg on an account the chart marks
+//!   `leaf: false`, with its leaves listed;
+//! - [`redated_intent`]: the same intent re-submitted with a different
+//!   effective date after a period-law (safety) refusal in this session —
+//!   the one thing a period-law fix never means;
+//! - [`self_approval`]: an approval, by the principal who planned the
+//!   proposal in this session, of that proposal.
+//!
+//! The last two need what this session has seen: [`Memory`], fed by
+//! [`remember`] after every dispatch.
+
+use fa_cli::json::Json;
+use fastmcp_rust::{JsonValue, json};
+
+use crate::dispatch::Reply;
+use crate::errors::{NEVER_REDATE, StructuredError};
+use crate::registry::{StdinKind, ToolCall, ToolSpec};
+
+/// The default principal (`--as`).
+pub const OPERATOR: &str = "operator";
+
+/// An intent a safety refusal (period law) turned away.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RefusedIntent {
+    pub idempotency_key: Option<String>,
+    /// The legs, canonical JSON (the intent's identity when the key changes).
+    pub legs: Option<String>,
+    pub effective_date: String,
+    pub refusal_id: Option<String>,
+}
+
+/// A proposal this session planned, and by whom.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Planned {
+    pub digest: String,
+    pub principal: String,
+}
+
+/// What this session has seen.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Memory {
+    pub refused: Vec<RefusedIntent>,
+    pub planned: Vec<Planned>,
+}
+
+/// The principal a call acts as (`as`, default operator).
+#[must_use]
+pub fn principal_of(arguments: &JsonValue) -> String {
+    arguments
+        .get("as")
+        .and_then(JsonValue::as_str)
+        .unwrap_or(OPERATOR)
+        .to_string()
+}
+
+/// The inline intent of a posting tool's call, when it has one.
+#[must_use]
+pub fn intent_of<'a>(tool: &ToolSpec, arguments: &'a JsonValue) -> Option<&'a JsonValue> {
+    let s = tool.stdin.as_ref()?;
+    if s.kind != StdinKind::Object || s.property != "intent" {
+        return None;
+    }
+    arguments.get(&s.property).filter(|v| v.is_object())
+}
+
+fn walk<'a>(
+    v: &'a JsonValue,
+    path: &mut Vec<String>,
+    f: &mut dyn FnMut(&[String], &'a JsonValue) -> Option<StructuredError>,
+) -> Option<StructuredError> {
+    if let Some(e) = f(path, v) {
+        return Some(e);
+    }
+    match v {
+        JsonValue::Array(items) => {
+            for (i, item) in items.iter().enumerate() {
+                path.push(format!("[{i}]"));
+                let r = walk(item, path, f);
+                path.pop();
+                if r.is_some() {
+                    return r;
+                }
+            }
+        }
+        JsonValue::Object(o) => {
+            for (k, item) in o {
+                path.push(k.clone());
+                let r = walk(item, path, f);
+                path.pop();
+                if r.is_some() {
+                    return r;
+                }
+            }
+        }
+        _ => {}
+    }
+    None
+}
+
+fn spell(path: &[String]) -> String {
+    let mut out = String::new();
+    for p in path {
+        if p.starts_with('[') {
+            out.push_str(p);
+        } else {
+            if !out.is_empty() {
+                out.push('.');
+            }
+            out.push_str(p);
+        }
+    }
+    if out.is_empty() {
+        "the arguments".into()
+    } else {
+        out
+    }
+}
+
+fn last_key(path: &[String]) -> &str {
+    path.iter()
+        .rev()
+        .find(|p| !p.starts_with('['))
+        .map_or("", String::as_str)
+}
+
+/// The arguments that are content, not arguments: a text document.
+fn is_content(tool: &ToolSpec, path: &[String]) -> bool {
+    tool.stdin.as_ref().is_some_and(|s| {
+        s.kind == StdinKind::Text && path.first().is_some_and(|p| p == &s.property)
+    })
+}
+
+/// A JSON number where an amount string is required.
+#[must_use]
+pub fn floats(arguments: &JsonValue) -> Option<StructuredError> {
+    walk(arguments, &mut Vec::new(), &mut |path, v| {
+        let JsonValue::Number(n) = v else { return None };
+        let key = last_key(path);
+        let amount_key =
+            key == "amount" || key.ends_with("_amount") || key == "requested" || key == "moved";
+        let non_integer = !n.is_i64() && !n.is_u64();
+        if amount_key || non_integer {
+            Some(StructuredError::detected(
+                "float_amount",
+                format!(
+                    "{} is the JSON number {n}; amounts cross this boundary only as strings with their unit, never as numbers",
+                    spell(path)
+                ),
+                format!(
+                    "write {} as an exact decimal string at the unit's registered scale with the unit code, e.g. \"1500.00 USD\" (no float ever touches an amount path)",
+                    spell(path)
+                ),
+                Vec::new(),
+            ))
+        } else {
+            None
+        }
+    })
+}
+
+fn is_date_key(key: &str) -> bool {
+    matches!(key, "date" | "as_of" | "effective_date" | "start" | "end") || key.ends_with("_date")
+}
+
+/// `2026-03-15T00:00:00Z`, `2026-03-15 00:00`, `1742000000`: an instant.
+fn instant_day(value: &str) -> Option<String> {
+    let b = value.as_bytes();
+    let civil = b.len() >= 10
+        && b[..10].iter().enumerate().all(|(i, c)| {
+            if i == 4 || i == 7 {
+                *c == b'-'
+            } else {
+                c.is_ascii_digit()
+            }
+        });
+    if civil {
+        let rest = &value[10..];
+        if rest.is_empty() {
+            return None;
+        }
+        if rest.starts_with('T')
+            || rest.starts_with(' ')
+            || rest.ends_with('Z')
+            || rest.contains('+')
+        {
+            return Some(value[..10].to_string());
+        }
+        return None;
+    }
+    if b.len() >= 10 && b.iter().all(u8::is_ascii_digit) {
+        // An epoch (seconds or milliseconds); the day is not derivable without a zone.
+        return Some(String::new());
+    }
+    None
+}
+
+/// An instant where a civil date is required.
+#[must_use]
+pub fn instants(tool: &ToolSpec, arguments: &JsonValue) -> Option<StructuredError> {
+    walk(arguments, &mut Vec::new(), &mut |path, v| {
+        let JsonValue::String(s) = v else { return None };
+        if is_content(tool, path) || !is_date_key(last_key(path)) {
+            return None;
+        }
+        let day = instant_day(s)?;
+        let hint = if day.is_empty() {
+            "choose the civil date explicitly: an epoch names no calendar day without a zone, and nothing here converts one".to_string()
+        } else {
+            format!(
+                "choose the civil date explicitly: its calendar day in UTC is {day}; pass \"{day}\" only if that is the day you mean (the book's time zone policy, not this server, decides a conversion)"
+            )
+        };
+        Some(StructuredError::detected(
+            "instant_for_date",
+            format!(
+                "{} is the instant \"{s}\" where a civil YYYY-MM-DD date is required; an instant is never silently converted (FA-REF-015)",
+                spell(path)
+            ),
+            hint,
+            Vec::new(),
+        ))
+    })
+}
+
+/// `<document oid>`, `TODO`, `…`, `YOUR_BOOK`: text that stands for a value.
+fn placeholder_in(s: &str) -> Option<String> {
+    if let Some(start) = s.find('<') {
+        let after = &s[start + 1..];
+        if let Some(end) = after.find('>') {
+            let inner = after[..end].trim();
+            let wordy = !inner.is_empty()
+                && inner.len() <= 40
+                && inner
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b' ' || b == b'_' || b == b'-');
+            if wordy {
+                return Some(format!("<{inner}>"));
+            }
+        }
+    }
+    if s.contains('…') || s == "..." || s.ends_with("...") {
+        return Some("…".into());
+    }
+    for word in [
+        "TODO",
+        "TBD",
+        "FIXME",
+        "PLACEHOLDER",
+        "CHANGEME",
+        "YOUR_BOOK",
+        "YOUR_",
+    ] {
+        if s.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .any(|w| w == word || (word.ends_with('_') && w.starts_with(word)))
+        {
+            return Some(word.into());
+        }
+    }
+    None
+}
+
+/// The tool that returns the real value a placeholder stands for.
+fn producer(key: &str, path: &[String]) -> Vec<ToolCall> {
+    let joined = path.join(".");
+    let (tool, command, args) = match key {
+        "evidence" | "document_oid" | "oid" => (
+            "fa_evidence_import_document",
+            "fa document add <file> --kind Invoice --json",
+            json!({}),
+        ),
+        "resolves" | "reverses" | "entry" | "vid" => (
+            "fa_read_show_entry",
+            "fa entry show <vid> --json",
+            json!({}),
+        ),
+        "proposal" => (
+            "fa_time_period_transition",
+            "fa period lock <code> --plan-out <file> --json",
+            json!({"plan_out": "<file>"}),
+        ),
+        "code" | "period" => ("fa_time_period_status", "fa period list --json", json!({})),
+        "account" => ("fa_chart_list_accounts", "fa chart list --json", json!({})),
+        _ if joined.contains("legs") => {
+            ("fa_chart_list_accounts", "fa chart list --json", json!({}))
+        }
+        _ => return Vec::new(),
+    };
+    vec![ToolCall {
+        tool: tool.into(),
+        arguments: args,
+        command: command.into(),
+    }]
+}
+
+/// Placeholder text in an argument.
+#[must_use]
+pub fn placeholders(tool: &ToolSpec, arguments: &JsonValue) -> Option<StructuredError> {
+    walk(arguments, &mut Vec::new(), &mut |path, v| {
+        let JsonValue::String(s) = v else { return None };
+        if is_content(tool, path) {
+            return None;
+        }
+        let found = placeholder_in(s)?;
+        let key = last_key(path);
+        let calls = producer(key, path);
+        let who = calls
+            .first()
+            .map(|c| format!("; `{}` returns it", c.tool))
+            .unwrap_or_default();
+        Some(StructuredError::detected(
+            "placeholder",
+            format!(
+                "{} holds the placeholder {found:?}, not a value",
+                spell(path)
+            ),
+            format!(
+                "replace {} with the real value{who}; the tool's Discovery section names what produces each handle",
+                spell(path)
+            ),
+            calls,
+        ))
+    })
+}
+
+/// A posting leg on a summary account, given the book's chart
+/// (`fa chart list` → `accounts`).
+#[must_use]
+pub fn summary_account(
+    tool: &ToolSpec,
+    arguments: &JsonValue,
+    chart: &Json,
+) -> Option<StructuredError> {
+    let intent = intent_of(tool, arguments)?;
+    let legs = intent.get("legs")?.as_array()?;
+    let accounts = chart.get("accounts")?.as_arr()?;
+    for (i, leg) in legs.iter().enumerate() {
+        let Some(code) = leg.get("account").and_then(JsonValue::as_str) else {
+            continue;
+        };
+        let Some(row) = accounts
+            .iter()
+            .find(|a| a.get("code").and_then(Json::as_str) == Some(code))
+        else {
+            continue;
+        };
+        if row.get("leaf").and_then(Json::as_bool) != Some(false) {
+            continue;
+        }
+        let name = row.get("name").and_then(Json::as_str).unwrap_or("");
+        let ty = row.get("type").and_then(Json::as_str).unwrap_or("");
+        let is_leaf = |a: &Json| a.get("leaf").and_then(Json::as_bool) == Some(true);
+        let code_of = |a: &Json| {
+            a.get("code")
+                .and_then(Json::as_str)
+                .unwrap_or("")
+                .to_string()
+        };
+        let mut leaves: Vec<String> = accounts
+            .iter()
+            .filter(|a| is_leaf(a) && code_of(a).starts_with(code))
+            .map(|a| {
+                format!(
+                    "{} ({})",
+                    code_of(a),
+                    a.get("name").and_then(Json::as_str).unwrap_or("")
+                )
+            })
+            .collect();
+        let scope = if leaves.is_empty() {
+            leaves = accounts
+                .iter()
+                .filter(|a| is_leaf(a) && a.get("type").and_then(Json::as_str) == Some(ty))
+                .map(|a| {
+                    format!(
+                        "{} ({})",
+                        code_of(a),
+                        a.get("name").and_then(Json::as_str).unwrap_or("")
+                    )
+                })
+                .collect();
+            format!("the {ty} leaves")
+        } else {
+            format!("the leaves under `{code}`")
+        };
+        return Some(StructuredError::detected(
+            "summary_account",
+            format!(
+                "intent.legs[{i}].account `{code}` ({name}) is a summary account; only leaves accept legs (FA-REF-002)"
+            ),
+            format!(
+                "post to a leaf: {scope} are {}",
+                if leaves.is_empty() {
+                    "none — install one with fa_chart_import_chart".to_string()
+                } else {
+                    leaves.join(", ")
+                }
+            ),
+            vec![ToolCall {
+                tool: "fa_chart_list_accounts".into(),
+                arguments: json!({}),
+                command: "fa chart list --json".into(),
+            }],
+        ));
+    }
+    None
+}
+
+fn legs_text(intent: &JsonValue) -> Option<String> {
+    intent.get("legs").map(JsonValue::to_string)
+}
+
+/// The same intent, re-dated, after a period-law refusal in this session.
+#[must_use]
+pub fn redated_intent(
+    tool: &ToolSpec,
+    arguments: &JsonValue,
+    memory: &Memory,
+) -> Option<StructuredError> {
+    let intent = intent_of(tool, arguments)?;
+    let date = intent.get("effective_date")?.as_str()?;
+    let key = intent.get("idempotency_key").and_then(JsonValue::as_str);
+    let legs = legs_text(intent);
+    let prior = memory.refused.iter().find(|r| {
+        r.effective_date != date
+            && ((key.is_some() && r.idempotency_key.as_deref() == key)
+                || (legs.is_some() && r.legs == legs))
+    })?;
+    let cited = prior.refusal_id.as_deref().unwrap_or("the period law");
+    Some(
+        StructuredError::detected(
+            "redated_intent",
+            format!(
+                "this intent was refused under {cited} at effective_date {}; re-dating it to {date} dodges the period law",
+                prior.effective_date
+            ),
+            format!(
+                "keep the true effective date {} and obtain the admissible class or the authorization the refusal named (fa_time_period_status shows each period's state); an entry's effective date is a fact, never a knob",
+                prior.effective_date
+            ),
+            vec![ToolCall {
+                tool: "fa_time_period_status".into(),
+                arguments: json!({}),
+                command: "fa period list --json".into(),
+            }],
+        )
+        .never(NEVER_REDATE),
+    )
+}
+
+/// An approval of a proposal by the principal who planned it here.
+#[must_use]
+pub fn self_approval(
+    tool: &ToolSpec,
+    arguments: &JsonValue,
+    memory: &Memory,
+) -> Option<StructuredError> {
+    if tool.verb != "approve" {
+        return None;
+    }
+    let digest = arguments.get("proposal")?.as_str()?;
+    let who = principal_of(arguments);
+    let planned = memory
+        .planned
+        .iter()
+        .find(|p| p.digest == digest && p.principal == who)?;
+    Some(StructuredError::detected(
+        "self_approval",
+        format!(
+            "`{}` planned proposal {} in this session; approving it as `{}` is self-approval (segregation of duties, FA-REF-008)",
+            planned.principal, planned.digest, who
+        ),
+        "a second approver is a second invocation as another principal: call fa_time_approve with `as` set to a different, admissible principal over the same proposal digest",
+        vec![ToolCall {
+            tool: "fa_time_approve".into(),
+            arguments: json!({"proposal": digest, "as": "<another principal>"}),
+            command: format!("fa approve --proposal {digest} --as <another principal> --json"),
+        }],
+    ))
+}
+
+/// Record what a dispatch taught: a posting tool's intent turned away by a
+/// safety (period-law) refusal, and a proposal this call planned.
+pub fn remember(memory: &mut Memory, tool: &ToolSpec, arguments: &JsonValue, reply: &Reply) {
+    if let Some(intent) = intent_of(tool, arguments)
+        && reply.exit == 7
+        && let Some(date) = intent.get("effective_date").and_then(JsonValue::as_str)
+    {
+        let refusal_id = reply
+            .error()
+            .and_then(|e| e.data.get("refusal_id"))
+            .and_then(Json::as_str)
+            .map(str::to_string);
+        memory.refused.push(RefusedIntent {
+            idempotency_key: intent
+                .get("idempotency_key")
+                .and_then(JsonValue::as_str)
+                .map(str::to_string),
+            legs: legs_text(intent),
+            effective_date: date.to_string(),
+            refusal_id,
+        });
+    }
+    if reply.exit == 0 {
+        for line in &reply.lines {
+            if line.event == "period_planned"
+                && let Some(digest) = line.data.get("proposal_digest").and_then(Json::as_str)
+            {
+                memory.planned.push(Planned {
+                    digest: digest.to_string(),
+                    principal: principal_of(arguments),
+                });
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dispatch::Line;
+    use crate::registry::McpRegistry;
+
+    fn tool(wire: &str) -> ToolSpec {
+        McpRegistry::embedded()
+            .expect("[mcp]")
+            .tool_by_wire(wire)
+            .expect(wire)
+            .clone()
+    }
+
+    fn intent(date: &str, key: &str, amount: JsonValue) -> JsonValue {
+        json!({"intent": {
+            "effective_date": date, "idempotency_key": key, "description": "rent",
+            "legs": [{"side": "debit", "account": "6000", "amount": amount}, {"side": "credit", "account": "1000", "amount": "1500.00 USD"}]
+        }})
+    }
+
+    #[test]
+    fn floats_positive_and_negative() {
+        let e = floats(&intent("2026-03-15", "k", json!(1500.5))).expect("a float");
+        assert_eq!(e.detector.as_deref(), Some("float_amount"));
+        assert!(e.message.contains("intent.legs[0].amount"), "{}", e.message);
+        assert!(
+            e.fix_hint
+                .as_deref()
+                .is_some_and(|f| f.contains("\"1500.00 USD\""))
+        );
+        // An integer under an amount key is still a number where a string is required.
+        assert!(floats(&intent("2026-03-15", "k", json!(1500))).is_some());
+        // A non-integer anywhere is refused; integers elsewhere are fine.
+        assert!(floats(&json!({"fiscal_year": 2026.0})).is_some());
+        assert!(floats(&json!({"fiscal_year": 2026, "reason": 0})).is_none());
+        assert!(floats(&intent("2026-03-15", "k", json!("1500.00 USD"))).is_none());
+    }
+
+    #[test]
+    fn instants_positive_and_negative() {
+        let post = tool("fa_post_post");
+        let e = instants(
+            &post,
+            &intent("2026-03-15T00:00:00Z", "k", json!("1.00 USD")),
+        )
+        .expect("an instant");
+        assert_eq!(e.detector.as_deref(), Some("instant_for_date"));
+        assert!(
+            e.fix_hint
+                .as_deref()
+                .is_some_and(|f| f.contains("2026-03-15") && f.contains("only if")),
+            "{:?}",
+            e.fix_hint
+        );
+        assert!(instants(&post, &intent("2026-03-15", "k", json!("1.00 USD"))).is_none());
+        let tb = tool("fa_read_trial_balance");
+        assert!(instants(&tb, &json!({"as_of": "2026-03-15 12:00"})).is_some());
+        assert!(instants(&tb, &json!({"as_of": "1742000000"})).is_some());
+        assert!(instants(&tb, &json!({"as_of": "2026-03-15"})).is_none());
+        // A sequence is not a date; an instant in a non-date field is the kernel's call.
+        assert!(instants(&tb, &json!({"as_known_at": "2026-03-15T00:00:00Z"})).is_none());
+        // Document text is content, not an argument.
+        let doc = tool("fa_evidence_import_document");
+        assert!(
+            instants(
+                &doc,
+                &json!({"text": "dated 2026-03-15T00:00:00Z", "kind": "Invoice"})
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn placeholders_positive_and_negative() {
+        let post = tool("fa_post_post");
+        let mut args = intent("2026-03-15", "k", json!("1.00 USD"));
+        args["evidence"] = json!(["<document oid>"]);
+        let e = placeholders(&post, &args).expect("a placeholder");
+        assert_eq!(e.detector.as_deref(), Some("placeholder"));
+        assert!(e.message.contains("evidence[0]"), "{}", e.message);
+        assert_eq!(
+            e.suggested_tool_calls[0].tool,
+            "fa_evidence_import_document"
+        );
+        for bad in ["TODO", "tbd later: TBD", "…", "YOUR_BOOK", "<vid>"] {
+            let args = json!({"intent": {"resolves": bad, "effective_date": "2026-03-15", "idempotency_key": "r"}});
+            assert!(
+                placeholders(&tool("fa_post_resolve"), &args).is_some(),
+                "{bad}"
+            );
+        }
+        assert!(
+            placeholders(&post, &intent("2026-03-15", "inv-1001", json!("1.00 USD"))).is_none()
+        );
+        // A real document may say anything.
+        let doc = tool("fa_evidence_import_document");
+        assert!(
+            placeholders(
+                &doc,
+                &json!({"text": "TODO: pay <vendor> …", "kind": "Invoice"})
+            )
+            .is_none()
+        );
+        assert!(placeholders(&doc, &json!({"text": "x", "kind": "<kind>"})).is_some());
+    }
+
+    #[test]
+    fn summary_accounts_are_caught_with_their_leaves_listed() {
+        let chart = fa_cli::json::parse(r#"{"accounts":[
+            {"code":"6","name":"Expenses","type":"Expense","leaf":false,"unit":"USD","lower_bound":null,"upper_bound":null,"limit_scope":null},
+            {"code":"6000","name":"Rent","type":"Expense","leaf":true,"unit":"USD","lower_bound":null,"upper_bound":null,"limit_scope":null},
+            {"code":"6100","name":"Power","type":"Expense","leaf":true,"unit":"USD","lower_bound":null,"upper_bound":null,"limit_scope":null},
+            {"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD","lower_bound":null,"upper_bound":null,"limit_scope":null}]}"#).unwrap();
+        let post = tool("fa_post_post");
+        let mut args = intent("2026-03-15", "k", json!("1.00 USD"));
+        args["intent"]["legs"][0]["account"] = json!("6");
+        let e = summary_account(&post, &args, &chart).expect("a summary account");
+        assert_eq!(e.detector.as_deref(), Some("summary_account"));
+        assert!(e.message.contains("legs[0].account `6`"), "{}", e.message);
+        let fix = e.fix_hint.clone().unwrap_or_default();
+        assert!(
+            fix.contains("6000 (Rent)") && fix.contains("6100 (Power)") && !fix.contains("1000"),
+            "{fix}"
+        );
+        assert!(
+            summary_account(&post, &intent("2026-03-15", "k", json!("1.00 USD")), &chart).is_none()
+        );
+        // An unknown account is the kernel's refusal (FA-REF-004), not this detector's.
+        args["intent"]["legs"][0]["account"] = json!("9999");
+        assert!(summary_account(&post, &args, &chart).is_none());
+    }
+
+    fn reply(exit: u8, event: &str, data: &str) -> Reply {
+        Reply {
+            exit,
+            lines: vec![Line {
+                event: event.into(),
+                data: fa_cli::json::parse(data).unwrap(),
+                line: Json::Null,
+            }],
+            stderr: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_redated_intent_after_a_period_law_refusal_is_caught_never_suggested() {
+        let post = tool("fa_post_post");
+        let mut memory = Memory::default();
+        let first = intent("2026-02-10", "inv-7", json!("1.00 USD"));
+        let refused = reply(
+            7,
+            "error",
+            r#"{"class":"safety","exit":7,"refusal_id":"FA-REF-010","message":"m","cite":"admissibility.toml (Original, Closed)","fix":"post in an Open period, or use the class and capability the cell admits","detail":null}"#,
+        );
+        remember(&mut memory, &post, &first, &refused);
+        assert_eq!(memory.refused.len(), 1);
+        // Same key, new date: caught.
+        let redated = intent("2026-03-01", "inv-7", json!("1.00 USD"));
+        let e = redated_intent(&post, &redated, &memory).expect("caught");
+        assert_eq!(e.detector.as_deref(), Some("redated_intent"));
+        assert_eq!(e.never.as_deref(), Some(NEVER_REDATE));
+        assert!(
+            e.fix_hint
+                .as_deref()
+                .is_some_and(|f| f.contains("2026-02-10") && !f.contains("2026-03-01")),
+            "{:?}",
+            e.fix_hint
+        );
+        // Same legs under a new key, new date: still caught.
+        let mut renamed = intent("2026-03-01", "inv-8", json!("1.00 USD"));
+        renamed["intent"]["description"] = json!("other");
+        assert!(redated_intent(&post, &renamed, &memory).is_some());
+        // The same date again (retrying after obtaining authorization), or a different intent: fine.
+        assert!(redated_intent(&post, &first, &memory).is_none());
+        let other = intent("2026-03-01", "inv-9", json!("2.00 USD"));
+        assert!(redated_intent(&post, &other, &memory).is_none());
+        // A refusal that is not a safety block teaches nothing.
+        let mut memory = Memory::default();
+        remember(
+            &mut memory,
+            &post,
+            &first,
+            &reply(
+                3,
+                "error",
+                r#"{"class":"refusal","exit":3,"refusal_id":"FA-REF-001","message":"m","cite":"c","fix":"f","detail":null}"#,
+            ),
+        );
+        assert!(memory.refused.is_empty());
+    }
+
+    #[test]
+    fn self_approval_of_a_proposal_planned_here_is_caught() {
+        let transition = tool("fa_time_period_transition");
+        let approve = tool("fa_time_approve");
+        let mut memory = Memory::default();
+        let digest = "ab".repeat(32);
+        let planned = reply(
+            0,
+            "period_planned",
+            &format!(
+                r#"{{"period":"FY2026-P01","from":"Closed","to":"Locked","proposal_digest":"{digest}","plan":"p.json"}}"#
+            ),
+        );
+        remember(
+            &mut memory,
+            &transition,
+            &json!({"transition": "lock", "code": "FY2026-P01", "plan_out": "p.json"}),
+            &planned,
+        );
+        assert_eq!(
+            memory.planned,
+            vec![Planned {
+                digest: digest.clone(),
+                principal: OPERATOR.into()
+            }]
+        );
+        let e = self_approval(&approve, &json!({"proposal": digest}), &memory)
+            .expect("caught: the default principal planned it");
+        assert_eq!(e.detector.as_deref(), Some("self_approval"));
+        assert!(
+            e.fix_hint
+                .as_deref()
+                .is_some_and(|f| f.contains("different")),
+            "{:?}",
+            e.fix_hint
+        );
+        assert!(
+            self_approval(
+                &approve,
+                &json!({"proposal": digest, "as": "operator"}),
+                &memory
+            )
+            .is_some()
+        );
+        // Another principal, or a proposal planned elsewhere: the kernel decides.
+        assert!(
+            self_approval(
+                &approve,
+                &json!({"proposal": digest, "as": "controller"}),
+                &memory
+            )
+            .is_none()
+        );
+        assert!(self_approval(&approve, &json!({"proposal": "cd".repeat(32)}), &memory).is_none());
+        assert!(
+            self_approval(&transition, &json!({"proposal": digest}), &memory).is_none(),
+            "only approve"
+        );
+    }
+}
