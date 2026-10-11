@@ -5,6 +5,7 @@
 //! source and refolds both sides:
 //!
 //! - the map names this book, and is strictly increasing on both sides;
+//! - its prefix is not past the source's frontier;
 //! - its pairs are exactly the source's commits through the prefix that
 //!   carry accounting objects (no gap, no extra), each with that commit's
 //!   marker;
@@ -29,8 +30,8 @@ use crate::{RegisterError, entries_at, entry_period, fold_period_at};
 /// Refusal codes this module issues.
 pub mod code {
     /// A SeqMap that does not describe the replay: wrong book, not monotone,
-    /// a gap or an extra pair, a wrong marker, or a pair at which the two
-    /// books' entries or folds differ.
+    /// a prefix past the source frontier, a gap or an extra pair, a wrong
+    /// marker, or a pair at which the two books' entries or folds differ.
     pub const SEQ_MAP_INVALID: &str = "FA-REF-135";
 }
 
@@ -76,6 +77,16 @@ where
         return Ok(Err(invalid(
             "the map's pairs are not strictly increasing on both sides".into(),
         )));
+    }
+    // The verifier is the outsider's check: a prefix past the source's
+    // frontier names history the source does not hold, refused here even
+    // though `source_batches` refuses it when a replay is made.
+    let frontier = source.frontier()?;
+    if map.source_prefix > frontier {
+        return Ok(Err(invalid(format!(
+            "the map's source prefix {} is past the source frontier {}",
+            map.source_prefix.0, frontier.0
+        ))));
     }
     // The source commits a replay through the prefix must reproduce.
     let mut maintenance = Maintenance::default();

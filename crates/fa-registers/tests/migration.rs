@@ -1533,6 +1533,24 @@ fn scratch_replay_equals_the_source_at_every_mapped_seq() {
             .expect("materialized");
         maintenance_commits.push(seq);
         checkpoints.push((seq, oracle.known()));
+        // Maintenance: the native register maintainer advances P01's cells
+        // and cursor (its first call creates the RegisterState vertex, later
+        // ones move its properties); once, a rebuild replaces them.
+        let ctx = k.ctx();
+        let (db, book) = (&mut k.db, &k.book);
+        let maintained = k
+            .runtime
+            .block_on(async move {
+                if r == 2 {
+                    fa_registers::rebuild(db, &ctx, book, P01).await
+                } else {
+                    fa_registers::advance(db, &ctx, book, P01).await
+                }
+            })
+            .expect("maintained");
+        assert!(maintained.wrote, "every round publishes");
+        maintenance_commits.push(maintained.published_at);
+        checkpoints.push((maintained.published_at, oracle.known()));
     }
     // An approval recorded for a proposal not yet posted anywhere.
     let pending = trunk_intent(
@@ -1551,6 +1569,13 @@ fn scratch_replay_equals_the_source_at_every_mapped_seq() {
     };
     let approvals = approve(&mut k, approved_proposal.proposal_digest().unwrap());
     let head = k.db.frontier().unwrap();
+    assert!(
+        k.db.vertices_at(head)
+            .unwrap()
+            .iter()
+            .any(|v| v.labels.contains(&fa_model::symbols::label::REGISTER_STATE)),
+        "the source holds the maintainer's state"
+    );
 
     let mut refused: BTreeMap<&'static str, usize> = BTreeMap::new();
     let prefixes = [
@@ -1579,6 +1604,20 @@ fn scratch_replay_equals_the_source_at_every_mapped_seq() {
                 .all(|v| !v.labels.contains(&fa_model::symbols::label::REGISTER)),
             "no materialized register reaches a scratch book"
         );
+        assert!(
+            scratch
+                .vertices_at(at)
+                .unwrap()
+                .iter()
+                .all(|v| !v.labels.contains(&fa_model::symbols::label::REGISTER_STATE)),
+            "no maintainer state reaches a scratch book"
+        );
+        // The map answers only inside [0, source_prefix].
+        assert_eq!(
+            map.translate(map.source_prefix),
+            map.pairs.last().map(|p| p.scratch_seq)
+        );
+        assert_eq!(map.translate(CommitSeq(map.source_prefix.0 + 1)), None);
         for (seq, known) in checkpoints.iter().filter(|(s, _)| *s <= prefix) {
             let scratch_seq = map.translate(*seq).expect("after genesis");
             assert_scratch_fold(&k, &scratch, &oracle, OPENING, scratch_seq, *known);
@@ -1605,6 +1644,17 @@ fn scratch_replay_equals_the_source_at_every_mapped_seq() {
         for bad in [&gap, &swapped, &marker, &shifted] {
             let r = verify(&k, &scratch, bad).expect_err("a planted map");
             assert_eq!((r.code, r.exit), ("FA-REF-135", exit::VERIFICATION), "{r}");
+            *refused.entry("FA-REF-135").or_default() += 1;
+        }
+        // At the head, a prefix moved past the source's frontier and nothing
+        // else changed: the commit set through it is the same, so only the
+        // frontier check sees it.
+        if prefix == head {
+            let mut future = map.clone();
+            future.source_prefix = CommitSeq(head.0 + 1);
+            let r = verify(&k, &scratch, &future).expect_err("a prefix past the frontier");
+            assert_eq!((r.code, r.exit), ("FA-REF-135", exit::VERIFICATION), "{r}");
+            assert!(r.message.contains("past the source frontier"), "{r}");
             *refused.entry("FA-REF-135").or_default() += 1;
         }
         last = Some((scratch, map));
@@ -1674,6 +1724,42 @@ fn scratch_replay_equals_the_source_at_every_mapped_seq() {
         let got = refused.get(code).copied().unwrap_or(0);
         assert!(got >= 3, "{code} planted {got} times");
     }
+
+    // The same families on maintenance are dropped, not refused: a
+    // RegisterState vertex with an edge, then a property removal and the
+    // edge's retirement, then the vertex's, replay to nothing.
+    let (mut src, _) = setup();
+    let before = src.db.frontier().unwrap();
+    let state = VId(0x5747_e000);
+    let root = fa_journal::rows::book_root();
+    let rel = fa_model::symbols::relation::IN_BOOK;
+    let eid = fa_journal::rows::edge_id(rel, state, root);
+    let mut w = WriteBatch::new(rel);
+    w.create_vertex(
+        state,
+        vec![fa_model::symbols::label::REGISTER_STATE],
+        Vec::new(),
+    );
+    w.set_vertex_property(
+        state,
+        fa_model::symbols::property::NAME,
+        Some(fgdb_types::CanonicalScalar::Int(1)),
+    );
+    w.add_edge(eid, state, root, Vec::new());
+    write_raw(&mut src, w);
+    let mut w = WriteBatch::new(rel);
+    w.set_vertex_property(state, fa_model::symbols::property::NAME, None);
+    w.delete_edge(eid);
+    write_raw(&mut src, w);
+    let mut w = WriteBatch::new(rel);
+    w.delete_vertex(state);
+    write_raw(&mut src, w);
+    let mut scratch = empty_scratch(&src);
+    let at = src.db.frontier().unwrap();
+    assert!(at > before);
+    let map = replay(&mut src, &mut scratch, at).expect("maintenance is dropped, not refused");
+    assert!(map.pairs.iter().all(|p| p.source_seq <= before));
+    verify(&src, &scratch, &map).expect("the map verifies");
 }
 
 /// A replay is about objects, not only totals: two books with the same

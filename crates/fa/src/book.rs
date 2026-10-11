@@ -1193,14 +1193,24 @@ mod tests {
             .unwrap()
             .code
             .clone();
-        book.transition_period(&march, PeriodTransition::Open, principal, 1, day, b"open")
-            .expect("kernel")
-            .expect("opens");
+        book.transition_period(
+            &march,
+            PeriodTransition::Open,
+            principal,
+            1,
+            day,
+            b"open",
+            &Capability::embedded(principal, &["close"]).expect("close"),
+        )
+        .expect("kernel")
+        .expect("opens");
         for key in [&b"rent-1"[..], b"rent-2"] {
             post_rent(&mut book, usd, principal, day, key, 150_000)
                 .expect("kernel")
                 .expect("admitted");
         }
+        // Maintained registers are maintenance: never replayed.
+        assert!(book.advance_registers(&march).expect("maintained").wrote);
         let source_head = with_store!(&book.store, db => db.frontier()).unwrap();
 
         let (mut scratch, map) = book
@@ -1220,6 +1230,14 @@ mod tests {
         assert_eq!(
             scratch.fold_period(&march).unwrap().cells,
             book.fold_period(&march).unwrap().cells
+        );
+        let scratch_rows =
+            with_store!(&scratch.store, db => db.vertices_at(db.frontier().unwrap())).unwrap();
+        assert!(
+            scratch_rows
+                .iter()
+                .all(|v| !v.labels.contains(&fa_model::symbols::label::REGISTER_STATE)),
+            "no maintainer state reaches the scratch book"
         );
 
         post_rent(&mut scratch, usd, principal, day, b"what-if", 150_000)

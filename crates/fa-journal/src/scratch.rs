@@ -13,11 +13,15 @@
 //! - property moves replay as compare-and-sets from the source's `before`,
 //!   so any divergence aborts instead of being papered over;
 //! - **accounting objects only**: rows on `Register` (materialized register
-//!   checkpoints) and `AccumulatorState` (the notary's checkpoints) vertices,
-//!   and edges and properties on them, are maintenance and are dropped; a
+//!   checkpoints), `AccumulatorState` (the notary's checkpoints) and
+//!   `RegisterState` (the native register maintainer's cells and cursor)
+//!   vertices, and every row on them or their edges — property moves and
+//!   removals, label flips, deletes — are maintenance and are dropped; a
 //!   source commit that is only maintenance yields no scratch commit;
-//! - a row family fa never writes (deletes, valid time, counters, escrow,
-//!   sketches, schema, constraints) refuses FA-REF-134, never a skip.
+//! - on an accounting object, a removal or a delete (the journal is
+//!   append-only), and anywhere a row family fa never writes (valid time,
+//!   counters, escrow, sketches, schema, constraints), refuses FA-REF-134,
+//!   never a skip.
 //!
 //! The scratch book's commit sequences are its own: recorded time is never
 //! forged. The [`SeqMap`] it returns binds each replayed source commit (its
@@ -44,7 +48,11 @@ pub const SEQ_MAP_VERSION: u16 = 1;
 pub const SCOPE_ACCOUNTING_OBJECTS_ONLY: u8 = 1;
 
 /// Labels whose vertices are maintenance or checkpoints, never replayed.
-const MAINTENANCE: [LabelId; 2] = [label::REGISTER, label::ACCUMULATOR_STATE];
+const MAINTENANCE: [LabelId; 3] = [
+    label::REGISTER,
+    label::ACCUMULATOR_STATE,
+    label::REGISTER_STATE,
+];
 
 /// One replayed source commit and the scratch commit that reproduces it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,9 +104,14 @@ impl SeqMap {
 
     /// The scratch coordinate that knows exactly the accounting objects the
     /// source knew at `source_known_at`: the last replayed commit at or
-    /// before it. `None` before the first replayed commit (nothing known).
+    /// before it. `None` before the first replayed commit (nothing known)
+    /// and past `source_prefix`, whose history the scratch book does not
+    /// hold: a floor is only lawful inside `[0, source_prefix]`.
     #[must_use]
     pub fn translate(&self, source_known_at: CommitSeq) -> Option<CommitSeq> {
+        if source_known_at > self.source_prefix {
+            return None;
+        }
         self.pairs
             .iter()
             .take_while(|p| p.source_seq <= source_known_at)
@@ -113,6 +126,15 @@ impl SeqMap {
 pub struct Maintenance {
     vertices: BTreeSet<VId>,
     edges: BTreeSet<EId>,
+}
+
+impl Maintenance {
+    fn holds(&self, elem: &ElementId) -> bool {
+        match elem {
+            ElementId::Vertex(v) => self.vertices.contains(v),
+            ElementId::Edge(e) => self.edges.contains(e),
+        }
+    }
 }
 
 fn unsupported(seq: CommitSeq, what: &str) -> Refusal {
@@ -181,14 +203,14 @@ pub fn replayable(
                     before,
                     after,
                 } => {
+                    if maintenance.holds(elem) {
+                        continue;
+                    }
                     let Some(after) = after else {
                         return Err(unsupported(seq, "a property removal"));
                     };
                     match elem {
                         ElementId::Vertex(v) => {
-                            if maintenance.vertices.contains(v) {
-                                continue;
-                            }
                             w.compare_and_set_vertex_property(
                                 *v,
                                 *property,
@@ -198,9 +220,6 @@ pub fn replayable(
                             );
                         }
                         ElementId::Edge(e) => {
-                            if maintenance.edges.contains(e) {
-                                continue;
-                            }
                             w.compare_and_set_edge_property(
                                 *e,
                                 *property,
@@ -214,12 +233,31 @@ pub fn replayable(
                 DeltaRow::LabelMembership {
                     vid, label, after, ..
                 } => {
+                    if MAINTENANCE.contains(label) {
+                        maintenance.vertices.insert(*vid);
+                    }
                     if maintenance.vertices.contains(vid) {
                         continue;
                     }
                     w.set_vertex_label(*vid, *label, *after);
                 }
-                DeltaRow::DeleteVertex { .. } | DeltaRow::DeleteEdge { .. } => {
+                DeltaRow::DeleteVertex {
+                    vid,
+                    sorted_retired_incident_edges,
+                    ..
+                } => {
+                    if maintenance.vertices.contains(vid) {
+                        maintenance
+                            .edges
+                            .extend(sorted_retired_incident_edges.iter().copied());
+                        continue;
+                    }
+                    return Err(unsupported(seq, "a delete (fa's journal is append-only)"));
+                }
+                DeltaRow::DeleteEdge { eid, .. } => {
+                    if maintenance.edges.contains(eid) {
+                        continue;
+                    }
                     return Err(unsupported(seq, "a delete (fa's journal is append-only)"));
                 }
                 DeltaRow::ValidTime { .. } => return Err(unsupported(seq, "a valid-time move")),
