@@ -24,6 +24,10 @@
 #   subcommand is a tool in one cluster or a registered exclusion; clusters
 #   of at most seven; planted defects refused), and the deny.toml wrapper
 #   rows are pinned by crates/fa-mcp/tests/deny_rows.rs.
+# COVERED since fa-c23: resolved foundation source/pin and shared type identity
+#   checks, production posture confinement and feature ceilings (separate
+#   current-host/default-feature normal+build trees). Third-party wrapper
+#   authorization remains cargo deny's separate responsibility.
 #
 # Usage: bash scripts/check.sh            # everything
 #        bash scripts/check.sh --quick    # fmt, check, clippy, ubs (no tests, no deny)
@@ -236,6 +240,14 @@ else
     gate_unrun "forbidden-deps — cargo metadata or jq did not produce the dependency edges (offloader, toolchain, or empty output); log: $DEPS_LOG"
   fi
 fi
+
+# Resolved foundation sources, singleton type identities and production feature
+# ceilings, separately for each shipped posture. Metadata's workspace feature
+# union is never attributed to one posture. Preserve the direct-name tripwire
+# above; this gate adds resolved identities, not a replacement exception list.
+run_gate "foundations" "$ROOT/scripts/check-forbidden-deps.sh" "$LOG_DIR/foundations"
+run_step "foundations-negative" python3 -B "$ROOT/scripts/tests/foundation_negative.py" \
+  "$LOG_DIR/foundations" "$LOG_DIR/foundations-negative"
 
 # The reference model must not reach the production arithmetic through a
 # registry dependency. Observed before fa-pri: fa-reference -> fa-registry ->
