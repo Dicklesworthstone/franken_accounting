@@ -6,6 +6,9 @@
 //! consistency proof between the two states, and the complete prefix. The
 //! producer (`fa-notary`) must reproduce these bytes exactly; here the
 //! verifier must accept them — and refuse every one of them once altered.
+//! `fixtures/checkpoint_v1.txt` and `fixtures/bundle_v1.txt` pin the signed
+//! checkpoint with its scope proofs, and the evidence bundles with a
+//! production receipt, the same way.
 
 use fa_verify::{
     Checkpoint, RecordCheck, VerifyError, verify_balance, verify_consistency, verify_inclusion,
@@ -322,5 +325,139 @@ fn every_pinned_checkpoint_vector_refuses_flipped_bits() {
                 "{name} bit {bit} accepted"
             );
         }
+    }
+}
+
+const BUNDLE_FIXTURE: &str = include_str!("fixtures/bundle_v1.txt");
+
+fn bundle_vector(name: &str) -> Vec<u8> {
+    let line = BUNDLE_FIXTURE
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .find_map(|l| l.strip_prefix(name)?.strip_prefix(' '))
+        .unwrap_or("");
+    assert!(!line.is_empty(), "fixture has no `{name}` vector");
+    unhex(line)
+}
+
+fn bundle_key() -> [u8; 32] {
+    bundle_vector("public_key")
+        .try_into()
+        .expect("a 32-byte key")
+}
+
+/// The pinned bundles verify predicate by predicate with the pinned key
+/// alone, each under its own completeness claim and with the counts the
+/// fixture header describes; the pinned digest is the prefix bundle's; its
+/// receipt verifies with it and fails, alone, against another bundle.
+#[test]
+fn the_pinned_bundles_verify_with_the_pinned_key() {
+    use fa_verify::{BundleScope, Completeness, ScopeClaim, verify_bundle};
+
+    let key = bundle_key();
+    let prefix = bundle_vector("bundle_prefix");
+    let digest: [u8; 32] = bundle_vector("digest_prefix").try_into().unwrap();
+    assert_eq!(fa_verify::bundle::bundle_digest(&prefix), digest);
+    let receipt = bundle_vector("receipt");
+
+    let report = verify_bundle(&prefix, &[key], Some(&receipt)).unwrap();
+    assert!(report.verified(), "{:#?}", report.checks);
+    assert_eq!(report.digest, digest);
+    assert_eq!(report.manifest.scope, BundleScope::Prefix);
+    assert_eq!(
+        report.manifest.completeness,
+        Completeness::SeqRangeComplete { from: 0, to: 5 }
+    );
+    assert_eq!(
+        (
+            report.summary.entries,
+            report.summary.documents,
+            report.summary.inline
+        ),
+        (5, 2, 2)
+    );
+    assert_eq!(
+        report.summary.balances,
+        vec![(b"fa:register-fold:v2".to_vec(), 2)]
+    );
+    let facts = report.receipt.expect("the receipt verified");
+    assert_eq!((facts.producer_principal, facts.produced_at_seq), (7, 9));
+    assert_eq!(facts.capability_commitment, [0xcc; 32]);
+    assert_eq!(facts.time_evidence_oid, None);
+
+    let account = bundle_vector("bundle_account");
+    let report = verify_bundle(&account, &[key], None).unwrap();
+    assert!(report.verified(), "{:#?}", report.checks);
+    assert_eq!(
+        report.manifest.scope,
+        BundleScope::Account(ScopeClaim {
+            account: 0x10,
+            from: i32::MIN,
+            to: i32::MAX
+        })
+    );
+    assert_eq!(
+        report.manifest.completeness,
+        Completeness::ScopeIndexComplete
+    );
+    assert_eq!(
+        (
+            report.summary.entries,
+            report.summary.documents,
+            report.summary.inline
+        ),
+        (3, 2, 0)
+    );
+    let elsewhere = verify_bundle(&account, &[key], Some(&receipt)).unwrap();
+    let failed: Vec<&str> = elsewhere
+        .checks
+        .iter()
+        .filter(|c| !matches!(c.grade, fa_verify::Grade::Pass))
+        .map(|c| c.check)
+        .collect();
+    assert_eq!(failed, ["production_receipt"]);
+
+    let entries = bundle_vector("bundle_entries");
+    let report = verify_bundle(&entries, &[key], None).unwrap();
+    assert!(report.verified(), "{:#?}", report.checks);
+    assert_eq!(report.manifest.scope, BundleScope::Entries(vec![3, 4]));
+    assert_eq!(report.manifest.completeness, Completeness::FilterAttested);
+    assert_eq!(report.manifest.completeness.label(), "membership_only");
+    assert_eq!(
+        (
+            report.summary.entries,
+            report.summary.documents,
+            report.summary.inline
+        ),
+        (2, 2, 2)
+    );
+}
+
+/// Sampled bits of every pinned bundle and of the receipt are bound: with
+/// one flipped, the bundle is refused whole or at least one predicate does
+/// not pass.
+#[test]
+fn every_pinned_bundle_refuses_sampled_flipped_bits() {
+    use fa_verify::verify_bundle;
+
+    let key = bundle_key();
+    for name in ["bundle_prefix", "bundle_account", "bundle_entries"] {
+        let v = bundle_vector(name);
+        let step = (v.len() / 256).max(1);
+        for i in (0..v.len()).step_by(step) {
+            let mut b = v.clone();
+            b[i] ^= 1 << (i % 8);
+            if let Ok(report) = verify_bundle(&b, &[key], None) {
+                assert!(!report.verified(), "{name}: byte {i} is not bound");
+            }
+        }
+    }
+    let prefix = bundle_vector("bundle_prefix");
+    let receipt = bundle_vector("receipt");
+    for i in 0..receipt.len() {
+        let mut r = receipt.clone();
+        r[i] ^= 1 << (i % 8);
+        let report = verify_bundle(&prefix, &[key], Some(&r)).unwrap();
+        assert!(!report.verified(), "receipt byte {i} is not bound");
     }
 }

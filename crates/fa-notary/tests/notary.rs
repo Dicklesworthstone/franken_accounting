@@ -4,8 +4,10 @@
 //! later state proves it extends an earlier one; the complete prefix is
 //! verifiable and an omitted leaf is detected; an entry recorded after a
 //! state cannot be proved against it; a forged state is found by
-//! recomputation and blocks further checkpoints; and every byte of a proof
-//! is bound.
+//! recomputation and blocks further checkpoints; every byte of a proof is
+//! bound; and an evidence bundle of each scope verifies predicate by
+//! predicate, reproduces byte for byte, and fails exactly the predicate a
+//! planted defect breaks.
 
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
@@ -19,8 +21,9 @@ use fa_model::{
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_notary::checkpoint::checkpoint_vid;
 use fa_notary::{
-    AccumulatorState, Journal, SigningKey, StoredState, chain, checkpoint, code, latest,
-    prove_balance, prove_consistency, prove_inclusion, prove_prefix, state_oid, state_vid,
+    AccumulatorState, BalanceRequest, BundleRequest, BundleScope, Journal, ProductionReceipt,
+    ReceiptBody, ScopeRequest, SigningKey, StoredState, bundle_basis, chain, checkpoint, code,
+    latest, prove_balance, prove_consistency, prove_inclusion, prove_prefix, state_oid, state_vid,
     verify_accumulator,
 };
 use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodState, PeriodTransition};
@@ -1246,6 +1249,12 @@ fn a_staged_migration_chunk_blocks_its_balance_proof_until_the_run_finalizes() {
             .any(|l| l.envelope.class == EntryClass::MIGRATION),
         "the accumulator keeps the staged chunk"
     );
+    let bundle_request = |account, unit| BundleRequest {
+        scope: BundleScope::Prefix,
+        balances: vec![balance(account, unit, None)],
+        inline_documents: true,
+    };
+    let before_refusal = h.db.frontier().unwrap();
     for account in [h.cash, h.rent] {
         let r = prove_balance(&h.db, &h.book, &staged.state, account, h.usd.0, None)
             .unwrap()
@@ -1255,12 +1264,28 @@ fn a_staged_migration_chunk_blocks_its_balance_proof_until_the_run_finalizes() {
             (code::MIGRATION_STAGED, exit::REFUSAL),
             "{r}"
         );
+        let refusal = h
+            .bundle(&staged, &bundle_request(account, h.usd))
+            .expect_err("bundle assembly preserves the staged-balance refusal");
+        assert_eq!(
+            (refusal.code, refusal.exit),
+            (code::MIGRATION_STAGED, exit::REFUSAL),
+            "{refusal}"
+        );
     }
+    assert_eq!(h.db.frontier().unwrap(), before_refusal);
     // An account the chunk does not touch proves as before.
     let utilities = prove_balance(&h.db, &h.book, &staged.state, h.utilities, h.usd.0, None)
         .unwrap()
         .expect("unaffected account proves");
     assert!(fa_verify::verify_balance(&utilities, &staged_trusted).is_ok());
+    let bundle = h
+        .bundle(&staged, &bundle_request(h.utilities, h.usd))
+        .expect("a bundle can still prove an unaffected account");
+    let receipt = h.receipt(&bundle, before_refusal);
+    let report = fa_verify::verify_bundle(&bundle.bytes, &[h.signer.public_key()], Some(&receipt))
+        .expect("readable bundle");
+    assert!(report.verified(), "{:#?}", not_passed(&report));
 
     // Finalize (two approvals over the planned proposal).
     let fin = plan_run_transition(
@@ -1307,12 +1332,24 @@ fn a_staged_migration_chunk_blocks_its_balance_proof_until_the_run_finalizes() {
             .find(|r| r.account == account && r.unit_id == h.usd.0)
             .map_or((0, 0), |r| (r.debits, r.credits));
         assert_eq!((report.claim.debits, report.claim.credits), expected);
+        let bundle = h
+            .bundle(&active, &bundle_request(account, h.usd))
+            .expect("the finalized balance can be bundled");
+        let receipt = h.receipt(&bundle, h.db.frontier().unwrap());
+        let report =
+            fa_verify::verify_bundle(&bundle.bytes, &[h.signer.public_key()], Some(&receipt))
+                .expect("readable bundle");
+        assert!(report.verified(), "{:#?}", not_passed(&report));
     }
     // The earlier prefix holds no Finalize leaf: it still refuses.
     let r = prove_balance(&h.db, &h.book, &staged.state, h.cash, h.usd.0, None)
         .unwrap()
         .expect_err("the staged prefix never proves the chunk");
     assert_eq!(r.code, code::MIGRATION_STAGED);
+    let refusal = h
+        .bundle(&staged, &bundle_request(h.cash, h.usd))
+        .expect_err("the earlier bundle prefix still lacks Finalize");
+    assert_eq!(refusal.code, code::MIGRATION_STAGED);
 }
 
 fn seal_text(h: &Harness, text: &str) -> Erasable<String> {
@@ -2070,7 +2107,6 @@ fn a_tampered_stored_checkpoint_is_a_finding_and_refused() {
 /// premise is `Recomputed`; without it, the premise names the signer.
 #[test]
 fn scope_proofs_list_exactly_the_brute_force_filter() {
-    use fa_notary::ScopeRequest;
     use fa_verify::{IndexDerivation, ScopeClaim, verify_scope};
 
     let mut h = harness();
@@ -2258,7 +2294,6 @@ impl ScopeProof {
 /// a scope the index cannot prove (FA-REF-126).
 #[test]
 fn planted_scope_defects_are_refused() {
-    use fa_notary::ScopeRequest;
     use fa_verify::{ScopeClaim, verify_scope};
 
     let mut h = harness();
@@ -2429,4 +2464,769 @@ fn planted_scope_defects_are_refused() {
         assert_eq!(refusal.exit, exit::REFUSAL);
         assert!(refusal.fix.contains("prove_prefix"), "{}", refusal.fix);
     }
+}
+
+// ---- evidence bundles and production receipts (fa-l3c slice 5) -------------
+
+impl Harness {
+    /// Record another source document; its citation in `role`.
+    fn document(&mut self, bytes: &[u8], role: u8) -> EvidenceRef {
+        let doc = Document {
+            book_id: self.book.book_id,
+            kind: 1,
+            mime: "text/plain".into(),
+            grade: 3,
+            retrieved_by: PRINCIPAL,
+            bytes: bytes.to_vec(),
+        };
+        let ctx = self.ctx();
+        let db = &mut self.db;
+        let book = &self.book;
+        self.runtime
+            .block_on(async { add_document(db, &ctx, book, &doc).await })
+            .expect("kernel")
+            .expect("the document is admitted");
+        doc.evidence_ref(role)
+    }
+
+    fn bundle(
+        &self,
+        state: &StoredState,
+        request: &BundleRequest,
+    ) -> Result<fa_notary::Bundle, Refusal> {
+        let (journal, checkpoint) =
+            bundle_basis(&self.db, &self.ctx(), &self.book, state, &self.signer)
+                .expect("kernel")?;
+        // The facade reads each cited document as its capability may see it
+        // (`read_document_for`, fa crate tests); these fixtures' documents
+        // are inline and ungoverned, so the format tests read them whole.
+        let mut documents = std::collections::BTreeMap::new();
+        for oid in fa_notary::bundle::cited_documents(&journal, request).expect("kernel")? {
+            let doc = read_document(&self.db, &oid)
+                .expect("kernel")?
+                .expect("a cited document is held");
+            documents.insert(oid, DocumentRead::Full(doc));
+        }
+        fa_notary::bundle::assemble(&journal, &checkpoint, request, &documents).expect("kernel")
+    }
+
+    fn receipt(&self, bundle: &fa_notary::Bundle, at: CommitSeq) -> Vec<u8> {
+        ProductionReceipt::sign(
+            ReceiptBody {
+                bundle_digest: bundle.digest,
+                producer_principal: PRINCIPAL,
+                produced_at_seq: at,
+                capability_commitment: [0xcc; 32],
+                time_evidence_oid: None,
+            },
+            &self.signer,
+        )
+        .unwrap()
+        .canonical_bytes()
+        .unwrap()
+    }
+}
+
+/// Postings citing one document, then two (a second document joins the
+/// citation list), a hold, and a later rent, published as one state:
+/// `[rent on the 3rd, utilities on the 9th, hold on the 12th, rent on the 20th]`.
+fn bundle_book() -> (Harness, fa_notary::Checkpointed, [VId; 4]) {
+    let mut h = harness();
+    let rent_3 = h.post_on(h.rent, 120_000, b"b-rent-3", 3, EntryClass::ORIGINAL);
+    let lease = h.document(b"LEASE (a second source document)", 2);
+    h.evidence.push(lease);
+    h.evidence.sort();
+    let utilities = h.post_on(h.utilities, 4_500, b"b-util", 9, EntryClass::ORIGINAL);
+    let hold = h.post_on(h.utilities, 700, b"b-hold", 12, EntryClass::PENDING);
+    let rent_20 = h.post_on(h.rent, 60_000, b"b-rent-20", 20, EntryClass::ORIGINAL);
+    let c = h.checkpointed();
+    (h, c, [rent_3, utilities, hold, rent_20])
+}
+
+fn balance(account: VId, unit: UnitId, through: Option<i32>) -> BalanceRequest {
+    BalanceRequest {
+        account,
+        unit: unit.0,
+        effective_through: through,
+    }
+}
+
+/// `(check, subject, reason)` of every check that did not pass, with
+/// `unrun:` marking the ones that did not run.
+fn not_passed(report: &fa_verify::BundleReport) -> Vec<(&'static str, String, String)> {
+    report
+        .checks
+        .iter()
+        .filter_map(|c| match &c.grade {
+            fa_verify::Grade::Pass => None,
+            fa_verify::Grade::Fail(why) => Some((c.check, c.subject.clone(), why.clone())),
+            fa_verify::Grade::Unrun(why) => {
+                Some((c.check, c.subject.clone(), format!("unrun: {why}")))
+            }
+        })
+        .collect()
+}
+
+fn names(failed: &[(&'static str, String, String)]) -> Vec<&'static str> {
+    failed.iter().map(|f| f.0).collect()
+}
+
+/// A bundle of each scope verifies predicate by predicate with nothing but
+/// fa-verify and the book's key, with its production receipt; the same
+/// request against the same checkpoint is the same bytes; each scope is
+/// reported under its own completeness label (named entries as
+/// `membership_only`, never complete); and fa-verify's evidence decoder
+/// agrees with the model's on every leaf of the prefix, control entries
+/// included.
+#[test]
+fn bundles_of_every_scope_verify_predicate_by_predicate_and_reproduce_byte_for_byte() {
+    let (h, c, [rent_3, utilities, _hold, rent_20]) = bundle_book();
+    let pk = h.signer.public_key();
+    let at = h.db.frontier().unwrap();
+    let account = |account: VId, from: u8, to: u8| {
+        BundleScope::Index(ScopeRequest::Account {
+            account,
+            from: day(from),
+            to: day(to),
+        })
+    };
+    let cases = [
+        (
+            BundleRequest {
+                scope: BundleScope::Prefix,
+                balances: vec![
+                    balance(h.cash, h.usd, None),
+                    balance(h.rent, h.usd, Some(day(10))),
+                ],
+                inline_documents: true,
+            },
+            "seq_range_complete",
+        ),
+        (
+            BundleRequest {
+                scope: account(h.rent, 1, 31),
+                balances: vec![balance(h.rent, h.usd, None)],
+                inline_documents: false,
+            },
+            "scope_index_complete",
+        ),
+        (
+            BundleRequest {
+                scope: account(h.rent, 4, 19),
+                balances: Vec::new(),
+                inline_documents: true,
+            },
+            "scope_index_complete",
+        ),
+        (
+            BundleRequest {
+                scope: BundleScope::Entries(vec![rent_20, utilities, rent_3, utilities]),
+                balances: Vec::new(),
+                inline_documents: true,
+            },
+            "membership_only",
+        ),
+    ];
+    let mut entries = Vec::new();
+    for (request, label) in &cases {
+        let bundle = h.bundle(&c.stored, request).expect("produced");
+        assert_eq!(h.bundle(&c.stored, request).unwrap(), bundle, "{label}");
+        let receipt = h.receipt(&bundle, at);
+        assert_eq!(h.receipt(&bundle, at), receipt, "Ed25519 is deterministic");
+        let report =
+            fa_verify::verify_bundle(&bundle.bytes, &[pk], Some(&receipt)).expect("readable");
+        assert!(report.verified(), "{label}: {:#?}", not_passed(&report));
+        assert_eq!(report.digest, bundle.digest);
+        assert_eq!(report.manifest.checkpoint_oid, c.checkpoint.oid.0);
+        let completeness = report
+            .checks
+            .iter()
+            .find(|k| matches!(k.check, "completeness"))
+            .unwrap();
+        assert_eq!(completeness.scope, *label);
+        assert_eq!(
+            completeness
+                .subject
+                .contains("premise: the scope index as signed by"),
+            *label == "scope_index_complete",
+            "{}",
+            completeness.subject
+        );
+        let facts = report.receipt.clone().expect("the receipt verified");
+        assert_eq!(
+            (facts.producer_principal, facts.produced_at_seq),
+            (PRINCIPAL.0, at.0)
+        );
+        assert_eq!(facts.capability_commitment, [0xcc; 32]);
+        assert_eq!(facts.time_evidence_oid, None);
+        let count = |name: &str| report.checks.iter().filter(|k| k.check == name).count() as u64;
+        assert_eq!(count("record"), report.summary.entries);
+        assert_eq!(count("closure"), report.summary.entries);
+        assert_eq!(count("public_commitment"), report.summary.documents);
+        assert_eq!(count("recomputation"), request.balances.len() as u64);
+        let inline = if request.inline_documents {
+            report.summary.documents
+        } else {
+            0
+        };
+        assert_eq!(report.summary.inline, inline);
+        entries.push(report.summary.entries);
+    }
+    // Every leaf; rent's two; none of rent's between the 4th and the 19th;
+    // three distinct named entries.
+    assert_eq!(entries[0], c.stored.state.leaf_count);
+    assert_eq!(entries[1..], [2, 0, 3]);
+
+    let journal = Journal::read(&h.db, &h.book, Some(c.stored.state.through_seq))
+        .unwrap()
+        .unwrap();
+    let mut controls = 0;
+    let mut two_documents = 0;
+    for leaf in &journal.leaves {
+        let entry = fa_model::Entry::decode(&leaf.payload).unwrap();
+        controls += usize::from(entry.proposal.control.is_some());
+        let mut model: Vec<[u8; 32]> = entry
+            .proposal
+            .evidence
+            .iter()
+            .map(|e| e.doc_commit)
+            .collect();
+        model.sort_unstable();
+        model.dedup();
+        two_documents += usize::from(model.len() == 2);
+        assert_eq!(
+            fa_verify::envelope::cited_documents(&leaf.payload[..leaf.proposal_len]).unwrap(),
+            model
+        );
+    }
+    assert!(controls >= 2, "the chart install and the period opening");
+    assert_eq!(two_documents, 3, "utilities, the hold, and the later rent");
+}
+
+/// An import run's control record (fa-txf part A, control tag 13) decodes
+/// in fa-verify exactly: the decoder differential holds on its leaf (it
+/// cites no document), and a prefix bundle over a book holding one
+/// verifies predicate by predicate.
+#[test]
+fn an_import_run_control_record_decodes_in_fa_verify() {
+    let mut h = harness();
+    h.post(h.rent, 1_000, b"r1");
+    let req = ImportRequest {
+        principal: PRINCIPAL,
+        source: fa_model::IntakeSource::Connector {
+            name: "fa-import".into(),
+            version: "1".into(),
+        },
+        idempotency_key: b"import".to_vec(),
+        effective_date: DateDay::from_ymd(2026, 3, 15).unwrap(),
+        description: seal_text(&h, "import"),
+        documents: vec![Document {
+            book_id: h.book.book_id,
+            kind: 1,
+            mime: "text/plain".into(),
+            grade: 3,
+            retrieved_by: PRINCIPAL,
+            bytes: b"INVOICE (imported)".to_vec(),
+        }],
+    };
+    let ctx = h.ctx();
+    let cap = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let (db, book) = (&mut h.db, &h.book);
+    let recorded = h
+        .runtime
+        .block_on(async move { import_run(db, &ctx, book, &cap, req).await })
+        .expect("kernel")
+        .expect("imported");
+    let stored = h.checkpoint();
+    let journal = Journal::read(&h.db, &h.book, Some(stored.state.through_seq))
+        .unwrap()
+        .unwrap();
+    let leaf = journal
+        .leaves
+        .iter()
+        .find(|l| l.vid == recorded.receipt.run)
+        .expect("the run's control entry is a leaf");
+    assert_eq!(leaf.envelope.class, EntryClass::IMPORT_CONTROL);
+    assert_eq!(
+        fa_verify::envelope::cited_documents(&leaf.payload[..leaf.proposal_len]).unwrap(),
+        Vec::<[u8; 32]>::new()
+    );
+    let bundle = h
+        .bundle(
+            &stored,
+            &BundleRequest {
+                scope: BundleScope::Prefix,
+                balances: Vec::new(),
+                inline_documents: true,
+            },
+        )
+        .expect("produced");
+    let report = fa_verify::verify_bundle(&bundle.bytes, &[h.signer.public_key()], None).unwrap();
+    assert!(report.verified(), "{:#?}", report.checks);
+}
+
+/// A bundle cut at its list boundaries (the layout in fa-verify's `bundle`
+/// module), so a test can plant one defect and re-encode the rest exactly.
+#[derive(Clone)]
+struct Cut {
+    head: Vec<u8>,
+    /// Where the manifest's completeness tag sits in `head`.
+    completeness_at: usize,
+    entries: Vec<CutEntry>,
+    balances: Vec<(Vec<u8>, u16, Vec<u8>)>,
+    md: Vec<u8>,
+}
+
+type CutStub = ([u8; 32], u8, u64, [u8; 32], Option<Vec<u8>>);
+
+#[derive(Clone)]
+struct CutEntry {
+    leaf_index: u64,
+    proposal_len: u32,
+    record: Vec<u8>,
+    stubs: Vec<CutStub>,
+}
+
+impl Cut {
+    fn of(bytes: &[u8]) -> Self {
+        const ANY: usize = usize::MAX;
+        let mut r = fa_model::Reader::new(bytes);
+        r.bytes(64, "format").unwrap();
+        r.u16("major").unwrap();
+        r.u16("minor").unwrap();
+        r.fixed::<16>("book").unwrap();
+        r.fixed::<16>("branch").unwrap();
+        r.u64("through").unwrap();
+        r.u64("leaves").unwrap();
+        r.fixed::<32>("checkpoint_oid").unwrap();
+        let scope = r.u8("scope").unwrap();
+        if scope == 2 {
+            r.u128("account").unwrap();
+            r.i32("from").unwrap();
+            r.i32("to").unwrap();
+        } else if scope == 3 {
+            let n = r.count(ANY, "named").unwrap();
+            for _ in 0..n {
+                r.u64("leaf").unwrap();
+            }
+        }
+        let completeness_at = r.offset();
+        if r.u8("completeness").unwrap() == 1 {
+            r.u64("from").unwrap();
+            r.u64("to").unwrap();
+        }
+        r.bytes(ANY, "checkpoint").unwrap();
+        if scope == 3 {
+            let n = r.count(ANY, "members").unwrap();
+            for _ in 0..n {
+                r.bytes(ANY, "envelope").unwrap();
+                let p = r.count(ANY, "path").unwrap();
+                for _ in 0..p {
+                    r.fixed::<32>("node").unwrap();
+                }
+            }
+        } else {
+            r.bytes(ANY, "proof").unwrap();
+        }
+        let head = bytes[..r.offset()].to_vec();
+        let entries = r
+            .list(ANY, "entries", |r| {
+                Ok(CutEntry {
+                    leaf_index: r.u64("leaf_index")?,
+                    proposal_len: r.u32("proposal_len")?,
+                    record: r.bytes(ANY, "record")?.to_vec(),
+                    stubs: r.list(ANY, "stubs", |r| {
+                        Ok((
+                            r.fixed("doc_commit")?,
+                            r.u8("kind")?,
+                            r.u64("length")?,
+                            r.fixed("chunk_root")?,
+                            r.opt("document", |r| Ok(r.bytes(ANY, "document")?.to_vec()))?,
+                        ))
+                    })?,
+                })
+            })
+            .unwrap();
+        let balances = r
+            .list(ANY, "balances", |r| {
+                Ok((
+                    r.bytes(64, "domain")?.to_vec(),
+                    r.u16("version")?,
+                    r.bytes(ANY, "proof")?.to_vec(),
+                ))
+            })
+            .unwrap();
+        let md = r.bytes(ANY, "manifest_md").unwrap().to_vec();
+        r.finish().unwrap();
+        Self {
+            head,
+            completeness_at,
+            entries,
+            balances,
+            md,
+        }
+    }
+
+    fn bytes(&self) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.fixed(&self.head)
+            .list(&self.entries, |w, e| {
+                w.u64(e.leaf_index)
+                    .u32(e.proposal_len)
+                    .bytes(&e.record)
+                    .list(&e.stubs, |w, (commit, kind, length, root, inline)| {
+                        w.fixed(commit).u8(*kind).u64(*length).fixed(root).opt(
+                            inline.as_ref(),
+                            |w, b| {
+                                w.bytes(b);
+                            },
+                        );
+                    });
+            })
+            .list(&self.balances, |w, (domain, version, proof)| {
+                w.bytes(domain).u16(*version).bytes(proof);
+            })
+            .bytes(&self.md);
+        w.finish().unwrap()
+    }
+
+    /// Regenerate `manifest_md` for the planted body with fa-verify's own
+    /// generator, so the planted defect is the only one.
+    fn with_md(mut self, manifest: &fa_verify::Manifest) -> Self {
+        let summary = fa_verify::Summary {
+            format: (1, 0),
+            entries: self.entries.len() as u64,
+            documents: self.entries.iter().map(|e| e.stubs.len() as u64).sum(),
+            inline: self
+                .entries
+                .iter()
+                .flat_map(|e| &e.stubs)
+                .filter(|s| s.4.is_some())
+                .count() as u64,
+            balances: self
+                .balances
+                .iter()
+                .map(|(d, v, _)| (d.clone(), *v))
+                .collect(),
+        };
+        self.md = fa_verify::bundle::manifest_md(manifest, &summary).into_bytes();
+        self
+    }
+
+    fn position(&self, leaf: u64) -> usize {
+        self.entries
+            .iter()
+            .position(|e| e.leaf_index == leaf)
+            .unwrap()
+    }
+}
+
+/// Every planted defect fails the predicate it breaks — and, where the
+/// grading says so, leaves the predicates resting on it unrun — while the
+/// untouched predicates still pass: an omitted entry, a padded entry, a
+/// payload swapped under its envelope, a document whose bytes or stub do
+/// not match, a stub the entry does not cite, a citation without a stub, a
+/// reordered body, a receipt over another bundle or by another key, an
+/// untrusted key, an edited manifest text, a completeness claim the scope
+/// does not admit, a fold law the verifier does not implement, and a
+/// format version it does not implement.
+#[test]
+fn planted_bundle_defects_fail_the_predicate_they_break() {
+    use fa_verify::{BundleError, verify_bundle};
+
+    let (h, c, [rent_3, utilities, _hold, rent_20]) = bundle_book();
+    let pk = h.signer.public_key();
+    let at = h.db.frontier().unwrap();
+    let journal = Journal::read(&h.db, &h.book, Some(c.stored.state.through_seq))
+        .unwrap()
+        .unwrap();
+    let leaf = |vid: VId| journal.leaf_index(vid).unwrap() as u64;
+    let (rent_3, utilities, rent_20) = (leaf(rent_3), leaf(utilities), leaf(rent_20));
+
+    let prefix = h
+        .bundle(
+            &c.stored,
+            &BundleRequest {
+                scope: BundleScope::Prefix,
+                balances: vec![balance(h.cash, h.usd, None)],
+                inline_documents: true,
+            },
+        )
+        .unwrap();
+    let base = verify_bundle(&prefix.bytes, &[pk], None).unwrap();
+    assert!(base.verified(), "{:#?}", not_passed(&base));
+    let cut = Cut::of(&prefix.bytes);
+    assert_eq!(cut.bytes(), prefix.bytes, "the cut re-encodes exactly");
+    let check = |planted: Cut, manifest: &fa_verify::Manifest| {
+        not_passed(&verify_bundle(&planted.with_md(manifest).bytes(), &[pk], None).unwrap())
+    };
+    let m = &base.manifest;
+
+    // 1. An omitted entry.
+    let mut omitted = cut.clone();
+    omitted.entries.remove(omitted.position(rent_20));
+    let failed = check(omitted, m);
+    assert_eq!(names(&failed), ["entries"], "{failed:#?}");
+    assert!(
+        failed[0]
+            .2
+            .contains(&format!("in-scope leaf {rent_20} has no entry"))
+    );
+
+    // 2. A padded entry: the utilities entry inside rent's account scope.
+    let rent_scope = h
+        .bundle(
+            &c.stored,
+            &BundleRequest {
+                scope: BundleScope::Index(ScopeRequest::Account {
+                    account: h.rent,
+                    from: day(1),
+                    to: day(31),
+                }),
+                balances: Vec::new(),
+                inline_documents: true,
+            },
+        )
+        .unwrap();
+    let rent_report = verify_bundle(&rent_scope.bytes, &[pk], None).unwrap();
+    assert!(rent_report.verified(), "{:#?}", not_passed(&rent_report));
+    let mut padded = Cut::of(&rent_scope.bytes);
+    padded
+        .entries
+        .push(cut.entries[cut.position(utilities)].clone());
+    padded.entries.sort_by_key(|e| e.leaf_index);
+    let failed = check(padded, &rent_report.manifest);
+    assert_eq!(
+        names(&failed),
+        ["entries", "record", "closure"],
+        "{failed:#?}"
+    );
+    assert!(failed[0].2.contains("padded"), "{}", failed[0].2);
+    assert!(failed[1].2.starts_with("unrun:") && failed[2].2.starts_with("unrun:"));
+
+    // 3. Two payloads swapped under their envelopes.
+    let mut swapped = cut.clone();
+    let (a, b) = (swapped.position(rent_3), swapped.position(rent_20));
+    let (ra, rb) = (swapped.entries[a].clone(), swapped.entries[b].clone());
+    (swapped.entries[a].record, swapped.entries[a].proposal_len) = (rb.record, rb.proposal_len);
+    (swapped.entries[b].record, swapped.entries[b].proposal_len) = (ra.record, ra.proposal_len);
+    let failed = check(swapped, m);
+    assert_eq!(
+        names(&failed),
+        ["record", "closure", "record", "closure"],
+        "{failed:#?}"
+    );
+    assert!(failed[1].2.starts_with("unrun:"));
+
+    // 4a. An included document whose bytes are not the committed document.
+    let mut altered = cut.clone();
+    let u = altered.position(utilities);
+    if let Some(bytes) = altered.entries[u].stubs[0].4.as_mut() {
+        bytes[0] ^= 1;
+    }
+    let failed = check(altered, m);
+    assert_eq!(names(&failed), ["public_commitment"], "{failed:#?}");
+    assert!(
+        failed[0].2.contains("chunk root differs"),
+        "{}",
+        failed[0].2
+    );
+    // 4b. A stub's length that its commitment does not commit.
+    let mut lying = cut.clone();
+    lying.entries[u].stubs[1].2 += 1;
+    let failed = check(lying, m);
+    assert_eq!(names(&failed), ["public_commitment"], "{failed:#?}");
+    // 4c. A cited document without a stub.
+    let mut missing = cut.clone();
+    let dropped = missing.entries[u].stubs.remove(1);
+    let failed = check(missing, m);
+    assert_eq!(names(&failed), ["closure"], "{failed:#?}");
+    assert!(failed[0].2.contains("has no stub"), "{}", failed[0].2);
+    // 4d. A stub the entry does not cite (rent on the 3rd cites one document).
+    let mut extra = cut.clone();
+    let r = extra.position(rent_3);
+    extra.entries[r].stubs.push(dropped);
+    extra.entries[r].stubs.sort_by_key(|s| s.0);
+    let failed = check(extra, m);
+    assert_eq!(names(&failed), ["closure"], "{failed:#?}");
+    assert!(failed[0].2.contains("not cited"), "{}", failed[0].2);
+
+    // 5. A reordered body is refused whole, and is another digest.
+    let mut reordered = cut.clone();
+    reordered.entries.swap(a, b);
+    let bytes = reordered.bytes();
+    assert!(matches!(
+        verify_bundle(&bytes, &[pk], None),
+        Err(BundleError::Decode(e)) if e.reason == fa_verify::codec::Reason::Unsorted
+    ));
+    assert_ne!(fa_verify::bundle::bundle_digest(&bytes), prefix.digest);
+
+    // 6. Receipts: over another bundle, by another key, with a flipped bit.
+    let receipt = h.receipt(&prefix, at);
+    let r = not_passed(&verify_bundle(&rent_scope.bytes, &[pk], Some(&receipt)).unwrap());
+    assert_eq!(names(&r), ["production_receipt"]);
+    assert!(r[0].2.contains("not this one"), "{}", r[0].2);
+    let other = SigningKey::from_seed(&[0x01; 32]);
+    let foreign =
+        ProductionReceipt::sign(ProductionReceipt::decode(&receipt).unwrap().body, &other)
+            .unwrap()
+            .canonical_bytes()
+            .unwrap();
+    let r = not_passed(&verify_bundle(&prefix.bytes, &[pk], Some(&foreign)).unwrap());
+    assert_eq!(names(&r), ["production_receipt"]);
+    assert!(r[0].2.contains("did not name as trusted"), "{}", r[0].2);
+    let mut flipped = receipt.clone();
+    let last = flipped.len() - 1;
+    flipped[last] ^= 0x10;
+    let r = not_passed(&verify_bundle(&prefix.bytes, &[pk], Some(&flipped)).unwrap());
+    assert_eq!(names(&r), ["production_receipt"]);
+    assert!(r[0].2.contains("does not verify"), "{}", r[0].2);
+
+    // 7. An untrusted key: the checkpoint fails, everything resting on it
+    // is unrun, and the stubs — checked against their own commitments —
+    // still pass; the receipt is by a key the caller did not name.
+    let report = verify_bundle(&prefix.bytes, &[other.public_key()], Some(&receipt)).unwrap();
+    for k in &report.checks {
+        let expected = match k.check {
+            "checkpoint" | "production_receipt" => "fail",
+            "public_commitment" => "pass",
+            _ => "unrun",
+        };
+        let got = match k.grade {
+            fa_verify::Grade::Pass => "pass",
+            fa_verify::Grade::Fail(_) => "fail",
+            fa_verify::Grade::Unrun(_) => "unrun",
+        };
+        assert_eq!((k.check, got), (k.check, expected), "{}", k.subject);
+    }
+
+    // 8. A manifest text that says something else.
+    let mut text = cut.clone().with_md(m);
+    text.md[2] ^= 0x20;
+    let failed = not_passed(&verify_bundle(&text.bytes(), &[pk], None).unwrap());
+    assert_eq!(names(&failed), ["manifest"], "{failed:#?}");
+
+    // 9. Named entries claiming completeness: refused as the manifest's
+    // claim, while membership itself still verifies.
+    let named = h
+        .bundle(
+            &c.stored,
+            &BundleRequest {
+                scope: BundleScope::Entries(vec![journal.leaves[rent_3 as usize].vid]),
+                balances: Vec::new(),
+                inline_documents: false,
+            },
+        )
+        .unwrap();
+    let named_report = verify_bundle(&named.bytes, &[pk], None).unwrap();
+    assert!(named_report.verified(), "{:#?}", not_passed(&named_report));
+    let mut inflated = Cut::of(&named.bytes);
+    let mut claim = vec![1u8];
+    claim.extend_from_slice(&0u64.to_le_bytes());
+    claim.extend_from_slice(&c.stored.state.leaf_count.to_le_bytes());
+    let at_tag = inflated.completeness_at;
+    let replaced: Vec<u8> = inflated.head.splice(at_tag..=at_tag, claim).collect();
+    assert_eq!(replaced, [3], "FilterAttested");
+    let mut claimed = named_report.manifest.clone();
+    claimed.completeness = fa_verify::Completeness::SeqRangeComplete {
+        from: 0,
+        to: c.stored.state.leaf_count,
+    };
+    let report = verify_bundle(&inflated.with_md(&claimed).bytes(), &[pk], None).unwrap();
+    let failed = not_passed(&report);
+    assert_eq!(names(&failed), ["manifest"], "{failed:#?}");
+    assert!(
+        failed[0]
+            .2
+            .contains("only admissible claim is membership_only")
+    );
+    let completeness = report
+        .checks
+        .iter()
+        .find(|k| matches!(k.check, "completeness"))
+        .unwrap();
+    assert_eq!(completeness.scope, "membership_only");
+
+    // 10. A balance under a fold law this verifier does not implement.
+    let mut v3 = cut.clone();
+    v3.balances[0].0 = b"fa:register-fold:v3".to_vec();
+    v3.balances[0].1 = 3;
+    let failed = check(v3, m);
+    assert_eq!(names(&failed), ["recomputation"], "{failed:#?}");
+    assert!(
+        failed[0].2.contains("`fa:register-fold:v3` version 3"),
+        "{}",
+        failed[0].2
+    );
+
+    // 11. A bundle targeting another fa-verify format.
+    let mut v2 = prefix.bytes.clone();
+    let major_at = 4 + fa_notary::bundle::BUNDLE_FORMAT.len();
+    v2[major_at] = 2;
+    assert_eq!(
+        verify_bundle(&v2, &[pk], None).unwrap_err(),
+        BundleError::Version { major: 2, minor: 0 }
+    );
+}
+
+/// The index proves one account's interval and nothing wider (FA-REF-126,
+/// naming the prefix); named entries must be inside the checkpoint's
+/// prefix (FA-REF-120).
+#[test]
+fn bundles_refuse_scopes_the_index_cannot_prove_and_entries_beyond_the_prefix() {
+    let (mut h, c, _) = bundle_book();
+    for request in [
+        ScopeRequest::Book {
+            from: day(1),
+            to: day(31),
+        },
+        ScopeRequest::Accounts {
+            accounts: vec![h.rent, h.utilities],
+            from: day(1),
+            to: day(31),
+        },
+    ] {
+        let refusal = h
+            .bundle(
+                &c.stored,
+                &BundleRequest {
+                    scope: BundleScope::Index(request),
+                    balances: Vec::new(),
+                    inline_documents: false,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(refusal.code, code::SCOPE_UNSUPPORTED);
+        assert!(refusal.fix.contains("prove_prefix"), "{}", refusal.fix);
+    }
+    let later = h.post(h.rent, 1, b"after the checkpoint");
+    let refusal = h
+        .bundle(
+            &c.stored,
+            &BundleRequest {
+                scope: BundleScope::Entries(vec![later]),
+                balances: Vec::new(),
+                inline_documents: false,
+            },
+        )
+        .unwrap_err();
+    assert_eq!(refusal.code, code::NOT_IN_PREFIX);
+}
+
+/// A bundle's balance claim is defined under the register fold law it
+/// names: the producer's law, the verifier's implemented law and the
+/// book's register fold digest domain are one law, so changing the
+/// register fold (fa-l3c slice 4b) fails here until a new law is named.
+#[test]
+fn the_bundle_balance_law_is_the_register_fold_law() {
+    use fa_notary::bundle::{BALANCE_FOLD_DOMAIN, BALANCE_FOLD_VERSION};
+    assert_eq!(BALANCE_FOLD_DOMAIN, fa_registers::FOLD_DIGEST_DOMAIN);
+    assert_eq!(
+        fa_verify::bundle::FOLD_DOMAIN,
+        fa_registers::FOLD_DIGEST_DOMAIN
+    );
+    assert_eq!(fa_verify::bundle::FOLD_VERSION, BALANCE_FOLD_VERSION);
+    assert!(
+        fa_registers::FOLD_DIGEST_DOMAIN.ends_with(format!(":v{BALANCE_FOLD_VERSION}").as_bytes())
+    );
 }

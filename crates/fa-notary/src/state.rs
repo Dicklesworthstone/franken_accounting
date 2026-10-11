@@ -924,3 +924,28 @@ pub fn prove_balance<V: asupersync::fs::Vfs + Clone>(
         Err(r) => Ok(Err(r)),
     }
 }
+
+/// What an evidence bundle against the journaled `state` is assembled over
+/// (plan §13.2): the journal prefix and the checkpoint beside the state.
+/// The checkpoint is recomputed from the journal and the book's key first,
+/// and refused (FA-REF-127) when the store holds anything else, so a bundle
+/// never carries a checkpoint the journal does not reproduce. The caller
+/// assembles it with [`crate::bundle::assemble`], reading each cited
+/// document as the producing capability may see it
+/// (`fa_journal::read_document_for`).
+pub fn bundle_basis<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    state: &StoredState,
+    signer: &dyn CheckpointSigner,
+) -> Outcome<(Journal, StoredCheckpoint)> {
+    let checkpoint = match stored_checkpoint(db, ctx, book, state, signer)? {
+        Ok(c) => c,
+        Err(r) => return Ok(Err(r)),
+    };
+    match supported(db, book, &state.state)? {
+        Ok(journal) => Ok(Ok((journal, checkpoint))),
+        Err(r) => Ok(Err(r)),
+    }
+}

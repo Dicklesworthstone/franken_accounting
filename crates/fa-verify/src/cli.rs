@@ -16,6 +16,8 @@
 //!                                                the claimed checkpoint extends the trusted one
 //!   doc-commit   <document> --kind N [--expect H]
 //!                                                a document's public commitment from its bytes
+//!   bundle       <bundle> --key K... [--receipt R]
+//!                                                an evidence bundle, every predicate graded
 //! ```
 //!
 //! Every artifact a command depends on is checked in the same run: a proof
@@ -23,8 +25,11 @@
 //! `--key`s verified first, and a scope's question (`--account`, `--from`,
 //! `--to`) comes from the caller, never from the proof.
 //!
-//! Exit codes: `0` every check passed, `8` a check failed (the artifact does
-//! not verify), `2` usage (an unknown command or flag, a missing or
+//! Every check is `pass`, `fail`, or `unrun` (a check it rests on did not
+//! pass); only `pass` is green.
+//!
+//! Exit codes: `0` every check passed, `8` a check failed or did not run
+//! (the artifact does not verify), `2` usage (an unknown command or flag, a missing or
 //! malformed argument, an unreadable file). Robot mode (`--json`) prints one
 //! deterministic JSON object on stdout; otherwise the report is text. A
 //! usage error in text mode goes to stderr. Bare `fa-verify`, `help` and
@@ -36,6 +41,7 @@
 
 use crate::balance::verify_balance;
 use crate::blake3::hex;
+use crate::bundle::{BundleReport, BundleScope, Grade, verify_bundle};
 use crate::checkpoint::{SignedCheckpoint, verify_checkpoint};
 use crate::document::doc_commit;
 use crate::envelope::LeafEnvelope;
@@ -71,18 +77,21 @@ commands:
   consistency  <proof> --trusted C --claimed C --key K
                                                 the claimed checkpoint extends the trusted one
   doc-commit   <document> --kind N [--expect H] a document's public commitment from its bytes
+  bundle       <bundle> --key K... [--receipt R]
+                                                an evidence bundle (.fab), every predicate graded
 
 options:
   --key K        a trusted Ed25519 public key, 64 hex characters (repeatable)
   --account A    an account vid: decimal, or 0x followed by up to 32 hex characters
   --from D --to D  an inclusive effective-day interval (days since 1970-01-01)
+  --receipt R    a bundle's detached production receipt
   --json         one JSON report on stdout (robot mode)
   --hex          read every input file as hexadecimal text
 
 exit codes: 0 verified · 2 usage · 8 verification failed
 ";
 
-const COMMANDS: [&str; 8] = [
+const COMMANDS: [&str; 9] = [
     "state",
     "checkpoint",
     "inclusion",
@@ -91,10 +100,11 @@ const COMMANDS: [&str; 8] = [
     "scope",
     "consistency",
     "doc-commit",
+    "bundle",
 ];
 
 /// Flags that take a value, and the switches.
-const VALUE_FLAGS: [&str; 10] = [
+const VALUE_FLAGS: [&str; 11] = [
     "--key",
     "--checkpoint",
     "--trusted",
@@ -105,6 +115,7 @@ const VALUE_FLAGS: [&str; 10] = [
     "--prefix",
     "--kind",
     "--expect",
+    "--receipt",
 ];
 const SWITCHES: [&str; 2] = ["--json", "--hex"];
 
@@ -204,10 +215,29 @@ fn day(d: Option<i32>) -> Json {
 
 // ---- the report --------------------------------------------------------------
 
+/// A check's result: only `Pass` is green.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Verdict {
+    Pass,
+    Fail,
+    /// Not evaluated: a check it rests on did not pass.
+    Unrun,
+}
+
+impl Verdict {
+    fn word(self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Fail => "fail",
+            Self::Unrun => "unrun",
+        }
+    }
+}
+
 struct Check {
     name: &'static str,
     scope: &'static str,
-    passed: bool,
+    verdict: Verdict,
     detail: Vec<(&'static str, Json)>,
     reason: Option<String>,
 }
@@ -217,7 +247,7 @@ impl Check {
         Self {
             name,
             scope,
-            passed: true,
+            verdict: Verdict::Pass,
             detail,
             reason: None,
         }
@@ -227,7 +257,7 @@ impl Check {
         Self {
             name,
             scope,
-            passed: false,
+            verdict: Verdict::Fail,
             detail: Vec::new(),
             reason: Some(e.to_string()),
         }
@@ -237,7 +267,7 @@ impl Check {
         Json::Obj(vec![
             ("check", s(self.name)),
             ("scope", s(self.scope)),
-            ("result", s(if self.passed { "pass" } else { "fail" })),
+            ("result", s(self.verdict.word())),
             ("detail", Json::Obj(self.detail.clone())),
             ("reason", self.reason.clone().map_or(Json::Null, Json::Str)),
         ])
@@ -257,7 +287,7 @@ fn usage(message: impl Into<String>, fix: impl Into<String>) -> Usage {
 }
 
 fn report(command: &str, json: bool, checks: &[Check]) -> Output {
-    let verified = !checks.is_empty() && checks.iter().all(|c| c.passed);
+    let verified = !checks.is_empty() && checks.iter().all(|c| matches!(c.verdict, Verdict::Pass));
     let exit = if verified { EXIT_VERIFIED } else { EXIT_FAILED };
     let stdout = if json {
         let mut out = String::new();
@@ -281,7 +311,7 @@ fn report(command: &str, json: bool, checks: &[Check]) -> Output {
             if verified { "VERIFIED" } else { "FAILED" }
         );
         for c in checks {
-            let mark = if c.passed { "PASS" } else { "FAIL" };
+            let mark = c.verdict.word().to_ascii_uppercase();
             out.push_str(&format!("{mark} {} ({})", c.name, c.scope));
             if let Some(r) = &c.reason {
                 out.push_str(&format!(": {r}"));
@@ -616,6 +646,12 @@ fn subject<'a>(args: &'a Args, what: &str) -> Result<&'a str, Usage> {
 
 fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
     let cmd = args.command.as_str();
+    if args.one("--receipt").is_some() && cmd != "bundle" {
+        return Err(usage(
+            "`--receipt` applies to `bundle` only",
+            "drop `--receipt`",
+        ));
+    }
     match cmd {
         "state" => {
             let bytes = load(read, subject(args, "a state file")?, args.hex)?;
@@ -821,7 +857,11 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     Ok(vec![Check {
                         name: "doc_commit",
                         scope: "public_commitment",
-                        passed: matches,
+                        verdict: if matches {
+                            Verdict::Pass
+                        } else {
+                            Verdict::Fail
+                        },
                         detail,
                         reason: (!matches).then(|| {
                             "the bytes and kind do not produce the expected doc_commit".to_string()
@@ -830,8 +870,112 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                 }
             }
         }
+        "bundle" => {
+            let file = subject(args, "a bundle file")?;
+            let keys = args.all("--key");
+            if keys.is_empty() {
+                return Err(usage(
+                    "no trusted key: a bundle is judged only against keys you name",
+                    "pass the book's checkpoint public key with `--key <64 hex>`",
+                ));
+            }
+            let keys: Vec<[u8; 32]> = keys.into_iter().map(key).collect::<Result<_, _>>()?;
+            let bytes = load(read, file, args.hex)?;
+            let receipt = match args.one("--receipt") {
+                Some(p) => Some(load(read, p, args.hex)?),
+                None => None,
+            };
+            Ok(match verify_bundle(&bytes, &keys, receipt.as_deref()) {
+                Err(e) => vec![Check {
+                    name: "bundle",
+                    scope: "format",
+                    verdict: Verdict::Fail,
+                    detail: Vec::new(),
+                    reason: Some(e.to_string()),
+                }],
+                Ok(report) => bundle_checks(&report),
+            })
+        }
         _ => unreachable_command(cmd),
     }
+}
+
+/// The bundle's identity, then every graded predicate in report order.
+fn bundle_checks(report: &BundleReport) -> Vec<Check> {
+    let m = &report.manifest;
+    let scope = match &m.scope {
+        BundleScope::Prefix => s("prefix"),
+        BundleScope::Account(c) => Json::Obj(vec![
+            ("account", s(format!("0x{:032x}", c.account))),
+            ("from", Json::Int(i64::from(c.from))),
+            ("to", Json::Int(i64::from(c.to))),
+        ]),
+        BundleScope::Entries(leaves) => Json::Obj(vec![(
+            "leaves",
+            Json::List(leaves.iter().map(|i| n(*i)).collect()),
+        )]),
+    };
+    let mut checks = vec![Check::pass(
+        "bundle",
+        "format",
+        vec![
+            ("bundle_digest", h(&report.digest)),
+            (
+                "format",
+                s(format!(
+                    "{}.{}",
+                    report.summary.format.0, report.summary.format.1
+                )),
+            ),
+            ("book_id", h(&m.book_id)),
+            ("branch_id", h(&m.branch_id)),
+            ("through_seq", n(m.through_seq)),
+            ("leaf_count", n(m.leaf_count)),
+            ("checkpoint_oid", h(&m.checkpoint_oid)),
+            ("scope", scope),
+            ("completeness", s(m.completeness.label())),
+            ("entries", n(report.summary.entries)),
+            ("documents", n(report.summary.documents)),
+            ("inline", n(report.summary.inline)),
+            ("balances", n(report.summary.balances.len() as u64)),
+        ],
+    )];
+    for c in &report.checks {
+        let (verdict, reason) = match &c.grade {
+            Grade::Pass => (Verdict::Pass, None),
+            Grade::Fail(why) => (Verdict::Fail, Some(why.clone())),
+            Grade::Unrun(why) => (Verdict::Unrun, Some(why.clone())),
+        };
+        let mut detail = vec![("subject", s(&c.subject))];
+        if c.check == "production_receipt"
+            && let Some(r) = &report.receipt
+        {
+            detail.extend([
+                (
+                    "producer_principal",
+                    s(format!("0x{:032x}", r.producer_principal)),
+                ),
+                ("produced_at_seq", n(r.produced_at_seq)),
+                ("capability_commitment", h(&r.capability_commitment)),
+                (
+                    "time_evidence_oid",
+                    r.time_evidence_oid.map_or_else(
+                        || s("absent (interim: TimeEvidence is not yet bound)"),
+                        |o| h(&o),
+                    ),
+                ),
+                ("signed_by", h(&r.signed_by)),
+            ]);
+        }
+        checks.push(Check {
+            name: c.check,
+            scope: c.scope,
+            verdict,
+            detail,
+            reason,
+        });
+    }
+    checks
 }
 
 fn unreachable_command(cmd: &str) -> Result<Vec<Check>, Usage> {
@@ -876,12 +1020,17 @@ mod tests {
 
     const ACCUMULATOR: &str = include_str!("../tests/fixtures/accumulator_v1.txt");
     const CHECKPOINT: &str = include_str!("../tests/fixtures/checkpoint_v1.txt");
+    const BUNDLE: &str = include_str!("../tests/fixtures/bundle_v1.txt");
 
     /// The pinned vectors as an in-memory file system (hex text, so the
     /// tests also exercise `--hex`).
     fn files() -> BTreeMap<String, Vec<u8>> {
         let mut out = BTreeMap::new();
-        for line in ACCUMULATOR.lines().chain(CHECKPOINT.lines()) {
+        for line in ACCUMULATOR
+            .lines()
+            .chain(CHECKPOINT.lines())
+            .chain(BUNDLE.lines())
+        {
             if line.starts_with('#') || line.trim().is_empty() {
                 continue;
             }
@@ -903,6 +1052,89 @@ mod tests {
                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no such file"))
         };
         run(&args, &read)
+    }
+
+    /// `bundle` grades every predicate: the pinned bundles verify with the
+    /// pinned key, the prefix bundle with its receipt; a receipt over
+    /// another bundle fails only its own check; another key fails the
+    /// checkpoint and leaves what rests on it unrun (exit 8); a missing key
+    /// and `--receipt` on another command are usage (exit 2).
+    #[test]
+    fn bundles_are_graded_predicate_by_predicate() {
+        let fs = files();
+        let key = key_hex();
+        for name in ["bundle_prefix", "bundle_account", "bundle_entries"] {
+            let out = run_with(&["bundle", name, "--key", &key, "--hex", "--json"], &fs);
+            assert_eq!(out.exit, 0, "{name}: {}", out.stdout);
+            assert!(
+                out.stdout.contains("\"verdict\":\"verified\""),
+                "{}",
+                out.stdout
+            );
+        }
+        let with_receipt: [&str; 7] = [
+            "bundle",
+            "bundle_prefix",
+            "--key",
+            &key,
+            "--receipt",
+            "receipt",
+            "--hex",
+        ];
+        let out = run_with(&with_receipt, &fs);
+        assert_eq!(out.exit, 0, "{}", out.stdout);
+        assert!(
+            out.stdout.contains("PASS production_receipt (production)"),
+            "{}",
+            out.stdout
+        );
+        let mut elsewhere = with_receipt;
+        elsewhere[1] = "bundle_account";
+        let out = run_with(&elsewhere, &fs);
+        assert_eq!(out.exit, 8);
+        assert_eq!(out.stdout.matches("FAIL ").count(), 1, "{}", out.stdout);
+        assert!(
+            out.stdout.contains("FAIL production_receipt"),
+            "{}",
+            out.stdout
+        );
+        let other = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+        let out = run_with(
+            &[
+                "bundle",
+                "bundle_entries",
+                "--key",
+                other,
+                "--hex",
+                "--json",
+            ],
+            &fs,
+        );
+        assert_eq!(out.exit, 8);
+        assert!(
+            out.stdout.contains("\"result\":\"unrun\""),
+            "{}",
+            out.stdout
+        );
+        assert_eq!(run_with(&["bundle", "bundle_prefix", "--hex"], &fs).exit, 2);
+        let out = run_with(
+            &[
+                "checkpoint",
+                "checkpoint",
+                "--key",
+                &key,
+                "--receipt",
+                "receipt",
+                "--hex",
+            ],
+            &fs,
+        );
+        assert_eq!(out.exit, 2);
+        assert!(
+            out.stderr.contains("applies to `bundle` only"),
+            "{}",
+            out.stderr
+        );
     }
 
     #[test]

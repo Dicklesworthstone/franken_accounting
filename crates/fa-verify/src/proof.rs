@@ -194,6 +194,13 @@ pub enum VerifyError {
     /// The scope index recomputed from the complete prefix is not the one
     /// the checkpoint signs.
     ScopeIndexDerivation,
+    /// A bundle's balance names a register fold law this verifier does not
+    /// implement: its claim is defined under that law, so recomputing it
+    /// under another would answer a different question.
+    FoldLaw {
+        domain: Vec<u8>,
+        version: u16,
+    },
 }
 
 impl fmt::Display for VerifyError {
@@ -289,6 +296,13 @@ impl fmt::Display for VerifyError {
             Self::ScopeIndexDerivation => write!(
                 f,
                 "the scope index recomputed from the complete prefix is not the one the checkpoint signs"
+            ),
+            Self::FoldLaw { domain, version } => write!(
+                f,
+                "the balance is defined under register fold `{}` version {version}; this verifier implements `{}` version {} only — use a verifier that implements the named law",
+                String::from_utf8_lossy(domain),
+                String::from_utf8_lossy(crate::bundle::FOLD_DOMAIN),
+                crate::bundle::FOLD_VERSION
             ),
         }
     }

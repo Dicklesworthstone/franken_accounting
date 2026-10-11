@@ -407,6 +407,15 @@ macro_rules! with_store {
     };
 }
 
+/// An evidence bundle and its detached production receipt (plan §13.2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProducedBundle {
+    /// The deterministic body (`.fab`) and its digest.
+    pub bundle: fa_notary::Bundle,
+    /// The `ProductionReceipt`'s canonical bytes, signed by the book's key.
+    pub receipt: Vec<u8>,
+}
+
 /// One open book.
 pub struct Book {
     runtime: Runtime,
@@ -1085,6 +1094,34 @@ impl Book {
     /// witnesses or document-receipt claims.
     pub fn verify_accumulator(&self) -> Result<fa_notary::AccumulatorVerification, BookError> {
         with_store!(&self.store, core => core.verify_accumulator(&self.purposes()))
+    }
+
+    /// Produce an evidence bundle (plan §13.2) and its detached production
+    /// receipt. The bundle is produced against the journaled state `state`
+    /// (default: the latest), whose checkpoint is recomputed from the
+    /// journal and the book's key first; it is a pure function of the
+    /// request and that checkpoint, so producing it again gives the same
+    /// bytes. The receipt records `principal`, the recorded sequence the
+    /// production was admitted at and `capability`'s commitment, signed
+    /// with the book's key. `produce` authorizes the production, and
+    /// admission (current, not revoked) precedes every read of the journal.
+    /// Each cited document is read as `capability` may see it
+    /// ([`Book::read_document_for`], decided before any read of its bytes):
+    /// a document it sees only as a redacted view gets a stub without bytes,
+    /// and inlining one is refused (FA-REF-128). `None` when the book has no
+    /// published state to produce against (publish one with
+    /// [`Book::checkpoint`]) or `state` is not on the chain.
+    pub fn produce_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        request: &fa_notary::BundleRequest,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_bundle(
+            &purposes, principal, capability, state, request,
+        )))
     }
 
     /// Open items (plan §5.7): every leg of a live posted entry, optionally
@@ -3184,6 +3221,88 @@ mod tests {
         assert_eq!(book.verify_accumulator().unwrap().states.len(), 2);
     }
 
+    /// `produce` authorizes a production and is checked before any read;
+    /// the body names no producer (an Agent's production is the same bytes)
+    /// while the receipt does; an outsider verifies both with the book's
+    /// public key; with no published state there is nothing to produce.
+    #[test]
+    fn bundles_require_produce_and_verify_with_the_book_key() {
+        use fa_policy::{Capability as PolicyCapability, Op, Profile};
+
+        let (spec, _) = spec(Id128([0x47; 16]));
+        let mut book = Book::create_memory(
+            BookKeys::for_development(47),
+            spec,
+            Entropy::deterministic(47),
+        )
+        .unwrap();
+        let principal = VId(47);
+        let request = fa_notary::BundleRequest {
+            scope: fa_notary::BundleScope::Prefix,
+            balances: Vec::new(),
+            inline_documents: true,
+        };
+        let producer = PolicyCapability::embedded(principal, &["produce"]).unwrap();
+        assert_eq!(
+            book.produce_bundle(principal, &producer, None, &request)
+                .unwrap()
+                .unwrap(),
+            None,
+            "no published state"
+        );
+        let witness = PolicyCapability::embedded(principal, &["witness"]).unwrap();
+        let published = book.checkpoint(principal, &witness).unwrap().unwrap();
+        let at = book.head().unwrap();
+        for (actor, cap, code) in [
+            (principal, witness, "FA-REF-011"),
+            (VId(48), producer.clone(), "FA-REF-011"),
+            (principal, producer.clone().expiring_at(at), "FA-REF-014"),
+        ] {
+            let refusal = book
+                .produce_bundle(actor, &cap, None, &request)
+                .unwrap()
+                .unwrap_err();
+            assert_eq!((refusal.code, refusal.exit), (code, 7));
+        }
+        let agent =
+            PolicyCapability::new(principal, Profile::Agent, &[Op::Produce], VId(1)).unwrap();
+        let by_agent = book
+            .produce_bundle(principal, &agent, None, &request)
+            .unwrap()
+            .unwrap()
+            .expect("the latest state");
+        let produced = book
+            .produce_bundle(principal, &producer, Some(published.stored.oid), &request)
+            .unwrap()
+            .unwrap()
+            .expect("the named state");
+        assert_eq!(
+            produced.bundle, by_agent.bundle,
+            "the body names no producer"
+        );
+        assert_ne!(produced.receipt, by_agent.receipt, "the receipt does");
+        let report = fa_verify::verify_bundle(
+            &produced.bundle.bytes,
+            &[book.checkpoint_public_key()],
+            Some(&produced.receipt),
+        )
+        .unwrap();
+        assert!(report.verified(), "{:#?}", report.checks);
+        let facts = report.receipt.expect("the receipt verified");
+        assert_eq!(
+            (facts.producer_principal, facts.produced_at_seq),
+            (principal.0, at.0)
+        );
+        assert_eq!(facts.capability_commitment, producer.commitment().unwrap());
+        assert_eq!(
+            book.produce_bundle(principal, &producer, Some(fa_model::Oid([9; 32])), &request)
+                .unwrap()
+                .unwrap(),
+            None,
+            "a state not on the chain"
+        );
+    }
+
     fn spec(book_id: Id128) -> (BookSpec, fa_money::UnitId) {
         let calendar = FiscalCalendar::monthly("cal", 1, 1).unwrap();
         let units = fa_money::UnitRegistry::embedded().unwrap();
@@ -3210,6 +3329,27 @@ mod tests {
         key: &[u8],
         cents_credit: i128,
     ) -> Outcome<Posted> {
+        let source = fa_journal::Document {
+            book_id: book.context().book_id,
+            kind: 1,
+            mime: "text/plain".into(),
+            grade: 3,
+            retrieved_by: principal,
+            bytes: b"INVOICE (facade fixture source document)".to_vec(),
+        };
+        post_rent_citing(book, usd, principal, day, key, cents_credit, &source)
+    }
+
+    /// [`post_rent`], citing `source` (added to the book first).
+    fn post_rent_citing(
+        book: &mut Book,
+        usd: fa_money::UnitId,
+        principal: VId,
+        day: DateDay,
+        key: &[u8],
+        cents_credit: i128,
+        source: &fa_journal::Document,
+    ) -> Outcome<Posted> {
         let book_id = book.context().book_id;
         let legs = vec![
             LegPayload::simple(
@@ -3223,15 +3363,7 @@ mod tests {
                 Amount::new(usd, cents_credit),
             ),
         ];
-        let source = fa_journal::Document {
-            book_id,
-            kind: 1,
-            mime: "text/plain".into(),
-            grade: 3,
-            retrieved_by: principal,
-            bytes: b"INVOICE (facade fixture source document)".to_vec(),
-        };
-        book.add_document(&source)?
+        book.add_document(source)?
             .expect("the fixture document is admitted");
         let proposal = EntryPayload {
             schema_minor: 0,
@@ -3855,6 +3987,134 @@ mod tests {
                 .expect("the bytes"),
             fa_journal::DocumentRead::Full(statement)
         );
+    }
+
+    /// A bundle reads each cited document as the producing capability may
+    /// see it (plan §9.6, doctrine 8). A bank statement is governed by
+    /// redaction contract 1. Before its view is derived, a reader without
+    /// `privileged` produces nothing over it (142), and `produce` without
+    /// `read` is refused at the document (011). With the view, the reader's
+    /// stub-only bundle is byte for byte the privileged holder's (the view
+    /// proves the kind, length and chunk root the bytes give) and carries
+    /// none of the bytes, while inlining is refused (128). The privileged
+    /// holder inlines the bytes, and both bundles verify. Once revoked, the
+    /// reader is refused before the journal is read (023).
+    #[test]
+    fn a_bundle_inlines_a_governed_document_only_for_a_capability_that_reveals_it() {
+        let book_id = Id128([0x4a; 16]);
+        let (spec, usd) = spec(book_id);
+        let mut book = Book::create_memory(
+            BookKeys::for_development(0x4a),
+            spec,
+            Entropy::deterministic(0x4a),
+        )
+        .expect("create");
+        let (counsel, reader) = (VId(1), VId(2));
+        let day = DateDay::from_ymd(2026, 3, 15).unwrap();
+        book.install_chart(&chart(usd), counsel, day, b"chart")
+            .expect("kernel")
+            .expect("installs");
+        let (_, periods) = book.create_periods(2026).expect("periods");
+        let march = periods
+            .iter()
+            .find(|p| p.contains(day) && p.kind == PeriodKind::Normal)
+            .unwrap()
+            .code
+            .clone();
+        book.transition_period(
+            &march,
+            PeriodTransition::Open,
+            counsel,
+            1,
+            day,
+            b"open",
+            &Capability::embedded(counsel, &["close"]).expect("close"),
+        )
+        .expect("kernel")
+        .expect("opens");
+        let statement = fa_journal::Document {
+            book_id,
+            kind: 5,
+            mime: "text/plain".into(),
+            grade: 3,
+            retrieved_by: counsel,
+            bytes: b"ACCOUNT 0012-3456-7890 (bundle fixture)\n".repeat(200),
+        };
+        post_rent_citing(&mut book, usd, counsel, day, b"rent", 150_000, &statement)
+            .expect("kernel")
+            .expect("admitted");
+        let witness = Capability::embedded(counsel, &["witness"]).expect("witness");
+        book.checkpoint(counsel, &witness).unwrap().unwrap();
+
+        let produce = |book: &mut Book, who: VId, cap: &Capability, inline_documents: bool| {
+            let request = fa_notary::BundleRequest {
+                scope: fa_notary::BundleScope::Prefix,
+                balances: Vec::new(),
+                inline_documents,
+            };
+            book.produce_bundle(who, cap, None, &request)
+                .expect("kernel")
+                .map(|produced| produced.expect("the latest state"))
+        };
+        let revealing =
+            Capability::embedded(counsel, &["produce", "read", "privileged"]).expect("privileged");
+        let viewing = Capability::embedded(reader, &["produce", "read"]).expect("read");
+        for inline in [true, false] {
+            let r = produce(&mut book, reader, &viewing, inline).unwrap_err();
+            assert_eq!((r.code, r.exit), ("FA-REF-142", 3), "{r}");
+        }
+        let unread = Capability::embedded(reader, &["produce"]).expect("produce");
+        let r = produce(&mut book, reader, &unread, false).unwrap_err();
+        assert_eq!((r.code, r.exit), ("FA-REF-011", 7), "{r}");
+
+        book.derive_redacted_view(&revealing, &statement.oid())
+            .expect("kernel")
+            .expect("derived");
+        let r = produce(&mut book, reader, &viewing, true).unwrap_err();
+        assert_eq!((r.code, r.exit), ("FA-REF-128", 3), "{r}");
+        let stubbed = produce(&mut book, reader, &viewing, false).expect("a stub-only bundle");
+        let by_counsel = produce(&mut book, counsel, &revealing, false).expect("the same bundle");
+        assert_eq!(
+            stubbed.bundle, by_counsel.bundle,
+            "the view proves the stub the bytes give"
+        );
+        let inlined = produce(&mut book, counsel, &revealing, true).expect("an inline bundle");
+        let holds = |bytes: &[u8]| bytes.windows(22).any(|w| w == b"ACCOUNT 0012-3456-7890");
+        assert!(holds(&inlined.bundle.bytes), "the statement is inlined");
+        assert!(
+            !holds(&stubbed.bundle.bytes),
+            "a stub carries none of its bytes"
+        );
+        let key = book.checkpoint_public_key();
+        for produced in [&stubbed, &inlined] {
+            let report =
+                fa_verify::verify_bundle(&produced.bundle.bytes, &[key], Some(&produced.receipt))
+                    .unwrap();
+            assert!(report.verified(), "{:#?}", report.checks);
+        }
+
+        let req = fa_journal::RevocationRequest {
+            capability: Capability::embedded(counsel, &["issue_capability"]).unwrap(),
+            revoked: viewing.commitment().unwrap(),
+            effective_date: DateDay::from_ymd(2026, 1, 1).unwrap(),
+            idempotency_key: b"revoke-viewing".to_vec(),
+            description: fa_model::Erasable::seal(
+                &"revoke".to_string(),
+                None,
+                &book.context().seal_key,
+                [0x4a; 32],
+                [0x4a; 24],
+            ),
+        };
+        let purposes = book.purposes();
+        let ctx = book.context().clone();
+        with_store!(&mut book.store, core => book.runtime.block_on(async {
+            fa_journal::revoke_capability(&mut core.db, &purposes, &ctx, req).await
+        }))
+        .unwrap()
+        .expect("revoked");
+        let r = produce(&mut book, reader, &viewing, false).unwrap_err();
+        assert_eq!((r.code, r.exit), ("FA-REF-023", 7), "{r}");
     }
 
     #[test]

@@ -20,7 +20,9 @@ pub mod async_book;
 pub mod book;
 
 pub use async_book::AsyncBook;
-pub use book::{Book, BookError, BookKeys, Entropy, Outcome};
-pub use fa_notary::{AccumulatorVerification, Checkpointed};
+pub use book::{Book, BookError, BookKeys, Entropy, Outcome, ProducedBundle};
+pub use fa_notary::{
+    AccumulatorVerification, BalanceRequest, BundleRequest, BundleScope, Checkpointed,
+};
 pub use fa_policy::{Capability, Op, Profile};
 pub use fa_registers::Advance;

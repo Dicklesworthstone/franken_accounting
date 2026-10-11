@@ -23,7 +23,13 @@
 //!   listed, against that checkpoint's signed scope-index root
 //!   ([`verify_scope`], scope `scope_index_complete`), with the premise
 //!   labelled: the signers, or the index recomputed from the complete
-//!   prefix.
+//!   prefix;
+//! - an evidence bundle (`.fab`) is what its manifest says — its entries
+//!   exactly the scope's leaves with their payloads, each entry's cited
+//!   documents present and, when included, matching their commitments,
+//!   its balances recomputed under the fold law they name — and its
+//!   detached production receipt was signed over it ([`verify_bundle`],
+//!   each predicate graded on its own).
 //!
 //! What it does not prove (plan §13.1): that an entry reflects what
 //! actually happened, that a signer's key belongs to anyone in particular
@@ -45,6 +51,7 @@
 
 pub mod balance;
 pub mod blake3;
+pub mod bundle;
 pub mod checkpoint;
 pub mod cli;
 pub mod codec;
@@ -58,6 +65,10 @@ pub mod state;
 pub mod tree;
 
 pub use balance::{Balance, BalanceClaim, verify_balance};
+pub use bundle::{
+    BundleCheck, BundleError, BundleReport, BundleScope, Completeness, Grade, Manifest,
+    ReceiptFacts, Summary, verify_bundle,
+};
 pub use checkpoint::{CheckpointError, SignedCheckpoint, verify_checkpoint};
 pub use codec::DecodeError;
 pub use envelope::{LeafEnvelope, RecordError};

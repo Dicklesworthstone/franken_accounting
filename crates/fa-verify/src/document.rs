@@ -53,10 +53,18 @@ pub fn chunk_root(bytes: &[u8]) -> [u8; 32] {
 /// `BLAKE3("fa:doc:v1" ‖ kind ‖ length ‖ chunk_root)`.
 #[must_use]
 pub fn doc_commit(kind: u8, bytes: &[u8]) -> [u8; 32] {
-    hash_parts(
-        DOC_DOMAIN,
-        &[&[kind], &le64(bytes.len()), &chunk_root(bytes)],
+    commit_of(
+        kind,
+        u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+        &chunk_root(bytes),
     )
+}
+
+/// The commitment of a document known by its kind, length and chunk root —
+/// how a stub binds all three without the bytes.
+#[must_use]
+pub fn commit_of(kind: u8, length: u64, chunk_root: &[u8; 32]) -> [u8; 32] {
+    hash_parts(DOC_DOMAIN, &[&[kind], &length.to_le_bytes(), chunk_root])
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@
 //! caller can keep both stores on the same lab-controlled I/O plane.
 
 use core::fmt;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use asupersync::fs::{Vfs, VfsFile};
@@ -26,9 +27,32 @@ use fgdb::Database;
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CommitSeq, VId};
 
-use crate::book::{BookError, BookKeys, Entropy, Outcome};
+use crate::book::{BookError, BookKeys, Entropy, Outcome, ProducedBundle};
 
 pub(crate) const BOOK_BLOB_STORE: u16 = 1;
+
+/// The journal prefix and the checkpoint a bundle is assembled over.
+type BundleBasis = (fa_notary::Journal, fa_notary::StoredCheckpoint);
+
+/// What a bundle against `state` (default: the latest journaled state) is
+/// assembled over, or `None` when there is no such state.
+fn bundle_basis_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    signer: &fa_notary::SigningKey,
+    state: Option<fa_model::Oid>,
+) -> Result<Option<Result<BundleBasis, fa_journal::Refusal>>, KernelError> {
+    let chain = fa_notary::chain(db)?;
+    let stored = match state {
+        None => chain.first(),
+        Some(oid) => chain.iter().find(|s| s.oid == oid),
+    };
+    match stored {
+        None => Ok(None),
+        Some(stored) => fa_notary::bundle_basis(db, cx, book, stored, signer).map(Some),
+    }
+}
 
 fn seal(
     cx: &PurposeContexts,
@@ -948,6 +972,92 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     #[must_use]
     pub fn checkpoint_public_key(&self) -> [u8; 32] {
         self.signer.public_key()
+    }
+
+    /// Produce an evidence bundle against the journaled state `state`
+    /// (default: the latest) and its detached production receipt
+    /// ([`crate::Book::produce_bundle`] states the contract). `produce`
+    /// admission, currency and revocation are checked before the journal is
+    /// read; each cited document is read as `capability` may see it,
+    /// decided before any read of its bytes.
+    pub async fn produce_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        request: &fa_notary::BundleRequest,
+    ) -> Outcome<Option<ProducedBundle>> {
+        cx.query().checkpoint().map_err(BookError::Context)?;
+        // A production writes nothing, so it is admitted as a read: an
+        // Agent-profile capability holding `produce` may produce.
+        if let Err(denial) = fa_policy::admit(
+            capability,
+            &fa_policy::Intent {
+                principal,
+                trunk: false,
+                op: fa_policy::Op::Produce,
+                book: self.context.book_id,
+                legs: &[],
+            },
+        ) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        let at = self.head(cx)?;
+        if let Err(denial) = fa_policy::current(capability, at) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        // Not revoked (fa-bcd), before the journal is read.
+        if let Err(refusal) = self.query(cx, |db, book| {
+            Ok(fa_journal::policy::capability_admitted(
+                db, book, capability,
+            )?)
+        })? {
+            return Ok(Err(refusal));
+        }
+        let commitment = capability
+            .commitment()
+            .map_err(|e| KernelError::Corrupt(format!("capability commitment: {e}")))?;
+        let basis = self.query(cx, |db, book| {
+            Ok(bundle_basis_at(db, cx, book, &self.signer, state)?)
+        })?;
+        let (journal, checkpoint) = match basis {
+            None => return Ok(Ok(None)),
+            Some(Err(refusal)) => return Ok(Err(refusal)),
+            Some(Ok(basis)) => basis,
+        };
+        let cited = match fa_notary::bundle::cited_documents(&journal, request)? {
+            Ok(cited) => cited,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let mut documents = BTreeMap::new();
+        for oid in cited {
+            match self.read_document_for(cx, capability, &oid).await? {
+                Ok(read) => {
+                    documents.insert(oid, read);
+                }
+                Err(refusal) => return Ok(Err(refusal)),
+            }
+        }
+        let bundle = match fa_notary::bundle::assemble(&journal, &checkpoint, request, &documents)?
+        {
+            Ok(bundle) => bundle,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let receipt = fa_notary::ProductionReceipt::sign(
+            fa_notary::ReceiptBody {
+                bundle_digest: bundle.digest,
+                producer_principal: principal,
+                produced_at_seq: at,
+                capability_commitment: commitment,
+                time_evidence_oid: None,
+            },
+            &self.signer,
+        )
+        .map_err(|e| KernelError::Corrupt(e.to_string()))?
+        .canonical_bytes()
+        .map_err(|e| KernelError::Model(e.into()))?;
+        Ok(Ok(Some(ProducedBundle { bundle, receipt })))
     }
 
     pub fn open_items(

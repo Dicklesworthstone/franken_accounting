@@ -22,13 +22,20 @@
 //! scope-index root, and the substrate's chain commitment at the same
 //! sequence.
 //!
+//! A production is an evidence [`bundle`] (`.fab`): a deterministic body
+//! carrying the signed checkpoint, the completeness proof of its scope, the
+//! in-scope entries' payloads with their cited documents, and balance
+//! proofs under a named fold law — and a detached [`ProductionReceipt`]
+//! the book's key signs over the body's digest.
+//!
 //! Not here yet, by name: witness signatures and `WitnessPolicy`, the
 //! `TrustAnchorSet` and key rotation (the verifier is given the book's
-//! public key out of band), the MMR cross-anchor (R-MMR) replacing the chain
-//! commitment, and bundles.
+//! public key out of band), and the MMR cross-anchor (R-MMR) replacing the
+//! chain commitment.
 
 #![forbid(unsafe_code)]
 
+pub mod bundle;
 pub mod checkpoint;
 pub mod journal;
 pub mod scope;
@@ -39,14 +46,19 @@ pub mod tree;
 use fa_model::{Id128, Writer};
 use fgdb_types::CommitSeq;
 
+pub use bundle::{
+    BalanceRequest, Bundle, BundleRequest, BundleScope, DocumentStub, ProductionReceipt,
+    ReceiptBody,
+};
 pub use checkpoint::TransparencyCheckpoint;
 pub use journal::{Journal, Leaf, LeafEnvelope};
 pub use scope::{ScopeIndex, ScopeRequest};
 pub use sign::{CheckpointSigner, SigningKey};
 pub use state::{
     AccumulatorState, AccumulatorVerification, Checkpointed, StateCheck, StoredCheckpoint,
-    StoredState, chain, checkpoint, latest, prove_balance, prove_consistency, prove_inclusion,
-    prove_prefix, prove_scope, state_oid, state_vid, stored_checkpoint, verify_accumulator,
+    StoredState, bundle_basis, chain, checkpoint, latest, prove_balance, prove_consistency,
+    prove_inclusion, prove_prefix, prove_scope, state_oid, state_vid, stored_checkpoint,
+    verify_accumulator,
 };
 
 /// Refusal codes the notary issues (`FA-REF-12x`).
@@ -68,6 +80,9 @@ pub mod code {
     /// A journaled checkpoint is not what the journal and the book's key
     /// reproduce.
     pub const CHECKPOINT_INVALID: &str = "FA-REF-127";
+    /// A bundle would inline a document its capability reads only as a
+    /// redacted view.
+    pub const INLINE_WITHHELD: &str = "FA-REF-128";
     /// A balance proof would count a migration chunk with unsupported
     /// visibility: its run has no Finalize in the prefix, or it predates
     /// the run's opening date. The latter may be summarized history or

@@ -108,6 +108,10 @@ impl<'a> Reader<'a> {
         Ok(i128::from_le_bytes(self.fixed(what)?))
     }
 
+    pub(crate) fn i64(&mut self, what: &'static str) -> Result<i64, DecodeError> {
+        Ok(i64::from_le_bytes(self.fixed(what)?))
+    }
+
     fn length(&mut self, max: usize, what: &'static str) -> Result<usize, DecodeError> {
         let n = usize::try_from(self.u32(what)?).unwrap_or(usize::MAX);
         if n > max {

@@ -662,6 +662,14 @@ exit = "verification"
 cite = "FA-INV-14 (a checkpoint is recomputed from the journal prefix and the book's key)"
 fix = "run `fa verify accumulator` and preserve the store for investigation; no proof is issued against it"
 
+[[refusal]]
+code = "FA-REF-128"
+name = "INLINE_WITHHELD"
+owners = ["fa-notary"]
+exit = "refusal"
+cite = "plan §9.6, §13.2 (a production discloses no more of a document than its capability may read)"
+fix = "produce without inline documents (each stub still carries the commitment, kind, length and chunk root), or with a capability that also holds privileged"
+
 # ---- Migration runs and scratch replay (130–139) -------------------------
 [[refusal]]
 code = "FA-REF-130"
