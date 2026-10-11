@@ -788,20 +788,10 @@ impl Book {
         effective_date: DateDay,
         description: &str,
     ) -> Outcome<fa_journal::LegalHoldPlaced> {
-        let req = fa_journal::LegalHoldRequest {
-            principal: capability.holder(),
-            subjects,
-            authority: *authority,
-            effective_date,
-            idempotency_key: idempotency_key.to_vec(),
-            description: self.seal_text(description)?,
-        };
         let purposes = self.purposes();
-        let ctx = &self.ctx;
-        let runtime = &self.runtime;
-        Ok(with_store!(&mut self.store, db => runtime.block_on(async {
-            fa_journal::place_legal_hold(db, &purposes, ctx, capability, req).await
-        }))?)
+        with_store!(&mut self.store, core => self.runtime.block_on(core.place_legal_hold(
+            &purposes, capability, subjects, authority, idempotency_key, effective_date, description,
+        )))
     }
 
     /// Plan the release of `hold` by `principal` without committing: the
@@ -814,10 +804,9 @@ impl Book {
         effective_date: DateDay,
         idempotency_key: &[u8],
     ) -> Outcome<fa_journal::ReleasePlan> {
-        let description = self.seal_text(&format!("release of legal hold {:032x}", hold.0))?;
-        Ok(
-            with_store!(&self.store, db => fa_journal::plan_release(db, &self.ctx, hold, principal, effective_date, idempotency_key, description))?,
-        )
+        with_store!(&self.store, core => core.plan_legal_hold_release(
+            &self.purposes(), hold, principal, effective_date, idempotency_key,
+        ))
     }
 
     /// The digest an approval of a planned release binds.
@@ -825,7 +814,7 @@ impl Book {
         &self,
         plan: &fa_journal::ReleasePlan,
     ) -> Result<[u8; 32], BookError> {
-        Ok(plan.proposal_digest(&self.ctx)?)
+        with_store!(&self.store, core => core.legal_hold_release_digest(plan))
     }
 
     /// Commit a planned release under `capability`, citing `approvals` of
@@ -838,17 +827,14 @@ impl Book {
         approvals: &[fa_model::ApprovalRef],
     ) -> Outcome<fa_journal::LegalHoldReleased> {
         let purposes = self.purposes();
-        let ctx = &self.ctx;
-        let runtime = &self.runtime;
-        Ok(with_store!(&mut self.store, db => runtime.block_on(async {
-            fa_journal::release_legal_hold(db, &purposes, ctx, capability, plan, approvals).await
-        }))?)
+        with_store!(&mut self.store, core => self.runtime.block_on(core.release_legal_hold(
+            &purposes, plan, capability, approvals,
+        )))
     }
 
     /// The legal hold placed as `hold`, with its release if one is recorded.
     pub fn legal_hold(&self, hold: VId) -> Result<Option<fa_journal::LegalHold>, BookError> {
-        let book = self.ctx.book_id;
-        Ok(with_store!(&self.store, db => fa_journal::read_legal_hold(db, book, hold))?)
+        with_store!(&self.store, core => core.legal_hold(&self.purposes(), hold))
     }
 
     /// Derive and record the redacted view of `oid` under the contract
@@ -858,16 +844,10 @@ impl Book {
         capability: &fa_journal::Capability,
         oid: &fa_model::Oid,
     ) -> Outcome<fa_journal::ViewDerived> {
-        let oid = *oid;
         let purposes = self.purposes();
-        let ctx = &self.ctx;
-        let runtime = &self.runtime;
-        let blobs = &self.blobs;
-        Ok(
-            with_store!(&mut self.store, db => with_blobs!(blobs, bs => runtime.block_on(async {
-                fa_journal::derive_redacted_view(db, &purposes, ctx, capability, bs, oid).await
-            })))?,
-        )
+        with_store!(&mut self.store, core => self.runtime.block_on(core.derive_redacted_view(
+            &purposes, capability, oid,
+        )))
     }
 
     /// Read `oid` as `capability` may see it: the verified bytes when it
@@ -877,22 +857,15 @@ impl Book {
         capability: &fa_journal::Capability,
         oid: &fa_model::Oid,
     ) -> Outcome<fa_journal::DocumentRead> {
-        let oid = *oid;
         let purposes = self.purposes();
-        let ctx = &self.ctx;
-        let runtime = &self.runtime;
-        let blobs = &self.blobs;
-        Ok(
-            with_store!(&mut self.store, db => with_blobs!(blobs, bs => runtime.block_on(async {
-                fa_journal::read_document_for(db, &purposes, ctx, capability, bs, oid).await
-            })))?,
-        )
+        with_store!(&mut self.store, core => self.runtime.block_on(core.read_document_for(
+            &purposes, capability, oid,
+        )))
     }
 
     /// The legal holds active on `subject`, ascending.
     pub fn legal_holds_on(&self, subject: VId) -> Result<Vec<VId>, BookError> {
-        let book = self.ctx.book_id;
-        Ok(with_store!(&self.store, db => fa_journal::active_legal_holds(db, book, subject))?)
+        with_store!(&self.store, core => core.legal_holds_on(&self.purposes(), subject))
     }
 
     /// The document at `oid`, verified against its commitment.
@@ -2596,8 +2569,6 @@ mod tests {
             )
             .await
             .unwrap();
-            let events = vfs.events().len();
-            let head = book.head(&cx).unwrap();
             let witness = Capability::embedded(VId(1), &["witness"]).unwrap();
             let system = fa_journal::rows::system_principal(book.context().book_id);
             let sweeper = Capability::new(
@@ -2607,6 +2578,63 @@ mod tests {
                 system,
             )
             .unwrap();
+            // Real held evidence and an approved release ensure cancellation
+            // prevents an otherwise admissible mutation, not merely a refusal.
+            let counsel = Capability::embedded(VId(1), &["hold", "read", "privileged"]).unwrap();
+            let day = DateDay::from_ymd(2026, 3, 20).unwrap();
+            let order = fa_journal::Document {
+                book_id: spec.book_id,
+                kind: 15,
+                mime: "text/plain".into(),
+                grade: 3,
+                retrieved_by: VId(1),
+                bytes: b"PRESERVATION ORDER (lab fixture)".to_vec(),
+            };
+            let order = book.add_document(&cx, &order).await.unwrap().unwrap();
+            let statement = fa_journal::Document {
+                book_id: spec.book_id,
+                kind: 5,
+                mime: "text/plain".into(),
+                grade: 3,
+                retrieved_by: VId(1),
+                bytes: b"ACCOUNT 0012-3456-7890 (lab fixture)\n".repeat(200),
+            };
+            let statement = book.add_document(&cx, &statement).await.unwrap().unwrap();
+            let hold = book
+                .place_legal_hold(
+                    &cx,
+                    &counsel,
+                    vec![statement.vid],
+                    &order.oid,
+                    b"lab-hold",
+                    day,
+                    "preserve evidence",
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                book.legal_holds_on(&cx, statement.vid).unwrap(),
+                vec![hold.hold]
+            );
+            assert!(book.legal_hold(&cx, hold.hold).unwrap().is_some());
+            let release = book
+                .plan_legal_hold_release(&cx, hold.hold, VId(1), day, b"lab-release")
+                .unwrap()
+                .unwrap();
+            let digest = book.legal_hold_release_digest(&release).unwrap();
+            let approval = book
+                .approve(
+                    &cx,
+                    Capability::embedded(VId(2), &["approve"]).unwrap(),
+                    digest,
+                )
+                .await
+                .unwrap()
+                .unwrap()
+                .approval();
+            let events = vfs.events().len();
+            let head = book.head(&cx).unwrap();
             root.cancel_with(CancelKind::User, Some("caller cancelled"));
             assert!(matches!(book.head(&cx), Err(BookError::Context(_))));
             assert!(matches!(book.latest_tick(&cx), Err(BookError::Context(_))));
@@ -2629,6 +2657,45 @@ mod tests {
             ));
             assert!(matches!(
                 book.sweep(&cx, &sweeper, 1).await,
+                Err(BookError::Context(_))
+            ));
+            assert!(matches!(
+                book.legal_hold(&cx, hold.hold),
+                Err(BookError::Context(_))
+            ));
+            assert!(matches!(
+                book.legal_holds_on(&cx, statement.vid),
+                Err(BookError::Context(_))
+            ));
+            assert!(matches!(
+                book.plan_legal_hold_release(&cx, hold.hold, VId(1), day, b"cancelled-release"),
+                Err(BookError::Context(_))
+            ));
+            assert!(matches!(
+                book.release_legal_hold(&cx, &release, &counsel, &[approval])
+                    .await,
+                Err(BookError::Context(_))
+            ));
+            assert!(matches!(
+                book.place_legal_hold(
+                    &cx,
+                    &counsel,
+                    vec![statement.vid],
+                    &order.oid,
+                    b"cancelled-hold",
+                    day,
+                    "cancelled hold",
+                )
+                .await,
+                Err(BookError::Context(_))
+            ));
+            assert!(matches!(
+                book.derive_redacted_view(&cx, &counsel, &statement.oid)
+                    .await,
+                Err(BookError::Context(_))
+            ));
+            assert!(matches!(
+                book.read_document_for(&cx, &counsel, &statement.oid).await,
                 Err(BookError::Context(_))
             ));
             // Inspect directly only as the test oracle: the public read

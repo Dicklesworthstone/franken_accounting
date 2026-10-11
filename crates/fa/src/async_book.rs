@@ -628,6 +628,144 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.query(cx, |db, _| Ok(fa_journal::custody_chain(db, document)?))
     }
 
+    /// Place a legal hold under the caller's commit context and authority.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn place_legal_hold(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        subjects: Vec<VId>,
+        authority: &fa_model::Oid,
+        idempotency_key: &[u8],
+        effective_date: DateDay,
+        description: &str,
+    ) -> Outcome<fa_journal::LegalHoldPlaced> {
+        let description = self.seal_text(cx, description)?;
+        let request = fa_journal::LegalHoldRequest {
+            principal: capability.holder(),
+            subjects,
+            authority: *authority,
+            effective_date,
+            idempotency_key: idempotency_key.to_vec(),
+            description,
+        };
+        Ok(
+            fa_journal::place_legal_hold(&mut self.db, cx, &self.context, capability, request)
+                .await?,
+        )
+    }
+
+    /// Plan a release without committing; approvals bind the returned plan.
+    pub fn plan_legal_hold_release(
+        &self,
+        cx: &PurposeContexts,
+        hold: VId,
+        principal: VId,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::ReleasePlan> {
+        let description = self.seal_text(cx, &format!("release of legal hold {:032x}", hold.0))?;
+        self.query(cx, |db, book| {
+            Ok(fa_journal::plan_release(
+                db,
+                book,
+                hold,
+                principal,
+                effective_date,
+                idempotency_key,
+                description,
+            )?)
+        })
+    }
+
+    /// Compute the approval digest without observing storage.
+    pub fn legal_hold_release_digest(
+        &self,
+        plan: &fa_journal::ReleasePlan,
+    ) -> Result<[u8; 32], BookError> {
+        Ok(plan.proposal_digest(&self.context)?)
+    }
+
+    /// Commit exactly the approved release under the caller's context.
+    pub async fn release_legal_hold(
+        &mut self,
+        cx: &PurposeContexts,
+        plan: &fa_journal::ReleasePlan,
+        capability: &fa_journal::Capability,
+        approvals: &[fa_model::ApprovalRef],
+    ) -> Outcome<fa_journal::LegalHoldReleased> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        Ok(fa_journal::release_legal_hold(
+            &mut self.db,
+            cx,
+            &self.context,
+            capability,
+            plan,
+            approvals,
+        )
+        .await?)
+    }
+
+    pub fn legal_hold(
+        &self,
+        cx: &PurposeContexts,
+        hold: VId,
+    ) -> Result<Option<fa_journal::LegalHold>, BookError> {
+        self.query(cx, |db, book| {
+            Ok(fa_journal::read_legal_hold(db, book.book_id, hold)?)
+        })
+    }
+
+    pub fn legal_holds_on(
+        &self,
+        cx: &PurposeContexts,
+        subject: VId,
+    ) -> Result<Vec<VId>, BookError> {
+        self.query(cx, |db, book| {
+            Ok(fa_journal::active_legal_holds(db, book.book_id, subject)?)
+        })
+    }
+
+    /// Journal the authorized view using the caller's filesystem and context.
+    pub async fn derive_redacted_view(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        oid: &fa_model::Oid,
+    ) -> Outcome<fa_journal::ViewDerived> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        Ok(fa_journal::derive_redacted_view(
+            &mut self.db,
+            cx,
+            &self.context,
+            capability,
+            &self.blobs,
+            *oid,
+        )
+        .await?)
+    }
+
+    /// Read verified full or redacted evidence after capability admission.
+    pub async fn read_document_for(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        oid: &fa_model::Oid,
+    ) -> Outcome<fa_journal::DocumentRead> {
+        let query = cx.query();
+        query.checkpoint().map_err(BookError::Context)?;
+        Ok(query
+            .with_restriction_async(fa_journal::read_document_for(
+                &mut self.db,
+                cx,
+                &self.context,
+                capability,
+                &self.blobs,
+                *oid,
+            ))
+            .await?)
+    }
+
     pub async fn read_document(
         &self,
         cx: &PurposeContexts,
