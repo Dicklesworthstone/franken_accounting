@@ -311,10 +311,20 @@ pub async fn checkpoint<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
 ) -> Outcome<Checkpointed> {
     let through = db.frontier()?;
-    let journal = match Journal::read(db, book, Some(through))? {
-        Ok(j) => j,
-        Err(refusal) => return Ok(Err(refusal)),
+    let journal = match Journal::read(db, book, Some(through)) {
+        Ok(Ok(journal)) => journal,
+        Ok(Err(refusal)) => return Ok(Err(refusal)),
+        Err(KernelError::Corrupt(why)) => return Ok(Err(drift(why))),
+        Err(KernelError::Model(error)) => {
+            return Ok(Err(drift(format!(
+                "the journal contains an invalid entry payload: {error}"
+            ))));
+        }
+        Err(error) => return Err(error),
     };
+    if let Err(refusal) = journal.verify_unchanged_at(db, through)? {
+        return Ok(Err(refusal));
+    }
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
     let basis = txn.basis();
@@ -496,7 +506,11 @@ impl AccumulatorVerification {
 /// FA-INV-14 by recomputation: every state on the chain is rebuilt from the
 /// journal prefix it names and must match field for field; each extends its
 /// predecessor; each was recorded after the prefix it covers; and every
-/// state vertex in the store is on the chain.
+/// state vertex in the store is on the chain. Every checkpointed record
+/// must also retain its label, creating sequence, payload and digest at
+/// the observed head: historical MVCC versions alone cannot show a later
+/// rewrite or retirement. The additional work is one point read per leaf
+/// of each checked state.
 pub fn verify_accumulator<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
@@ -528,6 +542,8 @@ pub fn verify_accumulator<V: asupersync::fs::Vfs + Clone>(
                             st.leaf_count,
                             hex(&st.root)
                         ));
+                    } else if let Err(refusal) = journal.verify_unchanged_at(db, at)? {
+                        finding = Some(refusal.message);
                     }
                 }
             }
@@ -572,13 +588,15 @@ fn hex(d: &[u8]) -> String {
 }
 
 /// Read the journal prefix a journaled state names and confirm it
-/// reproduces the state; refusing (exit 8) when it does not, so no proof is
-/// ever issued against a checkpoint the journal does not support.
+/// reproduces the state and remains unchanged at the observed head;
+/// refusing (exit 8) when either check fails, so retained historical
+/// versions cannot conceal a later rewrite while a new proof is issued.
 fn supported<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     state: &AccumulatorState,
 ) -> Outcome<Journal> {
+    let observed_at = db.frontier()?;
     let journal = match Journal::read(db, book, Some(state.through_seq))? {
         Ok(j) => j,
         Err(r) => return Ok(Err(r)),
@@ -594,6 +612,9 @@ fn supported<V: asupersync::fs::Vfs + Clone>(
             "FA-INV-14 (states are recomputed from the journal prefix)",
             "run `fa verify accumulator`; no proof is issued against an unsupported state",
         )));
+    }
+    if let Err(refusal) = journal.verify_unchanged_at(db, observed_at)? {
+        return Ok(Err(refusal));
     }
     Ok(Ok(journal))
 }

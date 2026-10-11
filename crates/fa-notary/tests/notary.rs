@@ -691,6 +691,186 @@ fn recomputation_finds_a_forged_state_and_blocks_checkpoints_over_it() {
     assert_eq!(found.unchained, vec![state_vid(&ooid)]);
 }
 
+/// An attacker can write a later version whose own entry digests are
+/// perfectly valid. The checkpoint's historical snapshot is unchanged,
+/// while head reports would read different accounting facts. Verification
+/// and every new proof must detect that disagreement.
+#[test]
+fn checkpointed_entries_must_remain_unchanged_before_verification_or_production() {
+    for change in [
+        "resealed payload",
+        "retirement",
+        "removed label",
+        "missing digest",
+        "changed digest",
+        "malformed payload",
+    ] {
+        let mut h = harness();
+        let target = h.post(h.rent, 125, b"protected-prefix");
+        let a = h.checkpoint();
+        let saved_proof = prove_inclusion(&h.db, &h.book, &a.state, target, true)
+            .unwrap()
+            .unwrap();
+        let trusted = outsider_checkpoint(&a);
+        let before = Journal::read(&h.db, &h.book, Some(a.state.through_seq))
+            .unwrap()
+            .unwrap();
+        h.post(h.utilities, 75, b"later-prefix");
+        let b = h.checkpoint();
+
+        let mut batch = WriteBatch::new(relation::DERIVED_FROM);
+        match change {
+            "resealed payload" => {
+                let row = h.db.vertex(target).unwrap().unwrap();
+                let original = fa_model::Entry::decode(
+                    &fa_journal::rows::bytes(&row, property::FA_PAYLOAD, "entry.payload")
+                        .unwrap(),
+                )
+                .unwrap();
+                let mut proposal = original.proposal;
+                for leg in &mut proposal.legs {
+                    leg.amount.mantissa = leg.amount.mantissa.checked_add(1).unwrap();
+                }
+                proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
+                let rewritten = proposal
+                    .seal(original.approvals, original.plan_certificate)
+                    .unwrap();
+                let payload = rewritten.encode().unwrap();
+                assert_eq!(
+                    fa_model::Entry::decode(&payload).unwrap(),
+                    rewritten,
+                    "the attack has valid recalculated digests, not a malformed entry"
+                );
+                batch.set_vertex_property(
+                    target,
+                    property::FA_PAYLOAD,
+                    Some(CanonicalScalar::bytes(payload).unwrap()),
+                );
+                batch.set_vertex_property(
+                    target,
+                    property::FA_DIGEST,
+                    Some(CanonicalScalar::bytes(rewritten.entry_digest.to_vec()).unwrap()),
+                );
+            }
+            "retirement" => {
+                batch.delete_vertex(target);
+            }
+            "removed label" => {
+                batch.set_vertex_label(target, label::ENTRY, false);
+            }
+            "missing digest" => {
+                batch.set_vertex_property(target, property::FA_DIGEST, None);
+            }
+            "changed digest" => {
+                batch.set_vertex_property(
+                    target,
+                    property::FA_DIGEST,
+                    Some(CanonicalScalar::bytes(vec![0xed; 32]).unwrap()),
+                );
+            }
+            "malformed payload" => {
+                batch.set_vertex_property(
+                    target,
+                    property::FA_PAYLOAD,
+                    Some(CanonicalScalar::bytes(b"invalid entry bytes".to_vec()).unwrap()),
+                );
+            }
+            _ => unreachable!("the cases above are exhaustive"),
+        }
+        h.write_raw(batch);
+        let attacked_head = h.db.frontier().unwrap();
+
+        assert_eq!(
+            Journal::read(&h.db, &h.book, Some(a.state.through_seq))
+                .unwrap()
+                .unwrap(),
+            before,
+            "{change}: the historical view alone cannot expose this attack"
+        );
+        let verified = verify_accumulator(&h.db, &h.book).unwrap();
+        assert!(!verified.is_green(), "{change}: {verified:?}");
+        assert_eq!(verified.states.len(), 2);
+        for state in &verified.states {
+            assert!(
+                state.finding.as_deref().is_some_and(|finding| {
+                    finding.contains(&format!("{:032x}", target.0))
+                        && finding.contains(&attacked_head.0.to_string())
+                }),
+                "{change}: {state:?}"
+            );
+        }
+        for produced in [
+            prove_inclusion(&h.db, &h.book, &a.state, target, true),
+            prove_inclusion(&h.db, &h.book, &a.state, target, false),
+            prove_prefix(&h.db, &h.book, &a.state),
+            prove_balance(&h.db, &h.book, &a.state, h.rent, h.usd.0, None),
+            prove_consistency(&h.db, &h.book, &a.state, &b.state),
+        ] {
+            let refused = produced.unwrap().unwrap_err();
+            assert_eq!(refused.code, code::ACCUMULATOR_DRIFT, "{change}");
+            assert_eq!(refused.exit, exit::VERIFICATION, "{change}");
+            assert!(refused.message.contains(&format!("{:032x}", target.0)));
+        }
+        let refused = h.checkpoint_refusal();
+        assert_eq!(refused.code, code::ACCUMULATOR_DRIFT, "{change}");
+        assert_eq!(refused.exit, exit::VERIFICATION, "{change}");
+        assert_eq!(
+            h.db.frontier().unwrap(),
+            attacked_head,
+            "{change}: failed verification, proof production and checkpointing never write"
+        );
+        // Already-produced historical evidence keeps its exact claim. The
+        // refusal concerns issuing a new proof from a now-inconsistent book.
+        fa_verify::verify_inclusion(&saved_proof, &trusted).unwrap();
+    }
+}
+
+#[test]
+fn an_unchanged_checkpoint_prefix_still_proves_after_later_postings() {
+    let mut h = harness();
+    let target = h.post(h.rent, 300, b"original-prefix");
+    let a = h.checkpoint();
+    let trusted = outsider_checkpoint(&a);
+    let saved = prove_inclusion(&h.db, &h.book, &a.state, target, true)
+        .unwrap()
+        .unwrap();
+    let prefix = Journal::read(&h.db, &h.book, Some(a.state.through_seq))
+        .unwrap()
+        .unwrap();
+
+    h.post(h.utilities, 250, b"later-ordinary-posting");
+    let b = h.checkpoint();
+    let observed_at = h.db.frontier().unwrap();
+    prefix
+        .verify_unchanged_at(&h.db, observed_at)
+        .unwrap()
+        .unwrap();
+    assert!(verify_accumulator(&h.db, &h.book).unwrap().is_green());
+    let proof = prove_inclusion(&h.db, &h.book, &a.state, target, true)
+        .unwrap()
+        .unwrap();
+    assert_eq!(proof, saved);
+    fa_verify::verify_inclusion(&proof, &trusted).unwrap();
+    let prefix_proof = prove_prefix(&h.db, &h.book, &a.state).unwrap().unwrap();
+    fa_verify::verify_prefix(&prefix_proof, &trusted).unwrap();
+    let balance = prove_balance(&h.db, &h.book, &a.state, h.rent, h.usd.0, None)
+        .unwrap()
+        .unwrap();
+    let folded = fa_verify::verify_balance(&balance, &trusted).unwrap();
+    assert_eq!((folded.claim.debits, folded.claim.credits), (300, 0));
+    let extension = prove_consistency(&h.db, &h.book, &a.state, &b.state)
+        .unwrap()
+        .unwrap();
+    let extended = outsider_checkpoint(&b);
+    assert_eq!(
+        fa_verify::verify_consistency(&extension, &trusted, &extended)
+            .unwrap()
+            .extended,
+        extended
+    );
+    assert_eq!(h.db.frontier().unwrap(), observed_at);
+}
+
 #[test]
 fn every_byte_of_an_inclusion_proof_is_bound() {
     let mut h = harness();
