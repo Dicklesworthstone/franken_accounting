@@ -30,6 +30,7 @@ use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
 use fa_journal::attestation::{Review, record_manual_assertion, record_review};
 use fa_journal::evidence::{CitedDocument, Document, add_document, check_minimum};
+use fa_journal::import::{ImportRecorded, ImportRequest, RunReceipt, import_run, verify_receipt};
 use fa_journal::*;
 use fa_model::{
     EntryClass, EntryOrigin, EntryPayload, Erasable, EvidenceRef, Id128, LegPayload, Oid, SealKey,
@@ -37,7 +38,7 @@ use fa_model::{
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_reference::evidence::{
-    Attestations, Citation, Doc, Law, manual_verdict, review_verdict, verdict,
+    Attestations, Citation, Custody, Doc, Law, manual_verdict, review_verdict, verdict,
 };
 use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodTransition};
 use fgdb::{Database, DatabaseKeys, MemVfs};
@@ -87,7 +88,7 @@ fn kernel_and_oracle_agree_on_every_class_and_every_pair_of_documents() {
         .iter()
         .map(|(_, name, _)| (*name).to_string())
         .collect();
-    assert_eq!(class_names.len(), 22, "every registered class");
+    assert_eq!(class_names.len(), 23, "every registered class");
     class_names.push("NoSuchClass".into());
     for class in &class_names {
         for set in &sets {
@@ -106,6 +107,7 @@ fn kernel_and_oracle_agree_on_every_class_and_every_pair_of_documents() {
                         grade: grade.clone(),
                         commit,
                         uploader: UPLOADER,
+                        custody: Custody::uploaded(),
                     },
                 );
                 citations.push(Citation {
@@ -528,6 +530,7 @@ fn attestations_on_the_real_kernel_agree_with_the_oracle() {
                         grade: grade_name,
                         commit: doc.doc_commit(),
                         uploader,
+                        custody: Custody::uploaded(),
                     },
                 );
                 handles.insert(id, doc.evidence_ref(1));
@@ -764,6 +767,452 @@ fn cite(
     (chosen.into_iter().map(|(e, _)| e).collect(), citations)
 }
 
+// ---------------------------------------------------------------------------
+// Custody and import receipts on the real substrate (fa-txf)
+// ---------------------------------------------------------------------------
+
+impl Book {
+    fn import(
+        &mut self,
+        principal: u64,
+        source: fa_model::IntakeSource,
+        key: &[u8],
+        documents: Vec<Document>,
+    ) -> Result<ImportRecorded, Refusal> {
+        let ctx = self.ctx();
+        let cap = Self::capability(principal);
+        let req = ImportRequest {
+            principal: VId(u128::from(principal)),
+            source,
+            idempotency_key: key.to_vec(),
+            effective_date: DateDay::from_ymd(2026, 3, 15).unwrap(),
+            description: Erasable::seal(
+                &"import".to_string(),
+                None,
+                &self.book.seal_key,
+                [4; 32],
+                [4; 24],
+            ),
+            documents,
+        };
+        let (db, book) = (&mut self.db, &self.book);
+        self.runtime
+            .block_on(async move { import_run(db, &ctx, book, &cap, req).await })
+            .expect("kernel")
+    }
+
+    fn transfer(
+        &mut self,
+        document: Oid,
+        from: u64,
+        to: u64,
+    ) -> Result<fa_journal::CustodyMoved, Refusal> {
+        let ctx = self.ctx();
+        let cap = Self::capability(from);
+        let (db, book) = (&mut self.db, &self.book);
+        self.runtime
+            .block_on(async move {
+                transfer_custody(
+                    db,
+                    &ctx,
+                    book,
+                    &cap,
+                    document,
+                    VId(u128::from(from)),
+                    VId(u128::from(to)),
+                )
+                .await
+            })
+            .expect("kernel")
+    }
+
+    fn write_raw(&mut self, batch: fgdb::WriteBatch) {
+        let ctx = self.ctx();
+        let db = &mut self.db;
+        self.runtime
+            .block_on(async move { db.write(&ctx.commit(), batch).await })
+            .expect("raw write");
+    }
+
+    /// A planted custody break, written outside every law.
+    fn plant(&mut self, plant: &Plant, doc: &Document) {
+        use fa_model::symbols::{label, property, relation};
+        let scalar = |b: Vec<u8>| fgdb_types::CanonicalScalar::bytes(b).unwrap();
+        let mut batch = fgdb::WriteBatch::new(relation::CUSTODY_OF);
+        let event = |batch: &mut fgdb::WriteBatch, e: &fa_journal::CustodyEvent| {
+            let vid = fa_journal::custody::custody_vid(e.book_id, &e.document_oid, e.index);
+            let mut props = vec![
+                (property::FA_PAYLOAD, scalar(e.canonical_bytes().unwrap())),
+                (property::FA_DIGEST, scalar(e.digest().unwrap().to_vec())),
+                (property::BOOK_ID, scalar(e.book_id.0.to_vec())),
+            ];
+            props.sort_by_key(|(k, _)| k.0);
+            let l = if e.index == 0 {
+                label::IMPORT_RECEIPT
+            } else {
+                label::CUSTODY_TRANSFER
+            };
+            batch.create_vertex(vid, vec![l], props);
+        };
+        let receipt = fa_journal::CustodyEvent {
+            book_id: doc.book_id,
+            document_oid: doc.oid(),
+            index: 0,
+            prev_digest: [0; 32],
+            body: fa_journal::CustodyBody::Receipt {
+                source: fa_model::IntakeSource::Upload {
+                    principal: doc.retrieved_by,
+                },
+                received_by: doc.retrieved_by,
+                digest_at_receipt: doc.doc_commit(),
+                run_ref: None,
+            },
+        };
+        let set_len = |batch: &mut fgdb::WriteBatch, n: i64| {
+            batch.set_vertex_property(
+                fa_journal::evidence::document_vid(&doc.oid()),
+                property::CUSTODY_LEN,
+                Some(fgdb_types::CanonicalScalar::Int(n)),
+            );
+        };
+        match plant {
+            // The document exists already (an upload); its chain is broken.
+            Plant::Gap => set_len(&mut batch, 2),
+            Plant::Unchained => {
+                event(
+                    &mut batch,
+                    &fa_journal::CustodyEvent {
+                        index: 1,
+                        prev_digest: [0xab; 32],
+                        body: fa_journal::CustodyBody::Transfer {
+                            from: doc.retrieved_by,
+                            to: VId(9),
+                        },
+                        ..receipt.clone()
+                    },
+                );
+                set_len(&mut batch, 2);
+            }
+            Plant::NotHolder => {
+                event(
+                    &mut batch,
+                    &fa_journal::CustodyEvent {
+                        index: 1,
+                        prev_digest: receipt.digest().unwrap(),
+                        body: fa_journal::CustodyBody::Transfer {
+                            from: VId(99),
+                            to: VId(9),
+                        },
+                        ..receipt.clone()
+                    },
+                );
+                set_len(&mut batch, 2);
+            }
+        }
+        self.write_raw(batch);
+    }
+}
+
+/// The custody breaks the differential plants on an uploaded document.
+#[derive(Clone, Copy, Debug)]
+enum Plant {
+    /// `custody_len` says 2; link 1 was never written.
+    Gap,
+    /// Link 1 does not chain to the receipt.
+    Unchained,
+    /// Link 1 is a transfer by a principal that did not hold the document.
+    NotHolder,
+}
+
+fn oracle_source(s: &fa_model::IntakeSource) -> fa_reference::evidence::Source {
+    use fa_model::IntakeSource as K;
+    use fa_reference::evidence::Source as O;
+    match s {
+        K::Upload { .. } => O::Upload,
+        K::Connector { name, version } => O::Connector {
+            name: name.clone(),
+            version: version.clone(),
+        },
+        K::Email { message_id } => O::Email {
+            message_id: message_id.clone(),
+        },
+        K::Scan { device } => O::Scan {
+            device: device.clone(),
+        },
+    }
+}
+
+#[test]
+fn custody_and_import_receipts_on_the_real_kernel_agree_with_the_oracle() {
+    use fa_model::IntakeSource;
+    use fa_reference::evidence::{Event, intake_verdict, receipt_verdict, transfer_verdict};
+    let law = Law::embedded().expect("registries");
+    let sources = [
+        IntakeSource::Connector {
+            name: "fa-import".into(),
+            version: "1".into(),
+        },
+        IntakeSource::Connector {
+            name: "bank-feed".into(),
+            version: "1".into(),
+        },
+        IntakeSource::Email {
+            message_id: "<run@example>".into(),
+        },
+        IntakeSource::Scan {
+            device: "office-scanner".into(),
+        },
+    ];
+    let mut totals: BTreeMap<&'static str, usize> = BTreeMap::new();
+    for seed in [
+        0x51ed_2701_8b3c_4d19_u64,
+        0x2545_f491_4f6c_dd1d,
+        0x9e37_79b9_7f4a_7c15,
+    ] {
+        let mut rng = Rng(seed);
+        let mut b = book();
+        let mut docs: BTreeMap<u64, Doc> = BTreeMap::new();
+        let mut handles: BTreeMap<u64, (Document, EvidenceRef)> = BTreeMap::new();
+        let mut holders: BTreeMap<u64, u64> = BTreeMap::new();
+        let mut runs: Vec<(RunReceipt, std::collections::BTreeSet<[u8; 32]>)> = Vec::new();
+        let mut seen: BTreeMap<&'static str, usize> = BTreeMap::new();
+        let mut next_id = 1u64;
+        let mut new_doc = |rng: &mut Rng, book_id, step: u64| -> Document {
+            next_id += 1;
+            Document {
+                book_id,
+                kind: 1,
+                mime: "text/plain".into(),
+                grade: 3,
+                retrieved_by: VId(u128::from(*rng.pick(&PRINCIPALS))),
+                bytes: format!("INVOICE {seed:x}/{step}/{next_id}").into_bytes(),
+            }
+        };
+        let book_id = b.book.book_id;
+        for step in 0..220u64 {
+            let roll = rng.below(100);
+            if roll < 20 || docs.is_empty() {
+                // An upload.
+                let doc = new_doc(&mut rng, book_id, step);
+                b.add(&doc)
+                    .expect("an upload of a registered kind and grade");
+                let id = step + 1_000;
+                docs.insert(
+                    id,
+                    Doc {
+                        kind: "Invoice".into(),
+                        grade: "HumanUpload".into(),
+                        commit: doc.doc_commit(),
+                        uploader: u64::try_from(doc.retrieved_by.0).unwrap(),
+                        custody: Custody::uploaded(),
+                    },
+                );
+                holders.insert(id, u64::try_from(doc.retrieved_by.0).unwrap());
+                let e = doc.evidence_ref(1);
+                handles.insert(id, (doc, e));
+                *seen.entry("upload").or_default() += 1;
+            } else if roll < 35 {
+                // An import run from a registered or unregistered source.
+                let source = rng.pick(&sources).clone();
+                let n = 1 + rng.below(3);
+                let batch: Vec<Document> =
+                    (0..n).map(|_| new_doc(&mut rng, book_id, step)).collect();
+                let principal = *rng.pick(&PRINCIPALS);
+                let expected = intake_verdict(&law, &oracle_source(&source));
+                let key = format!("run-{seed:x}-{step}");
+                let got = b.import(principal, source.clone(), key.as_bytes(), batch.clone());
+                assert_eq!(
+                    outcome(&got),
+                    expected,
+                    "seed {seed:x} step {step}: import from {source:?}: {got:?}"
+                );
+                match got {
+                    Ok(run) => {
+                        for (i, doc) in batch.iter().enumerate() {
+                            let id = step * 10 + u64::try_from(i).unwrap() + 100_000;
+                            let mut custody = Custody::uploaded();
+                            custody.events.insert(
+                                0,
+                                Event::Receipt {
+                                    source: oracle_source(&source),
+                                    digest_matches: true,
+                                },
+                            );
+                            docs.insert(
+                                id,
+                                Doc {
+                                    kind: "Invoice".into(),
+                                    grade: "HumanUpload".into(),
+                                    commit: doc.doc_commit(),
+                                    uploader: u64::try_from(doc.retrieved_by.0).unwrap(),
+                                    custody,
+                                },
+                            );
+                            holders.insert(id, principal);
+                            let e = doc.evidence_ref(1);
+                            handles.insert(id, (doc.clone(), e));
+                        }
+                        let set = batch.iter().map(|d| d.oid().0).collect();
+                        runs.push((run.receipt, set));
+                        *seen.entry("import recorded").or_default() += 1;
+                    }
+                    Err(r) => *seen.entry(r.code).or_default() += 1,
+                }
+            } else if roll < 50 {
+                // A transfer, by the holder or by someone else.
+                let ids: Vec<u64> = docs.keys().copied().collect();
+                let id = *rng.pick(&ids);
+                let holder = holders[&id];
+                let from = if rng.below(3) == 0 {
+                    *rng.pick(&PRINCIPALS)
+                } else {
+                    holder
+                };
+                let to = *rng.pick(&[7u64, 8, 9, 10]);
+                if from == to {
+                    continue;
+                }
+                // A broken chain refuses every transfer before the holder
+                // check; the oracle says so first.
+                let expected = if law.custody_complete(&docs[&id].custody) {
+                    transfer_verdict(holder, from)
+                } else {
+                    Some(fa_reference::evidence::CUSTODY_INCOMPLETE)
+                };
+                let oid = handles[&id].1.document_oid;
+                let got = b.transfer(oid, from, to);
+                assert_eq!(
+                    outcome(&got),
+                    expected,
+                    "seed {seed:x} step {step}: transfer of {id} {from}->{to} (holder {holder}): {got:?}"
+                );
+                if got.is_ok() {
+                    let custody = &mut docs.get_mut(&id).unwrap().custody;
+                    let index = custody.len;
+                    custody.events.insert(
+                        index,
+                        Event::Transfer {
+                            chained: true,
+                            from_holder: true,
+                        },
+                    );
+                    custody.len += 1;
+                    holders.insert(id, to);
+                    *seen.entry("transfer recorded").or_default() += 1;
+                } else if let Some(code) = expected {
+                    *seen.entry(code).or_default() += 1;
+                }
+            } else if roll < 58 {
+                // A planted break on an intact, single-receipt document.
+                let ids: Vec<u64> = docs
+                    .iter()
+                    .filter(|(_, d)| d.custody == Custody::uploaded())
+                    .map(|(id, _)| *id)
+                    .collect();
+                if ids.is_empty() {
+                    continue;
+                }
+                let id = *rng.pick(&ids);
+                let plant = *rng.pick(&[Plant::Gap, Plant::Unchained, Plant::NotHolder]);
+                b.plant(&plant, &handles[&id].0.clone());
+                let custody = &mut docs.get_mut(&id).unwrap().custody;
+                custody.len = 2;
+                match plant {
+                    Plant::Gap => {}
+                    Plant::Unchained => {
+                        custody.events.insert(
+                            1,
+                            Event::Transfer {
+                                chained: false,
+                                from_holder: true,
+                            },
+                        );
+                    }
+                    Plant::NotHolder => {
+                        custody.events.insert(
+                            1,
+                            Event::Transfer {
+                                chained: true,
+                                from_holder: false,
+                            },
+                        );
+                    }
+                }
+                *seen.entry("planted").or_default() += 1;
+            } else if roll < 68 && !runs.is_empty() {
+                // A receipt checked against the run's list or a tampered one.
+                let i = usize::try_from(rng.below(u64::try_from(runs.len()).unwrap())).unwrap();
+                let (receipt, set) = &runs[i];
+                let mut presented: Vec<[u8; 32]> = set.iter().copied().collect();
+                match rng.below(4) {
+                    0 => {}
+                    1 => presented[0][0] ^= 1,
+                    2 => {
+                        presented.pop();
+                    }
+                    _ => presented.push([0xee; 32]),
+                }
+                let expected = receipt_verdict(set, &presented);
+                let oids: Vec<Oid> = presented.iter().map(|o| Oid(*o)).collect();
+                let got = verify_receipt(receipt, book_id, &oids);
+                assert_eq!(
+                    got.as_ref().err().map(|r| r.code),
+                    expected,
+                    "seed {seed:x} step {step}: receipt check"
+                );
+                *seen
+                    .entry(expected.unwrap_or("receipt verified"))
+                    .or_default() += 1;
+            } else {
+                // A post citing one document.
+                let ids: Vec<u64> = docs.keys().copied().collect();
+                let id = *rng.pick(&ids);
+                let e = handles[&id].1;
+                let citations = vec![Citation {
+                    doc: id,
+                    commit: e.doc_commit,
+                    role: e.role,
+                }];
+                let expected = verdict(
+                    &law,
+                    "Original",
+                    &docs,
+                    &citations,
+                    &Attestations::default(),
+                );
+                let key = format!("p-{seed:x}-{step}");
+                let got = b.post(b.proposal(EntryClass::ORIGINAL, key.as_bytes(), vec![e]));
+                assert_eq!(
+                    outcome(&got),
+                    expected,
+                    "seed {seed:x} step {step}: post citing {id}: {got:?}"
+                );
+                *seen.entry(expected.unwrap_or("posted")).or_default() += 1;
+            }
+        }
+        eprintln!("custody-oracle seed {seed:x}: {seen:?}");
+        for key in [
+            "FA-REF-083",
+            "FA-REF-114",
+            "FA-REF-115",
+            "FA-REF-119",
+            "import recorded",
+            "transfer recorded",
+            "receipt verified",
+            "posted",
+            "planted",
+        ] {
+            assert!(
+                seen.get(key).copied().unwrap_or(0) >= 2,
+                "seed {seed:x}: {key} reached {:?} times: {seen:?}",
+                seen.get(key)
+            );
+            *totals.entry(key).or_default() += seen[key];
+        }
+    }
+    eprintln!("custody-oracle totals: {totals:?}");
+}
+
 /// Every control record in `db`, its kind checked against the oracle's
 /// literal copy of the registry (fa-g23): the class the kind mints is the
 /// record's class. Returns the count per kind; logs each origin.
@@ -803,7 +1252,7 @@ fn control_kinds_in(db: &Database<MemVfs>) -> BTreeMap<u16, usize> {
 
 /// fa-g23, the positive half: on a fresh book, every control record the
 /// kernel mints (chart install, period transitions, a tick, a capability
-/// revocation) carries the registry's number for its kind.
+/// revocation, an import run) carries the registry's number for its kind.
 #[test]
 fn every_control_record_carries_its_registered_kind() {
     let mut b = book();
@@ -839,9 +1288,27 @@ fn every_control_record_carries_its_registered_kind() {
             .expect("kernel")
             .expect("revoked");
     });
+    let imported = Document {
+        book_id: b.book.book_id,
+        kind: 1,
+        mime: "text/plain".into(),
+        grade: 3,
+        retrieved_by: VId(7),
+        bytes: b"INVOICE (g23 import fixture)".to_vec(),
+    };
+    b.import(
+        7,
+        fa_model::IntakeSource::Connector {
+            name: "fa-import".into(),
+            version: "1".into(),
+        },
+        b"g23-import",
+        vec![imported],
+    )
+    .expect("an import run");
     let seen = control_kinds_in(&b.db);
     eprintln!("g23 control kinds on a fresh book: {seen:?}");
-    for kind in [1, 2, 4, 8] {
+    for kind in [1, 2, 4, 6, 8] {
         assert!(seen.contains_key(&kind), "kind {kind} minted: {seen:?}");
     }
 }

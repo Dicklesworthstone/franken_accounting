@@ -108,6 +108,8 @@ impl EntryClass {
     pub const SCHEDULE_CONTROL: Self = Self(21);
     /// A `MigrationRun`'s lifecycle (plan §8.6): Open, Finalize, Abandon.
     pub const MIGRATION_CONTROL: Self = Self(22);
+    /// An `ImportRun` receipt (plan §9.3): book-scoped, undated.
+    pub const IMPORT_CONTROL: Self = Self(23);
 
     /// `(tag, name, is_control)` for every registered class.
     pub const ALL: &[(u16, &str, bool)] = &[
@@ -133,6 +135,7 @@ impl EntryClass {
         (20, "SweepControl", true),
         (21, "ScheduleControl", true),
         (22, "MigrationControl", true),
+        (23, "ImportControl", true),
     ];
 
     #[must_use]
@@ -182,6 +185,7 @@ impl ControlKind {
     pub const POLICY_ACTIVATION: Self = Self(3);
     pub const TIME_TICK: Self = Self(4);
     pub const SCHEDULE_CANCEL: Self = Self(5);
+    pub const IMPORT_RUN: Self = Self(6);
     pub const CAPABILITY_REVOCATION: Self = Self(8);
     pub const MIGRATION_RUN: Self = Self(9);
 
@@ -208,6 +212,7 @@ impl ControlKind {
             "schedule_cancel",
             EntryClass::SCHEDULE_CONTROL,
         ),
+        (Self::IMPORT_RUN, "import_run", EntryClass::IMPORT_CONTROL),
         (
             Self::CAPABILITY_REVOCATION,
             "capability_revocation",
@@ -723,6 +728,84 @@ impl EntryOrigin {
     }
 }
 
+/// Where a document entered the book (plan §9.3 `ImportReceipt.source`).
+/// The kinds and connectors a book accepts are `registries/intake_sources.toml`.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum IntakeSource {
+    /// A principal uploaded the bytes.
+    Upload { principal: VId },
+    /// A registered connector fetched them.
+    Connector { name: String, version: String },
+    /// They arrived by e-mail.
+    Email { message_id: String },
+    /// A registered scanning device captured them.
+    Scan { device: String },
+}
+
+impl IntakeSource {
+    /// The registered kind name (`intake_sources.toml [[kind]]`).
+    #[must_use]
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            Self::Upload { .. } => "Upload",
+            Self::Connector { .. } => "Connector",
+            Self::Email { .. } => "Email",
+            Self::Scan { .. } => "Scan",
+        }
+    }
+
+    /// Every text field is 1..=`max_intake_text_bytes` bytes.
+    #[must_use]
+    pub fn within_bounds(&self) -> bool {
+        let ok = |s: &str| !s.is_empty() && s.len() <= MAX_INTAKE_TEXT_BYTES;
+        match self {
+            Self::Upload { .. } => true,
+            Self::Connector { name, version } => ok(name) && ok(version),
+            Self::Email { message_id } => ok(message_id),
+            Self::Scan { device } => ok(device),
+        }
+    }
+
+    pub fn encode(&self, w: &mut Writer) {
+        match self {
+            Self::Upload { principal } => {
+                w.u8(1).u128(principal.0);
+            }
+            Self::Connector { name, version } => {
+                w.u8(2).str(name).str(version);
+            }
+            Self::Email { message_id } => {
+                w.u8(3).str(message_id);
+            }
+            Self::Scan { device } => {
+                w.u8(4).str(device);
+            }
+        }
+    }
+
+    pub fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let text = |r: &mut Reader<'_>, what| -> Result<String, DecodeError> {
+            Ok(r.str(MAX_INTAKE_TEXT_BYTES, what)?.to_string())
+        };
+        Ok(match r.u8("intake.tag")? {
+            1 => Self::Upload {
+                principal: VId(r.u128("intake.principal")?),
+            },
+            2 => Self::Connector {
+                name: text(r, "intake.name")?,
+                version: text(r, "intake.version")?,
+            },
+            3 => Self::Email {
+                message_id: text(r, "intake.message_id")?,
+            },
+            4 => Self::Scan {
+                device: text(r, "intake.device")?,
+            },
+            t => return Err(r.bad_tag("intake.tag", t)),
+        })
+    }
+}
+
 /// Control records carry no legs; the payload says what changed (Appendix A).
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -787,6 +870,17 @@ pub enum ControlPayload {
     /// a Pending's reservations. Target and disposition ride in `pending`
     /// (plan §5.4). Tag 11; never valid on a control class.
     ReservationRelease,
+    /// An import run's receipt (plan §9.3; class `ImportControl`, tag 13):
+    /// what came in, from where, how much, and the Merkle root over the
+    /// run's distinct document oids. `receipt_hash` is what the external
+    /// party keeps.
+    ImportRun {
+        source: IntakeSource,
+        document_count: u32,
+        byte_count: u64,
+        oids_root: [u8; 32],
+        receipt_hash: [u8; 32],
+    },
 }
 
 impl ControlPayload {
@@ -898,6 +992,20 @@ impl ControlPayload {
             Self::ReservationRelease => {
                 w.u8(11);
             }
+            Self::ImportRun {
+                source,
+                document_count,
+                byte_count,
+                oids_root,
+                receipt_hash,
+            } => {
+                w.u8(13);
+                source.encode(w);
+                w.u32(*document_count)
+                    .u64(*byte_count)
+                    .fixed(oids_root)
+                    .fixed(receipt_hash);
+            }
         }
     }
 
@@ -971,6 +1079,13 @@ impl ControlPayload {
                 tie_out_digest: r.fixed("control.tie_out_digest")?,
             },
             11 => Self::ReservationRelease,
+            13 => Self::ImportRun {
+                source: IntakeSource::decode(r)?,
+                document_count: r.u32("control.document_count")?,
+                byte_count: r.u64("control.byte_count")?,
+                oids_root: r.fixed("control.oids_root")?,
+                receipt_hash: r.fixed("control.receipt_hash")?,
+            },
             t => return Err(r.bad_tag("control.tag", t)),
         })
     }
@@ -989,6 +1104,14 @@ impl ControlPayload {
             Self::LifecycleTransition { proof_refs, .. } if proof_refs.len() > MAX_PROOF_REFS => {
                 Err(invalid("control.proof_refs", "exceeds max_proof_refs"))
             }
+            Self::ImportRun {
+                source,
+                document_count,
+                ..
+            } if !source.within_bounds() || *document_count == 0 => Err(invalid(
+                "control.import_run",
+                "an import run names a bounded source and at least one document",
+            )),
             Self::ErasureCut { field_digests, .. }
                 if field_digests.len() > MAX_FIELD_DIGESTS
                     || !strictly_ascending(field_digests, |d| *d) =>
@@ -1926,7 +2049,7 @@ mod tests {
                 }
             );
         }
-        for id in [0, 6, 7, 10, u16::MAX] {
+        for id in [0, 7, 10, u16::MAX] {
             assert!(
                 EntryOrigin::decode(&mut Reader::new(&origin(id))).is_err(),
                 "control_kind {id}"

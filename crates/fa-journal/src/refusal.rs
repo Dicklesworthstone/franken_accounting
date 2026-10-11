@@ -150,6 +150,12 @@ pub mod code {
     pub const REASON_CODE: &str = "FA-REF-112";
     /// A stored Attestation does not verify, its mirrors disagree with its payload, or it breaks a law its recording enforces.
     pub const ATTESTATION_DRIFT: &str = "FA-REF-113";
+    /// A cited document's custody chain does not reach a registered intake source (a link is missing, broken, or from an unregistered source).
+    pub const CUSTODY_INCOMPLETE: &str = "FA-REF-114";
+    /// An import receipt does not recompute from the presented oids (tampered, missing, extra, or reordered).
+    pub const RECEIPT_MISMATCH: &str = "FA-REF-115";
+    /// A custody transfer names a principal that does not hold the document.
+    pub const NOT_CUSTODIAN: &str = "FA-REF-119";
     /// The entry moves value out of a limited account below its lower bound
     /// (`net − pending_out − x < lower_bound`, plan §5.4).
     pub const AVAILABILITY_LOWER: &str = "FA-REF-090";
