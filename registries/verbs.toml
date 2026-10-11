@@ -776,3 +776,344 @@ fields = ["live:[string]", "gate_g1:[string]"]
 name = "dangerous_op"
 doc = "An operation that cannot be undone in practice: refused with FA-REF-007 (exit 7) unless --yes (or a --plan file) confirms it. `subcommand` is null for a verb without subcommands; `condition` says when it applies; `safe` is the alternative the refusal names."
 fields = ["verb:string", "subcommand:string?", "condition:string", "safe:string"]
+
+# ---------------------------------------------------------------------------
+# MCP (plan §15.4, bead fa-xex): this registry as tool clusters.
+# ---------------------------------------------------------------------------
+# fa-mcp exposes every [[verb]] (and every subcommand) above as a tool in
+# exactly one cluster of at most `max_tools_per_cluster` tools, or lists it
+# under [[mcp.excluded]] with the reason — host-only or interactive verbs only.
+# The fa-mcp parity test fails on a verb or subcommand that is neither, on one
+# that is both, on one covered by two tools, on a cluster over the limit, and
+# on a tool naming a verb or subcommand this registry lacks. Only verbs that
+# exist today are mapped; the plan's remaining clusters appear with their verbs.
+#
+# A tool's wire name is its cluster with `.` → `_`, then `_`, then its name
+# (`fa.read` + `trial_balance` = `fa_read_trial_balance`): hosts restrict tool
+# names to [A-Za-z0-9_-]. A tool's arguments are the verb's value flags without
+# the dashes (`--as-known-at` → `as_known_at`), its switches as booleans, the
+# positionals named in `positionals` (a trailing `?` marks an optional one),
+# `selector` (which subcommand, when the tool covers several), `book` (the book
+# directory; the server's --book when absent), `as` and `keys` (the global
+# flags), and `yes` on a verb with a [[dangerous]] row. `stdin_property` is a
+# JSON property the server forwards on stdin as the `-` argument of
+# `stdin_via` (a flag, or a positional's name); the flag or positional keeps
+# its string (path) form beside it. `required` names flags and positionals the
+# host must supply. `flags`/`switches`, when present, narrow the verb's lists
+# to what the covered subcommands read. `dont` and `mistakes` are the tool's
+# own lines of the generated Do / Don't / Discovery / Examples / Common
+# mistakes documentation; the rest is derived from the verb row, the
+# [[dangerous]] rows, the [[next_action]] rows and the detectors. Amounts
+# cross the boundary only as strings with their unit (plan §15.4); the server's
+# mistake detectors refuse a JSON number in an amount field, an instant where
+# a civil date is required, a placeholder, a posting leg on a summary account,
+# a re-dated intent after a period-law refusal, and a self-approval, before
+# anything is dispatched.
+
+[mcp]
+server = "fa-mcp"
+max_tools_per_cluster = 7
+# Host-only flags: the server sets --json itself and chooses the transport.
+hidden_flags = ["--json", "--via", "--no-color", "--help", "--version"]
+# Flags that may repeat: the property is an array of strings (one string is accepted too).
+repeat_flags = ["--grant", "--evidence", "--approval", "--period"]
+# Flags whose values are integers: the property accepts a JSON integer or its decimal string.
+integer_flags = ["--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing"]
+
+[[mcp.cluster]]
+name = "fa.orient"
+doc = "Where to start: what this build can do, the in-tool documentation, one verb's usage."
+
+[[mcp.cluster]]
+name = "fa.book"
+doc = "A book as a whole: create or describe it, publish a checkpoint, verify derived state against the journal, rebuild registers."
+
+[[mcp.cluster]]
+name = "fa.chart"
+doc = "The chart of accounts: install it as one journaled schema effect, or list it."
+
+[[mcp.cluster]]
+name = "fa.post"
+doc = "Posting under the accounting laws: entries, two-phase holds and their resolutions. Every amount is a string with its unit; nothing is auto-balanced."
+
+[[mcp.cluster]]
+name = "fa.read"
+doc = "Certified reads over the journal: trial balance, an explained balance, open items, one entry."
+
+[[mcp.cluster]]
+name = "fa.time"
+doc = "Period law: create a fiscal year's periods, list them, move one along the state machine, approve a planned transition."
+
+[[mcp.cluster]]
+name = "fa.evidence"
+doc = "Evidence: record a source document, content-addressed, so an entry can cite it."
+
+[[mcp.excluded]]
+verb = "fad"
+subcommand = "serve"
+reason = "host-only: controls the daemon process that will host fa-mcp (plan §15.4 registered exclusion)"
+
+[[mcp.excluded]]
+verb = "fad"
+subcommand = "status"
+reason = "host-only: reports on the daemon process, not on a book (plan §15.4 registered exclusion)"
+
+[[mcp.excluded]]
+verb = "fad"
+subcommand = "stop"
+reason = "host-only: stops the daemon process that will host fa-mcp (plan §15.4 registered exclusion)"
+
+# ---- fa.orient --------------------------------------------------------------
+
+[[mcp.tool]]
+cluster = "fa.orient"
+name = "capabilities"
+verb = "capabilities"
+subcommands = []
+positionals = []
+required = []
+dont = ["Don't guess a verb, an exit code or a dangerous operation: this lists all of them for this build."]
+mistakes = ["Reading the exit-code dictionary from memory instead of from `exit_codes` here (1 is never emitted; empty results are 0)."]
+
+[[mcp.tool]]
+cluster = "fa.orient"
+name = "robot_docs"
+verb = "robot-docs"
+subcommands = ["guide", "exit-codes", "examples", "schema"]
+selector = "topic"
+positionals = ["name?"]
+required = []
+dont = ["Don't infer an event's fields: `topic: \"schema\"` with `name` prints exactly the fields of one event or shape."]
+mistakes = ["Passing `name` with a topic other than `schema` (it is the event or shape to print)."]
+
+[[mcp.tool]]
+cluster = "fa.orient"
+name = "help"
+verb = "help"
+subcommands = []
+positionals = ["verb?"]
+required = []
+dont = ["Don't call this for the tool contract — the tool descriptions and input schemas are the contract; this is the CLI's own usage text."]
+mistakes = ["Passing a tool's wire name as `verb` (it takes the CLI verb, e.g. `tb`, or an alias such as `trial-balance`)."]
+
+# ---- fa.book ----------------------------------------------------------------
+
+[[mcp.tool]]
+cluster = "fa.book"
+name = "create"
+verb = "book"
+subcommands = ["create"]
+positionals = []
+required = ["--name", "book"]
+dont = ["Don't create a book inside an existing book directory; `book` names a new directory.", "Don't lose the key file the result names (`keys`): keys are never regenerated."]
+mistakes = ["Omitting `book`: creation needs the new directory, the server's default book is an existing one.", "Passing `base_unit` in lowercase (`usd`): unit codes are the registered spellings (USD, EUR, …)."]
+
+[[mcp.tool]]
+cluster = "fa.book"
+name = "info"
+verb = "book"
+subcommands = ["info"]
+positionals = []
+required = []
+dont = ["Don't read `periods_by_state` as period law: `fa_time_period_status` lists each period with its state."]
+mistakes = []
+
+[[mcp.tool]]
+cluster = "fa.book"
+name = "checkpoint"
+verb = "checkpoint"
+subcommands = ["create"]
+positionals = []
+required = ["--grant"]
+dont = ["Don't present the state as a signed checkpoint or an evidence bundle: it is unsigned and covers entries only."]
+mistakes = ["Omitting `grant: [\"witness\"]` — the embedded posture self-issues the op."]
+
+[[mcp.tool]]
+cluster = "fa.book"
+name = "verify"
+verb = "verify"
+subcommands = ["registers", "open-items", "availability", "accumulator"]
+selector = "target"
+positionals = []
+required = []
+dont = ["Don't treat a register, an aging or a statement as truth: truth is the fold, and this proves it (exit 8 on drift).", "Don't `materialize_registers` to make a verification pass; a drift is a finding, not a nuisance."]
+mistakes = ["Passing `period` or `fiscal_year` with a target other than `registers` (the other targets take no period filter).", "Reading `status: \"no_checkpoints\"` as verified: it makes no verification claim."]
+
+[[mcp.tool]]
+cluster = "fa.book"
+name = "materialize_registers"
+verb = "registers"
+subcommands = ["materialize"]
+positionals = []
+required = []
+dont = ["Don't rematerialize a period that already has cells to \"fix\" a drift; verify first (`fa_book_verify`, target `registers`) and keep the finding."]
+mistakes = ["Expecting the fold to change: registers are derived state; the journal is unchanged by this."]
+
+# ---- fa.chart ---------------------------------------------------------------
+
+[[mcp.tool]]
+cluster = "fa.chart"
+name = "import_chart"
+verb = "chart"
+subcommands = ["import"]
+positionals = ["file?"]
+stdin_property = "chart"
+stdin_kind = "object"
+stdin_via = "file"
+required = []
+dont = ["Don't post to a summary account afterwards: only leaves (`leaf: true`) accept legs.", "Don't edit an installed chart in place; a chart change is a new journaled schema effect."]
+mistakes = ["Passing both `chart` and `file`: exactly one of the inline document or the path.", "Giving `lower_bound`/`upper_bound` as numbers: bounds are amounts, strings in the account's unit (\"0.00\")."]
+
+[[mcp.tool]]
+cluster = "fa.chart"
+name = "list_accounts"
+verb = "chart"
+subcommands = ["list"]
+positionals = []
+required = []
+dont = ["Don't pick an account by name alone; post by `code`, and only to a `leaf`."]
+mistakes = []
+
+# ---- fa.post ----------------------------------------------------------------
+
+[[mcp.tool]]
+cluster = "fa.post"
+name = "post"
+verb = "post"
+subcommands = []
+positionals = []
+stdin_property = "intent"
+stdin_kind = "object"
+stdin_via = "--intent"
+required = []
+dont = ["Don't balance an entry by inventing a leg: report the imbalance; a residual leg exists only where a law names the rounding account.", "Don't pick an effective date to dodge a closed period: the matrix decides; the refusal names the admissible class and capability.", "Don't \"fix\" a posted entry: post a Reversal (`reverses`), Replacement or Reclassification with a reason; the original stays.", "Don't fabricate evidence: cite a document recorded with `fa_evidence_import_document`, or make an explicit manual assertion."]
+mistakes = ["A JSON number in `amount` (write \"1500.00 USD\").", "An instant (\"2026-03-15T00:00:00Z\") in `effective_date` (write the civil date \"2026-03-15\").", "A placeholder such as \"<document oid>\" in `evidence`.", "Posting to a summary account (`leaf: false` in `fa_chart_list_accounts`).", "Re-submitting the same intent with a different `effective_date` after a period-law refusal.", "Expecting a second post with the same `idempotency_key` to post again: it returns the recorded outcome (`recorded`)."]
+
+[[mcp.tool]]
+cluster = "fa.post"
+name = "reserve"
+verb = "reserve"
+subcommands = []
+positionals = []
+stdin_property = "intent"
+stdin_kind = "object"
+stdin_via = "--intent"
+required = []
+dont = ["Don't read a Pending as posted: its amounts sit in the pending columns until `fa_post_resolve` posts or voids it.", "Don't add a timeout field: timed holds are not available yet, and a timed reservation is never silently made permanent."]
+mistakes = ["A JSON number in `amount` (write \"80.00 USD\").", "Setting `class` to anything but `Pending` (omit it)."]
+
+[[mcp.tool]]
+cluster = "fa.post"
+name = "resolve"
+verb = "resolve"
+subcommands = []
+positionals = []
+stdin_property = "intent"
+stdin_kind = "object"
+stdin_via = "--intent"
+required = []
+dont = ["Don't void a hold to tidy up: `disposition: \"voids\"` releases it for good and needs `yes`; `posts` draws legs from it.", "Don't draw a leg the hold does not have: each resolving leg is the same account and side as one hold leg, at most its reserved amount."]
+mistakes = ["A placeholder such as \"<vid>\" in `resolves` (the reserve result's `vid`).", "Resolving a hold twice (exit 6, FA-REF-062) or resolving a non-hold (FA-REF-060)."]
+
+# ---- fa.read ----------------------------------------------------------------
+
+[[mcp.tool]]
+cluster = "fa.read"
+name = "trial_balance"
+verb = "tb"
+subcommands = []
+positionals = []
+required = []
+dont = ["Don't pass an instant to `as_of`: a civil date, never a timestamp; instants are unsupported here.", "Don't mix `as_of` with `period`, `fiscal_year` or `activity`."]
+mistakes = ["Reading `activity` rows as stock: stock includes opening history, `activity: true` is the selected periods' movement.", "Expecting `as_known_at` to accept an instant: it takes `HEAD` or a recorded sequence."]
+
+[[mcp.tool]]
+cluster = "fa.read"
+name = "explain_balance"
+verb = "explain"
+subcommands = ["balance"]
+positionals = ["account"]
+required = ["--period", "account"]
+dont = ["Don't trust a register cell you have not explained: the contributions re-add to the cells exactly, or the command fails."]
+mistakes = ["Explaining a summary account (registers hold leaf cells; explain one of its leaves).", "Passing more than one `period` (exactly one)."]
+
+[[mcp.tool]]
+cluster = "fa.read"
+name = "open_items"
+verb = "open-items"
+subcommands = []
+positionals = []
+required = []
+dont = ["Don't apply more than an item's `open` amount; FA-REF-072 names what is open."]
+mistakes = ["Passing an account name as `account` (it takes the account code)."]
+
+[[mcp.tool]]
+cluster = "fa.read"
+name = "show_entry"
+verb = "entry"
+subcommands = ["show"]
+positionals = ["vid"]
+required = ["vid"]
+dont = ["Don't treat `found: false` as an error: the entry is not in this book; every other field is null."]
+mistakes = ["Passing an `entry_digest` or an `oid` as `vid` (it is the 32-hex vertex id a post result returns)."]
+
+# ---- fa.time ----------------------------------------------------------------
+
+[[mcp.tool]]
+cluster = "fa.time"
+name = "create_periods"
+verb = "period"
+subcommands = ["create"]
+positionals = []
+flags = ["--fiscal-year"]
+required = ["--fiscal-year"]
+dont = ["Don't post before opening a period: a new fiscal year's periods are all Future."]
+mistakes = ["Passing `fiscal_year` as a period code (`FY2026`); it is the year, 2026."]
+
+[[mcp.tool]]
+cluster = "fa.time"
+name = "period_status"
+verb = "period"
+subcommands = ["list"]
+positionals = []
+flags = []
+required = []
+dont = ["Don't re-date an entry to a period whose state admits it; the entry's effective date is a fact."]
+mistakes = []
+
+[[mcp.tool]]
+cluster = "fa.time"
+name = "period_transition"
+verb = "period"
+subcommands = ["open", "soft-close", "close", "lock", "reopen"]
+selector = "transition"
+positionals = ["code"]
+flags = ["--to", "--reason", "--key", "--date", "--plan-out", "--plan", "--approval"]
+required = ["code"]
+dont = ["Don't reopen to admit an ordinary posting: only a lawfully classified adjustment or an authorized, case-bound reopen changes what a closed period reports.", "Don't approve your own plan: `plan_out` seals a proposal; `fa_time_approve` must run as a different principal (`as`).", "Don't close, lock or reopen without `yes` unless the operation is intended; the refusal names the reversible alternative (soft-close)."]
+mistakes = ["Passing `plan_out` together with `plan` or `approval` (a plan commits nothing; the commit cites the plan and its approvals).", "Passing `to` for a transition other than `reopen`."]
+
+[[mcp.tool]]
+cluster = "fa.time"
+name = "approve"
+verb = "approve"
+subcommands = []
+positionals = []
+required = ["--proposal"]
+dont = ["Don't approve a proposal you planned in this session: segregation of duties (FA-REF-008) needs another principal.", "Don't invent a digest: `proposal` is the `proposal_digest` a `period_transition` with `plan_out` returned."]
+mistakes = ["A placeholder such as \"<proposal_digest>\" in `proposal`.", "Omitting `as`: the default principal is `operator`, usually the planner."]
+
+# ---- fa.evidence ------------------------------------------------------------
+
+[[mcp.tool]]
+cluster = "fa.evidence"
+name = "import_document"
+verb = "document"
+subcommands = ["add"]
+positionals = ["file?"]
+stdin_property = "text"
+stdin_kind = "string"
+stdin_via = "file"
+required = []
+dont = ["Don't grade your own upload `HumanUpload`: an agent's document is `AgentUpload` and needs a human `Reviewed` attestation before promotion.", "Don't write a plausible document to stand in for a missing one; record an explicit manual assertion instead."]
+mistakes = ["Passing both `text` and `file`: exactly one of the inline text or the path.", "Citing `doc_commit` where an intent's `evidence` wants the document `oid`."]

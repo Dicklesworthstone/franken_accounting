@@ -13,13 +13,17 @@
 # scripts/lib/gate_verdict.sh, adopted verbatim from FrankenGraphDB.
 #
 # NOT COVERED YET (explicitly; a 0 exit here is not whole-chain G0 closure):
-#   the AGENTS file-coverage closure, the claims lint, verb parity
-#   (verbs.toml vs CLI vs MCP), a registry
+#   the AGENTS file-coverage closure, the claims lint, a registry
 #   schema checker (the registries are validated by the fa-registry and
 #   fa-model tests, not by this script), and a forbidden-deps check that
 #   distinguishes permitted foundation transitive paths from new paths
 #   (cargo deny is the real gate; the grep below is a tripwire). Bead fa-lbh
 #   stays open until those exist or are exempted with a reason.
+# COVERED since fa-xex: verb parity (verbs.toml vs CLI vs MCP) runs under
+#   the `test` step as crates/fa-mcp/tests/parity.rs (every verb and
+#   subcommand is a tool in one cluster or a registered exclusion; clusters
+#   of at most seven; planted defects refused), and the deny.toml wrapper
+#   rows are pinned by crates/fa-mcp/tests/deny_rows.rs.
 #
 # Usage: bash scripts/check.sh            # everything
 #        bash scripts/check.sh --quick    # fmt, check, clippy, ubs (no tests, no deny)
