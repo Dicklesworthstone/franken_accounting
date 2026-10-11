@@ -81,11 +81,23 @@ impl<V: Vfs + Clone> DurableDirectory<V> {
                         "durability anchor is not a directory",
                     ));
                 }
+                let mut crossed_symlink = false;
                 for ancestor in rooted.ancestors().filter(|p| !p.as_os_str().is_empty()) {
                     cx.checkpoint().map_err(io::Error::other)?;
+                    crossed_symlink |= vfs.symlink_metadata(ancestor).await?.is_symlink();
                     sync_directory(&vfs, ancestor).await?;
                 }
-                vfs.canonicalize(&rooted).await
+                let canonical = vfs.canonicalize(&rooted).await?;
+                if crossed_symlink {
+                    // Lexical parent handles fence names created through the
+                    // link, but not the target's own ancestors above it.
+                    // Bind those too before retaining the canonical path.
+                    for ancestor in canonical.ancestors() {
+                        cx.checkpoint().map_err(io::Error::other)?;
+                        sync_directory(&vfs, ancestor).await?;
+                    }
+                }
+                Ok::<_, io::Error>(canonical)
             })
             .await?;
         Ok(Self {

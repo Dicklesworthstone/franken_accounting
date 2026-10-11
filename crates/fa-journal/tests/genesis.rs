@@ -3461,6 +3461,85 @@ fn a_durable_store_anchor_fences_preexisting_unsynced_ancestors() {
     }
 }
 
+/// A symlink can skip the target's own ancestors in the caller's lexical
+/// chain. Use the real host VFS beneath FaultVfs so symlink resolution is
+/// real and a directory crash can expose the missing target-parent fence.
+#[cfg(unix)]
+#[test]
+fn a_symlinked_store_anchor_fences_the_canonical_target_ancestors() {
+    use asupersync::fs::{OpenOptions, UnixVfs, Vfs, VfsFile};
+    use fa_journal::blob::DurableDirectory;
+    use fgdb_sim::vfs::{FaultPlan, FaultVfs, Trigger};
+    let h = harness();
+    let ctx = h.ctx();
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let base =
+        std::env::temp_dir().join(format!("fa-symlink-anchor-{}-{suffix}", std::process::id()));
+    for canonical_fences in [false, true] {
+        let root = base.join(if canonical_fences {
+            "fenced"
+        } else {
+            "lexical-only"
+        });
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("real/deep");
+        let alias = root.join("alias");
+        let path = alias.join("store");
+        let vfs = FaultVfs::new(
+            UnixVfs::new(),
+            FaultPlan {
+                dirent_loss: Trigger::Always,
+                ..FaultPlan::faultless()
+            },
+        );
+        h.runtime.block_on(async {
+            ctx.commit()
+                .with_restriction_async(vfs.create_dir_all(&target))
+                .await
+                .unwrap();
+            assert_eq!(vfs.pending_dirent_ops(), 2, "target ancestors owe fences");
+            std::os::unix::fs::symlink(&target, &alias).unwrap();
+            if canonical_fences {
+                let anchor = DurableDirectory::create(&ctx.commit(), vfs.clone(), &path)
+                    .await
+                    .unwrap();
+                assert_eq!(anchor.path(), target.join("store"));
+                assert_eq!(vfs.pending_dirent_ops(), 0);
+            } else {
+                // The old barrier: sync only the lexical chain. Opening
+                // alias syncs deep, but never syncs real's entry for deep.
+                ctx.commit()
+                    .with_restriction_async(async {
+                        vfs.create_dir_all(&path).await.unwrap();
+                        for ancestor in path.ancestors() {
+                            vfs.open(ancestor, &OpenOptions::new().read(true))
+                                .await
+                                .unwrap()
+                                .sync_all()
+                                .await
+                                .unwrap();
+                        }
+                    })
+                    .await;
+                assert_eq!(vfs.pending_dirent_ops(), 1, "the skipped target parent");
+            }
+            vfs.crash().await.unwrap();
+            let observed = ctx
+                .query()
+                .with_restriction_async(vfs.metadata(&path))
+                .await;
+            if canonical_fences {
+                assert!(observed.unwrap().is_dir(), "the canonical chain survives");
+            } else {
+                assert_eq!(observed.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+            }
+        });
+    }
+}
+
 /// The publication fence under the substrate's lab VFS (WhiteCreek 3440,
 /// CobaltGull 3452). With `dirent_loss = Always` a crash rolls back every
 /// namespace change whose parent directory was never honestly synced: the
