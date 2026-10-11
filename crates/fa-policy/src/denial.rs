@@ -357,7 +357,7 @@ impl Denial {
                 "obtain a capability whose ceilings name this unit".into()
             }
             Self::SelfApproval { .. } | Self::DuplicateApprover { .. } => {
-                "collect the approval from a different principal: record_approval over this proposal digest, acting as the approver".into()
+                "collect the approval from a different principal, acting as the approver: `fa approve --proposal <digest> --as <approver> --json` over this proposal digest".into()
             }
             Self::ApproverProfile { allowed, .. } => format!(
                 "collect the approval from a principal acting under one of: {}",
@@ -376,13 +376,13 @@ impl Denial {
                 "this class lands with the case slice that can decide the exclusion; nothing was written".into()
             }
             Self::TooFewApprovals { .. } => {
-                "record the approvals over this proposal digest (record_approval, one per distinct approver) and resubmit citing them".into()
+                "approve this proposal digest once per distinct approver (`fa approve --proposal <digest> --as <approver> --json`; a planned period change prints the digest with --plan-out) and resubmit citing each approval vid (--approval <vid>)".into()
             }
             Self::ApprovalBinding { .. } => {
                 "approve this proposal's digest; an approval never transfers to another proposal".into()
             }
             Self::UnknownApproval { .. } => {
-                "record the approval first (record_approval), then cite the approval vid it returns".into()
+                "record the approval first (`fa approve --proposal <digest> --as <approver> --json`), then cite the approval vid it prints".into()
             }
             Self::StaleApproval { .. } => {
                 "the security policy changed after the approval; re-approve under the current epoch and resubmit".into()

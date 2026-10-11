@@ -726,6 +726,13 @@ impl Book {
         if let Err(denial) = fa_policy::current(capability, at) {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
+        // Not revoked at that frontier, before the journal is read; the
+        // checkpoint refuses a basis that moved past it (BASIS_MOVED), so a
+        // revocation committed in between is a conflict, never admitted.
+        if let Err(r) = with_store!(&self.store, db => fa_journal::policy::capability_admitted(db, &self.ctx, capability))?
+        {
+            return Ok(Err(r));
+        }
         let purposes = self.purposes();
         let ctx = &self.ctx;
         let runtime = &self.runtime;
@@ -901,6 +908,39 @@ mod tests {
         assert!(checked.is_green());
         assert_eq!(checked.states.len(), 1);
         assert_eq!(checked.states[0].oid, published.stored.oid);
+
+        // Revoked (fa-bcd): refused before the journal is read, nothing
+        // written; another capability of the same principal still publishes.
+        let req = fa_journal::RevocationRequest {
+            capability: PolicyCapability::embedded(VId(47), &["issue_capability"]).unwrap(),
+            revoked: witness.commitment().unwrap(),
+            effective_date: fa_time::DateDay::from_ymd(2026, 1, 1).unwrap(),
+            idempotency_key: b"revoke-witness".to_vec(),
+            description: fa_model::Erasable::seal(
+                &"revoke".to_string(),
+                None,
+                &book.ctx.seal_key,
+                [0x47; 32],
+                [0x47; 24],
+            ),
+        };
+        let purposes = book.purposes();
+        let (ctx, runtime) = (&book.ctx, &book.runtime);
+        with_store!(&mut book.store, db => runtime.block_on(async {
+            fa_journal::revoke_capability(db, &purposes, ctx, req).await
+        }))
+        .unwrap()
+        .expect("revoked");
+        let revoked_at = with_store!(&book.store, db => db.frontier()).unwrap();
+        let refusal = book.checkpoint(principal, &witness).unwrap().unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-023", 7));
+        assert_eq!(
+            with_store!(&book.store, db => db.frontier()).unwrap(),
+            revoked_at
+        );
+        let renewed = PolicyCapability::embedded(principal, &["witness", "read"]).unwrap();
+        book.checkpoint(principal, &renewed).unwrap().unwrap();
+        assert_eq!(book.verify_accumulator().unwrap().states.len(), 2);
     }
 
     fn spec(book_id: Id128) -> (BookSpec, fa_money::UnitId) {

@@ -22,8 +22,11 @@
 //! at an identity derived from the revoked capability's commitment, so the
 //! kernel's [`capability_witness`] is one point read: present means revoked,
 //! and an absent read is a witness a concurrent revocation invalidates.
-//! Every Steward-checked write (post, transitions, approvals, activations)
-//! takes it right after its transaction opens, before any other read.
+//! Every Steward-checked write (post, transitions, approvals, activations,
+//! revocations, ticks, sweeps, attestations, attached evidence) takes it
+//! right after its transaction opens, before any other read; a write that
+//! reads the head before its transaction also checks it there first
+//! ([`capability_admitted`]).
 //!
 //! **Approvals are objects.** [`record_approval`] writes an `Approval`
 //! vertex (`fa:approval:v1`) whose identity derives from (book, approver,
@@ -715,11 +718,35 @@ pub fn capability_witness<V: asupersync::fs::Vfs + Clone>(
     capability: &Capability,
 ) -> Outcome<()> {
     let commitment = capability.commitment().map_err(capability_error)?;
-    match txn.vertex(db, revocation_vid(book.book_id, &commitment))? {
-        Some(row) => Ok(Err(refusal(&Denial::Revoked {
+    Ok(not_revoked(
+        txn.vertex(db, revocation_vid(book.book_id, &commitment))?,
+    ))
+}
+
+/// The capability is not revoked at the admission point (the head this
+/// single-writer handle opens its transaction on), for a write that reads
+/// the head before its transaction does (the sweeps' candidate scans): a
+/// revoked token is refused before it observes anything, not even whether
+/// work is due. The write still takes [`capability_witness`] inside its
+/// transaction, the read a concurrent revocation invalidates.
+pub fn capability_admitted<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+) -> Outcome<()> {
+    let commitment = capability.commitment().map_err(capability_error)?;
+    Ok(not_revoked(
+        db.vertex(revocation_vid(book.book_id, &commitment))?,
+    ))
+}
+
+/// A revocation row read at the capability's identity means revoked.
+fn not_revoked(row: Option<fgdb::VertexRow>) -> Result<(), Refusal> {
+    match row {
+        Some(row) => Err(refusal(&Denial::Revoked {
             revoked_at: row.created_at,
-        }))),
-        None => Ok(Ok(())),
+        })),
+        None => Ok(()),
     }
 }
 

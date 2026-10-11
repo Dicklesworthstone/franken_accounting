@@ -1039,6 +1039,11 @@ pub async fn attach_evidence<V: asupersync::fs::Vfs + Clone>(
 
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
+    // Not revoked (plan §14.2): the first read, before the identity.
+    if let Err(r) = crate::policy::capability_witness(&txn, db, book, capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
     if let Some(row) = txn.vertex(db, svid)? {
         txn.abort();
         return recorded_supplement(&row, svid, &body_digest).map(Ok);
