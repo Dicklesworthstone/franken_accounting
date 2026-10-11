@@ -670,3 +670,12 @@ owners = ["fa-registers"]
 exit = "verification"
 cite = "plan §15.2 (a scratch book's certificate carries its SeqMap; replay equals the source at every mapped sequence)"
 fix = "replay again with fa_journal::scratch::replay_into and verify the fresh map; a SeqMap is never edited"
+
+# ---- Balance assertions (140–149) -----------------------------------------
+[[refusal]]
+code = "FA-REF-140"
+name = "REGISTER_CLAIM_FALSE"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §9.4 (a RegisterEquals binds the cell's value and fold digest at the sequence it was evaluated at)"
+fix = "evaluate the claim from the book (fa-registers register_equals) at the sequence you attest, and attest exactly that"

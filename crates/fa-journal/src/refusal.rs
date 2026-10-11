@@ -156,6 +156,8 @@ pub mod code {
     pub const RECEIPT_MISMATCH: &str = "FA-REF-115";
     /// A custody transfer names a principal that does not hold the document.
     pub const NOT_CUSTODIAN: &str = "FA-REF-119";
+    /// A RegisterEquals claim is not what its cell folds to at the claim's own sequence.
+    pub const REGISTER_CLAIM_FALSE: &str = "FA-REF-140";
     /// The entry moves value out of a limited account below its lower bound
     /// (`net − pending_out − x < lower_bound`, plan §5.4).
     pub const AVAILABILITY_LOWER: &str = "FA-REF-090";
