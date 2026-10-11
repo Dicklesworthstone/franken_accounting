@@ -15,7 +15,7 @@ use fa_journal::{
     AccountSpec, BookContext, BookSpec, ChartInstalled, KernelError, PostRequest, Posted,
     Transitioned,
 };
-use fa_model::{Entry, Erasable, SymbolTable};
+use fa_model::{Entry, Erasable, SealKey, SymbolTable};
 use fa_registers::{
     AvailabilityVerification, BalanceExplanation, Fold, OpenItem, OpenItemVerification,
     TrialBalance, Verification,
@@ -28,6 +28,33 @@ use fgdb_types::{CommitSeq, VId};
 use crate::book::{BookError, BookKeys, Entropy, Outcome};
 
 const BOOK_BLOB_STORE: u16 = 1;
+
+fn seal(
+    cx: &PurposeContexts,
+    entropy: &Entropy,
+    key: &SealKey,
+    text: &str,
+) -> Result<Erasable<String>, KernelError> {
+    cx.commit()
+        .checkpoint()
+        .map_err(fgdb::WriteTxnError::Interrupted)?;
+    let mut salt = [0; 32];
+    let mut nonce = [0; 24];
+    entropy.fill(&mut salt)?;
+    entropy.fill(&mut nonce)?;
+    Ok(Erasable::seal(&text.to_string(), None, key, salt, nonce))
+}
+
+fn sweep_request(
+    capability: &fa_journal::Capability,
+    max_batch: usize,
+) -> fa_journal::SweepRequest {
+    fa_journal::SweepRequest {
+        principal_ref: capability.holder(),
+        capability: capability.clone(),
+        max_batch,
+    }
+}
 
 /// One book over caller-supplied filesystems. Ordinary constructors use
 /// clones of the same VFS for both stores. The separate blob type permits
@@ -156,17 +183,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         text: &str,
     ) -> Result<Erasable<String>, BookError> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
-        let mut salt = [0; 32];
-        let mut nonce = [0; 24];
-        self.entropy.fill(&mut salt)?;
-        self.entropy.fill(&mut nonce)?;
-        Ok(Erasable::seal(
-            &text.to_string(),
-            None,
-            &self.context.seal_key,
-            salt,
-            nonce,
-        ))
+        Ok(seal(cx, &self.entropy, &self.context.seal_key, text)?)
     }
 
     pub async fn install_chart(
@@ -321,6 +338,108 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     ) -> Outcome<fa_journal::Balanced> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
         Ok(fa_journal::post_balancing(&mut self.db, cx, &self.context, req, leg).await?)
+    }
+
+    /// Holds due at the latest committed tick, still reserved until a
+    /// resolution commits (plan §5.4).
+    pub fn due_holds(&self, cx: &PurposeContexts) -> Result<Vec<fa_journal::DueHold>, BookError> {
+        self.query(cx, |db, _| Ok(fa_journal::due_holds(db, None)?))
+    }
+
+    /// Live scheduled reversals and their `Due`, `Waiting`, or `Blocked`
+    /// status under the latest committed tick (plan §7.6).
+    pub fn due_reversals(
+        &self,
+        cx: &PurposeContexts,
+    ) -> Result<Vec<fa_journal::DueReversal>, BookError> {
+        self.query(cx, |db, book| Ok(fa_journal::due_reversals(db, book)?))
+    }
+
+    /// The book's latest committed TimeEvidence tick, if any (plan §7.1a).
+    pub fn latest_tick(&self, cx: &PurposeContexts) -> Result<Option<fa_journal::Tick>, BookError> {
+        self.query(cx, |db, _| Ok(fa_journal::latest_tick(db)?))
+    }
+
+    /// Journal the caller's daemon-clock observation as TimeEvidence.
+    /// The capability's holder is the principal; the kernel enforces the
+    /// `witness` authority and monotonicity law. This adapter reads no clock.
+    /// Repeating the same observation returns its recorded outcome.
+    pub async fn record_tick(
+        &mut self,
+        cx: &PurposeContexts,
+        observed_utc_ns: u64,
+        monotonic_ok: bool,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::Ticked> {
+        let description = self.seal_text(
+            cx,
+            &format!(
+                "time evidence: the daemon clock observed {observed_utc_ns} ns (monotonic_ok {monotonic_ok})"
+            ),
+        )?;
+        let req = fa_journal::TickRequest {
+            observed_utc_ns,
+            source: fa_journal::sweep::SOURCE_DAEMON_CLOCK,
+            monotonic_ok,
+            principal_ref: capability.holder(),
+            capability: capability.clone(),
+            idempotency_key: format!("tick:{observed_utc_ns}").into_bytes(),
+            description,
+        };
+        Ok(fa_journal::record_tick(&mut self.db, cx, &self.context, req).await?)
+    }
+
+    /// Expire at most `max_batch` due holds in one transaction as the
+    /// capability's System principal (plan §5.4). `Ok(Ok(None))` means no
+    /// tick or nothing due. A sealing failure aborts the transaction.
+    pub async fn sweep_expiry(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        max_batch: usize,
+    ) -> Outcome<Option<fa_journal::SweepBatch>> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        let req = sweep_request(capability, max_batch);
+        let book = &self.context;
+        let entropy = &self.entropy;
+        let mut describe = |text: &str| seal(cx, entropy, &book.seal_key, text);
+        Ok(fa_journal::sweep_batch(&mut self.db, cx, book, &req, &mut describe).await?)
+    }
+
+    /// Examine at most `max_batch` reached schedules in one transaction,
+    /// minting admissible reversals and reporting blocked ones (plan §7.6).
+    /// The kernel requires the System capability; `Ok(Ok(None))` means
+    /// nothing reached. A sealing failure aborts the transaction.
+    pub async fn sweep_reversals(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        max_batch: usize,
+    ) -> Outcome<Option<fa_journal::ReversalBatch>> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        let req = sweep_request(capability, max_batch);
+        let book = &self.context;
+        let entropy = &self.entropy;
+        let mut describe = |text: &str| seal(cx, entropy, &book.seal_key, text);
+        Ok(fa_journal::sweep_reversals_batch(&mut self.db, cx, book, &req, &mut describe).await?)
+    }
+
+    /// Sweep expiry batches, then scheduled-reversal batches, until nothing
+    /// remains under the latest tick. Each transaction is bounded by
+    /// `max_batch`. A refusal or failure stops the sweep; earlier committed
+    /// batches remain journaled.
+    pub async fn sweep(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        max_batch: usize,
+    ) -> Outcome<fa_journal::Swept> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        let req = sweep_request(capability, max_batch);
+        let book = &self.context;
+        let entropy = &self.entropy;
+        let mut describe = |text: &str| seal(cx, entropy, &book.seal_key, text);
+        Ok(fa_journal::sweep(&mut self.db, cx, book, &req, &mut describe).await?)
     }
 
     pub async fn open_migration_run(

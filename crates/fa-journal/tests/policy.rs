@@ -1355,13 +1355,13 @@ impl Harness {
         let book = &self.book;
         self.runtime.block_on(async move {
             let mut describe = |text: &str| {
-                Erasable::seal(
+                Ok::<_, KernelError>(Erasable::seal(
                     &text.to_string(),
                     None,
                     &book.seal_key,
                     [0x5d; 32],
                     [0x5d; 24],
-                )
+                ))
             };
             let expiry = sweep_batch(db, &ctx, book, &req, &mut describe)
                 .await

@@ -475,6 +475,22 @@ exit = "usage"
 cite = "plan §7.6 (cancelled by lineage), FA-INV-08"
 fix = "reverse the scheduled target with a Reversal; its commit journals the cancellation"
 
+# ---- TopazOsprey's block (140–149): 144 allocated to fa-ffo (3606) ---------
+# 144 (CobaltGull 3599, bead fa-ffo; sits beside 140–143 once both land):
+# automatic effects take time only from a corroborated committed tick. The
+# expiry and scheduled-reversal sweeps refuse under a latest tick whose
+# TimeTick payload records monotonic_ok false, and an Open's scheduled
+# reversals reach no date under it. One kernel rule for every caller (the
+# library, fad, a period transition); it claims committed-tick semantics
+# only, nothing about an observed instant against true UTC (3602, 3604).
+[[refusal]]
+code = "FA-REF-144"
+name = "TICK_UNCORROBORATED"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §5.4, §7.1a, §7.6 (automatic effects take time only from a corroborated committed tick)"
+fix = "wait for `fad serve`'s next cycle (every tick_ns), or run `fad sweep-now --book <dir>` once the host clock agrees with its monotonic clock: fad journals a corroborated tick and the sweep runs under it"
+
 # ---- Structure, coordinate, entities (100–104) ---------------------------
 [[refusal]]
 code = "FA-REF-100"

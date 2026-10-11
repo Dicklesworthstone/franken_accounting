@@ -208,6 +208,62 @@ pub(crate) fn tick_witness<V: asupersync::fs::Vfs + Clone>(
     Ok((scalar, tick))
 }
 
+/// Whether the tick journaled in `row` (its `TimeControl` entry) was
+/// corroborated by its source's monotonic clock: its TimeTick payload's
+/// `monotonic_ok`. Entries are immutable, so a witness that the tick is
+/// still the latest keeps this answer current.
+pub(crate) fn tick_corroborated(row: &VertexRow) -> Result<bool, KernelError> {
+    match decode_entry(row)?.proposal.control {
+        Some(ControlPayload::TimeTick { monotonic_ok, .. }) => Ok(monotonic_ok),
+        other => Err(KernelError::Corrupt(format!(
+            "tick entry {:032x} carries {other:?}, not a TimeTick",
+            row.vid.0
+        ))),
+    }
+}
+
+/// **Automatic effects take time only from a corroborated committed tick**
+/// (CobaltGull 3599; WhiteCreek 3579, 3602). The expiry sweep, the
+/// scheduled-reversal sweep and an `Open`'s scheduled reversals (plan §7.6
+/// rule (b)) act on the book's latest tick only when its TimeTick payload
+/// records that its source's monotonic clock corroborated it; otherwise the
+/// sweeps refuse (FA-REF-144) and the `Open` reaches no date. It is one
+/// kernel rule for every caller (the library, the daemon, a period
+/// transition), not a policy one caller holds, and it claims committed-tick
+/// semantics only: nothing about how an observed instant relates to true
+/// UTC. (A remark under assumptions, not a guarantee: given a trusted,
+/// calibrated initial UTC baseline and bounded drift, a reading that fell
+/// behind its monotonic clock could not be early. The rule relies on no
+/// such assumption.)
+pub(crate) fn uncorroborated(tick: Tick) -> Refusal {
+    Refusal::new(
+        code::TICK_UNCORROBORATED,
+        exit::REFUSAL,
+        format!(
+            "the latest TimeEvidence tick ({} ns, entry {:032x}) was not corroborated by its source's monotonic clock (monotonic_ok false); automatic effects take time only from a corroborated tick",
+            tick.observed_utc_ns, tick.entry.0
+        ),
+        "plan §5.4, §7.1a, §7.6 (automatic effects take time only from a corroborated committed tick)",
+        "wait for `fad serve`'s next cycle (every tick_ns), or run `fad sweep-now --book <dir>` once the host clock agrees with its monotonic clock: fad journals a corroborated tick and the sweep runs under it",
+    )
+}
+
+/// The automatic-effects rule for `tick`, the book's latest at head: a
+/// sweep's transaction then witnesses that it is still the latest.
+pub(crate) fn corroborated_at_head<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    tick: Tick,
+) -> Outcome<()> {
+    let row = db
+        .vertex(tick.entry)?
+        .ok_or_else(|| KernelError::Corrupt("the latest tick's entry is missing".into()))?;
+    if tick_corroborated(&row)? {
+        Ok(Ok(()))
+    } else {
+        Ok(Err(uncorroborated(tick)))
+    }
+}
+
 /// The deadline of a timed hold committed at `seq`: its anchor tick (the
 /// latest tick strictly before `seq`) plus `timeout_ns`. The kernel admits
 /// a timed hold only with an anchor and a representable deadline, so either
@@ -567,6 +623,11 @@ fn recorded_tick(row: &VertexRow, proposal: &EntryPayload, book: &BookContext) -
     }
 }
 
+/// How a sweep seals each description it writes (the kernel holds no
+/// entropy). `Send`, so a sweep's future is too: the daemon's scheduler
+/// awaits it as a task of its own runtime, or of the lab's (bead fa-ffo).
+pub type Describe<'a> = dyn FnMut(&str) -> Result<Erasable<String>, KernelError> + Send + 'a;
+
 /// One sweep transaction's request. The sweep is the book's intrinsic actor:
 /// its capability is a `System`-profile capability holding the
 /// `expiry-sweep` row's op (`post`).
@@ -884,16 +945,20 @@ pub(crate) fn admit_sweep<V: asupersync::fs::Vfs + Clone>(
 /// Expire up to `req.max_batch` due holds in one transaction (plan §5.4).
 /// `Ok(None)`: no tick yet, or nothing due after the cursor — nothing is
 /// written. `describe` seals each new entry's description (the kernel holds
-/// no entropy). Refusals: a batch bound outside `1..=max_batch_entries`, a
+/// no entropy); when it fails, the open transaction is aborted and its
+/// error returned — nothing is committed, the cursor does not move, and a
+/// rerun sweeps the same holds. Refusals: a batch bound outside `1..=max_batch_entries`, a
 /// capability that is not the `System` principal's or lacks `post`, an
-/// expired capability, or a conflict (a hold resolved concurrently — its
-/// identity was taken — or a witness moved): rerun the sweep.
+/// expired capability, a latest tick its source's monotonic clock did not
+/// corroborate (FA-REF-144, [`corroborated_at_head`]), or a conflict (a hold
+/// resolved concurrently — its identity was taken — or a witness moved):
+/// rerun the sweep.
 pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
     req: &SweepRequest,
-    describe: &mut dyn FnMut(&str) -> Erasable<String>,
+    describe: &mut Describe<'_>,
 ) -> Outcome<Option<SweepBatch>> {
     let sweep_key = fa_policy::sod::control_key("SweepControl", None, "Expire");
     if let Err(r) = admit_sweep(db, book, req, &sweep_key)? {
@@ -905,6 +970,11 @@ pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
     let Some(tick) = latest_tick(db)? else {
         return Ok(Ok(None));
     };
+    // Automatic effects take time only from a corroborated committed tick;
+    // the transaction below witnesses that this tick is still the latest.
+    if let Err(r) = corroborated_at_head(db, tick)? {
+        return Ok(Err(r));
+    }
     let root = root_row(db, None)?.ok_or_else(|| KernelError::Corrupt("no book root".into()))?;
     let cursor = Cursor::from_scalar(prop(&root, property::SWEEP_CURSOR))?;
     let mut due = due_holds(db, Some(tick))?;
@@ -988,6 +1058,16 @@ pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
             txn.abort();
             return Ok(Err(r));
         }
+        let description = match describe(&format!(
+            "expired by the sweep at tick {} ns (deadline {} ns)",
+            tick.observed_utc_ns, d.deadline_ns
+        )) {
+            Ok(sealed) => sealed,
+            Err(e) => {
+                txn.abort();
+                return Err(e);
+            }
+        };
         let proposal = expires_proposal(
             book,
             req.principal_ref,
@@ -995,10 +1075,7 @@ pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
             hold_vid,
             tick,
             tick_digest,
-            describe(&format!(
-                "expired by the sweep at tick {} ns (deadline {} ns)",
-                tick.observed_utc_ns, d.deadline_ns
-            )),
+            description,
         );
         if let Err(r) = policy::authorize_approvals(
             &txn,
@@ -1043,6 +1120,17 @@ pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
             "its cursor is already journaled",
         )));
     }
+    let description = match describe(&format!(
+        "expiry sweep at tick {} ns: {} expired, {remaining_due} due after this batch",
+        tick.observed_utc_ns,
+        expired.len()
+    )) {
+        Ok(sealed) => sealed,
+        Err(e) => {
+            txn.abort();
+            return Err(e);
+        }
+    };
     let cursor_entry = cursor_proposal(
         book,
         req.principal_ref,
@@ -1051,11 +1139,7 @@ pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
         cvid,
         tick,
         tick_digest,
-        describe(&format!(
-            "expiry sweep at tick {} ns: {} expired, {remaining_due} due after this batch",
-            tick.observed_utc_ns,
-            expired.len()
-        )),
+        description,
     )?;
     if let Err(r) = policy::authorize_approvals(
         &txn,
@@ -1129,7 +1213,7 @@ pub async fn sweep<V: asupersync::fs::Vfs + Clone>(
     ctx: &PurposeContexts,
     book: &BookContext,
     req: &SweepRequest,
-    describe: &mut dyn FnMut(&str) -> Erasable<String>,
+    describe: &mut Describe<'_>,
 ) -> Outcome<Swept> {
     let mut out = Swept::default();
     loop {

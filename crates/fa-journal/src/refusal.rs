@@ -190,6 +190,11 @@ pub mod code {
     /// journals a schedule's cancellation itself, in the commit of the manual
     /// Reversal that supersedes the scheduled target (plan §7.6).
     pub const CANCEL_BY_KERNEL: &str = "FA-REF-099";
+    /// An automatic effect (an expiry or scheduled-reversal sweep batch)
+    /// would take its time from a latest tick its source's monotonic clock
+    /// did not corroborate (`monotonic_ok` false): automatic effects take
+    /// time only from a corroborated committed tick (CobaltGull 3599).
+    pub const TICK_UNCORROBORATED: &str = "FA-REF-144";
     /// A leg in a book that declares more than one legal entity names none
     /// (plan §4.1, §5.2: `legal_entity` is a mandatory balancing dimension).
     pub const DIMENSION_MISSING: &str = "FA-REF-005";
@@ -225,6 +230,9 @@ pub enum KernelError {
     Corrupt(String),
     /// A mirror value could not be built as a substrate scalar.
     Scalar(&'static str),
+    /// The caller's entropy source failed while sealing a field the kernel
+    /// writes (a sweep's descriptions); nothing was committed.
+    Entropy(fgdb_crypto::EntropyError),
 }
 
 impl fmt::Display for KernelError {
@@ -238,12 +246,18 @@ impl fmt::Display for KernelError {
             Self::Date(e) => write!(f, "date: {e:?}"),
             Self::Corrupt(what) => write!(f, "corrupt row: {what}"),
             Self::Scalar(what) => write!(f, "cannot build scalar `{what}`"),
+            Self::Entropy(e) => write!(f, "entropy: {e}"),
         }
     }
 }
 
 impl core::error::Error for KernelError {}
 
+impl From<fgdb_crypto::EntropyError> for KernelError {
+    fn from(e: fgdb_crypto::EntropyError) -> Self {
+        Self::Entropy(e)
+    }
+}
 impl From<fgdb::WriteError> for KernelError {
     fn from(e: fgdb::WriteError) -> Self {
         Self::Write(e)

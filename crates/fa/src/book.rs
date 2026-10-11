@@ -802,6 +802,72 @@ impl Book {
         with_store!(&self.store, core => core.periods(&self.purposes()))
     }
 
+    /// Timed holds reached by the latest committed tick and still pending.
+    pub fn due_holds(&self) -> Result<Vec<fa_journal::DueHold>, BookError> {
+        with_store!(&self.store, core => core.due_holds(&self.purposes()))
+    }
+
+    /// Scheduled reversals reached by the latest tick, with their status.
+    pub fn due_reversals(&self) -> Result<Vec<fa_journal::DueReversal>, BookError> {
+        with_store!(&self.store, core => core.due_reversals(&self.purposes()))
+    }
+
+    /// The latest committed TimeEvidence tick, if any.
+    pub fn latest_tick(&self) -> Result<Option<fa_journal::Tick>, BookError> {
+        with_store!(&self.store, core => core.latest_tick(&self.purposes()))
+    }
+
+    /// Journal the caller's clock observation under its context and
+    /// capability. This adapter reads no clock and creates no runtime.
+    pub async fn record_tick(
+        &mut self,
+        cx: &Cx,
+        observed_utc_ns: u64,
+        monotonic_ok: bool,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::Ticked> {
+        let purposes = PurposeContexts::narrow_runtime_root(cx);
+        with_store!(&mut self.store, core => core.record_tick(
+            &purposes, observed_utc_ns, monotonic_ok, capability,
+        ).await)
+    }
+
+    /// Expire at most `max_batch` due holds under the caller's context and
+    /// the book's System capability, through the shared async core.
+    pub async fn sweep_expiry(
+        &mut self,
+        cx: &Cx,
+        capability: &fa_journal::Capability,
+        max_batch: usize,
+    ) -> Outcome<Option<fa_journal::SweepBatch>> {
+        let purposes = PurposeContexts::narrow_runtime_root(cx);
+        with_store!(&mut self.store, core => core.sweep_expiry(&purposes, capability, max_batch).await)
+    }
+
+    /// Examine at most `max_batch` reached schedules under the caller's
+    /// context, minting admissible reversals and reporting blocked ones.
+    pub async fn sweep_reversals(
+        &mut self,
+        cx: &Cx,
+        capability: &fa_journal::Capability,
+        max_batch: usize,
+    ) -> Outcome<Option<fa_journal::ReversalBatch>> {
+        let purposes = PurposeContexts::narrow_runtime_root(cx);
+        with_store!(&mut self.store, core => core.sweep_reversals(&purposes, capability, max_batch).await)
+    }
+
+    /// Drain expiry batches and then reversal batches under the latest
+    /// tick. Each batch commits separately; a refusal stops further work.
+    pub async fn sweep(
+        &mut self,
+        cx: &Cx,
+        capability: &fa_journal::Capability,
+        max_batch: usize,
+    ) -> Outcome<fa_journal::Swept> {
+        let purposes = PurposeContexts::narrow_runtime_root(cx);
+        with_store!(&mut self.store, core => core.sweep(&purposes, capability, max_batch).await)
+    }
+
     /// Every account of the chart, sorted by code.
     pub fn accounts(&self) -> Result<Vec<AccountRow>, BookError> {
         with_store!(&self.store, core => core.accounts(&self.purposes()))
@@ -2142,6 +2208,203 @@ mod tests {
         });
     }
 
+    /// Declared ticks exercise committed-tick semantics in one lab runtime,
+    /// without asserting the accuracy of a physical clock.
+    #[test]
+    fn async_timing_adapters_expire_and_reverse_under_the_callers_fault_vfs() {
+        under_lab(89, |root| async move {
+            let cx = PurposeContexts::narrow_runtime_root(&root);
+            let mut fixture = prepared_fixture(&root, 89).await;
+            let book_id = fixture.book.context().book_id;
+            let witness = Capability::embedded(VId(1), &["witness"]).unwrap();
+            let system = fa_journal::rows::system_principal(book_id);
+            let sweeper = Capability::new(
+                system,
+                fa_policy::Profile::System,
+                &[fa_policy::Op::Post],
+                system,
+            )
+            .unwrap();
+            let march_day = DateDay::from_ymd(2026, 3, 15).unwrap();
+            let april_day = DateDay::from_ymd(2026, 4, 1).unwrap();
+            let march_ns = u64::try_from(march_day.0).unwrap() * 86_400_000_000_000;
+            let april_ns = u64::try_from(april_day.0).unwrap() * 86_400_000_000_000;
+            assert_eq!(fixture.book.latest_tick(&cx).unwrap(), None);
+            let tick_events_start = fixture.vfs.events().len();
+            let anchor = fixture
+                .book
+                .record_tick(&cx, march_ns, true, &witness)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(!anchor.already_recorded);
+            assert_eq!(fixture.book.latest_tick(&cx).unwrap(), Some(anchor.tick));
+            assert!(
+                fixture.vfs.events()[tick_events_start..]
+                    .iter()
+                    .any(|event| {
+                        matches!(event.kind, FaultKind::Latency { .. })
+                            && event.path.starts_with("./prepared-book/store")
+                    })
+            );
+
+            let mut hold_request = fixture.request.clone();
+            hold_request.proposal.class = EntryClass::PENDING;
+            hold_request.proposal.idempotency_key = b"timing-hold".to_vec();
+            hold_request.proposal.pending = Some(fa_model::Pending {
+                timeout_ns: Some(5),
+                resolution_of: None,
+                disposition: None,
+            });
+            let hold = fixture.book.post(&cx, hold_request).await.unwrap().unwrap();
+            fixture.request.proposal.class = EntryClass::ADJUSTING;
+            fixture.request.proposal =
+                fa_journal::with_auto_reverse(fixture.request.proposal, april_day);
+            let adjustment = fixture
+                .book
+                .post(&cx, fixture.request)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(fixture.book.due_holds(&cx).unwrap().is_empty());
+            assert!(fixture.book.due_reversals(&cx).unwrap().is_empty());
+
+            let uncorroborated = fixture
+                .book
+                .record_tick(&cx, april_ns, false, &witness)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(!uncorroborated.already_recorded);
+            assert_eq!(
+                fixture.book.due_holds(&cx).unwrap(),
+                vec![fa_journal::DueHold {
+                    hold: hold.entry_ref(),
+                    recorded_at: hold.recorded_at(),
+                    deadline_ns: march_ns + 5,
+                }]
+            );
+            let due = fixture.book.due_reversals(&cx).unwrap();
+            assert_eq!(due.len(), 1);
+            assert_eq!(due[0].schedule.target, adjustment.entry_ref());
+            assert!(matches!(
+                due[0].status,
+                fa_journal::ReversalStatus::Waiting { .. }
+            ));
+            let before = fixture.book.head(&cx).unwrap();
+            let entries = journal_entries(&fixture.book, &cx);
+            for refusal in [
+                fixture
+                    .book
+                    .sweep_expiry(&cx, &sweeper, 1)
+                    .await
+                    .unwrap()
+                    .unwrap_err(),
+                fixture
+                    .book
+                    .sweep_reversals(&cx, &sweeper, 1)
+                    .await
+                    .unwrap()
+                    .unwrap_err(),
+                fixture
+                    .book
+                    .sweep(&cx, &sweeper, 1)
+                    .await
+                    .unwrap()
+                    .unwrap_err(),
+            ] {
+                assert_eq!((refusal.code, refusal.exit), ("FA-REF-144", 3));
+            }
+            assert_eq!(fixture.book.head(&cx).unwrap(), before);
+            assert_eq!(journal_entries(&fixture.book, &cx), entries);
+            let opened = fixture
+                .book
+                .transition_period(
+                    &cx,
+                    &fixture.april,
+                    PeriodTransition::Open,
+                    VId(1),
+                    1,
+                    april_day,
+                    b"timing-open-april",
+                    &Capability::embedded(VId(1), &["close"]).unwrap(),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(opened.minted.is_empty());
+
+            let reached = fixture
+                .book
+                .record_tick(&cx, april_ns + 1, true, &witness)
+                .await
+                .unwrap()
+                .unwrap();
+            let before = fixture.book.head(&cx).unwrap();
+            let repeated = fixture
+                .book
+                .record_tick(&cx, april_ns + 1, true, &witness)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(repeated.already_recorded);
+            assert_eq!(repeated.entry_ref, reached.entry_ref);
+            assert_eq!(repeated.recorded_at, reached.recorded_at);
+            assert_eq!(fixture.book.head(&cx).unwrap(), before);
+            let sweep_events_start = fixture.vfs.events().len();
+            let swept = fixture.book.sweep(&cx, &sweeper, 1).await.unwrap().unwrap();
+            assert!(
+                fixture.vfs.events()[sweep_events_start..]
+                    .iter()
+                    .any(|event| {
+                        matches!(event.kind, FaultKind::Latency { .. })
+                            && event.path.starts_with("./prepared-book/store")
+                    })
+            );
+            assert_eq!(swept.expiry.len(), 1);
+            assert_eq!(swept.reversals.len(), 1);
+            assert_eq!(swept.expiry[0].tick, reached.tick);
+            assert_eq!(swept.expiry[0].expired.len(), 1);
+            assert_eq!(swept.expiry[0].expired[0].0, hold.entry_ref());
+            assert_eq!(swept.expiry[0].remaining_due, 0);
+            assert_eq!(swept.reversals[0].minted.len(), 1);
+            assert_eq!(swept.reversals[0].minted[0].0, adjustment.entry_ref());
+            assert!(swept.reversals[0].blocked.is_empty());
+            assert_eq!(swept.reversals[0].remaining, 0);
+            assert_eq!(swept.expiry[0].recorded_at, CommitSeq(before.0 + 1));
+            assert_eq!(swept.reversals[0].recorded_at, CommitSeq(before.0 + 2));
+            assert!(fixture.book.due_holds(&cx).unwrap().is_empty());
+            assert!(fixture.book.due_reversals(&cx).unwrap().is_empty());
+            let before = fixture.book.head(&cx).unwrap();
+            assert_eq!(
+                fixture.book.sweep(&cx, &sweeper, 1).await.unwrap().unwrap(),
+                fa_journal::Swept::default()
+            );
+            assert_eq!(fixture.book.head(&cx).unwrap(), before);
+            for (period, reversed, watermark) in [
+                (&fixture.march, false, swept.expiry[0].recorded_at),
+                (&fixture.april, true, swept.reversals[0].recorded_at),
+            ] {
+                let fold = fixture
+                    .book
+                    .advance_registers(&cx, period)
+                    .await
+                    .unwrap()
+                    .fold;
+                assert_rent_cells(&fold, book_id, fixture.usd, reversed);
+                assert_eq!(fold.watermark, Some(watermark));
+                assert_eq!(fold, fixture.book.fold_period(&cx, period).unwrap());
+                assert!(
+                    fixture
+                        .book
+                        .verify_registers(&cx, period)
+                        .unwrap()
+                        .is_green()
+                );
+            }
+        });
+    }
+
     #[test]
     fn async_book_honors_caller_cancellation_before_reads_and_writes() {
         under_cancelled_lab(23, |root| async move {
@@ -2168,8 +2431,43 @@ mod tests {
             .await
             .unwrap();
             let events = vfs.events().len();
+            let head = book.head(&cx).unwrap();
+            let witness = Capability::embedded(VId(1), &["witness"]).unwrap();
+            let system = fa_journal::rows::system_principal(book.context().book_id);
+            let sweeper = Capability::new(
+                system,
+                fa_policy::Profile::System,
+                &[fa_policy::Op::Post],
+                system,
+            )
+            .unwrap();
             root.cancel_with(CancelKind::User, Some("caller cancelled"));
             assert!(matches!(book.head(&cx), Err(BookError::Context(_))));
+            assert!(matches!(book.latest_tick(&cx), Err(BookError::Context(_))));
+            assert!(matches!(book.due_holds(&cx), Err(BookError::Context(_))));
+            assert!(matches!(
+                book.due_reversals(&cx),
+                Err(BookError::Context(_))
+            ));
+            assert!(matches!(
+                book.record_tick(&cx, 1, true, &witness).await,
+                Err(BookError::Context(_))
+            ));
+            assert!(matches!(
+                book.sweep_expiry(&cx, &sweeper, 1).await,
+                Err(BookError::Context(_))
+            ));
+            assert!(matches!(
+                book.sweep_reversals(&cx, &sweeper, 1).await,
+                Err(BookError::Context(_))
+            ));
+            assert!(matches!(
+                book.sweep(&cx, &sweeper, 1).await,
+                Err(BookError::Context(_))
+            ));
+            // Inspect directly only as the test oracle: the public read
+            // path correctly refuses the cancelled caller above.
+            assert_eq!(book.db.frontier().unwrap(), head);
             assert!(matches!(
                 book.create_periods(&cx, 2026).await,
                 Err(BookError::Context(_))

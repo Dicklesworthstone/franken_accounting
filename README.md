@@ -44,14 +44,22 @@ The embedded API's `Book::advance_registers(period)` consumes new committed entr
 
 `AsyncBook<V>` accepts the caller's `PurposeContexts` for each operation and
 uses the supplied filesystem for both the journal and external document bytes.
-It owns no runtime. The synchronous `Book` API creates a production runtime
-and delegates to the same implementation. This lets a host application or the
+It owns no runtime. The `Book` convenience API creates a production runtime
+for its synchronous operations and delegates to the same implementation. This lets a host application or the
 lab runtime supply cancellation, budgets, scheduling and filesystem faults
 without a second accounting implementation.
 
+Tick recording, bounded expiry and reversal sweeps, and their backlog reads
+also use this async core. The `Book` timing adapters accept the caller's
+context. The kernel takes automatic effects only from a corroborated committed
+tick; a failed description seal aborts the current batch without advancing
+its cursor. These are committed-tick semantics, not a guarantee of clock accuracy.
+
 The lab smoke tests cover a posted entry, exact expected register cells,
 external evidence, virtual sync latency, crash/reopen, idempotency, caller
-cancellation and an injected write failure. The full registered crash-point
+cancellation, tick-driven expiry and reversal, and an injected write failure.
+The timing test calls the library; it does not run the daemon scheduler.
+The full registered crash-point
 matrix, concurrency exploration and 1,000-seed Genesis campaign remain open
 under `fa-0fl`; these smoke tests do not establish that broader claim.
 
