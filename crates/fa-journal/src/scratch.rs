@@ -316,6 +316,33 @@ pub fn source_batches<V: asupersync::fs::Vfs + Clone>(
             format!("replay at or before {}", head.0),
         )));
     }
+    // A scratch book starts at the source's genesis: a prefix before the
+    // book root's creating commit would replay to a database with no book,
+    // which no caller may present as one (WhiteCreek 3500).
+    let Some(root) = source.vertex(crate::rows::book_root())? else {
+        return Ok(Err(Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            "the source database holds no book",
+            "plan §15.2",
+            "replay from an opened book",
+        )));
+    };
+    if prefix < root.created_at {
+        return Ok(Err(Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            format!(
+                "replay prefix {} precedes the book's genesis at {}",
+                prefix.0, root.created_at.0
+            ),
+            "plan §15.2",
+            format!(
+                "replay at or after {} (the genesis commit)",
+                root.created_at.0
+            ),
+        )));
+    }
     let batches = source
         .delta_since(CommitSeq(0))?
         .filter(|b| b.commit_seq() <= prefix)

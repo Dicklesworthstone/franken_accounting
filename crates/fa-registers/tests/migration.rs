@@ -1660,6 +1660,29 @@ fn scratch_replay_equals_the_source_at_every_mapped_seq() {
         last = Some((scratch, map));
     }
 
+    // Before the book's genesis there is no book to replay: the replay is
+    // refused (100), and a map claiming such a prefix is refused (135) even
+    // over an empty database, where an empty map would otherwise match.
+    let genesis =
+        k.db.vertex(fa_journal::rows::book_root())
+            .unwrap()
+            .expect("the source book")
+            .created_at;
+    assert!(genesis.0 >= 1, "genesis is a commit");
+    let before_genesis = CommitSeq(genesis.0 - 1);
+    let mut nothing = empty_scratch(&k);
+    let r = replay(&mut k, &mut nothing, before_genesis).expect_err("no book yet");
+    assert_eq!((r.code, r.exit), ("FA-REF-100", exit::USAGE), "{r}");
+    assert!(r.message.contains("precedes the book's genesis"), "{r}");
+    let empty = SeqMap {
+        source_book: k.book.book_id,
+        source_prefix: before_genesis,
+        pairs: Vec::new(),
+    };
+    let r = verify(&k, &nothing, &empty).expect_err("an empty map is not a scratch book");
+    assert_eq!((r.code, r.exit), ("FA-REF-135", exit::VERIFICATION), "{r}");
+    *refused.entry("FA-REF-135").or_default() += 1;
+
     // The approval recorded before the replay binds the same proposal on the
     // scratch book: posted there with it, and then on the source, the two
     // entries are the same object.

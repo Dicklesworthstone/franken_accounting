@@ -5,7 +5,8 @@
 //! source and refolds both sides:
 //!
 //! - the map names this book, and is strictly increasing on both sides;
-//! - its prefix is not past the source's frontier;
+//! - its prefix is not past the source's frontier, nor before the book's
+//!   genesis;
 //! - its pairs are exactly the source's commits through the prefix that
 //!   carry accounting objects (no gap, no extra), each with that commit's
 //!   marker;
@@ -30,8 +31,9 @@ use crate::{RegisterError, entries_at, entry_period, fold_period_at};
 /// Refusal codes this module issues.
 pub mod code {
     /// A SeqMap that does not describe the replay: wrong book, not monotone,
-    /// a prefix past the source frontier, a gap or an extra pair, a wrong
-    /// marker, or a pair at which the two books' entries or folds differ.
+    /// a prefix past the source frontier or before its genesis, a gap or an
+    /// extra pair, a wrong marker, or a pair at which the two books' entries
+    /// or folds differ.
     pub const SEQ_MAP_INVALID: &str = "FA-REF-135";
 }
 
@@ -86,6 +88,18 @@ where
         return Ok(Err(invalid(format!(
             "the map's source prefix {} is past the source frontier {}",
             map.source_prefix.0, frontier.0
+        ))));
+    }
+    // Nor before the book's genesis: an empty map over an empty database is
+    // not a scratch book.
+    let genesis = source
+        .vertex(fa_journal::rows::book_root())?
+        .map(|root| root.created_at);
+    if genesis.is_none_or(|g| map.source_prefix < g) {
+        return Ok(Err(invalid(format!(
+            "the map's source prefix {} precedes the source book's genesis ({})",
+            map.source_prefix.0,
+            genesis.map_or_else(|| "no book".to_string(), |g| g.0.to_string())
         ))));
     }
     // The source commits a replay through the prefix must reproduce.
