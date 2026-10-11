@@ -12,6 +12,8 @@
 //!   kind, including adjustment, opening, closing, and historical periods that
 //!   share civil dates with normal periods and are selected only through the
 //!   `effective_period` discriminator (§7.3).
+//! - [`BusinessCalendar`]: explicit workweeks, holiday tables, checked
+//!   business-day offsets, and named date adjustments (§7.7).
 //! - [`MonthlyRecurrence`]: anchor-preserving monthly dates with an explicit
 //!   end-of-month law and stable occurrence indices (§7.6–§7.7).
 //! - [`PeriodState`]: the state machine whose transitions are control entries.
@@ -20,12 +22,16 @@
 
 #![forbid(unsafe_code)]
 
+pub mod business;
 pub mod calendar;
 pub mod date;
 pub mod period;
 pub mod recurrence;
 pub mod selector;
 
+pub use business::{
+    AdjustedOccurrence, BusinessCalendar, BusinessDayConvention, BusinessDayError,
+};
 pub use calendar::{CalendarKind, FiscalCalendar, WeekPattern, YearEndRule};
 pub use date::{DateDay, DateError, MonthEndPolicy, Weekday};
 pub use period::{
