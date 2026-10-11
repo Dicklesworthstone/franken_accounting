@@ -218,6 +218,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.query(cx, |db, _| Ok(db.frontier().map_err(KernelError::from)?))
     }
 
+    /// The genesis spec journaled on the book root (base unit, calendar,
+    /// opening date, entities): what `fa book info` reports.
+    pub fn spec(&self, cx: &PurposeContexts) -> Result<BookSpec, BookError> {
+        self.query(cx, |db, _| {
+            fa_journal::genesis::read_book_spec(db)?.ok_or(BookError::NoBook)
+        })
+    }
+
     /// Seal text using this book's explicitly supplied entropy capability.
     pub fn seal_text(
         &self,

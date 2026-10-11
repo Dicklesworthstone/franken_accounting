@@ -923,6 +923,47 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
             }
         }
     }
+    // The chart is a forest of unique codes (plan §4.3): a code names one
+    // account, and no account is its own ancestor. Both are refused here,
+    // before any write, rather than surfacing as an identity collision or a
+    // cycle a later fold would walk forever.
+    let mut codes = std::collections::BTreeSet::new();
+    for a in accounts {
+        if !codes.insert(a.code.as_str()) {
+            return Ok(Err(Refusal::new(
+                code::STRUCTURE,
+                exit::USAGE,
+                format!(
+                    "account code `{}` appears more than once in the chart",
+                    a.code
+                ),
+                "plan §4.3 (an account's code is its identity)",
+                "keep one row per account code",
+            )));
+        }
+    }
+    for a in accounts {
+        let mut at = a;
+        for _ in 0..accounts.len() {
+            let Some(parent) = &at.parent_code else { break };
+            if *parent == a.code {
+                return Ok(Err(Refusal::new(
+                    code::STRUCTURE,
+                    exit::USAGE,
+                    format!(
+                        "account `{}` is its own ancestor: its parent chain cycles",
+                        a.code
+                    ),
+                    "plan §4.3 (the chart is a forest)",
+                    "break the cycle: give one account in it another parent, or none",
+                )));
+            }
+            match accounts.iter().find(|x| x.code == *parent) {
+                Some(next) => at = next,
+                None => break,
+            }
+        }
+    }
     let mut w = Writer::new();
     w.list(accounts, |w, a| a.canonical(w));
     // Limits are an additive trailing list, written only when the chart
