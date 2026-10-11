@@ -13,9 +13,50 @@
 
 </div>
 
-> **Status (2026-10-10): implementation in progress.** The Rust workspace includes the embedded library and persistent CLI, exact money and calendar primitives, chart installation, period transitions, basic posting/reversal, register folds and verification, and an independent arithmetic oracle. Reporting supports stock balances, period activity, civil-date cutoffs and historical commit-sequence snapshots. Gate G0 and the full Genesis acceptance criteria remain open; the daemon/MCP, certified reports, offline bundles and the broader workflows below are design targets.
+> **Status (2026-10-11): implementation in progress; Gates G0–G4 are open.** What runs today, with tests against the real binaries: the embedded library (`fa::Book`, `AsyncBook`), the `fa` CLI and its robot mode, the `fad` daemon that holds a book's writer lease, and the `fa-mcp` server over the same verb registry. The kernel posts balanced entries under period law, segregation of duties, evidence minimums and balance limits; reverses exactly; holds and resolves two-phase reservations; stages and finalizes migrations. Registers are folds verified by recomputation; documents carry public commitments, custody, legal holds and redacted views; an unsigned entry accumulator verifies by recomputation; every trial balance is certified and `fa replay` reproduces it byte-for-byte; chart templates install a working chart in one command. Not yet built: typed intents with dry-run plans and drafts, issued and verified capabilities (each surface binds a self-issued embedded capability to its operator), Canon rules, close and restatement workflows, statements, forensic procedures, GQL queries, signed checkpoints and offline bundles. [Try it today](#try-it-today) is exactly what runs; a test executes it.
 
 > **A note on tense.** The rest of this README is written in the **present tense, as if the entire design in [`COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md`](./COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md) is fully realized**: the 1.0 target state. This is deliberate — it describes the *finished* system so it gets trued-up in place as milestones land (§19's gates G1→G4) rather than rewritten later. Where the plan stages something as future work, this README says so plainly.
+
+### Try it today
+
+<!-- try-it-today: crates/fa-cli/tests/readme.rs runs this section against the real `fa` binary.
+It writes each `file:` block below verbatim, runs every `fa` line of the commands block in order
+in a fresh directory, fills `<document-oid>` from the `oid` the line before printed, honours a
+trailing `> file`, and requires exit 0 from every line. Edit a line and the test fails. -->
+
+Write an invoice and the entry it supports next to the book:
+
+<!-- file: invoice.txt -->
+```text
+Invoice 10442 to ACME-CUST-17: 10 widgets at 125.00 USD, total 1,250.00 USD.
+```
+
+<!-- file: sale.json -->
+```json
+{"effective_date":"2026-03-14","idempotency_key":"inv-10442","legs":[{"side":"debit","account":"1200","amount":"1250.00 USD"},{"side":"credit","account":"4000","amount":"1250.00 USD"}]}
+```
+
+Then create a book with a template chart, open March, record the invoice, post the entry it supports (replace `<document-oid>` with the `oid` that `fa document add` printed), and get a certified trial balance that `fa replay` reproduces byte-for-byte:
+
+<!-- commands -->
+```bash
+fa book create --book acme --name "Acme Co" --base-unit USD
+fa chart import --template us-gaap-smb --book acme
+fa period create --fiscal-year 2026 --book acme
+fa period open FY2026-P03 --book acme
+fa document add invoice.txt --kind Invoice --grade HumanUpload --book acme --json
+fa post --intent sale.json --evidence <document-oid> --book acme --json
+fa tb --period FY2026-P03 --book acme --json > tb.json
+fa replay tb.json --book acme --json
+fa certificate status tb.json --book acme --json
+fa explain balance 1200 --period FY2026-P03 --book acme --json
+fa registers materialize --period FY2026-P03 --book acme --json
+fa verify registers --period FY2026-P03 --book acme --json
+fa checkpoint create --grant witness --book acme --json
+fa verify accumulator --book acme --json
+```
+
+`fa chart templates` lists the charts (`us-gaap-smb`, `ifrs-sme`, `us-bank-call-report`); they are starting points, not GAAP, IFRS or regulatory advice. `--grade HumanUpload` declares that a human supplied the document; an agent's own upload is `AgentUpload`. Bare `fa`, `fa --help` and `fa robot-docs guide` orient an agent. Once the book exists, `fad` can hold its writer lease and serve these commands, and `fa-mcp` exposes the same verbs as tools.
 
 ### Reporting available now
 
@@ -32,7 +73,7 @@ fa verify registers --book ./books/acme --period FY2026-P03 --json
 fa registers materialize --book ./books/acme --period FY2026-P03 --json
 ```
 
-Omitting `--as-known-at` selects the current head; the response records the resolved sequence. A later backdated entry appears at head but cannot change a report at an earlier sequence. Instant selectors require TimeEvidence and are currently refused. These reports are exact payload folds; report certificates and independent offline verification are still pending. The [persistent CLI tests](./crates/fa-cli/tests/cli.rs) exercise book creation, chart installation, posting, reporting, refusals and recovery with the actual binary.
+Omitting `--as-known-at` selects the current head; the response records the resolved sequence. A later backdated entry appears at head but cannot change a report at an earlier sequence. Instant selectors require TimeEvidence and are currently refused. These reports are exact payload folds, and each carries a certificate (`data.certificate`): its inputs are the substrate's certified reads at the report's known-at, and `fa replay` re-executes them and refolds the report, exiting 8 with the first input, registry epoch or row that differs; `fa certificate status` says whether entries recorded since change what it selects. Statement, explanation and open-item certificates and independent offline verification of a certificate are still pending. The [persistent CLI tests](./crates/fa-cli/tests/cli.rs) exercise book creation, chart installation, posting, reporting, refusals and recovery with the actual binary.
 
 Reports show posted and pending amounts separately. A hold reserves its original period; a later partial posting releases the entire hold and posts only the explicitly selected sub-vector in the resolution's period. A void releases the hold without posting. Earlier recorded snapshots still show the unresolved reservation. Limited accounts reserve pending outflows; pending inflows cannot fund spending. `fa verify availability` compares each limited account's expected cell, including its account binding, with a journal fold. Library sweeps expire holds using committed ticks; daemon scheduling and full timing simulation remain unfinished.
 
