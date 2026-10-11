@@ -382,3 +382,114 @@ fn an_amount_rewritten_in_a_stored_payload_is_detected_never_folded() {
     );
     assert!(trial_balance(&h.db, &book, &[h.march.clone()]).is_err());
 }
+
+/// fa-txf C2 (plan §9.6): deriving a cited document's redacted view changes
+/// no amount, no entry and no evidence link — the fold, the trial balance,
+/// every citing entry and every `EVIDENCED_BY` edge are identical before and
+/// after — and the view a reader gets proves the commitment those entries
+/// carry.
+#[test]
+fn a_redacted_view_changes_no_amount_entry_or_evidence_link() {
+    use fa_journal::{DocumentRead, derive_redacted_view, read_document_for};
+    let mut h = harness();
+    let key = h.book.seal_key.clone();
+    let book = h.book.clone();
+    let (cash, revenue, rent) = (h.cash, h.revenue, h.rent);
+    let statement = Document {
+        book_id: book.book_id,
+        kind: 5,
+        mime: "text/plain".into(),
+        grade: 3,
+        retrieved_by: PRINCIPAL,
+        // Two chunks, within this harness's 16 KiB row bound: the first is
+        // withheld, the second disclosed.
+        bytes: b"ACCOUNT 0012-3456-7890; 2026-03-03 RENT -450.00\n".repeat(120),
+    };
+    let ctx = h.ctx();
+    {
+        let db = &mut h.db;
+        h.runtime
+            .block_on(async { add_document(db, &ctx, &book, &statement).await })
+            .expect("kernel")
+            .expect("admitted");
+    }
+    let cites = vec![statement.evidence_ref(1)];
+    let mut vids = Vec::new();
+    for (p, idem) in [
+        (
+            h.proposal(&key, cash, revenue, 120_000, b"st-1", 40),
+            "st-1",
+        ),
+        (h.proposal(&key, rent, cash, 45_000, b"st-2", 50), "st-2"),
+    ] {
+        let mut p = p;
+        p.evidence = cites.clone();
+        let posted = h.post_under(&book, p).expect(idem);
+        vids.push(posted.entry_ref().vid);
+    }
+    let dvid = fa_journal::evidence::document_vid(&statement.oid());
+    let snapshot = |h: &Harness| {
+        (
+            fold_period(&h.db, &book, &h.march).expect("fold"),
+            // The rows, not the coordinate: `known_at` is the head, which the
+            // view's own commit advances.
+            trial_balance(&h.db, &book, std::slice::from_ref(&h.march))
+                .expect("trial balance")
+                .rows,
+            vids.iter()
+                .map(|v| read_entry(&h.db, *v).unwrap().expect("entry row").0)
+                .collect::<Vec<Entry>>(),
+            vids.iter()
+                .map(|v| {
+                    h.db.edge(fa_journal::rows::edge_id(
+                        fa_model::symbols::relation::EVIDENCED_BY,
+                        *v,
+                        dvid,
+                    ))
+                    .unwrap()
+                    .is_some()
+                })
+                .collect::<Vec<bool>>(),
+        )
+    };
+    let before = snapshot(&h);
+    assert_eq!(before.3, [true, true], "both entries cite the statement");
+
+    let store = fa_journal::BlobStore::open(1, MemVfs::new().unwrap(), "blobs").unwrap();
+    let counsel = Capability::embedded(PRINCIPAL, &["privileged"]).expect("privileged");
+    let derived = {
+        let db = &mut h.db;
+        h.runtime
+            .block_on(async {
+                derive_redacted_view(db, &ctx, &book, &counsel, &store, statement.oid()).await
+            })
+            .expect("kernel")
+            .expect("derived")
+    };
+    assert!(!derived.already_recorded);
+    assert_eq!(
+        snapshot(&h),
+        before,
+        "a view changes no amount, entry or link"
+    );
+
+    let reader = Capability::embedded(VId(9), &["read"]).expect("read");
+    let read = {
+        let db = &mut h.db;
+        h.runtime
+            .block_on(async {
+                read_document_for(db, &ctx, &book, &reader, &store, statement.oid()).await
+            })
+            .expect("kernel")
+            .expect("a view")
+    };
+    let view = match read {
+        DocumentRead::Redacted(view) => Some(view),
+        DocumentRead::Full(_) => None,
+    }
+    .expect("a redacted view, not the bytes");
+    assert_eq!(view.verify(), Ok(()));
+    for entry in &before.2 {
+        assert_eq!(entry.proposal.evidence[0].doc_commit, view.doc_commit);
+    }
+}
