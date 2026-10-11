@@ -967,6 +967,44 @@ mod tests {
         Fut: std::future::Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
+        lab_outcome(seed, test)
+            .expect("join lab task")
+            .expect("task finished")
+    }
+
+    fn under_cancelled_lab<Fut>(seed: u64, test: impl FnOnce(Cx) -> Fut + Send + 'static)
+    where
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        // The runtime gives cancellation precedence over a successful task
+        // result. A cancelled join alone cannot prove that our assertions
+        // ran: require the future to return after every assertion as well.
+        let completed = Arc::new(AtomicBool::new(false));
+        let completion = completed.clone();
+        let outcome = lab_outcome(seed, move |root| async move {
+            test(root).await;
+            completion.store(true, Ordering::Release);
+        });
+        assert!(
+            completed.load(Ordering::Acquire),
+            "cancellation assertions did not finish"
+        );
+        assert!(
+            matches!(outcome, Err(asupersync::runtime::JoinError::Cancelled(_))),
+            "expected a cancelled task, got {outcome:?}"
+        );
+    }
+
+    fn lab_outcome<T, Fut>(
+        seed: u64,
+        test: impl FnOnce(Cx) -> Fut + Send + 'static,
+    ) -> Result<Option<T>, asupersync::runtime::JoinError>
+    where
+        Fut: std::future::Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
         let mut runtime = LabRuntime::new(LabConfig::new(seed).with_auto_advance());
         let root = runtime.state.create_root_region(Budget::INFINITE);
         let (task, mut handle) = runtime
@@ -986,10 +1024,7 @@ mod tests {
         );
         let report = runtime.report();
         assert!(report.lab_test_passed(), "lab oracles: {report:?}");
-        handle
-            .try_join()
-            .expect("join lab task")
-            .expect("task finished")
+        handle.try_join()
     }
 
     /// A bounded lifecycle smoke test of the real facade, not the full
@@ -1244,7 +1279,7 @@ mod tests {
 
     #[test]
     fn async_book_honors_caller_cancellation_before_reads_and_writes() {
-        under_lab(23, |root| async move {
+        under_cancelled_lab(23, |root| async move {
             let cx = PurposeContexts::narrow_runtime_root(&root);
             let backing = cx.commit().with_restriction(MemVfs::new).unwrap();
             let vfs = FaultVfs::with_clock(
@@ -1443,7 +1478,7 @@ mod tests {
 
     #[test]
     fn key_file_io_honors_caller_cancellation_before_observation() {
-        under_lab(41, |root| async move {
+        under_cancelled_lab(41, |root| async move {
             let cx = PurposeContexts::narrow_runtime_root(&root);
             let vfs = cx.commit().with_restriction(MemVfs::new).unwrap();
             root.cancel_with(CancelKind::User, Some("key custody cancelled"));
