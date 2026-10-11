@@ -1199,20 +1199,40 @@ fn register_advance_consumes_only_new_entries_and_refuses_damaged_cache() -> std
     assert!(!reopened.verify_registers(period).unwrap().is_green());
     drop(reopened);
 
-    // A fiscal-year command publishes each preceding period, then reports
-    // the later damaged period as the final error. Those successes remain
-    // durable and retrying them must not create duplicate maintenance writes.
+    // A fiscal-year selector includes the three special periods as well as
+    // the twelve normal periods, in canonical code order. The command
+    // publishes each preceding period before the damaged March refusal.
+    // Those successes remain durable; retrying must not duplicate writes.
+    let year_periods = [
+        "FY2026-A1",
+        "FY2026-CLOSE",
+        "FY2026-OPEN",
+        "FY2026-P01",
+        "FY2026-P02",
+        "FY2026-P03",
+        "FY2026-P04",
+        "FY2026-P05",
+        "FY2026-P06",
+        "FY2026-P07",
+        "FY2026-P08",
+        "FY2026-P09",
+        "FY2026-P10",
+        "FY2026-P11",
+        "FY2026-P12",
+    ];
+    let preceding = &year_periods[..5];
+    assert_eq!(year_periods[preceding.len()], period);
     let yearly = ["registers", "advance", "--fiscal-year", "2026", "--json"];
     let (code, partial, err) = fa(Some(&book), &yearly);
     assert_eq!(code, 8, "{partial}\n{err}");
     let lines: Vec<_> = partial.lines().collect();
     assert_eq!(
         lines.len(),
-        3,
-        "January, February, then March refusal: {partial}"
+        preceding.len() + 1,
+        "special periods, January, February, then March refusal: {partial}"
     );
     let mut last_published = None;
-    for (line, earlier) in lines[..2].iter().zip(["FY2026-P01", "FY2026-P02"]) {
+    for (line, &earlier) in lines[..preceding.len()].iter().zip(preceding) {
         assert_eq!(field(line, "event"), Some("registers_advanced"));
         let data = doc(line);
         assert_eq!(text(&data, "period"), earlier);
@@ -1220,13 +1240,17 @@ fn register_advance_consumes_only_new_entries_and_refuses_damaged_cache() -> std
         last_published = int(&data, "recorded_at");
         ok(&["verify", "registers", "--period", earlier, "--json"]);
     }
-    let failed = json::parse(lines[2]).unwrap();
-    assert_eq!(field(lines[2], "event"), Some("error"));
+    let refusal_line = lines[preceding.len()];
+    let failed = json::parse(refusal_line).unwrap();
+    assert_eq!(field(refusal_line, "event"), Some("error"));
     assert_eq!(
         failed.get("coordinate").unwrap().get("effective"),
         Some(&Json::Str(format!("period:{period}")))
     );
-    assert_eq!(text(doc(lines[2]).get("detail").unwrap(), "period"), period);
+    assert_eq!(
+        text(doc(refusal_line).get("detail").unwrap(), "period"),
+        period
+    );
     let reopened = Book::open_dir(&book, keys, Entropy::deterministic(57)).unwrap();
     assert_eq!(
         Some(i128::from(reopened.head().unwrap().0)),
@@ -1254,13 +1278,14 @@ fn register_advance_consumes_only_new_entries_and_refuses_damaged_cache() -> std
     ok(&["verify", "registers", "--period", period, "--json"]);
     assert_eq!(doc(&ok(&advance)).get("wrote"), Some(&Json::Bool(false)));
     let resumed = ok(&yearly);
-    assert_eq!(resumed.lines().count(), 12, "{resumed}");
-    for (index, line) in resumed.lines().enumerate() {
+    assert_eq!(resumed.lines().count(), year_periods.len(), "{resumed}");
+    for (index, (line, expected_period)) in resumed.lines().zip(year_periods).enumerate() {
         assert_eq!(field(line, "event"), Some("registers_advanced"));
         let data = doc(line);
-        assert_eq!(text(&data, "period"), format!("FY2026-P{:02}", index + 1));
-        assert_eq!(data.get("wrote"), Some(&Json::Bool(index >= 3)));
-        if index < 3 {
+        assert_eq!(text(&data, "period"), expected_period);
+        let already_maintained = index <= preceding.len();
+        assert_eq!(data.get("wrote"), Some(&Json::Bool(!already_maintained)));
+        if already_maintained {
             assert_eq!(data.get("recorded_at"), Some(&Json::Null));
         }
     }
@@ -2474,6 +2499,12 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(
         run(true, &["verify", "registers", "--period", "FY2026-P03"]).0,
         8
+    );
+    let (code, out) = run(true, &["registers", "advance", "--period", "FY2026-P03"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        run(true, &["verify", "registers", "--period", "FY2026-P03"]).0,
+        0
     );
     // A planned, approved lock (R4): `period_planned`, then `approved`.
     assert_eq!(run(true, &["period", "open", "FY2026-P04"]).0, 0);

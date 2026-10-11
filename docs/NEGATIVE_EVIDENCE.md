@@ -70,9 +70,11 @@ under `fa-p7r`.
   These are publication guards: the durable decoder and digest golden
   vectors are unchanged, so historical journal bytes remain inspectable.
 
-Runtime verification of the two aggregate-admission repairs remains pending;
-the exact before/after results and combined landing gate are tracked on
-`fa-p7r`. Their source review is not a passing test or full FX-law coverage.
+The old-code regression at `86c6ec3` admitted unchecked base totals and failed
+its refusal assertion. The corrected `827f757` passed the 247-test combined
+`fa`, `fa-journal`, `fa-registers` and `fa-money` run, including the control
+publication cases. The final integration gate remains pending on `fa-p7r`;
+these admission checks do not implement the full journal FX-law contract.
 
 ## 2026-10-11 — fa-syy approval binding after balancing
 
@@ -101,9 +103,10 @@ bound approval, and preserves the unlimited-account positive path.
 The regression uses a real capped account, a Closed-period Adjusting entry
 and a separately recorded Human approval. It pairs refusal of the old amount
 and changed effective date with a successful posting of approved resolved
-effects and an identical-request retry. Runtime before/after verification
-and the combined landing gate remain pending on `fa-syy`; source inspection
-does not prove the regression has executed.
+effects and an identical-request retry. The old-code run at `86c6ec3` failed
+the resolved-approval assertion; its foreign-approval observation control
+passed. The corrected regression passed in the 247-test run at `827f757`.
+The final integration gate remains pending on `fa-syy`.
 
 ## 2026-10-11 — fa-e00 finalized historical detail in balance proofs
 
@@ -134,3 +137,24 @@ that its first planted-state test was masked by a separate pre-opening
 chunk. The corrected test plants false finalization while only the Opening
 chunk is staged, then restores state, stages history and finalizes for real.
 The new regressions and final integration gate have not executed yet.
+
+## 2026-10-11 — fa-vn4 surface fixture corrections
+
+The first CLI run at `069e608` passed 24 tests and failed two fixture checks.
+The new fiscal-year advance test incorrectly assumed only twelve normal
+periods. The calendar also creates Opening, Closing and Adjustment periods;
+the existing CLI selector includes all fifteen, sorted by code. The corrected
+fixture admits that existing behavior: five successful publications before
+the damaged March refusal, then all fifteen periods on the repaired retry.
+It still rejects missing, extra or reordered output, wrong refusal coordinates,
+publication by the failed period, and duplicate writes on any already
+maintained period. No production selector or register law changed.
+
+The existing event-coverage workflow also lacked an invocation of the new
+command. It now advances its genuinely stale register and independently
+verifies the result; its exact declared-versus-emitted event comparison stays
+unchanged. The same run's real MCP test passed, including byte-identical CLI
+and MCP no-op data. The compiled schema was compared before editing its pin:
+exactly `registers_advanced` was added (34 events to 35); every old event,
+ordering, shape and envelope field was unchanged. The corrected Rust fixtures
+and final integration gate still require execution.
