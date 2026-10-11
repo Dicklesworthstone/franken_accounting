@@ -1290,6 +1290,12 @@ mod tests {
             r.check_line(&line("error", classless, "null", "null"))
                 .is_err()
         );
+        // Every failure names its fix: an error without one is off-schema.
+        let fixless = r#"{"class":"verification","cite":null,"detail":null,"exit":8,"fix":null,"message":"drift","refusal_id":null}"#;
+        assert!(
+            r.check_line(&line("error", fixless, "null", "null"))
+                .is_err()
+        );
         // Wire frames are the daemon's protocol: flat, no envelope.
         let frame = r#"{"event":"fad_response","exit":0,"op":"run","stderr":"","stdout":"","v":1}"#;
         assert_eq!(r.check_line(frame), Ok("fad_response"));

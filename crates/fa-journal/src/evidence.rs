@@ -592,7 +592,7 @@ pub fn check_minimum(
                 admissible.len()
             ),
             "plan §9.3 (self-sourced evidence: AgentUpload, Generated; it counts once an approver other than the uploader records a Reviewed attestation)",
-            "have a principal other than the uploader, holding `approve`, record a Reviewed attestation over each such document (the attestation library's record_review), then post again; or cite a document a person or third party supplied, recorded with `fa document add <file> --grade HumanUpload --json` by that person; never re-declare an agent's upload as a person's",
+            "have a principal other than the uploader, holding `approve`, review each such document (`fa attest review <document oid> --grant approve --as <reviewer> --json`), then post again; or cite a document a person or third party supplied, recorded with `fa document add <file> --grade HumanUpload --json` by that person; never re-declare an agent's upload as a person's",
         ));
     }
     let kinds = policy.kind_names(&min.kinds).join(", ");
@@ -610,7 +610,7 @@ pub fn check_minimum(
         )
     };
     let fix = if min.manual_assertion {
-        "record the source document with `fa document add <file> --kind <Kind> --json` and cite the printed `evidence` object in the intent's `evidence`; or, when no document exists, the preparer records a ManualAssertion over this proposal with a reason from reason_codes.toml (the attestation library's record_manual_assertion) before posting it — never fabricate a document"
+        "record the source document with `fa document add <file> --kind <Kind> --json` and cite the printed `evidence` object in the intent's `evidence`; or, when no document exists, plan the entry (`fa post --intent <entry.json> --plan-out <file> --json`), record the preparer's ManualAssertion over the plan with a reason from reason_codes.toml (`fa attest manual --plan <file> --reason <code> --statement <text> --json`), and post exactly that plan (`fa post --plan <file> --json`) — never fabricate a document"
     } else {
         "record the source document with `fa document add <file> --kind <Kind> --json` and cite the printed `evidence` object in the intent's `evidence`; this class admits no ManualAssertion in place of a document — never fabricate one"
     };
@@ -1373,7 +1373,7 @@ mod tests {
             (code::SELF_SOURCED, exit::REFUSAL)
         );
         assert!(agents.cite.contains("Reviewed"), "{}", agents.cite);
-        assert!(agents.fix.contains("record_review"), "{}", agents.fix);
+        assert!(agents.fix.contains("fa attest review"), "{}", agents.fix);
         assert!(check_minimum(&p, "Original", &[doc("Invoice", agent), invoice]).is_ok());
         // Self-sourced but inadmissible is the plain minimum refusal.
         let wrong_kind =
@@ -1436,7 +1436,7 @@ mod tests {
         );
         let original = check_minimum(&p, &reasons, "Original", &[], None).unwrap_err();
         assert!(
-            original.fix.contains("record_manual_assertion"),
+            original.fix.contains("fa attest manual --plan"),
             "{}",
             original.fix
         );

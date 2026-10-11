@@ -7,14 +7,24 @@
 //! and `--evidence <oid>` (repeatable) appends citations. The kernel, not the
 //! CLI, decides whether a citation names a held document under its exact
 //! commitment and whether the class's minimum is met.
+//!
+//! `fa attest review` (plan §9.3, beads fa-g21/fa-12x) records a reviewer's
+//! `Reviewed` attestation over a held document: a self-sourced upload then
+//! counts toward the evidence minimum of entries posted after it. `fa attest
+//! manual` records the preparer's `ManualAssertion` (plan §9.2) over a
+//! planned proposal (`fa post --plan-out`): no document exists, for a
+//! registered reason; posting that plan then meets the minimum where the
+//! class admits an assertion.
 
 use crate::json::{Json, obj, s};
 use fa_journal::evidence::{Document, self_sourced};
 use fa_model::{EvidenceRef, Oid};
+use fa_policy::{Capability, Op};
 use fa_registry::evidence_policy::EvidencePolicy;
+use fa_registry::reason_codes::ReasonCodes;
 
 use crate::args::{Args, nearest};
-use crate::cli::{Ctx, Fail, hex, principal, unhandled, usage};
+use crate::cli::{Ctx, Fail, hex, principal, read_entry_plan, unhandled, usage};
 
 const ADD_EXAMPLE: &str = "fa document add invoice.pdf --kind Invoice --mime application/pdf --grade HumanUpload --book <dir> --json";
 const EVIDENCE_EXAMPLE: &str = r#""evidence": ["<document oid hex>"] or [{"document_oid": "<hex>", "doc_commit": "<hex>", "role": "Source"}], or --evidence <oid>"#;
@@ -76,6 +86,189 @@ pub(crate) fn document_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         None => Err(usage("`fa document` needs a subcommand", ADD_EXAMPLE)),
         other => Err(unhandled("document", other)),
     }
+}
+
+const REVIEW_EXAMPLE: &str =
+    "fa attest review <document oid> --grant approve --as <reviewer> --book <dir> --json";
+const MANUAL_EXAMPLE: &str = "fa attest manual --plan <file> --reason NoDocumentIssued --statement \"<who, what, when, why there is no document>\" --book <dir> --json";
+/// The reason-code scope of a ManualAssertion (reason_codes.toml).
+const MANUAL_SCOPE: &str = "manual_assertion";
+
+/// `fa attest review <document oid> [--against <oid>]...`, or `fa attest
+/// manual --plan <file> --reason <code|name> --statement <text>`.
+pub(crate) fn attest_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    // Dispatch has already refused a subcommand verbs.toml does not register.
+    match args.positional.get(1).map(String::as_str) {
+        Some("review") => review(ctx, args),
+        Some("manual") => manual(ctx, args),
+        None => Err(usage("`fa attest` needs a subcommand", REVIEW_EXAMPLE)),
+        other => Err(unhandled("attest", other)),
+    }
+}
+
+/// The reviewer's `Reviewed` attestation (plan §9.3). Authority is explicit,
+/// like `fa checkpoint create`: the reviewer self-issues `approve` with
+/// `--grant approve`, admitted before the book is opened; the kernel then
+/// refuses a reviewer who uploaded the document (FA-REF-111) or a document
+/// the book does not hold (FA-REF-110). `--against` names the documents the
+/// review compared, as a set.
+fn review(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let out = &ctx.out;
+    let subject = args.positional.get(2).ok_or_else(|| {
+        usage(
+            "`fa attest review` needs the document's oid",
+            REVIEW_EXAMPLE,
+        )
+    })?;
+    if let Some(extra) = args.positional.get(3) {
+        return Err(usage(
+            format!("unexpected argument `{extra}`"),
+            REVIEW_EXAMPLE,
+        ));
+    }
+    let document = Oid(hex32(subject, "document oid")?);
+    let mut against = args
+        .flag_all("--against")
+        .into_iter()
+        .map(|a| hex32(a, "--against").map(Oid))
+        .collect::<Result<Vec<Oid>, Fail>>()?;
+    against.sort();
+    against.dedup();
+    let reviewer = principal(args);
+    let capability = Capability::embedded(reviewer, &args.flag_all("--grant"))
+        .map_err(|e| usage(e.to_string(), REVIEW_EXAMPLE))?;
+    // The book is not open yet, so its id (the `books` caveat's subject) is
+    // unknown here; a self-issued embedded capability is Human, the
+    // reviewer's, and carries no `books` caveat, so admission before the
+    // open reduces to the op check. The kernel judges the whole intent.
+    fa_policy::require(&capability, Op::Approve, "reviewing a document (`approve`)")
+        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    let mut book = ctx.books.open(args)?;
+    let attested = book.record_review(&capability, &document, against.clone())??;
+    out.at_book(&book)?;
+    let subject_hex = hex(&document.0);
+    out.next(
+        format!("fa post --intent <entry.json> --evidence {subject_hex} --json"),
+        "an entry citing the reviewed document now counts it toward the evidence minimum",
+    );
+    out.event(
+        "attested",
+        vec![
+            ("kind", s("Reviewed")),
+            ("vid", s(format!("{:032x}", attested.vid.0))),
+            ("subject", s(&subject_hex)),
+            (
+                "against",
+                Json::Arr(against.iter().map(|o| s(hex(&o.0))).collect()),
+            ),
+            ("signed_digest", s(hex(&attested.signed_digest))),
+            (
+                "recorded_at",
+                Json::Int(i128::from(attested.recorded_at.0)),
+            ),
+            ("already_recorded", Json::Bool(attested.already_recorded)),
+        ],
+        &if attested.already_recorded {
+            format!(
+                "document {subject_hex} was already reviewed (attestation {:032x}); nothing new was written",
+                attested.vid.0
+            )
+        } else {
+            format!(
+                "reviewed document {subject_hex}: attestation {:032x}, recorded at {}; entries citing it now count it toward the evidence minimum",
+                attested.vid.0, attested.recorded_at.0
+            )
+        },
+    );
+    Ok(())
+}
+
+/// The preparer's `ManualAssertion` (plan §9.2) over the proposal a plan
+/// file carries: no document exists, for a registered reason (`--reason`, a
+/// code or a name from reason_codes.toml), with the particulars in
+/// `--statement` (sealed under the book key). The preparer acts under
+/// `post`, the capability that will post the proposal; the kernel refuses
+/// an unregistered reason (FA-REF-112), a class that admits no assertion,
+/// and a principal other than the proposal's.
+fn manual(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let out = &ctx.out;
+    if let Some(extra) = args.positional.get(2) {
+        return Err(usage(
+            format!("unexpected argument `{extra}`"),
+            MANUAL_EXAMPLE,
+        ));
+    }
+    let path = args.require("--plan", MANUAL_EXAMPLE)?;
+    let reason = args.require("--reason", MANUAL_EXAMPLE)?;
+    let statement = args.require("--statement", MANUAL_EXAMPLE)?;
+    let reasons = ReasonCodes::embedded()
+        .map_err(|e| Fail::Internal(format!("the embedded reason codes: {e}")))?;
+    // A number goes to the kernel as given (it refuses an unregistered
+    // one); a name must be registered.
+    let reason_code = match reason.parse::<u16>() {
+        Ok(code) => code,
+        Err(_) => {
+            let names: Vec<&str> = reasons
+                .rows
+                .iter()
+                .filter(|r| r.scope == MANUAL_SCOPE)
+                .map(|r| r.name.as_str())
+                .collect();
+            reasons
+                .rows
+                .iter()
+                .find(|r| r.scope == MANUAL_SCOPE && r.name == reason)
+                .map(|r| r.code)
+                .ok_or_else(|| named("reason", reason, &names))?
+        }
+    };
+    let proposal = read_entry_plan(&ctx.files, path)?;
+    let digest = proposal
+        .proposal_digest()
+        .map_err(|e| usage(format!("{path}: {e}"), MANUAL_EXAMPLE))?;
+    let mut ops = vec!["post"];
+    ops.extend(args.flag_all("--grant"));
+    let capability = Capability::embedded(principal(args), &ops)
+        .map_err(|e| usage(e.to_string(), MANUAL_EXAMPLE))?;
+    let mut book = ctx.books.open(args)?;
+    let attested =
+        book.record_manual_assertion(&capability, &proposal, reason_code, statement)??;
+    out.at_book(&book)?;
+    let subject_hex = hex(&digest);
+    out.next(
+        format!("fa post --plan {path} --json"),
+        "posting exactly this proposal now meets its class's evidence minimum",
+    );
+    let name = reasons
+        .get(MANUAL_SCOPE, reason_code)
+        .map_or_else(|| reason_code.to_string(), |r| r.name.clone());
+    out.event(
+        "attested",
+        vec![
+            ("kind", s("ManualAssertion")),
+            ("vid", s(format!("{:032x}", attested.vid.0))),
+            ("subject", s(&subject_hex)),
+            ("against", Json::Arr(Vec::new())),
+            ("signed_digest", s(hex(&attested.signed_digest))),
+            (
+                "recorded_at",
+                Json::Int(i128::from(attested.recorded_at.0)),
+            ),
+            ("already_recorded", Json::Bool(attested.already_recorded)),
+        ],
+        &if attested.already_recorded {
+            format!(
+                "proposal {subject_hex} already carries its ManualAssertion (attestation {:032x}); nothing new was written",
+                attested.vid.0
+            )
+        } else {
+            format!(
+                "asserted ({name}) that no document exists for proposal {subject_hex}: attestation {:032x}, recorded at {}; post it with `fa post --plan {path}`",
+                attested.vid.0, attested.recorded_at.0
+            )
+        },
+    );
+    Ok(())
 }
 
 fn add(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {

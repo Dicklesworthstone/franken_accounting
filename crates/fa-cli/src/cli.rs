@@ -43,6 +43,7 @@ use crate::args::{self, Args, UsageError, nearest};
 use crate::document;
 use crate::json::{self, Json, obj, s};
 use crate::notary;
+use crate::triage;
 use crate::verbs::{self, Condition, Dangerous, Registry, Verb};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -63,6 +64,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("reserve", reserve_cmd),
     ("resolve", resolve_cmd),
     ("document", document::document_cmd),
+    ("attest", document::attest_cmd),
     ("tb", tb_cmd),
     ("open-items", open_items_cmd),
     ("explain", explain_cmd),
@@ -70,6 +72,9 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("verify", verify_cmd),
     ("registers", registers_cmd),
     ("entry", entry_cmd),
+    ("doctor", triage::doctor_cmd),
+    ("triage", triage::triage_cmd),
+    ("next", triage::next_cmd),
     ("capabilities", capabilities_cmd),
     ("robot-docs", robot_docs_cmd),
     ("help", help_cmd),
@@ -82,19 +87,58 @@ pub fn handled_verbs() -> Vec<&'static str> {
     HANDLERS.iter().map(|(name, _)| *name).collect()
 }
 
-/// What a command can end with besides success.
+/// What a command can end with besides success. Every failure names its
+/// fix (the `error` event's `fix` is never null): an agent always has a
+/// next step that works when followed.
 pub(crate) enum Fail {
     Usage(UsageError),
     Refusal(Refusal),
     Book(BookError),
-    Verification(String, Json),
+    /// Derived state differs from the journal's refold: the message, the
+    /// checks' payload, and the fix.
+    Verification(String, Json, String),
     /// The registry and this binary disagree (a parity defect), or the
     /// embedded registry is unreadable: a foundation failure, exit 5.
     Internal(String),
+    /// A foundation failure (exit 5) whose fix is known where it arises:
+    /// the message, and the fix.
+    Foundation(String, String),
     /// The environment cannot serve the command (no daemon where one was
-    /// asked for): exit 4.
-    Environment(String),
+    /// asked for): exit 4. The message, and the fix.
+    Environment(String, String),
 }
+
+/// The fix for a book that could not be opened or read: environment
+/// errors name what to check or create; foundation failures name the
+/// diagnosis (`fa doctor`), never a retry loop.
+fn book_fix(e: &BookError) -> String {
+    match e {
+        BookError::NoBook => "create the book with `fa book create --name <name> --json`, or pass the --book <dir> that holds it".into(),
+        BookError::Io(path, e) if e.kind() == std::io::ErrorKind::NotFound => format!(
+            "nothing at `{}`: when no book exists there yet, create one with `fa book create --name <name> --json`; otherwise pass the --book <dir> (or --keys <file>) that holds it",
+            path.display()
+        ),
+        BookError::Io(path, _) => format!(
+            "check that `{}` is readable by this user (paths resolve against the working directory)",
+            path.display()
+        ),
+        BookError::Open(_) | BookError::KeyFile(_) | BookError::Runtime(_) => {
+            "`fa doctor --json` checks the book directory, its key file and the writer lease, and names the fix".into()
+        }
+        BookError::Registers(fa_registers::RegisterError::InvalidSelection(_)) => {
+            "select existing periods: `fa period list --json` lists their codes".into()
+        }
+        BookError::Kernel(_)
+        | BookError::Registers(_)
+        | BookError::Registry(_)
+        | BookError::Entropy(_) => {
+            "a foundation failure, not a refusal: nothing was committed; `fa doctor --json` checks the book and its derived state".into()
+        }
+    }
+}
+
+/// The fix of an internal (foundation) failure.
+const INTERNAL_FIX: &str = "a foundation failure in this build, not a refusal: `fa doctor --json` checks the registries and the book; report the message with `fa --version --json`";
 
 impl From<UsageError> for Fail {
     fn from(e: UsageError) -> Self {
@@ -185,6 +229,7 @@ impl Style {
 struct Said {
     at: Option<At>,
     warnings: Vec<String>,
+    next: Vec<NextStep>,
 }
 
 /// Where a robot line sits (plan §4.8): the book's id, and the branch
@@ -197,21 +242,39 @@ pub struct At {
     pub effective: String,
 }
 
+/// A command an agent should run next, and why (Appendix D `next_actions`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NextStep {
+    pub command: String,
+    pub why: String,
+}
+
 /// One robot-mode line (plan Appendix D): `{v, event, book, coordinate,
 /// data, certificate, warnings, next_actions}` with the event's fields under
 /// `data`; `book` and `coordinate` from `at` (null when no book backs the
-/// line); the registry's next actions for the event; and the replay
-/// certificate, null until plan certificates land (fa-we7). A daemon wire
-/// frame is its own flat object, never a robot line.
+/// line); the registry's next actions for the event, then `next` (what the
+/// command computed from the book's state, as `fa triage` does); and the
+/// replay certificate, null until plan certificates land (fa-we7). A daemon
+/// wire frame is its own flat object, never a robot line.
 #[must_use]
-pub fn robot_line(event: &str, data: Json, at: Option<&At>, warnings: &[String]) -> Json {
-    let next_actions = verbs::registry().map_or_else(
+pub fn robot_line(
+    event: &str,
+    data: Json,
+    at: Option<&At>,
+    warnings: &[String],
+    next: &[NextStep],
+) -> Json {
+    let mut next_actions: Vec<Json> = verbs::registry().map_or_else(
         |_| Vec::new(),
         |r| {
             r.next_actions_for(event)
                 .map(|n| obj(vec![("command", s(&n.command)), ("why", s(&n.why))]))
                 .collect()
         },
+    );
+    next_actions.extend(
+        next.iter()
+            .map(|n| obj(vec![("command", s(&n.command)), ("why", s(&n.why))])),
     );
     obj(vec![
         ("v", Json::Int(verbs::ENVELOPE_VERSION)),
@@ -313,6 +376,16 @@ impl Out {
         self.said.borrow_mut().warnings.push(text);
     }
 
+    /// A command the agent should run next, computed by this command from
+    /// the book's state: robot mode appends it to the envelope's
+    /// `next_actions` (after the registry's); the human text says it.
+    pub(crate) fn next(&self, command: impl Into<String>, why: impl Into<String>) {
+        self.said.borrow_mut().next.push(NextStep {
+            command: command.into(),
+            why: why.into(),
+        });
+    }
+
     /// One line of data on stdout.
     pub(crate) fn line(&self, text: impl AsRef<str>) {
         match &self.sink {
@@ -342,7 +415,13 @@ impl Out {
     pub(crate) fn event(&self, name: &str, fields: Vec<(&str, Json)>, human: &str) {
         if self.json {
             let said = self.said.borrow();
-            let line = robot_line(name, obj(fields), said.at.as_ref(), &said.warnings);
+            let line = robot_line(
+                name,
+                obj(fields),
+                said.at.as_ref(),
+                &said.warnings,
+                &said.next,
+            );
             self.line(line.render());
         } else if !human.is_empty() {
             self.line(human);
@@ -438,7 +517,8 @@ impl BookSource<'_> {
         Ok(book)
     }
 
-    fn is_held(&self) -> bool {
+    /// Whether this command runs inside the fad that holds the book.
+    pub(crate) fn is_held(&self) -> bool {
         self.books.is_held()
     }
 }
@@ -579,8 +659,13 @@ pub fn usage_error(
 
 /// An environment error (exit 4) raised by a host before any command runs.
 #[must_use]
-pub fn environment_error(argv: &[String], message: String, capture: bool) -> (u8, Captured) {
-    host_failure(argv, Fail::Environment(message), capture)
+pub fn environment_error(
+    argv: &[String],
+    message: String,
+    fix: impl Into<String>,
+    capture: bool,
+) -> (u8, Captured) {
+    host_failure(argv, Fail::Environment(message, fix.into()), capture)
 }
 
 /// A book that could not be opened (its exit class: 4 environment or 5
@@ -592,8 +677,13 @@ pub fn book_error(argv: &[String], error: BookError, capture: bool) -> (u8, Capt
 
 /// A foundation failure (exit 5) raised by a host before any command runs.
 #[must_use]
-pub fn foundation_error(argv: &[String], message: String, capture: bool) -> (u8, Captured) {
-    host_failure(argv, Fail::Internal(message), capture)
+pub fn foundation_error(
+    argv: &[String],
+    message: String,
+    fix: impl Into<String>,
+    capture: bool,
+) -> (u8, Captured) {
+    host_failure(argv, Fail::Foundation(message, fix.into()), capture)
 }
 
 fn host_failure(argv: &[String], fail: Fail, capture: bool) -> (u8, Captured) {
@@ -630,7 +720,7 @@ fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
         refusal_id: Option<&'static str>,
         message: String,
         cite: Option<String>,
-        fix: Option<String>,
+        fix: String,
         detail: Json,
         diag: String,
     }
@@ -642,7 +732,7 @@ fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
             diag: format!("usage: {}\n  fix: {}", e.message, e.fix),
             message: e.message,
             cite: None,
-            fix: Some(e.fix),
+            fix: e.fix,
             detail: Json::Null,
         },
         Err(Fail::Refusal(r)) => Failure {
@@ -651,7 +741,7 @@ fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
             diag: format!("refused {r}"),
             message: r.message,
             cite: Some(r.cite),
-            fix: Some(r.fix),
+            fix: r.fix,
             detail: Json::Null,
         },
         Err(Fail::Book(e)) => {
@@ -662,20 +752,20 @@ fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
                 diag: format!("error (exit {code}): {e}"),
                 message: e.to_string(),
                 cite: None,
-                fix: None,
+                fix: book_fix(&e),
                 detail: Json::Null,
             }
         }
-        Err(Fail::Verification(message, detail)) => Failure {
+        Err(Fail::Verification(message, detail, fix)) => Failure {
             exit: exit::VERIFICATION,
             refusal_id: None,
             diag: format!(
-                "verification failed (exit {}): {message}",
+                "verification failed (exit {}): {message}\n  fix: {fix}",
                 exit::VERIFICATION
             ),
             message,
             cite: None,
-            fix: None,
+            fix,
             detail,
         },
         Err(Fail::Internal(message)) => Failure {
@@ -684,16 +774,28 @@ fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
             diag: format!("error (exit {}): {message}", exit::FOUNDATION),
             message,
             cite: None,
-            fix: None,
+            fix: INTERNAL_FIX.to_string(),
             detail: Json::Null,
         },
-        Err(Fail::Environment(message)) => Failure {
-            exit: exit::ENVIRONMENT,
+        Err(Fail::Foundation(message, fix)) => Failure {
+            exit: exit::FOUNDATION,
             refusal_id: None,
-            diag: format!("error (exit {}): {message}", exit::ENVIRONMENT),
+            diag: format!("error (exit {}): {message}\n  fix: {fix}", exit::FOUNDATION),
             message,
             cite: None,
-            fix: None,
+            fix,
+            detail: Json::Null,
+        },
+        Err(Fail::Environment(message, fix)) => Failure {
+            exit: exit::ENVIRONMENT,
+            refusal_id: None,
+            diag: format!(
+                "error (exit {}): {message}\n  fix: {fix}",
+                exit::ENVIRONMENT
+            ),
+            message,
+            cite: None,
+            fix,
             detail: Json::Null,
         },
     };
@@ -705,7 +807,7 @@ fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
             ("refusal_id", failure.refusal_id.map_or(Json::Null, s)),
             ("message", s(&failure.message)),
             ("cite", failure.cite.map_or(Json::Null, s)),
-            ("fix", failure.fix.map_or(Json::Null, s)),
+            ("fix", s(&failure.fix)),
             ("detail", failure.detail),
         ],
         "",
@@ -1453,7 +1555,7 @@ fa robot-docs schema balance_explained --json\n";
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-fn book_dir(args: &Args) -> Result<PathBuf, Fail> {
+pub(crate) fn book_dir(args: &Args) -> Result<PathBuf, Fail> {
     if let Some(d) = args.flag("--book") {
         return Ok(PathBuf::from(d));
     }
@@ -1468,7 +1570,7 @@ fn book_dir(args: &Args) -> Result<PathBuf, Fail> {
     ))
 }
 
-fn keys_path(args: &Args, dir: &Path) -> PathBuf {
+pub(crate) fn keys_path(args: &Args, dir: &Path) -> PathBuf {
     args.flag("--keys")
         .map(PathBuf::from)
         .unwrap_or_else(|| dir.join("book.keys"))
@@ -2321,9 +2423,19 @@ fn resolve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 }
 
 fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Result<(), Fail> {
+    if let Some(plan) = args.flag("--plan") {
+        return post_planned(ctx, args, forced, plan);
+    }
+    if !args.flag_all("--approval").is_empty() {
+        return Err(usage(
+            "--approval binds a planned proposal",
+            "plan first with `fa post --intent <entry.json> --plan-out <file> --json`, approve its proposal_digest with `fa approve --proposal <digest>`, then commit with `fa post --plan <file> --approval <vid> --json`",
+        ));
+    }
     let out = &ctx.out;
     let path = args.require("--intent", "entry.json (or - for stdin)")?;
     let text = ctx.files.read_text(path)?;
+    let plan_out = args.flag("--plan-out").map(|p| (p, ctx.files.resolve(p)));
     let doc = parse_json(path, &text)?;
     let mut book = ctx.books.open(args)?;
     let ctx = book.context().clone();
@@ -2597,12 +2709,207 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
             "--grant takes a registered op name; `fa capabilities --json` lists them",
         )
     })?;
+    if let Some((given, target)) = plan_out {
+        return write_entry_plan(out, &book, &proposal, args, given, &target);
+    }
     let req = PostRequest {
         proposal,
         approvals: Vec::new(),
         plan_certificate: None,
         capability,
     };
+    commit_post(out, &mut book, req, class_name, args)
+}
+
+/// The leading domain tag of a plan file written by `fa post --plan-out`;
+/// the format is versioned after it.
+const ENTRY_PLAN_DOMAIN: &[u8; 13] = b"fa:entry-plan";
+const ENTRY_PLAN_VERSION: u16 = 1;
+
+/// `"fa:entry-plan" ‖ u16 version ‖ bytes(canonical proposal)`: the
+/// proposal travels with its description and every other erasable field
+/// already sealed, so its `proposal_digest` — what a ManualAssertion or an
+/// approval binds — is the one `fa post --plan` commits.
+fn encode_entry_plan(proposal: &EntryPayload) -> Result<Vec<u8>, Fail> {
+    let canonical = proposal
+        .canonical_bytes()
+        .map_err(|e| Fail::Internal(format!("plan encoding: {e}")))?;
+    let mut w = fa_model::Writer::new();
+    w.fixed(ENTRY_PLAN_DOMAIN)
+        .u16(ENTRY_PLAN_VERSION)
+        .bytes(&canonical);
+    w.finish()
+        .map_err(|e| Fail::Internal(format!("plan encoding: {e}")))
+}
+
+/// Read a plan file back: another format, an unknown version, trailing
+/// bytes or a proposal that does not decode and validate is a usage error.
+pub(crate) fn read_entry_plan(files: &Files, path: &str) -> Result<EntryPayload, Fail> {
+    let bytes = files.read_bytes(path)?;
+    let not_a_plan = |why: String| {
+        usage(
+            format!("{path} is not an entry plan: {why}"),
+            "write one with `fa post --intent <entry.json> --plan-out <file> --json`",
+        )
+    };
+    let mut r = fa_model::Reader::new(&bytes);
+    let proposal = plan_proposal(&mut r).map_err(|e| not_a_plan(e.to_string()))?;
+    r.finish().map_err(|e| not_a_plan(e.to_string()))?;
+    EntryPayload::decode(proposal).map_err(|e| not_a_plan(e.to_string()))
+}
+
+/// A plan file's header, then its proposal's bytes.
+fn plan_proposal<'a>(r: &mut fa_model::Reader<'a>) -> Result<&'a [u8], fa_model::DecodeError> {
+    let domain: [u8; 13] = r.fixed("plan.domain")?;
+    if domain != *ENTRY_PLAN_DOMAIN {
+        return Err(r.invalid("plan.domain"));
+    }
+    if r.u16("plan.version")? != ENTRY_PLAN_VERSION {
+        return Err(r.invalid("plan.version"));
+    }
+    r.bytes(fa_model::limits::MAX_ENTRY_BYTES, "plan.proposal")
+}
+
+/// `--plan-out <file>`: write the sealed proposal and print the digest an
+/// attestation or approval binds; nothing is committed.
+fn write_entry_plan(
+    out: &Out,
+    book: &Book,
+    proposal: &EntryPayload,
+    args: &Args,
+    given: &str,
+    target: &Path,
+) -> Result<(), Fail> {
+    if args.flag("--balancing").is_some() {
+        return Err(usage(
+            "--plan-out writes a plan and commits nothing; --balancing decides an amount at the commit",
+            "plan without --balancing, or post the intent directly with --balancing",
+        ));
+    }
+    let bytes = encode_entry_plan(proposal)?;
+    let digest = proposal
+        .proposal_digest()
+        .map_err(fa_journal::KernelError::Model)
+        .map_err(BookError::Kernel)?;
+    std::fs::write(target, bytes).map_err(|e| BookError::Io(target.to_path_buf(), e))?;
+    let class_name = proposal.class.name().unwrap_or("?");
+    // The class's evidence minimum, when the proposal cites nothing and the
+    // class admits the preparer's ManualAssertion in its place.
+    let manual = proposal.evidence.is_empty()
+        && fa_registry::evidence_policy::EvidencePolicy::embedded()
+            .ok()
+            .and_then(|p| p.minimum(class_name).map(|m| m.manual_assertion))
+            .unwrap_or(false);
+    if manual {
+        out.next(
+            format!(
+                "fa attest manual --plan {given} --reason <code> --statement \"<why no document exists>\" --json"
+            ),
+            "the proposal cites no document: when none exists, the preparer asserts why (reason_codes.toml), never a fabricated one",
+        );
+    }
+    out.next(
+        format!("fa post --plan {given} --json"),
+        "commit exactly this proposal",
+    );
+    out.at_book(book)?;
+    out.event(
+        "entry_planned",
+        vec![
+            ("class", s(class_name)),
+            ("proposal_digest", s(hex(&digest))),
+            ("plan", s(given)),
+        ],
+        &format!(
+            "planned a {class_name} entry: proposal {}; nothing was committed; commit it with `fa post --plan {given}`",
+            hex(&digest)
+        ),
+    );
+    Ok(())
+}
+
+/// `fa post|reserve|resolve --plan <file>`: commit exactly the proposal a
+/// `--plan-out` wrote (its sealed fields, so its `proposal_digest`).
+/// Authority is the caller's, as for `--intent`: `--as` names the
+/// principal, who must be the proposal's (the kernel refuses another).
+fn post_planned(
+    ctx: &mut Ctx<'_>,
+    args: &Args,
+    forced: Option<EntryClass>,
+    path: &str,
+) -> Result<(), Fail> {
+    if args.flag("--intent").is_some() || args.flag("--plan-out").is_some() {
+        return Err(usage(
+            "--plan commits a planned proposal: it takes no --intent and writes no plan",
+            "fa post --plan <file> --json",
+        ));
+    }
+    if !args.flag_all("--evidence").is_empty() {
+        return Err(usage(
+            "--evidence would change a planned proposal, and its digest with it",
+            "cite the document when planning: `fa post --intent <entry.json> --evidence <oid> --plan-out <file>`",
+        ));
+    }
+    let proposal = read_entry_plan(&ctx.files, path)?;
+    let class_name = proposal.class.name().unwrap_or("?");
+    if let Some(f) = forced
+        && f != proposal.class
+    {
+        return Err(usage(
+            format!(
+                "`fa {}` commits a {} but the plan is a `{class_name}`",
+                if f == EntryClass::PENDING {
+                    "reserve"
+                } else {
+                    "resolve"
+                },
+                f.name().unwrap_or("?")
+            ),
+            format!("fa post --plan {path} --json"),
+        ));
+    }
+    let mut ops = vec!["post"];
+    ops.extend(args.flag_all("--grant"));
+    let capability = Capability::embedded(principal(args), &ops).map_err(|e| {
+        usage(
+            e.to_string(),
+            "--grant takes a registered op name; `fa capabilities --json` lists them",
+        )
+    })?;
+    // Approvals bind the planned proposal's digest (`fa approve --proposal`).
+    let digest = proposal
+        .proposal_digest()
+        .map_err(fa_journal::KernelError::Model)
+        .map_err(BookError::Kernel)?;
+    let approvals = args
+        .flag_all("--approval")
+        .iter()
+        .map(|v| {
+            Ok(fa_model::ApprovalRef {
+                approval_vid: parse_vid(v, "--approval")?,
+                approved_digest: digest,
+            })
+        })
+        .collect::<Result<Vec<_>, Fail>>()?;
+    let req = PostRequest {
+        proposal,
+        approvals,
+        plan_certificate: None,
+        capability,
+    };
+    let mut book = ctx.books.open(args)?;
+    commit_post(&ctx.out, &mut book, req, class_name, args)
+}
+
+/// Commit one post request and report it (`posted`, or `recorded` for the
+/// same intent already recorded).
+fn commit_post(
+    out: &Out,
+    book: &mut Book,
+    req: PostRequest,
+    class_name: &str,
+    args: &Args,
+) -> Result<(), Fail> {
     // `--balancing <leg>` (post and reserve): the leg moves at most what its
     // account's limit admits, decided inside the posting transaction; the
     // event names what was asked and what moved.
@@ -2646,7 +2953,7 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
     let balancing_text = amounts.as_ref().map_or(String::new(), |(r, m)| {
         format!(" · balancing: requested {r}, moved {m}")
     });
-    out.at_book(&book)?;
+    out.at_book(book)?;
     match posted {
         Posted::Committed {
             entry_ref,
@@ -3052,10 +3359,14 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let periods = selected_periods(args, &book)?;
             out.effective(periods_selector(&periods));
             let mut all_green = true;
+            let mut drifted: Vec<&str> = Vec::new();
             let mut details = Vec::new();
             let mut diagnostics = Vec::new();
             for p in &periods {
                 let v = book.verify_registers(p)?;
+                if !v.is_green() {
+                    drifted.push(p);
+                }
                 diagnostics.extend(v.projection_errors.iter().map(|e| format!("{p}: {e}")));
                 if !v.drift.is_empty() {
                     diagnostics.push(format!("{p}: {} posted cells differ", v.drift.len()));
@@ -3103,6 +3414,18 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         }
                     ),
                     Json::Arr(details),
+                    // Registers are derived (FA-INV-04): the journal is the
+                    // truth, so the repair rebuilds the cells from it.
+                    format!(
+                        "rebuild the cells from the journal: {}, then verify again",
+                        drifted
+                            .iter()
+                            .map(|p| format!(
+                                "`fa registers materialize --period {p} --yes --json`"
+                            ))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
                 ))
             }
         }
@@ -3142,6 +3465,7 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         v.drift.len()
                     ),
                     obj(fields),
+                    "the limit cells are derived and never authoritative (FA-INV-04); `detail` lists each drifted cell: report it — this build has no rebuild verb for limit cells, and no entry should be posted to compensate".to_string(),
                 ))
             }
         }
@@ -3182,6 +3506,7 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         v.drift.len()
                     ),
                     obj(fields),
+                    "the applied mirrors are derived and never authoritative (FA-INV-04); `detail` lists each drifted leg: report it — this build has no rebuild verb for them, and no settlement should be posted to compensate".to_string(),
                 ))
             }
         }
@@ -3311,11 +3636,169 @@ fn side_name(side: Side) -> &'static str {
 
 /// `fa explain balance <account> --period <code> [--as-known-at HEAD|<seq>]`.
 fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    let out = &ctx.out;
-    let sub = args.positional.get(1).map(String::as_str);
-    if sub != Some("balance") {
-        return Err(unhandled("explain", sub));
+    match args.positional.get(1).map(String::as_str) {
+        Some("balance") => explain_balance(ctx, args),
+        Some("lineage") => explain_lineage(ctx, args),
+        other => Err(unhandled("explain", other)),
     }
+}
+
+/// One leg of a committed entry, as the `entry_leg` shape spells it.
+fn leg_json(l: &LegPayload, units: &fa_money::UnitRegistry) -> Json {
+    obj(vec![
+        (
+            "side",
+            s(if l.side == Side::Debit {
+                "debit"
+            } else {
+                "credit"
+            }),
+        ),
+        ("account", s(format!("{:032x}", l.account_ref.0))),
+        ("amount", s(l.amount.render(units))),
+    ])
+}
+
+/// `fa explain lineage <vid>` (plan §7.3): what an entry supersedes, what
+/// supersedes it, and its net effect now. Every supersession the kernel
+/// admits today has an identity derived from its target (a Reversal from
+/// the entry it reverses, a Resolution from its hold; plan §4.9), so the
+/// successors are point reads, never a scan; Replacement and
+/// Reclassification join with fa-omi.
+fn explain_lineage(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let out = &ctx.out;
+    let example = "fa explain lineage <entry vid> --book <dir> --json";
+    let vid_s = args
+        .positional
+        .get(2)
+        .ok_or_else(|| usage("explain lineage needs an entry vid (32 hex)", example))?;
+    if let Some(extra) = args.positional.get(3) {
+        return Err(usage(format!("unexpected argument `{extra}`"), example));
+    }
+    let vid = u128::from_str_radix(vid_s, 16)
+        .ok()
+        .filter(|_| vid_s.len() == 32)
+        .map(VId)
+        .ok_or_else(|| {
+            usage(
+                format!("`{vid_s}` is not a 32-hex vid"),
+                "use the `vid` a posted event printed",
+            )
+        })?;
+    let book = ctx.books.open(args)?;
+    let units = &book.context().units;
+    let Some((entry, seq)) = book.read_entry(vid)? else {
+        return Err(usage(
+            format!("no entry {vid_s} in this book"),
+            "use the `vid` a posted event printed (fa entry show <vid> reads one)",
+        ));
+    };
+    let class = entry.proposal.class;
+    let class_name = class.name().unwrap_or("?");
+    let mut supersedes: Vec<Json> = entry
+        .proposal
+        .supersession
+        .iter()
+        .map(|sup| {
+            obj(vec![
+                ("entry", s(format!("{:032x}", sup.target.vid.0))),
+                ("kind", s(format!("{:?}", sup.kind))),
+                ("reason_code", Json::Int(i128::from(sup.reason_code))),
+            ])
+        })
+        .collect();
+    if let Some(hold) = entry
+        .proposal
+        .pending
+        .as_ref()
+        .and_then(|p| p.resolution_of.as_ref())
+    {
+        supersedes.push(obj(vec![
+            ("entry", s(format!("{:032x}", hold.vid.0))),
+            ("kind", s("Resolves")),
+            ("reason_code", Json::Int(0)),
+        ]));
+    }
+    // Successors by derived identity.
+    let successor = |kind: &str, at_vid: VId, found: Option<(fa_model::Entry, CommitSeq)>| {
+        found.map(|(e, at)| {
+            (
+                obj(vec![
+                    ("entry", s(format!("{:032x}", at_vid.0))),
+                    ("kind", s(kind)),
+                    ("class", s(e.proposal.class.name().unwrap_or("?"))),
+                    ("recorded_at", Json::Int(i128::from(at.0))),
+                ]),
+                e,
+            )
+        })
+    };
+    let reversal_vid = fa_journal::rows::reversal_vid(vid);
+    let reversal = successor("Reverses", reversal_vid, book.read_entry(reversal_vid)?);
+    let resolution = if class == EntryClass::PENDING {
+        let resolution_vid = fa_journal::rows::resolution_vid(vid);
+        successor("Resolves", resolution_vid, book.read_entry(resolution_vid)?)
+    } else {
+        None
+    };
+    let (status, net_legs): (&str, Vec<Json>) = match (&resolution, &reversal) {
+        (Some((_, res)), _) => match res
+            .proposal
+            .pending
+            .as_ref()
+            .and_then(|p| p.disposition.as_ref())
+        {
+            Some(Disposition::Posts { .. }) => (
+                "posted_from_hold",
+                res.proposal
+                    .legs
+                    .iter()
+                    .map(|l| leg_json(l, units))
+                    .collect(),
+            ),
+            _ => ("released", Vec::new()),
+        },
+        (None, Some(_)) => ("reversed", Vec::new()),
+        (None, None) if class == EntryClass::PENDING => ("pending", Vec::new()),
+        (None, None) => (
+            "in_force",
+            entry
+                .proposal
+                .legs
+                .iter()
+                .map(|l| leg_json(l, units))
+                .collect(),
+        ),
+    };
+    let superseded_by: Vec<Json> = [reversal, resolution]
+        .into_iter()
+        .flatten()
+        .map(|(j, _)| j)
+        .collect();
+    let human = format!(
+        "{class_name} {vid_s} recorded at {} · {status} · supersedes {} · superseded by {}",
+        seq.0,
+        supersedes.len(),
+        superseded_by.len()
+    );
+    out.event(
+        "entry_lineage",
+        vec![
+            ("entry", s(vid_s)),
+            ("class", s(class_name)),
+            ("recorded_at", Json::Int(i128::from(seq.0))),
+            ("status", s(status)),
+            ("supersedes", Json::Arr(supersedes)),
+            ("superseded_by", Json::Arr(superseded_by)),
+            ("net_legs", Json::Arr(net_legs)),
+        ],
+        &human,
+    );
+    Ok(())
+}
+
+fn explain_balance(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let out = &ctx.out;
     let example = "fa explain balance 1000 --period FY2026-P03 --book <dir>";
     let code = args
         .positional
@@ -3813,7 +4296,7 @@ mod tests {
             effective: "all".into(),
         };
         let data = obj(rendered.unwrap_or_default());
-        let line = robot_line("availability_verified", data, Some(&at), &[]).render();
+        let line = robot_line("availability_verified", data, Some(&at), &[], &[]).render();
         assert_eq!(reg.check_line(&line), Ok("availability_verified"), "{line}");
         assert!(
             line.contains(&format!(r#""stored_account":"{:032x}""#, 2))

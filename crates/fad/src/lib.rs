@@ -149,9 +149,12 @@ where
             let (exit, out) = cli::foundation_error(
                 &["--json".to_string()],
                 format!(
-                    "the answer ({} bytes) exceeds the daemon frame limit ({} bytes); narrow the command, or stop the daemon with `fad stop --book {}` and run it directly",
+                    "the answer ({} bytes) exceeds the daemon frame limit ({} bytes)",
                     reply.len(),
-                    limits.max_frame_bytes,
+                    limits.max_frame_bytes
+                ),
+                format!(
+                    "narrow the command, or stop the daemon with `fad stop --book {}` and run it directly",
                     dir.display()
                 ),
                 true,
@@ -308,7 +311,7 @@ impl Server<'_> {
 #[must_use]
 pub fn line(json: bool, event: &str, data: Json, at: Option<&cli::At>, text: &str) -> String {
     if json {
-        format!("{}\n", cli::robot_line(event, data, at, &[]).render())
+        format!("{}\n", cli::robot_line(event, data, at, &[], &[]).render())
     } else {
         format!("{text}\n")
     }

@@ -143,6 +143,7 @@ pub(crate) fn verify_accumulator(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), F
                     .map_or_else(String::new, |why| format!("; broken chain: {why}")),
             ),
             obj(fields),
+            "a checkpoint no longer matches the journal it committed to: this is tamper or corruption evidence, never something to rebuild over; keep the book as it is, export `detail` (the per-checkpoint findings), and compare with a witnessed copy".to_string(),
         ));
     }
     let human = match through {

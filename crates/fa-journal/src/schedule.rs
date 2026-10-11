@@ -914,7 +914,7 @@ pub async fn sweep_reversals_batch<V: asupersync::fs::Vfs + Clone>(
     ctx: &PurposeContexts,
     book: &BookContext,
     req: &SweepRequest,
-    describe: &mut dyn FnMut(&str) -> fa_model::Erasable<String>,
+    describe: &mut dyn FnMut(&str) -> Result<fa_model::Erasable<String>, KernelError>,
 ) -> Outcome<Option<ReversalBatch>> {
     let sweep_key = fa_policy::sod::control_key("SweepControl", None, "Reverse");
     if let Err(r) = admit_sweep(db, book, req, &sweep_key)? {
@@ -1021,6 +1021,20 @@ pub async fn sweep_reversals_batch<V: asupersync::fs::Vfs + Clone>(
             "its cursor is already journaled",
         )));
     }
+    // A failing `describe` (the caller's entropy) aborts the open
+    // transaction: nothing is committed and the cursor does not move.
+    let description = match describe(&format!(
+        "reversal sweep at tick {} ns: {} minted, {} blocked, {remaining} after this batch",
+        tick.observed_utc_ns,
+        mints.minted.len(),
+        mints.blocked.len()
+    )) {
+        Ok(sealed) => sealed,
+        Err(e) => {
+            txn.abort();
+            return Err(e);
+        }
+    };
     let cursor_entry = cursor_proposal(
         book,
         req.principal_ref,
@@ -1029,12 +1043,7 @@ pub async fn sweep_reversals_batch<V: asupersync::fs::Vfs + Clone>(
         cvid,
         tick,
         tick_digest,
-        describe(&format!(
-            "reversal sweep at tick {} ns: {} minted, {} blocked, {remaining} after this batch",
-            tick.observed_utc_ns,
-            mints.minted.len(),
-            mints.blocked.len()
-        )),
+        description,
     )?;
     if let Err(r) = policy::authorize_approvals(
         &txn,

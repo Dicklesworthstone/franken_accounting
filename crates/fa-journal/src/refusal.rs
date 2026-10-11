@@ -200,6 +200,9 @@ pub enum KernelError {
     Corrupt(String),
     /// A mirror value could not be built as a substrate scalar.
     Scalar(&'static str),
+    /// The caller's entropy source failed while sealing a field the kernel
+    /// writes (a sweep's descriptions); nothing was committed.
+    Entropy(fgdb_crypto::EntropyError),
 }
 
 impl fmt::Display for KernelError {
@@ -213,12 +216,18 @@ impl fmt::Display for KernelError {
             Self::Date(e) => write!(f, "date: {e:?}"),
             Self::Corrupt(what) => write!(f, "corrupt row: {what}"),
             Self::Scalar(what) => write!(f, "cannot build scalar `{what}`"),
+            Self::Entropy(e) => write!(f, "entropy: {e}"),
         }
     }
 }
 
 impl core::error::Error for KernelError {}
 
+impl From<fgdb_crypto::EntropyError> for KernelError {
+    fn from(e: fgdb_crypto::EntropyError) -> Self {
+        Self::Entropy(e)
+    }
+}
 impl From<fgdb::WriteError> for KernelError {
     fn from(e: fgdb::WriteError) -> Self {
         Self::Write(e)

@@ -1572,6 +1572,24 @@ impl EntryPayload {
         Ok(proposal_digest_of(&self.canonical_bytes()?))
     }
 
+    /// The inverse of [`Self::canonical_bytes`]: decode exactly one
+    /// proposal (no trailing bytes) and validate it. A planned proposal
+    /// travels as these bytes, so its sealed fields — and therefore its
+    /// `proposal_digest` — are the ones an approval or attestation binds.
+    pub fn decode(bytes: &[u8]) -> Result<Self, EntryError> {
+        if bytes.len() > MAX_ENTRY_BYTES {
+            return Err(EntryError::TooLarge {
+                bytes: bytes.len(),
+                max: MAX_ENTRY_BYTES,
+            });
+        }
+        let mut r = Reader::new(bytes);
+        let proposal = Self::decode_from(&mut r)?;
+        r.finish()?;
+        proposal.validate()?;
+        Ok(proposal)
+    }
+
     /// The private semantic transcript digest: the proposal encoded with
     /// every erasable field opened under `key` and written as plaintext.
     /// Computed in memory for retry decisions only; never persisted or
@@ -1830,6 +1848,30 @@ mod tests {
                 credits: 120_000
             }]
         );
+    }
+
+    /// A planned proposal decodes to itself, digest and sealed fields
+    /// included; trailing bytes and a truncation are refused.
+    #[test]
+    fn a_proposal_round_trips_through_its_canonical_bytes() {
+        let p = proposal(two_legs());
+        let bytes = p.canonical_bytes().unwrap();
+        let back = EntryPayload::decode(&bytes).unwrap();
+        assert_eq!(back, p);
+        assert_eq!(
+            back.proposal_digest().unwrap(),
+            p.proposal_digest().unwrap()
+        );
+        let mut longer = bytes.clone();
+        longer.push(0);
+        assert!(matches!(
+            EntryPayload::decode(&longer),
+            Err(EntryError::Decode(_))
+        ));
+        assert!(matches!(
+            EntryPayload::decode(&bytes[..bytes.len() - 1]),
+            Err(EntryError::Decode(_))
+        ));
     }
 
     /// fa-syy's negative: one changed leg changes `proposal_digest`, so any

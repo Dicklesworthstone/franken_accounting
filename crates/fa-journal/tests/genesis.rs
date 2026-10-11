@@ -2156,7 +2156,7 @@ fn self_sourced_documents_do_not_meet_the_minimum_until_reviewed() {
     let r = h.post_citing(&agents, b"self-only").unwrap_err();
     assert_eq!((r.code, r.exit), ("FA-REF-086", exit::REFUSAL), "{r}");
     assert!(r.cite.contains("Reviewed"), "{}", r.cite);
-    assert!(r.fix.contains("record_review"), "{}", r.fix);
+    assert!(r.fix.contains("fa attest review"), "{}", r.fix);
     assert!(r.fix.contains("--grade HumanUpload"), "{}", r.fix);
     let evid = entry_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), b"self-only");
     assert!(h.db.vertex(evid).unwrap().is_none());
@@ -2303,7 +2303,7 @@ fn a_review_by_another_approver_promotes_an_agent_upload_and_self_review_is_refu
         r.code, r.message
     );
     assert_eq!((r.code, r.exit), ("FA-REF-086", exit::REFUSAL), "{r}");
-    assert!(r.fix.contains("record_review"), "{}", r.fix);
+    assert!(r.fix.contains("fa attest review"), "{}", r.fix);
     assert!(entry_absent(&h, b"g21-before"));
 
     // The uploader reviewing its own upload: SoD, exit 7, nothing written.
@@ -2426,7 +2426,7 @@ fn a_preparers_manual_assertion_stands_in_for_a_document_only_where_registered()
     let r = h.post(h.request(original.clone(), &["post"])).unwrap_err();
     eprintln!("g21 manual: post with neither -> {} {}", r.code, r.message);
     assert_eq!((r.code, r.exit), ("FA-REF-080", exit::REFUSAL), "{r}");
-    assert!(r.fix.contains("record_manual_assertion"), "{}", r.fix);
+    assert!(r.fix.contains("fa attest manual --plan"), "{}", r.fix);
 
     // An unregistered reason: exit 2, listing the registered ones.
     let text = "the landlord issues no invoice; rent is fixed by the lease of 2025-12-01";

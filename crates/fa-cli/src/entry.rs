@@ -160,10 +160,23 @@ fn through_daemon(
                     dir.display(),
                     socket.display()
                 ),
+                format!(
+                    "start one with `fad serve --book {}`, or run the command without --via",
+                    dir.display()
+                ),
                 capture,
             ),
         },
-        Err(e) => cli::foundation_error(argv, format!("fad transport: {e}"), capture),
+        Err(e) => cli::foundation_error(
+            argv,
+            format!("fad transport: {e}"),
+            format!(
+                "`fad status --book {}` reports the daemon; `fad stop --book {}` releases the book so the command runs directly",
+                dir.display(),
+                dir.display()
+            ),
+            capture,
+        ),
     }
 }
 

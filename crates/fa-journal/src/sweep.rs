@@ -880,7 +880,9 @@ pub(crate) fn admit_sweep<V: asupersync::fs::Vfs + Clone>(
 /// Expire up to `req.max_batch` due holds in one transaction (plan §5.4).
 /// `Ok(None)`: no tick yet, or nothing due after the cursor — nothing is
 /// written. `describe` seals each new entry's description (the kernel holds
-/// no entropy). Refusals: a batch bound outside `1..=max_batch_entries`, a
+/// no entropy); when it fails, the open transaction is aborted and its
+/// error returned — nothing is committed, the cursor does not move, and a
+/// rerun sweeps the same holds. Refusals: a batch bound outside `1..=max_batch_entries`, a
 /// capability that is not the `System` principal's or lacks `post`, an
 /// expired capability, or a conflict (a hold resolved concurrently — its
 /// identity was taken — or a witness moved): rerun the sweep.
@@ -889,7 +891,7 @@ pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
     ctx: &PurposeContexts,
     book: &BookContext,
     req: &SweepRequest,
-    describe: &mut dyn FnMut(&str) -> Erasable<String>,
+    describe: &mut dyn FnMut(&str) -> Result<Erasable<String>, KernelError>,
 ) -> Outcome<Option<SweepBatch>> {
     let sweep_key = fa_policy::sod::control_key("SweepControl", None, "Expire");
     if let Err(r) = admit_sweep(db, book, req, &sweep_key)? {
@@ -980,6 +982,16 @@ pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
             txn.abort();
             return Ok(Err(r));
         }
+        let description = match describe(&format!(
+            "expired by the sweep at tick {} ns (deadline {} ns)",
+            tick.observed_utc_ns, d.deadline_ns
+        )) {
+            Ok(sealed) => sealed,
+            Err(e) => {
+                txn.abort();
+                return Err(e);
+            }
+        };
         let proposal = expires_proposal(
             book,
             req.principal_ref,
@@ -987,10 +999,7 @@ pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
             hold_vid,
             tick,
             tick_digest,
-            describe(&format!(
-                "expired by the sweep at tick {} ns (deadline {} ns)",
-                tick.observed_utc_ns, d.deadline_ns
-            )),
+            description,
         );
         if let Err(r) = policy::authorize_approvals(
             &txn,
@@ -1035,6 +1044,17 @@ pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
             "its cursor is already journaled",
         )));
     }
+    let description = match describe(&format!(
+        "expiry sweep at tick {} ns: {} expired, {remaining_due} due after this batch",
+        tick.observed_utc_ns,
+        expired.len()
+    )) {
+        Ok(sealed) => sealed,
+        Err(e) => {
+            txn.abort();
+            return Err(e);
+        }
+    };
     let cursor_entry = cursor_proposal(
         book,
         req.principal_ref,
@@ -1043,11 +1063,7 @@ pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
         cvid,
         tick,
         tick_digest,
-        describe(&format!(
-            "expiry sweep at tick {} ns: {} expired, {remaining_due} due after this batch",
-            tick.observed_utc_ns,
-            expired.len()
-        )),
+        description,
     )?;
     if let Err(r) = policy::authorize_approvals(
         &txn,
@@ -1121,7 +1137,7 @@ pub async fn sweep<V: asupersync::fs::Vfs + Clone>(
     ctx: &PurposeContexts,
     book: &BookContext,
     req: &SweepRequest,
-    describe: &mut dyn FnMut(&str) -> Erasable<String>,
+    describe: &mut dyn FnMut(&str) -> Result<Erasable<String>, KernelError>,
 ) -> Outcome<Swept> {
     let mut out = Swept::default();
     loop {

@@ -56,7 +56,7 @@ pub fn parse(argv: &[String], value_flags: &[&str], switches: &[&str]) -> Result
             } else {
                 let known: Vec<&str> = value_flags.iter().chain(switches).copied().collect();
                 let fix = match nearest(&name, &known) {
-                    Some(n) => format!("did you mean {n}?"),
+                    Some(n) => format!("did you mean `{n}`?"),
                     None => "run `fa --help` for the flag list".to_string(),
                 };
                 return Err(UsageError {

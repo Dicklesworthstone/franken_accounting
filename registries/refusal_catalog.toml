@@ -327,7 +327,7 @@ name = "EVIDENCE_MINIMUM"
 owners = ["fa-journal"]
 exit = "refusal"
 cite = "registries/evidence_policy.toml [[minimum]] class = \"{class}\" (FA-INV-05 evidence-minimum)"
-fix = "record the source document with `fa document add <file> --kind <Kind> --json` and cite it in the intent's `evidence` (or --evidence <oid>); where the class's row admits one and no document exists, the preparer records a ManualAssertion over the proposal with a reason from reason_codes.toml before posting"
+fix = "record the source document with `fa document add <file> --kind <Kind> --json` and cite it in the intent's `evidence` (or --evidence <oid>); where the class's row admits one and no document exists, plan the entry (`fa post --intent <entry.json> --plan-out <file> --json`), record the preparer's ManualAssertion over the plan with a reason from reason_codes.toml (`fa attest manual --plan <file> --reason <code> --statement <text> --json`), and post exactly that plan (`fa post --plan <file> --json`)"
 
 [[refusal]]
 code = "FA-REF-081"
@@ -375,7 +375,7 @@ name = "SELF_SOURCED"
 owners = ["fa-journal"]
 exit = "refusal"
 cite = "plan §9.3 (self-sourced evidence: AgentUpload, Generated; it counts once an approver other than the uploader records a Reviewed attestation)"
-fix = "have a principal other than the uploader, holding approve, record a Reviewed attestation over each such document; or cite a document a person or third party supplied, recorded with `fa document add <file> --grade HumanUpload --json` by that person"
+fix = "have a principal other than the uploader, holding approve, review each such document (`fa attest review <document oid> --grant approve --as <reviewer> --json`); or cite a document a person or third party supplied, recorded with `fa document add <file> --grade HumanUpload --json` by that person"
 
 [[refusal]]
 code = "FA-REF-087"

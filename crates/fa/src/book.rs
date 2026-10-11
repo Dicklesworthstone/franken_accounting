@@ -671,6 +671,19 @@ impl Book {
         Ok(with_store!(&self.store, db => fa_journal::genesis::list_periods(db))?)
     }
 
+    /// The timed holds the latest tick has made due that no sweep has
+    /// resolved yet, in commit order: the backlog `fa triage` reports as
+    /// `due` (plan §5.4, FA-CFG-02). Still pending in every register.
+    pub fn due_holds(&self) -> Result<Vec<fa_journal::DueHold>, BookError> {
+        Ok(with_store!(&self.store, db => fa_journal::due_holds(db, None))?)
+    }
+
+    /// The live scheduled reversals whose date the latest tick has reached,
+    /// each with its status (`Due`, `Waiting`, `Blocked`; plan §7.6).
+    pub fn due_reversals(&self) -> Result<Vec<fa_journal::DueReversal>, BookError> {
+        Ok(with_store!(&self.store, db => fa_journal::due_reversals(db, &self.ctx))?)
+    }
+
     /// Every account of the chart, sorted by code.
     pub fn accounts(&self) -> Result<Vec<AccountRow>, BookError> {
         Ok(with_store!(&self.store, db => fa_journal::genesis::list_accounts(db))?)

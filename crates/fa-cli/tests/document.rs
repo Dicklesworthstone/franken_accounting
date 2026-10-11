@@ -215,7 +215,7 @@ fn documents_are_recorded_once_and_entries_must_cite_them() -> std::io::Result<(
         3,
     );
     assert!(out.contains("Reviewed attestation"), "{out}");
-    assert!(out.contains("record_review"), "{out}");
+    assert!(out.contains("fa attest review"), "{out}");
     // A citation of a document the book does not hold.
     let unknown = "ab".repeat(32);
     refused(
@@ -322,5 +322,299 @@ fn documents_are_recorded_once_and_entries_must_cite_them() -> std::io::Result<(
         out.contains(r#""role":1"#),
         "the Source citations remain: {out}"
     );
+    Ok(())
+}
+
+/// `fa attest review` (plan §9.3, beads fa-g21/fa-12x): an agent's own upload
+/// does not meet the minimum; a principal other than its uploader reviews it
+/// under an explicit `--grant approve`, and the same entry then posts. The
+/// uploader never reviews its own upload (FA-REF-111, exit 7); without the
+/// grant the review is refused before the book is opened; an unknown
+/// document is FA-REF-110; a repeat review records nothing new.
+#[test]
+fn a_reviewer_other_than_the_uploader_promotes_a_self_sourced_document() -> std::io::Result<()> {
+    let dir = tmp("attest")?;
+    let book = dir.join("book");
+    ok(&book, &["book", "create", "--name", "Review Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        br#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&book, &["chart", "import", &chart, "--json"]);
+    ok(
+        &book,
+        &["period", "create", "--fiscal-year", "2026", "--json"],
+    );
+    ok(&book, &["period", "open", "FY2026-P03", "--json"]);
+
+    // The agent (the default principal) uploads its own workpaper.
+    let memo = write(&dir, "memo.txt", b"MEMO: rent accrual workpaper");
+    let out = ok(
+        &book,
+        &["document", "add", &memo, "--kind", "Memo", "--json"],
+    );
+    assert_eq!(field(&out, "self_sourced"), Some("true"), "{out}");
+    let memo_oid = field(&out, "oid").unwrap_or_default().to_string();
+    let entry = write(
+        &dir,
+        "rent.json",
+        format!(r#"{{"idempotency_key":"rent-1",{RENT}}}"#).as_bytes(),
+    );
+    let posting = [
+        "post",
+        "--intent",
+        &entry,
+        "--evidence",
+        &memo_oid,
+        "--json",
+    ];
+    refused(&book, &posting, "FA-REF-086", 3);
+
+    // No grant: refused before the book is opened, naming the grant.
+    let out = refused(
+        &book,
+        &[
+            "attest",
+            "review",
+            &memo_oid,
+            "--as",
+            "controller",
+            "--json",
+        ],
+        "FA-REF-011",
+        7,
+    );
+    assert!(out.contains("approve"), "{out}");
+    // The uploader reviewing its own upload: segregation of duties.
+    refused(
+        &book,
+        &[
+            "attest", "review", &memo_oid, "--grant", "approve", "--json",
+        ],
+        "FA-REF-111",
+        7,
+    );
+    // A document the book does not hold.
+    let unknown = "ab".repeat(32);
+    refused(
+        &book,
+        &[
+            "attest",
+            "review",
+            &unknown,
+            "--grant",
+            "approve",
+            "--as",
+            "controller",
+            "--json",
+        ],
+        "FA-REF-110",
+        3,
+    );
+    // A malformed oid is a usage error.
+    let (code, out, _) = fa(
+        &book,
+        &["attest", "review", "xyz", "--grant", "approve", "--json"],
+    );
+    assert_eq!(code, 2, "{out}");
+
+    // The controller reviews it; the entry now posts.
+    let out = ok(
+        &book,
+        &[
+            "attest",
+            "review",
+            &memo_oid,
+            "--grant",
+            "approve",
+            "--as",
+            "controller",
+            "--json",
+        ],
+    );
+    assert_eq!(field(&out, "event"), Some("attested"), "{out}");
+    assert_eq!(field(&out, "kind"), Some("Reviewed"), "{out}");
+    assert_eq!(field(&out, "subject"), Some(memo_oid.as_str()), "{out}");
+    assert_eq!(field(&out, "already_recorded"), Some("false"), "{out}");
+    let vid = field(&out, "vid").unwrap_or_default().to_string();
+    assert!(out.contains("fa post --intent"), "next_actions: {out}");
+    let out = ok(&book, &posting);
+    assert_eq!(field(&out, "event"), Some("posted"), "{out}");
+
+    // A repeat review is the recorded attestation; nothing new is written.
+    let out = ok(
+        &book,
+        &[
+            "attest",
+            "review",
+            &memo_oid,
+            "--grant",
+            "approve",
+            "--as",
+            "controller",
+            "--json",
+        ],
+    );
+    assert_eq!(field(&out, "already_recorded"), Some("true"), "{out}");
+    assert_eq!(field(&out, "vid"), Some(vid.as_str()), "{out}");
+    Ok(())
+}
+
+/// fa-12x slice 2 (plan §9.2): where no document exists, the preparer plans
+/// the entry (`--plan-out` seals its proposal once), asserts why under a
+/// registered reason (`fa attest manual --plan`), and posts exactly that
+/// proposal (`fa post --plan`). The plan is the only route: a proposal
+/// rebuilt from the intent seals afresh and is a different proposal.
+#[test]
+fn a_manual_assertion_over_a_planned_proposal_lets_exactly_that_proposal_post()
+-> std::io::Result<()> {
+    let dir = tmp("manual")?;
+    let book = dir.join("book");
+    ok(&book, &["book", "create", "--name", "Manual Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        br#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&book, &["chart", "import", &chart, "--json"]);
+    ok(
+        &book,
+        &["period", "create", "--fiscal-year", "2026", "--json"],
+    );
+    ok(&book, &["period", "open", "FY2026-P03", "--json"]);
+    let entry = write(
+        &dir,
+        "fee.json",
+        format!(r#"{{"idempotency_key":"fee-1",{RENT}}}"#).as_bytes(),
+    );
+    let plan = dir.join("fee.plan").display().to_string();
+
+    // Planning commits nothing and names the assertion as the next step.
+    let out = ok(
+        &book,
+        &["post", "--intent", &entry, "--plan-out", &plan, "--json"],
+    );
+    assert_eq!(field(&out, "event"), Some("entry_planned"), "{out}");
+    assert_eq!(field(&out, "class"), Some("Original"), "{out}");
+    let digest = field(&out, "proposal_digest")
+        .unwrap_or_default()
+        .to_string();
+    assert_eq!(digest.len(), 64, "{out}");
+    assert!(
+        out.contains("fa attest manual --plan"),
+        "next_actions: {out}"
+    );
+    let out = ok(&book, &["tb", "--period", "FY2026-P03", "--json"]);
+    assert!(!out.contains("1500.00"), "nothing was committed: {out}");
+
+    // Without the assertion the plan is below the minimum.
+    refused(&book, &["post", "--plan", &plan, "--json"], "FA-REF-080", 3);
+
+    // Refusals before the assertion is recorded.
+    let manual = |reason: &str, statement: &str, who: Option<&str>| {
+        let mut argv = vec![
+            "attest",
+            "manual",
+            "--plan",
+            plan.as_str(),
+            "--reason",
+            reason,
+            "--statement",
+            statement,
+            "--json",
+        ];
+        if let Some(w) = who {
+            argv.extend(["--as", w]);
+        }
+        fa(&book, &argv)
+    };
+    let why = "the bank shows this fee only as a statement line";
+    // An unknown reason name is a usage error that lists the names.
+    let (code, out, _) = manual("NoDocumentIsued", why, None);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("NoDocumentIssued"), "{out}");
+    // An unregistered code reaches the kernel, which refuses it.
+    let (code, out, _) = manual("999", why, None);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (2, Some("FA-REF-112")),
+        "{out}"
+    );
+    // A blank statement carries no particulars.
+    let (code, out, _) = manual("NoDocumentIssued", "   ", None);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (2, Some("FA-REF-100")),
+        "{out}"
+    );
+    // The assertion is the preparer's: another principal is refused.
+    let (code, out, _) = manual("NoDocumentIssued", why, Some("controller"));
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (7, Some("FA-REF-011")),
+        "{out}"
+    );
+    // A file that is not a plan, and a truncated plan.
+    let (code, out, _) = fa(
+        &book,
+        &[
+            "attest",
+            "manual",
+            "--plan",
+            &entry,
+            "--reason",
+            "1",
+            "--statement",
+            why,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 2, "{out}");
+    let bytes = std::fs::read(&plan)?;
+    let cut = write(&dir, "cut.plan", &bytes[..bytes.len() - 1]);
+    let (code, out, _) = fa(&book, &["post", "--plan", &cut, "--json"]);
+    assert_eq!(code, 2, "{out}");
+
+    // The preparer asserts; the attestation's subject is the plan's digest.
+    let (code, out, err) = manual("NoDocumentIssued", why, None);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert_eq!(field(&out, "event"), Some("attested"), "{out}");
+    assert_eq!(field(&out, "kind"), Some("ManualAssertion"), "{out}");
+    assert_eq!(field(&out, "subject"), Some(digest.as_str()), "{out}");
+    assert!(out.contains("fa post --plan"), "next_actions: {out}");
+
+    // The same intent posted directly is a fresh proposal (its description
+    // sealed anew), which the assertion does not cover.
+    refused(
+        &book,
+        &["post", "--intent", &entry, "--json"],
+        "FA-REF-080",
+        3,
+    );
+    // Flags that would change the planned proposal, or plan anew, are refused.
+    let (code, out, _) = fa(
+        &book,
+        &["post", "--plan", &plan, "--intent", &entry, "--json"],
+    );
+    assert_eq!(code, 2, "{out}");
+    let (code, out, _) = fa(&book, &["reserve", "--plan", &plan, "--json"]);
+    assert_eq!(code, 2, "{out}");
+    // An approval binds a planned proposal's digest, never a fresh intent.
+    let zero = "0".repeat(32);
+    let (code, out, _) = fa(
+        &book,
+        &["post", "--intent", &entry, "--approval", &zero, "--json"],
+    );
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("--plan-out"), "{out}");
+
+    // Exactly the planned proposal posts; a repeat is the recorded outcome.
+    let out = ok(&book, &["post", "--plan", &plan, "--json"]);
+    assert_eq!(field(&out, "event"), Some("posted"), "{out}");
+    let vid = field(&out, "vid").unwrap_or_default().to_string();
+    let out = ok(&book, &["post", "--plan", &plan, "--json"]);
+    assert_eq!(field(&out, "event"), Some("recorded"), "{out}");
+    assert_eq!(field(&out, "vid"), Some(vid.as_str()), "{out}");
     Ok(())
 }

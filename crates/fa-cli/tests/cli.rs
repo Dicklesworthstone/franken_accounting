@@ -2064,6 +2064,25 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     assert_eq!(code, 0, "{out}");
     let ev = field(&out, "oid").unwrap_or_default().to_string();
+    assert_eq!(
+        run(
+            true,
+            &[
+                "attest",
+                "review",
+                &ev,
+                "--grant",
+                "approve",
+                "--as",
+                "controller"
+            ]
+        )
+        .0,
+        0
+    );
+    assert_eq!(run(true, &["doctor"]).0, 0);
+    assert_eq!(run(true, &["triage"]).0, 0);
+    assert_eq!(run(true, &["next"]).0, 0);
     let rent = write(
         &dir,
         "rent.json",
@@ -2085,9 +2104,40 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         run(true, &["post", "--intent", &bad, "--evidence", &ev]).0,
         3
     );
+    // A planned entry with no document: the preparer's ManualAssertion over
+    // the plan, then exactly that proposal posts.
+    let fee = write(
+        &dir,
+        "fee.json",
+        r#"{"effective_date":"2026-03-14","idempotency_key":"fee","legs":[{"side":"debit","account":"6000","amount":"2.00 USD"},{"side":"credit","account":"1000","amount":"2.00 USD"}]}"#,
+    );
+    let plan = dir.join("fee.plan").display().to_string();
+    assert_eq!(
+        run(true, &["post", "--intent", &fee, "--plan-out", &plan]).0,
+        0
+    );
+    assert_eq!(
+        run(
+            true,
+            &[
+                "attest",
+                "manual",
+                "--plan",
+                &plan,
+                "--reason",
+                "NoDocumentIssued",
+                "--statement",
+                "the bank shows this fee only as a statement line"
+            ]
+        )
+        .0,
+        0
+    );
+    assert_eq!(run(true, &["post", "--plan", &plan]).0, 0);
     assert_eq!(run(true, &["tb", "--period", "FY2026-P03"]).0, 0);
     assert_eq!(run(true, &["open-items"]).0, 0);
     assert_eq!(run(true, &["entry", "show", &vid]).0, 0);
+    assert_eq!(run(true, &["explain", "lineage", &vid]).0, 0);
     assert_eq!(run(true, &["entry", "show", "00"]).0, 0);
     assert_eq!(
         run(
@@ -3328,4 +3378,368 @@ fn corrections_span_exactly_one_edit() {
         "two edits are not corrected: {out}"
     );
     assert!(fix.contains("fa --help"), "{out}");
+}
+
+/// The `fa doctor` checks in one report: (name, status).
+fn doctor_checks(out: &str) -> Vec<(String, String)> {
+    let line = out
+        .lines()
+        .find(|l| l.contains(r#""event":"doctor""#))
+        .unwrap_or_default();
+    let parsed = json::parse(line).unwrap_or(Json::Null);
+    let data = parsed.get("data").cloned().unwrap_or(Json::Null);
+    arr(&data, "checks")
+        .iter()
+        .map(|c| (text(c, "name").to_string(), text(c, "status").to_string()))
+        .collect()
+}
+
+/// `fa doctor` (plan §15.3, bead fa-12x slice 2): every check with its
+/// status and fix; exit 0 only when none failed, else the first failure's
+/// class after the report. A missing book is environment (4) naming `fa
+/// book create`; a key file others can read is a warning naming `chmod
+/// 600`; stale registers are verification (8) naming the rematerialize
+/// command, and the same doctor is healthy again after it.
+#[test]
+fn doctor_reports_every_check_and_its_fix_and_exits_with_the_first_failure() -> std::io::Result<()>
+{
+    // No book directory at all.
+    let (code, out, _) = fa(None, &["doctor", "--json"]);
+    assert_eq!(code, 4, "{out}");
+    assert!(
+        doctor_checks(&out).contains(&("book_dir".into(), "fail".into())),
+        "{out}"
+    );
+    assert_eq!(
+        field(out.lines().last().unwrap_or_default(), "class"),
+        Some("environment")
+    );
+    let dir = tmp("doctor")?;
+    let missing = dir.join("nowhere");
+    let (code, out, _) = fa(Some(&missing), &["doctor", "--json"]);
+    assert_eq!(code, 4, "{out}");
+    assert!(out.contains("fa book create --name <name> --book"), "{out}");
+
+    // A healthy book: every check ok, in order.
+    let (book, ev, dir2) = envelope_book("doctor-book")?;
+    let (code, out, err) = fa(Some(&book), &["doctor", "--json"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert_eq!(field(&out, "healthy"), Some("true"), "{out}");
+    let checks = doctor_checks(&out);
+    assert_eq!(
+        checks.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+        vec![
+            "registries",
+            "book_dir",
+            "keys",
+            "writer_lease",
+            "book",
+            "registers",
+            "availability",
+            "accumulator"
+        ],
+        "{out}"
+    );
+    assert!(checks.iter().all(|(_, st)| st == "ok"), "{out}");
+    // Human mode: one line per check, the verdict last.
+    let (code, human, _) = fa(Some(&book), &["doctor"]);
+    assert_eq!(code, 0);
+    assert!(human.trim_end().ends_with("healthy"), "{human}");
+
+    // A key file others can read: a warning with the exact fix; still healthy.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let keys = book.join("book.keys");
+        std::fs::set_permissions(&keys, std::fs::Permissions::from_mode(0o644))?;
+        let (code, out, _) = fa(Some(&book), &["doctor", "--json"]);
+        assert_eq!(code, 0, "{out}");
+        assert!(
+            doctor_checks(&out).contains(&("keys".into(), "warn".into())),
+            "{out}"
+        );
+        assert!(
+            out.contains(&format!("chmod 600 {}", keys.display())),
+            "{out}"
+        );
+        std::fs::set_permissions(&keys, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    // Stale registers: materialize March, then post into it.
+    let entry = write(
+        &dir2,
+        "rent.json",
+        r#"{"effective_date":"2026-03-05","description":"rent","idempotency_key":"rent-d1","legs":[{"side":"debit","account":"6000","amount":"5.00 USD"},{"side":"credit","account":"1000","amount":"5.00 USD"}]}"#,
+    );
+    let ok = |args: &[&str]| {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+    };
+    // Post, materialize the cells, then post again: the stored cells no
+    // longer equal the refold.
+    ok(&["post", "--intent", &entry, "--evidence", &ev, "--json"]);
+    ok(&[
+        "registers",
+        "materialize",
+        "--period",
+        "FY2026-P03",
+        "--json",
+    ]);
+    let more = write(
+        &dir2,
+        "more.json",
+        r#"{"effective_date":"2026-03-06","description":"more rent","idempotency_key":"rent-d2","legs":[{"side":"debit","account":"6000","amount":"7.00 USD"},{"side":"credit","account":"1000","amount":"7.00 USD"}]}"#,
+    );
+    ok(&["post", "--intent", &more, "--evidence", &ev, "--json"]);
+    let (code, out, _) = fa(Some(&book), &["doctor", "--json"]);
+    assert_eq!(code, 8, "{out}");
+    assert!(
+        doctor_checks(&out).contains(&("registers".into(), "fail".into())),
+        "{out}"
+    );
+    assert_eq!(
+        field(out.lines().last().unwrap_or_default(), "class"),
+        Some("verification")
+    );
+    assert!(
+        out.contains("fa registers materialize --period FY2026-P03 --yes"),
+        "{out}"
+    );
+    // triage names the same remedy in next_actions, ahead of the routine read.
+    let (code, out, _) = fa(Some(&book), &["triage", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let line = json::parse(out.lines().last().unwrap_or_default()).unwrap_or(Json::Null);
+    let data = line.get("data").cloned().unwrap_or(Json::Null);
+    assert_eq!(text(&data, "health"), "failing", "{out}");
+    assert_eq!(text(&data, "daemon"), "absent", "{out}");
+    let commands: Vec<&str> = arr(&line, "next_actions")
+        .iter()
+        .map(|n| text(n, "command"))
+        .collect();
+    assert_eq!(
+        commands.first().copied(),
+        Some("fa registers materialize --period FY2026-P03 --yes --json"),
+        "{out}"
+    );
+    assert_eq!(
+        commands.last().copied(),
+        Some("fa tb --period FY2026-P03 --json"),
+        "{out}"
+    );
+    // The remedy restores health.
+    ok(&[
+        "registers",
+        "materialize",
+        "--period",
+        "FY2026-P03",
+        "--yes",
+        "--json",
+    ]);
+    let (code, out, _) = fa(Some(&book), &["doctor", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    Ok(())
+}
+
+/// `fa triage` (plan §15.3): the book's state and the next command, from a
+/// new book through to one ready to post.
+#[test]
+fn triage_names_the_next_step_from_the_books_state() -> std::io::Result<()> {
+    let dir = tmp("triage")?;
+    let book = dir.join("book");
+    let next_of = |out: &str| -> (String, Vec<String>) {
+        let line = json::parse(out.lines().last().unwrap_or_default()).unwrap_or(Json::Null);
+        let data = line.get("data").cloned().unwrap_or(Json::Null);
+        (
+            text(&data, "health").to_string(),
+            arr(&line, "next_actions")
+                .iter()
+                .map(|n| text(n, "command").to_string())
+                .collect(),
+        )
+    };
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Triage Co", "--json"]);
+    let (health, next) = next_of(&ok(&["triage", "--json"]));
+    assert_eq!(health, "ok");
+    assert_eq!(
+        next.first().map(String::as_str),
+        Some("fa chart import <chart.json> --json")
+    );
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    let (_, next) = next_of(&ok(&["triage", "--json"]));
+    assert_eq!(
+        next.first().map(String::as_str),
+        Some("fa period create --fiscal-year <N> --json")
+    );
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    let (_, next) = next_of(&ok(&["triage", "--json"]));
+    let open_first = next.first().map(String::as_str).unwrap_or_default();
+    assert!(
+        open_first.starts_with("fa period open FY2026-") && open_first.ends_with(" --json"),
+        "the first Future period is the one to open: {next:?}"
+    );
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let out = ok(&["triage", "--json"]);
+    let (_, next) = next_of(&out);
+    assert_eq!(
+        next,
+        vec!["fa tb --period FY2026-P03 --json".to_string()],
+        "{out}"
+    );
+    assert!(out.contains(r#""open_periods":["FY2026-P03"]"#), "{out}");
+    // No tick yet: nothing is due (FA-CFG-02).
+    for key in ["due_holds", "due_reversals", "blocked_reversals"] {
+        assert!(out.contains(&format!(r#""{key}":0"#)), "{key}: {out}");
+    }
+    // `fa next`: the same first step, as data.
+    let out = ok(&["next", "--json"]);
+    let d = doc(&out);
+    assert_eq!(
+        text(&d, "command"),
+        "fa tb --period FY2026-P03 --json",
+        "{out}"
+    );
+    assert!(!text(&d, "why").is_empty(), "{out}");
+    // Human mode: one summary line.
+    let human = ok(&["triage"]);
+    assert!(
+        human.contains("1 open") || human.contains("FY2026-P03"),
+        "{human}"
+    );
+    Ok(())
+}
+
+/// `fa explain lineage <vid>` (plan §7.3): an entry's supersession in both
+/// directions and its net effect now: in force; reversed (the reversal
+/// supersedes it and is itself in force); a hold pending, then posted from
+/// by its Resolution, or released by a void.
+#[test]
+fn explain_lineage_names_what_an_entry_supersedes_and_its_net_effect() -> std::io::Result<()> {
+    let (book, ev, dir) = envelope_book("lineage")?;
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    let lineage = |vid: &str| -> Json { doc(&ok(&["explain", "lineage", vid, "--json"])) };
+    let links = |d: &Json, key: &str| -> Vec<(String, String)> {
+        arr(d, key)
+            .iter()
+            .map(|l| (text(l, "entry").to_string(), text(l, "kind").to_string()))
+            .collect()
+    };
+    let rent = write(
+        &dir,
+        "rent.json",
+        r#"{"effective_date":"2026-03-05","description":"rent","idempotency_key":"rent-l","legs":[{"side":"debit","account":"6000","amount":"40.00 USD"},{"side":"credit","account":"1000","amount":"40.00 USD"}]}"#,
+    );
+    let out = ok(&["post", "--intent", &rent, "--evidence", &ev, "--json"]);
+    let vid = field(&out, "vid").unwrap_or_default().to_string();
+
+    // In force: its own legs stand; nothing on either side.
+    let d = lineage(&vid);
+    assert_eq!(text(&d, "status"), "in_force");
+    assert_eq!(arr(&d, "net_legs").len(), 2);
+    assert!(links(&d, "supersedes").is_empty() && links(&d, "superseded_by").is_empty());
+
+    // Reversed: the original nets to nothing; the reversal supersedes it.
+    let undo = write(
+        &dir,
+        "undo.json",
+        &format!(
+            r#"{{"class":"Reversal","reverses":"{vid}","effective_date":"2026-03-06","idempotency_key":"rev-l"}}"#
+        ),
+    );
+    let out = ok(&["post", "--intent", &undo, "--json"]);
+    let rev = field(&out, "vid").unwrap_or_default().to_string();
+    let d = lineage(&vid);
+    assert_eq!(text(&d, "status"), "reversed");
+    assert!(arr(&d, "net_legs").is_empty());
+    assert_eq!(
+        links(&d, "superseded_by"),
+        vec![(rev.clone(), "Reverses".to_string())]
+    );
+    let d = lineage(&rev);
+    assert_eq!(text(&d, "class"), "Reversal");
+    assert_eq!(text(&d, "status"), "in_force");
+    assert_eq!(
+        links(&d, "supersedes"),
+        vec![(vid.clone(), "Reverses".to_string())]
+    );
+
+    // A hold: pending, then posted from by its Resolution.
+    let hold = write(
+        &dir,
+        "hold.json",
+        r#"{"effective_date":"2026-03-10","description":"PO","idempotency_key":"hold-l","legs":[{"side":"debit","account":"6000","amount":"80.00 USD"},{"side":"credit","account":"1000","amount":"80.00 USD"}]}"#,
+    );
+    let out = ok(&["reserve", "--intent", &hold, "--evidence", &ev, "--json"]);
+    let hold_vid = field(&out, "vid").unwrap_or_default().to_string();
+    let d = lineage(&hold_vid);
+    assert_eq!(text(&d, "status"), "pending");
+    assert!(arr(&d, "net_legs").is_empty());
+    let res = write(
+        &dir,
+        "res.json",
+        &format!(
+            r#"{{"resolves":"{hold_vid}","effective_date":"2026-03-12","description":"invoice","idempotency_key":"res-l","legs":[{{"side":"credit","account":"1000","amount":"60.00 USD"}},{{"side":"debit","account":"6000","amount":"60.00 USD"}}]}}"#
+        ),
+    );
+    let out = ok(&["resolve", "--intent", &res, "--json"]);
+    let res_vid = field(&out, "vid").unwrap_or_default().to_string();
+    let d = lineage(&hold_vid);
+    assert_eq!(text(&d, "status"), "posted_from_hold");
+    assert_eq!(
+        arr(&d, "net_legs")
+            .iter()
+            .map(|l| text(l, "amount"))
+            .collect::<Vec<_>>(),
+        vec!["60.00 USD", "60.00 USD"]
+    );
+    assert_eq!(
+        links(&d, "superseded_by"),
+        vec![(res_vid.clone(), "Resolves".to_string())]
+    );
+    let d = lineage(&res_vid);
+    assert_eq!(
+        links(&d, "supersedes"),
+        vec![(hold_vid, "Resolves".to_string())]
+    );
+
+    // A voided hold: released, nothing posted.
+    let hold2 = write(
+        &dir,
+        "hold2.json",
+        r#"{"effective_date":"2026-03-11","description":"PO 2","idempotency_key":"hold-l2","legs":[{"side":"debit","account":"6000","amount":"5.00 USD"},{"side":"credit","account":"1000","amount":"5.00 USD"}]}"#,
+    );
+    let out = ok(&["reserve", "--intent", &hold2, "--evidence", &ev, "--json"]);
+    let hold2_vid = field(&out, "vid").unwrap_or_default().to_string();
+    let void = write(
+        &dir,
+        "void.json",
+        &format!(
+            r#"{{"resolves":"{hold2_vid}","disposition":"voids","effective_date":"2026-03-12","idempotency_key":"void-l"}}"#
+        ),
+    );
+    ok(&["resolve", "--intent", &void, "--yes", "--json"]);
+    assert_eq!(text(&lineage(&hold2_vid), "status"), "released");
+
+    // Not an entry of this book; not a vid.
+    let (code, out, _) = fa(
+        Some(&book),
+        &["explain", "lineage", &"0".repeat(32), "--json"],
+    );
+    assert_eq!(code, 2, "{out}");
+    let (code, out, _) = fa(Some(&book), &["explain", "lineage", "xyz", "--json"]);
+    assert_eq!(code, 2, "{out}");
+    Ok(())
 }

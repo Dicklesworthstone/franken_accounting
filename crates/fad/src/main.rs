@@ -41,8 +41,13 @@ fn run(argv: &[String]) -> u8 {
     let reg = match verbs::registry() {
         Ok(r) => r,
         Err(e) => {
-            return cli::foundation_error(argv, format!("the embedded verb registry: {e}"), false)
-                .0;
+            return cli::foundation_error(
+                argv,
+                format!("the embedded verb registry: {e}"),
+                "this build's embedded registry is unreadable: install fad from a clean build (`fa --version --json` names the build)",
+                false,
+            )
+            .0;
         }
     };
     let d = &reg.daemon;
@@ -103,7 +108,18 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
     let lease = match Lease::acquire(dir, &d.lease, &note) {
         Ok(l) => l,
         Err(e @ LeaseError::Held { .. }) => return cli::refuse(argv, e.refusal(dir), false).0,
-        Err(e) => return cli::environment_error(argv, e.to_string(), false).0,
+        Err(e) => {
+            return cli::environment_error(
+                argv,
+                e.to_string(),
+                format!(
+                    "`fa doctor --book {} --json` checks the writer lease and names the fix",
+                    dir.display()
+                ),
+                false,
+            )
+            .0;
+        }
     };
     let keys_file = parsed
         .flag("--keys")
@@ -125,6 +141,11 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
                     "refusing to replace {}: it is not a socket",
                     socket.display()
                 ),
+                format!(
+                    "move the file at {} aside (fad creates its socket there), then run `fad serve --book {}` again",
+                    socket.display(),
+                    dir.display()
+                ),
                 false,
             )
             .0;
@@ -133,6 +154,11 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
             return cli::environment_error(
                 argv,
                 format!("stale socket {}: {e}", socket.display()),
+                format!(
+                    "remove the stale socket {} by hand (no daemon holds the lease), then run `fad serve --book {}` again",
+                    socket.display(),
+                    dir.display()
+                ),
                 false,
             )
             .0;
@@ -140,7 +166,15 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
     }
     let runtime = match RuntimeBuilder::new().build() {
         Ok(r) => r,
-        Err(e) => return cli::foundation_error(argv, format!("runtime: {e:?}"), false).0,
+        Err(e) => {
+            return cli::foundation_error(
+                argv,
+                format!("runtime: {e:?}"),
+                "the async runtime could not start: nothing was opened; run `fad serve` again, and `fa doctor --json` if it persists",
+                false,
+            )
+            .0;
+        }
     };
     let cx = runtime.request_cx_with_budget(Budget::INFINITE);
     let limits = Limits::from_registry(d);
@@ -230,7 +264,16 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
             );
             0
         }
-        Err(e) => cli::foundation_error(argv, e, false).0,
+        Err(e) => cli::foundation_error(
+            argv,
+            e,
+            format!(
+                "the daemon stopped; the writer lease is released when the process ends: `fa doctor --book {} --json` checks it",
+                dir.display()
+            ),
+            false,
+        )
+        .0,
     }
 }
 
@@ -281,7 +324,16 @@ fn status(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
             response.exit
         }
         Err(ClientError::Connect(_)) => not_serving(dir, &socket, Some(holder), json),
-        Err(e) => cli::foundation_error(argv, format!("fad transport: {e}"), false).0,
+        Err(e) => cli::foundation_error(
+            argv,
+            format!("fad transport: {e}"),
+            format!(
+                "the daemon did not answer its status request: `fad stop --book {}` releases the book",
+                dir.display()
+            ),
+            false,
+        )
+        .0,
     }
 }
 
@@ -306,6 +358,11 @@ fn stop(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
                     "fad answered stop but still holds {}'s writer lease after 10 s",
                     dir.display()
                 ),
+                format!(
+                    "wait for it to exit, then `fad status --book {}`; `fa doctor --book {} --json` names the lease holder",
+                    dir.display(),
+                    dir.display()
+                ),
                 false,
             )
             .0
@@ -318,10 +375,22 @@ fn stop(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
                     dir.display(),
                     socket.display()
                 ),
+                "nothing to stop: commands run directly against the book",
                 false,
             )
             .0
         }
-        Err(e) => cli::foundation_error(argv, format!("fad transport: {e}"), false).0,
+        Err(e) => {
+            cli::foundation_error(
+                argv,
+                format!("fad transport: {e}"),
+                format!(
+                    "the daemon did not answer its stop request: `fad status --book {}` reports it",
+                    dir.display()
+                ),
+                false,
+            )
+            .0
+        }
     }
 }

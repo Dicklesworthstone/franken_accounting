@@ -124,11 +124,11 @@ name = "post"
 summary = "Post one entry intent under the accounting laws (balance, period law, idempotency)."
 writes = true
 subcommands = []
-flags = ["--intent", "--grant", "--evidence", "--balancing"]
+flags = ["--intent", "--grant", "--evidence", "--balancing", "--plan-out", "--plan", "--approval"]
 switches = []
-events = ["posted", "recorded"]
+events = ["posted", "recorded", "entry_planned"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["post --intent <file.json|-> [--grant <op>]... [--evidence <oid>]... [--balancing 0|1] [--as <principal>]   (--balancing: that leg moves at most what its account's limit admits; the event says what was requested and what moved)"]
+usage = ["post --intent <file.json|-> [--grant <op>]... [--evidence <oid>]... [--balancing 0|1] [--as <principal>]   (--balancing: that leg moves at most what its account's limit admits; the event says what was requested and what moved)", "post --intent <file.json|-> [--evidence <oid>]... --plan-out <file>   (writes the sealed proposal and prints its proposal_digest; commits nothing)", "post --plan <file> [--approval <vid>]... [--grant <op>]... [--as <principal>]   (commits exactly the planned proposal, so a ManualAssertion over it counts and `fa approve --proposal <proposal_digest>` approvals bind it)"]
 example = "fa post --intent entry.json --book ./books/myco --json"
 
 [[verb]]
@@ -136,11 +136,11 @@ name = "reserve"
 summary = "Reserve amounts as a Pending entry (two-phase): nothing is posted."
 writes = true
 subcommands = []
-flags = ["--intent", "--grant", "--evidence", "--balancing"]
+flags = ["--intent", "--grant", "--evidence", "--balancing", "--plan-out", "--plan", "--approval"]
 switches = []
-events = ["posted", "recorded"]
+events = ["posted", "recorded", "entry_planned"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["reserve --intent <hold.json> (a Pending: amounts reserved, nothing posted)"]
+usage = ["reserve --intent <hold.json> (a Pending: amounts reserved, nothing posted)", "reserve --intent <hold.json> --plan-out <file>, then reserve --plan <file>   (as for post)"]
 example = "fa reserve --intent hold.json --book ./books/myco --json"
 
 [[verb]]
@@ -148,11 +148,11 @@ name = "resolve"
 summary = "Resolve a hold: post a sub-vector drawn from it, or void it; the rest is released."
 writes = true
 subcommands = []
-flags = ["--intent", "--grant", "--evidence"]
+flags = ["--intent", "--grant", "--evidence", "--plan-out", "--plan", "--approval"]
 switches = []
-events = ["posted", "recorded"]
+events = ["posted", "recorded", "entry_planned"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["resolve --intent <res.json> (resolves <hold vid>; disposition posts (legs drawn from the hold) | voids)"]
+usage = ["resolve --intent <res.json> (resolves <hold vid>; disposition posts (legs drawn from the hold) | voids)", "resolve --intent <res.json> --plan-out <file>, then resolve --plan <file>   (as for post)"]
 example = "fa resolve --intent res.json --book ./books/myco --json"
 
 [[verb]]
@@ -166,6 +166,18 @@ events = ["document"]
 exits = [0, 2, 3, 4, 5]
 usage = ["document add <file|-> [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload]"]
 example = "fa document add invoice.pdf --kind Invoice --mime application/pdf --grade HumanUpload --book ./books/myco --json"
+
+[[verb]]
+name = "attest"
+summary = "Record an attestation: a reviewer's Reviewed over a document the book holds (a self-sourced upload then counts toward the evidence minimum), or the preparer's ManualAssertion that no document exists for a planned proposal."
+writes = true
+subcommands = ["review", "manual"]
+flags = ["--grant", "--against", "--plan", "--reason", "--statement"]
+switches = []
+events = ["attested"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["attest review <document oid> [--against <oid>]... --grant approve [--as <reviewer>]   (the reviewer self-issues approve and must not be the document's uploader; --against names the documents compared)", "attest manual --plan <file> --reason <code|name> --statement <text> [--as <preparer>]   (the plan comes from `fa post --intent … --plan-out <file>`; reasons: reason_codes.toml scope manual_assertion; then `fa post --plan <file>`)"]
+example = "fa attest review <document oid> --grant approve --as controller --book ./books/myco --json"
 
 [[verb]]
 name = "tb"
@@ -193,14 +205,14 @@ example = "fa open-items --account 1200 --book ./books/myco --json"
 
 [[verb]]
 name = "explain"
-summary = "Explain a balance: the account's register cells in a period, the fold they belong to, every contributing leg with its recorded sequence, and the cell's known-at history."
+summary = "Explain a balance (the account's register cells in a period, the fold they belong to, every contributing leg with its recorded sequence, the cell's known-at history), or an entry's lineage (what it supersedes, what supersedes it, its net effect now)."
 writes = false
-subcommands = ["balance"]
+subcommands = ["balance", "lineage"]
 flags = ["--period", "--as-known-at"]
 switches = []
-events = ["balance_explained"]
+events = ["balance_explained", "entry_lineage"]
 exits = [0, 2, 4, 5]
-usage = ["explain balance <account code> --period <code> [--as-known-at HEAD|<seq>]"]
+usage = ["explain balance <account code> --period <code> [--as-known-at HEAD|<seq>]", "explain lineage <entry vid>   (status: in_force, reversed, pending, posted_from_hold, released)"]
 example = "fa explain balance 1000 --period FY2026-P03 --book ./books/myco --json"
 
 [[verb]]
@@ -250,6 +262,42 @@ events = ["entry"]
 exits = [0, 2, 4, 5]
 usage = ["entry show <vid-hex>"]
 example = "fa entry show 3f2a… --book ./books/myco --json"
+
+[[verb]]
+name = "doctor"
+summary = "Diagnose what a book needs: the embedded registries, the book directory, key file and writer lease, that the book opens, and that its registers, limit availability and accumulator equal the journal's refold. Every check names its fix."
+writes = false
+subcommands = []
+flags = []
+switches = []
+events = ["doctor"]
+exits = [0, 2, 4, 5, 8]
+usage = ["doctor   (each check is ok, warn, fail or skipped, with the fix; exit 0 only when none failed, else the first failing check's class: 4 environment, 5 foundation, 8 verification)"]
+example = "fa doctor --book ./books/myco --json"
+
+[[verb]]
+name = "triage"
+summary = "The book's state in one call (periods by state, open periods, pending cells, derived-state health, the daemon), with the commands to run next in next_actions."
+writes = false
+subcommands = []
+flags = []
+switches = []
+events = ["book_triage"]
+exits = [0, 2, 4, 5]
+usage = ["triage   (next_actions: what to run next, computed from the book's state)"]
+example = "fa triage --book ./books/myco --json"
+
+[[verb]]
+name = "next"
+summary = "The single most urgent next step for the book, as data (the rest of fa triage's steps follow in next_actions)."
+writes = false
+subcommands = []
+flags = []
+switches = []
+events = ["next_step"]
+exits = [0, 2, 4, 5]
+usage = ["next   (command and why; null when there is nothing to do)"]
+example = "fa next --book ./books/myco --json"
 
 [[verb]]
 name = "capabilities"
@@ -403,8 +451,37 @@ why = "recompute every checkpoint from the journal"
 [[event]]
 name = "document"
 book = true
-doc = "A document the book holds. `oid` locates it; `doc_commit` = BLAKE3(\"fa:doc:v1\" ‖ kind ‖ length ‖ 4 KiB-chunk Merkle root) is its public commitment; `evidence` is the citation for an intent's `evidence` list (or pass --evidence <oid>). On a repeat intake `already_recorded` is true and kind/grade are the book's. `self_sourced` (AgentUpload) will need a reviewer's attestation before promotion; not yet enforced."
+doc = "A document the book holds. `oid` locates it; `doc_commit` = BLAKE3(\"fa:doc:v1\" ‖ kind ‖ length ‖ 4 KiB-chunk Merkle root) is its public commitment; `evidence` is the citation for an intent's `evidence` list (or pass --evidence <oid>). On a repeat intake `already_recorded` is true and kind/grade are the book's. A `self_sourced` document (AgentUpload) counts toward an entry's evidence minimum only once a principal other than its uploader reviews it (`fa attest review`)."
 fields = ["oid:hex", "doc_commit:hex", "kind:string", "grade:string", "self_sourced:bool", "size:int", "recorded_at:seq", "already_recorded:bool", "evidence:evidence_ref"]
+
+[[event]]
+name = "doctor"
+doc = "`fa doctor`: every check in order (registries, book_dir, keys, writer_lease, book, registers, availability, accumulator), each ok, warn, fail or skipped (what it needs is missing), with what it found and the fix when it is not ok. `healthy` is false when any check failed; the exit is then the first failing check's class and an `error` line follows."
+fields = ["healthy:bool", "checks:[doctor_check]"]
+
+[[event]]
+name = "book_triage"
+book = true
+doc = "`fa triage`: the book's state. `health` is ok, or failing when derived state differs from the journal's refold (`derived` has the checks); `daemon` is serving (this answer came through the fad), absent, or held (with the holder). `pending_cells` counts register cells of open periods carrying reserved amounts. `due_holds` counts timed holds the latest tick has made due that no sweep has expired yet (plan §5.4, FA-CFG-02: still pending in every register); `due_reversals` counts scheduled reversals the latest tick has reached that the next reversal sweep mints, and `blocked_reversals` those whose period refuses the scheduler (reverse them by hand). The envelope's next_actions are computed from this state, most urgent first."
+fields = ["health:string", "daemon:string", "periods:int", "periods_by_state:object", "open_periods:[string]", "accounts:int", "pending_cells:int", "due_holds:int", "due_reversals:int", "blocked_reversals:int", "derived:[doctor_check]"]
+
+[[event]]
+name = "next_step"
+book = true
+doc = "`fa next`: the most urgent step `fa triage` would list for the book now, as `command` (run it with the same --book) and `why`; both null when there is nothing to do. The envelope's next_actions carry the steps after it."
+fields = ["command:string?", "why:string?"]
+
+[[event]]
+name = "entry_lineage"
+book = true
+doc = "`fa explain lineage <vid>` (plan §7.3): what the entry supersedes (its own supersession list, and the hold a Resolution resolves), what supersedes it (its Reversal, or a Pending's Resolution, found by derived identity), and `status` now: in_force (its legs stand), reversed (net nothing), pending (reserved, nothing posted), posted_from_hold (the Resolution posted `net_legs`), or released (voided or expired, nothing posted). `net_legs` are the legs in force for it."
+fields = ["entry:hex", "class:string", "recorded_at:seq", "status:string", "supersedes:[lineage]", "superseded_by:[successor]", "net_legs:[entry_leg]"]
+
+[[event]]
+name = "attested"
+book = true
+doc = "`fa attest review|manual`: an attestation recorded (plan §9.2–§9.3). `kind` Reviewed: the reviewer's review of the document `subject` against the documents `against` (a set, ascending; empty when the comparison was with an original the book does not hold). `kind` ManualAssertion: the preparer's assertion that no document exists for the planned proposal whose proposal_digest is `subject` (`against` is empty). `vid` is the attestation's derived identity (one per document, or per proposal); `signed_digest` binds its fields. On a repeat `already_recorded` is true and nothing was written. next_actions name the concrete command that now meets the minimum."
+fields = ["kind:string", "vid:hex", "subject:hex", "against:[hex]", "signed_digest:hex", "recorded_at:seq", "already_recorded:bool"]
 
 [[event]]
 name = "fad_request"
@@ -449,8 +526,8 @@ fields = ["verb:string?", "text:text"]
 
 [[event]]
 name = "error"
-doc = "Every non-zero exit emits exactly one (plan Appendix D). `class` names the exit (exit_codes.toml): usage (2: a bad flag, verb, argument or intent document), refusal (3: an accounting-law refusal), environment (4: no book, a bad key file), foundation (5: a foundation or I-O failure), conflict (6), safety (7: period law, capability, SoD, an unconfirmed dangerous operation), verification (8: derived state differs from the journal's refold). `refusal_id` is the refusal catalog code (FA-REF-nnn) when the failure is a catalog refusal, else null; `cite` is the law, matrix cell or policy row it cites (null otherwise); `fix` is the exact next step (null when none applies): do it, and never invent a leg, a date, or an approval. FA-REF-007 means the operation cannot be undone in practice: `fix` names the safe alternative; rerun with --yes only when the operation is intended. `detail` is a verification failure's payload (the per-period checks for registers, the leg drift for open items), null otherwise."
-fields = ["class:string", "exit:int", "refusal_id:string?", "message:string", "cite:string?", "fix:string?", "detail:any"]
+doc = "Every non-zero exit emits exactly one (plan Appendix D). `class` names the exit (exit_codes.toml): usage (2: a bad flag, verb, argument or intent document), refusal (3: an accounting-law refusal), environment (4: no book, a bad key file), foundation (5: a foundation or I-O failure), conflict (6), safety (7: period law, capability, SoD, an unconfirmed dangerous operation), verification (8: derived state differs from the journal's refold). `refusal_id` is the refusal catalog code (FA-REF-nnn) when the failure is a catalog refusal, else null; `cite` is the law, matrix cell or policy row it cites (null otherwise); `fix` is the exact next step, never null (every failure names one, and following it works): do it, and never invent a leg, a date, or an approval. FA-REF-007 means the operation cannot be undone in practice: `fix` names the safe alternative; rerun with --yes only when the operation is intended. `detail` is a verification failure's payload (the per-period checks for registers, the leg drift for open items), null otherwise."
+fields = ["class:string", "exit:int", "refusal_id:string?", "message:string", "cite:string?", "fix:string", "detail:any"]
 
 [[event]]
 name = "capabilities"
@@ -520,6 +597,12 @@ name = "approved"
 book = true
 doc = "An approval of a proposal digest was recorded (or already existed: then nothing was written and security_policy_epoch is null)."
 fields = ["approval_vid:hex", "approved_digest:hex", "security_policy_epoch:int?", "recorded_at:seq", "already_recorded:bool"]
+
+[[event]]
+name = "entry_planned"
+book = true
+doc = "`fa post|reserve|resolve --plan-out <file>`: the proposal was built and validated, its erasable fields sealed, and written to `plan`; nothing was committed. `proposal_digest` is what a ManualAssertion (`fa attest manual --plan`) or an approval binds; `fa post --plan <file>` commits exactly that proposal."
+fields = ["class:string", "proposal_digest:hex", "plan:string"]
 
 [[event]]
 name = "posted"
@@ -776,3 +859,13 @@ fields = ["live:[string]", "gate_g1:[string]"]
 name = "dangerous_op"
 doc = "An operation that cannot be undone in practice: refused with FA-REF-007 (exit 7) unless --yes (or a --plan file) confirms it. `subcommand` is null for a verb without subcommands; `condition` says when it applies; `safe` is the alternative the refusal names."
 fields = ["verb:string", "subcommand:string?", "condition:string", "safe:string"]
+
+[[shape]]
+name = "doctor_check"
+doc = "One check of `fa doctor` (or of `fa triage`'s derived state): its name, its status (ok, warn, fail, skipped), what it found, and the exact fix when it is not ok."
+fields = ["name:string", "status:string", "detail:string", "fix:string?"]
+
+[[shape]]
+name = "successor"
+doc = "An entry that supersedes another: its vid, how (Reverses, Resolves), its class and when it was recorded."
+fields = ["entry:hex", "kind:string", "class:string", "recorded_at:seq"]
