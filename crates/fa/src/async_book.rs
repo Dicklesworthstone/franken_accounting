@@ -9,7 +9,8 @@
 use core::fmt;
 use std::path::{Path, PathBuf};
 
-use asupersync::fs::{OpenOptions, Vfs, VfsFile};
+use asupersync::fs::{Vfs, VfsFile};
+use fa_journal::blob::DurableDirectory;
 use fa_journal::rows::{AccountRow, PeriodRow};
 use fa_journal::{
     AccountSpec, BookContext, BookSpec, ChartInstalled, KernelError, PostRequest, Posted,
@@ -70,6 +71,8 @@ pub struct AsyncBook<V: Vfs + Clone, B: Vfs + Clone = V> {
 impl<V: Vfs + Clone> AsyncBook<V> {
     /// Create `<dir>/store` and use `<dir>/blobs` for external documents.
     /// The caller supplies the runtime, filesystem, keys and entropy.
+    /// Confined filesystems use a namespace-relative `dir`. The resulting
+    /// stores retain canonical paths independently of later cwd changes.
     pub async fn create_with_vfs(
         cx: &PurposeContexts,
         vfs: V,
@@ -81,35 +84,17 @@ impl<V: Vfs + Clone> AsyncBook<V> {
         let dir = rooted_path(dir);
         let commit = cx.commit();
         commit.checkpoint().map_err(BookError::Context)?;
-        commit
-            .with_restriction_async(async {
-                vfs.create_dir_all(&dir)
-                    .await
-                    .map_err(|e| BookError::Io(dir.to_path_buf(), e))?;
-                // An earlier interrupted constructor may have created any of
-                // these names. Fence every ancestor, not only newly made ones.
-                for ancestor in dir.ancestors().filter(|p| !p.as_os_str().is_empty()) {
-                    let mut handle = vfs
-                        .open(ancestor, &OpenOptions::new().read(true))
-                        .await
-                        .map_err(|e| BookError::Io(ancestor.to_path_buf(), e))?;
-                    sync_file(&mut handle)
-                        .await
-                        .map_err(|e| BookError::Io(ancestor.to_path_buf(), e))?;
-                }
-                Ok::<_, BookError>(())
-            })
-            .await?;
+        let directory = DurableDirectory::create(&commit, vfs.clone(), &dir)
+            .await
+            .map_err(|e| BookError::Io(dir.clone(), e))?;
         // Chronicle's process-local writer lease uses a host path. Resolve
         // through the supplied VFS so a memory filesystem's private shadow
         // namespace and the lease identify the same database directory.
-        // Keep ancestor fencing above on the caller's path: a canonical
-        // memory path has host ancestors outside that VFS's namespace.
-        let database_dir = commit
-            .with_restriction_async(vfs.canonicalize(&dir))
+        let database_dir = directory.path().join("store");
+        let blob_directory = directory
+            .child(&commit, "blobs")
             .await
-            .map_err(|e| BookError::Io(dir.clone(), e))?
-            .join("store");
+            .map_err(|e| BookError::Io(directory.path().join("blobs"), e))?;
         let mut db =
             Database::create_with_vfs(&commit, vfs.clone(), database_dir, keys.inner.clone())
                 .await?;
@@ -118,7 +103,7 @@ impl<V: Vfs + Clone> AsyncBook<V> {
         fa_journal::create_book(&mut db, cx, &spec, &units, &symbols).await?;
         Ok(Self {
             db,
-            blobs: fa_journal::BlobStore::open(BOOK_BLOB_STORE, vfs, dir.join("blobs"))?,
+            blobs: fa_journal::BlobStore::open(BOOK_BLOB_STORE, blob_directory)?,
             context: BookContext {
                 book_id: spec.book_id,
                 calendar: spec.calendar,
@@ -132,6 +117,7 @@ impl<V: Vfs + Clone> AsyncBook<V> {
 
     /// Reopen the same book through the supplied filesystem, including its
     /// external documents. This does not construct a production runtime.
+    /// Confined filesystems use the same namespace-relative `dir` as create.
     pub async fn open_with_vfs(
         cx: &PurposeContexts,
         vfs: V,
@@ -142,11 +128,10 @@ impl<V: Vfs + Clone> AsyncBook<V> {
         let dir = rooted_path(dir);
         let commit = cx.commit();
         commit.checkpoint().map_err(BookError::Context)?;
-        let database_dir = commit
-            .with_restriction_async(vfs.canonicalize(&dir))
+        let directory = DurableDirectory::open_existing(&commit, vfs.clone(), &dir)
             .await
-            .map_err(|e| BookError::Io(dir.clone(), e))?
-            .join("store");
+            .map_err(|e| BookError::Io(dir.clone(), e))?;
+        let database_dir = directory.path().join("store");
         let db =
             Database::open_with_vfs(&commit, vfs.clone(), database_dir, keys.inner.clone()).await?;
         let query = cx.query();
@@ -154,9 +139,13 @@ impl<V: Vfs + Clone> AsyncBook<V> {
         let spec = query
             .with_restriction(|| fa_journal::genesis::read_book_spec(&db))?
             .ok_or(BookError::NoBook)?;
+        let blob_directory = directory
+            .child(&commit, "blobs")
+            .await
+            .map_err(|e| BookError::Io(directory.path().join("blobs"), e))?;
         Ok(Self {
             db,
-            blobs: fa_journal::BlobStore::open(BOOK_BLOB_STORE, vfs, dir.join("blobs"))?,
+            blobs: fa_journal::BlobStore::open(BOOK_BLOB_STORE, blob_directory)?,
             context: BookContext {
                 book_id: spec.book_id,
                 calendar: spec.calendar,

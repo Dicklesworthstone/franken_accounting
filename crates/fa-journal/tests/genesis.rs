@@ -3346,15 +3346,28 @@ fn an_import_run_records_its_documents_under_a_receipt_that_recomputes() {
 // blob store, the commitment inline, every read verified.
 // ---------------------------------------------------------------------------
 
-fn blob_store(root: &str) -> BlobStore<fgdb::MemVfs> {
-    BlobStore::open(1, fgdb::MemVfs::new().expect("memvfs"), root).expect("store 1")
+fn blob_store_in<V: asupersync::fs::Vfs + Clone>(h: &Harness, vfs: V, root: &str) -> BlobStore<V> {
+    let directory = h
+        .runtime
+        .block_on(fa_journal::blob::DurableDirectory::create(
+            &h.ctx().commit(),
+            vfs,
+            std::path::Path::new(root),
+        ))
+        .expect("durable store directory");
+    BlobStore::open(1, directory).expect("store 1")
+}
+
+fn blob_store(h: &Harness, root: &str) -> BlobStore<fgdb::MemVfs> {
+    blob_store_in(h, fgdb::MemVfs::new().expect("memvfs"), root)
 }
 
 /// A blob store over the substrate's lab VFS, rooted three directories deep.
 fn fault_store(
+    h: &Harness,
     vfs: &fgdb_sim::vfs::FaultVfs<fgdb::MemVfs>,
 ) -> BlobStore<fgdb_sim::vfs::FaultVfs<fgdb::MemVfs>> {
-    BlobStore::open(1, vfs.clone(), "deep/nested/blobs").expect("store 1")
+    blob_store_in(h, vfs.clone(), "deep/nested/blobs")
 }
 
 fn lab_vfs(plan: fgdb_sim::vfs::FaultPlan) -> fgdb_sim::vfs::FaultVfs<fgdb::MemVfs> {
@@ -3388,6 +3401,66 @@ impl Harness {
     }
 }
 
+/// Directory durability moved to the store constructor. Existing names may
+/// still owe fences after an interrupted mkdir chain. The unfenced control
+/// loses that chain; both creating and reopening an anchor must preserve it.
+#[test]
+fn a_durable_store_anchor_fences_preexisting_unsynced_ancestors() {
+    use asupersync::fs::Vfs;
+    use fa_journal::blob::DurableDirectory;
+    use fgdb_sim::vfs::{FaultPlan, Trigger};
+    let h = harness();
+    let ctx = h.ctx();
+    for mode in ["unfenced", "create", "open"] {
+        let vfs = lab_vfs(FaultPlan {
+            dirent_loss: Trigger::Always,
+            ..FaultPlan::faultless()
+        });
+        h.runtime.block_on(async {
+            let path = std::path::Path::new("./deep/nested/blobs");
+            ctx.commit()
+                .with_restriction_async(vfs.create_dir_all(path))
+                .await
+                .unwrap();
+            assert!(
+                vfs.pending_dirent_ops() >= 3,
+                "{mode}: unfenced mkdir chain"
+            );
+            let anchor = match mode {
+                "create" => Some(
+                    DurableDirectory::create(&ctx.commit(), vfs.clone(), path)
+                        .await
+                        .unwrap(),
+                ),
+                "open" => Some(
+                    DurableDirectory::open_existing(&ctx.commit(), vfs.clone(), path)
+                        .await
+                        .unwrap(),
+                ),
+                _ => None,
+            };
+            if let Some(anchor) = &anchor {
+                assert!(anchor.path().is_absolute());
+                assert_eq!(vfs.pending_dirent_ops(), 0, "{mode}: every ancestor fenced");
+            }
+            vfs.crash().await.unwrap();
+            let observed = ctx.query().with_restriction_async(vfs.metadata(path)).await;
+            if anchor.is_some() {
+                assert!(
+                    observed.unwrap().is_dir(),
+                    "{mode}: the full chain survives"
+                );
+            } else {
+                assert_eq!(
+                    observed.unwrap_err().kind(),
+                    std::io::ErrorKind::NotFound,
+                    "the unfenced control proves the crash loses these names"
+                );
+            }
+        });
+    }
+}
+
 /// The publication fence under the substrate's lab VFS (WhiteCreek 3440,
 /// CobaltGull 3452). With `dirent_loss = Always` a crash rolls back every
 /// namespace change whose parent directory was never honestly synced: the
@@ -3410,7 +3483,7 @@ fn an_external_blob_survives_a_crash_that_loses_every_unsynced_name() {
     ] {
         let mut h = harness();
         let vfs = lab_vfs(plan);
-        let store = fault_store(&vfs);
+        let store = fault_store(&h, &vfs);
         let doc = h.document(
             INVOICE,
             HUMAN_UPLOAD,
@@ -3425,7 +3498,7 @@ fn an_external_blob_survives_a_crash_that_loses_every_unsynced_name() {
             "{what}: nothing owes a sync once intake returns"
         );
         h.runtime.block_on(vfs.crash()).expect("crash");
-        let reopened = fault_store(&vfs);
+        let reopened = fault_store(&h, &vfs);
         let read = h.fetch_from(&reopened, &doc.oid());
         eprintln!(
             "txf fence: {what} -> crash generation {}, read {:?}",
@@ -3450,7 +3523,7 @@ fn a_lying_directory_sync_loses_the_blob_and_the_read_says_so() {
         dirent_lie: Trigger::Always,
         ..FaultPlan::faultless()
     });
-    let store = fault_store(&vfs);
+    let store = fault_store(&h, &vfs);
     let doc = h.document(
         INVOICE,
         HUMAN_UPLOAD,
@@ -3465,7 +3538,9 @@ fn a_lying_directory_sync_loses_the_blob_and_the_read_says_so() {
         "the lying syncs settled nothing"
     );
     h.runtime.block_on(vfs.crash()).expect("crash");
-    let r = h.fetch_from(&fault_store(&vfs), &doc.oid()).unwrap_err();
+    let r = h
+        .fetch_from(&fault_store(&h, &vfs), &doc.oid())
+        .unwrap_err();
     eprintln!(
         "txf fence: lying directory syncs, then a crash -> {} {}",
         r.code, r.message
@@ -3476,10 +3551,10 @@ fn a_lying_directory_sync_loses_the_blob_and_the_read_says_so() {
 /// Ordering, and the retry WhiteCreek 3459 named. A publication the lab VFS
 /// refuses — the first write (ENOSPC) or the sync write-back (a zero space
 /// budget) — never reaches the journal: intake is FA-REF-116 and nothing is
-/// written. Then the retry, after a first put interrupted between its
-/// `mkdir`s and its syncs at depth three: it finds the directories present,
-/// fences the whole ancestor chain anyway, and its blob survives a crash
-/// that loses every unsynced name.
+/// written. Then the retry, after a first put interrupted between creating
+/// its shard and syncing it: it finds the shard present, fences it and the
+/// established store anyway, and its blob survives a crash that loses every
+/// unsynced name. Constructor-level ancestor recovery is exercised above.
 #[test]
 fn a_blob_not_made_durable_never_reaches_the_journal_and_a_retry_fences_the_chain() {
     use fgdb_sim::vfs::{FaultPlan, Trigger};
@@ -3500,7 +3575,7 @@ fn a_blob_not_made_durable_never_reaches_the_journal_and_a_retry_fences_the_chai
         ),
     ] {
         let mut h = harness();
-        let store = fault_store(&lab_vfs(plan));
+        let store = fault_store(&h, &lab_vfs(plan));
         let doc = h.document(
             INVOICE,
             HUMAN_UPLOAD,
@@ -3527,7 +3602,7 @@ fn a_blob_not_made_durable_never_reaches_the_journal_and_a_retry_fences_the_chai
         dirent_loss: Trigger::Always,
         ..FaultPlan::faultless()
     });
-    let store = fault_store(&vfs);
+    let store = fault_store(&h, &vfs);
     let doc = h.document(
         INVOICE,
         HUMAN_UPLOAD,
@@ -3548,17 +3623,20 @@ fn a_blob_not_made_durable_never_reaches_the_journal_and_a_retry_fences_the_chai
         "the retry fenced every name the interrupted put left owing"
     );
     h.runtime.block_on(vfs.crash()).expect("crash");
-    assert_eq!(h.fetch_from(&fault_store(&vfs), &doc.oid()), Ok(Some(doc)));
+    assert_eq!(
+        h.fetch_from(&fault_store(&h, &vfs), &doc.oid()),
+        Ok(Some(doc))
+    );
 }
 
 /// The publication fence (WhiteCreek 3440/3445) on a root nested three
-/// directories deep that does not exist yet: `put` creates and syncs every
-/// directory it needs, publishes under its own staged name, and a second put
-/// of the same locator (same bytes, content-addressed) is harmless.
+/// directories deep that does not exist yet: the anchor creates and fences
+/// its chain, `put` creates and fences its shard, publishes under its own
+/// staged name, and a second put of the same locator is harmless.
 #[test]
 fn a_blob_publishes_into_a_fresh_nested_root_and_republishes_harmlessly() {
     let h = harness();
-    let store = blob_store("deep/nested/blobs");
+    let store = blob_store(&h, "deep/nested/blobs");
     let bytes = b"BLOB (publication fixture)".to_vec();
     let locator = fa_journal::blob::locator_of(&[7; 32]);
     let ctx = h.ctx();
@@ -3593,16 +3671,19 @@ fn a_blob_publishes_into_a_fresh_nested_root_and_republishes_harmlessly() {
 /// rename), so the root must sit under the working directory, and changing
 /// this process's working directory would race the other tests. The test
 /// re-runs itself in a child process whose working directory is a fresh
-/// temporary directory. The child publishes under `nested/store`; the
-/// parent reads the bytes back by absolute path, so a child that ran
-/// nothing cannot pass.
+/// temporary directory. The child opens `nested/store`, changes cwd, then
+/// publishes; the parent reads the original absolute path, so a child that
+/// ran nothing or a store that followed the changed cwd cannot pass.
 #[test]
 fn a_blob_publishes_through_a_relative_unix_root_without_changing_cwd() {
     const CHILD: &str = "FA_RELATIVE_BLOB_ROOT_CHILD";
     let locator = fa_journal::blob::locator_of(&[0x73; 32]);
     if std::env::var_os(CHILD).is_some() {
         let h = harness();
-        let store = BlobStore::open(1, asupersync::fs::UnixVfs::new(), "nested/store").unwrap();
+        let store = blob_store_in(&h, asupersync::fs::UnixVfs::new(), "nested/store");
+        let later = std::env::current_dir().unwrap().join("later-cwd");
+        std::fs::create_dir(&later).unwrap();
+        std::env::set_current_dir(&later).unwrap();
         let ctx = h.ctx();
         h.runtime.block_on(async {
             store
@@ -3644,6 +3725,8 @@ fn a_blob_publishes_through_a_relative_unix_root_without_changing_cwd() {
         std::fs::read(&published).expect("the child published under its relative root"),
         b"relative host blob"
     );
+    assert!(base.join("later-cwd").is_dir());
+    assert!(!base.join("later-cwd/nested").exists());
     assert_eq!(std::env::current_dir().unwrap(), cwd);
 }
 
@@ -3677,7 +3760,7 @@ impl Harness {
 #[test]
 fn an_external_document_reads_back_verified_and_a_missing_or_changed_blob_is_refused() {
     let mut h = harness();
-    let store = blob_store("blobs");
+    let store = blob_store(&h, "blobs");
     let doc = h.document(
         INVOICE,
         HUMAN_UPLOAD,
@@ -3722,7 +3805,7 @@ fn an_external_document_reads_back_verified_and_a_missing_or_changed_blob_is_ref
     assert!(h.add_document(&doc).expect("recorded").already_recorded);
 
     // A store that holds no such blob: exit 5, never a silent null.
-    let empty = blob_store("elsewhere");
+    let empty = blob_store(&h, "elsewhere");
     let r = h.fetch(&empty, &added.oid).unwrap_err();
     eprintln!("txf external: a missing blob -> {} {}", r.code, r.message);
     assert_eq!((r.code, r.exit), ("FA-REF-116", exit::FOUNDATION), "{r}");
@@ -3774,7 +3857,7 @@ fn a_document_past_the_inline_bound_is_refused_inline_and_admitted_by_a_store() 
     );
     assert_eq!(r.code, "FA-REF-083", "{r}");
     assert!(r.fix.contains("blob store"), "{}", r.fix);
-    let store = blob_store("blobs");
+    let store = blob_store(&h, "blobs");
     let added = h.add_external(&store, &big).expect("admitted by the store");
     assert_eq!(added.size, u64::try_from(bound + 1).unwrap());
     assert_eq!(h.fetch(&store, &added.oid).unwrap(), Some(big));
