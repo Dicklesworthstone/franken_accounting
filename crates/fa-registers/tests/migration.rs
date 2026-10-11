@@ -3616,3 +3616,339 @@ fn migrated_legs_are_open_items_once_their_run_finalizes_and_their_chunk_counts(
             .is_green()
     );
 }
+
+/// How a maintained run ends: Finalized, naming the periods whose
+/// maintained cells must then hold the run's balances and those that must
+/// stay empty, or Abandoned.
+enum RunEnd<'a> {
+    Finalize {
+        counted: &'a [&'a str],
+        empty: &'a [&'a str],
+    },
+    Abandon,
+}
+
+/// Advance the native maintainer over every period in `periods` and check
+/// each against the literal fold at the advance's input frontier: the
+/// maintained fold equals the rebuilt one and the stored cells verify.
+fn maintained_folds(
+    k: &mut Kernel,
+    periods: &[&str],
+    what: &str,
+) -> BTreeMap<String, fa_registers::Advance> {
+    let mut out = BTreeMap::new();
+    for p in periods {
+        let ctx = k.ctx();
+        let advanced = k
+            .runtime
+            .block_on(fa_registers::advance(&mut k.db, &ctx, &k.book, p))
+            .expect("the maintainer advances");
+        let rebuilt = fold_period_at(&k.db, &k.book, p, Some(advanced.through)).expect("fold");
+        assert_eq!(advanced.fold, rebuilt, "{what}: {p}: maintained == rebuilt");
+        assert!(
+            fa_registers::verify_period(&k.db, &k.book, p)
+                .expect("verify")
+                .is_green(),
+            "{what}: {p}: the maintained cells verify"
+        );
+        out.insert((*p).to_string(), advanced);
+    }
+    out
+}
+
+/// Open `spec`, stage `chunks` one by one, then end the run as `end` says,
+/// advancing the maintainer over `periods` after every step (fa-s4k). While
+/// the run is Open no advance rebuilds or moves a cell, though the staged
+/// chunk is in the unread suffix (the planted negative); after Finalize
+/// every advance rebuilds and the named periods hold cells or none; after
+/// Abandon nothing moves.
+fn maintained_run(
+    k: &mut Kernel,
+    oracle: &mut Oracle,
+    spec: &RunSpec,
+    chunks: &[Intent],
+    periods: &[&str],
+    end: RunEnd<'_>,
+) {
+    let ops = vec!["post".to_string(), "migrate".to_string()];
+    let before = maintained_folds(k, periods, &format!("{}: before", spec.key));
+    let open_key = format!("open-{}", spec.key);
+    let run = kernel_open(k, spec, &open_key, &["post", "migrate"])
+        .expect("opens")
+        .run;
+    let o = oracle
+        .open_run(spec, open_key.as_bytes(), &ops)
+        .expect("oracle opens");
+    for (i, chunk) in chunks.iter().enumerate() {
+        stage_both(k, oracle, (run, o), chunk, i as u64, "maintained chunk").expect("stages");
+        let staged = maintained_folds(k, periods, &format!("{}: staged {i}", spec.key));
+        for p in periods {
+            let advanced = &staged[*p];
+            assert!(
+                !advanced.rebuilt,
+                "{p}: an Open run's chunk forces no rebuild"
+            );
+            assert!(
+                advanced.entries_decoded >= 1,
+                "{p}: the staged chunk was in the unread suffix"
+            );
+            assert_eq!(
+                advanced.fold.cells, before[*p].fold.cells,
+                "{p}: an unfinalized chunk moves no maintained cell"
+            );
+        }
+    }
+    let close_key = format!("close-{}", spec.key);
+    match end {
+        RunEnd::Finalize { counted, empty } => {
+            finalize_both(k, oracle, (run, o), chunks.len(), &close_key);
+            let after = maintained_folds(k, periods, &format!("{}: finalized", spec.key));
+            for p in periods {
+                assert!(after[*p].rebuilt, "{p}: Finalize rebuilds the period");
+            }
+            for p in counted {
+                assert!(!after[*p].fold.cells.is_empty(), "{p}: the run counts here");
+            }
+            for p in empty {
+                assert!(
+                    after[*p].fold.cells.is_empty(),
+                    "{p}: no counting chunk lands here"
+                );
+            }
+        }
+        RunEnd::Abandon => {
+            let plan = kernel_plan(k, run, kind::ABANDON, &close_key).expect("plans");
+            kernel_transition(k, plan, false).expect("abandons");
+            oracle
+                .abandon_run(o, chunks.len(), close_key.as_bytes(), &ops)
+                .expect("oracle abandons");
+            let after = maintained_folds(k, periods, &format!("{}: abandoned", spec.key));
+            for p in periods {
+                assert!(!after[*p].rebuilt, "{p}: Abandon forces no rebuild");
+                assert_eq!(
+                    after[*p].fold.cells, before[*p].fold.cells,
+                    "{p}: an abandoned run never counts"
+                );
+            }
+        }
+    }
+}
+
+/// fa-s4k (rulings 4065/4080): the native register maintainer under the
+/// part-3 migration shapes, which the activation/abandonment regression
+/// (OpeningOnly runs, no book opening date) does not reach. The maintainer
+/// applies `migration::visible_at` (the whole predicate, the ruling 3675 F3
+/// date rule included) and rebuilds on Finalize; here, after every stage,
+/// Finalize and Abandon, each touched period's maintained fold equals the
+/// literal fold and verifies, in four books:
+/// - prior years, non-sole FullDetail: the FY2025 detail and the legacy
+///   close in FY2025-CLOSE never reach a maintained cell, even finalized;
+///   the Opening chunk does;
+/// - mid-year, non-sole FullDetail: an abandoned run never counts, and a
+///   finalized run's January–March detail (on or after its opening date)
+///   counts in the Historical periods;
+/// - prior years, sole source: all FY2025 detail counts;
+/// - mid-year PeriodBalances: every elapsed period counts once finalized.
+#[test]
+fn the_register_maintainer_honours_migration_visibility_in_historical_and_pre_opening_periods() {
+    let (dr, cr) = (fa_reference::Side::Debit, fa_reference::Side::Credit);
+    let day = |y: i32, m: u8, d: u8| DateDay::from_ymd(y, m, d).unwrap();
+
+    // Prior years, non-sole FullDetail with the legacy close (ruling 3685).
+    let (mut k, mut oracle) = setup_with(Some((opening_date(), P01)));
+    create_year(&mut k, &mut oracle, 2025);
+    let earned = usd_lines(&[("1000", 800), ("4000", -800)]);
+    let summarized = full_detail(
+        "summarized",
+        usd_lines(&[("1000", 800), ("3000", -800)]),
+        (1..=12)
+            .map(|m| {
+                let cum = if m < 3 { Vec::new() } else { earned.clone() };
+                (format!("FY2025-P{m:02}"), cum)
+            })
+            .collect(),
+        Vec::new(),
+        false,
+    );
+    let chunks = [
+        period_chunk(
+            "sum-rev",
+            Some("FY2025-P03"),
+            day(2025, 3, 15),
+            vec![leg(dr, "1000", 800), leg(cr, "4000", 800)],
+        ),
+        period_chunk(
+            "sum-close",
+            Some("FY2025-CLOSE"),
+            day(2025, 12, 31),
+            vec![leg(dr, "4000", 800), leg(cr, "3000", 800)],
+        ),
+        chunk_intent("sum-open", vec![leg(dr, "1000", 800), leg(cr, "3000", 800)]),
+    ];
+    maintained_run(
+        &mut k,
+        &mut oracle,
+        &summarized,
+        &chunks,
+        &[OPENING, "FY2025-P03", "FY2025-CLOSE"],
+        RunEnd::Finalize {
+            counted: &[OPENING],
+            empty: &["FY2025-P03", "FY2025-CLOSE"],
+        },
+    );
+
+    // Mid-year, non-sole FullDetail: abandoned, then finalized.
+    let (mut k, mut oracle) = setup_with(Some((go_live(), GO_LIVE_PERIOD)));
+    let base = usd_lines(&[("1000", 5_000), ("3000", -5_000)]);
+    let after_p01 = usd_lines(&[("1000", 5_500), ("3000", -5_000), ("4000", -500)]);
+    let after_p03 = usd_lines(&[
+        ("1000", 5_300),
+        ("3000", -5_000),
+        ("4000", -500),
+        ("6000", 200),
+    ]);
+    let periods = vec![
+        (P01.to_string(), after_p01.clone()),
+        ("FY2026-P02".to_string(), after_p01),
+        ("FY2026-P03".to_string(), after_p03),
+    ];
+    let mid_chunks = |prefix: &str| {
+        [
+            chunk_intent(
+                &format!("{prefix}-open"),
+                vec![leg(dr, "1000", 5_000), leg(cr, "3000", 5_000)],
+            ),
+            period_chunk(
+                &format!("{prefix}-jan"),
+                Some(P01),
+                day(2026, 1, 20),
+                vec![leg(dr, "1000", 500), leg(cr, "4000", 500)],
+            ),
+            period_chunk(
+                &format!("{prefix}-mar"),
+                Some("FY2026-P03"),
+                day(2026, 3, 5),
+                vec![leg(dr, "6000", 200), leg(cr, "1000", 200)],
+            ),
+        ]
+    };
+    let watched = [OPENING, P01, "FY2026-P03"];
+    maintained_run(
+        &mut k,
+        &mut oracle,
+        &full_detail(
+            "mid-abandoned",
+            base.clone(),
+            periods.clone(),
+            base.clone(),
+            false,
+        ),
+        &mid_chunks("ab"),
+        &watched,
+        RunEnd::Abandon,
+    );
+    maintained_run(
+        &mut k,
+        &mut oracle,
+        &full_detail("mid-year", base.clone(), periods, base, false),
+        &mid_chunks("mid"),
+        &watched,
+        RunEnd::Finalize {
+            counted: &watched,
+            empty: &[],
+        },
+    );
+
+    // Prior years, sole source: every FY2025 detail chunk counts.
+    let (mut k, mut oracle) = setup_with(Some((opening_date(), P01)));
+    create_year(&mut k, &mut oracle, 2025);
+    let funded = usd_lines(&[("1000", 2_000), ("3000", -2_000)]);
+    let spent = usd_lines(&[("1000", 1_800), ("3000", -2_000), ("6000", 200)]);
+    let sole = full_detail(
+        "prior-sole",
+        Vec::new(),
+        (1..=12)
+            .map(|m| {
+                let cum = if m < 6 { funded.clone() } else { spent.clone() };
+                (format!("FY2025-P{m:02}"), cum)
+            })
+            .collect(),
+        Vec::new(),
+        true,
+    );
+    let chunks = [
+        period_chunk(
+            "sole-jan",
+            Some("FY2025-P01"),
+            day(2025, 1, 2),
+            vec![leg(dr, "1000", 2_000), leg(cr, "3000", 2_000)],
+        ),
+        period_chunk(
+            "sole-jun",
+            Some("FY2025-P06"),
+            day(2025, 6, 10),
+            vec![leg(dr, "6000", 200), leg(cr, "1000", 200)],
+        ),
+    ];
+    maintained_run(
+        &mut k,
+        &mut oracle,
+        &sole,
+        &chunks,
+        &[OPENING, "FY2025-P01", "FY2025-P06"],
+        RunEnd::Finalize {
+            counted: &["FY2025-P01", "FY2025-P06"],
+            empty: &[OPENING],
+        },
+    );
+
+    // Mid-year PeriodBalances: every elapsed period counts once finalized.
+    let (mut k, mut oracle) = setup_with(Some((go_live(), GO_LIVE_PERIOD)));
+    let balances = RunSpec {
+        full_detail: None,
+        key: "balances".into(),
+        opening_date: opening_date(),
+        lines: tb(10_000, 0, 0, 0),
+        periods: vec![
+            (P01.to_string(), tb(10_500, 0, -500, 0)),
+            ("FY2026-P02".to_string(), tb(10_300, 0, -500, 200)),
+            ("FY2026-P03".to_string(), tb(10_600, 0, -800, 200)),
+        ],
+    };
+    let chunks = [
+        chunk_intent(
+            "pb-open",
+            vec![leg(dr, "1000", 10_000), leg(cr, "3000", 10_000)],
+        ),
+        period_chunk(
+            "pb-jan",
+            Some(P01),
+            day(2026, 1, 15),
+            vec![leg(dr, "1000", 500), leg(cr, "4000", 500)],
+        ),
+        period_chunk(
+            "pb-feb",
+            Some("FY2026-P02"),
+            day(2026, 2, 10),
+            vec![leg(dr, "6000", 200), leg(cr, "1000", 200)],
+        ),
+        period_chunk(
+            "pb-mar",
+            Some("FY2026-P03"),
+            day(2026, 3, 5),
+            vec![leg(dr, "1000", 300), leg(cr, "4000", 300)],
+        ),
+    ];
+    let watched = [OPENING, P01, "FY2026-P02", "FY2026-P03"];
+    maintained_run(
+        &mut k,
+        &mut oracle,
+        &balances,
+        &chunks,
+        &watched,
+        RunEnd::Finalize {
+            counted: &watched,
+            empty: &[],
+        },
+    );
+}
