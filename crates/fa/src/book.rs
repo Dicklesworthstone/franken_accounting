@@ -2547,24 +2547,56 @@ mod tests {
     #[test]
     fn directory_book_accepts_a_relative_host_path_without_changing_cwd() {
         // UnixVfs refuses `..` at rename. Run the relative-path operation
-        // beneath a child-specific cwd, without changing the cwd shared by
-        // parallel tests. Reopen by absolute path in the parent as well:
-        // a child invocation matching zero tests cannot satisfy this oracle.
+        // beneath a child-specific cwd. Only that child changes cwd after
+        // create and again after reopen; external bytes must remain bound
+        // to the original book. Absolute reads in the parent also prevent
+        // a child invocation matching zero tests from satisfying the oracle.
         const CHILD: &str = "FA_RELATIVE_BOOK_ROOT_CHILD";
         let keys = BookKeys::for_development(0x64);
+        let document = |byte| fa_journal::Document {
+            book_id: Id128([0x64; 16]),
+            kind: 1,
+            mime: "application/octet-stream".into(),
+            grade: 3,
+            retrieved_by: VId(3),
+            bytes: vec![byte; 16 * 1024 * 1024 + 1],
+        };
         if std::env::var_os(CHILD).is_some() {
+            let original = std::env::current_dir().unwrap();
             let relative = Path::new("nested/book");
             let (spec, _) = spec(Id128([0x64; 16]));
-            let book =
+            let mut book =
                 Book::create_dir(relative, keys.clone(), spec, Entropy::deterministic(31)).unwrap();
+            let moved = original.join("after-create");
+            std::fs::create_dir(&moved).unwrap();
+            std::env::set_current_dir(&moved).unwrap();
+            let first = document(b'c');
+            let added = book.add_document(&first).unwrap().unwrap();
+            assert!(matches!(
+                book.document_record(&added.oid).unwrap().unwrap().storage,
+                fa_journal::Storage::External { .. }
+            ));
+            assert_eq!(
+                book.read_document(&added.oid).unwrap().unwrap(),
+                Some(first)
+            );
             let head = book.head().unwrap();
             drop(book);
+            std::env::set_current_dir(&original).unwrap();
+            let mut book = Book::open_dir(relative, keys, Entropy::deterministic(31)).unwrap();
+            assert_eq!(book.head().unwrap(), head);
+            let moved = original.join("after-open");
+            std::fs::create_dir(&moved).unwrap();
+            std::env::set_current_dir(&moved).unwrap();
+            let second = document(b'o');
+            let added = book.add_document(&second).unwrap().unwrap();
+            assert!(matches!(
+                book.document_record(&added.oid).unwrap().unwrap().storage,
+                fa_journal::Storage::External { .. }
+            ));
             assert_eq!(
-                Book::open_dir(relative, keys, Entropy::deterministic(31))
-                    .unwrap()
-                    .head()
-                    .unwrap(),
-                head
+                book.read_document(&added.oid).unwrap().unwrap(),
+                Some(second)
             );
             return;
         }
@@ -2594,6 +2626,21 @@ mod tests {
             .expect("the child created a reopenable book under its relative path");
         assert_eq!(reopened.context().book_id, Id128([0x64; 16]));
         assert!(reopened.head().unwrap().0 > 0);
+        for byte in [b'c', b'o'] {
+            let source = document(byte);
+            assert_eq!(
+                reopened.read_document(&source.oid()).unwrap().unwrap(),
+                Some(source),
+                "an absolute reopen reads bytes attached after a cwd change"
+            );
+        }
+        for alternate in ["after-create", "after-open"] {
+            assert!(dir.join(alternate).is_dir(), "the child reached this phase");
+            assert!(
+                !dir.join(alternate).join("nested").exists(),
+                "no book files were written beneath the later cwd"
+            );
+        }
         assert_eq!(std::env::current_dir().unwrap(), cwd);
     }
 
