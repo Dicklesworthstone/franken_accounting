@@ -78,11 +78,14 @@ impl OpenItemVerification {
 }
 
 /// Whether an entry carries open-item legs: posted classes only (a hold
-/// reserves, a release posts nothing, a reversal's legs negate).
+/// reserves, a release posts nothing, a reversal's legs negate). A
+/// `Migration` chunk reaches here only when the migration predicate selects
+/// it (its run Finalized, the chunk counting), so its legs are open items
+/// exactly then (ruling 3733 C1).
 fn carries_open_items(entry: &Entry) -> bool {
     matches!(
         entry.proposal.class,
-        EntryClass::ORIGINAL | EntryClass::ADJUSTING
+        EntryClass::ORIGINAL | EntryClass::ADJUSTING | EntryClass::MIGRATION
     ) || (entry.proposal.class == EntryClass::RESOLUTION && !entry.proposal.legs.is_empty())
 }
 

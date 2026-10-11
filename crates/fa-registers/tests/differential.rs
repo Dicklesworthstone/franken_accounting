@@ -737,6 +737,7 @@ fn setup_entities(rows: &[ChartRow], entities: &[&str]) -> (Kernel, Oracle, Vec<
                 name: format!("{code} entity"),
             })
             .collect(),
+        opening_date: None,
     };
     let symbols = SymbolTable::compiled();
     runtime

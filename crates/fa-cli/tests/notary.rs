@@ -293,6 +293,7 @@ fn assert_corruption_refused(corrupt_head: bool) {
             calendar: fa_time::FiscalCalendar::monthly("fiscal", 1, 1).expect("calendar"),
             time_zone_policy: None,
             entities: Vec::new(),
+            opening_date: None,
         },
         Entropy::deterministic(43),
     )

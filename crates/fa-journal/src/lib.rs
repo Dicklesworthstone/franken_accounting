@@ -62,9 +62,9 @@ pub use limit::{
     post_balancing,
 };
 pub use migration::{
-    Run, RunBody, RunChunk, RunControlRequest, RunControlled, RunMode, RunState, TieOut,
-    TrialBalanceLine, open_proposal, open_run, plan_run_transition, tie_out, transition_run,
-    visible_at,
+    PeriodBalance, Run, RunBody, RunChunk, RunControlRequest, RunControlled, RunMode, RunState,
+    TieOut, TieOutLine, TrialBalanceLine, open_proposal, open_run, plan_run_transition, tie_out,
+    transition_run, visible_at,
 };
 pub use period::{
     PreparedTransition, TransitionPlan, Transitioned, plan_transition, prepare_transition,

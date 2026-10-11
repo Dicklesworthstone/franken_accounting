@@ -200,6 +200,7 @@ fn harness() -> Harness {
         calendar: calendar.clone(),
         time_zone_policy: None,
         entities: Vec::new(),
+        opening_date: None,
     };
     let symbols = SymbolTable::compiled();
     runtime
@@ -1130,12 +1131,15 @@ fn a_staged_migration_chunk_blocks_its_balance_proof_until_the_run_finalizes() {
                 mantissa: -5_000,
             },
         ],
+        periods: Vec::new(),
+        detail_base: Vec::new(),
+        sole_opening_source: false,
     };
     let proposal = open_proposal(
         &h.book,
         PRINCIPAL,
         &body,
-        h.evidence[0],
+        vec![h.evidence[0]],
         b"open-run",
         sealed(&h, "open"),
     )
@@ -1288,4 +1292,91 @@ fn a_staged_migration_chunk_blocks_its_balance_proof_until_the_run_finalizes() {
         .unwrap()
         .expect_err("the staged prefix never proves the chunk");
     assert_eq!(r.code, code::MIGRATION_STAGED);
+}
+
+/// fa-kjl acceptance example: a scratch replay with intervening system
+/// records (plan §15.2). The notary's checkpoints are maintenance: the
+/// `AccumulatorState` vertex and the head pointer its commit moves on the
+/// book root. A book whose posts are interleaved with two checkpoints
+/// replays into a scratch book that holds every entry, no checkpoint and no
+/// head pointer; neither checkpoint commit is paired, the map verifies, and
+/// the scratch book's March fold is the source's.
+#[test]
+fn a_scratch_replay_carries_no_notary_checkpoint_and_verifies() {
+    let mut h = harness();
+    h.post(h.rent, 1_000, b"r1");
+    let first = h.checkpoint();
+    h.post(h.utilities, 250, b"u1");
+    let second = h.checkpoint();
+    h.post(h.rent, 500, b"r2");
+    let head = h.db.frontier().unwrap();
+    // Positive controls: the source holds both checkpoints and its head
+    // pointer, so the scratch negatives below cannot pass vacuously.
+    assert_eq!(
+        h.db.vertices_at(head)
+            .unwrap()
+            .iter()
+            .filter(|v| v.labels.contains(&label::ACCUMULATOR_STATE))
+            .count(),
+        2,
+        "the source holds both checkpoints"
+    );
+    assert!(
+        fa_journal::rows::prop(
+            &h.db.vertex(book_root()).unwrap().expect("root"),
+            property::ACCUMULATOR_HEAD
+        )
+        .is_some(),
+        "the source's root points at its latest checkpoint"
+    );
+    let ctx = h.ctx();
+    let keys = DatabaseKeys::new(
+        [0x7a; 32],
+        DatabaseSecurityNamespaceId([0x7b; 32]),
+        [0x7c; 32],
+    );
+    let mut scratch = h
+        .runtime
+        .block_on(async { Database::open_memory(&ctx.commit(), keys).await })
+        .expect("a fresh scratch database");
+    let id = h.book.book_id;
+    let (db, runtime) = (&mut h.db, &h.runtime);
+    let map = runtime
+        .block_on(async { replay_into(db, &mut scratch, &ctx, id, Some(head)).await })
+        .expect("kernel")
+        .expect("replays");
+    for checkpoint in [first.recorded_at, second.recorded_at] {
+        assert!(
+            map.pairs.iter().all(|p| p.source_seq != checkpoint),
+            "a checkpoint commit is never paired"
+        );
+    }
+    let verified = fa_registers::replay::verify_replay(&h.db, &scratch, &h.book, &map)
+        .expect("kernel")
+        .expect("the map verifies");
+    assert_eq!(verified.pairs_checked, map.pairs.len());
+    let at = scratch.frontier().unwrap();
+    assert!(
+        scratch
+            .vertices_at(at)
+            .unwrap()
+            .iter()
+            .all(|v| !v.labels.contains(&label::ACCUMULATOR_STATE)),
+        "no checkpoint reaches the scratch book"
+    );
+    assert!(
+        fa_journal::rows::prop(
+            &scratch.vertex(book_root()).unwrap().expect("root"),
+            property::ACCUMULATOR_HEAD
+        )
+        .is_none(),
+        "nor a head pointer to one"
+    );
+    let fold = |db: &Database<MemVfs>| {
+        fa_registers::fold_period(db, &h.book, "FY2026-P03")
+            .expect("fold")
+            .cells
+    };
+    assert!(!fold(&h.db).is_empty(), "the source's March fold has cells");
+    assert_eq!(fold(&scratch), fold(&h.db));
 }
