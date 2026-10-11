@@ -5,8 +5,9 @@
 //! under the law, after checking exact native balance. The base sums differ
 //! by at most `n × ½ ulp` for half laws, or less than `n ulp` for directed laws; that
 //! difference is **not a leg**: it is absorbed into the valuation of one
-//! designated leg — the largest-base-amount leg on the side that needs it,
-//! ties by ordinal — so no unit's per-unit balance is touched and the base
+//! designated converted leg — the largest base amount on the side that
+//! needs it, ties by ordinal — so base-unit legs retain their at-par values,
+//! no unit's per-unit balance is touched and the base
 //! sums balance exactly.
 //!
 //! The counterexample that fixes the rule (fa-p7r): EUR `Dr 0.01, Dr 0.01 /
@@ -57,8 +58,10 @@ pub enum ValuationError {
         residual: i128,
         bound: i128,
     },
-    /// No leg on the deficient side can absorb the residual (empty side).
-    NoLegToAbsorb,
+    /// No converted leg on the deficient side can absorb this law's residual.
+    NoLegToAbsorb {
+        law: RoundingLaw,
+    },
 }
 
 impl fmt::Display for ValuationError {
@@ -73,8 +76,12 @@ impl fmt::Display for ValuationError {
             Self::ResidualTooLarge { residual, bound } => {
                 write!(f, "valuation residual {residual} exceeds bound {bound}")
             }
-            Self::NoLegToAbsorb => {
-                f.write_str("no leg on the deficient side can absorb the residual")
+            Self::NoLegToAbsorb { law } => {
+                write!(
+                    f,
+                    "no converted leg on the deficient side can absorb the {} residual",
+                    law.name()
+                )
             }
         }
     }
@@ -90,6 +97,8 @@ impl From<AmountError> for ValuationError {
 
 /// Value `legs` (all in one foreign unit) into `base` at `rate` (base units per
 /// foreign unit) under `law`. Legs already in `base` are valued at 1:1.
+/// Only converted legs may absorb a rounding residual: choose the largest
+/// base amount on the deficient side, breaking ties by lowest original ordinal.
 pub fn value_legs(
     budget: &mut ArithmeticBudget<'_, impl Sized>,
     legs: &[LegValue],
@@ -155,11 +164,12 @@ pub fn value_legs(
             });
         }
         let deficient = if diff > 0 { Side::Credit } else { Side::Debit };
-        // Largest base amount on the deficient side; ties by ordinal (lowest).
+        // Base-unit legs stay at par. Among converted legs on the deficient
+        // side, choose the largest base amount; ties by ordinal (lowest).
         let target = legs
             .iter()
             .enumerate()
-            .filter(|(_, l)| l.side == deficient)
+            .filter(|(_, l)| l.side == deficient && l.amount.unit != base)
             .max_by(|(ia, _), (ib, _)| {
                 base_amounts[*ia]
                     .mantissa
@@ -167,7 +177,7 @@ pub fn value_legs(
                     .then(ib.cmp(ia))
             })
             .map(|(i, _)| i)
-            .ok_or(ValuationError::NoLegToAbsorb)?;
+            .ok_or(ValuationError::NoLegToAbsorb { law })?;
         let adj = diff.abs();
         base_amounts[target] = base_amounts[target].checked_add(Amount::new(base, adj))?;
         residual = Some((target, adj));
