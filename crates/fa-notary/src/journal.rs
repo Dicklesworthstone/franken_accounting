@@ -21,7 +21,8 @@
 //! book-scoped, undated control classes (`SchemaControl`, `PolicyControl`).
 //! The selection fields are the sorted distinct leg accounts and leg units.
 
-use std::collections::BTreeSet;
+use std::collections::btree_map::Entry as MapEntry;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fa_journal::KernelError;
 use fa_journal::genesis::BookContext;
@@ -370,20 +371,31 @@ impl Journal {
             && through.is_none_or(|cutoff| e.effective_day.is_some_and(|d| d <= cutoff))
     }
 
-    /// The FA-INV-07 migration predicate over this prefix's own leaves: the
-    /// first leaf that would contribute to (account, unit) and is a chunk of
-    /// a migration run with no Finalize leaf in the prefix. The accumulator
-    /// keeps such leaves (they are journaled); a register fold does not count
-    /// them; and `fa-verify` decides its in-scope set from envelopes, which
-    /// do not carry the run — so the proof refuses rather than disagree with
-    /// the fold (ruling 3243; the format change is bead fa-e00).
+    /// The first leaf that would contribute to (account, unit) and is a
+    /// migration chunk a register fold may not count at this prefix, with
+    /// the reason, decided from the journal's own leaves (never from a run's
+    /// state projection or its unauthenticated body; WhiteCreek 3905): a
+    /// chunk whose run has no Finalize leaf in the prefix (staged or
+    /// abandoned), or one dated before its run's `Open` leaf, which
+    /// `open_run` dates on the run's opening date (a non-sole `FullDetail`
+    /// run's summarized history, ruling 3675 F3). A run with no single Open
+    /// leaf, or a leaf whose class and origin disagree about migration, is
+    /// refused too (WhiteCreek 3910, MaroonSquirrel 3917): records are
+    /// arbitrary to `from_records`. The accumulator keeps such leaves (they
+    /// are journaled), and `fa-verify` decides its in-scope set from
+    /// envelopes, which carry neither the run nor its body — so the proof
+    /// refuses rather than disagree with the fold (ruling 3243; the format
+    /// change is bead fa-e00). Conservative by design: a sole-source
+    /// `FullDetail` run's history, which does count, is refused too until
+    /// the format carries authenticated run metadata.
     fn staged_chunk(
         &self,
         account: VId,
         unit: u32,
         through: Option<i32>,
-    ) -> Result<Option<VId>, KernelError> {
+    ) -> Result<Option<(VId, &'static str)>, KernelError> {
         let mut finalized = BTreeSet::new();
+        let mut opened: BTreeMap<VId, Option<i32>> = BTreeMap::new();
         for leaf in self
             .leaves
             .iter()
@@ -391,20 +403,52 @@ impl Journal {
         {
             if let Some(ControlPayload::MigrationControl { run_ref, kind, .. }) =
                 Entry::decode(&leaf.payload)?.proposal.control
-                && kind == fa_journal::migration::kind::FINALIZE
             {
-                finalized.insert(run_ref);
+                if kind == fa_journal::migration::kind::FINALIZE {
+                    finalized.insert(run_ref);
+                } else if kind == fa_journal::migration::kind::OPEN {
+                    // Two Open records for one run are not an honest journal
+                    // (records are arbitrary to `from_records`): neither
+                    // dates the run, so its chunks refuse (WhiteCreek 3910).
+                    match opened.entry(run_ref) {
+                        MapEntry::Vacant(slot) => {
+                            slot.insert(leaf.envelope.effective_day);
+                        }
+                        MapEntry::Occupied(mut slot) => {
+                            slot.insert(None);
+                        }
+                    }
+                }
             }
         }
-        for leaf in self.leaves.iter().filter(|l| {
-            l.envelope.class == EntryClass::MIGRATION
-                && Self::contributes(l, account, unit, through)
-        }) {
-            if let EntryOrigin::Migration { run_ref, .. } =
-                Entry::decode(&leaf.payload)?.proposal.origin
-                && !finalized.contains(&run_ref)
-            {
-                return Ok(Some(leaf.vid));
+        for leaf in self
+            .leaves
+            .iter()
+            .filter(|l| Self::contributes(l, account, unit, through))
+        {
+            let chunk = leaf.envelope.class == EntryClass::MIGRATION;
+            let run_ref = match (Entry::decode(&leaf.payload)?.proposal.origin, chunk) {
+                (EntryOrigin::Migration { run_ref, .. }, true) => run_ref,
+                (EntryOrigin::Migration { .. }, false) | (_, true) => {
+                    return Ok(Some((
+                        leaf.vid,
+                        "its class and origin disagree about migration",
+                    )));
+                }
+                _ => continue,
+            };
+            if !finalized.contains(&run_ref) {
+                return Ok(Some((leaf.vid, "its run has no Finalize record here")));
+            }
+            match opened.get(&run_ref) {
+                Some(Some(open)) if leaf.envelope.effective_day.is_some_and(|d| d >= *open) => {}
+                Some(Some(_)) => {
+                    return Ok(Some((
+                        leaf.vid,
+                        "it is dated before its run's opening date (FullDetail history, refused even for a sole-source run until proofs carry run metadata)",
+                    )));
+                }
+                _ => return Ok(Some((leaf.vid, "its run has no single Open record here"))),
             }
         }
         Ok(None)
@@ -412,24 +456,24 @@ impl Journal {
 
     /// The posted (debits, credits) of (account, unit) through the cutoff,
     /// folded from the entry payloads with checked arithmetic. Refused
-    /// (FA-REF-133) while a contributing migration chunk's run is not
-    /// finalized in this prefix.
+    /// (FA-REF-133) while a contributing migration chunk is one a fold may
+    /// not count at this prefix (see `staged_chunk`).
     pub fn posted_balance(
         &self,
         account: VId,
         unit: u32,
         through: Option<i32>,
     ) -> Outcome<(i128, i128)> {
-        if let Some(chunk) = self.staged_chunk(account, unit, through)? {
+        if let Some((chunk, why)) = self.staged_chunk(account, unit, through)? {
             return Ok(Err(Refusal::new(
                 code::MIGRATION_STAGED,
                 exit::REFUSAL,
                 format!(
-                    "the balance would count migration chunk {:032x}, whose run is not finalized in this prefix",
+                    "the balance would count migration chunk {:032x}, which a fold may not count at this prefix: {why}",
                     chunk.0
                 ),
-                "plan §8.6, FA-INV-07 (a staged or abandoned chunk is invisible to every fold)",
-                "prove the balance at a checkpoint after the run is finalized; an abandoned run's accounts are provable once balance proofs carry the migration predicate (fa-e00)",
+                "plan §8.6, FA-INV-07 (a staged or abandoned chunk, or summarized FullDetail history, is invisible to every fold)",
+                "prove the balance at a checkpoint after the run is finalized; accounts carrying abandoned migration chunks or pre-opening FullDetail history are provable once balance proofs carry the migration predicate (fa-e00)",
             )));
         }
         let (mut debits, mut credits) = (0i128, 0i128);

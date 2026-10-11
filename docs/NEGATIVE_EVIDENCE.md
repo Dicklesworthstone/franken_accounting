@@ -104,3 +104,33 @@ and changed effective date with a successful posting of approved resolved
 effects and an identical-request retry. Runtime before/after verification
 and the combined landing gate remain pending on `fa-syy`; source inspection
 does not prove the regression has executed.
+
+## 2026-10-11 — fa-e00 finalized historical detail in balance proofs
+
+The joined FullDetail implementation excludes pre-opening detail already
+summarized by Opening chunks. Notary's v1 balance proof only checked for a
+Finalize leaf and then counted every selected migration chunk. Producer and
+independent verifier could therefore agree with one another while disagreeing
+with the register. In the new prior-year fixture, a 300-unit rent debit
+appears in both historical detail and its Opening summary: the register
+counts 300, while the unguarded proof would count 600. This is a
+source-derived counterexample; runtime reproduction is pending.
+
+The interim repair derives visibility only from journal OPEN and Finalize
+records and refuses selected migration history dated before OPEN. OPEN binds
+the opening date but does not embed the run body, so v1 cannot distinguish
+summarized history from legitimate sole-source history before that date.
+Both conservatively refuse with an explicit diagnostic. Inclusion proofs
+and finalized chunks on or after that date retain their semantics. Missing,
+duplicate or contradictory migration records fail closed. Full support
+needs authenticated run-mode and sole-source metadata as well as Finalize
+witnesses in the proof format; fa-e00 remains open.
+
+An initial private repair (29ded4c) used the run's mutable state projection
+and unauthenticated body to authorize proofs. Review rejected it: a false
+Finalized projection or changed sole-source flag must not authorize a
+balance proof. The replacement uses journal leaves alone. Review also found
+that its first planted-state test was masked by a separate pre-opening
+chunk. The corrected test plants false finalization while only the Opening
+chunk is staged, then restores state, stages history and finalizes for real.
+The new regressions and final integration gate have not executed yet.

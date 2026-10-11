@@ -692,8 +692,8 @@ code = "FA-REF-133"
 name = "MIGRATION_STAGED"
 owners = ["fa-notary"]
 exit = "refusal"
-cite = "plan §8.6, FA-INV-07 (a staged or abandoned chunk is invisible to every fold); ruling 3243"
-fix = "prove the balance at a checkpoint after the run is finalized; an abandoned run's accounts are provable once balance proofs carry the migration predicate (fa-e00)"
+cite = "plan §8.6, FA-INV-07 (migration visibility includes finalized state and pre-opening detail policy); ruling 3243"
+fix = "finalize a staged run before proving its balance; for abandoned or pre-opening migration history use inclusion proofs until balance proofs carry authenticated migration visibility witnesses (fa-e00)"
 
 [[refusal]]
 code = "FA-REF-134"
