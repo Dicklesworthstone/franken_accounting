@@ -3898,4 +3898,350 @@ mod tests {
         assert!(matches!(again, Posted::AlreadyRecorded { .. }));
         assert!(book.trial_balance(&[march]).unwrap().is_balanced());
     }
+
+    /// VFS calls in order: the operation and every path argument it was given.
+    type Calls = Vec<(&'static str, Vec<PathBuf>)>;
+
+    /// Real `UnixVfs` I/O with every path argument recorded in call order and
+    /// no result special-cased (fa-40l (B), JadePeak 4047, CobaltGull 4048).
+    #[derive(Clone)]
+    struct RecordingVfs {
+        inner: UnixVfs,
+        calls: std::sync::Arc<std::sync::Mutex<Calls>>,
+    }
+
+    impl RecordingVfs {
+        fn new() -> Self {
+            Self {
+                inner: UnixVfs::new(),
+                calls: std::sync::Arc::default(),
+            }
+        }
+
+        fn note(&self, op: &'static str, paths: &[&Path]) {
+            self.calls
+                .lock()
+                .expect("recorder lock")
+                .push((op, paths.iter().map(|p| p.to_path_buf()).collect()));
+        }
+
+        /// Every call recorded since the last take, in order.
+        fn take(&self) -> Calls {
+            std::mem::take(&mut *self.calls.lock().expect("recorder lock"))
+        }
+    }
+
+    impl Vfs for RecordingVfs {
+        type File = <UnixVfs as Vfs>::File;
+
+        fn open(
+            &self,
+            path: &Path,
+            opts: &OpenOptions,
+        ) -> impl std::future::Future<Output = std::io::Result<Self::File>> + Send {
+            self.note("open", &[path]);
+            self.inner.open(path, opts)
+        }
+
+        fn metadata(
+            &self,
+            path: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<asupersync::fs::Metadata>> + Send
+        {
+            self.note("metadata", &[path]);
+            self.inner.metadata(path)
+        }
+
+        fn symlink_metadata(
+            &self,
+            path: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<asupersync::fs::Metadata>> + Send
+        {
+            self.note("symlink_metadata", &[path]);
+            self.inner.symlink_metadata(path)
+        }
+
+        fn set_permissions(
+            &self,
+            path: &Path,
+            perm: asupersync::fs::Permissions,
+        ) -> impl std::future::Future<Output = std::io::Result<()>> + Send {
+            self.note("set_permissions", &[path]);
+            self.inner.set_permissions(path, perm)
+        }
+
+        fn create_dir(
+            &self,
+            path: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<()>> + Send {
+            self.note("create_dir", &[path]);
+            self.inner.create_dir(path)
+        }
+
+        fn create_dir_all(
+            &self,
+            path: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<()>> + Send {
+            self.note("create_dir_all", &[path]);
+            self.inner.create_dir_all(path)
+        }
+
+        fn remove_dir(
+            &self,
+            path: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<()>> + Send {
+            self.note("remove_dir", &[path]);
+            self.inner.remove_dir(path)
+        }
+
+        fn remove_dir_all(
+            &self,
+            path: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<()>> + Send {
+            self.note("remove_dir_all", &[path]);
+            self.inner.remove_dir_all(path)
+        }
+
+        fn read_dir(
+            &self,
+            path: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<asupersync::fs::ReadDir>> + Send
+        {
+            self.note("read_dir", &[path]);
+            self.inner.read_dir(path)
+        }
+
+        fn remove_file(
+            &self,
+            path: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<()>> + Send {
+            self.note("remove_file", &[path]);
+            self.inner.remove_file(path)
+        }
+
+        fn rename(
+            &self,
+            from: &Path,
+            to: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<()>> + Send {
+            self.note("rename", &[from, to]);
+            self.inner.rename(from, to)
+        }
+
+        fn copy(
+            &self,
+            src: &Path,
+            dst: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<u64>> + Send {
+            self.note("copy", &[src, dst]);
+            self.inner.copy(src, dst)
+        }
+
+        fn hard_link(
+            &self,
+            original: &Path,
+            link: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<()>> + Send {
+            self.note("hard_link", &[original, link]);
+            self.inner.hard_link(original, link)
+        }
+
+        fn canonicalize(
+            &self,
+            path: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<PathBuf>> + Send {
+            self.note("canonicalize", &[path]);
+            self.inner.canonicalize(path)
+        }
+
+        fn read_link(
+            &self,
+            path: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<PathBuf>> + Send {
+            self.note("read_link", &[path]);
+            self.inner.read_link(path)
+        }
+
+        fn read(
+            &self,
+            path: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<Vec<u8>>> + Send {
+            self.note("read", &[path]);
+            self.inner.read(path)
+        }
+
+        fn read_to_string(
+            &self,
+            path: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<String>> + Send {
+            self.note("read_to_string", &[path]);
+            self.inner.read_to_string(path)
+        }
+
+        fn write(
+            &self,
+            path: &Path,
+            contents: &[u8],
+        ) -> impl std::future::Future<Output = std::io::Result<()>> + Send {
+            self.note("write", &[path]);
+            self.inner.write(path, contents)
+        }
+    }
+
+    fn has_parent_dir(path: &Path) -> bool {
+        path.components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    }
+
+    /// The records before and including the `canonicalize` of `spelled`
+    /// (DurableDirectory's preflight on the caller's spelling), and the rest.
+    fn split_preflight(calls: Calls, spelled: &Path) -> (Calls, Calls) {
+        let end = calls
+            .iter()
+            .position(|(op, paths)| *op == "canonicalize" && paths[..] == [spelled.to_path_buf()]);
+        assert!(end.is_some(), "no canonicalize of {spelled:?}: {calls:?}");
+        let mut preflight = calls;
+        let rest = preflight.split_off(end.map_or(0, |i| i + 1));
+        (preflight, rest)
+    }
+
+    /// fa-40l acceptance (B), scoped to the 4046 boundary: a book spelled
+    /// with a `..` component reaches the VFS with that spelling only in
+    /// `DurableDirectory`'s preflight (create, metadata, the ancestor fence
+    /// and `canonicalize`); every argument handed on afterwards — to
+    /// `Database`, to the blob store, and by every later operation and the
+    /// reopen — carries no `..` and lies on the canonical root's line. Real
+    /// `UnixVfs` refuses a `..` at rename, so the renames recorded below
+    /// passing is the same fact from the host's side. No claim that the
+    /// substrate tolerates `..`: this pins where it stops.
+    #[cfg(unix)]
+    #[test]
+    fn a_dotdot_book_spelling_stops_at_the_durable_directory_preflight() {
+        let (runtime, root) = Book::runtime_and_root().unwrap();
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base =
+            std::env::temp_dir().join(format!("fa-40l-dotdot-{}-{suffix}", std::process::id()));
+        let caller = base.join("caller");
+        std::fs::create_dir_all(&caller).unwrap();
+        let spelled = caller.join("..").join("x");
+        let caller_parent = caller.join("..");
+        assert!(has_parent_dir(&spelled));
+        let canonical = std::fs::canonicalize(&base).unwrap().join("x");
+        let vfs = RecordingVfs::new();
+        let keys = BookKeys::for_development(0x6b);
+        let book_id = Id128([0x6b; 16]);
+        let (spec, usd) = spec(book_id);
+        let on_the_canonical_line =
+            |p: &Path| p.starts_with(&canonical) || canonical.starts_with(p);
+        runtime.block_on(async {
+            let mut book = AsyncBook::create_with_vfs(
+                &cx,
+                vfs.clone(),
+                &spelled,
+                keys.clone(),
+                spec,
+                Entropy::deterministic(0x6b),
+            )
+            .await
+            .expect("a `..` spelling creates the book");
+            let (preflight, handed) = split_preflight(vfs.take(), &spelled);
+            let dotdot = |calls: &Calls| -> Calls {
+                calls
+                    .iter()
+                    .filter(|(_, paths)| paths.iter().any(|p| has_parent_dir(p)))
+                    .cloned()
+                    .collect()
+            };
+            assert_eq!(
+                dotdot(&preflight),
+                vec![
+                    ("create_dir_all", vec![spelled.clone()]),
+                    ("metadata", vec![spelled.clone()]),
+                    ("symlink_metadata", vec![spelled.clone()]),
+                    ("open", vec![spelled.clone()]),
+                    ("symlink_metadata", vec![caller_parent.clone()]),
+                    ("open", vec![caller_parent.clone()]),
+                    ("canonicalize", vec![spelled.clone()]),
+                ],
+                "the preflight's `..` records are exactly these: {preflight:?}"
+            );
+
+            let principal = VId(1);
+            let day = DateDay::from_ymd(2026, 3, 15).unwrap();
+            book.install_chart(&cx, &chart(usd), principal, day, b"chart")
+                .await
+                .unwrap()
+                .unwrap();
+            let inline_bound = fa_registry::evidence_policy::EvidencePolicy::embedded()
+                .unwrap()
+                .max_document_bytes;
+            let document = fa_journal::Document {
+                book_id,
+                kind: 1,
+                mime: "application/octet-stream".into(),
+                grade: 3,
+                retrieved_by: principal,
+                bytes: vec![0x62; usize::try_from(inline_bound).unwrap() + 1],
+            };
+            book.add_document(&cx, &document).await.unwrap().unwrap();
+            let operated = vfs.take();
+            drop(book);
+
+            let reopened = AsyncBook::open_with_vfs(
+                &cx,
+                vfs.clone(),
+                &spelled,
+                keys,
+                Entropy::deterministic(0x6c),
+            )
+            .await
+            .expect("the same spelling reopens the book");
+            assert_eq!(reopened.accounts(&cx).unwrap().len(), chart(usd).len());
+            let (reopen_preflight, reopen_handed) = split_preflight(vfs.take(), &spelled);
+            assert_eq!(
+                dotdot(&reopen_preflight),
+                vec![
+                    ("metadata", vec![spelled.clone()]),
+                    ("symlink_metadata", vec![spelled.clone()]),
+                    ("open", vec![spelled.clone()]),
+                    ("symlink_metadata", vec![caller_parent.clone()]),
+                    ("open", vec![caller_parent.clone()]),
+                    ("canonicalize", vec![spelled.clone()]),
+                ],
+                "reopen's preflight `..` records: {reopen_preflight:?}"
+            );
+
+            // Everything handed on after the preflight: no `..` anywhere,
+            // and every path on the canonical root's line (the root, under
+            // it, or one of its ancestors' fences).
+            for (phase, calls) in [
+                ("create", &handed),
+                ("operations", &operated),
+                ("reopen", &reopen_handed),
+            ] {
+                assert!(!calls.is_empty(), "{phase} recorded nothing");
+                for (op, paths) in calls {
+                    for p in paths {
+                        assert!(!has_parent_dir(p), "{phase}: {op} {p:?} carries `..`");
+                        assert!(
+                            on_the_canonical_line(p),
+                            "{phase}: {op} {p:?} is off the canonical root {canonical:?}"
+                        );
+                    }
+                }
+            }
+            // Publication actually ran through the recorder: the external
+            // document's bytes were renamed into the canonical blob store.
+            let blobs = canonical.join("blobs");
+            assert!(
+                operated.iter().any(|(op, paths)| *op == "rename"
+                    && paths.last().is_some_and(|to| to.starts_with(&blobs))),
+                "no blob publication rename under {blobs:?}: {operated:?}"
+            );
+        });
+    }
 }
