@@ -1122,9 +1122,26 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
     }
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
+    // An existing identity is the same lawful refusal whether the substrate
+    // reports it while staging (a re-imported chart: its vertices are live)
+    // or at commit; it is never a foundation failure.
+    let existing = || {
+        Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            "an account or control entry with this identity already exists",
+            "plan §4.9 (identities are derived; a duplicate is a point conflict)",
+            "use a fresh idempotency key and omit accounts already installed",
+        )
+    };
     if let Err(e) = txn.write_ordered(db, vec![batch, in_book]) {
         txn.abort();
-        return Err(e.into());
+        return match e {
+            fgdb::WriteTxnError::Write(
+                fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
+            ) => Ok(Err(existing())),
+            e => Err(e.into()),
+        };
     }
     match txn.commit(db, &ctx.commit()).await {
         Ok(seq) => Ok(Ok(ChartInstalled {
@@ -1134,13 +1151,7 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
         })),
         Err(fgdb::WriteTxnError::Write(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
-        )) => Ok(Err(Refusal::new(
-            code::STRUCTURE,
-            exit::USAGE,
-            "an account or control entry with this identity already exists",
-            "plan §4.9 (identities are derived; a duplicate is a point conflict)",
-            "use a fresh idempotency key and omit accounts already installed",
-        ))),
+        )) => Ok(Err(existing())),
         Err(e) => Err(e.into()),
     }
 }
