@@ -10,6 +10,8 @@
 //! [`AsyncBook`] takes the caller's purpose contexts and filesystem; [`Book`]
 //! supplies a production runtime and delegates to the same implementation.
 //! Recorded time comes from the substrate's commit stream.
+//! [`AsyncBook`] also folds historical open-item snapshots and effective-date
+//! aging with explicit buckets; those projections are not certified reports.
 //! Trial balances can carry retained-history replay certificates binding the
 //! native reads, journal prefix, report selector, registries and exact output.
 //! Sessions, dry-run plans, drafts, signed transparency
@@ -18,10 +20,15 @@
 
 #![forbid(unsafe_code)]
 
+pub mod aging;
 pub mod async_book;
 pub mod book;
 pub mod certificate;
 
+pub use aging::{
+    AgedOpenItem, AgingAmounts, AgingBand, AgingBuckets, AgingCell, AgingTotal,
+    EffectiveDateAging, OpenItemSnapshot,
+};
 pub use async_book::AsyncBook;
 pub use book::{Book, BookError, BookKeys, Entropy, Outcome};
 pub use certificate::{

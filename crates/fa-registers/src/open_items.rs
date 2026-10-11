@@ -9,6 +9,9 @@
 //! module is the fold that mirror must agree with (`verify_open_items`),
 //! never a second source of truth.
 
+pub mod aging;
+pub mod history;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use fa_journal::genesis::BookContext;
@@ -119,8 +122,16 @@ pub fn open_items<V: asupersync::fs::Vfs + Clone>(
 ) -> Result<Vec<OpenItem>, RegisterError> {
     let seq = resolve_known_at(db, known_at)?;
     let entries = entries_at(db, book, seq)?;
+    fold_open_items(&entries, account)
+}
+
+// One payload fold shared by known-at-only and effective-cutoff readers.
+fn fold_open_items(
+    entries: &[(VId, Entry, CommitSeq)],
+    account: Option<VId>,
+) -> Result<Vec<OpenItem>, RegisterError> {
     let mut reversed_by: BTreeMap<VId, VId> = BTreeMap::new();
-    for (vid, entry, _) in &entries {
+    for (vid, entry, _) in entries {
         if entry.proposal.class != EntryClass::REVERSAL {
             continue;
         }
@@ -132,14 +143,14 @@ pub fn open_items<V: asupersync::fs::Vfs + Clone>(
         }
     }
     let mut live: BTreeSet<VId> = BTreeSet::new();
-    for (vid, _, _) in &entries {
+    for (vid, _, _) in entries {
         if is_live(*vid, &reversed_by)? {
             live.insert(*vid);
         }
     }
     // Every application ever made, keyed by its target leg, in commit order.
     let mut applications: BTreeMap<(VId, u16), Vec<Application>> = BTreeMap::new();
-    for (vid, entry, recorded_at) in &entries {
+    for (vid, entry, recorded_at) in entries {
         if !carries_open_items(entry) {
             continue;
         }
@@ -161,7 +172,7 @@ pub fn open_items<V: asupersync::fs::Vfs + Clone>(
         }
     }
     let mut items = Vec::new();
-    for (vid, entry, recorded_at) in &entries {
+    for (vid, entry, recorded_at) in entries {
         if !carries_open_items(entry) || !live.contains(vid) {
             continue;
         }
