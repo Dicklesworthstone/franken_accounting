@@ -1225,15 +1225,15 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         Mcp::start_with(&book, &["--profile", "preparer", "--principal", "operator"]);
     reopened.discover();
     let before_retry = cli_data(&["book", "info", "--book", &b, "--json"]);
-    // Even beside the complete plan bytes, a host path is refused first.
-    let (is_error, text, _) = call_tool(
-        &mut reopened,
-        "fa_post_commit_plan",
+    for arguments in [
+        json!({"plan_file": plan_file.display().to_string()}),
         json!({"plan": encoded, "plan_file": plan_file.display().to_string()}),
-    );
-    assert!(is_error, "host plan_file must be refused: {text}");
-    assert_eq!(structured_error(&text)["type"], "forbidden_path");
-    assert_eq!(std::fs::read_to_string(&plan_file).unwrap(), encoded);
+    ] {
+        let (is_error, text, _) = call_tool(&mut reopened, "fa_post_commit_plan", arguments);
+        assert!(is_error, "host plan_file must be refused: {text}");
+        assert_eq!(structured_error(&text)["type"], "forbidden_path");
+        assert_eq!(std::fs::read_to_string(&plan_file).unwrap(), encoded);
+    }
     let (is_error, text, _) = call_tool(
         &mut reopened,
         "fa_post_commit_plan",
@@ -1366,16 +1366,23 @@ fn default_agent_authority_survives_stdio_and_cannot_be_changed_by_a_call() {
     // Presence is refused even for null/false and before float detection.
     for argument in fa_mcp::registry::FORBIDDEN_ARGUMENTS {
         for value in [JsonValue::Null, json!(false), json!("operator")] {
-            let mut arguments = json!({"intent": {"amount": 1.25}});
-            arguments[*argument] = value;
-            let (error, text, _) = call_tool(&mut mcp, "fa_post_post", arguments);
-            assert!(error, "forbidden {argument}: {text}");
-            let refused = structured_error(&text);
-            assert_eq!(refused["type"], "forbidden_argument");
-            assert_eq!(refused["data"]["argument"], *argument);
-            assert_eq!(refused["authority"], authority);
-            assert!(refused.get("detector").is_none());
-            assert_eq!(refused["suggested_tool_calls"], json!([]));
+            for wire in ["fa_post_post", "fa_post_commit_plan"] {
+                let mut arguments = json!({"intent": {"amount": 1.25}});
+                arguments[*argument] = value.clone();
+                if wire == "fa_post_commit_plan" {
+                    // Missing required inline plan forces framework schema
+                    // refusal. Authority still precedes a forbidden path.
+                    arguments["plan_file"] = JsonValue::Null;
+                }
+                let (error, text, _) = call_tool(&mut mcp, wire, arguments);
+                assert!(error, "forbidden {argument}: {text}");
+                let refused = structured_error(&text);
+                assert_eq!(refused["type"], "forbidden_argument");
+                assert_eq!(refused["data"]["argument"], *argument);
+                assert_eq!(refused["authority"], authority);
+                assert!(refused.get("detector").is_none());
+                assert_eq!(refused["suggested_tool_calls"], json!([]));
+            }
         }
     }
     // An ordinary undeclared key reaches the server too (no schema closes
@@ -1539,9 +1546,11 @@ fn read_only_period_planning_is_inline_and_paths_cannot_touch_host_files() {
                 json!({"transition": "close", "code": "FY2026-P03"}),
             ),
             ("fa_post_post", "intent_file", json!({})),
-            // Tools with required properties carry inert values for them so
-            // the server's schema validation admits the call; the host-path
-            // refusal must still come first, before any detector.
+            ("fa_post_commit_plan", "plan_file", json!({})),
+            ("fa_read_replay", "file", json!({})),
+            ("fa_read_certificate_status", "file", json!({})),
+            // Both schema-invalid and schema-valid inputs retain the same
+            // host-path refusal; neither route may inspect a host file.
             ("fa_post_commit_plan", "plan_file", json!({"plan": "00"})),
             ("fa_read_replay", "file", json!({"certificate": "00"})),
             (
@@ -1553,19 +1562,35 @@ fn read_only_period_planning_is_inline_and_paths_cannot_touch_host_files() {
             ("fa_evidence_import_document", "file", json!({})),
             ("fa_read_trial_balance", "certificate_out", json!({})),
         ] {
-            input[argument] = json!(path);
-            let (error, text, _) = call_tool(&mut mcp, wire, input);
-            assert!(error, "{wire} must refuse a host path: {text}");
-            let refused = structured_error(&text);
-            assert_eq!(refused["type"], "forbidden_path", "{refused}");
-            assert_eq!(refused["data"]["argument"], argument);
-            assert_eq!(refused["authority"]["ops"], json!(["read"]));
-            assert!(refused.get("detector").is_none());
-            assert_eq!(
-                std::fs::read_to_string(&victim).unwrap(),
-                "host file must remain unchanged"
-            );
+            for value in [json!(path), JsonValue::Null, json!(false)] {
+                input[argument] = value;
+                let (error, text, _) = call_tool(&mut mcp, wire, input.clone());
+                assert!(error, "{wire} must refuse a host path: {text}");
+                let refused = structured_error(&text);
+                assert_eq!(refused["type"], "forbidden_path", "{refused}");
+                assert_eq!(refused["data"]["argument"], argument);
+                assert_eq!(refused["authority"]["ops"], json!(["read"]));
+                assert!(refused.get("detector").is_none());
+                assert_eq!(
+                    std::fs::read_to_string(&victim).unwrap(),
+                    "host file must remain unchanged"
+                );
+            }
         }
+    }
+    // Ordinary missing required inputs retain the framework's schema error;
+    // response enrichment cannot admit them or dispatch a tool.
+    for wire in [
+        "fa_post_commit_plan",
+        "fa_read_replay",
+        "fa_read_certificate_status",
+    ] {
+        let (error, text, _) = call_tool(&mut mcp, wire, json!({}));
+        assert!(error, "{wire} must still require its inline content");
+        assert_eq!(
+            text,
+            "Tool arguments do not match the declared input schema."
+        );
     }
     let (error, text, result) = call_tool(
         &mut mcp,

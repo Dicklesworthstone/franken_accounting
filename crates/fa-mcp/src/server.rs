@@ -22,8 +22,9 @@ use fastmcp_rust::server::{
 };
 use fastmcp_rust::{
     CacheScope, CacheTtl, CompleteResult, Content, EmbeddedResourceContents,
-    FinalReadResourceResult, JsonValue, McpContext, McpError, McpErrorCode, McpResult, Resource,
-    ResourceContent, ResourceTemplate, ResultMeta, Tool, ToolAnnotations, json,
+    FinalReadResourceResult, JsonRpcRequest, JsonValue, McpContext, McpError, McpErrorCode,
+    McpResult, Middleware, Resource, ResourceContent, ResourceTemplate, ResultMeta, Tool,
+    ToolAnnotations, json,
 };
 
 use crate::detect::{self, Memory};
@@ -226,11 +227,8 @@ impl Adapter {
         tool: &ToolSpec,
         arguments: &JsonValue,
     ) -> Result<CallOutput, StructuredError> {
-        if let Some(argument) = crate::registry::forbidden_argument(arguments) {
-            return Err(StructuredError::forbidden_argument(argument));
-        }
-        if let Some((argument, fix)) = tool.forbidden_path_argument(arguments) {
-            return Err(StructuredError::forbidden_path(&argument, fix));
+        if let Some(error) = forbidden_tool_argument(tool, arguments) {
+            return Err(error);
         }
         if let Some(e) = detect::floats(arguments)
             .or_else(|| detect::instants(tool, arguments))
@@ -428,6 +426,66 @@ fn percent_decode(s: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The same authority-first refusal applies before dispatch and when the
+/// framework has already rejected a call's ordinary input schema.
+fn forbidden_tool_argument(tool: &ToolSpec, arguments: &JsonValue) -> Option<StructuredError> {
+    crate::registry::forbidden_argument(arguments)
+        .map(StructuredError::forbidden_argument)
+        .or_else(|| {
+            tool.forbidden_path_argument(arguments)
+                .map(|(argument, fix)| StructuredError::forbidden_path(&argument, fix))
+        })
+}
+
+/// Preserve the structured refusal when required inline content is absent.
+/// The framework rejects that schema before entering the tool handler. Only
+/// its exact error content is enriched; schemas, requests, successful results
+/// and protected response metadata stay under the framework's admission.
+struct ToolArgumentErrors {
+    adapter: Arc<Adapter>,
+}
+
+impl Middleware for ToolArgumentErrors {
+    fn on_response(
+        &self,
+        ctx: &McpContext,
+        request: &JsonRpcRequest,
+        mut response: JsonValue,
+    ) -> McpResult<JsonValue> {
+        ctx.checkpoint()?;
+        if request.method != "tools/call"
+            || response["resultType"] != "complete"
+            || response["isError"] != true
+            || response["content"]
+                != json!([{
+                    "type": "text",
+                    "text": "Tool arguments do not match the declared input schema.",
+                }])
+        {
+            return Ok(response);
+        }
+        let Some(params) = request.params.as_ref() else {
+            return Ok(response);
+        };
+        let Some(tool) = params["name"]
+            .as_str()
+            .and_then(|name| self.adapter.mcp.tool_by_wire(name))
+        else {
+            return Ok(response);
+        };
+        let Some(arguments) = params.get("arguments").filter(|args| args.is_object()) else {
+            return Ok(response);
+        };
+        if let Some(error) = forbidden_tool_argument(tool, arguments) {
+            response["content"] = json!([{
+                "type": "text",
+                "text": error.with_authority(self.adapter.authority_json()).render(),
+            }]);
+        }
+        Ok(response)
+    }
 }
 
 /// One registry tool as a fastmcp tool.
@@ -640,8 +698,11 @@ pub fn build_server(config: ServerConfig) -> Result<Server, ServerError> {
         adapter.mcp.instructions(),
         adapter.authority_json(),
     );
-    let mut builder =
-        ServerBuilder::new(adapter.mcp.server.clone(), crate::VERSION).instructions(instructions);
+    let mut builder = ServerBuilder::new(adapter.mcp.server.clone(), crate::VERSION)
+        .instructions(instructions)
+        .middleware(ToolArgumentErrors {
+            adapter: Arc::clone(&adapter),
+        });
     for spec in adapter.mcp.tools.clone() {
         builder = builder.tool(VerbTool::new(Arc::clone(&adapter), spec));
     }
