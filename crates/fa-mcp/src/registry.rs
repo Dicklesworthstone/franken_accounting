@@ -1337,6 +1337,14 @@ impl ToolSpec {
             let prop = self.flag_property(f);
             let via_here = forwarded.is_some_and(|s| &s.via == f);
             match obj.get(&prop) {
+                Some(JsonValue::Null) if matches!(f.as_str(), "--timeout-ns" | "--reverse-on") => {
+                    return Err(ArgError {
+                        message: format!("{wire}: timing argument {prop} cannot be null"),
+                        fix: format!(
+                            "supply an explicit {prop} value, or omit it to request no timing"
+                        ),
+                    });
+                }
                 None | Some(JsonValue::Null) => {
                     if via_here {
                         argv.push(f.clone());
@@ -1371,7 +1379,7 @@ impl ToolSpec {
                         fix: format!("`{prop}`: \"…\""),
                     });
                 }
-                Some(JsonValue::Number(n)) if mcp.is_integer(f) && n.is_i64() => {
+                Some(JsonValue::Number(n)) if mcp.is_integer(f) && (n.is_i64() || n.is_u64()) => {
                     argv.push(f.clone());
                     argv.push(n.to_string());
                 }
@@ -2210,6 +2218,144 @@ mod tests {
             inv.argv,
             vec!["period", "create", "--fiscal-year", "2026", "--json"]
         );
+    }
+
+    #[test]
+    fn proof_normalization_preserves_each_scope_without_file_or_authority_overrides() {
+        let (mcp, reg) = embedded();
+        let tool = mcp.tool_by_wire("fa_proof_export").expect("proof export");
+        let schema = tool.input_schema(&mcp, reg);
+        assert_eq!(
+            schema["properties"]["kind"]["enum"],
+            json!([
+                "checkpoint",
+                "inclusion",
+                "consistency",
+                "prefix",
+                "balance"
+            ])
+        );
+        assert_eq!(tool.events(reg), vec!["proof_exported"]);
+        assert!(!reg.verb("proof").unwrap().writes);
+        let state = "a".repeat(64);
+        let next = "b".repeat(64);
+        let entry = "c".repeat(32);
+        for (arguments, expected) in [
+            (
+                json!({"kind": "checkpoint"}),
+                vec!["proof", "checkpoint", "--json"],
+            ),
+            (
+                json!({"kind": "inclusion", "state": state, "entry": entry, "with_record": true}),
+                vec![
+                    "proof",
+                    "inclusion",
+                    "--state",
+                    &state,
+                    "--entry",
+                    &entry,
+                    "--with-record",
+                    "--json",
+                ],
+            ),
+            (
+                json!({"kind": "consistency", "state": state, "next_state": next}),
+                vec![
+                    "proof",
+                    "consistency",
+                    "--state",
+                    &state,
+                    "--next-state",
+                    &next,
+                    "--json",
+                ],
+            ),
+            (
+                json!({"kind": "prefix", "state": "latest"}),
+                vec!["proof", "prefix", "--state", "latest", "--json"],
+            ),
+            (
+                json!({"kind": "balance", "state": state, "account": "1000", "unit": "USD", "as_of": "2026-03-31"}),
+                vec![
+                    "proof",
+                    "balance",
+                    "--state",
+                    &state,
+                    "--account",
+                    "1000",
+                    "--unit",
+                    "USD",
+                    "--as-of",
+                    "2026-03-31",
+                    "--json",
+                ],
+            ),
+        ] {
+            let invocation = tool
+                .invocation(&mcp, reg, &arguments)
+                .expect("proof arguments");
+            assert_eq!(invocation.argv, expected);
+            assert_eq!(
+                invocation.stdin, None,
+                "export takes selectors, not a supplied proof"
+            );
+        }
+        for property in ["out", "grant", "as", "book", "keys", "yes"] {
+            assert!(schema["properties"].get(property).is_none(), "{property}");
+            for value in [json!("caller-supplied"), JsonValue::Null] {
+                let mut arguments = json!({"kind": "checkpoint"});
+                arguments[property] = value;
+                assert!(
+                    tool.invocation(&mcp, reg, &arguments).is_err(),
+                    "{property} must never create a file or expand export authority"
+                );
+            }
+        }
+        for arguments in [
+            json!({}),
+            json!({"kind": "financial_statement"}),
+            json!({"kind": "inclusion", "entry": entry, "with_record": "true"}),
+            json!({"kind": "balance", "account": ["1000"], "unit": "USD"}),
+        ] {
+            assert!(
+                tool.invocation(&mcp, reg, &arguments).is_err(),
+                "{arguments}"
+            );
+        }
+        let description = tool.description(&mcp, reg);
+        assert!(description.contains("read and produce"));
+        assert!(description.contains("whole-book read authority"));
+        assert!(description.contains("trust") && description.contains("independently"));
+    }
+
+    #[test]
+    fn timed_arguments_keep_unsigned_nanoseconds_exact_and_refuse_float_or_null_values() {
+        let (mcp, reg) = embedded();
+        for wire in ["fa_post_post", "fa_post_reserve"] {
+            let tool = mcp.tool_by_wire(wire).expect("timed posting tool");
+            let invocation = tool
+                .invocation(&mcp, reg, &json!({"intent": {}, "timeout_ns": u64::MAX}))
+                .expect("an exact u64 is forwarded without an i64 or float conversion");
+            assert!(
+                invocation
+                    .argv
+                    .windows(2)
+                    .any(|pair| { pair[0] == "--timeout-ns" && pair[1] == "18446744073709551615" }),
+                "{invocation:?}"
+            );
+            assert_eq!(invocation.stdin.unwrap(), b"{}");
+            for value in [json!(1.0), json!(1.5), JsonValue::Null] {
+                let error = tool
+                    .invocation(&mcp, reg, &json!({"intent": {}, "timeout_ns": value}))
+                    .expect_err("a malformed duration must not become a permanent hold");
+                assert!(error.message.contains("timeout_ns"), "{error:?}");
+            }
+        }
+        let post = mcp.tool_by_wire("fa_post_post").expect("post");
+        let error = post
+            .invocation(&mcp, reg, &json!({"intent": {}, "reverse_on": null}))
+            .expect_err("an explicit null must not silently drop a reversal request");
+        assert!(error.message.contains("reverse_on"), "{error:?}");
     }
 
     #[test]

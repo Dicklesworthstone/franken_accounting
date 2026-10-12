@@ -165,8 +165,16 @@ fn fad(args: &[&str]) -> (i32, String, String) {
 }
 
 fn start(book: &Path) -> Daemon {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_fad"))
-        .args(["serve", "--book", &book.display().to_string(), "--json"])
+    start_with_timed_work(book, false)
+}
+
+fn start_with_timed_work(book: &Path, bootstrap: bool) -> Daemon {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_fad"));
+    command.args(["serve", "--book", &book.display().to_string(), "--json"]);
+    if bootstrap {
+        command.arg("--bootstrap-system");
+    }
+    let mut child = command
         .env_remove("FA_BOOK")
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -254,6 +262,8 @@ fn one_daemon_per_book_and_fa_gets_byte_identical_answers_through_it() {
 
     let daemon = start(&book);
     assert_eq!(field(&daemon.serving, "dir"), Some(b.as_str()));
+    assert_eq!(field(&daemon.serving, "timed_work_enabled"), Some("false"));
+    assert_eq!(field(&daemon.serving, "timed_authority"), Some("null"));
     // A second daemon for the same book is refused: the lease is held.
     let (code, out, err) = fad(&["serve", "--book", &b, "--json"]);
     assert_eq!(code, 6, "{out}\n{err}");
@@ -600,4 +610,73 @@ fn every_daemon_event_is_emitted_and_fad_refuses_what_it_does_not_know() {
     let (code, schema, _) = fa(&["robot-docs", "schema", "fad_request", "--json"]);
     assert_eq!(code, 0);
     assert!(schema.contains("\"name\":\"fad_request\""), "{schema}");
+}
+
+#[test]
+fn explicit_key_bootstrap_records_ticks_and_clean_stop_releases_the_timed_book() {
+    let dir = tmp("timed");
+    let (book, _) = book(&dir);
+    let b = book.display().to_string();
+    let (code, refusal, _) = fad(&["status", "--book", &b, "--bootstrap-system", "--json"]);
+    assert_eq!(code, 2, "{refusal}");
+    assert!(refusal.contains("local daemon launch authority"));
+    let daemon = start_with_timed_work(&book, true);
+    let mut status = String::new();
+    // Real process/lifecycle smoke only. Clock-drift and cancellation
+    // behavior are deterministic lab scenarios in timed/tests.rs.
+    for _ in 0..80 {
+        let (_, observed, _) = fad(&["status", "--book", &b, "--json"]);
+        status = observed;
+        if field(&status, "timed_cycles")
+            .and_then(|n| n.parse::<u64>().ok())
+            .unwrap_or(0)
+            >= 2
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let (stopped, stop_output, stop_error) = fad(&["stop", "--book", &b, "--json"]);
+    let (exit, remaining) = daemon.finish();
+    assert_eq!(stopped, 0, "{stop_output}\n{stop_error}");
+    assert_eq!(exit, 0, "{remaining}");
+    assert_eq!(
+        field(&status, "timed_work_enabled"),
+        Some("true"),
+        "{status}"
+    );
+    assert_eq!(
+        field(&status, "timed_authority"),
+        Some("trusted-local-book-keys"),
+        "{status}"
+    );
+    assert_eq!(
+        field(&status, "last_tick_monotonic_ok"),
+        Some("true"),
+        "{status}"
+    );
+    assert_eq!(field(&status, "timed_work_error"), Some("null"), "{status}");
+    assert_eq!(
+        Lease::holder(&book, &registry().unwrap().daemon.lease),
+        None
+    );
+    let reopened = fa::Book::open_dir(
+        &book,
+        fa::BookKeys::load(&book.join("book.keys")).unwrap(),
+        fa::Entropy::deterministic(101),
+    )
+    .unwrap();
+    let tick = reopened
+        .latest_tick()
+        .unwrap()
+        .expect("daemon journaled real TimeEvidence");
+    let (entry, _) = reopened.read_entry(tick.entry).unwrap().unwrap();
+    assert!(matches!(
+        entry.proposal.control,
+        Some(fa_model::ControlPayload::TimeTick {
+            source: 0,
+            monotonic_ok: true,
+            ..
+        })
+    ));
 }

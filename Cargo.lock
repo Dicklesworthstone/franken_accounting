@@ -820,6 +820,7 @@ dependencies = [
  "fa-registers",
  "fa-registry",
  "fa-time",
+ "fa-verify",
  "fgdb",
  "fgdb-types",
 ]
@@ -970,6 +971,12 @@ dependencies = [
  "asupersync",
  "fa",
  "fa-cli",
+ "fa-journal",
+ "fa-model",
+ "fa-money",
+ "fa-time",
+ "fgdb",
+ "fgdb-types",
 ]
 
 [[package]]

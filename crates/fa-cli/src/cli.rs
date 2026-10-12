@@ -78,6 +78,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("open-items", open_items_cmd),
     ("explain", explain_cmd),
     ("checkpoint", notary::checkpoint_cmd),
+    ("proof", crate::proof::proof_cmd),
     ("verify", verify_cmd),
     ("registers", registers_cmd),
     ("entry", entry_cmd),
@@ -107,6 +108,8 @@ pub(crate) enum Fail {
     /// The registry and this binary disagree (a parity defect), or the
     /// embedded registry is unreadable: a foundation failure, exit 5.
     Internal(String),
+    /// A command's artifact input/output failed: a foundation I/O failure, exit 5.
+    Io(String),
     /// The environment cannot serve the command (no daemon where one was
     /// asked for): exit 4.
     Environment(String),
@@ -993,7 +996,7 @@ fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
             fix,
             detail,
         },
-        Err(Fail::Internal(message)) => Failure {
+        Err(Fail::Internal(message) | Fail::Io(message)) => Failure {
             exit: exit::FOUNDATION,
             refusal_id: None,
             diag: format!("error (exit {}): {message}", exit::FOUNDATION),
@@ -1172,6 +1175,7 @@ fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fa
             ("post" | "commit" | "reverse" | "reserve" | "resolve", _) => &[Op::Post],
             ("approve", _) => &[Op::Approve],
             ("checkpoint", _) => &[Op::Witness],
+            ("proof", _) => &[Op::Read, Op::Produce],
             _ => {
                 return Err(Refusal::new(
                     fa_journal::refusal::code::CAPABILITY,
@@ -1207,7 +1211,7 @@ fn admit_bound_files(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fail
             fix,
         )
     };
-    for flag in ["--plan-out", "--certificate-out"] {
+    for flag in ["--plan-out", "--certificate-out", "--out"] {
         if args.flag(flag).is_some() {
             return Err(blocked(
                 flag,
@@ -2030,8 +2034,32 @@ fn req_str<'a>(doc: &'a Json, key: &str, what: &str) -> Result<&'a str, Fail> {
 
 fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
+    if args.flag("--time-zone").is_some()
+        && args.positional.get(1).map(String::as_str) != Some("create")
+    {
+        return Err(usage(
+            "--time-zone declares the policy of a new book; it belongs to book create",
+            "fa book create --name \"My Co\" --time-zone UTC",
+        ));
+    }
     match args.positional.get(1).map(String::as_str) {
         Some("create") => {
+            if args.flag_all("--time-zone").len() > 1 {
+                return Err(usage(
+                    "--time-zone may be supplied only once",
+                    "--time-zone UTC",
+                ));
+            }
+            let time_zone_policy = match args.flag("--time-zone") {
+                None => None,
+                Some("UTC") => Some(fa_journal::TimeZonePolicy::Utc),
+                Some(zone) => {
+                    return Err(usage(
+                        format!("time zone `{zone}` is not supported"),
+                        "--time-zone UTC (the registered policy), or omit it to leave the policy undeclared",
+                    ));
+                }
+            };
             if ctx.books.is_held() {
                 return Err(usage(
                     "`fa book create` makes a new book directory; a daemon serves an existing one",
@@ -2092,7 +2120,7 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     name: name.to_string(),
                     base_unit,
                     calendar,
-                    time_zone_policy: None,
+                    time_zone_policy,
                     entities: Vec::new(),
                     opening_date: None,
                 },
@@ -3025,6 +3053,110 @@ struct BuiltPost {
     reversal_detail: Option<(String, Reason)>,
 }
 
+/// Timing is request data. The posting kernel resolves its committed tick
+/// anchor and schedule law; the CLI never reads a clock or creates an effect.
+fn post_timing(
+    args: &Args,
+    doc: &Json,
+    class: EntryClass,
+) -> Result<(Option<u64>, Option<DateDay>), Fail> {
+    let Json::Obj(fields) = doc else {
+        return Err(usage("intent must be an object", "fa robot-docs examples"));
+    };
+    const FIELDS: &[&str] = &[
+        "class",
+        "effective_date",
+        "effective_period",
+        "idempotency_key",
+        "description",
+        "legs",
+        "evidence",
+        "reverses",
+        "reason",
+        "resolves",
+        "disposition",
+        "timeout_ns",
+        "reverse_on",
+    ];
+    if let Some((field, _)) = fields
+        .iter()
+        .find(|(field, _)| !FIELDS.contains(&field.as_str()))
+    {
+        return Err(usage(
+            format!("intent: unknown field `{field}`"),
+            "use timeout_ns for a Pending duration in nanoseconds, or reverse_on for an Adjusting reversal date; fa robot-docs examples lists the supported intent fields",
+        ));
+    }
+    for (field, flag, allowed, name) in [
+        ("timeout_ns", "--timeout-ns", EntryClass::PENDING, "Pending"),
+        (
+            "reverse_on",
+            "--reverse-on",
+            EntryClass::ADJUSTING,
+            "Adjusting",
+        ),
+    ] {
+        if args.flag_all(flag).len() > 1 {
+            return Err(usage(
+                format!("{flag} may be supplied only once"),
+                format!("supply one {flag} value, or use the intent's {field} field"),
+            ));
+        }
+        if doc.get(field).is_some() && args.flag(flag).is_some() {
+            return Err(usage(
+                format!("{field} was supplied in both the intent and {flag}"),
+                format!("supply {field} in the intent or {flag}, once"),
+            ));
+        }
+        if (doc.get(field).is_some() || args.flag(flag).is_some()) && class != allowed {
+            return Err(usage(
+                format!("{field} belongs to a {name} entry only"),
+                format!("remove {field}/{flag}, or use class {name}"),
+            ));
+        }
+    }
+    let bad_timeout = || {
+        usage(
+            "timeout_ns must be an integer from 0 through 18446744073709551615 nanoseconds",
+            "timeout_ns: 5000000000, or --timeout-ns 5000000000 (five seconds from the latest committed TimeEvidence tick)",
+        )
+    };
+    let timeout_ns = match doc.get("timeout_ns") {
+        Some(Json::Int(n)) => Some(u64::try_from(*n).map_err(|_| bad_timeout())?),
+        Some(_) => return Err(bad_timeout()),
+        None => args
+            .flag("--timeout-ns")
+            .map(|text| {
+                if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(bad_timeout());
+                }
+                text.parse::<u64>().map_err(|_| bad_timeout())
+            })
+            .transpose()?,
+    };
+    let reverse_text = match doc.get("reverse_on") {
+        Some(Json::Str(text)) => Some(text.as_str()),
+        Some(_) => {
+            return Err(usage(
+                "reverse_on must be a civil-date string",
+                "reverse_on: \"YYYY-MM-DD\", or --reverse-on YYYY-MM-DD",
+            ));
+        }
+        None => args.flag("--reverse-on"),
+    };
+    let reverse_on = reverse_text
+        .map(|text| {
+            DateDay::parse(text).map_err(|e| {
+                usage(
+                    format!("reverse_on `{text}`: {e:?}"),
+                    "reverse_on: \"YYYY-MM-DD\", or --reverse-on YYYY-MM-DD",
+                )
+            })
+        })
+        .transpose()?;
+    Ok((timeout_ns, reverse_on))
+}
+
 /// Resolve and seal the request once. Planning and posting must use these
 /// same bytes; rebuilding a description would change its randomized seal.
 fn build_post_request(
@@ -3037,31 +3169,27 @@ fn build_post_request(
     capability: Capability,
 ) -> Result<BuiltPost, Fail> {
     let ctx = book.context().clone();
-    let class_name = doc
-        .get("class")
-        .and_then(Json::as_str)
-        .unwrap_or(match forced {
+    let class_name = match doc.get("class") {
+        None => match forced {
             Some(EntryClass::PENDING) => "Pending",
             Some(EntryClass::RESOLUTION) => "Resolution",
             Some(EntryClass::REVERSAL) => "Reversal",
             _ => "Original",
-        });
+        },
+        Some(Json::Str(name)) => name,
+        Some(_) => {
+            return Err(usage(
+                "intent: class must be a string",
+                "class: Pending|Adjusting|Original|…",
+            ));
+        }
+    };
     let class = EntryClass::from_name(class_name).ok_or_else(|| {
         usage(
             format!("unknown class `{class_name}`"),
             "class: Original|Adjusting|Reversal|Pending|Resolution|…",
         )
     })?;
-    for key in ["timeout_ns", "timeout", "expires", "expiry", "expires_at"] {
-        if doc.get(key).is_some() {
-            return Err(usage(
-                format!(
-                    "`{key}`: timed holds are not available yet, and a timed reservation is never silently made permanent"
-                ),
-                "remove the field to reserve without a timeout, or wait for the TimeEvidence tick and expiry-sweep slice (plan §5.4)",
-            ));
-        }
-    }
     if forced.is_some_and(|f| f != class) {
         return Err(usage(
             format!(
@@ -3075,6 +3203,7 @@ fn build_post_request(
             "remove `class` from the intent, or use `fa post`",
         ));
     }
+    let (timeout_ns, reverse_on) = post_timing(args, doc, class)?;
     let typed_reversal = forced == Some(EntryClass::REVERSAL);
     let supplied_date = if typed_reversal && doc.get("effective_date").is_none() {
         None
@@ -3278,7 +3407,7 @@ fn build_post_request(
     } else {
         if class == EntryClass::PENDING {
             pending = Some(Pending {
-                timeout_ns: None,
+                timeout_ns,
                 resolution_of: None,
                 disposition: None,
             });
@@ -3344,6 +3473,10 @@ fn build_post_request(
         external_ids: Vec::new(),
         extensions: Vec::new(),
         tags: Vec::new(),
+    };
+    let proposal = match reverse_on {
+        Some(day) => fa_journal::with_auto_reverse(proposal, day),
+        None => proposal,
     };
     Ok(BuiltPost {
         request: PostRequest {
