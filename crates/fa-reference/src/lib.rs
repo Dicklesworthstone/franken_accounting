@@ -2241,25 +2241,28 @@ impl Oracle {
                     code: code::REVERSAL_SHAPE,
                 };
             }
-            // 7c. Application effects (plan §5.7, §8.2): an item with live
-            //     applications is not reversed; re-applying by reversing a
-            //     reversal waits for the full netting law.
-            for i in 0..original.legs.len() {
-                if !self.applied_to(target, i).is_zero() {
+            // Every ancestor changes liveness, not just the immediate
+            // reversal target. A revived invoice may have received new
+            // applications that must be undone before it can disappear.
+            let mut affected = target;
+            loop {
+                let entry = &self.journal[affected];
+                if (0..entry.legs.len()).any(|i| !self.applied_to(affected, i).is_zero()) {
                     return Verdict::Refused {
                         code: code::LIVE_APPLICATIONS,
                     };
                 }
-            }
-            if original.class == "Reversal"
-                && original
-                    .reverses
-                    .and_then(|g| self.journal.get(g))
-                    .is_some_and(|g| !g.settles.is_empty())
-            {
-                return Verdict::Refused {
-                    code: code::CLASS_NOT_IMPLEMENTED,
-                };
+                if entry.class != "Reversal" {
+                    break;
+                }
+                let parent = entry.reverses.expect("an admitted reversal has a target");
+                assert!(parent < affected, "reversal targets precede their entries");
+                if !self.journal[parent].settles.is_empty() {
+                    return Verdict::Refused {
+                        code: code::CLASS_NOT_IMPLEMENTED,
+                    };
+                }
+                affected = parent;
             }
         }
         // 7b. Resolution law: the target is a pending entry; a Posts

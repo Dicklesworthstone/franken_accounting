@@ -2098,10 +2098,29 @@ fn a_reversal_chain_of_any_length_keeps_liveness_by_parity_and_settles_the_reviv
         .expect("the revived original is an open item");
     assert!(matches!(receipt, Posted::Committed { .. }));
     assert_eq!(h.applied_to(original.vid, 0), 1);
-    // A 67th reversal (odd parity) reverses the original again: a further
-    // application against it is refused as a reversed target.
-    let r67 = h.post(h.request(h.reversal_of_entry(tip, b"rev-66"), &["post"]));
-    assert!(r67.is_ok(), "{r67:?}");
+    // A 67th reversal would hide the paid original again. Its immediate
+    // target has no applications, but the distant ancestor does: the
+    // receipt must be undone before this same proposal may commit.
+    let reversal = h.reversal_of_entry(tip, b"rev-66");
+    let before = h.db.frontier().unwrap();
+    let r67 = h
+        .post(h.request(reversal.clone(), &["post"]))
+        .expect_err("a long reversal chain cannot strand a live application");
+    assert_eq!((r67.code, r67.exit), ("FA-REF-073", exit::REFUSAL));
+    assert!(r67.message.contains(&format!("{:032x}", original.vid.0)));
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert_eq!(h.applied_to(original.vid, 0), 1);
+    h.post(h.request(
+        h.reversal_of_entry(receipt.entry_ref(), b"undo-rcpt-after-66"),
+        &["post"],
+    ))
+    .expect("undo the actual applying receipt");
+    assert_eq!(h.applied_to(original.vid, 0), 0);
+    let r67 = h.post(h.request(reversal, &["post"])).unwrap();
+    assert!(matches!(r67, Posted::Committed { .. }));
+    assert_eq!(h.applied_to(original.vid, 0), 0);
+    // Odd parity now safely hides the original, so a further application
+    // is still refused as a reversed target.
     let r = h
         .post(h.request(
             h.receipt(1, vec![settle(original, 0, usd, 1)], b"rcpt-after-67"),

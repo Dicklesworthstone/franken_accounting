@@ -1617,39 +1617,60 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
                 "post the same accounts and amounts in the same order with debit and credit exchanged; a different correction is a Replacement",
             )));
         }
-        // 7c. Application effects (plan §5.7, §8.2): a target with live
-        //     applications against its legs is not reversed — the applying
-        //     entries come first; the target's own applications are undone
-        //     exactly as derived UNSETTLES effects, never re-entered. Reversing
-        //     a reversal that undid applications would re-apply them; that
-        //     waits for the full netting law.
-        for i in 0..original.proposal.legs.len() {
-            let ordinal =
-                u16::try_from(i).map_err(|_| KernelError::Corrupt("more than u16 legs".into()))?;
-            let lvid = leg_vid(target.vid, ordinal);
-            let row = txn
-                .vertex(db, lvid)?
-                .ok_or_else(|| KernelError::Corrupt("reversal target leg row missing".into()))?;
-            let live = applied_witness(&row)?;
-            if live != 0 {
-                txn.abort();
-                return Ok(Err(Refusal::new(
-                    code::LIVE_APPLICATIONS,
-                    exit::REFUSAL,
-                    format!(
-                        "leg {i} of entry {:032x} has {live} applied against it",
-                        target.vid.0
-                    ),
-                    "plan §5.7 (reversing an open item with live applications would strand them)",
-                    "reverse the applying entries first (fa open-items --account <code> lists them), then reverse this entry",
-                )));
+        // 7c. Reversal changes the liveness of its entire ancestry. An
+        // invoice can be revived, receive a payment, and then be hidden by
+        // reversing a later reversal. Witness every affected leg so that
+        // this cannot strand live applications, including a concurrent one.
+        // The target's own applications are undone below; reviving an
+        // applying ancestor still waits for the full re-application law.
+        let mut affected = original.clone();
+        let mut affected_vid = target.vid;
+        let mut ancestry = BTreeSet::new();
+        loop {
+            if !ancestry.insert(affected_vid) {
+                return Err(KernelError::Corrupt("reversal ancestry cycles".into()));
             }
-        }
-        if original.proposal.class == EntryClass::REVERSAL
-            && let [first] = original.proposal.supersession.as_slice()
-            && let Some(grand) = txn.vertex(db, first.target.vid)?
-        {
-            let grand = match prop(&grand, property::FA_PAYLOAD) {
+            for i in 0..affected.proposal.legs.len() {
+                let ordinal = u16::try_from(i)
+                    .map_err(|_| KernelError::Corrupt("more than u16 legs".into()))?;
+                let lvid = leg_vid(affected_vid, ordinal);
+                let row = txn.vertex(db, lvid)?.ok_or_else(|| {
+                    KernelError::Corrupt("reversal ancestor leg row missing".into())
+                })?;
+                let live = applied_witness(&row)?;
+                if live != 0 {
+                    txn.abort();
+                    return Ok(Err(Refusal::new(
+                        code::LIVE_APPLICATIONS,
+                        exit::REFUSAL,
+                        format!(
+                            "leg {i} of entry {:032x} has {live} applied against it",
+                            affected_vid.0
+                        ),
+                        "plan §5.7 (reversing an open item with live applications would strand them)",
+                        "reverse the applying entries first (fa open-items --account <code> lists them), then reverse this entry",
+                    )));
+                }
+            }
+            if affected.proposal.class != EntryClass::REVERSAL {
+                break;
+            }
+            let [parent] = affected.proposal.supersession.as_slice() else {
+                return Err(KernelError::Corrupt(
+                    "reversal ancestor has no unique target".into(),
+                ));
+            };
+            if parent.kind != SupersessionKind::Reverses {
+                return Err(KernelError::Corrupt(
+                    "reversal ancestor has the wrong lineage kind".into(),
+                ));
+            }
+            let parent = parent.target;
+            let row = txn
+                .vertex(db, parent.vid)?
+                .filter(|row| row.labels.contains(&label::ENTRY))
+                .ok_or_else(|| KernelError::Corrupt("reversal ancestor entry missing".into()))?;
+            affected = match prop(&row, property::FA_PAYLOAD) {
                 Some(CanonicalScalar::Bytes(b)) => Entry::decode(b.as_slice())?,
                 other => {
                     return Err(KernelError::Corrupt(format!(
@@ -1657,12 +1678,41 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
                     )));
                 }
             };
-            if grand.proposal.legs.iter().any(|l| !l.settles.is_empty()) {
+            if affected.entry_digest != parent.entry_digest {
+                return Err(KernelError::Corrupt(
+                    "reversal ancestor digest mismatch".into(),
+                ));
+            }
+            if affected.proposal.book_id != proposal.book_id
+                || affected.proposal.branch_id != proposal.branch_id
+            {
+                return Err(KernelError::Corrupt(
+                    "reversal ancestor belongs to another book or branch".into(),
+                ));
+            }
+            let reversible = match affected.proposal.class {
+                EntryClass::ORIGINAL | EntryClass::ADJUSTING | EntryClass::REVERSAL => true,
+                EntryClass::RESOLUTION => matches!(
+                    affected.proposal.pending,
+                    Some(Pending {
+                        disposition: Some(Disposition::Posts { .. }),
+                        ..
+                    })
+                ),
+                _ => false,
+            };
+            if !reversible {
+                return Err(KernelError::Corrupt(
+                    "reversal ancestor is not a reversible posting entry".into(),
+                ));
+            }
+            if affected.proposal.legs.iter().any(|l| !l.settles.is_empty()) {
                 txn.abort();
                 return Ok(Err(not_implemented(
                     "re-application by reversing a reversal",
                 )));
             }
+            affected_vid = parent.vid;
         }
         for (i, oleg) in original.proposal.legs.iter().enumerate() {
             let ordinal =

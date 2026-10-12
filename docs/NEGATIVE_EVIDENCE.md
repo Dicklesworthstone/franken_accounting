@@ -288,3 +288,54 @@ the remaining independent histories before failing with every failed seed.
 No failed history can become a passing test. These two new repairs have
 passed source review and static checks; their runtime verdict, the actual
 Clippy boundary checks and the final integrated gate remain pending.
+
+### Reversal ancestry can strand a live application (2026-10-12, fa-wck)
+
+Build 1120 on `791216f` ran all 32 generated histories. Twelve failed:
+ten stopped at evidence-refusal coverage floors, one lacked reversal-shape
+refusal `FA-REF-051`, and seed `9e3779b97f4a7c2d` exposed a product defect.
+At commit sequence 182, open-item verification found entry
+`284225560683079585833914309786111446645`, leg 0, with an applied mirror
+of 57,917 but a literal journal fold of zero. The kernel and reference
+admission had agreed before this independent mirror check failed. The
+separate timed-expiry campaign passed all 32 seeds, including the formerly
+deficient `7135eed50fa0c80b`. Cargo reported one passed test and one failed
+test after 2,703.83 seconds of test execution; the complete run remains red.
+
+Source inspection identifies a matching counterexample: reverse an invoice,
+reverse that reversal to revive the invoice, apply a payment to it, then
+reverse the second reversal. Admission previously checked only the immediate
+target's legs. A reversal cannot receive applications, so its zero mirrors
+hid the live application on the invoice ancestor. Both literal folds correctly
+exclude that now-inactive invoice. The old log does not record this particular
+entry's complete lineage, so attribution of that exact runtime identity to
+this sequence remains an inference until replay.
+
+The repair witnesses and authenticates the full reversal ancestry before
+admission and applies the existing live-application refusal to every affected
+ancestor. The reference independently traverses its journal indices and
+counts applications from its own fold. A short real-kernel regression requires
+the third reversal to refuse without writes, then allows the identical
+proposal after the payment is reversed. Direct receipt undo remains supported;
+unsupported reapplication by reversing its reversal remains refused.
+
+An existing 67-reversal test explicitly required the defective admission.
+Its correction preserves all 66 lawful reversals and the successful payment,
+adds the exact `FA-REF-073` refusal and unchanged frontier/mirror, reverses
+the actual payment, requires the same 67th proposal to commit, and retains
+the final `FA-REF-070` refusal on another payment. This changes a demonstrably
+wrong expectation; it does not drop the positive chain or weaken the mirror
+verifier. Independent source review found no blocker. Runtime verification
+of the repair and the immediate-target-only mutant remain pending.
+
+The generator's separate coverage gaps are supplemented only after all
+640 original draws, in untouched August. Each deficient evidence case must
+produce the independent evidence oracle's actual refusal without changing
+frontier, journal, or folds; corrected evidence must then post under the same
+key. The missing reversal-shape case uses a balanced same-period reversal
+with the wrong leaf account, followed by its exact side-swap under the same
+refused key. All 32 seeds, original draws and coverage floors remain. The
+SoftClosed mutation probe also now captures both kernel and independent
+oracle verdicts before asserting refusal, so an admitted mutant cannot panic
+before the reference decision is observed. None of these changes is a passing
+runtime result or a closure of `fa-vfu`.

@@ -193,12 +193,12 @@ fn kernel_and_independent_oracle_require_softclosed_original_authority() {
     );
     let frontier = k.db.frontier().unwrap();
     let known = oracle.known();
-    let refused = kernel_post(&mut k, &intent, &[]).unwrap_err();
+    let actual = kernel_post(&mut k, &intent, &[]);
+    let reference = oracle.post(&intent);
+    assert_eq!(reference, Verdict::Refused { code: "FA-REF-011" });
+    let refused =
+        actual.expect_err("kernel disagrees with independently refused SoftClosed Original");
     assert_eq!((refused.code, refused.exit), ("FA-REF-011", exit::SAFETY));
-    assert_eq!(
-        oracle.post(&intent),
-        Verdict::Refused { code: "FA-REF-011" }
-    );
     assert_eq!(k.db.frontier().unwrap(), frontier);
     assert_eq!(oracle.known(), known);
     assert_eq!(oracle.journal_len(), 0);
@@ -213,6 +213,97 @@ fn kernel_and_independent_oracle_require_softclosed_original_authority() {
     ));
     assert_eq!(oracle.journal_len(), 1);
     let maintained = maintain(&mut k, march);
+    maintained_matches_oracle(&maintained, &oracle, k.book.book_id);
+}
+
+#[test]
+fn a_reversal_chain_cannot_strand_payments_on_a_revived_invoice() {
+    fn check(k: &Kernel, oracle: &Oracle, refs: &[EntryRef]) {
+        let projections = verify_projections(&k.db, &k.book, None).unwrap();
+        assert!(projections.is_green(), "{projections:?}");
+        let mirrors = verify_open_items(&k.db, &k.book, None).unwrap();
+        assert!(mirrors.is_green(), "{mirrors:?}");
+        let actual = open_items(&k.db, &k.book, None, None).unwrap();
+        let expected = oracle.open_items();
+        assert_eq!(actual.len(), expected.len());
+        for item in actual {
+            let index = refs.iter().position(|r| r.vid == item.entry).unwrap();
+            assert_eq!(
+                (item.original, item.applied, item.applied_out),
+                expected[&(index, usize::from(item.ordinal))]
+            );
+        }
+    }
+
+    let (mut k, mut oracle, periods) = setup();
+    let period = &periods[2];
+    open_period(&mut k, &mut oracle, period, 1);
+    let date = DateDay::from_ymd(2026, 3, 15).unwrap();
+    let mut invoice = maintenance_intent("Original", date, 100_000, "revived-invoice");
+    invoice.legs[0].account = "1200".into();
+    invoice.legs[1].account = "4000".into();
+    let reverse = |target, source: &Intent, key: &str| Intent {
+        class: "Reversal".into(),
+        key: key.as_bytes().to_vec(),
+        reverses: Some(target),
+        legs: source
+            .legs
+            .iter()
+            .map(|leg| Leg {
+                side: leg.side.flipped(),
+                ..leg.clone()
+            })
+            .collect(),
+        settles: Vec::new(),
+        ..source.clone()
+    };
+    let first = reverse(0, &invoice, "invoice-first-reversal");
+    let second = reverse(1, &first, "invoice-revival");
+    let mut refs = Vec::new();
+    for intent in [&invoice, &first, &second] {
+        correction_outcome(&mut k, &mut oracle, &mut refs, intent, Ok(period)).unwrap();
+        check(&k, &oracle, &refs);
+        let maintained = maintain(&mut k, period);
+        maintained_matches_oracle(&maintained, &oracle, k.book.book_id);
+    }
+    let mut receipt = maintenance_intent("Original", date, 57_917, "payment-after-revival");
+    receipt.legs[0].account = "1000".into();
+    receipt.legs[1].account = "1200".into();
+    receipt.settles.push(Settle {
+        leg: 1,
+        target: 0,
+        ordinal: 0,
+        mantissa: 57_917,
+    });
+    correction_outcome(&mut k, &mut oracle, &mut refs, &receipt, Ok(period)).unwrap();
+    check(&k, &oracle, &refs);
+    assert_eq!(oracle.open_items()[&(0, 0)], (100_000, 57_917, 0));
+
+    // The immediate target has no applications, but its invoice ancestor
+    // does. Refusal must leave both the journal and maintained mirror intact.
+    let third = reverse(2, &second, "invoice-third-reversal");
+    let frontier = k.db.frontier().unwrap();
+    let known = oracle.known();
+    let journal_len = oracle.journal_len();
+    assert_eq!(
+        correction_outcome(&mut k, &mut oracle, &mut refs, &third, Err("FA-REF-073")),
+        None
+    );
+    assert_eq!(k.db.frontier().unwrap(), frontier);
+    assert_eq!(oracle.known(), known);
+    assert_eq!(oracle.journal_len(), journal_len);
+    check(&k, &oracle, &refs);
+
+    // Undoing the payment removes the blocker. The exact refused proposal
+    // then commits, with no stale mirror and no dangling open item.
+    let receipt_undo = reverse(3, &receipt, "undo-payment-after-revival");
+    correction_outcome(&mut k, &mut oracle, &mut refs, &receipt_undo, Ok(period)).unwrap();
+    check(&k, &oracle, &refs);
+    assert_eq!(oracle.open_items()[&(0, 0)], (100_000, 0, 0));
+    correction_outcome(&mut k, &mut oracle, &mut refs, &third, Ok(period)).unwrap();
+    check(&k, &oracle, &refs);
+    assert!(oracle.open_items().is_empty());
+    let maintained = maintain(&mut k, period);
     maintained_matches_oracle(&maintained, &oracle, k.book.book_id);
 }
 
@@ -2411,6 +2502,173 @@ fn generated_history(seed: u64) {
         let applications = verify_open_items(&k.db, &k.book, None).unwrap();
         assert!(applications.is_green(), "{applications:?}");
         undone += 1;
+    }
+
+    // The random periods can remain SoftClosed, preventing the evidence
+    // plants from reaching their law. Keep every random draw and coverage
+    // floor, then exercise deficient cases in untouched August. Each refusal
+    // must leave both histories unchanged and permit a corrected same-key
+    // post. May remains reserved for the later corruption probe.
+    let evidence_codes = ["FA-REF-080", "FA-REF-081", "FA-REF-082", "FA-REF-086"];
+    if evidence_codes
+        .iter()
+        .any(|code| evidence_refused.get(code).copied().unwrap_or(0) < 3)
+        || !refused.contains_key("FA-REF-051")
+    {
+        let august = &periods[7];
+        let date = DateDay::from_ymd(2026, 8, 15).unwrap();
+        open_period(&mut k, &mut oracle, august, 641);
+        for (case, code) in evidence_codes.iter().enumerate() {
+            for sample in evidence_refused.get(code).copied().unwrap_or(0)..3 {
+                let intent = maintenance_intent(
+                    "Original",
+                    date,
+                    1,
+                    &format!("required-evidence-{code}-{sample}"),
+                );
+                let cite = |doc, commit| fa_reference::evidence::Citation {
+                    doc,
+                    commit,
+                    role: 1,
+                };
+                let mut wrong = k.evidence[0];
+                wrong.doc_commit = [0; 32];
+                let (evidence, citations) = match case {
+                    0 => (Vec::new(), Vec::new()),
+                    1 => (vec![ghost], vec![cite(99, ghost.doc_commit)]),
+                    2 => (vec![wrong], vec![cite(1, [0; 32])]),
+                    _ => (
+                        vec![k.agent_evidence],
+                        vec![cite(2, k.agent_evidence.doc_commit)],
+                    ),
+                };
+                let frontier = k.db.frontier().unwrap();
+                let known = oracle.known();
+                let journal_len = oracle.journal_len();
+                let native_before = fold_period(&k.db, &k.book, august).unwrap();
+                let model_before = oracle.fold(august);
+                // The posting oracle has no citation input. Its independent
+                // evidence law is the negative oracle; posting occurs only
+                // after those citations have been corrected.
+                let expected = fa_reference::evidence::verdict(
+                    &evidence_law,
+                    &intent.class,
+                    &held,
+                    &citations,
+                    &fa_reference::evidence::Attestations::default(),
+                );
+                assert_eq!(expected, Some(*code));
+                let refusal = kernel_post_citing(&mut k, &intent, &refs, evidence)
+                    .expect_err("the evidence law refuses the deficient citation");
+                assert_eq!(refusal.code, *code);
+                assert_eq!(k.db.frontier().unwrap(), frontier);
+                assert_eq!(oracle.known(), known);
+                assert_eq!(oracle.journal_len(), journal_len);
+                assert_eq!(fold_period(&k.db, &k.book, august).unwrap(), native_before);
+                assert_eq!(oracle.fold(august), model_before);
+                *evidence_refused.entry(code).or_insert(0) += 1;
+
+                assert_eq!(
+                    fa_reference::evidence::verdict(
+                        &evidence_law,
+                        &intent.class,
+                        &held,
+                        &[cite(1, k.evidence[0].doc_commit)],
+                        &fa_reference::evidence::Attestations::default(),
+                    ),
+                    None
+                );
+                let actual = kernel_post(&mut k, &intent, &refs);
+                let reference = oracle.post(&intent);
+                assert_eq!(
+                    reference,
+                    Verdict::Posted {
+                        index: refs.len(),
+                        period: august.clone(),
+                    }
+                );
+                let entry = actual.expect("corrected evidence permits the same key");
+                assert!(matches!(entry, Posted::Committed { .. }));
+                assert_eq!(entry.period(), Some(august.as_str()));
+                refs.push(entry.entry_ref());
+                posted += 1;
+                posted_intents.push(intent);
+            }
+        }
+
+        if !refused.contains_key("FA-REF-051") {
+            let original = maintenance_intent("Original", date, 1, "required-reversal-source");
+            let actual = kernel_post(&mut k, &original, &refs);
+            let reference = oracle.post(&original);
+            let target = refs.len();
+            assert_eq!(
+                reference,
+                Verdict::Posted {
+                    index: target,
+                    period: august.clone(),
+                }
+            );
+            let entry = actual.expect("a fresh reversal target posts");
+            assert!(matches!(entry, Posted::Committed { .. }));
+            assert_eq!(entry.period(), Some(august.as_str()));
+            refs.push(entry.entry_ref());
+            posted += 1;
+            posted_intents.push(original.clone());
+            let mut reversal = Intent {
+                class: "Reversal".into(),
+                key: b"required-reversal-shape".to_vec(),
+                reverses: Some(target),
+                legs: original
+                    .legs
+                    .iter()
+                    .map(|leg| Leg {
+                        side: leg.side.flipped(),
+                        ..leg.clone()
+                    })
+                    .collect(),
+                ..original
+            };
+            // Balance and period order remain valid. The wrong leaf account
+            // violates exact side-swap shape, rather than a prior law.
+            reversal.legs[0].account = "4000".into();
+            let frontier = k.db.frontier().unwrap();
+            let known = oracle.known();
+            let journal_len = oracle.journal_len();
+            let native_before = fold_period(&k.db, &k.book, august).unwrap();
+            let model_before = oracle.fold(august);
+            let actual = kernel_post(&mut k, &reversal, &refs);
+            let reference = oracle.post(&reversal);
+            assert_eq!(reference, Verdict::Refused { code: "FA-REF-051" });
+            assert_eq!(actual.unwrap_err().code, "FA-REF-051");
+            assert_eq!(k.db.frontier().unwrap(), frontier);
+            assert_eq!(oracle.known(), known);
+            assert_eq!(oracle.journal_len(), journal_len);
+            assert_eq!(fold_period(&k.db, &k.book, august).unwrap(), native_before);
+            assert_eq!(oracle.fold(august), model_before);
+            *refused.entry("FA-REF-051").or_insert(0) += 1;
+
+            reversal.legs[0].account = "6000".into();
+            let actual = kernel_post(&mut k, &reversal, &refs);
+            let reference = oracle.post(&reversal);
+            assert_eq!(
+                reference,
+                Verdict::Posted {
+                    index: refs.len(),
+                    period: august.clone(),
+                }
+            );
+            let entry = actual.expect("the exact reversal posts with the refused key");
+            assert!(matches!(entry, Posted::Committed { .. }));
+            assert_eq!(entry.period(), Some(august.as_str()));
+            refs.push(entry.entry_ref());
+            posted += 1;
+            posted_intents.push(reversal);
+            reversed_targets.insert(target);
+        }
+        let projections = verify_projections(&k.db, &k.book, None).unwrap();
+        assert!(projections.is_green(), "{projections:?}");
+        let applications = verify_open_items(&k.db, &k.book, None).unwrap();
+        assert!(applications.is_green(), "{applications:?}");
     }
 
     // Every evidence refusal the plants aim at was produced, on every seed.
