@@ -309,6 +309,33 @@ pub async fn ensure_history<V: asupersync::fs::Vfs + Clone>(
     }
 }
 
+/// The book root's original creating commit in the authenticated delta stream.
+/// Call [`ensure_history`] first. A missing current root or a history without
+/// its `CreateVertex` has no book genesis.
+///
+/// A vertex row's `created_at` is the start of that content version, not its
+/// original birth. Checkpoint maintenance moves `ACCUMULATOR_HEAD` on the
+/// root, so its current row cannot determine the earliest replayable prefix.
+pub fn source_genesis<V: asupersync::fs::Vfs + Clone>(
+    source: &Database<V>,
+) -> Result<Option<CommitSeq>, KernelError> {
+    let root = crate::rows::book_root();
+    if source.vertex(root)?.is_none() {
+        return Ok(None);
+    }
+    for batch in source.delta_since(CommitSeq(0))? {
+        for entry in batch.coordinate_entries() {
+            if entry.rows.iter().any(|row| {
+                matches!(row, DeltaRow::CreateVertex { vid, labels, .. }
+                    if *vid == root && labels.contains(&label::BOOK))
+            }) {
+                return Ok(Some(batch.commit_seq()));
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// The source's committed batches through `prefix` (head when `None`), in
 /// commit order. Call [`ensure_history`] first.
 pub fn source_batches<V: asupersync::fs::Vfs + Clone>(
@@ -332,7 +359,7 @@ pub fn source_batches<V: asupersync::fs::Vfs + Clone>(
     // A scratch book starts at the source's genesis: a prefix before the
     // book root's creating commit would replay to a database with no book,
     // which no caller may present as one (WhiteCreek 3500).
-    let Some(root) = source.vertex(crate::rows::book_root())? else {
+    let Some(genesis) = source_genesis(source)? else {
         return Ok(Err(Refusal::new(
             code::STRUCTURE,
             exit::USAGE,
@@ -341,19 +368,16 @@ pub fn source_batches<V: asupersync::fs::Vfs + Clone>(
             "replay from an opened book",
         )));
     };
-    if prefix < root.created_at {
+    if prefix < genesis {
         return Ok(Err(Refusal::new(
             code::STRUCTURE,
             exit::USAGE,
             format!(
                 "replay prefix {} precedes the book's genesis at {}",
-                prefix.0, root.created_at.0
+                prefix.0, genesis.0
             ),
             "plan §15.2",
-            format!(
-                "replay at or after {} (the genesis commit)",
-                root.created_at.0
-            ),
+            format!("replay at or after {} (the genesis commit)", genesis.0),
         )));
     }
     let batches = source

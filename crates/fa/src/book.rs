@@ -5253,8 +5253,9 @@ mod tests {
 
     /// Plan §15.2 through the facade: the scratch book (its own runtime and
     /// store) folds as the source does and verifies against its SeqMap; a
-    /// scenario post lands in the scratch book only; a map with a pair
-    /// removed is FA-REF-135.
+    /// later checkpoint cannot invalidate a historical replay. A scenario
+    /// post lands in the scratch book only; a map with a pair removed is
+    /// FA-REF-135.
     #[test]
     fn a_scratch_replay_reproduces_the_book_and_scenario_posts_stay_in_it() {
         let book_id = Id128([0x5c; 16]);
@@ -5265,6 +5266,7 @@ mod tests {
             Entropy::deterministic(0x5c),
         )
         .expect("create");
+        let genesis = book.head().unwrap();
         let principal = VId(1);
         let day = DateDay::from_ymd(2026, 3, 15).unwrap();
         book.install_chart(&chart(usd), principal, day, b"chart")
@@ -5293,6 +5295,7 @@ mod tests {
                 .expect("kernel")
                 .expect("admitted");
         }
+        let historical_prefix = book.head().unwrap();
         // Maintained registers and source-bound report artifacts are not
         // accounting inputs to a scratch book.
         assert!(book.advance_registers(&march).expect("maintained").wrote);
@@ -5302,7 +5305,62 @@ mod tests {
             .unwrap()
             .certificate;
         let retained = book.retain_certificate(&certificate).unwrap().unwrap();
+        let checkpoint = book
+            .checkpoint(
+                principal,
+                &Capability::embedded(principal, &["witness"]).unwrap(),
+            )
+            .unwrap()
+            .unwrap();
         let source_head = book.head().unwrap();
+        let root_vid = fa_journal::rows::book_root();
+        let current_root = with_store!(&book.store, core => core.db.vertex(root_vid))
+            .unwrap()
+            .unwrap();
+        assert_eq!(current_root.created_at, checkpoint.stored.recorded_at);
+        assert!(current_root.created_at > historical_prefix);
+
+        // The root's current version starts at the checkpoint, but its
+        // original creating commit still admits this earlier monetary prefix.
+        let (historical, historical_map) = book
+            .replay_into_scratch(
+                Some(historical_prefix),
+                BookKeys::for_development(0x5e),
+                Entropy::deterministic(0x5e),
+            )
+            .unwrap()
+            .expect("checkpoint maintenance cannot move genesis");
+        book.verify_replay(&historical, &historical_map)
+            .unwrap()
+            .expect("the historical map still verifies after the checkpoint");
+        assert_eq!(historical_map.source_prefix, historical_prefix);
+        let first = historical_map.pairs.first().expect("the genesis pair");
+        assert_eq!(first.source_seq, genesis);
+        let genesis_marker = with_store!(&book.store, core => {
+            core.db.delta_since(CommitSeq(0)).map(|mut history| {
+                history
+                    .find(|batch| batch.commit_seq() == genesis)
+                    .expect("the authenticated genesis commit")
+                    .commit_marker_identity()
+                    .marker_oid
+                    .0
+            })
+        })
+        .unwrap();
+        assert_eq!(first.source_marker, genesis_marker);
+        let original_root = with_store!(&book.store, core => core.db.vertex_at(root_vid, genesis))
+            .unwrap()
+            .unwrap();
+        let replayed_root = with_store!(&historical.store, core => core.db.vertex(root_vid))
+            .unwrap()
+            .unwrap();
+        assert_eq!(replayed_root.created_at, first.scratch_seq);
+        assert_eq!(replayed_root.birth_ordinal, original_root.birth_ordinal);
+        assert_eq!(replayed_root.props, original_root.props);
+        assert_eq!(
+            historical.fold_period(&march).unwrap().cells,
+            book.fold_period(&march).unwrap().cells
+        );
 
         let before_genesis = book
             .replay_into_scratch(
@@ -5335,6 +5393,15 @@ mod tests {
             .expect("verifies");
         assert_eq!(verified.pairs_checked, map.pairs.len());
         assert!(verified.entries_checked >= 2, "{verified:?}");
+        assert_eq!(
+            map.pairs, historical_map.pairs,
+            "only maintenance followed the historical accounting prefix"
+        );
+        assert_eq!(
+            map.translate(checkpoint.stored.recorded_at),
+            historical_map.translate(historical_prefix),
+            "a checkpoint translates to the preceding accounting commit"
+        );
         assert!(
             !map.pairs
                 .iter()
