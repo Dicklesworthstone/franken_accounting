@@ -1,4 +1,4 @@
-//! Real persisted-book coverage for the unsigned entry accumulator (fa-l3c).
+//! Real persisted-book coverage for signed entry checkpoints (fa-l3c).
 
 #![forbid(unsafe_code)]
 
@@ -84,6 +84,64 @@ fn write(dir: &Path, name: &str, contents: &str) -> String {
     path.display().to_string()
 }
 
+fn unhex(text: &str) -> Vec<u8> {
+    assert!(text.len().is_multiple_of(2));
+    text.as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| {
+            u8::from_str_radix(std::str::from_utf8(pair).expect("ASCII hex"), 16).expect("hex byte")
+        })
+        .collect()
+}
+
+/// The trust anchor comes from the fixture owner's key custody, independently
+/// of the event being checked. The verifier has no engine dependency.
+fn verify_published_checkpoint(event: &Json, trusted_key: [u8; 32]) {
+    use fa_verify::blake3::hex;
+
+    assert_eq!(text(event, "signer_public_key"), hex(&trusted_key));
+    let bytes = unhex(text(event, "checkpoint_bytes"));
+    let signed = fa_verify::verify_checkpoint(&bytes, &[trusted_key])
+        .expect("CLI checkpoint verifies independently");
+    assert_eq!(hex(&signed.oid), text(event, "checkpoint_oid"));
+    assert_eq!(hex(&signed.state_oid), text(event, "oid"));
+    assert_eq!(hex(&signed.checkpoint.book_id), text(event, "book"));
+    assert_eq!(hex(&signed.checkpoint.branch_id), text(event, "branch"));
+    assert_eq!(hex(&signed.checkpoint.root), text(event, "root"));
+    assert_eq!(
+        i128::from(signed.checkpoint.through_seq),
+        integer(event, "through_seq")
+    );
+    assert_eq!(
+        i128::from(signed.checkpoint.leaf_count),
+        integer(event, "leaf_count")
+    );
+    assert_eq!(
+        signed.signed_by,
+        [fa_verify::checkpoint::signer_key_id(&trusted_key)]
+    );
+    assert!(signed.not_judged.is_empty());
+
+    let wrong_key = fa_notary::SigningKey::from_seed(&[0x95; 32]).public_key();
+    assert_ne!(trusted_key, wrong_key);
+    assert!(matches!(
+        fa_verify::verify_checkpoint(&bytes, &[wrong_key]),
+        Err(fa_verify::VerifyError::Checkpoint(
+            fa_verify::CheckpointError::NoTrustedSignature
+        ))
+    ));
+    let mut tampered = bytes;
+    *tampered.last_mut().expect("checkpoint signature") ^= 1;
+    assert!(matches!(
+        fa_verify::verify_checkpoint(&tampered, &[trusted_key]),
+        Err(fa_verify::VerifyError::Checkpoint(
+            fa_verify::CheckpointError::Signature { .. }
+        ))
+    ));
+}
+
 #[test]
 fn checkpoints_and_verification_survive_reopen_and_include_later_postings() {
     let dir = fixture();
@@ -92,9 +150,17 @@ fn checkpoints_and_verification_survive_reopen_and_include_later_postings() {
         &book,
         &["book", "create", "--name", "Checkpoint Co", "--json"],
     );
+    let trusted_key = fa::Book::open_dir(
+        &book,
+        fa::BookKeys::load(&book.join("book.keys")).expect("fixture owner's keys"),
+        fa::Entropy::deterministic(0x96),
+    )
+    .expect("open fixture owner's book")
+    .checkpoint_public_key();
 
     let initial = parsed(&ok(&book, &["verify", "accumulator", "--json"]));
     assert_eq!(text(&initial, "status"), "no_checkpoints");
+    assert_eq!(text(&initial, "signatures"), "not_checked");
     assert_eq!(integer(&initial, "states_checked"), 0);
     assert_eq!(get(&initial, "verified_through"), Some(&Json::Null));
     assert!(array(&initial, "states").is_empty());
@@ -104,11 +170,29 @@ fn checkpoints_and_verification_survive_reopen_and_include_later_postings() {
         &["checkpoint", "create", "--grant", "witness", "--json"],
     ));
     assert_eq!(text(&first, "event"), "checkpoint_created");
-    assert_eq!(text(&first, "signatures"), "unsigned");
+    assert_eq!(text(&first, "signatures"), "book_key_ed25519");
     assert_eq!(text(&first, "scope"), "entry_prefix");
     assert_eq!(integer(&first, "leaf_count"), 0);
     assert_eq!(get(&first, "prev_state_oid"), Some(&Json::Null));
     assert!(integer(&first, "recorded_at") > integer(&first, "through_seq"));
+    verify_published_checkpoint(&first, trusted_key);
+
+    // Exercise the documented standalone CLI entry point with real file I/O,
+    // using the hex emitted by the producer and the independently held key.
+    let checkpoint_file = write(&dir, "checkpoint.hex", text(&first, "checkpoint_bytes"));
+    let verification = fa_verify::cli::run(
+        &[
+            "checkpoint".into(),
+            checkpoint_file,
+            "--hex".into(),
+            "--key".into(),
+            fa_verify::blake3::hex(&trusted_key),
+            "--json".into(),
+        ],
+        &|path| std::fs::read(path),
+    );
+    assert_eq!(verification.exit, 0, "{verification:?}");
+    assert!(verification.stderr.is_empty(), "{verification:?}");
     let once = parsed(&ok(&book, &["verify", "accumulator", "--json"]));
     assert_eq!(text(&once, "status"), "verified");
     assert_eq!(integer(&once, "states_checked"), 1);
@@ -171,6 +255,10 @@ fn checkpoints_and_verification_survive_reopen_and_include_later_postings() {
         &book,
         &["checkpoint", "create", "--grant", "witness", "--json"],
     ));
+    verify_published_checkpoint(&second, trusted_key);
+    // A newer checkpoint cannot invalidate the saved, independently verifiable
+    // signature on the earlier prefix.
+    verify_published_checkpoint(&first, trusted_key);
     assert_eq!(text(&second, "prev_state_oid"), text(&first, "oid"));
     assert_ne!(text(&second, "oid"), text(&first, "oid"));
     assert_ne!(text(&second, "root"), text(&first, "root"));
@@ -181,7 +269,7 @@ fn checkpoints_and_verification_survive_reopen_and_include_later_postings() {
     let verified_bytes = ok(&book, &["verify", "accumulator", "--json"]);
     let verified = parsed(&verified_bytes);
     assert_eq!(text(&verified, "status"), "verified");
-    assert_eq!(text(&verified, "signatures"), "unsigned");
+    assert_eq!(text(&verified, "signatures"), "verified");
     assert_eq!(text(&verified, "scope"), "entry_prefix");
     assert_eq!(get(&verified, "broken"), Some(&Json::Null));
     assert_eq!(integer(&verified, "states_checked"), 2);
@@ -205,12 +293,14 @@ fn checkpoints_and_verification_survive_reopen_and_include_later_postings() {
     );
     let human = ok(&book, &["verify", "accumulator"]);
     assert!(
-        human.contains("2 checkpoints") && human.contains("unsigned"),
+        human.contains("2 checkpoints") && human.contains("Ed25519 signatures verified"),
         "{human}"
     );
     let human_created = ok(&book, &["checkpoint", "create", "--grant", "witness"]);
     assert!(
-        human_created.contains("unsigned") && human_created.contains("entry"),
+        human_created.contains("Created signed entry accumulator checkpoint")
+            && human_created.contains("Checkpoint bytes (hex):")
+            && human_created.contains("Authenticate this key independently"),
         "{human_created}"
     );
     let after_human = parsed(&ok(&book, &["verify", "accumulator", "--json"]));
@@ -363,6 +453,7 @@ fn assert_corruption_refused(corrupt_head: bool) {
     assert_eq!(text(&report, "class"), "verification");
     let detail = get(&report, "detail").expect("failure detail");
     assert_eq!(text(detail, "status"), "failed");
+    assert_eq!(text(detail, "signatures"), "not_verified");
     assert_eq!(detail.get("verified_through"), Some(&Json::Null));
     if corrupt_head {
         assert!(text(detail, "broken").contains("32-byte oid"), "{failed}");

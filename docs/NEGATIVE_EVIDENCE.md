@@ -325,8 +325,26 @@ adds the exact `FA-REF-073` refusal and unchanged frontier/mirror, reverses
 the actual payment, requires the same 67th proposal to commit, and retains
 the final `FA-REF-070` refusal on another payment. This changes a demonstrably
 wrong expectation; it does not drop the positive chain or weaken the mirror
-verifier. Independent source review found no blocker. Runtime verification
-of the repair and the immediate-target-only mutant remain pending.
+verifier. Independent source review found no blocker. On `b1a8d83`, both
+reversal regressions and the SoftClosed and reversal-period controls passed
+in remote build 1129. Three isolated production mutations then failed their
+intended real-kernel differential, after the independent reference decision
+had already been asserted:
+
+- Build 1131 stopped ancestry inspection at the immediate target. The kernel
+  committed the third reversal at sequence 14 instead of refusing FA-REF-073.
+- Build 1132 changed Original/SoftClosed admission to unconditional admission.
+  The kernel committed at sequence 9 instead of refusing FA-REF-011.
+- Build 1133 removed the production reversal-period check. The kernel
+  committed an April target's reversal in March at sequence 16 instead of
+  refusing FA-REF-053.
+
+Each mutant was the sole source change and exited 101 from the intended
+assertion, not setup or compilation. After removal of every mutation, the
+source was byte-identical to `b1a8d83`; all four positive controls passed
+again in build 1134. The wider repaired campaign, mandatory Clippy boundary
+checks and final integrated gate remain pending. These results are bounded
+runtime evidence, not a general proof or a closure of `fa-vfu`.
 
 The generator's separate coverage gaps are supplemented only after all
 640 original draws, in untouched August. Each deficient evidence case must
@@ -337,8 +355,8 @@ with the wrong leaf account, followed by its exact side-swap under the same
 refused key. All 32 seeds, original draws and coverage floors remain. The
 SoftClosed mutation probe also now captures both kernel and independent
 oracle verdicts before asserting refusal, so an admitted mutant cannot panic
-before the reference decision is observed. None of these changes is a passing
-runtime result or a closure of `fa-vfu`.
+before the reference decision is observed. The coverage supplements still
+await their full generated-history runtime verdict.
 
 ## 2026-10-12 — RECON catch-up: certificate row capacity and the MCP error contract
 
@@ -363,3 +381,36 @@ runtime result or a closure of `fa-vfu`.
   The repair moves the server and the test client to MCP 2026-07-28
   (`server/discover`, per-request `_meta`), refuses legacy `initialize`, and
   keeps the structured assertions. The gate on that tree has not run yet.
+
+## 2026-10-12 — Bundle producer and verifier size admission (fa-5hs)
+
+Source review found that external evidence can exceed the independent
+verifier's 16 MiB inline-document bound, while the producer cloned those
+bytes into a bundle without that admission check. Balance requests also
+lacked the verifier's 4096-proof bound. This was a source finding; no
+pre-repair runtime verdict is claimed.
+
+The producer now refuses these two over-limit requests with FA-REF-129.
+Balance count is checked before requesting cited documents. Inline size is
+checked against verified metadata after authority, revocation and disclosure
+admission, before fetching the external blob, and again before assembly
+hashes or clones supplied document bytes. A redacted view never invokes the
+full-document callback. Stub production still reads and verifies available
+source bytes; it does not fabricate evidence when the blob is missing.
+
+The verifier's bounds and decoder behavior remain unchanged. Independent
+production constants are compared in dev-only contract tests, preserving
+the verifier's empty normal dependency set. Tests retain the exact 16 MiB
+inline and 4096-proof positive boundaries, the 16 MiB-plus-one stub positive,
+missing-blob and denied-authority precedence, and independent over-limit
+decoder refusals. A fresh large-document stub and its signed receipt are
+also passed to Cargo's built standalone verifier, with a one-byte commitment
+mutation that must fail only the public-commitment check. These new runtime
+tests and the final integrated gate have not executed yet.
+
+The first static scan of the partial scratch copy classified an unchanged
+genesis integration-test panic as library code because that crate's Cargo
+manifest was absent. Supplying its exact existing manifest changed the
+classification; the same Rust source then scanned with zero critical issues.
+No test assertion, scanner rule or exclusion changed. Both transcripts are
+retained; this static result does not establish runtime correctness.

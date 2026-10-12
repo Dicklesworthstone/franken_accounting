@@ -19,6 +19,8 @@
 #   distinguishes permitted foundation transitive paths from new paths
 #   (cargo deny is the real gate; the grep below is a tripwire). Bead fa-lbh
 #   stays open until those exist or are exempted with a reason.
+#   Its owed file-coverage closure must explicitly claim .cargo/config.toml:
+#   Cargo consumes it for fa-notary's producer-to-binary differential (fa-5hs).
 # COVERED since fa-xex: verb parity (verbs.toml vs CLI vs MCP) runs under
 #   the `test` step as crates/fa-mcp/tests/parity.rs (every verb and
 #   subcommand is a tool in one cluster or a registered exclusion; clusters

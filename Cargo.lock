@@ -821,6 +821,7 @@ dependencies = [
  "fa-registers",
  "fa-registry",
  "fa-time",
+ "fa-verify",
  "fgdb",
  "fgdb-types",
 ]

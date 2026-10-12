@@ -543,6 +543,9 @@ fn recorded(
 /// read, because nothing in them is privileged; one, and only the view
 /// vertex is read — FA-REF-142 when no view has been derived, FA-REF-143
 /// when the stored view does not rebuild the document's commitment.
+/// `check_size` is applied only to an authorized full read, after verifying
+/// the recorded metadata and before fetching the blob. A redacted read
+/// never invokes it or fetches the hidden source bytes.
 pub async fn read_document_for<V, B>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
@@ -550,6 +553,7 @@ pub async fn read_document_for<V, B>(
     capability: &Capability,
     store: &BlobStore<B>,
     oid: Oid,
+    check_size: impl FnOnce(u64) -> Result<(), Refusal>,
 ) -> Outcome<DocumentRead>
 where
     V: asupersync::fs::Vfs + Clone,
@@ -572,7 +576,9 @@ where
         Err(r) => Err(r),
     };
     if capability.holds(Op::Privileged) {
-        return Ok(full(fetch_document(db, ctx, store, &oid).await?));
+        return Ok(full(
+            crate::evidence::fetch_document_checked(db, ctx, store, &oid, check_size).await?,
+        ));
     }
     let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
     let txn_cx = ctx.txn();
@@ -598,7 +604,9 @@ where
     };
     let Some(contract) = contracts()?.for_kind(kind) else {
         txn.abort();
-        return Ok(full(fetch_document(db, ctx, store, &oid).await?));
+        return Ok(full(
+            crate::evidence::fetch_document_checked(db, ctx, store, &oid, check_size).await?,
+        ));
     };
     let vid = redacted_view_vid(book.book_id, &oid, contract.id);
     let row = txn.vertex(db, vid)?;
@@ -739,6 +747,7 @@ mod tests {
                             capability,
                             &self.store,
                             oid,
+                            |_| Ok(()),
                         )),
                 )
                 .unwrap()

@@ -1,8 +1,8 @@
 //! Accumulator verification and retained report replay on the CLI (§13).
 //!
-//! These commands publish and recompute the existing Notary state objects.
-//! Report certificates bind native historical reads and exact folds. Neither
-//! surface issues a signed TransparencyCheckpoint or an outsider evidence bundle.
+//! Checkpoint publication returns the book's signed TransparencyCheckpoint
+//! for independent verification. Report certificates separately bind native
+//! historical reads and exact folds; these commands do not produce bundles.
 
 use std::io::{Read, Write};
 
@@ -371,6 +371,9 @@ pub(crate) fn checkpoint_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail>
     ctx.out.at_book(&book)?;
     let stored = &created.stored;
     let state = &stored.state;
+    let checkpoint = &created.checkpoint;
+    let public_key = hex(&book.checkpoint_public_key());
+    let checkpoint_bytes = hex(&checkpoint.bytes);
     ctx.out.event(
         "checkpoint_created",
         vec![
@@ -382,13 +385,16 @@ pub(crate) fn checkpoint_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail>
             ("leaf_count", Json::Int(i128::from(state.leaf_count))),
             ("root", s(hex(&state.root))),
             ("prev_state_oid", state.prev_state_oid.map_or(Json::Null, |oid| s(hex(&oid.0)))),
-            ("signatures", s("unsigned")),
+            ("signatures", s("book_key_ed25519")),
             ("scope", s("entry_prefix")),
+            ("checkpoint_oid", s(hex(&checkpoint.oid.0))),
+            ("checkpoint_bytes", s(&checkpoint_bytes)),
+            ("signer_public_key", s(&public_key)),
         ],
         &format!(
-            "Created unsigned entry accumulator checkpoint {}: {} entries through sequence {}, recorded at {}. Root {}.",
+            "Created signed entry accumulator checkpoint {}: {} entries through sequence {}, recorded at {}. Root {}.\nTransparency checkpoint: {}\nBook signing public key: {public_key}\nAuthenticate this key independently before trusting it.\nCheckpoint bytes (hex): {checkpoint_bytes}",
             hex(&stored.oid.0), state.leaf_count, state.through_seq.0,
-            stored.recorded_at.0, hex(&state.root),
+            stored.recorded_at.0, hex(&state.root), hex(&checkpoint.oid.0),
         ),
     );
     Ok(())
@@ -411,6 +417,13 @@ pub(crate) fn verify_accumulator(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), F
     } else {
         "verified"
     };
+    let signatures = if !green {
+        "not_verified"
+    } else if result.states.is_empty() {
+        "not_checked"
+    } else {
+        "verified"
+    };
     let states = result
         .states
         .iter()
@@ -426,7 +439,7 @@ pub(crate) fn verify_accumulator(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), F
         .collect();
     let fields = vec![
         ("status", s(status)),
-        ("signatures", s("unsigned")),
+        ("signatures", s(signatures)),
         ("scope", s("entry_prefix")),
         ("states_checked", Json::Int(result.states.len() as i128)),
         ("broken", result.broken.as_ref().map_or(Json::Null, s)),
@@ -470,7 +483,7 @@ pub(crate) fn verify_accumulator(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), F
         None => "No accumulator checkpoints to verify; run `fa checkpoint create --grant witness`."
             .to_string(),
         Some(seq) => format!(
-            "Entry accumulator verified by recomputation: {} checkpoints through sequence {seq} (unsigned).",
+            "Entry accumulator verified by recomputation: {} checkpoints through sequence {seq}; book-key Ed25519 signatures verified.",
             result.states.len(),
         ),
     };
