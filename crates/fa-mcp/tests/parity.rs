@@ -151,7 +151,12 @@ fn tool_names_and_schemas_are_host_safe_and_registry_derived() {
         assert!(name.starts_with(&format!("{}_", t.cluster.replace('.', "_"))));
         let schema = t.input_schema(&mcp, reg);
         assert_eq!(schema["type"], JsonValue::String("object".into()));
-        assert_eq!(schema["additionalProperties"], JsonValue::Bool(false));
+        // Was `additionalProperties == false` (fa-23r): `ToolSpec::invocation`,
+        // not a closed schema, refuses undeclared keys (proved over stdio).
+        assert!(
+            schema.get("additionalProperties").is_none(),
+            "{name}: a closed schema pre-empts the server's structured refusal"
+        );
         let props = schema["properties"].as_object().expect("properties");
         for hidden in &mcp.hidden_flags {
             let prop = fa_mcp::registry::property(hidden);

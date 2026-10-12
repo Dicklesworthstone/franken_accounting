@@ -1331,6 +1331,33 @@ fn default_agent_authority_survives_stdio_and_cannot_be_changed_by_a_call() {
             assert_eq!(refused["suggested_tool_calls"], json!([]));
         }
     }
+    // An ordinary undeclared key reaches the server too (no schema closes
+    // itself, so fastmcp no longer answers it with a bare -32602) and is the
+    // normalizer's usage error with a spelling hint, before any dispatch
+    // (fa-23r).
+    let (error, text, _) = call_tool(
+        &mut mcp,
+        "fa_read_trial_balance",
+        json!({"perod": "FY2026-P03"}),
+    );
+    assert!(error, "a misspelled key is refused: {text}");
+    let refused = structured_error(&text);
+    assert_eq!(refused["type"], "usage", "{refused}");
+    assert_eq!(refused["exit"], 2, "{refused}");
+    assert_eq!(refused["detector"], "arguments", "{refused}");
+    assert!(
+        refused["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("unknown argument `perod`")),
+        "{refused}"
+    );
+    assert!(
+        refused["fix_hint"]
+            .as_str()
+            .is_some_and(|f| f.contains("`period`")),
+        "{refused}"
+    );
+    assert_eq!(refused["authority"], authority);
     let (error, text, _) = call_tool(
         &mut mcp,
         "fa_read_show_entry",
