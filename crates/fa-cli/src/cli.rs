@@ -1166,7 +1166,9 @@ fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fa
         &[Op::Read]
     } else {
         match (verb.name.as_str(), sub) {
-            ("capabilities" | "robot-docs" | "help", _) => &[],
+            // The chart templates are data embedded in this build; listing
+            // them reads nothing from the book.
+            ("capabilities" | "robot-docs" | "help", _) | ("chart", Some("templates")) => &[],
             ("book", Some("info"))
             | ("chart" | "period", Some("list"))
             | (
