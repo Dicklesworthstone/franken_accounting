@@ -5679,8 +5679,8 @@ fn directory_reopen_refuses_changed_or_missing_unit_facts_through_facade_and_cli
         assert_eq!(code, 5, "{damage}: {out}\n{err}");
         assert!(out.contains(expected), "{damage}: {out}\n{err}");
         if damage.starts_with("missing") {
-            assert!(out.contains("backfill"), "{out}");
-            assert!(out.contains("not available yet"), "{out}");
+            assert!(out.contains("no backfill"), "{out}");
+            assert!(out.contains("creating binary"), "{out}");
         }
 
         let db = runtime

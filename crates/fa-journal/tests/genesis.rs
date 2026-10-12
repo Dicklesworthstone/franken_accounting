@@ -5548,7 +5548,7 @@ fn unit_payload_and_table_commitment_damage_are_refused_without_repair() {
             .to_string();
         if damage.starts_with("missing") {
             assert!(error.contains("pre-payload"), "{damage}: {error}");
-            assert!(error.contains("backfill"), "{damage}: {error}");
+            assert!(error.contains("no backfill"), "{damage}: {error}");
         } else {
             assert!(error.contains("unit"), "{damage}: {error}");
         }

@@ -607,7 +607,7 @@ pub fn read_units<V: asupersync::fs::Vfs + Clone>(
 
     let pre_payload = |what: &str| {
         KernelError::Corrupt(format!(
-            "pre-payload unit table: {what}; this binary cannot infer missing unit facts. Keep the book unchanged and use its creating binary; upgrade requires an authorized journaled unit-payload backfill (fa-k1u), which is not available yet"
+            "pre-payload unit table: {what}; this binary cannot infer missing unit facts, and no backfill exists before 1.0: keep the book unchanged and open it with its creating binary"
         ))
     };
     let root = db
