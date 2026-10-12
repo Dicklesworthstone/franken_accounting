@@ -83,6 +83,9 @@ pub mod code {
     /// A bundle would inline a document its capability reads only as a
     /// redacted view.
     pub const INLINE_WITHHELD: &str = "FA-REF-128";
+    /// The requested balance count or inline document size exceeds the
+    /// independent verifier's bundle-format bound.
+    pub const BUNDLE_LIMIT: &str = "FA-REF-129";
     /// A balance proof would count a migration chunk with unsupported
     /// visibility: its run has no Finalize in the prefix, or it predates
     /// the run's opening date. The latter may be summarized history or

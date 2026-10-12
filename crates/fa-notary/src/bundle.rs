@@ -102,6 +102,11 @@ pub const RECEIPT_SIGNATURE_DOMAIN: &[u8] = b"fa:production-receipt-signature:v1
 /// fold under this domain (the tests pin it to `fa_registers`' own).
 pub const BALANCE_FOLD_DOMAIN: &[u8] = b"fa:register-fold:v2";
 pub const BALANCE_FOLD_VERSION: u16 = 2;
+/// Maximum inline document size in the independent verifier's v1 bundle
+/// format. External storage may hold larger documents; bundle them as stubs.
+pub const MAX_INLINE_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
+/// Maximum balance-proof count in the independent verifier's v1 bundle format.
+pub const MAX_BALANCES: usize = 4096;
 
 const SCOPE_PREFIX: u8 = 1;
 const SCOPE_ACCOUNT: u8 = 2;
@@ -144,9 +149,11 @@ pub struct BalanceRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BundleRequest {
     pub scope: BundleScope,
+    /// At most [`MAX_BALANCES`] proofs; a larger request is FA-REF-129.
     pub balances: Vec<BalanceRequest>,
     /// Include each cited document's bytes; otherwise its stub carries the
-    /// commitment, kind and length only.
+    /// commitment, kind, length and chunk root. A document larger than
+    /// [`MAX_INLINE_DOCUMENT_BYTES`] cannot be inlined (FA-REF-129).
     pub inline_documents: bool,
 }
 
@@ -308,6 +315,46 @@ fn encode_failed(e: EncodeError) -> KernelError {
     KernelError::Model(fa_model::EntryError::Encode(e))
 }
 
+fn bundle_limit(message: impl Into<String>, fix: impl Into<String>) -> Refusal {
+    Refusal::new(
+        code::BUNDLE_LIMIT,
+        exit::REFUSAL,
+        message,
+        "plan §13.2–13.3 (a produced bundle must fit its fa-verify wire bounds)",
+        fix,
+    )
+}
+
+fn check_request(request: &BundleRequest) -> Result<(), Refusal> {
+    if request.balances.len() > MAX_BALANCES {
+        return Err(bundle_limit(
+            format!(
+                "the request has {} balance proofs; bundle format 1.0 permits at most {MAX_BALANCES}",
+                request.balances.len()
+            ),
+            format!(
+                "request at most {MAX_BALANCES} balance proofs per bundle; split the balance requests across separate productions"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Admit the verified size of an authorized full document before fetching
+/// its bytes. Assembly checks again for callers supplying documents directly.
+pub fn check_document_size(inline: bool, oid: &Oid, size: u64) -> Result<(), Refusal> {
+    if inline && size > MAX_INLINE_DOCUMENT_BYTES as u64 {
+        return Err(bundle_limit(
+            format!(
+                "document {} has {size} bytes; bundle format 1.0 permits at most {MAX_INLINE_DOCUMENT_BYTES} inline bytes per document",
+                hex(&oid.0),
+            ),
+            "produce with inline_documents=false; the document stub retains its commitment, kind, length and chunk root",
+        ));
+    }
+    Ok(())
+}
+
 fn inline_withheld(oid: &Oid, contract: u16) -> Refusal {
     Refusal::new(
         code::INLINE_WITHHELD,
@@ -355,13 +402,18 @@ fn stubs(
             )));
         };
         out.push(match read {
-            DocumentRead::Full(doc) => DocumentStub {
-                doc_commit: commit,
-                kind: doc.kind,
-                length: doc.bytes.len() as u64,
-                chunk_root: fa_journal::evidence::chunk_root(&doc.bytes),
-                inline: inline.then(|| doc.bytes.clone()),
-            },
+            DocumentRead::Full(doc) => {
+                if let Err(refusal) = check_document_size(inline, &oid, doc.bytes.len() as u64) {
+                    return Ok(Err(refusal));
+                }
+                DocumentStub {
+                    doc_commit: commit,
+                    kind: doc.kind,
+                    length: doc.bytes.len() as u64,
+                    chunk_root: fa_journal::evidence::chunk_root(&doc.bytes),
+                    inline: inline.then(|| doc.bytes.clone()),
+                }
+            }
             DocumentRead::Redacted(view) if inline => {
                 return Ok(Err(inline_withheld(&oid, view.contract)));
             }
@@ -472,6 +524,9 @@ fn in_scope(journal: &Journal, request: &BundleRequest) -> Outcome<InScope> {
 /// The scope is refused here exactly as `assemble` refuses it, so nothing
 /// is read for a bundle that cannot be produced.
 pub fn cited_documents(journal: &Journal, request: &BundleRequest) -> Outcome<Vec<Oid>> {
+    if let Err(refusal) = check_request(request) {
+        return Ok(Err(refusal));
+    }
     let scope = match in_scope(journal, request)? {
         Ok(scope) => scope,
         Err(refusal) => return Ok(Err(refusal)),
@@ -502,6 +557,9 @@ pub fn assemble(
     request: &BundleRequest,
     documents: &BTreeMap<Oid, DocumentRead>,
 ) -> Outcome<Bundle> {
+    if let Err(refusal) = check_request(request) {
+        return Ok(Err(refusal));
+    }
     let statement = journal.statement();
     if checkpoint.checkpoint.body.statement != statement {
         return Err(corrupt(

@@ -487,7 +487,16 @@ fn a_redacted_view_changes_no_amount_entry_or_evidence_link() {
         let db = &mut h.db;
         h.runtime
             .block_on(async {
-                read_document_for(db, &ctx, &book, &reader, &store, statement.oid()).await
+                read_document_for(
+                    db,
+                    &ctx,
+                    &book,
+                    &reader,
+                    &store,
+                    statement.oid(),
+                    |_| Ok(()),
+                )
+                .await
             })
             .expect("kernel")
             .expect("a view")

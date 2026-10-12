@@ -1,0 +1,3 @@
+# fa-5hs: build the standalone verifier for producer integration tests.
+[unstable]
+bindeps = true

@@ -118,7 +118,9 @@ pub const COMPLETENESS_FILTER_ATTESTED: u8 = 3;
 pub const MAX_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_ENTRIES: usize = 1 << 24;
 const MAX_STUBS: usize = 4096;
-const MAX_BALANCES: usize = 4096;
+/// Maximum balance-proof count in a bundle. The producer's dev-only
+/// contract test pins its independent admission bound to this value.
+pub const MAX_BALANCES: usize = 4096;
 const MAX_CHECKPOINT_BYTES: usize = 1 << 20;
 const MAX_DOMAIN_BYTES: usize = 64;
 const MAX_MANIFEST_MD_BYTES: usize = 1 << 20;

@@ -4862,7 +4862,9 @@ impl Harness {
         let db = &mut self.db;
         let book = &self.book;
         self.runtime
-            .block_on(async move { read_document_for(db, &ctx, book, cap, store, oid).await })
+            .block_on(async move {
+                read_document_for(db, &ctx, book, cap, store, oid, |_| Ok(())).await
+            })
             .expect("kernel")
     }
 }
