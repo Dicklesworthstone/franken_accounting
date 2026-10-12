@@ -22,6 +22,7 @@
 #![forbid(unsafe_code)]
 
 pub mod evidence;
+pub mod lantern;
 pub mod sod;
 pub mod statements;
 mod temporal;

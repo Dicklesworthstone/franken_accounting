@@ -128,7 +128,7 @@ planned = true
 name = "fa-lantern"
 layer = "analytics"
 path = "crates/fa-lantern"
-planned = true
+planned = false
 
 [[crate]]
 name = "fa-query"

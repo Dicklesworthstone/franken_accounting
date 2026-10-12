@@ -13,6 +13,7 @@ pub mod evidence_policy;
 pub mod foundations;
 pub mod intake_sources;
 pub mod invariants;
+pub mod procedures;
 pub mod reason_codes;
 pub mod redaction_contracts;
 pub mod refusal_catalog;
