@@ -518,7 +518,9 @@ fn inline_period_plan_survives_independent_approval_and_exact_stdin_commit() {
     let encoded = text(&planned, "bytes");
     let bytes: Vec<u8> = encoded
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
         .collect();
     let decoded =
