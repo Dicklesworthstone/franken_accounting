@@ -92,7 +92,7 @@ pub struct Parameter {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Input {
     pub name: String,
-    /// `date`, `period` or `account`.
+    /// `date`, `period`, `account` or `entry`.
     pub kind: String,
     pub meaning: String,
 }
@@ -123,7 +123,7 @@ pub struct Procedures {
     pub rows: Vec<Procedure>,
 }
 
-pub const INPUT_KINDS: [&str; 3] = ["date", "period", "account"];
+pub const INPUT_KINDS: [&str; 4] = ["date", "period", "account", "entry"];
 
 fn well_formed_id(id: &str) -> bool {
     let mut parts = id.split('.');

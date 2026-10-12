@@ -30,6 +30,7 @@ pub mod jet;
 pub mod numbers;
 pub mod projection;
 pub mod snapshot;
+pub mod trace;
 pub mod witness;
 
 use core::fmt;

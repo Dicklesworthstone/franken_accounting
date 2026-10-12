@@ -334,3 +334,129 @@ pub fn structuring(
     out.sort();
     out
 }
+
+/// A naive tracing law over a debit-normal account.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TraceLaw {
+    Libr,
+    Fifo,
+    Lifo,
+    ProRata,
+}
+
+/// The traceable share of row `source`'s deposit into `account` at `claim`
+/// under `law`, and the rows whose withdrawals carried tainted value (for
+/// LIBR, the row at which the lowest balance was reached). Movements are
+/// each row's debits minus credits on the account, in date then row order;
+/// money before the deposit is clean; pro rata splits a withdrawal by exact
+/// integer proportion, which the planted corpus keeps exact.
+pub fn trace(
+    rows: &[Row],
+    account: &str,
+    source: usize,
+    claim: DateDay,
+    law: TraceLaw,
+) -> (i128, Vec<usize>) {
+    let mut moves: Vec<(i32, usize, i128)> = Vec::new();
+    for r in rows {
+        if r.date.0 > claim.0 {
+            continue;
+        }
+        let net: i128 = r
+            .legs
+            .iter()
+            .filter(|l| l.account == account)
+            .map(|l| {
+                if l.debit {
+                    l.mantissa.abs()
+                } else {
+                    -l.mantissa.abs()
+                }
+            })
+            .sum();
+        if net != 0 {
+            moves.push((r.date.0, r.index, net));
+        }
+    }
+    moves.sort_unstable();
+    let at = moves
+        .iter()
+        .position(|m| m.1 == source)
+        .expect("the source row moves the account");
+    let opening: i128 = moves[..at].iter().map(|m| m.2).sum();
+    let deposit = moves[at].2;
+    let mut balance = opening + deposit;
+    let mut lowest = (balance, None);
+    let mut tainted = deposit;
+    let mut clean = opening.max(0);
+    let mut layers: Vec<(bool, i128)> = Vec::new();
+    if opening > 0 {
+        layers.push((false, opening));
+    }
+    layers.push((true, deposit));
+    let mut carriers: Vec<usize> = Vec::new();
+    for m in &moves[at + 1..] {
+        if m.2 > 0 {
+            balance += m.2;
+            clean += m.2;
+            layers.push((false, m.2));
+            continue;
+        }
+        let w = -m.2;
+        balance -= w;
+        if balance < lowest.0 {
+            lowest = (balance, Some(m.1));
+        }
+        match law {
+            TraceLaw::Libr => {
+                if balance.max(0) < tainted {
+                    tainted = balance.max(0);
+                }
+            }
+            TraceLaw::Fifo | TraceLaw::Lifo => {
+                let mut remaining = w;
+                while remaining > 0 && !layers.is_empty() {
+                    let i = if law == TraceLaw::Fifo {
+                        0
+                    } else {
+                        layers.len() - 1
+                    };
+                    let take = remaining.min(layers[i].1);
+                    if layers[i].0 && take > 0 && !carriers.contains(&m.1) {
+                        carriers.push(m.1);
+                    }
+                    layers[i].1 -= take;
+                    remaining -= take;
+                    if layers[i].1 == 0 {
+                        layers.remove(i);
+                    }
+                }
+            }
+            TraceLaw::ProRata => {
+                let pool = tainted + clean;
+                if pool <= 0 {
+                    continue;
+                }
+                let drawn = w.min(pool);
+                let t_out = drawn * tainted / pool;
+                if t_out > 0 {
+                    carriers.push(m.1);
+                }
+                tainted -= t_out;
+                clean -= drawn - t_out;
+            }
+        }
+    }
+    let traced = match law {
+        TraceLaw::Libr | TraceLaw::ProRata => tainted,
+        TraceLaw::Fifo | TraceLaw::Lifo => layers.iter().filter(|l| l.0).map(|l| l.1).sum(),
+    };
+    if law == TraceLaw::Libr
+        && let Some(i) = lowest.1
+    {
+        carriers.push(i);
+    }
+    carriers.sort_unstable();
+    carriers.dedup();
+    (traced, carriers)
+}

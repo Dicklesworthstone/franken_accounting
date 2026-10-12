@@ -25,6 +25,7 @@ use fa_lantern::jet::{
 };
 use fa_lantern::numbers::SequenceGaps;
 use fa_lantern::projection::{documents, money_flow, preparers};
+use fa_lantern::trace::{Law, Trace};
 use fa_lantern::witness::determinism;
 use fa_lantern::{
     Cite, Finding, LanternError, Params, Procedure, ProcedureRun, Severity, Snapshot, Statistic,
@@ -368,6 +369,7 @@ fn harness() -> Harness {
     let chart: Vec<AccountSpec> = [
         ("1000", "Cash", 1u8, 0u8),
         ("1010", "Bank B", 1, 0),
+        ("1020", "Trust account", 1, 0),
         ("1200", "Receivables", 1, 0),
         ("2000", "Payables", 2, 1),
         ("4000", "Revenue", 4, 1),
@@ -441,8 +443,8 @@ fn harness() -> Harness {
     h
 }
 
-/// The planted corpus: twenty-five Original entries. 2026-01-01 is a
-/// Thursday, so Jan 10 and Mar 28 are Saturdays and Mar 15 is a Sunday.
+/// The planted corpus: thirty Original entries. 2026-01-01 is a Thursday,
+/// so Jan 10 and Mar 28 are Saturdays and Mar 15 is a Sunday.
 struct Corpus {
     specs: Vec<Spec>,
     round: BTreeSet<usize>,
@@ -459,6 +461,8 @@ struct Corpus {
     round_trips: Vec<(usize, usize)>,
     /// `(payer, receiver, entries)` sub-threshold chains.
     structuring: Vec<(&'static str, &'static str, Vec<usize>)>,
+    /// The commingled account and the tainted deposit for the tracing laws.
+    trace: (&'static str, usize),
 }
 
 fn corpus() -> Corpus {
@@ -526,6 +530,15 @@ fn corpus() -> Corpus {
     s.push(Spec::simple(day(2026, 2, 17), "1000", "4000", 950_100));
     s.push(Spec::simple(day(2026, 2, 19), "1000", "4000", 970_300));
     s.push(Spec::simple(day(2026, 2, 20), "1000", "4000", 990_700));
+    // 25-29: a commingled trust account. Clean 600.00 opens it; the claimant
+    // deposits 400.00 (26); 700.00 leaves; clean 300.00 arrives; 200.00
+    // leaves. At Apr 30 the laws disagree: LIBR 300.00 (the lowest balance
+    // after the deposit), FIFO 100.00, LIFO 0, pro rata 80.00.
+    s.push(Spec::simple(day(2026, 4, 1), "1020", "4000", 60_000));
+    s.push(Spec::simple(day(2026, 4, 2), "1020", "4000", 40_000));
+    s.push(Spec::simple(day(2026, 4, 6), "6000", "1020", 70_000));
+    s.push(Spec::simple(day(2026, 4, 7), "1020", "4000", 30_000));
+    s.push(Spec::simple(day(2026, 4, 8), "6000", "1020", 20_000));
     Corpus {
         specs: s,
         round: [1].into(),
@@ -540,6 +553,7 @@ fn corpus() -> Corpus {
         cutoff: [11].into(),
         round_trips: vec![(18, 19), (20, 21)],
         structuring: vec![("4000", "1000", vec![22, 23, 24])],
+        trace: ("1020", 26),
     }
 }
 
@@ -884,6 +898,10 @@ fn rankings_are_deterministic_and_an_order_dependent_ranking_fails_the_witness()
         Box::new(OpenItemsAging::new().unwrap()),
         Box::new(RoundTrips::new().unwrap()),
         Box::new(Structuring::new().unwrap()),
+        Box::new(Trace::new(Law::Libr, h.account("1020"), h.posted[26].0).unwrap()),
+        Box::new(Trace::new(Law::Fifo, h.account("1020"), h.posted[26].0).unwrap()),
+        Box::new(Trace::new(Law::Lifo, h.account("1020"), h.posted[26].0).unwrap()),
+        Box::new(Trace::new(Law::ProRata, h.account("1020"), h.posted[26].0).unwrap()),
     ];
     for p in &procedures {
         let w = determinism(&snapshot, &h.book, p.as_ref()).expect("witness");
@@ -1299,4 +1317,122 @@ fn graph_procedures_find_planted_round_trips_and_structuring_and_agree_with_the_
         run(&h.db, &h.book, None, Some(day(2026, 4, 30)), &inverted),
         Err(LanternError::Parameter { name, .. }) if name == "floor"
     ));
+}
+
+#[test]
+fn tracing_laws_follow_the_planted_deposit_and_agree_with_the_oracle() {
+    let (h, c) = posted_corpus();
+    let rows = naive_rows(&h, &c);
+    let (code, source) = c.trace;
+    let account = h.account(code);
+    let source_vid = h.posted[source].0;
+    let claim = day(2026, 4, 30);
+    let laws = [
+        (Law::Libr, naive::TraceLaw::Libr, 30_000),
+        (Law::Fifo, naive::TraceLaw::Fifo, 10_000),
+        (Law::Lifo, naive::TraceLaw::Lifo, 0),
+        (Law::ProRata, naive::TraceLaw::ProRata, 8_000),
+    ];
+    for (law, naive_law, expected) in laws {
+        let r = h.run(&Trace::new(law, account, source_vid).unwrap());
+        h.assert_cites_resolve(&r);
+        assert_eq!(r.procedure, law.id());
+        assert_eq!(
+            r.inputs,
+            vec![
+                ("account".to_string(), format!("{:032x}", account.0)),
+                ("source".to_string(), format!("{:032x}", source_vid.0)),
+            ]
+        );
+        assert_eq!(r.findings.len(), 1, "one finding per run");
+        let f = &r.findings[0];
+        println!("trace law={} {}", law.name(), f.narrative);
+        assert_eq!(f.statistic.name, "traced_mantissa");
+        assert_eq!(
+            f.statistic.value,
+            expected,
+            "{}: {}",
+            law.name(),
+            f.narrative
+        );
+        assert_eq!(
+            f.severity,
+            Severity::Info,
+            "a tracing result is a computation"
+        );
+        assert_eq!(f.cites[0], Cite::Account(account));
+        assert_eq!(f.cites[1], Cite::Entry(source_vid));
+        let mut cited: Vec<usize> = f.cites[2..].iter().map(|c| h.entry_index(c)).collect();
+        cited.sort_unstable();
+        let (naive_traced, naive_carriers) = naive::trace(&rows, code, source, claim, naive_law);
+        assert_eq!(f.statistic.value, naive_traced, "{}", law.name());
+        assert_eq!(cited, naive_carriers, "{}", law.name());
+    }
+    // LIBR cites the withdrawal at which the balance bottomed; FIFO cites
+    // both withdrawals; LIFO only the first; pro rata both.
+    let cited = |law: Law| -> Vec<usize> {
+        let r = h.run(&Trace::new(law, account, source_vid).unwrap());
+        let mut v: Vec<usize> = r.findings[0].cites[2..]
+            .iter()
+            .map(|c| h.entry_index(c))
+            .collect();
+        v.sort_unstable();
+        v
+    };
+    assert_eq!(cited(Law::Libr), vec![27]);
+    assert_eq!(cited(Law::Fifo), vec![27, 29]);
+    assert_eq!(cited(Law::Lifo), vec![27]);
+    assert_eq!(cited(Law::ProRata), vec![27, 29]);
+    // Planted negatives: a source that never deposited into the account, an
+    // unregistered intraday order, and a run without an effective date.
+    let stranger = h.posted[0].0;
+    let err = run(
+        &h.db,
+        &h.book,
+        None,
+        Some(claim),
+        &Trace::new(Law::Libr, account, stranger).unwrap(),
+    )
+    .err()
+    .expect("a stranger entry is refused");
+    assert!(
+        matches!(&err, LanternError::Parameter { name, .. } if name == "source"),
+        "{err:?}"
+    );
+    let value_date = Trace::with(
+        Law::Fifo,
+        Params::defaults(Law::Fifo.id())
+            .unwrap()
+            .set("intraday_order", 1)
+            .unwrap(),
+        account,
+        source_vid,
+    );
+    assert!(matches!(
+        run(&h.db, &h.book, None, Some(claim), &value_date),
+        Err(LanternError::Parameter { name, .. }) if name == "intraday_order"
+    ));
+    assert!(matches!(
+        run(
+            &h.db,
+            &h.book,
+            None,
+            None,
+            &Trace::new(Law::ProRata, account, source_vid).unwrap()
+        ),
+        Err(LanternError::Parameter { name, .. }) if name == "effective_through"
+    ));
+    // Withdrawals-first and deposits-first orderings agree here, since no
+    // two movements share a date; the claim date before the second
+    // withdrawal changes every law's answer.
+    let early = run(
+        &h.db,
+        &h.book,
+        None,
+        Some(day(2026, 4, 7)),
+        &Trace::new(Law::Fifo, account, source_vid).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(early.findings[0].statistic.value, 30_000);
+    assert_eq!(early.coordinate.effective_through, Some(day(2026, 4, 7)));
 }
