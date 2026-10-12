@@ -32,6 +32,7 @@ pub mod book;
 pub mod certificate;
 mod certificate_store;
 pub mod statements;
+pub mod upload;
 
 pub use aging::{
     AgedOpenItem, AgingAmounts, AgingBand, AgingBuckets, AgingCell, AgingTotal, EffectiveDateAging,
@@ -45,7 +46,7 @@ pub use certificate::{
 };
 pub use certificate_store::RetainedCertificate;
 pub use fa_intents::{IntentError, MAX_PLAN_BYTES, PlanCertificate, PostIntent, PostPlan};
-pub use fa_journal::InstantSelection;
+pub use fa_journal::{InstantSelection, UploadRequest};
 pub use fa_notary::{AccumulatorVerification, Checkpointed};
 pub use fa_policy::{Capability, Op, Profile};
 pub use fa_registers::Advance;

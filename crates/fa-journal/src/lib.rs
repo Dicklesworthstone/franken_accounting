@@ -39,6 +39,7 @@ pub mod schedule;
 pub mod scratch;
 pub mod sweep;
 pub mod temporal;
+pub mod upload;
 
 pub use attestation::{
     AttestationClaim, Attested, read_attestation, record_manual_assertion, record_review,
@@ -98,5 +99,6 @@ pub use sweep::{
     latest_tick, record_tick, sweep, sweep_batch,
 };
 pub use temporal::{InstantSelection, resolve_instant_at};
+pub use upload::{PreparedUpload, UploadPreparation, UploadRequest, prepare_upload, upload_document};
 
 pub use projections::{ProjectionVerification, verify_projections};
