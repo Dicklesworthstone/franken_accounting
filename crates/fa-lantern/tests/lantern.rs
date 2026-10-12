@@ -1436,3 +1436,52 @@ fn tracing_laws_follow_the_planted_deposit_and_agree_with_the_oracle() {
     assert_eq!(early.findings[0].statistic.value, 30_000);
     assert_eq!(early.coordinate.effective_through, Some(day(2026, 4, 7)));
 }
+
+#[test]
+fn the_catalog_builds_every_registered_procedure_and_refuses_what_it_cannot() {
+    let (h, _) = posted_corpus();
+    let rows = fa_lantern::catalog::registered().unwrap();
+    assert_eq!(rows.len(), 18, "every registry row is listed");
+    let mut ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), rows.len(), "ids are unique");
+    let trust = h.account("1020");
+    let source = h.posted[26].0;
+    for row in &rows {
+        let inputs = fa_lantern::catalog::Inputs {
+            account: Some(trust),
+            source: Some(source),
+        };
+        // Every registered row has an implementation in this build.
+        let built = fa_lantern::catalog::build(&row.id, Params::defaults(&row.id).unwrap(), inputs)
+            .expect("registered rows build");
+        assert_eq!(built.id(), row.id, "{}", row.id);
+        assert_eq!(built.version(), row.version, "{}", row.id);
+        let r = run(&h.db, &h.book, None, Some(day(2026, 4, 30)), built.as_ref())
+            .expect("every catalog procedure runs");
+        h.assert_cites_resolve(&r);
+        println!("catalog procedure={} findings={}", row.id, r.findings.len());
+    }
+    // A trace without its declared inputs is refused naming the input.
+    let err = fa_lantern::catalog::build(
+        "trace.libr",
+        Params::defaults("trace.libr").unwrap(),
+        fa_lantern::catalog::Inputs::default(),
+    )
+    .err()
+    .expect("missing input is refused");
+    assert!(
+        matches!(&err, LanternError::Parameter { name, .. } if name == "account"),
+        "{err:?}"
+    );
+    // An unregistered id is refused by the registry, not guessed.
+    assert!(matches!(
+        fa_lantern::catalog::build(
+            "graph.kiting",
+            Params::defaults("jet.weekend").unwrap(),
+            fa_lantern::catalog::Inputs::default()
+        ),
+        Err(LanternError::Unregistered { .. })
+    ));
+}

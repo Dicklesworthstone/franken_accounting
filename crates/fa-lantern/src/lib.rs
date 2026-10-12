@@ -22,6 +22,7 @@
 #![forbid(unsafe_code)]
 
 pub mod aging;
+pub mod catalog;
 pub mod cutoff;
 pub mod digits;
 pub mod duplicates;
