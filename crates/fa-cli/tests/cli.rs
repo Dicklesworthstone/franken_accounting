@@ -5760,7 +5760,8 @@ fn procedures_run_over_a_persisted_book_and_cite_resolving_handles() -> std::io:
 
     // The registry is listed in full, with its pinned defaults.
     let listed = ok(&["procedure", "list"]);
-    let rows = arr(&doc(&listed), "procedures");
+    let listed_doc = doc(&listed);
+    let rows = arr(&listed_doc, "procedures");
     assert_eq!(rows.len(), 18, "{listed}");
     assert!(
         rows.iter()
@@ -5831,7 +5832,8 @@ fn procedures_run_over_a_persisted_book_and_cite_resolving_handles() -> std::io:
         "--source",
         &round_vid,
     ]);
-    let traced_findings = arr(&doc(&traced), "findings");
+    let traced_doc = doc(&traced);
+    let traced_findings = arr(&traced_doc, "findings");
     assert_eq!(traced_findings.len(), 1, "{traced}");
     assert_eq!(
         traced_findings[0]

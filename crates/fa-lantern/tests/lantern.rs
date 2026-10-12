@@ -354,6 +354,7 @@ fn harness() -> Harness {
         calendar: calendar.clone(),
         time_zone_policy: None,
         entities: Vec::new(),
+        opening_date: None,
     };
     let symbols = SymbolTable::compiled();
     runtime
@@ -750,7 +751,7 @@ fn benford_claims_nothing_below_the_minimum_population_and_scores_above_it() {
 
 #[test]
 fn aging_buckets_open_items_to_the_declared_date() {
-    let (h, _) = posted_corpus();
+    let (h, c) = posted_corpus();
     // Ages at 2026-04-30: entry 16 (Jan 8) 112 days, 17 (Feb 20) 69 days,
     // 10 (Mar 5) 56 days.
     let r = h.run(&OpenItemsAging::new().unwrap());
