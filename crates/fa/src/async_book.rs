@@ -597,6 +597,27 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    /// Keep the session intake path bound to this book's private blob store.
+    /// Sibling facade modules must not accept a caller-selected store or fall
+    /// back to the legacy owner-only intake when an upload exceeds inline size.
+    pub(crate) async fn upload_in_configured_store(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        request: fa_journal::UploadRequest,
+    ) -> Outcome<fa_journal::DocumentAdded> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        Ok(fa_journal::upload::upload_document_in_store(
+            &mut self.db,
+            cx,
+            &self.context,
+            capability,
+            &self.blobs,
+            request,
+        )
+        .await?)
+    }
+
     pub async fn add_document(
         &mut self,
         cx: &PurposeContexts,
