@@ -819,6 +819,7 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         "tools/call",
         json!({"name": "fa_post_reverse", "arguments": {"vid": vid}}),
     );
+    assert_eq!(missing["error"]["code"], json!(-32602), "{missing}");
     assert!(
         missing["error"]["message"]
             .as_str()
@@ -1411,17 +1412,11 @@ fn default_agent_authority_survives_stdio_and_cannot_be_changed_by_a_call() {
         "resources/read",
         json!({"uri": "resource://fa/chart/%2Fanother%2Fbook"}),
     );
-    // The pinned framework's resources/read path forwards only the code and
-    // message of a handler error (observed on the RECON gate, 2026-10-12);
-    // the server still attaches the structured error as data, so a framework
-    // that forwards it changes nothing here. The message is the
-    // launch-binding refusal, and the book is not observed (checked below).
-    assert!(
-        alien["error"]["message"].as_str().is_some_and(|message| {
-            message == "`book` is fixed by the trusted server launch and is not a tool argument"
-        }),
+    assert_eq!(
+        alien["error"]["data"]["type"], "forbidden_argument",
         "{alien}"
     );
+    assert_eq!(alien["error"]["data"]["authority"], authority);
     assert_eq!(cli_data(&["book", "info", "--book", &b, "--json"]), before);
     assert_eq!(mcp.finish(), 0);
 
