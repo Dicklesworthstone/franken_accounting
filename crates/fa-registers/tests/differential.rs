@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
 use fa_journal::evidence::{Document, add_document};
+use fa_journal::genesis::list_periods;
 use fa_journal::*;
 use fa_model::{
     ControlPayload, Disposition, EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable,
