@@ -810,7 +810,7 @@ mod tests {
         poison.set_vertex_property(
             document_vid(&invoice.oid()),
             property::FA_PAYLOAD,
-            scalar_bytes("_fa_payload", vec![0xff]).unwrap(),
+            Some(scalar_bytes("_fa_payload", vec![0xff]).unwrap()),
         );
         f.runtime
             .block_on(f.db.write(&f.contexts.commit(), poison))

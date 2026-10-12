@@ -2392,7 +2392,7 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
         }
     }
     // `fa explain balance` agrees with the oracle's journal leg by leg, for
-    // every (period, account): the posted legs of the period's posting
+    // every (period, leaf account): the posted legs of the period's posting
     // entries, the pending legs of its unresolved holds, and the released
     // legs of its resolved holds — identified by the kernel handle of the
     // oracle's journal index, so the selection is checked against the model,
@@ -2404,9 +2404,17 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
     let mut explained_legs = 0usize;
     for code in &periods {
         let fold = fold_period(&k.db, &k.book, code).unwrap();
-        for (account, ..) in ACCOUNTS {
+        for (account, _, is_leaf) in ACCOUNTS {
             let vid = account_vid(k.book.book_id, account);
-            let ex = explain_balance(&k.db, &k.book, vid, code, None).unwrap();
+            let explanation = explain_balance(&k.db, &k.book, vid, code, None);
+            if !is_leaf {
+                assert!(
+                    matches!(&explanation, Err(fa_registers::RegisterError::InvalidSelection(message)) if message.contains("is a summary")),
+                    "{code}/{account}: summary accounts require a leaf selection: {explanation:?}"
+                );
+                continue;
+            }
+            let ex = explanation.expect("a leaf account has a balance explanation");
             let mut kernel: Vec<(VId, u16, bool, i128, &str)> = ex
                 .contributions
                 .iter()

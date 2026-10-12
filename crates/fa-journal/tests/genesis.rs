@@ -626,6 +626,85 @@ fn balanced_entry_commits_with_mirrors_and_edges_in_one_transaction() {
 }
 
 #[test]
+fn schema_valid_bulk_entry_exposes_native_row_capacity_without_partial_publication() {
+    // fa-fdt: reproduce the current storage gap, not a smaller accounting
+    // limit. When the representation is repaired, replace the refusal below
+    // with the bead's post/reopen/fold/certify/verify positive acceptance.
+    let mut h = harness();
+    let key = b"bulk-capacity";
+    let legs = (0..256).flat_map(|_| h.rent_legs(1)).collect::<Vec<_>>();
+    assert_eq!(legs.len(), 512);
+    assert!(legs.len() < fa_model::limits::MAX_LEGS_PER_ENTRY);
+    let proposal = h.proposal(legs, key, EntryClass::ORIGINAL);
+    let expected = proposal.clone().seal(Vec::new(), None).unwrap();
+    let bytes = expected.encode().unwrap();
+    assert!(bytes.len() > 16 * 1024);
+    assert!(bytes.len() < fa_model::limits::MAX_ENTRY_BYTES);
+    assert_eq!(fa_model::Entry::decode(&bytes).unwrap(), expected);
+
+    let vid = entry_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), key);
+    let before = h.db.frontier().unwrap();
+    // Call the kernel directly: Harness::post intentionally unwraps its
+    // foundation result, whereas this defect is native storage admission.
+    for _ in 0..2 {
+        let req = h.request(proposal.clone(), &["post"]);
+        let ctx = h.ctx();
+        let result = h.runtime.block_on(post(&mut h.db, &ctx, &h.book, req));
+        let error = result.expect_err("the pinned native row cannot store this entry");
+        let KernelError::Txn(fgdb::WriteTxnError::Write(
+            fgdb::WriteError::VertexStorageAdmission {
+                vid: rejected,
+                source,
+            },
+        )) = error
+        else {
+            panic!("expected the native entry-row capacity failure, got {error:?}");
+        };
+        assert_eq!(rejected, vid);
+        let diagnostic = source.to_string();
+        let (stored_bytes, limit) = diagnostic
+            .strip_prefix("vertex row needs ")
+            .and_then(|s| s.split_once(" stored bytes; admission limit is "))
+            .expect("RowExceedsStorageLimit diagnostic");
+        assert_eq!(limit, "16384");
+        assert!(stored_bytes.parse::<usize>().unwrap() > 16 * 1024);
+        eprintln!(
+            "fa-fdt: 512 schema-valid legs, {} payload bytes: {diagnostic}",
+            bytes.len()
+        );
+        assert_eq!(h.db.frontier().unwrap(), before);
+        assert!(read_entry(&h.db, vid).unwrap().is_none());
+        for ordinal in 0..512 {
+            let leg = leg_vid(vid, ordinal);
+            assert!(h.db.vertex(leg).unwrap().is_none());
+            assert!(
+                h.db.edge(edge_id(relation::HAS_LEG, vid, leg))
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+
+    // The failed attempt spends neither the journal identity nor its key.
+    // The same real evidence and capability admit a smaller balanced entry,
+    // whose exact retry returns that outcome without another commit.
+    let small = h.proposal(h.rent_legs(256), key, EntryClass::ORIGINAL);
+    let small_expected = small.clone().seal(Vec::new(), None).unwrap();
+    let posted = h.post(h.request(small.clone(), &["post"])).unwrap();
+    assert!(matches!(posted, Posted::Committed { .. }));
+    assert_eq!(posted.entry_ref().vid, vid);
+    let (back, recorded_at) = read_entry(&h.db, vid).unwrap().unwrap();
+    assert_eq!(back, small_expected);
+    assert_eq!(recorded_at, posted.recorded_at());
+    let after = h.db.frontier().unwrap();
+    let retried = h.post(h.request(small, &["post"])).unwrap();
+    assert!(matches!(retried, Posted::AlreadyRecorded { .. }));
+    assert_eq!(retried.entry_ref(), posted.entry_ref());
+    assert_eq!(retried.recorded_at(), posted.recorded_at());
+    assert_eq!(h.db.frontier().unwrap(), after);
+}
+
+#[test]
 fn unbalanced_entry_is_refused_with_exit_3_and_nothing_written() {
     let mut h = harness();
     let legs = vec![

@@ -35,6 +35,10 @@
 //! A failure is a tool error (`isError`) whose text is the structured error,
 //! also labelled with the launch authority. Resource data remains first;
 //! its second JSON content block identifies the same authority.
+//! The transport is MCP 2026-07-28: use `server/discover` and include protocol
+//! version and client capabilities in every request's `_meta`. Legacy
+//! `initialize` negotiation is refused, so resource errors retain their
+//! structured `data`, including the launch authority.
 //!
 //! # No-claim boundary
 //!

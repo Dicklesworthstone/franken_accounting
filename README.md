@@ -209,6 +209,14 @@ under `fa-we7` and its dependent beads.
 
 ### MCP launch authority
 
+The stdio server uses MCP `2026-07-28`. Clients discover it with
+`server/discover` and send `io.modelcontextprotocol/protocolVersion` and
+`io.modelcontextprotocol/clientCapabilities` in each request's `params._meta`.
+Legacy `initialize` negotiation is refused. Resource refusals retain their
+structured `error.data`, including the launch authority.
+Resource reads have private, zero-lifetime cache hints because their URIs
+resolve the current book state.
+
 Start the stdio server against a book the operator has already prepared:
 
 ```bash
