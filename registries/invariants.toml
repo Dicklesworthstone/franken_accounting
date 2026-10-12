@@ -957,8 +957,8 @@ statement = "Derived Leg vertices and edges equal the inline legs, are written i
 evidence_class = "invariant"
 first_gate = "G1"
 owner = "fa-op5"
-checkers = ["fa-journal::tests/genesis.rs::balanced_entry_commits_with_mirrors_and_edges_in_one_transaction", "fa-model::lib::mirrors::tests::leg_amount_mirrors_as_decimal_when_representable_else_bytes"]
-negatives = ["fa-registers::tests/registers.rs::missing_entry_period_projection_does_not_hide_journal_contributions", "fa-registers::tests/registers.rs::recovery_refuses_to_rewrite_an_account_forged_as_a_register"]
+checkers = ["fa-journal::tests/genesis.rs::balanced_entry_commits_with_mirrors_and_edges_in_one_transaction", "fa-model::lib::mirrors::tests::leg_amount_mirrors_as_decimal_when_representable_else_bytes", "fa-journal::tests/genesis.rs::projection_verification_covers_posted_pending_resolved_reversed_and_control_entries", "fa-journal::tests/genesis.rs::dimension_edges_are_published_with_legs_and_their_metadata_is_verified", "fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_a_generated_history"]
+negatives = ["fa-registers::tests/registers.rs::missing_entry_period_projection_does_not_hide_journal_contributions", "fa-registers::tests/registers.rs::recovery_refuses_to_rewrite_an_account_forged_as_a_register", "fa-journal::tests/genesis.rs::projection_verifier_detects_every_scalar_mirror_and_preserves_known_at", "fa-journal::tests/genesis.rs::projection_verifier_checks_the_exact_wide_amount_fallback", "fa-journal::tests/genesis.rs::projection_verifier_rejects_missing_extra_and_misdirected_topology", "fa-cli::tests/cli.rs::projection_verification_reports_drift_deterministically_without_writes", "fa-cli::tests/cli.rs::projection_verification_refuses_a_changed_amount_without_writes", "fa-cli::tests/cli.rs::projection_verification_refuses_a_missing_has_leg_without_writes"]
 waiver = "forbidden"
 
 [[clause]]
