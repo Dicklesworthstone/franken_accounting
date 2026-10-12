@@ -812,10 +812,18 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     // The typed reversal is the same law-enforced correction as the CLI:
     // missing and unknown reasons cannot post, and the persisted lineage
     // records the exact registered name/code the caller selected.
-    let (is_error, text, _) = call_tool(&mut mcp, "fa_post_reverse", json!({"vid": vid}));
+    // `--reason` is a required flag of the tool, so the server's input
+    // validation refuses the call before the tool runs and the protocol
+    // error names the missing field.
+    let missing = mcp.request(
+        "tools/call",
+        json!({"name": "fa_post_reverse", "arguments": {"vid": vid}}),
+    );
     assert!(
-        is_error && text.contains("reason"),
-        "missing reason: {text}"
+        missing["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("reason")),
+        "missing reason: {missing}"
     );
     let (is_error, text, _) = call_tool(
         &mut mcp,
@@ -1403,11 +1411,17 @@ fn default_agent_authority_survives_stdio_and_cannot_be_changed_by_a_call() {
         "resources/read",
         json!({"uri": "resource://fa/chart/%2Fanother%2Fbook"}),
     );
-    assert_eq!(
-        alien["error"]["data"]["type"], "forbidden_argument",
+    // The pinned framework's resources/read path forwards only the code and
+    // message of a handler error (observed on the RECON gate, 2026-10-12);
+    // the server still attaches the structured error as data, so a framework
+    // that forwards it changes nothing here. The message is the
+    // launch-binding refusal, and the book is not observed (checked below).
+    assert!(
+        alien["error"]["message"].as_str().is_some_and(|message| {
+            message == "`book` is fixed by the trusted server launch and is not a tool argument"
+        }),
         "{alien}"
     );
-    assert_eq!(alien["error"]["data"]["authority"], authority);
     assert_eq!(cli_data(&["book", "info", "--book", &b, "--json"]), before);
     assert_eq!(mcp.finish(), 0);
 

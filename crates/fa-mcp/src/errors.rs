@@ -233,7 +233,10 @@ impl StructuredError {
         if let Some(authority) = &self.authority {
             v["authority"] = authority.clone();
         }
-        if self.kind == "forbidden_argument" {
+        // Both launch-binding refusals name the offending argument where a
+        // client reads structured error data, before any detector or book
+        // observation: the fixed launch argument and the host-path argument.
+        if self.kind == "forbidden_argument" || self.kind == "forbidden_path" {
             v["data"] = json!({
                 "fix_hint": self.fix_hint,
                 "argument": self.detail.get("argument"),
