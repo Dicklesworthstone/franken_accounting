@@ -11,12 +11,14 @@ use fa_journal::*;
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
     ControlPayload, Disposition, EntryClass, EntryOrigin, EntryPayload, Erasable, EvidenceRef,
-    Id128, LegPayload, Oid, Pending, SealKey, SymbolTable, account_vid, period_vid,
+    Id128, LegPayload, Oid, Pending, SealKey, Supersession, SupersessionKind, SymbolTable,
+    account_vid, period_vid,
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_registers::{
     CacheStatus, Cell, CellKey, Fold, RegisterError, balance_as_of, fold_period, fold_period_at,
-    materialize, register_vid, trial_balance, trial_balance_at, verify_period,
+    materialize, period_activity, period_activity_excluding_classes, register_vid, trial_balance,
+    trial_balance_at, verify_period,
 };
 use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodTransition};
 use fgdb::{Database, DatabaseKeys, MemVfs, WriteBatch};
@@ -513,6 +515,104 @@ fn materialize_then_verify_is_green_and_a_tampered_register_is_drift() {
     assert_eq!(v.drift[0].key, cash_key);
     assert_eq!(v.drift[0].stored, Some((0, 999, 2)));
     assert_eq!(v.drift[0].refolded, (0, 1_005, 2));
+}
+
+#[test]
+fn class_filtered_activity_uses_payload_lineage_and_ignores_damaged_registers() {
+    let mut h = harness();
+    h.post_rent(100, b"ordinary-activity");
+    let adjustment = h.commit(h.proposal(
+        h.expense_legs(20),
+        b"adjustment-activity",
+        EntryClass::ADJUSTING,
+    ));
+    let before_reversal = h.db.frontier().unwrap();
+    let mut target = adjustment.entry_ref();
+    for key in [
+        b"undo-adjustment".as_slice(),
+        b"restore-adjustment".as_slice(),
+    ] {
+        let (original, _) = read_entry(&h.db, target.vid).unwrap().unwrap();
+        let legs = original
+            .proposal
+            .legs
+            .iter()
+            .map(|leg| {
+                LegPayload::simple(
+                    if leg.side == Side::Debit {
+                        Side::Credit
+                    } else {
+                        Side::Debit
+                    },
+                    leg.account_ref,
+                    leg.amount,
+                )
+            })
+            .collect();
+        let mut reversal = h.proposal(legs, key, EntryClass::REVERSAL);
+        reversal.supersession = vec![Supersession {
+            target,
+            kind: SupersessionKind::Reverses,
+            reason_code: 1,
+        }];
+        target = h.commit(reversal).entry_ref();
+    }
+    h.hold(h.expense_legs(500), b"reservation-is-separate");
+    let periods = [h.march.clone()];
+    let ordinary = period_activity(&h.db, &h.book, &periods, None).unwrap();
+    let unfiltered =
+        period_activity_excluding_classes(&h.db, &h.book, &periods, None, &[]).unwrap();
+    assert_eq!(
+        ordinary, unfiltered,
+        "ordinary activity has unchanged semantics"
+    );
+    let filtered =
+        period_activity_excluding_classes(&h.db, &h.book, &periods, None, &[EntryClass::ADJUSTING])
+            .unwrap();
+    let expense = filtered
+        .rows
+        .iter()
+        .find(|row| row.account == h.rent)
+        .unwrap();
+    assert_eq!((expense.debits, expense.credits), (100, 0));
+    assert_eq!((expense.debits_pending, expense.credits_pending), (500, 0));
+    assert_eq!(filtered.unit_totals[&h.usd.0], (100, 100));
+    let historical = period_activity_excluding_classes(
+        &h.db,
+        &h.book,
+        &periods,
+        Some(before_reversal),
+        &[EntryClass::ADJUSTING],
+    )
+    .unwrap();
+    assert_eq!(historical.unit_totals[&h.usd.0], (100, 100));
+    assert!(
+        historical
+            .pending_unit_totals
+            .values()
+            .all(|totals| *totals == (0, 0))
+    );
+
+    let fold = h.materialize_march();
+    let cell = fold
+        .cells
+        .iter()
+        .find(|cell| cell.key.account == h.rent)
+        .unwrap();
+    let mut corrupt = WriteBatch::new(relation::IN_PERIOD);
+    corrupt.set_vertex_property(
+        register_vid(h.book.book_id, &cell.key),
+        property::DEBITS_POSTED,
+        Some(scalar_bytes(9_999i128.to_le_bytes().to_vec())),
+    );
+    h.write_derived(corrupt);
+    h.assert_not_green("the planted register amount is detected");
+    let after =
+        period_activity_excluding_classes(&h.db, &h.book, &periods, None, &[EntryClass::ADJUSTING])
+            .unwrap();
+    assert_eq!(after.rows, filtered.rows);
+    assert_eq!(after.unit_totals, filtered.unit_totals);
+    assert_eq!(after.pending_unit_totals, filtered.pending_unit_totals);
 }
 
 #[test]

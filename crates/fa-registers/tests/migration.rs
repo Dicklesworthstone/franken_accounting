@@ -2648,6 +2648,129 @@ fn full_detail(
     }
 }
 
+/// A sole-source historical import keeps its year-end closing chunk visible.
+/// Migration retains its own class, not the source's original accounting class;
+/// an income fold must refuse that ambiguous Closing-period chunk rather than
+/// silently treating its equity transfer as negative revenue.
+#[test]
+fn income_activity_refuses_visible_migration_in_a_closing_period() {
+    let ops = vec!["post".to_string(), "migrate".to_string()];
+    let (dr, cr) = (fa_reference::Side::Debit, fa_reference::Side::Credit);
+    let (mut k, mut oracle) = setup_with(Some((opening_date(), P01)));
+    create_year(&mut k, &mut oracle, 2025);
+    let earned = usd_lines(&[("1000", 300), ("4000", -300)]);
+    let periods = (1..=12)
+        .map(|month| {
+            (
+                format!("FY2025-P{month:02}"),
+                if month < 3 {
+                    Vec::new()
+                } else {
+                    earned.clone()
+                },
+            )
+        })
+        .collect();
+    let spec = full_detail("statement-history", Vec::new(), periods, Vec::new(), true);
+    let run = kernel_open(
+        &mut k,
+        &spec,
+        "open-statement-history",
+        &["post", "migrate"],
+    )
+    .expect("opens a sole-source historical run")
+    .run;
+    let reference = oracle
+        .open_run(&spec, b"open-statement-history", &ops)
+        .unwrap();
+    stage_all(
+        &mut k,
+        &mut oracle,
+        (run, reference),
+        &[
+            period_chunk(
+                "earned",
+                Some("FY2025-P03"),
+                DateDay::from_ymd(2025, 3, 15).unwrap(),
+                vec![leg(dr, "1000", 300), leg(cr, "4000", 300)],
+            ),
+            period_chunk(
+                "closed",
+                Some("FY2025-CLOSE"),
+                DateDay::from_ymd(2025, 12, 31).unwrap(),
+                vec![leg(dr, "4000", 300), leg(cr, "3000", 300)],
+            ),
+        ],
+        "historical statement source",
+    );
+    let staged = k.db.frontier().unwrap();
+    let closing = ["FY2025-CLOSE".to_string()];
+    assert!(
+        fa_registers::period_activity_excluding_classes(
+            &k.db,
+            &k.book,
+            &closing,
+            Some(staged),
+            &[EntryClass::CLOSING],
+        )
+        .unwrap()
+        .rows
+        .is_empty(),
+        "unfinalized migration remains invisible"
+    );
+    finalize_both(
+        &mut k,
+        &mut oracle,
+        (run, reference),
+        2,
+        "finalize-statement-history",
+    );
+    let ordinary = fa_registers::period_activity(&k.db, &k.book, &closing, None).unwrap();
+    assert_eq!(ordinary.unit_totals[&usd().0], (300, 300));
+    let refused = fa_registers::period_activity_excluding_classes(
+        &k.db,
+        &k.book,
+        &closing,
+        None,
+        &[EntryClass::CLOSING],
+    )
+    .expect_err("the retained Migration class does not establish its source classification");
+    assert!(
+        matches!(refused, fa_registers::RegisterError::InvalidSelection(ref why)
+        if why.contains("migration entry") && why.contains("FY2025-CLOSE"))
+    );
+    let income = fa_registers::period_activity_excluding_classes(
+        &k.db,
+        &k.book,
+        &["FY2025-P03".into()],
+        None,
+        &[EntryClass::CLOSING],
+    )
+    .unwrap();
+    assert_eq!(
+        income
+            .rows
+            .iter()
+            .find(|row| row.code == "4000")
+            .unwrap()
+            .credits,
+        300
+    );
+    assert!(
+        fa_registers::period_activity_excluding_classes(
+            &k.db,
+            &k.book,
+            &closing,
+            Some(staged),
+            &[EntryClass::CLOSING],
+        )
+        .unwrap()
+        .rows
+        .is_empty(),
+        "historical visibility remains pinned after finalization"
+    );
+}
+
 /// Plan §8.6 FullDetail (ruling 3675), kernel against oracle. Prior years: a
 /// book going live at the fiscal-year start imports FY2025 legacy detail;
 /// the detail ties out cumulatively, the Opening chunk ties to the chain at

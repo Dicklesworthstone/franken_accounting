@@ -944,6 +944,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fa-statements"
+version = "0.0.1"
+dependencies = [
+ "fa-model",
+ "fa-money",
+ "fa-reference",
+ "fa-registry",
+ "fa-time",
+]
+
+[[package]]
 name = "fa-time"
 version = "0.0.1"
 

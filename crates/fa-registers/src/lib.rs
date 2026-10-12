@@ -32,7 +32,7 @@ use fa_model::{
     AccountType, ControlPayload, Entry, EntryClass, EntryOrigin, Id128, Writer, period_vid,
 };
 use fa_money::Side;
-use fa_time::DateDay;
+use fa_time::{DateDay, PeriodKind};
 use fgdb::{Database, VertexRow, WriteBatch};
 use fgdb_crypto::Hasher;
 use fgdb_types::context::PurposeContexts;
@@ -1020,7 +1020,7 @@ pub fn trial_balance_at<V: asupersync::fs::Vfs + Clone>(
             .ok_or_else(|| KernelError::Corrupt("period end underflow".into()))?;
         through = Some(through.map_or(DateDay(end), |d: DateDay| d.max(DateDay(end))));
     }
-    report_at(db, book, selected, seq, through)
+    report_at(db, book, selected, seq, through, &[])
 }
 
 /// A stock position on a civil day, independent of when postings were recorded.
@@ -1042,7 +1042,7 @@ pub fn balance_as_of<V: asupersync::fs::Vfs + Clone>(
             }
         }
     }
-    report_at(db, book, periods.into_iter().collect(), seq, Some(day))
+    report_at(db, book, periods.into_iter().collect(), seq, Some(day), &[])
 }
 
 /// Movement within the explicitly selected periods. Overlapping civil dates
@@ -1053,8 +1053,36 @@ pub fn period_activity<V: asupersync::fs::Vfs + Clone>(
     periods: &[String],
     known_at: Option<CommitSeq>,
 ) -> Result<TrialBalance, RegisterError> {
+    period_activity_excluding_classes(db, book, periods, known_at, &[])
+}
+
+/// Movement within the selected periods, excluding the named accounting
+/// classes and exact reversals of those classes. This is the same authoritative
+/// payload fold as [`period_activity`]; retained register cells never contribute.
+/// In particular, income statements exclude Closing transfers without excluding
+/// operating adjustments merely because they share a Closing-kind period.
+///
+/// Reversal lineage is checked against the retained target digest and followed
+/// to its original class, including a reversal of a reversal. If Closing is
+/// excluded, a Migration whose original entry lies in a Closing-kind period is
+/// refused: its current payload does not retain the source's accounting class,
+/// so treating it as either ordinary income or a closing transfer would guess.
+pub fn period_activity_excluding_classes<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    periods: &[String],
+    known_at: Option<CommitSeq>,
+    excluded_classes: &[EntryClass],
+) -> Result<TrialBalance, RegisterError> {
     let seq = resolve_known_at(db, known_at)?;
-    report_at(db, book, select_periods(db, book, periods, seq)?, seq, None)
+    report_at(
+        db,
+        book,
+        select_periods(db, book, periods, seq)?,
+        seq,
+        None,
+        excluded_classes,
+    )
 }
 
 fn select_periods<V: asupersync::fs::Vfs + Clone>(
@@ -1081,26 +1109,54 @@ fn report_at<V: asupersync::fs::Vfs + Clone>(
     periods: Vec<String>,
     seq: CommitSeq,
     through: Option<DateDay>,
+    excluded_classes: &[EntryClass],
 ) -> Result<TrialBalance, RegisterError> {
     let mut sums: BTreeMap<(VId, u32), [i128; 4]> = BTreeMap::new();
     let entries = entries_at(db, book, seq)?;
     let resolved = resolutions(&entries)?;
-    for (vid, entry, _) in entries {
+    let by_id: BTreeMap<_, _> = if excluded_classes.is_empty() {
+        BTreeMap::new()
+    } else {
+        entries
+            .iter()
+            .map(|(vid, entry, at)| (*vid, (entry, *at)))
+            .collect()
+    };
+    for (vid, entry, _) in &entries {
         if entry.proposal.legs.is_empty() {
             continue;
         }
         let pending = entry.proposal.class == EntryClass::PENDING;
         // Releases are evaluated at the known-at frontier. They release the
         // original period, irrespective of their own posting effective date.
-        if pending && resolved.contains_key(&vid) {
+        if pending && resolved.contains_key(vid) {
             continue;
         }
         let selected = match through {
             Some(day) => entry.proposal.effective_date <= day,
-            None => periods.binary_search(&entry_period(book, &entry)?).is_ok(),
+            None => periods.binary_search(&entry_period(book, entry)?).is_ok(),
         };
         if !selected {
             continue;
+        }
+        if !excluded_classes.is_empty() {
+            let (original_vid, original) = accounting_origin(*vid, entry, &by_id)?;
+            if excluded_classes.contains(&entry.proposal.class)
+                || excluded_classes.contains(&original.proposal.class)
+            {
+                continue;
+            }
+            if excluded_classes.contains(&EntryClass::CLOSING)
+                && original.proposal.class == EntryClass::MIGRATION
+            {
+                let code = entry_period(book, original)?;
+                if period_at(db, book, &code, seq)?.kind == PeriodKind::Closing {
+                    return Err(RegisterError::InvalidSelection(format!(
+                        "cannot classify migration entry {:032x} in Closing period `{code}` for activity excluding Closing: its original accounting class is not retained",
+                        original_vid.0
+                    )));
+                }
+            }
         }
         for leg in &entry.proposal.legs {
             let e = sums
@@ -1159,6 +1215,60 @@ fn report_at<V: asupersync::fs::Vfs + Clone>(
         unit_totals,
         pending_unit_totals,
     })
+}
+
+/// Exact reversals carry the economic class of the original entry for a
+/// class-filtered report. The lookup is over one already-admitted journal
+/// prefix, so lineage cannot consult a later head or a mutable projection.
+fn accounting_origin<'a>(
+    vid: VId,
+    entry: &'a Entry,
+    entries: &BTreeMap<VId, (&'a Entry, CommitSeq)>,
+) -> Result<(VId, &'a Entry), RegisterError> {
+    let mut current_vid = vid;
+    let mut current = entry;
+    let mut visited = BTreeSet::new();
+    while current.proposal.class == EntryClass::REVERSAL {
+        if !visited.insert(current_vid) {
+            return Err(KernelError::Corrupt(format!(
+                "reversal lineage of {:032x} cycles at {:032x}",
+                vid.0, current_vid.0
+            ))
+            .into());
+        }
+        let target = match current.proposal.supersession.as_slice() {
+            [supersession] if supersession.kind == fa_model::SupersessionKind::Reverses => {
+                supersession.target
+            }
+            _ => {
+                return Err(KernelError::Corrupt(format!(
+                    "reversal entry {:032x} does not name exactly one Reverses target",
+                    current_vid.0
+                ))
+                .into());
+            }
+        };
+        let Some((original, original_at)) = entries.get(&target.vid) else {
+            return Err(KernelError::Corrupt(format!(
+                "reversal entry {:032x} names target {:032x} absent from its visible journal prefix",
+                current_vid.0, target.vid.0
+            )).into());
+        };
+        let current_at = entries
+            .get(&current_vid)
+            .map(|(_, at)| *at)
+            .ok_or_else(|| KernelError::Corrupt("reversal absent from its journal index".into()))?;
+        if original.entry_digest != target.entry_digest || *original_at > current_at {
+            return Err(KernelError::Corrupt(format!(
+                "reversal entry {:032x} has a mismatched or later target {:032x}",
+                current_vid.0, target.vid.0
+            ))
+            .into());
+        }
+        current_vid = target.vid;
+        current = original;
+    }
+    Ok((current_vid, current))
 }
 
 /// Candidate periods for a stock position. The actual fold must additionally

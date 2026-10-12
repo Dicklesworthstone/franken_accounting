@@ -23,6 +23,7 @@
 
 pub mod evidence;
 pub mod sod;
+pub mod statements;
 mod temporal;
 
 /// The registered control kinds (`registries/entry_classes.toml`

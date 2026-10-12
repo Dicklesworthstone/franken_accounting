@@ -1,0 +1,30 @@
+# A native-unit activity statement. Closing entries, including their reversal
+# lineage, are excluded by the source fold so closing cannot erase the income
+# earned during the selected periods. Reservations are never earned income.
+schema_version = 1
+name = "income-statement"
+title = "Income statement"
+version = 1
+kind = "IncomeStatement"
+basis = "activity"
+covered_types = ["Revenue", "Expense"]
+excluded_classes = ["Closing"]
+check_lines = []
+
+[[line]]
+code = "revenue"
+label = "Revenue"
+account_types = ["Revenue"]
+sign = "credit"
+
+[[line]]
+code = "expense"
+label = "Expenses"
+account_types = ["Expense"]
+sign = "debit"
+
+[[line]]
+code = "net_income"
+label = "Net income"
+add = ["revenue"]
+subtract = ["expense"]
