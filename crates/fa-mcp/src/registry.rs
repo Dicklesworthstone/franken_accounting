@@ -661,6 +661,12 @@ impl McpRegistry {
         {
             return None;
         }
+        if ["--plan-out", "--certificate-out"]
+            .iter()
+            .any(|flag| parsed.flag(flag).is_some())
+        {
+            return None;
+        }
         let word = parsed.positional.first()?;
         let expanded: Vec<String> = match reg.alias(word) {
             Some(a) => a.expands.clone(),
@@ -716,9 +722,13 @@ impl McpRegistry {
                 _ => {}
             }
         }
+        let arguments = JsonValue::Object(arguments);
+        if tool.forbidden_path_argument(&arguments).is_some() {
+            return None;
+        }
         Some(ToolCall {
             tool: tool.wire_name(),
-            arguments: JsonValue::Object(arguments),
+            arguments,
             command: command.to_string(),
         })
     }
@@ -760,7 +770,7 @@ impl McpRegistry {
     #[must_use]
     pub fn instructions(&self) -> String {
         let mut text = String::from(
-            "FrankenAccounting over MCP: each call runs the accounting dispatcher under one trusted launch-bound principal, profile, capability and book. Start with `fa_orient_capabilities`. Tool arguments cannot contain as, grant, yes, keys, book, principal, profile or via; even null or false is refused as forbidden_argument. The Agent default reads but cannot publish accounting entries to trunk (FA-REF-013); an operator may explicitly launch the bounded Preparer profile. Dangerous commits remain unavailable through MCP until a separate confirmation exchange exists; planning does not authorize a commit. This is launch-time trust, not authenticated capability issuance or filesystem confinement. A book held by fad is refused until its transport can preserve this authority. Rules: amounts are strings with their unit (\"1500.00 USD\"), never JSON numbers; effective dates are civil YYYY-MM-DD; historical report instant selectors remain available; recorded time is assigned by the journal; corrections are new entries — nothing is edited in place; never invent balancing legs, re-date entries to dodge period law, approve your own proposal, or cite a placeholder. A tool's first content block is the robot envelope's data; the second adds book, coordinate, certificate, warnings, next_actions and authority. Resources retain their data first and return launch authority in a second JSON block. Tool errors carry {type, message, recoverable, fix_hint, suggested_tool_calls, exit, refusal_id, cite, detail, authority}. A different identity or stronger authority requires an operator to launch a separate appropriately bound session.\n\nClusters:\n",
+            "FrankenAccounting over MCP: each call runs the accounting dispatcher under one trusted launch-bound principal, profile, capability and book. Start with `fa_orient_capabilities`. Tool arguments cannot contain as, grant, yes, keys, book, principal, profile or via; even null or false is refused as forbidden_argument. Input content travels inline: file, intent_file, plan_file, plan_out and certificate_out are refused as forbidden_path before dispatch. No --files root is supported; the process itself is not sandboxed. Use dry_run: true on a period transition to receive its sealed proposal bytes without writing a file or changing the book. The Agent default reads but cannot publish accounting entries to trunk (FA-REF-013); an operator may explicitly launch the bounded Preparer profile. Dangerous commits remain unavailable through MCP until a separate confirmation exchange exists; planning does not authorize a commit. This is launch-time trust, not authenticated capability issuance. A book held by fad is refused until its transport can preserve this authority. Rules: amounts are strings with their unit (\"1500.00 USD\"), never JSON numbers; effective dates are civil YYYY-MM-DD; historical report instant selectors remain available; recorded time is assigned by the journal; corrections are new entries — nothing is edited in place; never invent balancing legs, re-date entries to dodge period law, approve your own proposal, or cite a placeholder. A tool's first content block is the robot envelope's data; the second adds book, coordinate, certificate, warnings, next_actions and authority. Resources retain their data first and return launch authority in a second JSON block. Tool errors carry {type, message, recoverable, fix_hint, suggested_tool_calls, exit, refusal_id, cite, detail, authority}. A different identity or stronger authority requires an operator to launch a separate appropriately bound session.\n\nClusters:\n",
         );
         for c in &self.clusters {
             let names: Vec<String> = self.tools_of(&c.name).map(ToolSpec::wire_name).collect();
@@ -819,6 +829,35 @@ impl ToolSpec {
         }
     }
 
+    fn is_host_path_property(&self, property: &str) -> bool {
+        matches!(
+            property,
+            "file" | "intent_file" | "plan_file" | "plan_out" | "certificate_out"
+        ) || self
+            .stdin
+            .as_ref()
+            .is_some_and(|stdin| self.via_property(stdin) == property)
+    }
+
+    /// Presence of a host-file alternative is refused before detectors,
+    /// input normalization or protected observations. Inline content is not
+    /// interpreted as a pathname, even when its text happens to look like one.
+    #[must_use]
+    pub fn forbidden_path_argument(&self, arguments: &JsonValue) -> Option<(String, String)> {
+        let object = arguments.as_object()?;
+        object.keys().find(|key| self.is_host_path_property(key)).map(|argument| {
+            let fix = match argument.as_str() {
+                "plan_out" => "omit plan_out; use dry_run: true to receive the complete plan bytes inline".to_string(),
+                "certificate_out" => "omit certificate_out; use certify: true and receive the retained certificate oid and bytes inline".to_string(),
+                _ => self.stdin.as_ref().map_or_else(
+                    || "supply the content inline; host filesystem paths are unavailable".to_string(),
+                    |stdin| format!("omit {argument}; pass the complete content in the inline `{}` property", stdin.property),
+                ),
+            };
+            (argument.clone(), format!("{fix}; this server accepts no caller filesystem paths or --files root (fa-yha)"))
+        })
+    }
+
     /// Every property the input schema declares, in schema order.
     #[must_use]
     pub fn property_names(&self, _reg: &Registry) -> Vec<String> {
@@ -826,11 +865,21 @@ impl ToolSpec {
         if let Some(sel) = &self.selector {
             names.push(sel.clone());
         }
-        names.extend(self.positionals.iter().map(|p| p.name.clone()));
+        names.extend(
+            self.positionals
+                .iter()
+                .filter(|p| !self.is_host_path_property(&p.name))
+                .map(|p| p.name.clone()),
+        );
         if let Some(s) = &self.stdin {
             names.push(s.property.clone());
         }
-        names.extend(self.flags.iter().map(|f| self.flag_property(f)));
+        names.extend(
+            self.flags
+                .iter()
+                .map(|f| self.flag_property(f))
+                .filter(|p| !self.is_host_path_property(p)),
+        );
         names.extend(self.switches.iter().map(|f| property(f)));
         names
     }
@@ -853,17 +902,10 @@ impl ToolSpec {
             required.push(sel.clone());
         }
         for p in &self.positionals {
-            let doc = match &self.stdin {
-                Some(s) if s.via == p.name && s.property == "certificate" => format!(
-                    "a retained certificate oid (C: followed by 64 hex digits, or bare), or a canonical certificate file path; alternatively pass `{}` inline",
-                    s.property
-                ),
-                Some(s) if s.via == p.name => format!(
-                    "a path (relative to the server's working directory); or pass `{}` inline instead",
-                    s.property
-                ),
-                _ => format!("the `<{}>` argument of `fa {}`", p.name, self.verb),
-            };
+            if self.is_host_path_property(&p.name) {
+                continue;
+            }
+            let doc = format!("the `<{}>` argument of `fa {}`", p.name, self.verb);
             props.insert(
                 p.name.clone(),
                 json!({ "type": "string", "description": doc }),
@@ -879,28 +921,30 @@ impl ToolSpec {
                     "string",
                     "a retained certificate oid (C: prefixed or bare 64-hex), or the complete canonical bytes in hex",
                 ),
+                StdinKind::Text if s.property == "plan" && self.verb == "period" => (
+                    "string",
+                    "the complete canonical period-plan bytes in hex from dry_run; supplying them does not authorize a dangerous commit through MCP",
+                ),
                 StdinKind::Text if s.property == "plan" => (
                     "string",
                     "the complete canonical plan bytes in hex from a successful dry_run under the same launch authority; dangerous void commits still require an unavailable separate confirmation exchange",
                 ),
                 StdinKind::Text => ("string", "the text, inline"),
             };
-            let alt = if s.via.starts_with("--") {
-                self.flag_property(&s.via)
-            } else {
-                s.via.clone()
-            };
             props.insert(
                 s.property.clone(),
                 json!({
                     "type": ty,
-                    "description": format!("{what}; forwarded on stdin as `{} -`. Exactly one of `{}` and `{alt}`.", s.via, s.property),
+                    "description": format!("{what}; forwarded on stdin as `{} -`. Host filesystem paths are not accepted.", s.via),
                 }),
             );
         }
         let usage = verb.map(|v| v.usage.join(" · ")).unwrap_or_default();
         for f in &self.flags {
             let prop = self.flag_property(f);
+            if self.is_host_path_property(&prop) {
+                continue;
+            }
             let mut schema = JsonMap::new();
             if mcp.is_repeat(f) {
                 schema.insert("type".into(), json!(["string", "array"]));
@@ -910,14 +954,7 @@ impl ToolSpec {
             } else {
                 schema.insert("type".into(), json!("string"));
             }
-            let doc = if self.stdin.as_ref().is_some_and(|s| &s.via == f) {
-                format!(
-                    "`{f} <path>` (a file path); or pass the document inline as `{}`",
-                    self.stdin.as_ref().map_or("", |s| s.property.as_str())
-                )
-            } else {
-                format!("`{f}` of `fa {}` ({})", self.verb, flag_hint(f, &usage))
-            };
+            let doc = format!("`{f}` of `fa {}` ({})", self.verb, flag_hint(f, &usage));
             schema.insert("description".into(), JsonValue::String(doc));
             props.insert(prop, JsonValue::Object(schema));
         }
@@ -928,11 +965,10 @@ impl ToolSpec {
             );
         }
         for r in &self.required {
-            // A path flag or positional can be satisfied by the inline
-            // property. Requiring only the path in the published schema
-            // would make a conforming MCP host reject the inline form.
-            // Invocation validation below enforces exactly one input.
-            if self.stdin.as_ref().is_some_and(|s| &s.via == r) {
+            if let Some(stdin) = self.stdin.as_ref().filter(|s| &s.via == r) {
+                if !required.contains(&stdin.property) {
+                    required.push(stdin.property.clone());
+                }
                 continue;
             }
             let prop = if r.starts_with("--") {
@@ -944,26 +980,12 @@ impl ToolSpec {
                 required.push(prop);
             }
         }
-        let mut schema = json!({
+        json!({
             "type": "object",
             "properties": props,
             "required": required,
             "additionalProperties": false,
-        });
-        if let Some(stdin) = &self.stdin
-            && self.required.contains(&stdin.via)
-        {
-            let path = if stdin.via.starts_with("--") {
-                self.flag_property(&stdin.via)
-            } else {
-                stdin.via.clone()
-            };
-            schema["oneOf"] = json!([
-                { "required": [stdin.property.clone()] },
-                { "required": [path] },
-            ]);
-        }
-        schema
+        })
     }
 
     /// The `[[dangerous]]` rows the covered subcommands carry.
@@ -1008,7 +1030,7 @@ impl ToolSpec {
         }
         d.push_str("\n\nDo:\n");
         d.push_str(&format!(
-            "- Call `{}` with the properties its input schema names: {}. The schema marks required fields and inline/file alternatives.\n",
+            "- Call `{}` with the properties its input schema names: {}. Input content travels inline; caller filesystem paths are refused.\n",
             self.wire_name(),
             self.property_names(reg).join(", "),
         ));
@@ -1145,6 +1167,12 @@ impl ToolSpec {
                     .into(),
             });
         }
+        if let Some((argument, fix)) = self.forbidden_path_argument(arguments) {
+            return Err(ArgError {
+                message: format!("{wire}: host filesystem argument `{argument}` is forbidden"),
+                fix,
+            });
+        }
         let empty = JsonMap::new();
         let obj = match arguments {
             JsonValue::Null => &empty,
@@ -1232,9 +1260,8 @@ impl ToolSpec {
                                     kind_of(other)
                                 ),
                                 fix: format!(
-                                    "`{}`: {{ … }} (the document itself), or `{}` with a path",
+                                    "`{}`: {{ … }} (the document itself, inline)",
                                     s.property,
-                                    self.via_property(s)
                                 ),
                             });
                         }
@@ -1246,9 +1273,8 @@ impl ToolSpec {
                                     kind_of(other)
                                 ),
                                 fix: format!(
-                                    "`{}`: \"…\" (the text itself), or `{}` with a path",
+                                    "`{}`: \"…\" (the text itself, inline)",
                                     s.property,
-                                    self.via_property(s)
                                 ),
                             });
                         }
@@ -1274,7 +1300,7 @@ impl ToolSpec {
                 (false, Some(v)) if v.starts_with("--") => {
                     return Err(ArgError {
                         message: format!("{wire}: `{}` cannot be an option-shaped positional", p.name),
-                        fix: "supply the literal identifier; prefix a relative file name with ./ if it begins with --".into(),
+                        fix: "supply the literal identifier; host file paths are not accepted".into(),
                     });
                 }
                 (false, Some(v)) => argv.push(v),
@@ -1381,6 +1407,15 @@ impl ToolSpec {
         }
         // What the host must supply.
         for r in &self.required {
+            if let Some(spec) = self.stdin.as_ref().filter(|spec| &spec.via == r || &spec.property == r) {
+                if stdin.is_none() {
+                    return Err(ArgError {
+                        message: format!("{wire}: inline `{}` is required", spec.property),
+                        fix: format!("pass the complete content in `{}`; host filesystem paths are not accepted", spec.property),
+                    });
+                }
+                continue;
+            }
             let present = if r.starts_with("--") {
                 let via = self.stdin.as_ref().filter(|s| &s.via == r);
                 obj.contains_key(&self.flag_property(r))
@@ -1730,7 +1765,7 @@ mod tests {
         let post = mcp.tool_by_wire("fa_post_post").expect("post tool");
         let schema = post.input_schema(&mcp, reg);
         assert_eq!(schema["properties"]["intent"]["type"], json!("object"));
-        assert_eq!(schema["properties"]["intent_file"]["type"], json!("string"));
+        assert!(schema["properties"].get("intent_file").is_none());
         assert!(schema["properties"].get("grant").is_none());
         assert!(schema["properties"].get("yes").is_none());
     }
@@ -1754,13 +1789,28 @@ mod tests {
             call.arguments,
             json!({"period": ["P1", "P2"], "activity": true})
         );
-        let call = mcp
-            .command_to_call(reg, "fa post --intent entry.json --evidence ab")
-            .expect("post");
-        assert_eq!(
-            call.arguments,
-            json!({"intent_file": "entry.json", "evidence": ["ab"]})
+        assert!(
+            mcp.command_to_call(reg, "fa post --intent entry.json --evidence ab")
+                .is_none()
         );
+        let dry_run = mcp
+            .command_to_call(reg, "fa period close FY2026-P03 --dry-run")
+            .expect("safe inline plan");
+        assert_eq!(
+            dry_run.arguments,
+            json!({"transition": "close", "code": "FY2026-P03", "dry_run": true})
+        );
+        for command in [
+            "fa period close P --plan-out /host/file",
+            "fa replay /host/certificate",
+            "fa commit --plan /host/plan",
+            "fa tb --certificate-out /host/file",
+        ] {
+            assert!(
+                mcp.command_to_call(reg, command).is_none(),
+                "must not suggest a host path: {command}"
+            );
+        }
         for command in [
             "fa post --intent e.json --yes",
             "fa post --intent e.json --grant post_closed",
@@ -1851,13 +1901,8 @@ mod tests {
             .expect("commit tool");
         let schema = commit.input_schema(&mcp, reg);
         assert_eq!(schema["properties"]["plan"]["type"], json!("string"));
-        assert_eq!(schema["properties"]["plan_file"]["type"], json!("string"));
-        assert_eq!(
-            schema["oneOf"],
-            json!([
-                {"required": ["plan"]}, {"required": ["plan_file"]},
-            ])
-        );
+        assert!(schema["properties"].get("plan_file").is_none());
+        assert_eq!(schema["required"], json!(["plan"]));
         let inline = commit
             .invocation(&mcp, reg, &json!({"plan": "abcd"}))
             .expect("hex plan stdin");
@@ -1865,11 +1910,12 @@ mod tests {
         assert_eq!(inline.stdin, Some(b"abcd".to_vec()));
         let file = commit
             .invocation(&mcp, reg, &json!({"plan_file": "saved.plan"}))
-            .expect("binary file");
-        assert_eq!(file.argv, vec!["commit", "--plan", "saved.plan", "--json"]);
-        assert!(file.stdin.is_none());
+            .expect_err("host file refused");
+        assert!(file.message.contains("filesystem"));
+        assert!(file.fix.contains("inline `plan`"));
         for args in [
             json!({}),
+            json!({"plan": null}),
             json!({"plan": {}}),
             json!({"plan": "ab", "plan_file": "saved.plan"}),
         ] {
@@ -1931,7 +1977,55 @@ mod tests {
     }
 
     #[test]
-    fn certificate_tools_accept_a_retained_file_digest_or_inline_bytes() {
+    fn period_planning_and_plan_input_are_inline_only() {
+        let (mcp, reg) = embedded();
+        let tool = mcp
+            .tool_by_wire("fa_time_period_transition")
+            .expect("period tool");
+        let schema = tool.input_schema(&mcp, reg);
+        assert_eq!(schema["properties"]["dry_run"]["type"], "boolean");
+        assert_eq!(schema["properties"]["plan"]["type"], "string");
+        assert!(schema["properties"].get("plan_out").is_none());
+        assert!(schema["properties"].get("plan_file").is_none());
+        let dry_run = tool
+            .invocation(
+                &mcp,
+                reg,
+                &json!({"transition": "close", "code": "P", "dry_run": true}),
+            )
+            .unwrap();
+        assert_eq!(
+            dry_run.argv,
+            vec!["period", "close", "P", "--dry-run", "--json"]
+        );
+        assert!(dry_run.stdin.is_none());
+        let inline = tool
+            .invocation(
+                &mcp,
+                reg,
+                &json!({"transition": "close", "code": "P", "plan": "abcd"}),
+            )
+            .unwrap();
+        assert_eq!(
+            inline.argv,
+            vec!["period", "close", "P", "--plan", "-", "--json"]
+        );
+        assert_eq!(inline.stdin, Some(b"abcd".to_vec()));
+        for arguments in [
+            json!({"transition": "close", "code": "P", "plan_out": "target"}),
+            json!({"transition": "close", "code": "P", "plan_file": "target"}),
+        ] {
+            assert!(
+                tool.invocation(&mcp, reg, &arguments)
+                    .unwrap_err()
+                    .message
+                    .contains("filesystem")
+            );
+        }
+    }
+
+    #[test]
+    fn certificate_tools_accept_inline_digests_and_bytes_but_refuse_host_files() {
         let (mcp, reg) = embedded();
         for (wire, prefix) in [
             ("fa_read_replay", vec!["replay"]),
@@ -1940,14 +2034,8 @@ mod tests {
             let tool = mcp.tool_by_wire(wire).expect("certificate tool");
             let schema = tool.input_schema(&mcp, reg);
             assert_eq!(schema["properties"]["certificate"]["type"], json!("string"));
-            assert_eq!(schema["properties"]["file"]["type"], json!("string"));
-            assert!(
-                !schema["required"]
-                    .as_array()
-                    .unwrap()
-                    .contains(&json!("file")),
-                "a host must accept inline bytes without a file: {schema}"
-            );
+            assert!(schema["properties"].get("file").is_none());
+            assert_eq!(schema["required"], json!(["certificate"]));
             let inline = tool
                 .invocation(&mcp, reg, &json!({"certificate": "abcd"}))
                 .expect("inline bytes");
@@ -1963,11 +2051,9 @@ mod tests {
             assert_eq!(by_digest.stdin, Some(digest.into_bytes()));
             let file = tool
                 .invocation(&mcp, reg, &json!({"file": "report.cert"}))
-                .expect("retained file");
-            let mut expected = prefix;
-            expected.extend(["report.cert", "--json"]);
-            assert_eq!(file.argv, expected);
-            assert!(file.stdin.is_none());
+                .expect_err("host file refused");
+            assert!(file.message.contains("filesystem"));
+            assert!(file.fix.contains("inline `certificate`"));
             for args in [
                 json!({}),
                 json!({"file": "report.cert", "certificate": "abcd"}),
@@ -1991,11 +2077,11 @@ mod tests {
         assert_eq!(inv.argv, vec!["post", "--intent", "-", "--json"]);
         let stdin = String::from_utf8(inv.stdin.expect("stdin")).unwrap();
         assert!(stdin.contains("\"idempotency_key\":\"k\""));
-        let inv = post
+        let refused = post
             .invocation(&mcp, reg, &json!({"intent_file": "e.json"}))
-            .expect("path form");
-        assert_eq!(inv.argv, vec!["post", "--intent", "e.json", "--json"]);
-        assert!(inv.stdin.is_none());
+            .expect_err("path form refused");
+        assert!(refused.message.contains("filesystem"));
+        assert!(refused.fix.contains("inline `intent`"));
         for (what, args) in [
             (
                 "both inline and path",

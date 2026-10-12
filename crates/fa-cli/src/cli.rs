@@ -1111,6 +1111,7 @@ fn dispatch(ctx: &mut Ctx<'_>, reg: &Registry, args: &Args) -> Result<(), Fail> 
     }
     gate_from_argv(out, reg, verb, args, ctx.authority.as_ref())?;
     admit_bound_command(ctx, verb, args)?;
+    admit_bound_files(ctx, verb, args)?;
     let handler = HANDLERS
         .iter()
         .find(|(name, _)| *name == verb.name)
@@ -1133,7 +1134,7 @@ fn period_plan_only(verb: &str, args: &Args) -> bool {
             args.positional.get(1).map(String::as_str),
             Some("open" | "soft-close" | "close" | "lock" | "reopen")
         )
-        && args.flag("--plan-out").is_some()
+        && (args.flag("--plan-out").is_some() || args.switch("--dry-run"))
         && args.flag("--plan").is_none()
         && args.flag_all("--approval").is_empty()
 }
@@ -1190,6 +1191,57 @@ fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fa
     Ok(())
 }
 
+/// Bound hosts receive content through forwarded stdin. Caller paths never
+/// become host reads or writes; the configured book and keys are separate,
+/// trusted launch inputs. No filesystem root is supported in this slice.
+fn admit_bound_files(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fail> {
+    if ctx.authority.is_none() {
+        return Ok(());
+    }
+    let blocked = |argument: &str, fix: &str| {
+        usage(
+            format!("{argument} cannot name a host filesystem path in a launch-bound request"),
+            fix,
+        )
+    };
+    for flag in ["--plan-out", "--certificate-out"] {
+        if args.flag(flag).is_some() {
+            return Err(blocked(
+                flag,
+                "use --dry-run for inline plan bytes or --certify for a retained certificate; MCP accepts no output paths (fa-yha)",
+            ));
+        }
+    }
+    for flag in ["--intent", "--plan"] {
+        if args.flag_all(flag).iter().any(|value| *value != "-") {
+            return Err(blocked(
+                flag,
+                "forward the complete content on stdin with -; MCP takes the inline intent or plan property, never a file path (fa-yha)",
+            ));
+        }
+    }
+    let sub = args.positional.get(1).map(String::as_str);
+    let input = match (verb.name.as_str(), sub) {
+        ("chart", Some("import")) | ("document", Some("add")) => args.positional.get(2),
+        ("replay", _) => args.positional.get(1),
+        ("certificate", Some("status")) => args.positional.get(2),
+        _ => None,
+    };
+    if let Some(input) = input {
+        let digits = input.strip_prefix("C:").unwrap_or(input);
+        let retained = matches!(verb.name.as_str(), "replay" | "certificate")
+            && digits.len() == 64
+            && digits.bytes().all(|byte| byte.is_ascii_hexdigit());
+        if input != "-" && !retained {
+            return Err(blocked(
+                "file",
+                "forward the complete input on stdin with -; report replay also accepts a retained C:<oid>. MCP uses inline chart, text, or certificate properties (fa-yha)",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Whether the command line confirms an operation that cannot be undone in
 /// practice: `--yes`, or a `--plan` file (whose exact proposal the kernel
 /// checks at commit).
@@ -1233,7 +1285,7 @@ fn unconfirmed_bound(d: &Dangerous) -> Fail {
         && matches!(d.subcommand.as_deref(), Some("lock" | "reopen" | "close"))
     {
         format!(
-            "prepare the operation with `fa period {} <code> --plan-out <file>`; an independent operator must review and commit it",
+            "prepare the operation with `fa period {} <code> --dry-run`; an independent operator must review and commit it",
             d.subcommand.as_deref().unwrap_or("lock")
         )
     } else {
@@ -2336,6 +2388,26 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     let sub = args.positional.get(1).map(String::as_str);
+    if args.switch("--dry-run") {
+        if !matches!(
+            sub,
+            Some("open" | "soft-close" | "close" | "lock" | "reopen")
+        ) {
+            return Err(usage(
+                "--dry-run prepares a period transition only",
+                "fa period <transition> <code> --dry-run --json",
+            ));
+        }
+        if args.flag("--plan-out").is_some()
+            || args.flag("--plan").is_some()
+            || !args.flag_all("--approval").is_empty()
+        {
+            return Err(usage(
+                "--dry-run returns a proposal inline and cannot be combined with --plan-out, --plan, or --approval",
+                "prepare with --dry-run first; an authorized owner commits the exact returned bytes separately",
+            ));
+        }
+    }
     match sub {
         Some("create") => {
             let fy: i32 = args
@@ -2442,6 +2514,26 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             // proposal the commit rebuilds from the plan's inputs. Plan files
             // resolve against the caller's working directory, as every file
             // argument does (a daemon writes and reads the client's).
+            if args.switch("--dry-run") {
+                let plan = book.plan_transition(code, transition, who, reason, date, &key)??;
+                let digest = book.plan_digest(&plan)?;
+                let bytes = plan.encode().map_err(|e| Fail::Internal(format!("plan encoding: {e}")))?;
+                let encoded = hex(&bytes);
+                out.event(
+                    "period_plan",
+                    vec![
+                        ("period", s(&plan.period_code)),
+                        ("from", s(plan.from.name())),
+                        ("to", s(plan.to.name())),
+                        ("principal", s(format!("{:032x}", plan.principal_ref.0))),
+                        ("proposal_digest", s(hex(&digest))),
+                        ("bytes", s(&encoded)),
+                        ("scope", s("period-transition-proposal")),
+                    ],
+                    &format!("{}: planned {} → {}; nothing was written. Approvals bind proposal {}. Commit authority and required approvals are checked separately.\nCanonical period plan bytes (hex):\n{encoded}", plan.period_code, plan.from.name(), plan.to.name(), hex(&digest)),
+                );
+                return Ok(());
+            }
             if let Some(path) = args.flag("--plan-out") {
                 if args.flag("--plan").is_some() || !approval_flags.is_empty() {
                     return Err(usage(
@@ -2479,7 +2571,7 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             }
             let tr = match args.flag("--plan") {
                 Some(path) => {
-                    let bytes = ctx.files.read_bytes(path)?;
+                    let bytes = read_plan_bytes(&ctx.files, path, b"fa:period-plan", "period transition")?;
                     let plan = fa_journal::TransitionPlan::decode(&bytes).map_err(|e| {
                         usage(
                             format!("{path} is not a period plan: {e}"),
@@ -3338,6 +3430,18 @@ fn post_document(
 /// the caller. Decode only within its format bound before the kernel checks
 /// its book authentication, capability binding, and current snapshot.
 fn read_post_plan(files: &Files, path: &str) -> Result<PostPlan, Fail> {
+    let bytes = read_plan_bytes(files, path, b"FA-POST-PLAN\0", "PostEntry")?;
+    PostPlan::decode(&bytes).map_err(|e| {
+        usage(
+            format!("{path} is not a canonical PostEntry plan: {e}"),
+            "use the complete binary plan file or bytes hex string from a successful --dry-run",
+        )
+    })
+}
+
+/// Both plan transports accept their existing canonical binary form and
+/// its complete hex encoding. Bound allocation before either codec runs.
+fn read_plan_bytes(files: &Files, path: &str, domain: &[u8], kind: &str) -> Result<Vec<u8>, Fail> {
     let limit = MAX_PLAN_BYTES * 2 + 2; // hex, optionally followed by CRLF
     let read = |reader: &mut dyn Read| -> Result<Vec<u8>, Fail> {
         let mut bytes = Vec::new();
@@ -3386,15 +3490,14 @@ fn read_post_plan(files: &Files, path: &str) -> Result<PostPlan, Fail> {
             "pass the complete plan bytes from a successful --dry-run",
         ));
     }
-    let decode =
-        |bytes: &[u8]| {
-            PostPlan::decode(bytes).map_err(|e| usage(
-            format!("{path} is not a canonical PostEntry plan: {e}"),
-            "use the complete binary plan file or bytes hex string from a successful --dry-run",
-        ))
-        };
-    if bytes.starts_with(b"FA-POST-PLAN\0") {
-        return decode(&bytes);
+    if bytes.starts_with(domain) {
+        if bytes.len() > MAX_PLAN_BYTES {
+            return Err(usage(
+                "plan exceeds its bounded input size",
+                "pass the complete plan bytes from a successful --dry-run",
+            ));
+        }
+        return Ok(bytes);
     }
     let Some(text) = std::str::from_utf8(&bytes)
         .ok()
@@ -3404,7 +3507,7 @@ fn read_post_plan(files: &Files, path: &str) -> Result<PostPlan, Fail> {
         })
     else {
         return Err(usage(
-            "expected a canonical binary PostEntry plan or its complete hex encoding",
+            format!("expected a canonical binary {kind} plan or its complete hex encoding"),
             "pass --plan <file> or forward the plan event's bytes string on stdin with --plan -",
         ));
     };
@@ -3424,7 +3527,7 @@ fn read_post_plan(files: &Files, path: &str) -> Result<PostPlan, Fail> {
                 .map_err(|_| usage("invalid plan hex", "pass the complete plan bytes string"))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    decode(&decoded)
+    Ok(decoded)
 }
 
 fn write_post_plan(files: &Files, path: &str, bytes: &[u8]) -> Result<(), Fail> {

@@ -157,6 +157,27 @@ impl StructuredError {
         }
     }
 
+    /// A caller-selected host path was refused before any dispatch or I/O.
+    #[must_use]
+    pub fn forbidden_path(argument: &str, fix_hint: impl Into<String>) -> Self {
+        Self {
+            kind: "forbidden_path".into(),
+            message: format!(
+                "`{argument}` cannot select a host filesystem path; this MCP server accepts inline content only"
+            ),
+            recoverable: true,
+            fix_hint: Some(fix_hint.into()),
+            suggested_tool_calls: Vec::new(),
+            exit: 2,
+            refusal_id: None,
+            cite: Some("plan §15.4; fa-yha caller filesystem containment".into()),
+            detail: json!({"argument": argument}),
+            detector: None,
+            never: None,
+            authority: None,
+        }
+    }
+
     /// The dispatcher itself failed (foundation class, exit 5).
     #[must_use]
     pub fn foundation(message: impl Into<String>) -> Self {

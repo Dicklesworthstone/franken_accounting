@@ -502,3 +502,61 @@ fn void_dry_run_keeps_the_hold_until_the_exact_plan_is_committed() {
     assert_eq!(get(&refused_retry, "book"), &Json::Null);
     assert_eq!(head(&f.book), committed_head);
 }
+
+#[test]
+fn inline_period_plan_survives_independent_approval_and_exact_stdin_commit() {
+    let f = Fixture::new();
+    ok(&f.book, &["period", "close", "FY2026-P03", "--yes"]);
+    let before = head(&f.book);
+    let planned = ok(&f.book, &["period", "lock", "FY2026-P03", "--dry-run"]);
+    assert_eq!(text(&planned, "event"), "period_plan");
+    assert_eq!(text(&planned, "scope"), "period-transition-proposal");
+    assert_eq!(text(&planned, "from"), "Closed");
+    assert_eq!(text(&planned, "to"), "Locked");
+    assert_eq!(get(&planned, "certificate"), &Json::Null);
+    assert_eq!(head(&f.book), before);
+    let encoded = text(&planned, "bytes");
+    let bytes: Vec<u8> = encoded
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect();
+    let decoded =
+        fa_journal::TransitionPlan::decode(&bytes).expect("existing canonical period format");
+    assert_eq!(decoded.encode().unwrap(), bytes);
+    assert_eq!(decoded.period_code, "FY2026-P03");
+    let approval = ok(
+        &f.book,
+        &[
+            "approve",
+            "--proposal",
+            text(&planned, "proposal_digest"),
+            "--as",
+            "controller",
+        ],
+    );
+    let (code, committed) = run(
+        &f.book,
+        &[
+            "period",
+            "lock",
+            "FY2026-P03",
+            "--plan",
+            "-",
+            "--approval",
+            text(&approval, "approval_vid"),
+        ],
+        Some(encoded.as_bytes()),
+    );
+    assert_eq!(code, 0, "{}", committed.render());
+    assert_eq!(text(&committed, "event"), "period_transitioned");
+    assert_eq!(text(&committed, "to"), "Locked");
+    let stored = ok(
+        &f.book,
+        &["entry", "show", text(&committed, "control_entry")],
+    );
+    assert_eq!(
+        text(&stored, "proposal_digest"),
+        text(&planned, "proposal_digest")
+    );
+}

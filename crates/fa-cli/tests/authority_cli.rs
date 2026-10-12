@@ -178,15 +178,14 @@ fn plan_files_and_plan_output_flags_cannot_confirm_a_dangerous_commit() {
 }
 
 #[test]
-fn only_an_actual_read_authorized_period_plan_can_reach_the_book() {
+fn only_an_actual_read_authorized_inline_period_plan_can_reach_the_book() {
     let reader = authority(LaunchProfile::Agent, &["read"]);
     let plan = reader
         .book()
         .parent()
         .expect("fixture parent")
         .join("review.plan");
-    let path = plan.to_str().expect("UTF-8 fixture path");
-    let argv = ["period", "lock", "FY2026-P03", "--plan-out", path, "--json"];
+    let argv = ["period", "lock", "FY2026-P03", "--dry-run", "--json"];
     let (exit, out) = run(&reader, &argv);
     assert_eq!(
         exit, 4,
@@ -201,6 +200,47 @@ fn only_an_actual_read_authorized_period_plan_can_reach_the_book() {
     assert!(!plan.exists(), "no plan may be fabricated without a book");
     let poster = authority(LaunchProfile::Preparer, &["post"]);
     refused_before_open(&poster, &argv, "FA-REF-011");
+}
+
+#[test]
+fn bound_handlers_refuse_file_paths_before_observing_the_book() {
+    let authority = authority(LaunchProfile::Preparer, &[]);
+    let target = authority.book().parent().unwrap().join("preserve.txt");
+    std::fs::write(&target, "preserve this host file").unwrap();
+    let path = target.to_str().unwrap();
+    for argv in [
+        vec![
+            "period",
+            "close",
+            "FY2026-P03",
+            "--plan-out",
+            path,
+            "--json",
+        ],
+        vec!["post", "--intent", path, "--dry-run", "--json"],
+        vec!["commit", "--plan", path, "--json"],
+        vec!["replay", path, "--json"],
+        vec!["certificate", "status", path, "--json"],
+        vec!["tb", "--certificate-out", path, "--json"],
+    ] {
+        let (exit, out) = run(&authority, &argv);
+        assert_eq!(exit, 2, "argv={argv:?}\n{out:?}");
+        let event = event(&authority, &out);
+        assert_eq!(event.get("book"), Some(&Json::Null));
+        assert!(
+            event
+                .get("data")
+                .and_then(|data| data.get("message"))
+                .and_then(Json::as_str)
+                .unwrap()
+                .contains("filesystem")
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "preserve this host file"
+        );
+        assert!(!authority.book().exists());
+    }
 }
 
 #[test]

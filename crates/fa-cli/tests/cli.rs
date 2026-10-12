@@ -3565,6 +3565,10 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     // A planned, approved lock (R4): `period_planned`, then `approved`.
     assert_eq!(run(true, &["period", "open", "FY2026-P04"]).0, 0);
     assert_eq!(run(true, &["period", "close", "FY2026-P04", "--yes"]).0, 0);
+    assert_eq!(
+        run(true, &["period", "lock", "FY2026-P04", "--dry-run"]).0,
+        0
+    );
     let plan = dir.join("lock.plan").display().to_string();
     let (code, out) = run(true, &["period", "lock", "FY2026-P04", "--plan-out", &plan]);
     assert_eq!(code, 0, "{out}");

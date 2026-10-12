@@ -264,7 +264,7 @@ fn producer(key: &str, path: &[String]) -> Vec<ToolCall> {
     let (tool, command, args) = match key {
         "evidence" | "document_oid" | "oid" => (
             "fa_evidence_import_document",
-            "fa document add <file> --kind Invoice --json",
+            "fa document add - --kind Invoice --json",
             json!({}),
         ),
         "resolves" | "reverses" | "entry" | "vid" => (
@@ -274,8 +274,8 @@ fn producer(key: &str, path: &[String]) -> Vec<ToolCall> {
         ),
         "proposal" => (
             "fa_time_period_transition",
-            "fa period lock <code> --plan-out <file> --json",
-            json!({"plan_out": "<file>"}),
+            "fa period lock <code> --dry-run --json",
+            json!({"transition": "lock", "dry_run": true}),
         ),
         "code" | "period" => ("fa_time_period_status", "fa period list --json", json!({})),
         "account" => ("fa_chart_list_accounts", "fa chart list --json", json!({})),
@@ -509,7 +509,7 @@ pub fn remember(
     }
     if reply.exit == 0 {
         for line in &reply.lines {
-            if matches!(line.event.as_str(), "period_planned" | "plan")
+            if matches!(line.event.as_str(), "period_planned" | "period_plan" | "plan")
                 && let Some(digest) = line.data.get("proposal_digest").and_then(Json::as_str)
             {
                 memory.planned.push(Planned {
@@ -738,15 +738,15 @@ mod tests {
         let digest = "ab".repeat(32);
         let planned = reply(
             0,
-            "period_planned",
+            "period_plan",
             &format!(
-                r#"{{"period":"FY2026-P01","from":"Closed","to":"Locked","proposal_digest":"{digest}","plan":"p.json"}}"#
+                r#"{{"period":"FY2026-P01","from":"Closed","to":"Locked","proposal_digest":"{digest}","bytes":"ab","scope":"period-transition-proposal"}}"#
             ),
         );
         remember(
             &mut memory,
             &transition,
-            &json!({"transition": "lock", "code": "FY2026-P01", "plan_out": "p.json"}),
+            &json!({"transition": "lock", "code": "FY2026-P01", "dry_run": true}),
             &planned,
             "planner",
         );

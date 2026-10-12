@@ -226,6 +226,9 @@ impl Adapter {
         if let Some(argument) = crate::registry::forbidden_argument(arguments) {
             return Err(StructuredError::forbidden_argument(argument));
         }
+        if let Some((argument, fix)) = tool.forbidden_path_argument(arguments) {
+            return Err(StructuredError::forbidden_path(&argument, fix));
+        }
         if let Some(e) = detect::floats(arguments)
             .or_else(|| detect::instants(tool, arguments))
             .or_else(|| detect::placeholders(tool, arguments))
@@ -373,6 +376,8 @@ impl Adapter {
                     "schema": JsonValue::Null,
                     "planning": {
                         "dry_run": "Set dry_run=true on a posting tool to run the actual laws without publishing. A bounded Preparer session can review the plan event and pass its complete bytes hex string as plan to fa_post_commit_plan under the same launch principal and capability.",
+                        "period_transition": "Set dry_run=true on fa_time_period_transition to receive existing canonical TransitionPlan bytes inline. This prepares a sealed period-transition proposal; commit independently checks authority, approvals and current period state. It is not a PostEntry effects certificate, and dangerous MCP commits remain unavailable.",
+                        "files": "Caller filesystem paths are refused. Supply content inline; no --files root is supported.",
                         "scope": "same-snapshot-post",
                         "invalidation": "Any intervening publication before the first commit requires another dry run. This slice preserves supplied approvals; it does not gather new approvals, create drafts, or rehearse balancing.",
                         "authority": "The artifact grants no authority. The default Agent profile cannot plan or commit accounting entries to trunk. Tool calls cannot select another principal, profile, book or grants. Dangerous void plan commits remain unavailable until a separate confirmation exchange exists.",
@@ -760,6 +765,57 @@ mod tests {
         assert_eq!(error.kind, "forbidden_argument");
         assert_eq!(error.detail["argument"], "book");
         assert_eq!(error.authority, Some(adapter.authority_json()));
+    }
+
+    #[test]
+    fn host_path_arguments_precede_detectors_and_all_dispatch() {
+        let adapter = Adapter::new(config()).expect("adapter");
+        for tool in &adapter.mcp.tools {
+            let schema = tool.input_schema(&adapter.mcp, adapter.reg);
+            let mut paths: Vec<String> = [
+                "file",
+                "intent_file",
+                "plan_file",
+                "plan_out",
+                "certificate_out",
+            ]
+            .iter()
+            .map(|path| (*path).to_string())
+            .collect();
+            if let Some(stdin) = &tool.stdin {
+                paths.push(tool.via_property(stdin));
+            }
+            paths.sort();
+            paths.dedup();
+            for argument in paths {
+                assert!(
+                    schema["properties"].get(&argument).is_none(),
+                    "{} exposes {argument}",
+                    tool.wire_name()
+                );
+                for value in [
+                    JsonValue::Null,
+                    json!(false),
+                    json!("/host/secret"),
+                    json!("../outside"),
+                    json!("symlink/target"),
+                ] {
+                    let mut input = json!({"intent": {"amount": 1.25}});
+                    input[&argument] = value;
+                    let error = adapter
+                        .call(tool, &input)
+                        .expect_err("host path refused before float/input checks or missing book");
+                    let json = error.to_json();
+                    assert_eq!(json["type"], "forbidden_path", "{json}");
+                    assert_eq!(json["exit"], 2);
+                    assert_eq!(json["data"]["argument"], argument);
+                    assert_eq!(json["authority"], adapter.authority_json());
+                    assert!(json.get("detector").is_none());
+                    assert_eq!(json["suggested_tool_calls"], json!([]));
+                    assert!(tool.invocation(&adapter.mcp, adapter.reg, &input).is_err());
+                }
+            }
+        }
     }
 
     #[test]

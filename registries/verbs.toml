@@ -101,10 +101,10 @@ summary = "Create a fiscal year's periods, list them, or move one along the peri
 writes = true
 subcommands = ["create", "list", "open", "soft-close", "close", "lock", "reopen"]
 flags = ["--fiscal-year", "--to", "--reason", "--key", "--date", "--plan-out", "--plan", "--approval"]
-switches = []
-events = ["periods_created", "periods", "period_transitioned", "period_planned"]
+switches = ["--dry-run"]
+events = ["periods_created", "periods", "period_transitioned", "period_planned", "period_plan"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["period create --fiscal-year N", "period list", "period open|soft-close|close|lock|reopen <code> [--to open|soft-closed] [--reason N] [--key K] [--date YYYY-MM-DD]", "period lock|reopen <code> --plan-out <file>   (writes the planned proposal and prints its proposal_digest; commits nothing)", "period lock|reopen <code> --plan <file> --approval <vid>...   (commits exactly the planned proposal, citing approvals of its digest)"]
+usage = ["period create --fiscal-year N", "period list", "period open|soft-close|close|lock|reopen <code> [--to open|soft-closed] [--reason N] [--key K] [--date YYYY-MM-DD]", "period <transition> <code> --dry-run   (returns the sealed proposal, its proposal_digest and canonical bytes as hex; writes no file or book data; commit authority and approvals are checked separately)", "period lock|reopen <code> --plan-out <file>   (owner CLI only: writes the planned proposal and prints its proposal_digest; commits nothing)", "period lock|reopen <code> --plan <file|-> --approval <vid>...   (owner CLI commits exactly the planned proposal, citing approvals of its digest; stdin accepts binary or complete bytes hex)"]
 example = "fa period open FY2026-P03 --book ./books/myco --json"
 
 [[verb]]
@@ -577,6 +577,12 @@ name = "period_planned"
 book = true
 doc = "A transition was planned and its sealed proposal written to a file; nothing was committed. Approvals bind proposal_digest."
 fields = ["period:string", "from:string", "to:string", "proposal_digest:hex", "plan:string"]
+
+[[event]]
+name = "period_plan"
+book = true
+doc = "A period transition proposal prepared inline without writing files or journal data. bytes is the complete existing canonical TransitionPlan in hex; approvals bind proposal_digest and the sealed description is preserved. Scope is period-transition-proposal: this prepares the state-machine transition, while commit independently checks current authority, approvals and period state. It is not the authenticated PostEntry effects certificate. MCP dangerous commits remain unavailable; an operator must separately review and authorize the transition."
+fields = ["period:string", "from:string", "to:string", "principal:hex", "proposal_digest:hex", "bytes:hex", "scope:string"]
 
 [[event]]
 name = "approved"
@@ -1098,7 +1104,7 @@ stdin_kind = "object"
 stdin_via = "file"
 required = []
 dont = ["Don't post to a summary account afterwards: only leaves (`leaf: true`) accept legs.", "Don't edit an installed chart in place; a chart change is a new journaled schema effect."]
-mistakes = ["Passing both `chart` and `file`: exactly one of the inline document or the path.", "Giving `lower_bound`/`upper_bound` as numbers: bounds are amounts, strings in the account's unit (\"0.00\")."]
+mistakes = ["Passing a host path as `file`: supply the chart object inline as `chart`; this does not grant chart-installation authority.", "Giving `lower_bound`/`upper_bound` as numbers: bounds are amounts, strings in the account's unit (\"0.00\")."]
 
 [[mcp.tool]]
 cluster = "fa.chart"
@@ -1176,7 +1182,7 @@ stdin_kind = "string"
 stdin_via = "--plan"
 required = ["--plan"]
 dont = ["Review the plan event, then pass its complete bytes hex string as plan using the same fixed launch authority. A Preparer can commit an admitted ordinary posting; an Agent remains unable to write trunk. The artifact provides no authority and tool arguments cannot change the principal or grants.", "A plan applies only at its recorded snapshot. After another book publication, run dry_run again and review the new result; do not edit a stale plan or change an effective date to obtain admission.", "Planning itself acquires no hold, releases no reservation and consumes no idempotency key. A first commit retains the artifact with its entry; exact commit retries return already_recorded=true.", "A void plan cannot supply the separate dangerous-operation confirmation exchange: bound MCP void commits remain refused with FA-REF-007, even when the launch capability matches."]
-mistakes = ["Passing both plan and plan_file.", "Passing an intent JSON object as plan: use the plan event's bytes string.", "Passing as, grant, yes, book or keys: these remain forbidden per-call overrides.", "Expecting new approval collection, drafts, issued tokens or balancing to be covered by this first same-snapshot PostEntry slice."]
+mistakes = ["Passing plan_file: host paths are refused; supply the plan event's complete bytes string inline as plan.", "Passing an intent JSON object as plan: use the plan event's bytes string.", "Passing as, grant, yes, book or keys: these remain forbidden per-call overrides.", "Expecting new approval collection, drafts, issued tokens or balancing to be covered by this first same-snapshot PostEntry slice."]
 
 # ---- fa.read ----------------------------------------------------------------
 
@@ -1201,8 +1207,8 @@ stdin_property = "certificate"
 stdin_kind = "string"
 stdin_via = "file"
 required = ["file"]
-dont = ["Pass the retained oid (bare 64-hex or C: prefixed) or complete bytes hex string from report_certificate as certificate; alternatively pass its canonical binary file as file. Never edit the certificate or substitute the current known-at.", "A replay proves the retained closure produces the same result; it is not a witness signature or a judgment on the accounting treatment."]
-mistakes = ["Looking up an oid in a different book; use the book where certification retained it.", "Passing both file and certificate."]
+dont = ["Pass the retained oid (bare 64-hex or C: prefixed) or complete bytes hex string from report_certificate inline as certificate. Never edit the certificate or substitute the current known-at.", "A replay proves the retained closure produces the same result; it is not a witness signature or a judgment on the accounting treatment."]
+mistakes = ["Looking up an oid in a different book; use the book where certification retained it.", "Passing file: MCP refuses host paths; use the inline certificate property."]
 
 [[mcp.tool]]
 cluster = "fa.read"
@@ -1281,9 +1287,12 @@ subcommands = ["open", "soft-close", "close", "lock", "reopen"]
 selector = "transition"
 positionals = ["code"]
 flags = ["--to", "--reason", "--key", "--date", "--plan-out", "--plan", "--approval"]
+stdin_property = "plan"
+stdin_kind = "string"
+stdin_via = "--plan"
 required = ["code"]
 dont = ["Don't reopen to admit an ordinary posting: only a lawfully classified adjustment or an authorized, case-bound reopen changes what a closed period reports.", "Don't approve your own plan: an independent approver needs their own authorized session; tool arguments cannot change this session's identity.", "Don't close, lock or reopen through MCP: dangerous confirmation is unavailable, and a plan or approval file cannot authorize a commit here."]
-mistakes = ["Passing `plan_out` together with `plan` or `approval` (a plan commits nothing; the commit cites the plan and its approvals).", "Passing `to` for a transition other than `reopen`."]
+mistakes = ["Passing a host path in plan_out or plan_file: MCP permits no filesystem paths. Use dry_run: true to receive canonical period plan bytes inline.", "Combining dry_run with plan or approval: preparation and commit are separate calls.", "Passing `to` for a transition other than `reopen`."]
 
 [[mcp.tool]]
 cluster = "fa.time"
@@ -1292,7 +1301,7 @@ verb = "approve"
 subcommands = []
 positionals = []
 required = ["--proposal"]
-dont = ["Don't approve a proposal you planned in this session: segregation of duties (FA-REF-008) needs another principal.", "Don't invent a digest: `proposal` is the `proposal_digest` a `period_transition` with `plan_out` returned."]
+dont = ["Don't approve a proposal you planned in this session: segregation of duties (FA-REF-008) needs another principal.", "Don't invent a digest: `proposal` is the `proposal_digest` a `period_transition` with `dry_run: true` returned."]
 mistakes = ["A placeholder such as \"<proposal_digest>\" in `proposal`.", "Trying to change principal or self-issue approve: this session is launch-bound, and Agent/Preparer profiles do not permit approval."]
 
 # ---- fa.evidence ------------------------------------------------------------
@@ -1308,4 +1317,4 @@ stdin_kind = "string"
 stdin_via = "file"
 required = []
 dont = ["Don't grade your own upload `HumanUpload`: an agent's document is `AgentUpload` and needs a human `Reviewed` attestation before promotion.", "Don't write a plausible document to stand in for a missing one; record an explicit manual assertion instead."]
-mistakes = ["Passing both `text` and `file`: exactly one of the inline text or the path.", "Citing `doc_commit` where an intent's `evidence` wants the document `oid`."]
+mistakes = ["Passing a host path as `file`: supply the document inline as `text`; this does not grant document-import authority.", "Citing `doc_commit` where an intent's `evidence` wants the document `oid`."]

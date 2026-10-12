@@ -874,7 +874,7 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
             .any(|call| {
                 call["tool"] == "fa_time_period_transition"
                     && call["arguments"]["transition"] == "close"
-                    && call["arguments"].get("plan_out").is_some()
+                    && call["arguments"]["dry_run"] == json!(true)
             }),
         "safe planning alternative: {e}"
     );
@@ -1088,6 +1088,14 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         "fa_post_commit_plan",
         json!({"plan_file": plan_file.display().to_string()}),
     );
+    assert!(is_error, "host plan_file must be refused: {text}");
+    assert_eq!(structured_error(&text)["type"], "forbidden_path");
+    assert_eq!(std::fs::read_to_string(&plan_file).unwrap(), encoded);
+    let (is_error, text, _) = call_tool(
+        &mut reopened,
+        "fa_post_commit_plan",
+        json!({"plan": encoded}),
+    );
     assert!(!is_error, "fresh-session exact retry: {text}");
     assert_eq!(
         text, retry,
@@ -1230,9 +1238,14 @@ fn default_agent_authority_survives_stdio_and_cannot_be_changed_by_a_call() {
         &b,
         "--json",
     ]);
+    let plan_bytes: String = std::fs::read(&plan)
+        .unwrap()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
     for arguments in [
         json!({"transition": "close", "code": "FY2026-P03"}),
-        json!({"transition": "close", "code": "FY2026-P03", "plan": plan.display().to_string()}),
+        json!({"transition": "close", "code": "FY2026-P03", "plan": plan_bytes}),
     ] {
         let (error, text, _) = call_tool(&mut mcp, "fa_time_period_transition", arguments);
         assert!(error, "dangerous commit: {text}");
@@ -1290,6 +1303,125 @@ fn default_agent_authority_survives_stdio_and_cannot_be_changed_by_a_call() {
     }
     assert_eq!(cli_data(&["book", "info", "--book", &b, "--json"]), before);
     assert_eq!(read_only.finish(), 0);
+}
+
+#[test]
+fn read_only_period_planning_is_inline_and_paths_cannot_touch_host_files() {
+    let dir = tmp("filesystem-containment");
+    let book = dir.join("book");
+    let b = book.display().to_string();
+    cli_data(&[
+        "book",
+        "create",
+        "--name",
+        "Inline plans",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2026",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&["period", "open", "FY2026-P03", "--book", &b, "--json"]);
+    let victim = dir.join("preserve.txt");
+    std::fs::write(&victim, "host file must remain unchanged").unwrap();
+    let paths = vec![victim.display().to_string(), "../preserve.txt".to_string()];
+    #[cfg(unix)]
+    let paths = {
+        let mut paths = paths;
+        let link = dir.join("escape-link");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        paths.push(link.display().to_string());
+        paths
+    };
+    let before = cli(&["book", "info", "--book", &b, "--json"]);
+    assert_eq!(before.0, 0);
+    let mut mcp = Mcp::start_with(&book, &["--principal", "reader", "--grant", "read"]);
+    mcp.initialize();
+    for path in paths {
+        for (wire, argument, mut input) in [
+            (
+                "fa_time_period_transition",
+                "plan_out",
+                json!({"transition": "close", "code": "FY2026-P03"}),
+            ),
+            ("fa_post_post", "intent_file", json!({})),
+            ("fa_post_commit_plan", "plan_file", json!({})),
+            ("fa_read_replay", "file", json!({})),
+            ("fa_read_certificate_status", "file", json!({})),
+            ("fa_chart_import_chart", "file", json!({})),
+            ("fa_evidence_import_document", "file", json!({})),
+            ("fa_read_trial_balance", "certificate_out", json!({})),
+        ] {
+            input[argument] = json!(path);
+            let (error, text, _) = call_tool(&mut mcp, wire, input);
+            assert!(error, "{wire} must refuse a host path: {text}");
+            let refused = structured_error(&text);
+            assert_eq!(refused["type"], "forbidden_path", "{refused}");
+            assert_eq!(refused["data"]["argument"], argument);
+            assert_eq!(refused["authority"]["ops"], json!(["read"]));
+            assert!(refused.get("detector").is_none());
+            assert_eq!(
+                std::fs::read_to_string(&victim).unwrap(),
+                "host file must remain unchanged"
+            );
+        }
+    }
+    let (error, text, result) = call_tool(
+        &mut mcp,
+        "fa_time_period_transition",
+        json!({"transition": "close", "code": "FY2026-P03", "dry_run": true}),
+    );
+    assert!(!error, "read-authorized inline preparation: {text}");
+    let planned: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(planned["scope"], "period-transition-proposal");
+    assert_eq!(planned["from"], "Open");
+    assert_eq!(planned["to"], "Closed");
+    assert!(
+        planned["bytes"]
+            .as_str()
+            .unwrap()
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    );
+    let envelope: JsonValue =
+        fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(envelope["events"], json!(["period_plan"]));
+    assert_eq!(envelope["certificate"], JsonValue::Null);
+    assert_eq!(envelope["authority"]["principal"], "reader");
+    let (error, text, _) = call_tool(
+        &mut mcp,
+        "fa_time_approve",
+        json!({"proposal": planned["proposal_digest"]}),
+    );
+    assert!(
+        error,
+        "the inline proposal remains subject to segregation of duties"
+    );
+    assert_eq!(structured_error(&text)["detector"], "self_approval");
+    let (error, text, _) = call_tool(
+        &mut mcp,
+        "fa_time_period_transition",
+        json!({"transition": "close", "code": "FY2026-P03", "plan": planned["bytes"]}),
+    );
+    assert!(error, "inline bytes never authorize a dangerous MCP commit");
+    assert_eq!(structured_error(&text)["refusal_id"], "FA-REF-007");
+    assert_eq!(
+        cli(&["book", "info", "--book", &b, "--json"]),
+        before,
+        "the recorded frontier must not move"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&victim).unwrap(),
+        "host file must remain unchanged"
+    );
+    assert_eq!(mcp.finish(), 0);
 }
 
 #[test]
