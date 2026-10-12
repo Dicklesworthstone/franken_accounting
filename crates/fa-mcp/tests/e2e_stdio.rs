@@ -1,6 +1,6 @@
 //! End to end over stdio (beads fa-xex/fa-23r): the real `fa-mcp` binary is started
 //! on a temp book and spoken to as an MCP host would — newline-delimited
-//! JSON-RPC on its stdin/stdout — through `initialize`, `tools/list`,
+//! JSON-RPC on its stdin/stdout — through `server/discover`, `tools/list`,
 //! `tools/call` and `resources/read`. Every tool result's first content
 //! block must equal, byte for byte, the `data` payload the CLI's own front
 //! door (`fa_cli::entry::fa`, the function the `fa` binary's `main` calls)
@@ -143,15 +143,15 @@ impl Mcp {
         }
     }
 
-    fn initialize(&mut self) -> JsonValue {
-        let init = self.result(
-            "initialize",
-            json!({"protocolVersion": PROTOCOL, "capabilities": {}, "clientInfo": {"name": "fa-mcp-e2e", "version": fa_mcp::VERSION}}),
+    fn discover(&mut self) -> JsonValue {
+        let discovery = self.result("server/discover", json!({}));
+        assert_eq!(discovery["supportedVersions"], json!([PROTOCOL]));
+        assert_eq!(
+            discovery["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+            json!("fa-mcp"),
+            "{discovery}"
         );
-        assert!(init["protocolVersion"].is_string(), "{init}");
-        assert_eq!(init["serverInfo"]["name"], json!("fa-mcp"), "{init}");
-        self.notify("notifications/initialized", json!({}));
-        init
+        discovery
     }
 
     fn send(&mut self, message: &JsonValue) {
@@ -163,13 +163,17 @@ impl Mcp {
         stdin.flush().expect("flush");
     }
 
-    fn notify(&mut self, method: &str, params: JsonValue) {
-        self.send(&json!({"jsonrpc": "2.0", "method": method, "params": params}));
-    }
-
     /// Send one request and wait for its response (notifications are logged
     /// and skipped). Returns the whole response object.
-    fn request(&mut self, method: &str, params: JsonValue) -> JsonValue {
+    fn request(&mut self, method: &str, mut params: JsonValue) -> JsonValue {
+        params["_meta"] = json!({
+            "io.modelcontextprotocol/protocolVersion": PROTOCOL,
+            "io.modelcontextprotocol/clientCapabilities": {},
+        });
+        self.request_raw(method, params)
+    }
+
+    fn request_raw(&mut self, method: &str, params: JsonValue) -> JsonValue {
         self.next_id += 1;
         let id = self.next_id;
         self.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
@@ -205,6 +209,11 @@ impl Mcp {
             response.get("error").is_none(),
             "{method} failed: {response}"
         );
+        assert_eq!(response["result"]["resultType"], "complete", "{response}");
+        if method == "resources/read" {
+            assert_eq!(response["result"]["ttlMs"], 0, "{response}");
+            assert_eq!(response["result"]["cacheScope"], "private", "{response}");
+        }
         response["result"].clone()
     }
 
@@ -332,7 +341,7 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
         "--json",
     ]);
     let mut mcp = Mcp::start(&book);
-    mcp.initialize();
+    mcp.discover();
     let (error, output, metadata) = call_tool(
         &mut mcp,
         "fa_read_statement",
@@ -460,7 +469,7 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     // This parity test deliberately uses the trusted Preparer template;
     // default Agent behavior is exercised separately below.
     let mut mcp = Mcp::start_with(&book, &["--profile", "preparer", "--principal", "operator"]);
-    mcp.initialize();
+    mcp.discover();
 
     // tools/list: exactly the registry's wire names, each with an object schema.
     let registry = fa_mcp::registry::McpRegistry::embedded().expect("[mcp]");
@@ -479,6 +488,15 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         for tool in page["tools"].as_array().expect("tools") {
             let name = tool["name"].as_str().expect("name").to_string();
             assert_eq!(tool["inputSchema"]["type"], json!("object"), "{name}");
+            if name == "fa_post_reverse" {
+                assert!(
+                    tool["inputSchema"]["required"]
+                        .as_array()
+                        .unwrap()
+                        .contains(&json!("reason")),
+                    "reversals require the registered reason: {tool}"
+                );
+            }
             for argument in fa_mcp::registry::FORBIDDEN_ARGUMENTS {
                 assert!(
                     tool["inputSchema"]["properties"].get(*argument).is_none(),
@@ -812,19 +830,21 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     // The typed reversal is the same law-enforced correction as the CLI:
     // missing and unknown reasons cannot post, and the persisted lineage
     // records the exact registered name/code the caller selected.
-    // `--reason` is a required flag of the tool, so the server's input
-    // validation refuses the call before the tool runs and the protocol
-    // error names the missing field.
-    let missing = mcp.request(
-        "tools/call",
-        json!({"name": "fa_post_reverse", "arguments": {"vid": vid}}),
-    );
-    assert_eq!(missing["error"]["code"], json!(-32602), "{missing}");
+    // The final protocol returns a tool error for schema validation. The
+    // advertised schema above requires reason; rejection must not post.
+    let before_missing = cli_data(&["book", "info", "--book", &b, "--json"]);
+    let (is_error, text, _) = call_tool(&mut mcp, "fa_post_reverse", json!({"vid": vid}));
     assert!(
-        missing["error"]["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("reason")),
-        "missing reason: {missing}"
+        is_error,
+        "missing reason must be refused before dispatch: {text}"
+    );
+    assert_eq!(
+        text,
+        "Tool arguments do not match the declared input schema."
+    );
+    assert_eq!(
+        cli_data(&["book", "info", "--book", &b, "--json"]),
+        before_missing
     );
     let (is_error, text, _) = call_tool(
         &mut mcp,
@@ -1097,7 +1117,7 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         ),
     ] {
         let mut other = Mcp::start_with(&book, &launch);
-        other.initialize();
+        other.discover();
         let (is_error, text, _) =
             call_tool(&mut other, "fa_post_commit_plan", json!({"plan": encoded}));
         assert!(is_error, "{launch:?}: {text}");
@@ -1203,7 +1223,7 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     std::fs::write(&plan_file, &encoded).unwrap();
     let mut reopened =
         Mcp::start_with(&book, &["--profile", "preparer", "--principal", "operator"]);
-    reopened.initialize();
+    reopened.discover();
     let before_retry = cli_data(&["book", "info", "--book", &b, "--json"]);
     let (is_error, text, _) = call_tool(
         &mut reopened,
@@ -1283,8 +1303,25 @@ fn default_agent_authority_survives_stdio_and_cannot_be_changed_by_a_call() {
         "posture": "mcp-launch-config", "principal": "mcp-agent", "profile": "agent",
         "ops": ["read", "post", "verify"],
     });
+    // A legacy initialize cannot silently select a different error contract.
+    // The operator gets a protocol refusal before the book is observed.
+    let before_legacy = cli_data(&["book", "info", "--book", &b, "--json"]);
+    let mut legacy = Mcp::start(&book);
+    let refused = legacy.request_raw(
+        "initialize",
+        json!({"protocolVersion": "2024-11-05", "capabilities": {},
+            "clientInfo": {"name": "fa-mcp-legacy-negative", "version": fa_mcp::VERSION}}),
+    );
+    assert!(refused.get("result").is_none(), "{refused}");
+    assert_eq!(refused["error"]["code"], -32601, "{refused}");
+    legacy.discover();
+    assert_eq!(legacy.finish(), 0);
+    assert_eq!(
+        cli_data(&["book", "info", "--book", &b, "--json"]),
+        before_legacy
+    );
     let mut mcp = Mcp::start(&book);
-    let init = mcp.initialize();
+    let init = mcp.discover();
     assert!(init["instructions"].as_str().unwrap().contains("mcp-agent"));
 
     // Real Agent reads and immutable report retention remain usable.
@@ -1433,7 +1470,7 @@ fn default_agent_authority_survives_stdio_and_cannot_be_changed_by_a_call() {
             "read",
         ],
     );
-    read_only.initialize();
+    read_only.discover();
     let (error, text, result) = call_tool(&mut read_only, "fa_book_info", json!({}));
     assert!(!error, "{text}");
     let envelope: JsonValue =
@@ -1492,7 +1529,7 @@ fn read_only_period_planning_is_inline_and_paths_cannot_touch_host_files() {
     let before = cli(&["book", "info", "--book", &b, "--json"]);
     assert_eq!(before.0, 0);
     let mut mcp = Mcp::start_with(&book, &["--principal", "reader", "--grant", "read"]);
-    mcp.initialize();
+    mcp.discover();
     for path in paths {
         for (wire, argument, mut input) in [
             (

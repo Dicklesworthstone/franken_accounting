@@ -16,11 +16,14 @@ use std::sync::{Arc, Mutex};
 use fa_cli::authority::{LaunchAuthority, LaunchProfile};
 use fa_cli::json::Json;
 use fa_cli::verbs::Registry;
-use fastmcp_rust::auto::{Server, ServerBuilder};
-use fastmcp_rust::server::{ResourceHandler, ToolHandler, UriParams};
+use fastmcp_rust::modern::{AbsoluteUri, Server, ServerBuilder};
+use fastmcp_rust::server::{
+    FinalResourceReadCacheHintProvenance, ResourceHandler, ToolHandler, UriParams,
+};
 use fastmcp_rust::{
-    Content, JsonValue, McpContext, McpError, McpErrorCode, McpResult, Resource, ResourceContent,
-    ResourceTemplate, Tool, ToolAnnotations, json,
+    CacheScope, CacheTtl, CompleteResult, Content, EmbeddedResourceContents,
+    FinalReadResourceResult, JsonValue, McpContext, McpError, McpErrorCode, McpResult, Resource,
+    ResourceContent, ResourceTemplate, ResultMeta, Tool, ToolAnnotations, json,
 };
 
 use crate::detect::{self, Memory};
@@ -547,6 +550,52 @@ impl ResourceHandler for FaResource {
         self.read_with_uri(ctx, self.uri, &HashMap::new())
     }
 
+    fn read_final(&self, ctx: &McpContext) -> McpResult<CompleteResult<FinalReadResourceResult>> {
+        self.read_final_with_uri(ctx, self.uri, &HashMap::new())
+    }
+
+    fn final_resource_read_cache_hint_provenance(&self) -> FinalResourceReadCacheHintProvenance {
+        FinalResourceReadCacheHintProvenance::Explicit
+    }
+
+    fn read_final_with_uri(
+        &self,
+        ctx: &McpContext,
+        uri: &str,
+        params: &UriParams,
+    ) -> McpResult<CompleteResult<FinalReadResourceResult>> {
+        let contents = self
+            .read_with_uri(ctx, uri, params)?
+            .into_iter()
+            .map(|content| {
+                let (Some(text), None) = (content.text, content.blob) else {
+                    return Err(McpError::internal_error(
+                        "accounting resources must be text",
+                    ));
+                };
+                Ok(EmbeddedResourceContents::Text {
+                    uri: AbsoluteUri::parse(content.uri)
+                        .map_err(|_| McpError::internal_error("invalid accounting resource URI"))?,
+                    text,
+                    mime_type: content.mime_type,
+                    meta: None,
+                    additional: Default::default(),
+                })
+            })
+            .collect::<McpResult<Vec<_>>>()?;
+        // These URIs resolve the current book, not an immutable snapshot.
+        // Explicit provenance prevents the router's one-hour default from
+        // letting clients reuse a pre-posting or pre-close response.
+        Ok(CompleteResult::new(
+            FinalReadResourceResult {
+                contents,
+                ttl_ms: CacheTtl::milliseconds(0),
+                cache_scope: CacheScope::Private,
+            },
+            ResultMeta::empty(),
+        ))
+    }
+
     fn read_with_uri(
         &self,
         ctx: &McpContext,
@@ -581,7 +630,9 @@ impl ResourceHandler for FaResource {
     }
 }
 
-/// Build the server: every registry tool, every resource, the instructions.
+/// Build the MCP 2026-07-28 server: every registry tool and resource.
+/// The explicit facade prevents a legacy initialize request from selecting
+/// the pinned framework's code/message-only resource error adapter.
 pub fn build_server(config: ServerConfig) -> Result<Server, ServerError> {
     let adapter = Arc::new(Adapter::new(config)?);
     let instructions = format!(
