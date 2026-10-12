@@ -38,7 +38,7 @@ pub use aging::{
     OpenItemSnapshot,
 };
 pub use async_book::AsyncBook;
-pub use book::{Book, BookError, BookKeys, Entropy, Outcome};
+pub use book::{Book, BookError, BookKeys, Entropy, Outcome, ReadScope};
 pub use certificate::{
     CertificateStatus, CertifiedReport, CertifiedTrialBalance, ReportCertificate, ReportOutput,
     ReportSelection, TrialBalanceSelection,

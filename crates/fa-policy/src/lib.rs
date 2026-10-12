@@ -12,7 +12,8 @@
 //! Layout:
 //! - [`op`] — the closed op vocabulary.
 //! - [`capability`] — `Profile`, the typed `Capability`, `fa:capability:v1`.
-//! - [`admit`] — pre-observation admission, expiry, op requirements.
+//! - [`admit`] — pre-observation admission, expiry, op requirements, and
+//!   the scope caveats' reach.
 //! - [`approval`] — the `fa:approval:v1` object and its binding law.
 //! - [`sod`] — the SoD predicate over `sod_policy.toml` rows.
 //! - [`denial`] — typed denials with code, exit, cite, and fix.
@@ -26,7 +27,10 @@ pub mod denial;
 pub mod op;
 pub mod sod;
 
-pub use admit::{Intent, admit, admit_read, current, require, scope};
+pub use admit::{
+    AccountScope, Intent, Observes, Reach, admit, admit_base, admit_read, admit_within, current,
+    reach, require, scope,
+};
 pub use approval::Approval;
 pub use capability::{Capability, CapabilityError, Profile};
 pub use denial::Denial;

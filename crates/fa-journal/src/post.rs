@@ -242,12 +242,25 @@ impl PreparedPost {
             }
             Err(WriteTxnError::Write(
                 fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
-            )) => match db.vertex(entry_ref.vid)? {
-                Some(row) => recorded_or_conflict(&row, &request.proposal, &seal_key, identity),
-                None => Err(KernelError::Corrupt(
-                    "identity spent but no live row".into(),
-                )),
-            },
+            )) => {
+                // Lost the identity race: the recorded outcome if it is the
+                // same intent, a conflict if it is not. A scoped token cannot
+                // judge the winner's scope without loading it, so it gets the
+                // conflict unread (WhiteCreek 3584); its retry decides from
+                // metadata.
+                if request.capability.is_scoped() {
+                    return Ok(Err(identity_conflict(identity, entry_ref.vid)));
+                }
+                match db.vertex(entry_ref.vid)? {
+                    Some(row) => {
+                        checked_entry(db, &row)?;
+                        recorded_or_conflict(&row, &request.proposal, &seal_key, identity)
+                    }
+                    None => Err(KernelError::Corrupt(
+                        "identity spent but no live row".into(),
+                    )),
+                }
+            }
             Err(e) => Err(e.into()),
         }
     }
@@ -305,35 +318,7 @@ pub(crate) fn recorded_or_conflict(
     if stored_digest == proposal.proposal_digest()? {
         return Ok(Ok(recorded));
     }
-    let conflict = match identity {
-        Identity::Reversal => Refusal::new(
-            code::ALREADY_REVERSED,
-            exit::CONFLICT,
-            format!("the target is already reversed by entry {:032x}", row.vid.0),
-            "plan §4.9 (one reversal per target, by identity)",
-            "cite the existing reversal instead of posting another",
-        ),
-        Identity::Resolution => Refusal::new(
-            code::ALREADY_RESOLVED,
-            exit::CONFLICT,
-            format!(
-                "the pending entry is already resolved by entry {:032x}",
-                row.vid.0
-            ),
-            "plan §5.4 (one resolution per pending entry, by identity)",
-            "read the existing resolution with `fa entry show`; a pending entry is resolved exactly once",
-        ),
-        Identity::Key => Refusal::new(
-            code::IDEMPOTENCY_CONFLICT,
-            exit::CONFLICT,
-            format!(
-                "idempotency key reused with different content; the recorded entry is {:032x}",
-                row.vid.0
-            ),
-            "plan §4.9 (identity is derived from the key; content is bound by proposal_digest)",
-            "resubmit the identical intent to get the recorded outcome, or use a new idempotency key for new content",
-        ),
-    };
+    let conflict = identity_conflict(identity, row.vid);
     if identity != Identity::Key && stored.proposal.principal_ref != proposal.principal_ref {
         return Ok(Err(conflict));
     }
@@ -360,6 +345,144 @@ pub(crate) fn recorded_or_conflict(
         }
         (Err(e), _) | (_, Err(e)) => Err(e.into()),
     }
+}
+
+/// The conflict for an identity already taken by different content.
+fn identity_conflict(identity: Identity, vid: VId) -> Refusal {
+    match identity {
+        Identity::Reversal => Refusal::new(
+            code::ALREADY_REVERSED,
+            exit::CONFLICT,
+            format!("the target is already reversed by entry {:032x}", vid.0),
+            "plan §4.9 (one reversal per target, by identity)",
+            "cite the existing reversal instead of posting another",
+        ),
+        Identity::Resolution => Refusal::new(
+            code::ALREADY_RESOLVED,
+            exit::CONFLICT,
+            format!(
+                "the pending entry is already resolved by entry {:032x}",
+                vid.0
+            ),
+            "plan §5.4 (one resolution per pending entry, by identity)",
+            "read the existing resolution with `fa entry show`; a pending entry is resolved exactly once",
+        ),
+        Identity::Key => Refusal::new(
+            code::IDEMPOTENCY_CONFLICT,
+            exit::CONFLICT,
+            format!(
+                "idempotency key reused with different content; the recorded entry is {:032x}",
+                vid.0
+            ),
+            "plan §4.9 (identity is derived from the key; content is bound by proposal_digest)",
+            "resubmit the identical intent to get the recorded outcome, or use a new idempotency key for new content",
+        ),
+    }
+}
+
+/// A reversal's target is absent — or, to a scoped token, not wholly in its
+/// scope: one envelope, so the token cannot tell the two apart.
+fn no_reversal_target(vid: VId) -> Refusal {
+    Refusal::new(
+        code::REVERSAL_TARGET,
+        exit::REFUSAL,
+        format!("no entry {:032x} in this book", vid.0),
+        "plan §4.4",
+        "fa entry show <vid> to find the entry to reverse",
+    )
+}
+
+/// A resolution's hold is absent, or not wholly in a scoped token's scope.
+fn no_resolution_target(vid: VId) -> Refusal {
+    Refusal::new(
+        code::RESOLUTION_TARGET,
+        exit::REFUSAL,
+        format!("no entry {:032x} in this book", vid.0),
+        "plan §5.4",
+        "fa entry show <vid> to find the pending entry to resolve",
+    )
+}
+
+/// Leg `i`'s settlement target is absent, or not wholly in a scoped token's
+/// scope.
+fn no_settle_target(i: usize, vid: VId) -> Refusal {
+    Refusal::new(
+        code::SETTLE_TARGET,
+        exit::REFUSAL,
+        format!("leg {i}: no entry {:032x} in this book", vid.0),
+        "plan §5.7",
+        "fa open-items --account <code> lists the open items to apply to",
+    )
+}
+
+/// Whether a scoped token reaches the entry at `vid`: decided from its
+/// metadata alone ([`policy::entry_in_scope_by_metadata`]), so an entry
+/// outside the scope is never loaded or decoded. `false` for an absent
+/// vertex or a non-entry too: one answer for all three.
+fn reaches<V: asupersync::fs::Vfs + Clone>(
+    txn: &fgdb::WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    req: &PostRequest,
+    scope: Option<&fa_policy::AccountScope>,
+    vid: VId,
+) -> Result<bool, KernelError> {
+    policy::entry_in_scope_by_metadata(txn, db, book, &req.capability, scope, vid)
+}
+
+/// Step 3''' for a scoped token (plan §14.2, CobaltGull 3570): the targets
+/// the commit releases, applies to or undoes are part of its footprint — a
+/// resolution's hold (every leg, so a partial Posts never silently releases
+/// an out-of-scope leg), each settled entry, and a reversal's target with
+/// its predecessor and every entry its legs applied to (the undo, WhiteCreek
+/// 3584). Each is judged from metadata before any payload of it is read;
+/// only the reversal's target, once admitted, is decoded here (its payload
+/// names the rest), and a payload that disagrees with its admitted mirrors
+/// is corruption. Out of scope, absent or not an entry, the refusal is the
+/// path's own "no entry" envelope.
+fn footprint_refusal<V: asupersync::fs::Vfs + Clone>(
+    txn: &fgdb::WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    req: &PostRequest,
+    scope: Option<&fa_policy::AccountScope>,
+    reversal_target: Option<EntryRef>,
+    resolution: Option<&(EntryRef, Disposition)>,
+) -> Result<Option<Refusal>, KernelError> {
+    let reached = |vid: VId| reaches(txn, db, book, req, scope, vid);
+    if let Some(target) = reversal_target {
+        if !reached(target.vid)? {
+            return Ok(Some(no_reversal_target(target.vid)));
+        }
+        let row = txn
+            .vertex(db, target.vid)?
+            .ok_or_else(|| KernelError::Corrupt("an admitted reversal target vanished".into()))?;
+        let (original, _) = checked_entry(db, &row)?;
+        let predecessors = original.proposal.supersession.iter().map(|s| s.target.vid);
+        let applied = original
+            .proposal
+            .legs
+            .iter()
+            .flat_map(|l| l.settles.iter().map(|s| s.target.vid));
+        for vid in predecessors.chain(applied) {
+            if !reached(vid)? {
+                return Ok(Some(no_reversal_target(target.vid)));
+            }
+        }
+    }
+    if let Some((target, _)) = resolution
+        && !reached(target.vid)?
+    {
+        return Ok(Some(no_resolution_target(target.vid)));
+    }
+    for (i, leg) in req.proposal.legs.iter().enumerate() {
+        for s in &leg.settles {
+            if !reached(s.target.vid)? {
+                return Ok(Some(no_settle_target(i, s.target.vid)));
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn not_implemented(class_name: &str) -> Refusal {
@@ -478,15 +601,24 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
     }
     // 1a. Authorization precedes observation (doctrine 8, FA-INV-10): the
     //     capability is the acting principal's, an Agent profile never
-    //     writes trunk, `post` is held, and every explicit leg is within its
-    //     unit's ceiling — decided by fa-policy from the payload alone,
-    //     before anything is read, including the identity row.
+    //     writes trunk, `post` is held, every explicit leg is within its
+    //     unit's ceiling, and the scope caveats admit what the payload
+    //     reaches (plan §14.2, [`policy::payload_reach`]): every leg's
+    //     account inside the `accounts` subtrees, the periods its date and
+    //     any `auto_reverse_on` resolve to (from the calendar alone) inside
+    //     `periods`, both dates inside `effective`, no `known_at` pin (a
+    //     write observes the head), the token's `branch` — decided by
+    //     fa-policy from the payload alone, before anything is read,
+    //     including the identity row. Only the `accounts` caveat's compile
+    //     reads: after the base checks and 1a', and only the caveat's own
+    //     subtrees. The targets it releases, applies to or undoes are judged
+    //     in step 3'''.
     let explicit: Vec<(fa_money::UnitId, i128)> = proposal
         .legs
         .iter()
         .map(|l| (l.amount.unit, l.amount.mantissa))
         .collect();
-    if let Err(d) = fa_policy::admit(
+    if let Err(d) = fa_policy::admit_base(
         &req.capability,
         &fa_policy::Intent {
             principal: proposal.principal_ref,
@@ -496,6 +628,21 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
             legs: &explicit,
         },
     ) {
+        return Ok(Err(policy::refusal(&d)));
+    }
+    // 1a'. The capability is current at the admission point (plan §14.2):
+    //      not expired at the head this single-writer handle observes, and
+    //      not revoked there (one point read at the token's own revocation
+    //      identity) — before the chart or anything else is read, so a
+    //      token expired or revoked now learns nothing, not even which
+    //      accounts its caveat covers. Nothing commits between here and the
+    //      transaction, which witnesses the revocation again for FCW.
+    let current = match policy::current_at(db, book, &req.capability)? {
+        Ok(current) => current,
+        Err(r) => return Ok(Err(r)),
+    };
+    let scope = policy::account_scope(db, book, &current)?;
+    if let Err(d) = policy::payload_reach(&req.capability, book, proposal, scope.as_ref()) {
         return Ok(Err(policy::refusal(&d)));
     }
     // 1b. The supported subset.
@@ -539,7 +686,8 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
     // The public path admits authored intents and the migration path checked
     // above. System entries are minted by their own internal constructors;
     // Canon and verified dry-run certificates have not shipped yet. Refuse
-    // these fields before the first storage observation, including on retry.
+    // these fields before any storage observation other than the
+    // capability's own currency and scope reads (1a'), including on retry.
     if req.plan_certificate.is_some() {
         return Ok(Err(Refusal::new(
             code::CLASS_NOT_IMPLEMENTED,
@@ -837,12 +985,7 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
         )));
     }
 
-    // 3'. The capability is current at the admission point (plan §14.2):
-    //     the head this single-writer handle observes immediately before the
-    //     transaction opens; nothing can commit in between.
-    if let Err(d) = fa_policy::current(&req.capability, db.frontier()?) {
-        return Ok(Err(policy::refusal(&d)));
-    }
+    // (The capability was found current at the admission point in 1a'.)
 
     // From here every read is a witness of this transaction.
     let txn_cx = ctx.txn();
@@ -850,6 +993,24 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
     // The capability is not revoked (plan §14.2): the first read, so a
     // revoked token learns nothing about the book, not even a recorded outcome.
     if let Err(r) = policy::capability_witness(&txn, db, book, &req.capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    // 3'''. A scoped token's footprint beyond the payload (plan §14.2,
+    //       CobaltGull 3570): every target the commit releases, applies to
+    //       or undoes lies wholly inside the scope, or the refusal is that
+    //       path's "no entry" envelope — read here, before the identity row.
+    if req.capability.is_scoped()
+        && let Some(r) = footprint_refusal(
+            &txn,
+            db,
+            book,
+            &req,
+            scope.as_ref(),
+            reversal_target,
+            resolution.as_ref(),
+        )?
+    {
         txn.abort();
         return Ok(Err(r));
     }
@@ -877,8 +1038,20 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
             ),
         },
     };
+    // A scoped token never loads or compares a recorded entry outside its
+    // scope (WhiteCreek 3571/3582): existence and membership come from
+    // metadata first; a taken identity it does not reach conflicts — no
+    // payload read, no digest or plaintext comparison, no recorded outcome.
+    if req.capability.is_scoped()
+        && txn.vertex_has_label(db, evid, label::ENTRY)?.is_some()
+        && !reaches(&txn, db, book, &req, scope.as_ref(), evid)?
+    {
+        txn.abort();
+        return Ok(Err(identity_conflict(identity, evid)));
+    }
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
+        checked_entry(db, &row)?;
         return Ok(
             recorded_or_conflict(&row, proposal, &book.seal_key, identity)?
                 .map(PostPreparation::AlreadyRecorded),
@@ -1286,13 +1459,7 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
         for s in &leg.settles {
             let Some(row) = txn.vertex(db, s.target.vid)? else {
                 txn.abort();
-                return Ok(Err(Refusal::new(
-                    code::SETTLE_TARGET,
-                    exit::REFUSAL,
-                    format!("leg {i}: no entry {:032x} in this book", s.target.vid.0),
-                    "plan §5.7",
-                    "fa open-items --account <code> lists the open items to apply to",
-                )));
+                return Ok(Err(no_settle_target(i, s.target.vid)));
             };
             if !row.labels.contains(&label::ENTRY) {
                 txn.abort();
@@ -1304,14 +1471,7 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
                     "cite the entry vid from `fa open-items`",
                 )));
             }
-            let target = match prop(&row, property::FA_PAYLOAD) {
-                Some(CanonicalScalar::Bytes(b)) => Entry::decode(b.as_slice())?,
-                other => {
-                    return Err(KernelError::Corrupt(format!(
-                        "entry _fa_payload: {other:?}"
-                    )));
-                }
-            };
+            let (target, _) = checked_entry(db, &row)?;
             if target.entry_digest != s.target.entry_digest {
                 txn.abort();
                 return Ok(Err(Refusal::new(
@@ -1358,7 +1518,11 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
             let mut reversed = false;
             let mut current = s.target.vid;
             let mut seen: BTreeSet<VId> = BTreeSet::new();
-            while txn.vertex(db, reversal_vid(current))?.is_some() {
+            // Existence only: a label point read, never the reversal's row.
+            while txn
+                .vertex_has_label(db, reversal_vid(current), label::ENTRY)?
+                .is_some()
+            {
                 if !seen.insert(current) {
                     return Err(KernelError::Corrupt(format!(
                         "reversal lineage of {:032x} cycles",
@@ -1471,13 +1635,7 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
     if let Some(target) = reversal_target {
         let Some(row) = txn.vertex(db, target.vid)? else {
             txn.abort();
-            return Ok(Err(Refusal::new(
-                code::REVERSAL_TARGET,
-                exit::REFUSAL,
-                format!("no entry {:032x} in this book", target.vid.0),
-                "plan §4.4",
-                "fa entry show <vid> to find the entry to reverse",
-            )));
+            return Ok(Err(no_reversal_target(target.vid)));
         };
         if !row.labels.contains(&label::ENTRY) {
             txn.abort();
@@ -1489,14 +1647,7 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
                 "cite the entry's vid from the posted event or `fa entry show`",
             )));
         }
-        let original = match prop(&row, property::FA_PAYLOAD) {
-            Some(CanonicalScalar::Bytes(b)) => Entry::decode(b.as_slice())?,
-            other => {
-                return Err(KernelError::Corrupt(format!(
-                    "entry _fa_payload: {other:?}"
-                )));
-            }
-        };
+        let (original, _) = checked_entry(db, &row)?;
         if original.entry_digest != target.entry_digest {
             txn.abort();
             return Ok(Err(Refusal::new(
@@ -1649,14 +1800,7 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
             && let [first] = original.proposal.supersession.as_slice()
             && let Some(grand) = txn.vertex(db, first.target.vid)?
         {
-            let grand = match prop(&grand, property::FA_PAYLOAD) {
-                Some(CanonicalScalar::Bytes(b)) => Entry::decode(b.as_slice())?,
-                other => {
-                    return Err(KernelError::Corrupt(format!(
-                        "entry _fa_payload: {other:?}"
-                    )));
-                }
-            };
+            let (grand, _) = checked_entry(db, &grand)?;
             if grand.proposal.legs.iter().any(|l| !l.settles.is_empty()) {
                 txn.abort();
                 return Ok(Err(not_implemented(
@@ -1664,10 +1808,18 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
                 )));
             }
         }
+        let mut undone: BTreeSet<VId> = BTreeSet::new();
         for (i, oleg) in original.proposal.legs.iter().enumerate() {
             let ordinal =
                 u16::try_from(i).map_err(|_| KernelError::Corrupt("more than u16 legs".into()))?;
             for s in &oleg.settles {
+                // Each entry the undo touches is bound to its mirrors first.
+                if undone.insert(s.target.vid) {
+                    let row = txn.vertex(db, s.target.vid)?.ok_or_else(|| {
+                        KernelError::Corrupt("an applied-to entry is missing".into())
+                    })?;
+                    checked_entry(db, &row)?;
+                }
                 let target_leg_vid = leg_vid(s.target.vid, s.ordinal);
                 if let MapEntry::Vacant(slot) = applied_delta.entry(target_leg_vid) {
                     let leg_row = txn.vertex(db, target_leg_vid)?.ok_or_else(|| {
@@ -1696,13 +1848,7 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
     if let Some((target, disposition)) = &resolution {
         let Some(row) = txn.vertex(db, target.vid)? else {
             txn.abort();
-            return Ok(Err(Refusal::new(
-                code::RESOLUTION_TARGET,
-                exit::REFUSAL,
-                format!("no entry {:032x} in this book", target.vid.0),
-                "plan §5.4",
-                "fa entry show <vid> to find the pending entry to resolve",
-            )));
+            return Ok(Err(no_resolution_target(target.vid)));
         };
         if !row.labels.contains(&label::ENTRY) {
             txn.abort();
@@ -1714,14 +1860,7 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
                 "cite the hold's vid from the posted event or `fa entry show`",
             )));
         }
-        let pending_entry = match prop(&row, property::FA_PAYLOAD) {
-            Some(CanonicalScalar::Bytes(b)) => Entry::decode(b.as_slice())?,
-            other => {
-                return Err(KernelError::Corrupt(format!(
-                    "entry _fa_payload: {other:?}"
-                )));
-            }
-        };
+        let (pending_entry, _) = checked_entry(db, &row)?;
         if pending_entry.entry_digest != target.entry_digest {
             txn.abort();
             return Ok(Err(Refusal::new(
@@ -2040,10 +2179,64 @@ pub fn read_entry<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     vid: VId,
 ) -> Result<Option<(Entry, CommitSeq)>, KernelError> {
-    let Some(row) = db.vertex(vid)? else {
-        return Ok(None);
+    db.vertex(vid)?.map(|row| entry_of(&row)).transpose()
+}
+
+/// [`read_entry`] through the snapshot at `seq`: an entry recorded after
+/// `seq` does not exist there, so its payload is never loaded or decoded
+/// (a `known_at`-pinned read observes nothing past its pin).
+pub fn read_entry_at<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    vid: VId,
+    seq: CommitSeq,
+) -> Result<Option<(Entry, CommitSeq)>, KernelError> {
+    db.vertex_at(vid, seq)?
+        .map(|row| entry_of(&row))
+        .transpose()
+}
+
+/// Decode an entry row bound to its mirrors (CobaltGull 3610): the payload
+/// must agree with the `_fa_effective_day` mirror on the row and, leg by
+/// leg, with each leg vertex's `account_ref` mirror, with no mirror past
+/// its last leg — exactly what a scope admission reads. Any disagreement is
+/// corruption, raised before the payload drives an effect, for every
+/// caller: the mirrors are what scoped tokens are admitted by.
+fn checked_entry<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    row: &VertexRow,
+) -> Result<(Entry, CommitSeq), KernelError> {
+    let (entry, recorded_at) = entry_of(row)?;
+    let drift = |what: String| {
+        KernelError::Corrupt(format!(
+            "entry {:032x}: {what} disagrees with its payload; its mirrors drifted",
+            row.vid.0
+        ))
     };
-    let payload = match prop(&row, property::FA_PAYLOAD) {
+    match prop(row, property::FA_EFFECTIVE_DAY) {
+        Some(CanonicalScalar::Int(d)) if *d == i64::from(entry.proposal.effective_date.0) => {}
+        other => return Err(drift(format!("the _fa_effective_day mirror {other:?}"))),
+    }
+    let legs = &entry.proposal.legs;
+    for k in 0..=legs.len() {
+        let ordinal =
+            u16::try_from(k).map_err(|_| KernelError::Corrupt("more than u16 legs".into()))?;
+        let leg_row = db.vertex(leg_vid(row.vid, ordinal))?;
+        let mirrored = leg_row
+            .as_ref()
+            .and_then(|r| prop(r, property::ACCOUNT_REF));
+        match (legs.get(k), mirrored) {
+            (Some(leg), Some(CanonicalScalar::Bytes(b)))
+                if b.as_slice() == &leg.account_ref.0.to_le_bytes()[..] => {}
+            (None, None) => {}
+            (_, other) => return Err(drift(format!("leg {k}'s account_ref mirror {other:?}"))),
+        }
+    }
+    Ok((entry, recorded_at))
+}
+
+/// Decode an entry row's payload, verifying its digests.
+fn entry_of(row: &VertexRow) -> Result<(Entry, CommitSeq), KernelError> {
+    let payload = match prop(row, property::FA_PAYLOAD) {
         Some(CanonicalScalar::Bytes(b)) => b.as_slice().to_vec(),
         other => {
             return Err(KernelError::Corrupt(format!(
@@ -2051,5 +2244,5 @@ pub fn read_entry<V: asupersync::fs::Vfs + Clone>(
             )));
         }
     };
-    Ok(Some((Entry::decode(&payload)?, row.created_at)))
+    Ok((Entry::decode(&payload)?, row.created_at))
 }

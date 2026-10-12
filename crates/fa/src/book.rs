@@ -1321,6 +1321,150 @@ impl Book {
     ) -> Result<TrialBalance, BookError> {
         with_store!(&self.store, core => core.period_activity(&self.purposes(), periods, known_at))
     }
+
+    /// Open reads under `capability` for `principal` (plan §14.2), through
+    /// the kernel's [`fa_journal::policy::admit_reads`]: the capability is
+    /// the principal's, holds `read`, its `books` caveat admits this book,
+    /// and it is neither expired nor revoked at the head — before anything
+    /// else is read. Historical selectors never resurrect authority: a token
+    /// revoked or expired now is refused whatever `known_at` a read would
+    /// select. Each [`ReadScope`] read is then judged by the scope caveats
+    /// before its query is constructed; an `accounts` caveat is refused
+    /// until whole-entry visibility lands, never filtered.
+    pub fn read_scope(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<ReadScope<'_>> {
+        let purposes = self.purposes();
+        let admitted = with_store!(&self.store, core => core.query(&purposes, |db, book| {
+            Ok(fa_journal::policy::admit_reads(db, book, principal, capability)?)
+        }))?;
+        Ok(admitted.map(|authority| ReadScope {
+            book: self,
+            authority,
+        }))
+    }
+}
+
+/// Reads of one book under one admitted capability (see [`Book::read_scope`]):
+/// the blocking adapter over the kernel's [`fa_journal::policy::ReadAuthority`].
+/// Every read resolves its recorded frontier first (`None` is the head) and
+/// is refused before its query is constructed when a scope caveat does not
+/// admit what it reaches; it never returns a filtered result.
+pub struct ReadScope<'b> {
+    book: &'b Book,
+    authority: fa_journal::policy::ReadAuthority,
+}
+
+impl ReadScope<'_> {
+    /// The capability these reads are admitted under.
+    #[must_use]
+    pub fn capability(&self) -> &fa_policy::Capability {
+        self.authority.capability()
+    }
+
+    /// The recorded frontier a read selects: `known_at`, or the head.
+    fn frontier(&self, known_at: Option<CommitSeq>) -> Result<CommitSeq, BookError> {
+        match known_at {
+            Some(seq) => Ok(seq),
+            None => self.book.head(),
+        }
+    }
+
+    /// [`Book::read_entry`] at a recorded frontier, through the kernel's
+    /// [`fa_journal::policy::ReadAuthority::read_entry`]: a `periods` or
+    /// `effective` caveat refuses it (the entry's period is known only once
+    /// read), and the read goes through the snapshot at the frontier, so an
+    /// entry recorded later is never loaded or decoded.
+    pub fn read_entry(
+        &self,
+        vid: VId,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<Option<(Entry, CommitSeq)>> {
+        let seq = self.frontier(known_at)?;
+        let purposes = self.book.purposes();
+        with_store!(&self.book.store, core => core.query(&purposes, |db, _| {
+            Ok(self.authority.read_entry(db, vid, seq)?)
+        }))
+    }
+
+    /// [`Book::explain_balance`] under the scope caveats: it reaches its one
+    /// period.
+    pub fn explain_balance(
+        &self,
+        account: VId,
+        period_code: &str,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<BalanceExplanation> {
+        let seq = self.frontier(known_at)?;
+        if let Err(r) = self
+            .authority
+            .periods(self.book.context(), seq, &[period_code])
+        {
+            return Ok(Err(r));
+        }
+        Ok(Ok(self.book.explain_balance(
+            account,
+            period_code,
+            Some(seq),
+        )?))
+    }
+
+    /// [`Book::trial_balance_at`] under the scope caveats. Stock balances
+    /// run from inception, so the read reaches every period before the
+    /// latest selected one: a `periods` caveat refuses it, and an
+    /// `effective` caveat admits it only through that period's last day.
+    pub fn trial_balance_at(
+        &self,
+        periods: &[String],
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<TrialBalance> {
+        let seq = self.frontier(known_at)?;
+        let codes: Vec<&str> = periods.iter().map(String::as_str).collect();
+        if let Err(r) = self
+            .authority
+            .stock_through(self.book.context(), seq, &codes)
+        {
+            return Ok(Err(r));
+        }
+        Ok(Ok(self.book.trial_balance_at(periods, Some(seq))?))
+    }
+
+    /// [`Book::balance_as_of`] under the scope caveats: it reaches every
+    /// period that starts by `day`, so a `periods` caveat refuses it.
+    pub fn balance_as_of(
+        &self,
+        day: DateDay,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<TrialBalance> {
+        let seq = self.frontier(known_at)?;
+        if let Err(r) = self.authority.as_of(seq, day) {
+            return Ok(Err(r));
+        }
+        Ok(Ok(self.book.balance_as_of(day, Some(seq))?))
+    }
+
+    /// [`Book::period_activity`] under the scope caveats: it reaches exactly
+    /// the selected periods.
+    pub fn period_activity(
+        &self,
+        periods: &[String],
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<TrialBalance> {
+        let seq = self.frontier(known_at)?;
+        let codes: Vec<&str> = periods.iter().map(String::as_str).collect();
+        if let Err(r) = self.authority.periods(self.book.context(), seq, &codes) {
+            return Ok(Err(r));
+        }
+        Ok(Ok(self.book.period_activity(periods, Some(seq))?))
+    }
+}
+
+impl fmt::Debug for ReadScope<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ReadScope({:?}, {:?})", self.book, self.authority)
+    }
 }
 
 impl fmt::Debug for Book {
@@ -3356,6 +3500,188 @@ mod tests {
         assert_eq!(book.verify_accumulator().unwrap().states.len(), 2);
     }
 
+    /// Reads under a capability (fa-llx; fa-t6m "historical read using a
+    /// revoked token"): admitted once against current policy, then every
+    /// read judged by the scope caveats before its query is constructed —
+    /// refused, never filtered.
+    #[test]
+    fn scoped_reads_refuse_before_construction_and_a_revoked_token_never_reads_history() {
+        let book_id = Id128([0x48; 16]);
+        let (spec, usd) = spec(book_id);
+        let mut book = Book::create_memory(
+            BookKeys::for_development(0x48),
+            spec,
+            Entropy::deterministic(0x48),
+        )
+        .unwrap();
+        let principal = VId(48);
+        let day = DateDay::from_ymd(2026, 3, 15).unwrap();
+        book.install_chart(&chart(usd), principal, day, b"chart")
+            .unwrap()
+            .unwrap();
+        let (_, periods) = book.create_periods(2026).unwrap();
+        let march = periods
+            .iter()
+            .find(|p| p.contains(day) && p.kind == PeriodKind::Normal)
+            .unwrap()
+            .code
+            .clone();
+        book.transition_period(
+            &march,
+            PeriodTransition::Open,
+            principal,
+            1,
+            day,
+            b"open",
+            &Capability::embedded(principal, &["close"]).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+        let posted = post_rent(&mut book, usd, principal, day, b"rent", 150_000)
+            .unwrap()
+            .unwrap();
+        let vid = posted.entry_ref().vid;
+        let recorded = posted.recorded_at();
+        let before = CommitSeq(recorded.0 - 1);
+        let rent = account_vid(book_id, "6000");
+        let months = [march.clone()];
+        let reader = Capability::embedded(principal, &["read"]).unwrap();
+        let caveat = |r: Refusal, caveat: &str| {
+            assert_eq!((r.code, r.exit), ("FA-REF-011", 7), "{}", r.message);
+            assert!(
+                r.message.contains(&format!("`{caveat}` caveat")),
+                "{}",
+                r.message
+            );
+        };
+
+        // Admission: the holder, `read`, and (until whole-entry visibility)
+        // no `accounts` caveat.
+        for (actor, cap) in [
+            (VId(49), reader.clone()),
+            (
+                principal,
+                Capability::embedded(principal, &["post"]).unwrap(),
+            ),
+            (principal, reader.clone().for_accounts(&["6000"]).unwrap()),
+        ] {
+            let r = book.read_scope(actor, &cap).unwrap().unwrap_err();
+            assert_eq!((r.code, r.exit), ("FA-REF-011", 7), "{}", r.message);
+        }
+
+        // Unscoped: the facade's reads; a frontier before the entry selects
+        // nothing.
+        let scope = book.read_scope(principal, &reader).unwrap().unwrap();
+        let (entry, seq) = scope.read_entry(vid, None).unwrap().unwrap().unwrap();
+        assert_eq!(
+            (entry.entry_digest, seq),
+            (posted.entry_ref().entry_digest, recorded)
+        );
+        assert_eq!(scope.read_entry(vid, Some(before)).unwrap().unwrap(), None);
+        assert_eq!(
+            scope.trial_balance_at(&months, None).unwrap().unwrap(),
+            book.trial_balance(&months).unwrap()
+        );
+
+        // known_at ≤ pin: the head and any later frontier refuse; the pin admits.
+        let pinned = reader.clone().known_at_most(before);
+        let scope = book.read_scope(principal, &pinned).unwrap().unwrap();
+        for known_at in [None, Some(recorded)] {
+            caveat(
+                scope
+                    .trial_balance_at(&months, known_at)
+                    .unwrap()
+                    .unwrap_err(),
+                "known_at",
+            );
+        }
+        caveat(
+            scope.read_entry(vid, None).unwrap().unwrap_err(),
+            "known_at",
+        );
+        assert_eq!(
+            scope
+                .trial_balance_at(&months, Some(before))
+                .unwrap()
+                .unwrap(),
+            book.trial_balance_at(&months, Some(before)).unwrap()
+        );
+
+        // periods ⊆ {March}: March's activity and explanation admit; the
+        // trial balance (stock from inception), the as-of, another period
+        // and an entry read (its period is unknown before the read) refuse.
+        let march_only = reader.clone().for_periods(&[march.as_str()]).unwrap();
+        let scope = book.read_scope(principal, &march_only).unwrap().unwrap();
+        scope.period_activity(&months, None).unwrap().unwrap();
+        let explained = scope.explain_balance(rent, &march, None).unwrap().unwrap();
+        assert_eq!(explained.contributions.len(), 1);
+        caveat(
+            scope.trial_balance_at(&months, None).unwrap().unwrap_err(),
+            "periods",
+        );
+        caveat(
+            scope.balance_as_of(day, None).unwrap().unwrap_err(),
+            "periods",
+        );
+        caveat(
+            scope
+                .period_activity(&["FY2026-P04".to_string()], None)
+                .unwrap()
+                .unwrap_err(),
+            "periods",
+        );
+        caveat(scope.read_entry(vid, None).unwrap().unwrap_err(), "periods");
+
+        // effective ≤ March 31: through March admits; April refuses.
+        let through_march = reader
+            .clone()
+            .effective_through(DateDay::from_ymd(2026, 3, 31).unwrap());
+        let scope = book.read_scope(principal, &through_march).unwrap().unwrap();
+        scope.trial_balance_at(&months, None).unwrap().unwrap();
+        scope.balance_as_of(day, None).unwrap().unwrap();
+        caveat(
+            scope
+                .balance_as_of(DateDay::from_ymd(2026, 4, 1).unwrap(), None)
+                .unwrap()
+                .unwrap_err(),
+            "effective",
+        );
+
+        // branch = <draft>: no trunk read.
+        let drafted = reader.clone().on_branch(Id128([0xd7; 16])).unwrap();
+        let scope = book.read_scope(principal, &drafted).unwrap().unwrap();
+        caveat(
+            scope.trial_balance_at(&months, None).unwrap().unwrap_err(),
+            "branch",
+        );
+
+        // Historical selectors never resurrect authority: expired or revoked
+        // now, the token reads nothing, not even the frontier before its end.
+        let head = book.head().unwrap();
+        let expired = reader.clone().expiring_at(head);
+        let r = book.read_scope(principal, &expired).unwrap().unwrap_err();
+        assert_eq!((r.code, r.exit), ("FA-REF-014", 7));
+        let req = fa_journal::RevocationRequest {
+            capability: Capability::embedded(VId(47), &["issue_capability"]).unwrap(),
+            revoked: reader.commitment().unwrap(),
+            effective_date: day,
+            idempotency_key: b"revoke-reader".to_vec(),
+            description: book.seal_text("revoke").unwrap(),
+        };
+        let purposes = book.purposes();
+        let ctx = book.context().clone();
+        with_store!(&mut book.store, core => book.runtime.block_on(async {
+            fa_journal::revoke_capability(&mut core.db, &purposes, &ctx, req).await
+        }))
+        .unwrap()
+        .expect("revoked");
+        let r = book.read_scope(principal, &reader).unwrap().unwrap_err();
+        assert_eq!((r.code, r.exit), ("FA-REF-023", 7));
+        book.read_scope(principal, &pinned)
+            .unwrap()
+            .expect("another capability of the same reader still reads");
+    }
+
     fn spec(book_id: Id128) -> (BookSpec, fa_money::UnitId) {
         let calendar = FiscalCalendar::monthly("cal", 1, 1).unwrap();
         let units = fa_money::UnitRegistry::embedded().unwrap();
@@ -3770,16 +4096,19 @@ mod tests {
         let backdated = post_rent(&mut book, usd, VId(1), day, b"backdated-march", 150_000)
             .unwrap()
             .unwrap();
-        match book.certificate_status(&certificate).unwrap().unwrap() {
+        let superseded = match book.certificate_status(&certificate).unwrap().unwrap() {
             CertificateStatus::SupersededBy {
                 later_entries,
                 checked_at,
-            } => {
-                assert_eq!(later_entries, vec![backdated.entry_ref().vid]);
-                assert_eq!(checked_at, book.head().unwrap());
-            }
-            state => panic!("backdated in-scope posting did not supersede report: {state:?}"),
-        }
+            } => Ok((later_entries, checked_at)),
+            state => Err(format!(
+                "backdated in-scope posting did not supersede report: {state:?}"
+            )),
+        };
+        let (later_entries, checked_at) =
+            superseded.expect("backdated in-scope posting did not supersede report");
+        assert_eq!(later_entries, vec![backdated.entry_ref().vid]);
+        assert_eq!(checked_at, book.head().unwrap());
         assert_eq!(
             book.trial_balance(&["FY2026-P03".into()])
                 .unwrap()
@@ -4103,12 +4432,17 @@ mod tests {
         for result in results {
             let replayed = book.replay_report(&result.certificate).unwrap().unwrap();
             assert_eq!(replayed, result.report);
+            assert!(
+                matches!(
+                    replayed,
+                    ReportOutput::ExplainBalance(_) | ReportOutput::OpenItems(_)
+                ),
+                "selected an explanation or open-items report"
+            );
             match &replayed {
                 ReportOutput::ExplainBalance(report) => assert_eq!(report.account_row.name, "Cash"),
                 ReportOutput::OpenItems(report) => assert_eq!(report.accounts[&cash].name, "Cash"),
-                ReportOutput::TrialBalance(_) | ReportOutput::Statement(_) => {
-                    panic!("selected an explanation or open-items report")
-                }
+                ReportOutput::TrialBalance(_) | ReportOutput::Statement(_) => {}
             }
             let refusal = book
                 .certificate_status(&result.certificate)
@@ -4594,7 +4928,7 @@ mod tests {
                 ),
                 3 => change.set_vertex_label(vid, label::CERTIFICATE, false),
                 _ => change.delete_vertex(vid),
-            }
+            };
             let purposes = book.purposes();
             with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&purposes.commit(), change)))
                 .unwrap();

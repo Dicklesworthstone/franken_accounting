@@ -20,16 +20,17 @@ use fa_journal::evidence::{
 };
 use fa_journal::policy::{
     ActivationRequest, ApprovalRequest, Approved, OPEN_END, PolicyActivated, RevocationRequest,
-    Revoked, activate_policy, activation_proposal, approval_vid, epoch_witness, record_approval,
-    revocation_vid, revoke_capability, security_policy_epoch, steward,
+    Revoked, activate_policy, activation_proposal, admit_reads, approval_vid, epoch_witness,
+    record_approval, revocation_vid, revoke_capability, security_policy_epoch, steward,
 };
 use fa_journal::post::read_entry;
 use fa_journal::rows::book_root;
 use fa_journal::*;
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    ApprovalRef, ControlPayload, EntryClass, EntryOrigin, EntryPayload, Erasable, EvidenceRef,
-    Id128, LegPayload, Oid, SealKey, SymbolTable, account_vid,
+    ApprovalRef, ControlPayload, Disposition, EntryClass, EntryOrigin, EntryPayload, EntryRef,
+    Erasable, EvidenceRef, Id128, LegPayload, Oid, Pending, SealKey, Settlement, Supersession,
+    SupersessionKind, SymbolTable, account_vid,
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_policy::{Capability, Op, Profile};
@@ -1672,4 +1673,1061 @@ fn a_revoked_capability_cannot_tick_sweep_attest_or_attach_evidence() {
             .expect("an unrevoked capability attaches")
             .already_recorded
     );
+}
+
+// ---------------------------------------------------------------------------
+// Scope caveats (plan §14.2, fa-llx): accounts, periods, effective, known_at,
+// branch — each refused before any query is constructed, never filtered
+// ---------------------------------------------------------------------------
+
+/// A scope refusal: FA-REF-011 `out_of_scope` naming the caveat, exit 7,
+/// and nothing written.
+fn assert_out_of_scope<T: std::fmt::Debug>(
+    h: &Harness,
+    before: CommitSeq,
+    r: Result<T, Refusal>,
+    caveat: &str,
+) {
+    let r = r.unwrap_err();
+    assert_eq!(
+        (r.code, r.exit),
+        ("FA-REF-011", exit::SAFETY),
+        "{}",
+        r.message
+    );
+    assert!(
+        r.message.contains(&format!("`{caveat}` caveat")),
+        "{}",
+        r.message
+    );
+    assert_eq!(h.db.frontier().unwrap(), before, "a scope refusal wrote");
+}
+
+impl Harness {
+    /// A second chart batch: summary `6100` over leaves `6110` and `6120`.
+    fn install_subtree(&mut self) -> (VId, VId) {
+        let ctx = self.ctx();
+        let usd = self.usd;
+        let account = |code: &str, is_leaf: bool, parent: Option<&str>| AccountSpec {
+            code: code.into(),
+            name: code.into(),
+            account_type: 5,
+            normal_balance: 0,
+            is_leaf,
+            unit_policy: UnitPolicy::Single(usd),
+            parent_code: parent.map(Into::into),
+            limit: None,
+        };
+        let chart = vec![
+            account("6100", false, None),
+            account("6110", true, Some("6100")),
+            account("6120", true, Some("6100")),
+        ];
+        let description = self.seal("chart 2", 0x62);
+        let db = &mut self.db;
+        let book = &self.book;
+        self.runtime
+            .block_on(async move {
+                install_chart(
+                    db,
+                    &ctx,
+                    book,
+                    &chart,
+                    PREPARER,
+                    DateDay::from_ymd(2026, 1, 1).unwrap(),
+                    b"chart-2",
+                    description,
+                )
+                .await
+            })
+            .expect("kernel")
+            .expect("the subtree installs");
+        (
+            account_vid(self.book.book_id, "6110"),
+            account_vid(self.book.book_id, "6120"),
+        )
+    }
+
+    /// An Original moving `cents` from `credit` to `debit`, dated `day`.
+    fn between(
+        &self,
+        debit: VId,
+        credit: VId,
+        cents: i128,
+        key: &[u8],
+        day: DateDay,
+    ) -> EntryPayload {
+        let mut p = self.proposal(PREPARER, cents, key, EntryClass::ORIGINAL);
+        p.legs = vec![
+            LegPayload::simple(Side::Debit, debit, Amount::new(self.usd, cents)),
+            LegPayload::simple(Side::Credit, credit, Amount::new(self.usd, cents)),
+        ];
+        p.unit_totals = EntryPayload::fold_unit_totals(&p.legs).unwrap();
+        p.effective_date = day;
+        p
+    }
+
+    fn post_ok(&mut self, proposal: EntryPayload, capability: Capability) {
+        assert!(matches!(
+            self.post(proposal, capability, Vec::new()),
+            Ok(Posted::Committed { .. })
+        ));
+    }
+}
+
+/// A post reaches its legs' accounts, the period its date resolves to, and
+/// that date: each scope caveat admits it only inside its bound, refuses it
+/// with FA-REF-011 before anything is written, and a whole-book pin
+/// (`known_at`) or a draft confinement (`branch`) refuses every trunk post.
+#[test]
+fn scope_caveats_confine_a_post_to_its_accounts_periods_and_dates() {
+    let mut h = harness();
+    let (travel, meals) = h.install_subtree();
+    let mid_march = DateDay::from_ymd(2026, 3, 15).unwrap();
+
+    // accounts ⊆ subtree(6100): both legs under the summary admit, a cash
+    // leg outside it refuses, and naming both roots admits that entry.
+    let expenses = human(PREPARER, &["post"]).for_accounts(&["6100"]).unwrap();
+    h.post_ok(
+        h.between(travel, meals, 1_000, b"in-tree", mid_march),
+        expenses.clone(),
+    );
+    let before = h.db.frontier().unwrap();
+    let r = h.post(
+        h.between(travel, h.cash, 1_000, b"cross", mid_march),
+        expenses,
+        Vec::new(),
+    );
+    assert_out_of_scope(&h, before, r, "accounts");
+    let both = human(PREPARER, &["post"])
+        .for_accounts(&["1000", "6100"])
+        .unwrap();
+    h.post_ok(h.between(travel, h.cash, 1_000, b"cross", mid_march), both);
+    // A root the chart lacks scopes no account.
+    let nowhere = human(PREPARER, &["post"]).for_accounts(&["9999"]).unwrap();
+    let before = h.db.frontier().unwrap();
+    let r = h.post(
+        h.between(travel, meals, 1_000, b"nowhere", mid_march),
+        nowhere,
+        Vec::new(),
+    );
+    assert_out_of_scope(&h, before, r, "accounts");
+    // The base checks precede the caveat's compile: another principal's
+    // scoped token is refused as not its holder, before the chart is read.
+    let alices = human(ALICE, &["post"]).for_accounts(&["6100"]).unwrap();
+    let r = h
+        .post(
+            h.between(travel, meals, 1_000, b"not-holder", mid_march),
+            alices,
+            Vec::new(),
+        )
+        .unwrap_err();
+    assert!(r.fix.contains("--as <holder>"), "{}", r.fix);
+    assert_eq!(h.db.frontier().unwrap(), before);
+
+    // periods ⊆ {March}: a March post admits; a token for February refuses
+    // it before the period law is read.
+    let march_only = human(PREPARER, &["post"])
+        .for_periods(&[h.march.as_str()])
+        .unwrap();
+    h.post_ok(
+        h.proposal(PREPARER, 2_000, b"p-in", EntryClass::ORIGINAL),
+        march_only,
+    );
+    let february = human(PREPARER, &["post"])
+        .for_periods(&["FY2026-P02"])
+        .unwrap();
+    let before = h.db.frontier().unwrap();
+    let r = h.post(
+        h.proposal(PREPARER, 2_000, b"p-out", EntryClass::ORIGINAL),
+        february,
+        Vec::new(),
+    );
+    assert_out_of_scope(&h, before, r, "periods");
+
+    // effective ≤ date: the 15th is past the 14th and inside the 31st.
+    let through_14th =
+        human(PREPARER, &["post"]).effective_through(DateDay::from_ymd(2026, 3, 14).unwrap());
+    let before = h.db.frontier().unwrap();
+    let r = h.post(
+        h.proposal(PREPARER, 3_000, b"e-out", EntryClass::ORIGINAL),
+        through_14th,
+        Vec::new(),
+    );
+    assert_out_of_scope(&h, before, r, "effective");
+    let through_31st =
+        human(PREPARER, &["post"]).effective_through(DateDay::from_ymd(2026, 3, 31).unwrap());
+    h.post_ok(
+        h.proposal(PREPARER, 3_000, b"e-in", EntryClass::ORIGINAL),
+        through_31st,
+    );
+
+    // known_at ≤ seq: a pinned token never writes, even pinned past the head.
+    let pinned = human(PREPARER, &["post"]).known_at_most(CommitSeq(u64::MAX));
+    let before = h.db.frontier().unwrap();
+    let r = h.post(
+        h.proposal(PREPARER, 4_000, b"k", EntryClass::ORIGINAL),
+        pinned,
+        Vec::new(),
+    );
+    assert_out_of_scope(&h, before, r, "known_at");
+
+    // branch = <draft>: confined to a draft, it cannot post to trunk; a
+    // token confined to trunk can.
+    let drafted = human(PREPARER, &["post"])
+        .on_branch(Id128([0xd7; 16]))
+        .unwrap();
+    let before = h.db.frontier().unwrap();
+    let r = h.post(
+        h.proposal(PREPARER, 5_000, b"b", EntryClass::ORIGINAL),
+        drafted,
+        Vec::new(),
+    );
+    assert_out_of_scope(&h, before, r, "branch");
+    let trunk = human(PREPARER, &["post"]).on_branch(Id128::TRUNK).unwrap();
+    h.post_ok(
+        h.proposal(PREPARER, 5_000, b"b", EntryClass::ORIGINAL),
+        trunk,
+    );
+}
+
+/// Acts on the whole book (a tick, the sweeps, an approval of an opaque
+/// proposal, a review) refuse every scoped token; a period transition
+/// reaches its one period, so a `periods` caveat naming it and an
+/// `effective` caveat through its last day admit it, while an `accounts`
+/// caveat (a close binds every account) refuses it.
+#[test]
+fn a_scoped_token_cannot_act_on_the_whole_book_and_a_transition_reaches_its_period() {
+    let mut h = harness();
+    let march = h.march.clone();
+
+    let before = h.db.frontier().unwrap();
+    let r = h.tick(
+        human(PREPARER, &["witness"])
+            .for_periods(&[march.as_str()])
+            .unwrap(),
+        1_000,
+        b"tick-1",
+    );
+    assert_out_of_scope(&h, before, r, "periods");
+
+    let system = fa_journal::rows::system_principal(h.book.book_id);
+    let pinned_sweeper = Capability::new(system, Profile::System, &[Op::Post], system)
+        .unwrap()
+        .known_at_most(CommitSeq(u64::MAX));
+    let (expiry, reversals) = h.sweeps(pinned_sweeper);
+    assert_out_of_scope(&h, before, expiry, "known_at");
+    assert_out_of_scope(&h, before, reversals, "known_at");
+
+    let tree_approver = human(ALICE, &["approve"]).for_accounts(&["6000"]).unwrap();
+    let r = h.approve_with(tree_approver, [0x11; 32]);
+    assert_out_of_scope(&h, before, r, "accounts");
+
+    let document = h.evidence[0].document_oid;
+    let r = h.review(
+        human(ALICE, &["approve"]).effective_through(DateDay::from_ymd(2026, 3, 31).unwrap()),
+        document,
+    );
+    assert_out_of_scope(&h, before, r, "effective");
+
+    // Transitions: a February token, an accounts-scoped token and a date
+    // bound short of March's last day refuse; March's own scope admits.
+    for (cap, caveat) in [
+        (
+            period_cap().for_periods(&["FY2026-P02"]).unwrap(),
+            "periods",
+        ),
+        (period_cap().for_accounts(&["1000"]).unwrap(), "accounts"),
+        (
+            period_cap().effective_through(DateDay::from_ymd(2026, 3, 30).unwrap()),
+            "effective",
+        ),
+        (period_cap().known_at_most(CommitSeq(u64::MAX)), "known_at"),
+    ] {
+        let r = h.transition_with(PeriodTransition::SoftClose, b"sc", &cap, &[]);
+        assert_out_of_scope(&h, before, r, caveat);
+    }
+    assert_eq!(h.march_state(), PeriodState::Open);
+    h.transition_with(
+        PeriodTransition::SoftClose,
+        b"sc",
+        &period_cap().for_periods(&[march.as_str()]).unwrap(),
+        &[],
+    )
+    .expect("a periods caveat naming March admits its soft close");
+    h.transition_with(
+        PeriodTransition::Close,
+        b"c",
+        &period_cap().effective_through(DateDay::from_ymd(2026, 3, 31).unwrap()),
+        &[],
+    )
+    .expect("an effective bound through March's last day admits its close");
+    assert_eq!(h.march_state(), PeriodState::Closed);
+}
+
+/// WhiteCreek 3559 (planted negative): a scoped token that is revoked or
+/// expired now gets that refusal before its `accounts` caveat is compiled,
+/// so a probe of an account inside its subtree and one outside it return
+/// the same envelope: the token learns nothing about the chart. The pinned
+/// substrate has no read counter; the compile's order is also fixed by type,
+/// since `account_scope` needs the `Current` proof only `current_at` mints
+/// after the expiry and revocation checks.
+#[test]
+fn a_revoked_or_expired_scoped_token_learns_nothing_about_its_subtree() {
+    let mut h = harness();
+    let (travel, meals) = h.install_subtree();
+    let mid_march = DateDay::from_ymd(2026, 3, 15).unwrap();
+    let revoked = human(PREPARER, &["post"]).for_accounts(&["6100"]).unwrap();
+    h.revoke(&human(ALICE, &["issue_capability"]), &revoked, b"rv-scoped")
+        .expect("revoked");
+    let expired = human(PREPARER, &["post", "read"])
+        .for_accounts(&["6100"])
+        .unwrap()
+        .expiring_at(h.db.frontier().unwrap());
+    for (cap, code) in [(revoked, "FA-REF-023"), (expired, "FA-REF-014")] {
+        let before = h.db.frontier().unwrap();
+        let inside = h
+            .post(
+                h.between(travel, meals, 1_000, b"probe-in", mid_march),
+                cap.clone(),
+                Vec::new(),
+            )
+            .unwrap_err();
+        let outside = h
+            .post(
+                h.between(travel, h.cash, 1_000, b"probe-out", mid_march),
+                cap,
+                Vec::new(),
+            )
+            .unwrap_err();
+        assert_eq!(
+            (inside.code, inside.exit),
+            (code, exit::SAFETY),
+            "{}",
+            inside.message
+        );
+        assert_eq!(inside, outside, "the probes are indistinguishable");
+        assert_eq!(h.db.frontier().unwrap(), before);
+    }
+}
+
+/// WhiteCreek 3559 (planted negative): a `known_at`-pinned read never loads
+/// or decodes an entry recorded after its pin. The vertex planted past the
+/// pin carries a payload that does not decode, so reading it at all would
+/// fail: through the pin it is simply absent, exactly like a vid that names
+/// nothing; at the head the pin refuses before any read, identically for
+/// both; and an unpinned reader at the head does hit the corrupt payload,
+/// so the trap is armed.
+#[test]
+fn a_pinned_read_never_decodes_an_entry_recorded_after_its_pin() {
+    let mut h = harness();
+    h.post_ok(
+        h.proposal(PREPARER, 1_000, b"before-pin", EntryClass::ORIGINAL),
+        controller(),
+    );
+    let early = fa_model::entry_vid(h.book.book_id, &PREPARER.0.to_le_bytes(), b"before-pin");
+    let pin = h.db.frontier().unwrap();
+    let planted = VId(0x5eed_0001);
+    {
+        let ctx = h.ctx();
+        let txn_cx = ctx.txn();
+        let mut txn = h.db.begin(&txn_cx).expect("begin");
+        let mut batch = WriteBatch::new(relation::IN_BOOK);
+        batch.create_vertex(
+            planted,
+            vec![label::ENTRY],
+            vec![(
+                property::FA_PAYLOAD,
+                fa_journal::rows::scalar_bytes("planted", vec![0xff; 8]).unwrap(),
+            )],
+        );
+        txn.write(&mut h.db, batch).expect("stage");
+        let commit_cx = ctx.commit();
+        let db = &mut h.db;
+        h.runtime
+            .block_on(async move { txn.commit(db, &commit_cx).await })
+            .expect("planted past the pin");
+    }
+    let head = h.db.frontier().unwrap();
+    assert!(head > pin);
+    let absent = VId(0x5eed_0002);
+
+    let pinned = human(PREPARER, &["read"]).known_at_most(pin);
+    let reads = admit_reads(&h.db, &h.book, PREPARER, &pinned)
+        .unwrap()
+        .expect("admitted");
+    assert!(
+        reads
+            .read_entry(&h.db, early, pin)
+            .unwrap()
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        reads.read_entry(&h.db, planted, pin).unwrap().unwrap(),
+        None
+    );
+    assert_eq!(reads.read_entry(&h.db, absent, pin).unwrap().unwrap(), None);
+    let at_planted = reads.read_entry(&h.db, planted, head).unwrap().unwrap_err();
+    let at_absent = reads.read_entry(&h.db, absent, head).unwrap().unwrap_err();
+    assert_eq!(
+        (at_planted.code, at_planted.exit),
+        ("FA-REF-011", exit::SAFETY)
+    );
+    assert_eq!(at_planted, at_absent, "refused before any read");
+
+    let open = admit_reads(&h.db, &h.book, PREPARER, &human(PREPARER, &["read"]))
+        .unwrap()
+        .expect("admitted");
+    assert!(
+        open.read_entry(&h.db, planted, head).is_err(),
+        "the planted payload does not decode, so the pinned reads never decoded it"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The complete effect footprint (CobaltGull 3570; WhiteCreek 3571/3582/3584):
+// holds, scheduled reversals, applications and their undo, the transition's
+// own date, and a retained identity — judged before any payload is loaded
+// ---------------------------------------------------------------------------
+
+/// A refusal of a target a scoped token does not reach is the refusal of a
+/// target that does not exist: the same code, exit, cite and fix, and the
+/// same message but for the vid it names. Nothing is written.
+fn assert_like_absent(
+    h: &Harness,
+    before: CommitSeq,
+    (refused, vid): (Refusal, VId),
+    (absent, nowhere): (Refusal, VId),
+) {
+    assert_eq!(
+        (refused.code, refused.exit, &refused.cite, &refused.fix),
+        (absent.code, absent.exit, &absent.cite, &absent.fix),
+        "{} / {}",
+        refused.message,
+        absent.message
+    );
+    assert_eq!(
+        refused.message.replace(&format!("{:032x}", vid.0), "<vid>"),
+        absent
+            .message
+            .replace(&format!("{:032x}", nowhere.0), "<vid>")
+    );
+    assert_eq!(
+        h.db.frontier().unwrap(),
+        before,
+        "a footprint refusal wrote"
+    );
+}
+
+const NOWHERE: EntryRef = EntryRef {
+    vid: VId(0x0bad_0001),
+    entry_digest: [0; 32],
+};
+
+impl Harness {
+    fn leg(&self, side: Side, account: VId, cents: i128) -> LegPayload {
+        LegPayload::simple(side, account, Amount::new(self.usd, cents))
+    }
+
+    /// A proposal of `class` with exactly `legs`, dated `day`.
+    fn with_legs(
+        &self,
+        class: EntryClass,
+        legs: Vec<LegPayload>,
+        key: &[u8],
+        day: DateDay,
+    ) -> EntryPayload {
+        let mut p = self.proposal(PREPARER, 1, key, class);
+        p.unit_totals = EntryPayload::fold_unit_totals(&legs).unwrap();
+        p.legs = legs;
+        p.effective_date = day;
+        p
+    }
+
+    fn hold(&self, legs: Vec<LegPayload>, key: &[u8], day: DateDay) -> EntryPayload {
+        let mut p = self.with_legs(EntryClass::PENDING, legs, key, day);
+        p.pending = Some(Pending {
+            timeout_ns: None,
+            resolution_of: None,
+            disposition: None,
+        });
+        p
+    }
+
+    fn voids(&self, target: EntryRef, key: &[u8], day: DateDay) -> EntryPayload {
+        let mut p = self.with_legs(EntryClass::RESOLUTION, Vec::new(), key, day);
+        p.control = Some(ControlPayload::ReservationRelease);
+        p.pending = Some(Pending {
+            timeout_ns: None,
+            resolution_of: Some(target),
+            disposition: Some(Disposition::Voids),
+        });
+        p
+    }
+
+    fn posts(
+        &self,
+        target: EntryRef,
+        legs: Vec<LegPayload>,
+        source_ordinals: Vec<u16>,
+        key: &[u8],
+        day: DateDay,
+    ) -> EntryPayload {
+        let mut p = self.with_legs(EntryClass::RESOLUTION, legs, key, day);
+        p.pending = Some(Pending {
+            timeout_ns: None,
+            resolution_of: Some(target),
+            disposition: Some(Disposition::Posts { source_ordinals }),
+        });
+        p
+    }
+
+    fn reverses(
+        &self,
+        target: EntryRef,
+        legs: Vec<LegPayload>,
+        key: &[u8],
+        day: DateDay,
+    ) -> EntryPayload {
+        let mut p = self.with_legs(EntryClass::REVERSAL, legs, key, day);
+        p.supersession = vec![Supersession {
+            target,
+            kind: SupersessionKind::Reverses,
+            reason_code: 1,
+        }];
+        p
+    }
+
+    fn commit(&mut self, proposal: EntryPayload, capability: Capability) -> EntryRef {
+        self.post(proposal, capability, Vec::new())
+            .expect("posted")
+            .entry_ref()
+    }
+
+    /// `post` without unwrapping the kernel error (the armed negatives).
+    fn post_outcome(
+        &mut self,
+        proposal: EntryPayload,
+        capability: Capability,
+    ) -> Result<Result<Posted, Refusal>, KernelError> {
+        let ctx = self.ctx();
+        let db = &mut self.db;
+        let book = &self.book;
+        let req = PostRequest {
+            proposal,
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability,
+        };
+        self.runtime
+            .block_on(async move { post(db, &ctx, book, req).await })
+    }
+
+    /// The Normal period of FY2026 that contains `day`.
+    fn period_of(&self, day: DateDay) -> String {
+        self.book
+            .calendar
+            .periods_for_year(2026)
+            .unwrap()
+            .into_iter()
+            .find(|p| p.contains(day) && p.kind == PeriodKind::Normal)
+            .expect("a normal period")
+            .code
+    }
+
+    fn open(&mut self, day: DateDay, key: &[u8]) {
+        let code = self.period_of(day);
+        self.transition_dated(PeriodTransition::Open, key, &period_cap(), &code, day)
+            .expect("opened");
+    }
+
+    fn transition_dated(
+        &mut self,
+        t: PeriodTransition,
+        key: &[u8],
+        capability: &Capability,
+        code: &str,
+        day: DateDay,
+    ) -> Result<Transitioned, Refusal> {
+        let ctx = self.ctx();
+        let description = self.period_description();
+        let db = &mut self.db;
+        let book = &self.book;
+        let code = code.to_string();
+        self.runtime
+            .block_on(async move {
+                transition_period(
+                    db,
+                    &ctx,
+                    book,
+                    &code,
+                    t,
+                    PREPARER,
+                    1,
+                    day,
+                    key,
+                    description,
+                    capability,
+                    &[],
+                )
+                .await
+            })
+            .expect("kernel")
+    }
+
+    /// Plant an ENTRY vertex whose payload does not decode, with mirrors
+    /// that put it on `day` with one leg on `account`.
+    fn plant(&mut self, vid: VId, day: DateDay, account: VId) {
+        let ctx = self.ctx();
+        let txn_cx = ctx.txn();
+        let mut txn = self.db.begin(&txn_cx).expect("begin");
+        let mut batch = WriteBatch::new(relation::IN_BOOK);
+        batch.create_vertex(
+            vid,
+            vec![label::ENTRY],
+            vec![
+                (
+                    property::FA_PAYLOAD,
+                    fa_journal::rows::scalar_bytes("planted", vec![0xff; 8]).unwrap(),
+                ),
+                (
+                    property::FA_EFFECTIVE_DAY,
+                    CanonicalScalar::Int(i64::from(day.0)),
+                ),
+            ],
+        );
+        batch.create_vertex(
+            fa_journal::rows::leg_vid(vid, 0),
+            vec![label::LEG],
+            vec![(
+                property::ACCOUNT_REF,
+                fa_journal::rows::scalar_bytes("account_ref", account.0.to_le_bytes().to_vec())
+                    .unwrap(),
+            )],
+        );
+        txn.write(&mut self.db, batch).expect("stage");
+        let commit_cx = ctx.commit();
+        let db = &mut self.db;
+        self.runtime
+            .block_on(async move { txn.commit(db, &commit_cx).await })
+            .expect("planted");
+    }
+}
+
+/// (a) and (b): a hold is part of the footprint of the resolution that
+/// releases it. A zero-leg Voids of a hold with a leg outside the
+/// `accounts` subtree — or under a root the chart lacks — and a partial
+/// Posts that omits that leg are refused exactly as a hold that does not
+/// exist; the unscoped controller still voids and posts them.
+#[test]
+fn a_scoped_token_never_voids_or_partially_posts_a_hold_reaching_outside_its_scope() {
+    let mut h = harness();
+    let (travel, meals) = h.install_subtree();
+    let day = DateDay::from_ymd(2026, 3, 15).unwrap();
+    let held = h.hold(
+        vec![
+            h.leg(Side::Debit, travel, 1_000),
+            h.leg(Side::Credit, h.cash, 1_000),
+        ],
+        b"hold-1",
+        day,
+    );
+    let hold = h.commit(held, controller());
+    let split = h.hold(
+        vec![
+            h.leg(Side::Debit, travel, 1_000),
+            h.leg(Side::Credit, meals, 600),
+            h.leg(Side::Credit, h.cash, 400),
+        ],
+        b"hold-2",
+        day,
+    );
+    let split = h.commit(split, controller());
+    let posted = |h: &Harness, target: EntryRef, key: &[u8]| {
+        h.posts(
+            target,
+            vec![
+                h.leg(Side::Debit, travel, 600),
+                h.leg(Side::Credit, meals, 600),
+            ],
+            vec![0, 1],
+            key,
+            day,
+        )
+    };
+    for roots in [["6100"], ["9999"]] {
+        let tree = human(PREPARER, &["post"]).for_accounts(&roots).unwrap();
+        let before = h.db.frontier().unwrap();
+        let refused = h.post(h.voids(hold, b"void", day), tree.clone(), Vec::new());
+        let absent = h.post(h.voids(NOWHERE, b"void-0", day), tree.clone(), Vec::new());
+        assert_like_absent(
+            &h,
+            before,
+            (refused.unwrap_err(), hold.vid),
+            (absent.unwrap_err(), NOWHERE.vid),
+        );
+        let refused = h.post(posted(&h, split, b"posts"), tree.clone(), Vec::new());
+        let absent = h.post(posted(&h, NOWHERE, b"posts-0"), tree, Vec::new());
+        assert_like_absent(
+            &h,
+            before,
+            (refused.unwrap_err(), split.vid),
+            (absent.unwrap_err(), NOWHERE.vid),
+        );
+    }
+    h.post_ok(h.voids(hold, b"void", day), controller());
+    h.post_ok(posted(&h, split, b"posts"), controller());
+}
+
+/// (c): an Adjusting's scheduled reversal is in its footprint now. A
+/// March-only or `effective <= Mar 31` token cannot schedule one for April
+/// — refused before anything is read, ahead of the request's own checks
+/// (unscoped, this book's missing time_zone_policy is the refusal).
+#[test]
+fn a_scoped_token_cannot_schedule_a_reversal_outside_its_scope() {
+    let mut h = harness();
+    let april = DateDay::from_ymd(2026, 4, 1).unwrap();
+    let accrual = |h: &Harness| {
+        with_auto_reverse(
+            h.proposal(PREPARER, 1_000, b"accrual", EntryClass::ADJUSTING),
+            april,
+        )
+    };
+    let march_only = human(PREPARER, &["post"])
+        .for_periods(&[h.march.as_str()])
+        .unwrap();
+    let before = h.db.frontier().unwrap();
+    let r = h.post(accrual(&h), march_only, Vec::new());
+    assert_out_of_scope(&h, before, r, "periods");
+    let through_march =
+        human(PREPARER, &["post"]).effective_through(DateDay::from_ymd(2026, 3, 31).unwrap());
+    let r = h.post(accrual(&h), through_march, Vec::new());
+    assert_out_of_scope(&h, before, r, "effective");
+    let r = h
+        .post(accrual(&h), human(PREPARER, &["post"]), Vec::new())
+        .unwrap_err();
+    assert_eq!(r.code, "FA-REF-102", "{}", r.message);
+}
+
+/// (d): an application changes its target leg, so a February open item is
+/// in the footprint of the March receipt that applies to it, and of the
+/// reversal that undoes that application. A March-only token is refused
+/// both as if the target did not exist; the unscoped controller applies
+/// and undoes.
+#[test]
+fn a_scoped_token_cannot_apply_to_or_unapply_a_leg_outside_its_scope() {
+    let mut h = harness();
+    let (travel, meals) = h.install_subtree();
+    let february = DateDay::from_ymd(2026, 2, 15).unwrap();
+    let day = DateDay::from_ymd(2026, 3, 15).unwrap();
+    h.open(february, b"open-feb");
+    let item = h.with_legs(
+        EntryClass::ORIGINAL,
+        vec![
+            h.leg(Side::Debit, travel, 500),
+            h.leg(Side::Credit, meals, 500),
+        ],
+        b"feb-item",
+        february,
+    );
+    let item = h.commit(item, controller());
+    let receipt = |h: &Harness, target: EntryRef, key: &[u8]| {
+        let mut credit = h.leg(Side::Credit, travel, 500);
+        credit.settles = vec![Settlement {
+            target,
+            ordinal: 0,
+            amount: Amount::new(h.usd, 500),
+        }];
+        h.with_legs(
+            EntryClass::ORIGINAL,
+            vec![h.leg(Side::Debit, meals, 500), credit],
+            key,
+            day,
+        )
+    };
+    let march_tree = human(PREPARER, &["post"])
+        .for_accounts(&["6100"])
+        .unwrap()
+        .for_periods(&[h.march.as_str()])
+        .unwrap();
+    let before = h.db.frontier().unwrap();
+    let refused = h.post(
+        receipt(&h, item, b"receipt"),
+        march_tree.clone(),
+        Vec::new(),
+    );
+    let absent = h.post(
+        receipt(&h, NOWHERE, b"receipt-0"),
+        march_tree.clone(),
+        Vec::new(),
+    );
+    assert_like_absent(
+        &h,
+        before,
+        (refused.unwrap_err(), item.vid),
+        (absent.unwrap_err(), NOWHERE.vid),
+    );
+    let applied = h.commit(receipt(&h, item, b"receipt"), controller());
+    let undo = |h: &Harness, target: EntryRef, key: &[u8]| {
+        h.reverses(
+            target,
+            vec![
+                h.leg(Side::Credit, meals, 500),
+                h.leg(Side::Debit, travel, 500),
+            ],
+            key,
+            day,
+        )
+    };
+    let before = h.db.frontier().unwrap();
+    let refused = h.post(undo(&h, applied, b"undo"), march_tree.clone(), Vec::new());
+    let absent = h.post(undo(&h, NOWHERE, b"undo-0"), march_tree, Vec::new());
+    assert_like_absent(
+        &h,
+        before,
+        (refused.unwrap_err(), applied.vid),
+        (absent.unwrap_err(), NOWHERE.vid),
+    );
+    h.post_ok(undo(&h, applied, b"undo"), controller());
+}
+
+/// The transition's own date is in its footprint: a revoked token bounded
+/// to March gets FA-REF-011 for an April-dated control, not FA-REF-023 —
+/// the scope refusal precedes every read, the revocation's included — and
+/// a live bounded token transitions with a March date.
+#[test]
+fn a_transition_dated_outside_a_scope_is_refused_before_any_read() {
+    let mut h = harness();
+    let march = h.march.clone();
+    let mid_april = DateDay::from_ymd(2026, 4, 15).unwrap();
+    let issuer = human(ALICE, &["issue_capability"]);
+    let bounded = period_cap().effective_through(DateDay::from_ymd(2026, 3, 31).unwrap());
+    let march_only = period_cap().for_periods(&[march.as_str()]).unwrap();
+    h.revoke(&issuer, &bounded, b"rv-bounded").expect("revoked");
+    h.revoke(&issuer, &march_only, b"rv-march")
+        .expect("revoked");
+    let before = h.db.frontier().unwrap();
+    for (cap, caveat) in [(bounded, "effective"), (march_only, "periods")] {
+        let r = h.transition_dated(PeriodTransition::SoftClose, b"sc", &cap, &march, mid_april);
+        assert_out_of_scope(&h, before, r, caveat);
+    }
+    let live = human(PREPARER, &["close", "reopen", "read"])
+        .effective_through(DateDay::from_ymd(2026, 3, 31).unwrap());
+    h.transition_dated(
+        PeriodTransition::SoftClose,
+        b"sc",
+        &live,
+        &march,
+        DateDay::from_ymd(2026, 3, 20).unwrap(),
+    )
+    .expect("a March date inside the bound admits");
+}
+
+/// WhiteCreek 3571/3582: a scoped token never loads an entry outside its
+/// scope. A key it reused from its own out-of-scope entry is a conflict —
+/// never compared, never the recorded outcome. Armed: entries planted with
+/// undecodable payloads behind mirrors outside the scope, at a key identity
+/// and as a hold to void, get the conflict and the absent-target refusal,
+/// while an unscoped caller that does load them hits the decode error.
+#[test]
+fn a_scoped_token_never_loads_an_entry_outside_its_scope() {
+    let mut h = harness();
+    let (travel, meals) = h.install_subtree();
+    let day = DateDay::from_ymd(2026, 3, 15).unwrap();
+    let tree = human(PREPARER, &["post"]).for_accounts(&["6100"]).unwrap();
+    h.commit(
+        h.proposal(PREPARER, 700, b"k", EntryClass::ORIGINAL),
+        controller(),
+    );
+    let unscoped = h
+        .post(
+            h.proposal(PREPARER, 701, b"k", EntryClass::ORIGINAL),
+            controller(),
+            Vec::new(),
+        )
+        .unwrap_err();
+    let before = h.db.frontier().unwrap();
+    let r = h
+        .post(
+            h.between(travel, meals, 700, b"k", day),
+            tree.clone(),
+            Vec::new(),
+        )
+        .unwrap_err();
+    assert_eq!(
+        (r.code, r.exit),
+        (unscoped.code, unscoped.exit),
+        "{}",
+        r.message
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+
+    // Armed, at a key identity.
+    let planted = fa_model::entry_vid(h.book.book_id, &PREPARER.0.to_le_bytes(), b"kx");
+    h.plant(planted, day, h.cash);
+    let before = h.db.frontier().unwrap();
+    let r = h
+        .post(
+            h.between(travel, meals, 700, b"kx", day),
+            tree.clone(),
+            Vec::new(),
+        )
+        .unwrap_err();
+    assert_eq!(
+        (r.code, r.exit),
+        (unscoped.code, unscoped.exit),
+        "{}",
+        r.message
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert!(
+        h.post_outcome(
+            h.proposal(PREPARER, 700, b"kx", EntryClass::ORIGINAL),
+            controller()
+        )
+        .is_err(),
+        "unscoped, the planted payload is loaded and does not decode"
+    );
+
+    // Armed, as a hold to void.
+    let hold = EntryRef {
+        vid: VId(0x5eed_0101),
+        entry_digest: [0; 32],
+    };
+    h.plant(hold.vid, day, h.cash);
+    let before = h.db.frontier().unwrap();
+    let refused = h.post(
+        h.voids(hold, b"void-planted", day),
+        tree.clone(),
+        Vec::new(),
+    );
+    let absent = h.post(h.voids(NOWHERE, b"void-nowhere", day), tree, Vec::new());
+    assert_like_absent(
+        &h,
+        before,
+        (refused.unwrap_err(), hold.vid),
+        (absent.unwrap_err(), NOWHERE.vid),
+    );
+    assert!(
+        h.post_outcome(h.voids(hold, b"void-planted", day), controller())
+            .is_err(),
+        "unscoped, the planted hold is loaded and does not decode"
+    );
+}
+
+impl Harness {
+    /// Rewrite (or, with `None`, remove) a leg vertex's `account_ref`
+    /// mirror: the corruption a scope admission must never trust.
+    fn set_account_mirror(&mut self, leg: VId, value: Option<CanonicalScalar>) {
+        let ctx = self.ctx();
+        let txn_cx = ctx.txn();
+        let mut txn = self.db.begin(&txn_cx).expect("begin");
+        let mut batch = WriteBatch::new(relation::IN_BOOK);
+        batch.set_vertex_property(leg, property::ACCOUNT_REF, value);
+        txn.write(&mut self.db, batch).expect("stage");
+        let commit_cx = ctx.commit();
+        let db = &mut self.db;
+        self.runtime
+            .block_on(async move { txn.commit(db, &commit_cx).await })
+            .expect("mirror rewritten");
+    }
+
+    fn open_code(&mut self, code: &str, day: DateDay, key: &[u8]) {
+        self.transition_dated(PeriodTransition::Open, key, &period_cap(), code, day)
+            .expect("opened");
+    }
+}
+
+/// CobaltGull 3610 (planted negative): mirror drift is corruption before
+/// any effect, for every caller. An honest hold [travel, cash] whose leg-1
+/// `account_ref` mirror is rewritten to travel — or removed, so the
+/// metadata walk stops early — would be admitted by a subtree(6100)
+/// token's metadata; the decode disagrees, so its Void is a kernel error
+/// with nothing written, and the controller's unscoped Void of the same
+/// hold is too.
+#[test]
+fn mirror_drift_is_corruption_before_any_effect_for_every_caller() {
+    let mut h = harness();
+    let (travel, _) = h.install_subtree();
+    let day = DateDay::from_ymd(2026, 3, 15).unwrap();
+    let tree = human(PREPARER, &["post"]).for_accounts(&["6100"]).unwrap();
+    let rewritten =
+        fa_journal::rows::scalar_bytes("account_ref", travel.0.to_le_bytes().to_vec()).unwrap();
+    for (key, mirror) in [
+        (&b"drift-rewritten"[..], Some(rewritten)),
+        (&b"drift-removed"[..], None),
+    ] {
+        let held = h.hold(
+            vec![
+                h.leg(Side::Debit, travel, 1_000),
+                h.leg(Side::Credit, h.cash, 1_000),
+            ],
+            key,
+            day,
+        );
+        let hold = h.commit(held, controller());
+        h.set_account_mirror(fa_journal::rows::leg_vid(hold.vid, 1), mirror);
+        let before = h.db.frontier().unwrap();
+        for cap in [tree.clone(), controller()] {
+            let r = h.post_outcome(h.voids(hold, b"void", day), cap);
+            assert!(
+                matches!(&r, Err(KernelError::Corrupt(m)) if m.contains("mirrors drifted")),
+                "{r:?}"
+            );
+            assert_eq!(h.db.frontier().unwrap(), before, "drift wrote");
+        }
+    }
+}
+
+/// CobaltGull 3618/3622 (planted negative): a date a special period shares
+/// with a normal one is ambiguous to the metadata, which carries no period
+/// discriminator yet, so under a `periods` caveat every such target is out
+/// of scope — the A1 Pending and the P12 Pending dated Dec 31 alike — and
+/// is refused like a target that does not exist. The same token voids a
+/// Pending on an unambiguous December day, and the controller voids both
+/// Dec 31 holds. The period mirror that restores the P12 case is slice 2.
+#[test]
+fn ambiguous_dates_are_out_of_scope_until_the_period_mirror_exists() {
+    let mut h = harness();
+    let dec15 = DateDay::from_ymd(2026, 12, 15).unwrap();
+    let dec31 = DateDay::from_ymd(2026, 12, 31).unwrap();
+    h.open(dec15, b"open-p12");
+    h.open_code("FY2026-A1", dec31, b"open-a1");
+    let legs = |h: &Harness| {
+        vec![
+            h.leg(Side::Debit, h.rent, 100),
+            h.leg(Side::Credit, h.cash, 100),
+        ]
+    };
+    let mut adjustment = h.hold(legs(&h), b"a1-hold", dec31);
+    adjustment.effective_period = Some(fa_model::PeriodRef {
+        calendar: "cal".into(),
+        code: "FY2026-A1".into(),
+    });
+    let a1_hold = h.commit(adjustment, controller());
+    let p12_hold = h.commit(h.hold(legs(&h), b"p12-hold", dec31), controller());
+    let plain_hold = h.commit(h.hold(legs(&h), b"dec15-hold", dec15), controller());
+    let p12 = h.period_of(dec15);
+    let december = human(PREPARER, &["post"])
+        .for_periods(&[p12.as_str()])
+        .unwrap();
+    for hold in [a1_hold, p12_hold] {
+        let before = h.db.frontier().unwrap();
+        let refused = h.post(h.voids(hold, b"void", dec15), december.clone(), Vec::new());
+        let absent = h.post(
+            h.voids(NOWHERE, b"void-0", dec15),
+            december.clone(),
+            Vec::new(),
+        );
+        assert_like_absent(
+            &h,
+            before,
+            (refused.unwrap_err(), hold.vid),
+            (absent.unwrap_err(), NOWHERE.vid),
+        );
+    }
+    h.post_ok(h.voids(plain_hold, b"void", dec15), december);
+    h.post_ok(h.voids(a1_hold, b"void", dec15), controller());
+    h.post_ok(h.voids(p12_hold, b"void", dec15), controller());
 }

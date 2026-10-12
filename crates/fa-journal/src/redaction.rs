@@ -521,7 +521,9 @@ fn recorded(
 
 /// Read document `oid` as `capability` may see it (plan §9.6; R-RED interim,
 /// decided before any read of its bytes, never as a result filter). The
-/// capability is its holder's, holds `read`, admits this book, is current
+/// capability is its holder's, holds `read`, admits this book, carries no
+/// scope caveat (plan §14.2: which documents a scoped reader may see is
+/// whole-entry visibility, not yet enforced, so it is refused), is current
 /// and is not revoked. One that also holds `privileged` reads the verified
 /// bytes. For
 /// any other, the document's kind (public metadata, one point read of its
@@ -542,6 +544,12 @@ where
     B: asupersync::fs::Vfs + Clone,
 {
     if let Err(d) = fa_policy::admit_read(capability, capability.holder(), book.book_id) {
+        return Ok(Err(refusal(&d)));
+    }
+    // A document read reaches the whole book at its head: a token with any
+    // scope caveat is refused here, before its currency or revocation is
+    // read.
+    if let Err(d) = fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None) {
         return Ok(Err(refusal(&d)));
     }
     if let Err(d) = fa_policy::current(capability, db.frontier()?) {
@@ -770,9 +778,11 @@ mod tests {
             .unwrap()
             .unwrap();
         let head = f.db.frontier().unwrap();
-        let DocumentRead::Redacted(view) = f.read(&reader, statement.oid()).unwrap() else {
-            panic!("an Agent without privileged must not receive the full statement");
-        };
+        let view = match f.read(&reader, statement.oid()).unwrap() {
+            DocumentRead::Redacted(view) => Some(view),
+            DocumentRead::Full(_) => None,
+        }
+        .expect("an Agent without privileged must not receive the full statement");
         assert_eq!(view.verify(), Ok(()));
         assert_eq!(view.doc_commit, statement.doc_commit());
         assert_eq!(view.chunks.len(), 2);
@@ -794,7 +804,7 @@ mod tests {
         poison.set_vertex_property(
             document_vid(&invoice.oid()),
             property::FA_PAYLOAD,
-            scalar_bytes("_fa_payload", vec![0xff]).unwrap(),
+            Some(scalar_bytes("_fa_payload", vec![0xff]).unwrap()),
         );
         f.runtime
             .block_on(f.db.write(&f.contexts.commit(), poison))
@@ -821,6 +831,63 @@ mod tests {
             f.read(&reader, invoice.oid()).unwrap_err().code,
             code::DOCUMENT_DRIFT,
             "the malformed payload is observable only after admission"
+        );
+    }
+
+    /// fa-llx: a token carrying `read` and any scope caveat (tags 3-7) is
+    /// refused before its currency, its revocation or any document is read,
+    /// and never receives bytes or a view.
+    #[test]
+    fn a_scoped_reader_is_refused_before_currency_revocation_or_any_read() {
+        let mut f = ReadFixture::new();
+        let invoice = Document { kind: 1, ..doc(29) };
+        f.add(&invoice);
+        let mut poison = WriteBatch::new(relation::CUSTODY_OF);
+        poison.set_vertex_property(
+            document_vid(&invoice.oid()),
+            property::FA_PAYLOAD,
+            Some(scalar_bytes("_fa_payload", vec![0xff]).unwrap()),
+        );
+        f.runtime
+            .block_on(f.db.write(&f.contexts.commit(), poison))
+            .unwrap();
+        let head = f.db.frontier().unwrap();
+        let reader = f.reader();
+        let day = DateDay::from_ymd(2026, 3, 31).unwrap();
+        for (capability, caveat) in [
+            (reader.clone().for_accounts(&["1000"]).unwrap(), "accounts"),
+            (
+                reader.clone().for_periods(&["FY2026-P03"]).unwrap(),
+                "periods",
+            ),
+            (reader.clone().effective_through(day), "effective"),
+            (reader.clone().known_at_most(head), "known_at"),
+            (reader.clone().on_branch(Id128([9; 16])).unwrap(), "branch"),
+            // Expired too: the scope refusal comes first.
+            (
+                reader
+                    .clone()
+                    .expiring_at(head)
+                    .for_periods(&["FY2026-P03"])
+                    .unwrap(),
+                "periods",
+            ),
+        ] {
+            let refused = f.read(&capability, invoice.oid()).unwrap_err();
+            assert_eq!(refused.code, "FA-REF-011", "{caveat}");
+            assert!(
+                refused
+                    .message
+                    .starts_with(&format!("the capability's `{caveat}` caveat")),
+                "{caveat}: {}",
+                refused.message
+            );
+            assert_eq!(f.db.frontier().unwrap(), head);
+        }
+        assert_eq!(
+            f.read(&reader, invoice.oid()).unwrap_err().code,
+            code::DOCUMENT_DRIFT,
+            "the same token without a scope caveat reaches the payload"
         );
     }
 

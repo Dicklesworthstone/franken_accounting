@@ -506,7 +506,21 @@ pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
                 "sod_policy.toml registers no PeriodControl {name} rule; the transition is refused, never unconstrained"
             ))
         })?;
-    if let Err(d) = fa_policy::admit(
+    // A transition reaches its period and its own control date (CobaltGull
+    // 3570): both periods' codes under a `periods` caveat, the later of the
+    // period's last day and the control date (from the calendar alone)
+    // under `effective`, and every account (a close binds the whole book),
+    // so an `accounts`, `known_at` or `branch` caveat refuses it.
+    let mut reached: Vec<&str> = vec![period_code];
+    let dated = policy::resolved_period(book, effective_date, None);
+    if let Some(code) = dated.as_deref()
+        && code != period_code
+    {
+        reached.push(code);
+    }
+    let through =
+        policy::calendar_period(book, period_code).map(|p| p.last_day().max(effective_date));
+    if let Err(d) = fa_policy::admit_within(
         capability,
         &Intent {
             principal: principal_ref,
@@ -515,6 +529,14 @@ pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
             book: book.book_id,
             legs: &[],
         },
+        &fa_policy::Reach {
+            branch: Some(Id128::TRUNK),
+            observes: fa_policy::Observes::Head,
+            periods: Some(&reached),
+            through,
+            accounts: None,
+        },
+        None,
     ) {
         return Ok(Err(policy::refusal(&d)));
     }

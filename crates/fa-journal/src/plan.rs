@@ -70,6 +70,9 @@ fn request(intent: &PostIntent, capability: Capability) -> PostRequest {
 /// Run every production posting law and stage every native effect, then
 /// release the transaction without a publication. Already recorded intents
 /// are refused: a fresh plan must describe an actual prospective effect.
+/// A token with a scope caveat (plan §14.2) is refused before anything is
+/// read, because [`commit_plan`] admits only whole-book tokens: no plan is
+/// issued that its own token could never commit.
 pub fn plan_post<V: Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
@@ -77,6 +80,9 @@ pub fn plan_post<V: Vfs + Clone>(
     capability: Capability,
     intent: PostIntent,
 ) -> Outcome<PostPlan> {
+    if let Err(d) = fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None) {
+        return Ok(Err(policy::refusal(&d)));
+    }
     let commitment = capability
         .commitment()
         .map_err(|e| KernelError::Corrupt(format!("capability commitment: {e}")))?;

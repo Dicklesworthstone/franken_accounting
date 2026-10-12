@@ -175,7 +175,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         &self.context
     }
 
-    fn query<T>(
+    /// Run `read` under the caller's query context and its restriction:
+    /// every facade read, the blocking [`crate::ReadScope`] included, goes
+    /// through here.
+    pub(crate) fn query<T>(
         &self,
         cx: &PurposeContexts,
         read: impl FnOnce(&Database<V>, &BookContext) -> Result<T, BookError>,
@@ -998,8 +1001,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         if let Err(denial) = fa_policy::current(capability, self.head(cx)?) {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
-        // The exclusive book handle holds the single-writer admission
-        // frontier while checking revocation and publishing the checkpoint.
+        // Not revoked at that frontier, before the journal is read. The
+        // exclusive book handle is the single writer, so no revocation can
+        // commit between this read and the checkpoint's transaction; with
+        // concurrent writers the read moves inside that transaction as a
+        // witness, as post's does.
         if let Err(refusal) = self.query(cx, |db, book| {
             Ok(fa_journal::policy::capability_admitted(
                 db, book, capability,

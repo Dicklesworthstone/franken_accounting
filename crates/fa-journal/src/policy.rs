@@ -28,24 +28,33 @@
 //! reads the head before its transaction also checks it there first
 //! ([`capability_admitted`]).
 //!
+//! **Scope caveats are compiled, never filtered.** fa-policy judges what an
+//! act reaches ([`fa_policy::reach`]); the kernel supplies only the
+//! `accounts` caveat compiled for this book ([`account_scope`], read from
+//! the caveat's own roots downward) and a period's dates from the calendar
+//! ([`calendar_period`], no read). Acts on the whole book refuse a scoped
+//! token; a post and a period transition name what they reach.
+//!
 //! **Approvals are objects.** [`record_approval`] writes an `Approval`
 //! vertex (`fa:approval:v1`) whose identity derives from (book, approver,
 //! approved proposal digest, epoch); a transcript's `ApprovalRef` must name
 //! one, bind this proposal's digest, and pass SoD. A fabricated reference
 //! is a refusal, not a count.
 
+use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
     ApprovalRef, ControlPayload, Entry, EntryClass, EntryOrigin, EntryPayload, Erasable, Id128,
-    Oid, entry_mirrors, entry_vid,
+    Oid, account_vid, entry_mirrors, entry_vid,
 };
 use fa_policy::{
-    Approval, Approver, Capability, CapabilityError, Denial, Intent, Op, Party, Steward,
+    AccountScope, Approval, Approver, Capability, CapabilityError, Denial, Intent, Op, Party,
+    Reach, Steward,
 };
 use fa_registry::sod_policy::SodKey;
-use fa_time::DateDay;
+use fa_time::{DateDay, PeriodDef};
 use fgdb::{Database, WriteBatch, WriteMismatchPolicy, WriteTxn, WriteTxnError};
 use fgdb_crypto::Hasher;
 use fgdb_types::context::PurposeContexts;
@@ -249,8 +258,11 @@ pub async fn record_approval<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: ApprovalRequest,
 ) -> Outcome<Approved> {
+    // An approval binds an opaque proposal digest, so it reaches the whole
+    // book: a scoped token cannot judge what it approves and is refused.
     if let Err(d) = fa_policy::require(&req.capability, Op::Approve, "recording an approval")
         .and_then(|()| fa_policy::scope(&req.capability, book.book_id))
+        .and_then(|()| fa_policy::reach(&req.capability, &Reach::whole_book(true), None))
     {
         return Ok(Err(refusal(&d)));
     }
@@ -747,6 +759,390 @@ pub fn capability_admitted<V: asupersync::fs::Vfs + Clone>(
     Ok(not_revoked(
         db.vertex(revocation_vid(book.book_id, &commitment))?,
     ))
+}
+
+/// A capability that is current at the head: not expired at the admission
+/// point and not revoked there. Only [`current_at`] makes one, and
+/// [`account_scope`] requires it, so the chart is never read for a token
+/// that is expired or revoked now (WhiteCreek 3559): such a token gets its
+/// expiry or revocation refusal whichever accounts it names.
+#[derive(Clone, Copy, Debug)]
+pub struct Current<'c> {
+    capability: &'c Capability,
+    at: CommitSeq,
+}
+
+impl<'c> Current<'c> {
+    #[must_use]
+    pub fn capability(&self) -> &'c Capability {
+        self.capability
+    }
+
+    /// The head the capability was found current at.
+    #[must_use]
+    pub fn at(&self) -> CommitSeq {
+        self.at
+    }
+}
+
+/// The capability is current at the head this single-writer handle
+/// observes (plan §14.2): its declared expiry bound is above the head
+/// (fa-policy), and no revocation names it there (one point read at the
+/// token's own revocation identity, nothing else). A write still takes
+/// [`capability_witness`] inside its transaction for first-committer-wins.
+pub fn current_at<'c, V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &'c Capability,
+) -> Outcome<Current<'c>> {
+    let at = db.frontier()?;
+    if let Err(d) = fa_policy::current(capability, at) {
+        return Ok(Err(refusal(&d)));
+    }
+    if let Err(r) = capability_admitted(db, book, capability)? {
+        return Ok(Err(r));
+    }
+    Ok(Ok(Current { capability, at }))
+}
+
+/// Compile the capability's `accounts` caveat for this book (plan §14.2):
+/// each root code's account vid and its `CHILD_OF` descendants, walked from
+/// the roots downward, so the compile reads only accounts inside the scope
+/// and observes nothing the caveat does not already name. It takes a
+/// [`Current`] proof: a token expired or revoked now never reaches the
+/// chart. `None` when the capability carries no `accounts` caveat. A root
+/// the chart lacks contributes only its own vid, which names no account, so
+/// every act on a real account is refused under it.
+pub fn account_scope<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    current: &Current<'_>,
+) -> Result<Option<AccountScope>, KernelError> {
+    let Some(roots) = current.capability.accounts() else {
+        return Ok(None);
+    };
+    let mut members = BTreeSet::new();
+    let mut pending: Vec<VId> = roots
+        .iter()
+        .map(|code| account_vid(book.book_id, code))
+        .collect();
+    while let Some(vid) = pending.pop() {
+        if members.insert(vid) {
+            pending.extend(db.in_neighbours(vid, relation::CHILD_OF)?);
+        }
+    }
+    Ok(Some(AccountScope::compiled(members)))
+}
+
+/// The period `code` names in this book's calendar, computed from the
+/// calendar alone (codes are `FY{year}-…`, plan §7.3), so a `periods` or
+/// `effective` caveat is judged before the period row is read. `None` when
+/// the code names no period of the calendar.
+#[must_use]
+pub fn calendar_period(book: &BookContext, code: &str) -> Option<PeriodDef> {
+    let year = code
+        .strip_prefix("FY")?
+        .split('-')
+        .next()?
+        .parse::<i32>()
+        .ok()?;
+    book.calendar
+        .periods_for_year(year)
+        .ok()?
+        .into_iter()
+        .find(|p| p.code == code)
+}
+
+/// The period `day` resolves to in this book's calendar (with an explicit
+/// `hint` for a date shared with a special period), from the calendar alone;
+/// `None` when it resolves to no single period.
+pub(crate) fn resolved_period(
+    book: &BookContext,
+    day: DateDay,
+    hint: Option<&str>,
+) -> Option<String> {
+    let fy = book.calendar.fiscal_year_of(day).ok()?;
+    let periods = book.calendar.periods_for_year(fy).ok()?;
+    fa_time::resolve_period(&periods, day, hint)
+        .ok()
+        .map(|p| p.code.clone())
+}
+
+/// The scope caveats admit the effects a posting proposal's payload alone
+/// determines (plan §14.2, CobaltGull 3570): its legs' accounts, the period
+/// its date resolves to and that date, and, for an Adjusting with
+/// `auto_reverse_on`, the scheduled reversal's period and date — the System
+/// mints that reversal later under the scope admitted now. A date that
+/// resolves to no single period reaches none here; the pipeline refuses it
+/// before anything is written. The targets a commit releases, applies to or
+/// undoes are judged inside its transaction by
+/// [`entry_in_scope_by_metadata`].
+pub fn payload_reach(
+    capability: &Capability,
+    book: &BookContext,
+    proposal: &EntryPayload,
+    accounts: Option<&AccountScope>,
+) -> Result<(), Denial> {
+    let legs: Vec<VId> = proposal.legs.iter().map(|l| l.account_ref).collect();
+    let mut periods: Vec<String> = resolved_period(
+        book,
+        proposal.effective_date,
+        proposal.effective_period.as_ref().map(|p| p.code.as_str()),
+    )
+    .into_iter()
+    .collect();
+    let mut through = proposal.effective_date;
+    if let Ok(Some((reverse_on, _))) = crate::schedule::auto_reverse(proposal) {
+        periods.extend(resolved_period(book, reverse_on, None));
+        through = through.max(reverse_on);
+    }
+    let codes: Vec<&str> = periods.iter().map(String::as_str).collect();
+    fa_policy::reach(
+        capability,
+        &Reach {
+            branch: Some(proposal.branch_id),
+            observes: fa_policy::Observes::Head,
+            periods: Some(&codes),
+            through: Some(through),
+            accounts: Some(&legs),
+        },
+        accounts,
+    )
+}
+
+/// Whether the entry at `vid` lies wholly inside the capability's scope,
+/// decided from its metadata alone (WhiteCreek 3575/3582): the ENTRY label,
+/// the `_fa_effective_day` mirror and each leg vertex's `account_ref`
+/// mirror, each a projection point read of `txn` that copies only the
+/// selected label or scalar and is a witness of the transaction. The
+/// payload is never loaded, so an entry outside the scope is never
+/// decoded; a caller decodes only an entry this admits. `false` for an
+/// absent vertex or one that is not an entry. The period is resolved from
+/// the date alone: a date shared with a special period (which only the
+/// payload's `effective_period` names) fails closed under a `periods`
+/// caveat. The act's own branch and `known_at` were judged at admission.
+pub fn entry_in_scope_by_metadata<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+    accounts: Option<&AccountScope>,
+    vid: VId,
+) -> Result<bool, KernelError> {
+    if txn.vertex_has_label(db, vid, label::ENTRY)? != Some(true) {
+        return Ok(false);
+    }
+    let day = match txn.vertex_property(db, vid, property::FA_EFFECTIVE_DAY)? {
+        Some(CanonicalScalar::Int(d)) => DateDay(
+            i32::try_from(d)
+                .map_err(|_| KernelError::Corrupt(format!("entry _fa_effective_day {d}")))?,
+        ),
+        other => {
+            return Err(KernelError::Corrupt(format!(
+                "entry _fa_effective_day mirror: {other:?}"
+            )));
+        }
+    };
+    let mut legs: Vec<VId> = Vec::new();
+    for ordinal in 0..=u16::MAX {
+        let leg = crate::rows::leg_vid(vid, ordinal);
+        match txn.vertex_property(db, leg, property::ACCOUNT_REF)? {
+            None => break,
+            Some(CanonicalScalar::Bytes(b)) => {
+                let raw: [u8; 16] = b.as_slice().try_into().map_err(|_| {
+                    KernelError::Corrupt(format!("leg {ordinal} account_ref mirror width"))
+                })?;
+                legs.push(VId(u128::from_le_bytes(raw)));
+            }
+            Some(other) => {
+                return Err(KernelError::Corrupt(format!(
+                    "leg {ordinal} account_ref mirror: {other:?}"
+                )));
+            }
+        }
+    }
+    Ok(footprint_in_scope(capability, accounts, book, &legs, day))
+}
+
+/// The accounts, period and effective-date caveats admit an entry with
+/// these legs on `day`, its period resolved from the date alone. Branch and
+/// `known_at` are the act's own and were judged at its admission, so they
+/// pass here.
+fn footprint_in_scope(
+    capability: &Capability,
+    accounts: Option<&AccountScope>,
+    book: &BookContext,
+    legs: &[VId],
+    day: DateDay,
+) -> bool {
+    if capability.accounts().is_some() && legs.is_empty() {
+        return false;
+    }
+    // A date a special period shares with a normal one names no period
+    // without the payload's `effective_period`, which no mirror carries yet
+    // (CobaltGull 3618/3622): out of scope under a `periods` caveat.
+    if capability.periods().is_some() && shared_date(book, day) {
+        return false;
+    }
+    let period = resolved_period(book, day, None);
+    if period.is_none() && capability.periods().is_some() {
+        return false;
+    }
+    let codes: Vec<&str> = period.iter().map(String::as_str).collect();
+    fa_policy::reach(
+        capability,
+        &Reach {
+            branch: capability.branch().or(Some(Id128::TRUNK)),
+            observes: capability
+                .known_at_pin()
+                .map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
+            periods: Some(&codes),
+            through: Some(day),
+            accounts: Some(legs),
+        },
+        accounts,
+    )
+    .is_ok()
+}
+
+/// More than one period of the calendar contains `day`: a special period
+/// (opening, adjustment, closing) shares it with a normal one, so the date
+/// alone does not name the entry's period. An unresolvable year counts as
+/// shared (fail closed).
+fn shared_date(book: &BookContext, day: DateDay) -> bool {
+    let Ok(fy) = book.calendar.fiscal_year_of(day) else {
+        return true;
+    };
+    let Ok(periods) = book.calendar.periods_for_year(fy) else {
+        return true;
+    };
+    periods.iter().filter(|p| p.contains(day)).count() > 1
+}
+
+/// Reads admitted under one capability (plan §14.2): the kernel core every
+/// read surface shares (the facade's `ReadScope`, the async book, fa-query
+/// and fa-mcp). [`admit_reads`] admits it once against current policy;
+/// each read is then judged by the scope caveats before its query is
+/// constructed, refused and never filtered. After admission every judgment
+/// is pure: a period's dates come from the calendar.
+#[derive(Clone, Debug)]
+pub struct ReadAuthority {
+    capability: Capability,
+}
+
+/// Admit `principal`'s reads of this book under `capability`: the pure
+/// checks first (the holder, `read`, the `books` caveat), then expiry and
+/// revocation at the head. Historical selectors never resurrect authority:
+/// a token expired or revoked now reads nothing, whatever `known_at` a read
+/// would select. An `accounts` caveat is refused here until whole-entry
+/// visibility lands (an entry may cross the scope), never filtered.
+pub fn admit_reads<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    principal: VId,
+    capability: &Capability,
+) -> Outcome<ReadAuthority> {
+    if let Err(d) = fa_policy::admit_read(capability, principal, book.book_id) {
+        return Ok(Err(refusal(&d)));
+    }
+    if capability.accounts().is_some() {
+        return Ok(Err(refusal(&Denial::OutOfScope {
+            caveat: "accounts",
+            value: "a read in this build (whole-entry visibility is not implemented, so a scoped read is refused, never filtered)".into(),
+        })));
+    }
+    if let Err(r) = current_at(db, book, capability)? {
+        return Ok(Err(r));
+    }
+    Ok(Ok(ReadAuthority {
+        capability: capability.clone(),
+    }))
+}
+
+impl ReadAuthority {
+    /// The capability these reads are admitted under.
+    #[must_use]
+    pub fn capability(&self) -> &Capability {
+        &self.capability
+    }
+
+    /// The entry `vid` as recorded at frontier `seq`. The entry's period is
+    /// known only once it is read, so a `periods` or `effective` caveat
+    /// refuses the read before it; a `known_at` pin refuses a frontier past
+    /// it. The read itself goes through the snapshot at `seq`
+    /// ([`crate::post::read_entry_at`]), so an entry recorded later is
+    /// never loaded or decoded: to this token it is no entry at all.
+    pub fn read_entry<V: asupersync::fs::Vfs + Clone>(
+        &self,
+        db: &Database<V>,
+        vid: VId,
+        seq: CommitSeq,
+    ) -> Outcome<Option<(Entry, CommitSeq)>> {
+        if let Err(r) = self.reach(seq, None, None) {
+            return Ok(Err(r));
+        }
+        Ok(Ok(crate::post::read_entry_at(db, vid, seq)?))
+    }
+
+    /// A read of exactly the periods `codes` (their activity, or one
+    /// account's explanation in one of them) at `seq`, through the latest
+    /// of their last days.
+    pub fn periods(
+        &self,
+        book: &BookContext,
+        seq: CommitSeq,
+        codes: &[&str],
+    ) -> Result<(), Refusal> {
+        self.reach(seq, Some(codes), last_day(book, codes))
+    }
+
+    /// A stock read through the latest of `codes` (a trial balance): stock
+    /// runs from inception, so it reaches every earlier period and a
+    /// `periods` caveat refuses it; an `effective` caveat bounds its last day.
+    pub fn stock_through(
+        &self,
+        book: &BookContext,
+        seq: CommitSeq,
+        codes: &[&str],
+    ) -> Result<(), Refusal> {
+        self.reach(seq, None, last_day(book, codes))
+    }
+
+    /// A stock read as of civil `day` (every period that starts by then).
+    pub fn as_of(&self, seq: CommitSeq, day: DateDay) -> Result<(), Refusal> {
+        self.reach(seq, None, Some(day))
+    }
+
+    fn reach(
+        &self,
+        seq: CommitSeq,
+        periods: Option<&[&str]>,
+        through: Option<DateDay>,
+    ) -> Result<(), Refusal> {
+        fa_policy::reach(
+            &self.capability,
+            &Reach {
+                branch: Some(Id128::TRUNK),
+                observes: fa_policy::Observes::At(seq),
+                periods,
+                through,
+                accounts: None,
+            },
+            None,
+        )
+        .map_err(|d| refusal(&d))
+    }
+}
+
+/// The latest last day of the periods `codes` names, from the calendar
+/// alone; `None` when a code names no period of the calendar.
+fn last_day(book: &BookContext, codes: &[&str]) -> Option<DateDay> {
+    let mut through: Option<DateDay> = None;
+    for code in codes {
+        let last = calendar_period(book, code)?.last_day();
+        through = Some(through.map_or(last, |d| d.max(last)));
+    }
+    through
 }
 
 /// A revocation row read at the capability's identity means revoked.
