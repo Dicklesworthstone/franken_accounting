@@ -443,6 +443,18 @@ negatives = ["fa-journal::lib::evidence::tests::a_supplement_round_trips_and_its
 waiver = "forbidden"
 
 [[clause]]
+invariant = "FA-INV-05"
+id = "registered-origin"
+status = "live"
+statement = "A public post carries only what the kernel can verify: its origin is Intent, its base totals and plan certificate are computed by the kernel and never accepted from the caller, and an entry that claims a Rule, Sweep, Schedule or Control origin, supplied base totals or a supplied plan certificate is refused before publication without consuming its identity; sweep- and schedule-minted entries commit only through their own minting paths, whose provenance the independent oracle reproduces."
+evidence_class = "invariant"
+first_gate = "G2"
+owner = "fa-cw1"
+checkers = ["fa-registers::tests/differential.rs::public_post_provenance_and_envelope_claims_match_the_independent_oracle", "fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_ticks_timed_holds_and_the_expiry_sweep"]
+negatives = ["fa-journal::tests/genesis.rs::unchecked_base_totals_are_refused_before_publication", "fa-journal::tests/genesis.rs::unverified_plan_and_origin_claims_are_refused_without_consuming_identity"]
+waiver = "forbidden"
+
+[[clause]]
 invariant = "FA-INV-06"
 id = "core"
 status = "live"
@@ -628,8 +640,8 @@ statement = "Capability caveats are enforced before any storage observation; a r
 evidence_class = "invariant"
 first_gate = "G1"
 owner = "fa-llx"
-checkers = ["fa-policy::lib::admit::tests::admission_order_is_holder_then_agent_then_op_then_ceilings"]
-negatives = ["fa-journal::tests/policy.rs::a_capability_authorizes_only_its_holder_and_refusals_precede_any_read", "fa-journal::tests/policy.rs::an_agent_profile_capability_never_writes_trunk_and_its_refusal_cites_fa_s7x", "fa-journal::tests/genesis.rs::a_foreign_book_or_branch_coordinate_is_refused_before_any_read"]
+checkers = ["fa-policy::lib::admit::tests::admission_order_is_holder_then_agent_then_op_then_ceilings", "fa::lib::book::tests::a_bank_statement_through_the_facade_reads_redacted_until_privileged"]
+negatives = ["fa-journal::tests/policy.rs::a_capability_authorizes_only_its_holder_and_refusals_precede_any_read", "fa-journal::tests/policy.rs::an_agent_profile_capability_never_writes_trunk_and_its_refusal_cites_fa_s7x", "fa-journal::tests/genesis.rs::a_foreign_book_or_branch_coordinate_is_refused_before_any_read", "fa-journal::lib::redaction::tests::an_agent_reads_public_documents_and_only_the_governed_redacted_view", "fa-journal::tests/genesis.rs::a_privileged_holder_derives_the_view_a_reader_gets_in_place_of_the_bytes"]
 waiver = "forbidden"
 
 [[clause]]
