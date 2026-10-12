@@ -77,6 +77,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("certificate", notary::certificate_cmd),
     ("open-items", open_items_cmd),
     ("explain", explain_cmd),
+    ("procedure", procedure_cmd),
     ("checkpoint", notary::checkpoint_cmd),
     ("verify", verify_cmd),
     ("registers", registers_cmd),
@@ -1165,7 +1166,8 @@ fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fa
             ("book", Some("info"))
             | ("chart" | "period", Some("list"))
             | (
-                "tb" | "statement" | "open-items" | "explain" | "replay" | "certificate" | "entry",
+                "tb" | "statement" | "open-items" | "explain" | "replay" | "certificate" | "entry"
+                | "procedure",
                 _,
             ) => &[Op::Read],
             ("verify" | "registers", _) => &[Op::Read, Op::Verify],
@@ -6021,5 +6023,328 @@ mod tests {
             let style = Style::resolve(false, false, false, true, only(name, value));
             assert_eq!(style, styled, "{name}={value}");
         }
+    }
+}
+
+// ---- procedure: Lantern over the CLI (plan §11, Appendix D) ----------------
+
+/// A procedure's registry or parameter refusal as a usage error naming the
+/// registry; a version mismatch is a parity defect of this build.
+fn lantern_usage(error: fa_lantern::LanternError) -> Fail {
+    use fa_lantern::LanternError as E;
+    match error {
+        E::Unregistered { procedure } => usage(
+            format!("`{procedure}` is not a registered procedure"),
+            "fa procedure list --json names every registered procedure id",
+        ),
+        E::Parameter {
+            procedure,
+            name,
+            message,
+        } => usage(
+            format!("{procedure}: {name}: {message}"),
+            "fa procedure list --json shows each procedure's registered parameters and inputs",
+        ),
+        E::Version {
+            procedure,
+            code,
+            registry,
+        } => Fail::Internal(format!(
+            "{procedure}: this build implements version {code} but procedures.toml registers {registry}"
+        )),
+        other => Fail::Internal(format!("procedure: {other}")),
+    }
+}
+
+fn tie_break_name(t: &fa_registry::procedures::TieBreak) -> &'static str {
+    use fa_registry::procedures::TieBreak as T;
+    match t {
+        T::EntryVid => "entry_vid",
+        T::AccountVid => "account_vid",
+        T::None => "none",
+    }
+}
+
+fn calibration_name(c: &fa_registry::procedures::Calibration) -> &'static str {
+    use fa_registry::procedures::Calibration as C;
+    match c {
+        C::Planted => "planted",
+        C::Corpus => "corpus",
+        C::Uncalibrated => "uncalibrated",
+    }
+}
+
+fn procedure_row_json(row: &fa_registry::procedures::Procedure) -> Json {
+    obj(vec![
+        ("id", s(&row.id)),
+        ("version", Json::Int(i128::from(row.version))),
+        ("claim", s(row.claim.name())),
+        ("evidence", s(&row.evidence)),
+        ("tie_break", s(tie_break_name(&row.tie_break))),
+        ("complexity", s(&row.complexity)),
+        ("calibration", s(calibration_name(&row.calibration))),
+        ("summary", s(&row.summary)),
+        (
+            "inputs",
+            Json::Arr(
+                row.inputs
+                    .iter()
+                    .map(|i| {
+                        obj(vec![
+                            ("name", s(&i.name)),
+                            ("kind", s(&i.kind)),
+                            ("meaning", s(&i.meaning)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+        (
+            "parameters",
+            Json::Arr(
+                row.parameters
+                    .iter()
+                    .map(|p| {
+                        obj(vec![
+                            ("name", s(&p.name)),
+                            ("default", Json::Int(p.default)),
+                            ("meaning", s(&p.meaning)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+    ])
+}
+
+/// A typed citation as one object: `kind` plus the handle fields, every
+/// field present and null when it does not apply.
+fn cite_json(c: &fa_lantern::Cite) -> Json {
+    use fa_lantern::Cite as C;
+    let vid = |v: &VId| s(format!("{:032x}", v.0));
+    let mut fields: Vec<(&str, Json)> = vec![
+        ("entry", Json::Null),
+        ("ordinal", Json::Null),
+        ("account", Json::Null),
+        ("period", Json::Null),
+        ("document", Json::Null),
+        ("principal", Json::Null),
+        ("approval", Json::Null),
+    ];
+    let (kind, set): (&str, Vec<(&str, Json)>) = match c {
+        C::Entry(v) => ("entry", vec![("entry", vid(v))]),
+        C::Leg { entry, ordinal } => (
+            "leg",
+            vec![
+                ("entry", vid(entry)),
+                ("ordinal", Json::Int(i128::from(*ordinal))),
+            ],
+        ),
+        C::Account(v) => ("account", vec![("account", vid(v))]),
+        C::Period(code) => ("period", vec![("period", s(code.as_str()))]),
+        C::Document(oid) => ("document", vec![("document", s(hex(&oid.0)))]),
+        C::Principal(v) => ("principal", vec![("principal", vid(v))]),
+        C::Approval(v) => ("approval", vec![("approval", vid(v))]),
+    };
+    for (key, value) in set {
+        if let Some(slot) = fields.iter_mut().find(|(name, _)| *name == key) {
+            slot.1 = value;
+        }
+    }
+    fields.push(("kind", s(kind)));
+    obj(fields)
+}
+
+fn finding_json(f: &fa_lantern::Finding) -> Json {
+    obj(vec![
+        ("severity", s(f.severity.name())),
+        (
+            "statistic",
+            obj(vec![
+                ("name", s(&f.statistic.name)),
+                ("value", Json::Int(f.statistic.value)),
+                ("scale", Json::Int(i128::from(f.statistic.scale))),
+                ("population", Json::Int(i128::from(f.statistic.population))),
+            ]),
+        ),
+        ("cites", Json::Arr(f.cites.iter().map(cite_json).collect())),
+        ("narrative", s(&f.narrative)),
+    ])
+}
+
+/// `fa procedure list` and `fa procedure run <id>`: Lantern's registered
+/// procedures over the book's trunk, a pure read (plan §11; FA-INV-04: a
+/// finding is derived, never authoritative).
+fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let out = &ctx.out;
+    let sub = args.positional.get(1).map(String::as_str);
+    let example = "fa procedure run jet.round_amounts --book <dir> --json";
+    match sub {
+        Some("list") => {
+            if let Some(extra) = args.positional.get(2) {
+                return Err(usage(
+                    format!("unexpected argument `{extra}`"),
+                    "fa procedure list --json",
+                ));
+            }
+            let rows = fa_lantern::catalog::registered().map_err(lantern_usage)?;
+            for row in &rows {
+                out.line(format!(
+                    "{} v{} {} {}",
+                    row.id,
+                    row.version,
+                    row.claim.name(),
+                    row.summary
+                ));
+            }
+            out.event(
+                "procedure_list",
+                vec![
+                    (
+                        "procedures",
+                        Json::Arr(rows.iter().map(procedure_row_json).collect()),
+                    ),
+                    ("count", Json::Int(rows.len() as i128)),
+                ],
+                &format!("{} registered procedure(s)", rows.len()),
+            );
+            Ok(())
+        }
+        Some("run") => {
+            let id = args
+                .positional
+                .get(2)
+                .ok_or_else(|| usage("procedure run needs a procedure id", example))?;
+            if let Some(extra) = args.positional.get(3) {
+                return Err(usage(format!("unexpected argument `{extra}`"), example));
+            }
+            for flag in ["--effective-through", "--account", "--source"] {
+                if args.flag_all(flag).len() > 1 {
+                    return Err(usage(
+                        format!("procedure run takes only one {flag}"),
+                        example,
+                    ));
+                }
+            }
+            let mut params = fa_lantern::Params::defaults(id).map_err(lantern_usage)?;
+            for assignment in args.flag_all("--param") {
+                let Some((name, value)) = assignment.split_once('=') else {
+                    return Err(usage(
+                        format!("--param `{assignment}` is not name=value"),
+                        "--param round_power=2",
+                    ));
+                };
+                let value: i128 = value.trim().parse().map_err(|_| {
+                    usage(
+                        format!("--param {name}: `{value}` is not an integer"),
+                        "--param name=<integer, in the parameter's registered unit>",
+                    )
+                })?;
+                params = params.set(name.trim(), value).map_err(lantern_usage)?;
+            }
+            let effective_through = match args.flag("--effective-through") {
+                None => None,
+                Some(d) => Some(DateDay::parse(d).map_err(|e| {
+                    usage(
+                        format!("--effective-through `{d}`: {e:?}"),
+                        "--effective-through YYYY-MM-DD",
+                    )
+                })?),
+            };
+            let book = ctx.books.open(args)?;
+            let (known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
+            if requested_utc_ns.is_some() {
+                return Err(usage(
+                    "procedures run at a recorded sequence, not at an instant",
+                    "--known-at HEAD or --known-at <commit sequence>",
+                ));
+            }
+            let inputs = fa_lantern::catalog::Inputs {
+                account: args
+                    .flag("--account")
+                    .map(|code| account_vid(book.context().book_id, code)),
+                source: args
+                    .flag("--source")
+                    .map(|text| parse_vid(text.strip_prefix("E:").unwrap_or(text), "--source"))
+                    .transpose()?,
+            };
+            let built = fa_lantern::catalog::build(id, params, inputs).map_err(lantern_usage)?;
+            let run = book.run_procedure(built.as_ref(), known_at, effective_through)?;
+            out.known_at(run.coordinate.known_at);
+            for f in &run.findings {
+                out.line(format!(
+                    "{} {} {}={} {}",
+                    f.severity.name(),
+                    run.procedure,
+                    f.statistic.name,
+                    f.statistic.value,
+                    f.narrative
+                ));
+            }
+            let human = format!(
+                "{}: {} finding(s) over {} entries",
+                run.procedure,
+                run.findings.len(),
+                run.population
+            );
+            out.event(
+                "procedure_run",
+                vec![
+                    ("procedure", s(&run.procedure)),
+                    ("version", Json::Int(i128::from(run.version))),
+                    ("claim", s(run.claim.name())),
+                    ("evidence", s(&run.evidence)),
+                    ("known_at", Json::Int(i128::from(run.coordinate.known_at.0))),
+                    (
+                        "effective_through",
+                        run.coordinate
+                            .effective_through
+                            .map_or(Json::Null, |d| s(d.render())),
+                    ),
+                    (
+                        "parameters",
+                        Json::Arr(
+                            run.parameters
+                                .iter()
+                                .map(|(k, v)| {
+                                    obj(vec![("name", s(k.as_str())), ("value", Json::Int(*v))])
+                                })
+                                .collect(),
+                        ),
+                    ),
+                    (
+                        "inputs",
+                        Json::Arr(
+                            run.inputs
+                                .iter()
+                                .map(|(k, v)| {
+                                    obj(vec![("name", s(k.as_str())), ("value", s(v.as_str()))])
+                                })
+                                .collect(),
+                        ),
+                    ),
+                    ("parameters_digest", s(hex(&run.parameters_digest))),
+                    ("inputs_digest", s(hex(&run.inputs_digest))),
+                    ("population", Json::Int(i128::from(run.population))),
+                    (
+                        "work",
+                        obj(vec![
+                            ("entries", Json::Int(i128::from(run.work.entries))),
+                            ("legs", Json::Int(i128::from(run.work.legs))),
+                            ("comparisons", Json::Int(i128::from(run.work.comparisons))),
+                        ]),
+                    ),
+                    (
+                        "findings",
+                        Json::Arr(run.findings.iter().map(finding_json).collect()),
+                    ),
+                    ("finding_count", Json::Int(run.findings.len() as i128)),
+                    ("findings_digest", s(hex(&run.findings_digest))),
+                ],
+                &human,
+            );
+            Ok(())
+        }
+        _ => Err(unhandled("procedure", sub)),
     }
 }

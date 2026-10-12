@@ -264,6 +264,18 @@ usage = ["explain balance <account code> --period <code> [--as-known-at HEAD|<se
 example = "fa explain balance 1000 --period FY2026-P03 --book ./books/myco --json"
 
 [[verb]]
+name = "procedure"
+summary = "Lantern (plan §11): list the registered forensic and audit procedures, or run one over the book's trunk at a recorded sequence and, for the historical folds, through an effective date. A finding is a statistic with typed citations, never an accusation."
+writes = false
+subcommands = ["list", "run"]
+flags = ["--known-at", "--effective-through", "--param", "--account", "--source"]
+switches = []
+events = ["procedure_list", "procedure_run"]
+exits = [0, 2, 3, 4, 5]
+usage = ["procedure list", "procedure run <procedure id> [--known-at HEAD|<seq>] [--effective-through YYYY-MM-DD] [--param <name>=<integer>]... [--account <code>] [--source <entry vid>]", "Parameters default to procedures.toml's pinned values; --param overrides one registered parameter. aging.* and trace.* need --effective-through; trace.* also need --account (the commingled account) and --source (the deposit entry)."]
+example = "fa procedure run jet.round_amounts --book ./books/myco --json"
+
+[[verb]]
 name = "checkpoint"
 summary = "Publish an unsigned, recomputable accumulator state over the book's entry prefix."
 writes = true
@@ -731,6 +743,63 @@ name = "accumulator_state_check"
 doc = "One state's recomputation result. finding is null on success; verification failure reports the same shape in its detail."
 fields = ["oid:hex", "through_seq:seq", "recorded_at:seq", "leaf_count:int", "finding:string?"]
 
+[[event]]
+name = "procedure_list"
+book = false
+doc = "Every registered Lantern procedure (procedures.toml): id, version, claim class, evidence row, tie-break policy, complexity bound, calibration status, declared inputs and parameters with their pinned defaults."
+fields = ["procedures:[procedure_row]", "count:int"]
+
+[[event]]
+name = "procedure_run"
+book = true
+doc = "One Lantern procedure run over the trunk as known at `known_at` (and, for the historical folds, through `effective_through`): the parameters and inputs it ran with, the digests an opposing expert reproduces, the population and work counted, and the findings sorted by severity then statistic then citations. A finding is a statistic with typed citations, never a conclusion."
+fields = ["procedure:string", "version:int", "claim:string", "evidence:string", "known_at:seq", "effective_through:date?", "parameters:[procedure_parameter]", "inputs:[procedure_input]", "parameters_digest:hex", "inputs_digest:hex", "population:int", "work:lantern_work", "findings:[finding]", "finding_count:int", "findings_digest:hex"]
+
+[[shape]]
+name = "procedure_row"
+doc = "One procedures.toml row."
+fields = ["id:string", "version:int", "claim:string", "evidence:string", "tie_break:string", "complexity:string", "calibration:string", "summary:string", "inputs:[procedure_input_decl]", "parameters:[procedure_parameter_decl]"]
+
+[[shape]]
+name = "procedure_input_decl"
+doc = "A declared input: its name, kind (date, period, account, entry) and meaning."
+fields = ["name:string", "kind:string", "meaning:string"]
+
+[[shape]]
+name = "procedure_parameter_decl"
+doc = "A registered parameter with its pinned default (the decision card's deterministic fallback)."
+fields = ["name:string", "default:int", "meaning:string"]
+
+[[shape]]
+name = "procedure_parameter"
+doc = "A parameter value the run used."
+fields = ["name:string", "value:int"]
+
+[[shape]]
+name = "procedure_input"
+doc = "An input the run used, as its canonical string (handles are 32-hex vids)."
+fields = ["name:string", "value:string"]
+
+[[shape]]
+name = "lantern_work"
+doc = "Work counted while the procedure ran: the complexity witness against the registry's declared bound."
+fields = ["entries:int", "legs:int", "comparisons:int"]
+
+[[shape]]
+name = "finding"
+doc = "One finding: its severity band, the statistic it rests on, its typed citations (every one resolves in the book) and a narrative built only from resolved handles and numbers."
+fields = ["severity:string", "statistic:statistic", "cites:[cite]", "narrative:string"]
+
+[[shape]]
+name = "statistic"
+doc = "The test statistic in fixed point (`value` at `scale` decimal places) with the size of the population it was computed over."
+fields = ["name:string", "value:int", "scale:int", "population:int"]
+
+[[shape]]
+name = "cite"
+doc = "A typed citation: `kind` is entry, leg, account, period, document, principal or approval, and exactly the fields that kind carries are non-null."
+fields = ["kind:string", "entry:hex?", "ordinal:int?", "account:hex?", "period:string?", "document:hex?", "principal:hex?", "approval:hex?"]
+
 [[shape]]
 name = "evidence_ref"
 doc = "One citation: the document, its commitment, and the EVIDENCED_BY role (evidence_policy.toml [[role]])."
@@ -981,7 +1050,7 @@ max_tools_per_cluster = 7
 # The server fixes authority and book selection once; it never forwards caller grants.
 hidden_flags = ["--json", "--via", "--no-color", "--help", "--version", "--as", "--grant", "--yes", "--keys", "--book"]
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
-repeat_flags = ["--evidence", "--approval", "--period"]
+repeat_flags = ["--evidence", "--approval", "--period", "--param"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
 integer_flags = ["--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing"]
 
@@ -1029,6 +1098,10 @@ subcommand = "stop"
 reason = "host-only: stops the daemon process that will host fa-mcp (plan §15.4 registered exclusion)"
 
 # ---- fa.orient --------------------------------------------------------------
+
+[[mcp.cluster]]
+name = "fa.forensics"
+doc = "Lantern: the registered forensic and audit procedures (journal-entry tests, duplicates, sequence gaps, cutoff, aging, digit tests, round trips, structuring, tracing laws) run as pure reads; findings are statistics with typed citations."
 
 [[mcp.tool]]
 cluster = "fa.orient"
@@ -1362,3 +1435,23 @@ stdin_via = "file"
 required = []
 dont = ["Don't grade your own upload `HumanUpload`: an agent's document is `AgentUpload` and needs a human `Reviewed` attestation before promotion.", "Don't write a plausible document to stand in for a missing one; record an explicit manual assertion instead."]
 mistakes = ["Passing a host path as `file`: supply the document inline as `text`; this does not grant document-import authority.", "Citing `doc_commit` where an intent's `evidence` wants the document `oid`."]
+
+[[mcp.tool]]
+cluster = "fa.forensics"
+name = "list_procedures"
+verb = "procedure"
+subcommands = ["list"]
+positionals = []
+required = []
+dont = ["Don't invent a procedure id or a parameter name: every registered one, with its pinned default and meaning, is listed here."]
+mistakes = ["Passing a parameter in display units (10000.00) instead of the unit's mantissa (1000000 at scale 2); the listing's `meaning` says which."]
+
+[[mcp.tool]]
+cluster = "fa.forensics"
+name = "run_procedure"
+verb = "procedure"
+subcommands = ["run"]
+positionals = ["id"]
+required = ["id"]
+dont = ["Don't treat a finding as a conclusion: it is a statistic with citations; every cited handle resolves and should be read before anything is asserted.", "Don't pass an instant to known_at: procedures run at HEAD or a recorded sequence."]
+mistakes = ["Running aging.* or trace.* without effective_through (they are historical folds and are refused naming it).", "Running trace.* without account and source (the commingled account and the deposit entry).", "Overriding a parameter with a float; parameters are integers in the registered unit."]

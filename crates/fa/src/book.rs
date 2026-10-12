@@ -323,6 +323,9 @@ pub enum BookError {
     Entropy(EntropyError),
     /// The substrate refused a native read needed by a report certificate.
     CertifiedRead(fgdb::QueryError),
+    /// A Lantern procedure refused or failed outside the kernel, registers
+    /// and registry (those map to their own variants).
+    Lantern(fa_lantern::LanternError),
 }
 
 impl BookError {
@@ -330,9 +333,11 @@ impl BookError {
     #[must_use]
     pub fn exit(&self) -> u8 {
         match self {
-            Self::Registers(fa_registers::RegisterError::InvalidSelection(_)) => {
-                fa_journal::exit::USAGE
-            }
+            Self::Registers(fa_registers::RegisterError::InvalidSelection(_))
+            | Self::Lantern(
+                fa_lantern::LanternError::Unregistered { .. }
+                | fa_lantern::LanternError::Parameter { .. },
+            ) => fa_journal::exit::USAGE,
             Self::Runtime(_) | Self::Open(_) | Self::Io(..) | Self::KeyFile(_) | Self::NoBook => {
                 fa_journal::exit::ENVIRONMENT
             }
@@ -341,7 +346,8 @@ impl BookError {
             | Self::Registers(_)
             | Self::Registry(_)
             | Self::Entropy(_)
-            | Self::CertifiedRead(_) => fa_journal::exit::FOUNDATION,
+            | Self::CertifiedRead(_)
+            | Self::Lantern(_) => fa_journal::exit::FOUNDATION,
         }
     }
 }
@@ -360,6 +366,7 @@ impl fmt::Display for BookError {
             Self::Registry(e) => write!(f, "registry: {e}"),
             Self::Entropy(e) => write!(f, "entropy: {e:?}"),
             Self::CertifiedRead(e) => write!(f, "certified report input: {e}"),
+            Self::Lantern(e) => write!(f, "procedure: {e}"),
         }
     }
 }
@@ -384,6 +391,16 @@ impl From<fa_registers::RegisterError> for BookError {
 impl From<fa_registry::RegistryError> for BookError {
     fn from(e: fa_registry::RegistryError) -> Self {
         Self::Registry(e)
+    }
+}
+impl From<fa_lantern::LanternError> for BookError {
+    fn from(e: fa_lantern::LanternError) -> Self {
+        match e {
+            fa_lantern::LanternError::Kernel(k) => Self::Kernel(k),
+            fa_lantern::LanternError::Register(r) => Self::Registers(r),
+            fa_lantern::LanternError::Registry(r) => Self::Registry(r),
+            other => Self::Lantern(other),
+        }
     }
 }
 impl From<EntropyError> for BookError {
@@ -1351,6 +1368,18 @@ impl Book {
         known_at: Option<CommitSeq>,
     ) -> Result<BalanceExplanation, BookError> {
         with_store!(&self.store, core => core.explain_balance(&self.purposes(), account, period_code, known_at))
+    }
+
+    /// Run a registered Lantern procedure over the trunk as known at
+    /// `known_at` (the head when `None`) and, for the historical folds,
+    /// through `effective_through`: a pure read (plan §11).
+    pub fn run_procedure(
+        &self,
+        procedure: &dyn fa_lantern::Procedure,
+        known_at: Option<CommitSeq>,
+        effective_through: Option<fa_time::DateDay>,
+    ) -> Result<fa_lantern::ProcedureRun, BookError> {
+        with_store!(&self.store, core => core.run_procedure(&self.purposes(), procedure, known_at, effective_through))
     }
 
     /// Stock balances from inception through the latest selected period's end.

@@ -3497,6 +3497,8 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     assert_eq!(run(true, &["tb", "--period", "FY2026-P03"]).0, 0);
     assert_eq!(run(true, &["open-items"]).0, 0);
+    assert_eq!(run(true, &["procedure", "list"]).0, 0);
+    assert_eq!(run(true, &["procedure", "run", "jet.round_amounts"]).0, 0);
     assert_eq!(run(true, &["entry", "show", &vid]).0, 0);
     assert_eq!(run(true, &["entry", "show", "00"]).0, 0);
     assert_eq!(
@@ -5696,5 +5698,193 @@ fn directory_reopen_refuses_changed_or_missing_unit_facts_through_facade_and_cli
             "{damage}: facade and CLI refusals must preserve the journal"
         );
     }
+    Ok(())
+}
+
+/// `fa procedure list|run`: Lantern over a persisted book through the CLI
+/// (plan §11, Appendix D). The planted round amount is found and cited by
+/// its posted vid; a parameter override changes the result; the registry
+/// refuses what it does not know, naming the fix; historical folds refuse
+/// to run without an effective date; a tracing law runs once its inputs
+/// are passed by handle and refuses a source that never deposited.
+#[test]
+fn procedures_run_over_a_persisted_book_and_cite_resolving_handles() -> std::io::Result<()> {
+    let dir = tmp("procedures")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&book), &argv);
+        assert_eq!(code, 0, "{argv:?}\n{out}\n{err}");
+        out
+    };
+    let refused = |args: &[&str]| -> (i32, String) {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, _) = fa(Some(&book), &argv);
+        (code, out)
+    };
+    ok(&["book", "create", "--name", "Procedures Co"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"1010","name":"Bank B","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart]);
+    ok(&["period", "create", "--fiscal-year", "2026"]);
+    ok(&["period", "open", "FY2026-P03"]);
+    let source = write(&dir, "source.txt", "INVOICE (procedure fixture)");
+    let added = ok(&[
+        "document",
+        "add",
+        &source,
+        "--kind",
+        "Invoice",
+        "--grade",
+        "HumanUpload",
+    ]);
+    let ev = field(&added, "oid").unwrap_or_default().to_string();
+    let round = write(
+        &dir,
+        "round.json",
+        r#"{"effective_date":"2026-03-10","idempotency_key":"round-rent","legs":[{"side":"debit","account":"6000","amount":"5000.00 USD"},{"side":"credit","account":"1000","amount":"5000.00 USD"}],"description":"March rent, round"}"#,
+    );
+    let posted = ok(&["post", "--intent", &round, "--evidence", &ev]);
+    let round_vid = field(&posted, "vid").unwrap_or_default().to_string();
+    let plain = write(
+        &dir,
+        "plain.json",
+        r#"{"effective_date":"2026-03-11","idempotency_key":"plain-rent","legs":[{"side":"debit","account":"6000","amount":"1234.56 USD"},{"side":"credit","account":"1000","amount":"1234.56 USD"}],"description":"March rent, not round"}"#,
+    );
+    ok(&["post", "--intent", &plain, "--evidence", &ev]);
+
+    // The registry is listed in full, with its pinned defaults.
+    let listed = ok(&["procedure", "list"]);
+    let rows = arr(&doc(&listed), "procedures");
+    assert_eq!(rows.len(), 18, "{listed}");
+    assert!(
+        rows.iter()
+            .any(|r| r.get("id").and_then(Json::as_str) == Some("jet.round_amounts")),
+        "{listed}"
+    );
+
+    // The planted round amount is found, cited by the posted entry's vid.
+    let out = ok(&["procedure", "run", "jet.round_amounts"]);
+    let data = doc(&out);
+    assert_eq!(text(&data, "procedure"), "jet.round_amounts");
+    assert_eq!(text(&data, "claim"), "statistical");
+    let findings = arr(&data, "findings");
+    assert_eq!(findings.len(), 1, "{out}");
+    let cites = findings[0]
+        .get("cites")
+        .and_then(Json::as_arr)
+        .expect("cites");
+    assert!(
+        cites.iter().any(|c| {
+            c.get("kind").and_then(Json::as_str) == Some("entry")
+                && c.get("entry").and_then(Json::as_str) == Some(round_vid.as_str())
+        }),
+        "the finding cites the round entry by vid: {out}"
+    );
+    assert_eq!(int(&data, "finding_count"), Some(1));
+    assert!(int(&data, "population").is_some_and(|n| n >= 2), "{out}");
+    assert!(
+        data.get("effective_through") == Some(&Json::Null),
+        "no effective date was declared: {out}"
+    );
+    // A parameter override is honoured: at round_power 6 nothing is round.
+    let none = ok(&[
+        "procedure",
+        "run",
+        "jet.round_amounts",
+        "--param",
+        "round_power=6",
+    ]);
+    assert_eq!(int(&doc(&none), "finding_count"), Some(0), "{none}");
+    assert_eq!(
+        arr(&doc(&none), "parameters")
+            .iter()
+            .find(|p| p.get("name").and_then(Json::as_str) == Some("round_power"))
+            .and_then(|p| int(p, "value")),
+        Some(6)
+    );
+    // An effective date selects the historical folds; aging runs with it.
+    let aged = ok(&[
+        "procedure",
+        "run",
+        "aging.open_items",
+        "--effective-through",
+        "2026-04-30",
+    ]);
+    assert_eq!(text(&doc(&aged), "effective_through"), "2026-04-30");
+    // A tracing law runs once its inputs are passed by handle: the round
+    // rent is the deposit into 6000; the later rent is a clean inflow, so
+    // the lowest intermediate balance never dips below the deposit.
+    let traced = ok(&[
+        "procedure",
+        "run",
+        "trace.libr",
+        "--effective-through",
+        "2026-04-30",
+        "--account",
+        "6000",
+        "--source",
+        &round_vid,
+    ]);
+    let traced_findings = arr(&doc(&traced), "findings");
+    assert_eq!(traced_findings.len(), 1, "{traced}");
+    assert_eq!(
+        traced_findings[0]
+            .get("statistic")
+            .and_then(|st| int(st, "value")),
+        Some(500_000),
+        "{traced}"
+    );
+    // Planted negatives, each naming the fix.
+    let (code, out) = refused(&["procedure", "run", "aging.open_items"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("effective_through"), "{out}");
+    let (code, out) = refused(&["procedure", "run", "graph.kiting"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("fa procedure list"), "{out}");
+    let (code, out) = refused(&[
+        "procedure",
+        "run",
+        "jet.round_amounts",
+        "--param",
+        "round_power=two",
+    ]);
+    assert_eq!(code, 2, "{out}");
+    let (code, out) = refused(&[
+        "procedure",
+        "run",
+        "jet.round_amounts",
+        "--param",
+        "no_such=1",
+    ]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("not a registered parameter"), "{out}");
+    let (code, out) = refused(&[
+        "procedure",
+        "run",
+        "trace.libr",
+        "--effective-through",
+        "2026-04-30",
+    ]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("account"), "{out}");
+    let (code, out) = refused(&[
+        "procedure",
+        "run",
+        "trace.libr",
+        "--effective-through",
+        "2026-04-30",
+        "--account",
+        "1000",
+        "--source",
+        &round_vid,
+    ]);
+    assert_eq!(code, 2, "a credit to cash is not a deposit into it: {out}");
+    assert!(out.contains("source"), "{out}");
     Ok(())
 }
