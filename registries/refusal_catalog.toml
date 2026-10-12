@@ -263,6 +263,15 @@ exit = "refusal"
 cite = "plan §7.1a / FA-INV-07"
 fix = "select --as-known-at HEAD or an existing commit sequence; an instant before the first retained tick cannot be reconstructed"
 
+# ---- Exact financial statements (152) -----------------------------------
+[[refusal]]
+code = "FA-REF-152"
+name = "STATEMENT_INVALID"
+owners = ["fa", "fa-statements"]
+exit = "refusal"
+cite = "plan §12.1 / FA-INV-04 mapping-partition (exact statement over the journal)"
+fix = "select balance-sheet or income-statement with an existing period; correct the named mapping or input and recompute from the journal without adding a balancing entry"
+
 # ---- Supersession (050–054) ----------------------------------------------
 [[refusal]]
 code = "FA-REF-050"

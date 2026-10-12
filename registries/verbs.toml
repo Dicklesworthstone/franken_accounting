@@ -204,13 +204,25 @@ usage = ["tb ((--period <code>)... | --fiscal-year N) [--activity] [--as-known-a
 example = "fa tb --period FY2026-P03 --book ./books/myco --json"
 
 [[verb]]
+name = "statement"
+summary = "Balance sheet or income statement from exact journal folds under a registered definition, with optional period comparatives and retained replay certificates."
+writes = true
+subcommands = []
+flags = ["--for", "--compare", "--known-at", "--as-known-at", "--certificate-out"]
+switches = ["--certify"]
+events = ["statement", "report_certificate"]
+exits = [0, 2, 3, 4, 5, 7, 8]
+usage = ["statement balance-sheet|income-statement --for <period> [--compare <period>] [--known-at HEAD|<seq>|<RFC3339>]", "Both columns use the same known-at snapshot and the registered definition. Balance sheets carry opening history through each selected period; income statements show that period's activity. Native units remain separate; there is no implicit FX conversion or presentation rounding.", "--as-known-at is an alias for --known-at; supply only one. Add --certify to retain an immutable certificate and emit its complete bytes inline. --certificate-out <new-file> also saves a binary copy without replacing a file. Uncertified statements do not publish metadata. Certificates prove replay and arithmetic over the journal, not GAAP conformity."]
+example = "fa statement balance-sheet --for FY2026-P03 --compare FY2026-P02 --certify --book ./books/myco --json"
+
+[[verb]]
 name = "replay"
-summary = "Verify a retained report certificate's complete native read closure and reproduce its original trial balance, balance explanation, or open-items report."
+summary = "Verify a retained report certificate's complete native read closure and reproduce its original trial balance, statement, balance explanation, or open-items report."
 writes = false
 subcommands = []
 flags = []
 switches = []
-events = ["trial_balance", "balance_explained", "open_items"]
+events = ["trial_balance", "statement", "balance_explained", "open_items"]
 exits = [0, 2, 3, 4, 5, 8]
 usage = ["replay <C:oid|oid|certificate-file|->", "A 64-hex oid resolves the immutable certificate retained in this book. A file holds canonical binary certificate bytes; stdin also accepts the oid or complete bytes hex string from a report_certificate event. Prefix a 64-hex filename with ./ to read it as a file. The certificate fixes the selector and known-at; replay never substitutes today's frontier."]
 example = "fa replay trial-balance.cert --book ./books/myco --json"
@@ -627,9 +639,15 @@ doc = "Stock (through `effective_through`) or activity (the selected periods), a
 fields = ["periods:[string]", "known_at:seq", "effective_through:date?", "activity:bool", "mode:string", "rows:[tb_row]", "unit_totals:[unit_total]", "pending_unit_totals:[pending_unit_total]", "balanced:bool"]
 
 [[event]]
+name = "statement"
+book = true
+doc = "A registered financial statement evaluated from exact journal folds. The definition digest commits its versioned mappings and formulas; mappings list the checked leaf-account partition. Each line contains amounts in one native unit, in column order. All columns share known_at. Certification and replay use the same presentation; no GAAP conformity, consolidation, FX conversion or presentation rounding is implied."
+fields = ["name:string", "definition_version:int", "definition_digest:hex", "known_at:seq", "columns:[statement_column]", "lines:[statement_line]", "mappings:[statement_mapping]", "scope:string"]
+
+[[event]]
 name = "report_certificate"
 book = true
-doc = "The certificate retained in this book for the preceding trial_balance, balance_explained, or open_items report. oid resolves through fa replay or certificate status; recorded_at is the immutable certificate object's sequence, distinct from the report's known_at. bytes is the complete canonical certificate in hex and file is an optional external copy. output_digest commits the exact binary result named by output_format. Retention advances the metadata frontier without posting accounting entries. The explicit replay_scope and authority limit the claim."
+doc = "The certificate retained in this book for the preceding trial_balance, statement, balance_explained, or open_items report. oid resolves through fa replay or certificate status; recorded_at is the immutable certificate object's sequence, distinct from the report's known_at. bytes is the complete canonical certificate in hex and file is an optional external copy. output_digest commits the exact binary result named by output_format. Retention advances the metadata frontier without posting accounting entries. The explicit replay_scope and authority limit the claim."
 fields = ["oid:hex", "known_at:seq", "recorded_at:seq", "bytes:hex", "file:string?", "replay_command:string", "replay_scope:string", "authority:string", "output_format:string", "output_digest:hex", "native_inputs:int", "journal_root:hex", "journal_leaves:int"]
 
 [[event]]
@@ -787,6 +805,21 @@ fields = ["code:string", "state:string", "kind:string", "start:date", "end:date"
 name = "tb_row"
 doc = "One account in one unit."
 fields = ["code:string", "name:string", "type:string", "debits:amount", "credits:amount", "net:amount", "debits_pending:amount", "credits_pending:amount"]
+
+[[shape]]
+name = "statement_column"
+doc = "A current or comparative period selection. Stock includes opening history through the inclusive cutoff; activity starts at effective_from. Every column uses the statement's same known-at snapshot."
+fields = ["label:string", "periods:[string]", "mode:string", "effective_from:date?", "effective_through:date"]
+
+[[shape]]
+name = "statement_line"
+doc = "One mapped or computed line in one native unit; amounts appear in the order of the statement columns. There is no summation across units."
+fields = ["code:string", "label:string", "unit:string", "amounts:[amount]"]
+
+[[shape]]
+name = "statement_mapping"
+doc = "A historical leaf account and its unique registered mapped line; computed lines refer to mapped lines rather than mapping an account a second time."
+fields = ["account_vid:hex", "account:string", "name:string", "type:string", "line:string"]
 
 [[shape]]
 name = "unit_total"
@@ -970,7 +1003,7 @@ doc = "Posting under the accounting laws: entries, two-phase holds and their res
 
 [[mcp.cluster]]
 name = "fa.read"
-doc = "Certified reads over the journal: trial balance, an explained balance, open items, one entry."
+doc = "Certified reads over the journal: trial balance, financial statements, an explained balance, open items, one entry."
 
 [[mcp.cluster]]
 name = "fa.time"
@@ -1196,6 +1229,17 @@ flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at"]
 required = []
 dont = ["Don't pass an instant to `as_of`: a civil date, never a timestamp; instants are unsupported here.", "Don't mix `as_of` with `period`, `fiscal_year` or `activity`.", "Use certify: true to retain the certificate in the book and receive the report and complete certificate as two data items. Replay accepts its oid or bytes string. Certification writes metadata only; MCP exposes no certificate_out host-file write."]
 mistakes = ["Reading `activity` rows as stock: stock includes opening history, `activity: true` is the selected periods' movement.", "Treating a known-at instant as an exact physical commit timestamp: it is a retained TimeEvidence bucket, with its frontier and brackets in the coordinate."]
+
+[[mcp.tool]]
+cluster = "fa.read"
+name = "statement"
+verb = "statement"
+subcommands = []
+positionals = ["name"]
+flags = ["--for", "--compare", "--known-at", "--as-known-at"]
+required = ["name", "--for"]
+dont = ["Use name balance-sheet or income-statement, for a fiscal period code, and optionally compare for another period. Both columns share one known-at snapshot.", "Keep native units separate: no implicit FX, consolidation or GAAP conformity is claimed. A balance sheet includes opening history; an income statement shows selected-period activity.", "Use certify: true for a retained certificate and replay it with fa_read_replay. certificate_out is forbidden; certificate bytes and oid are returned inline."]
+mistakes = ["Omitting for, passing multiple for or compare periods, or using a date where a period code is required.", "Supplying known_at and as_known_at together: they name the same selector.", "Treating a later-period comparative as a different known-at snapshot; use a separate statement call for that question."]
 
 [[mcp.tool]]
 cluster = "fa.read"

@@ -274,6 +274,119 @@ fn structured_error(text: &str) -> JsonValue {
 }
 
 #[test]
+fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
+    let dir = tmp("statements");
+    let book = dir.join("book");
+    let b = book.display().to_string();
+    cli_data(&[
+        "book",
+        "create",
+        "--book",
+        &b,
+        "--name",
+        "Statement MCP",
+        "--json",
+    ]);
+    let chart = dir.join("chart.json");
+    std::fs::write(&chart, r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#).unwrap();
+    cli_data(&[
+        "chart",
+        "import",
+        chart.to_str().unwrap(),
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2026",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&["period", "open", "FY2026-P03", "--book", &b, "--json"]);
+    let oid = source_document(&dir, &b);
+    let intent = dir.join("rent.json");
+    std::fs::write(&intent, r#"{"idempotency_key":"statement-rent","effective_date":"2026-03-15","legs":[{"side":"debit","account":"6000","amount":"10.00 USD"},{"side":"credit","account":"1000","amount":"10.00 USD"}]}"#).unwrap();
+    cli_data(&[
+        "post",
+        "--intent",
+        intent.to_str().unwrap(),
+        "--evidence",
+        &oid,
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let expected = cli_data(&[
+        "statement",
+        "income-statement",
+        "--for",
+        "FY2026-P03",
+        "--compare",
+        "FY2026-P02",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let mut mcp = Mcp::start(&book);
+    mcp.initialize();
+    let (error, output, metadata) = call_tool(
+        &mut mcp,
+        "fa_read_statement",
+        json!({
+            "name": "income-statement", "for": "FY2026-P03", "compare": "FY2026-P02",
+        }),
+    );
+    assert!(!error, "{output}");
+    assert_eq!(output, expected);
+    let envelope: JsonValue =
+        fastmcp_rust::serde_json::from_str(metadata["content"][1]["text"].as_str().unwrap())
+            .unwrap();
+    assert_eq!(envelope["events"], json!(["statement"]));
+    assert_eq!(envelope["authority"]["profile"], json!("agent"));
+    let (error, output, _) = call_tool(
+        &mut mcp,
+        "fa_read_statement",
+        json!({
+            "name": "balance-sheet", "for": "FY2026-P03", "compare": "FY2026-P02", "certify": true,
+        }),
+    );
+    assert!(!error, "{output}");
+    let certified: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+    assert_eq!(certified.as_array().unwrap().len(), 2);
+    assert_eq!(certified[0]["columns"].as_array().unwrap().len(), 2);
+    assert_eq!(certified[1]["file"], JsonValue::Null);
+    let replay_oid = format!("C:{}", certified[1]["oid"].as_str().unwrap());
+    for certificate in [
+        replay_oid,
+        certified[1]["bytes"].as_str().unwrap().to_string(),
+    ] {
+        let (error, replay, _) = call_tool(
+            &mut mcp,
+            "fa_read_replay",
+            json!({"certificate": certificate}),
+        );
+        assert!(!error, "{replay}");
+        assert_eq!(replay, certified[0].to_string());
+    }
+    let (error, output, _) = call_tool(
+        &mut mcp,
+        "fa_read_statement",
+        json!({
+            "name": "balance-sheet", "for": "FY2026-P03", "certificate_out": null,
+        }),
+    );
+    assert!(error, "{output}");
+    let denied = structured_error(&output);
+    assert_eq!(denied["type"], json!("forbidden_path"));
+    assert_eq!(denied["authority"]["profile"], json!("agent"));
+    assert_eq!(mcp.finish(), 0);
+}
+
+#[test]
 fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     let dir = tmp("e2e");
     let book = dir.join("book");

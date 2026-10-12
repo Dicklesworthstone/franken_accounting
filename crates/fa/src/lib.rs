@@ -31,6 +31,7 @@ pub mod async_book;
 pub mod book;
 pub mod certificate;
 mod certificate_store;
+pub mod statements;
 
 pub use aging::{
     AgedOpenItem, AgingAmounts, AgingBand, AgingBuckets, AgingCell, AgingTotal, EffectiveDateAging,
@@ -49,3 +50,8 @@ pub use fa_notary::{AccumulatorVerification, Checkpointed};
 pub use fa_policy::{Capability, Op, Profile};
 pub use fa_registers::Advance;
 pub use fa_registers::open_items::OpenItemsReport;
+pub use fa_statements::{
+    AccountMapping, Column as StatementColumn, Statement, StatementDefinition, StatementKind,
+    StatementLine,
+};
+pub use statements::{CertifiedStatement, StatementSelection};

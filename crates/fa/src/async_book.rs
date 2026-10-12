@@ -1119,6 +1119,43 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    /// Evaluate a registered statement from journal payloads at one snapshot.
+    /// Current and comparative columns use the same known-at and definition.
+    pub fn statement(
+        &self,
+        cx: &PurposeContexts,
+        selection: crate::StatementSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::Statement> {
+        self.query(cx, |db, book| {
+            crate::statements::read(db, &cx.query(), book, selection, known_at)
+        })
+    }
+
+    /// Bind a financial statement's definition, mapping and both columns to
+    /// the retained historical journal and native input closure.
+    pub fn certify_statement(
+        &self,
+        cx: &PurposeContexts,
+        selection: crate::StatementSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CertifiedStatement> {
+        Ok(self
+            .certify_report(cx, selection.into(), known_at)?
+            .and_then(crate::statements::certified))
+    }
+
+    pub fn certify_statement_at_instant(
+        &self,
+        cx: &PurposeContexts,
+        selection: crate::StatementSelection,
+        requested_utc_ns: u64,
+    ) -> Outcome<crate::CertifiedStatement> {
+        Ok(self
+            .certify_report_at_instant(cx, selection.into(), requested_utc_ns)?
+            .and_then(crate::statements::certified))
+    }
+
     /// Resolve a UTC instant from the journal's retained TimeEvidence at HEAD.
     /// The returned frontier and brackets describe the precision of the read.
     pub fn resolve_known_at_instant(
@@ -1145,13 +1182,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         requested_utc_ns: u64,
     ) -> Outcome<crate::CertifiedTrialBalance> {
         self.query(cx, |db, book| {
-            crate::certificate::certify_instant(
-                db,
-                &cx.query(),
-                book,
-                selection,
-                requested_utc_ns,
-            )
+            crate::certificate::certify_instant(db, &cx.query(), book, selection, requested_utc_ns)
         })
     }
 

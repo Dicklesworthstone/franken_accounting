@@ -269,6 +269,9 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         (ReportOutput::OpenItems(report), ReportSelection::OpenItems { .. }) => {
             render_open_items(&ctx.out, &book, report, Some(&digest))
         }
+        (ReportOutput::Statement(report), ReportSelection::Statement(_)) => {
+            crate::cli::render_statement(&ctx.out, &book, report, Some(&digest))
+        }
         _ => Err(certificate_invalid(
             "replayed report kind differs from the retained certificate selector",
         )),
@@ -305,6 +308,9 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
             ctx.out.effective(format!("period:{period}"));
         }
         ReportSelection::OpenItems { .. } => {}
+        ReportSelection::Statement(selection) => {
+            ctx.out.effective(periods_selector(&selection.periods));
+        }
     }
     let digest = hex(&certificate.digest);
     ctx.out.event_with_certificate(

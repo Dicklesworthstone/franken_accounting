@@ -40,6 +40,8 @@ pub const CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v1";
 pub const INSTANT_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v2";
 /// Additional literal reports use v3; v1/v2 trial-balance bytes stay unchanged.
 pub const REPORT_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v3";
+/// Statements bind their complete canonical definition and comparative columns.
+pub const STATEMENT_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v4";
 pub const REPLAY_SCOPE: &str = "fa-fold-over-prefix";
 pub const AUTHORITY: &str = "embedded-owner";
 pub const OUTPUT_FORMAT: &str = "fa:trial-balance:v1";
@@ -56,7 +58,10 @@ const INPUTS: &[(&str, &str)] = &[
         "Account",
         "code,name,account_type,normal_balance,posting,unit_policy,lower_bound,upper_bound,limit_scope,_fa_payload,book_id",
     ),
-    ("Book", "_fa_payload,book_id,base_unit,symbols_digest,unit_table_digest"),
+    (
+        "Book",
+        "_fa_payload,book_id,base_unit,symbols_digest,unit_table_digest",
+    ),
     ("Entry", "_fa_payload,_fa_digest"),
     ("FiscalCalendar", "_fa_payload,calendar_id"),
     ("MigrationRun", "_fa_payload,_fa_digest,state"),
@@ -162,11 +167,18 @@ pub enum ReportSelection {
     TrialBalance(TrialBalanceSelection),
     ExplainBalance { account: VId, period: String },
     OpenItems { account: Option<VId> },
+    Statement(Box<crate::StatementSelection>),
 }
 
 impl From<TrialBalanceSelection> for ReportSelection {
     fn from(selection: TrialBalanceSelection) -> Self {
         Self::TrialBalance(selection)
+    }
+}
+
+impl From<crate::StatementSelection> for ReportSelection {
+    fn from(selection: crate::StatementSelection) -> Self {
+        Self::Statement(Box::new(selection))
     }
 }
 
@@ -176,12 +188,14 @@ impl ReportSelection {
             Self::TrialBalance(selection) => selection.is_canonical(),
             Self::ExplainBalance { period, .. } => !period.is_empty() && period.len() <= 128,
             Self::OpenItems { .. } => true,
+            Self::Statement(selection) => selection.is_canonical(),
         }
     }
 
     fn normalize(self) -> Self {
         match self {
             Self::TrialBalance(selection) => Self::TrialBalance(selection.normalize()),
+            Self::Statement(selection) => Self::Statement(Box::new((*selection).normalize())),
             selection => selection,
         }
     }
@@ -192,10 +206,11 @@ impl ReportSelection {
             Self::TrialBalance(_) => OUTPUT_FORMAT,
             Self::ExplainBalance { .. } => "fa:balance-explanation:v1",
             Self::OpenItems { .. } => "fa:open-items:v1",
+            Self::Statement(_) => "fa:statement:v1",
         }
     }
 
-    fn write(&self, w: &mut Writer) {
+    fn write(&self, w: &mut Writer) -> Result<(), fa_model::EncodeError> {
         match self {
             // V1 and V2 retain the original selector bytes without a new tag.
             Self::TrialBalance(selection) => selection.write(w),
@@ -207,7 +222,12 @@ impl ReportSelection {
                     w.u128(vid.0);
                 });
             }
+            Self::Statement(selection) => {
+                w.u8(2);
+                selection.write(w)?;
+            }
         }
+        Ok(())
     }
 
     fn read(r: &mut Reader<'_>, version: u8) -> Result<Self, fa_model::DecodeError> {
@@ -215,15 +235,16 @@ impl ReportSelection {
             return TrialBalanceSelection::read(r).map(Self::TrialBalance);
         }
         match r.u8("report selector")? {
-            0 => Ok(Self::ExplainBalance {
+            0 if version == 3 => Ok(Self::ExplainBalance {
                 account: VId(r.u128("explanation account")?),
                 period: r.str(128, "explanation period")?.to_string(),
             }),
-            1 => Ok(Self::OpenItems {
-                account: r.opt("open-items account", |r| {
-                    Ok(VId(r.u128("account")?))
-                })?,
+            1 if version == 3 => Ok(Self::OpenItems {
+                account: r.opt("open-items account", |r| Ok(VId(r.u128("account")?)))?,
             }),
+            2 if version == 4 => Ok(Self::Statement(Box::new(crate::StatementSelection::read(
+                r,
+            )?))),
             tag => Err(r.bad_tag("report selector", tag)),
         }
     }
@@ -233,20 +254,27 @@ impl ReportSelection {
         db: &Database<V>,
         book: &BookContext,
         at: CommitSeq,
-    ) -> Result<ReportOutput, BookError> {
-        Ok(match self {
-            Self::TrialBalance(selection) => {
-                ReportOutput::TrialBalance(selection.report(db, book, at)?)
-            }
+    ) -> Outcome<ReportOutput> {
+        match self {
+            Self::TrialBalance(selection) => Ok(Ok(ReportOutput::TrialBalance(
+                selection.report(db, book, at)?,
+            ))),
             Self::ExplainBalance { account, period } => {
-                ReportOutput::ExplainBalance(Box::new(fa_registers::explain_balance(
-                    db, book, *account, period, Some(at),
-                )?))
+                Ok(Ok(ReportOutput::ExplainBalance(Box::new(
+                    fa_registers::explain_balance(db, book, *account, period, Some(at))?,
+                ))))
             }
-            Self::OpenItems { account } => {
-                ReportOutput::OpenItems(open_items_report(db, book, *account, Some(at))?)
+            Self::OpenItems { account } => Ok(Ok(ReportOutput::OpenItems(open_items_report(
+                db,
+                book,
+                *account,
+                Some(at),
+            )?))),
+            Self::Statement(selection) => {
+                Ok(crate::statements::report_at(db, book, selection, at)?
+                    .map(|statement| ReportOutput::Statement(Box::new(statement))))
             }
-        })
+        }
     }
 }
 
@@ -257,6 +285,7 @@ pub enum ReportOutput {
     TrialBalance(TrialBalance),
     ExplainBalance(Box<BalanceExplanation>),
     OpenItems(OpenItemsReport),
+    Statement(Box<fa_statements::Statement>),
 }
 
 impl ReportOutput {
@@ -266,6 +295,7 @@ impl ReportOutput {
             Self::TrialBalance(report) => report.known_at,
             Self::ExplainBalance(report) => report.known_at,
             Self::OpenItems(report) => report.known_at,
+            Self::Statement(report) => CommitSeq(report.known_at),
         }
     }
 
@@ -277,6 +307,7 @@ impl ReportOutput {
             Self::TrialBalance(report) => report.known_at = known_at,
             Self::ExplainBalance(report) => report.known_at = known_at,
             Self::OpenItems(report) => report.known_at = known_at,
+            Self::Statement(report) => report.known_at = known_at.0,
         }
     }
 
@@ -285,6 +316,7 @@ impl ReportOutput {
             Self::TrialBalance(report) => report.canonical_bytes(),
             Self::ExplainBalance(report) => report.canonical_bytes(),
             Self::OpenItems(report) => report.canonical_bytes(),
+            Self::Statement(report) => report.canonical_bytes(),
         }
     }
 }
@@ -427,9 +459,7 @@ fn write_observation(w: &mut Writer, tick: &fa_time::TimeObservation) {
         .bool(tick.monotonic_ok);
 }
 
-fn read_observation(
-    r: &mut Reader<'_>,
-) -> Result<fa_time::TimeObservation, fa_model::DecodeError> {
+fn read_observation(r: &mut Reader<'_>) -> Result<fa_time::TimeObservation, fa_model::DecodeError> {
     Ok(fa_time::TimeObservation {
         recorded_at: r.u64("tick sequence")?,
         observed_utc_ns: r.u64("tick observed UTC nanoseconds")?,
@@ -460,9 +490,7 @@ fn read_time_selection(
     let lower = read_observation(r)?;
     let upper = r.opt("upper tick", read_observation)?;
     let lower_entry = VId(r.u128("lower tick entry")?);
-    let upper_entry = r.opt("upper tick entry", |r| {
-        Ok(VId(r.u128("upper tick entry")?))
-    })?;
+    let upper_entry = r.opt("upper tick entry", |r| Ok(VId(r.u128("upper tick entry")?)))?;
     Ok(fa_journal::InstantSelection {
         resolution: fa_time::InstantResolution {
             requested_utc_ns,
@@ -483,6 +511,7 @@ impl ReportCertificate {
                 INSTANT_CERTIFICATE_FORMAT
             }
             ReportSelection::TrialBalance(_) => CERTIFICATE_FORMAT,
+            ReportSelection::Statement(_) => STATEMENT_CERTIFICATE_FORMAT,
             _ => REPORT_CERTIFICATE_FORMAT,
         }
     }
@@ -501,7 +530,7 @@ impl ReportCertificate {
             .fixed(&self.book_id.0)
             .fixed(&self.branch_id.0)
             .u64(self.known_at.0);
-        self.selection.write(&mut w);
+        self.selection.write(&mut w)?;
         w.fixed(&self.registry_digest)
             .fixed(&self.journal_root)
             .u64(self.journal_leaves)
@@ -510,7 +539,9 @@ impl ReportCertificate {
             })
             .bytes(&self.output)
             .fixed(&self.output_digest);
-        if self.format() == REPORT_CERTIFICATE_FORMAT {
+        if self.format() == REPORT_CERTIFICATE_FORMAT
+            || self.format() == STATEMENT_CERTIFICATE_FORMAT
+        {
             w.opt(self.time_selection.as_ref(), write_time_selection);
         } else if let Some(time) = &self.time_selection {
             write_time_selection(&mut w, time);
@@ -539,13 +570,12 @@ impl ReportCertificate {
                 2
             } else if format == REPORT_CERTIFICATE_FORMAT {
                 3
+            } else if format == STATEMENT_CERTIFICATE_FORMAT {
+                4
             } else {
                 return Err(r.invalid("report certificate format"));
             };
-            for (name, expected) in [
-                ("replay scope", REPLAY_SCOPE),
-                ("authority", AUTHORITY),
-            ] {
+            for (name, expected) in [("replay scope", REPLAY_SCOPE), ("authority", AUTHORITY)] {
                 if r.str(64, name)? != expected {
                     return Err(r.invalid(name));
                 }
@@ -658,8 +688,7 @@ pub(crate) fn certify<V: Vfs + Clone>(
     selection: TrialBalanceSelection,
     known_at: Option<CommitSeq>,
 ) -> Outcome<CertifiedTrialBalance> {
-    Ok(certify_report(db, cx, book, selection.into(), known_at)?
-        .and_then(certified_trial_balance))
+    Ok(certify_report(db, cx, book, selection.into(), known_at)?.and_then(certified_trial_balance))
 }
 
 pub(crate) fn certify_instant<V: Vfs + Clone>(
@@ -669,12 +698,17 @@ pub(crate) fn certify_instant<V: Vfs + Clone>(
     selection: TrialBalanceSelection,
     requested_utc_ns: u64,
 ) -> Outcome<CertifiedTrialBalance> {
-    Ok(certify_report_instant(db, cx, book, selection.into(), requested_utc_ns)?
-        .and_then(certified_trial_balance))
+    Ok(
+        certify_report_instant(db, cx, book, selection.into(), requested_utc_ns)?
+            .and_then(certified_trial_balance),
+    )
 }
 
 fn certified_trial_balance(report: CertifiedReport) -> Result<CertifiedTrialBalance, Refusal> {
-    let CertifiedReport { report, certificate } = report;
+    let CertifiedReport {
+        report,
+        certificate,
+    } = report;
     match report {
         ReportOutput::TrialBalance(report) => Ok(CertifiedTrialBalance {
             report,
@@ -715,7 +749,7 @@ pub(crate) fn certify_report_instant<V: Vfs + Clone>(
     )
 }
 
-fn context_at<V: Vfs + Clone>(
+pub(crate) fn context_at<V: Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     at: CommitSeq,
@@ -730,14 +764,21 @@ fn context_at<V: Vfs + Clone>(
                 at.0
             ))
         })?;
-    let spec = BookSpec::decode(&bytes(&row, property::FA_PAYLOAD, "certified book payload")?)?;
+    let spec = BookSpec::decode(&bytes(
+        &row,
+        property::FA_PAYLOAD,
+        "certified book payload",
+    )?)?;
     if spec.book_id != book.book_id
         || spec.calendar != book.calendar
         || bytes(&row, property::BOOK_ID, "certified book id")? != book.book_id.0
         || bytes(&row, property::SYMBOLS_DIGEST, "certified symbol digest")?
             != book.symbols.digest().0
-        || bytes(&row, property::UNIT_TABLE_DIGEST, "certified unit table digest")?
-            != fa_model::unit::unit_table_digest(&book.units).map_err(encoding)?
+        || bytes(
+            &row,
+            property::UNIT_TABLE_DIGEST,
+            "certified unit table digest",
+        )? != fa_model::unit::unit_table_digest(&book.units).map_err(encoding)?
     {
         return Err(fa_journal::KernelError::Corrupt(
             "report context differs from the book and calendar at its selected sequence".into(),
@@ -766,8 +807,7 @@ fn context_at<V: Vfs + Clone>(
             || int(&row, property::UNIT_ID, "certified unit id")? != i64::from(id.0)
             || text(&row, property::CODE, "certified unit code")? != unit.code
             || int(&row, property::SCALE, "certified unit scale")? != i64::from(unit.scale)
-            || int(&row, property::VERSION, "certified unit version")?
-                != i64::from(unit.version)
+            || int(&row, property::VERSION, "certified unit version")? != i64::from(unit.version)
         {
             return Err(fa_journal::KernelError::Corrupt(format!(
                 "registered unit {} differs from its certified historical definition",
@@ -792,6 +832,12 @@ fn certify_selected<V: Vfs + Clone>(
     let head = db.frontier().map_err(fa_journal::KernelError::from)?;
     let at = known_at.unwrap_or(head);
     if at > head {
+        if matches!(&selection, ReportSelection::Statement(_)) {
+            return Ok(Err(crate::statements::invalid(format!(
+                "statement known-at {} is beyond book head {}",
+                at.0, head.0
+            ))));
+        }
         return Err(fa_registers::RegisterError::InvalidSelection(format!(
             "known-at sequence {} is beyond book head {}",
             at.0, head.0
@@ -799,6 +845,11 @@ fn certify_selected<V: Vfs + Clone>(
         .into());
     }
     if !selection.is_canonical() {
+        if matches!(&selection, ReportSelection::Statement(_)) {
+            return Ok(Err(crate::statements::invalid(
+                "select nonempty, bounded statement periods",
+            )));
+        }
         return Err(fa_registers::RegisterError::InvalidSelection(
             "select a nonempty, bounded report selector".into(),
         )
@@ -807,7 +858,10 @@ fn certify_selected<V: Vfs + Clone>(
     // Empty as-of/open-item folds must not certify a coordinate before genesis,
     // or fold with a calendar/units context that the native closure never read.
     context_at(db, book, at)?;
-    let report = selection.report(db, book, at)?;
+    let report = match selection.report(db, book, at)? {
+        Ok(report) => report,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
     if matches!(&report, ReportOutput::TrialBalance(report) if !report.is_balanced()) {
         return Ok(Err(invalid(
             "the journal trial balance is not balanced in every unit",
@@ -905,12 +959,16 @@ pub(crate) fn replay<V: Vfs + Clone>(
     certificate: &ReportCertificate,
 ) -> Outcome<TrialBalance> {
     if !matches!(&certificate.selection, ReportSelection::TrialBalance(_)) {
-        return Ok(Err(invalid("the certificate's selected report is not a trial balance")));
+        return Ok(Err(invalid(
+            "the certificate's selected report is not a trial balance",
+        )));
     }
-    Ok(replay_report(db, cx, book, certificate)?.and_then(|report| match report {
-        ReportOutput::TrialBalance(report) => Ok(report),
-        _ => Err(invalid("the replayed report is not a trial balance")),
-    }))
+    Ok(
+        replay_report(db, cx, book, certificate)?.and_then(|report| match report {
+            ReportOutput::TrialBalance(report) => Ok(report),
+            _ => Err(invalid("the replayed report is not a trial balance")),
+        }),
+    )
 }
 
 pub(crate) fn replay_report<V: Vfs + Clone>(
@@ -986,9 +1044,18 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
     if let Err(refusal) = unchanged_entries(db, cx, &journal)? {
         return Ok(Err(refusal));
     }
-    let report = certificate
+    let report = match certificate
         .selection
-        .report(db, book, certificate.known_at)?;
+        .report(db, book, certificate.known_at)?
+    {
+        Ok(report) => report,
+        Err(refusal) => {
+            return Ok(Err(invalid(format!(
+                "the selected report no longer evaluates: {}",
+                refusal.message
+            ))));
+        }
+    };
     let output = report.canonical_bytes().map_err(encoding)?;
     if output != certificate.output {
         let first = output
@@ -1020,9 +1087,6 @@ pub(crate) fn status<V: Vfs + Clone>(
             "the current book context no longer matches the certified context: {error}"
         ))));
     }
-    if let Err(refusal) = unchanged_account_metadata(db, cx, &report, head)? {
-        return Ok(Err(refusal));
-    }
     let journal = match Journal::read(db, book, Some(head))? {
         Ok(journal) => journal,
         Err(refusal) => return Ok(Err(refusal)),
@@ -1034,6 +1098,15 @@ pub(crate) fn status<V: Vfs + Clone>(
             Entry::decode(&leaf.payload).map_err(fa_journal::KernelError::from)?,
         );
     }
+    let (additional_report, chart_entries) =
+        match statement_chart_additions(db, cx, book, certificate, &report, &journal, &entries)? {
+            Ok(additions) => additions,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+    let relevance_report = additional_report.as_ref().unwrap_or(&report);
+    if let Err(refusal) = unchanged_account_metadata(db, cx, relevance_report, head)? {
+        return Ok(Err(refusal));
+    }
     let mut later_entries = Vec::new();
     let mut migration_visibility = BTreeMap::new();
     for leaf in &journal.leaves {
@@ -1042,9 +1115,15 @@ pub(crate) fn status<V: Vfs + Clone>(
             continue;
         }
         let entry = &entries[&leaf.vid];
-        let mut relevant =
-            fa_journal::migration::visible_at(db, entry, head, &mut migration_visibility)?
-                && selected(book, &certificate.selection, &report, entry, &entries)?;
+        let mut relevant = chart_entries.contains(&leaf.vid)
+            || (fa_journal::migration::visible_at(db, entry, head, &mut migration_visibility)?
+                && selected(
+                    book,
+                    &certificate.selection,
+                    relevance_report,
+                    entry,
+                    &entries,
+                )?);
         if entry.proposal.class == EntryClass::RESOLUTION
             && let Some(target) = entry
                 .proposal
@@ -1053,7 +1132,13 @@ pub(crate) fn status<V: Vfs + Clone>(
                 .and_then(|p| p.resolution_of)
             && let Some(original) = entries.get(&target.vid)
         {
-            relevant |= selected(book, &certificate.selection, &report, original, &entries)?;
+            relevant |= selected(
+                book,
+                &certificate.selection,
+                relevance_report,
+                original,
+                &entries,
+            )?;
         }
         if let Some(ControlPayload::MigrationControl { run_ref, kind, .. }) =
             &entry.proposal.control
@@ -1068,7 +1153,13 @@ pub(crate) fn status<V: Vfs + Clone>(
                         &mut migration_visibility,
                     )?
                 {
-                    relevant |= selected(book, &certificate.selection, &report, migrated, &entries)?;
+                    relevant |= selected(
+                        book,
+                        &certificate.selection,
+                        relevance_report,
+                        migrated,
+                        &entries,
+                    )?;
                 }
             }
         }
@@ -1083,7 +1174,13 @@ pub(crate) fn status<V: Vfs + Clone>(
         // change Current merely because the entry scan found no new cause.
         cx.checkpoint().map_err(BookError::Context)?;
         let mut current = match certificate.selection.report(db, book, head) {
-            Ok(report) => report,
+            Ok(Ok(report)) => report,
+            Ok(Err(refusal)) => {
+                return Ok(Err(invalid(format!(
+                    "current report no longer satisfies its definition: {}",
+                    refusal.message
+                ))));
+            }
             Err(error) => {
                 return Ok(Err(invalid(format!(
                     "current report changed outside later contributing entries: {error}"
@@ -1110,6 +1207,394 @@ pub(crate) fn status<V: Vfs + Clone>(
         checked_at: head,
         later_entries,
     }))
+}
+
+/// Extend only the account-membership view used for later-entry relevance.
+/// The historical output remains untouched for replay and exact comparison.
+/// A chart install is relevant even when its new covered leaves have no legs:
+/// the statement's mandatory partition records those zero accounts too.
+fn statement_chart_additions<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    certificate: &ReportCertificate,
+    report: &ReportOutput,
+    journal: &Journal,
+    entries: &BTreeMap<VId, Entry>,
+) -> Outcome<(Option<ReportOutput>, BTreeSet<VId>)> {
+    let (ReportSelection::Statement(selection), ReportOutput::Statement(statement)) =
+        (&certificate.selection, report)
+    else {
+        return Ok(Ok((None, BTreeSet::new())));
+    };
+    let mut additions = Vec::new();
+    let mut chart_entries = BTreeSet::new();
+    let mut mapped_ids: BTreeSet<_> = statement
+        .mappings
+        .iter()
+        .map(|mapping| mapping.account.id)
+        .collect();
+    for leaf in &journal.leaves {
+        if leaf.envelope.commit_seq <= certificate.known_at {
+            continue;
+        }
+        cx.checkpoint().map_err(BookError::Context)?;
+        let entry = &entries[&leaf.vid];
+        if entry.proposal.class != EntryClass::SCHEMA_CONTROL
+            || !matches!(&entry.proposal.origin, EntryOrigin::Control { control_kind, .. }
+                if *control_kind == fa_model::ControlKind::CHART_INSTALL)
+        {
+            continue;
+        }
+        let Some(ControlPayload::SchemaChange {
+            kind: 1,
+            canonical_bytes,
+        }) = &entry.proposal.control
+        else {
+            return Ok(Err(invalid("chart install lacks its recorded chart body")));
+        };
+        let declared =
+            match statement_chart_accounts(canonical_bytes, book.book_id, leaf.envelope.commit_seq)
+            {
+                Ok(accounts) => accounts,
+                Err(error) => {
+                    return Ok(Err(invalid(format!(
+                        "chart install {:032x} does not decode canonically: {error}",
+                        leaf.vid.0
+                    ))));
+                }
+            };
+        let mut accounts = Vec::new();
+        for account in declared {
+            cx.checkpoint().map_err(BookError::Context)?;
+            if db
+                .vertex_at(account.vid, certificate.known_at)
+                .map_err(fa_journal::KernelError::from)?
+                .is_some()
+            {
+                return Ok(Err(invalid(format!(
+                    "chart install {:032x} rebinds existing account `{}`",
+                    leaf.vid.0, account.code
+                ))));
+            }
+            // Both snapshots must retain the declared identity and metadata;
+            // a coincident SchemaChange cannot excuse an unrelated row edit.
+            for at in [leaf.envelope.commit_seq, journal.through_seq] {
+                let row = db
+                    .vertex_at(account.vid, at)
+                    .map_err(fa_journal::KernelError::from)?;
+                let agrees = row.as_ref().is_some_and(|row| {
+                    row.labels.contains(&label::ACCOUNT)
+                        && row.created_at == leaf.envelope.commit_seq
+                        && bytes(row, property::BOOK_ID, "chart account book")
+                            .is_ok_and(|id| id == book.book_id.0)
+                        && AccountRow::decode(row).is_ok_and(|actual| actual == account)
+                });
+                if !agrees {
+                    return Ok(Err(invalid(format!(
+                        "chart install {:032x} does not bind account `{}` at sequence {}",
+                        leaf.vid.0, account.code, at.0
+                    ))));
+                }
+            }
+            accounts.push(fa_statements::Account {
+                id: account.vid.0,
+                code: account.code,
+                name: account.name,
+                account_type: account.account_type,
+                is_leaf: account.is_leaf,
+            });
+        }
+        let mappings = match fa_statements::map_accounts(&selection.definition, &accounts) {
+            Ok(mappings) => mappings,
+            Err(error) => {
+                return Ok(Err(invalid(format!(
+                    "the later chart does not satisfy the statement partition: {error}"
+                ))));
+            }
+        };
+        if !mappings.is_empty() {
+            chart_entries.insert(leaf.vid);
+        }
+        for mapping in mappings {
+            if !mapped_ids.insert(mapping.account.id) {
+                return Ok(Err(invalid(
+                    "later chart installs repeat a covered account",
+                )));
+            }
+            additions.push(mapping);
+        }
+    }
+    if additions.is_empty() {
+        return Ok(Ok((None, chart_entries)));
+    }
+    let mut augmented = statement.as_ref().clone();
+    augmented.mappings.extend(additions);
+    augmented.mappings.sort_by(|a, b| {
+        a.account
+            .code
+            .cmp(&b.account.code)
+            .then(a.account.id.cmp(&b.account.id))
+    });
+    Ok(Ok((
+        Some(ReportOutput::Statement(Box::new(augmented))),
+        chart_entries,
+    )))
+}
+
+/// Read the existing `genesis::install_chart` body, including its additive
+/// limit and period-scope tails. `AccountSpec::canonical` is private to the
+/// journal crate; this reader preserves that exact format and verifies its
+/// canonical re-encoding rather than inventing another chart representation.
+fn statement_chart_accounts(
+    body: &[u8],
+    book_id: Id128,
+    recorded_at: CommitSeq,
+) -> Result<Vec<AccountRow>, fa_model::DecodeError> {
+    use fa_journal::genesis::UnitPolicy;
+    use fa_journal::limit::{BalanceLimit, LimitScope};
+
+    let mut r = Reader::new(body);
+    let bound = fa_model::limits::MAX_SCHEMA_CHANGE_BYTES;
+    if body.len() > bound {
+        return Err(r.invalid("bounded chart body"));
+    }
+    // Even an account with a one-byte code and an empty name needs 21 bytes.
+    let count = r.count(bound / 21, "chart accounts")?;
+    let mut accounts: Vec<AccountRow> = Vec::new();
+    let mut parents = Vec::new();
+    let mut indices = BTreeMap::new();
+    for index in 0..count {
+        let code = r.str(64, "chart account code")?.to_string();
+        if code.is_empty() || indices.insert(code.clone(), index).is_some() {
+            return Err(r.invalid("unique nonempty chart account code"));
+        }
+        let name = r.str(bound, "chart account name")?.to_string();
+        let account_type = r.u8("chart account type")?;
+        if !fa_model::AccountType(account_type).is_registered() {
+            return Err(r.invalid("registered chart account type"));
+        }
+        let normal_balance = r.u8("chart normal balance")?;
+        let is_leaf = r.bool("chart posting")?;
+        let unit_policy = match r.i64("chart unit policy")? {
+            -1 => UnitPolicy::AnyCurrency,
+            -2 => UnitPolicy::AnyUnit,
+            value => UnitPolicy::Single(fa_money::UnitId(
+                u32::try_from(value).map_err(|_| r.invalid("chart unit policy"))?,
+            )),
+        };
+        parents.push(r.opt("chart parent", |r| {
+            Ok(r.str(64, "chart parent code")?.to_string())
+        })?);
+        accounts.push(AccountRow {
+            vid: fa_model::account_vid(book_id, &code),
+            code,
+            name,
+            account_type,
+            normal_balance,
+            is_leaf,
+            unit_policy,
+            limit: None,
+            created_at: recorded_at,
+        });
+    }
+    for parent in parents.iter().flatten() {
+        if !indices
+            .get(parent)
+            .is_some_and(|index| !accounts[*index].is_leaf)
+        {
+            return Err(r.invalid("declared summary chart parent"));
+        }
+    }
+    let mut limited = Vec::new();
+    let mut period_scoped = Vec::new();
+    if r.remaining() != 0 {
+        let count = r.count(accounts.len(), "chart limits")?;
+        if count == 0 {
+            return Err(r.invalid("nonempty chart limit tail"));
+        }
+        for _ in 0..count {
+            let code = r.str(64, "limited account code")?;
+            let index = *indices
+                .get(code)
+                .ok_or_else(|| r.invalid("declared limited account"))?;
+            if limited.last().is_some_and(|previous| *previous >= index) {
+                return Err(r.invalid("chart limit order"));
+            }
+            let limit = BalanceLimit {
+                lower: r.opt("chart lower bound", |r| r.i128("lower bound"))?,
+                upper: r.opt("chart upper bound", |r| r.i128("upper bound"))?,
+                scope: LimitScope::Lifetime,
+            };
+            if !limit.is_well_formed()
+                || !accounts[index].is_leaf
+                || !matches!(accounts[index].unit_policy, UnitPolicy::Single(_))
+            {
+                return Err(r.invalid("chart limit on a single-unit leaf"));
+            }
+            accounts[index].limit = Some(limit);
+            limited.push(index);
+        }
+        if r.remaining() != 0 {
+            let count = r.count(limited.len(), "period-scoped chart limits")?;
+            if count == 0 {
+                return Err(r.invalid("nonempty chart period-scope tail"));
+            }
+            for _ in 0..count {
+                let code = r.str(64, "period-scoped account code")?;
+                let index = *indices
+                    .get(code)
+                    .ok_or_else(|| r.invalid("declared period-scoped account"))?;
+                if period_scoped
+                    .last()
+                    .is_some_and(|previous| *previous >= index)
+                {
+                    return Err(r.invalid("chart period-scope order"));
+                }
+                let Some(limit) = &mut accounts[index].limit else {
+                    return Err(r.invalid("period scope requires a chart limit"));
+                };
+                limit.scope = LimitScope::Period;
+                period_scoped.push(index);
+            }
+        }
+    }
+    r.finish()?;
+    let mut w = Writer::new();
+    w.list(
+        &accounts.iter().zip(&parents).collect::<Vec<_>>(),
+        |w, (a, parent)| {
+            let unit_policy = match a.unit_policy {
+                UnitPolicy::Single(unit) => i64::from(unit.0),
+                UnitPolicy::AnyCurrency => -1,
+                UnitPolicy::AnyUnit => -2,
+            };
+            w.str(&a.code)
+                .str(&a.name)
+                .u8(a.account_type)
+                .u8(a.normal_balance)
+                .bool(a.is_leaf)
+                .i64(unit_policy)
+                .opt(parent.as_ref(), |w, code| {
+                    w.str(code);
+                });
+        },
+    );
+    if !limited.is_empty() {
+        w.u32(
+            u32::try_from(limited.len())
+                .map_err(|_| Reader::new(body).invalid("bounded chart limit encoding"))?,
+        );
+        for index in &limited {
+            let account = &accounts[*index];
+            let Some(limit) = account.limit.as_ref() else {
+                return Err(Reader::new(body).invalid("decoded chart limit"));
+            };
+            w.str(&account.code)
+                .opt(limit.lower.as_ref(), |w, value| {
+                    w.i128(*value);
+                })
+                .opt(limit.upper.as_ref(), |w, value| {
+                    w.i128(*value);
+                });
+        }
+    }
+    if !period_scoped.is_empty() {
+        w.list(&period_scoped, |w, index| {
+            w.str(&accounts[*index].code);
+        });
+    }
+    let encoded = w
+        .finish()
+        .map_err(|_| Reader::new(body).invalid("canonical chart encoding"))?;
+    if encoded != body {
+        return Err(Reader::new(body).invalid("canonical chart bytes"));
+    }
+    Ok(accounts)
+}
+
+#[cfg(test)]
+mod statement_chart_body_tests {
+    use super::*;
+    use fa_journal::limit::{BalanceLimit, LimitScope};
+
+    fn original_chart_body() -> Vec<u8> {
+        // The pre-limit AccountSpec wire layout, with a valid blank name.
+        let mut w = Writer::new();
+        w.u32(1)
+            .str("5999")
+            .str("")
+            .u8(5)
+            .u8(0)
+            .bool(true)
+            .i64(0)
+            .u8(0);
+        w.finish().unwrap()
+    }
+
+    #[test]
+    fn chart_reader_preserves_existing_body_and_additive_limit_tails() {
+        let book = Id128([9; 16]);
+        let at = CommitSeq(7);
+        let mut body = original_chart_body();
+        let accounts = statement_chart_accounts(&body, book, at).unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].vid, fa_model::account_vid(book, "5999"));
+        assert_eq!(accounts[0].created_at, at);
+        assert!(accounts[0].name.is_empty());
+        assert_eq!(accounts[0].limit, None);
+
+        let mut limit = Writer::new();
+        limit.u32(1).str("5999").u8(0).u8(1).i128(200);
+        body.extend(limit.finish().unwrap());
+        assert_eq!(
+            statement_chart_accounts(&body, book, at).unwrap()[0].limit,
+            Some(BalanceLimit {
+                lower: None,
+                upper: Some(200),
+                scope: LimitScope::Lifetime,
+            })
+        );
+        let mut scope = Writer::new();
+        scope.u32(1).str("5999");
+        body.extend(scope.finish().unwrap());
+        assert_eq!(
+            statement_chart_accounts(&body, book, at).unwrap()[0]
+                .limit
+                .unwrap()
+                .scope,
+            LimitScope::Period
+        );
+    }
+
+    #[test]
+    fn chart_reader_refuses_truncation_duplicates_and_unbound_limit_tails() {
+        let body = original_chart_body();
+        let parse = |bytes: &[u8]| statement_chart_accounts(bytes, Id128([9; 16]), CommitSeq(7));
+        for length in 0..body.len() {
+            assert!(parse(&body[..length]).is_err(), "prefix {length}");
+        }
+        let mut empty_tail = body.clone();
+        empty_tail.extend(0u32.to_le_bytes());
+        assert!(parse(&empty_tail).is_err());
+        let mut duplicate = 2u32.to_le_bytes().to_vec();
+        duplicate.extend_from_slice(&body[4..]);
+        duplicate.extend_from_slice(&body[4..]);
+        assert!(parse(&duplicate).is_err());
+        let mut foreign_limit = Writer::new();
+        foreign_limit
+            .fixed(&body)
+            .u32(1)
+            .str("6000")
+            .u8(0)
+            .u8(1)
+            .i128(200);
+        assert!(parse(&foreign_limit.finish().unwrap()).is_err());
+        let mut trailing = body;
+        trailing.push(255);
+        assert!(parse(&trailing).is_err());
+        assert!(parse(&vec![0; fa_model::limits::MAX_SCHEMA_CHANGE_BYTES + 1]).is_err());
+    }
 }
 
 /// The current chart installer only creates fresh identities; it does not
@@ -1145,6 +1630,21 @@ fn unchanged_account_metadata<V: Vfs + Clone>(
             .accounts
             .iter()
             .map(|(vid, row)| (*vid, AccountMetadata::Complete(row.clone())))
+            .collect(),
+        ReportOutput::Statement(report) => report
+            .mappings
+            .iter()
+            .map(|mapping| {
+                (
+                    VId(mapping.account.id),
+                    AccountMetadata::Statement {
+                        code: mapping.account.code.clone(),
+                        name: mapping.account.name.clone(),
+                        account_type: mapping.account.account_type,
+                        is_leaf: mapping.account.is_leaf,
+                    },
+                )
+            })
             .collect(),
     };
     for (vid, expected) in accounts {
@@ -1186,6 +1686,12 @@ enum AccountMetadata {
         account_type: u8,
     },
     Complete(AccountRow),
+    Statement {
+        code: String,
+        name: String,
+        account_type: u8,
+        is_leaf: bool,
+    },
 }
 
 impl AccountMetadata {
@@ -1197,6 +1703,12 @@ impl AccountMetadata {
                 account_type: row.account_type,
             },
             Self::Complete(_) => Self::Complete(row),
+            Self::Statement { .. } => Self::Statement {
+                code: row.code,
+                name: row.name,
+                account_type: row.account_type,
+                is_leaf: row.is_leaf,
+            },
         }
     }
 }
@@ -1223,6 +1735,65 @@ fn selected(
             }
         }
         (ReportSelection::ExplainBalance { .. }, ReportOutput::ExplainBalance(_)) => {}
+        (ReportSelection::Statement(selection), ReportOutput::Statement(report)) => {
+            if entry.proposal.class == EntryClass::PENDING {
+                return Ok(false);
+            }
+            if !entry.proposal.legs.iter().any(|leg| {
+                report
+                    .mappings
+                    .iter()
+                    .any(|mapping| mapping.account.id == leg.account_ref.0)
+            }) {
+                return Ok(false);
+            }
+            if selection.definition.basis() == fa_statements::Basis::Stock {
+                return Ok(report
+                    .columns
+                    .iter()
+                    .any(|column| entry.proposal.effective_date <= column.effective_through));
+            }
+            let mut original = entry;
+            let mut seen = BTreeSet::new();
+            loop {
+                if selection
+                    .definition
+                    .excluded_classes()
+                    .contains(&original.proposal.class)
+                {
+                    return Ok(false);
+                }
+                if original.proposal.class != EntryClass::REVERSAL {
+                    break;
+                }
+                let [supersession] = original.proposal.supersession.as_slice() else {
+                    return Err(fa_journal::KernelError::Corrupt(
+                        "statement status reversal lacks its single target".into(),
+                    )
+                    .into());
+                };
+                if supersession.kind != fa_model::SupersessionKind::Reverses
+                    || !seen.insert(supersession.target.vid)
+                {
+                    return Err(fa_journal::KernelError::Corrupt(
+                        "statement status reversal lineage is invalid or cyclic".into(),
+                    )
+                    .into());
+                }
+                let target = entries.get(&supersession.target.vid).ok_or_else(|| {
+                    fa_journal::KernelError::Corrupt(
+                        "statement status reversal target is absent from the journal".into(),
+                    )
+                })?;
+                if target.entry_digest != supersession.target.entry_digest {
+                    return Err(fa_journal::KernelError::Corrupt(
+                        "statement status reversal target digest differs from its lineage".into(),
+                    )
+                    .into());
+                }
+                original = target;
+            }
+        }
         _ => {
             return Err(fa_journal::KernelError::Corrupt(
                 "certificate selector and report kind disagree".into(),
@@ -1259,7 +1830,13 @@ fn selected(
         }
         // The explanation also names the entire period's fold digest and
         // watermark, so a contribution to another account changes its output.
-        ReportSelection::ExplainBalance { period: selected, .. } => *selected == period.code,
+        ReportSelection::ExplainBalance {
+            period: selected, ..
+        } => *selected == period.code,
+        ReportSelection::Statement(selection) => {
+            selection.periods.binary_search(&period.code).is_ok()
+                || selection.comparative.binary_search(&period.code).is_ok()
+        }
         _ => false,
     })
 }
@@ -1294,7 +1871,11 @@ fn open_item_selected(
     }
     Ok(carries_open_items(original)
         && account.is_none_or(|account| {
-            original.proposal.legs.iter().any(|leg| leg.account_ref == account)
+            original
+                .proposal
+                .legs
+                .iter()
+                .any(|leg| leg.account_ref == account)
         }))
 }
 
@@ -1417,10 +1998,7 @@ mod tests {
 
     #[test]
     fn trial_balance_v1_and_instant_v2_keep_their_original_body_layout() {
-        let mut certificate = wire_fixture(
-            TrialBalanceSelection::AsOf(DateDay(-2)).into(),
-            None,
-        );
+        let mut certificate = wire_fixture(TrialBalanceSelection::AsOf(DateDay(-2)).into(), None);
         let mut expected = CERTIFICATE_FORMAT.to_vec();
         for value in [REPLAY_SCOPE, AUTHORITY, OUTPUT_FORMAT] {
             expected.extend_from_slice(&u32::try_from(value.len()).unwrap().to_le_bytes());
@@ -1481,20 +2059,22 @@ mod tests {
         assert_eq!(read_time_selection(&mut reader).unwrap(), time);
         reader.finish().unwrap();
 
-        certificate.selection = ReportSelection::OpenItems { account: Some(VId(9)) };
+        certificate.selection = ReportSelection::OpenItems {
+            account: Some(VId(9)),
+        };
         let with_time = certificate.body_bytes().unwrap();
         assert_eq!(certificate.format(), REPORT_CERTIFICATE_FORMAT);
         let time_offset = with_time.len() - time_bytes.len() - 1;
         assert_eq!(with_time[time_offset], 1);
         let mut reader = Reader::new(&with_time[time_offset..]);
-        assert_eq!(
-            reader.opt("time", read_time_selection).unwrap(),
-            Some(time)
-        );
+        assert_eq!(reader.opt("time", read_time_selection).unwrap(), Some(time));
         reader.finish().unwrap();
         certificate.time_selection = None;
         let without_time = certificate.body_bytes().unwrap();
-        assert_eq!(&without_time[..without_time.len() - 1], &with_time[..time_offset]);
+        assert_eq!(
+            &without_time[..without_time.len() - 1],
+            &with_time[..time_offset]
+        );
         assert_eq!(without_time.last(), Some(&0));
     }
 
@@ -1508,7 +2088,7 @@ mod tests {
         for selection in legacy {
             let report = ReportSelection::from(selection.clone());
             let mut writer = Writer::new();
-            report.write(&mut writer);
+            report.write(&mut writer).unwrap();
             let bytes = writer.finish().unwrap();
             for version in [1, 2] {
                 let mut reader = Reader::new(&bytes);
@@ -1522,14 +2102,19 @@ mod tests {
                 period: "FY2026-A1".into(),
             },
             ReportSelection::OpenItems { account: None },
-            ReportSelection::OpenItems { account: Some(VId(9)) },
+            ReportSelection::OpenItems {
+                account: Some(VId(9)),
+            },
         ] {
             let mut writer = Writer::new();
-            selection.write(&mut writer);
+            selection.write(&mut writer).unwrap();
             let bytes = writer.finish().unwrap();
             let mut reader = Reader::new(&bytes);
             assert_eq!(ReportSelection::read(&mut reader, 3).unwrap(), selection);
             reader.finish().unwrap();
+            // A new format must not accept the old selector and reconstruct
+            // a different header while validating the old content digest.
+            assert!(ReportSelection::read(&mut Reader::new(&bytes), 4).is_err());
             let certificate = wire_fixture(selection, None);
             assert_eq!(certificate.format(), REPORT_CERTIFICATE_FORMAT);
             assert_eq!(certificate.body_bytes().unwrap().last(), Some(&0));
@@ -1537,12 +2122,46 @@ mod tests {
         let mut bad = Writer::new();
         bad.u8(0).u128(9).str(&"P".repeat(129));
         assert!(ReportSelection::read(&mut Reader::new(&bad.finish().unwrap()), 3).is_err());
-        assert!(!ReportSelection::ExplainBalance {
-            account: VId(9),
-            period: String::new(),
-        }
-        .is_canonical());
+        assert!(
+            !ReportSelection::ExplainBalance {
+                account: VId(9),
+                period: String::new(),
+            }
+            .is_canonical()
+        );
         assert!(ReportSelection::read(&mut Reader::new(&[255]), 3).is_err());
+    }
+
+    #[test]
+    fn statement_certificates_pin_the_definition_and_reserve_v4() {
+        let selection = ReportSelection::from(crate::StatementSelection {
+            definition: crate::StatementDefinition::embedded("balance-sheet").unwrap(),
+            periods: vec!["FY2026-P03".into()],
+            comparative: vec!["FY2025-P03".into()],
+        });
+        let mut writer = Writer::new();
+        selection.write(&mut writer).unwrap();
+        let bytes = writer.finish().unwrap();
+        let mut reader = Reader::new(&bytes);
+        assert_eq!(ReportSelection::read(&mut reader, 4).unwrap(), selection);
+        reader.finish().unwrap();
+        assert!(ReportSelection::read(&mut Reader::new(&bytes), 3).is_err());
+        let certificate = wire_fixture(selection, None);
+        assert_eq!(certificate.format(), STATEMENT_CERTIFICATE_FORMAT);
+        assert_eq!(certificate.output_format(), "fa:statement:v1");
+        let original = certificate.body_bytes().unwrap();
+        assert_eq!(original.last(), Some(&0));
+        let mut changed = certificate.clone();
+        if let ReportSelection::Statement(selection) = &mut changed.selection {
+            selection.definition =
+                crate::StatementDefinition::embedded("income-statement").unwrap();
+        }
+        assert_ne!(changed.body_bytes().unwrap(), original);
+        let mut changed = certificate;
+        if let ReportSelection::Statement(selection) = &mut changed.selection {
+            selection.comparative = vec!["FY2024-P03".into()];
+        }
+        assert_ne!(changed.body_bytes().unwrap(), original);
     }
 
     #[test]
@@ -1565,7 +2184,13 @@ mod tests {
             period: "FY2026-P01".into(),
         };
         let mut entry = posting(EntryClass::ORIGINAL, 1);
-        assert!(entry.proposal.legs.iter().all(|leg| leg.account_ref != VId(9)));
+        assert!(
+            entry
+                .proposal
+                .legs
+                .iter()
+                .all(|leg| leg.account_ref != VId(9))
+        );
         assert!(selected(&book, &selection, &report, &entry, &BTreeMap::new()).unwrap());
         entry.proposal.effective_date = DateDay::from_ymd(2026, 2, 15).unwrap();
         assert!(!selected(&book, &selection, &report, &entry, &BTreeMap::new()).unwrap());
@@ -1598,7 +2223,10 @@ mod tests {
             let first = reversal(&original, VId(10), 2);
             let second = reversal(&first, VId(11), 3);
             let entries = BTreeMap::from([(VId(10), original), (VId(11), first)]);
-            assert_eq!(open_item_selected(&second, &entries, None).unwrap(), contributes);
+            assert_eq!(
+                open_item_selected(&second, &entries, None).unwrap(),
+                contributes
+            );
             assert_eq!(
                 open_item_selected(&second, &entries, Some(VId(1))).unwrap(),
                 contributes

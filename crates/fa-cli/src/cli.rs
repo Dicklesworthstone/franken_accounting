@@ -27,7 +27,8 @@ use std::rc::Rc;
 
 use fa::book::{Book, BookError, BookKeys, Entropy};
 use fa::{
-    MAX_PLAN_BYTES, PostIntent, PostPlan, ReportOutput, ReportSelection, TrialBalanceSelection,
+    MAX_PLAN_BYTES, PostIntent, PostPlan, ReportOutput, ReportSelection, Statement,
+    StatementDefinition, StatementSelection, TrialBalanceSelection,
 };
 use fa_journal::BookContext;
 use fa_journal::{
@@ -71,6 +72,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("resolve", resolve_cmd),
     ("document", document::document_cmd),
     ("tb", tb_cmd),
+    ("statement", statement_cmd),
     ("replay", notary::replay_cmd),
     ("certificate", notary::certificate_cmd),
     ("open-items", open_items_cmd),
@@ -1162,9 +1164,10 @@ fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fa
             ("capabilities" | "robot-docs" | "help", _) => &[],
             ("book", Some("info"))
             | ("chart" | "period", Some("list"))
-            | ("tb" | "open-items" | "explain" | "replay" | "certificate" | "entry", _) => {
-                &[Op::Read]
-            }
+            | (
+                "tb" | "statement" | "open-items" | "explain" | "replay" | "certificate" | "entry",
+                _,
+            ) => &[Op::Read],
             ("verify" | "registers", _) => &[Op::Read, Op::Verify],
             ("post" | "commit" | "reverse" | "reserve" | "resolve", _) => &[Op::Post],
             ("approve", _) => &[Op::Approve],
@@ -2517,7 +2520,9 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             if args.switch("--dry-run") {
                 let plan = book.plan_transition(code, transition, who, reason, date, &key)??;
                 let digest = book.plan_digest(&plan)?;
-                let bytes = plan.encode().map_err(|e| Fail::Internal(format!("plan encoding: {e}")))?;
+                let bytes = plan
+                    .encode()
+                    .map_err(|e| Fail::Internal(format!("plan encoding: {e}")))?;
                 let encoded = hex(&bytes);
                 out.event(
                     "period_plan",
@@ -2571,7 +2576,8 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             }
             let tr = match args.flag("--plan") {
                 Some(path) => {
-                    let bytes = read_plan_bytes(&ctx.files, path, b"fa:period-plan", "period transition")?;
+                    let bytes =
+                        read_plan_bytes(&ctx.files, path, b"fa:period-plan", "period transition")?;
                     let plan = fa_journal::TransitionPlan::decode(&bytes).map_err(|e| {
                         usage(
                             format!("{path} is not a period plan: {e}"),
@@ -3994,19 +4000,24 @@ fn known_at_flag(
     book: &Book,
     out: &Out,
 ) -> Result<(Option<CommitSeq>, Option<u64>), Fail> {
-    if args.flag_all("--as-known-at").len() > 1 {
+    let flag = if args.flag("--known-at").is_some() {
+        "--known-at"
+    } else {
+        "--as-known-at"
+    };
+    if args.flag_all("--as-known-at").len() + args.flag_all("--known-at").len() > 1 {
         return Err(usage(
-            "--as-known-at may be supplied only once",
-            "--as-known-at HEAD, <u64 commit sequence>, or <RFC3339 instant>",
+            format!("{flag} may be supplied only once; --known-at and --as-known-at are aliases"),
+            format!("{flag} HEAD, <u64 commit sequence>, or <RFC3339 instant>"),
         ));
     }
-    match args.flag("--as-known-at") {
+    match args.flag(flag) {
         None | Some("HEAD") => Ok((None, None)),
         Some(value) if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) => {
             let sequence = value.parse::<u64>().map_err(|_| {
                 usage(
-                    "--as-known-at commit sequence exceeds u64",
-                    "--as-known-at HEAD or an existing unsigned commit sequence",
+                    format!("{flag} commit sequence exceeds u64"),
+                    format!("{flag} HEAD or an existing unsigned commit sequence"),
                 )
             })?;
             Ok((Some(CommitSeq(sequence)), None))
@@ -4014,8 +4025,8 @@ fn known_at_flag(
         Some(value) => {
             let instant = fa_time::UtcInstant::parse(value).map_err(|error| {
                 usage(
-                    format!("invalid --as-known-at selector: {error}"),
-                    "--as-known-at HEAD, <u64 commit sequence>, or 2026-03-15T00:00:00Z",
+                    format!("invalid {flag} selector: {error}"),
+                    format!("{flag} HEAD, <u64 commit sequence>, or 2026-03-15T00:00:00Z"),
                 )
             })?;
             let time = book.resolve_known_at_instant(instant.unix_ns())??;
@@ -4137,6 +4148,225 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if let (Some(certificate), Some((bytes, retained))) = (certificate.as_ref(), retained) {
         notary::emit_report_certificate(out, args, certificate, &bytes, &retained);
     }
+    Ok(())
+}
+
+fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.len() != 2 {
+        return Err(usage(
+            "statement needs exactly one registered definition name",
+            "fa statement balance-sheet|income-statement --for <period> [--compare <period>] --json",
+        ));
+    }
+    for flag in ["--for", "--compare", "--certificate-out"] {
+        if args.flag_all(flag).len() > 1 {
+            return Err(usage(
+                format!("{flag} may be supplied only once"),
+                "fa statement balance-sheet --for FY2026-P03 --compare FY2026-P02 --json",
+            ));
+        }
+    }
+    let period = args.require("--for", "<period>, for example FY2026-P03")?;
+    if period.is_empty() || args.flag("--compare").is_some_and(str::is_empty) {
+        return Err(usage(
+            "statement period codes must not be empty",
+            "--for FY2026-P03 [--compare FY2026-P02]",
+        ));
+    }
+    let definition = StatementDefinition::embedded(&args.positional[1]).map_err(|error| {
+        usage(
+            format!("statement definition: {error}"),
+            "fa statement balance-sheet|income-statement --for <period> --json",
+        )
+    })?;
+    let selection = StatementSelection {
+        definition,
+        periods: vec![period.to_string()],
+        comparative: args
+            .flag("--compare")
+            .into_iter()
+            .map(String::from)
+            .collect(),
+    };
+    let mut book = ctx.books.open(args)?;
+    let (known_at, requested_utc_ns) = known_at_flag(args, &book, &ctx.out)?;
+    let (statement, certificate) =
+        if args.switch("--certify") || args.flag("--certificate-out").is_some() {
+            let certified = match requested_utc_ns {
+                Some(instant) => book.certify_statement_at_instant(selection, instant)??,
+                None => book.certify_statement(selection, known_at)??,
+            };
+            ctx.out
+                .time_selection(certified.certificate.time_selection.as_ref());
+            (certified.statement, Some(certified.certificate))
+        } else {
+            (book.statement(selection, known_at)??, None)
+        };
+    // Render every amount, column and mapping before retaining a certificate
+    // or emitting a success. Missing units never become printable fallbacks.
+    let rendered = statement_presentation(&statement, &book.context().units)?;
+    let retained = certificate
+        .as_ref()
+        .map(|certificate| {
+            notary::retain_report_certificate(&mut book, &ctx.files, args, certificate)
+        })
+        .transpose()?;
+    let digest = certificate
+        .as_ref()
+        .map(|certificate| hex(&certificate.digest));
+    emit_statement(&ctx.out, &statement, rendered, digest.as_deref());
+    if let (Some(certificate), Some((bytes, retained))) = (certificate.as_ref(), retained) {
+        notary::emit_report_certificate(&ctx.out, args, certificate, &bytes, &retained);
+    }
+    Ok(())
+}
+
+type StatementPresentation = (Vec<(&'static str, Json)>, String);
+
+fn statement_presentation(
+    statement: &Statement,
+    units: &fa_money::UnitRegistry,
+) -> Result<StatementPresentation, Fail> {
+    if statement.columns.is_empty() {
+        return Err(Fail::Internal("a statement has no columns".into()));
+    }
+    let mut human = format!(
+        "{} · definition version {} · known at {}\n",
+        statement.definition_name, statement.definition_version, statement.known_at,
+    );
+    let columns = statement
+        .columns
+        .iter()
+        .map(|column| {
+            let mode = if column.effective_from.is_some() {
+                "activity"
+            } else {
+                "stock"
+            };
+            human.push_str(&format!(
+                "{}: {} · {mode}{} through {}\n",
+                column.label,
+                column.periods.join(", "),
+                column
+                    .effective_from
+                    .map_or(String::new(), |day| format!(" from {}", day.render())),
+                column.effective_through.render(),
+            ));
+            obj(vec![
+                ("label", s(&column.label)),
+                ("periods", Json::Arr(column.periods.iter().map(s).collect())),
+                ("mode", s(mode)),
+                (
+                    "effective_from",
+                    column
+                        .effective_from
+                        .map_or(Json::Null, |day| s(day.render())),
+                ),
+                ("effective_through", s(column.effective_through.render())),
+            ])
+        })
+        .collect();
+    human.push_str(&format!("{:<34}", "line"));
+    for column in &statement.columns {
+        human.push_str(&format!(" {:>24}", column.label));
+    }
+    human.push('\n');
+    let mut lines = Vec::with_capacity(statement.lines.len());
+    for line in &statement.lines {
+        if line.amounts.len() != statement.columns.len() {
+            return Err(Fail::Internal(format!(
+                "statement line {} has {} amounts for {} columns",
+                line.code,
+                line.amounts.len(),
+                statement.columns.len(),
+            )));
+        }
+        let unit = fa_money::UnitId(line.unit_id);
+        let code = registered_unit_code(unit, units)?;
+        let amounts = line
+            .amounts
+            .iter()
+            .map(|mantissa| render_amount(Amount::new(unit, *mantissa), units))
+            .collect::<Result<Vec<_>, Fail>>()?;
+        human.push_str(&format!("{:<34}", line.label));
+        for amount in &amounts {
+            human.push_str(&format!(" {amount:>24}"));
+        }
+        human.push('\n');
+        lines.push(obj(vec![
+            ("code", s(&line.code)),
+            ("label", s(&line.label)),
+            ("unit", s(code)),
+            ("amounts", Json::Arr(amounts.iter().map(s).collect())),
+        ]));
+    }
+    let mappings = statement
+        .mappings
+        .iter()
+        .map(|mapping| {
+            let account_type = AccountType(mapping.account.account_type)
+                .name()
+                .ok_or_else(|| {
+                    Fail::Internal(format!(
+                        "statement mapping {} has an unregistered account type",
+                        mapping.account.code
+                    ))
+                })?;
+            Ok(obj(vec![
+                ("account_vid", s(format!("{:032x}", mapping.account.id))),
+                ("account", s(&mapping.account.code)),
+                ("name", s(&mapping.account.name)),
+                ("type", s(account_type)),
+                ("line", s(&mapping.line_code)),
+            ]))
+        })
+        .collect::<Result<Vec<_>, Fail>>()?;
+    human.push_str(
+        "Scope: one book, exact native units; no FX conversion or presentation rounding.\n",
+    );
+    Ok((
+        vec![
+            ("name", s(&statement.definition_name)),
+            (
+                "definition_version",
+                Json::Int(i128::from(statement.definition_version)),
+            ),
+            ("definition_digest", s(hex(&statement.definition_digest))),
+            ("known_at", Json::Int(i128::from(statement.known_at))),
+            ("columns", Json::Arr(columns)),
+            ("lines", Json::Arr(lines)),
+            ("mappings", Json::Arr(mappings)),
+            ("scope", s("single-book-native-units")),
+        ],
+        human,
+    ))
+}
+
+fn emit_statement(
+    out: &Out,
+    statement: &Statement,
+    (fields, human): StatementPresentation,
+    certificate: Option<&str>,
+) {
+    out.known_at(CommitSeq(statement.known_at));
+    let periods: Vec<String> = statement
+        .columns
+        .iter()
+        .flat_map(|column| column.periods.iter().cloned())
+        .collect();
+    out.effective(periods_selector(&periods));
+    out.event_with_certificate("statement", fields, &human, certificate);
+}
+
+/// Original and verified replay share the exact same checked presentation.
+pub(crate) fn render_statement(
+    out: &Out,
+    book: &Book,
+    statement: &Statement,
+    certificate: Option<&str>,
+) -> Result<(), Fail> {
+    let rendered = statement_presentation(statement, &book.context().units)?;
+    emit_statement(out, statement, rendered, certificate);
     Ok(())
 }
 

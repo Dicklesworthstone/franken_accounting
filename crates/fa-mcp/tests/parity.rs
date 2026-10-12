@@ -269,7 +269,7 @@ fn the_gate_fails_on_planted_defects() {
         let reg = Registry::parse(&text)?;
         McpRegistry::parse(&text, &reg)
     }
-    let read_cluster_row = "[[mcp.cluster]]\nname = \"fa.read\"\ndoc = \"Certified reads over the journal: trial balance, an explained balance, open items, one entry.\"\n";
+    let read_cluster_row = "[[mcp.cluster]]\nname = \"fa.read\"\ndoc = \"Certified reads over the journal: trial balance, financial statements, an explained balance, open items, one entry.\"\n";
     assert!(
         SOURCE.contains(read_cluster_row),
         "the fa.read cluster row as this test spells it"

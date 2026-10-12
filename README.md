@@ -448,6 +448,42 @@ RETURN p.name, sum(open) AS exposure ORDER BY exposure DESC;
 
 ---
 
+## Financial statements
+
+The first statement definitions are `balance-sheet` and `income-statement`.
+They calculate exact amounts from the journal and check that their mappings
+cover every relevant leaf account exactly once. Each native unit has its own
+rows. Computed totals use checked integer arithmetic; no exchange rate or
+rounding adjustment is inferred.
+
+```bash
+fa statement balance-sheet --for FY2026-P03 --compare FY2026-P02 \
+  --book ./books/myco --json
+fa statement income-statement --for FY2026-P03 --compare FY2026-P02 \
+  --known-at HEAD --certify --book ./books/myco --json
+fa replay C:<oid-from-report_certificate> --book ./books/myco --json
+```
+
+Balance sheets include opening history through the selected period and show
+unclosed earnings explicitly, so the statement can balance before a fiscal
+close. Income statements show selected-period activity. Comparatives use the
+same known-at snapshot as the current column; `--known-at` also accepts a
+commit sequence or a retained TimeEvidence instant, and `--as-known-at` is an
+alias. The statement event includes the definition version and digest, the
+column coordinates, exact amounts, and the account-to-line mapping.
+
+An ordinary statement read writes nothing. `--certify` retains its immutable
+certificate and returns the complete bytes inline; `--certificate-out <new-file>`
+also writes a binary copy without replacing an existing file. Replay uses the
+same checked presentation and preserves both columns after subsequent postings.
+MCP exposes this as `fa_read_statement`, under the fixed launch authority, with
+inline certification and no caller-selected output paths.
+
+This slice covers one book and native units. Custom company layouts, cash-flow
+and equity-roll-forward statements, consolidation, FX translation, and
+presentation rounding remain separate work. A certificate establishes replay
+and arithmetic over the journal; it does not establish GAAP conformity.
+
 ## The six bets
 
 | Bet | One-line statement |

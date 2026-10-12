@@ -19,6 +19,7 @@ fa-notary = { path = "../fa-notary", version = "=0.0.1" }
 fa-policy = { path = "../fa-policy", version = "=0.0.1" }
 fa-registers = { path = "../fa-registers", version = "=0.0.1" }
 fa-registry = { path = "../fa-registry", version = "=0.0.1" }
+fa-statements = { path = "../fa-statements", version = "=0.0.1" }
 fa-time = { path = "../fa-time", version = "=0.0.1" }
 asupersync = { workspace = true }
 fgdb = { workspace = true }

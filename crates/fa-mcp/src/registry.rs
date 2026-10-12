@@ -1272,10 +1272,7 @@ impl ToolSpec {
                                     s.property,
                                     kind_of(other)
                                 ),
-                                fix: format!(
-                                    "`{}`: \"…\" (the text itself, inline)",
-                                    s.property,
-                                ),
+                                fix: format!("`{}`: \"…\" (the text itself, inline)", s.property,),
                             });
                         }
                     };
@@ -1299,8 +1296,12 @@ impl ToolSpec {
                 (true, None) => argv.push("-".into()),
                 (false, Some(v)) if v.starts_with("--") => {
                     return Err(ArgError {
-                        message: format!("{wire}: `{}` cannot be an option-shaped positional", p.name),
-                        fix: "supply the literal identifier; host file paths are not accepted".into(),
+                        message: format!(
+                            "{wire}: `{}` cannot be an option-shaped positional",
+                            p.name
+                        ),
+                        fix: "supply the literal identifier; host file paths are not accepted"
+                            .into(),
                     });
                 }
                 (false, Some(v)) => argv.push(v),
@@ -1407,11 +1408,18 @@ impl ToolSpec {
         }
         // What the host must supply.
         for r in &self.required {
-            if let Some(spec) = self.stdin.as_ref().filter(|spec| &spec.via == r || &spec.property == r) {
+            if let Some(spec) = self
+                .stdin
+                .as_ref()
+                .filter(|spec| &spec.via == r || &spec.property == r)
+            {
                 if stdin.is_none() {
                     return Err(ArgError {
                         message: format!("{wire}: inline `{}` is required", spec.property),
-                        fix: format!("pass the complete content in `{}`; host filesystem paths are not accepted", spec.property),
+                        fix: format!(
+                            "pass the complete content in `{}`; host filesystem paths are not accepted",
+                            spec.property
+                        ),
                     });
                 }
                 continue;
@@ -1953,6 +1961,11 @@ mod tests {
                 json!({"account": "1000", "certify": true}),
                 "open-items",
             ),
+            (
+                "fa_read_statement",
+                json!({"name": "balance-sheet", "for": "P", "compare": "Q", "certify": true}),
+                "statement",
+            ),
         ] {
             let tool = mcp.tool_by_wire(wire).expect("certifiable report");
             let schema = tool.input_schema(&mcp, reg);
@@ -1974,6 +1987,63 @@ mod tests {
                 "unregistered output path must refuse: {wire}"
             );
         }
+    }
+
+    #[test]
+    fn statements_normalize_period_comparatives_without_caller_authority_or_paths() {
+        let (mcp, reg) = embedded();
+        let tool = mcp
+            .tool_by_wire("fa_read_statement")
+            .expect("statement tool");
+        let schema = tool.input_schema(&mcp, reg);
+        assert_eq!(schema["required"], json!(["name", "for"]));
+        let args = json!({
+            "name": "income-statement",
+            "for": "FY2026-P03",
+            "compare": "FY2026-P02",
+            "known_at": "42",
+            "certify": true,
+        });
+        let invocation = tool.invocation(&mcp, reg, &args).unwrap();
+        assert_eq!(
+            invocation.argv,
+            vec![
+                "statement",
+                "income-statement",
+                "--for",
+                "FY2026-P03",
+                "--compare",
+                "FY2026-P02",
+                "--known-at",
+                "42",
+                "--certify",
+                "--json",
+            ]
+        );
+        assert!(invocation.stdin.is_none());
+        for property in ["book", "as", "grant", "certificate_out"] {
+            assert!(schema["properties"].get(property).is_none());
+            let mut forbidden = args.clone();
+            forbidden[property] = JsonValue::Null;
+            assert!(
+                tool.invocation(&mcp, reg, &forbidden).is_err(),
+                "{property}"
+            );
+        }
+        for incomplete in [json!({"name": "balance-sheet"}), json!({"for": "P"})] {
+            assert!(tool.invocation(&mcp, reg, &incomplete).is_err());
+        }
+        let suggested = mcp
+            .command_to_call(
+                reg,
+                "fa statement balance-sheet --for FY2026-P03 --compare FY2026-P02 --json",
+            )
+            .expect("statement command translates without authority or paths");
+        assert_eq!(suggested.tool, "fa_read_statement");
+        assert_eq!(
+            suggested.arguments,
+            json!({"name":"balance-sheet", "for":"FY2026-P03", "compare":"FY2026-P02"})
+        );
     }
 
     #[test]

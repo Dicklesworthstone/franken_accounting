@@ -1076,6 +1076,34 @@ impl Book {
         with_store!(&self.store, core => core.certify_report(&self.purposes(), selection, known_at))
     }
 
+    /// Evaluate an exact financial statement and optional comparative from
+    /// authoritative journal payloads, without publishing any object.
+    pub fn statement(
+        &self,
+        selection: crate::StatementSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::Statement> {
+        with_store!(&self.store, core => core.statement(&self.purposes(), selection, known_at))
+    }
+
+    /// Certify the complete statement definition, chart partition, historical
+    /// period columns and exact native-unit amounts without writing the book.
+    pub fn certify_statement(
+        &self,
+        selection: crate::StatementSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CertifiedStatement> {
+        with_store!(&self.store, core => core.certify_statement(&self.purposes(), selection, known_at))
+    }
+
+    pub fn certify_statement_at_instant(
+        &self,
+        selection: crate::StatementSelection,
+        requested_utc_ns: u64,
+    ) -> Outcome<crate::CertifiedStatement> {
+        with_store!(&self.store, core => core.certify_statement_at_instant(&self.purposes(), selection, requested_utc_ns))
+    }
+
     /// Resolve a UTC instant from retained ticks without reading a clock.
     /// Keep the returned frontier and brackets with the resolved sequence.
     pub fn resolve_known_at_instant(
@@ -3530,9 +3558,15 @@ mod tests {
         assert_eq!(time.resolution.frontier, current.0);
         assert_eq!(time.resolution.resolved_seq, before_upper.0);
         assert_eq!(time.upper_entry, Some(upper.tick.entry));
-        assert_eq!(time.resolution.upper.unwrap().recorded_at, upper.recorded_at.0);
+        assert_eq!(
+            time.resolution.upper.unwrap().recorded_at,
+            upper.recorded_at.0
+        );
         assert_eq!(time.resolution.precision_grade(), "tick_bucket");
-        assert_eq!(time.resolution.source_grade(), "uncorroborated_daemon_clock");
+        assert_eq!(
+            time.resolution.source_grade(),
+            "uncorroborated_daemon_clock"
+        );
         assert_eq!(closed.report.unit_totals[&usd.0], (450_000, 450_000));
         assert_eq!(
             book.trial_balance(&["FY2026-P03".into()])
@@ -3589,7 +3623,6 @@ mod tests {
         assert_eq!(sequence.report, open.report);
     }
 
-
     #[test]
     fn instant_certificate_replay_checks_upper_tick_beyond_the_report_prefix() {
         use crate::TrialBalanceSelection;
@@ -3606,7 +3639,14 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .certificate;
-            let frontier = CommitSeq(certificate.time_selection.as_ref().unwrap().resolution.frontier);
+            let frontier = CommitSeq(
+                certificate
+                    .time_selection
+                    .as_ref()
+                    .unwrap()
+                    .resolution
+                    .frontier,
+            );
             assert!(certificate.known_at < upper.recorded_at);
             assert!(book.replay_trial_balance(&certificate).unwrap().is_ok());
 
@@ -3624,11 +3664,13 @@ mod tests {
                 );
             }
             with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&contexts.commit(), change))).unwrap();
-            let historical = with_store!(&book.store, core => core.db.vertex_at(upper.entry_ref.vid, frontier))
-                .unwrap()
-                .unwrap();
+            let historical =
+                with_store!(&book.store, core => core.db.vertex_at(upper.entry_ref.vid, frontier))
+                    .unwrap()
+                    .unwrap();
             let old = Entry::decode(
-                &fa_journal::rows::bytes(&historical, property::FA_PAYLOAD, "tick.payload").unwrap(),
+                &fa_journal::rows::bytes(&historical, property::FA_PAYLOAD, "tick.payload")
+                    .unwrap(),
             )
             .unwrap();
             assert!(matches!(
@@ -3644,7 +3686,11 @@ mod tests {
             assert_eq!(refusal.code, crate::certificate::code::CERTIFICATE_INVALID);
             assert_eq!(refusal.exit, fa_journal::exit::VERIFICATION);
             assert!(book.certificate_status(&certificate).unwrap().is_err());
-            assert_eq!(book.head().unwrap(), head, "failed reads never repair or append");
+            assert_eq!(
+                book.head().unwrap(),
+                head,
+                "failed reads never repair or append"
+            );
         }
     }
 
@@ -3789,12 +3835,21 @@ mod tests {
             assert_eq!(result.report.known_at(), at);
             assert_eq!(result.certificate.known_at, at);
             assert_eq!(result.certificate.selection, selection);
-            assert_eq!(result.certificate.output, result.report.canonical_bytes().unwrap());
-            assert_eq!(result.certificate.output_format(), selection.output_format());
+            assert_eq!(
+                result.certificate.output,
+                result.report.canonical_bytes().unwrap()
+            );
+            assert_eq!(
+                result.certificate.output_format(),
+                selection.output_format()
+            );
             assert!(result.certificate.time_selection.is_none());
             let bytes = result.certificate.canonical_bytes().unwrap();
             assert!(bytes.starts_with(crate::certificate::REPORT_CERTIFICATE_FORMAT));
-            assert_eq!(ReportCertificate::decode(&bytes).unwrap(), result.certificate);
+            assert_eq!(
+                ReportCertificate::decode(&bytes).unwrap(),
+                result.certificate
+            );
             assert_eq!(
                 book.replay_report(&result.certificate).unwrap().unwrap(),
                 result.report
@@ -3809,21 +3864,24 @@ mod tests {
             );
             certified.push(result);
         }
-        assert_eq!(book.head().unwrap(), at, "certification and replay are reads");
+        assert_eq!(
+            book.head().unwrap(),
+            at,
+            "certification and replay are reads"
+        );
         assert_ne!(
-            certified[1].certificate.digest,
-            certified[2].certificate.digest,
+            certified[1].certificate.digest, certified[2].certificate.digest,
             "the account filter is part of the certificate identity"
         );
         for result in certified {
-            let retained = book.retain_certificate(&result.certificate).unwrap().unwrap();
+            let retained = book
+                .retain_certificate(&result.certificate)
+                .unwrap()
+                .unwrap();
             let loaded = book.read_certificate(&retained.digest).unwrap().unwrap();
             assert_eq!(loaded, result.certificate);
             assert_eq!(book.replay_report(&loaded).unwrap().unwrap(), result.report);
-            assert_eq!(
-                book.retain_certificate(&loaded).unwrap().unwrap(),
-                retained
-            );
+            assert_eq!(book.retain_certificate(&loaded).unwrap().unwrap(), retained);
             assert_eq!(book.head().unwrap(), retained.recorded_at);
             assert_eq!(
                 book.certificate_status(&loaded).unwrap().unwrap(),
@@ -3838,7 +3896,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(
-            trial.certificate.canonical_bytes().unwrap()
+            trial
+                .certificate
+                .canonical_bytes()
+                .unwrap()
                 .starts_with(crate::certificate::CERTIFICATE_FORMAT)
         );
         assert_eq!(
@@ -3864,7 +3925,12 @@ mod tests {
             .unwrap()
             .unwrap();
         let filtered = book
-            .certify_report(ReportSelection::OpenItems { account: Some(cash) }, None)
+            .certify_report(
+                ReportSelection::OpenItems {
+                    account: Some(cash),
+                },
+                None,
+            )
             .unwrap()
             .unwrap();
         let all = book
@@ -3899,7 +3965,9 @@ mod tests {
         for result in [&explanation, &filtered, &all] {
             assert!(
                 matches!(
-                    book.certificate_status(&result.certificate).unwrap().unwrap(),
+                    book.certificate_status(&result.certificate)
+                        .unwrap()
+                        .unwrap(),
                     CertificateStatus::Current { .. }
                 ),
                 "unrelated accounts with no contributions do not change rendered reports"
@@ -3927,7 +3995,9 @@ mod tests {
             .vid;
         assert!(
             matches!(
-                book.certificate_status(&filtered.certificate).unwrap().unwrap(),
+                book.certificate_status(&filtered.certificate)
+                    .unwrap()
+                    .unwrap(),
                 CertificateStatus::Current { .. }
             ),
             "the filtered open-item report excludes other accounts"
@@ -3992,7 +4062,9 @@ mod tests {
                 account: cash,
                 period: "FY2026-P03".into(),
             },
-            ReportSelection::OpenItems { account: Some(cash) },
+            ReportSelection::OpenItems {
+                account: Some(cash),
+            },
             ReportSelection::OpenItems { account: None },
         ] {
             results.push(book.certify_report(selection, Some(at)).unwrap().unwrap());
@@ -4015,11 +4087,17 @@ mod tests {
             "Changed Cash"
         );
         assert_eq!(
-            book.open_items_report(Some(cash), Some(at)).unwrap().accounts[&cash].name,
+            book.open_items_report(Some(cash), Some(at))
+                .unwrap()
+                .accounts[&cash]
+                .name,
             "Cash"
         );
         assert_eq!(
-            book.explain_balance(cash, "FY2026-P03", Some(at)).unwrap().account_row.name,
+            book.explain_balance(cash, "FY2026-P03", Some(at))
+                .unwrap()
+                .account_row
+                .name,
             "Cash"
         );
         for result in results {
@@ -4028,13 +4106,22 @@ mod tests {
             match &replayed {
                 ReportOutput::ExplainBalance(report) => assert_eq!(report.account_row.name, "Cash"),
                 ReportOutput::OpenItems(report) => assert_eq!(report.accounts[&cash].name, "Cash"),
-                ReportOutput::TrialBalance(_) => panic!("selected a non-trial-balance report"),
+                ReportOutput::TrialBalance(_) | ReportOutput::Statement(_) => {
+                    panic!("selected an explanation or open-items report")
+                }
             }
-            let refusal = book.certificate_status(&result.certificate).unwrap().unwrap_err();
+            let refusal = book
+                .certificate_status(&result.certificate)
+                .unwrap()
+                .unwrap_err();
             assert_eq!(refusal.code, crate::certificate::code::CERTIFICATE_INVALID);
             assert_eq!(refusal.exit, fa_journal::exit::VERIFICATION);
         }
-        assert_eq!(book.head().unwrap(), after, "replay and status do not repair the chart");
+        assert_eq!(
+            book.head().unwrap(),
+            after,
+            "replay and status do not repair the chart"
+        );
     }
 
     #[test]
@@ -4049,7 +4136,9 @@ mod tests {
                 account: cash,
                 period: "FY2026-P03".into(),
             },
-            ReportSelection::OpenItems { account: Some(cash) },
+            ReportSelection::OpenItems {
+                account: Some(cash),
+            },
             ReportSelection::OpenItems { account: None },
         ] {
             let error = book
@@ -4101,14 +4190,28 @@ mod tests {
             .unwrap()
             .unix_ns();
         let lower = certificate_tick(&mut book, base + 100, true);
-        post_rent(&mut book, usd, VId(1), day, b"generic-inside-bucket", 150_000)
-            .unwrap()
-            .unwrap();
+        post_rent(
+            &mut book,
+            usd,
+            VId(1),
+            day,
+            b"generic-inside-bucket",
+            150_000,
+        )
+        .unwrap()
+        .unwrap();
         let selected_at = book.head().unwrap();
         let upper = certificate_tick(&mut book, base + 110, true);
-        post_rent(&mut book, usd, VId(1), day, b"generic-after-bucket", 150_000)
-            .unwrap()
-            .unwrap();
+        post_rent(
+            &mut book,
+            usd,
+            VId(1),
+            day,
+            b"generic-after-bucket",
+            150_000,
+        )
+        .unwrap()
+        .unwrap();
         let frontier = book.head().unwrap();
         let mut results = Vec::new();
         for selection in [
@@ -4116,7 +4219,9 @@ mod tests {
                 account: cash,
                 period: "FY2026-P03".into(),
             },
-            ReportSelection::OpenItems { account: Some(cash) },
+            ReportSelection::OpenItems {
+                account: Some(cash),
+            },
         ] {
             let result = book
                 .certify_report_at_instant(selection.clone(), base + 105)
@@ -4130,22 +4235,36 @@ mod tests {
             assert_eq!(result.certificate.known_at, selected_at);
             assert_eq!(
                 result.report,
-                book.certify_report(selection, Some(selected_at)).unwrap().unwrap().report
+                book.certify_report(selection, Some(selected_at))
+                    .unwrap()
+                    .unwrap()
+                    .report
             );
             let encoded = result.certificate.canonical_bytes().unwrap();
             assert!(encoded.starts_with(crate::certificate::REPORT_CERTIFICATE_FORMAT));
-            assert_eq!(ReportCertificate::decode(&encoded).unwrap(), result.certificate);
+            assert_eq!(
+                ReportCertificate::decode(&encoded).unwrap(),
+                result.certificate
+            );
             results.push(result);
         }
         assert_eq!(book.head().unwrap(), frontier);
         certificate_tick(&mut book, base + 120, true);
         for result in results {
-            let retained = book.retain_certificate(&result.certificate).unwrap().unwrap();
+            let retained = book
+                .retain_certificate(&result.certificate)
+                .unwrap()
+                .unwrap();
             let loaded = book.read_certificate(&retained.digest).unwrap().unwrap();
             assert_eq!(loaded, result.certificate);
             assert_eq!(book.replay_report(&loaded).unwrap().unwrap(), result.report);
             let mut altered = loaded;
-            altered.time_selection.as_mut().unwrap().resolution.requested_utc_ns += 1;
+            altered
+                .time_selection
+                .as_mut()
+                .unwrap()
+                .resolution
+                .requested_utc_ns += 1;
             let refusal = book.replay_report(&altered).unwrap().unwrap_err();
             assert_eq!(refusal.code, crate::certificate::code::CERTIFICATE_INVALID);
             assert_eq!(book.head().unwrap(), retained.recorded_at);
@@ -4176,8 +4295,7 @@ mod tests {
             certified.certificate.journal_root
         );
         assert_eq!(
-            current.certificate.journal_leaves,
-            certified.certificate.journal_leaves,
+            current.certificate.journal_leaves, certified.certificate.journal_leaves,
             "no later accounting Entry can explain this period-membership change"
         );
         let refusal = book
@@ -4194,7 +4312,9 @@ mod tests {
             "metadata changes do not rewrite the original historical report"
         );
         assert_eq!(
-            book.certificate_status(&current.certificate).unwrap().unwrap(),
+            book.certificate_status(&current.certificate)
+                .unwrap()
+                .unwrap(),
             CertificateStatus::Current { checked_at: after }
         );
         assert_eq!(book.head().unwrap(), after);
@@ -4256,8 +4376,7 @@ mod tests {
             certified.certificate.journal_root
         );
         assert_eq!(
-            after.certificate.journal_leaves,
-            certified.certificate.journal_leaves,
+            after.certificate.journal_leaves, certified.certificate.journal_leaves,
             "retaining a report creates no accounting Entry"
         );
         let original_again = book
@@ -4276,7 +4395,10 @@ mod tests {
         assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
         assert_eq!(book.head().unwrap(), before_refusal);
         assert_eq!(
-            book.read_certificate(&[0xe7; 32]).unwrap().unwrap_err().code,
+            book.read_certificate(&[0xe7; 32])
+                .unwrap()
+                .unwrap_err()
+                .code,
             "FA-REF-150"
         );
 
@@ -4451,10 +4573,8 @@ mod tests {
                 .unwrap()
                 .certificate;
             let retained = book.retain_certificate(&certificate).unwrap().unwrap();
-            let vid = crate::certificate_store::certificate_vid(
-                book.context().book_id,
-                &retained.digest,
-            );
+            let vid =
+                crate::certificate_store::certificate_vid(book.context().book_id, &retained.digest);
             let mut change = fgdb::WriteBatch::new(relation::HAS_LEG);
             match mutation {
                 0 => change.set_vertex_property(
@@ -4479,14 +4599,18 @@ mod tests {
             with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&purposes.commit(), change)))
                 .unwrap();
             let after_tamper = book.head().unwrap();
-            let refusal = book.read_certificate(&retained.digest).unwrap().unwrap_err();
+            let refusal = book
+                .read_certificate(&retained.digest)
+                .unwrap()
+                .unwrap_err();
             assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
             let refusal = book.retain_certificate(&certificate).unwrap().unwrap_err();
             assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
             assert_eq!(book.head().unwrap(), after_tamper);
-            let original = with_store!(&book.store, core => core.db.vertex_at(vid, retained.recorded_at))
-                .unwrap()
-                .unwrap();
+            let original =
+                with_store!(&book.store, core => core.db.vertex_at(vid, retained.recorded_at))
+                    .unwrap()
+                    .unwrap();
             assert_eq!(
                 fa_journal::rows::bytes(&original, property::FA_PAYLOAD, "retained certificate")
                     .unwrap(),
@@ -4507,10 +4631,8 @@ mod tests {
             .unwrap()
             .unwrap()
             .certificate;
-        let vid = crate::certificate_store::certificate_vid(
-            book.context().book_id,
-            &certificate.digest,
-        );
+        let vid =
+            crate::certificate_store::certificate_vid(book.context().book_id, &certificate.digest);
         let mut properties = vec![
             (
                 property::FA_PAYLOAD,
@@ -4540,7 +4662,10 @@ mod tests {
         with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&purposes.commit(), replace)))
             .unwrap();
         let after_rebind = book.head().unwrap();
-        let refusal = book.read_certificate(&certificate.digest).unwrap().unwrap_err();
+        let refusal = book
+            .read_certificate(&certificate.digest)
+            .unwrap()
+            .unwrap_err();
         assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
         let refusal = book.retain_certificate(&certificate).unwrap().unwrap_err();
         assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
@@ -5216,7 +5341,10 @@ mod tests {
                 .any(|pair| pair.source_seq == retained.recorded_at),
             "retaining a source-bound certificate is not a scratch accounting commit"
         );
-        let refusal = scratch.read_certificate(&retained.digest).unwrap().unwrap_err();
+        let refusal = scratch
+            .read_certificate(&retained.digest)
+            .unwrap()
+            .unwrap_err();
         assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
         assert_eq!(
             book.read_certificate(&retained.digest)
@@ -5235,12 +5363,10 @@ mod tests {
             with_store!(&scratch.store, core => core.db.vertices_at(core.db.frontier().unwrap()))
         }).unwrap();
         assert!(
-            scratch_rows
-                .iter()
-                .all(|v| {
-                    !v.labels.contains(&fa_model::symbols::label::REGISTER_STATE)
-                        && !v.labels.contains(&fa_model::symbols::label::CERTIFICATE)
-                }),
+            scratch_rows.iter().all(|v| {
+                !v.labels.contains(&fa_model::symbols::label::REGISTER_STATE)
+                    && !v.labels.contains(&fa_model::symbols::label::CERTIFICATE)
+            }),
             "no maintainer state or source-bound certificate reaches the scratch book"
         );
 
@@ -5518,18 +5644,24 @@ mod tests {
         let historical_items = book.open_items_report(Some(cash), Some(before_chart));
         assert!(matches!(
             historical_items,
-            Err(BookError::Registers(fa_registers::RegisterError::InvalidSelection(_)))
+            Err(BookError::Registers(
+                fa_registers::RegisterError::InvalidSelection(_)
+            ))
         ));
         for selection in [
             crate::ReportSelection::ExplainBalance {
                 account: cash,
                 period: march.clone(),
             },
-            crate::ReportSelection::OpenItems { account: Some(cash) },
+            crate::ReportSelection::OpenItems {
+                account: Some(cash),
+            },
         ] {
             assert!(matches!(
                 book.certify_report(selection, Some(before_chart)),
-                Err(BookError::Registers(fa_registers::RegisterError::InvalidSelection(_)))
+                Err(BookError::Registers(
+                    fa_registers::RegisterError::InvalidSelection(_)
+                ))
             ));
         }
         let empty_items = book

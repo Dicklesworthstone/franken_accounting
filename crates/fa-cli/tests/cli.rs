@@ -441,7 +441,12 @@ fn certified_explanations_and_open_items_replay_before_settlements_and_reversals
         r#"{"effective_date":"2026-03-10","idempotency_key":"certified-invoice","legs":[{"side":"debit","account":"1200","amount":"500.00 USD"},{"side":"credit","account":"4000","amount":"500.00 USD"}]}"#,
     );
     let posted = doc(&ok(&[
-        "post", "--intent", &invoice, "--evidence", &evidence, "--json",
+        "post",
+        "--intent",
+        &invoice,
+        "--evidence",
+        &evidence,
+        "--json",
     ]));
     let invoice_vid = text(&posted, "vid").to_string();
     let known_at = int(&posted, "recorded_at").unwrap().to_string();
@@ -491,7 +496,10 @@ fn certified_explanations_and_open_items_replay_before_settlements_and_reversals
         assert_eq!(field(lines[1], "certificate"), Some(oid));
         assert_eq!(text(&certificate, "output_format"), output_format);
         assert_eq!(int(&certificate, "known_at").unwrap().to_string(), known_at);
-        assert_eq!(int(&certificate, "recorded_at"), Some(i128::from(frontier.0 + 1)));
+        assert_eq!(
+            int(&certificate, "recorded_at"),
+            Some(i128::from(frontier.0 + 1))
+        );
         assert_eq!(head().0, frontier.0 + 1, "only retention publishes");
 
         let data = doc(lines[0]);
@@ -501,7 +509,11 @@ fn certified_explanations_and_open_items_replay_before_settlements_and_reversals
             let Json::Obj(fields) = &mut comparable else {
                 panic!("explanation data must be an object");
             };
-            fields.iter_mut().find(|(key, _)| key == "certificate").unwrap().1 = Json::Null;
+            fields
+                .iter_mut()
+                .find(|(key, _)| key == "certificate")
+                .unwrap()
+                .1 = Json::Null;
             assert_eq!(text(&arr(&data, "cells")[0], "debits"), "500.00 USD");
             assert_eq!(arr(&data, "contributions").len(), 1);
             assert_eq!(text(&arr(&data, "contributions")[0], "entry"), invoice_vid);
@@ -523,7 +535,11 @@ fn certified_explanations_and_open_items_replay_before_settlements_and_reversals
                 assert_eq!(text(&data, "account"), "1000");
             }
         }
-        assert_eq!(comparable, doc(&plain), "{name}: certification changed report data");
+        assert_eq!(
+            comparable,
+            doc(&plain),
+            "{name}: certification changed report data"
+        );
         let bytes = std::fs::read(&path)?;
         assert!(bytes.starts_with(b"fa:report-certificate:v3"));
         let decoded = fa::ReportCertificate::decode(&bytes).unwrap();
@@ -576,7 +592,12 @@ fn certified_explanations_and_open_items_replay_before_settlements_and_reversals
         ),
     );
     let posted = doc(&ok(&[
-        "post", "--intent", &receipt, "--evidence", &evidence, "--json",
+        "post",
+        "--intent",
+        &receipt,
+        "--evidence",
+        &evidence,
+        "--json",
     ]));
     let receipt_vid = text(&posted, "vid").to_string();
     let applied = doc(&ok(&["open-items", "--account", "1200", "--json"]));
@@ -585,9 +606,16 @@ fn certified_explanations_and_open_items_replay_before_settlements_and_reversals
         .find(|item| text(item, "entry") == invoice_vid)
         .unwrap();
     assert_eq!(text(invoice_item, "open"), "300.00 USD");
-    assert_eq!(arr(invoice_item, "applications")[0].get("live"), Some(&Json::Bool(true)));
+    assert_eq!(
+        arr(invoice_item, "applications")[0].get("live"),
+        Some(&Json::Bool(true))
+    );
     let reversed = doc(&ok(&[
-        "reverse", &receipt_vid, "--reason", "WrongAmount", "--json",
+        "reverse",
+        &receipt_vid,
+        "--reason",
+        "WrongAmount",
+        "--json",
     ]));
     let reversal_vid = text(&reversed, "vid").to_string();
     let reopened = doc(&ok(&["open-items", "--account", "1200", "--json"]));
@@ -596,7 +624,10 @@ fn certified_explanations_and_open_items_replay_before_settlements_and_reversals
         .find(|item| text(item, "entry") == invoice_vid)
         .unwrap();
     assert_eq!(text(invoice_item, "open"), "500.00 USD");
-    assert_eq!(arr(invoice_item, "applications")[0].get("live"), Some(&Json::Bool(false)));
+    assert_eq!(
+        arr(invoice_item, "applications")[0].get("live"),
+        Some(&Json::Bool(false))
+    );
 
     let frontier = head();
     for (oid, original) in retained {
@@ -3562,6 +3593,10 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     assert_eq!(run(true, &["replay", &certificate]).0, 0);
     assert_eq!(run(true, &["certificate", "status", &certificate]).0, 0);
+    assert_eq!(
+        run(true, &["statement", "balance-sheet", "--for", "FY2026-P03"]).0,
+        0
+    );
     // A planned, approved lock (R4): `period_planned`, then `approved`.
     assert_eq!(run(true, &["period", "open", "FY2026-P04"]).0, 0);
     assert_eq!(run(true, &["period", "close", "FY2026-P04", "--yes"]).0, 0);
@@ -4932,7 +4967,11 @@ fn instant_selected_cli_reports_retain_tick_evidence_and_replay() -> std::io::Re
         assert_eq!(text(&doc(&out), "refusal_id"), "FA-REF-151", "{out}");
         assert_eq!(out.lines().count(), 1);
     }
-    assert_eq!(head(), before_evidence, "missing time evidence never writes");
+    assert_eq!(
+        head(),
+        before_evidence,
+        "missing time evidence never writes"
+    );
 
     // Only this explicit, witness-authorized host records clock evidence.
     // The read-only CLI is not given a tick command or System authority.
@@ -4964,52 +5003,64 @@ fn instant_selected_cli_reports_retain_tick_evidence_and_replay() -> std::io::Re
     let first_vid = text(&first, "vid").to_string();
     assert!(first_seq > i128::from(lower.recorded_at.0));
 
-    let check_coordinate = |line: &str, frontier: CommitSeq, upper: Option<&Ticked>, expected_seq: CommitSeq| {
-        let envelope = json::parse(line).unwrap();
-        let coordinate = envelope.get("coordinate").unwrap();
-        assert_eq!(int(coordinate, "known_at"), Some(i128::from(expected_seq.0)), "{line}");
-        let time = coordinate.get("time_evidence").unwrap();
-        assert_eq!(text(time, "requested_instant"), CANONICAL_INSTANT, "{line}");
-        assert_eq!(int(time, "requested_utc_ns"), Some(i128::from(REQUESTED_NS)));
-        assert_eq!(int(time, "frontier"), Some(i128::from(frontier.0)));
-        assert_eq!(int(time, "resolved_seq"), Some(i128::from(expected_seq.0)));
-        assert_eq!(text(time, "precision"), "tick_bucket", "{line}");
-        assert_eq!(text(time, "source_grade"), "corroborated_daemon_clock", "{line}");
-        let observation = time.get("lower").unwrap();
-        assert_eq!(
-            text(observation, "entry"),
-            format!("{:032x}", lower.entry_ref.vid.0)
-        );
-        assert_eq!(
-            int(observation, "recorded_at"),
-            Some(i128::from(lower.recorded_at.0))
-        );
-        assert_eq!(
-            int(observation, "observed_utc_ns"),
-            Some(i128::from(LOWER_NS))
-        );
-        assert_eq!(int(observation, "source"), Some(0));
-        assert_eq!(observation.get("monotonic_ok"), Some(&Json::Bool(true)));
-        match upper {
-            Some(tick) => {
-                let observation = time.get("upper").unwrap();
-                assert_eq!(
-                    text(observation, "entry"),
-                    format!("{:032x}", tick.entry_ref.vid.0)
-                );
-                assert_eq!(
-                    int(observation, "recorded_at"),
-                    Some(i128::from(tick.recorded_at.0))
-                );
-                assert_eq!(
-                    int(observation, "observed_utc_ns"),
-                    Some(i128::from(UPPER_NS))
-                );
-                assert_eq!(observation.get("monotonic_ok"), Some(&Json::Bool(true)));
+    let check_coordinate =
+        |line: &str, frontier: CommitSeq, upper: Option<&Ticked>, expected_seq: CommitSeq| {
+            let envelope = json::parse(line).unwrap();
+            let coordinate = envelope.get("coordinate").unwrap();
+            assert_eq!(
+                int(coordinate, "known_at"),
+                Some(i128::from(expected_seq.0)),
+                "{line}"
+            );
+            let time = coordinate.get("time_evidence").unwrap();
+            assert_eq!(text(time, "requested_instant"), CANONICAL_INSTANT, "{line}");
+            assert_eq!(
+                int(time, "requested_utc_ns"),
+                Some(i128::from(REQUESTED_NS))
+            );
+            assert_eq!(int(time, "frontier"), Some(i128::from(frontier.0)));
+            assert_eq!(int(time, "resolved_seq"), Some(i128::from(expected_seq.0)));
+            assert_eq!(text(time, "precision"), "tick_bucket", "{line}");
+            assert_eq!(
+                text(time, "source_grade"),
+                "corroborated_daemon_clock",
+                "{line}"
+            );
+            let observation = time.get("lower").unwrap();
+            assert_eq!(
+                text(observation, "entry"),
+                format!("{:032x}", lower.entry_ref.vid.0)
+            );
+            assert_eq!(
+                int(observation, "recorded_at"),
+                Some(i128::from(lower.recorded_at.0))
+            );
+            assert_eq!(
+                int(observation, "observed_utc_ns"),
+                Some(i128::from(LOWER_NS))
+            );
+            assert_eq!(int(observation, "source"), Some(0));
+            assert_eq!(observation.get("monotonic_ok"), Some(&Json::Bool(true)));
+            match upper {
+                Some(tick) => {
+                    let observation = time.get("upper").unwrap();
+                    assert_eq!(
+                        text(observation, "entry"),
+                        format!("{:032x}", tick.entry_ref.vid.0)
+                    );
+                    assert_eq!(
+                        int(observation, "recorded_at"),
+                        Some(i128::from(tick.recorded_at.0))
+                    );
+                    assert_eq!(
+                        int(observation, "observed_utc_ns"),
+                        Some(i128::from(UPPER_NS))
+                    );
+                    assert_eq!(observation.get("monotonic_ok"), Some(&Json::Bool(true)));
+                }
+                None => assert_eq!(time.get("upper"), Some(&Json::Null), "{line}"),
             }
-            None => assert_eq!(time.get("upper"), Some(&Json::Null), "{line}"),
-        }
-    };
+        };
 
     let open_frontier = head();
     let uncertified = report(
@@ -5018,7 +5069,11 @@ fn instant_selected_cli_reports_retain_tick_evidence_and_replay() -> std::io::Re
     );
     assert_cash_credits(&uncertified, "100.00 USD");
     check_coordinate(uncertified.trim_end(), open_frontier, None, open_frontier);
-    assert_eq!(head(), open_frontier, "uncertified instant reads never publish");
+    assert_eq!(
+        head(),
+        open_frontier,
+        "uncertified instant reads never publish"
+    );
     let path = dir.join("open-bucket.cert").display().to_string();
     let certified = ok(&[
         "tb",
@@ -5043,19 +5098,29 @@ fn instant_selected_cli_reports_retain_tick_evidence_and_replay() -> std::io::Re
     let stored = doc(lines[1]);
     let oid = text(&stored, "oid");
     let stored_at = CommitSeq(u64::try_from(int(&stored, "recorded_at").unwrap()).unwrap());
-    assert_eq!(stored_at.0, open_frontier.0 + 1, "only certificate metadata is published");
-    assert_eq!(open().read_certificate(&retained.digest).unwrap().unwrap(), retained);
+    assert_eq!(
+        stored_at.0,
+        open_frontier.0 + 1,
+        "only certificate metadata is published"
+    );
+    assert_eq!(
+        open().read_certificate(&retained.digest).unwrap().unwrap(),
+        retained
+    );
     let bound_time = retained.time_selection.as_ref().unwrap();
     assert_eq!(bound_time.resolution.frontier, open_frontier.0);
     assert_eq!(bound_time.resolution.requested_utc_ns, REQUESTED_NS);
     assert!(bound_time.resolution.upper.is_none());
-    assert_eq!(head(), stored_at, "retention adds the certificate, not a new clock tick");
+    assert_eq!(
+        head(),
+        stored_at,
+        "retention adds the certificate, not a new clock tick"
+    );
 
     let upper = tick(UPPER_NS);
     let closed_seq = CommitSeq(upper.recorded_at.0.checked_sub(1).unwrap());
     assert_eq!(
-        closed_seq,
-        stored_at,
+        closed_seq, stored_at,
         "the next tick closes the bucket after certificate metadata and before its own commit"
     );
     let later_file = write(
@@ -5079,7 +5144,12 @@ fn instant_selected_cli_reports_retain_tick_evidence_and_replay() -> std::io::Re
         &["tb", "--period", PERIOD, "--as-known-at", INSTANT, "--json"],
     );
     assert_cash_credits(&selected, "100.00 USD");
-    check_coordinate(selected.trim_end(), current_frontier, Some(&upper), closed_seq);
+    check_coordinate(
+        selected.trim_end(),
+        current_frontier,
+        Some(&upper),
+        closed_seq,
+    );
     let equivalent = report(
         &book,
         &[
@@ -5091,7 +5161,10 @@ fn instant_selected_cli_reports_retain_tick_evidence_and_replay() -> std::io::Re
             "--json",
         ],
     );
-    assert_eq!(selected, equivalent, "equivalent offsets canonicalize identically");
+    assert_eq!(
+        selected, equivalent,
+        "equivalent offsets canonicalize identically"
+    );
 
     let items_out = ok(&[
         "open-items",
@@ -5101,7 +5174,12 @@ fn instant_selected_cli_reports_retain_tick_evidence_and_replay() -> std::io::Re
         INSTANT,
         "--json",
     ]);
-    check_coordinate(items_out.trim_end(), current_frontier, Some(&upper), closed_seq);
+    check_coordinate(
+        items_out.trim_end(),
+        current_frontier,
+        Some(&upper),
+        closed_seq,
+    );
     let items = doc(&items_out);
     assert_eq!(int(&items, "count"), Some(1));
     let item = &arr(&items, "items")[0];
@@ -5118,11 +5196,22 @@ fn instant_selected_cli_reports_retain_tick_evidence_and_replay() -> std::io::Re
         INSTANT,
         "--json",
     ]);
-    check_coordinate(explained.trim_end(), current_frontier, Some(&upper), closed_seq);
+    check_coordinate(
+        explained.trim_end(),
+        current_frontier,
+        Some(&upper),
+        closed_seq,
+    );
     let explanation = doc(&explained);
     assert_eq!(arr(&explanation, "contributions").len(), 1);
-    assert_eq!(text(&arr(&explanation, "contributions")[0], "entry"), first_vid);
-    assert_eq!(text(&arr(&explanation, "cells")[0], "credits"), "100.00 USD");
+    assert_eq!(
+        text(&arr(&explanation, "contributions")[0], "entry"),
+        first_vid
+    );
+    assert_eq!(
+        text(&arr(&explanation, "cells")[0], "credits"),
+        "100.00 USD"
+    );
 
     let replay = ok(&["replay", &path, "--json"]);
     assert_eq!(
@@ -5131,7 +5220,10 @@ fn instant_selected_cli_reports_retain_tick_evidence_and_replay() -> std::io::Re
     );
     check_coordinate(replay.trim_end(), open_frontier, None, open_frontier);
     assert_eq!(ok(&["replay", oid, "--json"]), retained_line);
-    assert_eq!(ok(&["replay", &format!("C:{oid}"), "--json"]), retained_line);
+    assert_eq!(
+        ok(&["replay", &format!("C:{oid}"), "--json"]),
+        retained_line
+    );
     assert_cash_credits(
         &report(&book, &["tb", "--period", PERIOD, "--json"]),
         "125.00 USD",
@@ -5158,10 +5250,17 @@ fn instant_selected_cli_reports_retain_tick_evidence_and_replay() -> std::io::Re
         ),
     ] {
         let observed = head();
-        let path = dir.join(format!("instant-{name}.cert")).display().to_string();
+        let path = dir
+            .join(format!("instant-{name}.cert"))
+            .display()
+            .to_string();
         let mut args = command;
         args.extend([
-            "--as-known-at", INSTANT, "--certificate-out", path.as_str(), "--json",
+            "--as-known-at",
+            INSTANT,
+            "--certificate-out",
+            path.as_str(),
+            "--json",
         ]);
         let certified = ok(&args);
         let lines: Vec<&str> = certified.lines().collect();
@@ -5180,8 +5279,15 @@ fn instant_selected_cli_reports_retain_tick_evidence_and_replay() -> std::io::Re
             assert_eq!(text(&arr(&data, "items")[0], "open"), "100.00 USD");
         }
         let stored = doc(lines[1]);
-        assert_eq!(int(&stored, "recorded_at"), Some(i128::from(observed.0 + 1)));
-        assert_eq!(head().0, observed.0 + 1, "retention cannot record a new tick");
+        assert_eq!(
+            int(&stored, "recorded_at"),
+            Some(i128::from(observed.0 + 1))
+        );
+        assert_eq!(
+            head().0,
+            observed.0 + 1,
+            "retention cannot record a new tick"
+        );
         let bytes = std::fs::read(&path)?;
         assert!(bytes.starts_with(b"fa:report-certificate:v3"));
         let certificate = fa::ReportCertificate::decode(&bytes).unwrap();
@@ -5286,7 +5392,11 @@ fn projection_verification_reports_drift_deterministically_without_writes() -> s
     );
     assert_eq!(ok(&verify), green, "the same prefix has the same report");
     let handle = Book::open_dir(&book, keys.clone(), Entropy::deterministic(91)).unwrap();
-    assert_eq!(handle.head().unwrap(), prefix, "green verification wrote nothing");
+    assert_eq!(
+        handle.head().unwrap(),
+        prefix,
+        "green verification wrote nothing"
+    );
     drop(handle);
 
     // Plant a bad scalar mirror through the real substrate while leaving
@@ -5344,10 +5454,7 @@ fn projection_verification_reports_drift_deterministically_without_writes() -> s
     );
     assert!(!handle.verify_projections(None).unwrap().is_green());
     assert!(
-        handle
-            .verify_projections(Some(prefix))
-            .unwrap()
-            .is_green(),
+        handle.verify_projections(Some(prefix)).unwrap().is_green(),
         "the earlier committed projection remains independently verifiable"
     );
     Ok(())
@@ -5423,8 +5530,7 @@ fn directory_reopen_refuses_changed_or_missing_unit_facts_through_facade_and_cli
         keys.save(&book.join("book.keys")).unwrap();
         drop(handle);
 
-        let reopened = Book::open_dir(&book, keys.clone(), Entropy::deterministic(57))
-            .unwrap();
+        let reopened = Book::open_dir(&book, keys.clone(), Entropy::deterministic(57)).unwrap();
         assert_eq!(reopened.context().units.get(usd), Some(&original));
         drop(reopened);
         let (code, out, err) = fa(Some(&book), &["book", "info", "--json"]);
@@ -5442,8 +5548,7 @@ fn directory_reopen_refuses_changed_or_missing_unit_facts_through_facade_and_cli
             .unwrap();
         let vid = fa_model::unit_vid(book_id, "USD@v0");
         let row = db.vertex(vid).unwrap().unwrap();
-        let payload = fa_journal::rows::bytes(&row, property::FA_PAYLOAD, "unit.payload")
-            .unwrap();
+        let payload = fa_journal::rows::bytes(&row, property::FA_PAYLOAD, "unit.payload").unwrap();
         let mut definition = fa_model::UnitDefinition::decode(&payload).unwrap();
         let mut batch = WriteBatch::new(relation::IN_BOOK);
         match damage {
