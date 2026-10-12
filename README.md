@@ -17,6 +17,52 @@
 
 > **A note on tense.** The rest of this README is written in the **present tense, as if the entire design in [`COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md`](./COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md) is fully realized**: the 1.0 target state. This is deliberate — it describes the *finished* system so it gets trued-up in place as milestones land (§19's gates G1→G4) rather than rewritten later. Where the plan stages something as future work, this README says so plainly.
 
+### Try it today
+
+<!-- try-it-today: crates/fa-cli/tests/readme.rs runs this section against the real `fa` binary.
+It writes each `file:` block below verbatim, runs every `fa` line of the commands block in order
+in a fresh directory, fills `<document-oid>` from the `oid` the line before printed, and requires
+exit 0 from every line; the replay must reproduce the trial balance's data. Edit a line and the
+test fails. The same test checks every `fa` line above `## TL;DR` against the verb registry. -->
+
+Write an invoice and the entry it supports next to the book:
+
+<!-- file: invoice.txt -->
+```text
+Invoice 10442 to ACME-CUST-17: 10 widgets at 125.00 USD, total 1,250.00 USD.
+```
+
+<!-- file: sale.json -->
+```json
+{"effective_date":"2026-03-14","idempotency_key":"inv-10442","legs":[{"side":"debit","account":"1200","amount":"1250.00 USD"},{"side":"credit","account":"4000","amount":"1250.00 USD"}]}
+```
+
+Then create a book with a template chart, open March, and record the invoice. Rehearse the entry it supports as a sealed plan (replace `<document-oid>` with the `oid` that `fa document add` printed), commit exactly that plan, and get a certified trial balance that `fa replay` reproduces:
+
+<!-- commands -->
+```bash
+fa book create --book acme --name "Acme Co" --base-unit USD
+fa chart import --template us-gaap-smb --book acme
+fa period create --fiscal-year 2026 --book acme
+fa period open FY2026-P03 --book acme
+fa document add invoice.txt --kind Invoice --grade HumanUpload --book acme --json
+fa post --intent sale.json --evidence <document-oid> --dry-run --plan-out sale.plan --book acme --json
+fa commit --plan sale.plan --book acme --json
+fa tb --period FY2026-P03 --certificate-out march.cert --book acme --json
+fa replay march.cert --book acme --json
+fa certificate status march.cert --book acme --json
+fa statement income-statement --for FY2026-P03 --book acme --json
+fa statement balance-sheet --for FY2026-P03 --book acme --json
+fa explain balance 1200 --period FY2026-P03 --book acme --json
+fa registers materialize --period FY2026-P03 --book acme --json
+fa verify registers --period FY2026-P03 --book acme --json
+fa verify projections --book acme --json
+fa checkpoint create --grant witness --book acme --json
+fa verify accumulator --book acme --json
+```
+
+`fa chart templates` lists the charts (`us-gaap-smb`, `ifrs-sme`, `us-bank-call-report`); they are starting points, not GAAP, IFRS or regulatory advice. `--grade HumanUpload` declares that a human supplied the document; an agent's own upload is `AgentUpload`. Bare `fa`, `fa --help` and `fa robot-docs guide` orient an agent.
+
 ### Reporting available now
 
 For a book with posted entries, the current CLI supports:
