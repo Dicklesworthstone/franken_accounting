@@ -2441,7 +2441,7 @@ fn generated_history(seed: u64) {
         }
     }
     // `fa explain balance` agrees with the oracle's journal leg by leg, for
-    // every (period, account): the posted legs of the period's posting
+    // every (period, leaf account): the posted legs of the period's posting
     // entries, the pending legs of its unresolved holds, and the released
     // legs of its resolved holds — identified by the kernel handle of the
     // oracle's journal index, so the selection is checked against the model,
@@ -2453,9 +2453,17 @@ fn generated_history(seed: u64) {
     let mut explained_legs = 0usize;
     for code in &periods {
         let fold = fold_period(&k.db, &k.book, code).unwrap();
-        for (account, ..) in ACCOUNTS {
+        for (account, _, is_leaf) in ACCOUNTS {
             let vid = account_vid(k.book.book_id, account);
-            let ex = explain_balance(&k.db, &k.book, vid, code, None).unwrap();
+            let explanation = explain_balance(&k.db, &k.book, vid, code, None);
+            if !is_leaf {
+                assert!(
+                    matches!(&explanation, Err(fa_registers::RegisterError::InvalidSelection(message)) if message.contains("is a summary")),
+                    "{code}/{account}: summary accounts require a leaf selection: {explanation:?}"
+                );
+                continue;
+            }
+            let ex = explanation.expect("a leaf account has a balance explanation");
             let mut kernel: Vec<(VId, u16, bool, i128, &str)> = ex
                 .contributions
                 .iter()
@@ -4323,6 +4331,51 @@ fn budget_caps_and_balancing_history(seed: u64) {
         }
     }
 
+    // Exercise exact budget boundaries in two otherwise untouched periods.
+    // These real posts supplement all 640 generated steps: random near-edge
+    // draws need not land exactly on the cap twice for every seed.
+    for (offset, month) in [5_u8, 6].into_iter().enumerate() {
+        let period = &periods[usize::from(month) - 1];
+        let step = 640 + offset as u64;
+        open_period(&mut k, &mut oracle, period, step);
+        let date = DateDay::from_ymd(2026, month, 10).unwrap();
+        let boundary = plain(
+            "Pending",
+            vec![leg(dr, "6100", 50_000), leg(cr, "3000", 50_000)],
+            format!("exact-budget-{month}").into_bytes(),
+            date,
+        );
+        assert_eq!(oracle_lu_in(&oracle, "6100", Some(period), true), (0, 0));
+        let kernel = kernel_post(&mut k, &boundary, &refs).expect("exact cap is admissible");
+        assert!(matches!(kernel, Posted::Committed { .. }));
+        assert_eq!(
+            oracle.post(&boundary),
+            Verdict::Posted {
+                period: period.clone(),
+                index: refs.len(),
+            }
+        );
+        refs.push(kernel.entry_ref());
+        posted += 1;
+        budget_exact += 1;
+        assert_cell_in(&k, &oracle, "6100", Some(period), step);
+        assert_eq!(oracle_lu_in(&oracle, "6100", Some(period), true).1, 50_000);
+
+        let over = plain(
+            "Original",
+            vec![leg(dr, "6100", 1), leg(cr, "3000", 1)],
+            format!("over-budget-{month}").into_bytes(),
+            date,
+        );
+        let before = k.db.frontier().unwrap();
+        let refusal = kernel_post(&mut k, &over, &refs).expect_err("one over the cap");
+        assert_eq!(oracle.post(&over), Verdict::Refused { code: "FA-REF-091" });
+        assert_eq!(refusal.code, "FA-REF-091");
+        *refused.entry("FA-REF-091").or_insert(0) += 1;
+        assert_eq!(k.db.frontier().unwrap(), before);
+        assert_cell_in(&k, &oracle, "6100", Some(period), step);
+    }
+
     // Agreement is not vacuous.
     assert!(posted >= 150, "posted {posted}");
     assert!(recorded >= 3, "recorded {recorded}");
@@ -4801,11 +4854,70 @@ fn ticks_timed_holds_and_expiry_history(seed: u64) {
                 timed_posted += 1;
             }
         }
-        if step == 200 {
-            close_and_maybe_lock(&mut k, &mut oracle, &periods[0], true, step);
-        }
-        if step == 380 {
-            close_and_maybe_lock(&mut k, &mut oracle, &periods[1], false, step);
+        if step == 200 || step == 380 {
+            // Guarantee release in the closed origin state. Random manual
+            // resolutions may consume the earlier plants before a sweep;
+            // these additional holds reach their exact deadline immediately
+            // after the transition, with no intervening manual operation.
+            // Unlimited accounts isolate this law from budget exhaustion.
+            let origin = usize::from(step == 380);
+            let mut targets = Vec::new();
+            for n in 0..2 {
+                let intent = plain(
+                    "Pending",
+                    vec![leg(dr, "6000", 1), leg(cr, "4000", 1)],
+                    format!("expiry-after-close-{step}-{n}").into_bytes(),
+                    dated[origin],
+                );
+                let target = post_timed_both(
+                    &mut k,
+                    &mut oracle,
+                    &mut refs,
+                    &mut refused,
+                    &intent,
+                    1,
+                    step,
+                )
+                .expect("an unlimited hold posts before the close");
+                holds.push(target);
+                targets.push(target);
+                timed_posted += 1;
+            }
+            close_and_maybe_lock(&mut k, &mut oracle, &periods[origin], step == 200, step);
+            now += 1;
+            tick_seq += 1;
+            kernel_tick(&mut k, now, &format!("tick-{tick_seq}")).expect("deadline tick");
+            oracle.record_tick(now).expect("deadline tick");
+            for target in &targets {
+                assert_eq!(oracle.deadline(*target), Some(now));
+                assert!(oracle.due().contains(target));
+            }
+            while targets.iter().any(|target| !expired.contains(target)) {
+                let states: BTreeMap<usize, PeriodState> = oracle
+                    .due()
+                    .iter()
+                    .map(|h| {
+                        let period = &oracle.entry(*h).expect("hold").period;
+                        (*h, oracle.period_state(period).expect("created"))
+                    })
+                    .collect();
+                let batch = sweep_both(&mut k, &mut oracle, &mut refs, 2, step)
+                    .expect("the planted due holds require a sweep");
+                batches += 1;
+                if batch.remaining_due > 0 {
+                    backlog_batches += 1;
+                }
+                assert!(!batch.expired.is_empty(), "a sweep must make progress");
+                for (h, _) in &batch.expired {
+                    expired.insert(*h);
+                    resolved.insert(*h);
+                    *expired_in.entry(states[h]).or_insert(0) += 1;
+                    if oracle.deadline(*h) == Some(batch.tick) {
+                        equal_deadline += 1;
+                    }
+                }
+            }
+            assert_pending_registers(&k, &oracle, &watched, step);
         }
         let key = format!("x{step}").into_bytes();
         let date = dated[rng.below(4) as usize];
@@ -5048,8 +5160,19 @@ fn ticks_timed_holds_and_expiry_history(seed: u64) {
     assert!(kernel_tick(&mut k, now, "tick-final").is_ok());
     assert!(oracle.record_tick(now).is_ok());
     while let Some(m) = sweep_both(&mut k, &mut oracle, &mut refs, 2, 10_000) {
+        batches += 1;
+        if m.remaining_due > 0 {
+            backlog_batches += 1;
+        }
         for (h, _) in &m.expired {
             expired.insert(*h);
+            resolved.insert(*h);
+            let period = &oracle.entry(*h).expect("hold").period;
+            let state = oracle.period_state(period).expect("created");
+            *expired_in.entry(state).or_insert(0) += 1;
+            if oracle.deadline(*h) == Some(m.tick) {
+                equal_deadline += 1;
+            }
         }
     }
     assert!(oracle.due().is_empty() && kernel_due(&k, &refs).is_empty());
@@ -6755,7 +6878,51 @@ fn scheduled_reversals_history(seed: u64) {
             close_and_maybe_lock(&mut k, &mut oracle, &code, step == 230, step);
         }
         match step {
-            150 => open_minted += open_both(&mut k, &mut oracle, &mut refs, &periods[3], step),
+            150 => {
+                // Two real schedules must be due when April opens. Random
+                // schedules may all have been cancelled or remain in the
+                // future; neither should make Open-path coverage seed luck.
+                let reverse_on = DateDay::from_ymd(2026, 4, 1).unwrap();
+                let mut targets = Vec::new();
+                for n in 0..2 {
+                    let intent = plain(
+                        "Adjusting",
+                        vec![leg(dr, "6000", 10 + n), leg(cr, "3000", 10 + n)],
+                        format!("open-april-{n}").into_bytes(),
+                        DateDay::from_ymd(2026, 3, 15).unwrap(),
+                    );
+                    let posted = kernel_post_scheduled(&mut k, &intent, &refs, reverse_on)
+                        .expect("an unlimited March accrual posts");
+                    assert!(matches!(posted, Posted::Committed { .. }));
+                    assert_eq!(
+                        oracle.post_scheduled(&intent, reverse_on),
+                        Verdict::Posted {
+                            period: periods[2].clone(),
+                            index: refs.len(),
+                        }
+                    );
+                    targets.push(posted.entry_ref().vid);
+                    scheduled.push(refs.len());
+                    refs.push(posted.entry_ref());
+                }
+                if today < reverse_on {
+                    today = reverse_on;
+                    tick_seq += 1;
+                    kernel_tick(&mut k, noon(today), &format!("s-tick-{tick_seq}"))
+                        .expect("April has arrived");
+                    oracle.record_tick(noon(today)).expect("April has arrived");
+                }
+                let before = refs.len();
+                open_minted += open_both(&mut k, &mut oracle, &mut refs, &periods[3], step);
+                for target in targets {
+                    assert!(
+                        refs[before..]
+                            .iter()
+                            .any(|entry| entry.vid == rows::reversal_vid(target)),
+                        "opening April must mint the planted reversal"
+                    );
+                }
+            }
             300 => open_minted += open_both(&mut k, &mut oracle, &mut refs, &periods[4], step),
             _ => {}
         }

@@ -176,7 +176,8 @@ policy data and must refuse FA-REF-011, then post when authority is supplied.
 A separate real-kernel differential checks that refusal without mutation and
 the subsequent successful posting and register fold. Application tests cover
 joint over-application, exact i128 leg bounds and an intermediate above i128.
-These are source additions pending execution, not a full mutant-kernel run.
+These reference and focused kernel tests passed in build 1099 on 2026-10-12;
+this was not a full mutant-kernel run.
 
 Calendar generation and fiscal-year selection now walk civil days using
 independent month/week boundaries and year-end candidate enumeration. Source
@@ -188,7 +189,8 @@ reject unsupported adjustment counts instead of clamping, validate directly
 constructed month fields, check adjacent-year arithmetic, and continue past
 an unrepresentable adjacent fiscal year when a valid containing year exists.
 These use main's checked date helpers and preserve its newer civil-date APIs.
-Constructor and boundary regression tests are added; runtime remains pending.
+Constructor and boundary regressions passed in build 1099 (40 fa-time unit
+tests and 28 fa-reference unit tests). Integrated full-gate proof remains pending.
 
 The differential request adapter also replaced each declared leg and
 settlement unit with USD. It now preserves those units. A fixed 32-seed
@@ -199,13 +201,14 @@ near-boundary totals, an additional balanced posting crosses a register
 column to i128::MAX + 1: the oracle retains that exact value, while the
 production fold, report and maintainer must refuse overflow without publishing
 partial cached state. This documents the current report bound; it does not
-claim arbitrary-size production registers. The new campaign is not yet run.
+claim arbitrary-size production registers. All 32 seeds passed in build 1099.
 The seven longer generated-history tests now each run 32 fixed distinct
 seeds, with the original seed first, unchanged assertions and a replay command
 printed for each seed. Their coverage floors remain intact; any newly exposed
-failure must be investigated rather than excluded. These expanded histories
-are also unrun. The 10k-seed worker campaign and actual mutant-kernel receipts
-remain open.
+failure must be investigated rather than excluded. Build 1099 passed the
+limited-account, period-authority and per-entity campaigns, but failed four
+other campaigns as detailed below. The 10k-seed worker campaign and actual
+mutant-kernel receipts remain open.
 
 Repeated oracle `create_periods` also overwrote transitioned period states.
 It now checks all identities before mutation and returns a typed error for
@@ -218,8 +221,8 @@ A per-crate Clippy configuration now lists the eight production calendar,
 resolution, transition and admission methods. Normal oracle library builds
 forbid those calls; existing comparison tests expect each configured lint
 separately, including an alias and a re-export. The mandatory Clippy pass
-must execute before this boundary can be claimed enforced. All these new
-controls remain unrun. No valid-history arithmetic panic has been
+must execute before this boundary can be claimed enforced; that Clippy run
+remains pending. No valid-history arithmetic panic has been
 demonstrated; the arithmetic change removes shared fixed-width decisioning.
 
 ### Public register-cell subtraction (fa-645, 2026-10-11)
@@ -230,6 +233,32 @@ can construct public cells such as `(debits = i128::MAX, credits = -1)`.
 The method now returns `RegisterError::Overflow` for an unrepresentable
 difference, and its migration-test caller explicitly requires a valid net.
 New tests pin exact positive and negative boundaries, cancellation, and both
-overflow directions. Formatting and static review passed; runtime tests and
-the complete gate for this change remain unrun. No journal-produced cell
+overflow directions. Build 1099 passed all 22 fa-registers unit tests and all
+14 migration tests. The complete gate remains pending. No journal-produced cell
 overflow or enlargement of the register's column bound is claimed.
+
+### Generated-history failures exposed by the wider campaign (2026-10-12)
+
+Build 1099 on `74c69f9` exited 101: 127 tests passed and four differential
+tests failed. The original transcript is retained; no seed or assertion was
+removed. These were caller/coverage failures, not observed engine/oracle
+disagreements:
+
+- Seed `9e3779b97f4a7c15` asked `explain_balance` for summary account `1`
+  and unwrapped its `InvalidSelection`. The test now asserts that refusal
+  explicitly and retains every leaf-account contribution and history check.
+- Seed `7135eed50fa0c7f2` recorded no Closed-period expiry. Random manual
+  resolutions could consume the planted holds, and final-drain expiries were
+  omitted from the state counters. Additional real holds now reach their
+  exact deadline immediately after close/lock and must expire through the
+  actual sweep. Every returned final-drain batch is counted as well.
+- Seed `0badc0de5eed124a` hit an exact budget boundary only once. After all
+  640 original generated steps, two untouched periods receive real exact-cap
+  holds and one-unit-over-cap refusals, checked against the oracle and stored
+  cells; the refusals must preserve the frontier.
+- Seed `5c4ed01ed0af7e75` minted only one reversal at Open. Two additional
+  March accruals scheduled for April 1 now become due before April opens;
+  the Open helper must return both actual reversal identities.
+
+The original 32 seeds, generated step counts and coverage floors remain.
+The repairs are awaiting a new runtime verdict and do not close `fa-vfu`.
