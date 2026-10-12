@@ -767,6 +767,24 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.add_document(&purposes, doc)))
     }
 
+    /// Supply evidence under the calling session's capability. The kernel
+    /// derives the uploader and provenance grade and checks current authority
+    /// before observing an existing document or publishing its custody receipt.
+    /// Inline and large documents use this book's configured storage, never
+    /// the trusted owner intake path. A retry preserves the original provenance.
+    /// Hosts bind the capability; this method does not authenticate a transport
+    /// or grant an Agent monetary posting authority on trunk.
+    pub fn upload_document(
+        &mut self,
+        capability: &fa_journal::Capability,
+        request: fa_journal::UploadRequest,
+    ) -> Outcome<fa_journal::DocumentAdded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.upload_document(
+            &purposes, capability, request,
+        )))
+    }
+
     /// Record an import run (plan §9.3): the batch's documents and their
     /// receipts, and the run's `ImportControl` receipt, in one commit.
     /// `description` is sealed under the book key with fresh entropy.
