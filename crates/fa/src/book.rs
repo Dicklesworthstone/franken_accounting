@@ -1196,7 +1196,8 @@ impl Book {
 
     /// Load a retained artifact by its full public certificate digest.
     pub fn read_certificate(&self, digest: &[u8; 32]) -> Outcome<crate::ReportCertificate> {
-        with_store!(&self.store, core => core.read_certificate(&self.purposes(), digest))
+        let purposes = self.purposes();
+        with_store!(&self.store, core => self.runtime.block_on(core.read_certificate(&purposes, digest)))
     }
 
     /// Materialize a period's registers from a fresh fold.

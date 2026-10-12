@@ -1377,20 +1377,30 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         cx: &PurposeContexts,
         certificate: &crate::ReportCertificate,
     ) -> Outcome<crate::RetainedCertificate> {
-        crate::certificate_store::retain(&mut self.db, cx, &self.context, certificate).await
+        crate::certificate_store::retain(&mut self.db, cx, &self.context, &self.blobs, certificate)
+            .await
     }
 
     /// Load a retained certificate by its full public content digest.
-    /// Loading checks its immutable storage record; report replay separately
-    /// verifies the historical input closure.
-    pub fn read_certificate(
+    /// Loading checks its immutable storage record (and fetches and verifies
+    /// externally retained bytes); report replay separately verifies the
+    /// historical input closure.
+    pub async fn read_certificate(
         &self,
         cx: &PurposeContexts,
         digest: &[u8; 32],
     ) -> Outcome<crate::ReportCertificate> {
-        self.query(cx, |db, book| {
-            crate::certificate_store::read(db, &cx.query(), book, digest)
-        })
+        let query = cx.query();
+        query.checkpoint().map_err(BookError::Context)?;
+        query
+            .with_restriction_async(crate::certificate_store::read(
+                &self.db,
+                &query,
+                &self.context,
+                &self.blobs,
+                digest,
+            ))
+            .await
     }
 
     pub fn trial_balance_at(
