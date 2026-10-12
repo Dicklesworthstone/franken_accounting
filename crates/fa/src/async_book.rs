@@ -1017,6 +1017,20 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.query(cx, |db, book| Ok(fa_notary::verify_accumulator(db, book)?))
     }
 
+    /// Export a portable proof from a supported recorded checkpoint, under
+    /// current read and produce authority. Export never mutates the book.
+    pub fn export_proof(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: crate::ProofRequest,
+    ) -> Outcome<crate::ProofArtifact> {
+        self.query(cx, |db, book| {
+            crate::proof::export(db, book, principal, capability, request)
+        })
+    }
+
     pub fn open_items(
         &self,
         cx: &PurposeContexts,

@@ -31,6 +31,7 @@ pub mod async_book;
 pub mod book;
 pub mod certificate;
 mod certificate_store;
+pub mod proof;
 pub mod statements;
 pub mod upload;
 
@@ -55,4 +56,5 @@ pub use fa_statements::{
     AccountMapping, Column as StatementColumn, Statement, StatementDefinition, StatementKind,
     StatementLine,
 };
+pub use proof::{MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest};
 pub use statements::{CertifiedStatement, StatementSelection};

@@ -1232,6 +1232,20 @@ impl Book {
         with_store!(&self.store, core => core.verify_accumulator(&self.purposes()))
     }
 
+    /// Export a raw Notary proof or 80-byte checkpoint for the independent
+    /// `fa-verify` program. The holder must have current read and produce
+    /// authority for this book. The selected checkpoint is recomputed from
+    /// retained journal history; no new checkpoint or other write occurs.
+    /// Outsiders establish trust in the unsigned checkpoint separately.
+    pub fn export_proof(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: crate::ProofRequest,
+    ) -> Outcome<crate::ProofArtifact> {
+        with_store!(&self.store, core => core.export_proof(&self.purposes(), principal, capability, request))
+    }
+
     /// Open items (plan §5.7): every leg of a live posted entry, optionally
     /// on one account, with its applications and open amount.
     pub fn open_items(

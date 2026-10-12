@@ -699,6 +699,22 @@ fix = "select a sequence at or before the head"
 
 # ---- Migration runs and scratch replay (130–139) -------------------------
 [[refusal]]
+code = "FA-REF-126"
+name = "PROOF_STATE_UNKNOWN"
+owners = ["fa"]
+exit = "usage"
+cite = "plan §13.2 (proofs select an existing journaled AccumulatorState)"
+fix = "use fa verify accumulator --json to select a recorded state; the owner may publish one with fa checkpoint create --grant witness"
+
+[[refusal]]
+code = "FA-REF-127"
+name = "PROOF_EXPORT_LIMIT"
+owners = ["fa"]
+exit = "usage"
+cite = "plan §13.1–§13.3 (bounded complete portable proofs)"
+fix = "choose an earlier checkpoint or an inclusion proof, or export a binary file when only the inline transport is too small; a complete-prefix proof is never truncated"
+
+[[refusal]]
 code = "FA-REF-130"
 name = "RUN_NOT_OPEN"
 owners = ["fa-journal"]
