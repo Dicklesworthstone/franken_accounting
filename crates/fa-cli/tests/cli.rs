@@ -5603,8 +5603,7 @@ fn directory_reopen_refuses_changed_or_missing_unit_facts_through_facade_and_cli
         drop(db);
 
         let error = Book::open_dir(&book, keys.clone(), Entropy::deterministic(57))
-            .err()
-            .expect("reopen must refuse changed historical unit facts");
+            .expect_err("reopen must refuse changed historical unit facts");
         assert_eq!(error.exit(), 5, "{damage}: {error}");
         let expected = match damage {
             "kind" | "ISO" => "kind/ISO",
