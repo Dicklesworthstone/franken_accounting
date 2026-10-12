@@ -108,6 +108,10 @@ pub mod code {
     pub const REVERSAL_SHAPE: &str = "FA-REF-051";
     /// The target is already reversed by another entry.
     pub const ALREADY_REVERSED: &str = "FA-REF-052";
+    /// A reversal cannot precede its target in the fiscal calendar's order.
+    pub const REVERSAL_PERIOD: &str = "FA-REF-053";
+    /// Corrections require a nonzero reason registered for supersession.
+    pub const SUPERSESSION_REASON: &str = "FA-REF-054";
     /// The named pending entry is missing, is not a `Pending`, or its handle digest mismatches.
     pub const RESOLUTION_TARGET: &str = "FA-REF-060";
     /// The posted sub-vector is not drawn leg-by-leg from the pending entry.
@@ -124,6 +128,9 @@ pub mod code {
     pub const LIVE_APPLICATIONS: &str = "FA-REF-073";
     /// A key collided but equivalence cannot be verified: a sealed field is erased or under a key this book lacks.
     pub const EQUIVALENCE_UNVERIFIABLE: &str = "FA-REF-033";
+    /// A portable PostEntry plan is stale, unauthentic, or no longer
+    /// reproduces its exact admitted proposal and native staged effects.
+    pub const PLAN_INVALIDATED: &str = "FA-REF-034";
     /// The entry cites fewer admissible documents than its class's `evidence_policy.toml` minimum.
     pub const EVIDENCE_MINIMUM: &str = "FA-REF-080";
     /// A citation names a document this book does not hold.

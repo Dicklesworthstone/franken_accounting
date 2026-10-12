@@ -47,7 +47,7 @@ use fa_model::SealKey;
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
     ApprovalRef, Disposition, Entry, EntryClass, EntryOrigin, EntryPayload, EntryRef, Pending,
-    SupersessionKind, entry_mirrors, entry_vid, leg_mirrors, migration_entry_vid, period_vid,
+    SupersessionKind, entry_mirrors, entry_vid, migration_entry_vid, period_vid,
 };
 use fa_money::Side;
 use fa_registry::evidence_policy::EvidencePolicy;
@@ -153,8 +153,10 @@ pub enum PostPreparation {
 pub struct PreparedPost {
     txn: WriteTxn,
     request: PostRequest,
+    entry: Entry,
     entry_ref: EntryRef,
     period: String,
+    security_policy_epoch: u64,
     identity: Identity,
     seal_key: SealKey,
 }
@@ -164,6 +166,34 @@ impl PreparedPost {
     #[must_use]
     pub fn basis(&self) -> CommitSeq {
         self.txn.basis()
+    }
+
+    pub(crate) fn entry(&self) -> &Entry {
+        &self.entry
+    }
+
+    pub(crate) fn period(&self) -> &str {
+        &self.period
+    }
+
+    pub(crate) fn security_policy_epoch(&self) -> u64 {
+        self.security_policy_epoch
+    }
+
+    pub(crate) fn effects_digest(&self) -> Result<[u8; 32], KernelError> {
+        Ok(self.txn.staged_effect_digest()?.0)
+    }
+
+    /// Only the verified planning path appends its immutable graph evidence
+    /// after comparing the actual accounting effect. The original witnesses
+    /// and exact prepared Entry remain in this same transaction.
+    pub(crate) fn retain_plan<V: asupersync::fs::Vfs + Clone>(
+        &mut self,
+        db: &mut Database<V>,
+        batch: WriteBatch,
+    ) -> Result<(), KernelError> {
+        self.txn.write_ordered(db, vec![batch])?;
+        Ok(())
     }
 
     /// Release the prepared transaction without publishing any effects.
@@ -184,8 +214,10 @@ impl PreparedPost {
         let Self {
             mut txn,
             request,
+            entry: _,
             entry_ref,
             period,
+            security_policy_epoch: _,
             identity,
             seal_key,
         } = self;
@@ -503,6 +535,48 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
         }
         _ => None,
     };
+    // Provenance and plan references are claims, not caller-selected labels.
+    // The public path admits authored intents and the migration path checked
+    // above. System entries are minted by their own internal constructors;
+    // Canon and verified dry-run certificates have not shipped yet. Refuse
+    // these fields before the first storage observation, including on retry.
+    if req.plan_certificate.is_some() {
+        return Ok(Err(Refusal::new(
+            code::CLASS_NOT_IMPLEMENTED,
+            exit::REFUSAL,
+            "plan_certificate names an unverified dry-run certificate",
+            "Appendix A Entry envelope; FA-INV-05; fa-we7",
+            "omit plan_certificate until the plan-certificate verifier is available (fa-we7)",
+        )));
+    }
+    let unsupported_origin = match &proposal.origin {
+        EntryOrigin::Intent { .. } | EntryOrigin::Migration { .. } => None,
+        EntryOrigin::Rule { .. } => Some((
+            "Rule",
+            "leave the rule-derived entry unposted until Canon verifies its rule, event and inputs (fa-c34)",
+        )),
+        EntryOrigin::Sweep { .. } => Some((
+            "Sweep",
+            "run the kernel expiry sweep under a committed tick; only that sweep may mint Sweep provenance",
+        )),
+        EntryOrigin::Schedule { .. } => Some((
+            "Schedule",
+            "register the scheduled effect and let the kernel scheduler mint it from its trigger",
+        )),
+        EntryOrigin::Control { .. } => Some((
+            "Control",
+            "use the typed control operation; public post cannot mint a control origin",
+        )),
+    };
+    if let Some((origin, fix)) = unsupported_origin {
+        return Ok(Err(Refusal::new(
+            code::CLASS_NOT_IMPLEMENTED,
+            exit::REFUSAL,
+            format!("entry.origin.{origin} cannot be supplied through public post"),
+            "Appendix A EntryOrigin; FA-INV-05 (registered origin)",
+            fix,
+        )));
+    }
     // 1c. Two-phase shape (plan §5.4). `validate` already fixed the arity;
     //     `Expires` is the system's void at timeout — the expiry sweep mints
     //     it under a committed tick, so a caller never posts one.
@@ -811,6 +885,41 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
         );
     }
 
+    // A fresh correction names a registered reason. Outcome recognition
+    // stays first: an identical retry never rewrites or reinterprets an old
+    // immutable entry, including a reversal recorded before this law.
+    if is_reversal {
+        let reasons = fa_registry::reason_codes::ReasonCodes::embedded()
+            .map_err(|e| KernelError::Corrupt(e.to_string()))?;
+        let reason = proposal.supersession[0].reason_code;
+        let registered = reasons.get("supersession", reason);
+        let described = registered.is_none_or(|row| {
+            row.name != "Other"
+                || proposal
+                    .description
+                    .open(&book.seal_key, 1024)
+                    .is_ok_and(|text| !text.trim().is_empty())
+        });
+        if registered.is_none() || !described {
+            txn.abort();
+            return Ok(Err(Refusal::new(
+                code::SUPERSESSION_REASON,
+                exit::REFUSAL,
+                if registered.is_none() {
+                    format!("supersession reason {reason} is not registered (zero is not a reason)")
+                } else {
+                    "supersession reason Other requires a nonempty description sealed for this book"
+                        .into()
+                },
+                "plan §8.2, reason_codes.toml scope supersession",
+                format!(
+                    "choose a registered reason: {}; for Other, supply --description with the particulars",
+                    reasons.listing("supersession")
+                ),
+            )));
+        }
+    }
+
     // 4'. The run (plan §8.6): its state is a point witness, so a Finalize
     //     or Abandon that commits first makes this chunk a first-committer-wins
     //     conflict. An Opening-period chunk is dated on the run's opening
@@ -960,6 +1069,30 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
             ),
             rule.cite.clone(),
             "post this entry in a live period at or after the book's opening date; legacy history enters through a MigrationRun",
+        )));
+    }
+    if let Some(rule) = matrix.special_period_rule(born)
+        && !rule.admits(class_name)
+    {
+        if rule.refusal != code::PERIOD_LAW {
+            return Err(KernelError::Corrupt(format!(
+                "admissibility.toml special period {born:?} cites an unexpected refusal {}",
+                rule.refusal
+            )));
+        }
+        txn.abort();
+        return Ok(Err(Refusal::new(
+            code::PERIOD_LAW,
+            exit::SAFETY,
+            format!(
+                "`{}` is a {born:?} period and does not admit `{class_name}`",
+                period.code
+            ),
+            rule.cite.clone(),
+            format!(
+                "post `{class_name}` in a Normal period; this special period admits only {}",
+                rule.admits.join(", ")
+            ),
         )));
     }
     let family = match &resolution {
@@ -1419,6 +1552,43 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
                 fix,
             )));
         }
+        let target_fy = book
+            .calendar
+            .fiscal_year_of(original.proposal.effective_date)?;
+        let target_periods = book.calendar.periods_for_year(target_fy)?;
+        let target_period = resolve_period(
+            &target_periods,
+            original.proposal.effective_date,
+            original
+                .proposal
+                .effective_period
+                .as_ref()
+                .map(|p| p.code.as_str()),
+        )
+        .map_err(|error| {
+            KernelError::Corrupt(format!(
+                "reversal target {:032x} has no fiscal period: {error:?}",
+                target.vid.0
+            ))
+        })?;
+        // Civil dates alone cannot decide this: the normal year-end period
+        // and its adjustment/closing periods share the same last day.
+        if period.chronological_key() < target_period.chronological_key() {
+            txn.abort();
+            return Ok(Err(Refusal::new(
+                code::REVERSAL_PERIOD,
+                exit::REFUSAL,
+                format!(
+                    "reversal period `{}` precedes target period `{}` in the fiscal calendar",
+                    period.code, target_period.code
+                ),
+                "plan §8.1 (Reversal: same or later period)",
+                format!(
+                    "post the reversal in `{}` if its class is permitted there, or a later open Normal period",
+                    target_period.code
+                ),
+            )));
+        }
         let swapped = original.proposal.legs.len() == proposal.legs.len()
             && original
                 .proposal
@@ -1744,29 +1914,9 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
     }
     let entry: Entry = sealed.seal(req.approvals.clone(), req.plan_certificate)?;
     let mut has_leg = WriteBatch::new(relation::HAS_LEG);
-    let mut posts_to = WriteBatch::new(relation::POSTS_TO);
     let mut in_period = WriteBatch::new(relation::IN_PERIOD);
     has_leg.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
-    for (i, leg) in entry.proposal.legs.iter().enumerate() {
-        let ordinal =
-            u16::try_from(i).map_err(|_| KernelError::Corrupt("more than u16 legs".into()))?;
-        let lvid = leg_vid(evid, ordinal);
-        let mut mirrors = leg_mirrors(leg, ordinal, entry.proposal.effective_date, &book.units)?;
-        mirrors.push((property::APPLIED, mantissa_scalar("applied", 0)?));
-        has_leg.create_vertex(lvid, vec![label::LEG], mirrors);
-        has_leg.add_edge(
-            edge_id(relation::HAS_LEG, evid, lvid),
-            evid,
-            lvid,
-            vec![(property::ORDINAL, CanonicalScalar::Int(i64::from(ordinal)))],
-        );
-        posts_to.add_edge(
-            edge_id(relation::POSTS_TO, lvid, accounts[i].vid),
-            lvid,
-            accounts[i].vid,
-            vec![],
-        );
-    }
+    let leg_edges = crate::projections::stage_legs(&mut has_leg, evid, &entry, book)?;
     in_period.add_edge(edge_id(relation::IN_PERIOD, evid, pvid), evid, pvid, vec![]);
     for m in &judged.moves {
         m.before.stage(&m.after, m.cell, &mut has_leg)?;
@@ -1799,7 +1949,8 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
-    let mut batches = vec![has_leg, posts_to, in_period];
+    let mut batches = vec![has_leg, in_period];
+    batches.extend(leg_edges);
     if let Some(target) = reversal_target {
         let mut supersedes = WriteBatch::new(relation::SUPERSEDES);
         supersedes.add_edge(
@@ -1876,7 +2027,9 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
         txn,
         request: req,
         entry_ref: entry.entry_ref(evid),
+        entry,
         period: period.code,
+        security_policy_epoch: epoch,
         identity,
         seal_key: book.seal_key.clone(),
     }))))

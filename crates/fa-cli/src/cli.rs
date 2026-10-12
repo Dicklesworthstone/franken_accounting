@@ -21,11 +21,15 @@
 //! byte-identical across the two hosts by construction.
 
 use core::cell::RefCell;
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use fa::book::{Book, BookError, BookKeys, Entropy};
+use fa::{
+    MAX_PLAN_BYTES, PostIntent, PostPlan, ReportOutput, ReportSelection, Statement,
+    StatementDefinition, StatementSelection, TrialBalanceSelection,
+};
 use fa_journal::BookContext;
 use fa_journal::{
     AccountSpec, BalanceLimit, BookSpec, Capability, PostRequest, Posted, Refusal, UnitPolicy, exit,
@@ -36,10 +40,12 @@ use fa_model::{
 };
 use fa_model::{ControlPayload, Disposition, Pending};
 use fa_money::{Amount, Side};
+use fa_registry::reason_codes::{Reason, ReasonCodes};
 use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodState, PeriodTransition};
 use fgdb_types::{CommitSeq, VId};
 
 use crate::args::{self, Args, UsageError, nearest};
+use crate::authority::{LaunchAuthority, owner_envelope};
 use crate::document;
 use crate::json::{self, Json, obj, s};
 use crate::notary;
@@ -60,10 +66,15 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("period", period_cmd),
     ("approve", approve_cmd),
     ("post", post_cmd),
+    ("commit", commit_cmd),
+    ("reverse", reverse_cmd),
     ("reserve", reserve_cmd),
     ("resolve", resolve_cmd),
     ("document", document::document_cmd),
     ("tb", tb_cmd),
+    ("statement", statement_cmd),
+    ("replay", notary::replay_cmd),
+    ("certificate", notary::certificate_cmd),
     ("open-items", open_items_cmd),
     ("explain", explain_cmd),
     ("checkpoint", notary::checkpoint_cmd),
@@ -122,6 +133,30 @@ pub(crate) fn usage(message: impl Into<String>, fix: impl Into<String>) -> Fail 
         message: message.into(),
         fix: fix.into(),
     })
+}
+
+/// Report amounts come from stored entries and cells. A unit absent from
+/// the book's registry is corruption, not user input or printable money.
+fn amount_corruption(error: fa_money::AmountError) -> Fail {
+    Fail::Book(BookError::Kernel(fa_journal::KernelError::Corrupt(
+        format!(
+            "cannot render stored amount: {error}; preserve the book and use its creating registry; unit reconciliation is required (fa-nnm)"
+        ),
+    )))
+}
+
+fn render_amount(amount: Amount, units: &fa_money::UnitRegistry) -> Result<String, Fail> {
+    amount.try_render(units).map_err(amount_corruption)
+}
+
+fn registered_unit_code(
+    unit: fa_money::UnitId,
+    units: &fa_money::UnitRegistry,
+) -> Result<String, Fail> {
+    units
+        .get(unit)
+        .map(|unit| unit.code.clone())
+        .ok_or_else(|| amount_corruption(fa_money::AmountError::UnknownUnit(unit.to_string())))
 }
 
 /// Where a command's output goes.
@@ -190,6 +225,9 @@ impl Style {
 struct Said {
     at: Option<At>,
     warnings: Vec<String>,
+    time_selection: Option<fa::InstantSelection>,
+    authority: Option<Json>,
+    owner_principal: Option<String>,
 }
 
 /// Where a robot line sits (plan §4.8): the book's id, and the branch
@@ -203,20 +241,54 @@ pub struct At {
 }
 
 /// One robot-mode line (plan Appendix D): `{v, event, book, coordinate,
-/// data, certificate, warnings, next_actions}` with the event's fields under
+/// data, certificate, authority, warnings, next_actions}` with the event's fields under
 /// `data`; `book` and `coordinate` from `at` (null when no book backs the
-/// line); the registry's next actions for the event; and the replay
-/// certificate, null until plan certificates land (fa-we7). A daemon wire
-/// frame is its own flat object, never a robot line.
+/// line); and the registry's next actions for the event. This ordinary
+/// constructor leaves `certificate` null; certified reports bind their
+/// retained replay certificate per event. A daemon wire frame is its own
+/// flat object, never a robot line.
 #[must_use]
 pub fn robot_line(event: &str, data: Json, at: Option<&At>, warnings: &[String]) -> Json {
-    let next_actions = verbs::registry().map_or_else(
+    robot_line_with_actions(
+        event,
+        data,
+        at,
+        warnings,
+        &[],
+        RobotMetadata {
+            certificate: None,
+            time_selection: None,
+            authority: owner_envelope(None),
+        },
+    )
+}
+
+struct RobotMetadata<'a> {
+    certificate: Option<&'a str>,
+    time_selection: Option<&'a fa::InstantSelection>,
+    authority: Json,
+}
+
+fn robot_line_with_actions(
+    event: &str,
+    data: Json,
+    at: Option<&At>,
+    warnings: &[String],
+    actions: &[(String, String)],
+    metadata: RobotMetadata<'_>,
+) -> Json {
+    let mut next_actions: Vec<Json> = verbs::registry().map_or_else(
         |_| Vec::new(),
         |r| {
             r.next_actions_for(event)
                 .map(|n| obj(vec![("command", s(&n.command)), ("why", s(&n.why))]))
                 .collect()
         },
+    );
+    next_actions.extend(
+        actions
+            .iter()
+            .map(|(command, why)| obj(vec![("command", s(command)), ("why", s(why))])),
     );
     obj(vec![
         ("v", Json::Int(verbs::ENVELOPE_VERSION)),
@@ -229,11 +301,18 @@ pub fn robot_line(event: &str, data: Json, at: Option<&At>, warnings: &[String])
                     ("branch", s("trunk")),
                     ("known_at", Json::Int(i128::from(a.known_at.0))),
                     ("effective", s(&a.effective)),
+                    (
+                        "time_evidence",
+                        metadata
+                            .time_selection
+                            .map_or(Json::Null, time_selection_json),
+                    ),
                 ])
             }),
         ),
         (verbs::PAYLOAD, data),
-        ("certificate", Json::Null),
+        ("certificate", metadata.certificate.map_or(Json::Null, s)),
+        ("authority", metadata.authority),
         ("warnings", Json::Arr(warnings.iter().map(s).collect())),
         ("next_actions", Json::Arr(next_actions)),
     ])
@@ -248,6 +327,7 @@ fn stamp(said: &RefCell<Said>, book: &Book) -> Result<(), Fail> {
         .at
         .as_ref()
         .map_or_else(|| "all".to_string(), |a| a.effective.clone());
+    said.time_selection = None;
     said.at = Some(At {
         book: book.context().book_id.to_hex(),
         known_at: head,
@@ -266,6 +346,15 @@ pub(crate) struct Out {
 impl Out {
     fn new(json: bool, capture: bool) -> Self {
         Self::styled(json, capture, Style::PLAIN)
+    }
+
+    fn with_authority(self, authority: Option<&LaunchAuthority>) -> Self {
+        self.said.borrow_mut().authority = authority.map(LaunchAuthority::envelope_json);
+        self
+    }
+
+    fn is_bound(&self) -> bool {
+        self.said.borrow().authority.is_some()
     }
 
     fn styled(json: bool, capture: bool, style: Style) -> Self {
@@ -303,9 +392,26 @@ impl Out {
 
     /// Pin the coordinate's recorded sequence (an `--as-known-at` read).
     pub(crate) fn known_at(&self, seq: CommitSeq) {
-        if let Some(a) = self.said.borrow_mut().at.as_mut() {
+        let mut said = self.said.borrow_mut();
+        if let Some(a) = said.at.as_mut() {
             a.known_at = seq;
         }
+        if said
+            .time_selection
+            .as_ref()
+            .is_some_and(|time| time.resolution.resolved_seq != seq.0)
+        {
+            said.time_selection = None;
+        }
+    }
+
+    /// Bind an instant-selected coordinate to the retained tick resolution.
+    pub(crate) fn time_selection(&self, time: Option<&fa::InstantSelection>) {
+        let mut said = self.said.borrow_mut();
+        if let (Some(a), Some(time)) = (said.at.as_mut(), time) {
+            a.known_at = CommitSeq(time.resolution.resolved_seq);
+        }
+        said.time_selection = time.cloned();
     }
 
     /// Something the command noticed but did not refuse: robot mode carries
@@ -345,9 +451,56 @@ impl Out {
     /// One event: in robot mode the Appendix D line with `fields` as its
     /// `data`, otherwise the human text (nothing when it is empty).
     pub(crate) fn event(&self, name: &str, fields: Vec<(&str, Json)>, human: &str) {
+        self.event_with_actions(name, fields, human, &[]);
+    }
+
+    fn event_with_actions(
+        &self,
+        name: &str,
+        fields: Vec<(&str, Json)>,
+        human: &str,
+        actions: &[(String, String)],
+    ) {
+        self.emit_event(name, fields, human, actions, None);
+    }
+
+    /// Bind a successful report line to its replay certificate. The binding
+    /// is per event, so a later failure cannot inherit a success certificate.
+    pub(crate) fn event_with_certificate(
+        &self,
+        name: &str,
+        fields: Vec<(&str, Json)>,
+        human: &str,
+        certificate: Option<&str>,
+    ) {
+        self.emit_event(name, fields, human, &[], certificate);
+    }
+
+    fn emit_event(
+        &self,
+        name: &str,
+        fields: Vec<(&str, Json)>,
+        human: &str,
+        actions: &[(String, String)],
+        certificate: Option<&str>,
+    ) {
         if self.json {
             let said = self.said.borrow();
-            let line = robot_line(name, obj(fields), said.at.as_ref(), &said.warnings);
+            let line = robot_line_with_actions(
+                name,
+                obj(fields),
+                said.at.as_ref(),
+                &said.warnings,
+                actions,
+                RobotMetadata {
+                    certificate,
+                    time_selection: said.time_selection.as_ref(),
+                    authority: said
+                        .authority
+                        .clone()
+                        .unwrap_or_else(|| owner_envelope(said.owner_principal.as_deref())),
+                },
+            );
             self.line(line.render());
         } else if !human.is_empty() {
             self.line(human);
@@ -497,7 +650,7 @@ fn resolve_in(cwd: Option<&Path>, path: &str) -> PathBuf {
 }
 
 impl Files {
-    fn resolve(&self, path: &str) -> PathBuf {
+    pub(crate) fn resolve(&self, path: &str) -> PathBuf {
         resolve_in(self.cwd.as_deref(), path)
     }
 
@@ -541,21 +694,99 @@ pub(crate) struct Ctx<'a> {
     pub(crate) out: Out,
     pub(crate) books: BookSource<'a>,
     pub(crate) files: Files,
+    authority: Option<LaunchAuthority>,
+}
+
+impl Ctx<'_> {
+    pub(crate) fn principal(&self, args: &Args) -> VId {
+        self.authority
+            .as_ref()
+            .map_or_else(|| principal(args), LaunchAuthority::principal_vid)
+    }
+
+    /// A bound host reuses the launch capability verbatim. The handler's
+    /// implied ops exist only on the explicit embedded-owner route.
+    pub(crate) fn capability(&self, args: &Args, implied: &[&str]) -> Result<Capability, Fail> {
+        if let Some(authority) = &self.authority {
+            return Ok(authority.capability().clone());
+        }
+        let mut ops = implied.to_vec();
+        ops.extend(args.flag_all("--grant"));
+        Capability::embedded(self.principal(args), &ops).map_err(|e| {
+            usage(
+                e.to_string(),
+                "--grant takes a registered op name; `fa capabilities --json` lists them",
+            )
+        })
+    }
 }
 
 /// Run one `fa` command line. `capture` keeps the output for a response
 /// frame instead of writing it to stdio. Returns the exit code and, when
 /// captured, the output.
 pub fn run(argv: &[String], books: Books<'_>, files: Files, capture: bool) -> (u8, Captured) {
+    run_scoped(argv, books, files, None, capture)
+}
+
+/// Run under the immutable authority supplied by the host. Hosts opening
+/// a directory should use [`crate::entry::fa_with_authority`] for the
+/// writer lease as well. This route never self-issues an owner capability.
+pub fn run_with_authority(
+    argv: &[String],
+    books: Books<'_>,
+    files: Files,
+    authority: &LaunchAuthority,
+    capture: bool,
+) -> (u8, Captured) {
+    run_scoped(argv, books, files, Some(authority), capture)
+}
+
+fn run_scoped(
+    argv: &[String],
+    books: Books<'_>,
+    files: Files,
+    authority: Option<&LaunchAuthority>,
+    capture: bool,
+) -> (u8, Captured) {
     let json = argv.iter().any(|a| a == "--json");
     let reg = match registry() {
         Ok(r) => r,
-        Err(fail) => return finish_into(Out::new(json, capture), Err(fail)),
+        Err(fail) => {
+            return finish_into(Out::new(json, capture).with_authority(authority), Err(fail));
+        }
     };
-    let args = match args::parse(argv, &reg.value_flags(), &reg.switches()) {
+    let mut args = match args::parse(argv, &reg.value_flags(), &reg.switches()) {
         Ok(a) => a,
-        Err(e) => return finish_into(Out::new(json, capture), Err(Fail::Usage(e))),
+        Err(e) => {
+            return finish_into(
+                Out::new(json, capture).with_authority(authority),
+                Err(Fail::Usage(e)),
+            );
+        }
     };
+    if let Some(authority) = authority {
+        for flag in ["--as", "--grant", "--yes", "--book", "--keys", "--via"] {
+            if args.flags.contains_key(flag) || args.switch(flag) {
+                return usage_error_with_authority(
+                    argv,
+                    format!("{flag} cannot override launch-bound authority"),
+                    "identity, authority, book, keys and transport are fixed when the server starts; ask the operator to start a server with the profile you need",
+                    authority,
+                    capture,
+                );
+            }
+        }
+        // Bind parsed fields, not appended argv: a caller's `--` terminator
+        // or duplicate flag cannot turn the trusted paths into positionals.
+        args.flags.insert(
+            "--book".into(),
+            vec![authority.book().to_string_lossy().into_owned()],
+        );
+        if let Some(keys) = authority.keys() {
+            args.flags
+                .insert("--keys".into(), vec![keys.to_string_lossy().into_owned()]);
+        }
+    }
     let json = args.switch("--json");
     let style = Style::resolve(
         json,
@@ -564,13 +795,22 @@ pub fn run(argv: &[String], books: Books<'_>, files: Files, capture: bool) -> (u
         std::io::stdout().is_terminal(),
         |name| std::env::var(name).ok(),
     );
-    let out = Out::styled(json, capture, style);
+    let out = Out::styled(json, capture, style).with_authority(authority);
+    if authority.is_none() {
+        out.said.borrow_mut().owner_principal =
+            Some(args.flag("--as").unwrap_or("operator").to_string());
+    }
     let books = BookSource {
         books,
         said: Rc::clone(&out.said),
         cwd: files.cwd.clone(),
     };
-    let mut ctx = Ctx { out, books, files };
+    let mut ctx = Ctx {
+        out,
+        books,
+        files,
+        authority: authority.cloned(),
+    };
     let result = dispatch(&mut ctx, reg, &args);
     finish_into(ctx.out, result)
 }
@@ -585,6 +825,53 @@ fn finish_into(out: Out, result: Result<(), Fail>) -> (u8, Captured) {
 #[must_use]
 pub fn refuse(argv: &[String], refusal: Refusal, capture: bool) -> (u8, Captured) {
     host_failure(argv, Fail::Refusal(refusal), capture)
+}
+
+/// A host refusal that retains the launch binding before a book is opened.
+#[must_use]
+pub fn refuse_with_authority(
+    argv: &[String],
+    refusal: Refusal,
+    authority: &LaunchAuthority,
+    capture: bool,
+) -> (u8, Captured) {
+    host_failure_with_authority(argv, Fail::Refusal(refusal), authority, capture)
+}
+
+/// A bound host's usage error, including parsing and forbidden overrides.
+#[must_use]
+pub fn usage_error_with_authority(
+    argv: &[String],
+    message: impl Into<String>,
+    fix: impl Into<String>,
+    authority: &LaunchAuthority,
+    capture: bool,
+) -> (u8, Captured) {
+    host_failure_with_authority(argv, usage(message, fix), authority, capture)
+}
+
+/// A bound host's environment error; it never falls back to owner execution.
+#[must_use]
+pub fn environment_error_with_authority(
+    argv: &[String],
+    message: String,
+    authority: &LaunchAuthority,
+    capture: bool,
+) -> (u8, Captured) {
+    host_failure_with_authority(argv, Fail::Environment(message), authority, capture)
+}
+
+fn host_failure_with_authority(
+    argv: &[String],
+    fail: Fail,
+    authority: &LaunchAuthority,
+    capture: bool,
+) -> (u8, Captured) {
+    let json = argv.iter().any(|a| a == "--json");
+    finish_into(
+        Out::new(json, capture).with_authority(Some(authority)),
+        Err(fail),
+    )
 }
 
 /// A usage error (exit 2) raised by a host before any command runs.
@@ -824,7 +1111,9 @@ fn dispatch(ctx: &mut Ctx<'_>, reg: &Registry, args: &Args) -> Result<(), Fail> 
             }
         }
     }
-    gate_from_argv(out, reg, verb, args)?;
+    gate_from_argv(out, reg, verb, args, ctx.authority.as_ref())?;
+    admit_bound_command(ctx, verb, args)?;
+    admit_bound_files(ctx, verb, args)?;
     let handler = HANDLERS
         .iter()
         .find(|(name, _)| *name == verb.name)
@@ -836,6 +1125,124 @@ fn dispatch(ctx: &mut Ctx<'_>, reg: &Registry, args: &Args) -> Result<(), Fail> 
             ))
         })?;
     handler(ctx, args)
+}
+
+/// The current period planner returns before every publication. Only this
+/// concrete handler path may bypass dangerous-commit gating; an arbitrary
+/// `--plan` or `--plan-out` argument is never an MCP confirmation.
+fn period_plan_only(verb: &str, args: &Args) -> bool {
+    verb == "period"
+        && matches!(
+            args.positional.get(1).map(String::as_str),
+            Some("open" | "soft-close" | "close" | "lock" | "reopen")
+        )
+        && (args.flag("--plan-out").is_some() || args.switch("--dry-run"))
+        && args.flag("--plan").is_none()
+        && args.flag_all("--approval").is_empty()
+}
+
+/// These concrete handlers prepare and abort the real posting transaction.
+/// No other verb may use a dry-run flag to bypass its confirmation gate.
+fn post_plan_only(verb: &str, args: &Args) -> bool {
+    matches!(verb, "post" | "reverse" | "reserve" | "resolve") && args.switch("--dry-run")
+}
+
+/// Admit the concrete operation before handlers read input files or the
+/// book. Legacy facade mutations without a caller capability remain owner
+/// operations. Report certificates and derived register caches are metadata,
+/// not accounting entries; their actual dangerous rewrites are gated too.
+fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fail> {
+    let Some(authority) = &ctx.authority else {
+        return Ok(());
+    };
+    use fa_policy::Op;
+    let sub = args.positional.get(1).map(String::as_str);
+    let required: &[Op] = if period_plan_only(&verb.name, args) {
+        &[Op::Read]
+    } else {
+        match (verb.name.as_str(), sub) {
+            ("capabilities" | "robot-docs" | "help", _) => &[],
+            ("book", Some("info"))
+            | ("chart" | "period", Some("list"))
+            | (
+                "tb" | "statement" | "open-items" | "explain" | "replay" | "certificate" | "entry",
+                _,
+            ) => &[Op::Read],
+            ("verify" | "registers", _) => &[Op::Read, Op::Verify],
+            ("post" | "commit" | "reverse" | "reserve" | "resolve", _) => &[Op::Post],
+            ("approve", _) => &[Op::Approve],
+            ("checkpoint", _) => &[Op::Witness],
+            _ => {
+                return Err(Refusal::new(
+                    fa_journal::refusal::code::CAPABILITY,
+                    exit::SAFETY,
+                    format!("`{}` is not admitted by the launch-bound MCP command surface", command_name(&verb.name, sub)),
+                    "plan §14.2–§14.4; fa-23r (authority before observation)",
+                    "ask the operator to perform this owner operation; document intake needs its provenance-authorized surface (fa-vwf), and period lock/reopen can be prepared with --plan-out",
+                ).into());
+            }
+        }
+    };
+    for op in required {
+        fa_policy::require(authority.capability(), *op, &command_name(&verb.name, sub))
+            .map_err(|denial| {
+                let mut refusal = fa_journal::policy::refusal(&denial);
+                refusal.fix = "identity and authority are fixed when the server starts; ask the operator to start a server with the profile and operations you need".into();
+                Fail::Refusal(refusal)
+            })?;
+    }
+    Ok(())
+}
+
+/// Bound hosts receive content through forwarded stdin. Caller paths never
+/// become host reads or writes; the configured book and keys are separate,
+/// trusted launch inputs. No filesystem root is supported in this slice.
+fn admit_bound_files(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fail> {
+    if ctx.authority.is_none() {
+        return Ok(());
+    }
+    let blocked = |argument: &str, fix: &str| {
+        usage(
+            format!("{argument} cannot name a host filesystem path in a launch-bound request"),
+            fix,
+        )
+    };
+    for flag in ["--plan-out", "--certificate-out"] {
+        if args.flag(flag).is_some() {
+            return Err(blocked(
+                flag,
+                "use --dry-run for inline plan bytes or --certify for a retained certificate; MCP accepts no output paths (fa-yha)",
+            ));
+        }
+    }
+    for flag in ["--intent", "--plan"] {
+        if args.flag_all(flag).iter().any(|value| *value != "-") {
+            return Err(blocked(
+                flag,
+                "forward the complete content on stdin with -; MCP takes the inline intent or plan property, never a file path (fa-yha)",
+            ));
+        }
+    }
+    let sub = args.positional.get(1).map(String::as_str);
+    let input = match (verb.name.as_str(), sub) {
+        ("chart", Some("import")) | ("document", Some("add")) => args.positional.get(2),
+        ("replay", _) => args.positional.get(1),
+        ("certificate", Some("status")) => args.positional.get(2),
+        _ => None,
+    };
+    if let Some(input) = input {
+        let digits = input.strip_prefix("C:").unwrap_or(input);
+        let retained = matches!(verb.name.as_str(), "replay" | "certificate")
+            && digits.len() == 64
+            && digits.bytes().all(|byte| byte.is_ascii_hexdigit());
+        if input != "-" && !retained {
+            return Err(blocked(
+                "file",
+                "forward the complete input on stdin with -; report replay also accepts a retained C:<oid>. MCP uses inline chart, text, or certificate properties (fa-yha)",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Whether the command line confirms an operation that cannot be undone in
@@ -876,11 +1283,37 @@ fn unconfirmed(d: &Dangerous) -> Fail {
     ))
 }
 
+fn unconfirmed_bound(d: &Dangerous) -> Fail {
+    let alternative = if d.verb == "period"
+        && matches!(d.subcommand.as_deref(), Some("lock" | "reopen" | "close"))
+    {
+        format!(
+            "prepare the operation with `fa period {} <code> --dry-run`; an independent operator must review and commit it",
+            d.subcommand.as_deref().unwrap_or("lock")
+        )
+    } else {
+        d.safe.clone()
+    };
+    Refusal::new(
+        CONFIRMATION_REQUIRED,
+        exit::SAFETY,
+        format!("`{}` requires independent confirmation; MCP cannot commit this dangerous operation until confirm_plan is implemented", command_name(&d.verb, d.subcommand.as_deref())),
+        "plan §15.3; fa-23r; fa-we7 (typed confirmation plans)",
+        alternative,
+    ).into()
+}
+
 /// The dangerous operations the command line alone shows (verbs.toml
 /// `[[dangerous]]`: `always`, `grant:<op>`) are refused unless confirmed,
 /// before the handler opens the book. A confirmation on a command with no
 /// dangerous row is a warning, never a silent no-op.
-fn gate_from_argv(out: &Out, reg: &Registry, verb: &Verb, args: &Args) -> Result<(), Fail> {
+fn gate_from_argv(
+    out: &Out,
+    reg: &Registry,
+    verb: &Verb,
+    args: &Args,
+    authority: Option<&LaunchAuthority>,
+) -> Result<(), Fail> {
     let sub = if verb.subcommands.is_empty() {
         None
     } else {
@@ -888,10 +1321,10 @@ fn gate_from_argv(out: &Out, reg: &Registry, verb: &Verb, args: &Args) -> Result
     };
     let mut rows = reg.dangerous_for(&verb.name, sub).peekable();
     // Planning commits nothing: the commit from the plan is what confirms.
-    if args.flag("--plan-out").is_some() {
+    if period_plan_only(&verb.name, args) || post_plan_only(&verb.name, args) {
         return Ok(());
     }
-    if confirmed(args) {
+    if authority.is_none() && confirmed(args) {
         // `--plan` is a file argument wherever it appears; only a bare
         // `--yes` can confirm nothing.
         if rows.peek().is_none() && args.switch("--yes") {
@@ -905,11 +1338,20 @@ fn gate_from_argv(out: &Out, reg: &Registry, verb: &Verb, args: &Args) -> Result
     for d in rows {
         let applies = match &d.condition {
             Condition::Always => true,
-            Condition::Grant(op) => args.flag_all("--grant").contains(&op.as_str()),
+            Condition::Grant(op) => match authority {
+                Some(authority) => {
+                    fa_policy::Op::from_name(op).is_some_and(|op| authority.capability().holds(op))
+                }
+                None => args.flag_all("--grant").contains(&op.as_str()),
+            },
             Condition::Voids | Condition::ExistingCells => false,
         };
         if applies {
-            return Err(unconfirmed(d));
+            return Err(if authority.is_some() {
+                unconfirmed_bound(d)
+            } else {
+                unconfirmed(d)
+            });
         }
     }
     Ok(())
@@ -920,12 +1362,13 @@ fn gate_from_argv(out: &Out, reg: &Registry, verb: &Verb, args: &Args) -> Result
 /// write. A handler gating an operation verbs.toml does not list is a
 /// parity defect.
 pub(crate) fn gate(
+    out: &Out,
     args: &Args,
     verb: &str,
     subcommand: Option<&str>,
     condition: &Condition,
 ) -> Result<(), Fail> {
-    if confirmed(args) {
+    if (!out.is_bound() && confirmed(args)) || post_plan_only(verb, args) {
         return Ok(());
     }
     let reg = registry()?;
@@ -933,7 +1376,11 @@ pub(crate) fn gate(
         .dangerous_for(verb, subcommand)
         .find(|d| d.condition == *condition)
     {
-        Some(d) => Err(unconfirmed(d)),
+        Some(d) => Err(if out.is_bound() {
+            unconfirmed_bound(d)
+        } else {
+            unconfirmed(d)
+        }),
         None => Err(Fail::Internal(format!(
             "`{}` gates `{}`, which verbs.toml [[dangerous]] does not list",
             command_name(verb, subcommand),
@@ -1156,7 +1603,7 @@ fn capabilities_cmd(ctx: &mut Ctx<'_>, _args: &Args) -> Result<(), Fail> {
         ("stdout", s("data")),
         ("stderr", s("diagnostics")),
         ("tui", Json::Bool(false)),
-        ("capability", capability_model()?),
+        ("capability", capability_model(ctx.authority.as_ref())?),
         (
             "dangerous",
             Json::Arr(
@@ -1200,7 +1647,7 @@ fn capabilities_cmd(ctx: &mut Ctx<'_>, _args: &Args) -> Result<(), Fail> {
 /// The capability model this build enforces (plan §14.2, §14.4; fa-policy):
 /// the closed op vocabulary, the profiles and the ops each can never hold,
 /// the caveats' semantics, and the embedded posture's binding.
-fn capability_model() -> Result<Json, Fail> {
+fn capability_model(authority: Option<&LaunchAuthority>) -> Result<Json, Fail> {
     let steward = fa_journal::policy::steward().map_err(BookError::Kernel)?;
     let names = |ops: &[fa_policy::Op]| Json::Arr(ops.iter().map(|o| s(o.name())).collect());
     Ok(obj(vec![
@@ -1242,16 +1689,35 @@ fn capability_model() -> Result<Json, Fail> {
             obj(vec![
                 (
                     "flags",
-                    Json::Arr(vec![s("--as <principal>"), s("--grant <op>")]),
+                    Json::Arr(if authority.is_some() {
+                        Vec::new()
+                    } else {
+                        vec![s("--as <principal>"), s("--grant <op>")]
+                    }),
                 ),
-                ("profile", s(fa_policy::Profile::Human.name())),
+                (
+                    "posture",
+                    s(if authority.is_some() {
+                        "mcp-launch-config"
+                    } else {
+                        "embedded-owner"
+                    }),
+                ),
+                (
+                    "profile",
+                    s(authority
+                        .map_or(fa_policy::Profile::Human, |a| a.capability().profile())
+                        .name()),
+                ),
                 ("ceilings", Json::Arr(Vec::new())),
                 ("expires_at", Json::Null),
                 (
                     "trust_boundary",
-                    s(
-                        "embedded posture: the calling process is the principal's own agent; --as names the principal and --grant self-issues a Human-profile capability for it with no ceilings and no expiry. The daemon/MCP posture binds the capability from an authenticated session instead; the kernel never authenticates a caller.",
-                    ),
+                    s(if authority.is_some() {
+                        "MCP binds one capability from trusted operator launch configuration: fixed principal, profile, operations, book and key path. Requests cannot choose identity, grants, confirmation or daemon routing. Launch configuration does not authenticate the operator; issued tokens and authenticated daemon sessions remain fa-v62/fa-r3q. The envelope lists this session's actual launch template and ops."
+                    } else {
+                        "embedded-owner posture: the calling process supplies --as and self-issues Human-profile operations per command with --grant, without ceilings or expiry. The current fad argv route has the same owner posture and no authenticated session. MCP uses a separate launch-config binding and refuses this daemon route. The kernel evaluates supplied authority; it does not authenticate the operator."
+                    }),
                 ),
             ]),
         ),
@@ -1275,6 +1741,22 @@ fn robot_docs_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("examples") => EXAMPLES.to_string(),
         Some("schema") => return robot_schema(out, registry()?, args.positional.get(2)),
         _ => return Err(unhandled("robot-docs", topic.map(String::as_str))),
+    };
+    let text = match &ctx.authority {
+        Some(authority) => format!(
+            "This MCP server is bound at launch to principal `{}` under the `{}` template, with ops [{}]. Tool requests cannot override identity, grants, confirmation, book or keys. Dangerous commits require independent operator review until confirm_plan is available. The current daemon route cannot carry this authority and is refused. Launch configuration trusts the operator; it is not operator authentication. CLI --as/--grant/--yes examples below describe the operator's embedded-owner command line.\n\n{}",
+            authority.principal(),
+            authority.profile().name(),
+            authority
+                .capability()
+                .ops()
+                .iter()
+                .map(|op| op.name())
+                .collect::<Vec<_>>()
+                .join(", "),
+            text
+        ),
+        None => text,
     };
     out.event(
         "robot_docs",
@@ -1419,7 +1901,7 @@ fn robot_schema(out: &Out, reg: &Registry, name: Option<&String>) -> Result<(), 
 
 const GUIDE: &str = "fa robot-docs guide\n\
 \n\
-1. Every command accepts --json. Parse stdout line by line; each line is one JSON object {v, event, book, coordinate, data, certificate, warnings, next_actions}: `event` names the schema of `data`; `book` and `coordinate` say which book and (branch, known_at, effective) the line describes; `next_actions` are the commands usually run next (add the same --book).\n\
+1. Every command accepts --json. Parse stdout line by line; each line is one JSON object {v, event, book, coordinate, data, certificate, authority, warnings, next_actions}: `event` names the schema of `data`; `book` and `coordinate` say which book and (branch, known_at, effective) the line describes; `authority` declares the actual execution binding; `next_actions` are the commands usually run next (add the same --book in the owner's CLI).\n\
 2. Read the exit code before the output: 0 success (empty results are 0), 2 usage, 3 accounting-law refusal, 4 environment, 5 foundation/I-O, 6 conflict (retry with a fresh read), 7 safety block (period law, capability, an unconfirmed dangerous operation), 8 verification failure. 1 is never emitted.\n\
 3. Every non-zero exit is exactly one `error` line: data {class, exit, refusal_id, message, cite, fix, detail}. `refusal_id` (FA-REF-nnn) is the refusal catalog code when one applies. Do the `fix`; do not invent a leg, a date, or an approval. FA-REF-007 means the operation cannot be undone in practice: its fix names the safe alternative; add --yes only when the operation is intended (`fa capabilities --json` lists them under `dangerous`).\n\
 4. Amounts are strings with the unit: \"1500.00 USD\". Never floats. Dates are civil YYYY-MM-DD; recorded time is assigned by the journal, never supplied.\n\
@@ -1429,7 +1911,10 @@ const GUIDE: &str = "fa robot-docs guide\n\
 8. Two-phase: `fa reserve` posts a Pending (amounts in the pending columns, never posted); `fa resolve` names it with `resolves` and either posts a sub-vector (`legs`, each drawn from one hold leg — same account and side, at most the reserved amount; add `source_ordinal` when the hold has several such legs) or voids it (`disposition: \"voids\"`). The rest of the hold is released either way. One resolution per hold: a second is exit 6 (FA-REF-062); resolving a non-hold is FA-REF-060.\n\
 9. Explain before you trust: `fa explain balance <account> --period <code> --json` returns the account's register cells, the fold digest they belong to, every contributing leg with its entry and recorded_at, and the cells' known-at history; the legs re-add to the cells exactly. Add --as-known-at <seq> to see what was known then.\n\
 10. Schemas: `fa robot-docs schema --json` lists every event and its fields (generated from registries/verbs.toml); `fa robot-docs schema <event>` prints one. `fa <command> --help` prints that command's usage, flags, events and exits.\n\
-11. Application: a leg may carry `settles: [{entry, ordinal, amount}]` to apply itself to an open item — the opposite side on the same account and unit, at most the item's open amount (FA-REF-072 names what is open). `fa open-items --account <code>` lists items with their applications. Reversing a receipt reopens the invoice (its applications are undone, never re-entered); an invoice with live applications cannot be reversed until its receipts are (FA-REF-073).\n";
+11. Application: a leg may carry `settles: [{entry, ordinal, amount}]` to apply itself to an open item — the opposite side on the same account and unit, at most the item's open amount (FA-REF-072 names what is open). `fa open-items --account <code>` lists items with their applications. Reversing a receipt reopens the invoice (its applications are undone, never re-entered); an invoice with live applications cannot be reversed until its receipts are (FA-REF-073).\n\
+12. Corrections require a registered reason: `fa reverse <vid> --reason WrongAccount --json` derives the opposite legs and retains the target's date by default; --effective selects an explicit same-or-later admissible period. A Reversal passed to `fa post` likewise carries `reason`, for example \"WrongAmount\". `fa entry show <reversal vid> --json` reports the immutable supersession and its reason. Other requires a description; no reason code proves the explanation true.\n\
+13. Retain a report for replay: `fa tb --period FY2026-P03 --certify --json`, `fa explain balance 1000 --period FY2026-P03 --certify --json`, and `fa open-items --account 1000 --certify --json` retain the report's certificate in the book. Each emits its original report event followed by report_certificate, binding the selector, known-at, historical account metadata and native history. `fa replay C:<oid> --json` reproduces the original report, and `fa certificate status C:<oid> --json` names later relevant entries without changing it. --certificate-out report.cert also writes a new external copy, never overwriting one. File and complete inline hex remain accepted; MCP accepts the returned oid or bytes as certificate. Certification writes metadata, never accounting entries; uncertified reads do not write. Scope is fa-fold-over-prefix with embedded-owner authority.\n\
+14. Rehearse an entry before writing: add --dry-run to post, reverse, reserve or resolve. The actual posting laws run, their staged transaction is aborted, and one plan event returns the exact sealed proposal, native effects digest, snapshot and complete canonical bytes. --plan-out <new-file> saves a private binary copy without replacing a file. Review it, then `fa commit --plan <file|-> --json` with the same owner --as and --grant; stdin accepts the bytes hex string. MCP uses fa_post_commit_plan with plan set to that string and keeps its launch-bound capability unchanged: ordinary Preparer plans can commit, Agent trunk posting still refuses, and dangerous void commits remain unavailable until separate confirmation exists. A first commit atomically retains its graph Certificate and CITES edge; an exact retry returns plan_committed with already_recorded=true. Any intervening book publication invalidates this first same-snapshot plan and requires another dry run. Planning collects no new approvals and provides no draft or --balancing support. A dry-run void releases nothing; the owner explicitly confirms its exact artifact, while MCP must ask the operator to separately prepare and confirm a release. Public plan digests are data fields, never native object-store OIDs in the envelope.\n";
 
 const EXAMPLES: &str = "fa robot-docs examples\n\
 \n\
@@ -1690,6 +2175,7 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 // ---------------------------------------------------------------------------
 
 fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let who = ctx.principal(args);
     let out = &ctx.out;
     match args.positional.get(1).map(String::as_str) {
         Some("import") => {
@@ -1815,7 +2301,7 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 )
                 .into_bytes(),
             };
-            let installed = book.install_chart(&accounts, principal(args), date, &key)??;
+            let installed = book.install_chart(&accounts, who, date, &key)??;
             out.at_book(&book)?;
             out.event(
                 "chart_installed",
@@ -1841,16 +2327,20 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let book = ctx.books.open(args)?;
             let rows = book.accounts()?;
             let units = &book.context().units;
-            let bound = |a: &fa_journal::AccountRow, m: Option<i128>| match (a.unit_policy, m) {
-                (UnitPolicy::Single(u), Some(m)) => s(Amount::new(u, m).render(units)),
-                _ => Json::Null,
+            let bound = |a: &fa_journal::AccountRow, m: Option<i128>| -> Result<Json, Fail> {
+                match (a.unit_policy, m) {
+                    (UnitPolicy::Single(u), Some(m)) => {
+                        Ok(s(render_amount(Amount::new(u, m), units)?))
+                    }
+                    _ => Ok(Json::Null),
+                }
             };
             let items: Vec<Json> = rows
                 .iter()
                 .map(|a| {
-                    obj(vec![
-                        ("lower_bound", bound(a, a.limit.and_then(|l| l.lower))),
-                        ("upper_bound", bound(a, a.limit.and_then(|l| l.upper))),
+                    Ok(obj(vec![
+                        ("lower_bound", bound(a, a.limit.and_then(|l| l.lower))?),
+                        ("upper_bound", bound(a, a.limit.and_then(|l| l.upper))?),
                         (
                             "limit_scope",
                             a.limit.map_or(Json::Null, |l| {
@@ -1867,16 +2357,14 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         (
                             "unit",
                             s(match a.unit_policy {
-                                UnitPolicy::Single(u) => {
-                                    units.get(u).map(|u| u.code.clone()).unwrap_or_default()
-                                }
+                                UnitPolicy::Single(u) => registered_unit_code(u, units)?,
                                 UnitPolicy::AnyCurrency => "any-currency".into(),
                                 UnitPolicy::AnyUnit => "any".into(),
                             }),
                         ),
-                    ])
+                    ]))
                 })
-                .collect();
+                .collect::<Result<_, Fail>>()?;
             if out.json {
                 out.event("accounts", vec![("accounts", Json::Arr(items))], "");
             } else {
@@ -1903,6 +2391,26 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     let sub = args.positional.get(1).map(String::as_str);
+    if args.switch("--dry-run") {
+        if !matches!(
+            sub,
+            Some("open" | "soft-close" | "close" | "lock" | "reopen")
+        ) {
+            return Err(usage(
+                "--dry-run prepares a period transition only",
+                "fa period <transition> <code> --dry-run --json",
+            ));
+        }
+        if args.flag("--plan-out").is_some()
+            || args.flag("--plan").is_some()
+            || !args.flag_all("--approval").is_empty()
+        {
+            return Err(usage(
+                "--dry-run returns a proposal inline and cannot be combined with --plan-out, --plan, or --approval",
+                "prepare with --dry-run first; an authorized owner commits the exact returned bytes separately",
+            ));
+        }
+    }
     match sub {
         Some("create") => {
             let fy: i32 = args
@@ -1976,6 +2484,14 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "--reason 0",
                 )
             })?;
+            let who = ctx.principal(args);
+            let op = fa_journal::policy::steward()
+                .map_err(BookError::Kernel)?
+                .transition_op("PeriodControl", fa_journal::transition_name(transition))
+                .ok_or_else(|| {
+                    Fail::Internal(format!("no PeriodControl {t} rule in sod_policy.toml"))
+                })?;
+            let capability = ctx.capability(args, &[op.name()])?;
             let mut book = ctx.books.open(args)?;
             let current = book
                 .periods()?
@@ -1995,26 +2511,34 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     .map(|p| p.start)
                     .unwrap_or(DateDay(0)),
             )?;
-            // Embedded-posture binding (plan §14.2 trust boundary): the
-            // operator self-issues exactly the op the transition's registered
-            // rule names (`close`, or `reopen`). Transitions that need
-            // approvers are planned (`--plan-out`), approved (`fa approve`)
-            // and committed from the plan (`--plan`, `--approval`).
-            let who = principal(args);
-            let op = fa_journal::policy::steward()
-                .map_err(BookError::Kernel)?
-                .transition_op("PeriodControl", fa_journal::transition_name(transition))
-                .ok_or_else(|| {
-                    Fail::Internal(format!("no PeriodControl {t} rule in sod_policy.toml"))
-                })?;
-            let capability = Capability::embedded(who, &[op.name()])
-                .map_err(|e| Fail::Internal(format!("self-issued capability: {e}")))?;
             let approval_flags = args.flag_all("--approval");
             // A plan seals the description once (R4), so an approval
             // recorded by another principal, in another process, binds the
             // proposal the commit rebuilds from the plan's inputs. Plan files
             // resolve against the caller's working directory, as every file
             // argument does (a daemon writes and reads the client's).
+            if args.switch("--dry-run") {
+                let plan = book.plan_transition(code, transition, who, reason, date, &key)??;
+                let digest = book.plan_digest(&plan)?;
+                let bytes = plan
+                    .encode()
+                    .map_err(|e| Fail::Internal(format!("plan encoding: {e}")))?;
+                let encoded = hex(&bytes);
+                out.event(
+                    "period_plan",
+                    vec![
+                        ("period", s(&plan.period_code)),
+                        ("from", s(plan.from.name())),
+                        ("to", s(plan.to.name())),
+                        ("principal", s(format!("{:032x}", plan.principal_ref.0))),
+                        ("proposal_digest", s(hex(&digest))),
+                        ("bytes", s(&encoded)),
+                        ("scope", s("period-transition-proposal")),
+                    ],
+                    &format!("{}: planned {} → {}; nothing was written. Approvals bind proposal {}. Commit authority and required approvals are checked separately.\nCanonical period plan bytes (hex):\n{encoded}", plan.period_code, plan.from.name(), plan.to.name(), hex(&digest)),
+                );
+                return Ok(());
+            }
             if let Some(path) = args.flag("--plan-out") {
                 if args.flag("--plan").is_some() || !approval_flags.is_empty() {
                     return Err(usage(
@@ -2052,7 +2576,8 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             }
             let tr = match args.flag("--plan") {
                 Some(path) => {
-                    let bytes = ctx.files.read_bytes(path)?;
+                    let bytes =
+                        read_plan_bytes(&ctx.files, path, b"fa:period-plan", "period transition")?;
                     let plan = fa_journal::TransitionPlan::decode(&bytes).map_err(|e| {
                         usage(
                             format!("{path} is not a period plan: {e}"),
@@ -2136,15 +2661,7 @@ fn approve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         )
     })?;
     let digest = parse_digest(text, "--proposal")?;
-    let who = principal(args);
-    let mut ops = vec!["approve"];
-    ops.extend(args.flag_all("--grant"));
-    let capability = Capability::embedded(who, &ops).map_err(|e| {
-        usage(
-            e.to_string(),
-            "--grant takes a registered op name; `fa capabilities --json` lists them",
-        )
-    })?;
+    let capability = ctx.capability(args, &["approve"])?;
     let mut book = ctx.books.open(args)?;
     let approved = book.approve(capability, digest)??;
     ctx.out.at_book(&book)?;
@@ -2349,6 +2866,112 @@ fn post_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     post_with(ctx, args, None)
 }
 
+/// Reverse an identified entry without making the operator re-enter its
+/// legs. The original effective date is the default, never today's date or
+/// the next open period; any explicit date still passes the kernel's law.
+fn reverse_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.len() != 2 {
+        return Err(usage(
+            "reverse needs exactly one entry vid",
+            "fa reverse <vid> --reason WrongAccount [--effective YYYY-MM-DD]",
+        ));
+    }
+    for flag in [
+        "--reason",
+        "--effective",
+        "--period",
+        "--key",
+        "--description",
+    ] {
+        if args.flag_all(flag).len() > 1 {
+            return Err(usage(
+                format!("reverse takes only one {flag}"),
+                "fa reverse <vid> --reason WrongAccount [--effective YYYY-MM-DD]",
+            ));
+        }
+    }
+    let target = args.positional[1]
+        .strip_prefix("E:")
+        .unwrap_or(&args.positional[1]);
+    let vid = parse_vid(target, "reverse target")?;
+    let key = args
+        .flag("--key")
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("reverse:{:032x}", vid.0));
+    let mut fields = vec![
+        ("class", s("Reversal")),
+        ("reverses", s(format!("{:032x}", vid.0))),
+        ("idempotency_key", s(key)),
+    ];
+    for (flag, field) in [
+        ("--reason", "reason"),
+        ("--effective", "effective_date"),
+        ("--period", "effective_period"),
+        ("--description", "description"),
+    ] {
+        if let Some(value) = args.flag(flag) {
+            fields.push((field, s(value)));
+        }
+    }
+    post_document(ctx, args, Some(EntryClass::REVERSAL), obj(fields))
+}
+
+/// Reason names and numeric codes have one registry-backed meaning. The
+/// reason is part of the sealed proposal and therefore part of retry
+/// identity; the caller's explanation belongs in its description.
+fn reversal_reason(value: Option<&Json>) -> Result<Reason, Fail> {
+    let reasons =
+        ReasonCodes::embedded().map_err(|e| Fail::Internal(format!("reason_codes.toml: {e}")))?;
+    let supplied = value.and_then(Json::as_str);
+    let reason = supplied.and_then(|text| {
+        reasons.rows.iter().find(|r| {
+            r.scope == "supersession"
+                && (r.name == text || text.parse::<u16>().ok() == Some(r.code))
+        })
+    });
+    if let Some(reason) = reason {
+        return Ok(reason.clone());
+    }
+    let names: Vec<&str> = reasons
+        .rows
+        .iter()
+        .filter(|r| r.scope == "supersession")
+        .map(|r| r.name.as_str())
+        .collect();
+    let suggestion = supplied
+        .and_then(|name| nearest(name, &names))
+        .map(|name| format!("did you mean `{name}`? "))
+        .unwrap_or_default();
+    Err(Refusal::new(
+        fa_journal::refusal::code::SUPERSESSION_REASON,
+        exit::REFUSAL,
+        match supplied {
+            Some(name) => format!("reversal reason `{name}` is not registered"),
+            None => "a reversal requires a registered reason string".to_string(),
+        },
+        "plan §8.2; registries/reason_codes.toml (scope supersession)",
+        format!(
+            "{suggestion}set `reason` in the reversal intent, or `fa reverse <vid> --reason <name>`; registered reasons: {}",
+            reasons.listing("supersession")
+        ),
+    )
+    .into())
+}
+
+fn lineage_json(link: &fa_model::Supersession, reasons: &ReasonCodes) -> Json {
+    obj(vec![
+        ("entry", s(format!("{:032x}", link.target.vid.0))),
+        ("kind", s(format!("{:?}", link.kind))),
+        ("reason_code", Json::Int(i128::from(link.reason_code))),
+        (
+            "reason",
+            reasons
+                .get("supersession", link.reason_code)
+                .map_or(Json::Null, |reason| s(&reason.name)),
+        ),
+    ])
+}
+
 fn reserve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     post_with(ctx, args, Some(EntryClass::PENDING))
 }
@@ -2358,11 +2981,61 @@ fn resolve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 }
 
 fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Result<(), Fail> {
-    let out = &ctx.out;
+    check_post_planning_options(args)?;
     let path = args.require("--intent", "entry.json (or - for stdin)")?;
     let text = ctx.files.read_text(path)?;
     let doc = parse_json(path, &text)?;
-    let mut book = ctx.books.open(args)?;
+    post_document(ctx, args, forced, doc)
+}
+
+fn check_post_planning_options(args: &Args) -> Result<(), Fail> {
+    if args.flag_all("--plan-out").len() > 1 {
+        return Err(usage(
+            "--plan-out may be supplied only once",
+            "choose one new plan output file",
+        ));
+    }
+    if let Some(path) = args.flag("--plan-out") {
+        if !args.switch("--dry-run") {
+            return Err(usage(
+                "--plan-out requires --dry-run; nothing was posted",
+                "add --dry-run to rehearse the entry and save its exact plan",
+            ));
+        }
+        if path == "-" {
+            return Err(usage(
+                "--plan-out names a new file; - is not an output file",
+                "omit --plan-out to receive the complete plan bytes as hex on stdout",
+            ));
+        }
+    }
+    if args.switch("--dry-run") && args.flag("--balancing").is_some() {
+        return Err(usage(
+            "--dry-run does not yet rehearse saturating --balancing requests",
+            "plan an intent with explicit amounts and no --balancing; the normal posting laws still apply",
+        ));
+    }
+    Ok(())
+}
+
+struct BuiltPost {
+    request: PostRequest,
+    class_name: String,
+    typed_reversal: bool,
+    reversal_detail: Option<(String, Reason)>,
+}
+
+/// Resolve and seal the request once. Planning and posting must use these
+/// same bytes; rebuilding a description would change its randomized seal.
+fn build_post_request(
+    out: &Out,
+    book: &mut Book,
+    args: &Args,
+    forced: Option<EntryClass>,
+    doc: &Json,
+    who: VId,
+    capability: Capability,
+) -> Result<BuiltPost, Fail> {
     let ctx = book.context().clone();
     let class_name = doc
         .get("class")
@@ -2370,6 +3043,7 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
         .unwrap_or(match forced {
             Some(EntryClass::PENDING) => "Pending",
             Some(EntryClass::RESOLUTION) => "Resolution",
+            Some(EntryClass::REVERSAL) => "Reversal",
             _ => "Original",
         });
     let class = EntryClass::from_name(class_name).ok_or_else(|| {
@@ -2392,24 +3066,30 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
         return Err(usage(
             format!(
                 "`fa {}` posts a {} but the intent says class `{class_name}`",
-                if forced == Some(EntryClass::PENDING) {
-                    "reserve"
-                } else {
-                    "resolve"
-                },
+                args.positional
+                    .first()
+                    .map(String::as_str)
+                    .unwrap_or("post"),
                 forced.and_then(EntryClass::name).unwrap_or("?")
             ),
             "remove `class` from the intent, or use `fa post`",
         ));
     }
-    let date_s = req_str(&doc, "effective_date", "intent")?;
-    let effective_date = DateDay::parse(date_s).map_err(|e| {
-        usage(
-            format!("effective_date `{date_s}`: {e:?}"),
-            "effective_date: \"YYYY-MM-DD\"",
-        )
-    })?;
-    let key = req_str(&doc, "idempotency_key", "intent")?;
+    let typed_reversal = forced == Some(EntryClass::REVERSAL);
+    let supplied_date = if typed_reversal && doc.get("effective_date").is_none() {
+        None
+    } else {
+        let date_s = req_str(doc, "effective_date", "intent")?;
+        Some(DateDay::parse(date_s).map_err(|e| {
+            usage(
+                format!("effective_date `{date_s}`: {e:?}"),
+                "effective_date: \"YYYY-MM-DD\"",
+            )
+        })?)
+    };
+    let mut target_date = None;
+    let mut target_period = None;
+    let key = req_str(doc, "idempotency_key", "intent")?;
     let description = doc.get("description").and_then(Json::as_str).unwrap_or("");
     // A Reversal names its target; its legs are the exact side-swap of the
     // target's, derived here so an agent never has to retype amounts. A
@@ -2418,7 +3098,34 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
     let mut supersession = Vec::new();
     let mut pending = None;
     let mut control = None;
+    let mut reversal_detail = None;
     let legs: Vec<LegPayload> = if let Some(target_s) = doc.get("reverses").and_then(Json::as_str) {
+        // Earlier raw-post clients recorded zero when no reason was supplied.
+        // Let the kernel compare that complete historical request with the
+        // recorded outcome. It refuses every fresh zero-reason correction
+        // before publication; this path never invents a registered reason or
+        // guesses that two requests are equivalent. Typed reverse remains strict.
+        let legacy_reason = !typed_reversal
+            && class == EntryClass::REVERSAL
+            && match doc.get("reason") {
+                None | Some(Json::Int(0)) => true,
+                Some(Json::Str(reason)) => reason == "0",
+                _ => false,
+            };
+        let reason = if legacy_reason {
+            None
+        } else {
+            Some(reversal_reason(doc.get("reason"))?)
+        };
+        if reason.as_ref().is_some_and(|r| r.name == "Other") && description.trim().is_empty() {
+            return Err(Refusal::new(
+                fa_journal::refusal::code::SUPERSESSION_REASON,
+                exit::REFUSAL,
+                "the reversal reason Other requires a description",
+                "plan §8.2 (Other(text)); registries/reason_codes.toml",
+                "state the reason in the intent's description or use `fa reverse <vid> --reason Other --description <explanation>`",
+            ).into());
+        }
         let vid = parse_vid(target_s, "reverses")?;
         let Some((target, _)) = book.read_entry(vid)? else {
             return Err(usage(
@@ -2429,8 +3136,11 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
         supersession.push(fa_model::Supersession {
             target: target.entry_ref(vid),
             kind: fa_model::SupersessionKind::Reverses,
-            reason_code: 0,
+            reason_code: reason.as_ref().map_or(0, |r| r.code),
         });
+        target_date = Some(target.proposal.effective_date);
+        target_period = target.proposal.effective_period.clone();
+        reversal_detail = reason.map(|reason| (format!("{:032x}", vid.0), reason));
         if doc.get("legs").is_some() {
             return Err(usage(
                 "a Reversal's legs are derived from the target; do not supply `legs`",
@@ -2487,7 +3197,7 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
                     ));
                 }
                 // A void releases the hold for good (verbs.toml [[dangerous]]).
-                gate(args, "resolve", None, &Condition::Voids)?;
+                gate(out, args, "resolve", None, &Condition::Voids)?;
                 control = Some(ControlPayload::ReservationRelease);
                 pending = Some(Pending {
                     timeout_ns: None,
@@ -2498,7 +3208,7 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
             }
             "posts" | "post" => {
                 let mut pairs: Vec<(u16, LegPayload)> = Vec::new();
-                for (i, (leg, explicit)) in parse_legs(&doc, &ctx, &book)?.into_iter().enumerate() {
+                for (i, (leg, explicit)) in parse_legs(doc, &ctx, book)?.into_iter().enumerate() {
                     let ordinal = match explicit {
                         Some(o) => o,
                         None => {
@@ -2573,7 +3283,7 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
                 disposition: None,
             });
         }
-        let parsed = parse_legs(&doc, &ctx, &book)?;
+        let parsed = parse_legs(doc, &ctx, book)?;
         if let Some(i) = parsed.iter().position(|(_, o)| o.is_some()) {
             return Err(usage(
                 format!("legs[{i}]: `source_ordinal` belongs to a Resolution(Posts) only"),
@@ -2585,14 +3295,26 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
     let unit_totals = EntryPayload::fold_unit_totals(&legs)
         .map_err(fa_journal::KernelError::Model)
         .map_err(BookError::Kernel)?;
+    let effective_date = supplied_date.or(target_date).ok_or_else(|| {
+        usage(
+            "a reversal needs its target's effective date",
+            "fa entry show <vid> --json",
+        )
+    })?;
     let effective_period = doc
         .get("effective_period")
         .and_then(Json::as_str)
         .map(|c| PeriodRef {
             calendar: ctx.calendar.id.clone(),
             code: c.to_string(),
+        })
+        .or_else(|| {
+            if supplied_date.is_none() {
+                target_period
+            } else {
+                None
+            }
         });
-    let who = principal(args);
     let proposal = EntryPayload {
         schema_minor: 0,
         book_id: ctx.book_id,
@@ -2616,30 +3338,53 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
         },
         principal_ref: who,
         session_ref: None,
-        evidence: document::parse_evidence(&doc, args, &book)?,
+        evidence: document::parse_evidence(doc, args, book)?,
         supersession,
         pending,
         external_ids: Vec::new(),
         extensions: Vec::new(),
         tags: Vec::new(),
     };
-    let mut ops = vec!["post"];
-    ops.extend(args.flag_all("--grant"));
-    // Embedded-posture binding (plan §14.2 trust boundary): `--as` names the
-    // principal and `--grant` self-issues a Human-profile capability for it;
-    // an unregistered op name is a usage error, never a silently held string.
-    let capability = Capability::embedded(who, &ops).map_err(|e| {
-        usage(
-            e.to_string(),
-            "--grant takes a registered op name; `fa capabilities --json` lists them",
-        )
-    })?;
-    let req = PostRequest {
-        proposal,
-        approvals: Vec::new(),
-        plan_certificate: None,
-        capability,
-    };
+    Ok(BuiltPost {
+        request: PostRequest {
+            proposal,
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability,
+        },
+        class_name: class_name.to_string(),
+        typed_reversal,
+        reversal_detail,
+    })
+}
+
+fn post_document(
+    ctx: &mut Ctx<'_>,
+    args: &Args,
+    forced: Option<EntryClass>,
+    doc: Json,
+) -> Result<(), Fail> {
+    check_post_planning_options(args)?;
+    let who = ctx.principal(args);
+    let capability = ctx.capability(args, &["post"])?;
+    let out = &ctx.out;
+    let mut book = ctx.books.open(args)?;
+    let BuiltPost {
+        request: req,
+        class_name,
+        typed_reversal,
+        reversal_detail,
+    } = build_post_request(out, &mut book, args, forced, &doc, who, capability)?;
+    if args.switch("--dry-run") {
+        let intent = PostIntent::new(req.proposal, req.approvals).map_err(|e| {
+            usage(
+                format!("cannot plan this entry: {e}"),
+                "check the entry intent",
+            )
+        })?;
+        let plan = book.plan(intent, &req.capability)??;
+        return emit_post_plan(out, &book, &ctx.files, args, &plan);
+    }
     // `--balancing <leg>` (post and reserve): the leg moves at most what its
     // account's limit admits, decided inside the posting transaction; the
     // event names what was asked and what moved.
@@ -2670,12 +3415,452 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
             (
                 balanced.posted,
                 Some((
-                    Amount::new(unit, balanced.requested).render(units),
-                    Amount::new(unit, balanced.moved).render(units),
+                    render_amount(Amount::new(unit, balanced.requested), units)?,
+                    render_amount(Amount::new(unit, balanced.moved), units)?,
                 )),
             )
         }
     };
+    out.at_book(&book)?;
+    emit_posted(
+        out,
+        posted,
+        &class_name,
+        typed_reversal,
+        reversal_detail,
+        amounts,
+    )
+}
+
+/// A plan is portable canonical bytes, never an authority token supplied by
+/// the caller. Decode only within its format bound before the kernel checks
+/// its book authentication, capability binding, and current snapshot.
+fn read_post_plan(files: &Files, path: &str) -> Result<PostPlan, Fail> {
+    let bytes = read_plan_bytes(files, path, b"FA-POST-PLAN\0", "PostEntry")?;
+    PostPlan::decode(&bytes).map_err(|e| {
+        usage(
+            format!("{path} is not a canonical PostEntry plan: {e}"),
+            "use the complete binary plan file or bytes hex string from a successful --dry-run",
+        )
+    })
+}
+
+/// Both plan transports accept their existing canonical binary form and
+/// its complete hex encoding. Bound allocation before either codec runs.
+fn read_plan_bytes(files: &Files, path: &str, domain: &[u8], kind: &str) -> Result<Vec<u8>, Fail> {
+    let limit = MAX_PLAN_BYTES * 2 + 2; // hex, optionally followed by CRLF
+    let read = |reader: &mut dyn Read| -> Result<Vec<u8>, Fail> {
+        let mut bytes = Vec::new();
+        reader
+            .take(limit as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| {
+                usage(
+                    format!("{path}: {e}"),
+                    "pass a readable plan file or - for stdin",
+                )
+            })?;
+        Ok(bytes)
+    };
+    let bytes = if path == "-" {
+        match &files.stdin {
+            Stdin::Forwarded(bytes) => {
+                if bytes.len() > limit {
+                    return Err(usage(
+                        "plan input exceeds its bounded wire size",
+                        "pass the complete plan bytes from a successful --dry-run",
+                    ));
+                }
+                bytes.clone()
+            }
+            Stdin::Missing => {
+                return Err(usage(
+                    "- names plan stdin, but no bytes reached the command",
+                    "forward the plan event's bytes string, or pass its saved plan file",
+                ));
+            }
+            Stdin::Process => read(&mut std::io::stdin().lock())?,
+        }
+    } else {
+        let mut file = std::fs::File::open(files.resolve(path)).map_err(|e| {
+            usage(
+                format!("{path}: {e}"),
+                "pass the plan file saved with --dry-run --plan-out",
+            )
+        })?;
+        read(&mut file)?
+    };
+    if bytes.len() > limit {
+        return Err(usage(
+            "plan input exceeds its bounded wire size",
+            "pass the complete plan bytes from a successful --dry-run",
+        ));
+    }
+    if bytes.starts_with(domain) {
+        if bytes.len() > MAX_PLAN_BYTES {
+            return Err(usage(
+                "plan exceeds its bounded input size",
+                "pass the complete plan bytes from a successful --dry-run",
+            ));
+        }
+        return Ok(bytes);
+    }
+    let Some(text) = std::str::from_utf8(&bytes)
+        .ok()
+        .map(str::trim)
+        .filter(|text| {
+            !text.is_empty() && text.len() % 2 == 0 && text.bytes().all(|b| b.is_ascii_hexdigit())
+        })
+    else {
+        return Err(usage(
+            format!("expected a canonical binary {kind} plan or its complete hex encoding"),
+            "pass --plan <file> or forward the plan event's bytes string on stdin with --plan -",
+        ));
+    };
+    if text.len() / 2 > MAX_PLAN_BYTES {
+        return Err(usage(
+            "plan exceeds its canonical format limit",
+            "pass the complete plan bytes from a successful --dry-run",
+        ));
+    }
+    let decoded = text
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let digits = std::str::from_utf8(pair)
+                .map_err(|_| usage("invalid plan hex", "pass the complete plan bytes string"))?;
+            u8::from_str_radix(digits, 16)
+                .map_err(|_| usage("invalid plan hex", "pass the complete plan bytes string"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(decoded)
+}
+
+fn write_post_plan(files: &Files, path: &str, bytes: &[u8]) -> Result<(), Fail> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(files.resolve(path)).map_err(|e| {
+        usage(
+            format!("cannot create plan file {path}: {e}"),
+            "choose a new --plan-out path; an existing file is never overwritten",
+        )
+    })?;
+    file.write_all(bytes).and_then(|()| file.sync_all()).map_err(|e| {
+        Fail::Environment(format!(
+            "could not finish plan file {path}: {e}; nothing was posted; preserve the partial file and retry with a new output path"
+        ))
+    })
+}
+
+fn emit_post_plan(
+    out: &Out,
+    book: &Book,
+    files: &Files,
+    args: &Args,
+    plan: &PostPlan,
+) -> Result<(), Fail> {
+    let certificate = plan.certificate();
+    let proposal = plan.proposal();
+    let encode_error = |e| Fail::Internal(format!("encode the admitted post plan: {e}"));
+    let bytes = plan.canonical_bytes().map_err(encode_error)?;
+    let plan_digest = hex(&plan.digest().map_err(encode_error)?);
+    let certificate_digest = hex(&certificate.digest().map_err(encode_error)?);
+    let accounts: std::collections::BTreeMap<_, _> =
+        book.accounts()?.into_iter().map(|a| (a.vid, a)).collect();
+    let mut human_legs = Vec::new();
+    let legs = proposal
+        .legs
+        .iter()
+        .enumerate()
+        .map(|(ordinal, leg)| {
+            let account = accounts.get(&leg.account_ref).ok_or_else(|| {
+                Fail::Internal(format!(
+                    "admitted plan leg {ordinal} names a missing account {:032x}",
+                    leg.account_ref.0
+                ))
+            })?;
+            let amount = render_amount(leg.amount, &book.context().units)?;
+            let side = side_name(leg.side);
+            human_legs.push(format!(
+                "  {ordinal}: {side} {} ({}) {amount}",
+                account.code, account.name
+            ));
+            Ok(obj(vec![
+                ("ordinal", Json::Int(ordinal as i128)),
+                ("account", s(&account.code)),
+                ("account_vid", s(format!("{:032x}", leg.account_ref.0))),
+                ("side", s(side)),
+                ("amount", s(amount)),
+            ]))
+        })
+        .collect::<Result<Vec<_>, Fail>>()?;
+    let reasons =
+        ReasonCodes::embedded().map_err(|e| Fail::Internal(format!("reason_codes.toml: {e}")))?;
+    let resolves = proposal
+        .pending
+        .as_ref()
+        .and_then(|pending| pending.resolution_of.as_ref());
+    let disposition = proposal
+        .pending
+        .as_ref()
+        .and_then(|pending| pending.disposition.as_ref())
+        .map(|disposition| match disposition {
+            Disposition::Posts { .. } => "posts",
+            Disposition::Voids => "voids",
+            Disposition::Expires { .. } => "expires",
+        });
+    let bound = out.is_bound();
+    let authority_posture = if bound {
+        "mcp-launch-config"
+    } else {
+        "embedded-owner"
+    };
+    let bound_void = bound && disposition == Some("voids");
+    let command = if bound {
+        "fa_post_commit_plan".to_string()
+    } else {
+        let quoted = |word: &str| format!("'{}'", word.replace('\'', "'\\''"));
+        let mut command = format!(
+            "fa commit --plan {}",
+            quoted(args.flag("--plan-out").unwrap_or("-"))
+        );
+        for flag in ["--book", "--keys", "--as"] {
+            if let Some(value) = args.flag(flag) {
+                command.push_str(&format!(" {flag} {}", quoted(value)));
+            }
+        }
+        for grant in args.flag_all("--grant") {
+            command.push_str(&format!(" --grant {}", quoted(grant)));
+        }
+        command.push_str(" --json");
+        command
+    };
+    let commit_guidance = if bound_void {
+        "MCP cannot commit this void plan. Ask the operator to separately prepare, review and confirm the release.".to_string()
+    } else {
+        command.clone()
+    };
+    let next_actions = if bound_void {
+        Vec::new()
+    } else {
+        vec![(command, if bound {
+            "review this exact plan, then call fa_post_commit_plan with plan set to data.bytes in the same launch-bound session"
+        } else {
+            "review this exact plan, then commit it with the same caller capability; when --plan is -, forward data.bytes on stdin"
+        }.to_string())]
+    };
+    let mut human = format!(
+        "Planned {} effective {} in {} at sequence {}; nothing was written to the book.\nPreparer {:032x}\nProposal {}\nNative effects {}\nCertificate {}\n{}\nScope: same-snapshot-post; any intervening publication requires another dry run. Authority: {authority_posture}.\n{commit_guidance}",
+        proposal.class.name().unwrap_or("?"),
+        proposal.effective_date.render(),
+        certificate.period,
+        certificate.snapshot_seq.0,
+        certificate.principal.0,
+        hex(&certificate.proposal_digest),
+        hex(&certificate.effects_digest),
+        certificate_digest,
+        human_legs.join("\n"),
+    );
+    if let Some(disposition) = disposition {
+        human.push_str(&format!("\nResolution disposition: {disposition}"));
+    }
+    if let Some(target) = resolves {
+        human.push_str(&format!("\nResolves hold {:032x}", target.vid.0));
+    }
+    for link in &proposal.supersession {
+        let reason = reasons
+            .get("supersession", link.reason_code)
+            .map_or("unregistered historical reason", |reason| {
+                reason.name.as_str()
+            });
+        human.push_str(&format!(
+            "\n{:?} {:032x}; reason {} ({reason})",
+            link.kind, link.target.vid.0, link.reason_code,
+        ));
+    }
+    let encoded = hex(&bytes);
+    if args.flag("--plan-out").is_none() {
+        human.push_str(&format!(
+            "\nComplete canonical plan bytes (hex):\n{encoded}"
+        ));
+    }
+    // Complete rendering and encoding before creating a file, and create
+    // the entire optional file before publishing any successful plan event.
+    if let Some(path) = args.flag("--plan-out") {
+        write_post_plan(files, path, &bytes)?;
+    }
+    if bound_void {
+        out.warn(&commit_guidance);
+    }
+    out.known_at(certificate.snapshot_seq);
+    out.effective(format!("period:{}", certificate.period));
+    out.event_with_actions(
+        "plan",
+        vec![
+            ("intent_kind", s("PostEntry")),
+            ("class", s(proposal.class.name().unwrap_or("?"))),
+            ("effective_date", s(proposal.effective_date.render())),
+            ("period", s(&certificate.period)),
+            ("principal", s(format!("{:032x}", certificate.principal.0))),
+            ("idempotency_key", s(hex(&proposal.idempotency_key))),
+            ("intent_digest", s(hex(&certificate.intent_digest))),
+            ("proposal_digest", s(hex(&certificate.proposal_digest))),
+            ("effects_digest", s(hex(&certificate.effects_digest))),
+            (
+                "snapshot_seq",
+                Json::Int(i128::from(certificate.snapshot_seq.0)),
+            ),
+            (
+                "security_policy_epoch",
+                Json::Int(i128::from(certificate.security_policy_epoch)),
+            ),
+            (
+                "expires_at",
+                certificate
+                    .expires_at
+                    .map_or(Json::Null, |seq| Json::Int(i128::from(seq.0))),
+            ),
+            (
+                "capability_commitment",
+                s(hex(&certificate.capability_commitment)),
+            ),
+            ("certificate_digest", s(certificate_digest)),
+            ("plan_digest", s(plan_digest)),
+            ("legs", Json::Arr(legs)),
+            (
+                "resolves",
+                resolves.map_or(Json::Null, |entry| s(format!("{:032x}", entry.vid.0))),
+            ),
+            ("disposition", disposition.map_or(Json::Null, s)),
+            (
+                "supersedes",
+                Json::Arr(
+                    proposal
+                        .supersession
+                        .iter()
+                        .map(|link| lineage_json(link, &reasons))
+                        .collect(),
+                ),
+            ),
+            (
+                "evidence",
+                Json::Arr(
+                    proposal
+                        .evidence
+                        .iter()
+                        .map(|evidence| {
+                            obj(vec![
+                                ("document_oid", s(hex(&evidence.document_oid.0))),
+                                ("doc_commit", s(hex(&evidence.doc_commit))),
+                                ("role", Json::Int(i128::from(evidence.role))),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
+            ("approvals", Json::Int(plan.approvals().len() as i128)),
+            ("bytes", s(encoded)),
+            ("file", args.flag("--plan-out").map_or(Json::Null, s)),
+            ("scope", s("same-snapshot-post")),
+            ("authority", s(authority_posture)),
+        ],
+        &human,
+        &next_actions,
+    );
+    Ok(())
+}
+
+fn commit_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.len() != 1 || args.flag_all("--plan").len() != 1 {
+        return Err(usage(
+            "commit requires exactly one --plan and no positional arguments",
+            if ctx.out.is_bound() {
+                "call fa_post_commit_plan with exactly one of plan or plan_file; this session's authority stays fixed"
+            } else {
+                "fa commit --plan <file|-> [--as <principal>] [--grant <op>]... --json"
+            },
+        ));
+    }
+    let path = args.require("--plan", "the exact reviewed plan file, or - for stdin")?;
+    let plan = read_post_plan(&ctx.files, path)?;
+    let plan_digest = hex(&plan.digest().map_err(|e| {
+        usage(
+            format!("cannot identify plan: {e}"),
+            "pass the unchanged plan from --dry-run",
+        )
+    })?);
+    let certificate_digest = hex(&plan.certificate().digest().map_err(|e| {
+        usage(
+            format!("cannot identify plan certificate: {e}"),
+            "pass the unchanged plan from --dry-run",
+        )
+    })?);
+    // The artifact is never confirmation for a bound MCP host's dangerous
+    // release, even when its capability exactly matches an owner's plan.
+    // This check runs before the book is opened and before retry lookup.
+    let voids = matches!(
+        plan.proposal()
+            .pending
+            .as_ref()
+            .and_then(|pending| pending.disposition.as_ref()),
+        Some(Disposition::Voids)
+    ) || matches!(
+        plan.proposal().control.as_ref(),
+        Some(ControlPayload::ReservationRelease)
+    );
+    if ctx.out.is_bound() && voids {
+        gate(&ctx.out, args, "resolve", None, &Condition::Voids)?;
+    }
+    let capability = ctx.capability(args, &["post"])?;
+    let mut book = ctx.books.open(args)?;
+    let (entry_ref, recorded_at, period, already_recorded) =
+        match book.commit_plan(plan, &capability)?? {
+            Posted::Committed {
+                entry_ref,
+                recorded_at,
+                period,
+            } => (entry_ref, recorded_at, Some(period), false),
+            Posted::AlreadyRecorded {
+                entry_ref,
+                recorded_at,
+            } => (entry_ref, recorded_at, None, true),
+        };
+    ctx.out.at_book(&book)?;
+    if let Some(period) = &period {
+        ctx.out.effective(format!("period:{period}"));
+    }
+    ctx.out.event(
+        "plan_committed",
+        vec![
+            ("vid", s(format!("{:032x}", entry_ref.vid.0))),
+            ("entry_digest", s(hex(&entry_ref.entry_digest))),
+            ("recorded_at", Json::Int(i128::from(recorded_at.0))),
+            ("period", period.as_ref().map_or(Json::Null, s)),
+            ("already_recorded", Json::Bool(already_recorded)),
+            ("plan_digest", s(&plan_digest)),
+            ("certificate_digest", s(&certificate_digest)),
+        ],
+        &format!(
+            "{} plan {plan_digest} as entry {:032x}, recorded at {} (certificate {certificate_digest})",
+            if already_recorded { "Already committed" } else { "Committed" }, entry_ref.vid.0, recorded_at.0,
+        ),
+    );
+    Ok(())
+}
+
+fn emit_posted(
+    out: &Out,
+    posted: Posted,
+    class_name: &str,
+    typed_reversal: bool,
+    reversal_detail: Option<(String, Reason)>,
+    amounts: Option<(String, String)>,
+) -> Result<(), Fail> {
     let (requested, moved) = match &amounts {
         Some((r, m)) => (s(r), s(m)),
         None => (Json::Null, Json::Null),
@@ -2683,13 +3868,34 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
     let balancing_text = amounts.as_ref().map_or(String::new(), |(r, m)| {
         format!(" · balancing: requested {r}, moved {m}")
     });
-    out.at_book(&book)?;
     match posted {
         Posted::Committed {
             entry_ref,
             recorded_at,
             period,
         } => {
+            if typed_reversal {
+                let (target, reason) = reversal_detail.ok_or_else(|| {
+                    Fail::Internal("an admitted typed reversal has no supersession".into())
+                })?;
+                out.event(
+                    "reversed",
+                    vec![
+                        ("vid", s(format!("{:032x}", entry_ref.vid.0))),
+                        ("entry_digest", s(hex(&entry_ref.entry_digest))),
+                        ("recorded_at", Json::Int(i128::from(recorded_at.0))),
+                        ("period", s(&period)),
+                        ("target", s(&target)),
+                        ("reason_code", Json::Int(i128::from(reason.code))),
+                        ("reason", s(&reason.name)),
+                    ],
+                    &format!(
+                        "reversed {target} as {:032x} in {period}, recorded at {} · reason {}",
+                        entry_ref.vid.0, recorded_at.0, reason.name
+                    ),
+                );
+                return Ok(());
+            }
             out.event(
                 "posted",
                 vec![
@@ -2736,10 +3942,8 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
 // tb / verify / registers / entry
 // ---------------------------------------------------------------------------
 
-/// `--as-known-at HEAD|<seq>` (at most once): `None` selects the head; an
-/// instant or any other spelling is refused, never converted.
 /// The envelope's effective selector for a period selection (plan §4.8).
-fn periods_selector(periods: &[String]) -> String {
+pub(crate) fn periods_selector(periods: &[String]) -> String {
     match periods {
         [] => "all".to_string(),
         [one] => format!("period:{one}"),
@@ -2747,27 +3951,90 @@ fn periods_selector(periods: &[String]) -> String {
     }
 }
 
-fn known_at_flag(args: &Args) -> Result<Option<CommitSeq>, Fail> {
-    if args.flag_all("--as-known-at").len() > 1 {
+fn time_selection_json(time: &fa::InstantSelection) -> Json {
+    let resolution = &time.resolution;
+    let tick = |tick: &fa_time::TimeObservation, entry: VId| {
+        obj(vec![
+            ("entry", s(format!("{:032x}", entry.0))),
+            ("recorded_at", Json::Int(i128::from(tick.recorded_at))),
+            (
+                "observed_utc_ns",
+                Json::Int(i128::from(tick.observed_utc_ns)),
+            ),
+            ("source", Json::Int(i128::from(tick.source))),
+            ("monotonic_ok", Json::Bool(tick.monotonic_ok)),
+        ])
+    };
+    obj(vec![
+        (
+            "requested_instant",
+            s(fa_time::UtcInstant::from_unix_ns(resolution.requested_utc_ns).to_string()),
+        ),
+        (
+            "requested_utc_ns",
+            Json::Int(i128::from(resolution.requested_utc_ns)),
+        ),
+        ("frontier", Json::Int(i128::from(resolution.frontier))),
+        (
+            "resolved_seq",
+            Json::Int(i128::from(resolution.resolved_seq)),
+        ),
+        ("precision", s(resolution.precision_grade())),
+        ("source_grade", s(resolution.source_grade())),
+        ("lower", tick(&resolution.lower, time.lower_entry)),
+        (
+            "upper",
+            resolution
+                .upper
+                .as_ref()
+                .zip(time.upper_entry)
+                .map_or(Json::Null, |(observation, entry)| tick(observation, entry)),
+        ),
+    ])
+}
+
+/// Parse and resolve a known-at selector. An instant records its evidence
+/// beside the resolved sequence; missing evidence is never a HEAD fallback.
+fn known_at_flag(
+    args: &Args,
+    book: &Book,
+    out: &Out,
+) -> Result<(Option<CommitSeq>, Option<u64>), Fail> {
+    let flag = if args.flag("--known-at").is_some() {
+        "--known-at"
+    } else {
+        "--as-known-at"
+    };
+    if args.flag_all("--as-known-at").len() + args.flag_all("--known-at").len() > 1 {
         return Err(usage(
-            "--as-known-at may be supplied only once",
-            "--as-known-at HEAD or --as-known-at <u64 commit sequence>",
+            format!("{flag} may be supplied only once; --known-at and --as-known-at are aliases"),
+            format!("{flag} HEAD, <u64 commit sequence>, or <RFC3339 instant>"),
         ));
     }
-    match args.flag("--as-known-at") {
-        None | Some("HEAD") => Ok(None),
-        Some(value) => {
-            let sequence = if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
-                value.parse::<u64>().ok()
-            } else {
-                None
-            };
-            sequence.map(|n| Some(CommitSeq(n))).ok_or_else(|| {
+    match args.flag(flag) {
+        None | Some("HEAD") => Ok((None, None)),
+        Some(value) if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) => {
+            let sequence = value.parse::<u64>().map_err(|_| {
                 usage(
-                    "--as-known-at requires HEAD or an unsigned CommitSeq; instant selectors are unsupported",
-                    "--as-known-at HEAD or --as-known-at <u64 commit sequence>",
+                    format!("{flag} commit sequence exceeds u64"),
+                    format!("{flag} HEAD or an existing unsigned commit sequence"),
                 )
-            })
+            })?;
+            Ok((Some(CommitSeq(sequence)), None))
+        }
+        Some(value) => {
+            let instant = fa_time::UtcInstant::parse(value).map_err(|error| {
+                usage(
+                    format!("invalid {flag} selector: {error}"),
+                    format!("{flag} HEAD, <u64 commit sequence>, or 2026-03-15T00:00:00Z"),
+                )
+            })?;
+            let time = book.resolve_known_at_instant(instant.unix_ns())??;
+            out.time_selection(Some(&time));
+            Ok((
+                Some(CommitSeq(time.resolution.resolved_seq)),
+                Some(instant.unix_ns()),
+            ))
         }
     }
 }
@@ -2810,15 +4077,21 @@ fn selected_periods(args: &Args, book: &Book) -> Result<Vec<String>, Fail> {
 
 fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
-    let book = ctx.books.open(args)?;
+    let mut book = ctx.books.open(args)?;
     if args.positional.len() != 1 {
         return Err(usage("unexpected trial-balance argument", "fa tb --help"));
     }
     if args.flag_all("--as-of").len() > 1 {
         return Err(usage("--as-of may be supplied only once", "fa tb --help"));
     }
-    let known_at = known_at_flag(args)?;
-    let (periods, tb) = if let Some(date) = args.flag("--as-of") {
+    if args.flag_all("--certificate-out").len() > 1 {
+        return Err(usage(
+            "--certificate-out may be supplied only once",
+            "fa tb --help",
+        ));
+    }
+    let (known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
+    let selection = if let Some(date) = args.flag("--as-of") {
         if args.flag("--period").is_some()
             || args.flag("--fiscal-year").is_some()
             || args.switch("--activity")
@@ -2834,75 +4107,365 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 "--as-of YYYY-MM-DD",
             )
         })?;
-        (Vec::new(), book.balance_as_of(day, known_at)?)
+        TrialBalanceSelection::AsOf(day)
     } else {
         let periods = selected_periods(args, &book)?;
-        let tb = if args.switch("--activity") {
-            book.period_activity(&periods, known_at)?
+        if args.switch("--activity") {
+            TrialBalanceSelection::Activity(periods)
         } else {
-            book.trial_balance_at(&periods, known_at)?
+            TrialBalanceSelection::Periods(periods)
+        }
+    };
+    let (tb, certificate) = if args.switch("--certify") || args.flag("--certificate-out").is_some()
+    {
+        let certified = match requested_utc_ns {
+            Some(instant) => {
+                book.certify_trial_balance_at_instant(selection.clone(), instant)??
+            }
+            None => book.certify_trial_balance(selection.clone(), known_at)??,
         };
-        (periods, tb)
+        out.time_selection(certified.certificate.time_selection.as_ref());
+        (certified.report, Some(certified.certificate))
+    } else {
+        let report = match &selection {
+            TrialBalanceSelection::AsOf(day) => book.balance_as_of(*day, known_at)?,
+            TrialBalanceSelection::Periods(periods) => book.trial_balance_at(periods, known_at)?,
+            TrialBalanceSelection::Activity(periods) => book.period_activity(periods, known_at)?,
+        };
+        (report, None)
+    };
+    validate_trial_balance_units(&tb, &book.context().units)?;
+    let retained = certificate
+        .as_ref()
+        .map(|certificate| {
+            notary::retain_report_certificate(&mut book, &ctx.files, args, certificate)
+        })
+        .transpose()?;
+    let digest = certificate
+        .as_ref()
+        .map(|certificate| hex(&certificate.digest));
+    render_trial_balance(out, &book, &tb, &selection, digest.as_deref())?;
+    if let (Some(certificate), Some((bytes, retained))) = (certificate.as_ref(), retained) {
+        notary::emit_report_certificate(out, args, certificate, &bytes, &retained);
+    }
+    Ok(())
+}
+
+fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.len() != 2 {
+        return Err(usage(
+            "statement needs exactly one registered definition name",
+            "fa statement balance-sheet|income-statement --for <period> [--compare <period>] --json",
+        ));
+    }
+    for flag in ["--for", "--compare", "--certificate-out"] {
+        if args.flag_all(flag).len() > 1 {
+            return Err(usage(
+                format!("{flag} may be supplied only once"),
+                "fa statement balance-sheet --for FY2026-P03 --compare FY2026-P02 --json",
+            ));
+        }
+    }
+    let period = args.require("--for", "<period>, for example FY2026-P03")?;
+    if period.is_empty() || args.flag("--compare").is_some_and(str::is_empty) {
+        return Err(usage(
+            "statement period codes must not be empty",
+            "--for FY2026-P03 [--compare FY2026-P02]",
+        ));
+    }
+    let definition = StatementDefinition::embedded(&args.positional[1]).map_err(|error| {
+        usage(
+            format!("statement definition: {error}"),
+            "fa statement balance-sheet|income-statement --for <period> --json",
+        )
+    })?;
+    let selection = StatementSelection {
+        definition,
+        periods: vec![period.to_string()],
+        comparative: args
+            .flag("--compare")
+            .into_iter()
+            .map(String::from)
+            .collect(),
+    };
+    let mut book = ctx.books.open(args)?;
+    let (known_at, requested_utc_ns) = known_at_flag(args, &book, &ctx.out)?;
+    let (statement, certificate) =
+        if args.switch("--certify") || args.flag("--certificate-out").is_some() {
+            let certified = match requested_utc_ns {
+                Some(instant) => book.certify_statement_at_instant(selection, instant)??,
+                None => book.certify_statement(selection, known_at)??,
+            };
+            ctx.out
+                .time_selection(certified.certificate.time_selection.as_ref());
+            (certified.statement, Some(certified.certificate))
+        } else {
+            (book.statement(selection, known_at)??, None)
+        };
+    // Render every amount, column and mapping before retaining a certificate
+    // or emitting a success. Missing units never become printable fallbacks.
+    let rendered = statement_presentation(&statement, &book.context().units)?;
+    let retained = certificate
+        .as_ref()
+        .map(|certificate| {
+            notary::retain_report_certificate(&mut book, &ctx.files, args, certificate)
+        })
+        .transpose()?;
+    let digest = certificate
+        .as_ref()
+        .map(|certificate| hex(&certificate.digest));
+    emit_statement(&ctx.out, &statement, rendered, digest.as_deref());
+    if let (Some(certificate), Some((bytes, retained))) = (certificate.as_ref(), retained) {
+        notary::emit_report_certificate(&ctx.out, args, certificate, &bytes, &retained);
+    }
+    Ok(())
+}
+
+type StatementPresentation = (Vec<(&'static str, Json)>, String);
+
+fn statement_presentation(
+    statement: &Statement,
+    units: &fa_money::UnitRegistry,
+) -> Result<StatementPresentation, Fail> {
+    if statement.columns.is_empty() {
+        return Err(Fail::Internal("a statement has no columns".into()));
+    }
+    let mut human = format!(
+        "{} · definition version {} · known at {}\n",
+        statement.definition_name, statement.definition_version, statement.known_at,
+    );
+    let columns = statement
+        .columns
+        .iter()
+        .map(|column| {
+            let mode = if column.effective_from.is_some() {
+                "activity"
+            } else {
+                "stock"
+            };
+            human.push_str(&format!(
+                "{}: {} · {mode}{} through {}\n",
+                column.label,
+                column.periods.join(", "),
+                column
+                    .effective_from
+                    .map_or(String::new(), |day| format!(" from {}", day.render())),
+                column.effective_through.render(),
+            ));
+            obj(vec![
+                ("label", s(&column.label)),
+                ("periods", Json::Arr(column.periods.iter().map(s).collect())),
+                ("mode", s(mode)),
+                (
+                    "effective_from",
+                    column
+                        .effective_from
+                        .map_or(Json::Null, |day| s(day.render())),
+                ),
+                ("effective_through", s(column.effective_through.render())),
+            ])
+        })
+        .collect();
+    human.push_str(&format!("{:<34}", "line"));
+    for column in &statement.columns {
+        human.push_str(&format!(" {:>24}", column.label));
+    }
+    human.push('\n');
+    let mut lines = Vec::with_capacity(statement.lines.len());
+    for line in &statement.lines {
+        if line.amounts.len() != statement.columns.len() {
+            return Err(Fail::Internal(format!(
+                "statement line {} has {} amounts for {} columns",
+                line.code,
+                line.amounts.len(),
+                statement.columns.len(),
+            )));
+        }
+        let unit = fa_money::UnitId(line.unit_id);
+        let code = registered_unit_code(unit, units)?;
+        let amounts = line
+            .amounts
+            .iter()
+            .map(|mantissa| render_amount(Amount::new(unit, *mantissa), units))
+            .collect::<Result<Vec<_>, Fail>>()?;
+        human.push_str(&format!("{:<34}", line.label));
+        for amount in &amounts {
+            human.push_str(&format!(" {amount:>24}"));
+        }
+        human.push('\n');
+        lines.push(obj(vec![
+            ("code", s(&line.code)),
+            ("label", s(&line.label)),
+            ("unit", s(code)),
+            ("amounts", Json::Arr(amounts.iter().map(s).collect())),
+        ]));
+    }
+    let mappings = statement
+        .mappings
+        .iter()
+        .map(|mapping| {
+            let account_type = AccountType(mapping.account.account_type)
+                .name()
+                .ok_or_else(|| {
+                    Fail::Internal(format!(
+                        "statement mapping {} has an unregistered account type",
+                        mapping.account.code
+                    ))
+                })?;
+            Ok(obj(vec![
+                ("account_vid", s(format!("{:032x}", mapping.account.id))),
+                ("account", s(&mapping.account.code)),
+                ("name", s(&mapping.account.name)),
+                ("type", s(account_type)),
+                ("line", s(&mapping.line_code)),
+            ]))
+        })
+        .collect::<Result<Vec<_>, Fail>>()?;
+    human.push_str(
+        "Scope: one book, exact native units; no FX conversion or presentation rounding.\n",
+    );
+    Ok((
+        vec![
+            ("name", s(&statement.definition_name)),
+            (
+                "definition_version",
+                Json::Int(i128::from(statement.definition_version)),
+            ),
+            ("definition_digest", s(hex(&statement.definition_digest))),
+            ("known_at", Json::Int(i128::from(statement.known_at))),
+            ("columns", Json::Arr(columns)),
+            ("lines", Json::Arr(lines)),
+            ("mappings", Json::Arr(mappings)),
+            ("scope", s("single-book-native-units")),
+        ],
+        human,
+    ))
+}
+
+fn emit_statement(
+    out: &Out,
+    statement: &Statement,
+    (fields, human): StatementPresentation,
+    certificate: Option<&str>,
+) {
+    out.known_at(CommitSeq(statement.known_at));
+    let periods: Vec<String> = statement
+        .columns
+        .iter()
+        .flat_map(|column| column.periods.iter().cloned())
+        .collect();
+    out.effective(periods_selector(&periods));
+    out.event_with_certificate("statement", fields, &human, certificate);
+}
+
+/// Original and verified replay share the exact same checked presentation.
+pub(crate) fn render_statement(
+    out: &Out,
+    book: &Book,
+    statement: &Statement,
+    certificate: Option<&str>,
+) -> Result<(), Fail> {
+    let rendered = statement_presentation(statement, &book.context().units)?;
+    emit_statement(out, statement, rendered, certificate);
+    Ok(())
+}
+
+/// Check presentation inputs before retaining a certificate or emitting any
+/// report. Even a zero total must name a registered unit.
+fn validate_trial_balance_units(
+    tb: &fa_registers::TrialBalance,
+    units: &fa_money::UnitRegistry,
+) -> Result<(), Fail> {
+    for unit in tb
+        .rows
+        .iter()
+        .map(|row| row.unit_id)
+        .chain(tb.unit_totals.keys().copied())
+        .chain(tb.pending_unit_totals.keys().copied())
+    {
+        registered_unit_code(fa_money::UnitId(unit), units)?;
+    }
+    Ok(())
+}
+
+/// The same renderer serves both an original report and its verified replay.
+/// Its coordinate comes from the certified selector, never the present head.
+pub(crate) fn render_trial_balance(
+    out: &Out,
+    book: &Book,
+    tb: &fa_registers::TrialBalance,
+    selection: &TrialBalanceSelection,
+    certificate: Option<&str>,
+) -> Result<(), Fail> {
+    render_trial_balance_with_units(out, &book.context().units, tb, selection, certificate)
+}
+
+fn render_trial_balance_with_units(
+    out: &Out,
+    units: &fa_money::UnitRegistry,
+    tb: &fa_registers::TrialBalance,
+    selection: &TrialBalanceSelection,
+    certificate: Option<&str>,
+) -> Result<(), Fail> {
+    validate_trial_balance_units(tb, units)?;
+    let periods: &[String] = match selection {
+        TrialBalanceSelection::Periods(periods) | TrialBalanceSelection::Activity(periods) => {
+            periods
+        }
+        TrialBalanceSelection::AsOf(_) => &[],
     };
     out.known_at(tb.known_at);
-    out.effective(match args.flag("--as-of") {
-        Some(date) => format!("as-of:{date}"),
-        None => periods_selector(&periods),
+    out.effective(match selection {
+        TrialBalanceSelection::AsOf(date) => format!("as-of:{date}"),
+        _ => periods_selector(periods),
     });
-    let units = &book.context().units;
-    let render = |unit: u32, m: i128| Amount::new(fa_money::UnitId(unit), m).render(units);
+    let render = |unit: u32, m: i128| render_amount(Amount::new(fa_money::UnitId(unit), m), units);
     let rows: Vec<Json> = tb
         .rows
         .iter()
         .map(|r| {
-            obj(vec![
+            Ok(obj(vec![
                 ("code", s(&r.code)),
                 ("name", s(&r.name)),
                 ("type", s(r.account_type.name().unwrap_or("?"))),
-                ("debits", s(render(r.unit_id, r.debits))),
-                ("credits", s(render(r.unit_id, r.credits))),
-                ("net", s(render(r.unit_id, r.debits - r.credits))),
-                ("debits_pending", s(render(r.unit_id, r.debits_pending))),
-                ("credits_pending", s(render(r.unit_id, r.credits_pending))),
-            ])
+                ("debits", s(render(r.unit_id, r.debits)?)),
+                ("credits", s(render(r.unit_id, r.credits)?)),
+                ("net", s(render(r.unit_id, r.debits - r.credits)?)),
+                ("debits_pending", s(render(r.unit_id, r.debits_pending)?)),
+                ("credits_pending", s(render(r.unit_id, r.credits_pending)?)),
+            ]))
         })
-        .collect();
+        .collect::<Result<_, Fail>>()?;
     let pending_totals: Vec<Json> = tb
         .pending_unit_totals
         .iter()
         .map(|(u, (d, c))| {
-            obj(vec![
+            Ok(obj(vec![
                 (
                     "unit",
-                    s(units
-                        .get(fa_money::UnitId(*u))
-                        .map(|x| x.code.clone())
-                        .unwrap_or_default()),
+                    s(registered_unit_code(fa_money::UnitId(*u), units)?),
                 ),
-                ("debits_pending", s(render(*u, *d))),
-                ("credits_pending", s(render(*u, *c))),
-            ])
+                ("debits_pending", s(render(*u, *d)?)),
+                ("credits_pending", s(render(*u, *c)?)),
+            ]))
         })
-        .collect();
+        .collect::<Result<_, Fail>>()?;
     let totals: Vec<Json> = tb
         .unit_totals
         .iter()
         .map(|(u, (d, c))| {
-            obj(vec![
+            Ok(obj(vec![
                 (
                     "unit",
-                    s(units
-                        .get(fa_money::UnitId(*u))
-                        .map(|x| x.code.clone())
-                        .unwrap_or_default()),
+                    s(registered_unit_code(fa_money::UnitId(*u), units)?),
                 ),
-                ("debits", s(render(*u, *d))),
-                ("credits", s(render(*u, *c))),
-            ])
+                ("debits", s(render(*u, *d)?)),
+                ("credits", s(render(*u, *c)?)),
+            ]))
         })
-        .collect();
+        .collect::<Result<_, Fail>>()?;
     if out.json {
-        out.event(
+        out.event_with_certificate(
             "trial_balance",
             vec![
                 ("periods", Json::Arr(periods.iter().map(s).collect())),
@@ -2919,6 +4482,7 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ("balanced", Json::Bool(tb.is_balanced())),
             ],
             "",
+            certificate,
         );
     } else {
         if let Some(day) = tb.effective_through {
@@ -2947,10 +4511,10 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 "{:<10} {:<28} {:>22} {:>22} {:>22} {:>22}",
                 r.code,
                 r.name,
-                render(r.unit_id, r.debits),
-                render(r.unit_id, r.credits),
-                render(r.unit_id, r.debits_pending),
-                render(r.unit_id, r.credits_pending)
+                render(r.unit_id, r.debits)?,
+                render(r.unit_id, r.credits)?,
+                render(r.unit_id, r.debits_pending)?,
+                render(r.unit_id, r.credits_pending)?
             ));
         }
         let total_units: std::collections::BTreeSet<_> = tb
@@ -2965,10 +4529,10 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             out.line(format!(
                 "{:<39} {:>22} {:>22} {:>22} {:>22}",
                 "total",
-                render(u, d),
-                render(u, c),
-                render(u, pd),
-                render(u, pc)
+                render(u, d)?,
+                render(u, c)?,
+                render(u, pd)?,
+                render(u, pc)?
             ));
         }
         out.line(format!("balanced: {}", tb.is_balanced()));
@@ -3091,8 +4655,28 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let mut all_green = true;
             let mut details = Vec::new();
             let mut diagnostics = Vec::new();
+            let mut actions = Vec::new();
+            let mut repairs = Vec::new();
             for p in &periods {
-                let v = book.verify_registers(p)?;
+                let v = match book.verify_registers(p) {
+                    Ok(v) => v,
+                    Err(BookError::Registers(fa_registers::RegisterError::ProjectionDrift(
+                        why,
+                    )))
+                    | Err(BookError::Registers(fa_registers::RegisterError::Kernel(
+                        fa_journal::KernelError::Corrupt(why),
+                    ))) => {
+                        return Err(Fail::Verification {
+                            message: format!("register verification failed in {p}: {why}"),
+                            detail: obj(vec![("period", s(p)), ("problem", s(&why))]),
+                            cite: Some("FA-INV-04 (registers are derived from the journal)".into()),
+                            fix: Some(format!(
+                                "retain this finding (`fa verify registers --period {p} --json`); if repair is intended, run `fa registers materialize --period {p} --yes --json`"
+                            )),
+                        });
+                    }
+                    Err(error) => return Err(error.into()),
+                };
                 diagnostics.extend(v.projection_errors.iter().map(|e| format!("{p}: {e}")));
                 if !v.drift.is_empty() {
                     diagnostics.push(format!("{p}: {} posted cells differ", v.drift.len()));
@@ -3104,9 +4688,42 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     ));
                 }
                 all_green &= v.is_green();
+                if !v.is_green() {
+                    repairs.push(format!("--period {p}"));
+                }
+                if v.is_green() && v.stale {
+                    out.warn(format!(
+                        "{p}: verified cache has {} unread journal entries; run fa registers advance --period {p} --json",
+                        v.lag_entries
+                    ));
+                    actions.push((
+                        format!("fa registers advance --period {p} --json"),
+                        "consume unread journal entries after the verified cache prefix".into(),
+                    ));
+                }
+                if v.cache_status == fa_registers::CacheStatus::Uninitialized {
+                    out.warn(format!(
+                        "{p}: register cache is uninitialized; no processed prefix is certified; initialize it with fa registers advance --period {p} --json"
+                    ));
+                }
                 details.push(obj(vec![
                     ("period", s(p)),
                     ("green", Json::Bool(v.is_green())),
+                    (
+                        "cache_status",
+                        s(match v.cache_status {
+                            fa_registers::CacheStatus::Uninitialized => "uninitialized",
+                            fa_registers::CacheStatus::Verified => "verified",
+                            fa_registers::CacheStatus::Corrupt => "corrupt",
+                        }),
+                    ),
+                    (
+                        "verified_through",
+                        v.verified_through
+                            .map_or(Json::Null, |s| Json::Int(i128::from(s.0))),
+                    ),
+                    ("stale", Json::Bool(v.stale)),
+                    ("lag_entries", Json::Int(v.lag_entries as i128)),
                     ("cells_checked", Json::Int(v.cells_checked as i128)),
                     ("refold_digest", s(hex(&v.refold_digest))),
                     (
@@ -3122,10 +4739,11 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ]));
             }
             if all_green {
-                out.event(
+                out.event_with_actions(
                     "registers_verified",
                     vec![("periods", Json::Arr(details))],
                     &format!("registers verified by refold: {} green", periods.join(", ")),
+                    &actions,
                 );
                 Ok(())
             } else {
@@ -3140,8 +4758,58 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         }
                     ),
                     detail: Json::Arr(details),
-                    cite: None,
-                    fix: None,
+                    cite: Some("FA-INV-04 (registers are derived from the journal)".into()),
+                    fix: Some(format!(
+                        "retain this verification finding; if repair is intended, run fa registers materialize {} --yes --json with the same --book",
+                        repairs.join(" ")
+                    )),
+                })
+            }
+        }
+        Some("projections") => {
+            if args.positional.len() != 2 {
+                return Err(usage(
+                    "unexpected verify projections argument",
+                    "fa verify projections --book <dir> [--json]",
+                ));
+            }
+            if args.flag("--period").is_some() || args.flag("--fiscal-year").is_some() {
+                return Err(usage(
+                    "verify projections checks every entry at the current head and takes no period filter",
+                    "fa verify projections --book <dir> [--json]",
+                ));
+            }
+            let book = ctx.books.open(args)?;
+            let v = book.verify_projections(None)?;
+            out.known_at(v.known_at);
+            let fields = vec![
+                ("known_at", Json::Int(i128::from(v.known_at.0))),
+                ("entries_checked", Json::Int(v.entries_checked as i128)),
+                ("legs_checked", Json::Int(v.legs_checked as i128)),
+                ("edges_checked", Json::Int(v.edges_checked as i128)),
+                ("drift", Json::Arr(v.drift.iter().map(s).collect())),
+            ];
+            if v.is_green() {
+                out.event(
+                    "projections_verified",
+                    fields,
+                    &format!(
+                        "leg projections verified against canonical payloads: {} entries, {} legs, {} edges at {}",
+                        v.entries_checked, v.legs_checked, v.edges_checked, v.known_at.0
+                    ),
+                );
+                Ok(())
+            } else {
+                Err(Fail::Verification {
+                    message: format!(
+                        "leg projections differ from canonical entry payloads: {}",
+                        v.drift.join("; ")
+                    ),
+                    detail: obj(fields),
+                    cite: Some("FA-INV-16 (leg projections equal entry payloads)".into()),
+                    fix: Some(
+                        "retain this finding with fa verify projections --json and the same --book; projection recovery is not implemented".into(),
+                    ),
                 })
             }
         }
@@ -3161,7 +4829,7 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 let unit = unit_of.get(code).ok_or_else(|| {
                     Fail::Internal(format!("limited account `{code}` has no single unit"))
                 })?;
-                Ok(s(Amount::new(*unit, m).render(units)))
+                Ok(s(render_amount(Amount::new(*unit, m), units)?))
             };
             let fields = availability_fields(&v, &amount)?;
             if v.is_green() {
@@ -3234,41 +4902,118 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 
 fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
-    let book = ctx.books.open(args)?;
+    let mut book = ctx.books.open(args)?;
     if args.positional.len() != 1 {
         return Err(usage(
             "unexpected open-items argument",
-            "fa open-items [--account <code>] [--as-known-at HEAD|<seq>] --book <dir>",
+            "fa open-items [--account <code>] [--as-known-at HEAD|<seq>|<RFC3339>] --book <dir>",
         ));
     }
-    let ctx = book.context().clone();
+    if args.flag_all("--certificate-out").len() > 1 {
+        return Err(usage(
+            "--certificate-out may be supplied only once",
+            "fa open-items --help",
+        ));
+    }
     let account = args
         .flag("--account")
-        .map(|code| account_vid(ctx.book_id, code));
-    let known_at = known_at_flag(args)?;
-    let items = book.open_items(account, known_at)?;
-    if let Some(seq) = known_at {
-        out.known_at(seq);
+        .map(|code| account_vid(book.context().book_id, code));
+    let (known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
+    let (report, certificate) =
+        if args.switch("--certify") || args.flag("--certificate-out").is_some() {
+            let selection = ReportSelection::OpenItems { account };
+            let certified = match requested_utc_ns {
+                Some(instant) => book.certify_report_at_instant(selection, instant)??,
+                None => book.certify_report(selection, known_at)??,
+            };
+            out.time_selection(certified.certificate.time_selection.as_ref());
+            let ReportOutput::OpenItems(report) = certified.report else {
+                return Err(Fail::Internal(
+                    "open-items certification returned another report kind".into(),
+                ));
+            };
+            (report, Some(certified.certificate))
+        } else {
+            (book.open_items_report(account, known_at)?, None)
+        };
+    validate_open_items_report(&report, &book.context().units)?;
+    let retained = certificate
+        .as_ref()
+        .map(|certificate| {
+            notary::retain_report_certificate(&mut book, &ctx.files, args, certificate)
+        })
+        .transpose()?;
+    let digest = certificate
+        .as_ref()
+        .map(|certificate| hex(&certificate.digest));
+    render_open_items(out, &book, &report, digest.as_deref())?;
+    if let (Some(certificate), Some((bytes, retained))) = (certificate.as_ref(), retained) {
+        notary::emit_report_certificate(out, args, certificate, &bytes, &retained);
     }
-    let codes: std::collections::BTreeMap<VId, String> = book
-        .accounts()?
-        .into_iter()
-        .map(|a| (a.vid, a.code))
-        .collect();
+    Ok(())
+}
+
+/// Refuse corrupt presentation inputs before retaining or emitting a report.
+fn validate_open_items_report(
+    report: &fa_registers::open_items::OpenItemsReport,
+    units: &fa_money::UnitRegistry,
+) -> Result<(), Fail> {
+    for account in report
+        .items
+        .iter()
+        .map(|item| item.account)
+        .chain(report.account_filter)
+    {
+        if !report.accounts.contains_key(&account) {
+            return Err(Fail::Internal(format!(
+                "open-items report omits account {:032x} at sequence {}",
+                account.0, report.known_at.0
+            )));
+        }
+    }
+    for item in &report.items {
+        registered_unit_code(fa_money::UnitId(item.unit_id), units)?;
+    }
+    Ok(())
+}
+
+/// Account labels and item history belong to the same resolved snapshot.
+/// Replay uses this renderer without observing the present chart.
+pub(crate) fn render_open_items(
+    out: &Out,
+    book: &Book,
+    report: &fa_registers::open_items::OpenItemsReport,
+    certificate: Option<&str>,
+) -> Result<(), Fail> {
+    validate_open_items_report(report, &book.context().units)?;
+    out.known_at(report.known_at);
+    let items = &report.items;
     let code_of = |vid: VId| {
-        codes
+        report
+            .accounts
             .get(&vid)
-            .cloned()
-            .unwrap_or_else(|| format!("{:032x}", vid.0))
+            .map(|account| account.code.as_str())
+            .ok_or_else(|| {
+                Fail::Internal(format!(
+                    "open-items report omits account {:032x} at sequence {}",
+                    vid.0, report.known_at.0
+                ))
+            })
     };
-    let render = |unit: u32, m: i128| Amount::new(fa_money::UnitId(unit), m).render(&ctx.units);
+    let filter = report.account_filter.map(code_of).transpose()?;
+    let render = |unit: u32, m: i128| {
+        render_amount(
+            Amount::new(fa_money::UnitId(unit), m),
+            &book.context().units,
+        )
+    };
     let rows: Vec<Json> = items
         .iter()
         .map(|i| {
-            obj(vec![
+            Ok(obj(vec![
                 ("entry", s(format!("{:032x}", i.entry.0))),
                 ("ordinal", Json::Int(i128::from(i.ordinal))),
-                ("account", s(code_of(i.account))),
+                ("account", s(code_of(i.account)?)),
                 (
                     "side",
                     s(if i.side == Side::Debit {
@@ -3279,49 +5024,50 @@ fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ),
                 ("effective_date", s(i.effective_date.render())),
                 ("recorded_at", Json::Int(i128::from(i.recorded_at.0))),
-                ("original", s(render(i.unit_id, i.original))),
-                ("applied", s(render(i.unit_id, i.applied))),
-                ("applied_out", s(render(i.unit_id, i.applied_out))),
-                ("open", s(render(i.unit_id, i.open))),
+                ("original", s(render(i.unit_id, i.original)?)),
+                ("applied", s(render(i.unit_id, i.applied)?)),
+                ("applied_out", s(render(i.unit_id, i.applied_out)?)),
+                ("open", s(render(i.unit_id, i.open)?)),
                 (
                     "applications",
                     Json::Arr(
                         i.applications
                             .iter()
                             .map(|a| {
-                                obj(vec![
+                                Ok(obj(vec![
                                     ("entry", s(format!("{:032x}", a.entry.0))),
                                     ("ordinal", Json::Int(i128::from(a.ordinal))),
-                                    ("amount", s(render(i.unit_id, a.amount))),
+                                    ("amount", s(render(i.unit_id, a.amount)?)),
                                     ("recorded_at", Json::Int(i128::from(a.recorded_at.0))),
                                     ("live", Json::Bool(a.live)),
-                                ])
+                                ]))
                             })
-                            .collect(),
+                            .collect::<Result<_, Fail>>()?,
                     ),
                 ),
-            ])
+            ]))
         })
-        .collect();
+        .collect::<Result<_, Fail>>()?;
     if out.json {
-        out.event(
+        out.event_with_certificate(
             "open_items",
             vec![
-                ("account", args.flag("--account").map_or(Json::Null, s)),
+                ("account", filter.map_or(Json::Null, s)),
                 ("count", Json::Int(items.len() as i128)),
                 ("items", Json::Arr(rows)),
             ],
             "",
+            certificate,
         );
     } else {
         out.line(out.style().header(&format!(
             "{:<10} {:<34} {:>3} {:<6} {:>18} {:>18} {:>18} {:>18}",
             "account", "entry", "leg", "side", "original", "applied", "applied_out", "open"
         )));
-        for i in &items {
+        for i in items {
             out.line(format!(
                 "{:<10} {:<34} {:>3} {:<6} {:>18} {:>18} {:>18} {:>18}",
-                code_of(i.account),
+                code_of(i.account)?,
                 format!("{:032x}", i.entry.0),
                 i.ordinal,
                 if i.side == Side::Debit {
@@ -3329,10 +5075,10 @@ fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 } else {
                     "credit"
                 },
-                render(i.unit_id, i.original),
-                render(i.unit_id, i.applied),
-                render(i.unit_id, i.applied_out),
-                render(i.unit_id, i.open)
+                render(i.unit_id, i.original)?,
+                render(i.unit_id, i.applied)?,
+                render(i.unit_id, i.applied_out)?,
+                render(i.unit_id, i.open)?
             ));
         }
         out.line(format!("{} open item(s)", items.len()));
@@ -3373,66 +5119,160 @@ fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "fa explain balance <account> --period <code>; fa tb for several periods",
         ));
     }
-    let period = args.require("--period", "FY2026-P03")?;
-    let known_at = known_at_flag(args)?;
-    let book = ctx.books.open(args)?;
-    let periods = book.periods()?;
-    if !periods.iter().any(|p| p.code == period) {
-        let codes: Vec<&str> = periods.iter().map(|p| p.code.as_str()).collect();
+    if args.flag_all("--certificate-out").len() > 1 {
         return Err(usage(
+            "--certificate-out may be supplied only once",
+            "fa explain balance --help",
+        ));
+    }
+    let period = args.require("--period", "FY2026-P03")?;
+    let mut book = ctx.books.open(args)?;
+    let (known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
+    let account = account_vid(book.context().book_id, code);
+    let explain_error = |error| explanation_selection_error(&book, code, period, known_at, error);
+    let (ex, certificate) = if args.switch("--certify") || args.flag("--certificate-out").is_some()
+    {
+        let selection = ReportSelection::ExplainBalance {
+            account,
+            period: period.to_string(),
+        };
+        let certified = match requested_utc_ns {
+            Some(instant) => book.certify_report_at_instant(selection, instant),
+            None => book.certify_report(selection, known_at),
+        }
+        .map_err(explain_error)??;
+        out.time_selection(certified.certificate.time_selection.as_ref());
+        let ReportOutput::ExplainBalance(ex) = certified.report else {
+            return Err(Fail::Internal(
+                "explanation certification returned another report kind".into(),
+            ));
+        };
+        (*ex, Some(certified.certificate))
+    } else {
+        (
+            book.explain_balance(account, period, known_at)
+                .map_err(explain_error)?,
+            None,
+        )
+    };
+    validate_balance_explanation_units(&ex, &book.context().units)?;
+    let retained = certificate
+        .as_ref()
+        .map(|certificate| {
+            notary::retain_report_certificate(&mut book, &ctx.files, args, certificate)
+        })
+        .transpose()?;
+    let digest = certificate
+        .as_ref()
+        .map(|certificate| hex(&certificate.digest));
+    render_balance_explanation(out, &book, &ex, digest.as_deref())?;
+    if let (Some(certificate), Some((bytes, retained))) = (certificate.as_ref(), retained) {
+        notary::emit_report_certificate(out, args, certificate, &bytes, &retained);
+    }
+    Ok(())
+}
+
+/// Suggestions may consult today's chart only after the historical read has
+/// refused. Successful reports resolve identity and metadata at known-at.
+fn explanation_selection_error(
+    book: &Book,
+    code: &str,
+    period: &str,
+    known_at: Option<CommitSeq>,
+    error: BookError,
+) -> Fail {
+    if !matches!(
+        &error,
+        BookError::Registers(fa_registers::RegisterError::InvalidSelection(_))
+    ) {
+        return error.into();
+    }
+    if let Ok(periods) = book.periods()
+        && !periods.iter().any(|row| row.code == period)
+    {
+        let codes: Vec<&str> = periods.iter().map(|row| row.code.as_str()).collect();
+        return usage(
             format!("no period `{period}` in this book"),
             match nearest(period, &codes) {
-                Some(n) => format!("did you mean --period {n}? (fa period list)"),
+                Some(near) => format!("did you mean --period {near}? (fa period list)"),
                 None => "fa period list --book <dir>".to_string(),
             },
-        ));
+        );
     }
-    let accounts = book.accounts()?;
-    let Some(account) = accounts.iter().find(|a| &a.code == code) else {
-        let codes: Vec<&str> = accounts.iter().map(|a| a.code.as_str()).collect();
-        return Err(usage(
-            format!("no account `{code}` in this book's chart"),
-            match nearest(code, &codes) {
-                Some(n) => format!("did you mean `{n}`? (fa chart list)"),
-                None => "fa chart list --book <dir>".to_string(),
-            },
-        ));
-    };
-    // Today's chart names the account; whether it existed is decided at the
-    // requested coordinate (the register layer refuses it independently).
-    if let Some(seq) = known_at
-        && seq < account.created_at
+    if let Ok(accounts) = book.accounts() {
+        let Some(account) = accounts.iter().find(|row| row.code == code) else {
+            let codes: Vec<&str> = accounts.iter().map(|row| row.code.as_str()).collect();
+            return usage(
+                format!("no account `{code}` in this book's chart"),
+                match nearest(code, &codes) {
+                    Some(near) => format!("did you mean `{near}`? (fa chart list)"),
+                    None => "fa chart list --book <dir>".to_string(),
+                },
+            );
+        };
+        if let Some(seq) = known_at
+            && seq < account.created_at
+        {
+            return usage(
+                format!(
+                    "account `{code}` does not exist as known at {}: the chart created it at sequence {}",
+                    seq.0, account.created_at.0
+                ),
+                format!("--as-known-at {} or later (or HEAD)", account.created_at.0),
+            );
+        }
+        if !account.is_leaf {
+            return usage(
+                format!(
+                    "account `{code}` is a summary account: registers hold leaf cells, and a summary roll-up is not available yet"
+                ),
+                "explain one of its leaf accounts (fa chart list --book <dir>)",
+            );
+        }
+    }
+    error.into()
+}
+
+/// Cells, released contributions, and historical changes can name different
+/// units. Validate every one before retaining the explanation's certificate.
+fn validate_balance_explanation_units(
+    ex: &fa_registers::explain::BalanceExplanation,
+    units: &fa_money::UnitRegistry,
+) -> Result<(), Fail> {
+    for unit in ex
+        .cells
+        .iter()
+        .map(|cell| cell.key.unit_id)
+        .chain(ex.pending.iter().map(|cell| cell.key.unit_id))
+        .chain(
+            ex.contributions
+                .iter()
+                .map(|contribution| contribution.unit_id),
+        )
+        .chain(ex.history.iter().map(|change| change.unit_id))
     {
-        return Err(usage(
-            format!(
-                "account `{code}` does not exist as known at {}: the chart created it at sequence {}",
-                seq.0, account.created_at.0
-            ),
-            format!("--as-known-at {} or later (or HEAD)", account.created_at.0),
-        ));
+        registered_unit_code(fa_money::UnitId(unit), units)?;
     }
-    let ex = book.explain_balance(account.vid, period, known_at)?;
+    Ok(())
+}
+
+/// Original and replay share the exact contribution and history rendering.
+pub(crate) fn render_balance_explanation(
+    out: &Out,
+    book: &Book,
+    ex: &fa_registers::explain::BalanceExplanation,
+    certificate: Option<&str>,
+) -> Result<(), Fail> {
+    validate_balance_explanation_units(ex, &book.context().units)?;
     out.known_at(ex.known_at);
-    out.effective(format!("period:{period}"));
-    // Name, type, and leafness as they stood at `known_at`.
+    out.effective(format!("period:{}", ex.period));
     let account = &ex.account_row;
-    if !account.is_leaf {
-        return Err(usage(
-            format!(
-                "account `{code}` is a summary account: registers hold leaf cells, and a summary roll-up is not available yet"
-            ),
-            "explain one of its leaf accounts (fa chart list --book <dir>)",
-        ));
-    }
     let units = &book.context().units;
-    let render = |unit: u32, m: i128| Amount::new(fa_money::UnitId(unit), m).render(units);
-    let unit_code = |unit: u32| {
-        units
-            .get(fa_money::UnitId(unit))
-            .map(|u| u.code.clone())
-            .unwrap_or_default()
-    };
+    let render = |unit: u32, m: i128| render_amount(Amount::new(fa_money::UnitId(unit), m), units);
+    let unit_code = |unit: u32| registered_unit_code(fa_money::UnitId(unit), units);
     let type_name = AccountType(account.account_type).name().unwrap_or("?");
+    let reasons =
+        ReasonCodes::embedded().map_err(|e| Fail::Internal(format!("reason_codes.toml: {e}")))?;
     // One row per unit with both columns, like a materialized register row.
     let mut by_unit: std::collections::BTreeMap<u32, [i128; 6]> = std::collections::BTreeMap::new();
     for c in &ex.cells {
@@ -3447,94 +5287,90 @@ fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         row[4] = c.credits;
         row[5] = i128::from(c.entry_count);
     }
+    // Prepare every amount before emitting either format. In particular,
+    // a corrupt later contribution must not follow a partial human report.
+    let cells: Vec<Json> = by_unit
+        .iter()
+        .map(|(u, [d, c, n, pd, pc, pn])| {
+            Ok(obj(vec![
+                ("unit", s(unit_code(*u)?)),
+                ("debits", s(render(*u, *d)?)),
+                ("credits", s(render(*u, *c)?)),
+                ("net", s(render(*u, d - c)?)),
+                ("entry_count", Json::Int(*n)),
+                ("debits_pending", s(render(*u, *pd)?)),
+                ("credits_pending", s(render(*u, *pc)?)),
+                ("pending_count", Json::Int(*pn)),
+            ]))
+        })
+        .collect::<Result<_, Fail>>()?;
+    let contributions: Vec<Json> = ex
+        .contributions
+        .iter()
+        .map(|c| {
+            Ok(obj(vec![
+                ("entry", s(format!("{:032x}", c.entry.0))),
+                ("entry_digest", s(hex(&c.entry_digest))),
+                ("class", s(c.class.name().unwrap_or("?"))),
+                ("effective_date", s(c.effective_date.render())),
+                ("recorded_at", Json::Int(i128::from(c.recorded_at.0))),
+                ("ordinal", Json::Int(i128::from(c.ordinal))),
+                ("side", s(side_name(c.side))),
+                ("amount", s(render(c.unit_id, c.mantissa)?)),
+                ("column", s(c.column.name())),
+                (
+                    "released_at",
+                    c.released_at
+                        .map_or(Json::Null, |r| Json::Int(i128::from(r.0))),
+                ),
+                (
+                    "resolves",
+                    c.resolves
+                        .map_or(Json::Null, |v| s(format!("{:032x}", v.0))),
+                ),
+                (
+                    "supersedes",
+                    Json::Arr(
+                        c.supersedes
+                            .iter()
+                            .map(|l| lineage_json(l, &reasons))
+                            .collect(),
+                    ),
+                ),
+                (
+                    "evidence",
+                    Json::Arr(
+                        c.evidence
+                            .iter()
+                            .map(|e| {
+                                obj(vec![
+                                    ("document_oid", s(hex(&e.document_oid.0))),
+                                    ("doc_commit", s(hex(&e.doc_commit))),
+                                    ("role", Json::Int(i128::from(e.role))),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                ),
+            ]))
+        })
+        .collect::<Result<_, Fail>>()?;
+    let history: Vec<Json> = ex
+        .history
+        .iter()
+        .map(|h| {
+            Ok(obj(vec![
+                ("recorded_at", Json::Int(i128::from(h.recorded_at.0))),
+                ("unit", s(unit_code(h.unit_id)?)),
+                ("debits", s(render(h.unit_id, h.debits)?)),
+                ("credits", s(render(h.unit_id, h.credits)?)),
+                ("debits_pending", s(render(h.unit_id, h.debits_pending)?)),
+                ("credits_pending", s(render(h.unit_id, h.credits_pending)?)),
+            ]))
+        })
+        .collect::<Result<_, Fail>>()?;
     if out.json {
-        let cells: Vec<Json> = by_unit
-            .iter()
-            .map(|(u, [d, c, n, pd, pc, pn])| {
-                obj(vec![
-                    ("unit", s(unit_code(*u))),
-                    ("debits", s(render(*u, *d))),
-                    ("credits", s(render(*u, *c))),
-                    ("net", s(render(*u, d - c))),
-                    ("entry_count", Json::Int(*n)),
-                    ("debits_pending", s(render(*u, *pd))),
-                    ("credits_pending", s(render(*u, *pc))),
-                    ("pending_count", Json::Int(*pn)),
-                ])
-            })
-            .collect();
-        let contributions: Vec<Json> = ex
-            .contributions
-            .iter()
-            .map(|c| {
-                obj(vec![
-                    ("entry", s(format!("{:032x}", c.entry.0))),
-                    ("entry_digest", s(hex(&c.entry_digest))),
-                    ("class", s(c.class.name().unwrap_or("?"))),
-                    ("effective_date", s(c.effective_date.render())),
-                    ("recorded_at", Json::Int(i128::from(c.recorded_at.0))),
-                    ("ordinal", Json::Int(i128::from(c.ordinal))),
-                    ("side", s(side_name(c.side))),
-                    ("amount", s(render(c.unit_id, c.mantissa))),
-                    ("column", s(c.column.name())),
-                    (
-                        "released_at",
-                        c.released_at
-                            .map_or(Json::Null, |r| Json::Int(i128::from(r.0))),
-                    ),
-                    (
-                        "resolves",
-                        c.resolves
-                            .map_or(Json::Null, |v| s(format!("{:032x}", v.0))),
-                    ),
-                    (
-                        "supersedes",
-                        Json::Arr(
-                            c.supersedes
-                                .iter()
-                                .map(|l| {
-                                    obj(vec![
-                                        ("entry", s(format!("{:032x}", l.target.vid.0))),
-                                        ("kind", s(format!("{:?}", l.kind))),
-                                        ("reason_code", Json::Int(i128::from(l.reason_code))),
-                                    ])
-                                })
-                                .collect(),
-                        ),
-                    ),
-                    (
-                        "evidence",
-                        Json::Arr(
-                            c.evidence
-                                .iter()
-                                .map(|e| {
-                                    obj(vec![
-                                        ("document_oid", s(hex(&e.document_oid.0))),
-                                        ("doc_commit", s(hex(&e.doc_commit))),
-                                        ("role", Json::Int(i128::from(e.role))),
-                                    ])
-                                })
-                                .collect(),
-                        ),
-                    ),
-                ])
-            })
-            .collect();
-        let history: Vec<Json> = ex
-            .history
-            .iter()
-            .map(|h| {
-                obj(vec![
-                    ("recorded_at", Json::Int(i128::from(h.recorded_at.0))),
-                    ("unit", s(unit_code(h.unit_id))),
-                    ("debits", s(render(h.unit_id, h.debits))),
-                    ("credits", s(render(h.unit_id, h.credits))),
-                    ("debits_pending", s(render(h.unit_id, h.debits_pending))),
-                    ("credits_pending", s(render(h.unit_id, h.credits_pending))),
-                ])
-            })
-            .collect();
-        out.event(
+        out.event_with_certificate(
             "balance_explained",
             vec![
                 ("account", s(&account.code)),
@@ -3549,7 +5385,7 @@ fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         .map_or(Json::Null, |w| Json::Int(i128::from(w.0))),
                 ),
                 ("fold_digest", s(hex(&ex.fold_digest))),
-                ("certificate", Json::Null),
+                ("certificate", certificate.map_or(Json::Null, s)),
                 ("cells", Json::Arr(cells)),
                 ("contributions", Json::Arr(contributions)),
                 ("history", Json::Arr(history)),
@@ -3560,6 +5396,7 @@ fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ),
             ],
             "",
+            certificate,
         );
         return Ok(());
     }
@@ -3594,13 +5431,13 @@ fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         for (u, [d, c, n, pd, pc, _]) in &by_unit {
             out.line(format!(
                 "{:<6} {:>20} {:>20} {:>20} {:>7} {:>20} {:>20}",
-                unit_code(*u),
-                render(*u, *d),
-                render(*u, *c),
-                render(*u, d - c),
+                unit_code(*u)?,
+                render(*u, *d)?,
+                render(*u, *c)?,
+                render(*u, d - c)?,
                 n,
-                render(*u, *pd),
-                render(*u, *pc)
+                render(*u, *pd)?,
+                render(*u, *pc)?
             ));
         }
     }
@@ -3618,7 +5455,7 @@ fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             c.class.name().unwrap_or("?"),
             c.effective_date.render(),
             side_name(c.side),
-            render(c.unit_id, c.mantissa),
+            render(c.unit_id, c.mantissa)?,
             c.column.name(),
             c.released_at
                 .map_or(String::new(), |r| format!(" at {}", r.0))
@@ -3708,7 +5545,26 @@ fn registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             // (verbs.toml [[dangerous]]): every period is checked, and the
             // whole command refused, before anything is written.
             for p in &periods {
-                let v = book.verify_registers(p)?;
+                let v = match book.verify_registers(p) {
+                    Ok(v) => v,
+                    Err(BookError::Registers(fa_registers::RegisterError::ProjectionDrift(_)))
+                    | Err(BookError::Registers(fa_registers::RegisterError::Kernel(
+                        fa_journal::KernelError::Corrupt(_),
+                    ))) => {
+                        // Malformed derived values still require explicit
+                        // replacement authorization. The rebuild below must
+                        // independently fold valid journal payloads.
+                        gate(
+                            out,
+                            args,
+                            "registers",
+                            Some("materialize"),
+                            &Condition::ExistingCells,
+                        )?;
+                        continue;
+                    }
+                    Err(error) => return Err(error.into()),
+                };
                 let existing = v.stored_digest.is_some()
                     || v.drift
                         .iter()
@@ -3716,6 +5572,7 @@ fn registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         .any(|d| d.stored.is_some());
                 if existing {
                     gate(
+                        out,
                         args,
                         "registers",
                         Some("materialize"),
@@ -3787,6 +5644,7 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         "proposal_digest",
                         "approvals",
                         "legs",
+                        "supersedes",
                     ] {
                         fields.push((absent, Json::Null));
                     }
@@ -3794,12 +5652,14 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     Ok(())
                 }
                 Some((entry, seq)) => {
+                    let reasons = ReasonCodes::embedded()
+                        .map_err(|e| Fail::Internal(format!("reason_codes.toml: {e}")))?;
                     let legs: Vec<Json> = entry
                         .proposal
                         .legs
                         .iter()
                         .map(|l| {
-                            obj(vec![
+                            Ok(obj(vec![
                                 (
                                     "side",
                                     s(if l.side == Side::Debit {
@@ -3809,10 +5669,10 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                                     }),
                                 ),
                                 ("account", s(format!("{:032x}", l.account_ref.0))),
-                                ("amount", s(l.amount.render(units))),
-                            ])
+                                ("amount", s(render_amount(l.amount, units)?)),
+                            ]))
                         })
-                        .collect();
+                        .collect::<Result<_, Fail>>()?;
                     let fields = vec![
                         ("found", Json::Bool(true)),
                         ("vid", s(vid_s)),
@@ -3823,8 +5683,19 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         ("proposal_digest", s(hex(&entry.proposal_digest))),
                         ("approvals", Json::Int(entry.approvals.len() as i128)),
                         ("legs", Json::Arr(legs)),
+                        (
+                            "supersedes",
+                            Json::Arr(
+                                entry
+                                    .proposal
+                                    .supersession
+                                    .iter()
+                                    .map(|l| lineage_json(l, &reasons))
+                                    .collect(),
+                            ),
+                        ),
                     ];
-                    let human = format!(
+                    let mut human = format!(
                         "{} {} recorded at {} · {} legs · entry_digest {}",
                         entry.proposal.class.name().unwrap_or("?"),
                         entry.proposal.effective_date.render(),
@@ -3832,6 +5703,15 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         entry.proposal.legs.len(),
                         hex(&entry.entry_digest)
                     );
+                    for link in &entry.proposal.supersession {
+                        let reason = reasons
+                            .get("supersession", link.reason_code)
+                            .map_or("unregistered historical reason", |r| r.name.as_str());
+                        human.push_str(&format!(
+                            "\n{:?} {:032x} · reason {} ({reason})",
+                            link.kind, link.target.vid.0, link.reason_code
+                        ));
+                    }
                     out.event("entry", fields, &human);
                     Ok(())
                 }
@@ -3855,6 +5735,146 @@ mod tests {
         let handled: Vec<&str> = HANDLERS.iter().map(|(name, _)| *name).collect();
         let registered: Vec<&str> = reg.verbs.iter().map(|v| v.name.as_str()).collect();
         assert_eq!(handled, registered);
+    }
+
+    fn render_fixture(unit: fa_money::UnitId) -> fa_registers::TrialBalance {
+        fa_registers::TrialBalance {
+            periods: vec!["FY2026-P03".into()],
+            known_at: CommitSeq(9),
+            effective_through: Some(DateDay(0)),
+            activity: false,
+            rows: vec![fa_registers::TbRow {
+                account: VId(1),
+                code: "1000".into(),
+                name: "Cash".into(),
+                account_type: AccountType(1),
+                unit_id: unit.0,
+                debits: 1_234,
+                credits: 1_234,
+                debits_pending: 25,
+                credits_pending: 25,
+            }],
+            unit_totals: [(unit.0, (1_234, 1_234))].into_iter().collect(),
+            pending_unit_totals: [(unit.0, (25, 25))].into_iter().collect(),
+        }
+    }
+
+    #[test]
+    fn unknown_units_refuse_reports_before_any_success_output() {
+        let units = fa_money::UnitRegistry::with_defaults();
+        let usd = units.lookup("USD").unwrap();
+        let unknown = fa_money::UnitId(u32::MAX);
+        assert!(units.get(unknown).is_none());
+        let certificate = "a".repeat(64);
+        let reg = verbs::registry().expect("verbs.toml");
+        for location in ["row", "posted total", "pending total"] {
+            let mut tb = render_fixture(usd);
+            match location {
+                "row" => tb.rows.push(fa_registers::TbRow {
+                    account: VId(2),
+                    code: "2000".into(),
+                    unit_id: unknown.0,
+                    ..tb.rows[0].clone()
+                }),
+                "posted total" => {
+                    tb.unit_totals.insert(unknown.0, (0, 0));
+                }
+                _ => {
+                    tb.pending_unit_totals.insert(unknown.0, (0, 0));
+                }
+            }
+            let selection = TrialBalanceSelection::Periods(tb.periods.clone());
+            for json in [false, true] {
+                let out = Out::new(json, true);
+                let result = render_trial_balance_with_units(
+                    &out,
+                    &units,
+                    &tb,
+                    &selection,
+                    Some(&certificate),
+                );
+                assert!(matches!(
+                    &result,
+                    Err(Fail::Book(BookError::Kernel(
+                        fa_journal::KernelError::Corrupt(_)
+                    )))
+                ));
+                let (code, captured) = finish_into(out, result);
+                assert_eq!(code, exit::FOUNDATION, "{location}: {}", captured.stderr);
+                assert!(
+                    captured.stderr.contains("unknown unit"),
+                    "{}",
+                    captured.stderr
+                );
+                assert!(
+                    captured.stderr.contains("unit reconciliation"),
+                    "{}",
+                    captured.stderr
+                );
+                if json {
+                    assert_eq!(captured.stdout.lines().count(), 1, "{}", captured.stdout);
+                    assert_eq!(
+                        reg.check_line(captured.stdout.trim_end()),
+                        Ok("error"),
+                        "{}",
+                        captured.stdout
+                    );
+                    assert!(captured.stdout.contains(r#""exit":5"#));
+                    assert!(captured.stdout.contains(r#""class":"foundation""#));
+                    assert!(captured.stdout.contains(r#""certificate":null"#));
+                    assert!(!captured.stdout.contains(r#""event":"trial_balance""#));
+                } else {
+                    assert!(
+                        captured.stdout.is_empty(),
+                        "{location}: {}",
+                        captured.stdout
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn registered_amounts_keep_report_text_and_certificate_binding() {
+        let units = fa_money::UnitRegistry::with_defaults();
+        let tb = render_fixture(units.lookup("USD").unwrap());
+        let selection = TrialBalanceSelection::Periods(tb.periods.clone());
+        let certificate = "b".repeat(64);
+        let reg = verbs::registry().expect("verbs.toml");
+        for json in [false, true] {
+            let out = Out::new(json, true);
+            out.said.borrow_mut().at = Some(At {
+                book: "0a1b".into(),
+                known_at: CommitSeq(10),
+                effective: "all".into(),
+            });
+            let result =
+                render_trial_balance_with_units(&out, &units, &tb, &selection, Some(&certificate));
+            let (code, captured) = finish_into(out, result);
+            assert_eq!(code, exit::SUCCESS, "{}", captured.stderr);
+            assert!(captured.stderr.is_empty(), "{}", captured.stderr);
+            assert!(captured.stdout.contains("12.34 USD"), "{}", captured.stdout);
+            assert!(captured.stdout.contains("0.25 USD"), "{}", captured.stdout);
+            if json {
+                assert_eq!(
+                    reg.check_line(captured.stdout.trim_end()),
+                    Ok("trial_balance"),
+                    "{}",
+                    captured.stdout
+                );
+                assert!(captured.stdout.contains(r#""net":"0.00 USD""#));
+                assert!(captured.stdout.contains(r#""known_at":9"#));
+                assert!(
+                    captured
+                        .stdout
+                        .contains(&format!(r#""certificate":"{certificate}""#)),
+                    "{}",
+                    captured.stdout
+                );
+            } else {
+                assert!(captured.stdout.contains("balanced: true"));
+            }
+        }
     }
 
     /// A drift row only arises from a tampered store, which no binary test
@@ -3936,6 +5956,19 @@ mod tests {
                 && line.contains(r#""net":"40.00 USD""#),
             "{line}"
         );
+        let missing_units = fa_money::UnitRegistry::empty();
+        let corrupt_amount = |_: &str, m: i128| -> Result<Json, Fail> {
+            Ok(s(render_amount(
+                Amount::new(fa_money::UnitId(7), m),
+                &missing_units,
+            )?))
+        };
+        assert!(matches!(
+            availability_fields(&v, &corrupt_amount),
+            Err(Fail::Book(BookError::Kernel(
+                fa_journal::KernelError::Corrupt(_)
+            )))
+        ));
     }
 
     /// Styling is resolved once (plan Appendix D determinism): only a

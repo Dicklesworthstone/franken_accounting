@@ -1,0 +1,16 @@
+# fa-k1u: the complete journaled unit definition. The codec test checks the
+# version, layout and bound against this row and an independent USD vector.
+schema_version = 1
+name = "UnitDefinition"
+owner = "fa-model::unit::UnitDefinition"
+magic_hex = "46415500"
+major = 1
+minor = 0
+max_code_bytes = 64
+fields = ["magic:bytes4", "major:u16", "minor:u16", "id:u32", "code:string", "version:u16", "scale:u8", "kind:u8", "iso4217:option<u16>", "rounding_default:u16"]
+kind_tags = ["1:Currency", "2:Commodity", "3:Share", "4:Time", "5:Count", "6:Custom"]
+unknown_version = "refuse"
+pre_payload = "refuse; an authorized journaled backfill must establish the missing facts before a book can be upgraded"
+canonical_default_law_id = "none"
+table_digest_domain = "fa:unit-table:v1"
+table_digest_fields = ["count:u32", "definitions:ordered<bytes>"]

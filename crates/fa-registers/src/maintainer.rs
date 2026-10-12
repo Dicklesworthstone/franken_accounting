@@ -167,6 +167,13 @@ fn load<V: asupersync::fs::Vfs + Clone>(
     if through > db.frontier()? {
         return Err(drift("maintenance cursor exceeds book frontier"));
     }
+    match crate::period_at(db, book, period, through) {
+        Ok(_) => {}
+        Err(RegisterError::InvalidSelection(_)) => {
+            return Err(drift("maintenance cursor predates its period"));
+        }
+        Err(error) => return Err(error),
+    }
     for row in crate::stored_registers(db, book, &fold)?.values() {
         let account: [u8; 16] = bytes(row, property::ACCOUNT_REF, "register.account")?
             .try_into()
@@ -216,15 +223,19 @@ pub(crate) fn verify_state<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     period: &str,
-) -> Result<Option<String>, RegisterError> {
+) -> Result<(Option<CommitSeq>, Option<String>), RegisterError> {
     match load(db, book, period) {
-        Ok(None) => Ok(None),
+        Ok(None) => Ok((None, None)),
         Ok(Some((through, fold, _))) => {
             let truth = crate::fold_period_at(db, book, period, Some(through))?;
-            Ok((fold != truth)
-                .then(|| "maintenance state disagrees with its journal prefix".into()))
+            Ok((
+                Some(through),
+                (fold != truth)
+                    .then(|| "maintenance state disagrees with its journal prefix".into()),
+            ))
         }
-        Err(RegisterError::ProjectionDrift(what)) => Ok(Some(what)),
+        Err(RegisterError::ProjectionDrift(what))
+        | Err(RegisterError::Kernel(KernelError::Corrupt(what))) => Ok((None, Some(what))),
         Err(error) => Err(error),
     }
 }

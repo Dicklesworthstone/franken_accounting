@@ -28,14 +28,17 @@ pub mod legal_hold;
 pub mod limit;
 pub mod migration;
 pub mod period;
+pub mod plan;
 pub mod policy;
 pub mod post;
+pub mod projections;
 pub mod redaction;
 pub mod refusal;
 pub mod rows;
 pub mod schedule;
 pub mod scratch;
 pub mod sweep;
+pub mod temporal;
 
 pub use attestation::{
     AttestationClaim, Attested, read_attestation, record_manual_assertion, record_review,
@@ -70,6 +73,7 @@ pub use period::{
     PreparedTransition, TransitionPlan, Transitioned, plan_transition, prepare_transition,
     transition_name, transition_period, transition_proposal,
 };
+pub use plan::{commit_plan, plan_certificate_vid, plan_post};
 pub use policy::{
     ActivationRequest, ApprovalRequest, Approved, PolicyActivated, RevocationRequest, Revoked,
     activate_policy, activation_proposal, record_approval, revoke_capability,
@@ -93,3 +97,6 @@ pub use sweep::{
     DueHold, Op, Profile, SweepBatch, SweepRequest, Swept, Tick, TickRequest, Ticked, due_holds,
     latest_tick, record_tick, sweep, sweep_batch,
 };
+pub use temporal::{InstantSelection, resolve_instant_at};
+
+pub use projections::{ProjectionVerification, verify_projections};

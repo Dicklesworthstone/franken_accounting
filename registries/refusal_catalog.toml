@@ -195,7 +195,7 @@ exit = "safety"
 cite = "plan §14.2 (revocation is a journaled control entry; authority is evaluated against current policy at commit)"
 fix = "obtain a fresh capability from the book's steward; a revoked token is never reinstated"
 
-# ---- Concurrency and identity (030–033) ----------------------------------
+# ---- Concurrency, identity and posting plans (030–034) --------------------
 [[refusal]]
 code = "FA-REF-030"
 name = "CONFLICT"
@@ -228,6 +228,14 @@ exit = "conflict"
 cite = "plan §8.5 (no plaintext equivalence over destroyed secrets)"
 fix = "resubmit the exact prepared bytes to get the recorded outcome, or use a new idempotency key"
 
+[[refusal]]
+code = "FA-REF-034"
+name = "PLAN_INVALIDATED"
+owners = ["fa-journal"]
+exit = "conflict"
+cite = "plan §5.1 / §14.2 / FA-INV-11 (authenticated posting plan, exact preparation basis and current authority)"
+fix = "rehearse the original intent again at the current book head under the acting capability, review its new certificate, then commit that exact plan"
+
 # ---- Period transitions (040) --------------------------------------------
 [[refusal]]
 code = "FA-REF-040"
@@ -237,7 +245,34 @@ exit = "safety"
 cite = "plan §7.3 period state machine"
 fix = "pick a legal transition: Future→Open, Open→SoftClose, SoftClosed→Close|Reopen, Closed→Lock|Reopen"
 
-# ---- Supersession (050–052) ----------------------------------------------
+# ---- Certified replay (150) ---------------------------------------------
+[[refusal]]
+code = "FA-REF-150"
+name = "CERTIFICATE_INVALID"
+owners = ["fa"]
+exit = "verification"
+cite = "plan §13.6 / FA-INV-11"
+fix = "recreate the certificate from the original book and selector; retain its certified history and registry versions"
+
+# ---- TimeEvidence selection (151) ---------------------------------------
+[[refusal]]
+code = "FA-REF-151"
+name = "INSTANT_UNAVAILABLE"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §7.1a / FA-INV-07"
+fix = "select --as-known-at HEAD or an existing commit sequence; an instant before the first retained tick cannot be reconstructed"
+
+# ---- Exact financial statements (152) -----------------------------------
+[[refusal]]
+code = "FA-REF-152"
+name = "STATEMENT_INVALID"
+owners = ["fa", "fa-statements"]
+exit = "refusal"
+cite = "plan §12.1 / FA-INV-04 mapping-partition (exact statement over the journal)"
+fix = "select balance-sheet or income-statement with an existing period; correct the named mapping or input and recompute from the journal without adding a balancing entry"
+
+# ---- Supersession (050–054) ----------------------------------------------
 [[refusal]]
 code = "FA-REF-050"
 name = "REVERSAL_TARGET"
@@ -261,6 +296,22 @@ owners = ["fa-journal"]
 exit = "conflict"
 cite = "plan §4.9 (one reversal per target, by identity)"
 fix = "cite the existing reversal instead of posting another"
+
+[[refusal]]
+code = "FA-REF-053"
+name = "REVERSAL_PERIOD"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §8.1 (a reversal is in the target's period or a later period in fiscal-calendar order)"
+fix = "post the reversal in a permitted open period at or after the target's period; special-period ordinals also determine order"
+
+[[refusal]]
+code = "FA-REF-054"
+name = "SUPERSESSION_REASON"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §8.2 (corrections carry a registered reason_codes.toml supersession reason)"
+fix = "choose DataEntryError, WrongAccount, WrongPeriod, WrongAmount, Duplicate, EstimateChange, PolicyChange, Fraud, AuditAdjustment, RegulatoryDirective, Other, or ScheduledAccrualReversal; Other needs a description"
 
 # ---- Two-phase (060–062) -------------------------------------------------
 [[refusal]]

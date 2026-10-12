@@ -1,9 +1,9 @@
 //! Running one call through the `fa` front door and reading its robot lines.
 //!
 //! Every tool call and every resource read becomes an `fa … --json` command
-//! line run by [`fa_cli::entry::fa_with`] — the function the `fa` binary's
-//! `main` calls — so it runs directly under the book's writer lease, or
-//! through the `fad` that holds it, exactly as the CLI would. The forwarded
+//! line run by [`fa_cli::entry::fa_with_authority`] under the authority fixed
+//! at trusted launch. It takes the book's writer lease and never forwards
+//! to the unauthenticated `fad` protocol. The forwarded
 //! stdin is the call's inline document; a call that forwarded none gets
 //! [`Stdin::Missing`], so `-` can never read the server's own transport.
 //!
@@ -11,6 +11,7 @@
 //! ([`fa_cli::verbs::Registry::check_line`]): a line outside it is a
 //! foundation failure of the dispatcher, never a payload.
 
+use fa_cli::authority::LaunchAuthority;
 use fa_cli::cli::{Files, Stdin};
 use fa_cli::json::{self, Json};
 use fa_cli::verbs::Registry;
@@ -46,7 +47,11 @@ impl Reply {
 }
 
 /// Run `invocation` through the front door and parse its robot lines.
-pub fn run(reg: &Registry, invocation: &Invocation) -> Result<Reply, String> {
+pub fn run(
+    reg: &Registry,
+    invocation: &Invocation,
+    authority: &LaunchAuthority,
+) -> Result<Reply, String> {
     let files = Files {
         cwd: None,
         stdin: match &invocation.stdin {
@@ -54,7 +59,7 @@ pub fn run(reg: &Registry, invocation: &Invocation) -> Result<Reply, String> {
             None => Stdin::Missing,
         },
     };
-    let (exit, out) = fa_cli::entry::fa_with(&invocation.argv, files, true);
+    let (exit, out) = fa_cli::entry::fa_with_authority(&invocation.argv, files, authority, true);
     let mut lines = Vec::new();
     for raw in out.stdout.lines() {
         let event = reg
@@ -121,16 +126,23 @@ pub fn from_wire(v: &JsonValue) -> Option<Json> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fa_cli::authority::LaunchProfile;
     use fastmcp_rust::json;
+
+    fn authority(book: std::path::PathBuf) -> LaunchAuthority {
+        LaunchAuthority::new(book, None, "mcp-agent", LaunchProfile::Agent, &[])
+            .expect("launch authority")
+    }
 
     #[test]
     fn a_command_without_a_book_is_run_and_its_lines_are_schema_checked() {
         let reg = fa_cli::verbs::registry().expect("verbs.toml");
+        let authority = authority("/nonexistent/book".into());
         let inv = Invocation {
             argv: vec!["capabilities".into(), "--json".into()],
             stdin: None,
         };
-        let reply = run(reg, &inv).expect("ran");
+        let reply = run(reg, &inv, &authority).expect("ran");
         assert_eq!(reply.exit, 0, "{}", reply.stderr);
         assert_eq!(reply.lines.len(), 1);
         assert_eq!(reply.lines[0].event, "capabilities");
@@ -141,7 +153,7 @@ mod tests {
             argv: vec!["tb".into(), "--jsno".into(), "--json".into()],
             stdin: None,
         };
-        let reply = run(reg, &bad).expect("ran");
+        let reply = run(reg, &bad, &authority).expect("ran");
         assert_eq!(reply.exit, 2);
         let err = reply.error().expect("an error line");
         assert_eq!(err.data.get("class").and_then(Json::as_str), Some("usage"));
@@ -156,18 +168,19 @@ mod tests {
     #[test]
     fn a_missing_stdin_never_reads_the_servers_transport() {
         let reg = fa_cli::verbs::registry().expect("verbs.toml");
+        let dir = std::env::temp_dir().join(format!("fa-mcp-missing-stdin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("lease directory");
+        let authority = authority(dir);
         let inv = Invocation {
             argv: vec![
                 "post".into(),
                 "--intent".into(),
                 "-".into(),
-                "--book".into(),
-                "/nonexistent/book".into(),
                 "--json".into(),
             ],
             stdin: None,
         };
-        let reply = run(reg, &inv).expect("ran");
+        let reply = run(reg, &inv, &authority).expect("ran");
         assert_eq!(reply.exit, 2, "{:?}", reply.lines);
         let err = reply.error().expect("error");
         assert!(

@@ -3,92 +3,121 @@
 # an existing row never changes. Mantissas are stored at `scale` forever.
 #
 # Consumer: fa-money UnitRegistry (loaded by fa-registry), fa-cli amount
-# parsing and rendering. Gate: duplicate (code, version) fails the check.
+# parsing and rendering. IDs are explicit, dense and append-only. The
+# original thirteen definitions are pinned by an independent registry test.
+# Default rounding is an immutable part of each unit version; calculations
+# still name their law explicitly rather than silently applying this default.
 
 schema_version = 1
 
 [[unit]]
+id = 0
 code = "USD"
 version = 0
 scale = 2
 kind = "currency"
 iso4217 = 840
+rounding_default = 3
 
 [[unit]]
+id = 1
 code = "EUR"
 version = 0
 scale = 2
 kind = "currency"
 iso4217 = 978
+rounding_default = 3
 
 [[unit]]
+id = 2
 code = "GBP"
 version = 0
 scale = 2
 kind = "currency"
 iso4217 = 826
+rounding_default = 3
 
 [[unit]]
+id = 3
 code = "JPY"
 version = 0
 scale = 0
 kind = "currency"
 iso4217 = 392
+rounding_default = 3
 
 [[unit]]
+id = 4
 code = "CHF"
 version = 0
 scale = 2
 kind = "currency"
 iso4217 = 756
+rounding_default = 3
 
 [[unit]]
+id = 5
 code = "CAD"
 version = 0
 scale = 2
 kind = "currency"
 iso4217 = 124
+rounding_default = 3
 
 [[unit]]
+id = 6
 code = "AUD"
 version = 0
 scale = 2
 kind = "currency"
 iso4217 = 36
+rounding_default = 3
 
 [[unit]]
+id = 7
 code = "KWD"
 version = 0
 scale = 3
 kind = "currency"
 iso4217 = 414
+rounding_default = 3
 
 [[unit]]
+id = 8
 code = "BTC"
 version = 0
 scale = 8
 kind = "commodity"
+rounding_default = 3
 
 [[unit]]
+id = 9
 code = "ETH"
 version = 0
 scale = 18
 kind = "commodity"
+rounding_default = 3
 
 [[unit]]
+id = 10
 code = "SHARE"
 version = 0
 scale = 6
 kind = "share"
+rounding_default = 3
 
 [[unit]]
+id = 11
 code = "HOUR"
 version = 0
 scale = 2
 kind = "time"
+rounding_default = 3
 
 [[unit]]
+id = 12
 code = "EACH"
 version = 0
 scale = 0
 kind = "count"
+rounding_default = 3

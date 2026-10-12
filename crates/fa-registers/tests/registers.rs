@@ -11,12 +11,14 @@ use fa_journal::*;
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
     ControlPayload, Disposition, EntryClass, EntryOrigin, EntryPayload, Erasable, EvidenceRef,
-    Id128, LegPayload, Oid, Pending, SealKey, SymbolTable, account_vid, period_vid,
+    Id128, LegPayload, Oid, Pending, SealKey, Supersession, SupersessionKind, SymbolTable,
+    account_vid, period_vid,
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_registers::{
-    Cell, CellKey, Fold, RegisterError, balance_as_of, fold_period, fold_period_at, materialize,
-    register_vid, trial_balance, trial_balance_at, verify_period,
+    CacheStatus, Cell, CellKey, Fold, RegisterError, balance_as_of, fold_period, fold_period_at,
+    materialize, period_activity, period_activity_excluding_classes, register_vid, trial_balance,
+    trial_balance_at, verify_period,
 };
 use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodTransition};
 use fgdb::{Database, DatabaseKeys, MemVfs, WriteBatch};
@@ -462,17 +464,30 @@ fn materialize_then_verify_is_green_and_a_tampered_register_is_drift() {
     let v = verify_period(&h.db, &h.book, &h.march).unwrap();
     assert!(v.is_green(), "{v:?}");
     assert_eq!(v.cells_checked, 2);
+    assert_eq!(v.cache_status, CacheStatus::Verified);
+    let basis = v.verified_through.expect("materialized prefix");
+    assert!(
+        basis < h.db.frontier().unwrap(),
+        "publication is not an entry"
+    );
+    assert!(!v.stale);
+    assert_eq!(v.lag_entries, 0);
 
-    // A later post makes the stored registers stale: verify says so, the
-    // journal is untouched, and re-materializing restores green.
+    // A later post makes the cache stale without invalidating its checked prefix.
     h.post_rent(5, b"r2");
     let v = verify_period(&h.db, &h.book, &h.march).unwrap();
-    assert!(!v.is_green() && v.drift.len() == 2, "{v:?}");
+    assert!(v.is_green() && v.stale, "{v:?}");
+    assert_eq!(v.verified_through, Some(basis));
+    assert_eq!(v.lag_entries, 1);
+    assert!(v.drift.is_empty());
+    assert_eq!(v.refold_digest, fold.fold_digest);
     let fold = fold_period(&h.db, &h.book, &h.march).unwrap();
     h.runtime
         .block_on(async { materialize(&mut h.db, &ctx, &h.book, &fold).await })
         .expect("re-materialize");
-    assert!(verify_period(&h.db, &h.book, &h.march).unwrap().is_green());
+    let current = verify_period(&h.db, &h.book, &h.march).unwrap();
+    assert!(current.is_green() && !current.stale, "{current:?}");
+    assert_eq!(current.lag_entries, 0);
 
     // Tamper with a stored register directly: drift names the cell with both values.
     let cash_key = fold
@@ -494,10 +509,110 @@ fn materialize_then_verify_is_green_and_a_tampered_register_is_drift() {
         .expect("tamper write");
     let v = verify_period(&h.db, &h.book, &h.march).unwrap();
     assert!(!v.is_green());
+    assert_eq!(v.cache_status, CacheStatus::Corrupt);
+    assert_eq!(v.verified_through, None);
     assert_eq!(v.drift.len(), 1);
     assert_eq!(v.drift[0].key, cash_key);
     assert_eq!(v.drift[0].stored, Some((0, 999, 2)));
     assert_eq!(v.drift[0].refolded, (0, 1_005, 2));
+}
+
+#[test]
+fn class_filtered_activity_uses_payload_lineage_and_ignores_damaged_registers() {
+    let mut h = harness();
+    h.post_rent(100, b"ordinary-activity");
+    let adjustment = h.commit(h.proposal(
+        h.expense_legs(20),
+        b"adjustment-activity",
+        EntryClass::ADJUSTING,
+    ));
+    let before_reversal = h.db.frontier().unwrap();
+    let mut target = adjustment.entry_ref();
+    for key in [
+        b"undo-adjustment".as_slice(),
+        b"restore-adjustment".as_slice(),
+    ] {
+        let (original, _) = read_entry(&h.db, target.vid).unwrap().unwrap();
+        let legs = original
+            .proposal
+            .legs
+            .iter()
+            .map(|leg| {
+                LegPayload::simple(
+                    if leg.side == Side::Debit {
+                        Side::Credit
+                    } else {
+                        Side::Debit
+                    },
+                    leg.account_ref,
+                    leg.amount,
+                )
+            })
+            .collect();
+        let mut reversal = h.proposal(legs, key, EntryClass::REVERSAL);
+        reversal.supersession = vec![Supersession {
+            target,
+            kind: SupersessionKind::Reverses,
+            reason_code: 1,
+        }];
+        target = h.commit(reversal).entry_ref();
+    }
+    h.hold(h.expense_legs(500), b"reservation-is-separate");
+    let periods = [h.march.clone()];
+    let ordinary = period_activity(&h.db, &h.book, &periods, None).unwrap();
+    let unfiltered =
+        period_activity_excluding_classes(&h.db, &h.book, &periods, None, &[]).unwrap();
+    assert_eq!(
+        ordinary, unfiltered,
+        "ordinary activity has unchanged semantics"
+    );
+    let filtered =
+        period_activity_excluding_classes(&h.db, &h.book, &periods, None, &[EntryClass::ADJUSTING])
+            .unwrap();
+    let expense = filtered
+        .rows
+        .iter()
+        .find(|row| row.account == h.rent)
+        .unwrap();
+    assert_eq!((expense.debits, expense.credits), (100, 0));
+    assert_eq!((expense.debits_pending, expense.credits_pending), (500, 0));
+    assert_eq!(filtered.unit_totals[&h.usd.0], (100, 100));
+    let historical = period_activity_excluding_classes(
+        &h.db,
+        &h.book,
+        &periods,
+        Some(before_reversal),
+        &[EntryClass::ADJUSTING],
+    )
+    .unwrap();
+    assert_eq!(historical.unit_totals[&h.usd.0], (100, 100));
+    assert!(
+        historical
+            .pending_unit_totals
+            .values()
+            .all(|totals| *totals == (0, 0))
+    );
+
+    let fold = h.materialize_march();
+    let cell = fold
+        .cells
+        .iter()
+        .find(|cell| cell.key.account == h.rent)
+        .unwrap();
+    let mut corrupt = WriteBatch::new(relation::IN_PERIOD);
+    corrupt.set_vertex_property(
+        register_vid(h.book.book_id, &cell.key),
+        property::DEBITS_POSTED,
+        Some(scalar_bytes(9_999i128.to_le_bytes().to_vec())),
+    );
+    h.write_derived(corrupt);
+    h.assert_not_green("the planted register amount is detected");
+    let after =
+        period_activity_excluding_classes(&h.db, &h.book, &periods, None, &[EntryClass::ADJUSTING])
+            .unwrap();
+    assert_eq!(after.rows, filtered.rows);
+    assert_eq!(after.unit_totals, filtered.unit_totals);
+    assert_eq!(after.pending_unit_totals, filtered.pending_unit_totals);
 }
 
 #[test]
@@ -538,11 +653,143 @@ fn empty_period_verifies_and_rebuild_does_not_invent_cells_or_postings() {
         "empty journal and empty stored set must agree: {v:?}"
     );
     assert_eq!(v.cells_checked, 0);
+    assert_eq!(v.cache_status, CacheStatus::Uninitialized);
+    assert_eq!(v.verified_through, None);
     let fold = h.materialize_march();
     assert!(fold.cells.is_empty());
     assert_eq!(fold.entries, 0);
     assert_eq!(fold.watermark, None);
     assert_eq!(h.db.frontier().unwrap(), before, "no empty rebuild write");
+    let ctx = h.ctx();
+    let advanced = h
+        .runtime
+        .block_on(fa_registers::advance(&mut h.db, &ctx, &h.book, &h.march))
+        .unwrap();
+    let v = verify_period(&h.db, &h.book, &h.march).unwrap();
+    assert!(v.is_green() && !v.stale, "{v:?}");
+    assert_eq!(v.cache_status, CacheStatus::Verified);
+    assert_eq!(v.verified_through, Some(advanced.through));
+    assert_eq!(v.lag_entries, 0);
+    assert_eq!(advanced.fold.watermark, None);
+    assert!(advanced.published_at > advanced.through);
+    // The twin: a real Entry after publication creates lag, even though
+    // the verified empty prefix still has no monetary watermark.
+    h.post_rent(7, b"after-empty-advance");
+    let v = verify_period(&h.db, &h.book, &h.march).unwrap();
+    assert!(v.is_green() && v.stale, "{v:?}");
+    assert_eq!(v.verified_through, Some(advanced.through));
+    assert_eq!(v.lag_entries, 1);
+}
+
+#[test]
+fn prefix_verification_refuses_rewritten_or_retired_journal_entries() {
+    for retire in [false, true] {
+        let mut h = harness();
+        let posted = h.post_rent(13, b"immutable-prefix");
+        h.materialize_march();
+        let before = verify_period(&h.db, &h.book, &h.march).unwrap();
+        assert!(before.is_green() && !before.stale);
+        let mut write = WriteBatch::new(relation::IN_PERIOD);
+        if retire {
+            write.set_vertex_label(posted.entry_ref().vid, label::ENTRY, false);
+        } else {
+            write.set_vertex_property(
+                posted.entry_ref().vid,
+                property::FA_PAYLOAD,
+                Some(CanonicalScalar::bytes(vec![0xff]).unwrap()),
+            );
+        }
+        h.write_derived(write);
+        let v = verify_period(&h.db, &h.book, &h.march).unwrap();
+        assert!(!v.is_green(), "retire={retire}: {v:?}");
+        assert_eq!(v.cache_status, CacheStatus::Corrupt);
+        assert_eq!(v.verified_through, None);
+        assert!(
+            v.projection_errors
+                .iter()
+                .any(|error| error.contains("changed or disappeared"))
+        );
+    }
+}
+
+#[test]
+fn a_missing_cache_header_cannot_certify_surviving_cells() {
+    let mut h = harness();
+    h.post_rent(17, b"missing-header");
+    h.materialize_march();
+    assert!(verify_period(&h.db, &h.book, &h.march).unwrap().is_green());
+    let mut write = WriteBatch::new(relation::IN_PERIOD);
+    write.delete_vertex(fa_registers::maintainer::state_vid(
+        h.book.book_id,
+        &h.march,
+    ));
+    h.write_derived(write);
+    let v = verify_period(&h.db, &h.book, &h.march).unwrap();
+    assert!(!v.is_green());
+    assert_eq!(v.cache_status, CacheStatus::Corrupt);
+    assert_eq!(v.verified_through, None);
+    assert!(
+        v.projection_errors
+            .iter()
+            .any(|error| error.contains("maintenance header"))
+    );
+}
+
+#[test]
+fn a_checksummed_cursor_before_period_creation_is_corruption() {
+    let mut h = harness();
+    let ctx = h.ctx();
+    let initialized = h
+        .runtime
+        .block_on(fa_registers::advance(&mut h.db, &ctx, &h.book, &h.march))
+        .unwrap();
+    assert!(initialized.through.0 > 0);
+    assert!(verify_period(&h.db, &h.book, &h.march).unwrap().is_green());
+    let state = fa_registers::maintainer::state_vid(h.book.book_id, &h.march);
+    let row = h.db.vertex(state).unwrap().unwrap();
+    let mut payload = fa_journal::rows::bytes(&row, property::FA_PAYLOAD, "state").unwrap();
+    assert_eq!(&payload[..4], b"FARS");
+    assert_eq!(&payload[6..14], &initialized.through.0.to_le_bytes());
+    payload[6..14].copy_from_slice(&0u64.to_le_bytes());
+    let mut digest = fgdb_crypto::Hasher::new();
+    digest.update(b"fa:register-state-payload:v1");
+    digest.update(&h.book.book_id.0);
+    digest.update(&(h.march.len() as u64).to_le_bytes());
+    digest.update(h.march.as_bytes());
+    digest.update(&payload);
+    let mut write = WriteBatch::new(relation::IN_PERIOD);
+    write.set_vertex_property(
+        state,
+        property::FA_PAYLOAD,
+        Some(CanonicalScalar::bytes(payload).unwrap()),
+    );
+    write.set_vertex_property(
+        state,
+        property::FA_DIGEST,
+        Some(CanonicalScalar::bytes(digest.finalize().0.to_vec()).unwrap()),
+    );
+    h.write_derived(write);
+    let before = h.db.frontier().unwrap();
+    let v = verify_period(&h.db, &h.book, &h.march).unwrap();
+    assert!(!v.is_green());
+    assert_eq!(v.cache_status, CacheStatus::Corrupt);
+    assert_eq!(v.verified_through, None);
+    assert!(
+        v.projection_errors
+            .iter()
+            .any(|e| e.contains("cursor predates its period"))
+    );
+    assert!(matches!(
+        h.runtime
+            .block_on(fa_registers::advance(&mut h.db, &ctx, &h.book, &h.march)),
+        Err(RegisterError::ProjectionDrift(_))
+    ));
+    assert_eq!(h.db.frontier().unwrap(), before);
+    h.runtime
+        .block_on(fa_registers::rebuild(&mut h.db, &ctx, &h.book, &h.march))
+        .unwrap();
+    let repaired = verify_period(&h.db, &h.book, &h.march).unwrap();
+    assert!(repaired.is_green() && !repaired.stale);
 }
 
 #[test]
@@ -887,9 +1134,17 @@ fn partial_post_releases_all_march_reservations_and_posts_only_in_april() {
             source_ordinals: vec![0, 2],
         }),
     });
+    let basis = verify_period(&h.db, &h.book, &h.march)
+        .unwrap()
+        .verified_through;
     let posted = h.commit(proposal);
-    h.assert_not_green("March projection still claims a resolved hold");
+    let stale = verify_period(&h.db, &h.book, &h.march).unwrap();
+    assert!(stale.is_green() && stale.stale, "{stale:?}");
+    assert_eq!(stale.verified_through, basis);
+    assert_eq!(stale.lag_entries, 1);
     let released = h.materialize_march();
+    let fresh = verify_period(&h.db, &h.book, &h.march).unwrap();
+    assert!(fresh.is_green() && !fresh.stale, "{fresh:?}");
     assert!(released.pending.is_empty());
     assert!(released.cells.is_empty());
     assert_eq!(released.entries, 0);
@@ -1004,9 +1259,17 @@ fn april_void_releases_only_its_march_hold_and_never_posts() {
             resolution_of: Some(target),
             disposition: Some(Disposition::Voids),
         });
+        let basis = verify_period(&h.db, &h.book, &h.march)
+            .unwrap()
+            .verified_through;
         let resolution = h.commit(proposal);
-        h.assert_not_green("March pending totals predate the April void");
+        let stale = verify_period(&h.db, &h.book, &h.march).unwrap();
+        assert!(stale.is_green() && stale.stale, "{stale:?}");
+        assert_eq!(stale.verified_through, basis);
+        assert_eq!(stale.lag_entries, 1);
         let march = h.materialize_march();
+        let fresh = verify_period(&h.db, &h.book, &h.march).unwrap();
+        assert!(fresh.is_green() && !fresh.stale, "{fresh:?}");
         assert!(march.cells.is_empty());
         assert_eq!(march.entries, 0);
         assert_eq!(march.watermark, Some(resolution.recorded_at()));

@@ -26,7 +26,7 @@ pub mod denial;
 pub mod op;
 pub mod sod;
 
-pub use admit::{Intent, admit, current, require, scope};
+pub use admit::{Intent, admit, admit_read, current, require, scope};
 pub use approval::Approval;
 pub use capability::{Capability, CapabilityError, Profile};
 pub use denial::Denial;

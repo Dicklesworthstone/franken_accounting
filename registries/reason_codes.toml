@@ -13,6 +13,9 @@
 # Gate: codes ≥ 1, unique per scope; names unique per scope; scopes closed.
 #
 # Additive-only: a released code is never renumbered or reused.
+# Scope `supersession` records the preparer's correction reason (§8.2).
+# Other requires particulars in the authenticated entry description.
+# ScheduledAccrualReversal identifies the kernel's scheduled control effect.
 
 schema_version = 1
 
@@ -45,3 +48,75 @@ code = 5
 scope = "manual_assertion"
 name = "InternalTransfer"
 meaning = "a transfer between the book's own accounts, with no external counterparty document"
+
+[[reason]]
+code = 1
+scope = "supersession"
+name = "DataEntryError"
+meaning = "the preparer states that the original fact was entered incorrectly"
+
+[[reason]]
+code = 2
+scope = "supersession"
+name = "WrongAccount"
+meaning = "the original posting used an incorrect account"
+
+[[reason]]
+code = 3
+scope = "supersession"
+name = "WrongPeriod"
+meaning = "the original posting used an incorrect effective period"
+
+[[reason]]
+code = 4
+scope = "supersession"
+name = "WrongAmount"
+meaning = "the original posting used an incorrect amount"
+
+[[reason]]
+code = 5
+scope = "supersession"
+name = "Duplicate"
+meaning = "the original posting duplicated a fact already recorded"
+
+[[reason]]
+code = 6
+scope = "supersession"
+name = "EstimateChange"
+meaning = "the preparer records a changed estimate"
+
+[[reason]]
+code = 7
+scope = "supersession"
+name = "PolicyChange"
+meaning = "the correction follows a change in the applicable accounting policy"
+
+[[reason]]
+code = 8
+scope = "supersession"
+name = "Fraud"
+meaning = "the preparer attributes the correction to suspected or determined fraud; the reason alone proves neither"
+
+[[reason]]
+code = 9
+scope = "supersession"
+name = "AuditAdjustment"
+meaning = "the correction records an adjustment identified during an audit"
+
+[[reason]]
+code = 10
+scope = "supersession"
+name = "RegulatoryDirective"
+meaning = "the correction follows a directive from a regulatory authority"
+
+[[reason]]
+code = 11
+scope = "supersession"
+name = "Other"
+meaning = "another reason, explained in the entry's nonempty authenticated description"
+
+[[reason]]
+code = 12
+scope = "supersession"
+name = "ScheduledAccrualReversal"
+meaning = "the kernel reverses an accrual under its authenticated auto-reversal schedule"

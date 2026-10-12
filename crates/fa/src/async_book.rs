@@ -166,6 +166,17 @@ impl<V: Vfs + Clone> AsyncBook<V> {
         let spec = query
             .with_restriction(|| fa_journal::genesis::read_book_spec(&db))?
             .ok_or(BookError::NoBook)?;
+        let supported_units = fa_money::UnitRegistry::embedded()?;
+        let units = query.with_restriction(|| {
+            fa_journal::genesis::read_units(&db, spec.book_id, &supported_units)
+        })?;
+        if units.get(spec.base_unit).is_none() {
+            return Err(KernelError::Corrupt(format!(
+                "book.base_unit {} is absent from its journaled unit table",
+                spec.base_unit.0
+            ))
+            .into());
+        }
         let blob_directory = directory
             .child(&commit, "blobs")
             .await
@@ -176,7 +187,7 @@ impl<V: Vfs + Clone> AsyncBook<V> {
             context: BookContext {
                 book_id: spec.book_id,
                 calendar: spec.calendar,
-                units: fa_money::UnitRegistry::embedded()?,
+                units,
                 seal_key: keys.seal_key(),
                 symbols: SymbolTable::compiled(),
             },
@@ -359,6 +370,40 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     pub async fn post(&mut self, cx: &PurposeContexts, req: PostRequest) -> Outcome<Posted> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
         Ok(fa_journal::post(&mut self.db, cx, &self.context, req).await?)
+    }
+
+    /// Run the real posting preparation under the caller's transaction
+    /// context, then abort it. No runtime or authority is created here.
+    pub fn plan(
+        &mut self,
+        cx: &PurposeContexts,
+        intent: fa_intents::PostIntent,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_intents::PostPlan> {
+        cx.txn().checkpoint().map_err(BookError::Context)?;
+        Ok(fa_journal::plan_post(
+            &mut self.db,
+            cx,
+            &self.context,
+            capability.clone(),
+            intent,
+        )?)
+    }
+
+    /// Revalidate and atomically publish a portable plan with its retained
+    /// graph certificate. Authority is supplied by this caller, never taken
+    /// from the artifact, and all I/O retains the caller's purpose contexts.
+    pub async fn commit_plan(
+        &mut self,
+        cx: &PurposeContexts,
+        plan: fa_intents::PostPlan,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<Posted> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        Ok(
+            fa_journal::commit_plan(&mut self.db, cx, &self.context, capability.clone(), plan)
+                .await?,
+        )
     }
 
     pub async fn post_balancing(
@@ -780,6 +825,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     }
 
     /// Read verified full or redacted evidence after capability admission.
+    /// Document bytes have no ungated facade method (FA-INV-10, plan §9.6).
+    ///
+    /// ```
+    /// let _ = fa::AsyncBook::<fgdb::MemVfs>::read_document_for;
+    /// ```
+    ///
+    /// ```compile_fail,E0599
+    /// let _ = fa::AsyncBook::<fgdb::MemVfs>::read_document;
+    /// ```
     pub async fn read_document_for(
         &mut self,
         cx: &PurposeContexts,
@@ -800,24 +854,58 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             .await?)
     }
 
-    pub async fn read_document(
-        &self,
+    /// The public commitment mirror, bound to this book and document oid.
+    /// Only public label/identity/digest fields are observed; inline bytes
+    /// are neither read nor decoded. This does not verify the byte payload.
+    ///
+    /// ```
+    /// let _ = fa::AsyncBook::<fgdb::MemVfs>::document_commitment;
+    /// ```
+    ///
+    /// ```compile_fail,E0599
+    /// let _ = fa::AsyncBook::<fgdb::MemVfs>::document_record;
+    /// ```
+    pub fn document_commitment(
+        &mut self,
         cx: &PurposeContexts,
         oid: &fa_model::Oid,
-    ) -> Outcome<Option<fa_journal::Document>> {
+    ) -> Result<Option<[u8; 32]>, BookError> {
+        use fa_model::symbols::{label, property};
+        use fgdb_types::CanonicalScalar;
+
         let query = cx.query();
         query.checkpoint().map_err(BookError::Context)?;
-        Ok(query
-            .with_restriction_async(fa_journal::fetch_document(&self.db, cx, &self.blobs, oid))
-            .await?)
-    }
-
-    pub fn document_record(
-        &self,
-        cx: &PurposeContexts,
-        oid: &fa_model::Oid,
-    ) -> Result<Option<fa_journal::DocumentRecord>, BookError> {
-        self.query(cx, |db, _| Ok(fa_journal::document_record(db, oid)?))
+        query.with_restriction(|| {
+            let db = &mut self.db;
+            let book = &self.context;
+            let txn_cx = cx.txn();
+            let txn = db.begin(&txn_cx).map_err(KernelError::from)?;
+            let vid = fa_journal::evidence::document_vid(oid);
+            let is_document = txn.vertex_has_label(db, vid, label::DOCUMENT).map_err(KernelError::from)?;
+            if is_document.is_none() {
+                txn.abort();
+                return Ok(None);
+            }
+            let book_id = txn.vertex_property(db, vid, property::BOOK_ID).map_err(KernelError::from)?;
+            let digest = txn.vertex_property(db, vid, property::FA_DIGEST).map_err(KernelError::from)?;
+            txn.abort();
+            let malformed = || BookError::Kernel(KernelError::Corrupt(
+                "FA-REF-085 document commitment mirror has invalid identity or digest".into(),
+            ));
+            if is_document != Some(true)
+                || !matches!(book_id, Some(CanonicalScalar::Bytes(b)) if b.as_slice() == book.book_id.0)
+            {
+                return Err(malformed());
+            }
+            let Some(CanonicalScalar::Bytes(bytes)) = digest else {
+                return Err(malformed());
+            };
+            let commit: [u8; 32] = bytes.as_slice().try_into().map_err(|_| malformed())?;
+            if fa_journal::evidence::document_oid(book.book_id, &commit) != *oid {
+                return Err(malformed());
+            }
+            Ok(Some(commit))
+        })
     }
 
     pub async fn record_review(
@@ -1071,6 +1159,31 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    /// Resolve open items and their displayed account metadata at one sequence.
+    pub fn open_items_report(
+        &self,
+        cx: &PurposeContexts,
+        account: Option<VId>,
+        known_at: Option<CommitSeq>,
+    ) -> Result<crate::OpenItemsReport, BookError> {
+        self.query(cx, |db, book| {
+            Ok(fa_registers::open_items::open_items_report(
+                db, book, account, known_at,
+            )?)
+        })
+    }
+
+    /// Verify the immutable leg projection at one committed prefix without writes.
+    pub fn verify_projections(
+        &self,
+        cx: &PurposeContexts,
+        known_at: Option<CommitSeq>,
+    ) -> Result<fa_journal::ProjectionVerification, BookError> {
+        self.query(cx, |db, book| {
+            Ok(fa_journal::verify_projections(db, book, known_at)?)
+        })
+    }
+
     pub fn verify_open_items(
         &self,
         cx: &PurposeContexts,
@@ -1109,6 +1222,175 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         periods: &[String],
     ) -> Result<TrialBalance, BookError> {
         self.trial_balance_at(cx, periods, None)
+    }
+
+    /// Certify a stock/activity trial balance at a fixed retained snapshot.
+    /// The current whole-book embedded-owner authority is explicit in the
+    /// certificate. Creating this artifact does not advance the journal.
+    pub fn certify_trial_balance(
+        &self,
+        cx: &PurposeContexts,
+        selection: crate::TrialBalanceSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CertifiedTrialBalance> {
+        self.query(cx, |db, book| {
+            crate::certificate::certify(db, &cx.query(), book, selection, known_at)
+        })
+    }
+
+    /// Certify any supported report against one retained historical sequence.
+    pub fn certify_report(
+        &self,
+        cx: &PurposeContexts,
+        selection: crate::ReportSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CertifiedReport> {
+        self.query(cx, |db, book| {
+            crate::certificate::certify_report(db, &cx.query(), book, selection, known_at)
+        })
+    }
+
+    /// Evaluate a registered statement from journal payloads at one snapshot.
+    /// Current and comparative columns use the same known-at and definition.
+    pub fn statement(
+        &self,
+        cx: &PurposeContexts,
+        selection: crate::StatementSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::Statement> {
+        self.query(cx, |db, book| {
+            crate::statements::read(db, &cx.query(), book, selection, known_at)
+        })
+    }
+
+    /// Bind a financial statement's definition, mapping and both columns to
+    /// the retained historical journal and native input closure.
+    pub fn certify_statement(
+        &self,
+        cx: &PurposeContexts,
+        selection: crate::StatementSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CertifiedStatement> {
+        Ok(self
+            .certify_report(cx, selection.into(), known_at)?
+            .and_then(crate::statements::certified))
+    }
+
+    pub fn certify_statement_at_instant(
+        &self,
+        cx: &PurposeContexts,
+        selection: crate::StatementSelection,
+        requested_utc_ns: u64,
+    ) -> Outcome<crate::CertifiedStatement> {
+        Ok(self
+            .certify_report_at_instant(cx, selection.into(), requested_utc_ns)?
+            .and_then(crate::statements::certified))
+    }
+
+    /// Resolve a UTC instant from the journal's retained TimeEvidence at HEAD.
+    /// The returned frontier and brackets describe the precision of the read.
+    pub fn resolve_known_at_instant(
+        &self,
+        cx: &PurposeContexts,
+        requested_utc_ns: u64,
+    ) -> Outcome<fa_journal::InstantSelection> {
+        self.query(cx, |db, book| {
+            Ok(fa_journal::resolve_instant_at(
+                db,
+                &cx.query(),
+                book,
+                requested_utc_ns,
+                None,
+            )?)
+        })
+    }
+
+    /// Certify an instant-selected report, including its original tick brackets.
+    pub fn certify_trial_balance_at_instant(
+        &self,
+        cx: &PurposeContexts,
+        selection: crate::TrialBalanceSelection,
+        requested_utc_ns: u64,
+    ) -> Outcome<crate::CertifiedTrialBalance> {
+        self.query(cx, |db, book| {
+            crate::certificate::certify_instant(db, &cx.query(), book, selection, requested_utc_ns)
+        })
+    }
+
+    /// Certify any supported report with its original TimeEvidence resolution.
+    pub fn certify_report_at_instant(
+        &self,
+        cx: &PurposeContexts,
+        selection: crate::ReportSelection,
+        requested_utc_ns: u64,
+    ) -> Outcome<crate::CertifiedReport> {
+        self.query(cx, |db, book| {
+            crate::certificate::certify_report_instant(
+                db,
+                &cx.query(),
+                book,
+                selection,
+                requested_utc_ns,
+            )
+        })
+    }
+
+    /// Replay the exact historical output of any supported certificate family.
+    pub fn replay_report(
+        &self,
+        cx: &PurposeContexts,
+        certificate: &crate::ReportCertificate,
+    ) -> Outcome<crate::ReportOutput> {
+        self.query(cx, |db, book| {
+            crate::certificate::replay_report(db, &cx.query(), book, certificate)
+        })
+    }
+
+    /// Replay every native input, then the exact accounting fold.
+    pub fn replay_trial_balance(
+        &self,
+        cx: &PurposeContexts,
+        certificate: &crate::ReportCertificate,
+    ) -> Outcome<TrialBalance> {
+        self.query(cx, |db, book| {
+            crate::certificate::replay(db, &cx.query(), book, certificate)
+        })
+    }
+
+    /// Check whether later journal entries affect this report's selector.
+    pub fn certificate_status(
+        &self,
+        cx: &PurposeContexts,
+        certificate: &crate::ReportCertificate,
+    ) -> Outcome<crate::CertificateStatus> {
+        self.query(cx, |db, book| {
+            crate::certificate::status(db, &cx.query(), book, certificate)
+        })
+    }
+
+    /// Retain verified canonical certificate bytes in this book's substrate.
+    /// The public content digest resolves the immutable artifact after reopen.
+    /// This lazy write has its own sequence; the report keeps its original
+    /// known-at coordinate and no journal Entry is created.
+    pub async fn retain_certificate(
+        &mut self,
+        cx: &PurposeContexts,
+        certificate: &crate::ReportCertificate,
+    ) -> Outcome<crate::RetainedCertificate> {
+        crate::certificate_store::retain(&mut self.db, cx, &self.context, certificate).await
+    }
+
+    /// Load a retained certificate by its full public content digest.
+    /// Loading checks its immutable storage record; report replay separately
+    /// verifies the historical input closure.
+    pub fn read_certificate(
+        &self,
+        cx: &PurposeContexts,
+        digest: &[u8; 32],
+    ) -> Outcome<crate::ReportCertificate> {
+        self.query(cx, |db, book| {
+            crate::certificate_store::read(db, &cx.query(), book, digest)
+        })
     }
 
     pub fn trial_balance_at(

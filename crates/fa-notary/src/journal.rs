@@ -239,6 +239,71 @@ impl Journal {
         Ok(Ok(Self::from_records(book.book_id, seq, records)?))
     }
 
+    /// Require every record in this historical prefix to remain unchanged
+    /// at one fixed observed frontier. Re-reading only the old snapshot
+    /// cannot detect a later raw-store rewrite or retirement: the substrate
+    /// correctly preserves the old version for historical reads.
+    ///
+    /// This costs one point read per leaf and compares authoritative bytes,
+    /// their digest mirror, the Entry label and the creating sequence. New
+    /// entries after the prefix are permitted; derived Leg mirrors are the
+    /// separate projection invariant. This is local tamper detection, not
+    /// protection against replacement of the entire book directory.
+    pub fn verify_unchanged_at<V: asupersync::fs::Vfs + Clone>(
+        &self,
+        db: &Database<V>,
+        observed_at: CommitSeq,
+    ) -> Outcome<()> {
+        let refusal = |message: String| {
+            Refusal::new(
+                code::ACCUMULATOR_DRIFT,
+                exit::VERIFICATION,
+                message,
+                "FA-INV-02 / FA-INV-14 (checkpointed journal records remain immutable)",
+                "run `fa verify accumulator` and preserve the store for investigation; do not publish proofs or checkpoint over changed history",
+            )
+        };
+        let head = db.frontier()?;
+        if observed_at < self.through_seq || observed_at > head {
+            return Ok(Err(refusal(format!(
+                "cannot check the journal prefix through {} at sequence {}; the observed sequence must be between the prefix and head {}",
+                self.through_seq.0, observed_at.0, head.0
+            ))));
+        }
+        for leaf in &self.leaves {
+            let changed = |why: &str| {
+                refusal(format!(
+                    "checkpointed journal entry {:032x} {why} at observed sequence {} after the prefix through {}",
+                    leaf.vid.0, observed_at.0, self.through_seq.0
+                ))
+            };
+            let Some(row) = db.vertex_at(leaf.vid, observed_at)? else {
+                return Ok(Err(changed("was retired or is absent")));
+            };
+            if !row.labels.contains(&label::ENTRY) {
+                return Ok(Err(changed("lost its Entry label")));
+            }
+            if row.created_at != leaf.envelope.commit_seq {
+                return Ok(Err(changed("has a different creating sequence")));
+            }
+            if bytes(&row, property::FA_PAYLOAD, "checkpointed entry payload")
+                .ok()
+                .as_deref()
+                != Some(leaf.payload.as_slice())
+            {
+                return Ok(Err(changed("has a rewritten or missing payload")));
+            }
+            if bytes(&row, property::FA_DIGEST, "checkpointed entry digest")
+                .ok()
+                .as_deref()
+                != Some(leaf.envelope.record_digest.as_slice())
+            {
+                return Ok(Err(changed("has a rewritten or missing digest")));
+            }
+        }
+        Ok(Ok(()))
+    }
+
     #[must_use]
     pub fn len(&self) -> u64 {
         self.leaves.len() as u64

@@ -170,6 +170,17 @@ fa_status = "live"
 tracking = "fa-9ae"
 
 [[capability]]
+row = "R-POST-PLAN"
+capability = "`WriteTxn::staged_effect_digest` and application certificate object retention"
+status = "Native staged effects digest is live; the embedded API exposes no generic application object storage or portable write-witness export"
+posture = "rehearse through the posting kernel and abort; authenticate the portable plan with a book-scoped key; require the same basis and repeat all laws and native effects at commit; atomically retain a graph `Certificate` and entry `CITES` edge. Public digests are locators; `Entry.plan_certificate` stays absent. Existing approvals are required before planning"
+switch_over = "adopt native certificate object references only when public staging and retaining-reference APIs exist; adopt witness-based rebasing only with a verified portable witness closure; preserve already retained graph certificates"
+foundation = "frankengraphdb"
+upstream = "partial"
+fa_status = "interim"
+tracking = "fa-we7"
+
+[[capability]]
 row = "R-MMR"
 capability = "§5.8 accumulator, transparency checkpoints, witness policies, verifier SDK"
 status = "Planned"

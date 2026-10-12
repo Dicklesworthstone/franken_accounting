@@ -3,16 +3,17 @@
 //! fa-xex): every `[[verb]]` and every subcommand the CLI serves is a tool in
 //! exactly one cluster, or a registered exclusion with a reason — never
 //! neither, never both; no cluster has more than seven tools; every tool
-//! names a verb the CLI dispatches; every dangerous operation is gated by
-//! `yes`; the gate is shown able to fail on planted defects.
+//! names a verb the CLI dispatches; authority and dangerous confirmation
+//! stay outside call schemas and normalization. Dangerous operations retain
+//! their annotations and planning guidance. Planted defects show the gate fails.
 //!
 //! The mapping table is printed so a reviewer can read it from the log.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use fa_cli::verbs::{Registry, registry};
-use fa_mcp::registry::{McpRegistry, SOURCE, ToolSpec};
-use fastmcp_rust::JsonValue;
+use fa_mcp::registry::{FORBIDDEN_ARGUMENTS, McpRegistry, SOURCE, ToolSpec};
+use fastmcp_rust::{JsonValue, json};
 
 fn embedded() -> (McpRegistry, &'static Registry) {
     let reg = registry().expect("verbs.toml");
@@ -159,8 +160,22 @@ fn tool_names_and_schemas_are_host_safe_and_registry_derived() {
                 "{name} exposes the host-only flag {hidden}"
             );
         }
-        for p in ["book", "as", "keys"] {
-            assert!(props.contains_key(p), "{name} lacks `{p}`");
+        for property in FORBIDDEN_ARGUMENTS {
+            assert!(
+                !props.contains_key(*property),
+                "{name} exposes `{property}`"
+            );
+            for value in [JsonValue::Null, json!(false), json!("operator")] {
+                let mut arguments = json!({});
+                arguments[*property] = value;
+                let error = t
+                    .invocation(&mcp, reg, &arguments)
+                    .expect_err("forbidden authority must precede ordinary argument validation");
+                assert!(
+                    error.message.contains("forbidden argument"),
+                    "{name}: {error:?}"
+                );
+            }
         }
         let verb = reg.verb(&t.verb).expect("verb");
         for f in &t.flags {
@@ -209,7 +224,7 @@ fn tool_names_and_schemas_are_host_safe_and_registry_derived() {
 }
 
 #[test]
-fn every_dangerous_operation_is_gated_by_yes_on_its_tool() {
+fn dangerous_tools_keep_annotations_and_safe_guidance_without_caller_confirmation() {
     let (mcp, reg) = embedded();
     for d in &reg.dangerous {
         let tool = mcp
@@ -217,18 +232,9 @@ fn every_dangerous_operation_is_gated_by_yes_on_its_tool() {
             .unwrap_or_else(|| panic!("no tool covers dangerous {} {:?}", d.verb, d.subcommand));
         assert!(tool.is_dangerous(reg), "{}", tool.wire_name());
         let schema = tool.input_schema(&mcp, reg);
-        let yes = &schema["properties"]["yes"];
-        assert_eq!(
-            yes["type"],
-            JsonValue::String("boolean".into()),
-            "{}: yes",
-            tool.wire_name()
-        );
         assert!(
-            yes["description"]
-                .as_str()
-                .is_some_and(|s| s.contains(&d.safe)),
-            "{}: the safe alternative is in the doc",
+            schema["properties"].get("yes").is_none(),
+            "{} exposes confirmation",
             tool.wire_name()
         );
         let doc = tool.description(&mcp, reg);
@@ -237,16 +243,19 @@ fn every_dangerous_operation_is_gated_by_yes_on_its_tool() {
             "{}: Don't names the safe alternative",
             tool.wire_name()
         );
+        assert!(
+            doc.contains("dangerous confirmation is unavailable"),
+            "{doc}"
+        );
+        assert!(doc.contains("A plan is not confirmation"), "{doc}");
     }
-    // And no tool without a dangerous row takes `yes`.
+    // Confirmation is absent universally, including ordinary write tools.
     for t in &mcp.tools {
-        if !t.is_dangerous(reg) {
-            assert!(
-                t.input_schema(&mcp, reg)["properties"].get("yes").is_none(),
-                "{}",
-                t.wire_name()
-            );
-        }
+        assert!(
+            t.input_schema(&mcp, reg)["properties"].get("yes").is_none(),
+            "{}",
+            t.wire_name()
+        );
     }
 }
 
@@ -260,19 +269,34 @@ fn the_gate_fails_on_planted_defects() {
         let reg = Registry::parse(&text)?;
         McpRegistry::parse(&text, &reg)
     }
-    let read_cluster_row = "[[mcp.cluster]]\nname = \"fa.read\"\ndoc = \"Certified reads over the journal: trial balance, an explained balance, open items, one entry.\"\n";
+    let read_cluster_row = "[[mcp.cluster]]\nname = \"fa.read\"\ndoc = \"Certified reads over the journal: trial balance, financial statements, an explained balance, open items, one entry.\"\n";
     assert!(
         SOURCE.contains(read_cluster_row),
         "the fa.read cluster row as this test spells it"
     );
+    let open_items_header =
+        "[[mcp.tool]]\ncluster = \"fa.read\"\nname = \"open_items\"\nverb = \"open-items\"\n";
+    let open_items_start = SOURCE
+        .find(open_items_header)
+        .expect("open-items tool header");
+    let open_items_end = open_items_start
+        + SOURCE[open_items_start..]
+            .find("\n\n")
+            .expect("end of open-items tool row")
+        + 2;
+    let open_items_row = &SOURCE[open_items_start..open_items_end];
+    assert_eq!(SOURCE.matches(open_items_row).count(), 1);
+    let hidden_line = SOURCE
+        .lines()
+        .find(|line| line.starts_with("hidden_flags = "))
+        .expect("hidden flags");
+    let exposed_identity = hidden_line.replace(", \"--as\"", "");
+    assert_ne!(hidden_line, exposed_identity);
     let cases: Vec<(&str, &str, Result<McpRegistry, String>)> = vec![
         (
-            // The open_items tool pointed at `help` (a later verb, now covered
-            // twice): `open-items` is the first verb the coverage walk finds
-            // with no tool and no exclusion.
             "a verb that is neither a tool nor an exclusion",
             "neither a tool nor",
-            plant(|s| s.replace("verb = \"open-items\"", "verb = \"help\"")),
+            plant(|s| s.replacen(open_items_row, "", 1)),
         ),
         (
             "a verb that is both a tool and an exclusion",
@@ -302,6 +326,21 @@ fn the_gate_fails_on_planted_defects() {
             "covered by 2 tools",
             plant(|s| {
                 s.replace("name = \"period_status\"\nverb = \"period\"\nsubcommands = [\"list\"]", "name = \"period_status\"\nverb = \"period\"\nsubcommands = [\"list\", \"create\"]\nselector = \"which\"")
+            }),
+        ),
+        (
+            "authority removed from the hidden flag set",
+            "authority flag --as must be hidden",
+            plant(|s| s.replacen(hidden_line, &exposed_identity, 1)),
+        ),
+        (
+            "a tool explicitly exposing caller grants",
+            "hidden flag --grant cannot be exposed",
+            plant(|s| {
+                s.replace(
+                "name = \"post\"\nverb = \"post\"\nsubcommands = []\npositionals = []",
+                "name = \"post\"\nverb = \"post\"\nsubcommands = []\npositionals = []\nflags = [\"--intent\", \"--grant\"]",
+            )
             }),
         ),
     ];

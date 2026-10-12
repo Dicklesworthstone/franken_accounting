@@ -9,9 +9,11 @@
 //! what this session has seen.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::fmt;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use fa_cli::authority::{LaunchAuthority, LaunchProfile};
 use fa_cli::json::Json;
 use fa_cli::verbs::Registry;
 use fastmcp_rust::auto::{Server, ServerBuilder};
@@ -69,13 +71,57 @@ pub const LAWS: &[(&str, &str)] = &[
 ];
 
 /// What the server was started with.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServerConfig {
-    /// The book every call runs against unless it names its own.
+    /// The fixed book for every tool call and resource read.
     pub book: Option<PathBuf>,
-    /// The key file (`--keys`), passed to every call on the default book.
+    /// The fixed key file; never supplied by a tool call.
     pub keys: Option<PathBuf>,
+    /// The operator-selected principal, fixed for the session.
+    pub principal: String,
+    pub profile: LaunchProfile,
+    /// Explicit operations attenuate the selected launch profile's ceiling.
+    pub grants: Vec<String>,
 }
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            book: None,
+            keys: None,
+            principal: "mcp-agent".into(),
+            profile: LaunchProfile::Agent,
+            grants: Vec::new(),
+        }
+    }
+}
+
+/// A rejected launch configuration is distinct from an embedded registry defect.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ServerError {
+    Launch(String),
+    Foundation(String),
+}
+
+impl ServerError {
+    #[must_use]
+    pub const fn exit(&self) -> u8 {
+        match self {
+            Self::Launch(_) => 7,
+            Self::Foundation(_) => 5,
+        }
+    }
+}
+
+impl fmt::Display for ServerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Launch(message) | Self::Foundation(message) => f.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for ServerError {}
 
 /// The result of a successful call.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -92,7 +138,7 @@ pub struct CallOutput {
 pub struct Adapter {
     pub mcp: McpRegistry,
     pub reg: &'static Registry,
-    pub config: ServerConfig,
+    pub authority: LaunchAuthority,
     memory: Mutex<Memory>,
 }
 
@@ -101,66 +147,41 @@ pub struct Adapter {
 // built once per refusal on no hot path; boxing it would buy nothing.
 #[allow(clippy::result_large_err)]
 impl Adapter {
-    pub fn new(config: ServerConfig) -> Result<Self, String> {
-        let reg =
-            fa_cli::verbs::registry().map_err(|e| format!("the embedded verb registry: {e}"))?;
-        let mcp = McpRegistry::parse(crate::registry::SOURCE, reg)?;
+    pub fn new(config: ServerConfig) -> Result<Self, ServerError> {
+        let book = config.book.ok_or_else(|| {
+            ServerError::Launch("a fixed book is required; launch with --book or FA_BOOK".into())
+        })?;
+        let grants: Vec<&str> = config.grants.iter().map(String::as_str).collect();
+        let authority =
+            LaunchAuthority::new(book, config.keys, config.principal, config.profile, &grants)
+                .map_err(ServerError::Launch)?;
+        let reg = fa_cli::verbs::registry()
+            .map_err(|e| ServerError::Foundation(format!("the embedded verb registry: {e}")))?;
+        let mcp =
+            McpRegistry::parse(crate::registry::SOURCE, reg).map_err(ServerError::Foundation)?;
         Ok(Self {
             mcp,
             reg,
-            config,
+            authority,
             memory: Mutex::new(Memory::default()),
         })
     }
 
-    fn default_book(&self) -> Option<String> {
-        self.config.book.as_ref().map(|b| b.display().to_string())
-    }
-
-    /// The book a call runs against: its own `book`, else the server's.
-    fn book_of(&self, arguments: &JsonValue) -> Option<String> {
-        arguments
-            .get("book")
-            .and_then(JsonValue::as_str)
-            .map(str::to_string)
-            .or_else(|| self.default_book())
-    }
-
-    fn with_keys(&self, mut inv: Invocation, arguments: &JsonValue) -> Invocation {
-        // The server's key file applies to its own book only.
-        if let Some(keys) = &self.config.keys
-            && arguments.get("book").is_none()
-            && arguments.get("keys").is_none()
-            && self.config.book.is_some()
-        {
-            let at = inv.argv.len() - 1; // before `--json`
-            inv.argv.insert(at, keys.display().to_string());
-            inv.argv.insert(at, "--keys".into());
-        }
-        inv
+    fn authority_json(&self) -> JsonValue {
+        to_wire(&self.authority.envelope_json())
     }
 
     fn dispatch(&self, inv: &Invocation) -> Result<Reply, StructuredError> {
-        dispatch::run(self.reg, inv).map_err(StructuredError::foundation)
+        dispatch::run(self.reg, inv, &self.authority).map_err(StructuredError::foundation)
     }
 
     /// Run a read-only verb (no arguments beyond the book) and return its
     /// one line's `data`.
-    fn read(&self, argv: &[&str], book: Option<&str>) -> Result<Json, StructuredError> {
+    fn read(&self, argv: &[&str]) -> Result<Json, StructuredError> {
         let mut inv = Invocation {
             argv: argv.iter().map(|a| (*a).to_string()).collect(),
             stdin: None,
         };
-        if let Some(b) = book {
-            inv.argv.push("--book".into());
-            inv.argv.push(b.to_string());
-            if let (Some(keys), Some(own)) = (&self.config.keys, self.default_book())
-                && own == b
-            {
-                inv.argv.push("--keys".into());
-                inv.argv.push(keys.display().to_string());
-            }
-        }
         inv.argv.push("--json".into());
         let reply = self.dispatch(&inv)?;
         if reply.exit != 0 {
@@ -193,6 +214,21 @@ impl Adapter {
         tool: &ToolSpec,
         arguments: &JsonValue,
     ) -> Result<CallOutput, StructuredError> {
+        self.call_inner(tool, arguments)
+            .map_err(|e| e.with_authority(self.authority_json()))
+    }
+
+    fn call_inner(
+        &self,
+        tool: &ToolSpec,
+        arguments: &JsonValue,
+    ) -> Result<CallOutput, StructuredError> {
+        if let Some(argument) = crate::registry::forbidden_argument(arguments) {
+            return Err(StructuredError::forbidden_argument(argument));
+        }
+        if let Some((argument, fix)) = tool.forbidden_path_argument(arguments) {
+            return Err(StructuredError::forbidden_path(&argument, fix));
+        }
         if let Some(e) = detect::floats(arguments)
             .or_else(|| detect::instants(tool, arguments))
             .or_else(|| detect::placeholders(tool, arguments))
@@ -200,18 +236,12 @@ impl Adapter {
             return Err(e);
         }
         let inv = tool
-            .invocation(
-                &self.mcp,
-                self.reg,
-                arguments,
-                self.default_book().as_deref(),
-            )
+            .invocation(&self.mcp, self.reg, arguments)
             .map_err(|e| StructuredError::arguments(e.message, e.fix))?;
-        let inv = self.with_keys(inv, arguments);
         if detect::intent_of(tool, arguments).is_some() {
             // The chart is read through the same front door; when the book
             // cannot be read, the dispatch below reports why.
-            if let Ok(chart) = self.read(&["chart", "list"], self.book_of(arguments).as_deref())
+            if let Ok(chart) = self.read(&["chart", "list"])
                 && let Some(e) = detect::summary_account(tool, arguments, &chart)
             {
                 return Err(e);
@@ -222,15 +252,21 @@ impl Adapter {
                 .memory
                 .lock()
                 .map_err(|_| StructuredError::foundation("the session memory is poisoned"))?;
-            if let Some(e) = detect::redated_intent(tool, arguments, &memory)
-                .or_else(|| detect::self_approval(tool, arguments, &memory))
-            {
+            if let Some(e) = detect::redated_intent(tool, arguments, &memory).or_else(|| {
+                detect::self_approval(tool, arguments, &memory, self.authority.principal())
+            }) {
                 return Err(e);
             }
         }
         let reply = self.dispatch(&inv)?;
         if let Ok(mut memory) = self.memory.lock() {
-            detect::remember(&mut memory, tool, arguments, &reply);
+            detect::remember(
+                &mut memory,
+                tool,
+                arguments,
+                &reply,
+                self.authority.principal(),
+            );
         }
         if reply.exit != 0 {
             return Err(self.error_of(&reply));
@@ -271,6 +307,7 @@ impl Adapter {
             "warnings": field("warnings"),
             "next_actions": next_actions,
             "stderr": reply.stderr,
+            "authority": self.authority_json(),
         });
         Ok(CallOutput { data, envelope })
     }
@@ -281,30 +318,30 @@ impl Adapter {
         template: &str,
         params: &UriParams,
     ) -> Result<(String, String), StructuredError> {
+        self.read_resource_inner(template, params)
+            .map_err(|e| e.with_authority(self.authority_json()))
+    }
+
+    fn read_resource_inner(
+        &self,
+        template: &str,
+        params: &UriParams,
+    ) -> Result<(String, String), StructuredError> {
         let json_mime = "application/json".to_string();
-        let book_param = || -> Option<String> {
-            match params.get("book").map(String::as_str).map(percent_decode) {
-                None => self.default_book(),
-                Some(b) if b == "default" => self.default_book(),
-                Some(b) => Some(b),
-            }
-        };
+        if let Some(book) = params.get("book").map(String::as_str).map(percent_decode)
+            && book != "default"
+            && Path::new(&book) != self.authority.book()
+        {
+            return Err(StructuredError::forbidden_argument("book"));
+        }
         match template {
-            "resource://fa/book" => Ok((
-                json_mime,
-                self.read(&["book", "info"], self.default_book().as_deref())?
-                    .render(),
-            )),
-            "resource://fa/chart/{book}" => Ok((
-                json_mime,
-                self.read(&["chart", "list"], book_param().as_deref())?
-                    .render(),
-            )),
-            "resource://fa/periods/{book}" => Ok((
-                json_mime,
-                self.read(&["period", "list"], book_param().as_deref())?
-                    .render(),
-            )),
+            "resource://fa/book" => Ok((json_mime, self.read(&["book", "info"])?.render())),
+            "resource://fa/chart/{book}" => {
+                Ok((json_mime, self.read(&["chart", "list"])?.render()))
+            }
+            "resource://fa/periods/{book}" => {
+                Ok((json_mime, self.read(&["period", "list"])?.render()))
+            }
             "resource://fa/laws" => {
                 let mut m = fastmcp_rust::JsonMap::new();
                 for (name, text) in LAWS {
@@ -313,7 +350,7 @@ impl Adapter {
                 Ok((json_mime, JsonValue::Object(m).to_string()))
             }
             "resource://fa/exit-codes" => {
-                let caps = self.read(&["capabilities"], None)?;
+                let caps = self.read(&["capabilities"])?;
                 Ok((
                     json_mime,
                     caps.get("exit_codes")
@@ -323,8 +360,8 @@ impl Adapter {
                 ))
             }
             "resource://fa/intents" => {
-                let caps = self.read(&["capabilities"], None)?;
-                let examples = self.read(&["robot-docs", "examples"], None)?;
+                let caps = self.read(&["capabilities"])?;
+                let examples = self.read(&["robot-docs", "examples"])?;
                 let tools: Vec<String> = self
                     .mcp
                     .tools
@@ -337,7 +374,16 @@ impl Adapter {
                     "examples": examples.get("text").map_or(JsonValue::Null, to_wire),
                     "tools": tools,
                     "schema": JsonValue::Null,
-                    "note": "the intent document forms this build accepts, as the examples show them (an intent is the `intent` object of the tools listed); a machine-readable intent schema is not registered yet — fa-intents is planned, and this field will carry it",
+                    "planning": {
+                        "dry_run": "Set dry_run=true on a posting tool to run the actual laws without publishing. A bounded Preparer session can review the plan event and pass its complete bytes hex string as plan to fa_post_commit_plan under the same launch principal and capability.",
+                        "period_transition": "Set dry_run=true on fa_time_period_transition to receive existing canonical TransitionPlan bytes inline. This prepares a sealed period-transition proposal; commit independently checks authority, approvals and current period state. It is not a PostEntry effects certificate, and dangerous MCP commits remain unavailable.",
+                        "files": "Caller filesystem paths are refused. Supply content inline; no --files root is supported.",
+                        "scope": "same-snapshot-post",
+                        "invalidation": "Any intervening publication before the first commit requires another dry run. This slice preserves supplied approvals; it does not gather new approvals, create drafts, or rehearse balancing.",
+                        "authority": "The artifact grants no authority. The default Agent profile cannot plan or commit accounting entries to trunk. Tool calls cannot select another principal, profile, book or grants. Dangerous void plan commits remain unavailable until a separate confirmation exchange exists.",
+                        "commit_tool": "fa_post_commit_plan",
+                    },
+                    "note": "the JSON intent document forms this build accepts, as the examples show them (an intent is the `intent` object of the tools listed); a machine-readable JSON intent schema is not registered yet. The fa-intents PostEntry artifact has a separate bounded canonical binary format, returned as complete hex bytes for MCP transport",
                 });
                 Ok((json_mime, v.to_string()))
             }
@@ -360,14 +406,20 @@ fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
+    let hex = |byte: u8| match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    };
     while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
-            let hex = &s[i + 1..i + 3];
-            if let Ok(v) = u8::from_str_radix(hex, 16) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && let (Some(high), Some(low)) = (hex(b[i + 1]), hex(b[i + 2]))
+        {
+            out.push(high * 16 + low);
+            i += 3;
+            continue;
         }
         out.push(b[i]);
         i += 1;
@@ -503,12 +555,20 @@ impl ResourceHandler for FaResource {
     ) -> McpResult<Vec<ResourceContent>> {
         ctx.checkpoint()?;
         match self.adapter.read_resource(self.uri, params) {
-            Ok((mime, text)) => Ok(vec![ResourceContent {
-                uri: uri.to_string(),
-                mime_type: Some(mime),
-                text: Some(text),
-                blob: None,
-            }]),
+            Ok((mime, text)) => Ok(vec![
+                ResourceContent {
+                    uri: uri.to_string(),
+                    mime_type: Some(mime),
+                    text: Some(text),
+                    blob: None,
+                },
+                ResourceContent {
+                    uri: uri.to_string(),
+                    mime_type: Some("application/json".into()),
+                    text: Some(json!({"authority": self.adapter.authority_json()}).to_string()),
+                    blob: None,
+                },
+            ]),
             Err(e) => {
                 let code = if e.exit == 4 {
                     McpErrorCode::ResourceNotFound
@@ -522,10 +582,15 @@ impl ResourceHandler for FaResource {
 }
 
 /// Build the server: every registry tool, every resource, the instructions.
-pub fn build_server(config: ServerConfig) -> Result<Server, String> {
+pub fn build_server(config: ServerConfig) -> Result<Server, ServerError> {
     let adapter = Arc::new(Adapter::new(config)?);
-    let mut builder = ServerBuilder::new(adapter.mcp.server.clone(), crate::VERSION)
-        .instructions(adapter.mcp.instructions());
+    let instructions = format!(
+        "{}\n\nThis session's trusted launch authority: {}",
+        adapter.mcp.instructions(),
+        adapter.authority_json(),
+    );
+    let mut builder =
+        ServerBuilder::new(adapter.mcp.server.clone(), crate::VERSION).instructions(instructions);
     for spec in adapter.mcp.tools.clone() {
         builder = builder.tool(VerbTool::new(Arc::clone(&adapter), spec));
     }
@@ -534,21 +599,28 @@ pub fn build_server(config: ServerConfig) -> Result<Server, String> {
     }
     builder
         .try_build()
-        .map_err(|e| format!("fa-mcp could not register its tools: {e}"))
+        .map_err(|e| ServerError::Foundation(format!("fa-mcp could not register its tools: {e}")))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn config() -> ServerConfig {
+        ServerConfig {
+            book: Some(PathBuf::from("/nonexistent/book")),
+            ..ServerConfig::default()
+        }
+    }
+
     #[test]
     fn the_server_builds_with_every_tool_and_resource_registered() {
-        let server = build_server(ServerConfig::default());
+        let server = build_server(config());
         assert!(server.is_ok(), "{:?}", server.err());
-        let adapter = Adapter::new(ServerConfig::default()).expect("adapter");
+        let adapter = Adapter::new(config()).expect("adapter");
         for spec in &adapter.mcp.tools {
             let tool = VerbTool::new(
-                Arc::new(Adapter::new(ServerConfig::default()).expect("adapter")),
+                Arc::new(Adapter::new(config()).expect("adapter")),
                 spec.clone(),
             );
             let d = tool.definition();
@@ -559,15 +631,20 @@ mod tests {
     }
 
     #[test]
-    fn a_bookless_read_tool_runs_and_the_data_equals_the_front_doors_data() {
-        let adapter = Adapter::new(ServerConfig::default()).expect("adapter");
+    fn bookless_discovery_uses_bound_authority_without_reading_the_book() {
+        let adapter = Adapter::new(config()).expect("adapter");
         let caps = adapter
             .mcp
             .tool_by_wire("fa_orient_capabilities")
             .expect("tool")
             .clone();
         let out = adapter.call(&caps, &json!({})).expect("capabilities");
-        let (exit, captured) = fa_cli::entry::fa(&["capabilities".into(), "--json".into()], true);
+        let (exit, captured) = fa_cli::entry::fa_with_authority(
+            &["capabilities".into(), "--json".into()],
+            fa_cli::cli::Files::default(),
+            &adapter.authority,
+            true,
+        );
         assert_eq!(exit, 0);
         let line = fa_cli::json::parse(captured.stdout.trim_end()).expect("a robot line");
         assert_eq!(
@@ -577,18 +654,29 @@ mod tests {
         );
         assert_eq!(out.envelope["events"], json!(["capabilities"]));
         assert_eq!(out.envelope["book"], JsonValue::Null);
+        assert_eq!(out.envelope["authority"], adapter.authority_json());
+        let data = fa_cli::json::parse(&out.data).unwrap();
+        assert_eq!(
+            data.get("capability")
+                .unwrap()
+                .get("binding")
+                .unwrap()
+                .get("posture")
+                .and_then(Json::as_str),
+            Some("mcp-launch-config"),
+        );
     }
 
     #[test]
     fn a_detected_mistake_and_a_dispatcher_refusal_are_both_structured() {
-        let adapter = Adapter::new(ServerConfig::default()).expect("adapter");
+        let adapter = Adapter::new(config()).expect("adapter");
         let post = adapter
             .mcp
             .tool_by_wire("fa_post_post")
             .expect("tool")
             .clone();
         let e = adapter
-            .call(&post, &json!({"intent": {"effective_date": "2026-03-15", "idempotency_key": "k", "legs": [{"side": "debit", "account": "6000", "amount": 1.5}]}, "book": "/nonexistent"}))
+            .call(&post, &json!({"intent": {"effective_date": "2026-03-15", "idempotency_key": "k", "legs": [{"side": "debit", "account": "6000", "amount": 1.5}]}}))
             .unwrap_err();
         assert_eq!(e.detector.as_deref(), Some("float_amount"));
         let tb = adapter
@@ -596,12 +684,11 @@ mod tests {
             .tool_by_wire("fa_read_trial_balance")
             .expect("tool")
             .clone();
-        let e = adapter
-            .call(&tb, &json!({"period": "P", "book": "/nonexistent/book"}))
-            .unwrap_err();
+        let e = adapter.call(&tb, &json!({"period": "P"})).unwrap_err();
         assert_eq!(e.detector, None);
         assert_eq!(e.exit, 4, "{e:?}");
         assert_eq!(e.kind, "environment");
+        assert_eq!(e.authority, Some(adapter.authority_json()));
         assert!(!e.message.is_empty());
         let e = adapter
             .call(&tb, &json!({"period": "P", "activity": "yes"}))
@@ -611,7 +698,7 @@ mod tests {
 
     #[test]
     fn resources_that_need_no_book_read_and_unknown_ones_refuse() {
-        let adapter = Adapter::new(ServerConfig::default()).expect("adapter");
+        let adapter = Adapter::new(config()).expect("adapter");
         let (mime, text) = adapter
             .read_resource("resource://fa/exit-codes", &HashMap::new())
             .expect("exit codes");
@@ -644,5 +731,110 @@ mod tests {
         assert_eq!(e.kind, "environment");
         assert_eq!(percent_decode("%2Ftmp%2Fbook%20x"), "/tmp/book x");
         assert_eq!(percent_decode("plain"), "plain");
+        for malformed in ["%€", "%💥", "%A€", "%", "%2", "%xz"] {
+            assert_eq!(percent_decode(malformed), malformed);
+            let params = HashMap::from([("book".into(), malformed.into())]);
+            let error = adapter
+                .read_resource("resource://fa/chart/{book}", &params)
+                .expect_err("foreign book must refuse without a UTF-8 slice panic");
+            assert_eq!(error.kind, "forbidden_argument");
+            assert_eq!(error.authority, Some(adapter.authority_json()));
+        }
+    }
+
+    #[test]
+    fn forbidden_arguments_precede_detectors_and_resource_reads() {
+        let adapter = Adapter::new(config()).expect("adapter");
+        let post = adapter.mcp.tool_by_wire("fa_post_post").expect("post");
+        for argument in crate::registry::FORBIDDEN_ARGUMENTS {
+            for value in [JsonValue::Null, json!(false), json!("operator")] {
+                let mut input = json!({"intent": {"amount": 1.25}});
+                input[*argument] = value;
+                let error = adapter.call(post, &input).expect_err("forbidden");
+                let json = error.to_json();
+                assert_eq!(json["type"], "forbidden_argument", "{json}");
+                assert_eq!(json["data"]["argument"], *argument);
+                assert_eq!(json["authority"], adapter.authority_json());
+                assert!(json.get("detector").is_none());
+            }
+        }
+        let params = HashMap::from([("book".into(), "%2Fanother%2Fbook".into())]);
+        let error = adapter
+            .read_resource("resource://fa/chart/{book}", &params)
+            .expect_err("resource cannot change book");
+        assert_eq!(error.kind, "forbidden_argument");
+        assert_eq!(error.detail["argument"], "book");
+        assert_eq!(error.authority, Some(adapter.authority_json()));
+    }
+
+    #[test]
+    fn host_path_arguments_precede_detectors_and_all_dispatch() {
+        let adapter = Adapter::new(config()).expect("adapter");
+        for tool in &adapter.mcp.tools {
+            let schema = tool.input_schema(&adapter.mcp, adapter.reg);
+            let mut paths: Vec<String> = [
+                "file",
+                "intent_file",
+                "plan_file",
+                "plan_out",
+                "certificate_out",
+            ]
+            .iter()
+            .map(|path| (*path).to_string())
+            .collect();
+            if let Some(stdin) = &tool.stdin {
+                paths.push(tool.via_property(stdin));
+            }
+            paths.sort();
+            paths.dedup();
+            for argument in paths {
+                assert!(
+                    schema["properties"].get(&argument).is_none(),
+                    "{} exposes {argument}",
+                    tool.wire_name()
+                );
+                for value in [
+                    JsonValue::Null,
+                    json!(false),
+                    json!("/host/secret"),
+                    json!("../outside"),
+                    json!("symlink/target"),
+                ] {
+                    let mut input = json!({"intent": {"amount": 1.25}});
+                    input[&argument] = value;
+                    let error = adapter
+                        .call(tool, &input)
+                        .expect_err("host path refused before float/input checks or missing book");
+                    let json = error.to_json();
+                    assert_eq!(json["type"], "forbidden_path", "{json}");
+                    assert_eq!(json["exit"], 2);
+                    assert_eq!(json["data"]["argument"], argument);
+                    assert_eq!(json["authority"], adapter.authority_json());
+                    assert!(json.get("detector").is_none());
+                    assert_eq!(json["suggested_tool_calls"], json!([]));
+                    assert!(tool.invocation(&adapter.mcp, adapter.reg, &input).is_err());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn launch_requires_a_book_and_refuses_grants_outside_the_profile_ceiling() {
+        let error = Adapter::new(ServerConfig::default())
+            .err()
+            .expect("book required");
+        assert_eq!(error.exit(), 7);
+        for profile in [LaunchProfile::Agent, LaunchProfile::Preparer] {
+            for grant in ["approve", "close", "post_closed", "migrate", "witness"] {
+                let error = Adapter::new(ServerConfig {
+                    profile,
+                    grants: vec![grant.into()],
+                    ..config()
+                })
+                .err()
+                .expect("grant exceeds launch ceiling");
+                assert_eq!(error.exit(), 7, "{error}");
+            }
+        }
     }
 }

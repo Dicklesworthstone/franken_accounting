@@ -23,6 +23,8 @@
 
 pub mod evidence;
 pub mod sod;
+pub mod statements;
+mod temporal;
 
 /// The registered control kinds (`registries/entry_classes.toml`
 /// `[[control_kind]]`, fa-g23), written out literally: `(id, name, the
@@ -54,9 +56,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use fa_registry::sod_policy::{SodPolicy, SodRequirement};
 use fa_registry::{Admissibility, Decision, EntryClasses};
 use fa_time::period::transition;
-use fa_time::{
-    DateDay, FiscalCalendar, PeriodDef, PeriodKind, PeriodState, PeriodTransition, resolve_period,
-};
+use fa_time::{DateDay, FiscalCalendar, PeriodDef, PeriodKind, PeriodState, PeriodTransition};
 
 // ---------------------------------------------------------------------------
 // Own arithmetic: sign-magnitude, base 2^32 limbs, little-endian.
@@ -283,6 +283,8 @@ pub struct Intent {
     pub approvals: usize,
     /// For a Reversal: the journal index of the entry it reverses.
     pub reverses: Option<usize>,
+    /// Registered `supersession` reason; consulted only for a reversal.
+    pub supersession_reason: u16,
     /// For a Resolution: the pending entry it resolves and its disposition.
     pub resolves: Option<Resolve>,
     /// Applications (plan §5.7): `legs[leg]` applies `mantissa` to journal
@@ -297,6 +299,38 @@ pub struct Settle {
     pub target: usize,
     pub ordinal: usize,
     pub mantissa: i128,
+}
+
+/// Provenance asserted by a caller of the public posting path. Migration
+/// provenance is modelled by [`Oracle::post_migration`] and its verified run.
+/// The remaining system origins may only be minted internally.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ClaimedOrigin {
+    #[default]
+    Intent,
+    Rule,
+    Control,
+    Sweep,
+    Schedule,
+}
+
+/// A caller's unverified functional-currency aggregate. The model need only
+/// represent its unit and totals: no supplied law or rate can authorize it
+/// before the FX admission law exists.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaimedBaseTotals {
+    pub unit: u32,
+    pub debits: i128,
+    pub credits: i128,
+}
+
+/// Claims outside the reference model's ordinary authored intent. These are
+/// plain model values, independent of production payload and envelope types.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PostClaims {
+    pub origin: ClaimedOrigin,
+    pub plan_certificate: Option<[u8; 32]>,
+    pub base_totals: Option<ClaimedBaseTotals>,
 }
 
 /// A Resolution's target and disposition (plan §5.4): `posts = Some(ordinals)`
@@ -330,6 +364,8 @@ pub mod code {
     pub const REVERSAL_TARGET: &str = "FA-REF-050";
     pub const REVERSAL_SHAPE: &str = "FA-REF-051";
     pub const ALREADY_REVERSED: &str = "FA-REF-052";
+    pub const REVERSAL_PERIOD: &str = "FA-REF-053";
+    pub const SUPERSESSION_REASON: &str = "FA-REF-054";
     pub const RESOLUTION_TARGET: &str = "FA-REF-060";
     pub const RESOLUTION_SHAPE: &str = "FA-REF-061";
     pub const ALREADY_RESOLVED: &str = "FA-REF-062";
@@ -526,6 +562,7 @@ struct Content {
     discriminator: Option<String>,
     legs: Vec<Leg>,
     reverses: Option<usize>,
+    supersession_reason: u16,
     resolves: Option<Resolve>,
     settles: Vec<Settle>,
     key: Vec<u8>,
@@ -555,6 +592,11 @@ impl Content {
             discriminator: i.discriminator.clone(),
             legs: i.legs.clone(),
             reverses: i.reverses,
+            supersession_reason: if i.reverses.is_some() {
+                i.supersession_reason
+            } else {
+                0
+            },
             resolves: i.resolves.clone(),
             settles: i.settles.clone(),
             key: i.key.clone(),
@@ -687,6 +729,7 @@ pub struct Oracle {
     migration_keys: BTreeMap<(usize, Vec<u8>), (usize, Content)>,
     classes: EntryClasses,
     matrix: Admissibility,
+    special_periods: temporal::SpecialPeriods,
     sod: SodPolicy,
     /// Tokens of revoked capabilities.
     revoked: BTreeSet<u64>,
@@ -723,6 +766,7 @@ impl Oracle {
             migration_keys: BTreeMap::new(),
             classes,
             matrix,
+            special_periods: temporal::SpecialPeriods::embedded(),
             sod,
             revoked: BTreeSet::new(),
             epoch: 0,
@@ -1033,7 +1077,13 @@ impl Oracle {
     }
 
     pub fn post(&mut self, intent: &Intent) -> Verdict {
-        let v = self.post_inner(intent, None, None, None, None);
+        self.post_with_claims(intent, &PostClaims::default())
+    }
+
+    /// Post a caller's intent and envelope claims through the same model law.
+    /// Refusing a claim does not consume an idempotency key or move a balance.
+    pub fn post_with_claims(&mut self, intent: &Intent, claims: &PostClaims) -> Verdict {
+        let v = self.post_inner(intent, None, None, None, None, claims);
         // A manual Reversal of a scheduled target cancels the schedule by
         // lineage (plan §7.6): it can never fire.
         if matches!(v, Verdict::Posted { .. })
@@ -1048,7 +1098,14 @@ impl Oracle {
     /// An Adjusting entry that schedules its own reversal on `reverse_on`
     /// (plan §7.6, Appendix B `Accrue`/`Defer`).
     pub fn post_scheduled(&mut self, intent: &Intent, reverse_on: DateDay) -> Verdict {
-        self.post_inner(intent, None, None, Some(reverse_on), None)
+        self.post_inner(
+            intent,
+            None,
+            None,
+            Some(reverse_on),
+            None,
+            &PostClaims::default(),
+        )
     }
 
     /// The schedule of `target`, if it scheduled its reversal.
@@ -1097,10 +1154,11 @@ impl Oracle {
             ops: vec!["post".into()],
             approvals: 0,
             reverses: Some(target),
+            supersession_reason: 12,
             resolves: None,
             settles: Vec::new(),
         };
-        match self.post_inner(&intent, None, None, None, None) {
+        match self.post_inner(&intent, None, None, None, None, &PostClaims::default()) {
             Verdict::Posted { index, .. } => {
                 if let Some((_, content)) = self.reversed.get_mut(&target) {
                     content.by_sweep = true;
@@ -1211,7 +1269,14 @@ impl Oracle {
                 code: code::STRUCTURE,
             };
         }
-        self.post_inner(intent, None, Some(timeout_ns), None, None)
+        self.post_inner(
+            intent,
+            None,
+            Some(timeout_ns),
+            None,
+            None,
+            &PostClaims::default(),
+        )
     }
 
     /// A timed hold's deadline.
@@ -1293,6 +1358,7 @@ impl Oracle {
                         discriminator: None,
                         legs: Vec::new(),
                         reverses: None,
+                        supersession_reason: 0,
                         resolves: Some(Resolve {
                             target: h,
                             posts: None,
@@ -1345,7 +1411,7 @@ impl Oracle {
                 code: code::BALANCING_SHAPE,
             };
         }
-        self.post_inner(intent, Some(leg), None, None, None)
+        self.post_inner(intent, Some(leg), None, None, None, &PostClaims::default())
     }
 
     fn post_inner(
@@ -1355,6 +1421,7 @@ impl Oracle {
         timeout: Option<u64>,
         auto_reverse: Option<DateDay>,
         run: Option<usize>,
+        claims: &PostClaims,
     ) -> Verdict {
         // 1. Structure.
         let Some(class) = self.classes.by_name(&intent.class) else {
@@ -1404,6 +1471,16 @@ impl Oracle {
         if (intent.class == "Migration") != run.is_some() {
             return Verdict::Refused {
                 code: code::MIGRATION_OUTSIDE_RUN,
+            };
+        }
+        // Unverified caller claims never become journal authority. System
+        // minting and checked migration use their separate model entry points.
+        if claims.plan_certificate.is_some()
+            || claims.origin != ClaimedOrigin::Intent
+            || claims.base_totals.is_some()
+        {
+            return Verdict::Refused {
+                code: code::CLASS_NOT_IMPLEMENTED,
             };
         }
         if is_reversal && intent.reverses.is_none() {
@@ -1510,9 +1587,7 @@ impl Oracle {
                 .ok()
                 .and_then(|fy| self.calendar.periods_for_year(fy).ok())
                 .and_then(|defs| {
-                    resolve_period(&defs, reverse_on, None)
-                        .ok()
-                        .map(|p| p.code.clone())
+                    temporal::resolve(&defs, reverse_on, None).map(|p| p.code.clone())
                 });
             let Some(p) = resolved else {
                 return Verdict::Refused {
@@ -1564,7 +1639,8 @@ impl Oracle {
                 code: code::PERIOD_RESOLVE,
             };
         };
-        let Ok(period) = resolve_period(&defs, intent.date, intent.discriminator.as_deref()) else {
+        let Some(period) = temporal::resolve(&defs, intent.date, intent.discriminator.as_deref())
+        else {
             return Verdict::Refused {
                 code: code::PERIOD_RESOLVE,
             };
@@ -1605,6 +1681,19 @@ impl Oracle {
                     code: code::IDEMPOTENCY_CONFLICT,
                 }
             };
+        }
+        if is_reversal {
+            let reasons =
+                fa_registry::reason_codes::ReasonCodes::embedded().expect("reason registry");
+            if !reasons
+                .rows
+                .iter()
+                .any(|row| row.scope == "supersession" && row.code == intent.supersession_reason)
+            {
+                return Verdict::Refused {
+                    code: code::SUPERSESSION_REASON,
+                };
+            }
         }
         // 4'. The run: known, Open, and the chunk on its opening date.
         if let Some(r) = run {
@@ -1664,6 +1753,11 @@ impl Oracle {
             && !rule.admits(&intent.class)
         {
             assert_eq!(rule.refusal, code::PERIOD_LAW, "registry drift");
+            return Verdict::Refused {
+                code: code::PERIOD_LAW,
+            };
+        }
+        if born.is_some_and(|kind| !self.special_periods.admits(kind, &intent.class)) {
             return Verdict::Refused {
                 code: code::PERIOD_LAW,
             };
@@ -1779,6 +1873,28 @@ impl Oracle {
             if !reversible {
                 return Verdict::Refused {
                     code: code::REVERSAL_TARGET,
+                };
+            }
+            let target_period = &self.periods[&original.period].0;
+            let current_period = &self.periods[&period].0;
+            // Independent of production's chronological_key: definition
+            // enumeration appends Opening, while chronological order puts
+            // it before the first Normal period.
+            let rank = |kind| match kind {
+                PeriodKind::Opening => 0,
+                PeriodKind::Normal | PeriodKind::Historical => 1,
+                PeriodKind::Adjustment => 2,
+                PeriodKind::Closing => 3,
+            };
+            let order = current_period
+                .start
+                .cmp(&target_period.start)
+                .then_with(|| rank(current_period.kind).cmp(&rank(target_period.kind)))
+                .then_with(|| current_period.fiscal_year.cmp(&target_period.fiscal_year))
+                .then_with(|| current_period.ordinal.cmp(&target_period.ordinal));
+            if order.is_lt() {
+                return Verdict::Refused {
+                    code: code::REVERSAL_PERIOD,
                 };
             }
             let swapped = original.legs.len() == intent.legs.len()
@@ -2223,7 +2339,7 @@ impl Oracle {
 
     /// Post a chunk into `run` (a `Migration` entry naming it).
     pub fn post_migration(&mut self, run: usize, intent: &Intent) -> Verdict {
-        self.post_inner(intent, None, None, None, Some(run))
+        self.post_inner(intent, None, None, None, Some(run), &PostClaims::default())
     }
 
     /// Finalize `run`, planned over `planned_chunks` chunks.
@@ -2808,6 +2924,7 @@ mod tests {
             ops: vec!["post".into()],
             approvals: 0,
             reverses,
+            supersession_reason: 1,
             resolves: None,
             settles: Vec::new(),
         };
@@ -3082,6 +3199,7 @@ mod tests {
             ops: vec!["post".into()],
             approvals: 0,
             reverses: None,
+            supersession_reason: 1,
             resolves,
             settles: Vec::new(),
         };
@@ -3212,6 +3330,7 @@ mod tests {
             ops: vec!["post".into()],
             approvals: 0,
             reverses: None,
+            supersession_reason: 1,
             resolves,
             settles: Vec::new(),
         };

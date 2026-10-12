@@ -74,7 +74,7 @@ planned = false
 name = "fa-intents"
 layer = "laws"
 path = "crates/fa-intents"
-planned = true
+planned = false
 
 [[crate]]
 name = "fa-journal"
@@ -116,7 +116,7 @@ planned = false
 name = "fa-statements"
 layer = "analytics"
 path = "crates/fa-statements"
-planned = true
+planned = false
 
 [[crate]]
 name = "fa-concordat"

@@ -66,6 +66,26 @@ pub fn admit(cap: &Capability, intent: &Intent<'_>) -> Result<(), Denial> {
     Ok(())
 }
 
+/// Admit a read before any storage observation: the capability belongs to
+/// the actor, holds `read`, and admits the book. Reading trunk is permitted
+/// for an Agent; the trunk and amount laws govern writes only.
+///
+/// The kernel must then apply [`current`] at its current authority frontier
+/// and check revocation before observing the requested data. Keeping those
+/// checks separate lets a wrong actor, missing op, or excluded book refuse
+/// before the kernel even reads its frontier. A historical report coordinate
+/// never replaces the current authority frontier.
+pub fn admit_read(cap: &Capability, principal: VId, book: Id128) -> Result<(), Denial> {
+    if cap.holder() != principal {
+        return Err(Denial::NotHolder {
+            holder: cap.holder(),
+            principal,
+        });
+    }
+    require(cap, Op::Read, "reading this book")?;
+    scope(cap, book)
+}
+
 /// The capability is current at the admission point `at` (plan §14.2): a
 /// declared bound `expires_at = n` admits iff `at < n`. `at` is an explicit
 /// input; this crate never reads a clock or the book.
@@ -214,5 +234,63 @@ mod tests {
         assert!(current(&cap, CommitSeq(11)).is_err());
         let forever = Capability::embedded(VId(1), &["post"]).unwrap();
         assert_eq!(current(&forever, CommitSeq(u64::MAX)), Ok(()));
+    }
+
+    #[test]
+    fn an_agent_can_read_trunk_but_still_cannot_write_it() {
+        let agent = Capability::new(VId(5), Profile::Agent, &[Op::Read, Op::Post], VId(1))
+            .unwrap()
+            .for_books(&[BOOK])
+            .unwrap()
+            .with_ceiling(USD, 0)
+            .unwrap();
+        assert_eq!(admit_read(&agent, VId(5), BOOK), Ok(()));
+        assert_eq!(current(&agent, CommitSeq(42)), Ok(()));
+        assert_eq!(
+            admit(&agent, &intent(VId(5), &[(USD, 1)])).unwrap_err(),
+            Denial::AgentOnTrunk
+        );
+    }
+
+    #[test]
+    fn read_admission_requires_the_actor_read_op_and_book_in_that_order() {
+        let other = Id128([5; 16]);
+        let writer = Capability::new(VId(5), Profile::Agent, &[Op::Post], VId(1))
+            .unwrap()
+            .for_books(&[BOOK])
+            .unwrap();
+        assert_eq!(
+            admit_read(&writer, VId(6), other).unwrap_err(),
+            Denial::NotHolder {
+                holder: VId(5),
+                principal: VId(6),
+            }
+        );
+        let missing = admit_read(&writer, VId(5), other).unwrap_err();
+        assert_eq!(
+            (missing.code(), missing.kind()),
+            ("FA-REF-011", "missing_op")
+        );
+        let reader = Capability::new(VId(5), Profile::Agent, &[Op::Read], VId(1))
+            .unwrap()
+            .for_books(&[BOOK])
+            .unwrap()
+            .expiring_at(CommitSeq(10));
+        assert_eq!(
+            admit_read(&reader, VId(5), other).unwrap_err(),
+            Denial::OutOfScope {
+                caveat: "books",
+                value: other.to_hex(),
+            }
+        );
+        assert_eq!(admit_read(&reader, VId(5), BOOK), Ok(()));
+        assert_eq!(current(&reader, CommitSeq(9)), Ok(()));
+        assert_eq!(
+            current(&reader, CommitSeq(10)).unwrap_err(),
+            Denial::Expired {
+                expires_at: CommitSeq(10),
+                at: CommitSeq(10),
+            }
+        );
     }
 }

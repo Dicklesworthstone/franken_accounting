@@ -33,7 +33,7 @@ pub fn recoverable(exit: u8) -> bool {
 
 /// The refusal codes and citations that are the period law.
 fn is_period_law(refusal_id: Option<&str>, cite: Option<&str>) -> bool {
-    matches!(refusal_id, Some("FA-REF-010" | "FA-REF-011" | "FA-REF-021"))
+    matches!(refusal_id, Some("FA-REF-010" | "FA-REF-021"))
         || cite.is_some_and(|c| c.contains("admissibility"))
 }
 
@@ -56,6 +56,8 @@ pub struct StructuredError {
     pub detector: Option<String>,
     /// What no fix ever means (period law: never re-date).
     pub never: Option<String>,
+    /// The trusted launch binding under which this refusal was produced.
+    pub authority: Option<JsonValue>,
 }
 
 impl StructuredError {
@@ -102,6 +104,7 @@ impl StructuredError {
             detail: data.get("detail").map_or(JsonValue::Null, to_wire),
             detector: None,
             never,
+            authority: None,
         }
     }
 
@@ -125,6 +128,7 @@ impl StructuredError {
             detail: JsonValue::Null,
             detector: Some(detector.to_string()),
             never: None,
+            authority: None,
         }
     }
 
@@ -132,6 +136,46 @@ impl StructuredError {
     #[must_use]
     pub fn arguments(message: impl Into<String>, fix_hint: impl Into<String>) -> Self {
         Self::detected("arguments", message, fix_hint, Vec::new())
+    }
+
+    /// Caller input cannot change the server's launch-bound authority.
+    #[must_use]
+    pub fn forbidden_argument(argument: &str) -> Self {
+        Self {
+            kind: "forbidden_argument".into(),
+            message: format!("`{argument}` is fixed by the trusted server launch and is not a tool argument"),
+            recoverable: false,
+            fix_hint: Some("omit the forbidden argument; a different identity, capability, book, or key file requires an operator to start an appropriately bound server".into()),
+            suggested_tool_calls: Vec::new(),
+            exit: 7,
+            refusal_id: None,
+            cite: Some("plan §15.4; fa-23r launch-bound authority".into()),
+            detail: json!({"argument": argument}),
+            detector: None,
+            never: None,
+            authority: None,
+        }
+    }
+
+    /// A caller-selected host path was refused before any dispatch or I/O.
+    #[must_use]
+    pub fn forbidden_path(argument: &str, fix_hint: impl Into<String>) -> Self {
+        Self {
+            kind: "forbidden_path".into(),
+            message: format!(
+                "`{argument}` cannot select a host filesystem path; this MCP server accepts inline content only"
+            ),
+            recoverable: true,
+            fix_hint: Some(fix_hint.into()),
+            suggested_tool_calls: Vec::new(),
+            exit: 2,
+            refusal_id: None,
+            cite: Some("plan §15.4; fa-yha caller filesystem containment".into()),
+            detail: json!({"argument": argument}),
+            detector: None,
+            never: None,
+            authority: None,
+        }
     }
 
     /// The dispatcher itself failed (foundation class, exit 5).
@@ -149,7 +193,15 @@ impl StructuredError {
             detail: JsonValue::Null,
             detector: None,
             never: None,
+            authority: None,
         }
+    }
+
+    /// Attach the same launch binding to detector and dispatcher errors.
+    #[must_use]
+    pub fn with_authority(mut self, authority: JsonValue) -> Self {
+        self.authority = Some(authority);
+        self
     }
 
     /// Add what a period-law refusal never means.
@@ -177,6 +229,15 @@ impl StructuredError {
         }
         if let Some(n) = &self.never {
             v["never"] = JsonValue::String(n.clone());
+        }
+        if let Some(authority) = &self.authority {
+            v["authority"] = authority.clone();
+        }
+        if self.kind == "forbidden_argument" {
+            v["data"] = json!({
+                "fix_hint": self.fix_hint,
+                "argument": self.detail.get("argument"),
+            });
         }
         v
     }
@@ -334,6 +395,20 @@ mod tests {
             json!({"fiscal_year": "<FY>"})
         );
         assert!(e.never.is_some());
+        for code in ["FA-REF-011", "FA-REF-013"] {
+            let e = StructuredError::from_error_event(
+                &mcp,
+                reg,
+                &planted(
+                    "safety",
+                    7,
+                    Some(code),
+                    Some("plan §14"),
+                    Some("ask the operator"),
+                ),
+            );
+            assert!(e.never.is_none(), "{code} is authority, not period law");
+        }
         // A lease conflict is recoverable; a verification failure and a
         // foundation failure are not.
         let e = StructuredError::from_error_event(

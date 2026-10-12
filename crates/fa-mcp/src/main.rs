@@ -1,11 +1,12 @@
 //! `fa-mcp` — the FrankenAccounting MCP server over stdio (bead fa-xex):
 //!
-//! `fa-mcp [--book <dir>] [--keys <file>]` serves the verb registry's tool
+//! `fa-mcp --book <dir> [--keys <file>] [--principal <name>]
+//! [--profile agent|preparer] [--grant <op>]...` serves the verb registry's tool
 //! clusters and resources on stdin/stdout (newline-delimited JSON-RPC, the
 //! MCP stdio transport) until the host closes stdin. `--book` (or `FA_BOOK`)
-//! names the book every call runs against unless the call names its own.
-//! Each call runs exactly as `fa` would: directly under the book's writer
-//! lease, or through the `fad` that holds it.
+//! fixes the book for this session. Identity and operations are trusted
+//! launch configuration, never tool arguments. Calls retain their typed
+//! capability and refuse daemon forwarding until session binding is available.
 //!
 //! stdout is the transport; diagnostics go to stderr. Exit codes follow the
 //! `fa` dictionary: 2 usage, 5 foundation (the registry or the server could
@@ -19,9 +20,10 @@ use std::process::ExitCode;
 use asupersync::Cx;
 use asupersync::runtime::RuntimeBuilder;
 use asupersync::runtime::reactor::create_reactor;
+use fa_cli::authority::LaunchProfile;
 use fa_mcp::server::{ServerConfig, build_server};
 
-const USAGE: &str = "fa-mcp — the FrankenAccounting MCP server (stdio)\n\nusage\n  fa-mcp [--book <dir>] [--keys <file>]   (serves until stdin closes; FA_BOOK names the default book)\n  fa-mcp --help\n  fa-mcp --version\n";
+const USAGE: &str = "fa-mcp — the FrankenAccounting MCP server (stdio)\n\nusage\n  fa-mcp --book <dir> [--keys <file>] [--principal <name>]\n         [--profile agent|preparer] [--grant <op>]...\n  fa-mcp --help\n  fa-mcp --version\n\nFA_BOOK may supply the launch book. The default principal is mcp-agent and the\ndefault profile is agent. Default operations are read, post, verify; an explicit\n--grant list narrows the session to the named operations within its profile.\nIdentity, profile, operations, book and keys are fixed at launch. Tool arguments\ncannot override them or confirm dangerous operations. Agent writes to trunk are\nrefused by the kernel; drafts remain pending (fa-s7x). Launch configuration is\ntrusted operator input, not authenticated issuance (fa-v62/fa-r3q). A running fad\ncauses a lease refusal until it can preserve this session's authority.\n";
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -37,32 +39,25 @@ fn main() -> ExitCode {
                 println!("fa-mcp {}", fa_mcp::VERSION);
                 return ExitCode::SUCCESS;
             }
-            "--book" | "--keys" => {
+            "--book" | "--keys" | "--principal" | "--profile" | "--grant" => {
                 let Some(value) = argv.get(i + 1) else {
                     eprintln!(
-                        "usage: {} needs a value\n  fix: {} <path>",
+                        "usage: {} needs a value\n  fix: {} <value>",
                         argv[i], argv[i]
                     );
                     return ExitCode::from(2);
                 };
-                if argv[i] == "--book" {
-                    config.book = Some(PathBuf::from(value));
-                } else {
-                    config.keys = Some(PathBuf::from(value));
+                if let Err(e) = set_option(&mut config, &argv[i], value) {
+                    eprintln!("usage: {e}\n  fix: fa-mcp --help");
+                    return ExitCode::from(2);
                 }
                 i += 2;
             }
             other => {
                 let (flag, value) = other.split_once('=').unwrap_or((other, ""));
-                match flag {
-                    "--book" if !value.is_empty() => config.book = Some(PathBuf::from(value)),
-                    "--keys" if !value.is_empty() => config.keys = Some(PathBuf::from(value)),
-                    _ => {
-                        eprintln!(
-                            "usage: unknown argument `{other}`\n  fix: fa-mcp [--book <dir>] [--keys <file>]"
-                        );
-                        return ExitCode::from(2);
-                    }
+                if value.is_empty() || set_option(&mut config, flag, value).is_err() {
+                    eprintln!("usage: invalid argument `{other}`\n  fix: fa-mcp --help");
+                    return ExitCode::from(2);
                 }
                 i += 1;
             }
@@ -74,11 +69,17 @@ fn main() -> ExitCode {
     {
         config.book = Some(PathBuf::from(dir));
     }
+    if config.book.is_none() {
+        eprintln!(
+            "usage: a launch book is required\n  fix: fa-mcp --book <dir> (or set FA_BOOK before launch)"
+        );
+        return ExitCode::from(2);
+    }
     let server = match build_server(config) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("error (exit 5): {e}");
-            return ExitCode::from(5);
+            eprintln!("error (exit {}): {e}", e.exit());
+            return ExitCode::from(e.exit());
         }
     };
     let reactor = match create_reactor() {
@@ -107,4 +108,22 @@ fn main() -> ExitCode {
         // Serves until stdin closes, then exits the process itself.
         server.run_stdio_with_cx(&cx).await
     })
+}
+
+fn set_option(config: &mut ServerConfig, flag: &str, value: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Err(format!("{flag} needs a nonempty value"));
+    }
+    match flag {
+        "--book" => config.book = Some(PathBuf::from(value)),
+        "--keys" => config.keys = Some(PathBuf::from(value)),
+        "--principal" => config.principal = value.to_string(),
+        "--profile" => {
+            config.profile = LaunchProfile::from_name(value)
+                .ok_or_else(|| format!("unknown profile `{value}`; use agent or preparer"))?;
+        }
+        "--grant" => config.grants.push(value.to_string()),
+        _ => return Err(format!("unknown launch flag `{flag}`")),
+    }
+    Ok(())
 }

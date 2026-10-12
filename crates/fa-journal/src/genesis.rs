@@ -433,6 +433,14 @@ pub async fn create_book<V: asupersync::fs::Vfs + Clone>(
     units: &UnitRegistry,
     symbols: &SymbolTable,
 ) -> Result<CommitSeq, KernelError> {
+    if units.get(spec.base_unit).is_none() {
+        return Err(KernelError::Corrupt(format!(
+            "book.base_unit {} is absent from the genesis unit table",
+            spec.base_unit.0
+        )));
+    }
+    let units_digest = fa_model::unit::unit_table_digest(units)
+        .map_err(|e| KernelError::Corrupt(format!("unit table: {e}")))?;
     let bvid = book_root();
     let mut batch = WriteBatch::new(relation::IN_BOOK);
     let mut props = vec![
@@ -457,12 +465,27 @@ pub async fn create_book<V: asupersync::fs::Vfs + Clone>(
             property::SYMBOLS_DIGEST,
             scalar_bytes("symbols_digest", symbols.digest().0.to_vec())?,
         ),
+        (
+            property::UNIT_TABLE_DIGEST,
+            scalar_bytes("unit_table_digest", units_digest.to_vec())?,
+        ),
     ];
     props.sort_by_key(|(k, _)| k.0);
     batch.create_vertex(bvid, vec![label::BOOK], props);
     for (id, unit) in units.iter() {
+        let definition = fa_model::UnitDefinition {
+            id,
+            unit: unit.clone(),
+        };
+        let payload = definition
+            .canonical_bytes()
+            .map_err(|e| KernelError::Corrupt(format!("unit {}: {e}", unit.code)))?;
         let uvid = unit_vid(spec.book_id, &format!("{}@v{}", unit.code, unit.version));
         let mut props = vec![
+            (
+                property::FA_PAYLOAD,
+                scalar_bytes("unit._fa_payload", payload)?,
+            ),
             (
                 property::BOOK_ID,
                 scalar_bytes("book_id", spec.book_id.0.to_vec())?,
@@ -568,6 +591,142 @@ pub fn read_book_spec<V: asupersync::fs::Vfs + Clone>(
     };
     let payload = bytes(&row, property::FA_PAYLOAD, "book._fa_payload")?;
     BookSpec::decode(&payload).map(Some)
+}
+
+/// Reconstruct the runtime unit table from the complete journaled payloads,
+/// checking every mirror and the binary's supported definitions. Additional
+/// binary rows are allowed but are not installed into an existing book.
+/// Missing pre-payload metadata is refused; it is never inferred from the
+/// binary that happened to open the book (fa-nnm, fa-k1u).
+pub fn read_units<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book_id: Id128,
+    supported: &UnitRegistry,
+) -> Result<UnitRegistry, KernelError> {
+    use crate::rows::{int, prop, text};
+
+    let pre_payload = |what: &str| {
+        KernelError::Corrupt(format!(
+            "pre-payload unit table: {what}; this binary cannot infer missing unit facts. Keep the book unchanged and use its creating binary; upgrade requires an authorized journaled unit-payload backfill (fa-k1u), which is not available yet"
+        ))
+    };
+    let root = db
+        .vertex(book_root())?
+        .ok_or_else(|| KernelError::Corrupt("unit table has no Book root".into()))?;
+    let expected_digest = match prop(&root, property::UNIT_TABLE_DIGEST) {
+        None => return Err(pre_payload("Book.unit_table_digest is absent")),
+        Some(CanonicalScalar::Bytes(bytes)) if bytes.as_slice().len() == 32 => {
+            bytes.as_slice().to_vec()
+        }
+        _ => {
+            return Err(KernelError::Corrupt(
+                "Book.unit_table_digest must contain 32 bytes".into(),
+            ));
+        }
+    };
+    let mut definitions = std::collections::BTreeMap::new();
+    for vid in db.in_neighbours(book_root(), relation::IN_BOOK)? {
+        let Some(row) = db.vertex(vid)? else {
+            continue;
+        };
+        if !row.labels.contains(&label::UNIT) {
+            continue;
+        }
+        let payload = match prop(&row, property::FA_PAYLOAD) {
+            None => {
+                return Err(pre_payload(&format!(
+                    "unit {vid:?} has no canonical payload"
+                )));
+            }
+            Some(CanonicalScalar::Bytes(bytes)) => bytes.as_slice(),
+            _ => {
+                return Err(KernelError::Corrupt(format!(
+                    "unit {vid:?}._fa_payload must be bytes"
+                )));
+            }
+        };
+        let definition = fa_model::UnitDefinition::decode(payload)
+            .map_err(|e| KernelError::Corrupt(format!("unit {vid:?}: {e}")))?;
+        let id = definition.id;
+        let unit = &definition.unit;
+        let mismatch = |field: &str| {
+            KernelError::Corrupt(format!(
+                "unit {} ({}@v{}) {field} differs from its journaled definition; refuse reinterpretation of historical amounts",
+                id.0, unit.code, unit.version
+            ))
+        };
+        if bytes(&row, property::BOOK_ID, "unit.book_id")? != book_id.0 {
+            return Err(mismatch("book_id mirror"));
+        }
+        if int(&row, property::UNIT_ID, "unit.unit_id")? != i64::from(id.0) {
+            return Err(mismatch("id mirror"));
+        }
+        if text(&row, property::CODE, "unit.code")? != unit.code {
+            return Err(mismatch("code mirror"));
+        }
+        if int(&row, property::VERSION, "unit.version")? != i64::from(unit.version) {
+            return Err(mismatch("version mirror"));
+        }
+        if int(&row, property::SCALE, "unit.scale")? != i64::from(unit.scale) {
+            return Err(mismatch("scale mirror"));
+        }
+        if vid != unit_vid(book_id, &format!("{}@v{}", unit.code, unit.version)) {
+            return Err(mismatch("vertex identity"));
+        }
+        let Some(binary) = supported.get(id) else {
+            return Err(mismatch("binary registry id (unsupported unit)"));
+        };
+        if binary.code != unit.code {
+            return Err(mismatch("binary code"));
+        }
+        if binary.version != unit.version {
+            return Err(mismatch("binary version"));
+        }
+        if binary.scale != unit.scale {
+            return Err(mismatch("binary scale"));
+        }
+        if binary.kind != unit.kind {
+            return Err(mismatch("binary kind/ISO 4217"));
+        }
+        if binary.rounding_default != unit.rounding_default {
+            return Err(mismatch("binary default rounding law"));
+        }
+        if definitions.insert(id, definition.unit).is_some() {
+            return Err(KernelError::Corrupt(format!(
+                "duplicate journaled unit id {}",
+                id.0
+            )));
+        }
+    }
+    if definitions.is_empty() {
+        return Err(KernelError::Corrupt("journaled unit table is empty".into()));
+    }
+    let mut units = UnitRegistry::empty();
+    for (id, unit) in definitions {
+        if usize::try_from(id.0).ok() != Some(units.len()) {
+            return Err(KernelError::Corrupt(format!(
+                "journaled unit table has a gap before id {}",
+                id.0
+            )));
+        }
+        let assigned = units
+            .register(unit)
+            .map_err(|e| KernelError::Corrupt(format!("journaled unit {}: {e}", id.0)))?;
+        if assigned != id {
+            return Err(KernelError::Corrupt(format!(
+                "duplicate journaled unit definition at id {}",
+                id.0
+            )));
+        }
+    }
+    let actual_digest = fa_model::unit::unit_table_digest(&units)
+        .map_err(|e| KernelError::Corrupt(format!("unit table: {e}")))?;
+    if expected_digest != actual_digest {
+        return Err(KernelError::Corrupt(
+            "journaled unit table differs from Book.unit_table_digest; a definition or membership is missing or changed".into(),
+        ));
+    }
+    Ok(units)
 }
 
 /// Create the `Period` vertices of one fiscal year, each born as the book

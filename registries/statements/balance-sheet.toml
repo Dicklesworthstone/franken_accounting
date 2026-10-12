@@ -1,0 +1,67 @@
+# A native-unit stock statement. Every monetary account type is mapped once,
+# including zero-balance leaves. Nominal balances from every unclosed year
+# remain visible as unclosed earnings until actual Closing entries move them
+# to equity. This definition never creates a posting or assumes a close.
+schema_version = 1
+name = "balance-sheet"
+title = "Balance sheet"
+version = 1
+kind = "BalanceSheet"
+basis = "stock"
+covered_types = ["Asset", "Liability", "Equity", "Revenue", "Expense"]
+excluded_classes = []
+check_lines = ["balance_check"]
+
+[[line]]
+code = "assets"
+label = "Assets"
+account_types = ["Asset"]
+sign = "debit"
+
+[[line]]
+code = "liabilities"
+label = "Liabilities"
+account_types = ["Liability"]
+sign = "credit"
+
+[[line]]
+code = "equity"
+label = "Posted equity"
+account_types = ["Equity"]
+sign = "credit"
+
+[[line]]
+code = "unclosed_revenue"
+label = "Unclosed revenue, all years"
+account_types = ["Revenue"]
+sign = "credit"
+
+[[line]]
+code = "unclosed_expense"
+label = "Unclosed expenses, all years"
+account_types = ["Expense"]
+sign = "debit"
+
+[[line]]
+code = "unclosed_earnings"
+label = "Unclosed earnings, all years"
+add = ["unclosed_revenue"]
+subtract = ["unclosed_expense"]
+
+[[line]]
+code = "total_equity"
+label = "Equity including unclosed earnings"
+add = ["equity", "unclosed_earnings"]
+subtract = []
+
+[[line]]
+code = "liabilities_and_equity"
+label = "Liabilities and equity including unclosed earnings"
+add = ["liabilities", "total_equity"]
+subtract = []
+
+[[line]]
+code = "balance_check"
+label = "Assets less liabilities and equity (must equal zero)"
+add = ["assets"]
+subtract = ["liabilities_and_equity"]

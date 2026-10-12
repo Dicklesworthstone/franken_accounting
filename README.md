@@ -13,7 +13,7 @@
 
 </div>
 
-> **Status (2026-10-10): implementation in progress.** The Rust workspace includes the embedded library and persistent CLI, exact money and calendar primitives, chart installation, period transitions, basic posting/reversal, register folds and verification, and an independent arithmetic oracle. Reporting supports stock balances, period activity, civil-date cutoffs and historical commit-sequence snapshots. Gate G0 and the full Genesis acceptance criteria remain open; the daemon/MCP, certified reports, offline bundles and the broader workflows below are design targets.
+> **Status (2026-10-11): implementation in progress.** The Rust workspace includes the embedded library, persistent CLI, book writer-lease daemon and registered MCP tools, exact money and calendar primitives, chart installation, period transitions, posting and reasoned reversal, register folds and verification, and an independent arithmetic oracle. Trial balances support stock balances, period activity, civil-date cutoffs, and historical commit-sequence snapshots. Trial balances, leaf-account balance explanations, and open-items reports support retained certificates that replay their exact historical results through native certified reads. Gate G0 and the full Genesis acceptance criteria remain open. Signed outsider evidence bundles and the broader workflows below remain design targets.
 
 > **A note on tense.** The rest of this README is written in the **present tense, as if the entire design in [`COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md`](./COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md) is fully realized**: the 1.0 target state. This is deliberate — it describes the *finished* system so it gets trued-up in place as milestones land (§19's gates G1→G4) rather than rewritten later. Where the plan stages something as future work, this README says so plainly.
 
@@ -32,13 +32,225 @@ fa verify registers --book ./books/acme --period FY2026-P03 --json
 fa registers materialize --book ./books/acme --period FY2026-P03 --json
 ```
 
-Omitting `--as-known-at` selects the current head; the response records the resolved sequence. A later backdated entry appears at head but cannot change a report at an earlier sequence. Instant selectors require TimeEvidence and are currently refused. These reports are exact payload folds; report certificates and independent offline verification are still pending. The [persistent CLI tests](./crates/fa-cli/tests/cli.rs) exercise book creation, chart installation, posting, reporting, refusals and recovery with the actual binary.
+Omitting `--as-known-at` selects the current head; the response records the resolved sequence. A later backdated entry appears at head but cannot change a report at an earlier sequence. `--as-known-at` also accepts an RFC 3339 instant when the book contains retained TimeEvidence ticks. It resolves the latest recorded sequence in the matching tick bucket, reports the original frontier and both brackets under `coordinate.time_evidence`, and refuses an instant before the first tick. Numeric UTC offsets and up to nine fractional digits are exact. `--as-of` remains a civil-date selector. These reports are exact payload folds; `tb` can retain a replay certificate as described below. The [persistent CLI tests](./crates/fa-cli/tests/cli.rs) exercise book creation, chart installation, posting, reporting, retained replay, refusals and recovery with the actual binary.
 
 Reports show posted and pending amounts separately. A hold reserves its original period; a later partial posting releases the entire hold and posts only the explicitly selected sub-vector in the resolution's period. A void releases the hold without posting. Earlier recorded snapshots still show the unresolved reservation. Limited accounts reserve pending outflows; pending inflows cannot fund spending. `fa verify availability` compares each limited account's expected cell, including its account binding, with a journal fold. Library sweeps expire holds using committed ticks; daemon scheduling and full timing simulation remain unfinished.
 
 Register verification compares both amount columns, counts, identity, period membership, watermark and fold checksum against the journal payloads. Rebuilding repairs derived rows and retires phantom cells without changing journal entries. Existing register caches from before the pending-column format must be rebuilt; their missing columns are reported as drift rather than assumed to be zero.
 
 The embedded API's `Book::advance_registers(period)` consumes new committed entry payloads through `delta_since` for native posted/pending period cells. It publishes cells and the consumed cursor atomically; `Book::rebuild_registers(period)` replaces them from a fresh journal fold. Reopening rehydrates the delta window, and an actually retired cursor falls back to a full rebuild. Staged migration chunks stay invisible; finalizing a run triggers a full fold to include newly activated chunks older than the cursor. Pending-sum overflow also falls back to the final fold, so holds released later in the same suffix do not prevent advancement; a genuinely oversized final sum still fails. `verify_registers` also checks the maintenance state against its journal prefix. This slice still scans projection metadata and writes the period's cells; it makes no throughput claim. Reports retain their literal folds. Historical register checkpoints, cadence policies, other register families, supervised daemon maintenance and cached report reads remain unfinished.
+
+### Stored unit identity
+
+New books retain a versioned canonical definition for every unit: its numeric
+identifier, code, version, scale, kind, currency ISO number where applicable,
+and default rounding-law identifier. The book also commits to the complete
+unit table. Reopening reconstructs the runtime table from those stored
+definitions and checks them against the executable's supported registry.
+Changed definitions, missing members, corrupt payloads and unsupported unit
+identifiers fail with exit 5 before amounts are interpreted. Extra units in a
+newer executable are not silently installed into an older book.
+
+Financial CLI output checks every amount's unit and returns exit 5 for an
+unknown identity. Unit checks for trial balances, explanations and open-items
+reports also run before retaining certificate metadata in the book or creating
+a requested certificate file.
+Library callers can use `Amount::try_render` to
+propagate the same typed error; the compatibility `render` method labels an
+unknown value as a raw mantissa without guessing its scale.
+
+**Compatibility:** books created before canonical unit payloads and the table
+commitment were recorded are refused. Keep the creating executable for those
+books. An explicit, authorized backfill that journals the adopted definitions
+and their provenance is still pending; reopening never fills missing facts from
+the current binary. This does not implement unit evolution or redenomination.
+
+### Certified reports and replay
+
+Retain the exact selector, known-at sequence, accounting journal prefix, registry
+versions and native read closure behind a trial balance, leaf-account balance
+explanation, or open-items report:
+
+```bash
+# Retains the certificate in the book and saves a new external copy.
+fa tb --book ./books/acme --period FY2026-P03 --certificate-out march.cert --json
+# Verifies the retained inputs and reproduces the original trial_balance line.
+fa replay march.cert --book ./books/acme --json
+# Reports Current or SupersededBy, with the later relevant entry identities.
+fa certificate status march.cert --book ./books/acme --json
+
+# Explain one leaf account, retaining its cells, contributions and history.
+fa explain balance 1000 --period FY2026-P03 --as-known-at 42 \
+  --certify --book ./books/acme --json
+# Retain item balances, their applications and account metadata at that snapshot.
+fa open-items --account 1000 --as-known-at 42 \
+  --certificate-out cash-items.cert --book ./books/acme --json
+fa replay cash-items.cert --book ./books/acme --json
+```
+
+Instant-selected certificates also retain their requested instant, observed frontier,
+and tick identities. Replay uses those saved brackets even after later ticks or
+postings arrive. An open upper bracket is explicit; this is a clock-observation
+bucket, without a claim about the physical instant of each commit. The same
+instant selector is available on `open-items` and `explain balance`. Ticks are
+currently journaled through the existing library API; automatic daemon tick
+scheduling remains unfinished.
+
+The original call emits two robot lines: `trial_balance`, `balance_explained`,
+or `open_items`, followed by `report_certificate`, with the certificate digest
+in both envelopes. The certificate records the report's canonical output format
+and digest. `--certificate-out` implies
+certification. `--certify` retains an immutable, content-addressed certificate in
+the book; repeated retention of the same certificate reuses its recorded sequence.
+The second line's `bytes` field is its complete canonical encoding as hex.
+`fa replay -` and `fa certificate status -` accept those hex bytes, or canonical
+binary bytes, on stdin. Replay and status also accept the retained `oid`, either
+as 64 hex digits or with a `C:` prefix, from the original book: `fa replay C:<oid>`
+and `fa certificate status C:<oid>`. The optional file
+or complete bytes remains useful as an external copy. MCP exposes the same flow through
+`fa_read_trial_balance`, `fa_read_explain_balance`, or `fa_read_open_items` with
+`certify: true`, followed by `fa_read_replay` or `fa_read_certificate_status` with
+the returned `oid` or `bytes` as `certificate`.
+
+Certification writes a metadata object and advances the book frontier; it posts
+no accounting entry and does not change balances. Uncertified reports, replay and
+status do not publish anything.
+The certificate fixes the original `--as-known-at` sequence, including a resolved
+HEAD, so later backdated entries can supersede its current status while its
+historical report still replays exactly. Before returning `Current`, status also
+compares the current report's content with the original. Changes without a later
+contributing entry, such as newly created earlier fiscal periods in an as-of
+report, refuse with `FA-REF-150`; the original historical report remains replayable.
+Stock, `--as-of` and `--activity`
+trial balances are supported. The declared scope is `fa-fold-over-prefix` with
+`embedded-owner` authority: unsigned replay against retained native history.
+Balance explanations bind historical account metadata, evidence references,
+reversal lineage, cell history, and the whole-period fold. Open-items certificates
+bind the optional account filter, historical account metadata, and application
+and reversal lineage. An account absent at the selected snapshot refuses instead
+of producing an empty result. All three report families support commit-sequence
+and RFC3339 instant selectors; replay preserves the original coordinate even
+after later postings or ticks arrive. Signed witness claims, independent offline
+bundles, and certificates for additional report families remain unfinished.
+
+### Typed posting plans
+
+The library, CLI and MCP can rehearse an entry through the actual posting
+kernel, export its bounded canonical bytes, and commit that same intent later.
+The embedded API uses a typed `PostIntent`:
+
+```rust
+let intent = fa::PostIntent::new(request.proposal, request.approvals)?;
+let plan = book.plan(intent, &request.capability)??;
+let saved_bytes = plan.canonical_bytes()?;
+let restored = fa::PostPlan::decode(&saved_bytes)?;
+let posted = book.commit_plan(restored, &request.capability)??;
+```
+
+For an existing book and an entry intent file:
+
+```bash
+# Run the posting laws, review the exact result, and save a new binary plan.
+fa post --book ./books/acme --intent entry.json \
+  --dry-run --plan-out entry.plan --json
+# Commit the reviewed artifact with the same caller and grants.
+fa commit --book ./books/acme --plan entry.plan --json
+```
+
+`reverse`, `reserve` and `resolve` also accept `--dry-run` and optional
+`--plan-out`. Rehearsing a hold acquires no reservation, and rehearsing a void
+releases nothing. On the ordinary owner CLI, the explicit `commit --plan`
+confirms the authenticated artifact; use the same `--as` and `--grant` values
+on both calls.
+
+The robot `plan` event includes the exact legs, effective date, lineage,
+evidence references, snapshot, effects digest and complete canonical `bytes`
+as hex. `--plan-out` creates a private binary file and refuses an existing
+path. Without a file, forward `data.bytes` on stdin to `fa commit --plan -`.
+Commit emits `plan_committed`; an exact retry sets `already_recorded: true`.
+
+An MCP server launched with the bounded Preparer profile below can use
+`dry_run: true` on its posting tools, then pass the returned `data.bytes`
+as `plan` to `fa_post_commit_plan`. Both calls use the exact fixed launch
+capability. Per-call identity or grant overrides remain forbidden; the
+default Agent profile still refuses trunk posting and planning. A void can
+be previewed, but its MCP commit remains refused with `FA-REF-007` until the
+separate confirmation exchange exists. A plan cannot replace that exchange.
+Plan output identifies the actual `embedded-owner` or `mcp-launch-config`
+authority. CLI/MCP dry runs currently refuse `--balancing` and do not collect
+new approvals.
+
+Planning runs the same balance, period, evidence, capability, approval,
+settlement, reservation and balance-limit checks as posting, then aborts the
+prepared transaction. It publishes nothing and consumes no idempotency key.
+The artifact preserves the original sealed proposal, supplied approvals and
+resolved entry preview. Its authenticated certificate binds the book,
+principal, capability commitment, proposal, native staged effects, snapshot,
+security-policy epoch and capability expiry. No capability is created from
+the artifact; the caller supplies current authority again at commit.
+
+This first slice deliberately requires the exact same book sequence. A new
+posting, period transition, policy change, approval or retained report
+certificate requires a fresh plan. A mismatched plan refuses with
+`FA-REF-034` (exit 6), and current authorization is checked before protected
+book observations. Commit repeats the posting checks and compares the actual
+staged effects before publishing. An exact retry of a successfully committed
+plan returns the original entry and sequence without another write.
+
+The committed transaction also retains the complete plan in an immutable
+graph `Certificate` with a `CITES` edge from the entry. Its public digest is
+a graph locator. The pinned substrate has no public generic application
+object store, so this slice leaves the native `Entry.plan_certificate` field
+absent instead of treating that digest as a substrate object ID. Planning
+requires any needed approvals to exist already. Planning before approval
+collection, rebasing through portable read witnesses, atomic multi-intent
+batches, draft promotion and authenticated sessions remain unfinished
+under `fa-we7` and its dependent beads.
+
+### MCP launch authority
+
+Start the stdio server against a book the operator has already prepared:
+
+```bash
+# The default Agent session: read reports and verify the journal.
+fa-mcp --book ./books/acme --principal accounting-agent
+# A trusted operator can explicitly allow ordinary accounting posting.
+fa-mcp --book ./books/acme --principal rent-preparer --profile preparer
+# An explicit grant list is the entire selected set, not an addition to defaults.
+fa-mcp --book ./books/acme --principal report-reader --profile agent --grant read
+```
+
+The default principal is `mcp-agent`; the default profile is `agent`.
+Both profiles default to `read`, `post`, and `verify`. An explicit, nonempty
+`--grant` list selects only the named operations within the profile's ceiling.
+Agent permits `read`, `post`, `verify`, `reconcile`, `produce`, and `partial_view`;
+Preparer also permits `post_softclosed`. A grant outside that ceiling refuses
+startup. Preparer is a bounded Human template, not an unrestricted owner.
+
+An Agent's accounting posts to trunk reach the kernel and refuse with
+`FA-REF-013`; draft branches and promotion are still pending. An explicitly
+launched Preparer can make ordinary, evidence-backed posts under its own fixed
+principal. Book creation, chart/period preparation, document intake and approvals
+remain operator work. Both profiles can use the certified report and retained
+replay tools above when they hold `read`; certification retains metadata without
+posting an accounting entry. Register maintenance additionally requires `verify`.
+
+The server resolves `--book` or `FA_BOOK`, optional `--keys`, principal, profile,
+and operations once at launch. Tool calls cannot supply `as`, `grant`, `yes`,
+`keys`, `book`, `principal`, `profile`, or `via`, including null or false values.
+Resource reads use the same book. Successful responses and structured refusals
+identify the actual launch authority; report data remains in the first content
+block. A separate operator-controlled session is required to change identity
+or authority. Dangerous commits refuse with `FA-REF-007`; a plan or approval
+file cannot substitute for the separate confirmation exchange that remains
+unfinished.
+
+Each book operation takes the configured writer lease. If a running `fad` or
+another writer holds it, the server refuses instead of forwarding authority
+through the daemon's unauthenticated protocol. This is a trusted launch binding;
+authenticated capability issuance and daemon sessions remain unfinished. Host
+file arguments are not confined to a filesystem sandbox, so deployments must
+still control the server process's filesystem access.
 
 ### Embedded execution
 
@@ -74,6 +286,31 @@ an empty population, so a newly due schedule invalidates a prepared opening.
 The filesystem fault tests currently cover consistently anchored paths;
 relative-path alias handling in the substrate simulator is tracked by `fa-n4m`.
 
+### Leg projection verification
+
+`fa verify projections` compares stored leg mirrors and graph edges with the
+canonical entry payloads at one committed snapshot:
+
+```bash
+fa verify projections --book ./books/acme --json
+```
+
+The check derives leg identities from each entry, so a missing `HAS_LEG`
+edge cannot conceal a missing projection. It checks exact scalar mirrors,
+wide-amount fallback bytes, labels, and all `HAS_LEG`, `POSTS_TO`, `IN_UNIT`
+and dimension `FOR` edges. Pending and staged migration entries are included.
+The command returns deterministic counts on success or exit 8 with drift
+details, and never writes. The same target is available through
+`fa_book_verify` in MCP; `Book::verify_projections` and
+`AsyncBook::verify_projections` also accept an explicit historical sequence.
+
+Ordinary postings and scheduled reversals now publish unit and dimension
+edges together with the entry. Prefixes created by older versions can report
+those previously omitted edges as missing. Automatic projection rebuilding
+remains unfinished; verification reports that condition without repairing it.
+Applied counters and settlement edges retain their separate
+`fa verify open-items` check.
+
 ### Entry accumulator checkpoints
 
 The CLI can publish an unsigned checkpoint over the book's entry prefix and
@@ -89,8 +326,10 @@ trunk. Verification reports `verified_through`, the newest checked prefix,
 so later postings are covered only after another checkpoint. With no stored
 checkpoints it returns `status: "no_checkpoints"` and a null
 `verified_through`. A corrupt state or broken chain produces exit 8 and a
-finding; checkpoint creation refuses a corrupt predecessor. These states
-cover entries, including control entries. Signed transparency checkpoints,
+finding; checkpoint creation refuses a corrupt predecessor. Verification
+and proof generation also reject later rewrites or retirements of checkpointed
+entries, even when the original historical snapshot is still readable.
+These states cover entries, including control entries. Signed transparency checkpoints,
 document-receipt coverage and evidence bundles remain unfinished. The
 [CLI tests](./crates/fa-cli/tests/notary.rs) exercise persistence, later
 postings, authorization and real storage corruption.
@@ -208,6 +447,42 @@ RETURN p.name, sum(open) AS exposure ORDER BY exposure DESC;
 ```
 
 ---
+
+## Financial statements
+
+The first statement definitions are `balance-sheet` and `income-statement`.
+They calculate exact amounts from the journal and check that their mappings
+cover every relevant leaf account exactly once. Each native unit has its own
+rows. Computed totals use checked integer arithmetic; no exchange rate or
+rounding adjustment is inferred.
+
+```bash
+fa statement balance-sheet --for FY2026-P03 --compare FY2026-P02 \
+  --book ./books/myco --json
+fa statement income-statement --for FY2026-P03 --compare FY2026-P02 \
+  --known-at HEAD --certify --book ./books/myco --json
+fa replay C:<oid-from-report_certificate> --book ./books/myco --json
+```
+
+Balance sheets include opening history through the selected period and show
+unclosed earnings explicitly, so the statement can balance before a fiscal
+close. Income statements show selected-period activity. Comparatives use the
+same known-at snapshot as the current column; `--known-at` also accepts a
+commit sequence or a retained TimeEvidence instant, and `--as-known-at` is an
+alias. The statement event includes the definition version and digest, the
+column coordinates, exact amounts, and the account-to-line mapping.
+
+An ordinary statement read writes nothing. `--certify` retains its immutable
+certificate and returns the complete bytes inline; `--certificate-out <new-file>`
+also writes a binary copy without replacing an existing file. Replay uses the
+same checked presentation and preserves both columns after subsequent postings.
+MCP exposes this as `fa_read_statement`, under the fixed launch authority, with
+inline certification and no caller-selected output paths.
+
+This slice covers one book and native units. Custom company layouts, cash-flow
+and equity-roll-forward statements, consolidation, FX translation, and
+presentation rounding remain separate work. A certificate establishes replay
+and arithmetic over the journal; it does not establish GAAP conformity.
 
 ## The six bets
 

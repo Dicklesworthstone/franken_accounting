@@ -1,10 +1,11 @@
-//! End to end over stdio (bead fa-xex): the real `fa-mcp` binary is started
+//! End to end over stdio (beads fa-xex/fa-23r): the real `fa-mcp` binary is started
 //! on a temp book and spoken to as an MCP host would — newline-delimited
 //! JSON-RPC on its stdin/stdout — through `initialize`, `tools/list`,
 //! `tools/call` and `resources/read`. Every tool result's first content
 //! block must equal, byte for byte, the `data` payload the CLI's own front
 //! door (`fa_cli::entry::fa`, the function the `fa` binary's `main` calls)
-//! prints for the same verb with `--json`.
+//! prints for an operation admitted by the launch authority. Agent trunk
+//! posting and caller-selected authority must be refused without publication.
 //!
 //! Every request and response is printed with the prefix `fa-mcp-e2e:` so a
 //! reader can grep the transcript; the last line is the verdict.
@@ -100,13 +101,19 @@ struct Mcp {
 
 impl Mcp {
     fn start(book: &Path) -> Self {
+        Self::start_with(book, &[])
+    }
+
+    fn start_with(book: &Path, launch: &[&str]) -> Self {
         log(format!(
-            "spawn {} --book {}",
+            "spawn {} --book {} {}",
             env!("CARGO_BIN_EXE_fa-mcp"),
-            book.display()
+            book.display(),
+            launch.join(" "),
         ));
         let mut child = Command::new(env!("CARGO_BIN_EXE_fa-mcp"))
             .args(["--book", &book.display().to_string()])
+            .args(launch)
             .env_remove("FA_BOOK")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -134,6 +141,17 @@ impl Mcp {
             rx,
             next_id: 0,
         }
+    }
+
+    fn initialize(&mut self) -> JsonValue {
+        let init = self.result(
+            "initialize",
+            json!({"protocolVersion": PROTOCOL, "capabilities": {}, "clientInfo": {"name": "fa-mcp-e2e", "version": fa_mcp::VERSION}}),
+        );
+        assert!(init["protocolVersion"].is_string(), "{init}");
+        assert_eq!(init["serverInfo"]["name"], json!("fa-mcp"), "{init}");
+        self.notify("notifications/initialized", json!({}));
+        init
     }
 
     fn send(&mut self, message: &JsonValue) {
@@ -208,6 +226,16 @@ impl Mcp {
     }
 }
 
+impl Drop for Mcp {
+    fn drop(&mut self) {
+        // A failed assertion must not leave this test's server running.
+        if self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
 /// A tool call's outcome: the first content block's text and `isError`.
 fn call_tool(mcp: &mut Mcp, name: &str, arguments: JsonValue) -> (bool, String, JsonValue) {
     let result = mcp.result("tools/call", json!({"name": name, "arguments": arguments}));
@@ -235,6 +263,7 @@ fn structured_error(text: &str) -> JsonValue {
         "refusal_id",
         "cite",
         "detail",
+        "authority",
     ] {
         assert!(
             v.get(key).is_some(),
@@ -242,6 +271,119 @@ fn structured_error(text: &str) -> JsonValue {
         );
     }
     v
+}
+
+#[test]
+fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
+    let dir = tmp("statements");
+    let book = dir.join("book");
+    let b = book.display().to_string();
+    cli_data(&[
+        "book",
+        "create",
+        "--book",
+        &b,
+        "--name",
+        "Statement MCP",
+        "--json",
+    ]);
+    let chart = dir.join("chart.json");
+    std::fs::write(&chart, r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#).unwrap();
+    cli_data(&[
+        "chart",
+        "import",
+        chart.to_str().unwrap(),
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2026",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&["period", "open", "FY2026-P03", "--book", &b, "--json"]);
+    let oid = source_document(&dir, &b);
+    let intent = dir.join("rent.json");
+    std::fs::write(&intent, r#"{"idempotency_key":"statement-rent","effective_date":"2026-03-15","legs":[{"side":"debit","account":"6000","amount":"10.00 USD"},{"side":"credit","account":"1000","amount":"10.00 USD"}]}"#).unwrap();
+    cli_data(&[
+        "post",
+        "--intent",
+        intent.to_str().unwrap(),
+        "--evidence",
+        &oid,
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let expected = cli_data(&[
+        "statement",
+        "income-statement",
+        "--for",
+        "FY2026-P03",
+        "--compare",
+        "FY2026-P02",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let mut mcp = Mcp::start(&book);
+    mcp.initialize();
+    let (error, output, metadata) = call_tool(
+        &mut mcp,
+        "fa_read_statement",
+        json!({
+            "name": "income-statement", "for": "FY2026-P03", "compare": "FY2026-P02",
+        }),
+    );
+    assert!(!error, "{output}");
+    assert_eq!(output, expected);
+    let envelope: JsonValue =
+        fastmcp_rust::serde_json::from_str(metadata["content"][1]["text"].as_str().unwrap())
+            .unwrap();
+    assert_eq!(envelope["events"], json!(["statement"]));
+    assert_eq!(envelope["authority"]["profile"], json!("agent"));
+    let (error, output, _) = call_tool(
+        &mut mcp,
+        "fa_read_statement",
+        json!({
+            "name": "balance-sheet", "for": "FY2026-P03", "compare": "FY2026-P02", "certify": true,
+        }),
+    );
+    assert!(!error, "{output}");
+    let certified: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+    assert_eq!(certified.as_array().unwrap().len(), 2);
+    assert_eq!(certified[0]["columns"].as_array().unwrap().len(), 2);
+    assert_eq!(certified[1]["file"], JsonValue::Null);
+    let replay_oid = format!("C:{}", certified[1]["oid"].as_str().unwrap());
+    for certificate in [
+        replay_oid,
+        certified[1]["bytes"].as_str().unwrap().to_string(),
+    ] {
+        let (error, replay, _) = call_tool(
+            &mut mcp,
+            "fa_read_replay",
+            json!({"certificate": certificate}),
+        );
+        assert!(!error, "{replay}");
+        assert_eq!(replay, certified[0].to_string());
+    }
+    let (error, output, _) = call_tool(
+        &mut mcp,
+        "fa_read_statement",
+        json!({
+            "name": "balance-sheet", "for": "FY2026-P03", "certificate_out": null,
+        }),
+    );
+    assert!(error, "{output}");
+    let denied = structured_error(&output);
+    assert_eq!(denied["type"], json!("forbidden_path"));
+    assert_eq!(denied["authority"]["profile"], json!("agent"));
+    assert_eq!(mcp.finish(), 0);
 }
 
 #[test]
@@ -315,14 +457,10 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         0
     );
 
-    let mut mcp = Mcp::start(&book);
-    let init = mcp.result(
-        "initialize",
-        json!({"protocolVersion": PROTOCOL, "capabilities": {}, "clientInfo": {"name": "fa-mcp-e2e", "version": fa_mcp::VERSION}}),
-    );
-    assert!(init["protocolVersion"].is_string(), "{init}");
-    assert_eq!(init["serverInfo"]["name"], json!("fa-mcp"), "{init}");
-    mcp.notify("notifications/initialized", json!({}));
+    // This parity test deliberately uses the trusted Preparer template;
+    // default Agent behavior is exercised separately below.
+    let mut mcp = Mcp::start_with(&book, &["--profile", "preparer", "--principal", "operator"]);
+    mcp.initialize();
 
     // tools/list: exactly the registry's wire names, each with an object schema.
     let registry = fa_mcp::registry::McpRegistry::embedded().expect("[mcp]");
@@ -341,12 +479,33 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         for tool in page["tools"].as_array().expect("tools") {
             let name = tool["name"].as_str().expect("name").to_string();
             assert_eq!(tool["inputSchema"]["type"], json!("object"), "{name}");
+            for argument in fa_mcp::registry::FORBIDDEN_ARGUMENTS {
+                assert!(
+                    tool["inputSchema"]["properties"].get(*argument).is_none(),
+                    "{name} exposes {argument}"
+                );
+            }
             assert!(
                 tool["description"]
                     .as_str()
                     .is_some_and(|d| d.contains("Do:")),
                 "{name}"
             );
+            if matches!(
+                name.as_str(),
+                "fa_read_trial_balance" | "fa_read_explain_balance" | "fa_read_open_items"
+            ) {
+                assert_eq!(
+                    tool["inputSchema"]["properties"]["certify"]["type"],
+                    json!("boolean")
+                );
+                assert!(
+                    tool["inputSchema"]["properties"]
+                        .get("certificate_out")
+                        .is_none(),
+                    "MCP report certificates are returned inline"
+                );
+            }
             listed.insert(name);
         }
         match page.get("nextCursor").and_then(JsonValue::as_str) {
@@ -360,15 +519,28 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         listed.len()
     ));
 
-    // fa.orient: capabilities — equals the CLI's data byte for byte.
+    // Discovery shares the catalogue while declaring the actual binding.
     let (is_error, text, _) = call_tool(&mut mcp, "fa_orient_capabilities", json!({}));
     assert!(!is_error, "{text}");
-    let expected = cli_data(&["capabilities", "--json"]);
+    let mut actual: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    let mut expected: JsonValue =
+        fastmcp_rust::serde_json::from_str(&cli_data(&["capabilities", "--json"])).unwrap();
     assert_eq!(
-        text, expected,
-        "fa_orient_capabilities != fa capabilities --json (data)"
+        actual["capability"]["binding"]["posture"],
+        "mcp-launch-config"
     );
-    log("fa_orient_capabilities == fa capabilities --json: byte-identical data");
+    assert_eq!(actual["capability"]["binding"]["flags"], json!([]));
+    assert_eq!(
+        expected["capability"]["binding"]["posture"],
+        "embedded-owner"
+    );
+    actual["capability"]["binding"] = JsonValue::Null;
+    expected["capability"]["binding"] = JsonValue::Null;
+    assert_eq!(
+        actual, expected,
+        "capability catalogue differs beyond launch binding"
+    );
+    log("fa_orient_capabilities: same catalogue, actual launch-bound authority");
 
     // fa.read: the trial balance of the open period — equals the CLI's data.
     let (is_error, text, result) = call_tool(
@@ -391,6 +563,13 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     )
     .expect("envelope JSON");
     assert_eq!(envelope["events"], json!(["trial_balance"]));
+    assert_eq!(
+        envelope["authority"],
+        json!({
+            "posture": "mcp-launch-config", "principal": "operator", "profile": "preparer",
+            "ops": ["read", "post", "verify"],
+        })
+    );
     assert!(envelope["coordinate"]["known_at"].is_number(), "{envelope}");
     assert_eq!(
         envelope["coordinate"]["effective"],
@@ -468,6 +647,285 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         "fa_post_post (same idempotency key) -> recorded; fa_read_show_entry == fa entry show --json",
     );
 
+    // Retain a real certified report through the MCP transport. Inline bytes
+    // satisfy replay's input without creating a host file or looking up an oid.
+    let (is_error, text, result) = call_tool(
+        &mut mcp,
+        "fa_read_trial_balance",
+        json!({"period": "FY2026-P03", "certify": true}),
+    );
+    assert!(!is_error, "{text}");
+    let certified: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        certified.as_array().unwrap().len(),
+        2,
+        "report and certificate"
+    );
+    let certified_report = certified[0].to_string();
+    assert_eq!(
+        certified_report,
+        cli_data(&[
+            "tb",
+            "--period",
+            "FY2026-P03",
+            "--as-known-at",
+            &certified[1]["known_at"].to_string(),
+            "--book",
+            &b,
+            "--json",
+        ])
+    );
+    let certificate_hex = certified[1]["bytes"].as_str().unwrap().to_string();
+    let certificate_oid = certified[1]["oid"].as_str().unwrap().to_string();
+    assert_eq!(certificate_oid.len(), 64);
+    assert_eq!(certified[1]["file"], JsonValue::Null);
+    assert_eq!(certified[1]["replay_scope"], json!("fa-fold-over-prefix"));
+    assert_eq!(certified[1]["authority"], json!("embedded-owner"));
+    assert!(certified[1]["recorded_at"].as_u64() > certified[1]["known_at"].as_u64());
+    let envelope: JsonValue =
+        fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        envelope["events"],
+        json!(["trial_balance", "report_certificate"])
+    );
+    assert_eq!(envelope["certificate"], json!(certificate_oid));
+    let (is_error, replayed, result) = call_tool(
+        &mut mcp,
+        "fa_read_replay",
+        json!({"certificate": certificate_hex}),
+    );
+    assert!(!is_error, "{replayed}");
+    assert_eq!(replayed, certified_report);
+    let replay_envelope: JsonValue =
+        fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(replay_envelope["events"], json!(["trial_balance"]));
+    assert_eq!(replay_envelope["certificate"], json!(certificate_oid));
+    assert_eq!(replay_envelope["coordinate"], envelope["coordinate"]);
+    for digest in [&certificate_oid, &format!("C:{certificate_oid}")] {
+        let (is_error, replayed, _) =
+            call_tool(&mut mcp, "fa_read_replay", json!({"certificate": digest}));
+        assert!(!is_error, "{replayed}");
+        assert_eq!(replayed, certified_report);
+    }
+    let (is_error, status, _) = call_tool(
+        &mut mcp,
+        "fa_read_certificate_status",
+        json!({"certificate": certificate_oid}),
+    );
+    assert!(!is_error, "{status}");
+    let current: JsonValue = fastmcp_rust::serde_json::from_str(&status).unwrap();
+    assert_eq!(current["status"], json!("Current"));
+    assert_eq!(current["later_entries"], json!([]));
+
+    // The other report families use the same retained-object transport and
+    // retain their original account/period snapshot across subsequent writes.
+    let original_known_at = certified[1]["known_at"].to_string();
+    let mut generic_certificates = Vec::new();
+    for (wire, arguments, command, event, output_format) in [
+        (
+            "fa_read_explain_balance",
+            json!({"account": "1000", "period": "FY2026-P03", "as_known_at": original_known_at, "certify": true}),
+            vec!["explain", "balance", "1000", "--period", "FY2026-P03"],
+            "balance_explained",
+            "fa:balance-explanation:v1",
+        ),
+        (
+            "fa_read_open_items",
+            json!({"account": "1000", "as_known_at": original_known_at, "certify": true}),
+            vec!["open-items", "--account", "1000"],
+            "open_items",
+            "fa:open-items:v1",
+        ),
+    ] {
+        let (is_error, text, result) = call_tool(&mut mcp, wire, arguments);
+        assert!(!is_error, "{wire}: {text}");
+        let data: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+        assert_eq!(data.as_array().unwrap().len(), 2);
+        let oid = data[1]["oid"].as_str().unwrap().to_string();
+        assert_eq!(data[1]["output_format"], json!(output_format));
+        assert_eq!(data[1]["known_at"], certified[1]["known_at"]);
+        assert_eq!(data[1]["file"], JsonValue::Null);
+        let report_text = data[0].to_string();
+        let mut comparable = data[0].clone();
+        if event == "balance_explained" {
+            assert_eq!(comparable["certificate"], json!(oid));
+            comparable["certificate"] = JsonValue::Null;
+        }
+        let mut plain = command;
+        plain.extend([
+            "--as-known-at",
+            original_known_at.as_str(),
+            "--book",
+            b.as_str(),
+            "--json",
+        ]);
+        let expected: JsonValue = fastmcp_rust::serde_json::from_str(&cli_data(&plain)).unwrap();
+        assert_eq!(comparable, expected, "{wire}: original report parity");
+        let envelope: JsonValue =
+            fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(envelope["events"], json!([event, "report_certificate"]));
+        assert_eq!(envelope["certificate"], json!(oid));
+        for certificate in [oid.clone(), data[1]["bytes"].as_str().unwrap().to_string()] {
+            let (is_error, replayed, result) = call_tool(
+                &mut mcp,
+                "fa_read_replay",
+                json!({"certificate": certificate}),
+            );
+            assert!(!is_error, "{replayed}");
+            assert_eq!(replayed, report_text);
+            let replay_envelope: JsonValue =
+                fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap())
+                    .unwrap();
+            assert_eq!(replay_envelope["events"], json!([event]));
+            assert_eq!(replay_envelope["coordinate"], envelope["coordinate"]);
+        }
+        let (is_error, status, _) = call_tool(
+            &mut mcp,
+            "fa_read_certificate_status",
+            json!({"certificate": oid}),
+        );
+        assert!(!is_error, "{status}");
+        let status: JsonValue = fastmcp_rust::serde_json::from_str(&status).unwrap();
+        assert_eq!(status["status"], json!("Current"));
+        assert_eq!(status["later_entries"], json!([]));
+        generic_certificates.push((oid, report_text, envelope["coordinate"].clone()));
+    }
+    for (wire, arguments) in [
+        (
+            "fa_read_explain_balance",
+            json!({"account": "9999", "period": "FY2026-P03", "certify": true}),
+        ),
+        (
+            "fa_read_open_items",
+            json!({"account": "9999", "certify": true}),
+        ),
+    ] {
+        let (is_error, text, _) = call_tool(&mut mcp, wire, arguments);
+        assert!(
+            is_error,
+            "{wire}: unknown account cannot become an empty certified report"
+        );
+        assert_eq!(structured_error(&text)["exit"], json!(2), "{text}");
+    }
+
+    // The typed reversal is the same law-enforced correction as the CLI:
+    // missing and unknown reasons cannot post, and the persisted lineage
+    // records the exact registered name/code the caller selected.
+    let (is_error, text, _) = call_tool(&mut mcp, "fa_post_reverse", json!({"vid": vid}));
+    assert!(
+        is_error && text.contains("reason"),
+        "missing reason: {text}"
+    );
+    let (is_error, text, _) = call_tool(
+        &mut mcp,
+        "fa_post_reverse",
+        json!({"vid": vid, "reason": "WrongAcount"}),
+    );
+    assert!(is_error, "unregistered reason: {text}");
+    let e = structured_error(&text);
+    assert_eq!(e["refusal_id"], json!("FA-REF-054"), "{e}");
+    assert!(
+        e["fix_hint"].as_str().unwrap().contains("WrongAccount"),
+        "{e}"
+    );
+    let (is_error, text, _) = call_tool(
+        &mut mcp,
+        "fa_post_reverse",
+        json!({"vid": vid, "reason": "WrongAccount"}),
+    );
+    assert!(!is_error, "{text}");
+    let reversed: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(reversed["target"], json!(vid), "{reversed}");
+    assert_eq!(reversed["reason_code"], json!(2), "{reversed}");
+    assert_eq!(reversed["reason"], json!("WrongAccount"), "{reversed}");
+    let reversal_vid = reversed["vid"].as_str().unwrap();
+    let (is_error, text, _) =
+        call_tool(&mut mcp, "fa_read_show_entry", json!({"vid": reversal_vid}));
+    assert!(!is_error, "{text}");
+    assert_eq!(
+        text,
+        cli_data(&["entry", "show", reversal_vid, "--book", &b, "--json"])
+    );
+    let shown: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(shown["supersedes"][0]["reason"], json!("WrongAccount"));
+    assert_eq!(shown["supersedes"][0]["reason_code"], json!(2));
+    let (is_error, text, _) = call_tool(
+        &mut mcp,
+        "fa_post_reverse",
+        json!({"vid": vid, "reason": "WrongAccount"}),
+    );
+    assert!(!is_error, "retry: {text}");
+    let retried: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(retried["vid"], reversed["vid"]);
+    assert_eq!(retried["entry_digest"], reversed["entry_digest"]);
+    log("fa_post_reverse: reason refusals, exact retry and persisted lineage agree with the CLI");
+
+    let (is_error, status, _) = call_tool(
+        &mut mcp,
+        "fa_read_certificate_status",
+        json!({"certificate": certificate_hex}),
+    );
+    assert!(!is_error, "{status}");
+    let later: JsonValue = fastmcp_rust::serde_json::from_str(&status).unwrap();
+    assert_eq!(later["status"], json!("SupersededBy"));
+    assert_eq!(later["later_entries"], json!([reversal_vid]));
+    assert_eq!(later["known_at"], current["known_at"]);
+    let (is_error, replayed, _) = call_tool(
+        &mut mcp,
+        "fa_read_replay",
+        json!({"certificate": certificate_hex}),
+    );
+    assert!(!is_error, "{replayed}");
+    assert_eq!(
+        replayed, certified_report,
+        "later reversal leaves original report replayable"
+    );
+    for (oid, original, coordinate) in generic_certificates {
+        let (is_error, status, _) = call_tool(
+            &mut mcp,
+            "fa_read_certificate_status",
+            json!({"certificate": oid}),
+        );
+        assert!(!is_error, "{status}");
+        let status: JsonValue = fastmcp_rust::serde_json::from_str(&status).unwrap();
+        assert_eq!(status["status"], json!("SupersededBy"));
+        assert_eq!(status["later_entries"], json!([reversal_vid]));
+        assert_eq!(status["known_at"], certified[1]["known_at"]);
+        let (is_error, replayed, result) =
+            call_tool(&mut mcp, "fa_read_replay", json!({"certificate": oid}));
+        assert!(!is_error, "{replayed}");
+        assert_eq!(replayed, original, "historical report survives reversal");
+        let envelope: JsonValue =
+            fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(envelope["coordinate"], coordinate);
+    }
+    let retained_hex = dir.join("report.hex");
+    std::fs::write(&retained_hex, &certificate_hex).unwrap();
+    assert_eq!(
+        replayed,
+        cli_data(&[
+            "replay",
+            &retained_hex.display().to_string(),
+            "--book",
+            &b,
+            "--json"
+        ])
+    );
+    let mut damaged = certificate_hex.clone();
+    let last = damaged.pop().unwrap();
+    damaged.push(if last == '0' { '1' } else { '0' });
+    let (is_error, text, _) =
+        call_tool(&mut mcp, "fa_read_replay", json!({"certificate": damaged}));
+    assert!(is_error, "tampered certificate must refuse");
+    let error = structured_error(&text);
+    assert_eq!(error["exit"], json!(8), "{error}");
+    assert_eq!(error["refusal_id"], json!("FA-REF-150"), "{error}");
+    log(
+        "certified report: inline replay matches the CLI, later reversal supersedes status, tamper refuses",
+    );
+
     // A refusal from the dispatcher: structured, with the CLI's fix verbatim.
     let (is_error, text, _) = call_tool(
         &mut mcp,
@@ -512,7 +970,7 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     assert_eq!(e["type"], json!("usage"));
     log("detector float_amount refused a JSON number before dispatch");
 
-    // A dangerous operation without `yes`: FA-REF-007 with the safe alternative as a tool call.
+    // Dangerous commits cannot be confirmed by this MCP session.
     let (is_error, text, _) = call_tool(
         &mut mcp,
         "fa_time_period_transition",
@@ -521,17 +979,20 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     assert!(is_error, "{text}");
     let e = structured_error(&text);
     assert_eq!(e["refusal_id"], json!("FA-REF-007"), "{e}");
-    assert_eq!(
-        e["suggested_tool_calls"][0]["tool"],
-        json!("fa_time_period_transition"),
-        "{e}"
+    assert!(
+        e["suggested_tool_calls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|call| {
+                call["tool"] == "fa_time_period_transition"
+                    && call["arguments"]["transition"] == "close"
+                    && call["arguments"]["dry_run"] == json!(true)
+            }),
+        "safe planning alternative: {e}"
     );
-    assert_eq!(
-        e["suggested_tool_calls"][0]["arguments"]["transition"],
-        json!("soft-close"),
-        "{e}"
-    );
-    log("FA-REF-007 mapped with the safe alternative as a suggested tool call");
+    assert!(!e["fix_hint"].as_str().unwrap().contains("--yes"));
+    log("FA-REF-007 mapped with planning for independent operator review");
 
     // Resources: the exit codes and the served book's periods equal the CLI's data.
     let read = mcp.result("resources/read", json!({"uri": "resource://fa/exit-codes"}));
@@ -547,12 +1008,577 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     let read = mcp.result("resources/read", json!({"uri": "resource://fa/book"}));
     let text = read["contents"][0]["text"].as_str().expect("text");
     assert_eq!(text, cli_data(&["book", "info", "--book", &b, "--json"]));
+    let resource_envelope: JsonValue = fastmcp_rust::serde_json::from_str(
+        read["contents"][1]["text"]
+            .as_str()
+            .expect("resource authority"),
+    )
+    .unwrap();
+    assert_eq!(resource_envelope["authority"]["profile"], "preparer");
+    assert_eq!(resource_envelope["authority"]["principal"], "operator");
     log("resources exit-codes, periods/{book}, book == the CLI's data");
+
+    // A portable plan runs under the actual launch capability. Rejected
+    // overrides and other launch authorities cannot publish its effects.
+    let before_plan = cli_data(&["book", "info", "--book", &b, "--json"]);
+    let mut planned_intent = intent.clone();
+    planned_intent["idempotency_key"] = json!("mcp-portable-plan");
+    let (is_error, text, result) = call_tool(
+        &mut mcp,
+        "fa_post_post",
+        json!({"intent": planned_intent, "evidence": [oid], "dry_run": true}),
+    );
+    assert!(!is_error, "{text}");
+    let planned: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(planned["scope"], json!("same-snapshot-post"));
+    assert_eq!(planned["authority"], json!("mcp-launch-config"));
+    assert_eq!(planned["file"], JsonValue::Null);
+    let envelope: JsonValue = fastmcp_rust::serde_json::from_str(
+        result["content"][1]["text"]
+            .as_str()
+            .expect("plan envelope"),
+    )
+    .unwrap();
+    assert_eq!(envelope["events"], json!(["plan"]));
+    assert_eq!(envelope["certificate"], JsonValue::Null);
+    assert_eq!(envelope["authority"], resource_envelope["authority"]);
+    assert_eq!(
+        cli_data(&["book", "info", "--book", &b, "--json"]),
+        before_plan
+    );
+    let encoded = planned["bytes"]
+        .as_str()
+        .expect("canonical plan hex")
+        .to_string();
+    for argument in fa_mcp::registry::FORBIDDEN_ARGUMENTS {
+        let mut arguments = json!({"plan": encoded});
+        arguments[*argument] = JsonValue::Null;
+        let (is_error, text, _) = call_tool(&mut mcp, "fa_post_commit_plan", arguments);
+        assert!(is_error, "{argument}: {text}");
+        let refused = structured_error(&text);
+        assert_eq!(refused["type"], "forbidden_argument");
+        assert_eq!(refused["data"]["argument"], *argument);
+        assert_eq!(refused["authority"], resource_envelope["authority"]);
+    }
+    let mut damaged = encoded.clone();
+    let last = damaged.pop().unwrap();
+    damaged.push(if last == '0' { '1' } else { '0' });
+    let (is_error, text, _) = call_tool(&mut mcp, "fa_post_commit_plan", json!({"plan": damaged}));
+    assert!(is_error, "tampered plan: {text}");
+    let refused = structured_error(&text);
+    assert_eq!(refused["refusal_id"], "FA-REF-034");
+    assert_eq!(refused["exit"], 6);
+
+    for (launch, expected_refusal) in [
+        (
+            vec!["--profile", "preparer", "--principal", "another-preparer"],
+            "FA-REF-011",
+        ),
+        (vec!["--principal", "operator"], "FA-REF-013"),
+        (
+            vec![
+                "--profile",
+                "preparer",
+                "--principal",
+                "operator",
+                "--grant",
+                "read",
+            ],
+            "FA-REF-011",
+        ),
+    ] {
+        let mut other = Mcp::start_with(&book, &launch);
+        other.initialize();
+        let (is_error, text, _) =
+            call_tool(&mut other, "fa_post_commit_plan", json!({"plan": encoded}));
+        assert!(is_error, "{launch:?}: {text}");
+        let refused = structured_error(&text);
+        assert_eq!(
+            refused["refusal_id"], expected_refusal,
+            "{launch:?}: {refused}"
+        );
+        assert_eq!(refused["exit"], 7);
+        assert_eq!(other.finish(), 0);
+    }
+    let (is_error, text, _) = call_tool(
+        &mut mcp,
+        "fa_time_approve",
+        json!({"proposal": planned["proposal_digest"]}),
+    );
+    assert!(is_error, "{text}");
+    assert_eq!(structured_error(&text)["detector"], json!("self_approval"));
+    assert_eq!(
+        cli_data(&["book", "info", "--book", &b, "--json"]),
+        before_plan
+    );
+
+    let (is_error, text, result) =
+        call_tool(&mut mcp, "fa_post_commit_plan", json!({"plan": encoded}));
+    assert!(!is_error, "{text}");
+    let committed: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(committed["already_recorded"], json!(false));
+    assert_eq!(committed["plan_digest"], planned["plan_digest"]);
+    assert_eq!(
+        committed["certificate_digest"],
+        planned["certificate_digest"]
+    );
+    let envelope: JsonValue = fastmcp_rust::serde_json::from_str(
+        result["content"][1]["text"]
+            .as_str()
+            .expect("commit envelope"),
+    )
+    .unwrap();
+    assert_eq!(envelope["events"], json!(["plan_committed"]));
+    assert_eq!(envelope["authority"], resource_envelope["authority"]);
+    let (is_error, retry, _) = call_tool(&mut mcp, "fa_post_commit_plan", json!({"plan": encoded}));
+    assert!(!is_error, "{retry}");
+    let retried: JsonValue = fastmcp_rust::serde_json::from_str(&retry).unwrap();
+    assert_eq!(retried["already_recorded"], json!(true));
+    assert_eq!(retried["vid"], committed["vid"]);
+    assert_eq!(retried["recorded_at"], committed["recorded_at"]);
+
+    // A reviewable void plan grants no dangerous confirmation to this
+    // bounded Preparer. Its hold remains pending after the commit refusal.
+    let hold_intent = json!({
+        "effective_date": "2026-03-15", "idempotency_key": "mcp-plan-hold",
+        "legs": [
+            {"side": "debit", "account": "6000", "amount": "20.00 USD"},
+            {"side": "credit", "account": "1000", "amount": "20.00 USD"},
+        ],
+    });
+    let (is_error, text, _) = call_tool(
+        &mut mcp,
+        "fa_post_reserve",
+        json!({"intent": hold_intent, "evidence": [oid]}),
+    );
+    assert!(!is_error, "{text}");
+    let hold: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    let before_void = cli_data(&["book", "info", "--book", &b, "--json"]);
+    let pending = cli_data(&["tb", "--period", "FY2026-P03", "--book", &b, "--json"]);
+    let (is_error, text, _) = call_tool(
+        &mut mcp,
+        "fa_post_resolve",
+        json!({"intent": {
+            "resolves": hold["vid"], "disposition": "voids",
+            "effective_date": "2026-03-15", "idempotency_key": "mcp-plan-void",
+        }, "dry_run": true}),
+    );
+    assert!(!is_error, "void rehearsal: {text}");
+    let void_plan: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(void_plan["authority"], "mcp-launch-config");
+    let (is_error, text, _) = call_tool(
+        &mut mcp,
+        "fa_post_commit_plan",
+        json!({"plan": void_plan["bytes"]}),
+    );
+    assert!(is_error, "a void plan cannot confirm an MCP commit: {text}");
+    let refused = structured_error(&text);
+    assert_eq!(refused["refusal_id"], "FA-REF-007");
+    assert_eq!(refused["authority"], resource_envelope["authority"]);
+    assert_eq!(
+        cli_data(&["book", "info", "--book", &b, "--json"]),
+        before_void
+    );
+    assert_eq!(
+        cli_data(&["tb", "--period", "FY2026-P03", "--book", &b, "--json"]),
+        pending
+    );
+    log(
+        "portable plans: zero-write rehearsal, fixed-authority commit and retry, tamper and foreign authority refused, dangerous void remains pending",
+    );
 
     let code = mcp.finish();
     log(format!("fa-mcp exited {code} after stdin closed"));
     assert_eq!(code, 0);
-    log(
-        "VERDICT PASS: tools/list == registry; capabilities, tb, entry show, exit-codes, periods, book byte-identical to the CLI; refusal, detector and FA-REF-007 structured",
+    let plan_file = dir.join("mcp.plan.hex");
+    std::fs::write(&plan_file, &encoded).unwrap();
+    let mut reopened =
+        Mcp::start_with(&book, &["--profile", "preparer", "--principal", "operator"]);
+    reopened.initialize();
+    let before_retry = cli_data(&["book", "info", "--book", &b, "--json"]);
+    let (is_error, text, _) = call_tool(
+        &mut reopened,
+        "fa_post_commit_plan",
+        json!({"plan_file": plan_file.display().to_string()}),
     );
+    assert!(is_error, "host plan_file must be refused: {text}");
+    assert_eq!(structured_error(&text)["type"], "forbidden_path");
+    assert_eq!(std::fs::read_to_string(&plan_file).unwrap(), encoded);
+    let (is_error, text, _) = call_tool(
+        &mut reopened,
+        "fa_post_commit_plan",
+        json!({"plan": encoded}),
+    );
+    assert!(!is_error, "fresh-session exact retry: {text}");
+    assert_eq!(
+        text, retry,
+        "same bound launch and exact bytes preserve the original outcome across processes"
+    );
+    assert_eq!(
+        cli_data(&["book", "info", "--book", &b, "--json"]),
+        before_retry
+    );
+    assert_eq!(reopened.finish(), 0);
+    log(
+        "VERDICT PASS: registry tools, bound authority, report and read parity, portable planning and exact cross-process retry, authority and dangerous-commit refusals",
+    );
+}
+
+#[test]
+fn default_agent_authority_survives_stdio_and_cannot_be_changed_by_a_call() {
+    let dir = tmp("agent-authority");
+    let book = dir.join("book");
+    let b = book.display().to_string();
+    cli_data(&[
+        "book",
+        "create",
+        "--book",
+        &b,
+        "--name",
+        "Agent boundary",
+        "--json",
+    ]);
+    let chart = dir.join("chart.json");
+    std::fs::write(
+        &chart,
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","leaf":true,"unit":"USD"}]}"#,
+    ).unwrap();
+    cli_data(&[
+        "chart",
+        "import",
+        &chart.display().to_string(),
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2026",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&["period", "open", "FY2026-P03", "--book", &b, "--json"]);
+    let oid = source_document(&dir, &b);
+    let intent = json!({
+        "class": "Original", "effective_date": "2026-03-15",
+        "description": "Agent boundary rent", "idempotency_key": "agent-rent",
+        "legs": [
+            {"side": "debit", "account": "6000", "amount": "10.00 USD"},
+            {"side": "credit", "account": "1000", "amount": "10.00 USD"},
+        ],
+    });
+    let authority = json!({
+        "posture": "mcp-launch-config", "principal": "mcp-agent", "profile": "agent",
+        "ops": ["read", "post", "verify"],
+    });
+    let mut mcp = Mcp::start(&book);
+    let init = mcp.initialize();
+    assert!(init["instructions"].as_str().unwrap().contains("mcp-agent"));
+
+    // Real Agent reads and immutable report retention remain usable.
+    let (error, text, result) = call_tool(
+        &mut mcp,
+        "fa_read_trial_balance",
+        json!({"period": "FY2026-P03", "certify": true}),
+    );
+    assert!(!error, "{text}");
+    let certified: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    let envelope: JsonValue =
+        fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(envelope["authority"], authority);
+    let (error, replayed, result) = call_tool(
+        &mut mcp,
+        "fa_read_replay",
+        json!({"certificate": certified[1]["oid"]}),
+    );
+    assert!(!error, "{replayed}");
+    assert_eq!(replayed, certified[0].to_string());
+    let envelope: JsonValue =
+        fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(envelope["authority"], authority);
+    let before = cli_data(&["book", "info", "--book", &b, "--json"]);
+
+    // Valid accounting/evidence reaches Profile::Agent in the kernel; this
+    // must not be replaced by a blanket adapter write ban or an owner call.
+    for dry_run in [false, true] {
+        let (error, text, _) = call_tool(
+            &mut mcp,
+            "fa_post_post",
+            json!({"intent": intent, "evidence": [oid], "dry_run": dry_run}),
+        );
+        assert!(error, "an Agent must not plan or post to trunk: {text}");
+        let refused = structured_error(&text);
+        assert_eq!(refused["refusal_id"], "FA-REF-013", "{refused}");
+        assert_eq!(refused["exit"], 7);
+        assert_eq!(refused["authority"], authority);
+    }
+
+    // Presence is refused even for null/false and before float detection.
+    for argument in fa_mcp::registry::FORBIDDEN_ARGUMENTS {
+        for value in [JsonValue::Null, json!(false), json!("operator")] {
+            let mut arguments = json!({"intent": {"amount": 1.25}});
+            arguments[*argument] = value;
+            let (error, text, _) = call_tool(&mut mcp, "fa_post_post", arguments);
+            assert!(error, "forbidden {argument}: {text}");
+            let refused = structured_error(&text);
+            assert_eq!(refused["type"], "forbidden_argument");
+            assert_eq!(refused["data"]["argument"], *argument);
+            assert_eq!(refused["authority"], authority);
+            assert!(refused.get("detector").is_none());
+            assert_eq!(refused["suggested_tool_calls"], json!([]));
+        }
+    }
+    let (error, text, _) = call_tool(
+        &mut mcp,
+        "fa_read_show_entry",
+        json!({"vid": "--as=operator"}),
+    );
+    assert!(error, "a positional cannot inject an authority flag");
+    assert_eq!(structured_error(&text)["detector"], "arguments");
+
+    // A real owner-produced plan cannot become implicit MCP confirmation.
+    let plan = dir.join("close.plan");
+    cli_data(&[
+        "period",
+        "close",
+        "FY2026-P03",
+        "--plan-out",
+        &plan.display().to_string(),
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let plan_bytes: String = std::fs::read(&plan)
+        .unwrap()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    for arguments in [
+        json!({"transition": "close", "code": "FY2026-P03"}),
+        json!({"transition": "close", "code": "FY2026-P03", "plan": plan_bytes}),
+    ] {
+        let (error, text, _) = call_tool(&mut mcp, "fa_time_period_transition", arguments);
+        assert!(error, "dangerous commit: {text}");
+        let refused = structured_error(&text);
+        assert_eq!(refused["refusal_id"], "FA-REF-007", "{refused}");
+        assert_eq!(refused["authority"], authority);
+    }
+
+    let resource = mcp.result("resources/read", json!({"uri": "resource://fa/book"}));
+    let resource_authority: JsonValue =
+        fastmcp_rust::serde_json::from_str(resource["contents"][1]["text"].as_str().unwrap())
+            .unwrap();
+    assert_eq!(resource_authority["authority"], authority);
+    let alien = mcp.request(
+        "resources/read",
+        json!({"uri": "resource://fa/chart/%2Fanother%2Fbook"}),
+    );
+    assert_eq!(
+        alien["error"]["data"]["type"], "forbidden_argument",
+        "{alien}"
+    );
+    assert_eq!(alien["error"]["data"]["authority"], authority);
+    assert_eq!(cli_data(&["book", "info", "--book", &b, "--json"]), before);
+    assert_eq!(mcp.finish(), 0);
+
+    // Trusted launch grants attenuate the whole set: read is not silently
+    // supplemented with the Preparer template's default post permission.
+    let mut read_only = Mcp::start_with(
+        &book,
+        &[
+            "--principal",
+            "reader",
+            "--profile",
+            "preparer",
+            "--grant",
+            "read",
+        ],
+    );
+    read_only.initialize();
+    let (error, text, result) = call_tool(&mut read_only, "fa_book_info", json!({}));
+    assert!(!error, "{text}");
+    let envelope: JsonValue =
+        fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(envelope["authority"]["ops"], json!(["read"]));
+    assert_eq!(envelope["authority"]["principal"], "reader");
+    for dry_run in [false, true] {
+        let (error, text, _) = call_tool(
+            &mut read_only,
+            "fa_post_post",
+            json!({"intent": intent, "evidence": [oid], "dry_run": dry_run}),
+        );
+        assert!(error, "read-only Preparer cannot acquire Post: {text}");
+        assert_eq!(structured_error(&text)["exit"], 7);
+        assert_eq!(structured_error(&text)["refusal_id"], "FA-REF-011");
+    }
+    assert_eq!(cli_data(&["book", "info", "--book", &b, "--json"]), before);
+    assert_eq!(read_only.finish(), 0);
+}
+
+#[test]
+fn read_only_period_planning_is_inline_and_paths_cannot_touch_host_files() {
+    let dir = tmp("filesystem-containment");
+    let book = dir.join("book");
+    let b = book.display().to_string();
+    cli_data(&[
+        "book",
+        "create",
+        "--name",
+        "Inline plans",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2026",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&["period", "open", "FY2026-P03", "--book", &b, "--json"]);
+    let victim = dir.join("preserve.txt");
+    std::fs::write(&victim, "host file must remain unchanged").unwrap();
+    let paths = vec![victim.display().to_string(), "../preserve.txt".to_string()];
+    #[cfg(unix)]
+    let paths = {
+        let mut paths = paths;
+        let link = dir.join("escape-link");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        paths.push(link.display().to_string());
+        paths
+    };
+    let before = cli(&["book", "info", "--book", &b, "--json"]);
+    assert_eq!(before.0, 0);
+    let mut mcp = Mcp::start_with(&book, &["--principal", "reader", "--grant", "read"]);
+    mcp.initialize();
+    for path in paths {
+        for (wire, argument, mut input) in [
+            (
+                "fa_time_period_transition",
+                "plan_out",
+                json!({"transition": "close", "code": "FY2026-P03"}),
+            ),
+            ("fa_post_post", "intent_file", json!({})),
+            ("fa_post_commit_plan", "plan_file", json!({})),
+            ("fa_read_replay", "file", json!({})),
+            ("fa_read_certificate_status", "file", json!({})),
+            ("fa_chart_import_chart", "file", json!({})),
+            ("fa_evidence_import_document", "file", json!({})),
+            ("fa_read_trial_balance", "certificate_out", json!({})),
+        ] {
+            input[argument] = json!(path);
+            let (error, text, _) = call_tool(&mut mcp, wire, input);
+            assert!(error, "{wire} must refuse a host path: {text}");
+            let refused = structured_error(&text);
+            assert_eq!(refused["type"], "forbidden_path", "{refused}");
+            assert_eq!(refused["data"]["argument"], argument);
+            assert_eq!(refused["authority"]["ops"], json!(["read"]));
+            assert!(refused.get("detector").is_none());
+            assert_eq!(
+                std::fs::read_to_string(&victim).unwrap(),
+                "host file must remain unchanged"
+            );
+        }
+    }
+    let (error, text, result) = call_tool(
+        &mut mcp,
+        "fa_time_period_transition",
+        json!({"transition": "close", "code": "FY2026-P03", "dry_run": true}),
+    );
+    assert!(!error, "read-authorized inline preparation: {text}");
+    let planned: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(planned["scope"], "period-transition-proposal");
+    assert_eq!(planned["from"], "Open");
+    assert_eq!(planned["to"], "Closed");
+    assert!(
+        planned["bytes"]
+            .as_str()
+            .unwrap()
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    );
+    let envelope: JsonValue =
+        fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(envelope["events"], json!(["period_plan"]));
+    assert_eq!(envelope["certificate"], JsonValue::Null);
+    assert_eq!(envelope["authority"]["principal"], "reader");
+    let (error, text, _) = call_tool(
+        &mut mcp,
+        "fa_time_approve",
+        json!({"proposal": planned["proposal_digest"]}),
+    );
+    assert!(
+        error,
+        "the inline proposal remains subject to segregation of duties"
+    );
+    assert_eq!(structured_error(&text)["detector"], "self_approval");
+    let (error, text, _) = call_tool(
+        &mut mcp,
+        "fa_time_period_transition",
+        json!({"transition": "close", "code": "FY2026-P03", "plan": planned["bytes"]}),
+    );
+    assert!(error, "inline bytes never authorize a dangerous MCP commit");
+    assert_eq!(structured_error(&text)["refusal_id"], "FA-REF-007");
+    assert_eq!(
+        cli(&["book", "info", "--book", &b, "--json"]),
+        before,
+        "the recorded frontier must not move"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&victim).unwrap(),
+        "host file must remain unchanged"
+    );
+    assert_eq!(mcp.finish(), 0);
+}
+
+#[test]
+fn launch_rejects_unbounded_grants_before_serving_stdio() {
+    let dir = tmp("launch-refusal");
+    for profile in ["agent", "preparer"] {
+        for grant in [
+            "approve",
+            "close",
+            "post_closed",
+            "migrate",
+            "witness",
+            "issue_capability",
+        ] {
+            let output = Command::new(env!("CARGO_BIN_EXE_fa-mcp"))
+                .args([
+                    "--book",
+                    &dir.display().to_string(),
+                    "--profile",
+                    profile,
+                    "--grant",
+                    grant,
+                ])
+                .env_remove("FA_BOOK")
+                .stdin(Stdio::null())
+                .output()
+                .expect("launch fa-mcp");
+            assert_eq!(
+                output.status.code(),
+                Some(7),
+                "{profile} {grant}: {output:?}"
+            );
+            assert!(
+                output.stdout.is_empty(),
+                "a refused launch must not start the protocol"
+            );
+            assert!(String::from_utf8_lossy(&output.stderr).contains("cannot hold"));
+        }
+    }
+    let missing = Command::new(env!("CARGO_BIN_EXE_fa-mcp"))
+        .env_remove("FA_BOOK")
+        .stdin(Stdio::null())
+        .output()
+        .expect("launch without book");
+    assert_eq!(missing.status.code(), Some(2));
+    assert!(missing.stdout.is_empty());
 }

@@ -19,11 +19,13 @@ members = [
     "crates/fa-model",
     "crates/fa-journal",
     "crates/fa-registers",
+    "crates/fa-statements",
     "crates/fa-reference",
     "crates/fa-cli",
     "crates/fa-verify",
     "crates/fa-notary",
     "crates/fa-policy",
+    "crates/fa-intents",
     "crates/fad",
     "crates/fa-mcp",
 ]

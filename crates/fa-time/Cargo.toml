@@ -4,7 +4,7 @@ version = "0.0.1"
 edition.workspace = true
 license-file.workspace = true
 repository.workspace = true
-description = "Almanac: FrankenAccounting's civil-date arithmetic, fiscal calendars (12-month, 4-4-5 family, 52/53-week), period generation and resolution with the special-period discriminator, the period state machine, and effective-time selectors (plan §7). Built in-house over std; no chrono, no time crate; instants never enter here. Bead fa-fsb."
+description = "Almanac: FrankenAccounting's civil-date arithmetic, fiscal calendars (12-month, 4-4-5 family, 52/53-week), period generation and resolution, period state machine, effective-time selectors and pure UTC instant resolution over retained TimeEvidence (plan §7). Built in-house over std; no clock access, chrono or time crate. Beads fa-fsb, fa-rhn."
 publish = false
 
 [lints]

@@ -388,6 +388,22 @@ impl KindRule {
     }
 }
 
+/// A special period narrows posting classes without changing the period's
+/// transition law. Historical restrictions are applied separately.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpecialPeriodRule {
+    pub admits: Vec<String>,
+    pub refusal: String,
+    pub cite: String,
+}
+
+impl SpecialPeriodRule {
+    #[must_use]
+    pub fn admits(&self, class: &str) -> bool {
+        self.admits.iter().any(|c| c == class)
+    }
+}
+
 /// The rule for special periods before the book's opening date (plan §7.2,
 /// `[[pre_opening]]`, ruling 3685): a period of one of `kinds` ending on or
 /// before the opening date is born `born`, keeps its kind, admits only
@@ -443,6 +459,8 @@ pub struct Admissibility {
     cells: BTreeMap<(String, PeriodState), (Decision, Option<String>, Qualifier)>,
     /// Rules by period kind (`[[kind]]` rows).
     kinds: BTreeMap<String, KindRule>,
+    /// Explicit class allowlists for Opening, Adjustment and Closing.
+    special_periods: BTreeMap<String, SpecialPeriodRule>,
     /// The special periods before the book's opening date (`[[pre_opening]]`).
     pre_opening: Option<PreOpeningRule>,
     /// `Resolution(Expires)`, the expiry sweep's release, decided per state
@@ -593,6 +611,89 @@ impl Admissibility {
                 "the Historical kind has no row: what its periods admit is unregistered",
             ));
         }
+        let mut special_periods = BTreeMap::new();
+        for t in doc
+            .arrays
+            .get("special_period_classes")
+            .unwrap_or(&Vec::new())
+        {
+            let name = req_str(R, t, "kind")?;
+            if !matches!(
+                kind_from_name(name),
+                Some(PeriodKind::Opening | PeriodKind::Adjustment | PeriodKind::Closing)
+            ) {
+                return Err(invalid(
+                    R,
+                    format!("special_period_classes: `{name}` is not a special period kind"),
+                ));
+            }
+            let admits: Vec<String> = t
+                .get("admits")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    invalid(
+                        R,
+                        format!("special period `{name}`: `admits` must be a list"),
+                    )
+                })?
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| invalid(R, "special-period admission names classes"))
+                })
+                .collect::<Result<_, _>>()?;
+            let mut seen = std::collections::BTreeSet::new();
+            for class in &admits {
+                if classes
+                    .by_name(class)
+                    .is_none_or(|c| c.kind != ClassKind::Posting)
+                {
+                    return Err(invalid(
+                        R,
+                        format!(
+                            "special period `{name}` admits `{class}`, which is not a posting class"
+                        ),
+                    ));
+                }
+                if !seen.insert(class) {
+                    return Err(invalid(
+                        R,
+                        format!("special period `{name}` repeats class `{class}`"),
+                    ));
+                }
+            }
+            if admits.is_empty() {
+                return Err(invalid(
+                    R,
+                    format!("special period `{name}` has no admitted classes"),
+                ));
+            }
+            let refusal = req_str(R, t, "refusal")?.to_string();
+            if !is_refusal_code(&refusal) {
+                return Err(invalid(
+                    R,
+                    format!("special period `{name}`: `{refusal}` is not a refusal code"),
+                ));
+            }
+            let rule = SpecialPeriodRule {
+                admits,
+                refusal,
+                cite: req_str(R, t, "cite")?.to_string(),
+            };
+            if special_periods.insert(name.into(), rule).is_some() {
+                return Err(invalid(R, format!("special period `{name}` has two rows")));
+            }
+        }
+        for name in ["Opening", "Adjustment", "Closing"] {
+            if !special_periods.contains_key(name) {
+                return Err(invalid(
+                    R,
+                    format!("special period `{name}` has no class admission row"),
+                ));
+            }
+        }
         let tables = doc.arrays.get("pre_opening").map_or(&[][..], Vec::as_slice);
         let [t] = tables else {
             return Err(invalid(
@@ -665,6 +766,7 @@ impl Admissibility {
             cells,
             expires,
             kinds,
+            special_periods,
             pre_opening,
         })
     }
@@ -687,6 +789,19 @@ impl Admissibility {
             PeriodKind::Historical => "Historical",
         };
         self.kinds.get(name)
+    }
+
+    /// Class admission for live special periods (plan §7.3). The caller
+    /// also applies the ordinary state matrix and any pre-opening rule.
+    #[must_use]
+    pub fn special_period_rule(&self, kind: PeriodKind) -> Option<&SpecialPeriodRule> {
+        let name = match kind {
+            PeriodKind::Opening => "Opening",
+            PeriodKind::Adjustment => "Adjustment",
+            PeriodKind::Closing => "Closing",
+            PeriodKind::Normal | PeriodKind::Historical => return None,
+        };
+        self.special_periods.get(name)
     }
 
     pub fn decide(&self, class: &str, state: PeriodState) -> Option<&Decision> {
@@ -768,20 +883,39 @@ fn parse_decision(registry: &'static str, text: &str) -> Result<Decision, Regist
 /// Consumers bind these rows to their own unit representations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnitRow {
+    pub id: u32,
     pub code: String,
     pub version: u16,
     pub scale: u8,
     pub kind: String,
     pub iso4217: Option<u16>,
+    pub rounding_default: u16,
 }
 
 pub fn units_embedded() -> Result<Vec<UnitRow>, RegistryError> {
+    parse_units(UNITS)
+}
+
+/// Parse explicit, append-only unit identities and their immutable defaults.
+pub fn parse_units(text: &str) -> Result<Vec<UnitRow>, RegistryError> {
     const R: &str = "units.toml";
-    let doc = load(R, UNITS)?;
+    let doc = load(R, text)?;
+    let rounding_laws = rounding_laws_embedded()?;
     let mut rows = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     for t in doc.arrays.get("unit").unwrap_or(&Vec::new()) {
+        let id =
+            u32::try_from(req_int(R, t, "id")?).map_err(|_| invalid(R, "unit id out of range"))?;
+        if usize::try_from(id).ok() != Some(rows.len()) {
+            return Err(invalid(
+                R,
+                format!("unit id {id} is out of order; expected {}", rows.len()),
+            ));
+        }
         let code = req_str(R, t, "code")?.to_string();
+        if code.is_empty() || code.len() > 64 {
+            return Err(invalid(R, "unit code must contain 1..=64 bytes"));
+        }
         let version = u16::try_from(req_int(R, t, "version")?)
             .map_err(|_| invalid(R, "version out of range"))?;
         let scale =
@@ -798,15 +932,25 @@ pub fn units_embedded() -> Result<Vec<UnitRow>, RegistryError> {
             "commodity" | "share" | "time" | "count" | "custom" => None,
             other => return Err(invalid(R, format!("unknown unit kind `{other}`"))),
         };
+        let rounding_default = u16::try_from(req_int(R, t, "rounding_default")?)
+            .map_err(|_| invalid(R, "default rounding law out of range"))?;
+        if !rounding_laws.iter().any(|law| law.id == rounding_default) {
+            return Err(invalid(
+                R,
+                format!("`{code}` names unregistered default rounding law {rounding_default}"),
+            ));
+        }
         if !seen.insert((code.clone(), version)) {
             return Err(invalid(R, format!("duplicate unit {code}@v{version}")));
         }
         rows.push(UnitRow {
+            id,
             code,
             scale,
             version,
             kind: kind.to_owned(),
             iso4217,
+            rounding_default,
         });
     }
     if rows.is_empty() {
@@ -1128,6 +1272,66 @@ mod tests {
         assert!(e.to_string().contains("two rows"), "{e}");
     }
 
+    #[test]
+    fn special_period_class_rules_are_complete_and_distinct_from_transitions() {
+        let classes = EntryClasses::embedded().unwrap();
+        let matrix = Admissibility::embedded(&classes).unwrap();
+        for kind in [
+            PeriodKind::Opening,
+            PeriodKind::Adjustment,
+            PeriodKind::Closing,
+        ] {
+            let rule = matrix
+                .special_period_rule(kind)
+                .expect("registered special kind");
+            for class in classes.posting() {
+                let expected = matches!(
+                    class.name.as_str(),
+                    "Adjusting"
+                        | "Closing"
+                        | "Elimination"
+                        | "Revision"
+                        | "Restatement"
+                        | "Migration"
+                );
+                assert_eq!(
+                    rule.admits(&class.name),
+                    expected,
+                    "{kind:?} {}",
+                    class.name
+                );
+            }
+            assert_eq!(rule.refusal, "FA-REF-010");
+            assert!(
+                matrix.kind_rule(kind).is_none(),
+                "live special periods still transition"
+            );
+        }
+        for kind in [PeriodKind::Normal, PeriodKind::Historical] {
+            assert!(matrix.special_period_rule(kind).is_none());
+        }
+        for (from, to) in [
+            ("kind = \"Opening\"", "kind = \"Normal\""),
+            ("kind = \"Opening\"", "kind = \"Closing\""),
+            (
+                "[[special_period_classes]]\nkind = \"Opening\"",
+                "[[unused]]\nkind = \"Opening\"",
+            ),
+            (
+                "admits = [\"Adjusting\", \"Closing\"",
+                "admits = [\"PeriodControl\", \"Closing\"",
+            ),
+            (
+                "admits = [\"Adjusting\", \"Closing\"",
+                "admits = [\"Adjusting\", \"Adjusting\"",
+            ),
+        ] {
+            let changed = ADMISSIBILITY.replacen(from, to, 1);
+            assert_ne!(changed, ADMISSIBILITY);
+            assert!(Admissibility::parse(&classes, &changed).is_err(), "{to}");
+        }
+    }
+
     /// Ruling 3685: the pre-opening rule is registered once. Every posting
     /// class is decided against every pre-opening kind (only Migration
     /// admitted), the rule is born Locked and refuses transitions 040, it
@@ -1196,6 +1400,73 @@ mod tests {
         ] {
             let e = Admissibility::parse(&classes, &planted).unwrap_err();
             assert!(e.to_string().contains(why), "{why}: {e}");
+        }
+    }
+
+    #[test]
+    fn original_unit_definitions_are_pinned_and_new_ids_are_additive() {
+        // Independent fixture: these identities have already been written
+        // into amount payloads. Never regenerate it from units.toml.
+        let original = [
+            (0, "USD", 0, 2, "currency", Some(840), 3),
+            (1, "EUR", 0, 2, "currency", Some(978), 3),
+            (2, "GBP", 0, 2, "currency", Some(826), 3),
+            (3, "JPY", 0, 0, "currency", Some(392), 3),
+            (4, "CHF", 0, 2, "currency", Some(756), 3),
+            (5, "CAD", 0, 2, "currency", Some(124), 3),
+            (6, "AUD", 0, 2, "currency", Some(36), 3),
+            (7, "KWD", 0, 3, "currency", Some(414), 3),
+            (8, "BTC", 0, 8, "commodity", None, 3),
+            (9, "ETH", 0, 18, "commodity", None, 3),
+            (10, "SHARE", 0, 6, "share", None, 3),
+            (11, "HOUR", 0, 2, "time", None, 3),
+            (12, "EACH", 0, 0, "count", None, 3),
+        ];
+        let rows = units_embedded().unwrap();
+        assert!(rows.len() >= original.len(), "existing units were removed");
+        for (row, expected) in rows.iter().zip(original) {
+            assert_eq!(
+                (
+                    row.id,
+                    row.code.as_str(),
+                    row.version,
+                    row.scale,
+                    row.kind.as_str(),
+                    row.iso4217,
+                    row.rounding_default,
+                ),
+                expected,
+                "immutable unit {} changed; add a new version instead",
+                expected.1
+            );
+        }
+        let appended = format!(
+            "{UNITS}\n[[unit]]\nid = {}\ncode = \"NEW\"\nversion = 0\nscale = 2\nkind = \"custom\"\nrounding_default = 3\n",
+            rows.len()
+        );
+        let extended = parse_units(&appended).unwrap();
+        assert_eq!(&extended[..rows.len()], rows);
+        assert_eq!(extended.len(), rows.len() + 1);
+    }
+
+    #[test]
+    fn unit_registry_refuses_reordered_missing_duplicate_and_unknown_law_rows() {
+        for (text, why) in [
+            (UNITS.replacen("id = 0", "id = 1", 1), "out of order"),
+            (UNITS.replacen("id = 1\n", "id = 0\n", 1), "out of order"),
+            (UNITS.replacen("id = 1\n", "id = 2\n", 1), "out of order"),
+            (UNITS.replacen("id = 0\n", "", 1), "missing integer `id`"),
+            (
+                UNITS.replacen("code = \"EUR\"", "code = \"USD\"", 1),
+                "duplicate unit",
+            ),
+            (
+                UNITS.replacen("rounding_default = 3", "rounding_default = 65535", 1),
+                "unregistered default rounding",
+            ),
+        ] {
+            let error = parse_units(&text).unwrap_err().to_string();
+            assert!(error.contains(why), "{why}: {error}");
         }
     }
 

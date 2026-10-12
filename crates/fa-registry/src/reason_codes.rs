@@ -1,6 +1,6 @@
 //! `registries/reason_codes.toml`: the registered reasons a principal may
-//! give, by scope (plan §9.2). The kernel refuses a ManualAssertion whose
-//! reason is not a `manual_assertion` row.
+//! give, by scope (plan §8.2 and §9.2). Supersessions and ManualAssertions
+//! each require a reason registered for that scope.
 
 use std::collections::BTreeSet;
 
@@ -10,7 +10,10 @@ const REASON_CODES: &str = include_str!("../../../registries/reason_codes.toml")
 const R: &str = "reason_codes.toml";
 
 /// The closed set of scopes a reason may belong to.
-pub const SCOPES: [&str; 1] = ["manual_assertion"];
+pub const SCOPES: [&str; 2] = ["manual_assertion", "supersession"];
+
+/// Stable supersession reason for the kernel's scheduled accrual reversal.
+pub const SCHEDULED_ACCRUAL_REVERSAL: u16 = 12;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reason {
@@ -109,7 +112,16 @@ mod tests {
             Some("NoDocumentIssued")
         );
         assert!(r.get("manual_assertion", 0).is_none());
-        assert!(r.get("supersession", 1).is_none());
+        assert_eq!(
+            r.get("supersession", 1).map(|x| x.name.as_str()),
+            Some("DataEntryError")
+        );
+        assert_eq!(
+            r.get("supersession", SCHEDULED_ACCRUAL_REVERSAL)
+                .map(|x| x.name.as_str()),
+            Some("ScheduledAccrualReversal")
+        );
+        assert!(r.get("supersession", 0).is_none());
         assert!(
             r.listing("manual_assertion")
                 .starts_with("1 NoDocumentIssued")

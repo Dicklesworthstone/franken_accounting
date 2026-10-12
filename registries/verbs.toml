@@ -32,9 +32,9 @@ schema_version = 1
 discriminator = "event"
 version = 1
 payload = "data"
-fields = ["v:int", "book:hex?", "coordinate:coordinate?", "certificate:hex?", "warnings:[string]", "next_actions:[next_action]"]
+fields = ["v:int", "book:hex?", "coordinate:coordinate?", "certificate:hex?", "authority:authority", "warnings:[string]", "next_actions:[next_action]"]
 frames = ["fad_request", "fad_response"]
-description = "Robot mode (--json), plan Appendix D: stdout carries one JSON object per line and nothing else, {v, event, book, coordinate, data, certificate, warnings, next_actions}. `event` names the line's schema below and `data` holds exactly that schema's fields. `v` is the envelope version. `book` is the book's id and `coordinate` the (branch, known_at, effective) the line describes; both are never null on an event about a book (`book: true` below) and null on the others (version, help, an error before any book was opened). `certificate` is the replay certificate's oid, null until plan certificates land (fa-we7). `warnings` lists what the command noticed but did not refuse (always present, usually empty). `next_actions` lists the commands an agent usually runs next, each with why (run them with the same --book). Keys are sorted, amounts are strings with their unit (never JSON numbers), recorded sequences are integers, dates are civil YYYY-MM-DD. The daemon's wire frames (fad_request, fad_response) are its protocol, not robot lines: flat, with their protocol `v`. stderr carries diagnostics only. The exit code is the verdict (fa robot-docs exit-codes): every non-zero exit emits exactly one `error` event, whose data carries the exit's `class` (exit_codes.toml), the `exit`, and the `refusal_id` (the refusal catalog code, or null)."
+description = "Robot mode (--json), plan Appendix D: stdout carries one JSON object per line, {v, event, book, coordinate, data, certificate, authority, warnings, next_actions}. `event` names the schema of `data`; `v` is the envelope version. `book` and `coordinate` (branch, known_at, effective) are non-null on book events and may be null before a book opens. `certificate` is the replay certificate oid for certified reports and replay, otherwise null. Post plans identify their canonical artifact and authenticated certificate with data.plan_digest and data.certificate_digest; these are public digests, not native object-store OIDs. `authority` declares embedded-owner or mcp-launch-config; MCP names its fixed principal, bounded launch template and exact ops, while owner ops are null because they are self-issued per command. Launch configuration does not authenticate the operator. `warnings` records non-refusal diagnostics. `next_actions` names follow-up commands and why; owner CLI calls use the same book, while MCP keeps its launch-bound book. Keys are sorted; amounts are exact strings with units, sequences are integers and dates are YYYY-MM-DD. Daemon wire frames are flat protocol objects without this envelope. stderr carries diagnostics; every nonzero command exit emits one error event containing class, exit and refusal_id."
 
 [global]
 flags = ["--book", "--keys", "--as", "--via"]
@@ -101,10 +101,10 @@ summary = "Create a fiscal year's periods, list them, or move one along the peri
 writes = true
 subcommands = ["create", "list", "open", "soft-close", "close", "lock", "reopen"]
 flags = ["--fiscal-year", "--to", "--reason", "--key", "--date", "--plan-out", "--plan", "--approval"]
-switches = []
-events = ["periods_created", "periods", "period_transitioned", "period_planned"]
+switches = ["--dry-run"]
+events = ["periods_created", "periods", "period_transitioned", "period_planned", "period_plan"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["period create --fiscal-year N", "period list", "period open|soft-close|close|lock|reopen <code> [--to open|soft-closed] [--reason N] [--key K] [--date YYYY-MM-DD]", "period lock|reopen <code> --plan-out <file>   (writes the planned proposal and prints its proposal_digest; commits nothing)", "period lock|reopen <code> --plan <file> --approval <vid>...   (commits exactly the planned proposal, citing approvals of its digest)"]
+usage = ["period create --fiscal-year N", "period list", "period open|soft-close|close|lock|reopen <code> [--to open|soft-closed] [--reason N] [--key K] [--date YYYY-MM-DD]", "period <transition> <code> --dry-run   (returns the sealed proposal, its proposal_digest and canonical bytes as hex; writes no file or book data; commit authority and approvals are checked separately)", "period lock|reopen <code> --plan-out <file>   (owner CLI only: writes the planned proposal and prints its proposal_digest; commits nothing)", "period lock|reopen <code> --plan <file|-> --approval <vid>...   (owner CLI commits exactly the planned proposal, citing approvals of its digest; stdin accepts binary or complete bytes hex)"]
 example = "fa period open FY2026-P03 --book ./books/myco --json"
 
 [[verb]]
@@ -124,23 +124,47 @@ name = "post"
 summary = "Post one entry intent under the accounting laws (balance, period law, idempotency)."
 writes = true
 subcommands = []
-flags = ["--intent", "--grant", "--evidence", "--balancing"]
-switches = []
-events = ["posted", "recorded"]
+flags = ["--intent", "--grant", "--evidence", "--balancing", "--plan-out"]
+switches = ["--dry-run"]
+events = ["posted", "recorded", "plan"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["post --intent <file.json|-> [--grant <op>]... [--evidence <oid>]... [--balancing 0|1] [--as <principal>]   (--balancing: that leg moves at most what its account's limit admits; the event says what was requested and what moved)"]
+usage = ["post --intent <file.json|-> [--grant <op>]... [--evidence <oid>]... [--balancing 0|1] [--as <principal>]   (--balancing: that leg moves at most what its account's limit admits; the event says what was requested and what moved)", "post --intent <file.json|-> --dry-run [--plan-out <new-file>]   (runs the actual admission pipeline and aborts its staged transaction; emits the exact sealed PostEntry plan, commits nothing)", "Commit the reviewed plan with fa commit --plan <file|-> using the same --as and --grant. Any intervening book publication requires a new dry run; this first slice does not assemble new approvals or rehearse --balancing. --plan-out requires --dry-run and never overwrites a file.", "A Reversal intent names reverses and a registered reason (for example, \"reason\": \"WrongAccount\"); its legs come from the target."]
 example = "fa post --intent entry.json --book ./books/myco --json"
+
+[[verb]]
+name = "commit"
+summary = "Commit an exact reviewed PostEntry plan after current capability, snapshot and native effects revalidation."
+writes = true
+subcommands = []
+flags = ["--plan", "--grant"]
+switches = []
+events = ["plan_committed"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["commit --plan <file|-> [--as <principal>] [--grant <op>]...", "The file is canonical binary bytes from --dry-run --plan-out; stdin also accepts the plan event's complete bytes hex string. The explicit commit confirms that authenticated exact artifact. The current caller independently supplies the same capability; no authority is taken from the file.", "The first commit atomically retains the canonical plan as a graph Certificate linked from the entry by CITES. Entry.plan_certificate remains absent because the pinned substrate has no generic object-store API. An exact retry returns the original identity and already_recorded=true. Any unrelated publication before the first commit invalidates this same-snapshot plan (exit 6); perform a new dry run and review its result."]
+example = "fa commit --plan entry.plan --book ./books/myco --json"
+
+[[verb]]
+name = "reverse"
+summary = "Post the exact reversal of an entry with a registered reason, preserving the original entry and its lineage."
+writes = true
+subcommands = []
+flags = ["--reason", "--effective", "--period", "--key", "--description", "--grant", "--evidence", "--plan-out"]
+switches = ["--dry-run"]
+events = ["reversed", "recorded", "plan"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["reverse <vid|E:vid> --reason <name|code> [--effective YYYY-MM-DD] [--period <code>] [--key K] [--description <text>] [--grant <op>]... [--evidence <oid>]... [--dry-run [--plan-out <new-file>]]", "The default effective date and period are the target's; --effective never chooses an open period automatically. The default key is reverse:<target vid>. Repeating the same request returns the original outcome; changing a committed reversal is refused.", "--dry-run rehearses the exact derived reversal without publishing it; commit its reviewed sealed plan with fa commit --plan <file|-> at the same book snapshot.", "Reasons are registered in reason_codes.toml (scope supersession): WrongAccount, WrongPeriod, WrongAmount, Duplicate, and the other listed codes. Other requires --description. A reason records the preparer's statement, not its truth."]
+example = "fa reverse <vid> --reason WrongAccount --book ./books/myco --json"
 
 [[verb]]
 name = "reserve"
 summary = "Reserve amounts as a Pending entry (two-phase): nothing is posted."
 writes = true
 subcommands = []
-flags = ["--intent", "--grant", "--evidence", "--balancing"]
-switches = []
-events = ["posted", "recorded"]
+flags = ["--intent", "--grant", "--evidence", "--balancing", "--plan-out"]
+switches = ["--dry-run"]
+events = ["posted", "recorded", "plan"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["reserve --intent <hold.json> (a Pending: amounts reserved, nothing posted)"]
+usage = ["reserve --intent <hold.json> [--dry-run [--plan-out <new-file>]] (a Pending: amounts reserved, nothing posted)", "--dry-run runs the reservation laws without acquiring the hold; fa commit --plan <file|-> acquires exactly the reviewed hold if the book has not advanced. --balancing is not supported with --dry-run."]
 example = "fa reserve --intent hold.json --book ./books/myco --json"
 
 [[verb]]
@@ -148,11 +172,11 @@ name = "resolve"
 summary = "Resolve a hold: post a sub-vector drawn from it, or void it; the rest is released."
 writes = true
 subcommands = []
-flags = ["--intent", "--grant", "--evidence"]
-switches = []
-events = ["posted", "recorded"]
+flags = ["--intent", "--grant", "--evidence", "--plan-out"]
+switches = ["--dry-run"]
+events = ["posted", "recorded", "plan"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["resolve --intent <res.json> (resolves <hold vid>; disposition posts (legs drawn from the hold) | voids)"]
+usage = ["resolve --intent <res.json> [--dry-run [--plan-out <new-file>]] (resolves <hold vid>; disposition posts (legs drawn from the hold) | voids)", "A direct void requires --yes. --dry-run releases nothing and needs no confirmation; fa commit --plan <file|-> explicitly confirms the authenticated exact plan and rechecks the hold at the same snapshot."]
 example = "fa resolve --intent res.json --book ./books/myco --json"
 
 [[verb]]
@@ -169,38 +193,74 @@ example = "fa document add invoice.pdf --kind Invoice --mime application/pdf --g
 
 [[verb]]
 name = "tb"
-summary = "Trial balance: stock through the selected periods or a civil date, or period activity, at a known-at frontier."
-writes = false
+summary = "Trial balance: stock or period activity at a known-at frontier; opt-in certification retains an immutable certificate in the book."
+writes = true
 subcommands = []
-flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at"]
-switches = ["--activity"]
-events = ["trial_balance"]
-exits = [0, 2, 4, 5]
-usage = ["tb ((--period <code>)... | --fiscal-year N) [--activity] [--as-known-at HEAD|<seq>]", "tb --as-of YYYY-MM-DD [--as-known-at HEAD|<seq>]", "Stock balances include opening history; --activity is selected-period movement. Instants are unsupported."]
+flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at", "--certificate-out"]
+switches = ["--activity", "--certify"]
+events = ["trial_balance", "report_certificate"]
+exits = [0, 2, 3, 4, 5, 8]
+usage = ["tb ((--period <code>)... | --fiscal-year N) [--activity] [--as-known-at HEAD|<seq>|<RFC3339>]", "tb --as-of YYYY-MM-DD [--as-known-at HEAD|<seq>|<RFC3339>]", "Add --certify to retain a content-addressed certificate in the book and emit its complete canonical bytes as hex; --certificate-out <new-file> implies certification and also saves canonical binary bytes without replacing any existing file. Uncertified reports do not write; retention advances the metadata frontier while the report's known-at remains fixed.", "Stock balances include opening history; --activity is selected-period movement. Known-at instants resolve from retained TimeEvidence and report the observed frontier and tick brackets; as-of remains a civil date. Certificates preserve the original instant resolution, with embedded-owner authority and fa-fold-over-prefix replay scope; no witness signature or physical timestamp claim."]
 example = "fa tb --period FY2026-P03 --book ./books/myco --json"
 
 [[verb]]
-name = "open-items"
-summary = "Open items (plan §5.7): each live posted leg, its applications, and its open amount."
+name = "statement"
+summary = "Balance sheet or income statement from exact journal folds under a registered definition, with optional period comparatives and retained replay certificates."
+writes = true
+subcommands = []
+flags = ["--for", "--compare", "--known-at", "--as-known-at", "--certificate-out"]
+switches = ["--certify"]
+events = ["statement", "report_certificate"]
+exits = [0, 2, 3, 4, 5, 7, 8]
+usage = ["statement balance-sheet|income-statement --for <period> [--compare <period>] [--known-at HEAD|<seq>|<RFC3339>]", "Both columns use the same known-at snapshot and the registered definition. Balance sheets carry opening history through each selected period; income statements show that period's activity. Native units remain separate; there is no implicit FX conversion or presentation rounding.", "--as-known-at is an alias for --known-at; supply only one. Add --certify to retain an immutable certificate and emit its complete bytes inline. --certificate-out <new-file> also saves a binary copy without replacing a file. Uncertified statements do not publish metadata. Certificates prove replay and arithmetic over the journal, not GAAP conformity."]
+example = "fa statement balance-sheet --for FY2026-P03 --compare FY2026-P02 --certify --book ./books/myco --json"
+
+[[verb]]
+name = "replay"
+summary = "Verify a retained report certificate's complete native read closure and reproduce its original trial balance, statement, balance explanation, or open-items report."
 writes = false
 subcommands = []
-flags = ["--account", "--as-known-at"]
+flags = []
 switches = []
-events = ["open_items"]
-exits = [0, 2, 4, 5]
-usage = ["open-items [--account <code>] [--as-known-at HEAD|<seq>]"]
+events = ["trial_balance", "statement", "balance_explained", "open_items"]
+exits = [0, 2, 3, 4, 5, 8]
+usage = ["replay <C:oid|oid|certificate-file|->", "A 64-hex oid resolves the immutable certificate retained in this book. A file holds canonical binary certificate bytes; stdin also accepts the oid or complete bytes hex string from a report_certificate event. Prefix a 64-hex filename with ./ to read it as a file. The certificate fixes the selector and known-at; replay never substitutes today's frontier."]
+example = "fa replay trial-balance.cert --book ./books/myco --json"
+
+[[verb]]
+name = "certificate"
+summary = "Check whether later entries affect a retained report certificate's selector."
+writes = false
+subcommands = ["status"]
+flags = []
+switches = []
+events = ["certificate_status"]
+exits = [0, 2, 3, 4, 5, 8]
+usage = ["certificate status <C:oid|oid|certificate-file|->", "A 64-hex oid resolves the certificate retained in this book; file and inline bytes are also accepted. Current or SupersededBy is evaluated against the current book after the original certificate verifies; supersession does not erase the historical report, which still replays."]
+example = "fa certificate status trial-balance.cert --book ./books/myco --json"
+
+[[verb]]
+name = "open-items"
+summary = "Open items (plan §5.7): each live posted leg, its applications, and its open amount, with account metadata at the selected historical snapshot."
+writes = true
+subcommands = []
+flags = ["--account", "--as-known-at", "--certificate-out"]
+switches = ["--certify"]
+events = ["open_items", "report_certificate"]
+exits = [0, 2, 3, 4, 5, 8]
+usage = ["open-items [--account <code>] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]", "Without certification this is a pure read. --certify retains an immutable report certificate in the book; --certificate-out also creates a new external copy. Unknown account filters refuse, including accounts absent at the selected known-at. Replay fixes that snapshot, account metadata, and application/reversal lineage."]
 example = "fa open-items --account 1200 --book ./books/myco --json"
 
 [[verb]]
 name = "explain"
-summary = "Explain a balance: the account's register cells in a period, the fold they belong to, every contributing leg with its recorded sequence, and the cell's known-at history."
-writes = false
+summary = "Explain a leaf account's balance: its register cells in a period, the fold they belong to, every contributing leg with its recorded sequence, and the cell's known-at history."
+writes = true
 subcommands = ["balance"]
-flags = ["--period", "--as-known-at"]
-switches = []
-events = ["balance_explained"]
-exits = [0, 2, 4, 5]
-usage = ["explain balance <account code> --period <code> [--as-known-at HEAD|<seq>]"]
+flags = ["--period", "--as-known-at", "--certificate-out"]
+switches = ["--certify"]
+events = ["balance_explained", "report_certificate"]
+exits = [0, 2, 3, 4, 5, 8]
+usage = ["explain balance <account code> --period <code> [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]", "Without certification this is a pure read. --certify retains the exact explanation and native read closure in the book; --certificate-out also creates a new external copy. The certificate binds historical account metadata, contributing entries, evidence references, lineage, cell history, and the whole-period fold."]
 example = "fa explain balance 1000 --period FY2026-P03 --book ./books/myco --json"
 
 [[verb]]
@@ -217,14 +277,14 @@ example = "fa checkpoint create --grant witness --book ./books/myco --json"
 
 [[verb]]
 name = "verify"
-summary = "Verify derived state against the journal by refolding: registers, open-item applied mirrors, limited accounts' availability cells, or accumulator states (exit 8 on drift)."
+summary = "Verify derived state against the journal: leg projections, refolded registers, open-item applied mirrors, limited accounts' availability cells, or accumulator states (exit 8 on drift)."
 writes = false
-subcommands = ["registers", "open-items", "availability", "accumulator"]
+subcommands = ["registers", "open-items", "availability", "accumulator", "projections"]
 flags = ["--period", "--fiscal-year"]
 switches = []
-events = ["registers_verified", "open_items_verified", "availability_verified", "accumulator_verified"]
+events = ["registers_verified", "open_items_verified", "availability_verified", "accumulator_verified", "projections_verified"]
 exits = [0, 2, 4, 5, 8]
-usage = ["verify registers ((--period <code>)... | --fiscal-year N)", "verify open-items", "verify availability", "verify accumulator (every recorded checkpoint; no period filter)"]
+usage = ["verify registers ((--period <code>)... | --fiscal-year N)", "verify open-items", "verify availability", "verify accumulator (every recorded checkpoint; no period filter)", "verify projections (all entry payloads and leg topology at current head; no period filter)"]
 example = "fa verify registers --period FY2026-P03 --book ./books/myco"
 
 [[verb]]
@@ -337,6 +397,11 @@ condition = "grant:post_closed"
 safe = "leave the intent unposted; keep its true effective date and obtain the authorization or the admissible adjustment class the period-law refusal names (`fa period list --json` shows each period's state)"
 
 [[dangerous]]
+verb = "reverse"
+condition = "grant:post_closed"
+safe = "keep the intended reversal date and obtain the authority the period law requires; `fa period list --json` shows the target period's state"
+
+[[dangerous]]
 verb = "resolve"
 condition = "disposition:voids"
 safe = "resolve the hold with disposition `posts` to post what it held; a void releases it for good"
@@ -378,7 +443,7 @@ why = "cite the document in an entry"
 
 [[next_action]]
 after = "posted"
-command = "fa tb --json"
+command = "fa tb --period <code> --json"
 why = "the trial balance with this entry folded in"
 
 [[next_action]]
@@ -387,8 +452,13 @@ command = "fa entry show <vid> --json"
 why = "this idempotency key already recorded that entry; nothing new was written"
 
 [[next_action]]
+after = "plan_committed"
+command = "fa entry show <vid> --json"
+why = "inspect the entry identity returned by the exact plan commit"
+
+[[next_action]]
 after = "registers_materialized"
-command = "fa verify registers --json"
+command = "fa verify registers --period <code> --json"
 why = "prove the materialized cells equal the journal's refold"
 
 [[next_action]]
@@ -521,6 +591,12 @@ doc = "A transition was planned and its sealed proposal written to a file; nothi
 fields = ["period:string", "from:string", "to:string", "proposal_digest:hex", "plan:string"]
 
 [[event]]
+name = "period_plan"
+book = true
+doc = "A period transition proposal prepared inline without writing files or journal data. bytes is the complete existing canonical TransitionPlan in hex; approvals bind proposal_digest and the sealed description is preserved. Scope is period-transition-proposal: this prepares the state-machine transition, while commit independently checks current authority, approvals and period state. It is not the authenticated PostEntry effects certificate. MCP dangerous commits remain unavailable; an operator must separately review and authorize the transition."
+fields = ["period:string", "from:string", "to:string", "principal:hex", "proposal_digest:hex", "bytes:hex", "scope:string"]
+
+[[event]]
 name = "approved"
 book = true
 doc = "An approval of a proposal digest was recorded (or already existed: then nothing was written and security_policy_epoch is null)."
@@ -531,6 +607,24 @@ name = "posted"
 book = true
 doc = "An entry committed; `recorded_at` is its CommitSeq, assigned by the journal. With --balancing, `requested` is the amount asked for and `moved` what the balancing leg's account admitted (the legs posted at `moved`); both null otherwise."
 fields = ["class:string", "vid:hex", "entry_digest:hex", "recorded_at:seq", "period:string", "requested:amount?", "moved:amount?"]
+
+[[event]]
+name = "plan"
+book = true
+doc = "A successful rehearsal of the actual posting pipeline, with its staged transaction aborted and no journal or metadata writes. bytes is the complete canonical PostEntry plan as hex; file is an optional new external binary copy. The exact sealed proposal, original request and supplied approvals are retained. Leg amounts and lineage preview that proposal; effects_digest binds all staged native writes before the plan's own Certificate and CITES retention metadata is added. Book-key authentication binds the certificate, current caller capability, security epoch and snapshot. Any intervening publication requires a new plan. Scope is same-snapshot-post; authority names the actual embedded-owner or mcp-launch-config posture, with principal/profile/ops in the envelope. Agent profiles remain unable to plan trunk posts. Drafts, issued tokens, newly gathered approval quorums and saturating balancing remain unfinished. idempotency_key is exact key bytes in hex. The envelope certificate stays null: these public digests are not native object-store OIDs."
+fields = ["intent_kind:string", "class:string", "effective_date:date", "period:string", "principal:hex", "idempotency_key:hex", "intent_digest:hex", "proposal_digest:hex", "effects_digest:hex", "snapshot_seq:seq", "security_policy_epoch:int", "expires_at:seq?", "capability_commitment:hex", "certificate_digest:hex", "plan_digest:hex", "legs:[plan_leg]", "resolves:hex?", "disposition:string?", "supersedes:[lineage]", "evidence:[evidence_head]", "approvals:int", "bytes:hex", "file:string?", "scope:string", "authority:string"]
+
+[[event]]
+name = "plan_committed"
+book = true
+doc = "The authenticated exact plan committed after current authority and native effects revalidation, atomically retaining its artifact as a graph Certificate and CITES edge. A retry sets already_recorded=true and returns the original entry identity and sequence with period=null; nothing new is written. The public plan and certificate digests identify the reviewed artifact; envelope certificate is null because there is no native object-store OID."
+fields = ["vid:hex", "entry_digest:hex", "recorded_at:seq", "period:string?", "already_recorded:bool", "plan_digest:hex", "certificate_digest:hex"]
+
+[[event]]
+name = "reversed"
+book = true
+doc = "A typed reversal committed, negating the target's posted legs exactly and recording the preparer's registered reason. The original remains immutable; an exact retry emits recorded."
+fields = ["vid:hex", "entry_digest:hex", "recorded_at:seq", "period:string", "target:hex", "reason_code:int", "reason:string"]
 
 [[event]]
 name = "recorded"
@@ -545,9 +639,27 @@ doc = "Stock (through `effective_through`) or activity (the selected periods), a
 fields = ["periods:[string]", "known_at:seq", "effective_through:date?", "activity:bool", "mode:string", "rows:[tb_row]", "unit_totals:[unit_total]", "pending_unit_totals:[pending_unit_total]", "balanced:bool"]
 
 [[event]]
+name = "statement"
+book = true
+doc = "A registered financial statement evaluated from exact journal folds. The definition digest commits its versioned mappings and formulas; mappings list the checked leaf-account partition. Each line contains amounts in one native unit, in column order. All columns share known_at. Certification and replay use the same presentation; no GAAP conformity, consolidation, FX conversion or presentation rounding is implied."
+fields = ["name:string", "definition_version:int", "definition_digest:hex", "known_at:seq", "columns:[statement_column]", "lines:[statement_line]", "mappings:[statement_mapping]", "scope:string"]
+
+[[event]]
+name = "report_certificate"
+book = true
+doc = "The certificate retained in this book for the preceding trial_balance, statement, balance_explained, or open_items report. oid resolves through fa replay or certificate status; recorded_at is the immutable certificate object's sequence, distinct from the report's known_at. bytes is the complete canonical certificate in hex and file is an optional external copy. output_digest commits the exact binary result named by output_format. Retention advances the metadata frontier without posting accounting entries. The explicit replay_scope and authority limit the claim."
+fields = ["oid:hex", "known_at:seq", "recorded_at:seq", "bytes:hex", "file:string?", "replay_command:string", "replay_scope:string", "authority:string", "output_format:string", "output_digest:hex", "native_inputs:int", "journal_root:hex", "journal_leaves:int"]
+
+[[event]]
+name = "certificate_status"
+book = true
+doc = "A verified certificate is Current when no later entry affects its selector, otherwise SupersededBy with the later entry identities. Its original known_at remains replayable in both cases. checked_at is the frontier at which status was evaluated."
+fields = ["oid:hex", "status:string", "known_at:seq", "checked_at:seq", "later_entries:[hex]", "replay_scope:string", "authority:string"]
+
+[[event]]
 name = "open_items"
 book = true
-doc = "Open items, optionally on one account, at the `known_at` snapshot."
+doc = "Open items, optionally on one account, at the `known_at` snapshot, with historical account metadata and each item's applications and reversal lineage. An unknown account filter refuses. With --certify the envelope identifies the retained certificate emitted next."
 fields = ["account:string?", "count:int", "items:[open_item]"]
 
 [[event]]
@@ -565,8 +677,14 @@ fields = ["status:string", "signatures:string", "scope:string", "states_checked:
 [[event]]
 name = "registers_verified"
 book = true
-doc = "Every selected period's stored registers equal the refold."
+doc = "Every selected period's stored registers equal the refold at verified_through. Stale means unread journal entries remain after that processed basis, not corruption; exit 8 still means a mismatch. Uninitialized empty caches have no verified_through."
 fields = ["periods:[register_check]"]
+
+[[event]]
+name = "projections_verified"
+book = true
+doc = "Every decoded entry payload at known_at agrees with its immutable leg mirrors and HAS_LEG, POSTS_TO, IN_UNIT and FOR topology, including Pending and unpublished migration entries. edges_checked counts expected edges. Drift is sorted; applied counters and settlement edges have their own fold checker. Verification writes nothing and does not rebuild projections."
+fields = ["known_at:seq","entries_checked:int","legs_checked:int","edges_checked:int","drift:[string]"]
 
 [[event]]
 name = "open_items_verified"
@@ -596,12 +714,12 @@ fields = ["period:string", "from:seq", "through:seq", "recorded_at:seq?", "entri
 name = "entry"
 book = true
 doc = "One committed entry; when `found` is false every other field but `vid` is null."
-fields = ["found:bool", "vid:string", "class:string?", "effective_date:date?", "recorded_at:seq?", "entry_digest:hex?", "proposal_digest:hex?", "approvals:int?", "legs:[entry_leg]?"]
+fields = ["found:bool", "vid:string", "class:string?", "effective_date:date?", "recorded_at:seq?", "entry_digest:hex?", "proposal_digest:hex?", "approvals:int?", "legs:[entry_leg]?", "supersedes:[lineage]?"]
 
 [[event]]
 name = "balance_explained"
 book = true
-doc = "An account's register cells in one period at the `known_at` snapshot: the cells (one per unit, both columns), the fold they belong to (its digest and watermark), every contributing leg with its entry and recorded sequence, and the cells' known-at history. The legs re-add to the cells exactly or the command fails. A certified-read precursor: `certificate` is null until the notary lands."
+doc = "A leaf account's register cells in one period at the `known_at` snapshot: the cells (one per unit, both columns), the fold they belong to (its digest and watermark), every contributing leg with its entry and recorded sequence, and the cells' known-at history. The legs re-add to the cells exactly or the command fails. With --certify, `certificate` identifies the retained native-read certificate emitted next; otherwise it is null."
 fields = ["account:string", "account_vid:hex", "name:string", "type:string", "period:string", "known_at:seq", "watermark:seq?", "fold_digest:hex", "certificate:hex?", "cells:[explained_cell]", "contributions:[contribution]", "history:[cell_change]", "last_changed_at:seq?"]
 
 # ---------------------------------------------------------------------------
@@ -645,8 +763,13 @@ fields = ["name:string", "forbidden_ops:[string]"]
 
 [[shape]]
 name = "capability_binding"
-doc = "How the embedded posture binds a capability: --as names the principal, --grant self-issues ops; Human profile, no ceilings, no expiry."
-fields = ["flags:[string]", "profile:string", "ceilings:[string]", "expires_at:seq?", "trust_boundary:text"]
+doc = "The actual execution binding: embedded-owner self-issues Human operations per command; MCP uses one trusted launch capability and exposes no per-call identity or authority flags. Neither posture authenticates the operator."
+fields = ["flags:[string]", "posture:string", "profile:string", "ceilings:[string]", "expires_at:seq?", "trust_boundary:text"]
+
+[[shape]]
+name = "authority"
+doc = "Execution authority: mcp-launch-config names the fixed principal, launch template (agent or preparer), and exact bounded ops. Embedded-owner has Human profile and null ops because it self-issues per command; principal is null until parsed. Launch configuration does not authenticate the operator or supply issued tokens."
+fields = ["posture:string", "principal:string?", "profile:string", "ops:[string]?"]
 
 [[shape]]
 name = "envelope_doc"
@@ -684,6 +807,21 @@ doc = "One account in one unit."
 fields = ["code:string", "name:string", "type:string", "debits:amount", "credits:amount", "net:amount", "debits_pending:amount", "credits_pending:amount"]
 
 [[shape]]
+name = "statement_column"
+doc = "A current or comparative period selection. Stock includes opening history through the inclusive cutoff; activity starts at effective_from. Every column uses the statement's same known-at snapshot."
+fields = ["label:string", "periods:[string]", "mode:string", "effective_from:date?", "effective_through:date"]
+
+[[shape]]
+name = "statement_line"
+doc = "One mapped or computed line in one native unit; amounts appear in the order of the statement columns. There is no summation across units."
+fields = ["code:string", "label:string", "unit:string", "amounts:[amount]"]
+
+[[shape]]
+name = "statement_mapping"
+doc = "A historical leaf account and its unique registered mapped line; computed lines refer to mapped lines rather than mapping an account a second time."
+fields = ["account_vid:hex", "account:string", "name:string", "type:string", "line:string"]
+
+[[shape]]
 name = "unit_total"
 doc = "Posted totals of one unit."
 fields = ["unit:string", "debits:amount", "credits:amount"]
@@ -705,8 +843,8 @@ fields = ["entry:hex", "ordinal:int", "amount:amount", "recorded_at:seq", "live:
 
 [[shape]]
 name = "register_check"
-doc = "One period's verify-by-refold."
-fields = ["period:string", "green:bool", "cells_checked:int", "refold_digest:hex", "stored_digest:hex?", "drift:[cell_drift]", "pending_drift:[cell_drift]", "projection_errors:[string]"]
+doc = "One period's verify-by-refold at its processed basis (not its last monetary contribution). cache_status is uninitialized, verified, or corrupt. verified_through is null on a mismatch or an uninitialized cache; empty uninitialized caches compare green but certify no prefix. When green, stale reports unread journal entries and lag_entries counts their book-wide Entry creations, including controls and staged migrations; projection-only commits do not count."
+fields = ["period:string", "green:bool", "cache_status:string", "verified_through:seq?", "stale:bool", "lag_entries:int", "cells_checked:int", "refold_digest:hex", "stored_digest:hex?", "drift:[cell_drift]", "pending_drift:[cell_drift]", "projection_errors:[string]"]
 
 [[shape]]
 name = "cell_drift"
@@ -744,6 +882,11 @@ doc = "One leg of a committed entry."
 fields = ["side:string", "account:hex", "amount:amount"]
 
 [[shape]]
+name = "plan_leg"
+doc = "One proposed leg after actual admission, with the resolved account code and immutable account identity. Its amount is an exact decimal string with the book's unit."
+fields = ["ordinal:int", "account:string", "account_vid:hex", "side:string", "amount:amount"]
+
+[[shape]]
 name = "explained_cell"
 doc = "The account's cell in one unit: the posted column and the pending column."
 fields = ["unit:string", "debits:amount", "credits:amount", "net:amount", "entry_count:int", "debits_pending:amount", "credits_pending:amount", "pending_count:int"]
@@ -755,8 +898,8 @@ fields = ["entry:hex", "entry_digest:hex", "class:string", "effective_date:date"
 
 [[shape]]
 name = "lineage"
-doc = "What an entry supersedes, and how."
-fields = ["entry:hex", "kind:string", "reason_code:int"]
+doc = "What an entry supersedes, how, and the preparer's stated reason. reason is null for a historical code outside the current registry; the recorded numeric code is always preserved."
+fields = ["entry:hex", "kind:string", "reason_code:int", "reason:string?"]
 
 [[shape]]
 name = "evidence_head"
@@ -770,8 +913,18 @@ fields = ["recorded_at:seq", "unit:string", "debits:amount", "credits:amount", "
 
 [[shape]]
 name = "coordinate"
-doc = "What a line describes (plan §4.8), beside the envelope's `book` (the book id): the branch (`trunk`; drafts and scenarios land later), `known_at` (the recorded sequence: the head when read, or the one --as-known-at selected; after a write, the head that write produced), and `effective` (`all`, `period:<code>`, `periods:<code>,<code>…`, or `as-of:<YYYY-MM-DD>`)."
-fields = ["branch:string", "known_at:seq", "effective:string"]
+doc = "What a line describes (plan §4.8), beside the envelope's `book` (the book id): the branch (`trunk`; drafts and scenarios land later), `known_at` (the recorded sequence: the head when read, or the one --as-known-at selected; after a write, the head that write produced), and `effective` (`all`, `period:<code>`, `periods:<code>,<code>…`, or `as-of:<YYYY-MM-DD>`). `time_evidence` is null for sequence/HEAD reads; instant reads and their replays retain the original observed frontier, resolved sequence and tick brackets."
+fields = ["branch:string", "known_at:seq", "effective:string", "time_evidence:time_evidence?"]
+
+[[shape]]
+name = "time_evidence"
+doc = "The retained resolution of a requested UTC instant under plan §7.1a. precision is tick_bucket; source_grade preserves clock corroboration. A null upper bracket is open at frontier. This does not establish a physical commit instant, and replay uses this saved frontier."
+fields = ["requested_instant:string", "requested_utc_ns:int", "frontier:seq", "resolved_seq:seq", "precision:string", "source_grade:string", "lower:time_tick", "upper:time_tick?"]
+
+[[shape]]
+name = "time_tick"
+doc = "One journaled TimeEvidence observation and its immutable entry identity. source 0 is the daemon clock; monotonic_ok records corroboration, not proof of UTC accuracy."
+fields = ["entry:hex", "recorded_at:seq", "observed_utc_ns:int", "source:int", "monotonic_ok:bool"]
 
 [[shape]]
 name = "next_action"
@@ -804,9 +957,10 @@ fields = ["verb:string", "subcommand:string?", "condition:string", "safe:string"
 # names to [A-Za-z0-9_-]. A tool's arguments are the verb's value flags without
 # the dashes (`--as-known-at` → `as_known_at`), its switches as booleans, the
 # positionals named in `positionals` (a trailing `?` marks an optional one),
-# `selector` (which subcommand, when the tool covers several), `book` (the book
-# directory; the server's --book when absent), `as` and `keys` (the global
-# flags), and `yes` on a verb with a [[dangerous]] row. `stdin_property` is a
+# `selector` (which subcommand, when the tool covers several). Authority and
+# book selection are fixed at trusted launch: `as`, `grant`, `yes`, `keys`,
+# `book`, `principal`, `profile` and `via` are forbidden call properties.
+# `stdin_property` is a
 # JSON property the server forwards on stdin as the `-` argument of
 # `stdin_via` (a flag, or a positional's name); the flag or positional keeps
 # its string (path) form beside it. `required` names flags and positionals the
@@ -824,10 +978,10 @@ fields = ["verb:string", "subcommand:string?", "condition:string", "safe:string"
 [mcp]
 server = "fa-mcp"
 max_tools_per_cluster = 7
-# Host-only flags: the server sets --json itself and chooses the transport.
-hidden_flags = ["--json", "--via", "--no-color", "--help", "--version"]
+# The server fixes authority and book selection once; it never forwards caller grants.
+hidden_flags = ["--json", "--via", "--no-color", "--help", "--version", "--as", "--grant", "--yes", "--keys", "--book"]
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
-repeat_flags = ["--grant", "--evidence", "--approval", "--period"]
+repeat_flags = ["--evidence", "--approval", "--period"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
 integer_flags = ["--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing"]
 
@@ -845,11 +999,11 @@ doc = "The chart of accounts: install it as one journaled schema effect, or list
 
 [[mcp.cluster]]
 name = "fa.post"
-doc = "Posting under the accounting laws: entries, two-phase holds and their resolutions. Every amount is a string with its unit; nothing is auto-balanced."
+doc = "Posting under the accounting laws: entries, two-phase holds and their resolutions, with explicit dry-run plans and exact plan commits. Every amount is a string with its unit; nothing is auto-balanced."
 
 [[mcp.cluster]]
 name = "fa.read"
-doc = "Certified reads over the journal: trial balance, an explained balance, open items, one entry."
+doc = "Certified reads over the journal: trial balance, financial statements, an explained balance, open items, one entry."
 
 [[mcp.cluster]]
 name = "fa.time"
@@ -915,9 +1069,9 @@ name = "create"
 verb = "book"
 subcommands = ["create"]
 positionals = []
-required = ["--name", "book"]
-dont = ["Don't create a book inside an existing book directory; `book` names a new directory.", "Don't lose the key file the result names (`keys`): keys are never regenerated."]
-mistakes = ["Omitting `book`: creation needs the new directory, the server's default book is an existing one.", "Passing `base_unit` in lowercase (`usd`): unit codes are the registered spellings (USD, EUR, …)."]
+required = ["--name"]
+dont = ["The book path is fixed at launch; a call cannot select another directory. Agent and Preparer sessions cannot create books; ask the operator to prepare the book before launch.", "Don't lose the book's key file: keys are never regenerated."]
+mistakes = ["Passing a book or key path as a tool argument: both are forbidden.", "Passing `base_unit` in lowercase (`usd`): unit codes are the registered spellings (USD, EUR, …)."]
 
 [[mcp.tool]]
 cluster = "fa.book"
@@ -935,15 +1089,15 @@ name = "checkpoint"
 verb = "checkpoint"
 subcommands = ["create"]
 positionals = []
-required = ["--grant"]
+required = []
 dont = ["Don't present the state as a signed checkpoint or an evidence bundle: it is unsigned and covers entries only."]
-mistakes = ["Omitting `grant: [\"witness\"]` — the embedded posture self-issues the op."]
+mistakes = ["Trying to self-issue witness permission: caller grants are forbidden, and Agent/Preparer launch profiles do not include witness."]
 
 [[mcp.tool]]
 cluster = "fa.book"
 name = "verify"
 verb = "verify"
-subcommands = ["registers", "open-items", "availability", "accumulator"]
+subcommands = ["registers", "open-items", "availability", "accumulator", "projections"]
 selector = "target"
 positionals = []
 required = []
@@ -983,7 +1137,7 @@ stdin_kind = "object"
 stdin_via = "file"
 required = []
 dont = ["Don't post to a summary account afterwards: only leaves (`leaf: true`) accept legs.", "Don't edit an installed chart in place; a chart change is a new journaled schema effect."]
-mistakes = ["Passing both `chart` and `file`: exactly one of the inline document or the path.", "Giving `lower_bound`/`upper_bound` as numbers: bounds are amounts, strings in the account's unit (\"0.00\")."]
+mistakes = ["Passing a host path as `file`: supply the chart object inline as `chart`; this does not grant chart-installation authority.", "Giving `lower_bound`/`upper_bound` as numbers: bounds are amounts, strings in the account's unit (\"0.00\")."]
 
 [[mcp.tool]]
 cluster = "fa.chart"
@@ -1003,6 +1157,7 @@ name = "post"
 verb = "post"
 subcommands = []
 positionals = []
+flags = ["--intent", "--evidence", "--balancing"]
 stdin_property = "intent"
 stdin_kind = "object"
 stdin_via = "--intent"
@@ -1012,10 +1167,22 @@ mistakes = ["A JSON number in `amount` (write \"1500.00 USD\").", "An instant (\
 
 [[mcp.tool]]
 cluster = "fa.post"
+name = "reverse"
+verb = "reverse"
+subcommands = []
+positionals = ["vid"]
+flags = ["--reason", "--effective", "--period", "--key", "--description", "--evidence"]
+required = ["vid", "--reason"]
+dont = ["Don't re-enter the target's amounts: the reversal derives its exact opposite legs and preserves its evidence lineage.", "Don't pick an effective date to dodge the period law. The default is the target's date; a supplied date must be in the same or a later admissible period.", "Don't use Other without a description of the stated reason; a reason code does not attest that the explanation is true."]
+mistakes = ["Omitting reason or using an unregistered name (for example, use WrongAccount, WrongAmount or Duplicate).", "Trying to reverse an already reversed entry with a different reason: cite the existing reversal or explicitly reverse that reversal."]
+
+[[mcp.tool]]
+cluster = "fa.post"
 name = "reserve"
 verb = "reserve"
 subcommands = []
 positionals = []
+flags = ["--intent", "--evidence", "--balancing"]
 stdin_property = "intent"
 stdin_kind = "object"
 stdin_via = "--intent"
@@ -1029,12 +1196,26 @@ name = "resolve"
 verb = "resolve"
 subcommands = []
 positionals = []
+flags = ["--intent", "--evidence"]
 stdin_property = "intent"
 stdin_kind = "object"
 stdin_via = "--intent"
 required = []
-dont = ["Don't void a hold to tidy up: `disposition: \"voids\"` releases it for good and needs `yes`; `posts` draws legs from it.", "Don't draw a leg the hold does not have: each resolving leg is the same account and side as one hold leg, at most its reserved amount."]
+dont = ["Don't void a hold to tidy up: `disposition: \"voids\"` releases it for good. dry_run previews a void without releasing it; committing the void remains unavailable through MCP until separate confirmation exists, and a plan cannot replace that exchange. `posts` draws legs from the hold.", "Don't draw a leg the hold does not have: each resolving leg is the same account and side as one hold leg, at most its reserved amount."]
 mistakes = ["A placeholder such as \"<vid>\" in `resolves` (the reserve result's `vid`).", "Resolving a hold twice (exit 6, FA-REF-062) or resolving a non-hold (FA-REF-060)."]
+
+[[mcp.tool]]
+cluster = "fa.post"
+name = "commit_plan"
+verb = "commit"
+subcommands = []
+positionals = []
+stdin_property = "plan"
+stdin_kind = "string"
+stdin_via = "--plan"
+required = ["--plan"]
+dont = ["Review the plan event, then pass its complete bytes hex string as plan using the same fixed launch authority. A Preparer can commit an admitted ordinary posting; an Agent remains unable to write trunk. The artifact provides no authority and tool arguments cannot change the principal or grants.", "A plan applies only at its recorded snapshot. After another book publication, run dry_run again and review the new result; do not edit a stale plan or change an effective date to obtain admission.", "Planning itself acquires no hold, releases no reservation and consumes no idempotency key. A first commit retains the artifact with its entry; exact commit retries return already_recorded=true.", "A void plan cannot supply the separate dangerous-operation confirmation exchange: bound MCP void commits remain refused with FA-REF-007, even when the launch capability matches."]
+mistakes = ["Passing plan_file: host paths are refused; supply the plan event's complete bytes string inline as plan.", "Passing an intent JSON object as plan: use the plan event's bytes string.", "Passing as, grant, yes, book or keys: these remain forbidden per-call overrides.", "Expecting new approval collection, drafts, issued tokens or balancing to be covered by this first same-snapshot PostEntry slice."]
 
 # ---- fa.read ----------------------------------------------------------------
 
@@ -1044,9 +1225,47 @@ name = "trial_balance"
 verb = "tb"
 subcommands = []
 positionals = []
+flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at"]
 required = []
-dont = ["Don't pass an instant to `as_of`: a civil date, never a timestamp; instants are unsupported here.", "Don't mix `as_of` with `period`, `fiscal_year` or `activity`."]
-mistakes = ["Reading `activity` rows as stock: stock includes opening history, `activity: true` is the selected periods' movement.", "Expecting `as_known_at` to accept an instant: it takes `HEAD` or a recorded sequence."]
+dont = ["Don't pass an instant to `as_of`: a civil date, never a timestamp; instants are unsupported here.", "Don't mix `as_of` with `period`, `fiscal_year` or `activity`.", "Use certify: true to retain the certificate in the book and receive the report and complete certificate as two data items. Replay accepts its oid or bytes string. Certification writes metadata only; MCP exposes no certificate_out host-file write."]
+mistakes = ["Reading `activity` rows as stock: stock includes opening history, `activity: true` is the selected periods' movement.", "Treating a known-at instant as an exact physical commit timestamp: it is a retained TimeEvidence bucket, with its frontier and brackets in the coordinate."]
+
+[[mcp.tool]]
+cluster = "fa.read"
+name = "statement"
+verb = "statement"
+subcommands = []
+positionals = ["name"]
+flags = ["--for", "--compare", "--known-at", "--as-known-at"]
+required = ["name", "--for"]
+dont = ["Use name balance-sheet or income-statement, for a fiscal period code, and optionally compare for another period. Both columns share one known-at snapshot.", "Keep native units separate: no implicit FX, consolidation or GAAP conformity is claimed. A balance sheet includes opening history; an income statement shows selected-period activity.", "Use certify: true for a retained certificate and replay it with fa_read_replay. certificate_out is forbidden; certificate bytes and oid are returned inline."]
+mistakes = ["Omitting for, passing multiple for or compare periods, or using a date where a period code is required.", "Supplying known_at and as_known_at together: they name the same selector.", "Treating a later-period comparative as a different known-at snapshot; use a separate statement call for that question."]
+
+[[mcp.tool]]
+cluster = "fa.read"
+name = "replay"
+verb = "replay"
+subcommands = []
+positionals = ["file?"]
+stdin_property = "certificate"
+stdin_kind = "string"
+stdin_via = "file"
+required = ["file"]
+dont = ["Pass the retained oid (bare 64-hex or C: prefixed) or complete bytes hex string from report_certificate inline as certificate. Never edit the certificate or substitute the current known-at.", "A replay proves the retained closure produces the same result; it is not a witness signature or a judgment on the accounting treatment."]
+mistakes = ["Looking up an oid in a different book; use the book where certification retained it.", "Passing file: MCP refuses host paths; use the inline certificate property."]
+
+[[mcp.tool]]
+cluster = "fa.read"
+name = "certificate_status"
+verb = "certificate"
+subcommands = ["status"]
+positionals = ["file?"]
+stdin_property = "certificate"
+stdin_kind = "string"
+stdin_via = "file"
+required = ["file"]
+dont = ["Don't treat SupersededBy as a failed historical replay: later entries can change today's report while the original still verifies."]
+mistakes = ["Looking up an oid in a different book; the operator must launch the server against the original book."]
 
 [[mcp.tool]]
 cluster = "fa.read"
@@ -1054,6 +1273,7 @@ name = "explain_balance"
 verb = "explain"
 subcommands = ["balance"]
 positionals = ["account"]
+flags = ["--period", "--as-known-at"]
 required = ["--period", "account"]
 dont = ["Don't trust a register cell you have not explained: the contributions re-add to the cells exactly, or the command fails."]
 mistakes = ["Explaining a summary account (registers hold leaf cells; explain one of its leaves).", "Passing more than one `period` (exactly one)."]
@@ -1064,6 +1284,7 @@ name = "open_items"
 verb = "open-items"
 subcommands = []
 positionals = []
+flags = ["--account", "--as-known-at"]
 required = []
 dont = ["Don't apply more than an item's `open` amount; FA-REF-072 names what is open."]
 mistakes = ["Passing an account name as `account` (it takes the account code)."]
@@ -1110,9 +1331,12 @@ subcommands = ["open", "soft-close", "close", "lock", "reopen"]
 selector = "transition"
 positionals = ["code"]
 flags = ["--to", "--reason", "--key", "--date", "--plan-out", "--plan", "--approval"]
+stdin_property = "plan"
+stdin_kind = "string"
+stdin_via = "--plan"
 required = ["code"]
-dont = ["Don't reopen to admit an ordinary posting: only a lawfully classified adjustment or an authorized, case-bound reopen changes what a closed period reports.", "Don't approve your own plan: `plan_out` seals a proposal; `fa_time_approve` must run as a different principal (`as`).", "Don't close, lock or reopen without `yes` unless the operation is intended; the refusal names the reversible alternative (soft-close)."]
-mistakes = ["Passing `plan_out` together with `plan` or `approval` (a plan commits nothing; the commit cites the plan and its approvals).", "Passing `to` for a transition other than `reopen`."]
+dont = ["Don't reopen to admit an ordinary posting: only a lawfully classified adjustment or an authorized, case-bound reopen changes what a closed period reports.", "Don't approve your own plan: an independent approver needs their own authorized session; tool arguments cannot change this session's identity.", "Don't close, lock or reopen through MCP: dangerous confirmation is unavailable, and a plan or approval file cannot authorize a commit here."]
+mistakes = ["Passing a host path in plan_out or plan_file: MCP permits no filesystem paths. Use dry_run: true to receive canonical period plan bytes inline.", "Combining dry_run with plan or approval: preparation and commit are separate calls.", "Passing `to` for a transition other than `reopen`."]
 
 [[mcp.tool]]
 cluster = "fa.time"
@@ -1121,8 +1345,8 @@ verb = "approve"
 subcommands = []
 positionals = []
 required = ["--proposal"]
-dont = ["Don't approve a proposal you planned in this session: segregation of duties (FA-REF-008) needs another principal.", "Don't invent a digest: `proposal` is the `proposal_digest` a `period_transition` with `plan_out` returned."]
-mistakes = ["A placeholder such as \"<proposal_digest>\" in `proposal`.", "Omitting `as`: the default principal is `operator`, usually the planner."]
+dont = ["Don't approve a proposal you planned in this session: segregation of duties (FA-REF-008) needs another principal.", "Don't invent a digest: `proposal` is the `proposal_digest` a `period_transition` with `dry_run: true` returned."]
+mistakes = ["A placeholder such as \"<proposal_digest>\" in `proposal`.", "Trying to change principal or self-issue approve: this session is launch-bound, and Agent/Preparer profiles do not permit approval."]
 
 # ---- fa.evidence ------------------------------------------------------------
 
@@ -1137,4 +1361,4 @@ stdin_kind = "string"
 stdin_via = "file"
 required = []
 dont = ["Don't grade your own upload `HumanUpload`: an agent's document is `AgentUpload` and needs a human `Reviewed` attestation before promotion.", "Don't write a plausible document to stand in for a missing one; record an explicit manual assertion instead."]
-mistakes = ["Passing both `text` and `file`: exactly one of the inline text or the path.", "Citing `doc_commit` where an intent's `evidence` wants the document `oid`."]
+mistakes = ["Passing a host path as `file`: supply the document inline as `text`; this does not grant document-import authority.", "Citing `doc_commit` where an intent's `evidence` wants the document `oid`."]

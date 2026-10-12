@@ -19,6 +19,7 @@ pub mod explain;
 pub mod maintainer;
 pub mod open_items;
 pub mod replay;
+mod report;
 
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
@@ -31,7 +32,7 @@ use fa_model::{
     AccountType, ControlPayload, Entry, EntryClass, EntryOrigin, Id128, Writer, period_vid,
 };
 use fa_money::Side;
-use fa_time::DateDay;
+use fa_time::{DateDay, PeriodKind};
 use fgdb::{Database, VertexRow, WriteBatch};
 use fgdb_crypto::Hasher;
 use fgdb_types::context::PurposeContexts;
@@ -624,9 +625,33 @@ pub struct Drift {
     pub refolded: (i128, i128, u64),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CacheStatus {
+    /// No maintenance header or stored cells exist. Empty-set equality can
+    /// still be green, but no processed journal prefix is certified.
+    Uninitialized,
+    /// Stored cells and the maintenance header agree with their journal prefix.
+    Verified,
+    /// Stored cells, metadata, or the authoritative prefix disagree.
+    Corrupt,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Verification {
     pub period: String,
+    pub cache_status: CacheStatus,
+    /// The journal prefix independently verified against the current stored
+    /// cells. None on a mismatch or an uninitialized cache. This is the
+    /// processed basis, not the last monetary contribution.
+    pub verified_through: Option<CommitSeq>,
+    /// Whether journal entries remain after the checked basis. Meaningful
+    /// only when is_green(); corruption never becomes ordinary lag.
+    pub stale: bool,
+    /// Book-wide unread Entry creations, including controls and staged
+    /// migrations. Projection-only commits do not contribute to this count.
+    /// Counted by the pinned substrate's `(vid, created_at)` identity; a
+    /// replaced prefix identity is corruption, not a second legitimate entry.
+    pub lag_entries: usize,
     pub cells_checked: usize,
     pub drift: Vec<Drift>,
     pub pending_drift: Vec<Drift>,
@@ -709,17 +734,79 @@ fn stored_values(row: &VertexRow, pending: bool) -> Result<Option<CellValues>, R
     )
 }
 
-/// Refold the period and compare every stored `Register` vertex to it.
+/// Compare current stored cells with the journal at their processed basis,
+/// reporting freshness separately. Later postings are lag, not corruption.
+/// A headerless cache retains the current-head comparison; no historical
+/// prefix is inferred from a contribution watermark or publication sequence.
 pub fn verify_period<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     period_code: &str,
 ) -> Result<Verification, RegisterError> {
-    let fold = fold_period(db, book, period_code)?;
+    let head = db.frontier()?;
+    let (through, state_error) = maintainer::verify_state(db, book, period_code)?;
+    let basis = through.unwrap_or(head);
+    let fold = fold_period_at(db, book, period_code, Some(basis))?;
     let mut result = verify_projection(db, book, &fold)?;
-    if let Some(error) = maintainer::verify_state(db, book, period_code)? {
+    let has_stored_cells = !stored_registers(db, book, &fold)?.is_empty();
+    let uninitialized = through.is_none() && state_error.is_none() && !has_stored_cells;
+    if let Some(error) = state_error {
         result.projection_errors.push(error);
     }
+    if through.is_none() && has_stored_cells {
+        result
+            .projection_errors
+            .push("stored register cells have no valid maintenance header".into());
+    }
+    if basis < head {
+        let before: BTreeMap<_, _> = db
+            .vertices_at(basis)?
+            .into_iter()
+            .filter(|row| row.labels.contains(&label::ENTRY))
+            .map(|row| (row.vid, row))
+            .collect();
+        let current: BTreeMap<_, _> = db
+            .vertices_at(head)?
+            .into_iter()
+            .filter(|row| row.labels.contains(&label::ENTRY))
+            .map(|row| (row.vid, row))
+            .collect();
+        // Freshness is not head-minus-basis: register publications and other
+        // non-entry commits do not create work. Never hide a rewrite or
+        // retirement of the authoritative prefix behind a historical check.
+        result.lag_entries = current
+            .values()
+            .filter(|row| row.created_at > basis)
+            .count();
+        for (vid, row) in &before {
+            if current.get(vid).is_none_or(|now| {
+                now.created_at != row.created_at
+                    || prop(now, property::FA_PAYLOAD) != prop(row, property::FA_PAYLOAD)
+            }) {
+                result.projection_errors.push(format!(
+                    "journal entry {:032x} changed or disappeared after the checked prefix",
+                    vid.0
+                ));
+            }
+        }
+        for row in current.values() {
+            if row.created_at <= basis && !before.contains_key(&row.vid) {
+                result.projection_errors.push(format!(
+                    "journal entry {:032x} appeared with a creation sequence inside the checked prefix",
+                    row.vid.0
+                ));
+            }
+        }
+    }
+    result.stale = result.lag_entries != 0;
+    result.cache_status = if uninitialized {
+        CacheStatus::Uninitialized
+    } else if result.is_green() {
+        result.verified_through = through;
+        CacheStatus::Verified
+    } else {
+        CacheStatus::Corrupt
+    };
     Ok(result)
 }
 
@@ -820,6 +907,10 @@ fn verify_projection<V: asupersync::fs::Vfs + Clone>(
     }
     Ok(Verification {
         period: period_code.to_string(),
+        cache_status: CacheStatus::Uninitialized,
+        verified_through: None,
+        stale: false,
+        lag_entries: 0,
         cells_checked,
         drift,
         pending_drift,
@@ -858,6 +949,40 @@ pub struct TrialBalance {
 }
 
 impl TrialBalance {
+    /// The versioned, exact report output bound by replay certificates. Amounts
+    /// remain integer mantissas and unit IDs; presentation is not an input to
+    /// the fold. The certificate separately binds the unit and symbol registries.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, fa_model::EncodeError> {
+        let mut w = Writer::new();
+        w.fixed(b"fa:trial-balance:v1")
+            .list(&self.periods, |w, p| {
+                w.str(p);
+            })
+            .u64(self.known_at.0)
+            .opt(self.effective_through.as_ref(), |w, d| {
+                w.i32(d.0);
+            })
+            .bool(self.activity)
+            .list(&self.rows, |w, r| {
+                w.u128(r.account.0)
+                    .str(&r.code)
+                    .str(&r.name)
+                    .u8(r.account_type.0)
+                    .u32(r.unit_id)
+                    .i128(r.debits)
+                    .i128(r.credits)
+                    .i128(r.debits_pending)
+                    .i128(r.credits_pending);
+            });
+        for totals in [&self.unit_totals, &self.pending_unit_totals] {
+            let ordered: Vec<_> = totals.iter().collect();
+            w.list(&ordered, |w, (unit, (debits, credits))| {
+                w.u32(**unit).i128(*debits).i128(*credits);
+            });
+        }
+        w.finish()
+    }
+
     /// FA-INV-01 at the register level: every unit's debits equal its credits.
     #[must_use]
     pub fn is_balanced(&self) -> bool {
@@ -895,7 +1020,7 @@ pub fn trial_balance_at<V: asupersync::fs::Vfs + Clone>(
             .ok_or_else(|| KernelError::Corrupt("period end underflow".into()))?;
         through = Some(through.map_or(DateDay(end), |d: DateDay| d.max(DateDay(end))));
     }
-    report_at(db, book, selected, seq, through)
+    report_at(db, book, selected, seq, through, &[])
 }
 
 /// A stock position on a civil day, independent of when postings were recorded.
@@ -917,7 +1042,7 @@ pub fn balance_as_of<V: asupersync::fs::Vfs + Clone>(
             }
         }
     }
-    report_at(db, book, periods.into_iter().collect(), seq, Some(day))
+    report_at(db, book, periods.into_iter().collect(), seq, Some(day), &[])
 }
 
 /// Movement within the explicitly selected periods. Overlapping civil dates
@@ -928,8 +1053,36 @@ pub fn period_activity<V: asupersync::fs::Vfs + Clone>(
     periods: &[String],
     known_at: Option<CommitSeq>,
 ) -> Result<TrialBalance, RegisterError> {
+    period_activity_excluding_classes(db, book, periods, known_at, &[])
+}
+
+/// Movement within the selected periods, excluding the named accounting
+/// classes and exact reversals of those classes. This is the same authoritative
+/// payload fold as [`period_activity`]; retained register cells never contribute.
+/// In particular, income statements exclude Closing transfers without excluding
+/// operating adjustments merely because they share a Closing-kind period.
+///
+/// Reversal lineage is checked against the retained target digest and followed
+/// to its original class, including a reversal of a reversal. If Closing is
+/// excluded, a Migration whose original entry lies in a Closing-kind period is
+/// refused: its current payload does not retain the source's accounting class,
+/// so treating it as either ordinary income or a closing transfer would guess.
+pub fn period_activity_excluding_classes<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    periods: &[String],
+    known_at: Option<CommitSeq>,
+    excluded_classes: &[EntryClass],
+) -> Result<TrialBalance, RegisterError> {
     let seq = resolve_known_at(db, known_at)?;
-    report_at(db, book, select_periods(db, book, periods, seq)?, seq, None)
+    report_at(
+        db,
+        book,
+        select_periods(db, book, periods, seq)?,
+        seq,
+        None,
+        excluded_classes,
+    )
 }
 
 fn select_periods<V: asupersync::fs::Vfs + Clone>(
@@ -956,26 +1109,54 @@ fn report_at<V: asupersync::fs::Vfs + Clone>(
     periods: Vec<String>,
     seq: CommitSeq,
     through: Option<DateDay>,
+    excluded_classes: &[EntryClass],
 ) -> Result<TrialBalance, RegisterError> {
     let mut sums: BTreeMap<(VId, u32), [i128; 4]> = BTreeMap::new();
     let entries = entries_at(db, book, seq)?;
     let resolved = resolutions(&entries)?;
-    for (vid, entry, _) in entries {
+    let by_id: BTreeMap<_, _> = if excluded_classes.is_empty() {
+        BTreeMap::new()
+    } else {
+        entries
+            .iter()
+            .map(|(vid, entry, at)| (*vid, (entry, *at)))
+            .collect()
+    };
+    for (vid, entry, _) in &entries {
         if entry.proposal.legs.is_empty() {
             continue;
         }
         let pending = entry.proposal.class == EntryClass::PENDING;
         // Releases are evaluated at the known-at frontier. They release the
         // original period, irrespective of their own posting effective date.
-        if pending && resolved.contains_key(&vid) {
+        if pending && resolved.contains_key(vid) {
             continue;
         }
         let selected = match through {
             Some(day) => entry.proposal.effective_date <= day,
-            None => periods.binary_search(&entry_period(book, &entry)?).is_ok(),
+            None => periods.binary_search(&entry_period(book, entry)?).is_ok(),
         };
         if !selected {
             continue;
+        }
+        if !excluded_classes.is_empty() {
+            let (original_vid, original) = accounting_origin(*vid, entry, &by_id)?;
+            if excluded_classes.contains(&entry.proposal.class)
+                || excluded_classes.contains(&original.proposal.class)
+            {
+                continue;
+            }
+            if excluded_classes.contains(&EntryClass::CLOSING)
+                && original.proposal.class == EntryClass::MIGRATION
+            {
+                let code = entry_period(book, original)?;
+                if period_at(db, book, &code, seq)?.kind == PeriodKind::Closing {
+                    return Err(RegisterError::InvalidSelection(format!(
+                        "cannot classify migration entry {:032x} in Closing period `{code}` for activity excluding Closing: its original accounting class is not retained",
+                        original_vid.0
+                    )));
+                }
+            }
         }
         for leg in &entry.proposal.legs {
             let e = sums
@@ -1034,6 +1215,60 @@ fn report_at<V: asupersync::fs::Vfs + Clone>(
         unit_totals,
         pending_unit_totals,
     })
+}
+
+/// Exact reversals carry the economic class of the original entry for a
+/// class-filtered report. The lookup is over one already-admitted journal
+/// prefix, so lineage cannot consult a later head or a mutable projection.
+fn accounting_origin<'a>(
+    vid: VId,
+    entry: &'a Entry,
+    entries: &BTreeMap<VId, (&'a Entry, CommitSeq)>,
+) -> Result<(VId, &'a Entry), RegisterError> {
+    let mut current_vid = vid;
+    let mut current = entry;
+    let mut visited = BTreeSet::new();
+    while current.proposal.class == EntryClass::REVERSAL {
+        if !visited.insert(current_vid) {
+            return Err(KernelError::Corrupt(format!(
+                "reversal lineage of {:032x} cycles at {:032x}",
+                vid.0, current_vid.0
+            ))
+            .into());
+        }
+        let target = match current.proposal.supersession.as_slice() {
+            [supersession] if supersession.kind == fa_model::SupersessionKind::Reverses => {
+                supersession.target
+            }
+            _ => {
+                return Err(KernelError::Corrupt(format!(
+                    "reversal entry {:032x} does not name exactly one Reverses target",
+                    current_vid.0
+                ))
+                .into());
+            }
+        };
+        let Some((original, original_at)) = entries.get(&target.vid) else {
+            return Err(KernelError::Corrupt(format!(
+                "reversal entry {:032x} names target {:032x} absent from its visible journal prefix",
+                current_vid.0, target.vid.0
+            )).into());
+        };
+        let current_at = entries
+            .get(&current_vid)
+            .map(|(_, at)| *at)
+            .ok_or_else(|| KernelError::Corrupt("reversal absent from its journal index".into()))?;
+        if original.entry_digest != target.entry_digest || *original_at > current_at {
+            return Err(KernelError::Corrupt(format!(
+                "reversal entry {:032x} has a mismatched or later target {:032x}",
+                current_vid.0, target.vid.0
+            ))
+            .into());
+        }
+        current_vid = target.vid;
+        current = original;
+    }
+    Ok((current_vid, current))
 }
 
 /// Candidate periods for a stock position. The actual fold must additionally

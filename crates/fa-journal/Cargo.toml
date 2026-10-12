@@ -11,6 +11,7 @@ publish = false
 workspace = true
 
 [dependencies]
+fa-intents = { path = "../fa-intents", version = "=0.0.1" }
 fa-money = { path = "../fa-money", version = "=0.0.1" }
 fa-time = { path = "../fa-time", version = "=0.0.1" }
 fa-registry = { path = "../fa-registry", version = "=0.0.1" }

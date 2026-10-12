@@ -28,9 +28,6 @@ use crate::dispatch::Reply;
 use crate::errors::{NEVER_REDATE, StructuredError};
 use crate::registry::{StdinKind, ToolCall, ToolSpec};
 
-/// The default principal (`--as`).
-pub const OPERATOR: &str = "operator";
-
 /// An intent a safety refusal (period law) turned away.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RefusedIntent {
@@ -53,16 +50,6 @@ pub struct Planned {
 pub struct Memory {
     pub refused: Vec<RefusedIntent>,
     pub planned: Vec<Planned>,
-}
-
-/// The principal a call acts as (`as`, default operator).
-#[must_use]
-pub fn principal_of(arguments: &JsonValue) -> String {
-    arguments
-        .get("as")
-        .and_then(JsonValue::as_str)
-        .unwrap_or(OPERATOR)
-        .to_string()
 }
 
 /// The inline intent of a posting tool's call, when it has one.
@@ -277,7 +264,7 @@ fn producer(key: &str, path: &[String]) -> Vec<ToolCall> {
     let (tool, command, args) = match key {
         "evidence" | "document_oid" | "oid" => (
             "fa_evidence_import_document",
-            "fa document add <file> --kind Invoice --json",
+            "fa document add - --kind Invoice --json",
             json!({}),
         ),
         "resolves" | "reverses" | "entry" | "vid" => (
@@ -287,8 +274,8 @@ fn producer(key: &str, path: &[String]) -> Vec<ToolCall> {
         ),
         "proposal" => (
             "fa_time_period_transition",
-            "fa period lock <code> --plan-out <file> --json",
-            json!({"plan_out": "<file>"}),
+            "fa period lock <code> --dry-run --json",
+            json!({"transition": "lock", "dry_run": true}),
         ),
         "code" | "period" => ("fa_time_period_status", "fa period list --json", json!({})),
         "account" => ("fa_chart_list_accounts", "fa chart list --json", json!({})),
@@ -465,34 +452,36 @@ pub fn self_approval(
     tool: &ToolSpec,
     arguments: &JsonValue,
     memory: &Memory,
+    principal: &str,
 ) -> Option<StructuredError> {
     if tool.verb != "approve" {
         return None;
     }
     let digest = arguments.get("proposal")?.as_str()?;
-    let who = principal_of(arguments);
     let planned = memory
         .planned
         .iter()
-        .find(|p| p.digest == digest && p.principal == who)?;
+        .find(|p| p.digest == digest && p.principal == principal)?;
     Some(StructuredError::detected(
         "self_approval",
         format!(
             "`{}` planned proposal {} in this session; approving it as `{}` is self-approval (segregation of duties, FA-REF-008)",
-            planned.principal, planned.digest, who
+            planned.principal, planned.digest, principal
         ),
-        "a second approver is a second invocation as another principal: call fa_time_approve with `as` set to a different, admissible principal over the same proposal digest",
-        vec![ToolCall {
-            tool: "fa_time_approve".into(),
-            arguments: json!({"proposal": digest, "as": "<another principal>"}),
-            command: format!("fa approve --proposal {digest} --as <another principal> --json"),
-        }],
+        "an independent approver must use their own authorized session over the same proposal digest; this session cannot change principal or acquire approval authority through tool arguments",
+        Vec::new(),
     ))
 }
 
 /// Record what a dispatch taught: a posting tool's intent turned away by a
 /// safety (period-law) refusal, and a proposal this call planned.
-pub fn remember(memory: &mut Memory, tool: &ToolSpec, arguments: &JsonValue, reply: &Reply) {
+pub fn remember(
+    memory: &mut Memory,
+    tool: &ToolSpec,
+    arguments: &JsonValue,
+    reply: &Reply,
+    principal: &str,
+) {
     if let Some(intent) = intent_of(tool, arguments)
         && reply.exit == 7
         && let Some(date) = intent.get("effective_date").and_then(JsonValue::as_str)
@@ -502,6 +491,12 @@ pub fn remember(memory: &mut Memory, tool: &ToolSpec, arguments: &JsonValue, rep
             .and_then(|e| e.data.get("refusal_id"))
             .and_then(Json::as_str)
             .map(str::to_string);
+        // A bound Agent's trunk refusal (or a missing operation) says
+        // nothing about the effective date. Do not teach a false period
+        // constraint from an unrelated safety refusal.
+        if !matches!(refusal_id.as_deref(), Some("FA-REF-010" | "FA-REF-021")) {
+            return;
+        }
         memory.refused.push(RefusedIntent {
             idempotency_key: intent
                 .get("idempotency_key")
@@ -514,12 +509,14 @@ pub fn remember(memory: &mut Memory, tool: &ToolSpec, arguments: &JsonValue, rep
     }
     if reply.exit == 0 {
         for line in &reply.lines {
-            if line.event == "period_planned"
-                && let Some(digest) = line.data.get("proposal_digest").and_then(Json::as_str)
+            if matches!(
+                line.event.as_str(),
+                "period_planned" | "period_plan" | "plan"
+            ) && let Some(digest) = line.data.get("proposal_digest").and_then(Json::as_str)
             {
                 memory.planned.push(Planned {
                     digest: digest.to_string(),
-                    principal: principal_of(arguments),
+                    principal: principal.to_string(),
                 });
             }
         }
@@ -681,7 +678,7 @@ mod tests {
             "error",
             r#"{"class":"safety","exit":7,"refusal_id":"FA-REF-010","message":"m","cite":"admissibility.toml (Original, Closed)","fix":"post in an Open period, or use the class and capability the cell admits","detail":null}"#,
         );
-        remember(&mut memory, &post, &first, &refused);
+        remember(&mut memory, &post, &first, &refused, "mcp-agent");
         assert_eq!(memory.refused.len(), 1);
         // Same key, new date: caught.
         let redated = intent("2026-03-01", "inv-7", json!("1.00 USD"));
@@ -714,8 +711,25 @@ mod tests {
                 "error",
                 r#"{"class":"refusal","exit":3,"refusal_id":"FA-REF-001","message":"m","cite":"c","fix":"f","detail":null}"#,
             ),
+            "mcp-agent",
         );
         assert!(memory.refused.is_empty());
+        for refusal_id in ["FA-REF-011", "FA-REF-013"] {
+            remember(
+                &mut memory,
+                &post,
+                &first,
+                &reply(
+                    7,
+                    "error",
+                    &format!(
+                        r#"{{"class":"safety","exit":7,"refusal_id":"{refusal_id}","message":"capability refusal","cite":"profile","fix":"ask the operator","detail":null}}"#
+                    ),
+                ),
+                "mcp-agent",
+            );
+            assert!(memory.refused.is_empty(), "{refusal_id} is not period law");
+        }
     }
 
     #[test]
@@ -726,55 +740,118 @@ mod tests {
         let digest = "ab".repeat(32);
         let planned = reply(
             0,
-            "period_planned",
+            "period_plan",
             &format!(
-                r#"{{"period":"FY2026-P01","from":"Closed","to":"Locked","proposal_digest":"{digest}","plan":"p.json"}}"#
+                r#"{{"period":"FY2026-P01","from":"Closed","to":"Locked","proposal_digest":"{digest}","bytes":"ab","scope":"period-transition-proposal"}}"#
             ),
         );
         remember(
             &mut memory,
             &transition,
-            &json!({"transition": "lock", "code": "FY2026-P01", "plan_out": "p.json"}),
+            &json!({"transition": "lock", "code": "FY2026-P01", "dry_run": true}),
             &planned,
+            "planner",
         );
         assert_eq!(
             memory.planned,
             vec![Planned {
                 digest: digest.clone(),
-                principal: OPERATOR.into()
+                principal: "planner".into()
             }]
         );
-        let e = self_approval(&approve, &json!({"proposal": digest}), &memory)
-            .expect("caught: the default principal planned it");
+        let e = self_approval(&approve, &json!({"proposal": digest}), &memory, "planner")
+            .expect("caught: the launch principal planned it");
         assert_eq!(e.detector.as_deref(), Some("self_approval"));
         assert!(
             e.fix_hint
                 .as_deref()
-                .is_some_and(|f| f.contains("different")),
+                .is_some_and(|f| f.contains("independent approver") && !f.contains("`as`")),
             "{:?}",
             e.fix_hint
+        );
+        assert!(
+            e.suggested_tool_calls.is_empty(),
+            "no impersonation suggestion"
         );
         assert!(
             self_approval(
                 &approve,
                 &json!({"proposal": digest, "as": "operator"}),
-                &memory
+                &memory,
+                "planner",
             )
             .is_some()
         );
-        // Another principal, or a proposal planned elsewhere: the kernel decides.
+        // A forged argument cannot change the detector's trusted principal.
         assert!(
             self_approval(
                 &approve,
                 &json!({"proposal": digest, "as": "controller"}),
-                &memory
+                &memory,
+                "planner",
+            )
+            .is_some()
+        );
+        // A separately bound principal, or a proposal planned elsewhere: the kernel decides.
+        assert!(
+            self_approval(
+                &approve,
+                &json!({"proposal": digest}),
+                &memory,
+                "controller"
             )
             .is_none()
         );
-        assert!(self_approval(&approve, &json!({"proposal": "cd".repeat(32)}), &memory).is_none());
         assert!(
-            self_approval(&transition, &json!({"proposal": digest}), &memory).is_none(),
+            self_approval(
+                &approve,
+                &json!({"proposal": "cd".repeat(32)}),
+                &memory,
+                "planner"
+            )
+            .is_none()
+        );
+        assert!(
+            self_approval(
+                &transition,
+                &json!({"proposal": digest}),
+                &memory,
+                "planner"
+            )
+            .is_none(),
             "only approve"
+        );
+        let post_digest = "ef".repeat(32);
+        remember(
+            &mut memory,
+            &tool("fa_post_post"),
+            &json!({"intent": {}, "dry_run": true}),
+            &reply(
+                0,
+                "plan",
+                &format!(r#"{{"proposal_digest":"{post_digest}"}}"#),
+            ),
+            "planner",
+        );
+        assert!(
+            self_approval(
+                &approve,
+                &json!({"proposal": post_digest, "as": "controller"}),
+                &memory,
+                "planner",
+            )
+            .is_some(),
+            "a forged argument cannot change the principal who planned the PostEntry"
+        );
+        assert!(
+            self_approval(
+                &approve,
+                &json!({"proposal": post_digest}),
+                &memory,
+                "controller",
+            )
+            .is_none(),
+            "only a separately bound principal can be independent"
         );
     }
 }

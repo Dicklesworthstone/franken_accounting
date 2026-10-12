@@ -321,6 +321,8 @@ pub enum BookError {
     Registers(fa_registers::RegisterError),
     Registry(fa_registry::RegistryError),
     Entropy(EntropyError),
+    /// The substrate refused a native read needed by a report certificate.
+    CertifiedRead(fgdb::QueryError),
 }
 
 impl BookError {
@@ -338,7 +340,8 @@ impl BookError {
             | Self::Kernel(_)
             | Self::Registers(_)
             | Self::Registry(_)
-            | Self::Entropy(_) => fa_journal::exit::FOUNDATION,
+            | Self::Entropy(_)
+            | Self::CertifiedRead(_) => fa_journal::exit::FOUNDATION,
         }
     }
 }
@@ -356,6 +359,7 @@ impl fmt::Display for BookError {
             Self::Registers(e) => write!(f, "{e}"),
             Self::Registry(e) => write!(f, "registry: {e}"),
             Self::Entropy(e) => write!(f, "entropy: {e:?}"),
+            Self::CertifiedRead(e) => write!(f, "certified report input: {e}"),
         }
     }
 }
@@ -629,6 +633,41 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.post(&purposes, req)))
     }
 
+    /// Rehearse an intent through the posting kernel without publishing.
+    ///
+    /// The portable plan retains the original sealed proposal and approvals,
+    /// and binds the actual staged effects to this book's current sequence
+    /// and the supplied capability. This first slice requires any necessary
+    /// approvals to exist already; an intervening publication requires a new
+    /// plan. Planning neither records an entry nor consumes its idempotency key.
+    pub fn plan(
+        &mut self,
+        intent: fa_intents::PostIntent,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_intents::PostPlan> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => core.plan(&purposes, intent, capability))
+    }
+
+    /// Commit the exact rehearsed intent under the caller's current authority.
+    ///
+    /// The kernel authenticates the plan, repeats its accounting and authority
+    /// checks, and compares the staged effects before publishing. It retains
+    /// the plan as an immutable graph certificate linked to the entry in the
+    /// same transaction. Its public digest is a locator, not a native object
+    /// ID; the entry's native `plan_certificate` envelope field remains absent.
+    /// An exact retry returns the original recorded entry without writing.
+    pub fn commit_plan(
+        &mut self,
+        plan: fa_intents::PostPlan,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<Posted> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.commit_plan(
+            &purposes, plan, capability,
+        )))
+    }
+
     /// Post with a balancing leg (plan §5.5): leg `leg` moves at most what its
     /// account's limit admits, decided inside the posting transaction; the
     /// request is the entry's identity (`fa post --balancing`).
@@ -877,6 +916,15 @@ impl Book {
 
     /// Read `oid` as `capability` may see it: the verified bytes when it
     /// reveals them or nothing is privileged, otherwise the redacted view.
+    /// Document bytes have no ungated facade method (FA-INV-10, plan §9.6).
+    ///
+    /// ```
+    /// let _ = fa::Book::read_document_for;
+    /// ```
+    ///
+    /// ```compile_fail,E0599
+    /// let _ = fa::Book::read_document;
+    /// ```
     pub fn read_document_for(
         &mut self,
         capability: &fa_journal::Capability,
@@ -893,19 +941,25 @@ impl Book {
         with_store!(&self.store, core => core.legal_holds_on(&self.purposes(), subject))
     }
 
-    /// The document at `oid`, verified against its commitment.
-    pub fn read_document(&self, oid: &fa_model::Oid) -> Outcome<Option<fa_journal::Document>> {
-        let purposes = self.purposes();
-        with_store!(&self.store, core => self.runtime.block_on(core.read_document(&purposes, oid)))
-    }
-
-    /// The document's verified record (kind, grade, size, commitment, and
-    /// where its bytes are) without fetching the bytes.
-    pub fn document_record(
-        &self,
+    /// The document's public commitment, without reading its byte payload.
+    /// This is an identity-checked mirror for citation completion, not a
+    /// payload verification; the posting kernel verifies cited documents.
+    ///
+    /// ```
+    /// let _ = fa::Book::document_commitment;
+    /// ```
+    ///
+    /// An ungated record would expose `Storage::Inline` bytes:
+    ///
+    /// ```compile_fail,E0599
+    /// let _ = fa::Book::document_record;
+    /// ```
+    pub fn document_commitment(
+        &mut self,
         oid: &fa_model::Oid,
-    ) -> Result<Option<fa_journal::DocumentRecord>, BookError> {
-        with_store!(&self.store, core => core.document_record(&self.purposes(), oid))
+    ) -> Result<Option<[u8; 32]>, BookError> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => core.document_commitment(&purposes, oid))
     }
 
     /// Record a `Reviewed` attestation over the document at `document`
@@ -1027,6 +1081,124 @@ impl Book {
         with_store!(&self.store, core => core.fold_period(&self.purposes(), period_code))
     }
 
+    /// Certify a trial balance without writing to the book. Retain the returned
+    /// canonical certificate bytes to replay the exact historical report.
+    pub fn certify_trial_balance(
+        &self,
+        selection: crate::TrialBalanceSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CertifiedTrialBalance> {
+        with_store!(&self.store, core => core.certify_trial_balance(&self.purposes(), selection, known_at))
+    }
+
+    /// Certify a trial balance, balance explanation or open-item report at one
+    /// retained sequence. Creating the certificate does not write to the book.
+    pub fn certify_report(
+        &self,
+        selection: crate::ReportSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CertifiedReport> {
+        with_store!(&self.store, core => core.certify_report(&self.purposes(), selection, known_at))
+    }
+
+    /// Evaluate an exact financial statement and optional comparative from
+    /// authoritative journal payloads, without publishing any object.
+    pub fn statement(
+        &self,
+        selection: crate::StatementSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::Statement> {
+        with_store!(&self.store, core => core.statement(&self.purposes(), selection, known_at))
+    }
+
+    /// Certify the complete statement definition, chart partition, historical
+    /// period columns and exact native-unit amounts without writing the book.
+    pub fn certify_statement(
+        &self,
+        selection: crate::StatementSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CertifiedStatement> {
+        with_store!(&self.store, core => core.certify_statement(&self.purposes(), selection, known_at))
+    }
+
+    pub fn certify_statement_at_instant(
+        &self,
+        selection: crate::StatementSelection,
+        requested_utc_ns: u64,
+    ) -> Outcome<crate::CertifiedStatement> {
+        with_store!(&self.store, core => core.certify_statement_at_instant(&self.purposes(), selection, requested_utc_ns))
+    }
+
+    /// Resolve a UTC instant from retained ticks without reading a clock.
+    /// Keep the returned frontier and brackets with the resolved sequence.
+    pub fn resolve_known_at_instant(
+        &self,
+        requested_utc_ns: u64,
+    ) -> Outcome<fa_journal::InstantSelection> {
+        with_store!(&self.store, core => core.resolve_known_at_instant(&self.purposes(), requested_utc_ns))
+    }
+
+    /// Certify a trial balance selected by a TimeEvidence instant. Replay
+    /// preserves its original resolution even after later ticks are recorded.
+    pub fn certify_trial_balance_at_instant(
+        &self,
+        selection: crate::TrialBalanceSelection,
+        requested_utc_ns: u64,
+    ) -> Outcome<crate::CertifiedTrialBalance> {
+        with_store!(&self.store, core => core.certify_trial_balance_at_instant(&self.purposes(), selection, requested_utc_ns))
+    }
+
+    /// Certify any supported report with the original TimeEvidence frontier
+    /// and tick brackets attached to its resolved historical sequence.
+    pub fn certify_report_at_instant(
+        &self,
+        selection: crate::ReportSelection,
+        requested_utc_ns: u64,
+    ) -> Outcome<crate::CertifiedReport> {
+        with_store!(&self.store, core => core.certify_report_at_instant(&self.purposes(), selection, requested_utc_ns))
+    }
+
+    /// Replay the report family and exact historical output selected by a
+    /// certificate, including its account metadata and any time resolution.
+    pub fn replay_report(
+        &self,
+        certificate: &crate::ReportCertificate,
+    ) -> Outcome<crate::ReportOutput> {
+        with_store!(&self.store, core => core.replay_report(&self.purposes(), certificate))
+    }
+
+    /// Reproduce the report at the certificate's fixed known-at sequence,
+    /// refusing changed inputs, unavailable history or different output bytes.
+    pub fn replay_trial_balance(
+        &self,
+        certificate: &crate::ReportCertificate,
+    ) -> Outcome<TrialBalance> {
+        with_store!(&self.store, core => core.replay_trial_balance(&self.purposes(), certificate))
+    }
+
+    pub fn certificate_status(
+        &self,
+        certificate: &crate::ReportCertificate,
+    ) -> Outcome<crate::CertificateStatus> {
+        with_store!(&self.store, core => core.certificate_status(&self.purposes(), certificate))
+    }
+
+    /// Persist a certificate lazily as an immutable object in this book.
+    /// Exact retries return the original storage sequence without a write.
+    /// The report's known-at coordinate does not change when it is retained.
+    pub fn retain_certificate(
+        &mut self,
+        certificate: &crate::ReportCertificate,
+    ) -> Outcome<crate::RetainedCertificate> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.retain_certificate(&purposes, certificate)))
+    }
+
+    /// Load a retained artifact by its full public certificate digest.
+    pub fn read_certificate(&self, digest: &[u8; 32]) -> Outcome<crate::ReportCertificate> {
+        with_store!(&self.store, core => core.read_certificate(&self.purposes(), digest))
+    }
+
     /// Materialize a period's registers from a fresh fold.
     pub fn materialize_registers(
         &mut self,
@@ -1134,6 +1306,27 @@ impl Book {
         with_store!(&self.store, core => core.open_items(&self.purposes(), account, known_at))
     }
 
+    /// Fold open items together with the account metadata visible at the same
+    /// sequence. The resolved coordinate and optional account filter are part
+    /// of the report, so historical rendering never consults today's chart.
+    pub fn open_items_report(
+        &self,
+        account: Option<VId>,
+        known_at: Option<CommitSeq>,
+    ) -> Result<crate::OpenItemsReport, BookError> {
+        with_store!(&self.store, core => core.open_items_report(&self.purposes(), account, known_at))
+    }
+
+    /// Compare immutable leg mirrors and topology with canonical entry payloads.
+    /// `None` selects the current head; an explicit sequence checks that prefix.
+    /// Drift is reported without changing the book.
+    pub fn verify_projections(
+        &self,
+        known_at: Option<CommitSeq>,
+    ) -> Result<fa_journal::ProjectionVerification, BookError> {
+        with_store!(&self.store, core => core.verify_projections(&self.purposes(), known_at))
+    }
+
     /// Compare every posted leg's `applied` mirror with the open-item fold.
     pub fn verify_open_items(&self) -> Result<OpenItemVerification, BookError> {
         with_store!(&self.store, core => core.verify_open_items(&self.purposes()))
@@ -1216,6 +1409,17 @@ mod tests {
     use fa_money::{Amount, Side};
     use fa_time::{FiscalCalendar, PeriodKind};
     use fgdb_sim::vfs::{FaultKind, FaultPlan, FaultVfs, Trigger};
+
+    /// Storage-layout verification only: tests already own the book's keys
+    /// and inspect its private database. Never exposed through the facade.
+    fn storage_record(book: &Book, oid: &Oid) -> fa_journal::DocumentRecord {
+        let query = book.purposes().query();
+        query.checkpoint().unwrap();
+        query.with_restriction(|| {
+            with_store!(&book.store, core => fa_journal::document_record(&core.db, oid)
+                .unwrap().expect("stored document"))
+        })
+    }
 
     fn under_lab<T, Fut>(seed: u64, test: impl FnOnce(Cx) -> Fut + Send + 'static) -> T
     where
@@ -1452,13 +1656,13 @@ mod tests {
             assert_eq!(entry.entry_digest, posted.entry_ref().entry_digest);
             assert_eq!(book.fold_period(&cx, &march).unwrap(), before);
             assert!(book.verify_registers(&cx, &march).unwrap().is_green());
+            let reader = Capability::embedded(principal, &["read", "privileged"]).unwrap();
             let document = book
-                .read_document(&cx, &evidence.document_oid)
+                .read_document_for(&cx, &reader, &evidence.document_oid)
                 .await
                 .unwrap()
-                .unwrap()
                 .unwrap();
-            assert_eq!(document.bytes, source.bytes);
+            assert_eq!(document, fa_journal::DocumentRead::Full(source.clone()));
             assert!(matches!(
                 book.post(&cx, request).await.unwrap().unwrap(),
                 Posted::AlreadyRecorded { .. }
@@ -1480,7 +1684,7 @@ mod tests {
             .await
             .unwrap();
             let replay_events_start = vfs.events().len();
-            let (scratch, map) = book
+            let (mut scratch, map) = book
                 .replay_into(
                     &cx,
                     scratch_db,
@@ -1499,13 +1703,11 @@ mod tests {
             );
             assert_eq!(
                 scratch
-                    .read_document(&cx, &evidence.document_oid)
+                    .read_document_for(&cx, &reader, &evidence.document_oid)
                     .await
                     .unwrap()
-                    .unwrap()
-                    .unwrap()
-                    .bytes,
-                source.bytes
+                    .unwrap(),
+                fa_journal::DocumentRead::Full(source)
             );
             assert_eq!(book.head(&cx).unwrap(), source_head);
             let events = vfs.events();
@@ -2847,6 +3049,7 @@ mod tests {
         // a child invocation matching zero tests from satisfying the oracle.
         const CHILD: &str = "FA_RELATIVE_BOOK_ROOT_CHILD";
         let keys = BookKeys::for_development(0x64);
+        let reader = Capability::embedded(VId(3), &["read", "privileged"]).unwrap();
         let document = |byte| fa_journal::Document {
             book_id: Id128([0x64; 16]),
             kind: 1,
@@ -2867,12 +3070,14 @@ mod tests {
             let first = document(b'c');
             let added = book.add_document(&first).unwrap().unwrap();
             assert!(matches!(
-                book.document_record(&added.oid).unwrap().unwrap().storage,
+                storage_record(&book, &added.oid).storage,
                 fa_journal::Storage::External { .. }
             ));
             assert_eq!(
-                book.read_document(&added.oid).unwrap().unwrap(),
-                Some(first)
+                book.read_document_for(&reader, &added.oid)
+                    .unwrap()
+                    .unwrap(),
+                fa_journal::DocumentRead::Full(first)
             );
             let head = book.head().unwrap();
             drop(book);
@@ -2885,12 +3090,14 @@ mod tests {
             let second = document(b'o');
             let added = book.add_document(&second).unwrap().unwrap();
             assert!(matches!(
-                book.document_record(&added.oid).unwrap().unwrap().storage,
+                storage_record(&book, &added.oid).storage,
                 fa_journal::Storage::External { .. }
             ));
             assert_eq!(
-                book.read_document(&added.oid).unwrap().unwrap(),
-                Some(second)
+                book.read_document_for(&reader, &added.oid)
+                    .unwrap()
+                    .unwrap(),
+                fa_journal::DocumentRead::Full(second)
             );
             return;
         }
@@ -2916,15 +3123,19 @@ mod tests {
             String::from_utf8_lossy(&child.stdout),
             String::from_utf8_lossy(&child.stderr)
         );
-        let reopened = Book::open_dir(&dir.join("nested/book"), keys, Entropy::deterministic(31))
-            .expect("the child created a reopenable book under its relative path");
+        let mut reopened =
+            Book::open_dir(&dir.join("nested/book"), keys, Entropy::deterministic(31))
+                .expect("the child created a reopenable book under its relative path");
         assert_eq!(reopened.context().book_id, Id128([0x64; 16]));
         assert!(reopened.head().unwrap().0 > 0);
         for byte in *b"co" {
             let source = document(byte);
             assert_eq!(
-                reopened.read_document(&source.oid()).unwrap().unwrap(),
-                Some(source),
+                reopened
+                    .read_document_for(&reader, &source.oid())
+                    .unwrap()
+                    .unwrap(),
+                fa_journal::DocumentRead::Full(source),
                 "an absolute reopen reads bytes attached after a cwd change"
             );
         }
@@ -3425,6 +3636,1792 @@ mod tests {
         ]
     }
 
+    fn certified_fixture() -> (Book, fa_money::UnitId, DateDay, VId) {
+        let (spec, usd) = spec(Id128([0xc1; 16]));
+        let mut book = Book::create_memory(
+            BookKeys::for_development(0xc1),
+            spec,
+            Entropy::deterministic(193),
+        )
+        .unwrap();
+        let principal = VId(1);
+        let day = DateDay::from_ymd(2026, 3, 15).unwrap();
+        book.install_chart(&chart(usd), principal, day, b"cert-chart")
+            .unwrap()
+            .unwrap();
+        book.create_periods(2026).unwrap();
+        for (code, date) in [
+            ("FY2026-P03", day),
+            ("FY2026-P04", DateDay::from_ymd(2026, 4, 1).unwrap()),
+        ] {
+            book.transition_period(
+                code,
+                PeriodTransition::Open,
+                principal,
+                1,
+                date,
+                code.as_bytes(),
+                &Capability::embedded(principal, &["close"]).unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        }
+        let posted = post_rent(&mut book, usd, principal, day, b"cert-rent", 150_000)
+            .unwrap()
+            .unwrap();
+        (book, usd, day, posted.entry_ref().vid)
+    }
+
+    fn certificate_tick(book: &mut Book, ns: u64, monotonic_ok: bool) -> fa_journal::Ticked {
+        let (runtime, root) = Book::runtime_and_root().unwrap();
+        let witness = Capability::embedded(VId(1), &["witness"]).unwrap();
+        runtime
+            .block_on(book.record_tick(&root, ns, monotonic_ok, &witness))
+            .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn instant_certificates_keep_their_original_frontier_and_tick_brackets() {
+        use crate::{ReportCertificate, TrialBalanceSelection};
+        let (mut book, usd, day, _) = certified_fixture();
+        let selection = TrialBalanceSelection::Periods(vec!["FY2026-P03".into()]);
+        let base = fa_time::UtcInstant::parse("2026-03-15T00:00:00Z")
+            .unwrap()
+            .unix_ns();
+        let refused = book.resolve_known_at_instant(base).unwrap().unwrap_err();
+        assert_eq!((refused.code, refused.exit), ("FA-REF-151", 3));
+
+        let lower = certificate_tick(&mut book, base + 100, true);
+        post_rent(&mut book, usd, VId(1), day, b"inside-first-bucket", 150_000)
+            .unwrap()
+            .unwrap();
+        let frontier = book.head().unwrap();
+        let open = book
+            .certify_trial_balance_at_instant(selection.clone(), base + 105)
+            .unwrap()
+            .unwrap();
+        let evidence = open.certificate.time_selection.as_ref().unwrap();
+        assert_eq!(evidence.resolution.frontier, frontier.0);
+        assert_eq!(evidence.resolution.resolved_seq, frontier.0);
+        assert_eq!(evidence.lower_entry, lower.tick.entry);
+        assert!(evidence.resolution.upper.is_none());
+        assert!(evidence.upper_entry.is_none());
+        assert_eq!(open.report.unit_totals[&usd.0], (300_000, 300_000));
+        assert_eq!(book.head().unwrap(), frontier, "certification is read-only");
+
+        // New commits can extend a still-open bucket. Its earlier certificate
+        // must replay the old frontier, even after an upper tick later arrives.
+        post_rent(&mut book, usd, VId(1), day, b"extend-open-bucket", 150_000)
+            .unwrap()
+            .unwrap();
+        let before_upper = book.head().unwrap();
+        let upper = certificate_tick(&mut book, base + 110, false);
+        post_rent(&mut book, usd, VId(1), day, b"after-upper-tick", 150_000)
+            .unwrap()
+            .unwrap();
+        let current = book.head().unwrap();
+        let closed = book
+            .certify_trial_balance_at_instant(selection.clone(), base + 105)
+            .unwrap()
+            .unwrap();
+        let time = closed.certificate.time_selection.as_ref().unwrap();
+        assert_eq!(time.resolution.frontier, current.0);
+        assert_eq!(time.resolution.resolved_seq, before_upper.0);
+        assert_eq!(time.upper_entry, Some(upper.tick.entry));
+        assert_eq!(
+            time.resolution.upper.unwrap().recorded_at,
+            upper.recorded_at.0
+        );
+        assert_eq!(time.resolution.precision_grade(), "tick_bucket");
+        assert_eq!(
+            time.resolution.source_grade(),
+            "uncorroborated_daemon_clock"
+        );
+        assert_eq!(closed.report.unit_totals[&usd.0], (450_000, 450_000));
+        assert_eq!(
+            book.trial_balance(&["FY2026-P03".into()])
+                .unwrap()
+                .unit_totals[&usd.0],
+            (600_000, 600_000)
+        );
+
+        for saved in [&open, &closed] {
+            let encoded = saved.certificate.canonical_bytes().unwrap();
+            assert!(encoded.starts_with(crate::certificate::INSTANT_CERTIFICATE_FORMAT));
+            let decoded = ReportCertificate::decode(&encoded).unwrap();
+            assert_eq!(decoded, saved.certificate);
+            assert_eq!(
+                book.replay_trial_balance(&decoded).unwrap().unwrap(),
+                saved.report
+            );
+        }
+        assert_eq!(book.head().unwrap(), current, "replay appends nothing");
+        let exact = book.resolve_known_at_instant(base + 110).unwrap().unwrap();
+        assert_eq!(exact.lower_entry, upper.tick.entry);
+        assert_eq!(exact.resolution.resolved_seq, current.0);
+        assert!(exact.upper_entry.is_none());
+        let before_first = book
+            .resolve_known_at_instant(base + 99)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((before_first.code, before_first.exit), ("FA-REF-151", 3));
+
+        // A self-consistent rehash cannot substitute a different tick identity.
+        let mut forged = closed.certificate.clone();
+        forged.time_selection.as_mut().unwrap().lower_entry = VId(0xdead);
+        let raw = forged.canonical_bytes().unwrap();
+        let mut hasher = fgdb_crypto::Hasher::new();
+        hasher.update(crate::certificate::INSTANT_CERTIFICATE_FORMAT);
+        hasher.update(&raw[..raw.len() - 32]);
+        forged.digest = hasher.finalize().0;
+        let decoded = ReportCertificate::decode(&forged.canonical_bytes().unwrap()).unwrap();
+        let refusal = book.replay_trial_balance(&decoded).unwrap().unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
+
+        let sequence = book
+            .certify_trial_balance(selection, Some(frontier))
+            .unwrap()
+            .unwrap();
+        assert!(sequence.certificate.time_selection.is_none());
+        assert!(
+            sequence
+                .certificate
+                .canonical_bytes()
+                .unwrap()
+                .starts_with(crate::certificate::CERTIFICATE_FORMAT)
+        );
+        assert_eq!(sequence.report, open.report);
+    }
+
+    #[test]
+    fn instant_certificate_replay_checks_upper_tick_beyond_the_report_prefix() {
+        use crate::TrialBalanceSelection;
+        use fa_model::symbols::{property, relation};
+        for retire in [false, true] {
+            let (mut book, _, day, _) = certified_fixture();
+            let base = fa_time::UtcInstant::parse("2026-03-15T00:00:00Z")
+                .unwrap()
+                .unix_ns();
+            certificate_tick(&mut book, base + 100, true);
+            let upper = certificate_tick(&mut book, base + 110, true);
+            let certificate = book
+                .certify_trial_balance_at_instant(TrialBalanceSelection::AsOf(day), base + 105)
+                .unwrap()
+                .unwrap()
+                .certificate;
+            let frontier = CommitSeq(
+                certificate
+                    .time_selection
+                    .as_ref()
+                    .unwrap()
+                    .resolution
+                    .frontier,
+            );
+            assert!(certificate.known_at < upper.recorded_at);
+            assert!(book.replay_trial_balance(&certificate).unwrap().is_ok());
+
+            // The upper bracket lies outside the report's native read closure.
+            // Its later alteration must still invalidate the time interpretation.
+            let contexts = book.purposes();
+            let mut change = fgdb::WriteBatch::new(relation::HAS_LEG);
+            if retire {
+                change.delete_vertex(upper.entry_ref.vid);
+            } else {
+                change.set_vertex_property(
+                    upper.entry_ref.vid,
+                    property::FA_PAYLOAD,
+                    Some(fgdb_types::CanonicalScalar::bytes(b"rewritten tick".to_vec()).unwrap()),
+                );
+            }
+            with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&contexts.commit(), change))).unwrap();
+            let historical =
+                with_store!(&book.store, core => core.db.vertex_at(upper.entry_ref.vid, frontier))
+                    .unwrap()
+                    .unwrap();
+            let old = Entry::decode(
+                &fa_journal::rows::bytes(&historical, property::FA_PAYLOAD, "tick.payload")
+                    .unwrap(),
+            )
+            .unwrap();
+            assert!(matches!(
+                old.proposal.control,
+                Some(fa_model::ControlPayload::TimeTick { observed_utc_ns, .. })
+                    if observed_utc_ns == base + 110
+            ));
+            let head = book.head().unwrap();
+            let refusal = book
+                .replay_trial_balance(&certificate)
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(refusal.code, crate::certificate::code::CERTIFICATE_INVALID);
+            assert_eq!(refusal.exit, fa_journal::exit::VERIFICATION);
+            assert!(book.certificate_status(&certificate).unwrap().is_err());
+            assert_eq!(
+                book.head().unwrap(),
+                head,
+                "failed reads never repair or append"
+            );
+        }
+    }
+
+    #[test]
+    fn certified_trial_balance_replays_after_later_and_backdated_postings() {
+        use crate::{CertificateStatus, ReportCertificate, TrialBalanceSelection};
+        let (mut book, usd, day, _) = certified_fixture();
+        let before = book.head().unwrap();
+        let selection = TrialBalanceSelection::Periods(vec!["FY2026-P03".into()]);
+        let certified = book
+            .certify_trial_balance(selection.clone(), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            book.head().unwrap(),
+            before,
+            "certification must not write to its input book"
+        );
+        assert_eq!(certified.report.known_at, before);
+        assert_eq!(certified.report.unit_totals[&usd.0], (150_000, 150_000));
+        assert_eq!(
+            certified.certificate.inputs.len(),
+            7,
+            "metadata is part of the certified closure"
+        );
+        assert!(
+            certified
+                .certificate
+                .inputs
+                .iter()
+                .all(|input| input.plan.snapshot_seq == before)
+        );
+        let serialized = certified.certificate.canonical_bytes().unwrap();
+        let certificate = ReportCertificate::decode(&serialized).unwrap();
+        assert_eq!(certificate, certified.certificate);
+        assert_eq!(
+            book.replay_trial_balance(&certificate).unwrap().unwrap(),
+            certified.report
+        );
+        assert!(matches!(
+            book.certificate_status(&certificate).unwrap().unwrap(),
+            CertificateStatus::Current { .. }
+        ));
+        // Repeated selections normalize to exactly the same artifact at the
+        // same sequence, independent of caller spelling/order.
+        let duplicate = book
+            .certify_trial_balance(
+                TrialBalanceSelection::Periods(vec!["FY2026-P03".into(), "FY2026-P03".into()]),
+                Some(before),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(duplicate.certificate.canonical_bytes().unwrap(), serialized);
+
+        post_rent(
+            &mut book,
+            usd,
+            VId(1),
+            DateDay::from_ymd(2026, 4, 15).unwrap(),
+            b"later-april",
+            150_000,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(matches!(
+            book.certificate_status(&certificate).unwrap().unwrap(),
+            CertificateStatus::Current { .. }
+        ));
+        assert_eq!(
+            book.replay_trial_balance(&certificate)
+                .unwrap()
+                .unwrap()
+                .canonical_bytes()
+                .unwrap(),
+            certificate.output
+        );
+        let backdated = post_rent(&mut book, usd, VId(1), day, b"backdated-march", 150_000)
+            .unwrap()
+            .unwrap();
+        match book.certificate_status(&certificate).unwrap().unwrap() {
+            CertificateStatus::SupersededBy {
+                later_entries,
+                checked_at,
+            } => {
+                assert_eq!(later_entries, vec![backdated.entry_ref().vid]);
+                assert_eq!(checked_at, book.head().unwrap());
+            }
+            state => panic!("backdated in-scope posting did not supersede report: {state:?}"),
+        }
+        assert_eq!(
+            book.trial_balance(&["FY2026-P03".into()])
+                .unwrap()
+                .unit_totals[&usd.0],
+            (300_000, 300_000)
+        );
+        assert_eq!(
+            book.replay_trial_balance(&certificate).unwrap().unwrap(),
+            certified.report,
+            "replay must never replace the certified coordinate with HEAD"
+        );
+        assert_eq!(
+            book.certify_trial_balance(selection, Some(before))
+                .unwrap()
+                .unwrap()
+                .certificate
+                .canonical_bytes()
+                .unwrap(),
+            serialized
+        );
+    }
+
+    #[test]
+    fn generic_certificates_replay_exact_reports_and_retain_each_report_family() {
+        use crate::{CertificateStatus, ReportCertificate, ReportOutput, ReportSelection};
+        let (mut book, _, day, _) = certified_fixture();
+        let cash = account_vid(book.context().book_id, "1000");
+        let at = book.head().unwrap();
+        let expected = [
+            ReportOutput::ExplainBalance(Box::new(
+                book.explain_balance(cash, "FY2026-P03", Some(at)).unwrap(),
+            )),
+            ReportOutput::OpenItems(book.open_items_report(Some(cash), Some(at)).unwrap()),
+            ReportOutput::OpenItems(book.open_items_report(None, Some(at)).unwrap()),
+        ];
+        let selections = [
+            ReportSelection::ExplainBalance {
+                account: cash,
+                period: "FY2026-P03".into(),
+            },
+            ReportSelection::OpenItems {
+                account: Some(cash),
+            },
+            ReportSelection::OpenItems { account: None },
+        ];
+        let mut certified = Vec::new();
+        for (selection, expected) in selections.into_iter().zip(expected) {
+            let result = book
+                .certify_report(selection.clone(), Some(at))
+                .unwrap()
+                .unwrap();
+            assert_eq!(result.report, expected);
+            assert_eq!(result.report.known_at(), at);
+            assert_eq!(result.certificate.known_at, at);
+            assert_eq!(result.certificate.selection, selection);
+            assert_eq!(
+                result.certificate.output,
+                result.report.canonical_bytes().unwrap()
+            );
+            assert_eq!(
+                result.certificate.output_format(),
+                selection.output_format()
+            );
+            assert!(result.certificate.time_selection.is_none());
+            let bytes = result.certificate.canonical_bytes().unwrap();
+            assert!(bytes.starts_with(crate::certificate::REPORT_CERTIFICATE_FORMAT));
+            assert_eq!(
+                ReportCertificate::decode(&bytes).unwrap(),
+                result.certificate
+            );
+            assert_eq!(
+                book.replay_report(&result.certificate).unwrap().unwrap(),
+                result.report
+            );
+            assert_eq!(
+                book.replay_trial_balance(&result.certificate)
+                    .unwrap()
+                    .unwrap_err()
+                    .code,
+                crate::certificate::code::CERTIFICATE_INVALID,
+                "the typed trial-balance API must refuse a different report family"
+            );
+            certified.push(result);
+        }
+        assert_eq!(
+            book.head().unwrap(),
+            at,
+            "certification and replay are reads"
+        );
+        assert_ne!(
+            certified[1].certificate.digest, certified[2].certificate.digest,
+            "the account filter is part of the certificate identity"
+        );
+        for result in certified {
+            let retained = book
+                .retain_certificate(&result.certificate)
+                .unwrap()
+                .unwrap();
+            let loaded = book.read_certificate(&retained.digest).unwrap().unwrap();
+            assert_eq!(loaded, result.certificate);
+            assert_eq!(book.replay_report(&loaded).unwrap().unwrap(), result.report);
+            assert_eq!(book.retain_certificate(&loaded).unwrap().unwrap(), retained);
+            assert_eq!(book.head().unwrap(), retained.recorded_at);
+            assert_eq!(
+                book.certificate_status(&loaded).unwrap().unwrap(),
+                CertificateStatus::Current {
+                    checked_at: retained.recorded_at,
+                }
+            );
+        }
+        // Trial-balance callers retain the original sequence wire version.
+        let trial = book
+            .certify_report(crate::TrialBalanceSelection::AsOf(day).into(), Some(at))
+            .unwrap()
+            .unwrap();
+        assert!(
+            trial
+                .certificate
+                .canonical_bytes()
+                .unwrap()
+                .starts_with(crate::certificate::CERTIFICATE_FORMAT)
+        );
+        assert_eq!(
+            trial.report,
+            ReportOutput::TrialBalance(book.balance_as_of(day, Some(at)).unwrap())
+        );
+    }
+
+    #[test]
+    fn report_status_respects_account_filters_and_the_complete_explanation_fold() {
+        use crate::{CertificateStatus, ReportSelection};
+        let (mut book, usd, day, original) = certified_fixture();
+        let book_id = book.context().book_id;
+        let cash = account_vid(book_id, "1000");
+        let explanation = book
+            .certify_report(
+                ReportSelection::ExplainBalance {
+                    account: cash,
+                    period: "FY2026-P03".into(),
+                },
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        let filtered = book
+            .certify_report(
+                ReportSelection::OpenItems {
+                    account: Some(cash),
+                },
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        let all = book
+            .certify_report(ReportSelection::OpenItems { account: None }, None)
+            .unwrap()
+            .unwrap();
+        let accounts = [
+            AccountSpec {
+                code: "2000".into(),
+                name: "Other asset".into(),
+                account_type: 1,
+                normal_balance: 0,
+                is_leaf: true,
+                unit_policy: UnitPolicy::Single(usd),
+                parent_code: None,
+                limit: None,
+            },
+            AccountSpec {
+                code: "7000".into(),
+                name: "Other expense".into(),
+                account_type: 5,
+                normal_balance: 0,
+                is_leaf: true,
+                unit_policy: UnitPolicy::Single(usd),
+                parent_code: None,
+                limit: None,
+            },
+        ];
+        book.install_chart(&accounts, VId(1), day, b"additional-report-accounts")
+            .unwrap()
+            .unwrap();
+        for result in [&explanation, &filtered, &all] {
+            assert!(
+                matches!(
+                    book.certificate_status(&result.certificate)
+                        .unwrap()
+                        .unwrap(),
+                    CertificateStatus::Current { .. }
+                ),
+                "unrelated accounts with no contributions do not change rendered reports"
+            );
+        }
+        let mut proposal = book.read_entry(original).unwrap().unwrap().0.proposal;
+        proposal.idempotency_key = b"other-accounts-same-period".to_vec();
+        for leg in &mut proposal.legs {
+            leg.account_ref = if leg.account_ref == cash {
+                account_vid(book_id, "2000")
+            } else {
+                account_vid(book_id, "7000")
+            };
+        }
+        let later = book
+            .post(PostRequest {
+                proposal,
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: Capability::embedded(VId(1), &["post"]).unwrap(),
+            })
+            .unwrap()
+            .unwrap()
+            .entry_ref()
+            .vid;
+        assert!(
+            matches!(
+                book.certificate_status(&filtered.certificate)
+                    .unwrap()
+                    .unwrap(),
+                CertificateStatus::Current { .. }
+            ),
+            "the filtered open-item report excludes other accounts"
+        );
+        for result in [&explanation, &all] {
+            assert!(
+                matches!(
+                    book.certificate_status(&result.certificate).unwrap().unwrap(),
+                    CertificateStatus::SupersededBy { later_entries, .. }
+                        if later_entries == vec![later]
+                ),
+                "an explanation binds the whole period fold; unfiltered open items include every account"
+            );
+        }
+        for result in [&explanation, &filtered, &all] {
+            assert_eq!(
+                book.replay_report(&result.certificate).unwrap().unwrap(),
+                result.report,
+                "a superseded report still replays its exact original output"
+            );
+        }
+        let april = post_rent(
+            &mut book,
+            usd,
+            VId(1),
+            DateDay::from_ymd(2026, 4, 15).unwrap(),
+            b"april-open-item",
+            150_000,
+        )
+        .unwrap()
+        .unwrap()
+        .entry_ref()
+        .vid;
+        assert!(
+            matches!(
+                book.certificate_status(&explanation.certificate).unwrap().unwrap(),
+                CertificateStatus::SupersededBy { later_entries, .. }
+                    if later_entries == vec![later]
+            ),
+            "an April posting does not add to the March explanation's affected entries"
+        );
+        assert!(
+            matches!(
+                book.certificate_status(&filtered.certificate).unwrap().unwrap(),
+                CertificateStatus::SupersededBy { later_entries, .. }
+                    if later_entries == vec![april]
+            ),
+            "open items have no effective-date cutoff"
+        );
+    }
+
+    #[test]
+    fn report_replay_keeps_historical_account_metadata_and_status_refuses_rebinding() {
+        use crate::{ReportOutput, ReportSelection};
+        use fa_model::symbols::{property, relation};
+        let (mut book, _, _, _) = certified_fixture();
+        let cash = account_vid(book.context().book_id, "1000");
+        let at = book.head().unwrap();
+        let mut results = Vec::new();
+        for selection in [
+            ReportSelection::ExplainBalance {
+                account: cash,
+                period: "FY2026-P03".into(),
+            },
+            ReportSelection::OpenItems {
+                account: Some(cash),
+            },
+            ReportSelection::OpenItems { account: None },
+        ] {
+            results.push(book.certify_report(selection, Some(at)).unwrap().unwrap());
+        }
+        // This raw rewrite plants corruption; no supported chart operation
+        // currently changes an existing account's immutable identity.
+        let contexts = book.purposes();
+        let mut change = fgdb::WriteBatch::new(relation::HAS_LEG);
+        change.set_vertex_property(
+            cash,
+            property::NAME,
+            Some(fa_journal::rows::scalar_text("changed account name", "Changed Cash").unwrap()),
+        );
+        with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&contexts.commit(), change)))
+            .unwrap();
+        let after = book.head().unwrap();
+        assert!(after > at);
+        assert_eq!(
+            book.open_items_report(Some(cash), None).unwrap().accounts[&cash].name,
+            "Changed Cash"
+        );
+        assert_eq!(
+            book.open_items_report(Some(cash), Some(at))
+                .unwrap()
+                .accounts[&cash]
+                .name,
+            "Cash"
+        );
+        assert_eq!(
+            book.explain_balance(cash, "FY2026-P03", Some(at))
+                .unwrap()
+                .account_row
+                .name,
+            "Cash"
+        );
+        for result in results {
+            let replayed = book.replay_report(&result.certificate).unwrap().unwrap();
+            assert_eq!(replayed, result.report);
+            match &replayed {
+                ReportOutput::ExplainBalance(report) => assert_eq!(report.account_row.name, "Cash"),
+                ReportOutput::OpenItems(report) => assert_eq!(report.accounts[&cash].name, "Cash"),
+                ReportOutput::TrialBalance(_) | ReportOutput::Statement(_) => {
+                    panic!("selected an explanation or open-items report")
+                }
+            }
+            let refusal = book
+                .certificate_status(&result.certificate)
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(refusal.code, crate::certificate::code::CERTIFICATE_INVALID);
+            assert_eq!(refusal.exit, fa_journal::exit::VERIFICATION);
+        }
+        assert_eq!(
+            book.head().unwrap(),
+            after,
+            "replay and status do not repair the chart"
+        );
+    }
+
+    #[test]
+    fn certification_requires_genesis_and_the_historical_runtime_context() {
+        use crate::{ReportSelection, TrialBalanceSelection};
+        let (book, _, day, _) = certified_fixture();
+        let cash = account_vid(book.context().book_id, "1000");
+        let at = book.head().unwrap();
+        for selection in [
+            TrialBalanceSelection::AsOf(day).into(),
+            ReportSelection::ExplainBalance {
+                account: cash,
+                period: "FY2026-P03".into(),
+            },
+            ReportSelection::OpenItems {
+                account: Some(cash),
+            },
+            ReportSelection::OpenItems { account: None },
+        ] {
+            let error = book
+                .certify_report(selection, Some(CommitSeq(0)))
+                .unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    BookError::Registers(fa_registers::RegisterError::InvalidSelection(_))
+                ),
+                "{error}"
+            );
+        }
+        let certificate = book
+            .certify_report(TrialBalanceSelection::AsOf(day).into(), Some(at))
+            .unwrap()
+            .unwrap()
+            .certificate;
+        let mut context = book.context().clone();
+        context.calendar = FiscalCalendar::monthly("different-calendar", 1, 1).unwrap();
+        let purposes = book.purposes();
+        let error = with_store!(&book.store, core => crate::certificate::certify_report(
+            &core.db,
+            &purposes.query(),
+            &context,
+            TrialBalanceSelection::AsOf(day).into(),
+            Some(at),
+        ))
+        .unwrap_err();
+        assert!(error.to_string().contains("context differs"), "{error}");
+        let refusal = with_store!(&book.store, core => crate::certificate::replay_report(
+            &core.db,
+            &purposes.query(),
+            &context,
+            &certificate,
+        ))
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(refusal.code, crate::certificate::code::CERTIFICATE_INVALID);
+        assert_eq!(book.head().unwrap(), at);
+    }
+
+    #[test]
+    fn generic_instant_certificates_preserve_the_original_sequence_and_tick_brackets() {
+        use crate::{ReportCertificate, ReportSelection};
+        let (mut book, usd, day, _) = certified_fixture();
+        let cash = account_vid(book.context().book_id, "1000");
+        let base = fa_time::UtcInstant::parse("2026-03-15T00:00:00Z")
+            .unwrap()
+            .unix_ns();
+        let lower = certificate_tick(&mut book, base + 100, true);
+        post_rent(
+            &mut book,
+            usd,
+            VId(1),
+            day,
+            b"generic-inside-bucket",
+            150_000,
+        )
+        .unwrap()
+        .unwrap();
+        let selected_at = book.head().unwrap();
+        let upper = certificate_tick(&mut book, base + 110, true);
+        post_rent(
+            &mut book,
+            usd,
+            VId(1),
+            day,
+            b"generic-after-bucket",
+            150_000,
+        )
+        .unwrap()
+        .unwrap();
+        let frontier = book.head().unwrap();
+        let mut results = Vec::new();
+        for selection in [
+            ReportSelection::ExplainBalance {
+                account: cash,
+                period: "FY2026-P03".into(),
+            },
+            ReportSelection::OpenItems {
+                account: Some(cash),
+            },
+        ] {
+            let result = book
+                .certify_report_at_instant(selection.clone(), base + 105)
+                .unwrap()
+                .unwrap();
+            let time = result.certificate.time_selection.as_ref().unwrap();
+            assert_eq!(time.resolution.frontier, frontier.0);
+            assert_eq!(time.resolution.resolved_seq, selected_at.0);
+            assert_eq!(time.lower_entry, lower.tick.entry);
+            assert_eq!(time.upper_entry, Some(upper.tick.entry));
+            assert_eq!(result.certificate.known_at, selected_at);
+            assert_eq!(
+                result.report,
+                book.certify_report(selection, Some(selected_at))
+                    .unwrap()
+                    .unwrap()
+                    .report
+            );
+            let encoded = result.certificate.canonical_bytes().unwrap();
+            assert!(encoded.starts_with(crate::certificate::REPORT_CERTIFICATE_FORMAT));
+            assert_eq!(
+                ReportCertificate::decode(&encoded).unwrap(),
+                result.certificate
+            );
+            results.push(result);
+        }
+        assert_eq!(book.head().unwrap(), frontier);
+        certificate_tick(&mut book, base + 120, true);
+        for result in results {
+            let retained = book
+                .retain_certificate(&result.certificate)
+                .unwrap()
+                .unwrap();
+            let loaded = book.read_certificate(&retained.digest).unwrap().unwrap();
+            assert_eq!(loaded, result.certificate);
+            assert_eq!(book.replay_report(&loaded).unwrap().unwrap(), result.report);
+            let mut altered = loaded;
+            altered
+                .time_selection
+                .as_mut()
+                .unwrap()
+                .resolution
+                .requested_utc_ns += 1;
+            let refusal = book.replay_report(&altered).unwrap().unwrap_err();
+            assert_eq!(refusal.code, crate::certificate::code::CERTIFICATE_INVALID);
+            assert_eq!(book.head().unwrap(), retained.recorded_at);
+        }
+    }
+
+    #[test]
+    fn certificate_status_detects_period_catalog_changes_without_a_new_entry() {
+        use crate::{CertificateStatus, TrialBalanceSelection};
+        let (mut book, _, day, _) = certified_fixture();
+        let certified = book
+            .certify_trial_balance(TrialBalanceSelection::AsOf(day), None)
+            .unwrap()
+            .unwrap();
+        let original_at = certified.certificate.known_at;
+        // Period creation is supported and commits metadata without an Entry.
+        // An as-of report displays every discovered period through its cutoff.
+        book.create_periods(2025).unwrap();
+        let after = book.head().unwrap();
+        assert!(after > original_at);
+        let current = book
+            .certify_trial_balance(TrialBalanceSelection::AsOf(day), None)
+            .unwrap()
+            .unwrap();
+        assert_ne!(current.report.periods, certified.report.periods);
+        assert_eq!(
+            current.certificate.journal_root,
+            certified.certificate.journal_root
+        );
+        assert_eq!(
+            current.certificate.journal_leaves, certified.certificate.journal_leaves,
+            "no later accounting Entry can explain this period-membership change"
+        );
+        let refusal = book
+            .certificate_status(&certified.certificate)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refusal.code, crate::certificate::code::CERTIFICATE_INVALID);
+        assert_eq!(refusal.exit, fa_journal::exit::VERIFICATION);
+        assert_eq!(
+            book.replay_trial_balance(&certified.certificate)
+                .unwrap()
+                .unwrap(),
+            certified.report,
+            "metadata changes do not rewrite the original historical report"
+        );
+        assert_eq!(
+            book.certificate_status(&current.certificate)
+                .unwrap()
+                .unwrap(),
+            CertificateStatus::Current { checked_at: after }
+        );
+        assert_eq!(book.head().unwrap(), after);
+    }
+
+    #[test]
+    fn retained_certificates_are_idempotent_without_changing_the_certified_report() {
+        use crate::{CertificateStatus, TrialBalanceSelection};
+        let (mut book, _, day, _) = certified_fixture();
+        let certified = book
+            .certify_trial_balance(TrialBalanceSelection::AsOf(day), None)
+            .unwrap()
+            .unwrap();
+        let original_bytes = certified.certificate.canonical_bytes().unwrap();
+        let original_at = certified.certificate.known_at;
+        let retained = book
+            .retain_certificate(&certified.certificate)
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained.digest, certified.certificate.digest);
+        assert!(retained.recorded_at > original_at);
+        assert_eq!(book.head().unwrap(), retained.recorded_at);
+        assert_eq!(
+            book.read_certificate(&retained.digest)
+                .unwrap()
+                .unwrap()
+                .canonical_bytes()
+                .unwrap(),
+            original_bytes
+        );
+        assert_eq!(
+            book.retain_certificate(&certified.certificate)
+                .unwrap()
+                .unwrap(),
+            retained,
+            "retention retries return the original storage outcome"
+        );
+        assert_eq!(book.head().unwrap(), retained.recorded_at);
+        assert_eq!(
+            book.replay_trial_balance(&certified.certificate)
+                .unwrap()
+                .unwrap(),
+            certified.report
+        );
+        assert_eq!(
+            book.certificate_status(&certified.certificate)
+                .unwrap()
+                .unwrap(),
+            CertificateStatus::Current {
+                checked_at: retained.recorded_at,
+            }
+        );
+        let after = book
+            .certify_trial_balance(TrialBalanceSelection::AsOf(day), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after.certificate.journal_root,
+            certified.certificate.journal_root
+        );
+        assert_eq!(
+            after.certificate.journal_leaves, certified.certificate.journal_leaves,
+            "retaining a report creates no accounting Entry"
+        );
+        let original_again = book
+            .certify_trial_balance(TrialBalanceSelection::AsOf(day), Some(original_at))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            original_again.certificate.canonical_bytes().unwrap(),
+            original_bytes
+        );
+
+        let before_refusal = book.head().unwrap();
+        let mut altered = certified.certificate.clone();
+        altered.output[0] ^= 1;
+        let refusal = book.retain_certificate(&altered).unwrap().unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
+        assert_eq!(book.head().unwrap(), before_refusal);
+        assert_eq!(
+            book.read_certificate(&[0xe7; 32])
+                .unwrap()
+                .unwrap_err()
+                .code,
+            "FA-REF-150"
+        );
+
+        let (foreign_spec, _) = spec(Id128([0xd1; 16]));
+        let mut foreign = Book::create_memory(
+            BookKeys::for_development(0xd1),
+            foreign_spec,
+            Entropy::deterministic(209),
+        )
+        .unwrap();
+        let foreign_head = foreign.head().unwrap();
+        let refusal = foreign
+            .retain_certificate(&certified.certificate)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
+        assert_eq!(foreign.head().unwrap(), foreign_head);
+    }
+
+    #[test]
+    fn initial_certificate_retention_can_follow_unrelated_commits() {
+        use crate::TrialBalanceSelection;
+
+        let (mut book, _, day, _) = certified_fixture();
+        let certified = book
+            .certify_trial_balance(TrialBalanceSelection::AsOf(day), None)
+            .unwrap()
+            .unwrap();
+        let original_bytes = certified.certificate.canonical_bytes().unwrap();
+        let document = fa_journal::Document {
+            book_id: book.context().book_id,
+            kind: 1,
+            mime: "text/plain".into(),
+            grade: 3,
+            retrieved_by: VId(1),
+            bytes: b"Unrelated document recorded before delayed certificate retention".to_vec(),
+        };
+        book.add_document(&document).unwrap().unwrap();
+        let after_unrelated = book.head().unwrap();
+        assert!(after_unrelated > certified.certificate.known_at);
+        let retained = book
+            .retain_certificate(&certified.certificate)
+            .unwrap()
+            .unwrap();
+        assert!(retained.recorded_at > after_unrelated);
+        assert_eq!(
+            book.read_certificate(&retained.digest)
+                .unwrap()
+                .unwrap()
+                .canonical_bytes()
+                .unwrap(),
+            original_bytes
+        );
+        assert_eq!(
+            book.retain_certificate(&certified.certificate)
+                .unwrap()
+                .unwrap(),
+            retained
+        );
+        assert_eq!(
+            book.replay_trial_balance(&certified.certificate)
+                .unwrap()
+                .unwrap(),
+            certified.report,
+            "delayed retention preserves the original historical report"
+        );
+        assert_eq!(book.head().unwrap(), retained.recorded_at);
+    }
+
+    #[test]
+    fn restored_certificate_bytes_do_not_hide_a_later_record_version() {
+        use crate::{ReportCertificate, TrialBalanceSelection};
+        use fa_model::symbols::{property, relation};
+        use fgdb_types::CanonicalScalar;
+
+        let (mut book, _, day, _) = certified_fixture();
+        let certified = book
+            .certify_trial_balance(TrialBalanceSelection::AsOf(day), None)
+            .unwrap()
+            .unwrap();
+        let certificate = certified.certificate;
+        let retained = book.retain_certificate(&certificate).unwrap().unwrap();
+        let vid =
+            crate::certificate_store::certificate_vid(book.context().book_id, &retained.digest);
+        let original = with_store!(&book.store, core => core.db.vertex(vid))
+            .unwrap()
+            .unwrap();
+        let purposes = book.purposes();
+        let mut damage = fgdb::WriteBatch::new(relation::DERIVED_FROM);
+        damage.set_vertex_property(
+            vid,
+            property::FA_DIGEST,
+            Some(CanonicalScalar::bytes(vec![0x71; 32]).unwrap()),
+        );
+        with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&purposes.commit(), damage)))
+            .unwrap();
+        let mut restore = fgdb::WriteBatch::new(relation::DERIVED_FROM);
+        restore.set_vertex_property(
+            vid,
+            property::FA_DIGEST,
+            Some(
+                fa_journal::rows::prop(&original, property::FA_DIGEST)
+                    .unwrap()
+                    .clone(),
+            ),
+        );
+        with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&purposes.commit(), restore)))
+            .unwrap();
+
+        let current = with_store!(&book.store, core => core.db.vertex(vid))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            current.props, original.props,
+            "all exact bytes were restored"
+        );
+        assert_eq!(current.labels, original.labels);
+        assert!(current.created_at > retained.recorded_at);
+        let same_version =
+            with_store!(&book.store, core => core.db.vertex_at(vid, current.created_at))
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            same_version, current,
+            "comparing only the claimed creating snapshot cannot detect the rewrite"
+        );
+        let before_refusal = book.head().unwrap();
+        let refusal = book
+            .read_certificate(&retained.digest)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
+        assert!(refusal.message.contains("existed before"), "{refusal}");
+        let refusal = book.retain_certificate(&certificate).unwrap().unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
+        assert_eq!(
+            book.head().unwrap(),
+            before_refusal,
+            "no silent repair or re-retention"
+        );
+
+        let historical =
+            with_store!(&book.store, core => core.db.vertex_at(vid, retained.recorded_at))
+                .unwrap()
+                .unwrap();
+        let original_bytes =
+            fa_journal::rows::bytes(&historical, property::FA_PAYLOAD, "historical certificate")
+                .unwrap();
+        assert_eq!(
+            ReportCertificate::decode(&original_bytes).unwrap(),
+            certificate
+        );
+        assert_eq!(
+            book.replay_trial_balance(&certificate).unwrap().unwrap(),
+            certified.report,
+            "the original report and certificate remain readable in history"
+        );
+        assert_eq!(book.head().unwrap(), before_refusal);
+    }
+
+    #[test]
+    fn retained_certificate_rewrites_and_retirements_are_refused_without_repairing_history() {
+        use crate::TrialBalanceSelection;
+        use fa_model::symbols::{label, property, relation};
+        use fgdb_types::CanonicalScalar;
+
+        for mutation in 0..5 {
+            let (mut book, _, day, _) = certified_fixture();
+            let certificate = book
+                .certify_trial_balance(TrialBalanceSelection::AsOf(day), None)
+                .unwrap()
+                .unwrap()
+                .certificate;
+            let retained = book.retain_certificate(&certificate).unwrap().unwrap();
+            let vid =
+                crate::certificate_store::certificate_vid(book.context().book_id, &retained.digest);
+            let mut change = fgdb::WriteBatch::new(relation::HAS_LEG);
+            match mutation {
+                0 => change.set_vertex_property(
+                    vid,
+                    property::FA_PAYLOAD,
+                    Some(CanonicalScalar::bytes(b"rewritten certificate".to_vec()).unwrap()),
+                ),
+                1 => change.set_vertex_property(
+                    vid,
+                    property::FA_DIGEST,
+                    Some(CanonicalScalar::bytes(vec![0x71; 32]).unwrap()),
+                ),
+                2 => change.set_vertex_property(
+                    vid,
+                    property::BOOK_ID,
+                    Some(CanonicalScalar::bytes(vec![0x72; 16]).unwrap()),
+                ),
+                3 => change.set_vertex_label(vid, label::CERTIFICATE, false),
+                _ => change.delete_vertex(vid),
+            }
+            let purposes = book.purposes();
+            with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&purposes.commit(), change)))
+                .unwrap();
+            let after_tamper = book.head().unwrap();
+            let refusal = book
+                .read_certificate(&retained.digest)
+                .unwrap()
+                .unwrap_err();
+            assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
+            let refusal = book.retain_certificate(&certificate).unwrap().unwrap_err();
+            assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
+            assert_eq!(book.head().unwrap(), after_tamper);
+            let original =
+                with_store!(&book.store, core => core.db.vertex_at(vid, retained.recorded_at))
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(
+                fa_journal::rows::bytes(&original, property::FA_PAYLOAD, "retained certificate")
+                    .unwrap(),
+                certificate.canonical_bytes().unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn retained_certificate_cannot_be_rebound_from_an_earlier_unrelated_record() {
+        use crate::TrialBalanceSelection;
+        use fa_model::symbols::{label, property, relation};
+        use fgdb_types::CanonicalScalar;
+
+        let (mut book, _, day, _) = certified_fixture();
+        let certificate = book
+            .certify_trial_balance(TrialBalanceSelection::AsOf(day), None)
+            .unwrap()
+            .unwrap()
+            .certificate;
+        let vid =
+            crate::certificate_store::certificate_vid(book.context().book_id, &certificate.digest);
+        let mut properties = vec![
+            (
+                property::FA_PAYLOAD,
+                CanonicalScalar::bytes(b"unrelated original payload".to_vec()).unwrap(),
+            ),
+            (
+                property::FA_DIGEST,
+                CanonicalScalar::bytes(certificate.digest.to_vec()).unwrap(),
+            ),
+            (
+                property::BOOK_ID,
+                CanonicalScalar::bytes(book.context().book_id.0.to_vec()).unwrap(),
+            ),
+        ];
+        properties.sort_by_key(|(key, _)| key.0);
+        let purposes = book.purposes();
+        let mut create = fgdb::WriteBatch::new(relation::DERIVED_FROM);
+        create.create_vertex(vid, vec![label::CERTIFICATE], properties);
+        with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&purposes.commit(), create)))
+            .unwrap();
+        let mut replace = fgdb::WriteBatch::new(relation::DERIVED_FROM);
+        replace.set_vertex_property(
+            vid,
+            property::FA_PAYLOAD,
+            Some(CanonicalScalar::bytes(certificate.canonical_bytes().unwrap()).unwrap()),
+        );
+        with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&purposes.commit(), replace)))
+            .unwrap();
+        let after_rebind = book.head().unwrap();
+        let refusal = book
+            .read_certificate(&certificate.digest)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
+        let refusal = book.retain_certificate(&certificate).unwrap().unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
+        assert_eq!(book.head().unwrap(), after_rebind);
+    }
+
+    #[test]
+    fn certificate_binds_selectors_registry_native_inputs_and_exact_amounts() {
+        use crate::{ReportCertificate, TrialBalanceSelection};
+        let (book, _, day, _) = certified_fixture();
+        let certified = book
+            .certify_trial_balance(TrialBalanceSelection::AsOf(day), None)
+            .unwrap()
+            .unwrap();
+        let original = certified.certificate;
+        let activity = book
+            .certify_trial_balance(
+                TrialBalanceSelection::Activity(vec!["FY2026-P03".into()]),
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        assert_ne!(activity.certificate.digest, original.digest);
+        assert!(activity.report.activity);
+        assert_eq!(
+            book.replay_trial_balance(&activity.certificate)
+                .unwrap()
+                .unwrap(),
+            activity.report
+        );
+        for tamper in 0..8 {
+            let mut altered = original.clone();
+            match tamper {
+                0 => altered.known_at = CommitSeq(altered.known_at.0 + 1),
+                1 => altered.selection = TrialBalanceSelection::AsOf(DateDay(day.0 - 1)).into(),
+                2 => altered.registry_digest[0] ^= 1,
+                3 => altered.inputs[0].result_digest.0[0] ^= 1,
+                4 => {
+                    altered.inputs.pop();
+                }
+                5 => altered.output[0] ^= 1,
+                6 => altered.output_digest[0] ^= 1,
+                _ => altered.journal_leaves += 1,
+            }
+            let refusal = book.replay_trial_balance(&altered).unwrap().unwrap_err();
+            assert_eq!(
+                refusal.code,
+                crate::certificate::code::CERTIFICATE_INVALID,
+                "tamper {tamper}"
+            );
+            assert_eq!(refusal.exit, fa_journal::exit::VERIFICATION);
+            assert!(ReportCertificate::decode(&altered.canonical_bytes().unwrap()).is_err());
+        }
+        let wire = original.canonical_bytes().unwrap();
+        for length in [0, 1, 23, 24, wire.len() / 2, wire.len() - 1] {
+            assert!(
+                ReportCertificate::decode(&wire[..length]).is_err(),
+                "truncation {length}"
+            );
+        }
+        let mut trailing = wire.clone();
+        trailing.push(0);
+        assert!(ReportCertificate::decode(&trailing).is_err());
+        // Changing one exact amount by a single minor unit changes the output
+        // commitment; display precision or a float tolerance cannot mask it.
+        let mut changed_report = certified.report;
+        changed_report.rows[0].debits += 1;
+        assert_ne!(changed_report.canonical_bytes().unwrap(), original.output);
+    }
+
+    #[test]
+    fn certificate_replay_detects_rewrites_and_retirements_after_its_snapshot() {
+        use crate::TrialBalanceSelection;
+        use fa_model::symbols::{property, relation};
+        for retire in [false, true] {
+            let (mut book, _, day, target) = certified_fixture();
+            let certificate = book
+                .certify_trial_balance(TrialBalanceSelection::AsOf(day), None)
+                .unwrap()
+                .unwrap()
+                .certificate;
+            let contexts = book.purposes();
+            let mut change = fgdb::WriteBatch::new(relation::HAS_LEG);
+            if retire {
+                change.delete_vertex(target);
+            } else {
+                change.set_vertex_property(
+                    target,
+                    property::FA_PAYLOAD,
+                    Some(fgdb_types::CanonicalScalar::bytes(b"rewritten".to_vec()).unwrap()),
+                );
+            }
+            with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&contexts.commit(), change))).unwrap();
+            // The historical snapshot remains readable, which is why checking
+            // only its accumulator would overlook this later journal rewrite.
+            let old_row =
+                with_store!(&book.store, core => core.db.vertex_at(target, certificate.known_at))
+                    .unwrap()
+                    .unwrap();
+            let old = Entry::decode(
+                &fa_journal::rows::bytes(&old_row, property::FA_PAYLOAD, "entry.payload").unwrap(),
+            )
+            .unwrap();
+            assert_eq!(old.proposal.effective_date, day);
+            let refusal = book
+                .replay_trial_balance(&certificate)
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(refusal.code, crate::certificate::code::CERTIFICATE_INVALID);
+            assert_eq!(refusal.exit, fa_journal::exit::VERIFICATION);
+            assert!(book.certificate_status(&certificate).unwrap().is_err());
+        }
+    }
+
+    fn certificate_migration_fixture(
+        full_detail: bool,
+    ) -> (
+        Book,
+        fa_money::UnitId,
+        fa_model::EvidenceRef,
+        fa_journal::RunBody,
+    ) {
+        let (mut spec, usd) = spec(Id128([0xc2; 16]));
+        spec.opening_date = Some(DateDay::from_ymd(2026, 2, 1).unwrap());
+        let mut book = Book::create_memory(
+            BookKeys::for_development(0xc2),
+            spec,
+            Entropy::deterministic(194),
+        )
+        .unwrap();
+        let day = DateDay::from_ymd(2026, 1, 1).unwrap();
+        book.install_chart(&chart(usd), VId(1), day, b"migration-chart")
+            .unwrap()
+            .unwrap();
+        book.create_periods(2025).unwrap();
+        book.create_periods(2026).unwrap();
+        let document = fa_journal::Document {
+            book_id: book.context().book_id,
+            kind: 18,
+            mime: "text/csv".into(),
+            grade: 3,
+            retrieved_by: VId(1),
+            bytes: b"account,USD debit balance\n1000,1000\n6000,-1000\n".to_vec(),
+        };
+        book.add_document(&document).unwrap().unwrap();
+        let lines = vec![
+            fa_journal::TrialBalanceLine {
+                account_code: "1000".into(),
+                unit: usd,
+                mantissa: 1_000,
+            },
+            fa_journal::TrialBalanceLine {
+                account_code: "6000".into(),
+                unit: usd,
+                mantissa: -1_000,
+            },
+        ];
+        let body = fa_journal::RunBody {
+            book_id: book.context().book_id,
+            run_key: "certified-migration".into(),
+            source_system: "certificate-legacy".into(),
+            mode: if full_detail {
+                fa_journal::RunMode::FullDetail
+            } else {
+                fa_journal::RunMode::OpeningOnly
+            },
+            trial_balance: document.oid(),
+            opening_date: day,
+            periods: if full_detail {
+                ["FY2025-P12", "FY2026-P01"]
+                    .into_iter()
+                    .map(|period| fa_journal::PeriodBalance {
+                        period_code: period.into(),
+                        trial_balance: document.oid(),
+                        lines: lines.clone(),
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            lines,
+            detail_base: Vec::new(),
+            sole_opening_source: false,
+        };
+        (book, usd, document.evidence_ref(1), body)
+    }
+
+    fn certificate_open_run(
+        book: &mut Book,
+        evidence: fa_model::EvidenceRef,
+        body: &fa_journal::RunBody,
+    ) -> VId {
+        let proposal = fa_journal::migration::open_proposal(
+            book.context(),
+            VId(1),
+            body,
+            vec![evidence],
+            b"certificate-open-run",
+            book.seal_text("import legacy balances").unwrap(),
+        )
+        .unwrap();
+        book.open_migration_run(
+            body,
+            fa_journal::RunControlRequest {
+                proposal,
+                capability: Capability::embedded(VId(1), &["post", "migrate"]).unwrap(),
+                approvals: Vec::new(),
+            },
+        )
+        .unwrap()
+        .unwrap()
+        .run
+    }
+
+    fn certificate_approvals(
+        book: &mut Book,
+        proposal: &EntryPayload,
+    ) -> Vec<fa_model::ApprovalRef> {
+        let digest = proposal.proposal_digest().unwrap();
+        [VId(2), VId(3)]
+            .into_iter()
+            .map(|principal| {
+                book.approve(
+                    Capability::embedded(principal, &["approve"]).unwrap(),
+                    digest,
+                )
+                .unwrap()
+                .unwrap()
+                .approval()
+            })
+            .collect()
+    }
+
+    fn certificate_stage_chunk(
+        book: &mut Book,
+        evidence: fa_model::EvidenceRef,
+        body: &fa_journal::RunBody,
+        period: &str,
+        day: DateDay,
+    ) -> VId {
+        let usd = body.lines[0].unit;
+        let legs = vec![
+            LegPayload::simple(
+                Side::Debit,
+                account_vid(body.book_id, "1000"),
+                Amount::new(usd, 1_000),
+            ),
+            LegPayload::simple(
+                Side::Credit,
+                account_vid(body.book_id, "6000"),
+                Amount::new(usd, 1_000),
+            ),
+        ];
+        let proposal = EntryPayload {
+            schema_minor: 0,
+            book_id: body.book_id,
+            branch_id: Id128::TRUNK,
+            class: EntryClass::MIGRATION,
+            effective_date: day,
+            document_date: None,
+            description: book.seal_text("legacy chunk").unwrap(),
+            effective_period: Some(fa_model::PeriodRef {
+                calendar: book.context().calendar.id.clone(),
+                code: period.into(),
+            }),
+            unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
+            legs,
+            control: None,
+            base_totals: None,
+            idempotency_key: period.as_bytes().to_vec(),
+            origin: EntryOrigin::Migration {
+                run_ref: body.vid(),
+                source_system: body.source_system.clone(),
+                source_id: book.seal_text(period).unwrap(),
+                source_recorded_at_ns: None,
+                source_entered_by: None,
+                source_approved_by: None,
+                batch_oid: body.trial_balance,
+            },
+            principal_ref: VId(1),
+            session_ref: None,
+            evidence: vec![evidence],
+            supersession: Vec::new(),
+            pending: None,
+            external_ids: Vec::new(),
+            extensions: Vec::new(),
+            tags: Vec::new(),
+        };
+        let approvals = certificate_approvals(book, &proposal);
+        book.post(PostRequest {
+            proposal,
+            approvals,
+            plan_certificate: None,
+            capability: Capability::embedded(VId(1), &["post", "migrate"]).unwrap(),
+        })
+        .unwrap()
+        .unwrap()
+        .entry_ref()
+        .vid
+    }
+
+    fn certificate_transition_run(book: &mut Book, run: VId, kind: u8) -> VId {
+        let proposal = book
+            .plan_migration_transition(
+                run,
+                kind,
+                VId(1),
+                b"certificate-transition-run",
+                book.seal_text("legacy run outcome").unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        let approvals = if kind == fa_journal::migration::kind::FINALIZE {
+            certificate_approvals(book, &proposal)
+        } else {
+            Vec::new()
+        };
+        book.transition_migration_run(fa_journal::RunControlRequest {
+            proposal,
+            capability: Capability::embedded(VId(1), &["post", "migrate"]).unwrap(),
+            approvals,
+        })
+        .unwrap()
+        .unwrap()
+        .control_entry
+    }
+
+    #[test]
+    fn certificate_status_tracks_migration_activation_not_staging_or_abandonment() {
+        use crate::{CertificateStatus, TrialBalanceSelection};
+        use fa_journal::migration::kind;
+        for outcome in [kind::ABANDON, kind::FINALIZE] {
+            let (mut book, usd, evidence, body) = certificate_migration_fixture(false);
+            let selection = TrialBalanceSelection::AsOf(body.opening_date);
+            let before_run = book
+                .certify_trial_balance(selection.clone(), None)
+                .unwrap()
+                .unwrap();
+            let run = certificate_open_run(&mut book, evidence, &body);
+            assert!(matches!(
+                book.certificate_status(&before_run.certificate)
+                    .unwrap()
+                    .unwrap(),
+                CertificateStatus::Current { .. }
+            ));
+            let chunk = certificate_stage_chunk(
+                &mut book,
+                evidence,
+                &body,
+                "FY2026-OPEN",
+                body.opening_date,
+            );
+            assert!(
+                matches!(
+                    book.certificate_status(&before_run.certificate)
+                        .unwrap()
+                        .unwrap(),
+                    CertificateStatus::Current { .. }
+                ),
+                "staging is invisible until the run finalizes"
+            );
+            let staged = book
+                .certify_trial_balance(selection, None)
+                .unwrap()
+                .unwrap();
+            assert!(staged.report.rows.is_empty());
+            let control = certificate_transition_run(&mut book, run, outcome);
+            let current = book.balance_as_of(body.opening_date, None).unwrap();
+            if outcome == kind::FINALIZE {
+                assert_eq!(current.unit_totals[&usd.0], (1_000, 1_000));
+                assert!(matches!(
+                    book.certificate_status(&before_run.certificate).unwrap().unwrap(),
+                    CertificateStatus::SupersededBy { later_entries, .. }
+                        if later_entries == vec![chunk, control]
+                ));
+                assert!(
+                    matches!(
+                        book.certificate_status(&staged.certificate).unwrap().unwrap(),
+                        CertificateStatus::SupersededBy { later_entries, .. }
+                            if later_entries == vec![control]
+                    ),
+                    "a finalize activates chunks recorded before certification too"
+                );
+            } else {
+                assert!(current.rows.is_empty());
+                for certified in [&before_run, &staged] {
+                    assert!(
+                        matches!(
+                            book.certificate_status(&certified.certificate)
+                                .unwrap()
+                                .unwrap(),
+                            CertificateStatus::Current { .. }
+                        ),
+                        "abandoned chunks never contribute"
+                    );
+                }
+            }
+            for certified in [&before_run, &staged] {
+                assert_eq!(
+                    book.replay_trial_balance(&certified.certificate)
+                        .unwrap()
+                        .unwrap(),
+                    certified.report,
+                    "the original known-at remains reproducible across lifecycle changes"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn certificate_status_excludes_full_detail_summarized_by_opening_balances() {
+        use crate::{CertificateStatus, TrialBalanceSelection};
+        let (mut book, usd, evidence, body) = certificate_migration_fixture(true);
+        let prior_day = DateDay::from_ymd(2025, 12, 31).unwrap();
+        let selections = [
+            TrialBalanceSelection::AsOf(prior_day),
+            TrialBalanceSelection::Activity(vec!["FY2025-P12".into()]),
+        ];
+        let mut excluded = Vec::new();
+        for selection in &selections {
+            excluded.push(
+                book.certify_trial_balance(selection.clone(), None)
+                    .unwrap()
+                    .unwrap(),
+            );
+        }
+        let run = certificate_open_run(&mut book, evidence, &body);
+        certificate_stage_chunk(&mut book, evidence, &body, "FY2026-OPEN", body.opening_date);
+        certificate_stage_chunk(&mut book, evidence, &body, "FY2025-P12", prior_day);
+        for selection in &selections {
+            excluded.push(
+                book.certify_trial_balance(selection.clone(), None)
+                    .unwrap()
+                    .unwrap(),
+            );
+        }
+        let opening = book
+            .certify_trial_balance(
+                TrialBalanceSelection::Activity(vec!["FY2026-OPEN".into()]),
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        let control =
+            certificate_transition_run(&mut book, run, fa_journal::migration::kind::FINALIZE);
+        for certified in &excluded {
+            assert!(certified.report.rows.is_empty());
+            assert!(
+                matches!(
+                    book.certificate_status(&certified.certificate)
+                        .unwrap()
+                        .unwrap(),
+                    CertificateStatus::Current { .. }
+                ),
+                "FullDetail before the run's opening date stays excluded after finalization"
+            );
+            assert_eq!(
+                book.replay_trial_balance(&certified.certificate)
+                    .unwrap()
+                    .unwrap(),
+                certified.report
+            );
+        }
+        assert!(book.balance_as_of(prior_day, None).unwrap().rows.is_empty());
+        assert!(
+            book.period_activity(&["FY2025-P12".into()], None)
+                .unwrap()
+                .rows
+                .is_empty()
+        );
+        assert_eq!(
+            book.period_activity(&["FY2026-OPEN".into()], None)
+                .unwrap()
+                .unit_totals[&usd.0],
+            (1_000, 1_000)
+        );
+        assert!(matches!(
+            book.certificate_status(&opening.certificate).unwrap().unwrap(),
+            CertificateStatus::SupersededBy { later_entries, .. } if later_entries == vec![control]
+        ));
+    }
+
+    #[test]
+    fn certificate_status_ignores_period_controls_but_tracks_later_reservation_releases() {
+        use crate::{CertificateStatus, TrialBalanceSelection};
+        let (mut book, usd, day, rent) = certified_fixture();
+        let mut pending = book.read_entry(rent).unwrap().unwrap().0.proposal;
+        pending.class = EntryClass::PENDING;
+        pending.idempotency_key = b"certified-pending".to_vec();
+        pending.pending = Some(fa_model::Pending {
+            timeout_ns: None,
+            resolution_of: None,
+            disposition: None,
+        });
+        let target = book
+            .post(PostRequest {
+                proposal: pending.clone(),
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: Capability::embedded(VId(1), &["post"]).unwrap(),
+            })
+            .unwrap()
+            .unwrap()
+            .entry_ref();
+        let mut certificates = Vec::new();
+        for selection in [
+            TrialBalanceSelection::AsOf(day),
+            TrialBalanceSelection::Activity(vec!["FY2026-P03".into()]),
+        ] {
+            let certified = book
+                .certify_trial_balance(selection, None)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                certified.report.pending_unit_totals[&usd.0],
+                (150_000, 150_000)
+            );
+            certificates.push(certified);
+        }
+        book.transition_period(
+            "FY2026-P03",
+            PeriodTransition::SoftClose,
+            VId(1),
+            1,
+            day,
+            b"certified-soft-close",
+            &Capability::embedded(VId(1), &["close"]).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+        for certified in &certificates {
+            assert!(
+                matches!(
+                    book.certificate_status(&certified.certificate)
+                        .unwrap()
+                        .unwrap(),
+                    CertificateStatus::Current { .. }
+                ),
+                "period state alone changes no trial-balance contribution"
+            );
+        }
+        let mut release = pending;
+        release.class = EntryClass::RESOLUTION;
+        release.effective_date = DateDay::from_ymd(2026, 4, 15).unwrap();
+        release.idempotency_key = b"certified-release".to_vec();
+        release.legs.clear();
+        release.unit_totals.clear();
+        release.control = Some(fa_model::ControlPayload::ReservationRelease);
+        release.pending = Some(fa_model::Pending {
+            timeout_ns: None,
+            resolution_of: Some(target),
+            disposition: Some(fa_model::Disposition::Voids),
+        });
+        let resolution = book
+            .post(PostRequest {
+                proposal: release,
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: Capability::embedded(VId(1), &["post"]).unwrap(),
+            })
+            .unwrap()
+            .unwrap()
+            .entry_ref()
+            .vid;
+        assert_eq!(
+            book.balance_as_of(day, None).unwrap().pending_unit_totals[&usd.0],
+            (0, 0)
+        );
+        for certified in certificates {
+            assert!(
+                matches!(
+                    book.certificate_status(&certified.certificate).unwrap().unwrap(),
+                    CertificateStatus::SupersededBy { later_entries, .. } if later_entries == vec![resolution]
+                ),
+                "the zero-leg April resolution releases March's selected reservation"
+            );
+            assert_eq!(
+                book.replay_trial_balance(&certified.certificate)
+                    .unwrap()
+                    .unwrap(),
+                certified.report
+            );
+        }
+    }
+
     /// Plan §15.2 through the facade: the scratch book (its own runtime and
     /// store) folds as the source does and verifies against its SeqMap; a
     /// scenario post lands in the scratch book only; a map with a pair
@@ -3467,8 +5464,15 @@ mod tests {
                 .expect("kernel")
                 .expect("admitted");
         }
-        // Maintained registers are maintenance: never replayed.
+        // Maintained registers and source-bound report artifacts are not
+        // accounting inputs to a scratch book.
         assert!(book.advance_registers(&march).expect("maintained").wrote);
+        let certificate = book
+            .certify_trial_balance(crate::TrialBalanceSelection::AsOf(day), None)
+            .unwrap()
+            .unwrap()
+            .certificate;
+        let retained = book.retain_certificate(&certificate).unwrap().unwrap();
         let source_head = book.head().unwrap();
 
         let before_genesis = book
@@ -3502,6 +5506,26 @@ mod tests {
             .expect("verifies");
         assert_eq!(verified.pairs_checked, map.pairs.len());
         assert!(verified.entries_checked >= 2, "{verified:?}");
+        assert!(
+            !map.pairs
+                .iter()
+                .any(|pair| pair.source_seq == retained.recorded_at),
+            "retaining a source-bound certificate is not a scratch accounting commit"
+        );
+        let refusal = scratch
+            .read_certificate(&retained.digest)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
+        assert_eq!(
+            book.read_certificate(&retained.digest)
+                .unwrap()
+                .unwrap()
+                .canonical_bytes()
+                .unwrap(),
+            certificate.canonical_bytes().unwrap(),
+            "the source retains its original certificate"
+        );
         assert_eq!(
             scratch.fold_period(&march).unwrap().cells,
             book.fold_period(&march).unwrap().cells
@@ -3510,10 +5534,11 @@ mod tests {
             with_store!(&scratch.store, core => core.db.vertices_at(core.db.frontier().unwrap()))
         }).unwrap();
         assert!(
-            scratch_rows
-                .iter()
-                .all(|v| !v.labels.contains(&fa_model::symbols::label::REGISTER_STATE)),
-            "no maintainer state reaches the scratch book"
+            scratch_rows.iter().all(|v| {
+                !v.labels.contains(&fa_model::symbols::label::REGISTER_STATE)
+                    && !v.labels.contains(&fa_model::symbols::label::CERTIFICATE)
+            }),
+            "no maintainer state or source-bound certificate reaches the scratch book"
         );
 
         post_rent(&mut scratch, usd, principal, day, b"what-if", 150_000)
@@ -3787,6 +5812,34 @@ mod tests {
             "{refused}"
         );
         assert_eq!(refused.exit(), fa_journal::exit::USAGE);
+        let historical_items = book.open_items_report(Some(cash), Some(before_chart));
+        assert!(matches!(
+            historical_items,
+            Err(BookError::Registers(
+                fa_registers::RegisterError::InvalidSelection(_)
+            ))
+        ));
+        for selection in [
+            crate::ReportSelection::ExplainBalance {
+                account: cash,
+                period: march.clone(),
+            },
+            crate::ReportSelection::OpenItems {
+                account: Some(cash),
+            },
+        ] {
+            assert!(matches!(
+                book.certify_report(selection, Some(before_chart)),
+                Err(BookError::Registers(
+                    fa_registers::RegisterError::InvalidSelection(_)
+                ))
+            ));
+        }
+        let empty_items = book
+            .open_items_report(Some(cash), Some(installed.recorded_at))
+            .unwrap();
+        assert_eq!(empty_items.accounts[&cash].name, "Cash");
+        assert!(empty_items.items.is_empty());
         let then = book
             .explain_balance(cash, &march, Some(installed.recorded_at))
             .unwrap();
@@ -3821,7 +5874,7 @@ mod tests {
                 Book::create_dir(&dir, keys.clone(), spec.clone(), Entropy::deterministic(11))
                     .expect("create_dir");
             let added = book.add_document(&big).expect("kernel").expect("admitted");
-            let record = book.document_record(&added.oid).unwrap().expect("held");
+            let record = storage_record(&book, &added.oid);
             let locator = match record.storage {
                 fa_journal::Storage::External { store, locator } => Some((store, locator)),
                 fa_journal::Storage::Inline(_) => None,
@@ -3839,30 +5892,28 @@ mod tests {
                 .expect("kernel")
                 .expect("admitted");
             assert!(matches!(
-                book.document_record(&inline.oid)
-                    .unwrap()
-                    .expect("held")
-                    .storage,
+                storage_record(&book, &inline.oid).storage,
                 fa_journal::Storage::Inline(_)
             ));
             (added.oid, locator)
         };
         // Reopened, the document reads back byte-identically.
-        let book = Book::open_dir(&dir, keys, Entropy::deterministic(12)).expect("open_dir");
+        let mut book = Book::open_dir(&dir, keys, Entropy::deterministic(12)).expect("open_dir");
+        let reader = Capability::embedded(principal, &["read", "privileged"]).unwrap();
         assert_eq!(
-            book.read_document(&oid).unwrap().unwrap(),
-            Some(big.clone())
+            book.read_document_for(&reader, &oid).unwrap().unwrap(),
+            fa_journal::DocumentRead::Full(big.clone())
         );
         // A byte changed on disk: refused (exit 8), never the changed bytes.
         let path = dir.join("blobs").join(&locator[..2]).join(&locator);
         let mut changed = big.bytes.clone();
         changed[0] = b'Q';
         std::fs::write(&path, &changed).unwrap();
-        let r = book.read_document(&oid).unwrap().unwrap_err();
+        let r = book.read_document_for(&reader, &oid).unwrap().unwrap_err();
         assert_eq!((r.code, r.exit), ("FA-REF-085", 8), "{r}");
         // The blob moved away: refused (exit 5), never a silent null.
         std::fs::rename(&path, path.with_extension("moved")).unwrap();
-        let r = book.read_document(&oid).unwrap().unwrap_err();
+        let r = book.read_document_for(&reader, &oid).unwrap().unwrap_err();
         assert_eq!((r.code, r.exit), ("FA-REF-116", 5), "{r}");
     }
 
@@ -3965,6 +6016,11 @@ mod tests {
             .expect("admitted");
         let reader = Capability::embedded(VId(2), &["read"]).expect("read");
         let counsel = Capability::embedded(VId(1), &["read", "privileged"]).expect("privileged");
+        assert_eq!(
+            book.document_commitment(&added.oid).unwrap(),
+            Some(statement.doc_commit())
+        );
+        assert_eq!(book.document_commitment(&Oid([0xee; 32])).unwrap(), None);
         let r = book
             .read_document_for(&reader, &added.oid)
             .expect("kernel")
@@ -4118,6 +6174,67 @@ mod tests {
     }
 
     #[test]
+    fn public_document_commitment_does_not_decode_bytes_or_trust_a_rebound_digest() {
+        use fa_model::symbols::{property, relation};
+        use fgdb::WriteBatch;
+        use fgdb_types::CanonicalScalar;
+
+        let book_id = Id128([0x4b; 16]);
+        let (spec, _) = spec(book_id);
+        let mut book = Book::create_memory(
+            BookKeys::for_development(0x4b),
+            spec,
+            Entropy::deterministic(0x4b),
+        )
+        .unwrap();
+        let document = fa_journal::Document {
+            book_id,
+            kind: 5,
+            mime: "text/plain".into(),
+            grade: 3,
+            retrieved_by: VId(1),
+            bytes: b"privileged inline bytes".to_vec(),
+        };
+        let added = book.add_document(&document).unwrap().unwrap();
+        assert_eq!(
+            book.document_commitment(&added.oid).unwrap(),
+            Some(document.doc_commit())
+        );
+        let ctx = book.purposes();
+        let vid = fa_journal::evidence::document_vid(&added.oid);
+        let mut batch = WriteBatch::new(relation::DERIVED_FROM);
+        batch.set_vertex_property(
+            vid,
+            property::FA_PAYLOAD,
+            Some(CanonicalScalar::bytes(vec![0xff]).unwrap()),
+        );
+        with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&ctx.commit(), batch))).unwrap();
+        // The public mirror lookup neither fetches nor decodes a private
+        // payload. Its result is not a byte-verification certificate.
+        assert_eq!(
+            book.document_commitment(&added.oid).unwrap(),
+            Some(document.doc_commit())
+        );
+        let counsel = Capability::embedded(VId(1), &["read", "privileged"]).unwrap();
+        let refusal = book
+            .read_document_for(&counsel, &added.oid)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refusal.code, "FA-REF-085");
+        let mut batch = WriteBatch::new(relation::DERIVED_FROM);
+        batch.set_vertex_property(
+            vid,
+            property::FA_DIGEST,
+            Some(CanonicalScalar::bytes(vec![0; 32]).unwrap()),
+        );
+        with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&ctx.commit(), batch))).unwrap();
+        assert!(matches!(
+            book.document_commitment(&added.oid),
+            Err(BookError::Kernel(KernelError::Corrupt(_)))
+        ));
+    }
+
+    #[test]
     fn directory_book_persists_across_reopen() {
         let dir = std::env::temp_dir().join(format!("fa-book-{}", std::process::id()));
         let keys = BookKeys::generate(&Entropy::deterministic(9)).unwrap();
@@ -4127,6 +6244,8 @@ mod tests {
         let day = DateDay::from_ymd(2026, 3, 15).unwrap();
         let march;
         let entry_ref;
+        let certified_report;
+        let retained_certificate;
         {
             let mut book =
                 Book::create_dir(&dir, keys.clone(), spec.clone(), Entropy::deterministic(7))
@@ -4160,6 +6279,14 @@ mod tests {
                 .expect("kernel")
                 .expect("admitted")
                 .entry_ref();
+            certified_report = book
+                .certify_trial_balance(crate::TrialBalanceSelection::AsOf(day), None)
+                .unwrap()
+                .unwrap();
+            retained_certificate = book
+                .retain_certificate(&certified_report.certificate)
+                .unwrap()
+                .unwrap();
         }
         // A wrong key does not open the store.
         assert!(
@@ -4173,6 +6300,20 @@ mod tests {
         let mut book = Book::open_dir(&dir, keys, Entropy::deterministic(8)).expect("open_dir");
         assert_eq!(book.context().book_id, book_id);
         assert_eq!(book.context().calendar, spec.calendar);
+        let certificate = book
+            .read_certificate(&retained_certificate.digest)
+            .unwrap()
+            .expect("the retained certificate survived reopen");
+        assert_eq!(certificate, certified_report.certificate);
+        assert_eq!(
+            book.replay_trial_balance(&certificate).unwrap().unwrap(),
+            certified_report.report
+        );
+        assert_eq!(
+            book.retain_certificate(&certificate).unwrap().unwrap(),
+            retained_certificate
+        );
+        assert_eq!(book.head().unwrap(), retained_certificate.recorded_at);
         let (entry, _) = book
             .read_entry(entry_ref.vid)
             .unwrap()
@@ -4196,5 +6337,351 @@ mod tests {
             .expect("recorded");
         assert!(matches!(again, Posted::AlreadyRecorded { .. }));
         assert!(book.trial_balance(&[march]).unwrap().is_balanced());
+    }
+
+    /// VFS calls in order: the operation and every path argument it was given.
+    type Calls = Vec<(&'static str, Vec<PathBuf>)>;
+
+    /// Real `UnixVfs` I/O with every path argument recorded in call order and
+    /// no result special-cased (fa-40l (B), JadePeak 4047, CobaltGull 4048).
+    #[derive(Clone)]
+    struct RecordingVfs {
+        inner: UnixVfs,
+        calls: std::sync::Arc<std::sync::Mutex<Calls>>,
+    }
+
+    impl RecordingVfs {
+        fn new() -> Self {
+            Self {
+                inner: UnixVfs::new(),
+                calls: std::sync::Arc::default(),
+            }
+        }
+
+        fn note(&self, op: &'static str, paths: &[&Path]) {
+            self.calls
+                .lock()
+                .expect("recorder lock")
+                .push((op, paths.iter().map(|p| p.to_path_buf()).collect()));
+        }
+
+        /// Every call recorded since the last take, in order.
+        fn take(&self) -> Calls {
+            std::mem::take(&mut *self.calls.lock().expect("recorder lock"))
+        }
+    }
+
+    impl Vfs for RecordingVfs {
+        type File = <UnixVfs as Vfs>::File;
+
+        fn open(
+            &self,
+            path: &Path,
+            opts: &OpenOptions,
+        ) -> impl std::future::Future<Output = std::io::Result<Self::File>> + Send {
+            self.note("open", &[path]);
+            self.inner.open(path, opts)
+        }
+
+        fn metadata(
+            &self,
+            path: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<asupersync::fs::Metadata>> + Send
+        {
+            self.note("metadata", &[path]);
+            self.inner.metadata(path)
+        }
+
+        fn symlink_metadata(
+            &self,
+            path: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<asupersync::fs::Metadata>> + Send
+        {
+            self.note("symlink_metadata", &[path]);
+            self.inner.symlink_metadata(path)
+        }
+
+        fn set_permissions(
+            &self,
+            path: &Path,
+            perm: asupersync::fs::Permissions,
+        ) -> impl std::future::Future<Output = std::io::Result<()>> + Send {
+            self.note("set_permissions", &[path]);
+            self.inner.set_permissions(path, perm)
+        }
+
+        fn create_dir(
+            &self,
+            path: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<()>> + Send {
+            self.note("create_dir", &[path]);
+            self.inner.create_dir(path)
+        }
+
+        fn create_dir_all(
+            &self,
+            path: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<()>> + Send {
+            self.note("create_dir_all", &[path]);
+            self.inner.create_dir_all(path)
+        }
+
+        fn remove_dir(
+            &self,
+            path: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<()>> + Send {
+            self.note("remove_dir", &[path]);
+            self.inner.remove_dir(path)
+        }
+
+        fn remove_dir_all(
+            &self,
+            path: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<()>> + Send {
+            self.note("remove_dir_all", &[path]);
+            self.inner.remove_dir_all(path)
+        }
+
+        fn read_dir(
+            &self,
+            path: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<asupersync::fs::ReadDir>> + Send
+        {
+            self.note("read_dir", &[path]);
+            self.inner.read_dir(path)
+        }
+
+        fn remove_file(
+            &self,
+            path: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<()>> + Send {
+            self.note("remove_file", &[path]);
+            self.inner.remove_file(path)
+        }
+
+        fn rename(
+            &self,
+            from: &Path,
+            to: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<()>> + Send {
+            self.note("rename", &[from, to]);
+            self.inner.rename(from, to)
+        }
+
+        fn copy(
+            &self,
+            src: &Path,
+            dst: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<u64>> + Send {
+            self.note("copy", &[src, dst]);
+            self.inner.copy(src, dst)
+        }
+
+        fn hard_link(
+            &self,
+            original: &Path,
+            link: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<()>> + Send {
+            self.note("hard_link", &[original, link]);
+            self.inner.hard_link(original, link)
+        }
+
+        fn canonicalize(
+            &self,
+            path: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<PathBuf>> + Send {
+            self.note("canonicalize", &[path]);
+            self.inner.canonicalize(path)
+        }
+
+        fn read_link(
+            &self,
+            path: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<PathBuf>> + Send {
+            self.note("read_link", &[path]);
+            self.inner.read_link(path)
+        }
+
+        fn read(
+            &self,
+            path: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<Vec<u8>>> + Send {
+            self.note("read", &[path]);
+            self.inner.read(path)
+        }
+
+        fn read_to_string(
+            &self,
+            path: &Path,
+        ) -> impl std::future::Future<Output = std::io::Result<String>> + Send {
+            self.note("read_to_string", &[path]);
+            self.inner.read_to_string(path)
+        }
+
+        fn write(
+            &self,
+            path: &Path,
+            contents: &[u8],
+        ) -> impl std::future::Future<Output = std::io::Result<()>> + Send {
+            self.note("write", &[path]);
+            self.inner.write(path, contents)
+        }
+    }
+
+    fn has_parent_dir(path: &Path) -> bool {
+        path.components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    }
+
+    /// The records before and including the `canonicalize` of `spelled`
+    /// (DurableDirectory's preflight on the caller's spelling), and the rest.
+    fn split_preflight(calls: Calls, spelled: &Path) -> (Calls, Calls) {
+        let end = calls
+            .iter()
+            .position(|(op, paths)| *op == "canonicalize" && paths[..] == [spelled.to_path_buf()]);
+        assert!(end.is_some(), "no canonicalize of {spelled:?}: {calls:?}");
+        let mut preflight = calls;
+        let rest = preflight.split_off(end.map_or(0, |i| i + 1));
+        (preflight, rest)
+    }
+
+    /// fa-40l acceptance (B), scoped to the 4046 boundary: a book spelled
+    /// with a `..` component reaches the VFS with that spelling only in
+    /// `DurableDirectory`'s preflight (create, metadata, the ancestor fence
+    /// and `canonicalize`); every argument handed on afterwards — to
+    /// `Database`, to the blob store, and by every later operation and the
+    /// reopen — carries no `..` and lies on the canonical root's line. Real
+    /// `UnixVfs` refuses a `..` at rename, so the renames recorded below
+    /// passing is the same fact from the host's side. No claim that the
+    /// substrate tolerates `..`: this pins where it stops.
+    #[cfg(unix)]
+    #[test]
+    fn a_dotdot_book_spelling_stops_at_the_durable_directory_preflight() {
+        let (runtime, root) = Book::runtime_and_root().unwrap();
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base =
+            std::env::temp_dir().join(format!("fa-40l-dotdot-{}-{suffix}", std::process::id()));
+        let caller = base.join("caller");
+        std::fs::create_dir_all(&caller).unwrap();
+        let spelled = caller.join("..").join("x");
+        let caller_parent = caller.join("..");
+        assert!(has_parent_dir(&spelled));
+        let canonical = std::fs::canonicalize(&base).unwrap().join("x");
+        let vfs = RecordingVfs::new();
+        let keys = BookKeys::for_development(0x6b);
+        let book_id = Id128([0x6b; 16]);
+        let (spec, usd) = spec(book_id);
+        let on_the_canonical_line =
+            |p: &Path| p.starts_with(&canonical) || canonical.starts_with(p);
+        runtime.block_on(async {
+            let mut book = AsyncBook::create_with_vfs(
+                &cx,
+                vfs.clone(),
+                &spelled,
+                keys.clone(),
+                spec,
+                Entropy::deterministic(0x6b),
+            )
+            .await
+            .expect("a `..` spelling creates the book");
+            let (preflight, handed) = split_preflight(vfs.take(), &spelled);
+            let dotdot = |calls: &Calls| -> Calls {
+                calls
+                    .iter()
+                    .filter(|(_, paths)| paths.iter().any(|p| has_parent_dir(p)))
+                    .cloned()
+                    .collect()
+            };
+            assert_eq!(
+                dotdot(&preflight),
+                vec![
+                    ("create_dir_all", vec![spelled.clone()]),
+                    ("metadata", vec![spelled.clone()]),
+                    ("symlink_metadata", vec![spelled.clone()]),
+                    ("open", vec![spelled.clone()]),
+                    ("symlink_metadata", vec![caller_parent.clone()]),
+                    ("open", vec![caller_parent.clone()]),
+                    ("canonicalize", vec![spelled.clone()]),
+                ],
+                "the preflight's `..` records are exactly these: {preflight:?}"
+            );
+
+            let principal = VId(1);
+            let day = DateDay::from_ymd(2026, 3, 15).unwrap();
+            book.install_chart(&cx, &chart(usd), principal, day, b"chart")
+                .await
+                .unwrap()
+                .unwrap();
+            let inline_bound = fa_registry::evidence_policy::EvidencePolicy::embedded()
+                .unwrap()
+                .max_document_bytes;
+            let document = fa_journal::Document {
+                book_id,
+                kind: 1,
+                mime: "application/octet-stream".into(),
+                grade: 3,
+                retrieved_by: principal,
+                bytes: vec![0x62; usize::try_from(inline_bound).unwrap() + 1],
+            };
+            book.add_document(&cx, &document).await.unwrap().unwrap();
+            let operated = vfs.take();
+            drop(book);
+
+            let reopened = AsyncBook::open_with_vfs(
+                &cx,
+                vfs.clone(),
+                &spelled,
+                keys,
+                Entropy::deterministic(0x6c),
+            )
+            .await
+            .expect("the same spelling reopens the book");
+            assert_eq!(reopened.accounts(&cx).unwrap().len(), chart(usd).len());
+            let (reopen_preflight, reopen_handed) = split_preflight(vfs.take(), &spelled);
+            assert_eq!(
+                dotdot(&reopen_preflight),
+                vec![
+                    ("metadata", vec![spelled.clone()]),
+                    ("symlink_metadata", vec![spelled.clone()]),
+                    ("open", vec![spelled.clone()]),
+                    ("symlink_metadata", vec![caller_parent.clone()]),
+                    ("open", vec![caller_parent.clone()]),
+                    ("canonicalize", vec![spelled.clone()]),
+                ],
+                "reopen's preflight `..` records: {reopen_preflight:?}"
+            );
+
+            // Everything handed on after the preflight: no `..` anywhere,
+            // and every path on the canonical root's line (the root, under
+            // it, or one of its ancestors' fences).
+            for (phase, calls) in [
+                ("create", &handed),
+                ("operations", &operated),
+                ("reopen", &reopen_handed),
+            ] {
+                assert!(!calls.is_empty(), "{phase} recorded nothing");
+                for (op, paths) in calls {
+                    for p in paths {
+                        assert!(!has_parent_dir(p), "{phase}: {op} {p:?} carries `..`");
+                        assert!(
+                            on_the_canonical_line(p),
+                            "{phase}: {op} {p:?} is off the canonical root {canonical:?}"
+                        );
+                    }
+                }
+            }
+            // Publication actually ran through the recorder: the external
+            // document's bytes were renamed into the canonical blob store.
+            let blobs = canonical.join("blobs");
+            assert!(
+                operated.iter().any(|(op, paths)| *op == "rename"
+                    && paths.last().is_some_and(|to| to.starts_with(&blobs))),
+                "no blob publication rename under {blobs:?}: {operated:?}"
+            );
+        });
     }
 }

@@ -54,7 +54,7 @@ use fa_model::limits::MAX_BATCH_ENTRIES;
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
     ControlPayload, EntryClass, EntryOrigin, EntryPayload, EntryRef, Id128, LegPayload,
-    ScheduleTrigger, Supersession, SupersessionKind, entry_mirrors, leg_mirrors, period_vid,
+    ScheduleTrigger, Supersession, SupersessionKind, entry_mirrors, period_vid,
 };
 use fa_money::Side;
 use fa_policy::Party;
@@ -70,9 +70,9 @@ use crate::limit::{self, LimitCell, LimitScope, Movement};
 use crate::policy;
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{
-    AccountRow, applied_witness, book_root, edge_id, leg_vid, mantissa_scalar, prop, reversal_vid,
-    scalar_bytes, scalar_text, schedule_cancel_vid, schedule_cursor_vid, schedule_vid,
-    state_from_scalar, system_principal,
+    AccountRow, applied_witness, book_root, edge_id, leg_vid, prop, reversal_vid, scalar_bytes,
+    scalar_text, schedule_cancel_vid, schedule_cursor_vid, schedule_vid, state_from_scalar,
+    system_principal,
 };
 use crate::sweep::{
     CellRun, Cursor, SweepRequest, Tick, admit_sweep, conflict, corroborated_at_head,
@@ -524,7 +524,7 @@ fn swapped(legs: &[LegPayload]) -> Vec<LegPayload> {
 /// The writes of the reversals one transaction mints, and what it blocked.
 pub(crate) struct Mints {
     has_leg: WriteBatch,
-    posts_to: WriteBatch,
+    leg_edges: [WriteBatch; 3],
     in_period: WriteBatch,
     supersedes: WriteBatch,
     cells: BTreeMap<VId, CellRun>,
@@ -539,7 +539,11 @@ impl Mints {
     pub(crate) fn new() -> Self {
         Self {
             has_leg: WriteBatch::new(relation::HAS_LEG),
-            posts_to: WriteBatch::new(relation::POSTS_TO),
+            leg_edges: [
+                WriteBatch::new(relation::POSTS_TO),
+                WriteBatch::new(relation::IN_UNIT),
+                WriteBatch::new(relation::FOR),
+            ],
             in_period: WriteBatch::new(relation::IN_PERIOD),
             supersedes: WriteBatch::new(relation::SUPERSEDES),
             cells: BTreeMap::new(),
@@ -554,7 +558,8 @@ impl Mints {
         for (cell, run) in &self.cells {
             run.before.stage(&run.after, *cell, &mut self.has_leg)?;
         }
-        let mut out = vec![self.has_leg, self.posts_to, self.in_period, self.supersedes];
+        let mut out = vec![self.has_leg, self.in_period, self.supersedes];
+        out.extend(self.leg_edges);
         out.retain(|b| !b.is_empty());
         Ok(out)
     }
@@ -750,9 +755,7 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
         supersession: vec![Supersession {
             target: schedule.target,
             kind: SupersessionKind::Reverses,
-            // No reason-code registry yet (plan §8.2 reason_codes.toml);
-            // 0 is "unspecified": the schedule is the reason.
-            reason_code: 0,
+            reason_code: fa_registry::reason_codes::SCHEDULED_ACCRUAL_REVERSAL,
         }],
         pending: None,
         external_ids: Vec::new(),
@@ -782,25 +785,9 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
     mints
         .has_leg
         .create_vertex(rvid, vec![label::ENTRY], entry_mirrors(&entry)?);
-    for (i, leg) in entry.proposal.legs.iter().enumerate() {
-        let ordinal =
-            u16::try_from(i).map_err(|_| KernelError::Corrupt("more than u16 legs".into()))?;
-        let lvid = leg_vid(rvid, ordinal);
-        let mut mirrors = leg_mirrors(leg, ordinal, entry.proposal.effective_date, &book.units)?;
-        mirrors.push((property::APPLIED, mantissa_scalar("applied", 0)?));
-        mints.has_leg.create_vertex(lvid, vec![label::LEG], mirrors);
-        mints.has_leg.add_edge(
-            edge_id(relation::HAS_LEG, rvid, lvid),
-            rvid,
-            lvid,
-            vec![(property::ORDINAL, CanonicalScalar::Int(i64::from(ordinal)))],
-        );
-        mints.posts_to.add_edge(
-            edge_id(relation::POSTS_TO, lvid, leg.account_ref),
-            lvid,
-            leg.account_ref,
-            vec![],
-        );
+    let leg_edges = crate::projections::stage_legs(&mut mints.has_leg, rvid, &entry, book)?;
+    for (aggregate, batch) in mints.leg_edges.iter_mut().zip(leg_edges) {
+        aggregate.extend(batch)?;
     }
     mints
         .in_period

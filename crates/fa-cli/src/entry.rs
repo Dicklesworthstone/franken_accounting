@@ -12,11 +12,14 @@
 //!
 //! `--via fad` insists on the daemon (exit 4 when none serves the book);
 //! `--via direct` refuses (FA-REF-018) instead of routing when the lease is
-//! held.
+//! held. These are the embedded-owner entry points. An MCP host must use
+//! [`fa_with_authority`], which keeps its launch capability and never routes
+//! through the unauthenticated daemon protocol.
 
 use std::io::{IsTerminal, Read, Write};
 
 use crate::args;
+use crate::authority::LaunchAuthority;
 use crate::cli::{self, Books, Captured, Files, Stdin};
 use crate::client::{self, ClientError};
 use crate::lease::{Lease, LeaseError};
@@ -30,10 +33,9 @@ pub fn fa(argv: &[String], capture: bool) -> (u8, Captured) {
 }
 
 /// [`fa`] with the files and stdin the command's arguments resolve against
-/// (`fa_cli::cli::Files`): a host that is not the `fa` binary (fa-mcp) hands
-/// a forwarded stdin here instead of the process's own, so `-` never reads
-/// the host's transport. Through a daemon, the forwarded bytes travel in the
-/// request.
+/// (`fa_cli::cli::Files`): a trusted embedded-owner host hands a forwarded
+/// stdin here instead of the process's own. Through a daemon, the forwarded
+/// bytes travel in the request. MCP hosts use [`fa_with_authority`] instead.
 pub fn fa_with(argv: &[String], files: Files, capture: bool) -> (u8, Captured) {
     let Ok(reg) = verbs::registry() else {
         // `cli::run` reports the unreadable registry itself.
@@ -75,6 +77,88 @@ pub fn fa_with(argv: &[String], files: Files, capture: bool) -> (u8, Captured) {
                 through_daemon(argv, &dir, Some(held), &files, capture)
             }
         }
+    }
+}
+
+/// Run a request under the authority fixed when an MCP server starts.
+///
+/// The capability is an in-process value, never a command-line argument or
+/// an unauthenticated daemon frame. Discovery needs no book; every command
+/// that may observe the book must take its configured writer lease. A held
+/// lease is refused until the daemon can bind an authenticated session.
+pub fn fa_with_authority(
+    argv: &[String],
+    files: Files,
+    authority: &LaunchAuthority,
+    capture: bool,
+) -> (u8, Captured) {
+    let Ok(reg) = verbs::registry() else {
+        return cli::run_with_authority(argv, Books::Dir, files, authority, capture);
+    };
+    let Ok(parsed) = args::parse(argv, &reg.value_flags(), &reg.switches()) else {
+        return cli::run_with_authority(argv, Books::Dir, files, authority, capture);
+    };
+    // Judge parsed arguments, not strings inside an ordinary value or after
+    // `--`. The bound dispatcher repeats this check and binds book/keys in
+    // Args itself, so no appended argv can turn a positional value into an
+    // authority override.
+    for flag in [
+        "--as",
+        "--grant",
+        "--yes",
+        "--book",
+        "--keys",
+        "--via",
+        "--principal",
+        "--profile",
+    ] {
+        if parsed.flag(flag).is_some() || parsed.switch(flag) {
+            return cli::usage_error_with_authority(
+                argv,
+                format!("{flag} cannot be supplied by a launch-bound request"),
+                "identity, permissions, book and keys are fixed when the server starts; ask the operator to start a server with the required authority",
+                authority,
+                capture,
+            );
+        }
+    }
+    let command = parsed.positional.first().map(|word| {
+        reg.alias(word)
+            .and_then(|alias| alias.expands.first())
+            .unwrap_or(word)
+            .as_str()
+    });
+    if parsed.switch("--help")
+        || parsed.switch("--version")
+        || matches!(command, None | Some("help" | "capabilities" | "robot-docs"))
+    {
+        return cli::run_with_authority(argv, Books::Dir, files, authority, capture);
+    }
+    let note = format!(
+        "fa-mcp pid={} principal={}",
+        std::process::id(),
+        authority.principal()
+    );
+    match Lease::acquire(authority.book(), &reg.daemon.lease, &note) {
+        Ok(lease) => {
+            let result = cli::run_with_authority(argv, Books::Dir, files, authority, capture);
+            drop(lease);
+            result
+        }
+        Err(held @ LeaseError::Held { .. }) => {
+            let mut refusal = held.refusal(authority.book());
+            refusal.message.push_str(
+                "; launch-bound authority cannot be forwarded through the unauthenticated fad protocol",
+            );
+            refusal.fix = "ask the operator to release the book's writer lease, then retry this launch-bound session; authenticated daemon sessions are not yet available (fa-r3q)".into();
+            cli::refuse_with_authority(argv, refusal, authority, capture)
+        }
+        Err(error @ LeaseError::Io { .. }) => cli::environment_error_with_authority(
+            argv,
+            format!("cannot acquire the configured book's writer lease: {error}"),
+            authority,
+            capture,
+        ),
     }
 }
 

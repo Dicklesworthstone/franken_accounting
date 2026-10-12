@@ -28,6 +28,7 @@ pub mod ids;
 pub mod limits;
 pub mod mirrors;
 pub mod symbols;
+pub mod unit;
 
 pub use account::AccountType;
 pub use canon::{DecodeError, EncodeError, Reader, Writer};
@@ -46,3 +47,4 @@ pub use ids::{
 };
 pub use mirrors::{MirrorError, entry_mirrors, leg_mirrors};
 pub use symbols::SymbolTable;
+pub use unit::UnitDefinition;
