@@ -1649,12 +1649,21 @@ fn kernel_transition(
 #[test]
 fn kernel_and_oracle_agree_on_a_generated_history() {
     const FIRST_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut failed_seeds = Vec::new();
     for seed in FIRST_SEED..FIRST_SEED + 32 {
         eprintln!(
             "generated history seed={seed:#018x}; replay all 32: RCH_REQUIRE_REMOTE=1 rch exec -- cargo test -p fa-registers --test differential kernel_and_oracle_agree_on_a_generated_history -- --exact --nocapture"
         );
-        generated_history(seed);
+        // Each history creates its own kernel and oracle. Retain the panic
+        // diagnostic, but let every declared seed execute before failing.
+        if std::panic::catch_unwind(|| generated_history(seed)).is_err() {
+            failed_seeds.push(seed);
+        }
     }
+    assert!(
+        failed_seeds.is_empty(),
+        "generated histories failed for seeds {failed_seeds:#018x?}"
+    );
 }
 
 fn generated_history(seed: u64) {
@@ -2323,6 +2332,85 @@ fn generated_history(seed: u64) {
             *evidence_refused.entry(expected).or_insert(0) += 1;
             evidence_plants += 1;
         }
+    }
+
+    // A random reversal can miss every applying receipt even though the
+    // history posted several applications. Supplement all 640 unchanged
+    // steps with one actual undo when that law has not yet been exercised.
+    // June is untouched; May belongs to the later corruption probe.
+    if undone == 0 {
+        let target = (0..refs.len())
+            .find(|index| {
+                !reversed_targets.contains(index)
+                    && oracle.entry(*index).is_some_and(|e| !e.settles.is_empty())
+            })
+            .expect("the generated history posted an unreversed application");
+        let original = oracle.entry(target).unwrap().clone();
+        let mut released = BTreeMap::<(usize, usize), i128>::new();
+        for application in &original.settles {
+            let amount = released
+                .entry((application.target, application.ordinal))
+                .or_default();
+            *amount = amount.checked_add(application.mantissa).unwrap();
+        }
+        let native_before = open_items(&k.db, &k.book, None, None).unwrap();
+        let model_before = oracle.open_items();
+        open_period(&mut k, &mut oracle, &periods[5], 640);
+        let intent = Intent {
+            class: "Reversal".into(),
+            date: DateDay::from_ymd(2026, 6, 15).unwrap(),
+            discriminator: None,
+            legs: original
+                .legs
+                .iter()
+                .map(|leg| Leg {
+                    side: leg.side.flipped(),
+                    ..leg.clone()
+                })
+                .collect(),
+            key: b"required-application-undo".to_vec(),
+            ops: vec!["post".into()],
+            approvals: 0,
+            reverses: Some(target),
+            supersession_reason: 1,
+            resolves: None,
+            settles: Vec::new(),
+        };
+        let kernel = kernel_post(&mut k, &intent, &refs).expect("the receipt reverses");
+        assert!(matches!(kernel, Posted::Committed { .. }));
+        assert_eq!(kernel.period(), Some(periods[5].as_str()));
+        assert_eq!(
+            oracle.post(&intent),
+            Verdict::Posted {
+                index: refs.len(),
+                period: periods[5].clone(),
+            }
+        );
+        refs.push(kernel.entry_ref());
+        posted += 1;
+        posted_intents.push(intent);
+        reversed_targets.insert(target);
+        let native_after = open_items(&k.db, &k.book, None, None).unwrap();
+        let model_after = oracle.open_items();
+        for ((entry, ordinal), amount) in released {
+            let select = |item: &&fa_registers::open_items::OpenItem| {
+                item.entry == refs[entry].vid && usize::from(item.ordinal) == ordinal
+            };
+            let before = native_before.iter().find(select).expect("applied invoice");
+            let after = native_after.iter().find(select).expect("released invoice");
+            assert_eq!(before.applied.checked_sub(amount), Some(after.applied));
+            assert_eq!(before.open.checked_add(amount), Some(after.open));
+            assert_eq!(
+                model_before[&(entry, ordinal)].1.checked_sub(amount),
+                Some(model_after[&(entry, ordinal)].1)
+            );
+            assert_eq!(after.applied, model_after[&(entry, ordinal)].1);
+        }
+        let projections = verify_projections(&k.db, &k.book, None).unwrap();
+        assert!(projections.is_green(), "{projections:?}");
+        let applications = verify_open_items(&k.db, &k.book, None).unwrap();
+        assert!(applications.is_green(), "{applications:?}");
+        undone += 1;
     }
 
     // Every evidence refusal the plants aim at was produced, on every seed.
@@ -4743,12 +4831,19 @@ fn close_and_maybe_lock(k: &mut Kernel, oracle: &mut Oracle, code: &str, lock: b
 #[test]
 fn kernel_and_oracle_agree_on_ticks_timed_holds_and_the_expiry_sweep() {
     const FIRST_SEED: u64 = 0x7135_EED5_0FA0_C7F1;
+    let mut failed_seeds = Vec::new();
     for seed in FIRST_SEED..FIRST_SEED + 32 {
         eprintln!(
             "ticks and expiry seed={seed:#018x}; replay all 32: RCH_REQUIRE_REMOTE=1 rch exec -- cargo test -p fa-registers --test differential kernel_and_oracle_agree_on_ticks_timed_holds_and_the_expiry_sweep -- --exact --nocapture"
         );
-        ticks_timed_holds_and_expiry_history(seed);
+        if std::panic::catch_unwind(|| ticks_timed_holds_and_expiry_history(seed)).is_err() {
+            failed_seeds.push(seed);
+        }
     }
+    assert!(
+        failed_seeds.is_empty(),
+        "timed histories failed for seeds {failed_seeds:#018x?}"
+    );
 }
 
 fn ticks_timed_holds_and_expiry_history(seed: u64) {
@@ -5155,6 +5250,78 @@ fn ticks_timed_holds_and_expiry_history(seed: u64) {
             assert_pending_registers(&k, &oracle, &watched, step);
         }
     }
+    // Random manual resolutions can miss due holds. Supplement all 600
+    // draws with actual deadline-equality refusals on distinct holds, then
+    // successfully void each one using the refused request's key.
+    for n in refused.get("FA-REF-097").copied().unwrap_or(0)..3 {
+        let step = 600 + u64::from(n);
+        let hold = plain(
+            "Pending",
+            vec![leg(dr, "6000", 1), leg(cr, "4000", 1)],
+            format!("required-due-hold-{n}").into_bytes(),
+            dated[2],
+        );
+        let target = post_timed_both(&mut k, &mut oracle, &mut refs, &mut refused, &hold, 1, step)
+            .expect("an unlimited timed hold posts in open March");
+        holds.push(target);
+        timed_posted += 1;
+        assert!(!oracle.due().contains(&target));
+        now = now.checked_add(1).unwrap();
+        assert_eq!(oracle.deadline(target), Some(now));
+        kernel_tick(&mut k, now, &format!("required-due-tick-{n}")).expect("deadline tick");
+        oracle.record_tick(now).expect("deadline tick");
+        assert!(oracle.due().contains(&target));
+        assert_eq!(kernel_due(&k, &refs), oracle.due());
+
+        let mut resolution = plain(
+            "Resolution",
+            hold.legs,
+            format!("required-due-resolution-{n}").into_bytes(),
+            dated[2],
+        );
+        resolution.resolves = Some(Resolve {
+            target,
+            posts: Some(vec![0, 1]),
+        });
+        let frontier = k.db.frontier().unwrap();
+        let journal_len = oracle.journal_len();
+        let refusal = kernel_post(&mut k, &resolution, &refs).expect_err("due at equality");
+        assert_eq!(
+            oracle.post(&resolution),
+            Verdict::Refused { code: "FA-REF-097" }
+        );
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-097", exit::REFUSAL));
+        assert!(refusal.fix.contains("Resolution(Voids)"), "{refusal}");
+        assert_eq!(k.db.frontier().unwrap(), frontier);
+        assert_eq!(oracle.journal_len(), journal_len);
+        assert!(oracle.due().contains(&target));
+        assert_eq!(kernel_due(&k, &refs), oracle.due());
+        assert_pending_registers(&k, &oracle, &watched, step);
+        *refused.entry("FA-REF-097").or_insert(0) += 1;
+
+        resolution.legs.clear();
+        resolution.resolves = Some(Resolve {
+            target,
+            posts: None,
+        });
+        let posted = kernel_post(&mut k, &resolution, &refs).expect("a due hold can be voided");
+        assert!(matches!(posted, Posted::Committed { .. }));
+        assert_eq!(posted.period(), Some(periods[2].as_str()));
+        assert_eq!(
+            oracle.post(&resolution),
+            Verdict::Posted {
+                index: refs.len(),
+                period: periods[2].clone(),
+            }
+        );
+        refs.push(posted.entry_ref());
+        resolved.insert(target);
+        voids_on_due += 1;
+        assert!(!oracle.due().contains(&target));
+        assert_eq!(kernel_due(&k, &refs), oracle.due());
+        assert_pending_registers(&k, &oracle, &watched, step);
+    }
+
     // Drain: one more tick past every deadline, then sweep to the end.
     now += 1_000;
     assert!(kernel_tick(&mut k, now, "tick-final").is_ok());

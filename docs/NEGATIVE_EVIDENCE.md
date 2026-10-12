@@ -262,3 +262,29 @@ disagreements:
 
 The original 32 seeds, generated step counts and coverage floors remain.
 The repairs are awaiting a new runtime verdict and do not close `fa-vfu`.
+
+Build 1110 on `095a797` exited 101 on 2026-10-12: 129 tests passed and
+two differential tests failed. All 32 seeds passed for the multi-unit,
+period-authority, budget, limited-account, scheduled-reversal and per-entity
+campaigns. All reference, register-cell, migration and calendar tests passed.
+The two remaining failures exposed additional generator coverage gaps:
+
+- Seed `9e3779b97f4a7c16` posted applications but no random reversal undid
+  one. After all 640 generated steps, a history with zero undos now reverses
+  a real applying receipt in untouched June. The test checks exact released
+  amounts against both implementations, then verifies projections and open
+  items. The later corruption probe retains its live application targets.
+- Seed `7135eed50fa0c80b` exercised `FA-REF-097` once, below its floor of
+  three. After all 600 generated steps, missing cases now create distinct
+  timed holds in open March and reach their exact deadline. Posts must
+  refuse without changing either journal; Voids must then succeed using
+  the refused request's key. Due backlogs and pending registers are checked
+  against the independent oracle before and after resolution.
+
+Neither failure showed an engine/oracle disagreement before the coverage
+assertion. All original seeds, random draws, floors and assertions remain.
+The two affected campaign wrappers now retain each panic diagnostic and run
+the remaining independent histories before failing with every failed seed.
+No failed history can become a passing test. These two new repairs have
+passed source review and static checks; their runtime verdict, the actual
+Clippy boundary checks and the final integrated gate remain pending.
