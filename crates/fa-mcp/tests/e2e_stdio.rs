@@ -1225,10 +1225,11 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         Mcp::start_with(&book, &["--profile", "preparer", "--principal", "operator"]);
     reopened.discover();
     let before_retry = cli_data(&["book", "info", "--book", &b, "--json"]);
+    // Even beside the complete plan bytes, a host path is refused first.
     let (is_error, text, _) = call_tool(
         &mut reopened,
         "fa_post_commit_plan",
-        json!({"plan_file": plan_file.display().to_string()}),
+        json!({"plan": encoded, "plan_file": plan_file.display().to_string()}),
     );
     assert!(is_error, "host plan_file must be refused: {text}");
     assert_eq!(structured_error(&text)["type"], "forbidden_path");
@@ -1538,9 +1539,16 @@ fn read_only_period_planning_is_inline_and_paths_cannot_touch_host_files() {
                 json!({"transition": "close", "code": "FY2026-P03"}),
             ),
             ("fa_post_post", "intent_file", json!({})),
-            ("fa_post_commit_plan", "plan_file", json!({})),
-            ("fa_read_replay", "file", json!({})),
-            ("fa_read_certificate_status", "file", json!({})),
+            // Tools with required properties carry inert values for them so
+            // the server's schema validation admits the call; the host-path
+            // refusal must still come first, before any detector.
+            ("fa_post_commit_plan", "plan_file", json!({"plan": "00"})),
+            ("fa_read_replay", "file", json!({"certificate": "00"})),
+            (
+                "fa_read_certificate_status",
+                "file",
+                json!({"certificate": "00"}),
+            ),
             ("fa_chart_import_chart", "file", json!({})),
             ("fa_evidence_import_document", "file", json!({})),
             ("fa_read_trial_balance", "certificate_out", json!({})),

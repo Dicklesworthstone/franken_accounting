@@ -829,7 +829,10 @@ impl ToolSpec {
         }
     }
 
-    fn is_host_path_property(&self, property: &str) -> bool {
+    /// Whether `property` names a host filesystem path: never exposed in the
+    /// tool's input schema and refused before any observation.
+    #[must_use]
+    pub fn is_host_path_property(&self, property: &str) -> bool {
         matches!(
             property,
             "file" | "intent_file" | "plan_file" | "plan_out" | "certificate_out"
