@@ -263,11 +263,13 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-02"
 id = "unit-version"
-status = "dormant"
-statement = "Unit versions are journaled and immutable; historical mantissas are never reinterpreted."
+status = "live"
+statement = "Every Unit vertex's facts (code, kind, scale, ISO 4217 code, default rounding law) are journaled at genesis in a format-versioned payload and are immutable; the open book's unit table is rebuilt from the journal; a binary whose registry disagrees with a journaled fact, or that finds a pre-payload table, refuses to open the book naming the unit and field; registry rows are pinned and new ids are additive; an unknown unit id is a typed render refusal, never a guessed scale; historical mantissas are never reinterpreted."
 evidence_class = "invariant"
 first_gate = "G2"
-activating = ["fa-p7r"]
+owner = "fa-nnm"
+checkers = ["fa-journal::tests/genesis.rs::journaled_units_are_runtime_truth_and_binary_extensions_do_not_install_units", "fa-registry::lib::tests::original_unit_definitions_are_pinned_and_new_ids_are_additive", "fa-model::lib::unit::tests::unit_payload_matches_independent_golden_bytes_and_every_kind_round_trips"]
+negatives = ["fa-journal::tests/genesis.rs::unit_reconciliation_refuses_every_changed_historical_meaning", "fa-journal::tests/genesis.rs::unit_payload_and_table_commitment_damage_are_refused_without_repair", "fa-cli::tests/cli.rs::directory_reopen_refuses_changed_or_missing_unit_facts_through_facade_and_cli", "fa-model::lib::unit::tests::unit_payload_refuses_truncation_versions_tags_scales_and_trailing_bytes", "fa-registry::lib::tests::unit_registry_refuses_reordered_missing_duplicate_and_unknown_law_rows", "fa-cli::lib::cli::tests::unknown_units_refuse_reports_before_any_success_output"]
 waiver = "forbidden"
 
 [[clause]]
@@ -449,7 +451,7 @@ evidence_class = "invariant"
 first_gate = "G1"
 owner = "fa-p7r"
 checkers = ["fa-money::lib::allocation::tests::conserves_total_on_a_grid", "fa-money::lib::rounding::tests::registry_requires_exact_correspondence_with_executable_laws", "fa-money::lib::rounding::tests::error_bound_is_half_ulp_for_half_laws"]
-negatives = ["fa-money::lib::amount::tests::checked_arithmetic_refuses_overflow_and_unit_mixing", "fa-money::lib::amount::tests::over_scale_is_refused_not_rounded", "fa-money::lib::wide::tests::overflow_is_detected", "fa-model::lib::entry::tests::overflowing_leg_sums_are_refused_not_wrapped", "fa-money::lib::valuation::tests::native_imbalance_is_never_absorbed_as_rounding"]
+negatives = ["fa-money::lib::amount::tests::checked_arithmetic_refuses_overflow_and_unit_mixing", "fa-money::lib::amount::tests::over_scale_is_refused_not_rounded", "fa-money::lib::wide::tests::overflow_is_detected", "fa-money::lib::amount::tests::try_render_refuses_unknown_units_without_panicking_or_guessing_a_scale", "fa-model::lib::entry::tests::overflowing_leg_sums_are_refused_not_wrapped", "fa-money::lib::valuation::tests::native_imbalance_is_never_absorbed_as_rounding"]
 waiver = "forbidden"
 
 [[clause]]
