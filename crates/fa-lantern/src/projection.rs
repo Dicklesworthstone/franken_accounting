@@ -10,9 +10,10 @@
 
 use std::collections::BTreeMap;
 
-use fa_model::Writer;
+use fa_model::{EntryClass, Writer};
 use fa_money::allocation::largest_remainder;
 use fa_money::{Amount, Side};
+use fa_time::DateDay;
 use fgdb_crypto::Hasher;
 use fgdb_types::VId;
 
@@ -50,16 +51,30 @@ pub struct MoneyFlow {
     pub digest: [u8; 32],
 }
 
+/// One credit leg's allocated share of value to one debit account of the
+/// same entry and unit: the entry-level grain the graph procedures walk.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FlowLeg {
+    pub entry: VId,
+    pub class: EntryClass,
+    pub effective_date: DateDay,
+    pub period: String,
+    pub from: VId,
+    pub to: VId,
+    pub unit_id: u32,
+    /// Exact and non-negative, in the unit's mantissa scale.
+    pub mantissa: i128,
+}
+
 /// One entry's legs of one unit: `(credits as (account, amount), debits as
 /// (account, magnitude))`.
 type UnitLegs = (Vec<(VId, Amount)>, Vec<(VId, u128)>);
 
-/// The money-flow projection of every posting entry in the snapshot.
-pub fn money_flow(snapshot: &Snapshot) -> Result<MoneyFlow, LanternError> {
-    let mut edges: BTreeMap<(u128, u128, u32, String), (i128, u64)> = BTreeMap::new();
-    let mut entries = 0u64;
+/// Every posting entry's credit→debit allocations under the registered
+/// largest-remainder law, ascending by `(entry, unit, from, to)`.
+pub fn flow_legs(snapshot: &Snapshot) -> Result<Vec<FlowLeg>, LanternError> {
+    let mut legs = Vec::new();
     for e in snapshot.entries.iter().filter(|e| e.posts()) {
-        entries += 1;
         let mut by_unit: BTreeMap<u32, UnitLegs> = BTreeMap::new();
         for leg in &e.entry.proposal.legs {
             let slot = by_unit.entry(leg.amount.unit.0).or_default();
@@ -85,17 +100,41 @@ pub fn money_flow(snapshot: &Snapshot) -> Result<MoneyFlow, LanternError> {
                 );
                 let shares = largest_remainder(magnitude, &weights)?;
                 for ((to, _), share) in debits.iter().zip(shares) {
-                    let slot = edges
-                        .entry((from.0, to.0, unit_id, e.period.clone()))
-                        .or_insert((0, 0));
-                    slot.0 = slot
-                        .0
-                        .checked_add(share.mantissa)
-                        .ok_or(LanternError::Overflow("flow edge"))?;
-                    slot.1 += 1;
+                    legs.push(FlowLeg {
+                        entry: e.vid,
+                        class: e.entry.proposal.class,
+                        effective_date: e.entry.proposal.effective_date,
+                        period: e.period.clone(),
+                        from,
+                        to: *to,
+                        unit_id,
+                        mantissa: share.mantissa,
+                    });
                 }
             }
         }
+    }
+    legs.sort_by(|a, b| {
+        (a.entry, a.unit_id, a.from, a.to, a.mantissa)
+            .cmp(&(b.entry, b.unit_id, b.from, b.to, b.mantissa))
+    });
+    Ok(legs)
+}
+
+/// The money-flow projection of every posting entry in the snapshot: the
+/// flow legs folded per `(from, to, unit, period)`.
+pub fn money_flow(snapshot: &Snapshot) -> Result<MoneyFlow, LanternError> {
+    let entries = snapshot.entries.iter().filter(|e| e.posts()).count() as u64;
+    let mut edges: BTreeMap<(u128, u128, u32, String), (i128, u64)> = BTreeMap::new();
+    for l in flow_legs(snapshot)? {
+        let slot = edges
+            .entry((l.from.0, l.to.0, l.unit_id, l.period))
+            .or_insert((0, 0));
+        slot.0 = slot
+            .0
+            .checked_add(l.mantissa)
+            .ok_or(LanternError::Overflow("flow edge"))?;
+        slot.1 += 1;
     }
     let edges: Vec<FlowEdge> = edges
         .into_iter()

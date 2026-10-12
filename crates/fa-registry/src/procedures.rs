@@ -345,10 +345,21 @@ meaning = "power of ten"
                 .default,
             3
         );
-        assert_eq!(p.get("aging.open_items").unwrap().inputs[0].kind, "date");
         assert!(
-            p.get("graph.kiting").is_none(),
-            "graph procedures are a later slice"
+            p.get("aging.open_items").unwrap().inputs.is_empty(),
+            "the aging date is the run's coordinate, not a registered input"
+        );
+        assert_eq!(
+            p.get("graph.round_trips")
+                .unwrap()
+                .parameter("window_days")
+                .unwrap()
+                .default,
+            5
+        );
+        assert!(
+            p.get("graph.tracing").is_none(),
+            "tracing laws are a later slice"
         );
     }
 

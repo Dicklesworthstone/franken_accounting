@@ -19,6 +19,7 @@ use fa_lantern::aging::OpenItemsAging;
 use fa_lantern::cutoff::PeriodBoundary;
 use fa_lantern::digits::FirstDigit;
 use fa_lantern::duplicates::{SameSameDifferent, SameSameSame};
+use fa_lantern::graph::{RoundTrips, Structuring};
 use fa_lantern::jet::{
     PeriodEndTiming, PostClosing, RoundAmounts, SelfApproved, ThinDescriptions, Weekend,
 };
@@ -366,6 +367,7 @@ fn harness() -> Harness {
     };
     let chart: Vec<AccountSpec> = [
         ("1000", "Cash", 1u8, 0u8),
+        ("1010", "Bank B", 1, 0),
         ("1200", "Receivables", 1, 0),
         ("2000", "Payables", 2, 1),
         ("4000", "Revenue", 4, 1),
@@ -439,8 +441,8 @@ fn harness() -> Harness {
     h
 }
 
-/// The planted corpus: eighteen Original entries. 2026-01-01 is a Thursday,
-/// so Jan 10 and Mar 28 are Saturdays and Mar 15 is a Sunday.
+/// The planted corpus: twenty-five Original entries. 2026-01-01 is a
+/// Thursday, so Jan 10 and Mar 28 are Saturdays and Mar 15 is a Sunday.
 struct Corpus {
     specs: Vec<Spec>,
     round: BTreeSet<usize>,
@@ -453,6 +455,10 @@ struct Corpus {
     same_same_different: Vec<(usize, usize)>,
     sequence_gap_missing: Vec<u64>,
     cutoff: BTreeSet<usize>,
+    /// `(outbound, return)` round trips between asset accounts.
+    round_trips: Vec<(usize, usize)>,
+    /// `(payer, receiver, entries)` sub-threshold chains.
+    structuring: Vec<(&'static str, &'static str, Vec<usize>)>,
 }
 
 fn corpus() -> Corpus {
@@ -508,6 +514,18 @@ fn corpus() -> Corpus {
     // 16, 17: older receivables for the aging buckets.
     s.push(Spec::simple(day(2026, 1, 8), "1200", "4000", 40_000));
     s.push(Spec::simple(day(2026, 2, 20), "1200", "4000", 5000));
+    // 18, 19: value leaves Cash for Bank B and returns two days later in the
+    // same amount (the kiting motif), mid-period.
+    s.push(Spec::simple(day(2026, 2, 16), "1010", "1000", 275_500));
+    s.push(Spec::simple(day(2026, 2, 18), "1000", "1010", 275_500));
+    // 20, 21: the same motif returning six days before April's end.
+    s.push(Spec::simple(day(2026, 4, 21), "1010", "1000", 133_700));
+    s.push(Spec::simple(day(2026, 4, 24), "1000", "1010", 133_700));
+    // 22-24: three receipts from one payer, each just under 10,000.00,
+    // within four days (structuring).
+    s.push(Spec::simple(day(2026, 2, 17), "1000", "4000", 950_100));
+    s.push(Spec::simple(day(2026, 2, 19), "1000", "4000", 970_300));
+    s.push(Spec::simple(day(2026, 2, 20), "1000", "4000", 990_700));
     Corpus {
         specs: s,
         round: [1].into(),
@@ -520,6 +538,8 @@ fn corpus() -> Corpus {
         same_same_different: vec![(7, 9), (8, 9)],
         sequence_gap_missing: vec![2],
         cutoff: [11].into(),
+        round_trips: vec![(18, 19), (20, 21)],
+        structuring: vec![("4000", "1000", vec![22, 23, 24])],
     }
 }
 
@@ -750,10 +770,21 @@ fn aging_buckets_open_items_to_the_declared_date() {
         2,
         "the account and the one leg older than the last edge"
     );
+    // Nothing in the corpus is settled, so every leg is an open item and the
+    // oracle for the finding count is the set of (account, side) pairs.
+    let sides: BTreeSet<(String, bool)> = c
+        .specs
+        .iter()
+        .flat_map(|s| {
+            s.legs
+                .iter()
+                .map(|(code, side, _)| ((*code).to_string(), *side == Side::Debit))
+        })
+        .collect();
     assert_eq!(
         r.findings.len(),
-        6,
-        "every account with an open leg gets one finding"
+        sides.len(),
+        "one finding per account and side with an open leg"
     );
     assert!(
         r.findings
@@ -851,6 +882,8 @@ fn rankings_are_deterministic_and_an_order_dependent_ranking_fails_the_witness()
         )),
         Box::new(PeriodBoundary::new().unwrap()),
         Box::new(OpenItemsAging::new().unwrap()),
+        Box::new(RoundTrips::new().unwrap()),
+        Box::new(Structuring::new().unwrap()),
     ];
     for p in &procedures {
         let w = determinism(&snapshot, &h.book, p.as_ref()).expect("witness");
@@ -1154,4 +1187,116 @@ fn the_folds_agree_with_the_reference_oracle_on_the_same_rows() {
         h.cited_entries(&h.run(&PeriodBoundary::new().unwrap())),
         set(naive::cutoff(&rows, &period_of))
     );
+}
+
+#[test]
+fn graph_procedures_find_planted_round_trips_and_structuring_and_agree_with_the_oracle() {
+    let (h, c) = posted_corpus();
+    let rows = naive_rows(&h, &c);
+    let codes = ["1000", "1010", "1200", "2000", "4000", "6000", "7000"];
+    let code_of: BTreeMap<VId, &str> = codes.iter().map(|code| (h.account(code), *code)).collect();
+
+    // Round trips: the two planted pairs, the near-period-end one scored High.
+    let r = h.run(&RoundTrips::new().unwrap());
+    h.assert_cites_resolve(&r);
+    let planted: BTreeSet<usize> = c.round_trips.iter().flat_map(|(a, b)| [*a, *b]).collect();
+    calibrate("graph.round_trips", &planted, &h.cited_entries(&r));
+    let mut pairs: Vec<(usize, usize, Severity)> = r
+        .findings
+        .iter()
+        .map(|f| {
+            match f.cites.as_slice() {
+                [
+                    Cite::Entry(a),
+                    Cite::Entry(b),
+                    Cite::Account(_),
+                    Cite::Account(_),
+                ] => Some((h.index_of(*a), h.index_of(*b), f.severity)),
+                _ => None,
+            }
+            .expect("two entries then the two accounts")
+        })
+        .collect();
+    pairs.sort_unstable();
+    assert_eq!(
+        pairs,
+        vec![(18, 19, Severity::Medium), (20, 21, Severity::High)]
+    );
+    for f in &r.findings {
+        assert_eq!(f.statistic.name, "round_trip_mantissa");
+        println!("round trip severity={} {}", f.severity.name(), f.narrative);
+    }
+    assert_eq!(
+        pairs.iter().map(|(a, b, _)| (*a, *b)).collect::<Vec<_>>(),
+        naive::round_trips(&rows, 5, &|code| code.starts_with('1'))
+    );
+    // Planted negative: a one-day window admits neither trip.
+    let tight = RoundTrips::with(
+        Params::defaults(RoundTrips::ID)
+            .unwrap()
+            .set("window_days", 1)
+            .unwrap(),
+    );
+    assert!(h.run(&tight).findings.is_empty());
+
+    // Structuring: the one planted chain, as the oracle sees it.
+    let r = h.run(&Structuring::new().unwrap());
+    h.assert_cites_resolve(&r);
+    let planted: BTreeSet<usize> = c
+        .structuring
+        .iter()
+        .flat_map(|(_, _, idx)| idx.iter().copied())
+        .collect();
+    calibrate("graph.structuring", &planted, &h.cited_entries(&r));
+    let mut chains: Vec<(String, String, Vec<usize>)> = r
+        .findings
+        .iter()
+        .map(|f| {
+            match f.cites.as_slice() {
+                [Cite::Account(to), Cite::Account(from), rest @ ..] => Some((
+                    code_of[from].to_string(),
+                    code_of[to].to_string(),
+                    rest.iter().map(|c| h.entry_index(c)).collect::<Vec<_>>(),
+                )),
+                _ => None,
+            }
+            .expect("the receiving and paying accounts then the entries")
+        })
+        .collect();
+    chains.sort();
+    let expected: Vec<(String, String, Vec<usize>)> = c
+        .structuring
+        .iter()
+        .map(|(from, to, idx)| ((*from).to_string(), (*to).to_string(), idx.clone()))
+        .collect();
+    assert_eq!(chains, expected);
+    assert_eq!(chains, naive::structuring(&rows, 1_000_000, 800_000, 7, 3));
+    let f = &r.findings[0];
+    assert_eq!(f.statistic.name, "chain_mantissa");
+    assert_eq!(f.statistic.value, 950_100 + 970_300 + 990_700);
+    assert_eq!(
+        f.severity,
+        Severity::High,
+        "three deposits sum past twice the threshold"
+    );
+    println!("structuring severity={} {}", f.severity.name(), f.narrative);
+    // Planted negatives: a four-deposit minimum finds nothing; an inverted
+    // floor is refused before any leg is read.
+    let strict = Structuring::with(
+        Params::defaults(Structuring::ID)
+            .unwrap()
+            .set("min_count", 4)
+            .unwrap(),
+    );
+    assert!(h.run(&strict).findings.is_empty());
+    let inverted = Structuring::with(
+        Params::defaults(Structuring::ID)
+            .unwrap()
+            .set("floor", 1_000_000)
+            .unwrap(),
+    );
+    assert!(matches!(
+        run(&h.db, &h.book, None, Some(day(2026, 4, 30)), &inverted),
+        Err(LanternError::Parameter { name, .. }) if name == "floor"
+    ));
 }

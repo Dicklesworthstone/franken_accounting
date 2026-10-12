@@ -236,3 +236,101 @@ pub fn benford_mad_1e9(counts: &[u64; 9]) -> i128 {
     }
     total / (9 * n)
 }
+
+/// A two-leg row as `(credit account, debit account, unit, magnitude)`: the
+/// naive flow of value from the credited account to the debited one.
+fn transfer(r: &Row) -> Option<(&str, &str, u32, i128)> {
+    match r.legs.as_slice() {
+        [a, b] if a.debit && !b.debit => Some((&b.account, &a.account, a.unit, a.mantissa.abs())),
+        [a, b] if !a.debit && b.debit => Some((&a.account, &b.account, a.unit, b.mantissa.abs())),
+        _ => None,
+    }
+}
+
+/// Pairs `(i, j)` of two-leg rows where value leaves asset `A` for asset `B`
+/// in row `i` and the same magnitude returns from `B` to `A` in row `j`,
+/// 0..=window days later (`i` before `j` when the dates tie).
+pub fn round_trips(
+    rows: &[Row],
+    window: i32,
+    is_asset: &dyn Fn(&str) -> bool,
+) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    for a in rows {
+        for b in rows {
+            let (Some((from_a, to_a, unit_a, m_a)), Some((from_b, to_b, unit_b, m_b))) =
+                (transfer(a), transfer(b))
+            else {
+                continue;
+            };
+            let gap = b.date.0 - a.date.0;
+            if a.index != b.index
+                && from_a == to_b
+                && to_a == from_b
+                && from_a != to_a
+                && unit_a == unit_b
+                && m_a == m_b
+                && m_a != 0
+                && (0..=window).contains(&gap)
+                && (gap != 0 || a.index < b.index)
+                && is_asset(from_a)
+                && is_asset(to_a)
+            {
+                out.push((a.index, b.index));
+            }
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+/// `(from account, to account, row indexes)` of every chain of two-leg
+/// transfers between one pair of accounts in one unit whose magnitudes lie in
+/// `floor..threshold`, with consecutive dates at most `window` days apart,
+/// at least `min_count` long and summing to at least `threshold`.
+pub fn structuring(
+    rows: &[Row],
+    threshold: i128,
+    floor: i128,
+    window: i32,
+    min_count: usize,
+) -> Vec<(String, String, Vec<usize>)> {
+    let mut groups: BTreeMap<(String, String, u32), Vec<(i32, usize, i128)>> = BTreeMap::new();
+    for r in rows {
+        if let Some((from, to, unit, m)) = transfer(r)
+            && m >= floor
+            && m < threshold
+        {
+            groups
+                .entry((from.to_string(), to.to_string(), unit))
+                .or_default()
+                .push((r.date.0, r.index, m));
+        }
+    }
+    let mut out = Vec::new();
+    for ((from, to, _), mut legs) in groups {
+        legs.sort_unstable();
+        let mut chain: Vec<(i32, usize, i128)> = Vec::new();
+        let flush = |chain: &mut Vec<(i32, usize, i128)>,
+                     out: &mut Vec<(String, String, Vec<usize>)>| {
+            let sum: i128 = chain.iter().map(|l| l.2).sum();
+            if chain.len() >= min_count && sum >= threshold {
+                let mut idx: Vec<usize> = chain.iter().map(|l| l.1).collect();
+                idx.sort_unstable();
+                out.push((from.clone(), to.clone(), idx));
+            }
+            chain.clear();
+        };
+        for l in legs {
+            if let Some(last) = chain.last()
+                && l.0 - last.0 > window
+            {
+                flush(&mut chain, &mut out);
+            }
+            chain.push(l);
+        }
+        flush(&mut chain, &mut out);
+    }
+    out.sort();
+    out
+}

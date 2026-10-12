@@ -25,6 +25,7 @@ pub mod aging;
 pub mod cutoff;
 pub mod digits;
 pub mod duplicates;
+pub mod graph;
 pub mod jet;
 pub mod numbers;
 pub mod projection;

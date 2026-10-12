@@ -213,3 +213,65 @@ procedure = "aging.open_items"
 name = "bucket_3"
 default = 90
 meaning = "Upper edge in days of the third bucket; anything older is the fourth bucket."
+
+# ---- Graph procedures over the money flow (plan §11.9; bet A4) -----------
+# Both walk the entry-level flow legs (every credit leg's allocated share to
+# each debit account of its entry under the largest-remainder law), so each
+# amount is exact and each citation resolves. A motif is a score, never a
+# finding of fact.
+
+[[procedure]]
+id = "graph.round_trips"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L13"
+tie_break = "entry_vid"
+complexity = "O(flow legs × returns per account pair)"
+calibration = "planted"
+summary = "Value that leaves one asset account for another and returns in the same exact amount within window_days (the kiting motif): over the entry-level money flow between asset accounts, reversals excluded; a trip whose outbound or return falls within period_end_days of its period's end scores High, otherwise Medium."
+
+[[parameter]]
+procedure = "graph.round_trips"
+name = "window_days"
+default = 5
+meaning = "Maximum days from the outbound entry's effective date to the return's."
+
+[[parameter]]
+procedure = "graph.round_trips"
+name = "period_end_days"
+default = 7
+meaning = "A trip whose outbound or return is effective within this many days of its period's end scores High."
+
+[[procedure]]
+id = "graph.structuring"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L14"
+tie_break = "entry_vid"
+complexity = "O(flow legs log flow legs)"
+calibration = "planted"
+summary = "Sub-threshold clustering between one payer account and one receiving account in one unit: a chain of allocated transfers each at least floor and below threshold, consecutive ones at most window_days apart, numbering at least min_count and summing to at least threshold; reversals excluded."
+
+[[parameter]]
+procedure = "graph.structuring"
+name = "threshold"
+default = 1000000
+meaning = "The reporting threshold in the unit's mantissa scale (10,000.00 at scale 2); a counted transfer is below it and a reported chain sums to at least it."
+
+[[parameter]]
+procedure = "graph.structuring"
+name = "floor"
+default = 800000
+meaning = "The smallest transfer counted, in the unit's mantissa scale; must be below threshold."
+
+[[parameter]]
+procedure = "graph.structuring"
+name = "window_days"
+default = 7
+meaning = "Maximum days between consecutive transfers of one chain."
+
+[[parameter]]
+procedure = "graph.structuring"
+name = "min_count"
+default = 3
+meaning = "The fewest transfers a reported chain has."
