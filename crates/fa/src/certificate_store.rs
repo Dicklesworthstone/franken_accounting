@@ -379,15 +379,6 @@ pub(crate) async fn retain<V: Vfs + Clone, W: Vfs + Clone>(
         Ok(payload) => payload,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    let external = payload.len() > MAX_INLINE_CERTIFICATE_BYTES;
-    let row_payload = if external {
-        match external_record(blobs.id(), payload.len() as u64) {
-            Ok(record) => record,
-            Err(refusal) => return Ok(Err(refusal)),
-        }
-    } else {
-        payload.clone()
-    };
     let vid = certificate_vid(book.book_id, &certificate.digest);
     let txn_cx = cx.txn();
     let mut txn = db.begin(&txn_cx).map_err(KernelError::from)?;
@@ -398,8 +389,19 @@ pub(crate) async fn retain<V: Vfs + Clone, W: Vfs + Clone>(
             Ok(stored) => stored,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let same_row = matches!(prop(&row, property::FA_PAYLOAD), Some(CanonicalScalar::Bytes(value)) if value.as_slice() == row_payload.as_slice());
-        if stored != *certificate || !same_row {
+        // An exact retry compares canonical bytes, never a freshly chosen
+        // placement: an inline row must hold these bytes and an external row
+        // a descriptor of their size, whatever the inline bound was when the
+        // certificate was retained. The row's immutability was proved above.
+        let same_bytes = match prop(&row, property::FA_PAYLOAD) {
+            Some(CanonicalScalar::Bytes(value)) => match decode_external(value.as_slice()) {
+                Ok(Some((_, size))) => size == payload.len() as u64,
+                Ok(None) => value.as_slice() == payload.as_slice(),
+                Err(_) => false,
+            },
+            _ => false,
+        };
+        if stored != *certificate || !same_bytes {
             return Ok(Err(invalid(
                 "the retained certificate locator contains different canonical bytes",
             )));
@@ -414,7 +416,14 @@ pub(crate) async fn retain<V: Vfs + Clone, W: Vfs + Clone>(
         return Ok(Err(refusal));
     }
     query_cx.checkpoint().map_err(BookError::Context)?;
-    if external {
+    let row_payload = if payload.len() > MAX_INLINE_CERTIFICATE_BYTES {
+        let record = match external_record(blobs.id(), payload.len() as u64) {
+            Ok(record) => record,
+            Err(refusal) => {
+                txn.abort();
+                return Ok(Err(refusal));
+            }
+        };
         let locator = locator(&certificate.digest);
         if let Err(error) = blobs.put(&cx.commit(), &locator, &payload).await {
             txn.abort();
@@ -423,7 +432,10 @@ pub(crate) async fn retain<V: Vfs + Clone, W: Vfs + Clone>(
                 blobs.id()
             ))));
         }
-    }
+        record
+    } else {
+        payload
+    };
     let mut properties = vec![
         (
             property::FA_PAYLOAD,
