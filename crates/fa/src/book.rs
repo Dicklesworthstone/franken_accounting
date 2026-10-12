@@ -3941,16 +3941,19 @@ mod tests {
         let backdated = post_rent(&mut book, usd, VId(1), day, b"backdated-march", 150_000)
             .unwrap()
             .unwrap();
-        match book.certificate_status(&certificate).unwrap().unwrap() {
+        let superseded = match book.certificate_status(&certificate).unwrap().unwrap() {
             CertificateStatus::SupersededBy {
                 later_entries,
                 checked_at,
-            } => {
-                assert_eq!(later_entries, vec![backdated.entry_ref().vid]);
-                assert_eq!(checked_at, book.head().unwrap());
-            }
-            state => panic!("backdated in-scope posting did not supersede report: {state:?}"),
-        }
+            } => Ok((later_entries, checked_at)),
+            state => Err(format!(
+                "backdated in-scope posting did not supersede report: {state:?}"
+            )),
+        };
+        let (later_entries, checked_at) =
+            superseded.expect("backdated in-scope posting did not supersede report");
+        assert_eq!(later_entries, vec![backdated.entry_ref().vid]);
+        assert_eq!(checked_at, book.head().unwrap());
         assert_eq!(
             book.trial_balance(&["FY2026-P03".into()])
                 .unwrap()
@@ -4274,12 +4277,17 @@ mod tests {
         for result in results {
             let replayed = book.replay_report(&result.certificate).unwrap().unwrap();
             assert_eq!(replayed, result.report);
+            assert!(
+                matches!(
+                    replayed,
+                    ReportOutput::ExplainBalance(_) | ReportOutput::OpenItems(_)
+                ),
+                "selected an explanation or open-items report"
+            );
             match &replayed {
                 ReportOutput::ExplainBalance(report) => assert_eq!(report.account_row.name, "Cash"),
                 ReportOutput::OpenItems(report) => assert_eq!(report.accounts[&cash].name, "Cash"),
-                ReportOutput::TrialBalance(_) | ReportOutput::Statement(_) => {
-                    panic!("selected an explanation or open-items report")
-                }
+                ReportOutput::TrialBalance(_) | ReportOutput::Statement(_) => {}
             }
             let refusal = book
                 .certificate_status(&result.certificate)

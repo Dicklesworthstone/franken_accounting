@@ -23,6 +23,7 @@ allow = [
 exceptions = [
   { crate = "fa@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fa-cli@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fa-intents@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fa-journal@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fa-model@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fa-money@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
@@ -31,6 +32,7 @@ exceptions = [
   { crate = "fa-reference@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fa-registers@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fa-registry@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fa-statements@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fa-time@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fa-verify@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fad@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
@@ -112,6 +114,11 @@ expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
 
 [[licenses.clarify]]
+crate = "fa-intents@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
 crate = "fa-journal@0.0.1"
 expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
@@ -148,6 +155,11 @@ license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
 
 [[licenses.clarify]]
 crate = "fa-registry@0.0.1"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fa-statements@0.0.1"
 expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
 

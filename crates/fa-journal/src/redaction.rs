@@ -784,9 +784,11 @@ mod tests {
             .unwrap()
             .unwrap();
         let head = f.db.frontier().unwrap();
-        let DocumentRead::Redacted(view) = f.read(&reader, statement.oid()).unwrap() else {
-            panic!("an Agent without privileged must not receive the full statement");
-        };
+        let view = match f.read(&reader, statement.oid()).unwrap() {
+            DocumentRead::Redacted(view) => Some(view),
+            DocumentRead::Full(_) => None,
+        }
+        .expect("an Agent without privileged must not receive the full statement");
         assert_eq!(view.verify(), Ok(()));
         assert_eq!(view.doc_commit, statement.doc_commit());
         assert_eq!(view.chunks.len(), 2);
