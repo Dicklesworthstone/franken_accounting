@@ -1,26 +1,26 @@
 //! Capability-bound document uploads (plan §9.3, fa-vwf).
 //!
-//! Unlike the embedded-owner `evidence::add_document` API, this entrypoint
-//! accepts no caller-selected uploader or provenance grade. Uploads create
-//! evidence objects, not monetary entries or branch-control entries: an Agent
-//! with `post` may supply evidence, but this never permits it to post on trunk.
-//! Human uploads are HumanUpload; machine uploads are conservatively
-//! AgentUpload, never Connector, ThirdPartySigned or Generated. Those stronger
-//! receipt-derived grades need their own verified acquisition paths.
+//! Uploads create evidence objects, not monetary or branch-control entries.
+//! The uploader and provenance grade come from the session capability. An
+//! Agent with `post` may supply evidence; that never permits trunk postings.
+//! Machine uploads are conservatively AgentUpload, not a receipt-derived
+//! Connector, ThirdPartySigned or Generated claim.
 //!
-//! The caller must bind the capability from its authenticated session. This
-//! module enforces that capability; it does not authenticate its transport.
-//! Inline documents and their custody receipts publish in one witnessed
-//! transaction. Existing raw intake APIs remain trusted embedded-owner APIs;
-//! this module does not claim that those APIs or the CLI have been migrated.
+//! Inline and external intake share admission, identity and custody laws.
+//! External bytes become durable before the document and receipt publish in
+//! one witnessed transaction. Aborting may leave an unreferenced blob, never
+//! a committed document whose bytes have not finished writing.
+//!
+//! The host authenticates the capability; this module enforces it. Legacy raw
+//! intake methods remain explicitly trusted embedded-owner entrypoints.
 
-use fa_model::{IntakeSource, Oid};
 use fa_model::symbols::relation;
+use fa_model::{IntakeSource, Oid};
 use fa_policy::{Capability, Op, Profile};
 use fa_registry::evidence_policy::EvidencePolicy;
 use fgdb::{Database, WriteBatch, WriteTxn, WriteTxnError};
-use fgdb_types::CommitSeq;
 use fgdb_types::context::PurposeContexts;
+use fgdb_types::CommitSeq;
 
 use crate::evidence::{
     Document, DocumentAdded, document_vid, drift, intake_check, stage_document, verify_row,
@@ -28,6 +28,9 @@ use crate::evidence::{
 use crate::genesis::BookContext;
 use crate::policy;
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
+
+pub mod external;
+pub use external::{prepare_external_upload, upload_document_in_store, upload_external_document};
 
 /// Bytes supplied by a session. Identity and provenance are derived, not input.
 #[derive(Clone, Debug)]
@@ -57,7 +60,8 @@ struct UploadSummary {
 }
 
 /// The immutable document, receipt, and original capability witnesses.
-/// Dropping or aborting this value publishes neither document nor receipt.
+/// Dropping or aborting publishes neither document nor receipt. An external
+/// preparation may already have durably written unreferenced blob bytes.
 #[derive(Debug)]
 #[must_use]
 pub struct PreparedUpload {
@@ -81,8 +85,8 @@ impl PreparedUpload {
         self.txn.abort();
     }
 
-    /// Recheck sequence expiry and publish with the original revocation
-    /// witnesses. An intervening revocation is a conflict, not refreshed away.
+    /// Recheck sequence expiry and publish with the original revocation and
+    /// policy witnesses. Intervening changes are not refreshed away.
     pub async fn commit<V: asupersync::fs::Vfs + Clone>(
         self,
         db: &mut Database<V>,
@@ -120,6 +124,41 @@ impl PreparedUpload {
     }
 }
 
+/// A checked upload before any bytes or graph effects have been staged. The
+/// original transaction survives external I/O; it is never opened again at
+/// publication. Keeping this private prevents callers from replacing inputs.
+struct AdmittedUpload {
+    txn: WriteTxn,
+    capability: Capability,
+    document: Document,
+    kind: String,
+    source: IntakeSource,
+    summary: UploadSummary,
+}
+
+enum UploadAdmission {
+    AlreadyRecorded(DocumentAdded),
+    New(Box<AdmittedUpload>),
+}
+
+impl AdmittedUpload {
+    fn stage<V: asupersync::fs::Vfs + Clone>(
+        mut self,
+        db: &mut Database<V>,
+        batch: WriteBatch,
+    ) -> Result<Box<PreparedUpload>, KernelError> {
+        if let Err(error) = self.txn.write_ordered(db, vec![batch]) {
+            self.txn.abort();
+            return Err(error.into());
+        }
+        Ok(Box::new(PreparedUpload {
+            txn: self.txn,
+            capability: self.capability,
+            summary: self.summary,
+        }))
+    }
+}
+
 /// The registered grade of an upload, without reading storage or accepting a
 /// caller's account of who supplied it. System uploads are self-sourced too.
 pub fn upload_grade(policy: &EvidencePolicy, profile: Profile) -> Result<u8, KernelError> {
@@ -138,15 +177,17 @@ pub fn upload_grade(policy: &EvidencePolicy, profile: Profile) -> Result<u8, Ker
     Ok(grade.tag)
 }
 
-/// Run every intake and authority check without publishing. In particular,
-/// unauthorized repeats cannot observe whether the document already exists.
-pub fn prepare_upload<V: asupersync::fs::Vfs + Clone>(
+/// Shared inline/external admission. There is no storage observation before
+/// the operation and book checks, and no content hashing or blob access
+/// before current expiry and the original revocation witness are checked.
+fn admit_upload<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     cx: &PurposeContexts,
     book: &BookContext,
     capability: &Capability,
     request: UploadRequest,
-) -> Outcome<UploadPreparation> {
+    max_bytes: u64,
+) -> Outcome<UploadAdmission> {
     cx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
     if let Err(denial) = fa_policy::require(capability, Op::Post, "uploading evidence")
         .and_then(|()| fa_policy::scope(capability, book.book_id))
@@ -176,7 +217,7 @@ pub fn prepare_upload<V: asupersync::fs::Vfs + Clone>(
         retrieved_by: capability.holder(),
         bytes: request.bytes,
     };
-    let kind = match intake_check(&policy, book, &document, policy.max_document_bytes) {
+    let kind = match intake_check(&policy, book, &document, max_bytes) {
         Ok(kind) => kind,
         Err(refusal) => return Ok(Err(refusal)),
     };
@@ -188,7 +229,7 @@ pub fn prepare_upload<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(policy::refusal(&denial)));
     }
     let txn_cx = cx.txn();
-    let mut txn = db.begin(&txn_cx)?;
+    let txn = db.begin(&txn_cx)?;
     if let Err(refusal) = policy::capability_witness(&txn, db, book, capability)? {
         txn.abort();
         return Ok(Err(refusal));
@@ -202,9 +243,9 @@ pub fn prepare_upload<V: asupersync::fs::Vfs + Clone>(
             Ok(stored) => stored,
             Err(why) => return Ok(Err(drift(&oid, &why))),
         };
-        // The identity is content based, not uploader based. A new upload
-        // assertion must never rewrite or upgrade an earlier machine receipt.
-        return Ok(Ok(UploadPreparation::AlreadyRecorded(DocumentAdded {
+        // Identity is content based. Storage choice, another uploader, or a
+        // new grade assertion never upgrades the original immutable receipt.
+        return Ok(Ok(UploadAdmission::AlreadyRecorded(DocumentAdded {
             oid: stored.oid(),
             doc_commit: stored.doc_commit,
             vid,
@@ -223,20 +264,40 @@ pub fn prepare_upload<V: asupersync::fs::Vfs + Clone>(
         size: u64::try_from(document.bytes.len())
             .map_err(|_| KernelError::Corrupt("document size exceeds u64".into()))?,
     };
-    let mut batch = WriteBatch::new(relation::CUSTODY_OF);
-    stage_document(&mut batch, book, &document, &kind)?;
-    crate::custody::stage_receipt(
-        &mut batch, book, &document, source, capability.holder(), None,
-    )?;
-    if let Err(error) = txn.write_ordered(db, vec![batch]) {
-        txn.abort();
-        return Err(error.into());
-    }
-    Ok(Ok(UploadPreparation::Ready(Box::new(PreparedUpload {
+    Ok(Ok(UploadAdmission::New(Box::new(AdmittedUpload {
         txn,
         capability: capability.clone(),
+        document,
+        kind,
+        source,
         summary,
     }))))
+}
+
+/// Run every inline intake and authority check without publishing.
+/// Unauthorized repeats cannot observe whether the document exists.
+pub fn prepare_upload<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    capability: &Capability,
+    request: UploadRequest,
+) -> Outcome<UploadPreparation> {
+    let max_bytes = EvidencePolicy::embedded()
+        .map_err(|error| KernelError::Corrupt(error.to_string()))?.max_document_bytes;
+    let admitted = match admit_upload(db, cx, book, capability, request, max_bytes)? {
+        Err(refusal) => return Ok(Err(refusal)),
+        Ok(UploadAdmission::AlreadyRecorded(added)) => {
+            return Ok(Ok(UploadPreparation::AlreadyRecorded(added)));
+        }
+        Ok(UploadAdmission::New(admitted)) => admitted,
+    };
+    let mut batch = WriteBatch::new(relation::CUSTODY_OF);
+    stage_document(&mut batch, book, &admitted.document, &admitted.kind)?;
+    crate::custody::stage_receipt(
+        &mut batch, book, &admitted.document, admitted.source.clone(), capability.holder(), None,
+    )?;
+    Ok(Ok(UploadPreparation::Ready(admitted.stage(db, batch)?)))
 }
 
 /// Upload an inline document and its custody receipt under session authority.
