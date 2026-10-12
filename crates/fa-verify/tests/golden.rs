@@ -171,6 +171,17 @@ fn a_checkpoint_encodes_to_its_80_bytes() {
     let inclusion = vector("inclusion");
     let at = 4 + b"fa:acc-inclusion-proof:v1".len();
     assert_eq!(&inclusion[at..at + Checkpoint::ENCODED_LEN], &bytes[..]);
+    assert_eq!(Checkpoint::decode(&bytes).unwrap(), cp);
+    assert_eq!(
+        Checkpoint::decode(&inclusion[at..at + Checkpoint::ENCODED_LEN]).unwrap(),
+        cp
+    );
+    for end in 0..Checkpoint::ENCODED_LEN {
+        assert!(Checkpoint::decode(&bytes[..end]).is_err());
+    }
+    let mut trailing = bytes;
+    trailing.push(0);
+    assert!(Checkpoint::decode(&trailing).is_err());
 }
 
 /// The 3 → 5 vector takes the non-power-of-two branch of RFC 9162

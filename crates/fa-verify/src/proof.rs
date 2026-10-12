@@ -79,6 +79,16 @@ pub struct Checkpoint {
 impl Checkpoint {
     pub const ENCODED_LEN: usize = 16 + 16 + 8 + 8 + 32;
 
+    /// Read exactly one canonical 80-byte checkpoint. This parses an anchor;
+    /// it does not authenticate its origin or make it trusted. The operator
+    /// must supply that trust independently of the proof being checked.
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        let mut reader = Reader::new(bytes);
+        let checkpoint = Self::read(&mut reader)?;
+        reader.finish("checkpoint")?;
+        Ok(checkpoint)
+    }
+
     pub(crate) fn read(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
         Ok(Self {
             book_id: r.fixed("checkpoint.book_id")?,
