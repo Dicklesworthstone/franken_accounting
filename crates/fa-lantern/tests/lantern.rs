@@ -271,11 +271,11 @@ impl Harness {
     }
 
     fn snapshot(&self) -> Snapshot {
-        Snapshot::read(&self.db, &self.book, None).expect("snapshot")
+        Snapshot::read(&self.db, &self.book, None, Some(day(2026, 4, 30))).expect("snapshot")
     }
 
     fn run(&self, p: &dyn Procedure) -> ProcedureRun {
-        run(&self.db, &self.book, None, p).expect("run")
+        run(&self.db, &self.book, None, Some(day(2026, 4, 30)), p).expect("run")
     }
 
     fn index_of(&self, vid: VId) -> usize {
@@ -719,12 +719,13 @@ fn aging_buckets_open_items_to_the_declared_date() {
     let (h, _) = posted_corpus();
     // Ages at 2026-04-30: entry 16 (Jan 8) 112 days, 17 (Feb 20) 69 days,
     // 10 (Mar 5) 56 days.
-    let r = h.run(&OpenItemsAging::new(day(2026, 4, 30)).unwrap());
+    let r = h.run(&OpenItemsAging::new().unwrap());
     h.assert_cites_resolve(&r);
-    assert_eq!(
-        r.inputs,
-        vec![("as_of".to_string(), "2026-04-30".to_string())]
+    assert!(
+        r.inputs.is_empty(),
+        "the date is the coordinate, not an input"
     );
+    assert_eq!(r.coordinate.effective_through, Some(day(2026, 4, 30)));
     let receivables = h.account("1200");
     let f = r
         .findings
@@ -772,10 +773,21 @@ fn aging_buckets_open_items_to_the_declared_date() {
             &h.db,
             &h.book,
             None,
-            &OpenItemsAging::with(bad, day(2026, 4, 30))
+            Some(day(2026, 4, 30)),
+            &OpenItemsAging::with(bad)
         ),
         Err(LanternError::Parameter { .. })
     ));
+    // Without a declared effective date there is no historical fold to age:
+    // the refusal names the coordinate to declare.
+    let err = run(&h.db, &h.book, None, None, &OpenItemsAging::new().unwrap())
+        .err()
+        .expect("aging without an effective date is refused");
+    assert!(
+        matches!(&err, LanternError::Parameter { name, message, .. }
+            if name == "effective_through" && message.contains("effective date")),
+        "{err:?}"
+    );
 }
 
 /// A deliberately order-dependent ranking under a registered id: the
@@ -838,7 +850,7 @@ fn rankings_are_deterministic_and_an_order_dependent_ranking_fails_the_witness()
                 .unwrap(),
         )),
         Box::new(PeriodBoundary::new().unwrap()),
-        Box::new(OpenItemsAging::new(day(2026, 4, 30)).unwrap()),
+        Box::new(OpenItemsAging::new().unwrap()),
     ];
     for p in &procedures {
         let w = determinism(&snapshot, &h.book, p.as_ref()).expect("witness");
@@ -850,7 +862,7 @@ fn rankings_are_deterministic_and_an_order_dependent_ranking_fails_the_witness()
         );
         assert!(w.deterministic(), "{w:?}");
         // A fresh read of the same coordinate reproduces the digest.
-        let again = run(&h.db, &h.book, None, p.as_ref()).unwrap();
+        let again = run(&h.db, &h.book, None, Some(day(2026, 4, 30)), p.as_ref()).unwrap();
         assert_eq!(again.findings_digest, w.digest);
         // Work stays inside the registered bounds.
         let n = snapshot.entries.len() as u64;

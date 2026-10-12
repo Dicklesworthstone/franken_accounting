@@ -1,12 +1,16 @@
-//! Aging (plan §11.7): open items from fa-registers' settlement fold,
-//! bucketed by days from the item's effective date to a declared `as_of`
-//! date, per account and unit. The date is an input the caller declares;
-//! a procedure never reads a clock.
+//! Aging (plan §11.7): fa-registers' historical open-item fold at the
+//! coordinate's effective date, bucketed by civil days from each item's
+//! effective date, per account, unit and side. The fold and its cutoff
+//! refusals belong to fa-registers (`open_items_as_of`, `age_snapshot`);
+//! this procedure owns only the registered bucket edges and the score.
+//! Debits and credits are never netted. The date is a coordinate the
+//! caller declares; a procedure never reads a clock.
 
 use std::collections::BTreeMap;
 
 use fa_journal::genesis::BookContext;
-use fa_time::DateDay;
+use fa_money::Side;
+use fa_registers::open_items::aging::{AgingBuckets, age_snapshot};
 use fgdb_types::VId;
 
 use crate::jet::finding;
@@ -17,32 +21,38 @@ use crate::{
 /// `aging.open_items`.
 pub struct OpenItemsAging {
     params: Params,
-    as_of: DateDay,
 }
 
 impl OpenItemsAging {
     pub const ID: &'static str = "aging.open_items";
 
-    /// With the registry's pinned bucket edges, aged to `as_of`.
-    pub fn new(as_of: DateDay) -> Result<Self, LanternError> {
+    /// With the registry's pinned bucket edges.
+    pub fn new() -> Result<Self, LanternError> {
         Ok(Self {
             params: Params::defaults(Self::ID)?,
-            as_of,
         })
     }
 
     #[must_use]
-    pub fn with(params: Params, as_of: DateDay) -> Self {
-        Self { params, as_of }
+    pub fn with(params: Params) -> Self {
+        Self { params }
     }
 }
 
-/// One account's open amount per bucket.
+/// One side of one account and unit: the open amount per bucket, never
+/// netted against the other side.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct Buckets {
+struct Column {
     totals: [i128; 4],
     oldest: Vec<(VId, u16)>,
     items: u64,
+}
+
+fn side_name(side: Side) -> &'static str {
+    match side {
+        Side::Debit => "debit",
+        Side::Credit => "credit",
+    }
 }
 
 impl Procedure for OpenItemsAging {
@@ -54,17 +64,6 @@ impl Procedure for OpenItemsAging {
     }
     fn params(&self) -> &Params {
         &self.params
-    }
-    fn inputs(&self) -> Vec<(String, String)> {
-        vec![(
-            "as_of".into(),
-            format!(
-                "{:04}-{:02}-{:02}",
-                self.as_of.year(),
-                self.as_of.month(),
-                self.as_of.day()
-            ),
-        )]
     }
     fn run(
         &self,
@@ -84,32 +83,46 @@ impl Procedure for OpenItemsAging {
                 message: "bucket edges must be strictly ascending".into(),
             });
         }
-        let mut per_account: BTreeMap<(u128, u32), Buckets> = BTreeMap::new();
-        let mut population = 0u64;
-        for item in snapshot.open_items.iter().filter(|i| i.open != 0) {
+        let Some(fold) = &snapshot.open_items_as_of else {
+            return Err(LanternError::Parameter {
+                procedure: Self::ID.into(),
+                name: "effective_through".into(),
+                message: "aging is a historical fold: read the snapshot with an effective date \
+                          (the coordinate's effective_through)"
+                    .into(),
+            });
+        };
+        let buckets = AgingBuckets::new(edges.to_vec())?;
+        let aged = age_snapshot(fold.clone(), &buckets)?;
+        let population = aged.items.len() as u64;
+        // Keyed by (account, unit, side tag) so the two sides never meet.
+        let mut columns: BTreeMap<(u128, u32, u8), Column> = BTreeMap::new();
+        for row in &aged.items {
             work.leg();
-            population += 1;
-            let age = (self.as_of.0 - item.effective_date.0).max(0) as u32;
-            let bucket = edges.iter().position(|edge| age <= *edge).unwrap_or(3);
-            let b = per_account
-                .entry((item.account.0, item.unit_id))
+            let tag = match row.item.side {
+                Side::Debit => 0u8,
+                Side::Credit => 1u8,
+            };
+            let c = columns
+                .entry((row.item.account.0, row.item.unit_id, tag))
                 .or_default();
-            b.totals[bucket] = b.totals[bucket]
-                .checked_add(item.open)
+            c.totals[row.bucket] = c.totals[row.bucket]
+                .checked_add(row.item.open)
                 .ok_or(LanternError::Overflow("aging bucket"))?;
-            b.items += 1;
-            if bucket == 3 && b.oldest.len() < MAX_CITES - 1 {
-                b.oldest.push((item.entry, item.ordinal));
+            c.items += 1;
+            if row.bucket == 3 && c.oldest.len() < MAX_CITES - 1 {
+                c.oldest.push((row.item.entry, row.item.ordinal));
             }
         }
         let mut out = Vec::new();
-        for ((account, unit_id), b) in per_account {
-            let total: i128 = b
+        for ((account, unit_id, tag), c) in columns {
+            let side = if tag == 0 { Side::Debit } else { Side::Credit };
+            let total: i128 = c
                 .totals
                 .iter()
                 .try_fold(0i128, |acc, t| acc.checked_add(*t))
                 .ok_or(LanternError::Overflow("aging total"))?;
-            let past = b.totals[3];
+            let past = c.totals[3];
             let severity = if past == 0 {
                 Severity::Info
             } else if past.unsigned_abs().saturating_mul(2) >= total.unsigned_abs() {
@@ -118,7 +131,7 @@ impl Procedure for OpenItemsAging {
                 Severity::Medium
             };
             let mut cites = vec![Cite::Account(VId(account))];
-            let mut oldest = b.oldest;
+            let mut oldest = c.oldest;
             oldest.sort_unstable();
             cites.extend(
                 oldest
@@ -136,8 +149,16 @@ impl Procedure for OpenItemsAging {
                 },
                 cites,
                 format!(
-                    "unit {unit_id}: {} open item(s); buckets 0..={}: {}, ..={}: {}, ..={}: {}, older: {} (mantissas)",
-                    b.items, edges[0], b.totals[0], edges[1], b.totals[1], edges[2], b.totals[2], past
+                    "unit {unit_id} {}: {} open item(s); buckets 0..={}: {}, ..={}: {}, ..={}: {}, older: {} (mantissas, never netted)",
+                    side_name(side),
+                    c.items,
+                    edges[0],
+                    c.totals[0],
+                    edges[1],
+                    c.totals[1],
+                    edges[2],
+                    c.totals[2],
+                    past
                 ),
             ));
         }

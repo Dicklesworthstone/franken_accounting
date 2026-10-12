@@ -43,6 +43,7 @@ use fa_money::AmountError;
 use fa_registers::RegisterError;
 use fa_registry::RegistryError;
 use fa_registry::procedures::{Claim, Procedure as Row, Procedures};
+use fa_time::DateDay;
 use fgdb::Database;
 use fgdb_crypto::Hasher;
 use fgdb_types::{CommitSeq, VId};
@@ -160,16 +161,25 @@ impl From<AmountError> for LanternError {
 }
 
 /// The pinned coordinate a run reads (plan §11.1): the trunk of `book_id`
-/// as known at `known_at`.
+/// as known at `known_at` and, for the historical folds, through
+/// `effective_through`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Coordinate {
     pub book_id: Id128,
     pub known_at: CommitSeq,
+    /// The inclusive effective date of the historical folds a run reads
+    /// (aging); `None` when the run declares none.
+    pub effective_through: Option<DateDay>,
 }
 
 impl Coordinate {
     pub fn encode(&self, w: &mut Writer) {
-        w.fixed(&self.book_id.0).u64(self.known_at.0);
+        w.fixed(&self.book_id.0).u64(self.known_at.0).opt(
+            self.effective_through.as_ref(),
+            |w, d| {
+                w.i32(d.0);
+            },
+        );
     }
 }
 
@@ -535,14 +545,16 @@ fn digest(domain: &[u8], bytes: &[u8]) -> [u8; 32] {
 }
 
 /// Run `procedure` over the trunk of `book` as known at `known_at` (the head
-/// when `None`).
+/// when `None`), with the historical folds read through `effective_through`
+/// when one is declared.
 pub fn run<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     known_at: Option<CommitSeq>,
+    effective_through: Option<DateDay>,
     procedure: &dyn Procedure,
 ) -> Result<ProcedureRun, LanternError> {
-    let snapshot = Snapshot::read(db, book, known_at)?;
+    let snapshot = Snapshot::read(db, book, known_at, effective_through)?;
     run_over(&snapshot, book, procedure)
 }
 

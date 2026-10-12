@@ -194,13 +194,7 @@ evidence = "FA-EVID-L12"
 tie_break = "account_vid"
 complexity = "O(open items)"
 calibration = "planted"
-summary = "Open items (fa-registers' settlement fold) bucketed by age in days from the item's effective date to the declared as_of date, per account."
-
-[[input]]
-procedure = "aging.open_items"
-name = "as_of"
-kind = "date"
-meaning = "The date ages are measured to. Declared by the caller; a procedure never reads a clock."
+summary = "fa-registers' historical open-item fold through the coordinate's effective date (open_items_as_of), bucketed by civil days from each item's effective date, per account, unit and side; debits and credits are never netted; the date is a declared coordinate, never a clock."
 
 [[parameter]]
 procedure = "aging.open_items"

@@ -2,8 +2,10 @@
 //! as known at one commit sequence, read once through fa-registers' entry
 //! stream reader (so the migration predicate of FA-INV-07 is applied in one
 //! place), with each entry's period and approvers, the chart, the periods and
-//! their transition history, and the open items. Nothing here is a clock:
-//! `known_at` is the only time, and it is a commit sequence.
+//! their transition history, and, when an effective date is declared,
+//! fa-registers' historical open-item fold through it. Nothing here is a
+//! clock: `known_at` is a commit sequence and `effective_through` is a
+//! declared civil date.
 
 use std::collections::BTreeMap;
 
@@ -12,8 +14,9 @@ use fa_journal::genesis::BookContext;
 use fa_journal::rows::{AccountRow, PeriodRow, bytes, prop};
 use fa_model::symbols::{label, property};
 use fa_model::{ControlPayload, Entry, EntryClass, Writer};
-use fa_registers::{OpenItem, entries_at, entry_period, open_items, resolve_known_at};
-use fa_time::PeriodState;
+use fa_registers::open_items::history::{OpenItemSnapshot, open_items_as_of};
+use fa_registers::{entries_at, entry_period, resolve_known_at};
+use fa_time::{DateDay, PeriodState};
 use fgdb::Database;
 use fgdb_crypto::Hasher;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
@@ -71,17 +74,22 @@ pub struct Snapshot {
     pub periods: BTreeMap<String, PeriodRow>,
     /// By period code, ascending by commit.
     pub transitions: BTreeMap<String, Vec<Transition>>,
-    pub open_items: Vec<OpenItem>,
+    /// fa-registers' historical open-item fold through the coordinate's
+    /// effective date; `None` when the run declared no effective date.
+    pub open_items_as_of: Option<OpenItemSnapshot>,
     /// `H(domain ‖ known_at ‖ (vid, entry_digest, recorded_at)*)`.
     pub inputs_digest: [u8; 32],
 }
 
 impl Snapshot {
-    /// Read the trunk of `book` as known at `known_at` (the head when `None`).
+    /// Read the trunk of `book` as known at `known_at` (the head when `None`)
+    /// and, when `effective_through` is declared, fa-registers' historical
+    /// open-item fold through it.
     pub fn read<V: asupersync::fs::Vfs + Clone>(
         db: &Database<V>,
         book: &BookContext,
         known_at: Option<CommitSeq>,
+        effective_through: Option<DateDay>,
     ) -> Result<Self, LanternError> {
         let seq = resolve_known_at(db, known_at)?;
         let mut entries = Vec::new();
@@ -162,10 +170,15 @@ impl Snapshot {
                 }
             }
         }
-        let open_items = open_items(db, book, None, Some(seq))?;
+        let open_items_as_of = match effective_through {
+            Some(through) => Some(open_items_as_of(db, book, None, through, Some(seq))?),
+            None => None,
+        };
         let inputs_digest = {
             let mut w = Writer::new();
-            w.u64(seq.0);
+            w.u64(seq.0).opt(effective_through.as_ref(), |w, d| {
+                w.i32(d.0);
+            });
             w.list(&entries, |w, e| {
                 w.u128(e.vid.0)
                     .fixed(&e.entry.entry_digest)
@@ -180,12 +193,13 @@ impl Snapshot {
             coordinate: Coordinate {
                 book_id: book.book_id,
                 known_at: seq,
+                effective_through,
             },
             entries,
             accounts,
             periods,
             transitions,
-            open_items,
+            open_items_as_of,
             inputs_digest,
         })
     }

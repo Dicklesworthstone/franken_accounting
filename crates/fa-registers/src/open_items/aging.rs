@@ -161,7 +161,10 @@ pub fn effective_date_aging<V: asupersync::fs::Vfs + Clone>(
     age_snapshot(snapshot, buckets)
 }
 
-fn age_snapshot(
+/// Bucket an already-selected historical snapshot. Public for the analytics
+/// layer (fa-lantern), which reads the fold at snapshot time and applies its
+/// registered bucket edges at procedure time.
+pub fn age_snapshot(
     snapshot: OpenItemSnapshot,
     buckets: &AgingBuckets,
 ) -> Result<EffectiveDateAging, RegisterError> {
