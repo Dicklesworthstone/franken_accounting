@@ -35,3 +35,4 @@ fgdb-types = { workspace = true }
 asupersync = { workspace = true }
 fgdb = { workspace = true }
 fa-notary = { path = "../fa-notary", version = "=0.0.1" }
+fa-verify = { path = "../fa-verify", version = "=0.0.1" }

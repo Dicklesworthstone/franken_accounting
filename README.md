@@ -313,8 +313,8 @@ Applied counters and settlement edges retain their separate
 
 ### Entry accumulator checkpoints
 
-The CLI can publish an unsigned checkpoint over the book's entry prefix and
-recompute the stored chain from the journal:
+The CLI publishes a signed transparency checkpoint over the book's entry
+prefix and can recompute the stored chain from the journal:
 
 ```bash
 fa checkpoint create --grant witness --book ./books/acme --json
@@ -329,8 +329,18 @@ checkpoints it returns `status: "no_checkpoints"` and a null
 finding; checkpoint creation refuses a corrupt predecessor. Verification
 and proof generation also reject later rewrites or retirements of checkpointed
 entries, even when the original historical snapshot is still readable.
-These states cover entries, including control entries. Signed transparency checkpoints,
-document-receipt coverage and evidence bundles remain unfinished. The
+The `checkpoint_created` event includes `checkpoint_bytes` (canonical hex),
+`checkpoint_oid`, and `signer_public_key`. Save the hex in a file and verify
+it offline with `fa-verify checkpoint checkpoint.hex --hex --key <trusted-public-key> --json`.
+Authenticate the public key independently before trusting it; a key delivered
+with an artifact does not establish its source. Verification proves that
+the trusted key signed the checkpoint, not that the ledger reflects reality.
+
+These checkpoints cover entries, including control entries. Accumulator
+verification also checks the stored book-key signatures. With no checkpoints,
+`signatures` is `not_checked`; only a successful nonempty verification reports
+`verified`. External witness policies, standalone document-receipt coverage,
+and evidence-bundle production through the CLI remain unfinished. The
 [CLI tests](./crates/fa-cli/tests/notary.rs) exercise persistence, later
 postings, authorization and real storage corruption.
 

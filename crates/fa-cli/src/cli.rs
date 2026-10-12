@@ -3525,7 +3525,9 @@ fn read_plan_bytes(files: &Files, path: &str, domain: &[u8], kind: &str) -> Resu
     }
     let decoded = text
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let digits = std::str::from_utf8(pair)
                 .map_err(|_| usage("invalid plan hex", "pass the complete plan bytes string"))?;

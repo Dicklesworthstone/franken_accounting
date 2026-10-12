@@ -265,14 +265,14 @@ example = "fa explain balance 1000 --period FY2026-P03 --book ./books/myco --jso
 
 [[verb]]
 name = "checkpoint"
-summary = "Publish an unsigned, recomputable accumulator state over the book's entry prefix."
+summary = "Publish a recomputable entry accumulator state and its book-signed transparency checkpoint."
 writes = true
 subcommands = ["create"]
 flags = ["--grant"]
 switches = []
 events = ["checkpoint_created"]
 exits = [0, 2, 4, 5, 6, 7, 8]
-usage = ["checkpoint create --grant witness [--as <principal>]", "The state is unsigned and covers entries; it is not a signed TransparencyCheckpoint or an evidence bundle."]
+usage = ["checkpoint create --grant witness [--as <principal>]", "Returns the canonical transparency checkpoint as hex and the book's Ed25519 public key. Authenticate that key independently before offline verification. The checkpoint covers an entry prefix; it does not include an evidence bundle or external witness approval."]
 example = "fa checkpoint create --grant witness --book ./books/myco --json"
 
 [[verb]]
@@ -665,13 +665,13 @@ fields = ["account:string?", "count:int", "items:[open_item]"]
 [[event]]
 name = "checkpoint_created"
 book = true
-doc = "An unsigned AccumulatorState over every entry in the named book/branch prefix through through_seq, recorded in a later commit. prev_state_oid links its predecessor. The scope excludes document receipts, attestations, signatures, and bundles."
-fields = ["book:hex", "branch:hex", "oid:hex", "recorded_at:seq", "through_seq:seq", "leaf_count:int", "root:hex", "prev_state_oid:hex?", "signatures:string", "scope:string"]
+doc = "An AccumulatorState over every entry in the named book/branch prefix through through_seq, recorded with its signed TransparencyCheckpoint in a later commit. oid and prev_state_oid identify accumulator states; checkpoint_oid identifies the signed object. checkpoint_bytes is that object's canonical hex encoding and signer_public_key is the book's Ed25519 public key, which must be authenticated independently before trusting it. signatures is book_key_ed25519. The entry_prefix scope excludes standalone document receipts, attestations, and bundles; a signature alone does not prove the ledger or scope index correct."
+fields = ["book:hex", "branch:hex", "oid:hex", "recorded_at:seq", "through_seq:seq", "leaf_count:int", "root:hex", "prev_state_oid:hex?", "signatures:string", "scope:string", "checkpoint_oid:hex", "checkpoint_bytes:hex", "signer_public_key:hex"]
 
 [[event]]
 name = "accumulator_verified"
 book = true
-doc = "Every existing accumulator state was recomputed from its entry prefix and every stored state belongs to the chain. status is verified or no_checkpoints; no_checkpoints makes no verification claim and verified_through is null. Otherwise verified_through names the newest checked prefix, never an implicit current-head claim. signatures is unsigned and scope is entry_prefix. States are newest first."
+doc = "Every existing accumulator state and its signed checkpoint were recomputed from the journal and the book's Ed25519 key, and every stored state/checkpoint belongs to the chain. status is verified or no_checkpoints; no_checkpoints makes no verification claim, signatures is not_checked, and verified_through is null. Otherwise signatures is verified and verified_through names the newest checked prefix, never an implicit current-head claim. Failed verification reports signatures=not_verified in the error detail. The scope is entry_prefix; external witnesses and out-of-band key authenticity are not checked. States are newest first."
 fields = ["status:string", "signatures:string", "scope:string", "states_checked:int", "broken:string?", "verified_through:seq?", "states:[accumulator_state_check]", "unchained:[hex]"]
 
 [[event]]
@@ -1090,7 +1090,7 @@ verb = "checkpoint"
 subcommands = ["create"]
 positionals = []
 required = []
-dont = ["Don't present the state as a signed checkpoint or an evidence bundle: it is unsigned and covers entries only."]
+dont = ["Don't treat the returned public key as its own trust anchor: authenticate it independently before verifying checkpoint_bytes.", "Don't call a book-key signature external witness approval or an evidence bundle; this checkpoint covers the named entry prefix."]
 mistakes = ["Trying to self-issue witness permission: caller grants are forbidden, and Agent/Preparer launch profiles do not include witness."]
 
 [[mcp.tool]]
