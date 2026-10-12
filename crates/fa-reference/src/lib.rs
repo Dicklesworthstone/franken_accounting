@@ -3566,8 +3566,8 @@ mod tests {
                     let registered = matrix.kind_rule(kind).is_none_or(|r| r.admits(class))
                         && (!pre.governs(kind, end, opening) || pre.admits(class))
                         && matrix
-                            .special_period_classes(kind)
-                            .is_none_or(|classes| classes.iter().any(|c| c == class));
+                            .special_period_rule(kind)
+                            .is_none_or(|rule| rule.admits(class));
                     assert_eq!(
                         registered,
                         kind_admits(&special_periods, kind, end, opening, class),
