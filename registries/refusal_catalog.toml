@@ -267,7 +267,7 @@ fix = "select --as-known-at HEAD or an existing commit sequence; an instant befo
 [[refusal]]
 code = "FA-REF-152"
 name = "STATEMENT_INVALID"
-owners = ["fa", "fa-statements"]
+owners = ["fa"]
 exit = "refusal"
 cite = "plan §12.1 / FA-INV-04 mapping-partition (exact statement over the journal)"
 fix = "select balance-sheet or income-statement with an existing period; correct the named mapping or input and recompute from the journal without adding a balancing entry"

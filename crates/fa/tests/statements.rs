@@ -1,5 +1,8 @@
 //! End-to-end statement regressions through the public facade and its real
-//! MemVfs-backed book. Every monetary input is admitted by the posting kernel.
+//! memory and directory books. Every monetary input is admitted by the posting kernel.
+
+use std::io::Write;
+use std::path::Path;
 
 use fa::{
     Book, BookKeys, CertificateStatus, Entropy, ReportCertificate, ReportOutput, Statement,
@@ -12,7 +15,7 @@ use fa_model::{
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_time::{DateDay, FiscalCalendar, PeriodTransition};
-use fgdb_types::{CommitSeq, VId};
+use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
 const PRINCIPAL: VId = VId(1);
 const DECEMBER: &str = "FY2025-P12";
@@ -49,23 +52,29 @@ struct Fixture {
 
 impl Fixture {
     fn new(seed: u8) -> Self {
+        Self::at(seed, None)
+    }
+
+    fn at(seed: u8, directory: Option<&Path>) -> Self {
         let units = UnitRegistry::embedded().unwrap();
         let usd = units.lookup("USD").unwrap();
         let jpy = units.lookup("JPY").unwrap();
         let book_id = Id128([seed; 16]);
-        let mut book = Book::create_memory(
-            BookKeys::for_development(seed),
-            BookSpec {
-                book_id,
-                name: "Statement integration fixture".into(),
-                base_unit: usd,
-                calendar: FiscalCalendar::monthly("statement-calendar", 1, 1).unwrap(),
-                time_zone_policy: None,
-                entities: Vec::new(),
-                opening_date: None,
-            },
-            Entropy::deterministic(u64::from(seed)),
-        )
+        let spec = BookSpec {
+            book_id,
+            name: "Statement integration fixture".into(),
+            base_unit: usd,
+            calendar: FiscalCalendar::monthly("statement-calendar", 1, 1).unwrap(),
+            time_zone_policy: None,
+            entities: Vec::new(),
+            opening_date: None,
+        };
+        let keys = BookKeys::for_development(seed);
+        let entropy = Entropy::deterministic(u64::from(seed));
+        let mut book = match directory {
+            Some(directory) => Book::create_dir(directory, keys, spec, entropy),
+            None => Book::create_memory(keys, spec, entropy),
+        }
         .unwrap();
         book.install_chart(
             &[
@@ -461,6 +470,145 @@ fn retained_comparatives_replay_after_later_and_backdated_postings() {
         head,
         "historical replay never republishes a report"
     );
+}
+
+#[test]
+fn large_retained_certificate_survives_reopen_and_never_repairs_missing_or_changed_bytes() {
+    let seed = 0x96;
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory = std::env::temp_dir().join(format!(
+        "fa-certificate-storage-{}-{suffix}",
+        std::process::id()
+    ));
+    // Keep the book and every damaged version for failure diagnosis. The
+    // unique directory is created exclusively; no pre-existing data is reused.
+    std::fs::create_dir(&directory).unwrap();
+    let mut fixture = Fixture::at(seed, Some(&directory));
+    let usd = fixture.usd;
+    fixture.transfer(day(2026, 1, 15), b"jan-sale", usd, ("1000", "4000"), 300);
+    fixture.transfer(day(2026, 2, 15), b"feb-sale", usd, ("1000", "4000"), 500);
+    fixture.transfer(day(2026, 2, 15), b"feb-cost", usd, ("6000", "1000"), 40);
+    let certified = fixture
+        .book
+        .certify_statement(selection("balance-sheet", FEBRUARY, JANUARY), None)
+        .unwrap()
+        .unwrap();
+    let certificate = certified.certificate;
+    let canonical = certificate.canonical_bytes().unwrap();
+    // Native rows store byte scalars as 8-byte memcomparable groups, about
+    // 9/8 of the raw bytes. Compare the actual scalar encoding, not the raw
+    // certificate length: this payload alone cannot fit in one row, even
+    // before the row's other properties and metadata.
+    let encoded_payload = CanonicalScalar::bytes(canonical.clone())
+        .unwrap()
+        .encode()
+        .unwrap();
+    assert!(
+        encoded_payload.len() > 16 * 1024,
+        "this regression must exceed one substrate row: {} encoded payload bytes",
+        encoded_payload.len()
+    );
+    let retained = fixture
+        .book
+        .retain_certificate(&certificate)
+        .unwrap()
+        .unwrap();
+    // Locate the actual persisted bytes independently of the producer's
+    // descriptor and locator helpers. The evidence document is inline.
+    let mut matching = Vec::new();
+    for shard in std::fs::read_dir(directory.join("blobs")).unwrap() {
+        let shard = shard.unwrap();
+        if shard.file_type().unwrap().is_dir() {
+            for item in std::fs::read_dir(shard.path()).unwrap() {
+                let path = item.unwrap().path();
+                if std::fs::read(&path).unwrap() == canonical {
+                    matching.push(path);
+                }
+            }
+        }
+    }
+    assert_eq!(matching.len(), 1, "one persisted canonical certificate");
+    let blob = matching.pop().unwrap();
+    drop(fixture);
+    let mut book = Book::open_dir(
+        &directory,
+        BookKeys::for_development(seed),
+        Entropy::deterministic(u64::from(seed)),
+    )
+    .unwrap();
+    let head = book.head().unwrap();
+    assert_eq!(head, retained.recorded_at);
+    let loaded = book.read_certificate(&retained.digest).unwrap().unwrap();
+    assert_eq!(loaded, certificate);
+    assert_eq!(loaded.canonical_bytes().unwrap(), canonical);
+    assert_eq!(replay(&book, &loaded), certified.statement);
+    assert_eq!(book.retain_certificate(&loaded).unwrap().unwrap(), retained);
+    assert_eq!(book.head().unwrap(), head);
+
+    let backup = directory.join("certificate-pristine-backup");
+    std::fs::rename(&blob, &backup).unwrap();
+    for refusal in [
+        book.read_certificate(&retained.digest)
+            .unwrap()
+            .unwrap_err(),
+        book.retain_certificate(&certificate).unwrap().unwrap_err(),
+    ] {
+        assert_eq!(refusal.code, fa_journal::refusal::code::BLOB_MISSING);
+        assert_eq!(refusal.exit, fa_journal::refusal::exit::FOUNDATION);
+    }
+    assert_eq!(book.head().unwrap(), head);
+    assert!(
+        !blob.exists(),
+        "a retry must not silently recreate missing bytes"
+    );
+    assert_eq!(std::fs::read(&backup).unwrap(), canonical);
+    std::fs::rename(&backup, &blob).unwrap();
+
+    let mut changed_digest = canonical.clone();
+    *changed_digest.last_mut().unwrap() ^= 1;
+    let mut overlong = canonical.clone();
+    overlong.push(0);
+    let truncated = canonical[..canonical.len() - 1].to_vec();
+    for (name, damaged) in [
+        ("changed-digest", changed_digest),
+        ("overlong", overlong),
+        ("truncated", truncated),
+    ] {
+        std::fs::rename(&blob, &backup).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&blob)
+            .unwrap();
+        file.write_all(&damaged).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        for refusal in [
+            book.read_certificate(&retained.digest)
+                .unwrap()
+                .unwrap_err(),
+            book.retain_certificate(&certificate).unwrap().unwrap_err(),
+        ] {
+            assert_eq!(refusal.code, fa::certificate::code::CERTIFICATE_INVALID);
+            assert_eq!(refusal.exit, fa_journal::refusal::exit::VERIFICATION);
+        }
+        assert_eq!(book.head().unwrap(), head);
+        assert_eq!(std::fs::read(&blob).unwrap(), damaged, "no silent repair");
+        assert_eq!(std::fs::read(&backup).unwrap(), canonical);
+        std::fs::rename(&blob, directory.join(format!("certificate-{name}"))).unwrap();
+        std::fs::rename(&backup, &blob).unwrap();
+        let restored = book.read_certificate(&retained.digest).unwrap().unwrap();
+        assert_eq!(restored.canonical_bytes().unwrap(), canonical);
+        assert_eq!(replay(&book, &restored), certified.statement);
+        assert_eq!(
+            book.retain_certificate(&restored).unwrap().unwrap(),
+            retained
+        );
+        assert_eq!(book.head().unwrap(), head);
+    }
 }
 
 #[test]
