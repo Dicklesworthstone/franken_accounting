@@ -139,6 +139,10 @@ mod tests {
     #[test]
     fn reference_period_selection_checks_discriminators_and_unique_defaults() {
         let calendar = fa_time::FiscalCalendar::monthly("cal", 1, 1).unwrap();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "fixture for independent period selection"
+        )]
         let mut definitions = calendar.periods_for_year(2026).unwrap();
         let day = DateDay::parse("2026-12-31").unwrap();
         assert_eq!(resolve(&definitions, day, None).unwrap().code, "FY2026-P12");

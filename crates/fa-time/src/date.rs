@@ -64,6 +64,7 @@ pub enum MonthEndPolicy {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DateError {
     InvalidYmd { year: i32, month: u8, day: u8 },
+    InvalidCalendar(&'static str),
     Malformed(String),
     OutOfRange,
 }
@@ -75,6 +76,7 @@ impl fmt::Display for DateError {
                 write!(f, "invalid civil date {year:04}-{month:02}-{day:02}")
             }
             Self::Malformed(s) => write!(f, "malformed date `{s}`; expected YYYY-MM-DD"),
+            Self::InvalidCalendar(reason) => write!(f, "invalid fiscal calendar: {reason}"),
             Self::OutOfRange => f.write_str("date out of representable range"),
         }
     }

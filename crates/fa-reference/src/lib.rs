@@ -3,7 +3,7 @@
 //! Everything here is the *obvious* implementation: canonical maps, linear
 //! scans, and sign-magnitude limb integers written from scratch so that a
 //! shared arithmetic bug in `fa-money` cannot make the differential green.
-//! The oracle mirrors the kernel's law order exactly — structure, control,
+//! The oracle follows the specified refusal precedence — structure, control,
 //! supported subset, balance, period resolution, identity (recorded outcome
 //! or conflict), period law, accounts, reversal shape, resolution shape — and
 //! returns the same
@@ -12,6 +12,10 @@
 //!
 //! Boundary: `std`, `fa-time`, and the registries. No `fa-money`, no
 //! `fa-model`, no substrate.
+//! Admission, transition and period lookup decisions are literal local
+//! implementations of Appendix C and §7. Calendar generation walks civil
+//! days independently; primitive date conversion and policy parsing still
+//! share production code, so full oracle independence remains bounded.
 //!
 //! Period authority (plan §14.2, Appendix C PeriodControl) is modelled the
 //! same way: an [`Authority`] is the plan's caveat list in plain values, the
@@ -20,6 +24,10 @@
 //! up literally in `sod_policy.toml` and judged by [`sod::verdict`].
 
 #![forbid(unsafe_code)]
+// Production decisions belong only in the comparison side of tests. The
+// normal library build forbids them even through aliases or re-exports;
+// statement-level expectations below pin all eight configured methods.
+#![cfg_attr(not(test), forbid(clippy::disallowed_methods))]
 
 pub mod evidence;
 pub mod sod;
@@ -54,9 +62,339 @@ pub fn control_kind_class(id: u16) -> Option<&'static str> {
 use std::collections::{BTreeMap, BTreeSet};
 
 use fa_registry::sod_policy::{SodPolicy, SodRequirement};
-use fa_registry::{Admissibility, Decision, EntryClasses};
-use fa_time::period::transition;
-use fa_time::{DateDay, FiscalCalendar, PeriodDef, PeriodKind, PeriodState, PeriodTransition};
+use fa_registry::{Admissibility, EntryClasses};
+use fa_time::{
+    CalendarKind, DateDay, DateError, FiscalCalendar, PeriodDef, PeriodKind, PeriodState,
+    PeriodTransition, WeekPattern, YearEndRule,
+};
+use temporal::resolve as resolve_period;
+
+// ---------------------------------------------------------------------------
+// Literal period law (plan Appendix C). These decisions must not call the
+// production matrix or state machine; changing either must break a test.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Admission {
+    Admit,
+    With(&'static str, u8),
+    Refuse,
+}
+
+// Columns: Future, Open, SoftClosed, Closed, Locked. The Resolution row is
+// Posts; the separate release row below covers Voids and Expires. Case,
+// migration-run and rule requirements are additional class-specific laws.
+const ADMISSION_ROWS: [(&str, [Admission; 5]); 15] = {
+    use Admission::{Admit as A, Refuse as R, With as W};
+    [
+        ("Original", [R, A, W("post_softclosed", 0), R, R]),
+        ("Pending", [R, A, W("post_softclosed", 0), R, R]),
+        ("Resolution", [R, A, A, W("post_closed", 0), R]),
+        ("Reversal", [R, A, A, W("post_closed", 0), R]),
+        ("Replacement", [R, A, A, W("post_closed", 1), R]),
+        ("Reclassification", [R, A, A, W("post_closed", 1), R]),
+        ("Adjusting", [R, A, A, W("post_closed", 1), R]),
+        (
+            "Closing",
+            [
+                R,
+                W("close", 0),
+                W("close", 0),
+                W("close", 1),
+                W("restate", 2),
+            ],
+        ),
+        ("Allocation", [R, A, A, W("post_closed", 1), R]),
+        ("Revaluation", [R, A, A, W("post_closed", 1), R]),
+        ("Elimination", [R, A, A, W("post_closed", 1), R]),
+        ("Migration", [R, R, R, R, W("migrate", 2)]),
+        ("Revision", [R, R, R, W("restate", 1), W("restate", 2)]),
+        ("Restatement", [R, R, R, W("restate", 2), W("restate", 2)]),
+        (
+            "PriorPeriodAdjustment",
+            [R, W("restate", 2), W("restate", 2), R, R],
+        ),
+    ]
+};
+
+const RELEASE_ROW: [Admission; 5] = [
+    Admission::Refuse,
+    Admission::Admit,
+    Admission::Admit,
+    Admission::Admit,
+    Admission::Admit,
+];
+
+fn state_column(state: PeriodState) -> usize {
+    match state {
+        PeriodState::Future => 0,
+        PeriodState::Open => 1,
+        PeriodState::SoftClosed => 2,
+        PeriodState::Closed => 3,
+        PeriodState::Locked => 4,
+    }
+}
+
+fn admission(class: &str, state: PeriodState, release: bool) -> Admission {
+    let column = state_column(state);
+    if class == "Resolution" && release {
+        return RELEASE_ROW[column];
+    }
+    ADMISSION_ROWS
+        .iter()
+        .find(|(name, _)| *name == class)
+        .map_or(Admission::Refuse, |(_, row)| row[column])
+}
+
+fn special(kind: PeriodKind) -> bool {
+    matches!(
+        kind,
+        PeriodKind::Opening | PeriodKind::Adjustment | PeriodKind::Closing
+    )
+}
+
+fn pre_opening(kind: PeriodKind, end: DateDay, opening: Option<DateDay>) -> bool {
+    special(kind) && opening.is_some_and(|day| end <= day)
+}
+
+fn kind_admits(
+    special_periods: &temporal::SpecialPeriods,
+    kind: PeriodKind,
+    end: DateDay,
+    opening: Option<DateDay>,
+    class: &str,
+) -> bool {
+    if kind == PeriodKind::Historical || pre_opening(kind, end, opening) {
+        return class == "Migration";
+    }
+    special_periods.admits(kind, class)
+}
+
+fn next_state(from: PeriodState, transition: PeriodTransition) -> Option<PeriodState> {
+    use PeriodState::{Closed, Future, Locked, Open, SoftClosed};
+    use PeriodTransition as T;
+    // §7.3: Reopen from Closed/Locked can target Open or SoftClosed.
+    // SoD and case authorization are evaluated separately after this table.
+    const EDGES: [(PeriodState, PeriodTransition, PeriodState); 10] = [
+        (Future, T::Open, Open),
+        (Open, T::SoftClose, SoftClosed),
+        (Open, T::Close, Closed),
+        (SoftClosed, T::Close, Closed),
+        (Closed, T::Lock, Locked),
+        (SoftClosed, T::Reopen { to: Open }, Open),
+        (Closed, T::Reopen { to: Open }, Open),
+        (Closed, T::Reopen { to: SoftClosed }, SoftClosed),
+        (Locked, T::Reopen { to: Open }, Open),
+        (Locked, T::Reopen { to: SoftClosed }, SoftClosed),
+    ];
+    EDGES
+        .iter()
+        .find_map(|&(state, action, to)| (state == from && action == transition).then_some(to))
+}
+
+// Calendar decisions are local too. Only the primitive civil-day type,
+// conversions, successor and weekday are shared with fa-time. In particular,
+// do not use its month arithmetic, year-end selection or fiscal-year lookup.
+fn valid_calendar(calendar: &FiscalCalendar) -> bool {
+    let month = match calendar.kind {
+        CalendarKind::Monthly12 { year_start_month } => year_start_month,
+        CalendarKind::Weeks { end_rule, .. } | CalendarKind::Week5253 { end_rule } => {
+            match end_rule {
+                YearEndRule::LastWeekdayOfMonth { month, .. }
+                | YearEndRule::WeekdayNearestEnd { month, .. } => month,
+            }
+        }
+    };
+    (1..=12).contains(&month) && calendar.adjustment_periods <= 4
+}
+
+fn calendar_year_end(rule: YearEndRule, year: i32) -> Option<DateDay> {
+    let (weekday, month) = match rule {
+        YearEndRule::LastWeekdayOfMonth { weekday, month }
+        | YearEndRule::WeekdayNearestEnd { weekday, month } => (weekday, month),
+    };
+    // Try actual civil dates to locate month end. OutOfRange is not a short
+    // month: accepting a clipped month at DateDay::MAX would move year end.
+    let mut last = None;
+    for day in (28..=31).rev() {
+        match DateDay::from_ymd(year, month, day) {
+            Ok(date) => {
+                last = Some(date);
+                break;
+            }
+            Err(DateError::InvalidYmd { .. }) => {}
+            Err(_) => return None,
+        }
+    }
+    let last = last?;
+    match rule {
+        YearEndRule::LastWeekdayOfMonth { .. } => {
+            let mut chosen = None;
+            // Enumerate the month, including a partly representable month
+            // at DateDay::MIN; the last matching weekday is the answer.
+            for day in 1..=last.ymd().2 {
+                if let Ok(date) = DateDay::from_ymd(year, month, day)
+                    && date.weekday() == weekday
+                {
+                    chosen = Some(date);
+                }
+            }
+            chosen
+        }
+        YearEndRule::WeekdayNearestEnd { .. } => {
+            // Exactly one of these seven days has the requested weekday.
+            // If that day is outside DateDay, no farther day substitutes.
+            for offset in -3..=3 {
+                if let Some(day) = last.0.checked_add(offset)
+                    && DateDay(day).weekday() == weekday
+                {
+                    return Some(DateDay(day));
+                }
+            }
+            None
+        }
+    }
+}
+
+/// Inclusive fiscal-year bounds, found without production calendar helpers.
+fn calendar_year_bounds(calendar: &FiscalCalendar, fy: i32) -> Option<(DateDay, DateDay)> {
+    if !valid_calendar(calendar) {
+        return None;
+    }
+    match calendar.kind {
+        CalendarKind::Monthly12 { year_start_month } => {
+            let year = if year_start_month == 1 {
+                fy
+            } else {
+                fy.checked_sub(1)?
+            };
+            let start = DateDay::from_ymd(year, year_start_month, 1).ok()?;
+            let mut day = start;
+            let mut months = 0;
+            loop {
+                let next = day.succ().ok()?;
+                if next.ymd().2 == 1 {
+                    months += 1;
+                    if months == 12 {
+                        return Some((start, day));
+                    }
+                }
+                day = next;
+            }
+        }
+        CalendarKind::Weeks { end_rule, .. } | CalendarKind::Week5253 { end_rule } => {
+            let previous = calendar_year_end(end_rule, fy.checked_sub(1)?)?;
+            let start = previous.succ().ok()?;
+            let end = calendar_year_end(end_rule, fy)?;
+            (start <= end).then_some((start, end))
+        }
+    }
+}
+
+fn containing_fiscal_year(calendar: &FiscalCalendar, day: DateDay) -> Option<i32> {
+    if !valid_calendar(calendar) {
+        return None;
+    }
+    // A fiscal year is named by its ending civil year; a nearest-weekday
+    // December end may cross into January. Scan neighboring year labels
+    // and test their actual bounds rather than guessing from a start month.
+    for offset in -1..=1 {
+        let fy = day.ymd().0.checked_add(offset)?;
+        if let Some((start, end)) = calendar_year_bounds(calendar, fy)
+            && start <= day
+            && day <= end
+        {
+            return Some(fy);
+        }
+    }
+    None
+}
+
+fn calendar_periods(calendar: &FiscalCalendar, fy: i32) -> Option<Vec<PeriodDef>> {
+    let (start, last) = calendar_year_bounds(calendar, fy)?;
+    let mut periods = Vec::new();
+    let mut cursor = start;
+    let mut add_normal = |start, end| -> Option<()> {
+        let ordinal = u16::try_from(periods.len()).ok()?.checked_add(1)?;
+        periods.push(PeriodDef {
+            code: format!("FY{fy}-P{ordinal:02}"),
+            fiscal_year: fy,
+            ordinal,
+            kind: PeriodKind::Normal,
+            start,
+            end,
+        });
+        Some(())
+    };
+    match calendar.kind {
+        CalendarKind::Monthly12 { .. } => {
+            let mut period_start = start;
+            while cursor <= last {
+                cursor = cursor.succ().ok()?;
+                if cursor.ymd().2 == 1 {
+                    add_normal(period_start, cursor)?;
+                    period_start = cursor;
+                }
+            }
+        }
+        CalendarKind::Weeks { .. } | CalendarKind::Week5253 { .. } => {
+            let widths: &[u16] = match calendar.kind {
+                CalendarKind::Weeks { pattern, .. } => match pattern {
+                    WeekPattern::W445 => &[4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4, 5],
+                    WeekPattern::W454 => &[4, 5, 4, 4, 5, 4, 4, 5, 4, 4, 5, 4],
+                    WeekPattern::W544 => &[5, 4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4],
+                },
+                CalendarKind::Week5253 { .. } => &[4; 13],
+                CalendarKind::Monthly12 { .. } => return None,
+            };
+            for (index, weeks) in widths.iter().enumerate() {
+                let period_start = cursor;
+                let regular_days = weeks * 7;
+                let final_period = index + 1 == widths.len();
+                let mut days = 0;
+                // The final period consumes the remainder of the year;
+                // its only permitted extra duration is the 53rd week.
+                while cursor <= last && (final_period || days < regular_days) {
+                    cursor = cursor.succ().ok()?;
+                    days += 1;
+                }
+                if days != regular_days && !(final_period && days == regular_days + 7) {
+                    return None;
+                }
+                add_normal(period_start, cursor)?;
+            }
+        }
+    }
+    let normal_count = u16::try_from(periods.len()).ok()?;
+    let end = last.succ().ok()?;
+    periods.push(PeriodDef {
+        code: format!("FY{fy}-OPEN"),
+        fiscal_year: fy,
+        ordinal: normal_count + 1,
+        kind: PeriodKind::Opening,
+        start,
+        end: start.succ().ok()?,
+    });
+    for adjustment in 1..=calendar.adjustment_periods {
+        periods.push(PeriodDef {
+            code: format!("FY{fy}-A{adjustment}"),
+            fiscal_year: fy,
+            ordinal: normal_count + 1 + u16::from(adjustment),
+            kind: PeriodKind::Adjustment,
+            start: last,
+            end,
+        });
+    }
+    periods.push(PeriodDef {
+        code: format!("FY{fy}-CLOSE"),
+        fiscal_year: fy,
+        ordinal: normal_count + 2 + u16::from(calendar.adjustment_periods),
+        kind: PeriodKind::Closing,
+        start: last,
+        end,
+    });
+    Some(periods)
+}
 
 // ---------------------------------------------------------------------------
 // Own arithmetic: sign-magnitude, base 2^32 limbs, little-endian.
@@ -683,6 +1021,14 @@ pub struct Recorded {
     pub epoch: u64,
 }
 
+/// Period creation is atomic: neither an invalid calendar range nor an
+/// existing period may overwrite a definition or its transitioned state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PeriodCreationError {
+    InvalidCalendar,
+    AlreadyExists(String),
+}
+
 pub struct Oracle {
     calendar: FiscalCalendar,
     accounts: BTreeMap<String, Account>,
@@ -728,7 +1074,6 @@ pub struct Oracle {
     /// (run, key) → (journal index, content) for Migration chunks.
     migration_keys: BTreeMap<(usize, Vec<u8>), (usize, Content)>,
     classes: EntryClasses,
-    matrix: Admissibility,
     special_periods: temporal::SpecialPeriods,
     sod: SodPolicy,
     /// Tokens of revoked capabilities.
@@ -741,6 +1086,17 @@ impl Oracle {
     pub fn new(calendar: FiscalCalendar) -> Self {
         let classes = EntryClasses::embedded().expect("entry_classes.toml");
         let matrix = Admissibility::embedded(&classes).expect("admissibility.toml");
+        Self::from_policy_data(calendar, classes, matrix)
+    }
+
+    // The matrix is used only to validate policy data, never for admission.
+    // Tests supply a valid but incorrect matrix through this same path: the
+    // oracle must still enforce the independently transcribed Appendix C.
+    fn from_policy_data(
+        calendar: FiscalCalendar,
+        classes: EntryClasses,
+        matrix: Admissibility,
+    ) -> Self {
         let sod = SodPolicy::embedded(&classes, &matrix).expect("sod_policy.toml");
         Self {
             calendar,
@@ -765,7 +1121,6 @@ impl Oracle {
             control_keys: BTreeMap::new(),
             migration_keys: BTreeMap::new(),
             classes,
-            matrix,
             special_periods: temporal::SpecialPeriods::embedded(),
             sod,
             revoked: BTreeSet::new(),
@@ -848,19 +1203,24 @@ impl Oracle {
     /// Create a fiscal year's periods: `Future`, except a Normal period that
     /// ends on or before the book's opening date, which is born Historical
     /// and Locked.
-    pub fn create_periods(&mut self, fy: i32) {
-        let pre_opening = self.matrix.pre_opening().expect("pre_opening rule").clone();
-        for mut p in self.calendar.periods_for_year(fy).expect("periods") {
+    pub fn create_periods(&mut self, fy: i32) -> Result<(), PeriodCreationError> {
+        let periods =
+            calendar_periods(&self.calendar, fy).ok_or(PeriodCreationError::InvalidCalendar)?;
+        if let Some(p) = periods.iter().find(|p| self.periods.contains_key(&p.code)) {
+            return Err(PeriodCreationError::AlreadyExists(p.code.clone()));
+        }
+        for mut p in periods {
             let state = match self.opening_date {
                 Some(day) if p.kind == PeriodKind::Normal && p.end <= day => {
                     p.kind = PeriodKind::Historical;
                     PeriodState::Locked
                 }
-                _ if pre_opening.governs(p.kind, p.end, self.opening_date) => pre_opening.born,
+                _ if pre_opening(p.kind, p.end, self.opening_date) => PeriodState::Locked,
                 _ => PeriodState::Future,
             };
             self.periods.insert(p.code.clone(), (p, state));
         }
+        Ok(())
     }
 
     pub fn period_state(&self, code: &str) -> Option<PeriodState> {
@@ -923,7 +1283,7 @@ impl Oracle {
         };
         let mut approvals = Vec::new();
         if let Some((_, from)) = self.periods.get(code)
-            && transition(*from, t).is_ok()
+            && next_state(*from, t).is_some()
         {
             let req = self.period_rule(*from, t);
             for i in 0..req.approvers {
@@ -1004,22 +1364,13 @@ impl Oracle {
         let Some((def, state)) = self.periods.get(code) else {
             return Err(code::PERIOD_UNKNOWN);
         };
-        // A registered kind row (a Historical period: born Locked) refuses
-        // every transition.
-        if let Some(rule) = self.matrix.kind_rule(def.kind) {
-            assert_eq!(rule.transition_refusal, code::TRANSITION, "registry drift");
-            return Err(code::TRANSITION);
-        }
-        if let Some(rule) = self
-            .matrix
-            .pre_opening()
-            .filter(|r| r.governs(def.kind, def.end, self.opening_date))
-        {
-            assert_eq!(rule.transition_refusal, code::TRANSITION, "registry drift");
+        // Appendix C: Historical and pre-opening special periods never
+        // transition, whatever state is presented.
+        if def.kind == PeriodKind::Historical || pre_opening(def.kind, def.end, self.opening_date) {
             return Err(code::TRANSITION);
         }
         let from = *state;
-        let to = transition(from, t).map_err(|_| code::TRANSITION)?;
+        let to = next_state(from, t).ok_or(code::TRANSITION)?;
         if approvals.iter().any(|a| a.epoch != self.epoch) {
             return Err(code::STALE_APPROVAL);
         }
@@ -1182,14 +1533,13 @@ impl Oracle {
             .map(|(target, s)| {
                 let status = match self.period_state(&s.period) {
                     None | Some(PeriodState::Future) => Reached::Waiting,
-                    Some(state) => match self.matrix.decide("Reversal", state) {
-                        Some(Decision::Admit) => Reached::Due,
-                        Some(Decision::With { op, .. }) if op == "post" => Reached::Due,
+                    Some(state) => match admission("Reversal", state, false) {
+                        Admission::Admit | Admission::With("post", _) => Reached::Due,
                         _ => Reached::Blocked,
                     },
                 };
-                let live_applications =
-                    (0..self.journal[*target].legs.len()).any(|i| self.applied_to(*target, i) != 0);
+                let live_applications = (0..self.journal[*target].legs.len())
+                    .any(|i| !self.applied_to(*target, i).is_zero());
                 let status = if status == Reached::Due && live_applications {
                     Reached::Blocked
                 } else {
@@ -1330,9 +1680,8 @@ impl Oracle {
             let state = self
                 .period_state(&hold.period)
                 .unwrap_or(PeriodState::Future);
-            // The registered Resolution(Expires) row of the hold's period
-            // state decides (the sweep holds `post` only).
-            if !matches!(self.matrix.decide_expires(state), Some(Decision::Admit)) {
+            // Appendix C admits releases in every state except Future.
+            if admission("Resolution", state, true) != Admission::Admit {
                 return Err(code::PERIOD_LAW);
             }
             let index = self.journal.len();
@@ -1536,23 +1885,16 @@ impl Oracle {
                 }
             }
             let mut named = BTreeSet::new();
-            let mut sum: i128 = 0;
+            let mut sum = Int::zero();
             for s in mine {
                 if s.mantissa <= 0 || !named.insert((s.target, s.ordinal)) {
                     return Verdict::Refused {
                         code: code::SETTLE_SHAPE,
                     };
                 }
-                sum = match sum.checked_add(s.mantissa) {
-                    Some(v) => v,
-                    None => {
-                        return Verdict::Refused {
-                            code: code::SETTLE_SHAPE,
-                        };
-                    }
-                };
+                sum = sum.add(&Int::from_i128(s.mantissa));
             }
-            if sum > leg.mantissa {
+            if Int::from_i128(leg.mantissa).sub(&sum).is_negative() {
                 return Verdict::Refused {
                     code: code::SETTLE_SHAPE,
                 };
@@ -1581,14 +1923,9 @@ impl Oracle {
                     code: code::CLASS_NOT_IMPLEMENTED,
                 };
             }
-            let resolved = self
-                .calendar
-                .fiscal_year_of(reverse_on)
-                .ok()
-                .and_then(|fy| self.calendar.periods_for_year(fy).ok())
-                .and_then(|defs| {
-                    temporal::resolve(&defs, reverse_on, None).map(|p| p.code.clone())
-                });
+            let resolved = containing_fiscal_year(&self.calendar, reverse_on)
+                .and_then(|fy| calendar_periods(&self.calendar, fy))
+                .and_then(|defs| resolve_period(&defs, reverse_on, None).map(|p| p.code.clone()));
             let Some(p) = resolved else {
                 return Verdict::Refused {
                     code: code::PERIOD_RESOLVE,
@@ -1629,17 +1966,17 @@ impl Oracle {
             };
         }
         // 3. Resolve the period.
-        let Ok(fy) = self.calendar.fiscal_year_of(intent.date) else {
+        let Some(fy) = containing_fiscal_year(&self.calendar, intent.date) else {
             return Verdict::Refused {
                 code: code::PERIOD_RESOLVE,
             };
         };
-        let Ok(defs) = self.calendar.periods_for_year(fy) else {
+        let Some(defs) = calendar_periods(&self.calendar, fy) else {
             return Verdict::Refused {
                 code: code::PERIOD_RESOLVE,
             };
         };
-        let Some(period) = temporal::resolve(&defs, intent.date, intent.discriminator.as_deref())
+        let Some(period) = resolve_period(&defs, intent.date, intent.discriminator.as_deref())
         else {
             return Verdict::Refused {
                 code: code::PERIOD_RESOLVE,
@@ -1740,36 +2077,24 @@ impl Oracle {
         //    never created) and its born kind: a Historical period admits
         //    only Migration.
         let born = self.periods.get(&period).map(|(d, _)| d.kind);
-        if let Some(rule) = born.and_then(|k| self.matrix.kind_rule(k))
-            && !rule.admits(&intent.class)
-        {
-            assert_eq!(rule.refusal, code::PERIOD_LAW, "registry drift");
-            return Verdict::Refused {
-                code: code::PERIOD_LAW,
-            };
-        }
-        if let (Some(kind), Some(rule)) = (born, self.matrix.pre_opening())
-            && rule.governs(kind, period_end, self.opening_date)
-            && !rule.admits(&intent.class)
-        {
-            assert_eq!(rule.refusal, code::PERIOD_LAW, "registry drift");
-            return Verdict::Refused {
-                code: code::PERIOD_LAW,
-            };
-        }
-        if born.is_some_and(|kind| !self.special_periods.admits(kind, &intent.class)) {
+        if born.is_some_and(|kind| {
+            !kind_admits(
+                &self.special_periods,
+                kind,
+                period_end,
+                self.opening_date,
+                &intent.class,
+            )
+        }) {
             return Verdict::Refused {
                 code: code::PERIOD_LAW,
             };
         }
         let state = self.period_state(&period).unwrap_or(PeriodState::Future);
-        match self
-            .matrix
-            .decide_disposition(&intent.class, state, is_release)
-        {
-            Some(Decision::Admit) => {}
-            Some(Decision::With { op, approvals }) => {
-                if !intent.ops.contains(&op) {
+        match admission(&intent.class, state, is_release) {
+            Admission::Admit => {}
+            Admission::With(op, approvals) => {
+                if !intent.ops.iter().any(|held| held == op) {
                     return Verdict::Refused {
                         code: code::CAPABILITY,
                     };
@@ -1780,7 +2105,7 @@ impl Oracle {
                     };
                 }
             }
-            Some(Decision::Refuse) | None => {
+            Admission::Refuse => {
                 return Verdict::Refused {
                     code: code::PERIOD_LAW,
                 };
@@ -1819,7 +2144,7 @@ impl Oracle {
         // 7a. Application law (plan §5.7): a witnessed, live, posted target
         //     leg on the same account and unit with the opposite side, within
         //     its open amount (counting earlier settlements of this intent).
-        let mut used: BTreeMap<(usize, usize), i128> = BTreeMap::new();
+        let mut used: BTreeMap<(usize, usize), Int> = BTreeMap::new();
         for s in &intent.settles {
             let leg = &intent.legs[s.leg];
             let Some(target) = self.journal.get(s.target) else {
@@ -1842,20 +2167,26 @@ impl Oracle {
                     code: code::SETTLE_SHAPE,
                 };
             }
-            let before = used.get(&(s.target, s.ordinal)).copied().unwrap_or(0);
-            let consumed: i128 = target
+            let before = used
+                .get(&(s.target, s.ordinal))
+                .cloned()
+                .unwrap_or_else(Int::zero);
+            let consumed = target
                 .settles
                 .iter()
                 .filter(|t| t.leg == s.ordinal)
-                .map(|t| t.mantissa)
-                .sum();
-            let open = tl.mantissa - consumed - self.applied_to(s.target, s.ordinal) - before;
-            if s.mantissa > open {
+                .fold(Int::zero(), |sum, t| sum.add(&Int::from_i128(t.mantissa)));
+            let open = Int::from_i128(tl.mantissa)
+                .sub(&consumed)
+                .sub(&self.applied_to(s.target, s.ordinal))
+                .sub(&before);
+            let applied = Int::from_i128(s.mantissa);
+            if open.sub(&applied).is_negative() {
                 return Verdict::Refused {
                     code: code::OVER_APPLICATION,
                 };
             }
-            used.insert((s.target, s.ordinal), before + s.mantissa);
+            used.insert((s.target, s.ordinal), before.add(&applied));
         }
         // 7. Reversal law: the target exists and the legs are its exact side-swap.
         if let Some(target) = intent.reverses {
@@ -1914,7 +2245,7 @@ impl Oracle {
             //     applications is not reversed; re-applying by reversing a
             //     reversal waits for the full netting law.
             for i in 0..original.legs.len() {
-                if self.applied_to(target, i) != 0 {
+                if !self.applied_to(target, i).is_zero() {
                     return Verdict::Refused {
                         code: code::LIVE_APPLICATIONS,
                     };
@@ -2253,12 +2584,10 @@ impl Oracle {
         if let Some(f) = &spec.full_detail {
             check_balance_lines(&f.detail_base)?;
         }
-        let year_start = self
-            .calendar
-            .fiscal_year_of(spec.opening_date)
-            .and_then(|fy| self.calendar.year_bounds(fy))
+        let year_start = containing_fiscal_year(&self.calendar, spec.opening_date)
+            .and_then(|fy| calendar_year_bounds(&self.calendar, fy))
             .map(|(start, _)| start);
-        if year_start.ok() != Some(spec.opening_date) {
+        if year_start != Some(spec.opening_date) {
             return Err(code::STRUCTURE);
         }
         if !ops.iter().any(|o| o == "migrate") {
@@ -2295,15 +2624,15 @@ impl Oracle {
             } else {
                 spec.opening_date
             };
-            let (Ok(first), Ok(last)) = (
-                self.calendar.fiscal_year_of(start),
-                self.calendar.fiscal_year_of(go_live),
+            let (Some(first), Some(last)) = (
+                containing_fiscal_year(&self.calendar, start),
+                containing_fiscal_year(&self.calendar, go_live),
             ) else {
                 return Err(code::STRUCTURE);
             };
             let mut expected = Vec::new();
             for fy in first..=last {
-                for p in self.calendar.periods_for_year(fy).expect("periods") {
+                for p in calendar_periods(&self.calendar, fy).ok_or(code::STRUCTURE)? {
                     if p.kind == PeriodKind::Normal && p.start >= start && p.end <= go_live {
                         expected.push(p.code);
                     }
@@ -2435,18 +2764,13 @@ impl Oracle {
     /// period's chunks through `p` to `p`'s cumulative lines.
     fn ties_out(&self, run: usize) -> bool {
         let r = &self.runs[run];
-        let own_opening = self
-            .calendar
-            .periods_for_year(
-                self.calendar
-                    .fiscal_year_of(r.spec.opening_date)
-                    .expect("fiscal year"),
-            )
-            .expect("periods")
-            .into_iter()
-            .find(|p| p.kind == PeriodKind::Opening)
-            .expect("an Opening period")
-            .code;
+        let Some(own_opening) = containing_fiscal_year(&self.calendar, r.spec.opening_date)
+            .and_then(|fy| calendar_periods(&self.calendar, fy))
+            .and_then(|periods| periods.into_iter().find(|p| p.kind == PeriodKind::Opening))
+            .map(|p| p.code)
+        else {
+            return false;
+        };
         let mut cumulative: BTreeMap<(String, u32), Int> = BTreeMap::new();
         for i in &r.chunks {
             if self.journal[*i].period == own_opening {
@@ -2721,15 +3045,14 @@ impl Oracle {
     }
 
     /// The sum of live applications against `target`'s leg `ordinal`.
-    fn applied_to(&self, target: usize, ordinal: usize) -> i128 {
+    fn applied_to(&self, target: usize, ordinal: usize) -> Int {
         self.journal
             .iter()
             .enumerate()
             .filter(|(i, e)| self.carries_open_items(e) && self.is_live(*i))
             .flat_map(|(_, e)| e.settles.iter())
             .filter(|s| s.target == target && s.ordinal == ordinal)
-            .map(|s| s.mantissa)
-            .sum()
+            .fold(Int::zero(), |sum, s| sum.add(&Int::from_i128(s.mantissa)))
     }
 
     /// The literal open-item fold: every leg of every live posted entry →
@@ -2742,13 +3065,23 @@ impl Oracle {
                 continue;
             }
             for (o, leg) in e.legs.iter().enumerate() {
-                let out_of: i128 = e
+                let out_of = e
                     .settles
                     .iter()
                     .filter(|s| s.leg == o)
-                    .map(|s| s.mantissa)
-                    .sum();
-                out.insert((i, o), (leg.mantissa, self.applied_to(i, o), out_of));
+                    .fold(Int::zero(), |sum, s| sum.add(&Int::from_i128(s.mantissa)));
+                // Admission bounds each total by the original i128 leg.
+                // Narrow only the public result, after the independent fold.
+                out.insert(
+                    (i, o),
+                    (
+                        leg.mantissa,
+                        self.applied_to(i, o)
+                            .to_i128()
+                            .expect("applications fit admitted target"),
+                        out_of.to_i128().expect("applications fit admitted source"),
+                    ),
+                );
             }
         }
         out
@@ -2818,6 +3151,599 @@ impl Oracle {
 mod tests {
     use super::*;
 
+    #[test]
+    fn invalid_period_creation_preserves_existing_definitions_and_states() {
+        let mut oracle = Oracle::new(FiscalCalendar::monthly("cal", 1, 1).unwrap());
+        oracle.create_periods(2026).unwrap();
+        oracle
+            .transition("FY2026-P03", PeriodTransition::Open)
+            .unwrap();
+        let periods = oracle.periods.clone();
+        let known = oracle.known();
+        for year in [i32::MIN, i32::MAX] {
+            assert_eq!(
+                oracle.create_periods(year),
+                Err(PeriodCreationError::InvalidCalendar)
+            );
+            assert_eq!(oracle.periods, periods);
+            assert_eq!(oracle.known(), known);
+        }
+    }
+
+    fn check_calendar(calendar: &FiscalCalendar, fy: i32) -> Option<i64> {
+        let bounds = calendar_year_bounds(calendar, fy);
+        #[expect(clippy::disallowed_methods, reason = "pin the year-bounds boundary")]
+        let production_bounds = calendar.year_bounds(fy).ok();
+        assert_eq!(bounds, production_bounds, "{calendar:?} / FY{fy}");
+        let periods = calendar_periods(calendar, fy);
+        #[expect(clippy::disallowed_methods, reason = "pin the generation boundary")]
+        let production_periods = calendar.periods_for_year(fy).ok();
+        assert_eq!(periods, production_periods, "{calendar:?} / FY{fy}");
+        let (start, last) = bounds?;
+        for day in [start, last] {
+            assert_eq!(
+                containing_fiscal_year(calendar, day),
+                Some(fy),
+                "{calendar:?} / {day:?}"
+            );
+        }
+        for day in [start.0.checked_sub(1), last.0.checked_add(1)]
+            .into_iter()
+            .flatten()
+        {
+            #[expect(clippy::disallowed_methods, reason = "pin fiscal-year selection")]
+            let production_year = calendar.fiscal_year_of(DateDay(day)).ok();
+            assert_eq!(
+                containing_fiscal_year(calendar, DateDay(day)),
+                production_year,
+                "{calendar:?} / boundary {day}"
+            );
+        }
+        if let Some(periods) = periods {
+            let count = if matches!(calendar.kind, CalendarKind::Week5253 { .. }) {
+                13
+            } else {
+                12
+            };
+            assert_eq!(
+                periods.len(),
+                count + usize::from(calendar.adjustment_periods) + 2
+            );
+            let mut next = start;
+            for (index, period) in periods[..count].iter().enumerate() {
+                assert_eq!(period.kind, PeriodKind::Normal);
+                assert_eq!(period.ordinal, index as u16 + 1);
+                assert_eq!(period.start, next);
+                assert!(period.start < period.end);
+                assert_eq!(resolve_period(&periods, period.start, None), Some(period));
+                assert_eq!(
+                    resolve_period(&periods, DateDay(period.end.0 - 1), None),
+                    Some(period)
+                );
+                next = period.end;
+            }
+            assert_eq!(next, last.succ().unwrap());
+            assert_eq!(periods[count].kind, PeriodKind::Opening);
+            assert_eq!(periods[count].start, start);
+            assert_eq!(periods[count].end, start.succ().unwrap());
+            for period in &periods[count + 1..] {
+                assert_eq!((period.start, period.end), (last, next));
+                assert_eq!(
+                    resolve_period(&periods, last, Some(&period.code)),
+                    Some(period)
+                );
+            }
+        }
+        Some(i64::from(last.0) - i64::from(start.0) + 1)
+    }
+
+    fn week_kinds(rule: YearEndRule) -> [CalendarKind; 4] {
+        [
+            CalendarKind::Weeks {
+                pattern: WeekPattern::W445,
+                end_rule: rule,
+            },
+            CalendarKind::Weeks {
+                pattern: WeekPattern::W454,
+                end_rule: rule,
+            },
+            CalendarKind::Weeks {
+                pattern: WeekPattern::W544,
+                end_rule: rule,
+            },
+            CalendarKind::Week5253 { end_rule: rule },
+        ]
+    }
+
+    #[test]
+    fn day_walking_monthly_calendars_match_across_starts_and_gregorian_boundaries() {
+        for year in [
+            -400, -1, 0, 1, 1899, 1900, 1999, 2000, 2024, 2025, 2026, 2099, 2100, 2400,
+        ] {
+            for month in 1..=12 {
+                for adjustments in 0..=4 {
+                    let calendar = FiscalCalendar {
+                        id: "monthly".into(),
+                        kind: CalendarKind::Monthly12 {
+                            year_start_month: month,
+                        },
+                        adjustment_periods: adjustments,
+                    };
+                    assert!(matches!(check_calendar(&calendar, year), Some(365 | 366)));
+                }
+            }
+        }
+        // Independent civil-date anchors, including the century exception.
+        let calendar = FiscalCalendar::monthly("calendar", 1, 1).unwrap();
+        for (year, february_days) in [(0, 29), (1900, 28), (2000, 29), (2100, 28), (2400, 29)] {
+            let periods = calendar_periods(&calendar, year).unwrap();
+            assert_eq!(periods[1].end.0 - periods[1].start.0, february_days);
+        }
+        let october = FiscalCalendar::monthly("october", 10, 1).unwrap();
+        assert_eq!(
+            calendar_year_bounds(&october, 2026),
+            Some((
+                DateDay::from_ymd(2025, 10, 1).unwrap(),
+                DateDay::from_ymd(2026, 9, 30).unwrap()
+            ))
+        );
+    }
+
+    #[test]
+    fn day_walking_week_calendars_match_every_rule_and_put_week_53_last() {
+        use fa_time::Weekday::{Friday, Monday, Saturday, Sunday, Thursday, Tuesday, Wednesday};
+        for month in 1..=12 {
+            for weekday in [
+                Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday,
+            ] {
+                for rule in [
+                    YearEndRule::LastWeekdayOfMonth { weekday, month },
+                    YearEndRule::WeekdayNearestEnd { weekday, month },
+                ] {
+                    for kind in week_kinds(rule) {
+                        let mut lengths = BTreeSet::new();
+                        for (index, year) in [
+                            -400, -1, 0, 1, 1900, 2000, 2020, 2021, 2022, 2023, 2024, 2025, 2026,
+                            2027, 2028, 2029, 2030, 2031, 2100, 2400,
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        {
+                            let calendar = FiscalCalendar {
+                                id: "weeks".into(),
+                                kind: kind.clone(),
+                                adjustment_periods: (index % 5) as u8,
+                            };
+                            let days = check_calendar(&calendar, year).unwrap();
+                            assert!(matches!(days, 364 | 371));
+                            lengths.insert(days);
+                            let periods = calendar_periods(&calendar, year).unwrap();
+                            let normals: Vec<_> = periods
+                                .iter()
+                                .filter(|p| p.kind == PeriodKind::Normal)
+                                .collect();
+                            let ordinary_last = match kind {
+                                CalendarKind::Weeks {
+                                    pattern: WeekPattern::W445,
+                                    ..
+                                } => 35,
+                                _ => 28,
+                            };
+                            let last = normals.last().unwrap();
+                            assert_eq!(
+                                last.end.0 - last.start.0,
+                                ordinary_last + if days == 371 { 7 } else { 0 }
+                            );
+                            assert_eq!(DateDay(last.end.0 - 1).weekday(), weekday);
+                        }
+                        assert_eq!(lengths, BTreeSet::from([364, 371]), "{kind:?}");
+                    }
+                }
+            }
+        }
+        let calendar = FiscalCalendar {
+            id: "retail".into(),
+            kind: CalendarKind::Weeks {
+                pattern: WeekPattern::W445,
+                end_rule: YearEndRule::WeekdayNearestEnd {
+                    weekday: Saturday,
+                    month: 12,
+                },
+            },
+            adjustment_periods: 0,
+        };
+        assert_eq!(
+            calendar_year_bounds(&calendar, 2025).unwrap().1,
+            DateDay::from_ymd(2026, 1, 3).unwrap()
+        );
+        assert_eq!(
+            containing_fiscal_year(&calendar, DateDay::from_ymd(2026, 1, 3).unwrap()),
+            Some(2025)
+        );
+        assert_eq!(
+            containing_fiscal_year(&calendar, DateDay::from_ymd(2026, 1, 4).unwrap()),
+            Some(2026)
+        );
+    }
+
+    #[test]
+    fn day_walking_calendars_refuse_invalid_definitions_and_preserve_date_endpoints() {
+        use fa_time::Weekday;
+        for month in [0, 13, u8::MAX] {
+            let kinds = [CalendarKind::Monthly12 {
+                year_start_month: month,
+            }]
+            .into_iter()
+            .chain(week_kinds(YearEndRule::LastWeekdayOfMonth {
+                weekday: Weekday::Monday,
+                month,
+            }))
+            .chain(week_kinds(YearEndRule::WeekdayNearestEnd {
+                weekday: Weekday::Sunday,
+                month,
+            }));
+            for kind in kinds {
+                let calendar = FiscalCalendar {
+                    id: "invalid month".into(),
+                    kind,
+                    adjustment_periods: 0,
+                };
+                assert!(!valid_calendar(&calendar));
+                assert_eq!(calendar_periods(&calendar, 2026), None);
+                assert_eq!(calendar_year_bounds(&calendar, 2026), None);
+                assert_eq!(containing_fiscal_year(&calendar, DateDay::EPOCH), None);
+                #[expect(clippy::disallowed_methods, reason = "compare invalid month refusal")]
+                let production = calendar.periods_for_year(2026);
+                assert!(production.is_err());
+            }
+        }
+        let kinds = [CalendarKind::Monthly12 {
+            year_start_month: 1,
+        }]
+        .into_iter()
+        .chain(week_kinds(YearEndRule::WeekdayNearestEnd {
+            weekday: Weekday::Saturday,
+            month: 12,
+        }));
+        for kind in kinds {
+            for adjustments in [5, u8::MAX] {
+                let calendar = FiscalCalendar {
+                    id: "invalid adjustments".into(),
+                    kind: kind.clone(),
+                    adjustment_periods: adjustments,
+                };
+                assert_eq!(calendar_periods(&calendar, 2026), None);
+                assert_eq!(containing_fiscal_year(&calendar, DateDay::EPOCH), None);
+                #[expect(clippy::disallowed_methods, reason = "compare adjustment bounds")]
+                let production = calendar.periods_for_year(2026);
+                assert!(production.is_err());
+            }
+        }
+        let mut calendars: Vec<_> = (1..=12)
+            .map(|month| FiscalCalendar {
+                id: "endpoint monthly".into(),
+                kind: CalendarKind::Monthly12 {
+                    year_start_month: month,
+                },
+                adjustment_periods: 4,
+            })
+            .collect();
+        for month in [1, 6, 12] {
+            for weekday in [
+                Weekday::Monday,
+                Weekday::Tuesday,
+                Weekday::Wednesday,
+                Weekday::Thursday,
+                Weekday::Friday,
+                Weekday::Saturday,
+                Weekday::Sunday,
+            ] {
+                for rule in [
+                    YearEndRule::LastWeekdayOfMonth { weekday, month },
+                    YearEndRule::WeekdayNearestEnd { weekday, month },
+                ] {
+                    calendars.extend(week_kinds(rule).map(|kind| FiscalCalendar {
+                        id: "endpoint weeks".into(),
+                        kind,
+                        adjustment_periods: 4,
+                    }));
+                }
+            }
+        }
+        for calendar in calendars {
+            for year in [i32::MIN, i32::MAX] {
+                assert_eq!(calendar_periods(&calendar, year), None);
+                #[expect(clippy::disallowed_methods, reason = "compare out-of-range refusal")]
+                let production = calendar.periods_for_year(year);
+                assert!(production.is_err());
+            }
+            for endpoint in [DateDay(i32::MIN), DateDay(i32::MAX)] {
+                for offset in -1..=1 {
+                    let _ = check_calendar(&calendar, endpoint.ymd().0 + offset);
+                }
+                for offset in 0..=7 {
+                    let day = if endpoint.0 == i32::MIN {
+                        DateDay(endpoint.0 + offset)
+                    } else {
+                        DateDay(endpoint.0 - offset)
+                    };
+                    #[expect(clippy::disallowed_methods, reason = "compare endpoint selection")]
+                    let production = calendar.fiscal_year_of(day).ok();
+                    assert_eq!(
+                        containing_fiscal_year(&calendar, day),
+                        production,
+                        "{calendar:?} / endpoint {day:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    const STATES: [PeriodState; 5] = [
+        PeriodState::Future,
+        PeriodState::Open,
+        PeriodState::SoftClosed,
+        PeriodState::Closed,
+        PeriodState::Locked,
+    ];
+
+    fn registry_decision(value: Admission) -> fa_registry::Decision {
+        match value {
+            Admission::Admit => fa_registry::Decision::Admit,
+            Admission::With(op, approvals) => fa_registry::Decision::With {
+                op: op.into(),
+                approvals,
+            },
+            Admission::Refuse => fa_registry::Decision::Refuse,
+        }
+    }
+
+    #[test]
+    fn literal_appendix_c_agrees_with_every_production_cell_and_disposition() {
+        let classes = EntryClasses::embedded().unwrap();
+        let matrix = Admissibility::embedded(&classes).unwrap();
+        let actual: BTreeSet<&str> = classes
+            .rows
+            .iter()
+            .filter(|r| r.kind == fa_registry::ClassKind::Posting)
+            .map(|r| r.name.as_str())
+            .collect();
+        let expected: BTreeSet<&str> = ADMISSION_ROWS.iter().map(|(name, _)| *name).collect();
+        assert_eq!(
+            actual, expected,
+            "every posting class has an independent row"
+        );
+        assert_eq!(matrix.len(), 75);
+        for class in actual {
+            for state in STATES {
+                for release in [false, true] {
+                    #[expect(clippy::disallowed_methods, reason = "pin disposition admission")]
+                    let production = matrix.decide_disposition(class, state, release);
+                    assert_eq!(
+                        production,
+                        Some(registry_decision(admission(class, state, release))),
+                        "{class} / {state:?} / release={release}"
+                    );
+                }
+            }
+        }
+        for state in STATES {
+            #[expect(clippy::disallowed_methods, reason = "pin expiry admission")]
+            let production = matrix.decide_expires(state);
+            assert_eq!(
+                production,
+                Some(&registry_decision(admission("Resolution", state, true))),
+                "Expires / {state:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn literal_kind_restrictions_agree_at_each_opening_boundary() {
+        let classes = EntryClasses::embedded().unwrap();
+        let matrix = Admissibility::embedded(&classes).unwrap();
+        let special_periods = temporal::SpecialPeriods::embedded();
+        for kind in [
+            PeriodKind::Normal,
+            PeriodKind::Historical,
+            PeriodKind::Opening,
+            PeriodKind::Adjustment,
+            PeriodKind::Closing,
+        ] {
+            for opening in [
+                None,
+                Some(DateDay(99)),
+                Some(DateDay(100)),
+                Some(DateDay(101)),
+            ] {
+                let end = DateDay(100);
+                let pre = matrix.pre_opening().unwrap();
+                assert_eq!(
+                    pre.governs(kind, end, opening),
+                    pre_opening(kind, end, opening)
+                );
+                for (class, _) in ADMISSION_ROWS {
+                    let registered = matrix.kind_rule(kind).is_none_or(|r| r.admits(class))
+                        && (!pre.governs(kind, end, opening) || pre.admits(class))
+                        && matrix
+                            .special_period_classes(kind)
+                            .is_none_or(|classes| classes.iter().any(|c| c == class));
+                    assert_eq!(
+                        registered,
+                        kind_admits(&special_periods, kind, end, opening, class),
+                        "{kind:?} / {class} / opening={opening:?}"
+                    );
+                }
+            }
+        }
+        assert_eq!(matrix.pre_opening().unwrap().born, PeriodState::Locked);
+        assert_eq!(
+            matrix.pre_opening().unwrap().transition_refusal,
+            code::TRANSITION
+        );
+        assert_eq!(matrix.pre_opening().unwrap().refusal, code::PERIOD_LAW);
+        let historical = matrix.kind_rule(PeriodKind::Historical).unwrap();
+        assert_eq!(historical.transition_refusal, code::TRANSITION);
+        assert_eq!(historical.refusal, code::PERIOD_LAW);
+    }
+
+    #[test]
+    fn literal_state_machine_agrees_on_all_45_actions() {
+        use fa_time::period::transition as production_transition;
+
+        for from in STATES {
+            let mut actions = vec![
+                PeriodTransition::Open,
+                PeriodTransition::SoftClose,
+                PeriodTransition::Close,
+                PeriodTransition::Lock,
+            ];
+            actions.extend(STATES.map(|to| PeriodTransition::Reopen { to }));
+            for action in actions {
+                #[expect(clippy::disallowed_methods, reason = "pin aliased transition calls")]
+                let production = production_transition(from, action).ok();
+                assert_eq!(
+                    production,
+                    next_state(from, action),
+                    "{from:?} / {action:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn literal_resolution_preserves_half_open_boundaries_and_special_selection() {
+        let def = |code: &str, ordinal, kind, start, end| PeriodDef {
+            code: code.into(),
+            fiscal_year: 2026,
+            ordinal,
+            kind,
+            start: DateDay(start),
+            end: DateDay(end),
+        };
+        // Put specials first so default resolution cannot accidentally
+        // succeed by returning the first containing definition.
+        let periods = vec![
+            def("opening", 0, PeriodKind::Opening, 0, 1),
+            def("adjustment", 3, PeriodKind::Adjustment, 29, 30),
+            def("closing", 4, PeriodKind::Closing, 20, 30),
+            def("normal", 1, PeriodKind::Normal, 0, 30),
+            def("historical", 2, PeriodKind::Historical, 30, 60),
+        ];
+        for day in -1..=60 {
+            let expected = match day {
+                0..=29 => Some("normal"),
+                30..=59 => Some("historical"),
+                _ => None,
+            };
+            assert_eq!(
+                resolve_period(&periods, DateDay(day), None).map(|p| p.code.as_str()),
+                expected
+            );
+            for selected in [
+                None,
+                Some("opening"),
+                Some("adjustment"),
+                Some("closing"),
+                Some("normal"),
+                Some("historical"),
+                Some("absent"),
+            ] {
+                #[expect(clippy::disallowed_methods, reason = "pin re-exported resolution")]
+                let production = fa_time::resolve_period(&periods, DateDay(day), selected).ok();
+                assert_eq!(
+                    resolve_period(&periods, DateDay(day), selected),
+                    production,
+                    "day={day} / selected={selected:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn oracle_rejects_original_despite_a_planted_production_admission_cell() {
+        const ORIGINAL: &str =
+            "class = \"Original\"\nstate = \"SoftClosed\"\ndecision = \"with:post_softclosed\"";
+        const WRONG: &str = "class = \"Original\"\nstate = \"SoftClosed\"\ndecision = \"admit\"";
+        let text = include_str!("../../../registries/admissibility.toml");
+        assert_eq!(text.matches(ORIGINAL).count(), 1, "plant exactly one cell");
+        let mutated = Admissibility::parse(
+            &EntryClasses::embedded().unwrap(),
+            &text.replacen(ORIGINAL, WRONG, 1),
+        )
+        .unwrap();
+        #[expect(clippy::disallowed_methods, reason = "pin direct admission lookup")]
+        let planted = mutated.decide("Original", PeriodState::SoftClosed);
+        assert_eq!(planted, Some(&fa_registry::Decision::Admit));
+        #[expect(clippy::disallowed_methods, reason = "compare planted disposition")]
+        let planted = mutated.decide_disposition("Original", PeriodState::SoftClosed, false);
+        assert_eq!(planted, Some(fa_registry::Decision::Admit));
+
+        let mut oracle = Oracle::from_policy_data(
+            FiscalCalendar::monthly("cal", 1, 1).unwrap(),
+            EntryClasses::embedded().unwrap(),
+            mutated,
+        );
+        for account in ["cash", "expense"] {
+            oracle.add_account(Account {
+                code: account.into(),
+                is_leaf: true,
+                unit: Some(1),
+            });
+        }
+        oracle.create_periods(2026).unwrap();
+        oracle
+            .transition("FY2026-P03", PeriodTransition::Open)
+            .unwrap();
+        oracle
+            .transition("FY2026-P03", PeriodTransition::SoftClose)
+            .unwrap();
+        let mut intent = Intent {
+            class: "Original".into(),
+            date: DateDay::from_ymd(2026, 3, 15).unwrap(),
+            discriminator: None,
+            legs: vec![
+                Leg {
+                    side: Side::Debit,
+                    account: "expense".into(),
+                    unit: 1,
+                    entity: None,
+                    mantissa: 700,
+                },
+                Leg {
+                    side: Side::Credit,
+                    account: "cash".into(),
+                    unit: 1,
+                    entity: None,
+                    mantissa: 700,
+                },
+            ],
+            key: b"wrong-cell".to_vec(),
+            ops: vec!["post".into()],
+            approvals: 0,
+            reverses: None,
+            supersession_reason: 1,
+            resolves: None,
+            settles: Vec::new(),
+        };
+        let before = oracle.known();
+        assert_eq!(
+            oracle.post(&intent),
+            Verdict::Refused { code: "FA-REF-011" }
+        );
+        assert_eq!(oracle.known(), before);
+        assert_eq!(oracle.journal_len(), 0);
+        intent.ops.push("post_softclosed".into());
+        assert!(matches!(
+            oracle.post(&intent),
+            Verdict::Posted { index: 0, .. }
+        ));
+        assert_eq!(
+            oracle.fold("FY2026-P03")[&("expense".into(), 1)].debits,
+            Int::from_i128(700)
+        );
+    }
+
     /// fa-g23: the oracle's literal copy is the registry's table, row for row.
     #[test]
     fn control_kinds_mirror_the_registry() {
@@ -2877,6 +3803,155 @@ mod tests {
     }
 
     #[test]
+    fn application_laws_use_exact_intermediates_at_the_leg_boundary() {
+        let mut oracle = Oracle::new(FiscalCalendar::monthly("cal", 1, 0).unwrap());
+        for account in ["receivable", "income", "cash"] {
+            oracle.add_account(Account {
+                code: account.into(),
+                is_leaf: true,
+                unit: Some(1),
+            });
+        }
+        oracle.create_periods(2026).unwrap();
+        oracle
+            .transition("FY2026-P03", PeriodTransition::Open)
+            .unwrap();
+        let leg = |side, account: &str, mantissa| Leg {
+            side,
+            account: account.into(),
+            unit: 1,
+            entity: None,
+            mantissa,
+        };
+        let intent = |key: &[u8], legs, settles| Intent {
+            class: "Original".into(),
+            date: DateDay::from_ymd(2026, 3, 15).unwrap(),
+            discriminator: None,
+            legs,
+            key: key.to_vec(),
+            ops: vec!["post".into()],
+            approvals: 0,
+            reverses: None,
+            supersession_reason: 1,
+            resolves: None,
+            settles,
+        };
+        let invoice = intent(
+            b"invoice",
+            vec![
+                leg(Side::Debit, "receivable", i128::MAX),
+                leg(Side::Credit, "income", i128::MAX),
+            ],
+            vec![],
+        );
+        assert!(matches!(
+            oracle.post(&invoice),
+            Verdict::Posted { index: 0, .. }
+        ));
+        // Each settlement fits its own source leg. Only the combined use
+        // of the same target exceeds its budget; no shape check masks it.
+        let payment = |last| {
+            intent(
+                b"payment",
+                vec![
+                    leg(Side::Credit, "receivable", i128::MAX - 1),
+                    leg(Side::Credit, "receivable", last),
+                    leg(Side::Debit, "cash", i128::MAX - 1),
+                    leg(Side::Debit, "cash", last),
+                ],
+                vec![
+                    Settle {
+                        leg: 0,
+                        target: 0,
+                        ordinal: 0,
+                        mantissa: i128::MAX - 1,
+                    },
+                    Settle {
+                        leg: 1,
+                        target: 0,
+                        ordinal: 0,
+                        mantissa: last,
+                    },
+                ],
+            )
+        };
+        let before = oracle.known();
+        assert_eq!(
+            oracle.post(&payment(2)),
+            Verdict::Refused {
+                code: code::OVER_APPLICATION
+            }
+        );
+        assert_eq!(oracle.known(), before);
+        assert_eq!(oracle.open_items()[&(0, 0)], (i128::MAX, 0, 0));
+        assert!(matches!(
+            oracle.post(&payment(1)),
+            Verdict::Posted { index: 1, .. }
+        ));
+        let items = oracle.open_items();
+        assert_eq!(items[&(0, 0)], (i128::MAX, i128::MAX, 0));
+        assert_eq!(items[&(1, 0)], (i128::MAX - 1, 0, i128::MAX - 1));
+        assert_eq!(items[&(1, 1)], (1, 0, 1));
+        let before = oracle.known();
+        // A payment leg that applied all its value out cannot itself be
+        // consumed by a later entry; its open amount includes applied-out.
+        let consume_payment = intent(
+            b"consumed-source",
+            vec![
+                leg(Side::Debit, "receivable", 1),
+                leg(Side::Credit, "cash", 1),
+            ],
+            vec![Settle {
+                leg: 0,
+                target: 1,
+                ordinal: 0,
+                mantissa: 1,
+            }],
+        );
+        assert_eq!(
+            oracle.post(&consume_payment),
+            Verdict::Refused {
+                code: code::OVER_APPLICATION
+            }
+        );
+        assert_eq!(oracle.known(), before);
+        assert_eq!(oracle.open_items(), items);
+        // The independent structural sum exceeds i128; this is an exact
+        // comparison to the source leg, not checked-add agreement with the
+        // production implementation. Distinct targets avoid duplicate-law
+        // masking, and target lookup comes later than this shape refusal.
+        let too_much = intent(
+            b"wide-shape",
+            vec![
+                leg(Side::Credit, "receivable", i128::MAX),
+                leg(Side::Debit, "cash", i128::MAX),
+            ],
+            vec![
+                Settle {
+                    leg: 0,
+                    target: 0,
+                    ordinal: 0,
+                    mantissa: i128::MAX,
+                },
+                Settle {
+                    leg: 0,
+                    target: 1,
+                    ordinal: 0,
+                    mantissa: i128::MAX,
+                },
+            ],
+        );
+        assert_eq!(
+            oracle.post(&too_much),
+            Verdict::Refused {
+                code: code::SETTLE_SHAPE
+            }
+        );
+        assert_eq!(oracle.known(), before);
+        assert_eq!(oracle.open_items(), items);
+    }
+
+    #[test]
     fn the_model_posts_refuses_reverses_and_folds_in_the_obvious_way() {
         let cal = FiscalCalendar::monthly("cal", 1, 1).unwrap();
         let mut o = Oracle::new(cal);
@@ -2895,7 +3970,7 @@ mod tests {
             is_leaf: false,
             unit: Some(1),
         });
-        o.create_periods(2026);
+        o.create_periods(2026).unwrap();
         let day = DateDay::from_ymd(2026, 3, 15).unwrap();
         let legs = |d: i128, c: i128| {
             vec![
@@ -3043,7 +4118,7 @@ mod tests {
     fn period_authority_in_the_obvious_way() {
         let cal = FiscalCalendar::monthly("cal", 1, 1).unwrap();
         let mut o = Oracle::new(cal);
-        o.create_periods(2026);
+        o.create_periods(2026).unwrap();
         let march = "FY2026-P03";
         let full = Authority {
             token: 1,
@@ -3169,7 +4244,7 @@ mod tests {
                 per_period: false,
             },
         );
-        o.create_periods(2026);
+        o.create_periods(2026).unwrap();
         o.transition("FY2026-P03", PeriodTransition::Open).unwrap();
         let day = DateDay::from_ymd(2026, 3, 15).unwrap();
         let mv = |dr: &str, cr: &str, m: i128| {
@@ -3302,7 +4377,7 @@ mod tests {
                 unit: Some(1),
             });
         }
-        o.create_periods(2026);
+        o.create_periods(2026).unwrap();
         o.transition("FY2026-P03", PeriodTransition::Open).unwrap();
         let day = DateDay::from_ymd(2026, 3, 15).unwrap();
         let hold_legs = vec![

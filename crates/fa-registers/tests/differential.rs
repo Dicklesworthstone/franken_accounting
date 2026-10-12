@@ -118,9 +118,8 @@ fn correction_outcome(
     intent: &Intent,
     expected: Result<&str, &'static str>,
 ) -> Option<usize> {
-    let usd = kernel.book.units.lookup("USD").unwrap();
     let head = kernel.db.frontier().unwrap();
-    let actual = kernel_post(kernel, intent, usd, refs);
+    let actual = kernel_post(kernel, intent, refs);
     let reference = oracle.post(intent);
     match expected {
         Ok(period) => {
@@ -148,6 +147,75 @@ fn correction_outcome(
 }
 
 #[test]
+fn kernel_and_independent_oracle_require_softclosed_original_authority() {
+    let (mut k, mut oracle, periods) = setup();
+    let march = &periods[2];
+    open_period(&mut k, &mut oracle, march, 1);
+    kernel_transition(&mut k, march, PeriodTransition::SoftClose, 2).unwrap();
+    oracle
+        .transition(march, PeriodTransition::SoftClose)
+        .unwrap();
+    // Repeating creation must not put a transitioned period back in Future.
+    // The kernel refuses the existing vertex before commit; the independent
+    // model must preserve every definition and state too.
+    let before = list_periods(&k.db).unwrap();
+    let frontier = k.db.frontier().unwrap();
+    let known = oracle.known();
+    let ctx = k.ctx();
+    assert!(matches!(
+        k.runtime
+            .block_on(create_periods(&mut k.db, &ctx, &k.book, 2026)),
+        Err(KernelError::Write(fgdb::WriteError::AlreadyLive { .. }))
+    ));
+    assert_eq!(
+        oracle.create_periods(2026),
+        Err(fa_reference::PeriodCreationError::AlreadyExists(
+            periods[0].clone()
+        ))
+    );
+    assert_eq!(list_periods(&k.db).unwrap(), before);
+    assert_eq!(k.db.frontier().unwrap(), frontier);
+    assert_eq!(oracle.known(), known);
+    for period in &before {
+        assert_eq!(oracle.period_state(&period.code), Some(period.state));
+    }
+    // A different year remains creatable, without changing the old states.
+    create_year(&mut k, &mut oracle, 2027);
+    for period in &before {
+        assert_eq!(oracle.period_state(&period.code), Some(period.state));
+    }
+    let mut intent = maintenance_intent(
+        "Original",
+        DateDay::from_ymd(2026, 3, 15).unwrap(),
+        700,
+        "softclosed",
+    );
+    let frontier = k.db.frontier().unwrap();
+    let known = oracle.known();
+    let refused = kernel_post(&mut k, &intent, &[]).unwrap_err();
+    assert_eq!((refused.code, refused.exit), ("FA-REF-011", exit::SAFETY));
+    assert_eq!(
+        oracle.post(&intent),
+        Verdict::Refused { code: "FA-REF-011" }
+    );
+    assert_eq!(k.db.frontier().unwrap(), frontier);
+    assert_eq!(oracle.known(), known);
+    assert_eq!(oracle.journal_len(), 0);
+    // The failed attempt consumes neither identity. Granting the required
+    // operation makes exactly the same balanced, evidenced proposal post.
+    intent.ops.push("post_softclosed".into());
+    let posted = kernel_post(&mut k, &intent, &[]).unwrap();
+    assert!(matches!(posted, Posted::Committed { .. }));
+    assert!(matches!(
+        oracle.post(&intent),
+        Verdict::Posted { index: 0, .. }
+    ));
+    assert_eq!(oracle.journal_len(), 1);
+    let maintained = maintain(&mut k, march);
+    maintained_matches_oracle(&maintained, &oracle, k.book.book_id);
+}
+
+#[test]
 fn correction_period_order_and_reasons_match_independent_oracle_across_seeds() {
     for seed in [7, 0x529a_4571, 0x9812_73bb] {
         let (mut kernel, mut oracle, _) = setup();
@@ -171,7 +239,7 @@ fn correction_period_order_and_reasons_match_independent_oracle_across_seeds() {
             .runtime
             .block_on(create_periods(&mut kernel.db, &ctx, &kernel.book, 2027))
             .unwrap();
-        oracle.create_periods(2027);
+        oracle.create_periods(2027).unwrap();
         open_period(&mut kernel, &mut oracle, "FY2027-P01", 8);
         let mut refs = Vec::new();
         for n in 0..6 {
@@ -337,7 +405,6 @@ fn incremental_registers_consume_only_new_entries_and_release_the_original_perio
     let (mut k, mut oracle, periods) = setup();
     open_period(&mut k, &mut oracle, &periods[2], 1);
     open_period(&mut k, &mut oracle, &periods[3], 2);
-    let usd = k.book.units.lookup("USD").unwrap();
     let march = DateDay::from_ymd(2026, 3, 15).unwrap();
     let april = DateDay::from_ymd(2026, 4, 15).unwrap();
     maintain(&mut k, &periods[2]);
@@ -345,7 +412,7 @@ fn incremental_registers_consume_only_new_entries_and_release_the_original_perio
     let mut refs = Vec::new();
     for n in 1..=24 {
         let i = maintenance_intent("Original", march, n, &format!("inc-{n}"));
-        refs.push(kernel_post(&mut k, &i, usd, &refs).unwrap().entry_ref());
+        refs.push(kernel_post(&mut k, &i, &refs).unwrap().entry_ref());
         assert!(matches!(oracle.post(&i), Verdict::Posted { .. }));
         let result = maintain(&mut k, &periods[2]);
         maintained_matches_oracle(&result, &oracle, k.book.book_id);
@@ -371,11 +438,7 @@ fn incremental_registers_consume_only_new_entries_and_release_the_original_perio
         };
     }
     reversal.reverses = Some(0);
-    refs.push(
-        kernel_post(&mut k, &reversal, usd, &refs)
-            .unwrap()
-            .entry_ref(),
-    );
+    refs.push(kernel_post(&mut k, &reversal, &refs).unwrap().entry_ref());
     assert!(matches!(oracle.post(&reversal), Verdict::Posted { .. }));
     let reversed = maintain(&mut k, &periods[2]);
     maintained_matches_oracle(&reversed, &oracle, k.book.book_id);
@@ -393,7 +456,7 @@ fn incremental_registers_consume_only_new_entries_and_release_the_original_perio
     let first_hold = refs.len();
     for n in 0..3 {
         let i = maintenance_intent("Pending", march, 80, &format!("hold-{n}"));
-        refs.push(kernel_post(&mut k, &i, usd, &refs).unwrap().entry_ref());
+        refs.push(kernel_post(&mut k, &i, &refs).unwrap().entry_ref());
         assert!(matches!(oracle.post(&i), Verdict::Posted { .. }));
     }
     let held = maintain(&mut k, &periods[2]);
@@ -411,11 +474,7 @@ fn incremental_registers_consume_only_new_entries_and_release_the_original_perio
         target: first_hold,
         posts: Some(vec![0, 1]),
     });
-    refs.push(
-        kernel_post(&mut k, &partial, usd, &refs)
-            .unwrap()
-            .entry_ref(),
-    );
+    refs.push(kernel_post(&mut k, &partial, &refs).unwrap().entry_ref());
     assert!(matches!(oracle.post(&partial), Verdict::Posted { .. }));
     let released = maintain(&mut k, &periods[2]);
     maintained_matches_oracle(&released, &oracle, k.book.book_id);
@@ -439,7 +498,7 @@ fn incremental_registers_consume_only_new_entries_and_release_the_original_perio
             target,
             posts: None,
         });
-        refs.push(kernel_post(&mut k, &void, usd, &refs).unwrap().entry_ref());
+        refs.push(kernel_post(&mut k, &void, &refs).unwrap().entry_ref());
         assert!(matches!(oracle.post(&void), Verdict::Posted { .. }));
     }
     assert!(maintain(&mut k, &periods[2]).fold.pending.is_empty());
@@ -463,17 +522,16 @@ fn incremental_pending_overflow_can_resolve_before_the_consumed_frontier() {
         let (mut k, mut oracle, periods) = setup();
         let period = &periods[2];
         open_period(&mut k, &mut oracle, period, 1);
-        let usd = k.book.units.lookup("USD").unwrap();
         let date = DateDay::from_ymd(2026, 3, 15).unwrap();
         let mut refs = Vec::new();
         let large = maintenance_intent("Pending", date, i128::MAX, "large-hold");
-        refs.push(kernel_post(&mut k, &large, usd, &refs).unwrap().entry_ref());
+        refs.push(kernel_post(&mut k, &large, &refs).unwrap().entry_ref());
         assert!(matches!(oracle.post(&large), Verdict::Posted { .. }));
         if cached_hold {
             maintained_matches_oracle(&maintain(&mut k, period), &oracle, k.book.book_id);
         }
         let small = maintenance_intent("Pending", date, 1, "small-hold");
-        refs.push(kernel_post(&mut k, &small, usd, &refs).unwrap().entry_ref());
+        refs.push(kernel_post(&mut k, &small, &refs).unwrap().entry_ref());
         assert!(matches!(oracle.post(&small), Verdict::Posted { .. }));
 
         // Unlimited accounts admit both holds. While both are live, the
@@ -495,11 +553,7 @@ fn incremental_pending_overflow_can_resolve_before_the_consumed_frontier() {
             target: 0,
             posts: None,
         });
-        refs.push(
-            kernel_post(&mut k, &release, usd, &refs)
-                .unwrap()
-                .entry_ref(),
-        );
+        refs.push(kernel_post(&mut k, &release, &refs).unwrap().entry_ref());
         assert!(matches!(oracle.post(&release), Verdict::Posted { .. }));
 
         // The unread suffix briefly exceeds i128, but at its actual target
@@ -520,7 +574,7 @@ fn incremental_pending_overflow_can_resolve_before_the_consumed_frontier() {
 
         release.key = b"release-small-hold".to_vec();
         release.resolves.as_mut().unwrap().target = 1;
-        kernel_post(&mut k, &release, usd, &refs).unwrap();
+        kernel_post(&mut k, &release, &refs).unwrap();
         assert!(matches!(oracle.post(&release), Verdict::Posted { .. }));
         let empty = maintain(&mut k, period);
         assert!(!empty.rebuilt);
@@ -537,7 +591,6 @@ fn incremental_registers_reject_stale_or_foreign_preparation_and_recover_after_r
         .collect();
     let (mut k, mut oracle, periods, vfs) = setup_store(&chart);
     open_period(&mut k, &mut oracle, &periods[2], 1);
-    let usd = k.book.units.lookup("USD").unwrap();
     let march = DateDay::from_ymd(2026, 3, 15).unwrap();
     maintain(&mut k, &periods[2]);
     let ctx = k.ctx();
@@ -569,7 +622,6 @@ fn incremental_registers_reject_stale_or_foreign_preparation_and_recover_after_r
     kernel_post(
         &mut k,
         &maintenance_intent("Original", march, 17, "after-plan"),
-        usd,
         &[],
     )
     .unwrap();
@@ -619,7 +671,6 @@ fn incremental_registers_reject_stale_or_foreign_preparation_and_recover_after_r
     kernel_post(
         &mut other,
         &maintenance_intent("Original", march, 999, "after-plan"),
-        usd,
         &[],
     )
     .unwrap();
@@ -659,12 +710,10 @@ fn incremental_registers_verify_corruption_and_rebuild_without_changing_journal(
     use fa_model::symbols::{property, relation};
     let (mut k, mut oracle, periods) = setup();
     open_period(&mut k, &mut oracle, &periods[2], 1);
-    let usd = k.book.units.lookup("USD").unwrap();
     let march = DateDay::from_ymd(2026, 3, 15).unwrap();
     let posted = kernel_post(
         &mut k,
         &maintenance_intent("Original", march, 123, "fund"),
-        usd,
         &[],
     )
     .unwrap();
@@ -762,7 +811,6 @@ fn incremental_registers_verify_corruption_and_rebuild_without_changing_journal(
     kernel_post(
         &mut k,
         &maintenance_intent("Original", march, 7, "skipped"),
-        usd,
         &[],
     )
     .unwrap();
@@ -818,14 +866,12 @@ fn incremental_registers_verify_corruption_and_rebuild_without_changing_journal(
 fn incremental_registers_consume_every_expiry_in_a_single_commit() {
     let (mut k, mut oracle, periods) = setup();
     open_period(&mut k, &mut oracle, &periods[2], 1);
-    let usd = k.book.units.lookup("USD").unwrap();
     let march = DateDay::from_ymd(2026, 3, 15).unwrap();
     kernel_tick(&mut k, 100, "initial").unwrap();
     for n in 0..5 {
         kernel_post_timed(
             &mut k,
             &maintenance_intent("Pending", march, 80, &format!("timed-{n}")),
-            usd,
             &[],
             10,
         )
@@ -887,7 +933,7 @@ fn public_post_provenance_and_envelope_claims_match_the_independent_oracle() {
             let amount = i128::from(rng.below(10_000) + 1);
             let intent =
                 maintenance_intent("Original", date, amount, &format!("claims-{seed}-{kind}"));
-            let mut request = kernel_request(&k, &intent, usd, &[]);
+            let mut request = kernel_request(&k, &intent, &[]);
             let mut claims = PostClaims::default();
             let oid = [rng.below(256) as u8; 32];
             match case {
@@ -972,7 +1018,7 @@ fn public_post_provenance_and_envelope_claims_match_the_independent_oracle() {
             }
             // The same identity is usable after a refusal, and an ordinary
             // successful request is still idempotent in both implementations.
-            let native = kernel_post(&mut k, &intent, usd, &[]).unwrap();
+            let native = kernel_post(&mut k, &intent, &[]).unwrap();
             let model_native = oracle.post(&intent);
             if kind == 0 {
                 assert!(matches!(native, Posted::AlreadyRecorded { .. }));
@@ -982,7 +1028,7 @@ fn public_post_provenance_and_envelope_claims_match_the_independent_oracle() {
                 assert!(matches!(model_native, Verdict::Posted { .. }));
             }
             assert!(matches!(
-                kernel_post(&mut k, &intent, usd, &[]).unwrap(),
+                kernel_post(&mut k, &intent, &[]).unwrap(),
                 Posted::AlreadyRecorded { .. }
             ));
             assert!(matches!(oracle.post(&intent), Verdict::Recorded { .. }));
@@ -1207,7 +1253,7 @@ fn setup_entities(rows: &[ChartRow], entities: &[&str]) -> (Kernel, Oracle, Vec<
             );
         }
     }
-    oracle.create_periods(2026);
+    oracle.create_periods(2026).unwrap();
     (
         Kernel {
             runtime,
@@ -1223,7 +1269,7 @@ fn setup_entities(rows: &[ChartRow], entities: &[&str]) -> (Kernel, Oracle, Vec<
     )
 }
 
-fn to_kernel_legs(book_id: Id128, usd: UnitId, legs: &[Leg]) -> Vec<LegPayload> {
+fn to_kernel_legs(book_id: Id128, legs: &[Leg]) -> Vec<LegPayload> {
     legs.iter()
         .map(|l| {
             let mut leg = LegPayload::simple(
@@ -1233,7 +1279,7 @@ fn to_kernel_legs(book_id: Id128, usd: UnitId, legs: &[Leg]) -> Vec<LegPayload> 
                     Side::Credit
                 },
                 account_vid(book_id, &l.account),
-                Amount::new(usd, l.mantissa),
+                Amount::new(UnitId(l.unit), l.mantissa),
             );
             // The legal entity rides in the leg's dimension_set (plan §5.2).
             if let Some(e) = &l.entity {
@@ -1247,13 +1293,8 @@ fn to_kernel_legs(book_id: Id128, usd: UnitId, legs: &[Leg]) -> Vec<LegPayload> 
         .collect()
 }
 
-fn kernel_post(
-    k: &mut Kernel,
-    intent: &Intent,
-    usd: UnitId,
-    refs: &[EntryRef],
-) -> Result<Posted, Refusal> {
-    kernel_post_raw(k, intent, usd, refs).expect("kernel")
+fn kernel_post(k: &mut Kernel, intent: &Intent, refs: &[EntryRef]) -> Result<Posted, Refusal> {
+    kernel_post_raw(k, intent, refs).expect("kernel")
 }
 
 /// `kernel_post` with the intent citing `evidence` instead of the fixture
@@ -1261,12 +1302,11 @@ fn kernel_post(
 fn kernel_post_citing(
     k: &mut Kernel,
     intent: &Intent,
-    usd: UnitId,
     refs: &[EntryRef],
     evidence: Vec<EvidenceRef>,
 ) -> Result<Posted, Refusal> {
     let saved = std::mem::replace(&mut k.evidence, evidence);
-    let out = kernel_post(k, intent, usd, refs);
+    let out = kernel_post(k, intent, refs);
     k.evidence = saved;
     out
 }
@@ -1274,10 +1314,9 @@ fn kernel_post_citing(
 fn kernel_post_raw(
     k: &mut Kernel,
     intent: &Intent,
-    usd: UnitId,
     refs: &[EntryRef],
 ) -> Result<Result<Posted, Refusal>, KernelError> {
-    let req = kernel_request(k, intent, usd, refs);
+    let req = kernel_request(k, intent, refs);
     let ctx = k.ctx();
     let db = &mut k.db;
     let book = &k.book;
@@ -1289,11 +1328,10 @@ fn kernel_post_raw(
 fn kernel_post_balancing(
     k: &mut Kernel,
     intent: &Intent,
-    usd: UnitId,
     refs: &[EntryRef],
     leg: u16,
 ) -> Result<Balanced, Refusal> {
-    let req = kernel_request(k, intent, usd, refs);
+    let req = kernel_request(k, intent, refs);
     let ctx = k.ctx();
     let db = &mut k.db;
     let book = &k.book;
@@ -1303,13 +1341,13 @@ fn kernel_post_balancing(
 }
 
 /// The kernel request for an oracle intent.
-fn kernel_request(k: &Kernel, intent: &Intent, usd: UnitId, refs: &[EntryRef]) -> PostRequest {
-    let mut legs = to_kernel_legs(k.book.book_id, usd, &intent.legs);
+fn kernel_request(k: &Kernel, intent: &Intent, refs: &[EntryRef]) -> PostRequest {
+    let mut legs = to_kernel_legs(k.book.book_id, &intent.legs);
     for s in &intent.settles {
         legs[s.leg].settles.push(Settlement {
             target: refs[s.target],
             ordinal: u16::try_from(s.ordinal).expect("small ordinal"),
-            amount: Amount::new(usd, s.mantissa),
+            amount: Amount::new(UnitId(intent.legs[s.leg].unit), s.mantissa),
         });
     }
     let unit_totals =
@@ -1609,9 +1647,19 @@ fn kernel_transition(
 
 #[test]
 fn kernel_and_oracle_agree_on_a_generated_history() {
+    const FIRST_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
+    for seed in FIRST_SEED..FIRST_SEED + 32 {
+        eprintln!(
+            "generated history seed={seed:#018x}; replay all 32: RCH_REQUIRE_REMOTE=1 rch exec -- cargo test -p fa-registers --test differential kernel_and_oracle_agree_on_a_generated_history -- --exact --nocapture"
+        );
+        generated_history(seed);
+    }
+}
+
+fn generated_history(seed: u64) {
     let (mut k, mut oracle, periods) = setup();
     let usd = k.book.units.lookup("USD").unwrap();
-    let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+    let mut rng = Rng(seed);
     let dates = [
         DateDay::from_ymd(2026, 2, 10).unwrap(),
         DateDay::from_ymd(2026, 3, 15).unwrap(),
@@ -2156,7 +2204,7 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
         };
         history.push(intent.clone());
 
-        let kernel = kernel_post(&mut k, &intent, usd, &refs);
+        let kernel = kernel_post(&mut k, &intent, &refs);
         let model = oracle.post(&intent);
         match (&kernel, &model) {
             (
@@ -2263,7 +2311,7 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
                 &fa_reference::evidence::Attestations::default(),
             )
             .expect("the evidence oracle refuses every plant");
-            let r = kernel_post_citing(&mut k, &copy, usd, &refs, evidence)
+            let r = kernel_post_citing(&mut k, &copy, &refs, evidence)
                 .expect_err("an evidence plant was admitted");
             assert_eq!(
                 r.code,
@@ -2628,7 +2676,7 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
             mantissa: 1,
         }],
     };
-    let outcome = kernel_post_raw(&mut k, &receipt, usd, &refs);
+    let outcome = kernel_post_raw(&mut k, &receipt, &refs);
     assert!(
         matches!(outcome, Err(KernelError::Corrupt(_))),
         "a missing mirror must be corruption, got {outcome:?}"
@@ -2650,7 +2698,7 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
         assert!(!verified.is_green(), "{what}: {verified:?}");
         let mut probe = receipt.clone();
         probe.key = format!("after-{what}").into_bytes();
-        let outcome = kernel_post_raw(&mut k, &probe, usd, &refs);
+        let outcome = kernel_post_raw(&mut k, &probe, &refs);
         assert!(
             matches!(outcome, Err(KernelError::Corrupt(_))),
             "a {what} mirror must be corruption, got {outcome:?}"
@@ -2666,7 +2714,7 @@ fn create_year(k: &mut Kernel, oracle: &mut Oracle, year: i32) -> CommitSeq {
         .runtime
         .block_on(async { create_periods(&mut k.db, &ctx, &k.book, year).await })
         .expect("create real period definitions");
-    oracle.create_periods(year);
+    oracle.create_periods(year).unwrap();
     seq
 }
 
@@ -2726,8 +2774,7 @@ fn temporal_intent(
 /// Record the correspondence without teaching the oracle about CommitSeq.
 /// Period creation and control commits advance only the substrate sequence.
 fn post_temporal(k: &mut Kernel, oracle: &mut Oracle, intent: &Intent) -> (CommitSeq, usize) {
-    let usd = k.book.units.lookup("USD").unwrap();
-    let posted = kernel_post(k, intent, usd, &[]).expect("real monetary commit");
+    let posted = kernel_post(k, intent, &[]).expect("real monetary commit");
     let Posted::Committed {
         recorded_at,
         period,
@@ -3110,6 +3157,16 @@ fn near(rng: &mut Rng, edge: i128) -> i128 {
 
 #[test]
 fn kernel_and_oracle_agree_on_limited_accounts() {
+    const FIRST_SEED: u64 = 0xA5A5_5A5A_0F0F_F0F0;
+    for seed in FIRST_SEED..FIRST_SEED + 32 {
+        eprintln!(
+            "limited accounts seed={seed:#018x}; replay all 32: RCH_REQUIRE_REMOTE=1 rch exec -- cargo test -p fa-registers --test differential kernel_and_oracle_agree_on_limited_accounts -- --exact --nocapture"
+        );
+        limited_accounts_history(seed);
+    }
+}
+
+fn limited_accounts_history(seed: u64) {
     let (mut k, mut oracle, periods) = setup_with(LIMITED);
     let usd = k.book.units.lookup("USD").unwrap();
     open_period(&mut k, &mut oracle, &periods[2], 1);
@@ -3118,7 +3175,7 @@ fn kernel_and_oracle_agree_on_limited_accounts() {
         DateDay::from_ymd(2026, 3, 10).unwrap(),
         DateDay::from_ymd(2026, 3, 20).unwrap(),
     ];
-    let mut rng = Rng(0xA5A5_5A5A_0F0F_F0F0);
+    let mut rng = Rng(seed);
     let leg = |side: fa_reference::Side, account: &str, mantissa: i128| Leg {
         side,
         account: account.into(),
@@ -3299,7 +3356,7 @@ fn kernel_and_oracle_agree_on_limited_accounts() {
             }
         };
 
-        let kernel = kernel_post(&mut k, &intent, usd, &refs);
+        let kernel = kernel_post(&mut k, &intent, &refs);
         let model = oracle.post(&intent);
         match (&kernel, &model) {
             (Ok(Posted::Committed { entry_ref, .. }), Verdict::Posted { index, .. }) => {
@@ -3479,7 +3536,7 @@ fn kernel_and_oracle_agree_on_limited_accounts() {
     let mut control = k.db.begin(&txn_cx).expect("begin the control transaction");
     let loan_cell = limit_cell_vid(account_vid(k.book.book_id, "2100"));
     assert!(control.vertex(&k.db, loan_cell).expect("read").is_some());
-    let won = kernel_post(&mut k, &racer, usd, &refs);
+    let won = kernel_post(&mut k, &racer, &refs);
     assert!(matches!(won, Ok(Posted::Committed { .. })), "{won:?}");
     assert!(matches!(oracle.post(&racer), Verdict::Posted { .. }));
     refs.push(won.expect("committed").entry_ref());
@@ -3571,7 +3628,7 @@ fn kernel_and_oracle_agree_on_limited_accounts() {
     };
     assert!(
         matches!(
-            kernel_post_raw(&mut k, &probe, usd, &refs),
+            kernel_post_raw(&mut k, &probe, &refs),
             Err(KernelError::Corrupt(_))
         ),
         "a post on a corrupt limited account fails closed"
@@ -3582,7 +3639,7 @@ fn kernel_and_oracle_agree_on_limited_accounts() {
         ..fund
     };
     assert!(matches!(
-        kernel_post(&mut k, &elsewhere, usd, &refs),
+        kernel_post(&mut k, &elsewhere, &refs),
         Ok(Posted::Committed { .. })
     ));
 }
@@ -3687,6 +3744,16 @@ fn assert_cell_in(k: &Kernel, oracle: &Oracle, code: &str, period: Option<&str>,
 
 #[test]
 fn kernel_and_oracle_agree_on_budget_caps_and_balancing() {
+    const FIRST_SEED: u64 = 0x0BAD_C0DE_5EED_1234;
+    for seed in FIRST_SEED..FIRST_SEED + 32 {
+        eprintln!(
+            "budget caps seed={seed:#018x}; replay all 32: RCH_REQUIRE_REMOTE=1 rch exec -- cargo test -p fa-registers --test differential kernel_and_oracle_agree_on_budget_caps_and_balancing -- --exact --nocapture"
+        );
+        budget_caps_and_balancing_history(seed);
+    }
+}
+
+fn budget_caps_and_balancing_history(seed: u64) {
     let (mut k, mut oracle, periods) = setup_with(BUDGETED);
     let usd = k.book.units.lookup("USD").unwrap();
     for (n, p) in periods[1..4].iter().enumerate() {
@@ -3772,7 +3839,7 @@ fn kernel_and_oracle_agree_on_budget_caps_and_balancing() {
         resolves: None,
         settles: Vec::new(),
     };
-    let mut rng = Rng(0x0BAD_C0DE_5EED_1234);
+    let mut rng = Rng(seed);
     let mut refs: Vec<EntryRef> = Vec::new();
     let mut plain_posted: Vec<Intent> = Vec::new();
     // (request, balancing leg, journal index, moved)
@@ -4116,7 +4183,7 @@ fn kernel_and_oracle_agree_on_budget_caps_and_balancing() {
 
         match balancing {
             None => {
-                let kernel = kernel_post(&mut k, &intent, usd, &refs);
+                let kernel = kernel_post(&mut k, &intent, &refs);
                 let model = oracle.post(&intent);
                 match (&kernel, &model) {
                     (Ok(Posted::Committed { entry_ref, .. }), Verdict::Posted { index, .. }) => {
@@ -4163,7 +4230,7 @@ fn kernel_and_oracle_agree_on_budget_caps_and_balancing() {
                 }
             }
             Some(l) => {
-                let kernel = kernel_post_balancing(&mut k, &intent, usd, &refs, l);
+                let kernel = kernel_post_balancing(&mut k, &intent, &refs, l);
                 let model = oracle.post_balancing(&intent, l);
                 let requested = intent.legs[0].mantissa;
                 match (&kernel, &model) {
@@ -4359,7 +4426,6 @@ fn kernel_and_oracle_agree_on_budget_caps_and_balancing() {
         kernel_post_raw(
             &mut k,
             &credit_back(b"march-after-rebind", dated[1].0),
-            usd,
             &refs
         ),
         Err(KernelError::Corrupt(_))
@@ -4368,7 +4434,6 @@ fn kernel_and_oracle_agree_on_budget_caps_and_balancing() {
         kernel_post(
             &mut k,
             &credit_back(b"april-after-rebind", dated[2].0),
-            usd,
             &refs
         ),
         Ok(Posted::Committed { .. })
@@ -4430,11 +4495,10 @@ fn kernel_tick(k: &mut Kernel, observed_utc_ns: u64, key: &str) -> Result<Ticked
 fn kernel_post_timed(
     k: &mut Kernel,
     intent: &Intent,
-    usd: UnitId,
     refs: &[EntryRef],
     timeout_ns: u64,
 ) -> Result<Posted, Refusal> {
-    let mut req = kernel_request(k, intent, usd, refs);
+    let mut req = kernel_request(k, intent, refs);
     if let Some(p) = req.proposal.pending.as_mut() {
         p.timeout_ns = Some(timeout_ns);
     }
@@ -4573,11 +4637,10 @@ fn post_timed_both(
     refs: &mut Vec<EntryRef>,
     refused: &mut BTreeMap<&'static str, u32>,
     intent: &Intent,
-    usd: UnitId,
     timeout: u64,
     step: u64,
 ) -> Option<usize> {
-    let kernel = kernel_post_timed(k, intent, usd, refs, timeout);
+    let kernel = kernel_post_timed(k, intent, refs, timeout);
     let model = oracle.post_timed(intent, timeout);
     match (&kernel, &model) {
         (Ok(Posted::Committed { entry_ref, .. }), Verdict::Posted { index, .. }) => {
@@ -4625,6 +4688,16 @@ fn close_and_maybe_lock(k: &mut Kernel, oracle: &mut Oracle, code: &str, lock: b
 
 #[test]
 fn kernel_and_oracle_agree_on_ticks_timed_holds_and_the_expiry_sweep() {
+    const FIRST_SEED: u64 = 0x7135_EED5_0FA0_C7F1;
+    for seed in FIRST_SEED..FIRST_SEED + 32 {
+        eprintln!(
+            "ticks and expiry seed={seed:#018x}; replay all 32: RCH_REQUIRE_REMOTE=1 rch exec -- cargo test -p fa-registers --test differential kernel_and_oracle_agree_on_ticks_timed_holds_and_the_expiry_sweep -- --exact --nocapture"
+        );
+        ticks_timed_holds_and_expiry_history(seed);
+    }
+}
+
+fn ticks_timed_holds_and_expiry_history(seed: u64) {
     let (mut k, mut oracle, periods) = setup_with(BUDGETED);
     let usd = k.book.units.lookup("USD").unwrap();
     for (i, p) in periods.iter().take(4).enumerate() {
@@ -4659,7 +4732,7 @@ fn kernel_and_oracle_agree_on_ticks_timed_holds_and_the_expiry_sweep() {
         resolves: None,
         settles: Vec::new(),
     };
-    let mut rng = Rng(0x7135_EED5_0FA0_C7F1);
+    let mut rng = Rng(seed);
     let mut refs: Vec<EntryRef> = Vec::new();
     let mut holds: Vec<usize> = Vec::new();
     let mut resolved: BTreeSet<usize> = BTreeSet::new();
@@ -4684,7 +4757,7 @@ fn kernel_and_oracle_agree_on_ticks_timed_holds_and_the_expiry_sweep() {
         b"timed-before-tick".to_vec(),
         dated[2],
     );
-    let kernel = kernel_post_timed(&mut k, &first, usd, &refs, 5);
+    let kernel = kernel_post_timed(&mut k, &first, &refs, 5);
     assert_eq!(
         oracle.post_timed(&first, 5),
         Verdict::Refused { code: "FA-REF-095" }
@@ -4699,7 +4772,7 @@ fn kernel_and_oracle_agree_on_ticks_timed_holds_and_the_expiry_sweep() {
         b"fund".to_vec(),
         dated[0],
     );
-    let funded = kernel_post(&mut k, &fund, usd, &refs).expect("funds");
+    let funded = kernel_post(&mut k, &fund, &refs).expect("funds");
     assert!(matches!(funded, Posted::Committed { .. }));
     assert!(matches!(
         oracle.post(&fund),
@@ -4720,16 +4793,8 @@ fn kernel_and_oracle_agree_on_ticks_timed_holds_and_the_expiry_sweep() {
                     format!("pre-close-{step}-{n}").into_bytes(),
                     date,
                 );
-                let posted = post_timed_both(
-                    &mut k,
-                    &mut oracle,
-                    &mut refs,
-                    &mut refused,
-                    &i,
-                    usd,
-                    60,
-                    step,
-                );
+                let posted =
+                    post_timed_both(&mut k, &mut oracle, &mut refs, &mut refused, &i, 60, step);
                 let h = posted.expect("a pre-close hold posts");
                 holds.push(h);
                 timed_posted += 1;
@@ -4801,7 +4866,6 @@ fn kernel_and_oracle_agree_on_ticks_timed_holds_and_the_expiry_sweep() {
                     &mut refs,
                     &mut refused,
                     &i,
-                    usd,
                     timeout,
                     step,
                 ) {
@@ -4818,7 +4882,7 @@ fn kernel_and_oracle_agree_on_ticks_timed_holds_and_the_expiry_sweep() {
                     key,
                     date,
                 );
-                let kernel = kernel_post(&mut k, &i, usd, &refs);
+                let kernel = kernel_post(&mut k, &i, &refs);
                 let model = oracle.post(&i);
                 if let (Ok(Posted::Committed { entry_ref, .. }), Verdict::Posted { index, .. }) =
                     (&kernel, &model)
@@ -4866,7 +4930,7 @@ fn kernel_and_oracle_agree_on_ticks_timed_holds_and_the_expiry_sweep() {
                     target,
                     posts: ordinals,
                 });
-                let kernel = kernel_post(&mut k, &i, usd, &refs);
+                let kernel = kernel_post(&mut k, &i, &refs);
                 let model = oracle.post(&i);
                 match (&kernel, &model) {
                     (Ok(Posted::Committed { entry_ref, .. }), Verdict::Posted { index, .. }) => {
@@ -4934,7 +4998,7 @@ fn kernel_and_oracle_agree_on_ticks_timed_holds_and_the_expiry_sweep() {
                     key,
                     dated[2 + rng.below(2) as usize],
                 );
-                let kernel = kernel_post(&mut k, &i, usd, &refs);
+                let kernel = kernel_post(&mut k, &i, &refs);
                 let model = oracle.post(&i);
                 match (&kernel, &model) {
                     (Ok(Posted::Committed { entry_ref, .. }), Verdict::Posted { .. }) => {
@@ -4953,7 +5017,7 @@ fn kernel_and_oracle_agree_on_ticks_timed_holds_and_the_expiry_sweep() {
                     key,
                     dated[2 + rng.below(2) as usize],
                 );
-                let kernel = kernel_post(&mut k, &i, usd, &refs);
+                let kernel = kernel_post(&mut k, &i, &refs);
                 let model = oracle.post(&i);
                 if let (Ok(Posted::Committed { entry_ref, .. }), Verdict::Posted { .. }) =
                     (&kernel, &model)
@@ -5071,7 +5135,7 @@ fn timed_holds_anchor_on_a_witnessed_tick_and_posts_stop_at_the_deadline() {
         None,
     );
     refs.push(
-        kernel_post(&mut k, &fund, usd, &refs)
+        kernel_post(&mut k, &fund, &refs)
             .expect("funds")
             .entry_ref(),
     );
@@ -5106,7 +5170,7 @@ fn timed_holds_anchor_on_a_witnessed_tick_and_posts_stop_at_the_deadline() {
     let post_hold =
         |k: &mut Kernel, oracle: &mut Oracle, refs: &mut Vec<EntryRef>, key: &str, t: u64| {
             let i = intent("Pending", hold_legs.clone(), key, None);
-            let posted = kernel_post_timed(k, &i, usd, refs, t).expect("timed hold");
+            let posted = kernel_post_timed(k, &i, refs, t).expect("timed hold");
             assert!(matches!(oracle.post_timed(&i, t), Verdict::Posted { .. }));
             refs.push(posted.entry_ref());
             refs.len() - 1
@@ -5142,7 +5206,7 @@ fn timed_holds_anchor_on_a_witnessed_tick_and_posts_stop_at_the_deadline() {
     oracle.record_tick(1_009).unwrap();
     let pa = posts(a, "posts-A", 40);
     refs.push(
-        kernel_post(&mut k, &pa, usd, &refs)
+        kernel_post(&mut k, &pa, &refs)
             .expect("posts before due")
             .entry_ref(),
     );
@@ -5192,7 +5256,7 @@ fn timed_holds_anchor_on_a_witnessed_tick_and_posts_stop_at_the_deadline() {
 
     // Re-planned after the due tick, at equality with the deadline: refused.
     let pb = posts(b, "posts-B", 40);
-    let r = kernel_post(&mut k, &pb, usd, &refs).expect_err("due at equality");
+    let r = kernel_post(&mut k, &pb, &refs).expect_err("due at equality");
     assert_eq!(oracle.post(&pb), Verdict::Refused { code: "FA-REF-097" });
     assert_eq!((r.code, r.exit), ("FA-REF-097", exit::REFUSAL), "{r}");
     assert!(
@@ -5201,7 +5265,7 @@ fn timed_holds_anchor_on_a_witnessed_tick_and_posts_stop_at_the_deadline() {
     // C is not due yet (deadline 1_030): its Posts is admissible.
     let pc = posts(c, "posts-C", 1);
     refs.push(
-        kernel_post(&mut k, &pc, usd, &refs)
+        kernel_post(&mut k, &pc, &refs)
             .expect("C not due")
             .entry_ref(),
     );
@@ -5218,7 +5282,7 @@ fn timed_holds_anchor_on_a_witnessed_tick_and_posts_stop_at_the_deadline() {
         }),
     );
     refs.push(
-        kernel_post(&mut k, &vb, usd, &refs)
+        kernel_post(&mut k, &vb, &refs)
             .expect("voids a due hold")
             .entry_ref(),
     );
@@ -5228,10 +5292,10 @@ fn timed_holds_anchor_on_a_witnessed_tick_and_posts_stop_at_the_deadline() {
 
     // Expires is the sweep's: through `post` it is refused, nothing written.
     let d = intent("Pending", hold_legs.clone(), "D", None);
-    let d_ref = kernel_post_timed(&mut k, &d, usd, &refs, 1)
+    let d_ref = kernel_post_timed(&mut k, &d, &refs, 1)
         .expect("D")
         .entry_ref();
-    let mut req = kernel_request(&k, &vb, usd, &refs);
+    let mut req = kernel_request(&k, &vb, &refs);
     req.proposal.idempotency_key = b"expires-by-hand".to_vec();
     req.proposal.pending = Some(Pending {
         timeout_ns: None,
@@ -5307,7 +5371,7 @@ fn the_sweep_and_manual_resolution_race_by_identity_never_double_release() {
         None,
     );
     refs.push(
-        kernel_post(&mut k, &fund, usd, &refs)
+        kernel_post(&mut k, &fund, &refs)
             .expect("funds")
             .entry_ref(),
     );
@@ -5323,7 +5387,7 @@ fn the_sweep_and_manual_resolution_race_by_identity_never_double_release() {
             None,
         );
         refs.push(
-            kernel_post_timed(&mut k, &i, usd, &refs, 10)
+            kernel_post_timed(&mut k, &i, &refs, 10)
                 .expect("hold")
                 .entry_ref(),
         );
@@ -5359,7 +5423,7 @@ fn the_sweep_and_manual_resolution_race_by_identity_never_double_release() {
 
     // Manual void, then the sweep: H0 is resolved and no longer due.
     refs.push(
-        kernel_post(&mut k, &void(holds[0], "void-H0"), usd, &refs)
+        kernel_post(&mut k, &void(holds[0], "void-H0"), &refs)
             .expect("void")
             .entry_ref(),
     );
@@ -5422,7 +5486,7 @@ fn the_sweep_and_manual_resolution_race_by_identity_never_double_release() {
             .is_none()
     );
     refs.push(
-        kernel_post(&mut k, &void(holds[3], "void-H3"), usd, &refs)
+        kernel_post(&mut k, &void(holds[3], "void-H3"), &refs)
             .expect("void")
             .entry_ref(),
     );
@@ -5455,7 +5519,7 @@ fn the_sweep_and_manual_resolution_race_by_identity_never_double_release() {
     // After the sweep, a manual void of an expired hold is the
     // one-resolution conflict, citing the sweep's resolution.
     let late = void(holds[2], "void-H2-late");
-    let r = kernel_post(&mut k, &late, usd, &refs).expect_err("already expired");
+    let r = kernel_post(&mut k, &late, &refs).expect_err("already expired");
     assert_eq!(oracle.post(&late), Verdict::Refused { code: "FA-REF-062" });
     assert_eq!((r.code, r.exit), ("FA-REF-062", exit::CONFLICT), "{r}");
     assert!(
@@ -5514,7 +5578,7 @@ fn a_crashed_sweep_leaves_nothing_partial_and_the_cursor_survives_restart() {
         "fund",
     );
     refs.push(
-        kernel_post(&mut k, &fund, usd, &refs)
+        kernel_post(&mut k, &fund, &refs)
             .expect("funds")
             .entry_ref(),
     );
@@ -5528,7 +5592,7 @@ fn a_crashed_sweep_leaves_nothing_partial_and_the_cursor_survives_restart() {
             &format!("H{n}"),
         );
         refs.push(
-            kernel_post_timed(&mut k, &i, usd, &refs, 5)
+            kernel_post_timed(&mut k, &i, &refs, 5)
                 .expect("hold")
                 .entry_ref(),
         );
@@ -5713,7 +5777,7 @@ fn an_entropy_failure_in_the_sweep_commits_nothing_and_the_retry_sweeps_the_same
         "fund",
     );
     refs.push(
-        kernel_post(&mut k, &fund, usd, &refs)
+        kernel_post(&mut k, &fund, &refs)
             .expect("funds")
             .entry_ref(),
     );
@@ -5727,7 +5791,7 @@ fn an_entropy_failure_in_the_sweep_commits_nothing_and_the_retry_sweeps_the_same
             &format!("H{n}"),
         );
         refs.push(
-            kernel_post_timed(&mut k, &i, usd, &refs, 5)
+            kernel_post_timed(&mut k, &i, &refs, 5)
                 .expect("hold")
                 .entry_ref(),
         );
@@ -5817,7 +5881,7 @@ fn an_entropy_failure_in_the_reversal_sweep_commits_nothing_and_the_retry_mints_
     for key in ["A", "B"] {
         let i = accrual(key);
         refs.push(
-            kernel_post_scheduled(&mut k, &i, usd, &refs, march(10))
+            kernel_post_scheduled(&mut k, &i, &refs, march(10))
                 .expect("scheduled")
                 .entry_ref(),
         );
@@ -5845,6 +5909,326 @@ fn an_entropy_failure_in_the_reversal_sweep_commits_nothing_and_the_retry_mints_
         reversal_sweep_both(&mut k, &mut oracle, &mut refs, 5, 1).expect("the retried batch");
     assert_eq!(batch.minted.len(), 2);
     assert_eq!(batch.remaining, 0);
+}
+
+/// Bounded fa-vfu campaign: every seed carries four distinct registered
+/// units through real posts, retries, applications, reversals, and folds.
+#[test]
+fn generated_multi_unit_histories_preserve_units_and_exact_registers() {
+    const REPLAY: &str = "RCH_REQUIRE_REMOTE=1 rch exec -- cargo test -p fa-registers --test differential generated_multi_unit_histories_preserve_units_and_exact_registers -- --exact --nocapture";
+    for seed in 1..=32u64 {
+        eprintln!("multi-unit seed={seed}; replay all 32: {REPLAY}");
+        let (mut k, mut oracle, periods) = setup();
+        let period = &periods[2];
+        open_period(&mut k, &mut oracle, period, 1);
+        let date = DateDay::from_ymd(2026, 3, 15).unwrap();
+        let mut rng = Rng(seed);
+        let mut chart = Vec::new();
+        let mut units = Vec::new();
+        for (index, code) in ["USD", "JPY", "BTC", "ETH"].into_iter().enumerate() {
+            let unit = k.book.units.lookup(code).expect("registered campaign unit");
+            let receivable = format!("81{index}0");
+            let cash = format!("82{index}0");
+            let revenue = format!("83{index}0");
+            for (account, account_type, normal_balance) in
+                [(&receivable, 1, 0), (&cash, 1, 0), (&revenue, 4, 1)]
+            {
+                chart.push(AccountSpec {
+                    code: account.clone(),
+                    name: format!("{account} {code}"),
+                    account_type,
+                    normal_balance,
+                    is_leaf: true,
+                    unit_policy: UnitPolicy::Single(unit),
+                    parent_code: None,
+                    limit: None,
+                });
+                oracle.add_account(Account {
+                    code: account.clone(),
+                    is_leaf: true,
+                    unit: Some(unit.0),
+                });
+            }
+            // Monetary mirrors are exact 16-byte mantissas. Register cells
+            // and trial-balance unit totals use checked i128 sums. After an
+            // invoice a, receipt a-1 and its reversal, each unit's debit and
+            // credit totals are 3*a-2: near, but below, the actual ceiling.
+            let amount = if seed % 2 == 0 {
+                i128::MAX / 3 - i128::from(rng.below(1024)) - index as i128
+            } else {
+                2 + i128::from(rng.below(100_000))
+            };
+            units.push((unit, receivable, cash, revenue, amount));
+        }
+        let ctx = k.ctx();
+        let description = fresh_seal(&k.book.seal_key, "multi-unit campaign chart");
+        k.runtime
+            .block_on(install_chart(
+                &mut k.db,
+                &ctx,
+                &k.book,
+                &chart,
+                PRINCIPAL,
+                DateDay::from_ymd(2026, 1, 1).unwrap(),
+                b"multi-unit-chart",
+                description,
+            ))
+            .expect("kernel chart")
+            .expect("matching unit policies install");
+        let leg = |side, account: &str, unit: UnitId, mantissa| Leg {
+            side,
+            account: account.into(),
+            unit: unit.0,
+            entity: None,
+            mantissa,
+        };
+        let dr = fa_reference::Side::Debit;
+        let cr = fa_reference::Side::Credit;
+        let mut invoice = maintenance_intent("Original", date, 0, "multi-unit-invoice");
+        for (unit, receivable, _, revenue, amount) in &units {
+            invoice.legs.push(leg(dr, receivable, *unit, *amount));
+            invoice.legs.push(leg(cr, revenue, *unit, *amount));
+        }
+        let mut refs = Vec::new();
+        let translated = kernel_request(&k, &invoice, &refs);
+        assert_eq!(
+            translated
+                .proposal
+                .legs
+                .iter()
+                .map(|l| l.amount.unit.0)
+                .collect::<Vec<_>>(),
+            invoice.legs.iter().map(|l| l.unit).collect::<Vec<_>>(),
+            "seed={seed}: mixed units survive translation; {REPLAY}"
+        );
+        assert_eq!(translated.proposal.unit_totals.len(), 4, "seed={seed}");
+        // The scalar changes cancel globally but not in USD or JPY. All
+        // accounts, evidence, dates and unit policies still match; FA-001
+        // must be the per-unit balance law, not a sibling admission check.
+        let mut imbalanced = invoice.clone();
+        imbalanced.legs[1].mantissa -= 1;
+        imbalanced.legs[3].mantissa += 1;
+        let frontier = k.db.frontier().unwrap();
+        let known = oracle.known();
+        let refused = kernel_post(&mut k, &imbalanced, &refs).unwrap_err();
+        assert_eq!(
+            (refused.code, refused.exit),
+            ("FA-REF-001", exit::REFUSAL),
+            "seed={seed}: {refused}; {REPLAY}"
+        );
+        assert_eq!(
+            oracle.post(&imbalanced),
+            Verdict::Refused { code: "FA-REF-001" },
+            "seed={seed}"
+        );
+        assert_eq!(k.db.frontier().unwrap(), frontier, "seed={seed}");
+        assert_eq!(oracle.known(), known, "seed={seed}");
+        assert_eq!(oracle.journal_len(), 0, "seed={seed}");
+
+        let mut receipt = maintenance_intent("Original", date, 0, "multi-unit-receipt");
+        for (index, (unit, receivable, cash, _, amount)) in units.iter().enumerate() {
+            receipt.legs.push(leg(dr, cash, *unit, *amount - 1));
+            receipt.legs.push(leg(cr, receivable, *unit, *amount - 1));
+            receipt.settles.push(Settle {
+                leg: 2 * index + 1,
+                target: 0,
+                ordinal: 2 * index,
+                mantissa: *amount - 1,
+            });
+        }
+        let mut reversal = receipt.clone();
+        reversal.class = "Reversal".into();
+        reversal.key = b"multi-unit-reversal".to_vec();
+        reversal.reverses = Some(1);
+        reversal.supersession_reason = 4;
+        reversal.settles.clear();
+        for leg in &mut reversal.legs {
+            leg.side = leg.side.flipped();
+        }
+        for (step, intent) in [&invoice, &receipt, &reversal].into_iter().enumerate() {
+            eprintln!("multi-unit seed={seed} step={step}");
+            let request = kernel_request(&k, intent, &refs);
+            for settlement in &intent.settles {
+                let translated = &request.proposal.legs[settlement.leg].settles[0];
+                assert_eq!(
+                    translated.amount,
+                    Amount::new(
+                        UnitId(intent.legs[settlement.leg].unit),
+                        settlement.mantissa
+                    ),
+                    "seed={seed} step={step}: settlement unit; {REPLAY}"
+                );
+                assert_eq!(
+                    translated.target, refs[settlement.target],
+                    "seed={seed} step={step}"
+                );
+                assert_eq!(
+                    usize::from(translated.ordinal),
+                    settlement.ordinal,
+                    "seed={seed} step={step}"
+                );
+            }
+            let posted = kernel_post(&mut k, intent, &refs)
+                .unwrap_or_else(|r| panic!("seed={seed} step={step}: {r}; {REPLAY}"));
+            assert!(
+                matches!(posted, Posted::Committed { .. }),
+                "seed={seed} step={step}"
+            );
+            assert!(
+                matches!(oracle.post(intent), Verdict::Posted { index, .. } if index == step),
+                "seed={seed} step={step}: oracle must commit; {REPLAY}"
+            );
+            refs.push(posted.entry_ref());
+            let frontier = k.db.frontier().unwrap();
+            let known = oracle.known();
+            let retry = kernel_post(&mut k, intent, &refs).unwrap();
+            assert!(
+                matches!(retry, Posted::AlreadyRecorded { .. }),
+                "seed={seed} step={step}"
+            );
+            assert_eq!(
+                retry.entry_ref(),
+                posted.entry_ref(),
+                "seed={seed} step={step}"
+            );
+            assert_eq!(
+                oracle.post(intent),
+                Verdict::Recorded { index: step },
+                "seed={seed} step={step}"
+            );
+            assert_eq!(
+                k.db.frontier().unwrap(),
+                frontier,
+                "seed={seed} step={step}"
+            );
+            assert_eq!(oracle.known(), known, "seed={seed} step={step}");
+            assert_eq!(oracle.journal_len(), step + 1, "seed={seed} step={step}");
+            let maintained = maintain(&mut k, period);
+            maintained_matches_oracle(&maintained, &oracle, k.book.book_id);
+            let actual_items = open_items(&k.db, &k.book, None, None).unwrap();
+            let actual: BTreeMap<_, _> = actual_items
+                .iter()
+                .map(|item| {
+                    let index = refs
+                        .iter()
+                        .position(|r| r.vid == item.entry)
+                        .expect("known journal item");
+                    (
+                        (index, usize::from(item.ordinal)),
+                        (item.original, item.applied, item.applied_out),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                actual,
+                oracle.open_items(),
+                "seed={seed} step={step}: open items; {REPLAY}"
+            );
+            assert!(
+                verify_open_items(&k.db, &k.book, None).unwrap().is_green(),
+                "seed={seed} step={step}"
+            );
+            let report = trial_balance(&k.db, &k.book, std::slice::from_ref(period)).unwrap();
+            assert!(report.is_balanced(), "seed={seed} step={step}");
+            assert_eq!(report.unit_totals.len(), 4, "seed={seed} step={step}");
+            for (index, (unit, receivable, _, _, amount)) in units.iter().enumerate() {
+                let paid = *amount - 1;
+                let total = *amount + step as i128 * paid;
+                assert_eq!(
+                    report.unit_totals[&unit.0],
+                    (total, total),
+                    "seed={seed} step={step} unit={unit:?}; {REPLAY}"
+                );
+                let expected_applied = if step == 1 { paid } else { 0 };
+                let item = actual_items
+                    .iter()
+                    .find(|item| {
+                        item.entry == refs[0].vid && usize::from(item.ordinal) == 2 * index
+                    })
+                    .unwrap();
+                assert_eq!(
+                    (item.unit_id, item.applied, item.open),
+                    (unit.0, expected_applied, *amount - expected_applied),
+                    "seed={seed} step={step}: literal invoice checkpoint; {REPLAY}"
+                );
+                let row = report
+                    .rows
+                    .iter()
+                    .find(|row| row.code == *receivable && row.unit_id == unit.0)
+                    .unwrap();
+                assert_eq!(
+                    (row.debits, row.credits),
+                    (
+                        *amount + if step == 2 { paid } else { 0 },
+                        if step >= 1 { paid } else { 0 }
+                    ),
+                    "seed={seed} step={step}: literal receivable totals; {REPLAY}"
+                );
+            }
+        }
+        // Admission limits each entry's amounts, not the lifetime register
+        // column. Preserve this boundary explicitly: another lawful entry
+        // can make an i128 register unreportable while the independent Int
+        // fold still represents it. Refusal must leave cached state intact.
+        eprintln!("multi-unit seed={seed} step=3 register overflow boundary");
+        let mut overflow = maintenance_intent("Original", date, 0, "multi-unit-overflow");
+        for (unit, receivable, _, revenue, amount) in &units {
+            let extra = i128::MAX - (*amount + (*amount - 1)) + 1;
+            overflow.legs.push(leg(dr, receivable, *unit, extra));
+            overflow.legs.push(leg(cr, revenue, *unit, extra));
+        }
+        let posted = kernel_post(&mut k, &overflow, &refs)
+            .unwrap_or_else(|r| panic!("seed={seed} step=3: {r}; {REPLAY}"));
+        assert!(matches!(posted, Posted::Committed { .. }), "seed={seed}");
+        assert!(
+            matches!(oracle.post(&overflow), Verdict::Posted { index: 3, .. }),
+            "seed={seed}"
+        );
+        let expected = Int::from_i128(i128::MAX).add(&Int::from_i128(1));
+        let model = oracle.fold(period);
+        for (unit, receivable, _, _, _) in &units {
+            assert_eq!(
+                model[&(receivable.clone(), unit.0)].debits,
+                expected,
+                "seed={seed}: oracle retains MAX+1; {REPLAY}"
+            );
+        }
+        assert!(
+            matches!(
+                fold_period(&k.db, &k.book, period),
+                Err(fa_registers::RegisterError::Overflow)
+            ),
+            "seed={seed}: literal overflow; {REPLAY}"
+        );
+        assert!(
+            matches!(
+                trial_balance(&k.db, &k.book, std::slice::from_ref(period)),
+                Err(fa_registers::RegisterError::Overflow)
+            ),
+            "seed={seed}: report overflow; {REPLAY}"
+        );
+        let frontier = k.db.frontier().unwrap();
+        let state_vid = fa_registers::maintainer::state_vid(k.book.book_id, period);
+        let state_before = k.db.vertex(state_vid).unwrap().unwrap();
+        let ctx = k.ctx();
+        let result = k
+            .runtime
+            .block_on(fa_registers::advance(&mut k.db, &ctx, &k.book, period));
+        assert!(
+            matches!(result, Err(fa_registers::RegisterError::Overflow)),
+            "seed={seed}: maintained overflow; {REPLAY}"
+        );
+        assert_eq!(
+            k.db.frontier().unwrap(),
+            frontier,
+            "seed={seed}: no partial register publication; {REPLAY}"
+        );
+        assert_eq!(
+            k.db.vertex(state_vid).unwrap().unwrap().props,
+            state_before.props,
+            "seed={seed}: cursor and checksum unchanged; {REPLAY}"
+        );
+    }
 }
 
 /// Plan §5.4 per-leg sub-vectors across units: a USD+EUR hold posts a
@@ -5956,15 +6340,9 @@ fn multi_unit_holds_post_partially_per_unit_and_expire_in_every_unit() {
         resolves,
         settles: Vec::new(),
     };
-    // The kernel request with each leg in its own unit (the shared helper
-    // writes USD).
+    // The shared translator preserves each leg's declared unit.
     let in_units = |k: &Kernel, i: &Intent, refs: &[EntryRef], timeout: Option<u64>| {
-        let mut req = kernel_request(k, i, usd, refs);
-        for (l, m) in req.proposal.legs.iter_mut().zip(&i.legs) {
-            l.amount = Amount::new(UnitId(m.unit), l.amount.mantissa);
-        }
-        req.proposal.unit_totals =
-            EntryPayload::fold_unit_totals(&req.proposal.legs).expect("totals");
+        let mut req = kernel_request(k, i, refs);
         if let (Some(t), Some(p)) = (timeout, req.proposal.pending.as_mut()) {
             p.timeout_ns = Some(t);
         }
@@ -6135,11 +6513,10 @@ fn noon(day: DateDay) -> u64 {
 fn kernel_post_scheduled(
     k: &mut Kernel,
     intent: &Intent,
-    usd: UnitId,
     refs: &[EntryRef],
     reverse_on: DateDay,
 ) -> Result<Posted, Refusal> {
-    let mut req = kernel_request(k, intent, usd, refs);
+    let mut req = kernel_request(k, intent, refs);
     req.proposal = with_auto_reverse(req.proposal, reverse_on);
     let ctx = k.ctx();
     let db = &mut k.db;
@@ -6286,6 +6663,16 @@ fn open_both(
 
 #[test]
 fn kernel_and_oracle_agree_on_scheduled_reversals() {
+    const FIRST_SEED: u64 = 0x5C4E_D01E_D0AF_7E57;
+    for seed in FIRST_SEED..FIRST_SEED + 32 {
+        eprintln!(
+            "scheduled reversals seed={seed:#018x}; replay all 32: RCH_REQUIRE_REMOTE=1 rch exec -- cargo test -p fa-registers --test differential kernel_and_oracle_agree_on_scheduled_reversals -- --exact --nocapture"
+        );
+        scheduled_reversals_history(seed);
+    }
+}
+
+fn scheduled_reversals_history(seed: u64) {
     let (mut k, mut oracle, periods) = setup_with(BUDGETED);
     oracle.declare_time_zone();
     let usd = k.book.units.lookup("USD").unwrap();
@@ -6316,7 +6703,7 @@ fn kernel_and_oracle_agree_on_scheduled_reversals() {
     };
     let day0 = DateDay::from_ymd(2026, 1, 5).unwrap();
     let mut today = day0;
-    let mut rng = Rng(0x5C4E_D01E_D0AF_7E57);
+    let mut rng = Rng(seed);
     let mut refs: Vec<EntryRef> = Vec::new();
     let mut scheduled: Vec<usize> = Vec::new();
     let mut refused: BTreeMap<&'static str, u32> = BTreeMap::new();
@@ -6331,7 +6718,7 @@ fn kernel_and_oracle_agree_on_scheduled_reversals() {
         day0,
     );
     refs.push(
-        kernel_post(&mut k, &fund, usd, &refs)
+        kernel_post(&mut k, &fund, &refs)
             .expect("funds")
             .entry_ref(),
     );
@@ -6354,7 +6741,7 @@ fn kernel_and_oracle_agree_on_scheduled_reversals() {
                     DateDay::from_ymd(2026, month, 10).unwrap(),
                 );
                 let reverse_on = DateDay::from_ymd(2026, month, 20).unwrap();
-                let posted = kernel_post_scheduled(&mut k, &i, usd, &refs, reverse_on)
+                let posted = kernel_post_scheduled(&mut k, &i, &refs, reverse_on)
                     .expect("a pre-close accrual posts");
                 assert!(matches!(
                     oracle.post_scheduled(&i, reverse_on),
@@ -6421,7 +6808,7 @@ fn kernel_and_oracle_agree_on_scheduled_reversals() {
                 if planted && reverse_on != date {
                     i.class = "Original".into();
                 }
-                let kernel = kernel_post_scheduled(&mut k, &i, usd, &refs, reverse_on);
+                let kernel = kernel_post_scheduled(&mut k, &i, &refs, reverse_on);
                 let model = oracle.post_scheduled(&i, reverse_on);
                 match (&kernel, &model) {
                     (Ok(Posted::Committed { entry_ref, .. }), Verdict::Posted { index, .. }) => {
@@ -6457,7 +6844,7 @@ fn kernel_and_oracle_agree_on_scheduled_reversals() {
                     key,
                     pick_open(&mut rng),
                 );
-                let kernel = kernel_post(&mut k, &i, usd, &refs);
+                let kernel = kernel_post(&mut k, &i, &refs);
                 let model = oracle.post(&i);
                 match (&kernel, &model) {
                     (Ok(Posted::Committed { entry_ref, .. }), Verdict::Posted { .. }) => {
@@ -6485,7 +6872,7 @@ fn kernel_and_oracle_agree_on_scheduled_reversals() {
                 );
                 i.reverses = Some(target);
                 let was_blocked = blocked_closed.contains(&target);
-                let kernel = kernel_post(&mut k, &i, usd, &refs);
+                let kernel = kernel_post(&mut k, &i, &refs);
                 let model = oracle.post(&i);
                 match (&kernel, &model) {
                     (Ok(Posted::Committed { entry_ref, .. }), Verdict::Posted { index, .. }) => {
@@ -6578,7 +6965,7 @@ fn kernel_and_oracle_agree_on_scheduled_reversals() {
             DateDay::from_ymd(2026, 3, 20).unwrap(),
         );
         i.reverses = Some(t);
-        let kernel = kernel_post(&mut k, &i, usd, &refs);
+        let kernel = kernel_post(&mut k, &i, &refs);
         let model = oracle.post(&i);
         match (&kernel, &model) {
             (Ok(Posted::Committed { entry_ref, .. }), Verdict::Posted { .. }) => {
@@ -6664,7 +7051,7 @@ fn a_manual_reversal_and_the_reversal_sweep_race_by_identity() {
     for key in ["A", "B"] {
         let i = accrual(key);
         refs.push(
-            kernel_post_scheduled(&mut k, &i, usd, &refs, march(10))
+            kernel_post_scheduled(&mut k, &i, &refs, march(10))
                 .expect("scheduled")
                 .entry_ref(),
         );
@@ -6737,7 +7124,7 @@ fn a_manual_reversal_and_the_reversal_sweep_race_by_identity() {
         })
         .collect();
     by_hand.reverses = Some(0);
-    let r = kernel_post(&mut k, &by_hand, usd, &refs).expect_err("already reversed");
+    let r = kernel_post(&mut k, &by_hand, &refs).expect_err("already reversed");
     assert_eq!(
         oracle.post(&by_hand),
         Verdict::Refused { code: "FA-REF-052" }
@@ -6765,7 +7152,7 @@ fn a_manual_reversal_and_the_reversal_sweep_race_by_identity() {
         Ok(Some((TimeZonePolicy::Utc, _)))
     ));
     // A ScheduleControl is never posted.
-    let mut req = kernel_request(&k, &accrual("ctl"), usd, &refs);
+    let mut req = kernel_request(&k, &accrual("ctl"), &refs);
     req.proposal.class = EntryClass::SCHEDULE_CONTROL;
     req.proposal.legs = Vec::new();
     req.proposal.unit_totals = Vec::new();
@@ -6868,6 +7255,16 @@ fn oracle_entity_fold(oracle: &Oracle, period: &str) -> EntityTable {
 
 #[test]
 fn kernel_and_oracle_agree_on_the_per_entity_balance_law() {
+    const FIRST_SEED: u64 = 0x00E7_1717_B41A_7CE5;
+    for seed in FIRST_SEED..FIRST_SEED + 32 {
+        eprintln!(
+            "per-entity balance seed={seed:#018x}; replay all 32: RCH_REQUIRE_REMOTE=1 rch exec -- cargo test -p fa-registers --test differential kernel_and_oracle_agree_on_the_per_entity_balance_law -- --exact --nocapture"
+        );
+        per_entity_balance_history(seed);
+    }
+}
+
+fn per_entity_balance_history(seed: u64) {
     let (mut k, mut oracle, periods, _) = setup_entities(ENTITY_CHART, ENTITIES);
     let usd = k.book.units.lookup("USD").unwrap();
     let march = periods[2].clone();
@@ -6895,7 +7292,7 @@ fn kernel_and_oracle_agree_on_the_per_entity_balance_law() {
         resolves: None,
         settles: Vec::new(),
     };
-    let mut rng = Rng(0x00E7_1717_B41A_7CE5);
+    let mut rng = Rng(seed);
     let mut refs: Vec<EntryRef> = Vec::new();
     let mut holds: Vec<usize> = Vec::new();
     let mut resolved: BTreeSet<usize> = BTreeSet::new();
@@ -6918,11 +7315,7 @@ fn kernel_and_oracle_agree_on_the_per_entity_balance_law() {
             format!("fund-{e}").into_bytes(),
             day(n as u64),
         );
-        refs.push(
-            kernel_post(&mut k, &i, usd, &refs)
-                .expect("funds")
-                .entry_ref(),
-        );
+        refs.push(kernel_post(&mut k, &i, &refs).expect("funds").entry_ref());
         assert!(matches!(oracle.post(&i), Verdict::Posted { .. }));
         posted_entries.push(refs.len() - 1);
     }
@@ -7115,11 +7508,11 @@ fn kernel_and_oracle_agree_on_the_per_entity_balance_law() {
             > 1;
         let (kernel, model) = match balancing {
             Some(l) => (
-                kernel_post_balancing_raw(&mut k, &intent, usd, &refs, l),
+                kernel_post_balancing_raw(&mut k, &intent, &refs, l),
                 oracle.post_balancing(&intent, l),
             ),
             None => (
-                kernel_post(&mut k, &intent, usd, &refs).map(|p| (p, None)),
+                kernel_post(&mut k, &intent, &refs).map(|p| (p, None)),
                 oracle.post(&intent),
             ),
         };
@@ -7255,11 +7648,10 @@ fn kernel_and_oracle_agree_on_the_per_entity_balance_law() {
 fn kernel_post_balancing_raw(
     k: &mut Kernel,
     intent: &Intent,
-    usd: UnitId,
     refs: &[EntryRef],
     leg: u16,
 ) -> Result<(Posted, Option<i128>), Refusal> {
-    kernel_post_balancing(k, intent, usd, refs, leg).map(|b| (b.posted, Some(b.moved)))
+    kernel_post_balancing(k, intent, refs, leg).map(|b| (b.posted, Some(b.moved)))
 }
 
 /// A book declaring exactly one entity: a leg may omit it (it is that
@@ -7312,7 +7704,7 @@ fn one_entity_books_and_entityless_books_keep_the_per_unit_law() {
         ),
     ] {
         let i = intent(legs, key);
-        refs.push(kernel_post(&mut k, &i, usd, &refs).expect(key).entry_ref());
+        refs.push(kernel_post(&mut k, &i, &refs).expect(key).entry_ref());
         assert!(matches!(oracle.post(&i), Verdict::Posted { .. }), "{key}");
     }
     let other = intent(
@@ -7322,7 +7714,7 @@ fn one_entity_books_and_entityless_books_keep_the_per_unit_law() {
         ],
         "other",
     );
-    let r = kernel_post(&mut k, &other, usd, &refs).expect_err("undeclared");
+    let r = kernel_post(&mut k, &other, &refs).expect_err("undeclared");
     assert_eq!(oracle.post(&other), Verdict::Refused { code: "FA-REF-104" });
     assert_eq!((r.code, r.exit), ("FA-REF-104", exit::REFUSAL), "{r}");
     assert!(r.message.contains("SOLO"), "{r}");
@@ -7430,7 +7822,7 @@ fn two_phase_sub_vectors_balance_per_entity() {
         None,
     );
     refs.push(
-        kernel_post(&mut k, &fund, usd, &refs)
+        kernel_post(&mut k, &fund, &refs)
             .expect("funds")
             .entry_ref(),
     );
@@ -7447,11 +7839,7 @@ fn two_phase_sub_vectors_balance_per_entity() {
         "hold",
         None,
     );
-    refs.push(
-        kernel_post(&mut k, &hold, usd, &refs)
-            .expect("hold")
-            .entry_ref(),
-    );
+    refs.push(kernel_post(&mut k, &hold, &refs).expect("hold").entry_ref());
     assert!(matches!(
         oracle.post(&hold),
         Verdict::Posted { index: 1, .. }
@@ -7473,7 +7861,7 @@ fn two_phase_sub_vectors_balance_per_entity() {
         vec![0, 3],
         "crossed",
     );
-    let r = kernel_post(&mut k, &crossed, usd, &refs).expect_err("cross-entity");
+    let r = kernel_post(&mut k, &crossed, &refs).expect_err("cross-entity");
     assert_eq!(
         oracle.post(&crossed),
         Verdict::Refused { code: "FA-REF-001" }
@@ -7495,7 +7883,7 @@ fn two_phase_sub_vectors_balance_per_entity() {
         "good",
     );
     refs.push(
-        kernel_post(&mut k, &good, usd, &refs)
+        kernel_post(&mut k, &good, &refs)
             .expect("per-entity")
             .entry_ref(),
     );
@@ -7570,6 +7958,16 @@ struct Seen {
 /// by construction, not by seed luck.
 #[test]
 fn kernel_and_oracle_agree_on_period_authority() {
+    const FIRST_SEED: u64 = 0xC105_ED0F_FA11_5EED;
+    for seed in FIRST_SEED..FIRST_SEED + 32 {
+        eprintln!(
+            "period authority seed={seed:#018x}; replay all 32: RCH_REQUIRE_REMOTE=1 rch exec -- cargo test -p fa-registers --test differential kernel_and_oracle_agree_on_period_authority -- --exact --nocapture"
+        );
+        period_authority_history(seed);
+    }
+}
+
+fn period_authority_history(seed: u64) {
     let (mut k, mut oracle, periods) = setup();
     let book = u128::from_le_bytes(k.book.book_id.0);
     let elsewhere = Id128([0xee; 16]);
@@ -7622,7 +8020,7 @@ fn kernel_and_oracle_agree_on_period_authority() {
             ]
         })
         .collect();
-    let mut rng = Rng(0xC105_ED0F_FA11_5EED);
+    let mut rng = Rng(seed);
     let mut seen: Vec<Seen> = Vec::new();
     for step in 0..480u64 {
         let i = step as usize;

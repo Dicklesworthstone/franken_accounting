@@ -231,7 +231,7 @@ fn setup_with(go_live: Option<(DateDay, &str)>) -> (Kernel, Oracle) {
     if let Some((day, _)) = go_live {
         oracle.set_opening_date(day);
     }
-    oracle.create_periods(2026);
+    oracle.create_periods(2026).unwrap();
     // The Opening period is Locked for the run: walked there when it is a
     // live period, born Locked when it precedes the book's opening date
     // (the pre_opening rule, ruling 3685).
@@ -430,7 +430,7 @@ fn create_year(k: &mut Kernel, oracle: &mut Oracle, fy: i32) {
     k.runtime
         .block_on(async move { create_periods(db, &ctx, book, fy).await })
         .expect("periods");
-    oracle.create_periods(fy);
+    oracle.create_periods(fy).unwrap();
 }
 
 fn capability(ops: &[&str]) -> Capability {
@@ -1208,7 +1208,12 @@ fn opening_net(k: &Kernel, at: Option<CommitSeq>) -> BTreeMap<String, i128> {
         .expect("fold")
         .cells
         .iter()
-        .map(|c| (codes[&c.key.account].to_string(), c.net()))
+        .map(|c| {
+            (
+                codes[&c.key.account].to_string(),
+                c.net().expect("exact net"),
+            )
+        })
         .filter(|(_, net)| *net != 0)
         .collect()
 }

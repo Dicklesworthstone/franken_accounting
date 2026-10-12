@@ -1,0 +1,15 @@
+# fa-vfu: the mandatory workspace clippy gate rejects production decision
+# calls in the oracle. Primitive date operations, types and parsers remain
+# allowed. Comparison tests expect each lint separately, so a missing rule
+# fails with an unfulfilled lint expectation. Retire this file when the
+# oracle no longer depends on production decision-bearing crates.
+disallowed-methods = [
+    "fa_time::calendar::FiscalCalendar::periods_for_year",
+    "fa_time::calendar::FiscalCalendar::year_bounds",
+    "fa_time::calendar::FiscalCalendar::fiscal_year_of",
+    "fa_time::period::resolve_period",
+    "fa_time::period::transition",
+    "fa_registry::Admissibility::decide",
+    "fa_registry::Admissibility::decide_disposition",
+    "fa_registry::Admissibility::decide_expires",
+]

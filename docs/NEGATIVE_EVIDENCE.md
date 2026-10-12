@@ -158,3 +158,78 @@ and MCP no-op data. The compiled schema was compared before editing its pin:
 exactly `registers_advanced` was added (34 events to 35); every old event,
 ordering, shape and envelope field was unchanged. The corrected Rust fixtures
 and final integration gate still require execution.
+
+## Reference period laws shared the production implementation (fa-vfu)
+
+Source review found that the reference oracle called the same admission,
+transition and calendar functions as the kernel. Agreement could
+therefore preserve a wrong accounting law. The oracle now contains a literal
+Appendix C table, explicit transition edges, kind restrictions and a linear
+half-open period resolver, retaining its unique-match check. Special-period
+classes retain the independent raw registry reader. Its application law and open-item fold use its own
+limb arithmetic, narrowing only admitted, bounded output values.
+
+New tests compare every posting class/state/disposition, expiry cell, period
+kind and transition action. A planted Original/SoftClosed production cell
+admits without `post_softclosed`; the oracle receives that same matrix as
+policy data and must refuse FA-REF-011, then post when authority is supplied.
+A separate real-kernel differential checks that refusal without mutation and
+the subsequent successful posting and register fold. Application tests cover
+joint over-application, exact i128 leg bounds and an intermediate above i128.
+These are source additions pending execution, not a full mutant-kernel run.
+
+Calendar generation and fiscal-year selection now walk civil days using
+independent month/week boundaries and year-end candidate enumeration. Source
+tests cover each calendar family, all year-end months and weekdays, both
+year-end rules, 52/53-week years, century dates and DateDay endpoints. These
+tests still share primitive date operations; policy parsing also remains
+shared. Reparenting onto current main also requires the calendar prerequisite:
+reject unsupported adjustment counts instead of clamping, validate directly
+constructed month fields, check adjacent-year arithmetic, and continue past
+an unrepresentable adjacent fiscal year when a valid containing year exists.
+These use main's checked date helpers and preserve its newer civil-date APIs.
+Constructor and boundary regression tests are added; runtime remains pending.
+
+The differential request adapter also replaced each declared leg and
+settlement unit with USD. It now preserves those units. A fixed 32-seed
+campaign exercises USD, JPY, BTC and ETH through actual kernel postings,
+applications, reversals, retries and register folds, with literal balance
+checkpoints and isolated per-unit imbalance refusals. After representable
+near-boundary totals, an additional balanced posting crosses a register
+column to i128::MAX + 1: the oracle retains that exact value, while the
+production fold, report and maintainer must refuse overflow without publishing
+partial cached state. This documents the current report bound; it does not
+claim arbitrary-size production registers. The new campaign is not yet run.
+The seven longer generated-history tests now each run 32 fixed distinct
+seeds, with the original seed first, unchanged assertions and a replay command
+printed for each seed. Their coverage floors remain intact; any newly exposed
+failure must be investigated rather than excluded. These expanded histories
+are also unrun. The 10k-seed worker campaign and actual mutant-kernel receipts
+remain open.
+
+Repeated oracle `create_periods` also overwrote transitioned period states.
+It now checks all identities before mutation and returns a typed error for
+duplicates or invalid ranges. The kernel comparison requires its actual
+AlreadyLive refusal with unchanged period rows and frontier, followed by
+successful creation of another year and the original authorized posting.
+Invalid-year controls retain the oracle's existing definitions and states.
+
+A per-crate Clippy configuration now lists the eight production calendar,
+resolution, transition and admission methods. Normal oracle library builds
+forbid those calls; existing comparison tests expect each configured lint
+separately, including an alias and a re-export. The mandatory Clippy pass
+must execute before this boundary can be claimed enforced. All these new
+controls remain unrun. No valid-history arithmetic panic has been
+demonstrated; the arithmetic change removes shared fixed-width decisioning.
+
+### Public register-cell subtraction (fa-645, 2026-10-11)
+
+Source review found unchecked subtraction in `Cell::net()`. Valid folded
+cells have nonnegative columns and a representable difference, but callers
+can construct public cells such as `(debits = i128::MAX, credits = -1)`.
+The method now returns `RegisterError::Overflow` for an unrepresentable
+difference, and its migration-test caller explicitly requires a valid net.
+New tests pin exact positive and negative boundaries, cancellation, and both
+overflow directions. Formatting and static review passed; runtime tests and
+the complete gate for this change remain unrun. No journal-produced cell
+overflow or enlargement of the register's column bound is claimed.
