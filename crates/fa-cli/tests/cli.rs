@@ -1946,7 +1946,7 @@ fn reversals_by_target_and_idempotency_conflicts_follow_the_contract() -> std::i
     let before = report(&book, &["tb", "--period", "FY2026-P03", "--json"]);
     for (reason, expected) in [
         (None, "registered reason"),
-        (Some("WrongAcount"), "did you mean `WrongAccount`"),
+        (Some("WrongAccout"), "did you mean `WrongAccount`"),
         (Some("0"), "not registered"),
         (Some("65535"), "not registered"),
         (Some("Other"), "requires a description"),
@@ -3033,7 +3033,7 @@ fn robot_docs_schema_prints_the_envelope_and_every_event_from_the_registry() {
     let (code, human, _) = fa(None, &["robot-docs", "schema"]);
     assert_eq!(code, 0);
     assert!(
-        human.contains("event balance_explained (explain)")
+        human.contains("event balance_explained (replay, explain)")
             && human.contains("  contributions: [contribution]")
             && human.contains("shape contribution"),
         "{human}"
@@ -4504,6 +4504,7 @@ const DANGEROUS: &[(&str, Option<&str>, &str)] = &[
     ("period", Some("lock"), "always"),
     ("period", Some("reopen"), "always"),
     ("post", None, "grant:post_closed"),
+    ("reverse", None, "grant:post_closed"),
     ("resolve", None, "disposition:voids"),
     ("registers", Some("materialize"), "existing-cells"),
 ];
