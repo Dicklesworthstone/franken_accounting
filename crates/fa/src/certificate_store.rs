@@ -32,11 +32,14 @@ use fgdb_types::{CanonicalScalar, CommitSeq, QueryCx, VId};
 use crate::certificate::{MAX_CERTIFICATE_BYTES, ReportCertificate};
 use crate::{BookError, Outcome};
 
-/// Canonical certificate bytes a vertex row carries inline. The pinned
-/// substrate refuses a row above 16384 bytes (`RowExceedsStorageLimit`), and
-/// the row also holds the 32-byte digest, the 16-byte book mirror, the label
-/// and the property keys; 12 KiB leaves that headroom. Larger certificates
-/// are retained externally.
+/// The encoded length of the certificate payload scalar a vertex row
+/// carries inline, measured with the substrate's own
+/// `CanonicalScalar::canonical_encoded_len` (byte scalars are stored as
+/// 8-byte memcomparable groups, about 9/8 of the raw bytes), never the raw
+/// length. The pinned substrate refuses a row above 16384 bytes
+/// (`RowExceedsStorageLimit`), and the row also holds the 32-byte digest,
+/// the 16-byte book mirror, the label and the property keys; 12 KiB leaves
+/// that headroom. Larger certificates are retained externally.
 pub const MAX_INLINE_CERTIFICATE_BYTES: usize = 12 * 1024;
 
 /// The vertex payload of an externally retained certificate: this tag, the
@@ -138,7 +141,7 @@ pub(crate) fn decode_external(payload: &[u8]) -> Result<Option<(u16, u64)>, Refu
 
 /// Where a retained certificate's canonical bytes are.
 enum Stored {
-    Inline(ReportCertificate),
+    Inline(Box<ReportCertificate>),
     External { store: u16, size: u64 },
 }
 
@@ -203,12 +206,12 @@ fn decoded_row(row: &VertexRow, book: &BookContext, digest: &[u8; 32]) -> Result
     if let Some((store, size)) = decode_external(payload.as_slice())? {
         return Ok(Stored::External { store, size });
     }
-    Ok(Stored::Inline(verified(
+    Ok(Stored::Inline(Box::new(verified(
         payload.as_slice(),
         book,
         digest,
         row.created_at,
-    )?))
+    )?)))
 }
 
 /// Fetch and verify an externally retained certificate's bytes.
@@ -306,7 +309,7 @@ async fn unchanged_row<V: Vfs + Clone, W: Vfs + Clone>(
         ))));
     }
     match stored {
-        Stored::Inline(certificate) => Ok(Ok(certificate)),
+        Stored::Inline(certificate) => Ok(Ok(*certificate)),
         Stored::External { store, size } => {
             fetched(cx, blobs, book, digest, row.created_at, store, size).await
         }
@@ -379,6 +382,13 @@ pub(crate) async fn retain<V: Vfs + Clone, W: Vfs + Clone>(
         Ok(payload) => payload,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    let payload = scalar_bytes("certificate payload", payload)?;
+    let encoded_len = payload
+        .canonical_encoded_len()
+        .map_err(|_| KernelError::Scalar("certificate payload"))?;
+    let CanonicalScalar::Bytes(bytes) = &payload else {
+        return Err(KernelError::Scalar("certificate payload").into());
+    };
     let vid = certificate_vid(book.book_id, &certificate.digest);
     let txn_cx = cx.txn();
     let mut txn = db.begin(&txn_cx).map_err(KernelError::from)?;
@@ -395,8 +405,8 @@ pub(crate) async fn retain<V: Vfs + Clone, W: Vfs + Clone>(
         // certificate was retained. The row's immutability was proved above.
         let same_bytes = match prop(&row, property::FA_PAYLOAD) {
             Some(CanonicalScalar::Bytes(value)) => match decode_external(value.as_slice()) {
-                Ok(Some((_, size))) => size == payload.len() as u64,
-                Ok(None) => value.as_slice() == payload.as_slice(),
+                Ok(Some((_, size))) => size == bytes.len() as u64,
+                Ok(None) => value.as_slice() == bytes.as_slice(),
                 Err(_) => false,
             },
             _ => false,
@@ -416,8 +426,8 @@ pub(crate) async fn retain<V: Vfs + Clone, W: Vfs + Clone>(
         return Ok(Err(refusal));
     }
     query_cx.checkpoint().map_err(BookError::Context)?;
-    let row_payload = if payload.len() > MAX_INLINE_CERTIFICATE_BYTES {
-        let record = match external_record(blobs.id(), payload.len() as u64) {
+    let row_payload = if encoded_len > MAX_INLINE_CERTIFICATE_BYTES {
+        let record = match external_record(blobs.id(), bytes.len() as u64) {
             Ok(record) => record,
             Err(refusal) => {
                 txn.abort();
@@ -425,22 +435,19 @@ pub(crate) async fn retain<V: Vfs + Clone, W: Vfs + Clone>(
             }
         };
         let locator = locator(&certificate.digest);
-        if let Err(error) = blobs.put(&cx.commit(), &locator, &payload).await {
+        if let Err(error) = blobs.put(&cx.commit(), &locator, bytes.as_slice()).await {
             txn.abort();
             return Ok(Err(unavailable(format!(
                 "store {} could not be written for the certificate's blob {locator}: {error}; nothing was retained",
                 blobs.id()
             ))));
         }
-        record
+        scalar_bytes("certificate payload", record)?
     } else {
         payload
     };
     let mut properties = vec![
-        (
-            property::FA_PAYLOAD,
-            scalar_bytes("certificate payload", row_payload)?,
-        ),
+        (property::FA_PAYLOAD, row_payload),
         (
             property::FA_DIGEST,
             scalar_bytes("certificate digest", certificate.digest.to_vec())?,

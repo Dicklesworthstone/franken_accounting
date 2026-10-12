@@ -15,7 +15,7 @@ use fa_model::{
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_time::{DateDay, FiscalCalendar, PeriodTransition};
-use fgdb_types::{CommitSeq, VId};
+use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
 const PRINCIPAL: VId = VId(1);
 const DECEMBER: &str = "FY2025-P12";
@@ -498,10 +498,18 @@ fn large_retained_certificate_survives_reopen_and_never_repairs_missing_or_chang
         .unwrap();
     let certificate = certified.certificate;
     let canonical = certificate.canonical_bytes().unwrap();
+    // Native rows store byte scalars as 8-byte memcomparable groups, about
+    // 9/8 of the raw bytes. Compare the actual scalar encoding, not the raw
+    // certificate length: this payload alone cannot fit in one row, even
+    // before the row's other properties and metadata.
+    let encoded_payload = CanonicalScalar::bytes(canonical.clone())
+        .unwrap()
+        .encode()
+        .unwrap();
     assert!(
-        canonical.len() > 16 * 1024,
-        "this regression must exercise a certificate larger than one substrate row: {} bytes",
-        canonical.len()
+        encoded_payload.len() > 16 * 1024,
+        "this regression must exceed one substrate row: {} encoded payload bytes",
+        encoded_payload.len()
     );
     let retained = fixture
         .book
