@@ -238,3 +238,229 @@ fn policy_epoch_is_an_original_witness_not_refreshed_at_publication() {
     assert_eq!(h.db.frontier().unwrap(), head);
     assert!(h.db.vertex(document_vid(&oid)).unwrap().is_none());
 }
+
+fn import_cap(profile: Profile, holder: u128) -> Capability {
+    let key = fa_policy::sod::control_key("ImportControl", None, "Import");
+    let op = fa_journal::policy::steward().unwrap().preparer_op(&key).unwrap();
+    Capability::new(VId(holder), profile, &[op], VId(1)).unwrap()
+}
+
+fn import_document(h: &Harness, capability: &Capability, bytes: &[u8], name: &str) -> fa_journal::Document {
+    let req = request(bytes);
+    fa_journal::Document {
+        book_id: h.book.book_id,
+        kind: req.kind,
+        mime: req.mime,
+        grade: grade(name),
+        retrieved_by: capability.holder(),
+        bytes: req.bytes,
+    }
+}
+
+fn import_request(
+    h: &Harness,
+    capability: &Capability,
+    key: &[u8],
+    documents: Vec<fa_journal::Document>,
+) -> fa_journal::ImportRequest {
+    fa_journal::ImportRequest {
+        principal: capability.holder(),
+        source: fa_model::IntakeSource::Upload { principal: capability.holder() },
+        idempotency_key: key.to_vec(),
+        effective_date: fa_time::DateDay::EPOCH,
+        // A constant plaintext for these deterministic test-only sealing inputs.
+        description: fa_model::Erasable::seal(
+            &"authorized import".to_string(), None, &h.book.seal_key, [51; 32], [52; 24],
+        ),
+        documents,
+    }
+}
+
+fn run_import(
+    h: &mut Harness,
+    capability: &Capability,
+    request: fa_journal::ImportRequest,
+) -> Result<fa_journal::ImportRecorded, Refusal> {
+    let cx = h.cx();
+    h.runtime.block_on(fa_journal::import_run(
+        &mut h.db, &cx, &h.book, capability, request,
+    )).unwrap()
+}
+
+#[test]
+fn a_forged_document_uploader_refuses_the_whole_import_before_any_staging() {
+    let mut h = Harness::new();
+    let capability = import_cap(Profile::Human, 90);
+    let docs = vec![
+        import_document(&h, &capability, b"first batch invoice", "HumanUpload"),
+        import_document(&h, &capability, b"second batch invoice", "HumanUpload"),
+    ];
+    let valid = import_request(&h, &capability, b"bound-batch", docs);
+    let mut forged = valid.clone();
+    forged.documents[1].retrieved_by = VId(999);
+    let before = h.db.frontier().unwrap();
+    let denied = run_import(&mut h, &capability, forged).unwrap_err();
+    assert_eq!(denied.exit, 7, "{denied}");
+    assert!(denied.message.contains("documents[1].retrieved_by"), "{denied}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+    for doc in &valid.documents {
+        assert!(h.db.vertex(document_vid(&doc.oid())).unwrap().is_none());
+        let receipt = fa_journal::custody::custody_vid(h.book.book_id, &doc.oid(), 0);
+        assert!(h.db.vertex(receipt).unwrap().is_none());
+    }
+    let run_id = fa_model::entry_vid(
+        h.book.book_id, &capability.holder().0.to_le_bytes(), &valid.idempotency_key,
+    );
+    assert!(h.db.vertex(run_id).unwrap().is_none());
+    let mut oids: Vec<_> = valid.documents.iter().map(|doc| doc.oid()).collect();
+    oids.sort();
+    let imported = run_import(&mut h, &capability, valid).unwrap();
+    assert_eq!(imported.recorded, oids);
+    assert_eq!(imported.receipt.recorded_at.0, before.0 + 1);
+    fa_journal::verify_receipt_in(&h.db, h.book.book_id, &imported.receipt, &oids)
+        .unwrap().unwrap();
+    for oid in oids {
+        let chain = fa_journal::custody_chain(&h.db, &oid).unwrap();
+        assert_eq!(chain.len(), 1);
+        assert_eq!(chain[0].1, imported.receipt.recorded_at);
+    }
+}
+
+#[test]
+fn an_import_source_cannot_claim_another_uploading_principal() {
+    let mut h = Harness::new();
+    let capability = import_cap(Profile::Human, 100);
+    let doc = import_document(&h, &capability, b"source binding", "HumanUpload");
+    let mut req = import_request(&h, &capability, b"source-bound", vec![doc]);
+    req.source = fa_model::IntakeSource::Upload { principal: VId(101) };
+    let before = h.db.frontier().unwrap();
+    let denied = run_import(&mut h, &capability, req).unwrap_err();
+    assert_eq!(denied.exit, 7, "{denied}");
+    assert!(denied.message.contains("source uploader"), "{denied}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+#[test]
+fn registered_connector_names_do_not_let_machine_imports_claim_human_provenance() {
+    let mut h = Harness::new();
+    let machine = import_cap(Profile::System, 110);
+    let doc = import_document(&h, &machine, b"automated invoice", "HumanUpload");
+    let mut req = import_request(&h, &machine, b"machine-import", vec![doc]);
+    let sources = [
+        fa_model::IntakeSource::Upload { principal: machine.holder() },
+        fa_model::IntakeSource::Connector { name: "fa-import".into(), version: "1".into() },
+        fa_model::IntakeSource::Email { message_id: "declared-message-id".into() },
+    ];
+    let before = h.db.frontier().unwrap();
+    for source in sources {
+        req.source = source;
+        let denied = run_import(&mut h, &machine, req.clone()).unwrap_err();
+        assert_eq!(denied.code, "FA-REF-084", "{denied}");
+        assert!(denied.message.contains("documents[0]"), "{denied}");
+        assert_eq!(h.db.frontier().unwrap(), before);
+    }
+    req.source = fa_model::IntakeSource::Upload { principal: machine.holder() };
+    req.documents[0].grade = grade("AgentUpload");
+    let expected = req.documents[0].oid();
+    let imported = run_import(&mut h, &machine, req).unwrap();
+    assert_eq!(imported.recorded, vec![expected]);
+    let stored = read_document(&h.db, &expected).unwrap().unwrap().unwrap();
+    assert_eq!(stored.retrieved_by, machine.holder());
+    assert_eq!(stored.grade, grade("AgentUpload"));
+}
+
+#[test]
+fn human_imports_preserve_conservative_grades_and_existing_custody() {
+    let mut h = Harness::new();
+    let first_cap = import_cap(Profile::Human, 120);
+    let doc = import_document(&h, &first_cap, b"conservative batch", "AgentUpload");
+    let oid = doc.oid();
+    let req = import_request(&h, &first_cap, b"conservative-first", vec![doc]);
+    let first = run_import(&mut h, &first_cap, req).unwrap();
+    let second_cap = import_cap(Profile::Human, 121);
+    let reupload = import_document(&h, &second_cap, b"conservative batch", "HumanUpload");
+    let req = import_request(&h, &second_cap, b"conservative-repeat", vec![reupload]);
+    let second = run_import(&mut h, &second_cap, req).unwrap();
+    assert!(second.recorded.is_empty());
+    assert_eq!(second.already_held, vec![oid]);
+    let stored = read_document(&h.db, &oid).unwrap().unwrap().unwrap();
+    assert_eq!(stored.grade, grade("AgentUpload"));
+    assert_eq!(stored.retrieved_by, first_cap.holder());
+    let chain = fa_journal::custody_chain(&h.db, &oid).unwrap();
+    assert_eq!(chain.len(), 1);
+    assert_eq!(chain[0].1, first.receipt.recorded_at);
+    fa_journal::verify_receipt_in(&h.db, h.book.book_id, &second.receipt, &[oid])
+        .unwrap().unwrap();
+}
+
+#[test]
+fn recorded_import_retries_do_not_bypass_current_provenance_admission() {
+    let mut h = Harness::new();
+    let capability = import_cap(Profile::Human, 130);
+    let doc = import_document(&h, &capability, b"idempotent import", "HumanUpload");
+    let req = import_request(&h, &capability, b"repeated-import", vec![doc]);
+    let original = run_import(&mut h, &capability, req.clone()).unwrap();
+    let before = h.db.frontier().unwrap();
+    let retry = run_import(&mut h, &capability, req.clone()).unwrap();
+    assert!(retry.already_recorded);
+    assert_eq!(retry.receipt, original.receipt);
+    let mut wrong_doc = req.clone();
+    wrong_doc.documents[0].retrieved_by = VId(131);
+    assert_eq!(run_import(&mut h, &capability, wrong_doc).unwrap_err().exit, 7);
+    let mut wrong_source = req;
+    wrong_source.source = fa_model::IntakeSource::Upload { principal: VId(131) };
+    assert_eq!(run_import(&mut h, &capability, wrong_source).unwrap_err().exit, 7);
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+#[test]
+fn import_authority_precedes_document_processing_and_agent_trunk_policy_stays_intact() {
+    let mut h = Harness::new();
+    let reader = Capability::new(VId(140), Profile::Human, &[], VId(1)).unwrap();
+    let malformed = import_request(&h, &reader, b"no-authority", Vec::new());
+    let before = h.db.frontier().unwrap();
+    assert_eq!(run_import(&mut h, &reader, malformed).unwrap_err().code, "FA-REF-011");
+    // Supplying an evidence object is not permission to append ImportControl.
+    let agent = import_cap(Profile::Agent, 141);
+    let doc = import_document(&h, &agent, b"agent bulk attempt", "AgentUpload");
+    let req = import_request(&h, &agent, b"no-trunk", vec![doc]);
+    assert_eq!(run_import(&mut h, &agent, req).unwrap_err().code, "FA-REF-013");
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+#[test]
+fn a_real_revocation_invalidates_prepared_uploads_and_blocks_recorded_retries() {
+    let mut h = Harness::new();
+    let capability = cap(Profile::Agent, 150);
+    let prior = h.upload(&capability, request(b"uploaded before revocation")).unwrap();
+    let prepared = h.prepare(&capability, request(b"prepared before revocation"));
+    let oid = prepared.document_oid();
+    let revoker = Capability::new(VId(1), Profile::Human, &[Op::IssueCapability], VId(1)).unwrap();
+    let req = fa_journal::RevocationRequest {
+        capability: revoker,
+        revoked: capability.commitment().unwrap(),
+        effective_date: fa_time::DateDay::EPOCH,
+        idempotency_key: b"revoke-uploader".to_vec(),
+        description: fa_model::Erasable::seal(
+            &"revoke upload authority".to_string(), None, &h.book.seal_key, [61; 32], [62; 24],
+        ),
+    };
+    let cx = h.cx();
+    let revoked = h.runtime.block_on(fa_journal::revoke_capability(
+        &mut h.db, &cx, &h.book, req,
+    )).unwrap().unwrap();
+    let before = h.db.frontier().unwrap();
+    assert_eq!(before, revoked.recorded_at);
+    assert_eq!(h.commit(prepared).unwrap_err().exit, 6);
+    for bytes in [b"uploaded before revocation".as_slice(), b"prepared before revocation".as_slice()] {
+        let denied = h.upload(&capability, request(bytes)).unwrap_err();
+        assert_eq!(denied.exit, 7, "{denied}");
+        assert!(denied.message.contains("revok"), "{denied}");
+    }
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert!(h.db.vertex(document_vid(&oid)).unwrap().is_none());
+    let receipt = fa_journal::custody::custody_vid(h.book.book_id, &oid, 0);
+    assert!(h.db.vertex(receipt).unwrap().is_none());
+    let kept = read_document(&h.db, &prior.oid).unwrap().unwrap().unwrap();
+    assert_eq!(kept.bytes, b"uploaded before revocation");
+}
