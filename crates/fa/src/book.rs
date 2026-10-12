@@ -4599,6 +4599,114 @@ mod tests {
     }
 
     #[test]
+    fn historical_inline_certificate_retries_do_not_reselect_placement() {
+        use crate::TrialBalanceSelection;
+        use fa_model::symbols::{label, property, relation};
+        use fgdb_types::CanonicalScalar;
+
+        let (mut book, usd, day, original) = certified_fixture();
+        let template = book.read_entry(original).unwrap().unwrap().0.proposal;
+        let mut selected = None;
+        // Add distinct, posted leaf accounts: more entries on the same
+        // accounts change totals, but do not add trial-balance rows. Do not
+        // pad a certificate or alter its committed output to create a size.
+        for n in 0..128 {
+            let certified = book
+                .certify_trial_balance(TrialBalanceSelection::AsOf(day), None)
+                .unwrap()
+                .unwrap();
+            assert_eq!(certified.report.rows.len(), n + 2);
+            let bytes = certified.certificate.canonical_bytes().unwrap();
+            let payload = CanonicalScalar::bytes(bytes.clone()).unwrap();
+            if payload.canonical_encoded_len().unwrap()
+                > crate::certificate_store::MAX_INLINE_CERTIFICATE_BYTES
+            {
+                selected = Some((certified, bytes, payload));
+                break;
+            }
+            let code = format!("7{n:03}");
+            book.install_chart(
+                &[AccountSpec {
+                    code: code.clone(),
+                    name: format!("Rent allocation {n}"),
+                    account_type: 5,
+                    normal_balance: 0,
+                    is_leaf: true,
+                    unit_policy: UnitPolicy::Single(usd),
+                    parent_code: None,
+                    limit: None,
+                }],
+                VId(1),
+                day,
+                format!("legacy-inline-chart-{n}").as_bytes(),
+            )
+            .unwrap()
+            .unwrap();
+            let mut proposal = template.clone();
+            proposal.idempotency_key = format!("legacy-inline-rent-{n}").into_bytes();
+            proposal.legs[0].account_ref = account_vid(book.context().book_id, &code);
+            book.post(PostRequest {
+                proposal,
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: Capability::embedded(VId(1), &["post"]).unwrap(),
+            })
+            .unwrap()
+            .unwrap();
+        }
+        let (certified, bytes, payload) =
+            selected.expect("the bounded real history crosses the inline policy cutoff");
+        let certificate = certified.certificate;
+        let vid =
+            crate::certificate_store::certificate_vid(book.context().book_id, &certificate.digest);
+
+        // Reproduce the historical producer's first retention, which always
+        // stored canonical bytes inline. Native admission must accept the
+        // complete row: a format-valid but oversized fixture is not enough.
+        let mut properties = vec![
+            (property::FA_PAYLOAD, payload),
+            (
+                property::FA_DIGEST,
+                CanonicalScalar::bytes(certificate.digest.to_vec()).unwrap(),
+            ),
+            (
+                property::BOOK_ID,
+                CanonicalScalar::bytes(book.context().book_id.0.to_vec()).unwrap(),
+            ),
+        ];
+        properties.sort_by_key(|(key, _)| key.0);
+        let purposes = book.purposes();
+        let mut create = fgdb::WriteBatch::new(relation::DERIVED_FROM);
+        create.create_vertex(vid, vec![label::CERTIFICATE], properties);
+        with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&purposes.commit(), create)))
+            .expect("the historical inline representation fits the native row");
+        let recorded_at = book.head().unwrap();
+        assert!(recorded_at > certificate.known_at);
+
+        assert_eq!(
+            book.read_certificate(&certificate.digest).unwrap().unwrap(),
+            certificate
+        );
+        assert_eq!(
+            book.replay_trial_balance(&certificate).unwrap().unwrap(),
+            certified.report
+        );
+        let retained = book.retain_certificate(&certificate).unwrap().unwrap();
+        assert_eq!(retained.digest, certificate.digest);
+        assert_eq!(retained.recorded_at, recorded_at);
+        assert_eq!(book.head().unwrap(), recorded_at);
+        let row = with_store!(&book.store, core => core.db.vertex(vid))
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.created_at, recorded_at);
+        assert_eq!(
+            fa_journal::rows::bytes(&row, property::FA_PAYLOAD, "historical certificate").unwrap(),
+            bytes,
+            "retry preserves the original inline bytes despite the new placement policy"
+        );
+    }
+
+    #[test]
     fn initial_certificate_retention_can_follow_unrelated_commits() {
         use crate::TrialBalanceSelection;
 
