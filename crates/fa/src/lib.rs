@@ -14,6 +14,9 @@
 //! aging with explicit buckets; those projections are not certified reports.
 //! Summary trial balances preserve historical chart membership, exact native
 //! units and leaf drilldown under a current whole-book read capability.
+//! [`SummaryCertificate`] composes a retained-history source certificate with
+//! the root selector and exact summary output; AsyncBook can certify and replay
+//! it under caller authority without publishing a journal object.
 //! Trial balances, balance explanations and open items can carry retained-history
 //! replay certificates binding the native reads, journal prefix, report selector,
 //! historical account metadata, registries and exact output. Certificates may be
@@ -22,6 +25,9 @@
 //! committed from an authenticated portable plan under current authority.
 //! Their graph certificates are retained atomically with the resulting entry;
 //! this slice requires an unchanged book sequence and existing approvals.
+//! Explicit receivable/payable allocations can be prepared for approval and
+//! rehearsed through that same kernel with [`SettlementPostRequest`]. The
+//! unchanged portable plan supports atomic publication and exact retries.
 //! Sessions and drafts remain later slices of the embedded API described
 //! in `COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md` (§15.2).
 
@@ -33,8 +39,11 @@ pub mod book;
 pub mod certificate;
 mod certificate_store;
 pub mod proof;
+pub mod settlement;
+pub mod statement_diff;
 pub mod statements;
 pub mod summary;
+pub mod summary_certificate;
 pub mod upload;
 
 pub use aging::{
@@ -61,5 +70,14 @@ pub use fa_statements::{
     StatementLine,
 };
 pub use proof::{MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest};
+pub use settlement::{PreparedSettlement, SettlementPostPlan, SettlementPostRequest};
+pub use statement_diff::{
+    CertifiedStatementDiff, MAX_STATEMENT_DIFF_CERTIFICATE_BYTES, StatementDiff,
+    StatementDiffCertificate, StatementDiffRequest, StatementLineChange, StatementMappingChange,
+};
 pub use statements::{CertifiedStatement, StatementSelection};
 pub use summary::{SummaryGroup, SummaryRequest, SummaryScope, SummaryTrialBalance};
+pub use summary_certificate::{
+    CertifiedSummaryTrialBalance, MAX_SUMMARY_CERTIFICATE_BYTES, SummaryCertificate,
+    SummaryCertificateStatus,
+};

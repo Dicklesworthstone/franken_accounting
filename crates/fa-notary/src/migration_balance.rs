@@ -188,6 +188,16 @@ fn encode(
                 if run.terminal.is_some() {
                     return Ok(Err(refusal(format!("leaf {index} terminates a run twice"))));
                 }
+                // Finalize/Abandon bind the same immutable RunBody as Open.
+                // Their tie-out digest is a different commitment and need not
+                // equal the body digest. Check every control, even when this
+                // run has no posting candidates in the requested cell.
+                if spec_body_digest != &run.body_digest {
+                    return Ok(Err(refusal(format!(
+                        "terminal leaf {index} names a different run body than its Open at leaf {}",
+                        run.open_index
+                    ))));
+                }
                 run.terminal = Some((*index, *transition));
             }
             _ => {

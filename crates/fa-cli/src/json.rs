@@ -4,8 +4,10 @@
 //! refused: amounts travel as strings like `"1500.00 USD"` so no float ever
 //! touches an amount path (plan §1 constraint 4). Object keys keep insertion
 //! order on read and are written sorted, so output is byte-deterministic.
+//! Strings are decoded losslessly: malformed escapes, unpaired surrogates,
+//! unescaped control characters and duplicate decoded keys are rejected.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Json {
@@ -221,6 +223,9 @@ impl Parser<'_> {
             Some(b'{') => {
                 self.i += 1;
                 let mut fields = Vec::new();
+                // Preserve insertion order without a quadratic duplicate scan.
+                // Check decoded keys before reading their (possibly large) values.
+                let mut keys = BTreeSet::new();
                 self.ws();
                 if self.eat(b'}') {
                     return Ok(Json::Obj(fields));
@@ -231,15 +236,15 @@ impl Parser<'_> {
                         return Err(self.err("expected a string key"));
                     }
                     let k = self.string()?;
+                    if !keys.insert(k.clone()) {
+                        return Err(self.err(&format!("duplicate key `{k}`")));
+                    }
                     self.ws();
                     if !self.eat(b':') {
                         return Err(self.err("expected `:`"));
                     }
                     self.ws();
                     let v = self.value(depth + 1)?;
-                    if fields.iter().any(|(fk, _): &(String, Json)| *fk == k) {
-                        return Err(self.err(&format!("duplicate key `{k}`")));
-                    }
                     fields.push((k, v));
                     self.ws();
                     if self.eat(b',') {
@@ -259,8 +264,19 @@ impl Parser<'_> {
     fn number(&mut self) -> Result<Json, ParseError> {
         let start = self.i;
         self.eat(b'-');
-        while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
-            self.i += 1;
+        match self.peek() {
+            Some(b'0') => {
+                self.i += 1;
+                if matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
+                    return Err(self.err("leading zeros are not accepted in JSON numbers"));
+                }
+            }
+            Some(b'1'..=b'9') => {
+                while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
+                    self.i += 1;
+                }
+            }
+            _ => return Err(self.err("expected an integer digit")),
         }
         if matches!(self.peek(), Some(b'.' | b'e' | b'E')) {
             return Err(self.err("fractional or exponent numbers are not accepted; write amounts as strings like \"12.34 USD\""));
@@ -270,6 +286,44 @@ impl Parser<'_> {
         text.parse::<i128>()
             .map(Json::Int)
             .map_err(|_| self.err("integer out of range"))
+    }
+
+    /// Read exactly four ASCII hexadecimal digits, never a signed integer.
+    fn hex_quad(&mut self) -> Result<u32, ParseError> {
+        let mut code = 0;
+        for _ in 0..4 {
+            let digit = match self.peek() {
+                Some(c @ b'0'..=b'9') => u32::from(c - b'0'),
+                Some(c @ b'a'..=b'f') => u32::from(c - b'a' + 10),
+                Some(c @ b'A'..=b'F') => u32::from(c - b'A' + 10),
+                _ => return Err(self.err("expected four hexadecimal digits in \\u escape")),
+            };
+            self.i += 1;
+            code = (code << 4) | digit;
+        }
+        Ok(code)
+    }
+
+    /// A UTF-16 surrogate pair encodes one scalar, not two replacements.
+    fn unicode_scalar(&mut self) -> Result<char, ParseError> {
+        let first = self.hex_quad()?;
+        let code = match first {
+            0xD800..=0xDBFF => {
+                if !self.eat(b'\\') || !self.eat(b'u') {
+                    return Err(
+                        self.err("high surrogate must be followed by a low surrogate escape")
+                    );
+                }
+                let low = self.hex_quad()?;
+                if !(0xDC00..=0xDFFF).contains(&low) {
+                    return Err(self.err("expected a low surrogate"));
+                }
+                0x10000 + ((first - 0xD800) << 10) + (low - 0xDC00)
+            }
+            0xDC00..=0xDFFF => return Err(self.err("unpaired low surrogate")),
+            _ => first,
+        };
+        char::from_u32(code).ok_or_else(|| self.err("invalid Unicode scalar"))
     }
 
     fn string(&mut self) -> Result<String, ParseError> {
@@ -296,23 +350,11 @@ impl Parser<'_> {
                         b'n' => out.push('\n'),
                         b'r' => out.push('\r'),
                         b't' => out.push('\t'),
-                        b'u' => {
-                            let hex = self
-                                .b
-                                .get(self.i..self.i + 4)
-                                .ok_or_else(|| self.err("short \\u escape"))?;
-                            let code = u32::from_str_radix(
-                                core::str::from_utf8(hex)
-                                    .map_err(|_| self.err("bad \\u escape"))?,
-                                16,
-                            )
-                            .map_err(|_| self.err("bad \\u escape"))?;
-                            self.i += 4;
-                            out.push(char::from_u32(code).unwrap_or('\u{fffd}'));
-                        }
+                        b'u' => out.push(self.unicode_scalar()?),
                         _ => return Err(self.err("unknown escape")),
                     }
                 }
+                0x00..=0x1F => return Err(self.err("unescaped control character in string")),
                 _ => {
                     // Copy one UTF-8 scalar.
                     let start = self.i - 1;
@@ -365,5 +407,114 @@ mod tests {
         assert!(parse("[1,]").is_err());
         assert!(parse("{\"a\":1} x").is_err());
         assert_eq!(parse("\"\\u0041\"").unwrap(), Json::Str("A".into()));
+    }
+
+    #[test]
+    fn integer_grammar_and_full_i128_domain() {
+        for value in [i128::MIN, -10, -1, 0, 1, 10, i128::MAX] {
+            assert_eq!(parse(&value.to_string()).unwrap(), Json::Int(value));
+        }
+        assert_eq!(parse("-0").unwrap(), Json::Int(0));
+        for text in [
+            "00",
+            "01",
+            "-00",
+            "-01",
+            "-",
+            "- 1",
+            "+1",
+            "1.0",
+            "1e0",
+            "1E+3",
+            "170141183460469231731687303715884105728",
+            "-170141183460469231731687303715884105729",
+        ] {
+            assert!(parse(text).is_err(), "accepted {text:?}");
+            assert!(
+                parse(&format!("[{text}]")).is_err(),
+                "accepted array {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_all_unescaped_controls_but_round_trips_escaped_controls() {
+        for code in 0_u8..0x20 {
+            let text = format!("\"{}\"", char::from(code));
+            assert!(parse(&text).is_err(), "accepted raw control {code}");
+            let escaped = format!(r#""\u{code:04x}""#);
+            let value = Json::Str(char::from(code).to_string());
+            assert_eq!(parse(&escaped).unwrap(), value);
+            assert_eq!(parse(&value.render()).unwrap(), value);
+        }
+    }
+
+    #[test]
+    fn surrogate_pairs_preserve_non_bmp_identifiers() {
+        for (text, expected) in [
+            (r#""\uD834\uDD1E""#, "\u{1d11e}"),
+            (r#""\ud83d\ude00""#, "\u{1f600}"),
+            (r#""\uD800\uDC00""#, "\u{10000}"),
+            (r#""\uDBFF\uDFFF""#, "\u{10ffff}"),
+            (r#""\uFFFD""#, "\u{fffd}"),
+        ] {
+            let value = parse(text).unwrap();
+            assert_eq!(value, Json::Str(expected.into()));
+            assert_eq!(parse(&value.render()).unwrap(), value);
+        }
+    }
+
+    #[test]
+    fn malformed_unicode_is_never_replaced_or_accepted_as_a_signed_hex_number() {
+        for text in [
+            r#""\uD800""#,
+            r#""\uDC00""#,
+            r#""\uDFFF""#,
+            r#""\uD800x""#,
+            r#""\uD800\n""#,
+            r#""\uD800\u0041""#,
+            r#""\uD800\uD800""#,
+            r#""\uDC00\uD800""#,
+            r#""\u+041""#,
+            r#""\u-041""#,
+            r#""\u 041""#,
+            r#""\u00xz""#,
+            r#""\u123""#,
+            r#""\uD800\u12""#,
+        ] {
+            assert!(parse(text).is_err(), "accepted {text:?}");
+        }
+    }
+
+    #[test]
+    fn duplicate_detection_uses_decoded_keys_at_every_object_depth() {
+        for text in [
+            r#"{"a":1,"\u0061":2}"#,
+            r#"{"nested":{"a":1,"\u0061":2}}"#,
+            r#"[{"a":1,"\u0061":2}]"#,
+            "{\"\u{1f600}\":1,\"\\ud83d\\ude00\":2}",
+        ] {
+            assert!(parse(text).unwrap_err().message.contains("duplicate"));
+        }
+        // Reusing a key in a different object is legal.
+        assert!(parse(r#"{"a":1,"nested":{"a":2}}"#).is_ok());
+    }
+
+    #[test]
+    fn raw_and_escaped_identifiers_have_identical_canonical_bytes() {
+        let raw = parse("{\"\u{1f600}\":\"\u{1d11e}\",\"a\":1}").unwrap();
+        let escaped = parse(r#"{"a":1,"\ud83d\ude00":"\ud834\udd1e"}"#).unwrap();
+        assert_eq!(raw.render(), escaped.render());
+    }
+
+    #[test]
+    fn nesting_limit_and_truncated_tokens_fail_without_panicking() {
+        let at_limit = format!("{}0{}", "[".repeat(MAX_DEPTH), "]".repeat(MAX_DEPTH));
+        assert!(parse(&at_limit).is_ok());
+        let too_deep = format!("[{at_limit}]");
+        assert!(parse(&too_deep).is_err());
+        for text in ["", "[", "{", "\"", "\"\\", "\"\\u", "\"\\uD800\\u", "tru"] {
+            assert!(parse(text).is_err(), "accepted {text:?}");
+        }
     }
 }

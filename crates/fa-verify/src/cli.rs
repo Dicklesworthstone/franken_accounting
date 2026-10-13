@@ -77,7 +77,9 @@ pub const EXIT_FAILED: i32 = 8;
 /// policy can call the library directly.
 pub const MAX_INPUT_BYTES: usize = 64 * 1024 * 1024;
 
-const USAGE: &str = "\
+/// The library grammar's usage text (the `fa-verify` binary appends it to
+/// its own `--help`).
+pub const USAGE: &str = "\
 fa-verify — the dependency-free verifier (FrankenAccounting plan §13.3)
 
 usage: fa-verify <command> <file> [options] [--json] [--hex]
@@ -114,6 +116,8 @@ options:
   --hex          read every input file as hexadecimal text
 
 Input files are limited to 64 MiB. No book, network or other program is used.
+The raw --proof/--checkpoint grammar (operator-trusted 80-byte checkpoints, balance
+expectations) and the document and redacted-view commands: fa-verify --help.
 exit codes: 0 verified · 2 usage · 5 file I/O · 8 verification failed
 ";
 

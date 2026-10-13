@@ -374,3 +374,162 @@ fn empty_and_nonmigration_v2_proofs_work_without_changing_v1_bytes() {
         );
     }
 }
+
+// Re-seal the changed proposal before rebuilding the journal: this is an
+// authenticated semantic mismatch, not a stale hash or broken envelope.
+fn rebound_terminal(body: &RunBody, transition: u8, seq: u64) -> (VId, Entry, CommitSeq) {
+    let (vid, entry, recorded) = control(body, transition, seq);
+    let mut proposal = entry.proposal;
+    let mut other_digest = body.digest().unwrap();
+    other_digest[0] ^= 1;
+    proposal.origin = EntryOrigin::Control {
+        control_kind: ControlKind::MIGRATION_RUN,
+        spec_body_digest: other_digest,
+    };
+    (vid, proposal.seal(Vec::new(), None).unwrap(), recorded)
+}
+
+#[test]
+fn terminal_body_substitution_is_refused_for_finalize_and_abandon() {
+    let body = body(RunMode::OpeningOnly, false, "terminal-binding");
+    for (terminal, expected) in [(kind::FINALIZE, 5_000), (kind::ABANDON, 0)] {
+        let valid = history(&body, Some(terminal), 100);
+        // Terminal tie-out and run-body commitments are different things.
+        // The fixture intentionally keeps the former at [9; 32].
+        assert_ne!(body.digest().unwrap(), [9; 32]);
+        assert_eq!(
+            checked(&valid, std::slice::from_ref(&body), CASH, 1, None)
+                .claim
+                .debits,
+            expected
+        );
+        let invalid = Journal::from_records(
+            BOOK,
+            CommitSeq(3),
+            vec![
+                control(&body, kind::OPEN, 1),
+                posting(Some(&body), 2, 100, 1),
+                rebound_terminal(&body, terminal, 3),
+            ],
+        )
+        .unwrap();
+        for account in [CASH, OFFSET] {
+            let refusal = invalid
+                .balance_proof_with_migrations(account, 1, None, std::slice::from_ref(&body))
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(refusal.code, code::MIGRATION_STAGED);
+            assert!(refusal.message.contains("different run body"));
+        }
+    }
+}
+
+#[test]
+fn unrelated_or_cutoff_excluded_chunks_do_not_hide_a_bad_v2_terminal() {
+    let body = body(RunMode::OpeningOnly, false, "unrelated-terminal");
+    for terminal in [kind::FINALIZE, kind::ABANDON] {
+        let valid = history(&body, Some(terminal), 100);
+        let invalid = Journal::from_records(
+            BOOK,
+            CommitSeq(3),
+            vec![
+                control(&body, kind::OPEN, 1),
+                posting(Some(&body), 2, 100, 1),
+                rebound_terminal(&body, terminal, 3),
+            ],
+        )
+        .unwrap();
+        for (account, unit, cutoff) in [(VId(999), 1, None), (CASH, 2, None), (CASH, 1, Some(99))] {
+            // No run body is required or disclosed for these cells. All
+            // controls still belong to v2's authenticated lifecycle scope.
+            assert_eq!(checked(&valid, &[], account, unit, cutoff).claim.debits, 0);
+            let refusal = invalid
+                .balance_proof_with_migrations(account, unit, cutoff, &[])
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(refusal.code, code::MIGRATION_STAGED);
+            assert!(refusal.message.contains("different run body"));
+        }
+    }
+}
+
+#[test]
+fn recipient_requests_bind_nonempty_v2_proofs_across_migration_visibility_states() {
+    use fa_verify::{
+        BalanceAmounts, BalanceExpectation, BalanceExpectationError, BalanceScope,
+        verify_balance_for,
+    };
+    for (mode, sole, day, visible) in [
+        (RunMode::OpeningOnly, false, 100, 5_000),
+        (RunMode::PeriodBalances, false, 90, 5_000),
+        (RunMode::FullDetail, false, 90, 0),
+        (RunMode::FullDetail, true, 90, 5_000),
+    ] {
+        let body = body(mode, sole, "requested-migration");
+        for terminal in [None, Some(kind::ABANDON), Some(kind::FINALIZE)] {
+            let journal = history(&body, terminal, day);
+            let checkpoint = anchor(&journal);
+            let proof = journal
+                .balance_proof_with_migrations(CASH, 1, Some(day), std::slice::from_ref(&body))
+                .unwrap()
+                .unwrap();
+            // These expectations come from fixture intent, never from the
+            // untrusted proof's claim or its recomputed result.
+            let expected = BalanceExpectation {
+                scope: BalanceScope {
+                    account: CASH.0,
+                    unit: 1,
+                    effective_through: Some(day),
+                },
+                amounts: Some(BalanceAmounts {
+                    debits: if terminal == Some(kind::FINALIZE) {
+                        visible
+                    } else {
+                        0
+                    },
+                    credits: 0,
+                }),
+            };
+            let verified = verify_balance_for(&proof, &checkpoint, &expected).unwrap();
+            assert_eq!(
+                verified,
+                fa_verify::verify_balance(&proof, &checkpoint).unwrap()
+            );
+            for scope in [
+                BalanceScope {
+                    account: OFFSET.0,
+                    ..expected.scope
+                },
+                BalanceScope {
+                    unit: 2,
+                    ..expected.scope
+                },
+                BalanceScope {
+                    effective_through: None,
+                    ..expected.scope
+                },
+            ] {
+                assert!(matches!(
+                    verify_balance_for(
+                        &proof,
+                        &checkpoint,
+                        &BalanceExpectation { scope, ..expected }
+                    ),
+                    Err(BalanceExpectationError::Scope { .. }),
+                ));
+            }
+            let amounts = expected.amounts.unwrap();
+            let wrong = BalanceExpectation {
+                amounts: Some(BalanceAmounts {
+                    debits: amounts.debits + 1,
+                    credits: 1,
+                }),
+                ..expected
+            };
+            assert!(matches!(
+                verify_balance_for(&proof, &checkpoint, &wrong),
+                Err(BalanceExpectationError::Amounts { .. })
+            ));
+        }
+    }
+}

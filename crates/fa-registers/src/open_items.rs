@@ -11,6 +11,9 @@
 
 pub mod aging;
 pub mod history;
+pub mod settlement;
+
+pub use settlement::{SettlementAllocation, SettlementPlan, SettlementRequest, plan_settlement};
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -422,6 +425,30 @@ mod tests {
                 .windows(16)
                 .any(|bytes| { bytes == 9_007_199_254_740_993i128.to_le_bytes().as_slice() })
         );
+
+        // Public settlement advice consumes the same exact, reversal-aware
+        // snapshot as the certified report, without changing its output bytes.
+        let request = SettlementRequest {
+            account: VId(9),
+            unit_id: 1,
+            side: Side::Credit,
+            amount: 9_007_199_254_740_993,
+            effective_date: DateDay(20_000),
+            targets: vec![(VId(10), 0)],
+        };
+        let plan = report.plan_settlement(&request).unwrap();
+        assert_eq!(plan.known_at, report.known_at);
+        assert_eq!(plan.unapplied, 0);
+        assert_eq!(plan.allocations.len(), 1);
+        assert_eq!(plan.allocations[0].amount, request.amount);
+        assert_eq!(plan.allocations[0].open_before, request.amount);
+        assert_eq!(plan.allocations[0].open_after, 0);
+        plan.validate_against(&report).unwrap();
+        assert_eq!(report.canonical_bytes().unwrap(), original);
+        let mut newer = report.clone();
+        newer.known_at = CommitSeq(9);
+        assert!(plan.validate_against(&newer).is_err());
+
         // An undone application remains part of the certified history even
         // though it contributes zero to the current applied/open amounts.
         let history = report.items[0].applications.pop().unwrap();
