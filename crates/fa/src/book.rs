@@ -1285,6 +1285,62 @@ impl Book {
         with_store!(&self.store, core => core.open_items_report(&self.purposes(), account, known_at))
     }
 
+    /// Read complete selected general-ledger detail at one retained prefix.
+    /// This synchronous adapter delegates to the same AsyncBook implementation
+    /// used by lab and embedded callers; no alternate report semantics exist.
+    pub fn general_ledger(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::RollForwardRequest,
+    ) -> Outcome<crate::GeneralLedger> {
+        with_store!(&self.store, core => core.general_ledger(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Certify the native retained-history source before deriving ledger detail.
+    /// The returned source certificate is the existing roll-forward certificate,
+    /// not a second certificate format.
+    pub fn certify_general_ledger(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::RollForwardRequest,
+    ) -> Outcome<crate::general_ledger::CertifiedGeneralLedger> {
+        with_store!(&self.store, core => core.certify_general_ledger(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Replay a certified ledger only after binding it to an independently
+    /// supplied expected request under current read authority.
+    pub fn replay_general_ledger(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        source: &crate::roll_forward::RollForwardCertificate,
+        expected: &crate::RollForwardRequest,
+    ) -> Outcome<crate::GeneralLedger> {
+        with_store!(&self.store, core => core.replay_general_ledger(
+            &self.purposes(), principal, capability, source, expected
+        ))
+    }
+
+    /// Render the selected ledger as bounded JSONL after replaying the complete
+    /// native source certificate. Produce authority is required by the async core.
+    pub fn general_ledger_jsonl(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        source: &crate::roll_forward::RollForwardCertificate,
+        expected: &crate::RollForwardRequest,
+    ) -> Outcome<String> {
+        with_store!(&self.store, core => core.general_ledger_jsonl(
+            &self.purposes(), principal, capability, source, expected
+        ))
+    }
+
     /// Compare immutable leg mirrors and topology with canonical entry payloads.
     /// `None` selects the current head; an explicit sequence checks that prefix.
     /// Drift is reported without changing the book.
