@@ -29,7 +29,7 @@ pub mod sod;
 
 pub use admit::{
     AccountScope, Intent, Observes, Reach, admit, admit_base, admit_read, admit_within, current,
-    reach, require, scope,
+    reach, require, scope, writes_trunk,
 };
 pub use approval::Approval;
 pub use capability::{Capability, CapabilityError, Profile};

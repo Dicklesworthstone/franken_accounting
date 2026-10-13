@@ -113,6 +113,15 @@ pub fn admit(cap: &Capability, intent: &Intent<'_>) -> Result<(), Denial> {
     admit_within(cap, intent, &Reach::whole_book(intent.trunk), None)
 }
 
+/// Whether the capability may write trunk at all: an Agent never does (it
+/// works on drafts; plan §14.4), so its trunk writes are refused
+/// FA-REF-013 whatever ops it holds. [`admit_base`] applies exactly this;
+/// surfaces use it to avoid suggesting a write that must be refused.
+#[must_use]
+pub fn writes_trunk(cap: &Capability) -> bool {
+    cap.profile() != Profile::Agent
+}
+
 /// [`admit`] for an act that names what it reaches: [`admit_base`], then
 /// [`reach`] over `r` with the compiled `accounts` scope.
 pub fn admit_within(
@@ -137,7 +146,7 @@ pub fn admit_base(cap: &Capability, intent: &Intent<'_>) -> Result<(), Denial> {
             principal: intent.principal,
         });
     }
-    if cap.profile() == Profile::Agent && intent.trunk {
+    if intent.trunk && !writes_trunk(cap) {
         return Err(Denial::AgentOnTrunk);
     }
     require(

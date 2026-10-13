@@ -58,6 +58,10 @@ pub struct StructuredError {
     pub never: Option<String>,
     /// The trusted launch binding under which this refusal was produced.
     pub authority: Option<JsonValue>,
+    /// Commands the fix names that this session's launch authority cannot
+    /// make (fa-na8): the operator runs them, outside MCP, or launches a
+    /// session that may. Never offered as tool calls.
+    pub operator_commands: Vec<String>,
 }
 
 impl StructuredError {
@@ -105,6 +109,7 @@ impl StructuredError {
             detector: None,
             never,
             authority: None,
+            operator_commands: Vec::new(),
         }
     }
 
@@ -129,6 +134,7 @@ impl StructuredError {
             detector: Some(detector.to_string()),
             never: None,
             authority: None,
+            operator_commands: Vec::new(),
         }
     }
 
@@ -154,6 +160,7 @@ impl StructuredError {
             detector: None,
             never: None,
             authority: None,
+            operator_commands: Vec::new(),
         }
     }
 
@@ -175,6 +182,7 @@ impl StructuredError {
             detector: None,
             never: None,
             authority: None,
+            operator_commands: Vec::new(),
         }
     }
 
@@ -194,6 +202,7 @@ impl StructuredError {
             detector: None,
             never: None,
             authority: None,
+            operator_commands: Vec::new(),
         }
     }
 
@@ -201,6 +210,21 @@ impl StructuredError {
     #[must_use]
     pub fn with_authority(mut self, authority: JsonValue) -> Self {
         self.authority = Some(authority);
+        self
+    }
+
+    /// Keep only the suggested calls `admissible` admits; the others become
+    /// `operator_commands`, so a refusal never points an agent at a call
+    /// the same launch authority must refuse (fa-na8).
+    #[must_use]
+    pub fn with_admissible_calls(mut self, admissible: impl Fn(&str) -> bool) -> Self {
+        let (keep, refuse): (Vec<ToolCall>, Vec<ToolCall>) = self
+            .suggested_tool_calls
+            .into_iter()
+            .partition(|call| admissible(&call.command));
+        self.suggested_tool_calls = keep;
+        self.operator_commands
+            .extend(refuse.into_iter().map(|call| call.command));
         self
     }
 
@@ -232,6 +256,9 @@ impl StructuredError {
         }
         if let Some(authority) = &self.authority {
             v["authority"] = authority.clone();
+        }
+        if !self.operator_commands.is_empty() {
+            v["operator_commands"] = json!(self.operator_commands);
         }
         // Both launch-binding refusals name the offending argument where a
         // client reads structured error data, before any detector or book
@@ -352,6 +379,53 @@ mod tests {
         ] {
             assert!(j.get(key).is_some(), "{key}");
         }
+    }
+
+    /// fa-na8: a suggested call the launch authority cannot make is never
+    /// offered as a tool call; it is named for the operator instead.
+    #[test]
+    fn suggestions_outside_the_launch_authority_become_operator_commands() {
+        let (mcp, reg) = embedded();
+        let e = StructuredError::from_error_event(
+            &mcp,
+            reg,
+            &planted(
+                "refusal",
+                3,
+                None,
+                None,
+                Some("read `fa tb --period FY2026-P03 --json`, then `fa checkpoint create --json`"),
+            ),
+        );
+        assert_eq!(
+            e.suggested_tool_calls.len(),
+            2,
+            "{:?}",
+            e.suggested_tool_calls
+        );
+        let e = e.with_admissible_calls(|command| command.starts_with("fa tb"));
+        assert_eq!(e.suggested_tool_calls.len(), 1);
+        assert!(e.suggested_tool_calls[0].command.starts_with("fa tb"));
+        assert_eq!(e.operator_commands, vec!["fa checkpoint create --json"]);
+        let j = e.to_json();
+        assert_eq!(
+            j["operator_commands"],
+            json!(["fa checkpoint create --json"])
+        );
+        // Nothing dropped: no operator_commands key at all.
+        let all = StructuredError::from_error_event(
+            &mcp,
+            reg,
+            &planted(
+                "refusal",
+                3,
+                None,
+                None,
+                Some("read `fa tb --period FY2026-P03 --json`"),
+            ),
+        )
+        .with_admissible_calls(|_| true);
+        assert!(all.to_json().get("operator_commands").is_none());
     }
 
     #[test]

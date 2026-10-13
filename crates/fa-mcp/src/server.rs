@@ -218,8 +218,24 @@ impl Adapter {
         tool: &ToolSpec,
         arguments: &JsonValue,
     ) -> Result<CallOutput, StructuredError> {
-        self.call_inner(tool, arguments)
-            .map_err(|e| e.with_authority(self.authority_json()))
+        self.call_inner(tool, arguments).map_err(|e| {
+            e.with_admissible_calls(|command| self.admissible(command))
+                .with_authority(self.authority_json())
+        })
+    }
+
+    /// Whether this session's launch authority could make `command` (an
+    /// `fa …` line) at all: the shared launch-bound admission table, the
+    /// ops it holds, and the trunk-write rule (fa-na8). Dispatch never uses
+    /// this: the kernel stays the authority that refuses.
+    fn admissible(&self, command: &str) -> bool {
+        let argv = crate::registry::shell_split(command);
+        match argv.split_first() {
+            Some((fa, rest)) if fa == "fa" => {
+                fa_cli::cli::bound_command_admissible(self.authority.capability(), rest)
+            }
+            _ => false,
+        }
     }
 
     fn call_inner(
@@ -292,7 +308,14 @@ impl Adapter {
                         let command = n.get("command").and_then(Json::as_str).unwrap_or("");
                         let mut v = to_wire(n);
                         if let Some(call) = self.mcp.command_to_call(self.reg, command) {
-                            v["call"] = json!({ "tool": call.tool, "arguments": call.arguments });
+                            if self.admissible(command) {
+                                v["call"] =
+                                    json!({ "tool": call.tool, "arguments": call.arguments });
+                            } else {
+                                // Outside this launch's authority: the
+                                // operator's step, never a callable tool.
+                                v["requires_operator"] = json!(true);
+                            }
                         }
                         v
                     })

@@ -1206,43 +1206,104 @@ fn post_plan_only(verb: &str, args: &Args) -> bool {
 /// book. Legacy facade mutations without a caller capability remain owner
 /// operations. Report certificates and derived register caches are metadata,
 /// not accounting entries; their actual dangerous rewrites are gated too.
+/// What the launch-bound command surface requires of one command (plan
+/// §14.2–§14.4): the capability ops checked before dispatch, and whether
+/// the command writes trunk, which the kernel refuses for a profile that
+/// may not ([`fa_policy::writes_trunk`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BoundAdmission {
+    pub ops: &'static [fa_policy::Op],
+    pub writes_trunk: bool,
+}
+
+/// The launch-bound admission of `verb` / `sub`; `plan_only` is a period
+/// transition that only plans (`--dry-run` / `--plan-out`). `None`: the
+/// command is not admitted on that surface at all (an owner operation).
+#[must_use]
+pub fn bound_admission(verb: &str, sub: Option<&str>, plan_only: bool) -> Option<BoundAdmission> {
+    use fa_policy::Op;
+    let read = |ops: &'static [Op]| BoundAdmission {
+        ops,
+        writes_trunk: false,
+    };
+    let write = |ops: &'static [Op]| BoundAdmission {
+        ops,
+        writes_trunk: true,
+    };
+    if verb == "period" && plan_only {
+        return Some(read(&[Op::Read]));
+    }
+    Some(match (verb, sub) {
+        // The chart templates are data embedded in this build; listing
+        // them reads nothing from the book.
+        ("capabilities" | "robot-docs" | "help", _) | ("chart", Some("templates")) => read(&[]),
+        ("book", Some("info"))
+        | ("chart" | "period", Some("list"))
+        | (
+            "tb" | "statement" | "open-items" | "explain" | "replay" | "certificate" | "entry"
+            | "procedure" | "triage" | "next" | "doctor",
+            _,
+        ) => read(&[Op::Read]),
+        ("verify" | "registers", _) => read(&[Op::Read, Op::Verify]),
+        // A dry run still runs the kernel's admission, which refuses an
+        // Agent's trunk write (the owner's e2e pins that refusal).
+        ("post" | "commit" | "reverse" | "reserve" | "resolve", _) => write(&[Op::Post]),
+        ("approve", _) => read(&[Op::Approve]),
+        ("checkpoint", _) => write(&[Op::Witness]),
+        ("proof" | "bundle", _) => read(&[Op::Read, Op::Produce]),
+        _ => return None,
+    })
+}
+
+/// Whether `argv` (a command without its leading `fa`) could pass the
+/// launch-bound admission under `capability`: admitted on that surface,
+/// every op held, and no trunk write by a profile that may not write
+/// trunk. MCP filters the tool calls it suggests with this, so a refusal
+/// never points an agent at another call that must be refused; dispatch
+/// itself still lets the kernel refuse (the authority stays the kernel's).
+#[must_use]
+pub fn bound_command_admissible(capability: &fa_policy::Capability, argv: &[String]) -> bool {
+    let Some(verb) = argv.first().map(String::as_str) else {
+        return false;
+    };
+    let sub = argv
+        .get(1)
+        .map(String::as_str)
+        .filter(|s| !s.starts_with('-'));
+    let has = |flag: &str| argv.iter().any(|a| a == flag);
+    let plan_only = verb == "period"
+        && matches!(
+            sub,
+            Some("open" | "soft-close" | "close" | "lock" | "reopen")
+        )
+        && (has("--plan-out") || has("--dry-run"))
+        && !has("--plan")
+        && !has("--approval");
+    bound_admission(verb, sub, plan_only).is_some_and(|admission| {
+        admission
+            .ops
+            .iter()
+            .all(|op| fa_policy::require(capability, *op, verb).is_ok())
+            && (!admission.writes_trunk || fa_policy::writes_trunk(capability))
+    })
+}
+
 fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fail> {
     let Some(authority) = &ctx.authority else {
         return Ok(());
     };
-    use fa_policy::Op;
     let sub = args.positional.get(1).map(String::as_str);
-    let required: &[Op] = if period_plan_only(&verb.name, args) {
-        &[Op::Read]
-    } else {
-        match (verb.name.as_str(), sub) {
-            // The chart templates are data embedded in this build; listing
-            // them reads nothing from the book.
-            ("capabilities" | "robot-docs" | "help", _) | ("chart", Some("templates")) => &[],
-            ("book", Some("info"))
-            | ("chart" | "period", Some("list"))
-            | (
-                "tb" | "statement" | "open-items" | "explain" | "replay" | "certificate" | "entry"
-                | "procedure" | "triage" | "next" | "doctor",
-                _,
-            ) => &[Op::Read],
-            ("verify" | "registers", _) => &[Op::Read, Op::Verify],
-            ("post" | "commit" | "reverse" | "reserve" | "resolve", _) => &[Op::Post],
-            ("approve", _) => &[Op::Approve],
-            ("checkpoint", _) => &[Op::Witness],
-            ("proof" | "bundle", _) => &[Op::Read, Op::Produce],
-            _ => {
-                return Err(Refusal::new(
-                    fa_journal::refusal::code::CAPABILITY,
-                    exit::SAFETY,
-                    format!("`{}` is not admitted by the launch-bound MCP command surface", command_name(&verb.name, sub)),
-                    "plan §14.2–§14.4; fa-23r (authority before observation)",
-                    "ask the operator to perform this owner operation; document intake needs its provenance-authorized surface (fa-vwf), and period lock/reopen can be prepared with --plan-out",
-                ).into());
-            }
-        }
+    let Some(admission) = bound_admission(&verb.name, sub, period_plan_only(&verb.name, args))
+    else {
+        return Err(Refusal::new(
+            fa_journal::refusal::code::CAPABILITY,
+            exit::SAFETY,
+            format!("`{}` is not admitted by the launch-bound MCP command surface", command_name(&verb.name, sub)),
+            "plan §14.2–§14.4; fa-23r (authority before observation)",
+            "ask the operator to perform this owner operation; document intake needs its provenance-authorized surface (fa-vwf), and period lock/reopen can be prepared with --plan-out",
+        ).into());
     };
-    for op in required {
+    for op in admission.ops {
         fa_policy::require(authority.capability(), *op, &command_name(&verb.name, sub))
             .map_err(|denial| {
                 let mut refusal = fa_journal::policy::refusal(&denial);
@@ -6301,6 +6362,50 @@ fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// fa-na8: the launch-bound admission predicate MCP filters its
+    /// suggestions with. An Agent (the default launch, read+post+verify)
+    /// may read, verify and plan a period transition, but no trunk write
+    /// (post, checkpoint) and no owner operation; a Preparer holding `post`
+    /// may post; a missing op is never admissible.
+    #[test]
+    fn suggestions_are_admissible_only_within_the_launch_authority() {
+        use fa_policy::{Capability, Op, Profile};
+        use fgdb_types::VId;
+        let argv = |line: &str| -> Vec<String> { line.split(' ').map(str::to_string).collect() };
+        let agent = Capability::new(
+            VId(31),
+            Profile::Agent,
+            &[Op::Read, Op::Post, Op::Verify],
+            VId(1),
+        )
+        .expect("agent capability");
+        let preparer = Capability::new(VId(32), Profile::Human, &[Op::Read, Op::Post], VId(1))
+            .expect("preparer");
+        for (line, agent_ok, preparer_ok) in [
+            ("tb --period FY2026-P03 --json", true, true),
+            ("verify registers --json", true, false),
+            ("period close FY2026-P03 --dry-run --json", true, true),
+            ("period close FY2026-P03 --json", false, false),
+            ("post --intent - --json", false, true),
+            ("post --intent - --dry-run --json", false, true),
+            ("checkpoint create --json", false, false),
+            ("chart import - --json", false, false),
+            ("capabilities --json", true, true),
+        ] {
+            assert_eq!(
+                bound_command_admissible(&agent, &argv(line)),
+                agent_ok,
+                "agent: {line}"
+            );
+            assert_eq!(
+                bound_command_admissible(&preparer, &argv(line)),
+                preparer_ok,
+                "preparer: {line}"
+            );
+        }
+        assert!(!bound_command_admissible(&agent, &[]));
+    }
 
     /// The other half of the parity gate (the binary tests prove every
     /// registered verb and subcommand reaches a handler): a handler whose
