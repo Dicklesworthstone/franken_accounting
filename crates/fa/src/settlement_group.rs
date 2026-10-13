@@ -7,6 +7,8 @@
 //! The existing single-leg preparer resolves each selection at the same basis;
 //! the ordinary posting kernel judges the complete combined entry atomically.
 
+mod review;
+
 use std::collections::BTreeSet;
 
 use asupersync::fs::Vfs;

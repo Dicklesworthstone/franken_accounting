@@ -330,3 +330,5 @@ fn competing_consumption_invalidates_the_whole_group_not_only_one_leg() {
     assert_eq!(h.open(bill, 1), 70, "the other selection must not commit alone");
     assert!(h.book.verify_open_items(&cx).unwrap().is_green());
 }
+
+mod review;
