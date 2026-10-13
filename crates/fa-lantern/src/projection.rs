@@ -15,7 +15,7 @@ use fa_money::allocation::largest_remainder;
 use fa_money::{Amount, Side};
 use fa_time::DateDay;
 use fgdb_crypto::Hasher;
-use fgdb_types::VId;
+use fgdb_types::{CommitSeq, VId};
 
 use crate::{LanternError, Snapshot};
 
@@ -56,6 +56,9 @@ pub struct MoneyFlow {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FlowLeg {
     pub entry: VId,
+    /// The entry's recorded commit sequence: its statement order, which
+    /// orders same-day legs (never the hashed vid).
+    pub recorded: CommitSeq,
     pub class: EntryClass,
     pub effective_date: DateDay,
     pub period: String,
@@ -102,6 +105,7 @@ pub fn flow_legs(snapshot: &Snapshot) -> Result<Vec<FlowLeg>, LanternError> {
                 for ((to, _), share) in debits.iter().zip(shares) {
                     legs.push(FlowLeg {
                         entry: e.vid,
+                        recorded: e.recorded_at,
                         class: e.entry.proposal.class,
                         effective_date: e.entry.proposal.effective_date,
                         period: e.period.clone(),

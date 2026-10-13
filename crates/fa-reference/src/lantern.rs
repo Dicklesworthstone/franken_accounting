@@ -24,6 +24,8 @@ pub struct Row {
     pub date: DateDay,
     pub document_date: Option<DateDay>,
     pub period: String,
+    /// The period's exclusive end (fa-time `PeriodDef::end`); its last day
+    /// is one before.
     pub period_end: DateDay,
     pub legs: Vec<Leg>,
     pub preparer: String,
@@ -57,7 +59,7 @@ pub fn round_amounts(rows: &[Row], round_power: u32) -> Vec<(usize, usize)> {
 pub fn period_end_timing(rows: &[Row], window: i32) -> Vec<usize> {
     rows.iter()
         .filter(|r| {
-            let d = r.period_end.0 - r.date.0;
+            let d = r.period_end.0 - 1 - r.date.0;
             d >= 0 && d < window
         })
         .map(|r| r.index)

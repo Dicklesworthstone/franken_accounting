@@ -32,13 +32,14 @@ fn is_asset(snapshot: &Snapshot, account: VId) -> bool {
         .is_some_and(|a| a.account_type == AccountType::ASSET.0)
 }
 
-/// Days from a leg's effective date to the end of its period; `None` when
-/// the period is not in the snapshot's calendar.
+/// Days from a leg's effective date to the last day of its period (`end`
+/// is exclusive, so the last day is `end - 1`); `None` when the period is
+/// not in the snapshot's calendar.
 fn days_to_period_end(snapshot: &Snapshot, leg: &FlowLeg) -> Option<i32> {
     snapshot
         .periods
         .get(&leg.period)
-        .map(|p| p.end.0 - leg.effective_date.0)
+        .map(|p| p.end.0 - 1 - leg.effective_date.0)
 }
 
 /// `graph.round_trips`: value that leaves one asset account for another and
@@ -110,11 +111,11 @@ impl Procedure for RoundTrips {
                     work.compare(1);
                     let gap = r.effective_date.0 - o.effective_date.0;
                     // When the dates tie both orderings qualify; report the
-                    // one whose outbound entry is the earlier vid.
+                    // one whose outbound entry was recorded first.
                     if o.entry == r.entry
                         || o.mantissa != r.mantissa
                         || !(0..=window_days).contains(&gap)
-                        || (gap == 0 && r.entry < o.entry)
+                        || (gap == 0 && (r.recorded, r.entry) < (o.recorded, o.entry))
                     {
                         continue;
                     }
@@ -263,9 +264,13 @@ impl Rule {
             return Ok(());
         }
         let span = last.effective_date.0 - first.effective_date.0;
-        let mut entries: Vec<VId> = chain.iter().map(|l| l.entry).collect();
-        entries.sort_unstable();
-        entries.dedup();
+        // The chain's entries in its own (date, recorded) order, each once.
+        let mut seen = std::collections::BTreeSet::new();
+        let mut entries: Vec<VId> = chain
+            .iter()
+            .map(|l| l.entry)
+            .filter(|entry| seen.insert(*entry))
+            .collect();
         entries.truncate(MAX_CITES - 2);
         let severity = if sum >= self.threshold.saturating_mul(2)
             || chain.len() >= self.min_count.saturating_mul(2)
@@ -338,7 +343,7 @@ impl Procedure for Structuring {
         let mut out = Vec::new();
         for (key, mut group) in groups {
             let scale = crate::unit_scale(book, key.2)?;
-            group.sort_by_key(|l| (l.effective_date, l.entry));
+            group.sort_by_key(|l| (l.effective_date, l.recorded, l.entry));
             work.compare(group.len() as u64);
             let mut chain: Vec<&FlowLeg> = Vec::new();
             for l in group {

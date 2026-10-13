@@ -178,7 +178,9 @@ impl Procedure for PeriodEndTiming {
                 continue;
             };
             population += 1;
-            let days_to_end = period.end.0 - e.entry.proposal.effective_date.0;
+            // A period's `end` is exclusive (fa-time PeriodDef), so its last
+            // day is `end - 1`: an entry on the last day is 0 days from it.
+            let days_to_end = period.end.0 - 1 - e.entry.proposal.effective_date.0;
             if (0..window).contains(&days_to_end) {
                 hits.push((e.vid, e.period.clone(), days_to_end));
             }

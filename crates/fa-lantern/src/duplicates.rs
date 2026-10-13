@@ -160,8 +160,9 @@ impl Procedure for SameSameDifferent {
                 if apart > window {
                     continue;
                 }
-                let mut pair = [list[i].2, later];
-                pair.sort_unstable();
+                // Earlier then later, in (date, recorded) order: the
+                // chronology a reader checks, never the hashed vid order.
+                let pair = [list[i].2, later];
                 out.push(finding(
                     Self::ID,
                     Severity::Low,
