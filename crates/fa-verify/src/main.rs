@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 mod balance_args;
+mod document_args;
 
 use std::ffi::OsString;
 use std::fs::File;
@@ -34,6 +35,7 @@ Usage:
   fa-verify balance --proof FILE --checkpoint TRUSTED_FILE [--json]
   fa-verify consistency --proof FILE --checkpoint TRUSTED_FILE --next-checkpoint CLAIMED_FILE [--json]
   fa-verify redacted-view --view FILE --document-commit HEX64 --expect-chunks I,J [--json]
+  fa-verify document --proof FILE --document-commit TRUSTED_FILE --chunks 0,4 [--json]
 
 All inputs are raw canonical bytes, not hex text or a bundle. A checkpoint
 is exactly 80 bytes. Obtain and trust --checkpoint independently of the
@@ -54,7 +56,15 @@ A valid proof for a different scope or amount fails with exit 8. Without
 these options only the proof's own claim is verified. Never copy expected
 values from the untrusted proof or its packaging.
 
-Accumulator proof files are limited to 64 MiB. For kernel RedactedView v1
+Compact document disclosures use the portable fa:document-disclosure:v1
+format with the document command. Its --document-commit is a FILE containing
+exactly 32 raw doc_commit bytes, not hex text or an 80-byte checkpoint.
+Obtain this commitment independently. --chunks is the recipient's nonempty,
+strictly increasing comma-separated decimal request (at most 16384 indexes),
+never inferred from the proof. Whole chunks only; no partial redactions.
+Output is membership_only and never echoes disclosed document content.
+
+Accumulator and compact proof files are limited to 64 MiB. For kernel RedactedView v1
 inputs, run fa-verify redacted-view --help. That command uses a document
 commitment, not a checkpoint, and a framing-aware view size bound.
 No book, keys, or network are required.
@@ -780,6 +790,8 @@ fn main() -> ExitCode {
     let json = args.iter().any(|argument| argument == "--json");
     let result = if args.first().and_then(|arg| arg.to_str()) == Some("redacted-view") {
         redacted_view_cli::run(&args[1..], json)
+    } else if args.first().and_then(|arg| arg.to_str()) == Some("document") {
+        document_args::run(&args, json)
     } else {
         parse(&args).and_then(|request| verify(&request)).map(|report| {
             if json { report.json() } else { report.human() }
