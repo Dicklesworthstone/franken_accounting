@@ -51,6 +51,7 @@ pub mod document_disclosure;
 pub mod proof;
 pub mod settlement;
 pub mod settlement_group;
+pub mod settlement_group_review;
 pub mod settlement_review;
 pub mod statement_diff;
 pub mod statement_diff_workpaper;
@@ -88,6 +89,7 @@ pub use settlement_group::{
     MAX_SETTLEMENT_GROUP_LEGS, MAX_SETTLEMENT_GROUP_TARGETS, PreparedSettlementGroup,
     SettlementGroupPostPlan, SettlementGroupRequest, SettlementLegAllocation, SettlementLegSelection,
 };
+pub use settlement_group_review::{MAX_SETTLEMENT_GROUP_REVIEW_BYTES, SettlementGroupReview};
 pub use settlement_review::{
     MAX_SETTLEMENT_REVIEW_BYTES, SettlementReview, SettlementReviewError,
 };
