@@ -443,9 +443,9 @@ These states cover entries, including control entries. The library also signs
 each published checkpoint with the book's Ed25519 key
 (`Book::checkpoint_public_key`) as a `TransparencyCheckpoint` and produces
 evidence bundles with detached production receipts (`Book::produce_bundle`);
-`fa-verify checkpoint|scope|bundle` check them. The CLI does not emit signed
-checkpoints or bundles yet, and document-receipt coverage, witnesses and key
-rotation remain unfinished. The
+`fa-verify checkpoint|scope|bundle` check them. The CLI exports both (see
+below); document-receipt coverage, witnesses and key rotation remain
+unfinished. The
 [CLI tests](./crates/fa-cli/tests/notary.rs) exercise persistence, later
 postings, authorization and real storage corruption.
 
@@ -485,10 +485,21 @@ fa-verify consistency --proof extension.proof --checkpoint old.checkpoint \
 ```
 
 These checkpoints are unsigned, and `--unsigned-checkpoint` says so: you trust
-the 80-byte statement through some other channel. A signed
-`TransparencyCheckpoint` is checked instead with `--key <64 hex>` (repeatable),
-which is required for `scope` and `bundle`; run `fa-verify --help` for the
-grammar. Receiving a proof and its checkpoint together
+the 80-byte statement through some other channel. The signed alternative needs
+no side channel beyond the book's public key, which every export names as
+`checkpoint_public_key`:
+
+```bash
+fa proof signed-checkpoint --state latest --out acme.ckpt --book ./books/acme --json
+fa-verify prefix --proof acme.prefix --checkpoint acme.ckpt --key <checkpoint_public_key> --json
+# An evidence bundle: one account's month, a recomputed balance, a signed receipt.
+fa bundle produce --account 1000 --from 2026-03-01 --to 2026-03-31 \
+  --balance 1000:USD:2026-03-31 --out cash.fab --receipt-out cash.receipt --book ./books/acme --json
+fa-verify bundle cash.fab --key <checkpoint_public_key> --receipt cash.receipt --json
+```
+
+`--key` (repeatable) is required for `scope` and `bundle`; run
+`fa-verify --help` for the grammar. Receiving a proof and its checkpoint together
 does not authenticate their origin. The verifier requires the trust anchor
 as a separate input and reports the exact predicate it checked: inclusion,
 tree extension, complete prefix envelopes, or posted debit/credit arithmetic

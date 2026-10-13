@@ -285,6 +285,108 @@ fn a_signed_checkpoint_export_verifies_against_the_named_public_key() {
     );
 }
 
+/// `fa bundle produce` end to end: a prefix bundle and an account-interval
+/// bundle with a recomputed balance, written to new files and checked by the
+/// independent verifier with the key the event names; inline output equals
+/// the files; usage mistakes refuse before the book is read.
+#[test]
+fn bundles_produced_by_the_cli_verify_offline_with_their_receipts() {
+    let f = Fixture::new();
+    let evidence = f.chart_and_evidence();
+    let (code, refusal) = run(&f.book, &["bundle", "produce"]);
+    assert_eq!(code, 2, "{}", refusal.render());
+    assert_eq!(
+        text(&refusal, "refusal_id"),
+        "FA-REF-145",
+        "no checkpoint yet"
+    );
+    f.post("bundle-sale-1", "2026-03-10", "12.34", &evidence);
+    f.post("bundle-sale-2", "2026-03-20", "2.00", &evidence);
+    f.checkpoint();
+
+    let fab = f.dir.join("prefix.fab");
+    let receipt = f.dir.join("prefix.receipt");
+    let line = ok(
+        &f.book,
+        &[
+            "bundle",
+            "produce",
+            "--out",
+            fab.to_str().unwrap(),
+            "--receipt-out",
+            receipt.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(text(&line, "event"), "bundle_produced");
+    assert_eq!(text(&line, "scope"), "prefix");
+    assert_eq!(get(&line, "bytes"), &Json::Null);
+    let key: [u8; 32] = unhex(text(&line, "checkpoint_public_key"))
+        .try_into()
+        .expect("32-byte key");
+    assert!(text(&line, "verify").starts_with("fa-verify bundle "));
+    let bundle_bytes = std::fs::read(&fab).expect("bundle file");
+    let receipt_bytes = std::fs::read(&receipt).expect("receipt file");
+    assert_eq!(bundle_bytes.len() as i128, integer(&line, "byte_len"));
+    let report = fa_verify::verify_bundle(&bundle_bytes, &[key], Some(&receipt_bytes))
+        .expect("a well-formed bundle");
+    assert!(report.verified(), "{:#?}", report.checks);
+    assert_eq!(
+        fa_verify::blake3::hex(&report.digest),
+        text(&line, "digest")
+    );
+    assert!(report.receipt.is_some(), "the receipt verified");
+
+    // Inline output carries the same deterministic body.
+    let inline = ok(&f.book, &["bundle", "produce"]);
+    assert_eq!(unhex(text(&inline, "bytes")), bundle_bytes);
+
+    // One account's interval with a recomputed balance.
+    let line = ok(
+        &f.book,
+        &[
+            "bundle",
+            "produce",
+            "--account",
+            "1000",
+            "--from",
+            "2026-03-01",
+            "--to",
+            "2026-03-31",
+            "--balance",
+            "1000:USD:2026-03-31",
+        ],
+    );
+    assert_eq!(text(&line, "scope"), "account");
+    assert_eq!(integer(&line, "balances"), 1);
+    let report = fa_verify::verify_bundle(
+        &unhex(text(&line, "bytes")),
+        &[key],
+        Some(&unhex(text(&line, "receipt"))),
+    )
+    .expect("a well-formed account bundle");
+    assert!(report.verified(), "{:#?}", report.checks);
+    assert_eq!(report.summary.balances.len(), 1);
+
+    // Tampering is caught; usage mistakes exit 2 before any read.
+    let mut flipped = bundle_bytes.clone();
+    let middle = flipped.len() / 2;
+    flipped[middle] ^= 1;
+    assert!(
+        fa_verify::verify_bundle(&flipped, &[key], Some(&receipt_bytes))
+            .map_or(true, |report| !report.verified())
+    );
+    for args in [
+        vec!["bundle", "produce", "--account", "1000", "--entry", "E:00"],
+        vec!["bundle", "produce", "--from", "2026-03-01"],
+        vec!["bundle", "produce", "--out", "x.fab"],
+        vec!["bundle", "produce", "--balance", "1000"],
+        vec!["bundle", "export"],
+    ] {
+        let (code, refusal) = run(&f.book, &args);
+        assert_eq!(code, 2, "{args:?}: {}", refusal.render());
+    }
+}
+
 #[test]
 fn all_five_exports_verify_independently_at_recorded_checkpoints_after_reopen() {
     let f = Fixture::new();

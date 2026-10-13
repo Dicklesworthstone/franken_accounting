@@ -81,6 +81,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("procedure", procedure_cmd),
     ("checkpoint", notary::checkpoint_cmd),
     ("proof", crate::proof::proof_cmd),
+    ("bundle", crate::proof::bundle_cmd),
     ("verify", verify_cmd),
     ("registers", registers_cmd),
     ("entry", entry_cmd),
@@ -1180,7 +1181,7 @@ fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fa
             ("post" | "commit" | "reverse" | "reserve" | "resolve", _) => &[Op::Post],
             ("approve", _) => &[Op::Approve],
             ("checkpoint", _) => &[Op::Witness],
-            ("proof", _) => &[Op::Read, Op::Produce],
+            ("proof" | "bundle", _) => &[Op::Read, Op::Produce],
             _ => {
                 return Err(Refusal::new(
                     fa_journal::refusal::code::CAPABILITY,
