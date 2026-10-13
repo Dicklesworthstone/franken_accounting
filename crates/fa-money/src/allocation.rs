@@ -4,8 +4,10 @@
 //! theorem, and the test below checks it on a grid.
 
 mod ordered;
+mod pro_rata;
 
 pub use ordered::{equal_split_residual_first, waterfall};
+pub use pro_rata::{ProRataAllocation, pro_rata_residual_to_named};
 
 use crate::amount::{Amount, AmountError, signed_magnitude};
 use crate::wide::U256;

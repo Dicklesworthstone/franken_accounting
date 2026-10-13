@@ -29,7 +29,11 @@ pub fn equal_split_residual_first(
     let negative = total.mantissa < 0;
     let ordinary = Amount::new(total.unit, signed_magnitude(quotient, negative)?);
     let first = quotient.checked_add(remainder).ok_or(AmountError::Overflow)?;
-    let mut shares = vec![ordinary; target_count];
+    let mut shares = Vec::new();
+    shares
+        .try_reserve_exact(target_count)
+        .map_err(|_| AmountError::Overflow)?;
+    shares.resize(target_count, ordinary);
     shares[0] = Amount::new(total.unit, signed_magnitude(first, negative)?);
     Ok(shares)
 }
@@ -60,7 +64,10 @@ pub fn waterfall(total: Amount, caps: &[u128]) -> Result<Vec<Amount>, AmountErro
     }
     let negative = total.mantissa < 0;
     let mut remaining = magnitude;
-    let mut shares = Vec::with_capacity(caps.len());
+    let mut shares = Vec::new();
+    shares
+        .try_reserve_exact(caps.len())
+        .map_err(|_| AmountError::Overflow)?;
     for cap in caps {
         let share = remaining.min(*cap);
         remaining -= share;
@@ -191,6 +198,14 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn impossible_target_capacity_returns_an_error_instead_of_panicking() {
+        assert!(matches!(
+            equal_split_residual_first(Amount::new(UnitId(7), 1), usize::MAX),
+            Err(AmountError::Overflow)
+        ));
     }
 
     #[test]
