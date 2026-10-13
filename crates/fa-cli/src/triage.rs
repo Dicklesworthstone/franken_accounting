@@ -1,0 +1,790 @@
+//! The mega-commands (plan §15.3 "Mega-commands", the agent Polish Bar;
+//! bead fa-12x slice 2): one call answers "what is wrong, and what do I run
+//! next". Ported from JadePeak's fa-12x slice 2 WIP (3a37d3c) onto the
+//! RECON-2 integration tree.
+//!
+//! `fa doctor` checks what a book needs from its environment: the embedded
+//! registries, the book directory, its key file, the writer lease and the
+//! daemon, that the book opens, and that its derived state (registers,
+//! limit availability, the entry accumulator) still equals the journal's
+//! refold. Every check names its status and, when it is not ok, the exact
+//! fix. The exit code is the verdict: 0 only when no check failed; otherwise
+//! the report is followed by one `error` line whose class is the first
+//! failing check's (foundation, environment, or verification).
+//!
+//! `fa triage` summarises a book's state and puts the commands an agent
+//! should run next into the envelope's `next_actions`, computed from that
+//! state. Without a running fad it reads the book directly and says
+//! `daemon: absent`.
+
+use std::path::Path;
+
+use crate::args::Args;
+use crate::cli::{Ctx, Fail};
+use crate::json::{Json, obj, s};
+use crate::lease::Lease;
+use crate::verbs;
+use fa::Book;
+use fa_time::PeriodState;
+
+/// One step an agent should run next: the command and why.
+struct NextStep {
+    command: String,
+    why: String,
+}
+
+/// A check's outcome.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Status {
+    Ok,
+    Warn,
+    Fail,
+    /// Not checked: what it needs (an open book) is missing.
+    Skipped,
+}
+
+impl Status {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Warn => "warn",
+            Self::Fail => "fail",
+            Self::Skipped => "skipped",
+        }
+    }
+}
+
+/// The exit class a failed check maps to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Class {
+    Foundation,
+    Environment,
+    Verification,
+}
+
+struct Check {
+    name: &'static str,
+    status: Status,
+    detail: String,
+    fix: Option<String>,
+    /// The one command to run next, when a single command is the remedy.
+    command: Option<String>,
+    class: Class,
+}
+
+impl Check {
+    fn ok(name: &'static str, class: Class, detail: impl Into<String>) -> Self {
+        Self {
+            name,
+            status: Status::Ok,
+            detail: detail.into(),
+            fix: None,
+            command: None,
+            class,
+        }
+    }
+
+    fn not_ok(
+        name: &'static str,
+        class: Class,
+        status: Status,
+        detail: impl Into<String>,
+        fix: impl Into<String>,
+    ) -> Self {
+        Self {
+            name,
+            status,
+            detail: detail.into(),
+            fix: Some(fix.into()),
+            command: None,
+            class,
+        }
+    }
+
+    fn with_command(mut self, command: impl Into<String>) -> Self {
+        self.command = Some(command.into());
+        self
+    }
+
+    fn skipped(name: &'static str, class: Class, why: &str) -> Self {
+        Self {
+            name,
+            status: Status::Skipped,
+            detail: why.to_string(),
+            fix: None,
+            command: None,
+            class,
+        }
+    }
+
+    fn json(&self) -> Json {
+        obj(vec![
+            ("name", s(self.name)),
+            ("status", s(self.status.name())),
+            ("detail", s(&self.detail)),
+            ("fix", self.fix.as_ref().map_or(Json::Null, s)),
+        ])
+    }
+}
+
+/// What a failure says, whatever its kind.
+fn describe(fail: &Fail) -> String {
+    match fail {
+        Fail::Usage(e) => format!("{} (fix: {})", e.message, e.fix),
+        Fail::Refusal(r) => format!("{}: {}", r.code, r.message),
+        Fail::Book(e) => e.to_string(),
+        Fail::Verification { message, .. } => message.clone(),
+        Fail::Internal(m) | Fail::Io(m) | Fail::Environment(m) => m.clone(),
+    }
+}
+
+/// Every registry this build embeds parses and agrees with the others.
+fn registries() -> Check {
+    let mut problems: Vec<String> = Vec::new();
+    if let Err(e) = verbs::registry() {
+        problems.push(format!("verbs.toml: {e}"));
+    }
+    match fa_registry::Registries::embedded() {
+        Err(e) => problems.push(e.to_string()),
+        Ok(r) => {
+            if let Err(e) =
+                fa_registry::sod_policy::SodPolicy::embedded(&r.entry_classes, &r.admissibility)
+            {
+                problems.push(e.to_string());
+            }
+        }
+    }
+    if let Err(e) = fa_registry::evidence_policy::EvidencePolicy::embedded() {
+        problems.push(e.to_string());
+    }
+    if let Err(e) = fa_registry::reason_codes::ReasonCodes::embedded() {
+        problems.push(e.to_string());
+    }
+    if let Err(e) = fa_registry::refusal_catalog::RefusalCatalog::embedded() {
+        problems.push(e.to_string());
+    }
+    if problems.is_empty() {
+        Check::ok(
+            "registries",
+            Class::Foundation,
+            format!(
+                "verbs, exit codes, entry classes, admissibility, units, rounding laws, symbols, SoD and evidence policy, reason codes and the refusal catalog all parse and agree (robot envelope v{})",
+                verbs::ENVELOPE_VERSION
+            ),
+        )
+    } else {
+        Check::not_ok(
+            "registries",
+            Class::Foundation,
+            Status::Fail,
+            problems.join("; "),
+            "this build's embedded registries are inconsistent: rebuild fa from a tree whose `scripts/check.sh` passes",
+        )
+    }
+}
+
+/// The key file exists and is private to its owner.
+fn key_file(path: &Path) -> Check {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return Check::not_ok(
+            "keys",
+            Class::Environment,
+            Status::Fail,
+            format!("no key file at {}", path.display()),
+            "pass --keys <file> naming the book's key file (fa book create writes <dir>/book.keys)",
+        );
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = meta.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            return Check::not_ok(
+                "keys",
+                Class::Environment,
+                Status::Warn,
+                format!(
+                    "{} is readable by group or others (mode {mode:o})",
+                    path.display()
+                ),
+                format!("chmod 600 {}", path.display()),
+            );
+        }
+    }
+    Check::ok(
+        "keys",
+        Class::Environment,
+        format!("{} is private to its owner", path.display()),
+    )
+}
+
+/// Who holds the book's writer lease, and whether a fad serves it.
+fn writer_lease(dir: &Path, held: bool) -> Check {
+    if held {
+        return Check::ok(
+            "writer_lease",
+            Class::Environment,
+            "held by the fad answering this command",
+        );
+    }
+    let Ok(reg) = verbs::registry() else {
+        return Check::skipped("writer_lease", Class::Environment, "no registry");
+    };
+    match Lease::holder(dir, &reg.daemon.lease) {
+        None => Check::ok(
+            "writer_lease",
+            Class::Environment,
+            "free: no fad serves the book; commands open it directly",
+        ),
+        // A direct `fa` command holds the lease for its own duration.
+        Some(holder) if holder == own_note() => Check::ok(
+            "writer_lease",
+            Class::Environment,
+            "held by this command for its duration; no fad serves the book",
+        ),
+        Some(holder) => Check::not_ok(
+            "writer_lease",
+            Class::Environment,
+            Status::Warn,
+            format!("held by: {holder}"),
+            format!(
+                "`fa` routes through a serving fad by itself; see `fad status --book {}`",
+                dir.display()
+            ),
+        ),
+    }
+}
+
+/// The lease note a direct `fa` command writes for itself (`entry`).
+fn own_note() -> String {
+    format!("fa pid={}", std::process::id())
+}
+
+/// The derived state still equals the journal's refold.
+fn derived_state(book: &Book) -> Vec<Check> {
+    let mut checks = Vec::new();
+    // Registers: every period with materialized cells.
+    let registers = (|| -> Result<Check, fa::book::BookError> {
+        let mut checked = 0usize;
+        let mut drifted: Vec<String> = Vec::new();
+        // A verified cache with journal entries after its basis is lag, not
+        // drift: green, and advanced by `fa registers advance`.
+        let mut lagging: Vec<(String, usize)> = Vec::new();
+        for p in book.periods()? {
+            let v = book.verify_registers(&p.code)?;
+            let materialized = v.stored_digest.is_some()
+                || v.drift
+                    .iter()
+                    .chain(&v.pending_drift)
+                    .any(|d| d.stored.is_some());
+            if materialized {
+                checked += 1;
+                if !v.is_green() {
+                    drifted.push(p.code.clone());
+                } else if v.stale {
+                    lagging.push((p.code.clone(), v.lag_entries));
+                }
+            }
+        }
+        Ok(match drifted.first() {
+            None if !lagging.is_empty() => {
+                let first = lagging[0].0.clone();
+                Check::not_ok(
+                    "registers",
+                    Class::Verification,
+                    Status::Warn,
+                    format!(
+                        "{} materialized period(s) equal the refold of their basis; behind the journal: {}",
+                        checked,
+                        lagging
+                            .iter()
+                            .map(|(code, n)| format!("{code} ({n} entries)"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    format!("fa registers advance --period {first} --json folds the unread entries in"),
+                )
+                .with_command(format!("fa registers advance --period {first} --json"))
+            }
+            None => Check::ok(
+                "registers",
+                Class::Verification,
+                format!("{checked} materialized period(s) equal the journal's refold"),
+            ),
+            Some(first) => Check::not_ok(
+                "registers",
+                Class::Verification,
+                Status::Fail,
+                format!(
+                    "stored cells differ from the refold in {}",
+                    drifted.join(", ")
+                ),
+                format!(
+                    "fa verify registers --period {first} --json shows the cells; fa registers materialize --period {first} --yes rebuilds them"
+                ),
+            )
+            .with_command(format!("fa registers materialize --period {first} --yes --json")),
+        })
+    })();
+    checks.push(registers.unwrap_or_else(|e| {
+        Check::not_ok(
+            "registers",
+            Class::Verification,
+            Status::Fail,
+            e.to_string(),
+            "fa verify registers --json",
+        )
+    }));
+    checks.push(match book.verify_availability() {
+        Ok(v) if v.drift.is_empty() => Check::ok(
+            "availability",
+            Class::Verification,
+            format!(
+                "{} limited account(s), {} cell(s) equal the refold",
+                v.accounts_checked, v.cells_checked
+            ),
+        ),
+        Ok(v) => Check::not_ok(
+            "availability",
+            Class::Verification,
+            Status::Fail,
+            format!("{} limit cell(s) differ from the refold", v.drift.len()),
+            "fa verify availability --json lists them",
+        )
+        .with_command("fa verify availability --json"),
+        Err(e) => Check::not_ok(
+            "availability",
+            Class::Verification,
+            Status::Fail,
+            e.to_string(),
+            "fa verify availability --json",
+        ),
+    });
+    checks.push(match book.verify_accumulator() {
+        Ok(v) if v.is_green() => Check::ok(
+            "accumulator",
+            Class::Verification,
+            if v.states.is_empty() {
+                "no checkpoints yet (fa checkpoint create --grant witness)".to_string()
+            } else {
+                format!(
+                    "{} checkpoint(s) and their signatures recompute from the journal and the book's key",
+                    v.states.len()
+                )
+            },
+        ),
+        Ok(v) => Check::not_ok(
+            "accumulator",
+            Class::Verification,
+            Status::Fail,
+            v.broken.unwrap_or_else(|| {
+                format!(
+                    "{} state finding(s), {} unchained state(s)",
+                    v.states.iter().filter(|st| st.finding.is_some()).count(),
+                    v.unchained.len()
+                )
+            }),
+            "fa verify accumulator --json shows the findings",
+        )
+        .with_command("fa verify accumulator --json"),
+        Err(e) => Check::not_ok(
+            "accumulator",
+            Class::Verification,
+            Status::Fail,
+            e.to_string(),
+            "fa verify accumulator --json",
+        ),
+    });
+    checks
+}
+
+/// `fa doctor`: every check, then the verdict.
+pub(crate) fn doctor_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if let Some(extra) = args.positional.get(1) {
+        return Err(crate::cli::usage(
+            format!("unexpected argument `{extra}`"),
+            "fa doctor --book <dir> --json",
+        ));
+    }
+    let mut checks = vec![registries()];
+    let held = ctx.books.is_held();
+    match ctx.books.locate(args) {
+        Err(_) => {
+            checks.push(Check::not_ok(
+                "book_dir",
+                Class::Environment,
+                Status::Fail,
+                "no book directory named",
+                "--book <dir> (or export FA_BOOK=<dir>); a new book: fa book create --name <name> --book <dir>",
+            ));
+            for name in ["keys", "writer_lease", "book"] {
+                checks.push(Check::skipped(
+                    name,
+                    Class::Environment,
+                    "no book directory",
+                ));
+            }
+        }
+        Ok((dir, _)) if !dir.is_dir() => {
+            checks.push(Check::not_ok(
+                "book_dir",
+                Class::Environment,
+                Status::Fail,
+                format!("no directory at {}", dir.display()),
+                format!("fa book create --name <name> --book {}", dir.display()),
+            ));
+            for name in ["keys", "writer_lease", "book"] {
+                checks.push(Check::skipped(
+                    name,
+                    Class::Environment,
+                    "no book directory",
+                ));
+            }
+        }
+        Ok((dir, keys)) => {
+            checks.push(Check::ok(
+                "book_dir",
+                Class::Environment,
+                dir.display().to_string(),
+            ));
+            checks.push(key_file(&keys));
+            checks.push(writer_lease(&dir, held));
+            match ctx.books.open(args) {
+                Err(fail) => {
+                    checks.push(Check::not_ok(
+                        "book",
+                        Class::Environment,
+                        Status::Fail,
+                        describe(&fail),
+                        "check --book and --keys; `fa book info --json` repeats the error",
+                    ));
+                    for name in ["registers", "availability", "accumulator"] {
+                        checks.push(Check::skipped(
+                            name,
+                            Class::Verification,
+                            "the book did not open",
+                        ));
+                    }
+                }
+                Ok(book) => {
+                    let head = book.head().map(|h| h.0).unwrap_or_default();
+                    let periods = book.periods().map(|p| p.len()).unwrap_or_default();
+                    let accounts = book.accounts().map(|a| a.len()).unwrap_or_default();
+                    checks.push(Check::ok(
+                        "book",
+                        Class::Environment,
+                        format!(
+                            "book {} opens at head {head}: {periods} period(s), {accounts} account(s)",
+                            book.context().book_id.to_hex()
+                        ),
+                    ));
+                    checks.extend(derived_state(&book));
+                }
+            }
+        }
+    }
+    let healthy = checks.iter().all(|c| c.status != Status::Fail);
+    let mut text = String::new();
+    for c in &checks {
+        text.push_str(&format!(
+            "{:<8} {:<13} {}\n",
+            c.status.name(),
+            c.name,
+            c.detail
+        ));
+        if let Some(fix) = &c.fix {
+            text.push_str(&format!("{:<22} fix: {fix}\n", ""));
+        }
+    }
+    text.push_str(if healthy {
+        "healthy\n"
+    } else {
+        "NOT healthy: do the first fix above\n"
+    });
+    ctx.out.event(
+        "doctor",
+        vec![
+            ("healthy", Json::Bool(healthy)),
+            (
+                "checks",
+                Json::Arr(checks.iter().map(Check::json).collect()),
+            ),
+        ],
+        text.trim_end(),
+    );
+    match checks.iter().find(|c| c.status == Status::Fail) {
+        None => Ok(()),
+        Some(first) => {
+            let message = format!("doctor: {} failed: {}", first.name, first.detail);
+            let fix = first.command.clone().map_or_else(
+                || {
+                    first
+                        .fix
+                        .clone()
+                        .unwrap_or_else(|| "see the checks above".to_string())
+                },
+                |c| format!("`{c}`"),
+            );
+            Err(match first.class {
+                Class::Foundation => Fail::Internal(format!("{message}; fix: {fix}")),
+                Class::Environment => Fail::Environment(format!("{message}; fix: {fix}")),
+                Class::Verification => Fail::Verification {
+                    message,
+                    detail: first.json(),
+                    cite: None,
+                    fix: Some(fix),
+                },
+            })
+        }
+    }
+}
+
+/// What `fa triage` and `fa next` read from a book: its state, and the
+/// commands to run next, most urgent first.
+struct Survey {
+    book_id: String,
+    daemon: String,
+    periods: usize,
+    by_state: Vec<(String, i128)>,
+    open: Vec<String>,
+    accounts: usize,
+    pending_cells: usize,
+    due_holds: usize,
+    due_reversals: usize,
+    blocked_reversals: usize,
+    derived: Vec<Check>,
+    steps: Vec<NextStep>,
+}
+
+impl Survey {
+    fn healthy(&self) -> bool {
+        self.derived.iter().all(|c| c.status != Status::Fail)
+    }
+}
+
+fn step(command: impl Into<String>, why: impl Into<String>) -> NextStep {
+    NextStep {
+        command: command.into(),
+        why: why.into(),
+    }
+}
+
+/// Read the book once: periods, accounts, pending cells, derived-state
+/// health, the daemon, and the next steps that state calls for.
+fn survey(ctx: &mut Ctx<'_>, args: &Args) -> Result<Survey, Fail> {
+    let held = ctx.books.is_held();
+    let (dir, _) = ctx.books.locate(args)?;
+    let daemon = if held {
+        "serving".to_string()
+    } else {
+        let holder = verbs::registry()
+            .ok()
+            .and_then(|reg| Lease::holder(&dir, &reg.daemon.lease));
+        match holder {
+            None => "absent".to_string(),
+            Some(h) if h == own_note() => "absent".to_string(),
+            Some(h) => format!("held: {h}"),
+        }
+    };
+    let book = ctx.books.open(args)?;
+    let periods = book.periods()?;
+    let mut by_state: Vec<(String, i128)> = Vec::new();
+    for p in &periods {
+        match by_state.iter_mut().find(|(n, _)| *n == p.state.name()) {
+            Some((_, n)) => *n += 1,
+            None => by_state.push((p.state.name().to_string(), 1)),
+        }
+    }
+    let open: Vec<String> = periods
+        .iter()
+        .filter(|p| p.state == PeriodState::Open)
+        .map(|p| p.code.clone())
+        .collect();
+    let accounts = book.accounts()?.len();
+    let mut pending_cells = 0usize;
+    for code in &open {
+        pending_cells += book.fold_period(code)?.pending.len();
+    }
+    // FA-CFG-02: a due-but-unswept hold is still pending; it is reported
+    // as due until the sweep expires it.
+    let due_holds = book.due_holds()?.len();
+    let reversals = book.due_reversals()?;
+    let due_reversals = reversals
+        .iter()
+        .filter(|r| r.status == fa_journal::ReversalStatus::Due)
+        .count();
+    let blocked_reversals = reversals
+        .iter()
+        .filter(|r| matches!(r.status, fa_journal::ReversalStatus::Blocked { .. }))
+        .count();
+    let derived = derived_state(&book);
+
+    // The next steps, from the state (the first is the most urgent).
+    let mut steps = Vec::new();
+    if accounts == 0 {
+        steps.push(step(
+            "fa chart import <chart.json> --json",
+            "the book has no accounts; install the chart",
+        ));
+    } else if periods.is_empty() {
+        steps.push(step(
+            "fa period create --fiscal-year <N> --json",
+            "entries post into periods; create the fiscal year's",
+        ));
+    } else if open.is_empty() {
+        let future = periods.iter().find(|p| p.state == PeriodState::Future);
+        steps.push(step(
+            format!(
+                "fa period open {} --json",
+                future.map_or("<code>", |p| p.code.as_str())
+            ),
+            "no period is open, so nothing can post",
+        ));
+    }
+    // Failures first, then warnings that name their remedy.
+    for check in derived
+        .iter()
+        .filter(|c| c.status == Status::Fail)
+        .chain(derived.iter().filter(|c| c.status == Status::Warn))
+    {
+        if let Some(command) = &check.command {
+            steps.push(step(
+                command.clone(),
+                format!("{}: {}", check.name, check.detail),
+            ));
+        }
+    }
+    if pending_cells > 0 {
+        steps.push(step(
+            "fa resolve --intent <resolution.json> --json",
+            format!(
+                "{pending_cells} register cell(s) carry reserved amounts: resolve the holds that are done"
+            ),
+        ));
+    }
+    if let Some(latest) = open.last() {
+        steps.push(step(
+            format!("fa tb --period {latest} --json"),
+            "the trial balance of the latest open period",
+        ));
+    }
+    Ok(Survey {
+        book_id: book.context().book_id.to_hex(),
+        daemon,
+        periods: periods.len(),
+        by_state,
+        open,
+        accounts,
+        pending_cells,
+        due_holds,
+        due_reversals,
+        blocked_reversals,
+        derived,
+        steps,
+    })
+}
+
+fn no_arguments(args: &Args, example: &str) -> Result<(), Fail> {
+    match args.positional.get(1) {
+        Some(extra) => Err(crate::cli::usage(
+            format!("unexpected argument `{extra}`"),
+            example,
+        )),
+        None => Ok(()),
+    }
+}
+
+/// `fa triage`: the book's state, and every next step in `next_actions`.
+pub(crate) fn triage_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    no_arguments(args, "fa triage --book <dir> --json")?;
+    let sv = survey(ctx, args)?;
+    let actions: Vec<(String, String)> = sv
+        .steps
+        .iter()
+        .map(|st| (st.command.clone(), st.why.clone()))
+        .collect();
+    let health = if sv.healthy() { "ok" } else { "failing" };
+    let mut text = format!(
+        "book {} · {} periods ({}) · open: {} · {} accounts · {} pending cell(s) · due: {} hold(s), {} reversal(s) ({} blocked) · derived state {} · daemon {}",
+        sv.book_id,
+        sv.periods,
+        sv.by_state
+            .iter()
+            .map(|(k, v)| format!("{k} {v}"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        if sv.open.is_empty() {
+            "none".to_string()
+        } else {
+            sv.open.join(" ")
+        },
+        sv.accounts,
+        sv.pending_cells,
+        sv.due_holds,
+        sv.due_reversals,
+        sv.blocked_reversals,
+        health,
+        sv.daemon
+    );
+    for st in &sv.steps {
+        text.push_str(&format!("\nnext: {}   ({})", st.command, st.why));
+    }
+    ctx.out.event_with_actions(
+        "book_triage",
+        vec![
+            ("health", s(health)),
+            ("daemon", s(&sv.daemon)),
+            ("periods", Json::Int(sv.periods as i128)),
+            (
+                "periods_by_state",
+                Json::Obj(
+                    sv.by_state
+                        .iter()
+                        .map(|(k, v)| (k.clone(), Json::Int(*v)))
+                        .collect(),
+                ),
+            ),
+            ("open_periods", Json::Arr(sv.open.iter().map(s).collect())),
+            ("accounts", Json::Int(sv.accounts as i128)),
+            ("pending_cells", Json::Int(sv.pending_cells as i128)),
+            ("due_holds", Json::Int(sv.due_holds as i128)),
+            ("due_reversals", Json::Int(sv.due_reversals as i128)),
+            ("blocked_reversals", Json::Int(sv.blocked_reversals as i128)),
+            (
+                "derived",
+                Json::Arr(sv.derived.iter().map(Check::json).collect()),
+            ),
+        ],
+        &text,
+        &actions,
+    );
+    Ok(())
+}
+
+/// `fa next`: the single most urgent next step as data (the rest follow in
+/// `next_actions`). A step that needs authority this build does not
+/// self-issue names it in its command (`--grant approve`, `--grant witness`).
+pub(crate) fn next_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    no_arguments(args, "fa next --book <dir> --json")?;
+    let sv = survey(ctx, args)?;
+    let mut steps = sv.steps.into_iter();
+    let first = steps.next();
+    let actions: Vec<(String, String)> = steps.map(|st| (st.command, st.why)).collect();
+    let text = first.as_ref().map_or_else(
+        || "nothing to do".to_string(),
+        |st| format!("{}   ({})", st.command, st.why),
+    );
+    ctx.out.event_with_actions(
+        "next_step",
+        vec![
+            (
+                "command",
+                first.as_ref().map_or(Json::Null, |st| s(&st.command)),
+            ),
+            ("why", first.as_ref().map_or(Json::Null, |st| s(&st.why))),
+        ],
+        &text,
+        &actions,
+    );
+    Ok(())
+}

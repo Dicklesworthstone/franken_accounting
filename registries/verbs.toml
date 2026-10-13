@@ -351,6 +351,43 @@ usage = ["entry show <vid-hex>"]
 example = "fa entry show 3f2a… --book ./books/myco --json"
 
 [[verb]]
+name = "doctor"
+summary = "Diagnose what a book needs: the embedded registries, the book directory, key file and writer lease, that the book opens, and that its registers, limit availability and accumulator equal the journal's refold. Every check names its fix."
+writes = false
+subcommands = []
+flags = []
+switches = []
+events = ["doctor"]
+exits = [0, 2, 4, 5, 8]
+usage = ["doctor   (each check is ok, warn, fail or skipped, with the fix; exit 0 only when none failed, else the first failing check's class: 4 environment, 5 foundation, 8 verification)"]
+example = "fa doctor --book ./books/myco --json"
+
+[[verb]]
+name = "triage"
+summary = "The book's state in one call (periods by state, open periods, pending cells, derived-state health, the daemon), with the commands to run next in next_actions."
+writes = false
+subcommands = []
+flags = []
+switches = []
+events = ["book_triage"]
+exits = [0, 2, 4, 5]
+usage = ["triage   (next_actions: what to run next, computed from the book's state)"]
+example = "fa triage --book ./books/myco --json"
+
+[[verb]]
+name = "next"
+summary = "The single most urgent next step for the book, as data (the rest of fa triage's steps follow in next_actions)."
+writes = false
+subcommands = []
+flags = []
+switches = []
+events = ["next_step"]
+exits = [0, 2, 4, 5]
+usage = ["next   (command and why; null when there is nothing to do)"]
+example = "fa next --book ./books/myco --json"
+
+
+[[verb]]
 name = "capabilities"
 summary = "What this build can do: verbs, aliases, exit codes, entry classes, robot mode."
 writes = false
@@ -726,6 +763,24 @@ doc = "An evidence bundle produced against a recorded checkpoint, with its detac
 fields = ["scope:string", "digest:hex", "byte_len:int", "receipt_len:int", "balances:int", "inline_documents:bool", "checkpoint_public_key:hex", "bytes:hex?", "receipt:hex?", "file:string?", "receipt_file:string?", "verify:string"]
 
 [[event]]
+name = "doctor"
+doc = "`fa doctor`: every check in order (registries, book_dir, keys, writer_lease, book, registers, availability, accumulator), each ok, warn, fail or skipped (what it needs is missing), with what it found and the fix when it is not ok. `healthy` is false when any check failed; the exit is then the first failing check's class and an `error` line follows."
+fields = ["healthy:bool", "checks:[doctor_check]"]
+
+[[event]]
+name = "book_triage"
+book = true
+doc = "`fa triage`: the book's state. `health` is ok, or failing when derived state differs from the journal's refold (`derived` has the checks); `daemon` is serving (this answer came through the fad), absent, or held (with the holder). `pending_cells` counts register cells of open periods carrying reserved amounts. `due_holds` counts timed holds the latest tick has made due that no sweep has expired yet (plan §5.4, FA-CFG-02: still pending in every register); `due_reversals` counts scheduled reversals the latest tick has reached that the next reversal sweep mints, and `blocked_reversals` those whose period refuses the scheduler (reverse them by hand). The envelope's next_actions are computed from this state, most urgent first."
+fields = ["health:string", "daemon:string", "periods:int", "periods_by_state:object", "open_periods:[string]", "accounts:int", "pending_cells:int", "due_holds:int", "due_reversals:int", "blocked_reversals:int", "derived:[doctor_check]"]
+
+[[event]]
+name = "next_step"
+book = true
+doc = "`fa next`: the most urgent step `fa triage` would list for the book now, as `command` (run it with the same --book) and `why`; both null when there is nothing to do. The envelope's next_actions carry the steps after it."
+fields = ["command:string?", "why:string?"]
+
+
+[[event]]
 name = "accumulator_verified"
 book = true
 doc = "Every existing accumulator state was recomputed from its entry prefix and every stored state belongs to the chain. status is verified or no_checkpoints; no_checkpoints makes no verification claim and verified_through is null. Otherwise verified_through names the newest checked prefix, never an implicit current-head claim. signatures is ed25519: each state's signed TransparencyCheckpoint was reproduced from the journal prefix and the book's key. scope is entry_prefix. States are newest first."
@@ -782,6 +837,12 @@ fields = ["account:string", "account_vid:hex", "name:string", "type:string", "pe
 # ---------------------------------------------------------------------------
 # Shapes: the objects events nest.
 # ---------------------------------------------------------------------------
+
+[[shape]]
+name = "doctor_check"
+doc = "One check of `fa doctor` (or of `fa triage`'s derived state): its name, its status (ok, warn, fail, skipped), what it found, and the exact fix when it is not ok."
+fields = ["name:string", "status:string", "detail:string", "fix:string?"]
+
 
 [[shape]]
 name = "accumulator_state_check"
@@ -1137,6 +1198,11 @@ name = "fa.proof"
 doc = "Portable accounting proofs from recorded checkpoints (signed by the book's key, or raw statements), checked independently without book keys."
 
 [[mcp.excluded]]
+verb = "doctor"
+reason = "host-only: inspects the book directory, the key file's permissions and the writer lease on the host, outside the launch-bound book (plan §15.4 registered exclusion)"
+
+
+[[mcp.excluded]]
 verb = "fad"
 subcommand = "serve"
 reason = "host-only: controls the daemon process that will host fa-mcp (plan §15.4 registered exclusion)"
@@ -1187,6 +1253,27 @@ positionals = ["verb?"]
 required = []
 dont = ["Don't call this for the tool contract — the tool descriptions and input schemas are the contract; this is the CLI's own usage text."]
 mistakes = ["Passing a tool's wire name as `verb` (it takes the CLI verb, e.g. `tb`, or an alias such as `trial-balance`)."]
+
+[[mcp.tool]]
+cluster = "fa.orient"
+name = "triage"
+verb = "triage"
+subcommands = []
+positionals = []
+required = []
+dont = ["Don't guess what to do next: next_actions lists the commands this book's state calls for, most urgent first."]
+mistakes = ["Reading health ok as a clean audit: it says derived state equals the journal's refold, nothing about whether the entries are right."]
+
+[[mcp.tool]]
+cluster = "fa.orient"
+name = "next"
+verb = "next"
+subcommands = []
+positionals = []
+required = []
+dont = ["Don't run the command blindly when it names a grant the launch does not hold (`--grant approve`, `--grant witness`): ask the operator."]
+mistakes = ["Treating a null command as an error: it means there is nothing to do."]
+
 
 # ---- fa.book ----------------------------------------------------------------
 

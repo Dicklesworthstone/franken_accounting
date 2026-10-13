@@ -26,5 +26,6 @@ pub(crate) mod notary;
 pub mod panic;
 mod proof;
 mod templates;
+mod triage;
 pub mod verbs;
 pub mod wire;

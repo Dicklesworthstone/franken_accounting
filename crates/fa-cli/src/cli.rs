@@ -82,6 +82,9 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("checkpoint", notary::checkpoint_cmd),
     ("proof", crate::proof::proof_cmd),
     ("bundle", crate::proof::bundle_cmd),
+    ("doctor", crate::triage::doctor_cmd),
+    ("triage", crate::triage::triage_cmd),
+    ("next", crate::triage::next_cmd),
     ("verify", verify_cmd),
     ("registers", registers_cmd),
     ("entry", entry_cmd),
@@ -460,7 +463,7 @@ impl Out {
         self.event_with_actions(name, fields, human, &[]);
     }
 
-    fn event_with_actions(
+    pub(crate) fn event_with_actions(
         &self,
         name: &str,
         fields: Vec<(&str, Json)>,
@@ -640,13 +643,21 @@ pub(crate) struct BookSource<'a> {
 }
 
 impl BookSource<'_> {
+    /// The book directory and key file `args` name, resolved as `open`
+    /// resolves them, without opening anything.
+    pub(crate) fn locate(&self, args: &Args) -> Result<(PathBuf, PathBuf), Fail> {
+        let dir = book_dir(args, self.cwd.as_deref())?;
+        let keys = keys_path(args, &dir, self.cwd.as_deref());
+        Ok((dir, keys))
+    }
+
     pub(crate) fn open(&mut self, args: &Args) -> Result<BookRef<'_>, Fail> {
         let book = self.books.open(args, self.cwd.as_deref())?;
         stamp(&self.said, &book)?;
         Ok(book)
     }
 
-    fn is_held(&self) -> bool {
+    pub(crate) fn is_held(&self) -> bool {
         self.books.is_held()
     }
 }
@@ -1212,7 +1223,7 @@ fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fa
             | ("chart" | "period", Some("list"))
             | (
                 "tb" | "statement" | "open-items" | "explain" | "replay" | "certificate" | "entry"
-                | "procedure",
+                | "procedure" | "triage" | "next",
                 _,
             ) => &[Op::Read],
             ("verify" | "registers", _) => &[Op::Read, Op::Verify],
