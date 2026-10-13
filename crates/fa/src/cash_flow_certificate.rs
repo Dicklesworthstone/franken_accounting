@@ -11,6 +11,10 @@
 //! cash-scoped. Keep them confidential. Creating or replaying this artifact does
 //! not write the book, approve a classification, or claim GAAP/IFRS conformity.
 
+mod workpaper;
+
+pub use workpaper::{CASH_FLOW_WORKPAPER_FORMAT, MAX_CASH_FLOW_WORKPAPER_BYTES};
+
 use asupersync::fs::Vfs;
 use fa_journal::{Refusal, exit};
 use fa_model::{DecodeError, Id128, Reader, Writer, domain_digest};

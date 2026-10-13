@@ -281,3 +281,84 @@ fn portable_envelope_rejects_malformed_lengths_versions_trailing_data_and_digest
     bad.push(0);
     assert!(CashFlowCertificate::decode(&bad).is_err());
 }
+
+#[test]
+fn recipient_cash_workpaper_preserves_exact_rows_and_omits_whole_book_evidence() {
+    let mut h = Harness::new();
+    let large = (1i128 << 100) + 17;
+    h.post(1, b"opening", h.usd, 100);
+    h.post(10, b"inflow", h.usd, large);
+    h.post(20, b"outflow", h.jpy, -7);
+    let request = h.request();
+    let mut definition = h.definition(&request);
+    definition.name = "Cash policy € \"quoted\"\nline\0".into();
+    let certified = h.certify(&request, &definition);
+    let before = h.head();
+    let text = h.book.cash_flow_jsonl(&h.cx(), PRINCIPAL, &cap(&["read", "produce"]),
+        certified.certificate(), &request, &definition).unwrap().unwrap();
+    assert!(text.contains("\"format\":\"fa:cash-flow-workpaper:v1\""));
+    assert!(text.contains("\"definition\":\"Cash policy € \\\"quoted\\\"\\nline\\u0000\""));
+    assert!(text.contains("\"label\":\"January cash €\\nworkpaper\""));
+    assert!(text.contains(&format!("\"inflows\":\"{large}\"")));
+    assert!(text.contains("\"closing\":\"-7\""));
+    assert!(text.contains("\"code\":\"USD\",\"scale\":\"2\""));
+    assert!(text.contains("\"code\":\"JPY\",\"scale\":\"0\""));
+    for (event, count) in [("cash_flow_account", 2), ("cash_flow_unit", 2),
+        ("cash_flow_section", 8), ("cash_flow_total", 2), ("cash_flow_account_balance", 4),
+        ("cash_flow_leg", 2), ("cash_flow_result", 1)]
+    {
+        assert_eq!(text.lines().filter(|line| line.starts_with(&format!("{{\"event\":\"{event}\","))).count(), count);
+    }
+    for assignment in &definition.assignments {
+        let digest: String = assignment.entry_digest.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert!(text.contains(&digest));
+    }
+    assert!(!text.contains(&format!("{:032x}", h.id("3000").0)));
+    assert!(!text.contains("Confidential underlying cash evidence"));
+    assert!(!text.contains("Private cash posting narrative"));
+    assert!(text.contains("\"full_native_evidence_disclosed\":false"));
+    assert!(text.contains("\"classification_judgment_verified\":false"));
+    assert!(text.contains("\"outsider_completeness_proof\":false"));
+    assert!(text.contains("\"native_history_replayed\":true"));
+    assert!(text.ends_with("}\n"));
+    assert_eq!(h.head(), before);
+}
+
+#[test]
+fn recipient_workpaper_replays_byte_identically_after_backdating_and_cannot_export_without_produce() {
+    let mut h = Harness::new();
+    h.post(10, b"original", h.usd, 30);
+    let request = h.request();
+    let definition = h.definition(&request);
+    let certified = h.certify(&request, &definition);
+    let before = h.book.cash_flow_jsonl(&h.cx(), PRINCIPAL, &cap(&["read", "produce"]),
+        certified.certificate(), &request, &definition).unwrap().unwrap();
+    h.post(12, b"backdated", h.usd, -8);
+    let after = h.book.cash_flow_jsonl(&h.cx(), PRINCIPAL, &cap(&["read", "produce"]),
+        certified.certificate(), &request, &definition).unwrap().unwrap();
+    assert_eq!(after, before);
+    for capability in [cap(&["read"]), cap(&["produce"]), cap(&["post"])] {
+        assert!(h.book.cash_flow_jsonl(&h.cx(), PRINCIPAL, &capability,
+            certified.certificate(), &request, &definition).unwrap().is_err());
+    }
+    assert!(h.book.cash_flow_jsonl(&h.cx(), VId(99), &cap(&["read", "produce"]),
+        certified.certificate(), &request, &definition).unwrap().is_err());
+}
+
+#[test]
+fn cash_workpaper_never_returns_a_prefix_for_a_self_consistent_forged_certificate() {
+    let mut h = Harness::new();
+    h.post(10, b"original", h.usd, 30);
+    let request = h.request();
+    let definition = h.definition(&request);
+    let certified = h.certify(&request, &definition);
+    let mut bytes = certified.certificate().canonical_bytes().unwrap();
+    let end = bytes.len() - 32;
+    bytes[end - 16] ^= 1;
+    let digest = fa_model::domain_digest(b"fa:cash-flow-certificate-digest:v1", &[&bytes[..end]]);
+    bytes[end..].copy_from_slice(&digest);
+    let forged = CashFlowCertificate::decode(&bytes).unwrap();
+    let result = h.book.cash_flow_jsonl(&h.cx(), PRINCIPAL, &cap(&["read", "produce"]),
+        &forged, &request, &definition).unwrap();
+    assert_eq!(result.unwrap_err().exit, 8);
+}
