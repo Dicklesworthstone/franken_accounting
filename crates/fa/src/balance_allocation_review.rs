@@ -178,5 +178,7 @@ fn bounded(bytes: &[u8]) -> Result<(), AllocationReviewError> {
     Ok(())
 }
 
+mod native;
+
 #[cfg(test)]
 mod tests;
