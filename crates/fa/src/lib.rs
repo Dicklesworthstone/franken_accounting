@@ -31,6 +31,9 @@
 //! [`SettlementReview`] preserves the sealed proposal and observed allocations
 //! across approval publications and process restarts. Explicit revalidation
 //! requires the same proposal and amounts; a review itself grants no authority.
+//! [`Book::export_document_disclosure`] and its async counterpart export only
+//! requested permitted chunks under current read/produce authority, retaining
+//! the protected reader's governed redactions for offline membership checks.
 //! Sessions, drafts, signed transparency
 //! checkpoints and bundles remain later slices of the embedded API described
 //! in `COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md` (§15.2).
@@ -42,6 +45,7 @@ pub mod async_book;
 pub mod book;
 pub mod certificate;
 mod certificate_store;
+pub mod document_disclosure;
 pub mod proof;
 pub mod settlement;
 pub mod settlement_review;
@@ -63,6 +67,7 @@ pub use certificate::{
     ReportSelection, TrialBalanceSelection,
 };
 pub use certificate_store::RetainedCertificate;
+pub use document_disclosure::{DisclosureAccess, DocumentDisclosureArtifact};
 pub use fa_intents::{IntentError, MAX_PLAN_BYTES, PlanCertificate, PostIntent, PostPlan};
 pub use fa_journal::{InstantSelection, UploadRequest};
 pub use fa_notary::{AccumulatorVerification, Checkpointed};
