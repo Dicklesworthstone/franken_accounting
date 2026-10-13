@@ -52,6 +52,7 @@ mod certificate_store;
 pub mod document_disclosure;
 pub mod evidence_disclosure;
 pub mod proof;
+pub mod roll_forward;
 pub mod settlement;
 pub mod settlement_group;
 pub mod settlement_group_review;
@@ -88,6 +89,7 @@ pub use fa_statements::{
     StatementLine,
 };
 pub use proof::{MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest};
+pub use roll_forward::{RollForward, RollForwardRequest};
 pub use settlement::{PreparedSettlement, SettlementPostPlan, SettlementPostRequest};
 pub use settlement_group::{
     MAX_SETTLEMENT_GROUP_LEGS, MAX_SETTLEMENT_GROUP_TARGETS, PreparedSettlementGroup,
