@@ -333,5 +333,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     }
 }
 
+mod approval;
+
 #[cfg(test)]
 mod tests;
