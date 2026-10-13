@@ -202,7 +202,7 @@ impl ProposalPrefix {
 
 /// The `fa:entry:v1` erasable field: digest, optional subject, nonce, sealed
 /// bytes. Its content never feeds an envelope; it is skipped exactly.
-fn skip_erasable(r: &mut Reader<'_>, what: &'static str) -> Result<(), DecodeError> {
+pub(crate) fn skip_erasable(r: &mut Reader<'_>, what: &'static str) -> Result<(), DecodeError> {
     r.fixed::<32>(what)?;
     if r.present(what)? {
         r.u128(what)?;
@@ -217,7 +217,19 @@ fn amount(r: &mut Reader<'_>, what: &'static str) -> Result<(u32, i128), DecodeE
 }
 
 fn proposal_prefix(proposal: &[u8]) -> Result<ProposalPrefix, DecodeError> {
+    read_proposal_prefix(&mut Reader::new(proposal))
+}
+
+/// Continue an authenticated proposal after its legs without duplicating
+/// the prefix decoder used to recompute its leaf envelope. This positions
+/// a reader; it does not authenticate the proposal by itself.
+pub(crate) fn proposal_after_legs(proposal: &[u8]) -> Result<Reader<'_>, DecodeError> {
     let mut r = Reader::new(proposal);
+    read_proposal_prefix(&mut r)?;
+    Ok(r)
+}
+
+fn read_proposal_prefix(r: &mut Reader<'_>) -> Result<ProposalPrefix, DecodeError> {
     let major = r.u16("entry.schema_major")?;
     if major != 1 {
         return Err(r.error("entry.schema_major", Reason::BadTag(major.to_le_bytes()[0])));
@@ -230,7 +242,7 @@ fn proposal_prefix(proposal: &[u8]) -> Result<ProposalPrefix, DecodeError> {
     if r.present("entry.document_date")? {
         r.i32("entry.document_date")?;
     }
-    skip_erasable(&mut r, "entry.description")?;
+    skip_erasable(r, "entry.description")?;
     if r.present("entry.effective_period")? {
         r.bytes(MAX_RECORD_BYTES, "entry.effective_period.calendar")?;
         r.bytes(MAX_RECORD_BYTES, "entry.effective_period.code")?;
@@ -245,7 +257,7 @@ fn proposal_prefix(proposal: &[u8]) -> Result<ProposalPrefix, DecodeError> {
             t => return Err(r.error("leg.side", Reason::BadTag(t))),
         };
         let account = r.u128("leg.account_ref")?;
-        let (unit, mantissa) = amount(&mut r, "leg.amount")?;
+        let (unit, mantissa) = amount(r, "leg.amount")?;
         parsed.push(Leg {
             debit,
             account,
@@ -253,7 +265,7 @@ fn proposal_prefix(proposal: &[u8]) -> Result<ProposalPrefix, DecodeError> {
             mantissa,
         });
         if r.present("leg.base_amount")? {
-            amount(&mut r, "leg.base_amount")?;
+            amount(r, "leg.base_amount")?;
         }
         let dims = r.count(MAX_ENVELOPE_LIST, 20, "leg.dimension_set")?;
         for _ in 0..dims {
@@ -261,14 +273,14 @@ fn proposal_prefix(proposal: &[u8]) -> Result<ProposalPrefix, DecodeError> {
             r.u128("dimension.value")?;
         }
         if r.present("leg.memo")? {
-            skip_erasable(&mut r, "leg.memo")?;
+            skip_erasable(r, "leg.memo")?;
         }
         let settles = r.count(MAX_ENVELOPE_LIST, 16 + 32 + 2 + 20, "leg.settles")?;
         for _ in 0..settles {
             r.u128("settles.target.vid")?;
             r.fixed::<32>("settles.target.entry_digest")?;
             r.u16("settles.ordinal")?;
-            amount(&mut r, "settles.amount")?;
+            amount(r, "settles.amount")?;
         }
     }
     Ok(ProposalPrefix {
