@@ -279,8 +279,12 @@ fn retained_directory() -> PathBuf {
             std::env::temp_dir().join(format!("fa-verify-migration-{}-{id}", std::process::id()));
         match std::fs::create_dir(&path) {
             Ok(()) => return path,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => panic!("create {}: {error}", path.display()),
+            Err(error) => assert_eq!(
+                error.kind(),
+                std::io::ErrorKind::AlreadyExists,
+                "create {}: {error}",
+                path.display()
+            ),
         }
     }
 }

@@ -28,6 +28,8 @@
 //! Explicit receivable/payable allocations can be prepared for approval and
 //! rehearsed through that same kernel with [`SettlementPostRequest`]. The
 //! unchanged portable plan supports atomic publication and exact retries.
+//! [`SettlementGroupRequest`] prepares disjoint selections on multiple legs of
+//! one complete entry; the kernel publishes all applications atomically.
 //! [`SettlementReview`] preserves the sealed proposal and observed allocations
 //! across approval publications and process restarts. Explicit revalidation
 //! requires the same proposal and amounts; a review itself grants no authority.
@@ -47,6 +49,7 @@ mod certificate_store;
 pub mod document_disclosure;
 pub mod proof;
 pub mod settlement;
+pub mod settlement_group;
 pub mod settlement_review;
 pub mod statement_diff;
 pub mod statement_diff_workpaper;
@@ -82,6 +85,11 @@ pub use fa_statements::{
 };
 pub use proof::{MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest};
 pub use settlement::{PreparedSettlement, SettlementPostPlan, SettlementPostRequest};
+pub use settlement_group::{
+    MAX_SETTLEMENT_GROUP_LEGS, MAX_SETTLEMENT_GROUP_TARGETS, PreparedSettlementGroup,
+    SettlementGroupPostPlan, SettlementGroupRequest, SettlementLegAllocation,
+    SettlementLegSelection,
+};
 pub use settlement_review::{MAX_SETTLEMENT_REVIEW_BYTES, SettlementReview, SettlementReviewError};
 pub use statement_diff::{
     CertifiedStatementDiff, MAX_STATEMENT_DIFF_CERTIFICATE_BYTES, StatementDiff,
