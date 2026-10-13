@@ -28,6 +28,9 @@
 //! Explicit receivable/payable allocations can be prepared for approval and
 //! rehearsed through that same kernel with [`SettlementPostRequest`]. The
 //! unchanged portable plan supports atomic publication and exact retries.
+//! [`SettlementReview`] preserves the sealed proposal and observed allocations
+//! across approval publications and process restarts. Explicit revalidation
+//! requires the same proposal and amounts; a review itself grants no authority.
 //! Sessions, drafts, signed transparency
 //! checkpoints and bundles remain later slices of the embedded API described
 //! in `COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md` (§15.2).
@@ -41,6 +44,7 @@ pub mod certificate;
 mod certificate_store;
 pub mod proof;
 pub mod settlement;
+pub mod settlement_review;
 pub mod statement_diff;
 pub mod statement_diff_workpaper;
 pub mod statements;
@@ -71,6 +75,9 @@ pub use fa_statements::{
 };
 pub use proof::{MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest};
 pub use settlement::{PreparedSettlement, SettlementPostPlan, SettlementPostRequest};
+pub use settlement_review::{
+    MAX_SETTLEMENT_REVIEW_BYTES, SettlementReview, SettlementReviewError,
+};
 pub use statement_diff::{
     CertifiedStatementDiff, MAX_STATEMENT_DIFF_CERTIFICATE_BYTES, StatementDiff,
     StatementDiffCertificate, StatementDiffRequest, StatementLineChange, StatementMappingChange,
