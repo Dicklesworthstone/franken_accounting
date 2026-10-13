@@ -37,6 +37,7 @@ pub mod book;
 pub mod certificate;
 mod certificate_store;
 pub mod proof;
+pub mod statement_diff;
 pub mod statements;
 pub mod summary;
 pub mod summary_certificate;
@@ -64,6 +65,7 @@ pub use fa_statements::{
     StatementLine,
 };
 pub use proof::{MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest};
+pub use statement_diff::{StatementDiff, StatementDiffRequest, StatementLineChange, StatementMappingChange};
 pub use statements::{CertifiedStatement, StatementSelection};
 pub use summary::{SummaryGroup, SummaryRequest, SummaryScope, SummaryTrialBalance};
 pub use summary_certificate::{
