@@ -334,6 +334,19 @@ fn one_daemon_per_book_and_fa_gets_byte_identical_answers_through_it() {
     assert_eq!(code, 4, "nothing left to stop: {out}");
 }
 
+/// What `fa doctor` and `fa triage` say about the host that answered:
+/// (run directly, through fad).
+fn host_report(verb: &str) -> Option<(&'static str, &'static str)> {
+    match verb {
+        "doctor" => Some((
+            "held by this command for its duration; no fad serves the book",
+            "held by the fad answering this command",
+        )),
+        "triage" => Some((r#""daemon":"absent""#, r#""daemon":"serving""#)),
+        _ => None,
+    }
+}
+
 #[test]
 fn every_registered_verb_and_subcommand_is_served_by_both_hosts() {
     let dir = tmp("parity");
@@ -369,9 +382,20 @@ fn every_registered_verb_and_subcommand_is_served_by_both_hosts() {
             "fad does not serve {ask:?}: {t:?}"
         );
         if ask[..2] == ["book".to_string(), "create".to_string()] {
-            // The one posture difference: a daemon serves an existing book.
+            // A posture difference: a daemon serves an existing book.
             assert_eq!(t.0, 2, "{t:?}");
             assert!(t.1.contains("a daemon serves an existing one"), "{t:?}");
+        } else if let Some((here, there)) = host_report(&ask[0]) {
+            // The other: doctor and triage report the host that answered
+            // (who holds the lease, whether a daemon serves). Each host
+            // says its own; with that one value swapped, the answers match.
+            assert!(d.1.contains(here), "direct {ask:?}: {d:?}");
+            assert!(t.1.contains(there), "through fad {ask:?}: {t:?}");
+            assert_eq!(
+                d,
+                &(t.0, t.1.replace(there, here), t.2.clone()),
+                "direct vs through fad differ for {ask:?}"
+            );
         } else {
             assert_eq!(d, t, "direct vs through fad differ for {ask:?}");
         }

@@ -28,7 +28,8 @@ const RAW_ONLY_COMMANDS: [&str; 2] = ["document", "redacted-view"];
 
 /// Whether `args` are the library grammar's: a bare invocation, any library
 /// anchor flag, a library-only command, a shared command named positionally,
-/// or an unknown command (the library suggests the closest one).
+/// or an unknown command that names no `--proof` (the library suggests the
+/// closest one).
 pub fn handles(args: &[OsString]) -> bool {
     let Some(first) = args.first() else {
         return true;
@@ -50,7 +51,10 @@ pub fn handles(args: &[OsString]) -> bool {
         // positionally; `--proof` marks the raw grammar, and anything else
         // (including a raw-grammar usage error) is the raw parser's to judge.
         Some(f) if SHARED_COMMANDS.contains(&f) => !has("--proof") && has_positional(&args[1..]),
-        Some(f) => !f.starts_with("--"),
+        // An unknown command naming `--proof` is a raw-grammar mistake and
+        // gets the raw parser's error event; otherwise the library suggests
+        // the closest command.
+        Some(f) => !f.starts_with("--") && !has("--proof"),
         None => false,
     }
 }
