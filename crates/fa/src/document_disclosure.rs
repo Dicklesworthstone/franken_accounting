@@ -319,7 +319,7 @@ mod tests {
             batch.set_vertex_property(
                 fa_journal::evidence::document_vid(&self.doc.oid()),
                 property::FA_PAYLOAD,
-                fa_journal::rows::scalar_bytes("payload", vec![255]).unwrap(),
+                Some(fa_journal::rows::scalar_bytes("payload", vec![255]).unwrap()),
             );
             self.runtime
                 .block_on(self.book.db.write(&cx.commit(), batch))
