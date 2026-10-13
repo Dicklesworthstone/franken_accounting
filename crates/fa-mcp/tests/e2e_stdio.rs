@@ -1688,3 +1688,24 @@ fn launch_rejects_unbounded_grants_before_serving_stdio() {
     assert_eq!(missing.status.code(), Some(2));
     assert!(missing.stdout.is_empty());
 }
+
+/// Never silent on a panic (fa-y9z): stdout is the JSON-RPC transport, so a
+/// panicking `fa-mcp` writes nothing there, reports FA-REF-153 on stderr and
+/// exits 5, never Rust's 101. The panic is the debug build's `FA_TEST_PANIC`
+/// trigger; a release build compiles it out.
+#[test]
+fn a_panicking_server_reports_fa_ref_153_on_stderr_with_exit_5() {
+    let panicked = Command::new(env!("CARGO_BIN_EXE_fa-mcp"))
+        .args(["--book", "/nonexistent/fa-mcp-panic-book"])
+        .env_remove("FA_BOOK")
+        .env("FA_TEST_PANIC", "1")
+        .stdin(Stdio::null())
+        .output()
+        .expect("launch with the panic trigger");
+    let stderr = String::from_utf8_lossy(&panicked.stderr);
+    assert_eq!(panicked.status.code(), Some(5), "{stderr}");
+    assert!(panicked.stdout.is_empty(), "the transport stays clean");
+    assert!(stderr.contains("fa-mcp: internal error"), "{stderr}");
+    assert!(stderr.contains("FA-REF-153"), "{stderr}");
+    assert!(stderr.contains("FA_TEST_PANIC"), "{stderr}");
+}

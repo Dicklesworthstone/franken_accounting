@@ -680,3 +680,25 @@ fn explicit_key_bootstrap_records_ticks_and_clean_stop_releases_the_timed_book()
         })
     ));
 }
+
+/// Never silent on a panic (fa-y9z): a panicking `fad` exits 5 with exactly
+/// one FA-REF-153 error event, never Rust's 101. The panic is the debug
+/// build's `FA_TEST_PANIC` trigger; a release build compiles it out.
+#[test]
+fn a_panicking_daemon_command_is_one_error_event_with_exit_5() {
+    let dir = tmp("panic");
+    let book = dir.join("book").display().to_string();
+    let out = Command::new(env!("CARGO_BIN_EXE_fad"))
+        .args(["status", "--book", &book, "--json"])
+        .env_remove("FA_BOOK")
+        .env("FA_TEST_PANIC", "1")
+        .output()
+        .expect("run fad");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(out.status.code(), Some(5), "{stdout}\n{stderr}");
+    assert_eq!(checked(&stdout), vec!["error"], "{stdout}");
+    assert!(stdout.contains("\"refusal_id\":\"FA-REF-153\""), "{stdout}");
+    assert!(stdout.contains("FA_TEST_PANIC"), "{stdout}");
+    assert!(stderr.contains("fad: internal error"), "{stderr}");
+}

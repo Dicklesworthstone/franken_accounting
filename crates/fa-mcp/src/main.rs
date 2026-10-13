@@ -10,7 +10,8 @@
 //!
 //! stdout is the transport; diagnostics go to stderr. Exit codes follow the
 //! `fa` dictionary: 2 usage, 5 foundation (the registry or the server could
-//! not be built); the transport's own end is 0.
+//! not be built, or a panic, reported as FA-REF-153 on stderr); the
+//! transport's own end is 0.
 
 #![forbid(unsafe_code)]
 
@@ -27,6 +28,28 @@ const USAGE: &str = "fa-mcp — the FrankenAccounting MCP server (stdio)\n\nusag
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    // Never silent on a panic (fa-y9z): stdout is the transport, so the
+    // FA-REF-153 refusal goes to stderr with exit 5, never Rust's 101.
+    fa_cli::panic::install("fa-mcp");
+    match fa_cli::panic::catch(|| {
+        // Debug builds only: the never-silent-fail test's deliberate panic.
+        #[cfg(debug_assertions)]
+        if std::env::var_os("FA_TEST_PANIC").is_some() {
+            std::panic::panic_any(
+                "FA_TEST_PANIC: a deliberate panic for the never-silent-fail test",
+            );
+        }
+        serve(&argv)
+    }) {
+        Ok(code) => code,
+        Err(text) => {
+            eprintln!("error (exit 5): {}", fa_cli::panic::refusal(&text));
+            ExitCode::from(5)
+        }
+    }
+}
+
+fn serve(argv: &[String]) -> ExitCode {
     let mut config = ServerConfig::default();
     let mut i = 0;
     while i < argv.len() {

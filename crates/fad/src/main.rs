@@ -34,7 +34,18 @@ use fad::{Limits, Server, line};
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
-    ExitCode::from(run(&argv))
+    // Never silent on a panic (fa-y9z): one FA-REF-153 error event, exit 5.
+    fa_cli::panic::install("fad");
+    ExitCode::from(fa_cli::panic::run_reporting(&argv, || {
+        // Debug builds only: the never-silent-fail test's deliberate panic.
+        #[cfg(debug_assertions)]
+        if std::env::var_os("FA_TEST_PANIC").is_some() {
+            std::panic::panic_any(
+                "FA_TEST_PANIC: a deliberate panic for the never-silent-fail test",
+            );
+        }
+        run(&argv)
+    }))
 }
 
 fn run(argv: &[String]) -> u8 {

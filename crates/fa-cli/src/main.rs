@@ -10,7 +10,7 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
-    fa_cli::panic::install();
+    fa_cli::panic::install("fa");
     let code = fa_cli::panic::run_reporting(&argv, || {
         // Debug builds only: the never-silent-fail test's deliberate panic.
         #[cfg(debug_assertions)]
