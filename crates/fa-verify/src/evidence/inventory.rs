@@ -5,6 +5,7 @@
 //! inventory lists every citation in that entry, including multiple roles
 //! for one document. It does not verify or disclose document bytes.
 
+pub mod allocation;
 pub mod production;
 
 use core::fmt;
