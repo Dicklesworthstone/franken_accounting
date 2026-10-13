@@ -201,9 +201,21 @@ impl Writer {
         self
     }
 
+    #[cfg(test)]
+    pub(crate) fn i128(&mut self, v: i128) -> &mut Self {
+        self.buf.extend_from_slice(&v.to_le_bytes());
+        self
+    }
+
     pub(crate) fn fixed(&mut self, b: &[u8]) -> &mut Self {
         self.buf.extend_from_slice(b);
         self
+    }
+
+    /// A byte string already bounded by its caller, with canonical framing.
+    #[cfg(test)]
+    pub(crate) fn bytes(&mut self, b: &[u8]) -> &mut Self {
+        self.count(b.len()).fixed(b)
     }
 
     /// A list count. Every list the verifier writes is bounded far below
@@ -261,5 +273,21 @@ mod tests {
         assert_eq!(r.fixed::<1>("g").unwrap(), [7]);
         assert_eq!(r.u32("h").unwrap(), 8);
         r.finish("all").unwrap();
+    }
+
+    #[test]
+    fn proof_fields_preserve_signed_boundaries_and_binary_string_framing() {
+        for amount in [i128::MIN, -1, 0, 1, i128::MAX] {
+            let mut w = Writer::default();
+            w.i128(amount).bytes(&[]).bytes(&[0, 255, 128]);
+            assert_eq!(&w.buf[..16], &amount.to_le_bytes());
+            assert_eq!(&w.buf[16..20], &0u32.to_le_bytes());
+            assert_eq!(&w.buf[20..24], &3u32.to_le_bytes());
+            let mut r = Reader::new(&w.buf);
+            assert_eq!(r.i128("amount").unwrap(), amount);
+            assert!(r.bytes(0, "empty").unwrap().is_empty());
+            assert_eq!(r.bytes(3, "binary").unwrap(), &[0, 255, 128]);
+            r.finish("proof fields").unwrap();
+        }
     }
 }

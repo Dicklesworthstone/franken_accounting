@@ -77,7 +77,6 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use crate::balance::verify_balance;
 use crate::blake3::{hash_parts, hex};
 use crate::checkpoint::{SCHEME_ED25519, SignedCheckpoint, signer_key_id, verify_checkpoint};
 use crate::codec::{DecodeError, Reader, Reason};
@@ -89,6 +88,7 @@ use crate::proof::{
 };
 use crate::scope::{SCOPE_INDEX_COMPLETE, ScopeClaim, verify_scope};
 use crate::tree::{Digest, leaf_hash, root_from_inclusion};
+use crate::verify_balance;
 
 pub const BUNDLE_FORMAT: &[u8] = b"fa:bundle:v1";
 pub const BUNDLE_DIGEST_DOMAIN: &[u8] = b"fa:bundle:v1";

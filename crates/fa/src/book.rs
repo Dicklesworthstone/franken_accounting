@@ -809,6 +809,24 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.add_document(&purposes, doc)))
     }
 
+    /// Supply evidence under the calling session's capability. The kernel
+    /// derives the uploader and provenance grade and checks current authority
+    /// before observing an existing document or publishing its custody receipt.
+    /// Inline and large documents use this book's configured storage, never
+    /// the trusted owner intake path. A retry preserves the original provenance.
+    /// Hosts bind the capability; this method does not authenticate a transport
+    /// or grant an Agent monetary posting authority on trunk.
+    pub fn upload_document(
+        &mut self,
+        capability: &fa_journal::Capability,
+        request: fa_journal::UploadRequest,
+    ) -> Outcome<fa_journal::DocumentAdded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.upload_document(
+            &purposes, capability, request,
+        )))
+    }
+
     /// Record an import run (plan §9.3): the batch's documents and their
     /// receipts, and the run's `ImportControl` receipt, in one commit.
     /// `description` is sealed under the book key with fresh entropy.
@@ -1284,6 +1302,20 @@ impl Book {
     /// witnesses or document-receipt claims.
     pub fn verify_accumulator(&self) -> Result<fa_notary::AccumulatorVerification, BookError> {
         with_store!(&self.store, core => core.verify_accumulator(&self.purposes()))
+    }
+
+    /// Export a raw Notary proof or 80-byte checkpoint for the independent
+    /// `fa-verify` program. The holder must have current read and produce
+    /// authority for this book. The selected checkpoint is recomputed from
+    /// retained journal history; no new checkpoint or other write occurs.
+    /// Outsiders establish trust in the unsigned checkpoint separately.
+    pub fn export_proof(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: crate::ProofRequest,
+    ) -> Outcome<crate::ProofArtifact> {
+        with_store!(&self.store, core => core.export_proof(&self.purposes(), principal, capability, request))
     }
 
     /// Produce an evidence bundle (plan §13.2) and its detached production
@@ -3483,7 +3515,7 @@ mod tests {
             balances: Vec::new(),
             inline_documents: true,
         };
-        let producer = PolicyCapability::embedded(principal, &["produce"]).unwrap();
+        let producer = PolicyCapability::embedded(principal, &["produce", "read"]).unwrap();
         assert_eq!(
             book.produce_bundle(principal, &producer, None, &request)
                 .unwrap()
@@ -3505,8 +3537,17 @@ mod tests {
                 .unwrap_err();
             assert_eq!((refusal.code, refusal.exit), (code, 7));
         }
+        // `produce` alone never discloses the journal: a Prefix bundle lists
+        // every leaf, so production also needs whole-book read (fa-ku9).
+        let produce_only = PolicyCapability::embedded(principal, &["produce"]).unwrap();
+        let refusal = book
+            .produce_bundle(principal, &produce_only, None, &request)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", 7));
         let agent =
-            PolicyCapability::new(principal, Profile::Agent, &[Op::Produce], VId(1)).unwrap();
+            PolicyCapability::new(principal, Profile::Agent, &[Op::Produce, Op::Read], VId(1))
+                .unwrap();
         let by_agent = book
             .produce_bundle(principal, &agent, None, &request)
             .unwrap()
@@ -5570,8 +5611,9 @@ mod tests {
 
     /// Plan §15.2 through the facade: the scratch book (its own runtime and
     /// store) folds as the source does and verifies against its SeqMap; a
-    /// scenario post lands in the scratch book only; a map with a pair
-    /// removed is FA-REF-135.
+    /// later checkpoint cannot invalidate a historical replay. A scenario
+    /// post lands in the scratch book only; a map with a pair removed is
+    /// FA-REF-135.
     #[test]
     fn a_scratch_replay_reproduces_the_book_and_scenario_posts_stay_in_it() {
         let book_id = Id128([0x5c; 16]);
@@ -5582,6 +5624,7 @@ mod tests {
             Entropy::deterministic(0x5c),
         )
         .expect("create");
+        let genesis = book.head().unwrap();
         let principal = VId(1);
         let day = DateDay::from_ymd(2026, 3, 15).unwrap();
         book.install_chart(&chart(usd), principal, day, b"chart")
@@ -5610,6 +5653,7 @@ mod tests {
                 .expect("kernel")
                 .expect("admitted");
         }
+        let historical_prefix = book.head().unwrap();
         // Maintained registers and source-bound report artifacts are not
         // accounting inputs to a scratch book.
         assert!(book.advance_registers(&march).expect("maintained").wrote);
@@ -5619,7 +5663,62 @@ mod tests {
             .unwrap()
             .certificate;
         let retained = book.retain_certificate(&certificate).unwrap().unwrap();
+        let checkpoint = book
+            .checkpoint(
+                principal,
+                &Capability::embedded(principal, &["witness"]).unwrap(),
+            )
+            .unwrap()
+            .unwrap();
         let source_head = book.head().unwrap();
+        let root_vid = fa_journal::rows::book_root();
+        let current_root = with_store!(&book.store, core => core.db.vertex(root_vid))
+            .unwrap()
+            .unwrap();
+        assert_eq!(current_root.created_at, checkpoint.stored.recorded_at);
+        assert!(current_root.created_at > historical_prefix);
+
+        // The root's current version starts at the checkpoint, but its
+        // original creating commit still admits this earlier monetary prefix.
+        let (historical, historical_map) = book
+            .replay_into_scratch(
+                Some(historical_prefix),
+                BookKeys::for_development(0x5e),
+                Entropy::deterministic(0x5e),
+            )
+            .unwrap()
+            .expect("checkpoint maintenance cannot move genesis");
+        book.verify_replay(&historical, &historical_map)
+            .unwrap()
+            .expect("the historical map still verifies after the checkpoint");
+        assert_eq!(historical_map.source_prefix, historical_prefix);
+        let first = historical_map.pairs.first().expect("the genesis pair");
+        assert_eq!(first.source_seq, genesis);
+        let genesis_marker = with_store!(&book.store, core => {
+            core.db.delta_since(CommitSeq(0)).map(|mut history| {
+                history
+                    .find(|batch| batch.commit_seq() == genesis)
+                    .expect("the authenticated genesis commit")
+                    .commit_marker_identity()
+                    .marker_oid
+                    .0
+            })
+        })
+        .unwrap();
+        assert_eq!(first.source_marker, genesis_marker);
+        let original_root = with_store!(&book.store, core => core.db.vertex_at(root_vid, genesis))
+            .unwrap()
+            .unwrap();
+        let replayed_root = with_store!(&historical.store, core => core.db.vertex(root_vid))
+            .unwrap()
+            .unwrap();
+        assert_eq!(replayed_root.created_at, first.scratch_seq);
+        assert_eq!(replayed_root.birth_ordinal, original_root.birth_ordinal);
+        assert_eq!(replayed_root.props, original_root.props);
+        assert_eq!(
+            historical.fold_period(&march).unwrap().cells,
+            book.fold_period(&march).unwrap().cells
+        );
 
         let before_genesis = book
             .replay_into_scratch(
@@ -5652,6 +5751,15 @@ mod tests {
             .expect("verifies");
         assert_eq!(verified.pairs_checked, map.pairs.len());
         assert!(verified.entries_checked >= 2, "{verified:?}");
+        assert_eq!(
+            map.pairs, historical_map.pairs,
+            "only maintenance followed the historical accounting prefix"
+        );
+        assert_eq!(
+            map.translate(checkpoint.stored.recorded_at),
+            historical_map.translate(historical_prefix),
+            "a checkpoint translates to the preceding accounting commit"
+        );
         assert!(
             !map.pairs
                 .iter()

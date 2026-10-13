@@ -631,6 +631,27 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    /// Keep the session intake path bound to this book's private blob store.
+    /// Sibling facade modules must not accept a caller-selected store or fall
+    /// back to the legacy owner-only intake when an upload exceeds inline size.
+    pub(crate) async fn upload_in_configured_store(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        request: fa_journal::UploadRequest,
+    ) -> Outcome<fa_journal::DocumentAdded> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        Ok(fa_journal::upload::upload_document_in_store(
+            &mut self.db,
+            cx,
+            &self.context,
+            capability,
+            &self.blobs,
+            request,
+        )
+        .await?)
+    }
+
     pub async fn add_document(
         &mut self,
         cx: &PurposeContexts,
@@ -1091,6 +1112,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         ) {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
+        // A bundle discloses its scope's entries (every leaf of a Prefix
+        // scope), so producing one also needs whole-book read authority, as
+        // a proof export does: `produce` alone never discloses the journal.
+        if let Err(denial) = fa_policy::admit_read(capability, principal, self.context.book_id) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
         let at = self.head(cx)?;
         if let Err(denial) = fa_policy::current(capability, at) {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
@@ -1146,6 +1173,20 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .canonical_bytes()
         .map_err(|e| KernelError::Model(e.into()))?;
         Ok(Ok(Some(ProducedBundle { bundle, receipt })))
+    }
+
+    /// Export a portable proof from a supported recorded checkpoint, under
+    /// current read and produce authority. Export never mutates the book.
+    pub fn export_proof(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: crate::ProofRequest,
+    ) -> Outcome<crate::ProofArtifact> {
+        self.query(cx, |db, book| {
+            crate::proof::export(db, cx, book, &self.signer, principal, capability, request)
+        })
     }
 
     pub fn open_items(

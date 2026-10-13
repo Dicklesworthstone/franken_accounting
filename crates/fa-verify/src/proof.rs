@@ -80,6 +80,16 @@ pub struct Checkpoint {
 impl Checkpoint {
     pub const ENCODED_LEN: usize = 16 + 16 + 8 + 8 + 32;
 
+    /// Read exactly one canonical 80-byte checkpoint. This parses an anchor;
+    /// it does not authenticate its origin or make it trusted. The operator
+    /// must supply that trust independently of the proof being checked.
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        let mut reader = Reader::new(bytes);
+        let checkpoint = Self::read(&mut reader)?;
+        reader.finish("checkpoint")?;
+        Ok(checkpoint)
+    }
+
     pub(crate) fn read(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
         Ok(Self {
             book_id: r.fixed("checkpoint.book_id")?,
@@ -166,6 +176,11 @@ pub enum VerifyError {
     /// A balance proof's records are not exactly the in-scope leaves: the
     /// first leaf index that is missing or should not be there.
     RecordSet {
+        index: u64,
+    },
+    /// An in-scope Migration leaf needs authenticated lifecycle and run
+    /// policy evidence that a v1 balance proof does not carry (fa-e00).
+    MigrationVisibility {
         index: u64,
     },
     /// A leg amount is negative or a sum overflowed `i128`.
@@ -270,6 +285,10 @@ impl fmt::Display for VerifyError {
             Self::RecordSet { index } => write!(
                 f,
                 "the records are not exactly the in-scope leaves (leaf {index} is missing or extra)"
+            ),
+            Self::MigrationVisibility { index } => write!(
+                f,
+                "Migration leaf {index}: a v1 balance proof cannot establish migration visibility; authenticated lifecycle and run-policy witnesses are required (fa-e00)"
             ),
             Self::Arithmetic => write!(f, "a leg amount is negative or a sum overflowed"),
             Self::Claim { debits, credits } => write!(

@@ -975,7 +975,9 @@ fn corrections_require_registered_reasons_and_other_requires_particulars() {
         .entry_ref();
     let before = read_entry(&h.db, original.vid).unwrap().unwrap();
     let mut reversal = h.reversal_of(original, 80, b"reason-reversal");
-    for reason in [0, u16::MAX] {
+    // 12 is ScheduledAccrualReversal: reserved for the kernel's own scheduled
+    // reversal, never a manual reason (fa-cvg).
+    for reason in [0, 12, u16::MAX] {
         reversal.supersession[0].reason_code = reason;
         let head = h.db.frontier().unwrap();
         let refusal = h.post(h.request(reversal.clone(), &["post"])).unwrap_err();

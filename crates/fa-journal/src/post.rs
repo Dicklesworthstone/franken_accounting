@@ -892,7 +892,13 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
         let reasons = fa_registry::reason_codes::ReasonCodes::embedded()
             .map_err(|e| KernelError::Corrupt(e.to_string()))?;
         let reason = proposal.supersession[0].reason_code;
-        let registered = reasons.get("supersession", reason);
+        // ScheduledAccrualReversal names the kernel's own scheduled effect,
+        // which the scheduler mints without this path; a manual reversal
+        // citing it would impersonate one (fa-cvg), so it is not a reason a
+        // principal may give here.
+        let registered = reasons
+            .get("supersession", reason)
+            .filter(|_| reason != fa_registry::reason_codes::SCHEDULED_ACCRUAL_REVERSAL);
         let described = registered.is_none_or(|row| {
             row.name != "Other"
                 || proposal
@@ -905,7 +911,11 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
             return Ok(Err(Refusal::new(
                 code::SUPERSESSION_REASON,
                 exit::REFUSAL,
-                if registered.is_none() {
+                if reason == fa_registry::reason_codes::SCHEDULED_ACCRUAL_REVERSAL {
+                    format!(
+                        "supersession reason {reason} (ScheduledAccrualReversal) is reserved for the kernel's scheduled reversal; a manual reversal gives its own reason"
+                    )
+                } else if registered.is_none() {
                     format!("supersession reason {reason} is not registered (zero is not a reason)")
                 } else {
                     "supersession reason Other requires a nonempty description sealed for this book"

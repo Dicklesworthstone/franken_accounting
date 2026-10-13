@@ -12,6 +12,8 @@
 //! Recorded time comes from the substrate's commit stream.
 //! [`AsyncBook`] also folds historical open-item snapshots and effective-date
 //! aging with explicit buckets; those projections are not certified reports.
+//! Summary trial balances preserve historical chart membership, exact native
+//! units and leaf drilldown under a current whole-book read capability.
 //! Trial balances, balance explanations and open items can carry retained-history
 //! replay certificates binding the native reads, journal prefix, report selector,
 //! historical account metadata, registries and exact output. Certificates may be
@@ -30,7 +32,10 @@ pub mod async_book;
 pub mod book;
 pub mod certificate;
 mod certificate_store;
+pub mod proof;
 pub mod statements;
+pub mod summary;
+pub mod upload;
 
 pub use aging::{
     AgedOpenItem, AgingAmounts, AgingBand, AgingBuckets, AgingCell, AgingTotal, EffectiveDateAging,
@@ -44,7 +49,7 @@ pub use certificate::{
 };
 pub use certificate_store::RetainedCertificate;
 pub use fa_intents::{IntentError, MAX_PLAN_BYTES, PlanCertificate, PostIntent, PostPlan};
-pub use fa_journal::InstantSelection;
+pub use fa_journal::{InstantSelection, UploadRequest};
 pub use fa_notary::{
     AccumulatorVerification, BalanceRequest, BundleRequest, BundleScope, Checkpointed,
 };
@@ -55,4 +60,6 @@ pub use fa_statements::{
     AccountMapping, Column as StatementColumn, Statement, StatementDefinition, StatementKind,
     StatementLine,
 };
+pub use proof::{MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest};
 pub use statements::{CertifiedStatement, StatementSelection};
+pub use summary::{SummaryGroup, SummaryRequest, SummaryScope, SummaryTrialBalance};

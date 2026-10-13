@@ -817,3 +817,20 @@ owners = ["fa-journal"]
 exit = "refusal"
 cite = "plan §5.4, §7.1a, §7.6 (automatic effects take time only from a corroborated committed tick)"
 fix = "journal a newer TimeEvidence tick that its source's monotonic clock corroborates (Book::record_tick or AsyncBook::record_tick with monotonic_ok true, by the caller that holds the clock), then rerun the sweep under it (Book::sweep or AsyncBook::sweep)"
+
+# ---- Proof export (145–146; renumbered from main's 126/127, which staging's Notary codes hold) ---
+[[refusal]]
+code = "FA-REF-145"
+name = "PROOF_STATE_UNKNOWN"
+owners = ["fa"]
+exit = "usage"
+cite = "plan §13.2 (proofs select an existing journaled AccumulatorState)"
+fix = "use fa verify accumulator --json to select a recorded state; the owner may publish one with fa checkpoint create --grant witness"
+
+[[refusal]]
+code = "FA-REF-146"
+name = "PROOF_EXPORT_LIMIT"
+owners = ["fa"]
+exit = "usage"
+cite = "plan §13.1–§13.3 (bounded complete portable proofs)"
+fix = "choose an earlier checkpoint or an inclusion proof, or export a binary file when only the inline transport is too small; a complete-prefix proof is never truncated"

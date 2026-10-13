@@ -265,7 +265,7 @@ pub(crate) fn admit_request<V: asupersync::fs::Vfs + Clone>(
             exit::REFUSAL,
             "this book declares no time_zone_policy, so no tick can become the civil date a scheduled reversal waits for",
             "plan §7.7 (the book's time_zone_policy governs instant → civil date; always explicit)",
-            "declare the policy at genesis (BookSpec.time_zone_policy = Utc; `fa book create --time-zone-policy Utc`), or post the reversal by hand when it is due",
+            "declare the policy at genesis (BookSpec.time_zone_policy = Utc; `fa book create --time-zone UTC`), or post the reversal by hand when it is due",
         )));
     }
     match period_of(book, reverse_on)? {

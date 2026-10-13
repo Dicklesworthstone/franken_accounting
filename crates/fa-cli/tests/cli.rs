@@ -2422,6 +2422,413 @@ fn raw_reversal_retries_preserve_legacy_zero_reasons_without_admitting_new_ones(
 }
 
 #[test]
+fn book_time_zone_rejects_unsupported_or_inapplicable_options_before_creation()
+-> std::io::Result<()> {
+    let dir = tmp("book-time-zone")?;
+    for (index, args) in [
+        vec![
+            "book",
+            "create",
+            "--name",
+            "Zone Co",
+            "--time-zone",
+            "America/New_York",
+            "--json",
+        ],
+        vec![
+            "book",
+            "create",
+            "--name",
+            "Zone Co",
+            "--time-zone",
+            "utc",
+            "--json",
+        ],
+        vec![
+            "book",
+            "create",
+            "--name",
+            "Zone Co",
+            "--time-zone",
+            "UTC",
+            "--time-zone",
+            "UTC",
+            "--json",
+        ],
+        vec!["book", "info", "--time-zone", "UTC", "--json"],
+    ]
+    .iter()
+    .enumerate()
+    {
+        let book = dir.join(format!("refused-{index}"));
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 2, "args={args:?}\n{out}\n{err}");
+        assert!(
+            !book.exists(),
+            "invalid book policy must not create a directory or keys"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn timed_cli_intents_preserve_their_requests_and_execute_under_recorded_ticks()
+-> std::io::Result<()> {
+    use asupersync::Budget;
+    use asupersync::runtime::RuntimeBuilder;
+    use fa::{Book, BookKeys, Entropy};
+    use fa_journal::{Capability, ReversalStatus};
+    use fa_model::{Disposition, EntryClass};
+    use fa_money::Side;
+    use fa_policy::{Op, Profile};
+    use fa_time::DateDay;
+    use fgdb_types::VId;
+
+    // Declared observations, independent of process wall time: March 15
+    // noon and April 1 midnight UTC. Only the host fixture records ticks.
+    const ANCHOR_NS: u64 = 1_773_576_000_000_000_000;
+    const APRIL_NS: u64 = 1_775_001_600_000_000_000;
+    let dir = tmp("timed-intents")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        assert!(err.is_empty(), "{err}");
+        out
+    };
+    ok(&[
+        "book",
+        "create",
+        "--name",
+        "Timed Co",
+        "--time-zone",
+        "UTC",
+        "--json",
+    ]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    ok(&["period", "open", "FY2026-P04", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let keys = BookKeys::load(&book.join("book.keys")).unwrap();
+    let open = || Book::open_dir(&book, keys.clone(), Entropy::production()).unwrap();
+    let head = || open().head().unwrap();
+    let runtime = RuntimeBuilder::new().build().unwrap();
+    let root = runtime.request_cx_with_budget(Budget::INFINITE);
+    let witness = Capability::embedded(VId(7), &["witness"]).unwrap();
+    let tick = |ns| {
+        let mut handle = open();
+        runtime
+            .block_on(handle.record_tick(&root, ns, true, &witness))
+            .unwrap()
+            .unwrap()
+    };
+    let system = fa_journal::rows::system_principal(open().context().book_id);
+    let sweeper = Capability::new(system, Profile::System, &[Op::Post], system).unwrap();
+    let anchor = tick(ANCHOR_NS);
+    let intent = |key: &str, class: &str, extra: &str| {
+        write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"class":"{class}","effective_date":"2026-03-15","idempotency_key":"{key}","legs":[{{"side":"debit","account":"6000","amount":"1.00 USD"}},{{"side":"credit","account":"1000","amount":"1.00 USD"}}]{extra}}}"#
+            ),
+        )
+    };
+    // Typos, inapplicable fields, duplicate sources, and wrong types never
+    // become permanent or unscheduled entries. Valid but inadmissible data
+    // still reaches the kernel's registered refusal unchanged.
+    /// `(class, extra intent fields, extra argv, exit, refusal id)`.
+    type BadIntent = (
+        &'static str,
+        &'static str,
+        &'static [&'static str],
+        i32,
+        Option<&'static str>,
+    );
+    let bad_intents: &[BadIntent] = &[
+        ("Pending", r#","timeout_ns":-1"#, &[], 2, None),
+        (
+            "Pending",
+            r#","timeout_ns":18446744073709551616"#,
+            &[],
+            2,
+            None,
+        ),
+        ("Pending", r#","timeout_ns":"5""#, &[], 2, None),
+        ("Pending", r#","timeout_ns":null"#, &[], 2, None),
+        ("Pending", r#","timeout_ns":1.5"#, &[], 2, None),
+        ("Pending", r#","timeout":5"#, &[], 2, None),
+        ("Pending", r#","timeout_nss":5"#, &[], 2, None),
+        ("Pending", r#","expires_at":"2026-04-01""#, &[], 2, None),
+        ("Original", r#","timeout_ns":5"#, &[], 2, None),
+        ("Resolution", r#","timeout_ns":5"#, &[], 2, None),
+        ("Pending", r#","reverse_on":"2026-04-01""#, &[], 2, None),
+        ("Original", r#","reverse_on":"2026-04-01""#, &[], 2, None),
+        ("Adjusting", r#","reverse_on":5"#, &[], 2, None),
+        ("Adjusting", r#","reverse_on":null"#, &[], 2, None),
+        ("Adjusting", r#","reverse_on":"2026-02-30""#, &[], 2, None),
+        (
+            "Adjusting",
+            r#","auto_reverse_on":"2026-04-01""#,
+            &[],
+            2,
+            None,
+        ),
+        ("Pending", "", &["--timeout-ns", "-1"], 2, None),
+        ("Pending", "", &["--timeout-ns", "+5"], 2, None),
+        (
+            "Pending",
+            "",
+            &["--timeout-ns", "18446744073709551616"],
+            2,
+            None,
+        ),
+        ("Original", "", &["--timeout-ns", "5"], 2, None),
+        ("Original", "", &["--reverse-on", "2026-04-01"], 2, None),
+        ("Adjusting", "", &["--reverse-on", "2026-04-31"], 2, None),
+        (
+            "Pending",
+            "",
+            &["--timeout-ns", "5", "--timeout-ns", "5"],
+            2,
+            None,
+        ),
+        (
+            "Pending",
+            r#","timeout_ns":5"#,
+            &["--timeout-ns", "5"],
+            2,
+            None,
+        ),
+        (
+            "Adjusting",
+            r#","reverse_on":"2026-04-01""#,
+            &["--reverse-on", "2026-04-01"],
+            2,
+            None,
+        ),
+        (
+            "Adjusting",
+            "",
+            &["--reverse-on", "2026-04-01", "--reverse-on", "2026-04-01"],
+            2,
+            None,
+        ),
+        (
+            "Pending",
+            r#","timeout_ns":18446744073709551615"#,
+            &[],
+            3,
+            Some("FA-REF-096"),
+        ),
+        (
+            "Adjusting",
+            r#","reverse_on":"2026-03-15""#,
+            &[],
+            2,
+            Some("FA-REF-100"),
+        ),
+    ];
+    let before_invalid = head();
+    for (index, (class, extra, flags, expected_exit, refusal)) in bad_intents.iter().enumerate() {
+        let path = intent(&format!("invalid-{index}"), class, extra);
+        let mut args = vec!["post", "--intent", &path, "--evidence", &evidence, "--json"];
+        args.extend_from_slice(flags);
+        let (code, out, err) = fa(Some(&book), &args);
+        assert_eq!(code, *expected_exit, "case {index}: {args:?}\n{out}\n{err}");
+        if let Some(refusal) = refusal {
+            assert_eq!(field(&out, "refusal_id"), Some(*refusal), "{out}");
+        }
+        assert_eq!(head(), before_invalid, "case {index} must publish nothing");
+    }
+    let vid = |out: &str| VId(u128::from_str_radix(text(&doc(out), "vid"), 16).unwrap());
+    let mut holds = Vec::new();
+    for (key, verb, extra, flag, timeout) in [
+        ("hold-json", "reserve", r#","timeout_ns":5"#, None, 5),
+        ("hold-flag", "reserve", "", Some("7"), 7),
+        ("post-hold", "post", "", Some("9"), 9),
+    ] {
+        let path = intent(key, "Pending", extra);
+        let mut args = vec![verb, "--intent", &path, "--evidence", &evidence, "--json"];
+        if let Some(value) = flag {
+            args.extend(["--timeout-ns", value]);
+        }
+        let before = head();
+        let mut plan_args = args.clone();
+        plan_args.push("--dry-run");
+        assert_eq!(field(&ok(&plan_args), "event"), Some("plan"));
+        assert_eq!(head(), before, "planning must not acquire a reservation");
+        let out = ok(&args);
+        let (entry, seq) = open().read_entry(vid(&out)).unwrap().unwrap();
+        assert!(seq > anchor.recorded_at);
+        assert_eq!(entry.proposal.class, EntryClass::PENDING);
+        assert_eq!(
+            entry.proposal.pending.as_ref().unwrap().timeout_ns,
+            Some(timeout)
+        );
+        holds.push(entry.entry_ref(vid(&out)));
+        let before = head();
+        assert_eq!(field(&ok(&args), "event"), Some("recorded"));
+        assert_eq!(head(), before, "an exact timed retry cannot reserve twice");
+    }
+    let reverse_day = DateDay::parse("2026-04-01").unwrap();
+    let mut adjustments = Vec::new();
+    for (key, extra, flag) in [
+        ("adjust-json", r#","reverse_on":"2026-04-01""#, None),
+        ("adjust-flag", "", Some("2026-04-01")),
+    ] {
+        let path = intent(key, "Adjusting", extra);
+        let mut args = vec!["post", "--intent", &path, "--evidence", &evidence, "--json"];
+        if let Some(value) = flag {
+            args.extend(["--reverse-on", value]);
+        }
+        let out = ok(&args);
+        let (entry, _) = open().read_entry(vid(&out)).unwrap().unwrap();
+        assert_eq!(
+            fa_journal::schedule::auto_reverse(&entry.proposal).unwrap(),
+            Some((reverse_day, fa_journal::schedule::RULE_EXACT_NEGATION))
+        );
+        adjustments.push(entry.entry_ref(vid(&out)));
+    }
+    assert!(open().due_holds().unwrap().is_empty());
+    assert!(open().due_reversals().unwrap().is_empty());
+
+    // Being due does not itself release the money. Until the sweep commits,
+    // the pending columns retain all three reservations.
+    let reached = tick(ANCHOR_NS + 10);
+    let due = open().due_holds().unwrap();
+    assert_eq!(due.iter().map(|h| h.hold).collect::<Vec<_>>(), holds);
+    assert_eq!(
+        due.iter().map(|h| h.deadline_ns).collect::<Vec<_>>(),
+        vec![ANCHOR_NS + 5, ANCHOR_NS + 7, ANCHOR_NS + 9]
+    );
+    let tb = doc(&report(&book, &["tb", "--period", "FY2026-P03", "--json"]));
+    let cash = arr(&tb, "rows")
+        .iter()
+        .find(|row| text(row, "code") == "1000")
+        .unwrap();
+    assert_eq!(text(cash, "credits_pending"), "3.00 USD");
+    let resolution = write(
+        &dir,
+        "too-late.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-15","idempotency_key":"too-late","resolves":"{:032x}","disposition":"posts","legs":[{{"side":"debit","account":"6000","amount":"1.00 USD"}},{{"side":"credit","account":"1000","amount":"1.00 USD"}}]}}"#,
+            holds[0].vid.0
+        ),
+    );
+    let before = head();
+    let (code, out, _) = fa(Some(&book), &["resolve", "--intent", &resolution, "--json"]);
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-097"), "{out}");
+    assert_eq!(
+        head(),
+        before,
+        "a due hold cannot be posted by a manual resolution"
+    );
+    {
+        let mut handle = open();
+        for (expected, remaining) in [(&holds[..2], 1), (&holds[2..], 0)] {
+            let batch = runtime
+                .block_on(handle.sweep_expiry(&root, &sweeper, 2))
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(batch.tick, reached.tick);
+            assert_eq!(batch.remaining_due, remaining);
+            assert_eq!(
+                batch
+                    .expired
+                    .iter()
+                    .map(|(hold, _)| *hold)
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            for (_, expiry) in batch.expired {
+                let (entry, _) = handle.read_entry(expiry.vid).unwrap().unwrap();
+                assert_eq!(
+                    entry.proposal.pending.as_ref().unwrap().disposition,
+                    Some(Disposition::Expires {
+                        at_tick: ANCHOR_NS + 10
+                    })
+                );
+            }
+        }
+        assert!(handle.due_holds().unwrap().is_empty());
+        let before = handle.head().unwrap();
+        assert!(
+            runtime
+                .block_on(handle.sweep_expiry(&root, &sweeper, 2))
+                .unwrap()
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(handle.head().unwrap(), before);
+    }
+    assert_cash_credits(
+        &report(&book, &["tb", "--period", "FY2026-P03", "--json"]),
+        "2.00 USD",
+    );
+
+    // The civil-date policy declared through book create enables real
+    // schedule execution. Only this System host fixture invokes the sweeps.
+    let april = tick(APRIL_NS);
+    let mut handle = open();
+    let due = handle.due_reversals().unwrap();
+    assert_eq!(
+        due.iter().map(|r| r.schedule.target).collect::<Vec<_>>(),
+        adjustments
+    );
+    assert!(due.iter().all(|r| r.status == ReversalStatus::Due));
+    let batch = runtime
+        .block_on(handle.sweep_reversals(&root, &sweeper, 2))
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(batch.tick, april.tick);
+    assert!(batch.blocked.is_empty());
+    assert_eq!(batch.minted.len(), 2);
+    for (target, reversal) in batch.minted {
+        let (original, _) = handle.read_entry(target.vid).unwrap().unwrap();
+        let (reversed, _) = handle.read_entry(reversal.vid).unwrap().unwrap();
+        assert_eq!(reversed.proposal.class, EntryClass::REVERSAL);
+        assert_eq!(reversed.proposal.effective_date, reverse_day);
+        for (source, actual) in original.proposal.legs.iter().zip(&reversed.proposal.legs) {
+            let mut expected = source.clone();
+            expected.side = if source.side == Side::Debit {
+                Side::Credit
+            } else {
+                Side::Debit
+            };
+            assert_eq!(
+                *actual, expected,
+                "the schedule retains the exact requested effects"
+            );
+        }
+    }
+    assert!(handle.due_reversals().unwrap().is_empty());
+    let before = handle.head().unwrap();
+    assert!(
+        runtime
+            .block_on(handle.sweep_reversals(&root, &sweeper, 2))
+            .unwrap()
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        handle.head().unwrap(),
+        before,
+        "a schedule executes at most once"
+    );
+    Ok(())
+}
+
+#[test]
 fn two_phase_reserve_and_resolve_follow_the_contract() -> std::io::Result<()> {
     let dir = tmp("two-phase")?;
     let book = dir.join("book");
@@ -2445,6 +2852,17 @@ fn two_phase_reserve_and_resolve_follow_the_contract() -> std::io::Result<()> {
     let (code, _, _) = fa(Some(&book), &["period", "open", "FY2026-P03", "--json"]);
     assert_eq!(code, 0);
     let ev = source_doc(&dir, &book);
+    let scheduled = write(
+        &dir,
+        "without-zone.json",
+        r#"{"class":"Adjusting","effective_date":"2026-03-10","reverse_on":"2026-04-01","idempotency_key":"without-zone","legs":[{"side":"debit","account":"6000","amount":"1.00 USD"},{"side":"credit","account":"1000","amount":"1.00 USD"}]}"#,
+    );
+    let (code, out, _) = fa(
+        Some(&book),
+        &["post", "--intent", &scheduled, "--evidence", &ev, "--json"],
+    );
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-102"), "{out}");
     let row = |out: &str, code: &str| -> String {
         let found = out
             .split('{')
@@ -2489,7 +2907,7 @@ fn two_phase_reserve_and_resolve_follow_the_contract() -> std::io::Result<()> {
     assert_eq!(code, 2, "{out}");
     assert!(out.contains("--as-of"), "{out}");
 
-    // A requested timeout is refused, never silently dropped into a
+    // A requested timeout needs committed clock evidence, never a silently
     // permanent hold; `source_ordinal` outside a Resolution(Posts) is refused.
     let timed = write(
         &dir,
@@ -2500,8 +2918,9 @@ fn two_phase_reserve_and_resolve_follow_the_contract() -> std::io::Result<()> {
         Some(&book),
         &["reserve", "--intent", &timed, "--evidence", &ev, "--json"],
     );
-    assert_eq!(code, 2, "{out}");
-    assert!(out.contains("timed holds"), "{out}");
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-095"), "{out}");
+    assert!(out.contains("TimeEvidence"), "{out}");
     let stray = write(
         &dir,
         "stray.json",

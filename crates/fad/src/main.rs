@@ -75,6 +75,15 @@ fn run(argv: &[String]) -> u8 {
         )
         .0;
     };
+    if parsed.switch("--bootstrap-system") && verb != Some("serve") {
+        return cli::usage_error(
+            argv,
+            "--bootstrap-system is a local daemon launch authority choice",
+            "fad serve --book <dir> --bootstrap-system (trusted-local book-key posture)",
+            false,
+        )
+        .0;
+    }
     match verb {
         Some("serve") => serve(argv, &parsed, d, &dir),
         Some("status") => status(argv, &parsed, d, &dir),
@@ -143,6 +152,20 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
         Err(e) => return cli::foundation_error(argv, format!("runtime: {e:?}"), false).0,
     };
     let cx = runtime.request_cx_with_budget(Budget::INFINITE);
+    let timed = if parsed.switch("--bootstrap-system") {
+        let policy = match fad::timed::Policy::from_registry(d) {
+            Ok(policy) => policy,
+            Err(error) => return cli::foundation_error(argv, error.to_string(), false).0,
+        };
+        match fad::timed::TimedWork::bootstrap(&cx, &book, policy) {
+            Ok(work) => Some(work),
+            // An explicit request for timed work never silently falls back
+            // to an unconfigured server if authority or time is absent.
+            Err(error) => return cli::foundation_error(argv, error.to_string(), false).0,
+        }
+    } else {
+        None
+    };
     let limits = Limits::from_registry(d);
     let book_id = book.context().book_id.to_hex();
     let at = match book.head() {
@@ -161,7 +184,7 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
         let listener = UnixListener::bind(&socket)
             .await
             .map_err(|e| format!("bind {}: {e}", socket.display()))?;
-        let serving = obj(vec![
+        let mut serving = vec![
             ("book_id", s(&book_id)),
             ("dir", s(dir.display().to_string())),
             ("socket", s(socket.display().to_string())),
@@ -171,7 +194,9 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
                 "max_frame_bytes",
                 Json::Int(i128::try_from(d.max_frame_bytes).unwrap_or(i128::MAX)),
             ),
-        ]);
+        ];
+        serving.extend(fad::timed::status_fields(timed.as_ref()));
+        let serving = obj(serving);
         print!(
             "{}",
             line(
@@ -180,9 +205,10 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
                 serving,
                 Some(&at),
                 &format!(
-                    "fad serving {} (book {book_id}) on {}; stop with `fad stop --book {}`",
+                    "fad serving {} (book {book_id}) on {}; {}; stop with `fad stop --book {}`",
                     dir.display(),
                     socket.display(),
+                    fad::timed::status_text(timed.as_ref()),
                     dir.display()
                 ),
             )
@@ -192,11 +218,9 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
             dir: dir.to_path_buf(),
             socket: socket.clone(),
             requests: 0,
+            timed,
         };
-        let served = {
-            let mut handle = |r: Request| server.handle(r);
-            fad::serve(region.cx(), &listener, limits, dir, &mut handle).await
-        };
+        let served = fad::serve_book(region.cx(), &listener, limits, &mut server).await;
         // Dropping the listener removes the socket path it created.
         drop(listener);
         let requests = server.requests;
@@ -248,7 +272,7 @@ fn request(op: Op, json: bool) -> Request {
 }
 
 fn not_serving(dir: &Path, socket: &Path, holder: Option<String>, json: bool) -> u8 {
-    let data = obj(vec![
+    let mut fields = vec![
         ("serving", Json::Bool(false)),
         ("dir", s(dir.display().to_string())),
         ("socket", s(socket.display().to_string())),
@@ -256,7 +280,9 @@ fn not_serving(dir: &Path, socket: &Path, holder: Option<String>, json: bool) ->
         ("book_id", Json::Null),
         ("requests", Json::Null),
         ("holder", holder.as_ref().map_or(Json::Null, s)),
-    ]);
+    ];
+    fields.extend(fad::timed::status_fields(None));
+    let data = obj(fields);
     let text = match &holder {
         None => format!("no fad serves {}", dir.display()),
         Some(h) => format!(

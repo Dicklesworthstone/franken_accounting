@@ -38,6 +38,7 @@
 pub mod bundle;
 pub mod checkpoint;
 pub mod journal;
+pub mod migration_balance;
 pub mod scope;
 pub mod sign;
 pub mod state;
@@ -52,6 +53,7 @@ pub use bundle::{
 };
 pub use checkpoint::TransparencyCheckpoint;
 pub use journal::{Journal, Leaf, LeafEnvelope};
+pub use migration_balance::prove_balance_with_migrations;
 pub use scope::{ScopeIndex, ScopeRequest};
 pub use sign::{CheckpointSigner, SigningKey};
 pub use state::{

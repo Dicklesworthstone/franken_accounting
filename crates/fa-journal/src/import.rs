@@ -104,6 +104,9 @@ pub struct ImportRequest {
     /// it resolves no period).
     pub effective_date: DateDay,
     pub description: Erasable<String>,
+    /// Intake assertions: each retrieved_by must equal the acting holder.
+    /// A Human may conservatively declare AgentUpload; a machine can never
+    /// claim HumanUpload. Already-held documents keep their original metadata.
     pub documents: Vec<Document>,
 }
 
@@ -147,6 +150,9 @@ fn structure(message: impl Into<String>, fix: &str) -> Refusal {
 fn prepare(
     book: &BookContext,
     policy: &EvidencePolicy,
+    capability: &Capability,
+    derived_grade: u8,
+    machine_grade: u8,
     req: &ImportRequest,
 ) -> Result<(EntryPayload, Vec<(Document, String)>), Refusal> {
     if req.documents.is_empty() || req.documents.len() > fa_model::limits::MAX_IMPORT_DOCUMENTS {
@@ -160,10 +166,45 @@ fn prepare(
         ));
     }
     admit_source(&req.source)?;
+    if let IntakeSource::Upload { principal } = &req.source
+        && *principal != capability.holder()
+    {
+        let mut denied = refusal(&fa_policy::Denial::NotHolder {
+            holder: capability.holder(),
+            principal: *principal,
+        });
+        denied.message = format!("import source uploader: {}", denied.message);
+        return Err(denied);
+    }
     let mut docs: Vec<(Document, String)> = Vec::with_capacity(req.documents.len());
     for (i, doc) in req.documents.iter().enumerate() {
         match intake_check(policy, book, doc, policy.max_document_bytes) {
-            Ok(kind) => docs.push((doc.clone(), kind)),
+            Ok(kind) => {
+                if doc.retrieved_by != capability.holder() {
+                    let mut denied = refusal(&fa_policy::Denial::NotHolder {
+                        holder: capability.holder(),
+                        principal: doc.retrieved_by,
+                    });
+                    denied.message = format!("documents[{i}].retrieved_by: {}", denied.message);
+                    return Err(denied);
+                }
+                // Preserve conservative declarations by Human/owner importers,
+                // but never allow a machine to manufacture HumanUpload evidence.
+                // Registered source names alone confer no connector/signature grade.
+                if doc.grade != derived_grade && doc.grade != machine_grade {
+                    return Err(Refusal::new(
+                        code::GRADE_UNVERIFIED,
+                        exit::REFUSAL,
+                        format!(
+                            "documents[{i}]: provenance grade exceeds the {} importer's upload posture",
+                            capability.profile().name(),
+                        ),
+                        "plan §9.3; FA-INV-05; fa-vwf",
+                        "use the session's upload grade or conservative AgentUpload; human review is an attestation, never an intake relabel",
+                    ));
+                }
+                docs.push((doc.clone(), kind));
+            }
             Err(mut r) => {
                 r.message = format!("documents[{i}]: {}", r.message);
                 return Err(r);
@@ -416,10 +457,11 @@ fn recorded_or_conflict(
     }
 }
 
-/// Record an import run (plan §9.3): refused before any read on structure,
-/// an unregistered source, any document's intake laws, or authority (the
+/// Record an import run (plan §9.3): authority is checked before preparing
+/// bytes; structure, source registration, bound uploader and provenance
+/// assertions are checked before any storage read. Authority requires the
 /// `import-run` SoD row's preparer op, a current capability that is the
-/// principal's own). Then, in one transaction: the run's identity (the same
+/// principal's own. Then, in one transaction: the run's identity (the same
 /// run again is its recorded receipt), the SoD rule over the witnessed
 /// policy epoch, each document either held already (verified, counted) or
 /// recorded with its receipt naming the run, and the `ImportControl` entry.
@@ -430,11 +472,8 @@ pub async fn import_run<V: asupersync::fs::Vfs + Clone>(
     capability: &Capability,
     req: ImportRequest,
 ) -> Outcome<ImportRecorded> {
-    let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
-    let (proposal, docs) = match prepare(book, &policy, &req) {
-        Ok(p) => p,
-        Err(r) => return Ok(Err(r)),
-    };
+    ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
+    // Authority precedes even document hashing/cloning, not just storage.
     let steward = steward()?;
     let key = fa_policy::sod::control_key("ImportControl", None, "Import");
     let Some(op) = steward.preparer_op(&key) else {
@@ -454,6 +493,20 @@ pub async fn import_run<V: asupersync::fs::Vfs + Clone>(
     ) {
         return Ok(Err(refusal(&d)));
     }
+    let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    let derived_grade = crate::upload::upload_grade(&policy, capability.profile())?;
+    let machine_grade = crate::upload::upload_grade(&policy, fa_policy::Profile::Agent)?;
+    let (proposal, docs) = match prepare(
+        book,
+        &policy,
+        capability,
+        derived_grade,
+        machine_grade,
+        &req,
+    ) {
+        Ok(prepared) => prepared,
+        Err(refused) => return Ok(Err(refused)),
+    };
     if let Err(d) = fa_policy::current(capability, db.frontier()?) {
         return Ok(Err(refusal(&d)));
     }

@@ -7,12 +7,12 @@
 //!
 //!   state        <state>                         an AccumulatorState's bytes on their own
 //!   checkpoint   <checkpoint> --key K...         a TransparencyCheckpoint signed by a trusted key
-//!   inclusion    <proof> --checkpoint C --key K  an entry recorded within the checkpoint's prefix
-//!   prefix       <proof> --checkpoint C --key K  the complete prefix (seq_range_complete)
-//!   balance      <proof> --checkpoint C --key K  a posted balance refolded (recomputation)
+//!   inclusion    <proof> --checkpoint C ANCHOR   an entry recorded within the checkpoint's prefix
+//!   prefix       <proof> --checkpoint C ANCHOR   the complete prefix (seq_range_complete)
+//!   balance      <proof> --checkpoint C ANCHOR   a posted balance refolded (recomputation)
 //!   scope        <proof> --checkpoint C --key K --account A --from D --to D [--prefix P]
 //!                                                one account's day interval (scope_index_complete)
-//!   consistency  <proof> --trusted C --claimed C --key K
+//!   consistency  <proof> --trusted C --claimed C ANCHOR
 //!                                                the claimed checkpoint extends the trusted one
 //!   doc-commit   <document> --kind N [--expect H]
 //!                                                a document's public commitment from its bytes
@@ -20,34 +20,44 @@
 //!                                                an evidence bundle, every predicate graded
 //! ```
 //!
-//! Every artifact a command depends on is checked in the same run: a proof
-//! is only ever judged against a checkpoint whose signature by one of the
-//! `--key`s verified first, and a scope's question (`--account`, `--from`,
-//! `--to`) comes from the caller, never from the proof.
+//! `ANCHOR` is how the caller trusts the checkpoint, and there are exactly
+//! two ways: `--key K...` (a signed `TransparencyCheckpoint` whose signature
+//! by one of the keys verifies first), or `--unsigned-checkpoint` (a raw
+//! 80-byte checkpoint statement the caller obtained and trusts out of band;
+//! no signature or origin is checked, and the report says so). A proof never
+//! supplies its own anchor, and a scope's question (`--account`, `--from`,
+//! `--to`) comes from the caller, never from the proof. The proof may be
+//! named positionally or with `--proof`; `--checkpoint`/`--next-checkpoint`
+//! are accepted for `consistency` as `--trusted`/`--claimed`.
 //!
 //! Every check is `pass`, `fail`, or `unrun` (a check it rests on did not
 //! pass); only `pass` is green.
 //!
 //! Exit codes: `0` every check passed, `8` a check failed or did not run
-//! (the artifact does not verify), `2` usage (an unknown command or flag, a missing or
-//! malformed argument, an unreadable file). Robot mode (`--json`) prints one
-//! deterministic JSON object on stdout; otherwise the report is text. A
-//! usage error in text mode goes to stderr. Bare `fa-verify`, `help` and
-//! `--help` print the usage and exit `0`.
+//! (the artifact does not verify, or an input exceeds the
+//! [`MAX_INPUT_BYTES`] bound), `2` usage (an unknown command or flag, a
+//! missing, repeated, inapplicable or malformed argument; every argument is
+//! judged before any file is opened), `5` an input file could not be read.
+//! Robot mode (`--json`) prints one deterministic JSON object on stdout;
+//! otherwise the report is text. A usage or I/O error is also a diagnostic
+//! line on stderr. Bare `fa-verify`, `help` and `--help` print the usage and
+//! exit `0`.
 //!
 //! Inputs are the artifacts' raw bytes; `--hex` reads every input file as
 //! hexadecimal text instead (whitespace ignored), as the golden fixtures
 //! store them.
 
-use crate::balance::verify_balance;
 use crate::blake3::hex;
 use crate::bundle::{BundleReport, BundleScope, Grade, verify_bundle};
 use crate::checkpoint::{SignedCheckpoint, verify_checkpoint};
 use crate::document::doc_commit;
 use crate::envelope::LeafEnvelope;
-use crate::proof::{RecordCheck, VerifyError, verify_consistency, verify_inclusion, verify_prefix};
+use crate::proof::{
+    Checkpoint, RecordCheck, VerifyError, verify_consistency, verify_inclusion, verify_prefix,
+};
 use crate::scope::{IndexDerivation, ScopeClaim, verify_scope};
 use crate::state::verify_state;
+use crate::verify_balance;
 
 /// What a run prints and how it exits.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,7 +69,13 @@ pub struct Output {
 
 pub const EXIT_VERIFIED: i32 = 0;
 pub const EXIT_USAGE: i32 = 2;
+pub const EXIT_IO: i32 = 5;
 pub const EXIT_FAILED: i32 = 8;
+
+/// The largest input file this verifier judges (64 MiB). A larger export is
+/// refused (exit 8), never read in part; an embedding with its own resource
+/// policy can call the library directly.
+pub const MAX_INPUT_BYTES: usize = 64 * 1024 * 1024;
 
 const USAGE: &str = "\
 fa-verify — the dependency-free verifier (FrankenAccounting plan §13.3)
@@ -69,18 +85,27 @@ usage: fa-verify <command> <file> [options] [--json] [--hex]
 commands:
   state        <state>                          an AccumulatorState's bytes on their own
   checkpoint   <checkpoint> --key K...          a TransparencyCheckpoint signed by a trusted key
-  inclusion    <proof> --checkpoint C --key K   an entry recorded within the checkpoint's prefix
-  prefix       <proof> --checkpoint C --key K   every leaf of the prefix (seq_range_complete)
-  balance      <proof> --checkpoint C --key K   a posted balance refolded (recomputation)
+  inclusion    <proof> --checkpoint C ANCHOR    an entry recorded within the checkpoint's prefix
+  prefix       <proof> --checkpoint C ANCHOR    every leaf of the prefix (seq_range_complete)
+  balance      <proof> --checkpoint C ANCHOR    a posted balance refolded (recomputation)
   scope        <proof> --checkpoint C --key K --account A --from D --to D [--prefix P]
                                                 one account's day interval (scope_index_complete)
-  consistency  <proof> --trusted C --claimed C --key K
+  consistency  <proof> --trusted C --claimed C ANCHOR
                                                 the claimed checkpoint extends the trusted one
   doc-commit   <document> --kind N [--expect H] a document's public commitment from its bytes
   bundle       <bundle> --key K... [--receipt R]
                                                 an evidence bundle (.fab), every predicate graded
 
+ANCHOR — how you trust the checkpoint (exactly one; a proof never supplies its own):
+  --key K...             C is a signed TransparencyCheckpoint; its signature by one of
+                         these keys is verified first (scope and bundle require this)
+  --unsigned-checkpoint  C is a raw 80-byte checkpoint statement that you obtained and
+                         trust independently; no signature or origin is checked here.
+                         For consistency the --claimed checkpoint is the producer's claim,
+                         not a trusted anchor: its sequence boundary is not authenticated
+
 options:
+  --proof P      the proof file (instead of naming it positionally)
   --key K        a trusted Ed25519 public key, 64 hex characters (repeatable)
   --account A    an account vid: decimal, or 0x followed by up to 32 hex characters
   --from D --to D  an inclusive effective-day interval (days since 1970-01-01)
@@ -88,7 +113,8 @@ options:
   --json         one JSON report on stdout (robot mode)
   --hex          read every input file as hexadecimal text
 
-exit codes: 0 verified · 2 usage · 8 verification failed
+Input files are limited to 64 MiB. No book, network or other program is used.
+exit codes: 0 verified · 2 usage · 5 file I/O · 8 verification failed
 ";
 
 const COMMANDS: [&str; 9] = [
@@ -104,9 +130,11 @@ const COMMANDS: [&str; 9] = [
 ];
 
 /// Flags that take a value, and the switches.
-const VALUE_FLAGS: [&str; 11] = [
+const VALUE_FLAGS: [&str; 13] = [
     "--key",
+    "--proof",
     "--checkpoint",
+    "--next-checkpoint",
     "--trusted",
     "--claimed",
     "--account",
@@ -117,7 +145,42 @@ const VALUE_FLAGS: [&str; 11] = [
     "--expect",
     "--receipt",
 ];
-const SWITCHES: [&str; 2] = ["--json", "--hex"];
+const SWITCHES: [&str; 3] = ["--json", "--hex", "--unsigned-checkpoint"];
+
+/// The flags each command admits beyond `--json` and `--hex`. Anything else
+/// is refused before a file is opened.
+fn admitted(command: &str) -> &'static [&'static str] {
+    match command {
+        "checkpoint" => &["--key"],
+        "inclusion" | "prefix" | "balance" => {
+            &["--proof", "--checkpoint", "--key", "--unsigned-checkpoint"]
+        }
+        // `--unsigned-checkpoint` is admitted only to be refused with the
+        // reason: a scope proof rests on the signed scope-index root.
+        "scope" => &[
+            "--proof",
+            "--checkpoint",
+            "--key",
+            "--unsigned-checkpoint",
+            "--account",
+            "--from",
+            "--to",
+            "--prefix",
+        ],
+        "consistency" => &[
+            "--proof",
+            "--trusted",
+            "--claimed",
+            "--checkpoint",
+            "--next-checkpoint",
+            "--key",
+            "--unsigned-checkpoint",
+        ],
+        "doc-commit" => &["--kind", "--expect"],
+        "bundle" => &["--key", "--receipt"],
+        _ => &[],
+    }
+}
 
 // ---- a minimal deterministic JSON writer -----------------------------------
 
@@ -274,15 +337,22 @@ impl Check {
     }
 }
 
+/// Why a run ended without a report: bad usage (exit 2), an unreadable input
+/// (exit 5), or an input over [`MAX_INPUT_BYTES`] that is refused unread
+/// (exit 8).
 struct Usage {
     message: String,
     fix: String,
+    exit: i32,
+    verdict: &'static str,
 }
 
 fn usage(message: impl Into<String>, fix: impl Into<String>) -> Usage {
     Usage {
         message: message.into(),
         fix: fix.into(),
+        exit: EXIT_USAGE,
+        verdict: "usage",
     }
 }
 
@@ -323,10 +393,22 @@ fn report(command: &str, json: bool, checks: &[Check]) -> Output {
         }
         out
     };
+    let stderr = if verified {
+        String::new()
+    } else {
+        let failed = checks
+            .iter()
+            .filter(|c| !matches!(c.verdict, Verdict::Pass))
+            .count();
+        format!(
+            "fa-verify: {command}: not verified ({failed} of {} checks did not pass)\n",
+            checks.len()
+        )
+    };
     Output {
         exit,
         stdout,
-        stderr: String::new(),
+        stderr,
     }
 }
 
@@ -337,7 +419,7 @@ fn usage_output(command: &str, json: bool, u: &Usage) -> Output {
             ("v", Json::Int(1)),
             ("tool", s("fa-verify")),
             ("command", s(command)),
-            ("verdict", s("usage")),
+            ("verdict", s(u.verdict)),
             ("checks", Json::List(Vec::new())),
             (
                 "error",
@@ -347,13 +429,13 @@ fn usage_output(command: &str, json: bool, u: &Usage) -> Output {
         .write(&mut out);
         out.push('\n');
         Output {
-            exit: EXIT_USAGE,
+            exit: u.exit,
             stdout: out,
-            stderr: String::new(),
+            stderr: format!("fa-verify: {}\n", u.message),
         }
     } else {
         Output {
-            exit: EXIT_USAGE,
+            exit: u.exit,
             stdout: String::new(),
             stderr: format!("fa-verify: {}\n  fix: {}\n", u.message, u.fix),
         }
@@ -419,6 +501,35 @@ impl Args {
             .map(|(_, v)| v.as_str())
             .collect()
     }
+
+    fn has(&self, flag: &str) -> bool {
+        self.values.iter().any(|(f, _)| f == flag)
+    }
+
+    /// The value of `flag`, or of its `alias`; naming both is ambiguous.
+    fn either(&self, flag: &str, alias: &str) -> Result<Option<&str>, Usage> {
+        match (self.one(flag), self.one(alias)) {
+            (Some(_), Some(_)) => Err(usage(
+                format!("`{flag}` and `{alias}` name the same input"),
+                format!("pass `{flag}` once"),
+            )),
+            (a, b) => Ok(a.or(b)),
+        }
+    }
+
+    /// Refuse, before any file is opened, a flag `command` does not take.
+    fn admitted_by(&self, command: &str) -> Result<(), Usage> {
+        let admitted = admitted(command);
+        for (flag, _) in &self.values {
+            if flag != "--json" && flag != "--hex" && !admitted.contains(&flag.as_str()) {
+                return Err(usage(
+                    format!("`{flag}` does not apply to `{command}`"),
+                    format!("drop `{flag}`; run `fa-verify --help` for what `{command}` takes"),
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 fn parse(args: &[String]) -> Result<Args, Usage> {
@@ -429,10 +540,19 @@ fn parse(args: &[String]) -> Result<Args, Usage> {
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
-        if a == "--json" {
-            json = true;
-        } else if a == "--hex" {
-            hex = true;
+        if SWITCHES.contains(&a.as_str()) {
+            if values.iter().any(|(f, _)| f == a) {
+                return Err(usage(
+                    format!("`{a}` may be supplied only once"),
+                    format!("drop the repeated `{a}`"),
+                ));
+            }
+            match a.as_str() {
+                "--json" => json = true,
+                "--hex" => hex = true,
+                _ => {}
+            }
+            values.push((a.clone(), String::new()));
         } else if a.starts_with("--") {
             let (flag, inline) = match a.split_once('=') {
                 Some((f, v)) => (f.to_string(), Some(v.to_string())),
@@ -450,14 +570,31 @@ fn parse(args: &[String]) -> Result<Args, Usage> {
                 Some(v) => v,
                 None => {
                     i += 1;
-                    args.get(i).cloned().ok_or_else(|| {
-                        usage(
-                            format!("`{flag}` needs a value"),
-                            format!("pass `{flag} <value>`"),
-                        )
-                    })?
+                    args.get(i)
+                        .filter(|v| !v.starts_with("--"))
+                        .cloned()
+                        .ok_or_else(|| {
+                            usage(
+                                format!("`{flag}` needs a value"),
+                                format!(
+                                    "pass `{flag} <value>` (write ./--name for a file whose name begins with --)"
+                                ),
+                            )
+                        })?
                 }
             };
+            if value.is_empty() {
+                return Err(usage(
+                    format!("`{flag}` needs a non-empty value"),
+                    format!("pass `{flag} <value>`"),
+                ));
+            }
+            if flag != "--key" && values.iter().any(|(f, _)| *f == flag) {
+                return Err(usage(
+                    format!("`{flag}` may be supplied only once"),
+                    format!("pass one `{flag}`; only `--key` repeats"),
+                ));
+            }
             values.push((flag, value));
         } else if command.is_none() {
             command = Some(a.clone());
@@ -536,9 +673,34 @@ fn int<T: std::str::FromStr>(args: &Args, flag: &str, what: &str) -> Result<T, U
 
 type Read<'a> = &'a dyn Fn(&str) -> std::io::Result<Vec<u8>>;
 
+fn oversized(path: &str) -> Usage {
+    Usage {
+        message: format!("`{path}`: input exceeds the {MAX_INPUT_BYTES}-byte bound"),
+        fix: "verify a smaller artifact (an earlier checkpoint, an inclusion proof, or a narrower scope), or call the fa_verify library under your own resource policy".to_string(),
+        exit: EXIT_FAILED,
+        verdict: "failed",
+    }
+}
+
+/// Read one input. A reader that enforces [`MAX_INPUT_BYTES`] before
+/// allocating reports an oversized file as `ErrorKind::FileTooLarge`; the
+/// bound is checked again here for readers that do not.
 fn load(read: Read<'_>, path: &str, hex_input: bool) -> Result<Vec<u8>, Usage> {
-    let bytes =
-        read(path).map_err(|e| usage(format!("cannot read `{path}`: {e}"), "check the path"))?;
+    let bytes = read(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::FileTooLarge {
+            oversized(path)
+        } else {
+            Usage {
+                message: format!("cannot read `{path}`: {e}"),
+                fix: "check the path and its permissions".to_string(),
+                exit: EXIT_IO,
+                verdict: "io_error",
+            }
+        }
+    })?;
+    if bytes.len() > MAX_INPUT_BYTES {
+        return Err(oversized(path));
+    }
     if hex_input {
         let text = String::from_utf8(bytes).map_err(|_| {
             usage(
@@ -602,36 +764,122 @@ fn envelope_detail(index: u64, e: &LeafEnvelope) -> Json {
     ])
 }
 
-/// Verify the `--checkpoint` (or another named flag) against the `--key`s.
-fn signed_checkpoint(
-    args: &Args,
-    flag: &str,
-    read: Read<'_>,
-) -> Result<Result<SignedCheckpoint, VerifyError>, Usage> {
-    let path = args.one(flag).ok_or_else(|| {
+/// How the caller trusts a checkpoint (the `ANCHOR` of the usage text).
+enum Trust {
+    /// A signed `TransparencyCheckpoint`, judged against these keys.
+    Keys(Vec<[u8; 32]>),
+    /// A raw 80-byte checkpoint statement the caller trusts out of band.
+    Unsigned,
+}
+
+/// The `--key`s or `--unsigned-checkpoint`, exactly one of them; parsed
+/// before any file is opened.
+fn trust(args: &Args) -> Result<Trust, Usage> {
+    let keys = args.all("--key");
+    match (keys.is_empty(), args.has("--unsigned-checkpoint")) {
+        (false, true) => Err(usage(
+            "`--key` and `--unsigned-checkpoint` are two different anchors",
+            "pass `--key` for a signed checkpoint, or `--unsigned-checkpoint` for a raw one you trust independently",
+        )),
+        (true, false) => Err(usage(
+            "no trusted anchor: a checkpoint is judged only against keys you name, or as a raw checkpoint you say you trust",
+            "pass the book's checkpoint public key with `--key <64 hex>`, or `--unsigned-checkpoint` for a raw 80-byte checkpoint obtained independently",
+        )),
+        (true, true) => Ok(Trust::Unsigned),
+        (false, false) => Ok(Trust::Keys(
+            keys.into_iter().map(key).collect::<Result<_, _>>()?,
+        )),
+    }
+}
+
+/// The checkpoint file a command names under `flag` (or its `alias`).
+fn checkpoint_path<'a>(args: &'a Args, flag: &str, alias: Option<&str>) -> Result<&'a str, Usage> {
+    let path = match alias {
+        Some(alias) => args.either(flag, alias)?,
+        None => args.one(flag),
+    };
+    path.ok_or_else(|| {
         usage(
             format!("`{}` needs `{flag} <file>`", args.command),
-            format!("pass the signed checkpoint the proof is against with `{flag}`"),
+            format!("pass the checkpoint the proof is judged against with `{flag}`"),
         )
-    })?;
-    let keys = args.all("--key");
-    if keys.is_empty() {
-        return Err(usage(
-            "no trusted key: a checkpoint is judged only against keys you name",
-            "pass the book's checkpoint public key with `--key <64 hex>`",
-        ));
-    }
-    let keys: Vec<[u8; 32]> = keys.into_iter().map(key).collect::<Result<_, _>>()?;
+    })
+}
+
+/// A checkpoint whose anchor check passed, with its signed form when the
+/// caller trusted it through `--key`.
+type Anchored = Option<(Checkpoint, Option<SignedCheckpoint>)>;
+
+/// The checkpoint a proof is judged against: its check, and the checkpoint
+/// itself when that check passed.
+fn anchor(
+    trust: &Trust,
+    path: &str,
+    role: &'static str,
+    args: &Args,
+    read: Read<'_>,
+) -> Result<(Check, Anchored), Usage> {
     let bytes = load(read, path, args.hex)?;
-    Ok(verify_checkpoint(&bytes, &keys))
+    Ok(match trust {
+        Trust::Keys(keys) => {
+            let signed = verify_checkpoint(&bytes, keys);
+            let check = checkpoint_check(&signed);
+            (check, signed.ok().map(|c| (c.checkpoint, Some(c))))
+        }
+        Trust::Unsigned => match Checkpoint::decode(&bytes) {
+            Err(e) => (
+                Check::fail(role, unsigned_scope(role), &VerifyError::from(e)),
+                None,
+            ),
+            Ok(cp) => {
+                let mut detail = vec![
+                    ("format", s("unsigned_raw_checkpoint")),
+                    ("book_id", h(&cp.book_id)),
+                    ("branch_id", h(&cp.branch_id)),
+                    ("through_seq", n(cp.through_seq)),
+                    ("leaf_count", n(cp.leaf_count)),
+                    ("root", h(&cp.root)),
+                    ("signature_verification", s("not_performed")),
+                ];
+                if role == "claimed_checkpoint" {
+                    detail.push((
+                        "claimed_sequence_boundary",
+                        s("not_verified_by_consistency"),
+                    ));
+                }
+                (
+                    Check::pass(role, unsigned_scope(role), detail),
+                    Some((cp, None)),
+                )
+            }
+        },
+    })
+}
+
+/// The scope label of an unsigned checkpoint: the trusted one rests on the
+/// caller's own trust; a claimed one is only the producer's claim.
+fn unsigned_scope(role: &str) -> &'static str {
+    if role == "claimed_checkpoint" {
+        "producer_claim"
+    } else {
+        "operator_trusted"
+    }
 }
 
 fn subject<'a>(args: &'a Args, what: &str) -> Result<&'a str, Usage> {
-    match args.positional.as_slice() {
-        [one] => Ok(one),
-        [] => Err(usage(
+    match (args.positional.as_slice(), args.one("--proof")) {
+        ([one], None) => Ok(one.as_str()),
+        ([], Some(one)) => Ok(one),
+        ([], None) => Err(usage(
             format!("`{}` needs {what}", args.command),
             format!("fa-verify {} <file> …", args.command),
+        )),
+        (_, Some(_)) => Err(usage(
+            format!("`{}` names its file twice", args.command),
+            format!(
+                "name the file positionally or with `--proof`, not both: fa-verify {} <file> …",
+                args.command
+            ),
         )),
         _ => Err(usage(
             format!(
@@ -646,12 +894,10 @@ fn subject<'a>(args: &'a Args, what: &str) -> Result<&'a str, Usage> {
 
 fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
     let cmd = args.command.as_str();
-    if args.one("--receipt").is_some() && cmd != "bundle" {
-        return Err(usage(
-            "`--receipt` applies to `bundle` only",
-            "drop `--receipt`",
-        ));
+    if !COMMANDS.contains(&cmd) {
+        return unreachable_command(cmd);
     }
+    args.admitted_by(cmd)?;
     match cmd {
         "state" => {
             let bytes = load(read, subject(args, "a state file")?, args.hex)?;
@@ -693,7 +939,14 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
         }
         "inclusion" | "prefix" | "balance" | "scope" => {
             let proof_path = subject(args, "a proof file")?;
-            let signed = signed_checkpoint(args, "--checkpoint", read)?;
+            let checkpoint_file = checkpoint_path(args, "--checkpoint", None)?;
+            let trust = trust(args)?;
+            if cmd == "scope" && matches!(trust, Trust::Unsigned) {
+                return Err(usage(
+                    "`scope` needs a signed checkpoint: the scope-index root it proves against is part of the signed statement",
+                    "pass the book's checkpoint public key with `--key <64 hex>`",
+                ));
+            }
             let claim = if cmd == "scope" {
                 let account = account(args.one("--account").ok_or_else(|| {
                     usage(
@@ -707,22 +960,17 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
             } else {
                 None
             };
+            let (anchor_check, anchored) =
+                anchor(&trust, checkpoint_file, "checkpoint", args, read)?;
             let prefix = match args.one("--prefix") {
-                Some(p) if cmd == "scope" => Some(load(read, p, args.hex)?),
-                Some(_) => {
-                    return Err(usage(
-                        "`--prefix` applies to `scope` only",
-                        "drop `--prefix`",
-                    ));
-                }
+                Some(p) => Some(load(read, p, args.hex)?),
                 None => None,
             };
             let proof = load(read, proof_path, args.hex)?;
-            let mut checks = vec![checkpoint_check(&signed)];
-            let Ok(signed) = signed else {
+            let mut checks = vec![anchor_check];
+            let Some((cp, signed)) = anchored else {
                 return Ok(checks);
             };
-            let cp = signed.checkpoint;
             checks.push(match cmd {
                 "inclusion" => match verify_inclusion(&proof, &cp) {
                     Err(e) => Check::fail("inclusion", "inclusion", &e),
@@ -773,7 +1021,17 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                         from: 0,
                         to: 0,
                     });
-                    match verify_scope(&proof, &signed, &claim, prefix.as_deref()) {
+                    // `scope` admits only `--key` trust (refused above), so a
+                    // passing anchor is always a signed checkpoint.
+                    let scoped = signed.as_ref().map_or_else(
+                        || {
+                            Err(VerifyError::Format {
+                                expected: crate::checkpoint::CHECKPOINT_BODY_DOMAIN,
+                            })
+                        },
+                        |signed| verify_scope(&proof, signed, &claim, prefix.as_deref()),
+                    );
+                    match scoped {
                         Err(e) => Check::fail("scope", "scope_index_complete", &e),
                         Ok(r) => Check::pass(
                             "scope",
@@ -812,25 +1070,27 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
         }
         "consistency" => {
             let proof_path = subject(args, "a proof file")?;
-            let trusted = signed_checkpoint(args, "--trusted", read)?;
-            let claimed = signed_checkpoint(args, "--claimed", read)?;
+            let trusted_file = checkpoint_path(args, "--trusted", Some("--checkpoint"))?;
+            let claimed_file = checkpoint_path(args, "--claimed", Some("--next-checkpoint"))?;
+            let trust = trust(args)?;
+            let (trusted_check, trusted) = anchor(&trust, trusted_file, "checkpoint", args, read)?;
+            let (claimed_check, claimed) =
+                anchor(&trust, claimed_file, "claimed_checkpoint", args, read)?;
             let proof = load(read, proof_path, args.hex)?;
-            let mut checks = vec![checkpoint_check(&trusted), checkpoint_check(&claimed)];
-            if let (Ok(t), Ok(c)) = (&trusted, &claimed) {
-                checks.push(
-                    match verify_consistency(&proof, &t.checkpoint, &c.checkpoint) {
-                        Err(e) => Check::fail("consistency", "consistency", &e),
-                        Ok(r) => Check::pass(
-                            "consistency",
-                            r.scope,
-                            vec![
-                                ("trusted_leaf_count", n(r.trusted.leaf_count)),
-                                ("extended_leaf_count", n(r.extended.leaf_count)),
-                                ("extended_through_seq", n(r.extended.through_seq)),
-                            ],
-                        ),
-                    },
-                );
+            let mut checks = vec![trusted_check, claimed_check];
+            if let (Some((t, _)), Some((c, _))) = (&trusted, &claimed) {
+                checks.push(match verify_consistency(&proof, t, c) {
+                    Err(e) => Check::fail("consistency", "consistency", &e),
+                    Ok(r) => Check::pass(
+                        "consistency",
+                        r.scope,
+                        vec![
+                            ("trusted_leaf_count", n(r.trusted.leaf_count)),
+                            ("extended_leaf_count", n(r.extended.leaf_count)),
+                            ("extended_through_seq", n(r.extended.through_seq)),
+                        ],
+                    ),
+                });
             }
             Ok(checks)
         }
@@ -1415,9 +1675,9 @@ mod tests {
             ],
             &fs,
         );
-        assert_eq!(out.exit, 2);
+        assert_eq!(out.exit, 5, "an unreadable input is I/O (5), not usage");
         assert!(
-            out.stdout.contains("\"verdict\":\"usage\"")
+            out.stdout.contains("\"verdict\":\"io_error\"")
                 && out.stdout.contains("cannot read `missing`")
         );
         let out = run_with(

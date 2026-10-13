@@ -19,4 +19,6 @@ fn the_manifest_declares_no_dependency_table() {
     );
     // The tripwire sees the manifest it guards.
     assert!(MANIFEST.contains("name = \"fa-verify\""));
+    assert!(MANIFEST.contains("[[bin]]"));
+    assert!(MANIFEST.contains("path = \"src/main.rs\""));
 }

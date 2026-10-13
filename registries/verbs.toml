@@ -61,11 +61,14 @@ socket = "fad.sock"
 lease = "fad.lease"
 max_frame_bytes = 67108864
 idle_timeout_ms = 30000
+tick_ns = 1000000000
+sweep_batch = 64
+clock_drift_ns = 250000000
 verbs = ["serve", "status", "stop"]
 flags = ["--book", "--keys"]
-switches = ["--json", "--help"]
+switches = ["--json", "--help", "--bootstrap-system"]
 events = ["fad_request", "fad_response", "fad_serving", "fad_status", "fad_stopped"]
-usage = ["fad serve --book <dir> [--keys <file>] [--json]   (holds the writer lease and serves until `fad stop`)", "fad status --book <dir> [--json]", "fad stop --book <dir> [--json]"]
+usage = ["fad serve --book <dir> [--keys <file>] [--bootstrap-system] [--json]   (holds the writer lease and serves until `fad stop`)", "--bootstrap-system opts the local book-key holder into daemon TimeEvidence and one bounded expiry batch plus one reversal batch per cycle. This is trusted local bootstrap authority, not journaled capability issuance. First/restart and uncorroborated clock observations never sweep. Batch sizes bound effects; candidate discovery still scans the book.", "fad status --book <dir> [--json]", "fad stop --book <dir> [--json]"]
 
 # ---------------------------------------------------------------------------
 # Verbs
@@ -76,11 +79,11 @@ name = "book"
 summary = "Create a book directory (store + key file), or describe one."
 writes = true
 subcommands = ["create", "info"]
-flags = ["--name", "--base-unit", "--calendar", "--year-start-month", "--adjustment-periods"]
+flags = ["--name", "--base-unit", "--calendar", "--year-start-month", "--adjustment-periods", "--time-zone"]
 switches = []
 events = ["book_created", "book"]
 exits = [0, 2, 4, 5]
-usage = ["book create --name \"My Co\" [--base-unit USD] [--calendar monthly] [--year-start-month 1] [--adjustment-periods 1]", "book info"]
+usage = ["book create --name \"My Co\" [--base-unit USD] [--calendar monthly] [--year-start-month 1] [--adjustment-periods 1] [--time-zone UTC]", "--time-zone UTC records the explicit civil-day policy required by scheduled reversals. Omitting it leaves the policy unset; the machine's local zone is never assumed.", "book info"]
 example = "fa book create --book ./books/myco --name \"My Co\" --json"
 
 [[verb]]
@@ -124,11 +127,11 @@ name = "post"
 summary = "Post one entry intent under the accounting laws (balance, period law, idempotency)."
 writes = true
 subcommands = []
-flags = ["--intent", "--grant", "--evidence", "--balancing", "--plan-out"]
+flags = ["--intent", "--grant", "--evidence", "--balancing", "--plan-out", "--timeout-ns", "--reverse-on"]
 switches = ["--dry-run"]
 events = ["posted", "recorded", "plan"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["post --intent <file.json|-> [--grant <op>]... [--evidence <oid>]... [--balancing 0|1] [--as <principal>]   (--balancing: that leg moves at most what its account's limit admits; the event says what was requested and what moved)", "post --intent <file.json|-> --dry-run [--plan-out <new-file>]   (runs the actual admission pipeline and aborts its staged transaction; emits the exact sealed PostEntry plan, commits nothing)", "Commit the reviewed plan with fa commit --plan <file|-> using the same --as and --grant. Any intervening book publication requires a new dry run; this first slice does not assemble new approvals or rehearse --balancing. --plan-out requires --dry-run and never overwrites a file.", "A Reversal intent names reverses and a registered reason (for example, \"reason\": \"WrongAccount\"); its legs come from the target."]
+usage = ["post --intent <file.json|-> [--grant <op>]... [--evidence <oid>]... [--balancing 0|1] [--as <principal>]   (--balancing: that leg moves at most what its account's limit admits; the event says what was requested and what moved)", "post --intent <file.json|-> --dry-run [--plan-out <new-file>]   (runs the actual admission pipeline and aborts its staged transaction; emits the exact sealed PostEntry plan, commits nothing)", "Commit the reviewed plan with fa commit --plan <file|-> using the same --as and --grant. Any intervening book publication requires a new dry run; this first slice does not assemble new approvals or rehearse --balancing. --plan-out requires --dry-run and never overwrites a file.", "Pending accepts timeout_ns as an unsigned JSON integer, or --timeout-ns N. Its deadline is anchored to committed TimeEvidence. Adjusting accepts reverse_on as YYYY-MM-DD, or --reverse-on YYYY-MM-DD; the book must declare --time-zone UTC at creation. Supply each value once. Only the daemon records production clock observations and runs timed effects.", "A Reversal intent names reverses and a registered reason (for example, \"reason\": \"WrongAccount\"); its legs come from the target."]
 example = "fa post --intent entry.json --book ./books/myco --json"
 
 [[verb]]
@@ -160,11 +163,11 @@ name = "reserve"
 summary = "Reserve amounts as a Pending entry (two-phase): nothing is posted."
 writes = true
 subcommands = []
-flags = ["--intent", "--grant", "--evidence", "--balancing", "--plan-out"]
+flags = ["--intent", "--grant", "--evidence", "--balancing", "--plan-out", "--timeout-ns"]
 switches = ["--dry-run"]
 events = ["posted", "recorded", "plan"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["reserve --intent <hold.json> [--dry-run [--plan-out <new-file>]] (a Pending: amounts reserved, nothing posted)", "--dry-run runs the reservation laws without acquiring the hold; fa commit --plan <file|-> acquires exactly the reviewed hold if the book has not advanced. --balancing is not supported with --dry-run."]
+usage = ["reserve --intent <hold.json> [--timeout-ns N] [--dry-run [--plan-out <new-file>]] (a Pending: amounts reserved, nothing posted)", "timeout_ns in the intent or --timeout-ns supplies one unsigned nanosecond duration from the latest committed TimeEvidence. Missing anchors and overflow refuse. Start fad serve --bootstrap-system to record clock observations and expire due holds.", "--dry-run runs the reservation laws without acquiring the hold; fa commit --plan <file|-> acquires exactly the reviewed hold if the book has not advanced. --balancing is not supported with --dry-run."]
 example = "fa reserve --intent hold.json --book ./books/myco --json"
 
 [[verb]]
@@ -277,15 +280,27 @@ example = "fa procedure run jet.round_amounts --book ./books/myco --json"
 
 [[verb]]
 name = "checkpoint"
-summary = "Publish an unsigned, recomputable accumulator state over the book's entry prefix."
+summary = "Publish a recomputable accumulator state over the book's entry prefix and its TransparencyCheckpoint signed by the book's key."
 writes = true
 subcommands = ["create"]
 flags = ["--grant"]
 switches = []
 events = ["checkpoint_created"]
 exits = [0, 2, 4, 5, 6, 7, 8]
-usage = ["checkpoint create --grant witness [--as <principal>]", "The state is unsigned and covers entries; it is not a signed TransparencyCheckpoint or an evidence bundle."]
+usage = ["checkpoint create --grant witness [--as <principal>]", "The state covers entries; its TransparencyCheckpoint is signed by the book's Ed25519 key (public_key) and is exported with `fa proof signed-checkpoint`. It is not an evidence bundle and covers no document receipts."]
 example = "fa checkpoint create --grant witness --book ./books/myco --json"
+
+[[verb]]
+name = "proof"
+summary = "Export a recorded checkpoint (signed TransparencyCheckpoint or raw 80-byte statement) or a portable accounting proof for independent fa-verify verification."
+writes = false
+subcommands = ["signed-checkpoint", "checkpoint", "inclusion", "consistency", "prefix", "balance"]
+flags = ["--state", "--next-state", "--entry", "--account", "--unit", "--as-of", "--out", "--grant"]
+switches = ["--with-record"]
+events = ["proof_exported"]
+exits = [0, 2, 3, 4, 5, 7, 8]
+usage = ["proof signed-checkpoint [--state <64-hex-oid|latest>] [--out <new-file>]   (the TransparencyCheckpoint signed by the book's key; checkpoint_public_key names the key)", "proof checkpoint [--state <64-hex-oid|latest>] [--out <new-file>]", "proof inclusion --entry <vid|E:vid> [--with-record] [--state <oid|latest>] [--out <new-file>]", "proof consistency --state <old-oid> --next-state <new-oid> [--out <new-file>]", "proof prefix [--state <oid|latest>] [--out <new-file>]", "proof balance --account <code> --unit <CODE> [--as-of YYYY-MM-DD] [--state <oid|latest>] [--out <new-file>]", "Export never creates a checkpoint or changes the book. Missing --state selects the latest recorded state. --out writes a new raw binary file; otherwise bytes is complete hex. Checkpoints are exact 80-byte statements. Binary proofs are limited to 64 MiB; inline output has the smaller daemon frame bound.", "fa-verify <kind> --proof <file> --checkpoint <signed-checkpoint-file> --key <checkpoint_public_key> --json, or --checkpoint <raw-80-byte-file> --unsigned-checkpoint once that statement is trusted outside the proof; consistency also takes --next-checkpoint <claimed-file>. Prefix verifies all envelopes, inclusion optionally recomputes a payload, and balance recomputes exact posted debits/credits for one account/unit through an inclusive effective cutoff. No signatures, document receipts, FX or general statement replay are claimed."]
+example = "fa proof balance --account 1000 --unit USD --state latest --book ./books/myco --json"
 
 [[verb]]
 name = "verify"
@@ -506,13 +521,13 @@ fields = ["v:int", "op:string", "exit:int", "stdout:text", "stderr:text"]
 [[event]]
 name = "fad_serving"
 book = true
-doc = "`fad serve`: the writer lease is held and the socket is listening."
-fields = ["book_id:hex", "dir:string", "socket:string", "pid:int", "protocol:int", "max_frame_bytes:int"]
+doc = "`fad serve`: the writer lease is held and the socket is listening. Timed work requires explicit trusted-local book-key bootstrap. Tick and drift intervals are nanoseconds; sweep_batch bounds each expiry/reversal batch's effects, not candidate scan work. Disabled timing fields are null and cycles is zero."
+fields = ["book_id:hex", "dir:string", "socket:string", "pid:int", "protocol:int", "max_frame_bytes:int", "timed_work_enabled:bool", "timed_authority:string?", "tick_ns:int?", "sweep_batch:int?", "clock_drift_ns:int?", "timed_cycles:int", "last_tick_utc_ns:int?", "last_tick_monotonic_ok:bool?", "timed_work_error:string?"]
 
 [[event]]
 name = "fad_status"
-doc = "`fad status`: whether a fad serves the book; when one does, its pid, book, and requests answered so far. `holder` is the lease file's note when the lease is held by something that is not answering (a direct `fa` command mid-flight)."
-fields = ["serving:bool", "dir:string", "socket:string", "pid:int?", "book_id:hex?", "requests:int?", "holder:string?"]
+doc = "`fad status`: whether a fad serves the book; when one does, its pid, book, requests and timed-work progress. holder is the lease note when its holder is not answering. timed_work_error names a refused or failed cycle; uncorroborated ticks never authorize automatic accounting effects. Timing fields are null/false/zero when disabled or not serving."
+fields = ["serving:bool", "dir:string", "socket:string", "pid:int?", "book_id:hex?", "requests:int?", "holder:string?", "timed_work_enabled:bool", "timed_authority:string?", "tick_ns:int?", "sweep_batch:int?", "clock_drift_ns:int?", "timed_cycles:int", "last_tick_utc_ns:int?", "last_tick_monotonic_ok:bool?", "timed_work_error:string?"]
 
 [[event]]
 name = "fad_stopped"
@@ -677,13 +692,19 @@ fields = ["account:string?", "count:int", "items:[open_item]"]
 [[event]]
 name = "checkpoint_created"
 book = true
-doc = "An unsigned AccumulatorState over every entry in the named book/branch prefix through through_seq, recorded in a later commit. prev_state_oid links its predecessor. The scope excludes document receipts, attestations, signatures, and bundles."
-fields = ["book:hex", "branch:hex", "oid:hex", "recorded_at:seq", "through_seq:seq", "leaf_count:int", "root:hex", "prev_state_oid:hex?", "signatures:string", "scope:string"]
+doc = "An AccumulatorState over every entry in the named book/branch prefix through through_seq, recorded in a later commit, with its TransparencyCheckpoint (checkpoint_oid) signed by the book's Ed25519 key public_key; signatures is ed25519. prev_state_oid links its predecessor. The scope excludes document receipts, attestations and bundles; `fa proof signed-checkpoint` exports the signed checkpoint for fa-verify --key."
+fields = ["book:hex", "branch:hex", "oid:hex", "recorded_at:seq", "through_seq:seq", "leaf_count:int", "root:hex", "prev_state_oid:hex?", "signatures:string", "checkpoint_oid:hex", "public_key:hex", "scope:string"]
+
+[[event]]
+name = "proof_exported"
+book = true
+doc = "A raw portable proof from an existing recomputed checkpoint, the exact 80-byte checkpoint statement itself (kind checkpoint), or the state's TransparencyCheckpoint signed by the book's key (kind signed-checkpoint; signatures ed25519, trust checkpoint_public_key). checkpoint_bytes and next_checkpoint_bytes are hex statements; the latter is a consistency claim, not a trust anchor. checkpoint_public_key is the book's Ed25519 checkpoint key, the --key fa-verify judges a signed checkpoint with. bytes is full proof hex for inline output, otherwise null with a new binary file. No book write occurs. A raw statement needs external trust (signatures unsigned, trust external_checkpoint_required); scope and claim name the exact inclusion, prefix-completeness or balance predicate."
+fields = ["kind:string", "scope:string", "state_oid:hex", "recorded_at:seq", "through_seq:seq", "leaf_count:int", "root:hex", "checkpoint_bytes:hex", "next_state_oid:hex?", "next_checkpoint_bytes:hex?", "signatures:string", "trust:string", "checkpoint_public_key:hex", "claim:object", "byte_len:int", "bytes:hex?", "file:string?"]
 
 [[event]]
 name = "accumulator_verified"
 book = true
-doc = "Every existing accumulator state was recomputed from its entry prefix and every stored state belongs to the chain. status is verified or no_checkpoints; no_checkpoints makes no verification claim and verified_through is null. Otherwise verified_through names the newest checked prefix, never an implicit current-head claim. signatures is unsigned and scope is entry_prefix. States are newest first."
+doc = "Every existing accumulator state was recomputed from its entry prefix and every stored state belongs to the chain. status is verified or no_checkpoints; no_checkpoints makes no verification claim and verified_through is null. Otherwise verified_through names the newest checked prefix, never an implicit current-head claim. signatures is ed25519: each state's signed TransparencyCheckpoint was reproduced from the journal prefix and the book's key. scope is entry_prefix. States are newest first."
 fields = ["status:string", "signatures:string", "scope:string", "states_checked:int", "broken:string?", "verified_through:seq?", "states:[accumulator_state_check]", "unchained:[hex]"]
 
 [[event]]
@@ -1052,7 +1073,7 @@ hidden_flags = ["--json", "--via", "--no-color", "--help", "--version", "--as", 
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
 repeat_flags = ["--evidence", "--approval", "--period", "--param"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
-integer_flags = ["--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing"]
+integer_flags = ["--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns"]
 
 [[mcp.cluster]]
 name = "fa.orient"
@@ -1081,6 +1102,10 @@ doc = "Period law: create a fiscal year's periods, list them, move one along the
 [[mcp.cluster]]
 name = "fa.evidence"
 doc = "Evidence: record a source document, content-addressed, so an entry can cite it."
+
+[[mcp.cluster]]
+name = "fa.proof"
+doc = "Portable accounting proofs from recorded checkpoints (signed by the book's key, or raw statements), checked independently without book keys."
 
 [[mcp.excluded]]
 verb = "fad"
@@ -1163,7 +1188,7 @@ verb = "checkpoint"
 subcommands = ["create"]
 positionals = []
 required = []
-dont = ["Don't present the state as a signed checkpoint or an evidence bundle: it is unsigned and covers entries only."]
+dont = ["Don't present the checkpoint as an evidence bundle or a document-receipt proof: it covers entries only, signed by the book's key (public_key)."]
 mistakes = ["Trying to self-issue witness permission: caller grants are forbidden, and Agent/Preparer launch profiles do not include witness."]
 
 [[mcp.tool]]
@@ -1230,7 +1255,7 @@ name = "post"
 verb = "post"
 subcommands = []
 positionals = []
-flags = ["--intent", "--evidence", "--balancing"]
+flags = ["--intent", "--evidence", "--balancing", "--timeout-ns", "--reverse-on"]
 stdin_property = "intent"
 stdin_kind = "object"
 stdin_via = "--intent"
@@ -1255,12 +1280,12 @@ name = "reserve"
 verb = "reserve"
 subcommands = []
 positionals = []
-flags = ["--intent", "--evidence", "--balancing"]
+flags = ["--intent", "--evidence", "--balancing", "--timeout-ns"]
 stdin_property = "intent"
 stdin_kind = "object"
 stdin_via = "--intent"
 required = []
-dont = ["Don't read a Pending as posted: its amounts sit in the pending columns until `fa_post_resolve` posts or voids it.", "Don't add a timeout field: timed holds are not available yet, and a timed reservation is never silently made permanent."]
+dont = ["Don't read a Pending as posted: its amounts sit in the pending columns until resolution or expiry.", "Supply timeout_ns once, as an unsigned integer in the intent or the tool property. It anchors to committed TimeEvidence; missing or overflowing anchors refuse. Only the configured daemon can record production time and expire a due hold."]
 mistakes = ["A JSON number in `amount` (write \"80.00 USD\").", "Setting `class` to anything but `Pending` (omit it)."]
 
 [[mcp.tool]]
@@ -1291,6 +1316,19 @@ dont = ["Review the plan event, then pass its complete bytes hex string as plan 
 mistakes = ["Passing plan_file: host paths are refused; supply the plan event's complete bytes string inline as plan.", "Passing an intent JSON object as plan: use the plan event's bytes string.", "Passing as, grant, yes, book or keys: these remain forbidden per-call overrides.", "Expecting new approval collection, drafts, issued tokens or balancing to be covered by this first same-snapshot PostEntry slice."]
 
 # ---- fa.read ----------------------------------------------------------------
+
+[[mcp.tool]]
+cluster = "fa.proof"
+name = "export"
+verb = "proof"
+subcommands = ["signed-checkpoint", "checkpoint", "inclusion", "consistency", "prefix", "balance"]
+selector = "kind"
+positionals = []
+flags = ["--state", "--next-state", "--entry", "--account", "--unit", "--as-of"]
+switches = ["--with-record"]
+required = []
+dont = ["The launch capability must include read and produce. Per-call grants, book selection and output paths are forbidden. Proofs and checkpoint bytes are returned as complete hex.", "Judge proofs against the signed checkpoint (kind signed-checkpoint) with fa-verify --key <checkpoint_public_key>, or establish trust in the raw checkpoint independently and pass --unsigned-checkpoint; the proof never authenticates its own anchor. Complete-prefix and balance formats disclose every journal envelope and require whole-book read authority.", "A balance proof checks posted debits and credits for one account/unit from inception through an optional inclusive as_of date. It is not a financial-statement, FX, signatures or document-receipt proof."]
+mistakes = ["Using entry or with_record outside inclusion; omitting entry for inclusion.", "Omitting next_state for consistency or account and unit for balance.", "Passing out to write a host file: MCP has inline output only.", "Using a state oid from another book, or expecting export to create a new checkpoint."]
 
 [[mcp.tool]]
 cluster = "fa.read"

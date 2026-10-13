@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fa_journal::genesis::BookContext;
 use fa_journal::refusal::{Refusal, exit};
-use fa_journal::scratch::{Maintenance, SeqMap, replayable};
+use fa_journal::scratch::{Maintenance, SeqMap, replayable, source_genesis};
 use fgdb::Database;
 use fgdb_types::{CommitSeq, VId};
 
@@ -92,9 +92,9 @@ where
     }
     // Nor before the book's genesis: an empty map over an empty database is
     // not a scratch book.
-    let genesis = source
-        .vertex(fa_journal::rows::book_root())?
-        .map(|root| root.created_at);
+    // Maintenance advances the root's content version. Only its original
+    // CreateVertex in the authenticated history defines the book's genesis.
+    let genesis = source_genesis(source)?;
     if genesis.is_none_or(|g| map.source_prefix < g) {
         return Ok(Err(invalid(format!(
             "the map's source prefix {} precedes the source book's genesis ({})",

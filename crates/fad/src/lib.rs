@@ -21,11 +21,18 @@
 
 #![forbid(unsafe_code)]
 
+pub mod clock;
+pub mod timed;
+
+use core::future::{Future, poll_fn};
+use core::pin::{Pin, pin};
+use core::task::Poll;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use asupersync::Cx;
 use asupersync::io::{AsyncRead, AsyncWrite};
+use asupersync::types::Time;
 use fa::book::Book;
 use fa_cli::cli::{self, Books, Files, Stdin};
 use fa_cli::json::{Json, obj, s};
@@ -106,23 +113,168 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
     H: FnMut(Request) -> (Response, Next),
 {
+    serve_connection_with(cx, stream, limits, dir, &mut Untimed(handle)).await
+}
+
+/// The same framing loop serves a real book with scheduled work and the
+/// protocol-only lab handlers. Timing never owns a second book writer.
+trait Service {
+    fn handle(&mut self, request: Request) -> (Response, Next);
+    fn deadline(&self) -> Option<Time>;
+    async fn tick(&mut self, cx: &Cx);
+}
+
+struct Untimed<'a, H>(&'a mut H);
+
+impl<H: FnMut(Request) -> (Response, Next)> Service for Untimed<'_, H> {
+    fn handle(&mut self, request: Request) -> (Response, Next) {
+        self.0(request)
+    }
+
+    fn deadline(&self) -> Option<Time> {
+        None
+    }
+
+    async fn tick(&mut self, _cx: &Cx) {}
+}
+
+#[derive(Debug)]
+enum WaitError {
+    Idle,
+    Clock(clock::ClockError),
+}
+
+impl From<clock::ClockError> for WaitError {
+    fn from(error: clock::ClockError) -> Self {
+        Self::Clock(error)
+    }
+}
+
+impl WaitError {
+    fn frame(self) -> FrameError {
+        match self {
+            Self::Clock(clock::ClockError::Cancelled) => FrameError::Cancelled,
+            Self::Clock(error) => FrameError::Io(std::io::ErrorKind::Other, error.to_string()),
+            Self::Idle => FrameError::Io(std::io::ErrorKind::TimedOut, "idle connection".into()),
+        }
+    }
+}
+
+/// Keep one I/O future pinned while timer events are handled. In
+/// particular a partially consumed frame prefix/payload stays inside its
+/// original read_frame future until it completes or the connection ends.
+async fn wait_io<F: Future, H: Service>(
+    cx: &Cx,
+    operation: F,
+    idle: Option<Duration>,
+    service: &mut H,
+) -> Result<F::Output, WaitError> {
+    let idle_deadline = match idle {
+        Some(duration) => Some(clock::deadline_after(
+            clock::timer(cx)?.now(),
+            u64::try_from(duration.as_nanos()).map_err(|_| clock::ClockError::DeadlineOverflow)?,
+        )?),
+        None => None,
+    };
+    let mut operation = pin!(operation);
     loop {
-        let read = Box::pin(read_frame(cx, stream, limits.max_frame_bytes));
-        let frame = match limits.idle {
-            None => read.await,
-            Some(idle) => {
-                match asupersync::time::timeout(asupersync::time::wall_now(), idle, read).await {
-                    Ok(frame) => frame,
-                    Err(_) => return Ended::Idle,
-                }
+        let next = match (idle_deadline, service.deadline()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let mut deadline = next.map(|at| clock::Deadline::new(cx, at)).transpose()?;
+        enum Ready<T> {
+            Io(T),
+            Timer,
+        }
+        let ready = poll_fn(|task| {
+            if cx.checkpoint().is_err() {
+                return Poll::Ready(Err(WaitError::Clock(clock::ClockError::Cancelled)));
             }
+            // Timer first: a stream of immediately-ready requests cannot
+            // starve due work. After one cycle its next deadline is in the
+            // future, so the retained I/O operation gets its turn.
+            if let Some(timer) = deadline.as_mut()
+                && let Poll::Ready(result) = Pin::new(timer).poll(task)
+            {
+                return Poll::Ready(result.map(|()| Ready::Timer).map_err(WaitError::Clock));
+            }
+            operation
+                .as_mut()
+                .poll(task)
+                .map(|value| Ok(Ready::Io(value)))
+        })
+        .await?;
+        match ready {
+            Ready::Io(value) => return Ok(value),
+            Ready::Timer => {
+                if idle_deadline.is_some_and(|at| {
+                    // A timer was constructed above, so the capability is
+                    // present; failure below is handled before doing work.
+                    cx.timer_driver().is_some_and(|timer| timer.now() >= at)
+                }) {
+                    return Err(WaitError::Idle);
+                }
+                clock::timer(cx)?;
+                service.tick(cx).await;
+            }
+        }
+    }
+}
+
+async fn write_served<S, H>(
+    cx: &Cx,
+    stream: &mut S,
+    payload: &[u8],
+    max: usize,
+    service: &mut H,
+) -> Result<(), FrameError>
+where
+    S: AsyncWrite + Unpin,
+    H: Service,
+{
+    wait_io(cx, write_frame(cx, stream, payload, max), None, service)
+        .await
+        .map_err(WaitError::frame)?
+}
+
+async fn serve_connection_with<S, H>(
+    cx: &Cx,
+    stream: &mut S,
+    limits: Limits,
+    dir: &Path,
+    service: &mut H,
+) -> Ended
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    H: Service,
+{
+    loop {
+        let frame = match wait_io(
+            cx,
+            read_frame(cx, stream, limits.max_frame_bytes),
+            limits.idle,
+            service,
+        )
+        .await
+        {
+            Ok(frame) => frame,
+            Err(WaitError::Idle) => return Ended::Idle,
+            Err(error) => return Ended::Fault(error.frame()),
         };
         let payload = match frame {
             Ok(None) => return Ended::Closed,
             Ok(Some(payload)) => payload,
             Err(fault @ (FrameError::TooLarge { .. } | FrameError::Malformed(_))) => {
                 let reply = protocol_fault(&fault).to_json(limits.protocol).render();
-                let _ = write_frame(cx, stream, reply.as_bytes(), limits.max_frame_bytes).await;
+                let _ = write_served(
+                    cx,
+                    stream,
+                    reply.as_bytes(),
+                    limits.max_frame_bytes,
+                    service,
+                )
+                .await;
                 return Ended::Fault(fault);
             }
             Err(fault) => return Ended::Fault(fault),
@@ -132,11 +284,18 @@ where
             Ok(r) => r,
             Err(fault) => {
                 let reply = protocol_fault(&fault).to_json(limits.protocol).render();
-                let _ = write_frame(cx, stream, reply.as_bytes(), limits.max_frame_bytes).await;
+                let _ = write_served(
+                    cx,
+                    stream,
+                    reply.as_bytes(),
+                    limits.max_frame_bytes,
+                    service,
+                )
+                .await;
                 return Ended::Fault(fault);
             }
         };
-        let (response, next) = handle(request);
+        let (response, next) = service.handle(request);
         let mut reply = response.to_json(limits.protocol).render();
         if reply.len() > limits.max_frame_bytes {
             // An answer too large for one frame is refused as a whole, never
@@ -164,16 +323,38 @@ where
             }
             .to_json(limits.protocol)
             .render();
-            if write_frame(cx, stream, reply.as_bytes(), limits.max_frame_bytes)
+            let written = if next == Next::Stop {
+                write_frame(cx, stream, reply.as_bytes(), limits.max_frame_bytes).await
+            } else {
+                write_served(
+                    cx,
+                    stream,
+                    reply.as_bytes(),
+                    limits.max_frame_bytes,
+                    service,
+                )
                 .await
-                .is_err()
-            {
+            };
+            if written.is_err() {
                 return Ended::Fault(fault);
             }
-        } else if let Err(fault) =
-            write_frame(cx, stream, reply.as_bytes(), limits.max_frame_bytes).await
-        {
-            return Ended::Fault(fault);
+        } else {
+            let written = if next == Next::Stop {
+                // Once stop is accepted, no more automatic effects run.
+                write_frame(cx, stream, reply.as_bytes(), limits.max_frame_bytes).await
+            } else {
+                write_served(
+                    cx,
+                    stream,
+                    reply.as_bytes(),
+                    limits.max_frame_bytes,
+                    service,
+                )
+                .await
+            };
+            if let Err(fault) = written {
+                return Ended::Fault(fault);
+            }
         }
         if next == Next::Stop {
             return Ended::Stop;
@@ -187,6 +368,25 @@ pub struct Server<'a> {
     pub dir: PathBuf,
     pub socket: PathBuf,
     pub requests: u64,
+    /// Present only after the local launcher explicitly authorizes a
+    /// book-key System bootstrap. Wire requests never construct this.
+    pub timed: Option<timed::TimedWork>,
+}
+
+impl Service for Server<'_> {
+    fn handle(&mut self, request: Request) -> (Response, Next) {
+        Server::handle(self, request)
+    }
+
+    fn deadline(&self) -> Option<Time> {
+        self.timed.as_ref().and_then(timed::TimedWork::deadline)
+    }
+
+    async fn tick(&mut self, cx: &Cx) {
+        if let Some(work) = self.timed.as_mut() {
+            work.run_due(cx, self.book).await;
+        }
+    }
 }
 
 impl Server<'_> {
@@ -262,7 +462,7 @@ impl Server<'_> {
     /// `fad_status` data for a serving daemon.
     #[must_use]
     pub fn status_data(&self) -> Json {
-        obj(vec![
+        let mut fields = vec![
             ("serving", Json::Bool(true)),
             ("dir", s(self.dir.display().to_string())),
             ("socket", s(self.socket.display().to_string())),
@@ -270,17 +470,20 @@ impl Server<'_> {
             ("book_id", s(self.book.context().book_id.to_hex())),
             ("requests", Json::Int(i128::from(self.requests))),
             ("holder", Json::Null),
-        ])
+        ];
+        fields.extend(timed::status_fields(self.timed.as_ref()));
+        obj(fields)
     }
 
     fn status_text(&self) -> String {
         format!(
-            "fad serving {} (pid {}, book {}) on {} · {} requests answered",
+            "fad serving {} (pid {}, book {}) on {} · {} requests answered · {}",
             self.dir.display(),
             std::process::id(),
             self.book.context().book_id.to_hex(),
             self.socket.display(),
-            self.requests
+            self.requests,
+            timed::status_text(self.timed.as_ref()),
         )
     }
 
@@ -327,11 +530,35 @@ pub async fn serve<H>(
 where
     H: FnMut(Request) -> (Response, Next),
 {
+    serve_with(cx, listener, limits, dir, &mut Untimed(handle)).await
+}
+
+/// Serve the held book with its optional launch-configured timed work in
+/// the same region and on the same writer as foreground requests.
+pub async fn serve_book(
+    cx: &Cx,
+    listener: &asupersync::net::unix::UnixListener,
+    limits: Limits,
+    server: &mut Server<'_>,
+) -> std::io::Result<()> {
+    let dir = server.dir.clone();
+    serve_with(cx, listener, limits, &dir, server).await
+}
+
+async fn serve_with<H: Service>(
+    cx: &Cx,
+    listener: &asupersync::net::unix::UnixListener,
+    limits: Limits,
+    dir: &Path,
+    service: &mut H,
+) -> std::io::Result<()> {
     loop {
         cx.checkpoint()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Interrupted, format!("{e:?}")))?;
-        let (mut stream, _) = listener.accept().await?;
-        if serve_connection(cx, &mut stream, limits, dir, handle).await == Ended::Stop {
+        let (mut stream, _) = wait_io(cx, listener.accept(), None, service)
+            .await
+            .map_err(|error| std::io::Error::other(format!("{}", error.frame())))??;
+        if serve_connection_with(cx, &mut stream, limits, dir, service).await == Ended::Stop {
             return Ok(());
         }
     }
