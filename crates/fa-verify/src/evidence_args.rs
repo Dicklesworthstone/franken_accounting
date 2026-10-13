@@ -1,6 +1,7 @@
 //! Offline evidence inventories; parse the recipient's complete request
 //! before observing a file, then emit metadata only after every check passes.
 
+mod allocation;
 mod production;
 
 use std::ffi::OsString;
@@ -15,6 +16,7 @@ use fa_verify::evidence::{EvidenceCitation, MAX_EVIDENCE_PER_ENTRY, MAX_PROOF_BY
 use crate::{Failure, array, hex, object, quote, read_bounded, read_checkpoint};
 
 const HELP: &str = "Usage:
+  fa-verify evidence allocation --help  (independent allocation arithmetic and exact driver)
   fa-verify evidence production --help  (complete scoped entry/citation inventories)
   fa-verify evidence --proof INCLUSION --checkpoint TRUSTED_FILE --expect-entry HEX64 [--json]
   fa-verify evidence --proof INCLUSION --checkpoint TRUSTED_FILE --expect-entry HEX64 \\
@@ -149,6 +151,9 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
 }
 
 pub(super) fn run(args: &[OsString], json: bool) -> Result<String, Failure> {
+    if args.get(1).and_then(|argument| argument.to_str()) == Some("allocation") {
+        return allocation::run(&args[1..], json);
+    }
     if args.get(1).and_then(|argument| argument.to_str()) == Some("production") {
         return production::run(&args[1..], json);
     }
