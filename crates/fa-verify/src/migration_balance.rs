@@ -5,8 +5,9 @@
 //! EVERY MigrationControl leaf in the complete prefix. Supplying all controls
 //! proves absence as well as presence of Finalize; an absence flag supplied by
 //! the producer would not. Each selected migration run needs its Open body,
-//! in leaf order, whose domain-separated digest equals the Open's committed
-//! tie_out_digest. Unrelated run bodies are neither required nor accepted.
+//! in leaf order, whose length-framed domain digest equals the Open's committed
+//! tie_out_digest and whose book/key derive the named run identity.
+//! Unrelated run bodies are neither required nor accepted.
 //!
 //! This proves the register visibility predicate, not the migration's economic
 //! correctness, authorization, or trial-balance tie-out. Nothing reads current
@@ -24,7 +25,26 @@ pub const BALANCE_FORMAT_V2: &[u8] = b"fa:acc-balance-proof:v2";
 
 const CLASS_MIGRATION_CONTROL: u16 = 22;
 const BODY_DOMAIN: &[u8] = b"fa:migration-run-body:v1";
+const RUN_ID_DOMAIN: &[u8] = b"fa:vid:migration-run:v1";
 const MAX_RUN_PERIODS: usize = 256;
+
+// Migration bodies use fa-model's domain_digest, not the accumulator's
+// raw-concatenation convention. Every part, including a fixed-width book
+// id in derive_vid, has a u32 little-endian byte-length prefix. Inputs here
+// have already been bounded by the decoder well below u32::MAX.
+fn body_digest(body: &[u8]) -> [u8; 32] {
+    let length = u32::try_from(body.len()).unwrap_or(u32::MAX).to_le_bytes();
+    hash_parts(BODY_DOMAIN, &[&length, body])
+}
+
+fn run_identity(book: &[u8; 16], key: &[u8]) -> u128 {
+    let book_length = 16u32.to_le_bytes();
+    let key_length = u32::try_from(key.len()).unwrap_or(u32::MAX).to_le_bytes();
+    let digest = hash_parts(RUN_ID_DOMAIN, &[&book_length, book, &key_length, key]);
+    let mut low = [0u8; 16];
+    low.copy_from_slice(&digest[..16]);
+    u128::from_le_bytes(low)
+}
 
 #[derive(Clone, Copy, Debug)]
 enum Metadata {
@@ -34,11 +54,13 @@ enum Metadata {
         run: u128,
         kind: u8,
         digest: [u8; 32],
+        body_digest: [u8; 32],
     },
 }
 
 #[derive(Clone, Copy, Debug)]
 struct Policy {
+    run: u128,
     opening_day: i32,
     counts_from: Option<i32>,
 }
@@ -123,7 +145,13 @@ pub fn verify_balance(proof: &[u8], anchor: &Checkpoint) -> Result<Balance, Veri
         if let Metadata::Chunk(run) = metadata {
             needed_runs.insert(run);
         }
-        if let Metadata::Control { run, kind, digest } = metadata {
+        if let Metadata::Control {
+            run,
+            kind,
+            digest,
+            body_digest,
+        } = metadata
+        {
             if kind == 0 {
                 if runs.contains_key(&run) {
                     return Err(scope_error(*index));
@@ -142,7 +170,10 @@ pub fn verify_balance(proof: &[u8], anchor: &Checkpoint) -> Result<Balance, Veri
                 opens.push((*index, run));
             } else {
                 let state = runs.get_mut(&run).ok_or_else(|| scope_error(*index))?;
-                if state.terminal.is_some() || *index <= state.open_index {
+                if state.terminal.is_some()
+                    || *index <= state.open_index
+                    || body_digest != state.digest
+                {
                     return Err(scope_error(*index));
                 }
                 state.terminal = Some((*index, kind));
@@ -163,13 +194,13 @@ pub fn verify_balance(proof: &[u8], anchor: &Checkpoint) -> Result<Balance, Veri
             return Err(scope_error((*got).min(*open_index)));
         }
         let state = runs.get_mut(run).ok_or_else(|| scope_error(*open_index))?;
-        if hash_parts(BODY_DOMAIN, &[bytes]) != state.digest {
+        if body_digest(bytes) != state.digest {
             return Err(VerifyError::Record(crate::envelope::RecordError::Digest {
                 which: "migration.run_body",
             }));
         }
         let policy = policy(bytes, &checkpoint.book_id)?;
-        if policy.opening_day != state.open_day {
+        if policy.run != *run || policy.opening_day != state.open_day {
             return Err(scope_error(*open_index));
         }
         state.policy = Some(policy);
@@ -312,7 +343,12 @@ fn metadata(e: &LeafEnvelope, proposal: &[u8], index: u64) -> Result<Metadata, V
         if kind == 0 && body_digest != digest {
             return Err(scope_error(index));
         }
-        return Ok(Metadata::Control { run, kind, digest });
+        return Ok(Metadata::Control {
+            run,
+            kind,
+            digest,
+            body_digest,
+        });
     }
     if origin == 2 {
         if e.class != CLASS_MIGRATION {
@@ -348,7 +384,8 @@ fn policy(bytes: &[u8], book: &[u8; 16]) -> Result<Policy, VerifyError> {
     if r.fixed::<16>("run.book")? != *book {
         return Err(VerifyError::Coordinate);
     }
-    r.bytes(64, "run.key")?;
+    let key = r.bytes(64, "run.key")?;
+    let run = run_identity(book, key);
     r.bytes(MAX_RECORD_BYTES, "run.source_system")?;
     let mode = r.u8("run.mode")?;
     if mode > 2 {
@@ -375,6 +412,7 @@ fn policy(bytes: &[u8], book: &[u8; 16]) -> Result<Policy, VerifyError> {
     };
     r.finish("migration run body")?;
     Ok(Policy {
+        run,
         opening_day,
         counts_from: (mode == 2 && !sole).then_some(opening_day),
     })
@@ -386,6 +424,10 @@ mod tests {
     use crate::codec::Writer;
     use crate::envelope::{ENTRY_DIGEST_DOMAIN, PROPOSAL_DIGEST_DOMAIN, envelope_of_entry};
     use crate::tree::{leaf_hash, root_of};
+
+    // Pinned in fa-model ids::migration_identities_are_pinned for book [1;16]
+    // and key "go-live". This is data, not a dependency on producer code.
+    const RUN: u128 = 0x234a_61ec_52cd_c6a7_442d_0c1f_8c35_b825;
 
     // Independent canonical wire fixtures. These test the offline predicate;
     // they do not claim that the kernel admitted the synthetic accounting.
@@ -436,7 +478,10 @@ mod tests {
             }
         }
         if let Kind::Control(run, kind, digest) = kind {
-            w.u8(1).u8(10).u128(run).u8(kind).fixed(&digest);
+            // Open ties to the body; terminal tie-outs commit the chunk set.
+            // The origin below retains the same body digest at every phase.
+            let tie_out = if kind == 0 { digest } else { [9; 32] };
+            w.u8(1).u8(10).u128(run).u8(kind).fixed(&tie_out);
         } else {
             w.u8(0);
         }
@@ -482,7 +527,7 @@ mod tests {
         let mut w = Writer::default();
         w.u16(1)
             .fixed(&[1; 16])
-            .bytes(b"run")
+            .bytes(b"go-live")
             .bytes(b"legacy")
             .u8(mode)
             .fixed(&[0; 32])
@@ -498,13 +543,13 @@ mod tests {
     }
 
     fn history(body: &[u8], day: i32, terminal: Option<u8>) -> Vec<Record> {
-        let digest = hash_parts(BODY_DOMAIN, &[body]);
+        let digest = body_digest(body);
         let mut records = vec![
-            record(Kind::Control(1, 0, digest), 1, 100),
-            record(Kind::Chunk(1), 2, day),
+            record(Kind::Control(RUN, 0, digest), 1, 100),
+            record(Kind::Chunk(RUN), 2, day),
         ];
         if let Some(kind) = terminal {
-            records.push(record(Kind::Control(1, kind, [9; 32]), 3, 100));
+            records.push(record(Kind::Control(RUN, kind, digest), 3, 100));
         }
         records
     }
@@ -575,7 +620,10 @@ mod tests {
             let (bytes, anchor) = proof(&records, &witnesses, expected, None, None);
             let report = super::verify_balance(&bytes, &anchor).unwrap();
             assert_eq!(report.claim.debits, expected);
-            assert_eq!(report.contributing, if expected == 0 { vec![] } else { vec![1] });
+            assert_eq!(
+                report.contributing,
+                if expected == 0 { vec![] } else { vec![1] }
+            );
             let (wrong, anchor) = proof(&records, &witnesses, 5000 - expected, None, None);
             assert_eq!(
                 super::verify_balance(&wrong, &anchor),
@@ -599,9 +647,17 @@ mod tests {
             let body = body(mode, sole);
             let records = history(&body, day, Some(1));
             let (bytes, anchor) = proof(&records, &[(0, body)], expected, Some(day), None);
-            assert_eq!(super::verify_balance(&bytes, &anchor).unwrap().claim.debits, expected);
+            assert_eq!(
+                super::verify_balance(&bytes, &anchor).unwrap().claim.debits,
+                expected
+            );
             let (earlier, anchor) = proof(&records, &[], 0, Some(day - 1), None);
-            assert!(super::verify_balance(&earlier, &anchor).unwrap().contributing.is_empty());
+            assert!(
+                super::verify_balance(&earlier, &anchor)
+                    .unwrap()
+                    .contributing
+                    .is_empty()
+            );
         }
     }
 
@@ -639,26 +695,26 @@ mod tests {
     #[test]
     fn malformed_lifecycles_never_manufacture_visibility() {
         let body = body(0, false);
-        let digest = hash_parts(BODY_DOMAIN, &[&body]);
+        let digest = body_digest(&body);
         let cases = [
-            vec![record(Kind::Control(1, 1, [9; 32]), 1, 100)],
+            vec![record(Kind::Control(RUN, 1, digest), 1, 100)],
             vec![
-                record(Kind::Control(1, 0, digest), 1, 100),
-                record(Kind::Control(1, 0, digest), 2, 100),
+                record(Kind::Control(RUN, 0, digest), 1, 100),
+                record(Kind::Control(RUN, 0, digest), 2, 100),
             ],
             vec![
-                record(Kind::Control(1, 0, digest), 1, 100),
-                record(Kind::Control(1, 1, [9; 32]), 2, 100),
-                record(Kind::Chunk(1), 3, 100),
+                record(Kind::Control(RUN, 0, digest), 1, 100),
+                record(Kind::Control(RUN, 1, digest), 2, 100),
+                record(Kind::Chunk(RUN), 3, 100),
             ],
             vec![
-                record(Kind::Chunk(1), 1, 100),
-                record(Kind::Control(1, 0, digest), 2, 100),
+                record(Kind::Chunk(RUN), 1, 100),
+                record(Kind::Control(RUN, 0, digest), 2, 100),
             ],
             vec![
-                record(Kind::Control(1, 0, digest), 1, 100),
-                record(Kind::Control(1, 2, [9; 32]), 2, 100),
-                record(Kind::Control(1, 1, [9; 32]), 3, 100),
+                record(Kind::Control(RUN, 0, digest), 1, 100),
+                record(Kind::Control(RUN, 2, digest), 2, 100),
+                record(Kind::Control(RUN, 1, digest), 3, 100),
             ],
         ];
         for records in cases {
@@ -681,13 +737,56 @@ mod tests {
             vec![],
             vec![record(Kind::Ordinary, 1, 100)],
             vec![
-                record(Kind::Control(1, 0, [9; 32]), 1, 100),
+                record(Kind::Control(RUN, 0, [9; 32]), 1, 100),
                 record(Kind::Ordinary, 2, 100),
             ],
         ] {
             let amount = if records.is_empty() { 0 } else { 5000 };
             let (bytes, anchor) = proof(&records, &[], amount, None, None);
-            assert_eq!(super::verify_balance(&bytes, &anchor).unwrap().claim.debits, amount);
+            assert_eq!(
+                super::verify_balance(&bytes, &anchor).unwrap().claim.debits,
+                amount
+            );
         }
+    }
+
+    #[test]
+    fn migration_hash_transcripts_are_length_framed_and_run_identity_is_pinned() {
+        assert_eq!(run_identity(&[1; 16], b"go-live"), RUN);
+        for body in [body(0, false), body(1, false), body(2, false), body(2, true)] {
+            let mut transcript = BODY_DOMAIN.to_vec();
+            transcript.extend_from_slice(&u32::try_from(body.len()).unwrap().to_le_bytes());
+            transcript.extend_from_slice(&body);
+            assert_eq!(body_digest(&body), crate::blake3::hash(&transcript));
+            assert_ne!(
+                body_digest(&body),
+                hash_parts(BODY_DOMAIN, &[&body]),
+                "the accumulator's unframed transcript is not a RunBody digest"
+            );
+        }
+    }
+
+    #[test]
+    fn run_identity_and_terminal_policy_cannot_be_rebound_under_authentic_records() {
+        let body = body(0, false);
+        let digest = body_digest(&body);
+        let wrong_run = RUN ^ 1;
+        let wrong_identity = vec![
+            record(Kind::Control(wrong_run, 0, digest), 1, 100),
+            record(Kind::Chunk(wrong_run), 2, 100),
+            record(Kind::Control(wrong_run, 1, digest), 3, 100),
+        ];
+        let (bytes, anchor) = proof(&wrong_identity, &[(0, body.clone())], 5000, None, None);
+        assert_eq!(
+            super::verify_balance(&bytes, &anchor),
+            Err(VerifyError::RecordSet { index: 0 })
+        );
+        let mut records = history(&body, 100, Some(1));
+        records[2] = record(Kind::Control(RUN, 1, [8; 32]), 3, 100);
+        let (bytes, anchor) = proof(&records, &[(0, body)], 5000, None, None);
+        assert_eq!(
+            super::verify_balance(&bytes, &anchor),
+            Err(VerifyError::RecordSet { index: 2 })
+        );
     }
 }
