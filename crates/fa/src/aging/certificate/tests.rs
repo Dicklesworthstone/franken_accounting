@@ -330,3 +330,6 @@ fn backdated_application_cutoff_is_refused_instead_of_losing_balances() {
     assert_eq!(h.certify(&h.request("2026-03-31")).report.items[0].item.open, 60);
     assert_eq!(h.head(), head);
 }
+
+#[path = "export_tests.rs"]
+mod export_tests;

@@ -26,6 +26,8 @@ use crate::{AsyncBook, BookError, Outcome, ReportCertificate, ReportOutput, Repo
 
 pub const AGING_CERTIFICATE_FORMAT: &[u8] = b"fa:aging-certificate:v1";
 pub const AGING_OUTPUT_FORMAT: &[u8] = b"fa:effective-date-aging:v1";
+mod export;
+
 const DIGEST_DOMAIN: &[u8] = b"fa:aging-certificate-digest:v1";
 pub const MAX_AGING_CERTIFICATE_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_AGING_BUCKET_BOUNDS: usize = 128;
