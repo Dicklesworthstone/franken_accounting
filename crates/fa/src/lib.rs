@@ -47,6 +47,7 @@
 pub mod aging;
 pub mod allocation_review;
 pub mod async_book;
+pub mod balance_allocation;
 pub mod book;
 pub mod certificate;
 mod certificate_store;
@@ -73,6 +74,9 @@ pub use aging::{
 };
 pub use allocation_review::{AllocationReview, AllocationReviewError, MAX_ALLOCATION_REVIEW_BYTES};
 pub use async_book::AsyncBook;
+pub use balance_allocation::{
+    BalanceAllocationRequest, MAX_BALANCE_ALLOCATION_CONTRIBUTIONS, PreparedBalanceAllocation,
+};
 pub use book::{Book, BookError, BookKeys, Entropy, Outcome};
 pub use certificate::{
     CertificateStatus, CertifiedReport, CertifiedTrialBalance, ReportCertificate, ReportOutput,
