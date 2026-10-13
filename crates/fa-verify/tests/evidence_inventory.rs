@@ -3,6 +3,9 @@
 #[path = "support/evidence_inventory.rs"]
 mod fixture;
 
+#[path = "evidence_inventory/cli.rs"]
+mod cli;
+
 use fa_verify::RecordCheck;
 use fa_verify::evidence::inventory::{
     InventoryError, validate_citation_request, verify_evidence_inventory_exact,

@@ -9,6 +9,7 @@
 
 mod balance_args;
 mod document_args;
+mod evidence_args;
 
 use std::ffi::OsString;
 use std::fs::File;
@@ -36,6 +37,10 @@ Usage:
   fa-verify consistency --proof FILE --checkpoint TRUSTED_FILE --next-checkpoint CLAIMED_FILE [--json]
   fa-verify redacted-view --view FILE --document-commit HEX64 --expect-chunks I,J [--json]
   fa-verify document --proof FILE --document-commit TRUSTED_FILE --chunks 0,4 [--json]
+
+Evidence citation inventories (complete for one requested entry only):
+  fa-verify evidence --proof FILE --checkpoint TRUSTED_FILE --expect-entry HEX64 [--json]
+  fa-verify evidence --help
 
 All inputs are raw canonical bytes, not hex text or a bundle. A checkpoint
 is exactly 80 bytes. Obtain and trust --checkpoint independently of the
@@ -792,6 +797,8 @@ fn main() -> ExitCode {
         redacted_view_cli::run(&args[1..], json)
     } else if args.first().and_then(|arg| arg.to_str()) == Some("document") {
         document_args::run(&args, json)
+    } else if args.first().and_then(|arg| arg.to_str()) == Some("evidence") {
+        evidence_args::run(&args, json)
     } else {
         parse(&args).and_then(|request| verify(&request)).map(|report| {
             if json { report.json() } else { report.human() }
