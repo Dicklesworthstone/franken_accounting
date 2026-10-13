@@ -15,9 +15,9 @@
 //! payload of exactly the in-scope leaves, ascending. Candidate leaves name
 //! the account and unit, are not `Pending`, and meet the effective cutoff.
 //! **Migration visibility cannot be established by v1.** If a candidate is
-//! a `Migration`, verification refuses with its `RecordSet` index, whether
-//! or not the producer supplied its record. Counting it could include an
-//! Open/Abandoned run; silently excluding it could omit a Finalized run.
+//! a `Migration`, verification refuses with its `MigrationVisibility` index,
+//! whether or not the producer supplied its record. Counting it could include
+//! an Open/Abandoned run; silently excluding it could omit a Finalized run.
 //! Authenticating a leaf is not evidence that its legs currently count.
 //! A later format must authenticate the run lifecycle and opening policy
 //! (fa-e00). Even finalized migrations are conservatively refused here.
@@ -96,7 +96,7 @@ fn read_claim(r: &mut Reader<'_>) -> Result<BalanceClaim, DecodeError> {
 
 /// Verify a balance proof against the checkpoint the caller trusts.
 /// A v1 proof cannot prove the contribution of a Migration candidate;
-/// `RecordSet` names the first such leaf in the authenticated prefix.
+/// `MigrationVisibility` names the first such leaf in the authenticated prefix.
 pub fn verify_balance(
     proof: &[u8],
     trusted_checkpoint: &Checkpoint,
@@ -129,7 +129,7 @@ pub fn verify_balance(
         // not be able to choose whether a migration counts by including or
         // withholding its payload. v1 has no lifecycle visibility witness.
         if envelope.class == CLASS_MIGRATION {
-            return Err(VerifyError::RecordSet { index });
+            return Err(VerifyError::MigrationVisibility { index });
         }
         expected.push(index);
     }
@@ -284,7 +284,8 @@ mod tests {
             root: leaf_hash(&raw),
         };
         let mut w = Writer::default();
-        w.bytes(BALANCE_FORMAT)
+        w.count(BALANCE_FORMAT.len())
+            .fixed(BALANCE_FORMAT)
             .fixed(&checkpoint.encode())
             .u128(claim.account)
             .u32(claim.unit);
@@ -296,15 +297,17 @@ mod tests {
                 w.u8(0);
             }
         }
-        w.i128(claim.debits)
-            .i128(claim.credits)
+        w.fixed(&claim.debits.to_le_bytes())
+            .fixed(&claim.credits.to_le_bytes())
             .count(1)
-            .bytes(&raw);
+            .count(raw.len())
+            .fixed(&raw);
         if include_record {
             w.count(1)
                 .u64(0)
                 .u32(u32::try_from(*proposal_len).unwrap())
-                .bytes(payload);
+                .count(payload.len())
+                .fixed(payload);
         } else {
             w.count(0);
         }
@@ -330,7 +333,7 @@ mod tests {
                     proof_for(&migration, cash_claim(credits), include_record);
                 assert_eq!(
                     verify_balance(&proof, &checkpoint),
-                    Err(VerifyError::RecordSet { index: 0 }),
+                    Err(VerifyError::MigrationVisibility { index: 0 }),
                     "migration visibility is not proven: record={include_record}, credits={credits}"
                 );
             }
@@ -374,7 +377,7 @@ mod tests {
         let (proof, checkpoint) = proof_for(&migration, inclusive, true);
         assert_eq!(
             verify_balance(&proof, &checkpoint),
-            Err(VerifyError::RecordSet { index: 0 })
+            Err(VerifyError::MigrationVisibility { index: 0 })
         );
     }
 
