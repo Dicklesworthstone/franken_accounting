@@ -38,6 +38,10 @@
 //! the protected reader's governed redactions for offline membership checks.
 //! [`Book::export_evidence_disclosure`] binds that protected export to an exact
 //! journal entry and citation role, with its independent inclusion proof.
+//! [`BalanceAllocationReview`] retains a journal-derived allocation
+//! source selector and expectation together with the exact sealed proposal.
+//! Its bounded transport survives process restarts without recreating a
+//! trusted source observation or granting approval/posting authority.
 //! Sessions, drafts, signed transparency
 //! checkpoints and bundles remain later slices of the embedded API described
 //! in `COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md` (§15.2).
@@ -48,6 +52,7 @@ pub mod aging;
 pub mod allocation_review;
 pub mod async_book;
 pub mod balance_allocation;
+pub mod balance_allocation_review;
 pub mod book;
 pub mod certificate;
 mod certificate_store;
@@ -76,6 +81,9 @@ pub use allocation_review::{AllocationReview, AllocationReviewError, MAX_ALLOCAT
 pub use async_book::AsyncBook;
 pub use balance_allocation::{
     BalanceAllocationRequest, MAX_BALANCE_ALLOCATION_CONTRIBUTIONS, PreparedBalanceAllocation,
+};
+pub use balance_allocation_review::{
+    BalanceAllocationReview, MAX_BALANCE_ALLOCATION_REVIEW_BYTES,
 };
 pub use book::{Book, BookError, BookKeys, Entropy, Outcome};
 pub use certificate::{
