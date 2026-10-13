@@ -1223,7 +1223,7 @@ fn period_control_is_admitted_under_close_and_a_lock_needs_a_distinct_human_appr
     assert_eq!((r.code, r.exit), ("FA-REF-010", exit::SAFETY), "{r}");
     assert_eq!(
         r.fix,
-        "date the entry in an Open period; a Locked period admits only Resolution releases"
+        "keep the entry's true effective date; never re-date it to escape the period law: a Locked period admits no posting class in this build, only Resolution releases; a reopen of a Locked period is case-bound and refused in this build; `fa period list --json` shows each period's state"
     );
 }
 

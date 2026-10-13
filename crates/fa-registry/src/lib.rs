@@ -835,20 +835,18 @@ impl Admissibility {
 
     /// Every class a period of `state` admits for one disposition family
     /// (`release` as in [`Self::decide_disposition`]), in class order, with
-    /// the capability op a `with:` cell requires. A refusal's fix names
-    /// exactly these, so it never suggests a class the matrix refuses.
+    /// its decision (`Admit`, or the op and approvals a `with:` cell
+    /// requires). A refusal's fix names only these, so it never suggests a
+    /// class the matrix refuses.
     #[must_use]
-    pub fn admitting(&self, state: PeriodState, release: bool) -> Vec<(&str, Option<String>)> {
+    pub fn admitting(&self, state: PeriodState, release: bool) -> Vec<(&str, Decision)> {
         self.cells
             .keys()
             .filter(|(_, s)| *s == state)
-            .filter_map(
-                |(class, _)| match self.decide_disposition(class, state, release)? {
-                    Decision::Admit => Some((class.as_str(), None)),
-                    Decision::With { op, .. } => Some((class.as_str(), Some(op))),
-                    Decision::Refuse => None,
-                },
-            )
+            .filter_map(|(class, _)| {
+                let decision = self.decide_disposition(class, state, release)?;
+                (decision != Decision::Refuse).then_some((class.as_str(), decision))
+            })
             .collect()
     }
 

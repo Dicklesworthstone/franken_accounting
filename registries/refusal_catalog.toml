@@ -97,7 +97,7 @@ name = "PERIOD_LAW"
 owners = ["fa-journal"]
 exit = "safety"
 cite = "admissibility.toml ({class}, {state})"
-fix = "post in an Open period, or use the class and capability the cell admits"
+fix = "keep the entry's true effective date (never re-date it to escape the period law): use a class the period's state admits, with the op and approvals its cell names; `fa period list --json` shows each period's state"
 
 [[refusal]]
 code = "FA-REF-011"

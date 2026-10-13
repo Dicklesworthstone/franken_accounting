@@ -762,7 +762,7 @@ fn closed_period_refuses_originals_and_admits_an_exact_reversal_under_post_close
     // (fa-l93 D8), each with the op its cell requires.
     assert_eq!(
         r.fix,
-        "post in an Open period, or use a class a Closed period admits: Adjusting (with post_closed), Resolution (with post_closed), Reversal (with post_closed)"
+        "keep the entry's true effective date; never re-date it to escape the period law: a Closed period admits Adjusting (with `post_closed` and 1 approval), Reversal (with `post_closed`); a reopen of a Closed period is case-bound and refused in this build; `fa period list --json` shows each period's state"
     );
 
     // Reversal in a Closed period: needs post_closed.

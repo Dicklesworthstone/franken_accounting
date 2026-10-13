@@ -1247,7 +1247,7 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
             format!(
                 "plan §7.2, Appendix C (admissibility.toml kind {born:?}: Historical periods admit only Migration)"
             ),
-            "post this entry in a live period at or after the book's opening date; legacy history enters through a MigrationRun",
+            "keep the entry's true effective date; history dated before the book's opening date enters only through a MigrationRun (plan §8.6), never by re-dating it into a live period",
         )));
     }
     // 5''. A special period before the book's opening date (the registered
@@ -1275,7 +1275,7 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
                 rule.admits.join(", ")
             ),
             rule.cite.clone(),
-            "post this entry in a live period at or after the book's opening date; legacy history enters through a MigrationRun",
+            "keep the entry's true effective date; history dated before the book's opening date enters only through a MigrationRun (plan §8.6), never by re-dating it into a live period",
         )));
     }
     if let Some(rule) = matrix.special_period_rule(born)
@@ -1329,7 +1329,7 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
                     ),
                     cell,
                     format!(
-                        "obtain `{op}` from the book's steward, or post an Original in an Open period"
+                        "keep the entry's true effective date and obtain `{op}` from the book's steward (embedded posture: `--grant {op}`); never re-date an entry to escape the period law"
                     ),
                 )));
             }
@@ -1344,49 +1344,70 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
                 )
             } else if matches!(resolution, Some((_, Disposition::Posts { .. }))) {
                 format!(
-                    "a {} period admits only a release: resolve with Voids, or post the sub-vector dated in an Open period",
+                    "a {} period admits only a release of the hold: resolve it with Voids; a Posts resolution carries the date it actually posts, never one chosen to escape the period law",
                     state.name()
                 )
             } else {
-                // Name what the matrix admits in this state, never a class
-                // it refuses there (a Locked period admits no posting class;
-                // fa-l93 D8).
-                // Only classes this slice posts, and never Migration, which
-                // reaches only its own run's periods.
-                let postable = |class: &str| {
+                // Lawful routes only (doctrine: never re-date an entry to
+                // escape the period law; rulings 3397/3408, fa-l93 D8): the
+                // classes this state's cells admit that this slice posts,
+                // without case-bound cells (refused in this build), Migration
+                // (its run's periods only) and Resolution (its own route).
+                let posted = |class: &str| {
                     class != "Migration" && POSTED_CLASSES.iter().any(|c| c.name() == Some(class))
                 };
                 let postings: Vec<String> = matrix
                     .admitting(state, false)
                     .into_iter()
-                    .filter(|(class, _)| postable(class))
-                    .map(|(class, op)| match op {
-                        None => class.to_string(),
-                        Some(op) => format!("{class} (with {op})"),
+                    .filter(|(class, _)| {
+                        posted(class)
+                            && *class != "Resolution"
+                            && matrix.note(class, state) != Some("case")
+                    })
+                    .map(|(class, decision)| match decision {
+                        Decision::With { op, approvals: 0 } => format!("{class} (with `{op}`)"),
+                        Decision::With { op, approvals: 1 } => {
+                            format!("{class} (with `{op}` and 1 approval)")
+                        }
+                        Decision::With { op, approvals } => {
+                            format!("{class} (with `{op}` and {approvals} approvals)")
+                        }
+                        Decision::Admit | Decision::Refuse => class.to_string(),
                     })
                     .collect();
                 let releases: Vec<String> = matrix
                     .admitting(state, true)
                     .into_iter()
-                    .filter(|(class, _)| postable(class))
+                    .filter(|(class, _)| posted(class))
                     .map(|(class, _)| format!("{class} releases"))
                     .collect();
-                match (postings.is_empty(), releases.is_empty()) {
-                    (false, _) => format!(
-                        "post in an Open period, or use a class a {} period admits: {}",
-                        state.name(),
-                        postings.join(", ")
-                    ),
-                    (true, false) => format!(
-                        "date the entry in an Open period; a {} period admits only {}",
-                        state.name(),
-                        releases.join(", ")
-                    ),
-                    (true, true) => format!(
-                        "date the entry in an Open period; a {} period admits no entry",
-                        state.name()
-                    ),
+                let name = state.name();
+                let mut fix = format!(
+                    "keep the entry's true effective date; never re-date it to escape the period law: {}",
+                    match (postings.is_empty(), releases.is_empty()) {
+                        (false, _) => format!("a {name} period admits {}", postings.join(", ")),
+                        (true, false) => format!(
+                            "a {name} period admits no posting class in this build, only {}",
+                            releases.join(", ")
+                        ),
+                        (true, true) => format!("a {name} period admits no entry in this build"),
+                    }
+                );
+                if is_reversal {
+                    fix.push_str(
+                        "; a Reversal may instead be dated in the next Open period (Appendix B Reverse)",
+                    );
                 }
+                if matches!(
+                    state,
+                    fa_time::PeriodState::Closed | fa_time::PeriodState::Locked
+                ) {
+                    fix.push_str(&format!(
+                        "; a reopen of a {name} period is case-bound and refused in this build"
+                    ));
+                }
+                fix.push_str("; `fa period list --json` shows each period's state");
+                fix
             };
             return Ok(Err(Refusal::new(
                 code::PERIOD_LAW,
