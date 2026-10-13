@@ -25,6 +25,9 @@
 //! committed from an authenticated portable plan under current authority.
 //! Their graph certificates are retained atomically with the resulting entry;
 //! this slice requires an unchanged book sequence and existing approvals.
+//! Explicit receivable/payable allocations can be prepared for approval and
+//! rehearsed through that same kernel with [`SettlementPostRequest`]. The
+//! unchanged portable plan supports atomic publication and exact retries.
 //! Sessions, drafts, signed transparency
 //! checkpoints and bundles remain later slices of the embedded API described
 //! in `COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md` (§15.2).
@@ -37,6 +40,7 @@ pub mod book;
 pub mod certificate;
 mod certificate_store;
 pub mod proof;
+pub mod settlement;
 pub mod statement_diff;
 pub mod statements;
 pub mod summary;
@@ -65,6 +69,7 @@ pub use fa_statements::{
     StatementLine,
 };
 pub use proof::{MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest};
+pub use settlement::{PreparedSettlement, SettlementPostPlan, SettlementPostRequest};
 pub use statement_diff::{StatementDiff, StatementDiffRequest, StatementLineChange, StatementMappingChange};
 pub use statements::{CertifiedStatement, StatementSelection};
 pub use summary::{SummaryGroup, SummaryRequest, SummaryScope, SummaryTrialBalance};
