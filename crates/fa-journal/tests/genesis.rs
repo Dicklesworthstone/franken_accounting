@@ -5587,6 +5587,69 @@ impl Harness {
     }
 }
 
+/// fa-llx: `commit_plan` admits only whole-book tokens, so a token with a
+/// scope caveat is refused a plan up front, even for an entry its caveat
+/// admits, and nothing is written.
+#[test]
+fn a_scoped_token_is_refused_a_plan_it_could_never_commit() {
+    let mut h = harness();
+    let proposal = h.proposal(h.rent_legs(12_345), b"scoped-plan", EntryClass::ORIGINAL);
+    let mut request = h.request(proposal.clone(), &["post"]);
+    request.capability = Capability::embedded(PRINCIPAL, &["post"])
+        .unwrap()
+        .for_periods(&[h.march.as_str()])
+        .unwrap();
+    let basis = h.db.frontier().unwrap();
+    let before_vertices = h.db.vertices().unwrap();
+    let refusal = h.post_plan(request).unwrap_err();
+    assert_eq!(refusal.code, "FA-REF-011");
+    assert!(
+        refusal
+            .message
+            .starts_with("the capability's `periods` caveat"),
+        "{}",
+        refusal.message
+    );
+    assert_eq!(h.db.frontier().unwrap(), basis);
+    assert_eq!(h.db.vertices().unwrap(), before_vertices);
+    h.post_plan(h.request(proposal, &["post"]))
+        .expect("the same intent plans under a whole-book token");
+}
+
+/// fa-llx: a plan made under a whole-book token and presented with a scoped
+/// token is refused by `commit_plan`'s whole-book admission; nothing is
+/// recorded, and the planning token still commits it.
+#[test]
+fn a_scoped_token_cannot_commit_a_whole_book_plan() {
+    let mut h = harness();
+    let proposal = h.proposal(h.rent_legs(12_345), b"scoped-commit", EntryClass::ORIGINAL);
+    let plan = h
+        .post_plan(h.request(proposal, &["post"]))
+        .expect("whole-book plan");
+    let scoped = Capability::embedded(PRINCIPAL, &["post"])
+        .unwrap()
+        .for_periods(&[h.march.as_str()])
+        .unwrap();
+    let basis = h.db.frontier().unwrap();
+    let refusal = h.publish_plan(plan.clone(), &scoped).unwrap_err();
+    assert_eq!(refusal.code, "FA-REF-011");
+    assert!(
+        refusal
+            .message
+            .starts_with("the capability's `periods` caveat"),
+        "{}",
+        refusal.message
+    );
+    assert_eq!(h.db.frontier().unwrap(), basis, "nothing is recorded");
+    let cvid = plan_certificate_vid(h.book.book_id, &plan.certificate().digest().unwrap());
+    assert!(h.db.vertex(cvid).unwrap().is_none());
+    let whole = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let posted = h
+        .publish_plan(plan, &whole)
+        .expect("the planning token commits it");
+    assert_eq!(posted.recorded_at().0, basis.0 + 1);
+}
+
 #[test]
 fn portable_post_plan_is_zero_write_and_retains_exact_evidence_with_its_entry() {
     let mut h = harness();

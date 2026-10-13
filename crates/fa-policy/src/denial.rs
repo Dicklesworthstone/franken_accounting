@@ -391,9 +391,15 @@ impl Denial {
                 "activate the policy this build enforces ({}, `fa capabilities --json` capability.policy_oid); different rules need a build that embeds them",
                 hex(enforced)
             ),
-            Self::OutOfScope { caveat, .. } => format!(
-                "use a capability whose `{caveat}` caveat names this target"
-            ),
+            Self::OutOfScope { caveat, .. } => match *caveat {
+                "known_at" => "select a recorded frontier at or below the pin (--as-known-at <seq>); a pinned capability reads and never writes".into(),
+                "branch" => "act on the branch the capability names; drafts land with fa-s7x, so a branch-confined capability cannot act on trunk in this build".into(),
+                "accounts" => "name only accounts inside the capability's subtrees; an act on the whole book (a tick, sweep, approval, attestation, checkpoint or full fold) needs a capability without an `accounts` caveat".into(),
+                "periods" | "effective" => format!(
+                    "name only periods and effective dates inside the capability's `{caveat}` caveat; an act on the whole book needs a capability without one"
+                ),
+                _ => format!("use a capability whose `{caveat}` caveat names this target"),
+            },
             Self::Revoked { .. } => {
                 "obtain a fresh capability from the book's steward; a revoked token is never reinstated".into()
             }
