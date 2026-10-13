@@ -358,3 +358,5 @@ fn large_native_amounts_remain_exact_across_transport_and_resume() {
     h.runtime.block_on(h.book.commit_settlement_group_plan(&cx, plan, &cap())).unwrap().unwrap();
     assert_eq!(h.open(invoice, 0), 2);
 }
+
+mod approval;

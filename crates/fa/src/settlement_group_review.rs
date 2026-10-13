@@ -261,6 +261,7 @@ impl SettlementGroupReview {
     }
 }
 
+mod approval;
 mod resume;
 
 #[cfg(test)]
