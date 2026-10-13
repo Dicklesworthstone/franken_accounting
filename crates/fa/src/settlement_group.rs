@@ -4,10 +4,11 @@
 //! Target sets must be disjoint, including unused targets: independent advice
 //! must never reserve the same open amount twice. This is not a multi-entry
 //! batch, implicit party matching, currency conversion or a balancing rule.
-//! The existing single-leg preparer resolves each selection at the same basis;
+//! One authoritative open-item fold resolves every selection at the same basis;
 //! the ordinary posting kernel judges the complete combined entry atomically.
 
 mod review;
+mod snapshot;
 
 use std::collections::BTreeSet;
 
@@ -21,10 +22,13 @@ use fa_registers::open_items::SettlementPlan;
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CommitSeq, VId};
 
-use crate::{AsyncBook, BookError, Outcome, SettlementPostRequest};
+use crate::{AsyncBook, BookError, Outcome};
 
-/// Facade work bound, not a change to the model's posting-arity law. Every
-/// selection refolds the authoritative report; refuse rather than truncate.
+#[cfg(test)]
+use crate::SettlementPostRequest;
+
+/// Facade work bound, not a change to the model's posting-arity law. One
+/// shared snapshot supplies every selection; refuse rather than truncate.
 pub const MAX_SETTLEMENT_GROUP_LEGS: usize = 64;
 /// Aggregate eligible targets, including those receiving zero allocation.
 /// Each applying leg also retains the model's MAX_SETTLES_PER_LEG bound.
@@ -170,8 +174,8 @@ fn normalize(mut request: SettlementGroupRequest) -> Result<SettlementGroupReque
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// Prepare all selected legs without writing. Every selection validates
-    /// every target, including exhausted/unused targets, through the existing
-    /// authoritative preparer. A failure returns no partial preparation.
+    /// every target, including exhausted/unused targets, from one authoritative
+    /// report and shared payload cache. A failure returns no partial preparation.
     /// Permissions cover the FULL entry, not only each selected leg's amount.
     pub fn prepare_settlement_group(
         &self,
@@ -194,40 +198,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(request) => request,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let mut proposal = request.proposal.clone();
-        let mut allocations = Vec::with_capacity(request.payments.len());
-        let mut known_at = None;
-        for selection in &request.payments {
-            query.checkpoint().map_err(BookError::Context)?;
-            // Always start from the same EMPTY-settles original, never a
-            // partly modified entry. No intermediate proposal is published.
-            let part = match self.prepare_settlement(cx, SettlementPostRequest {
-                proposal: request.proposal.clone(),
-                payment_leg: selection.payment_leg,
-                targets: selection.targets.clone(),
-            }, capability)? {
-                Ok(part) => part,
-                Err(refusal) => return Ok(Err(refusal)),
-            };
-            let at = part.allocation().known_at;
-            if known_at.is_some_and(|basis| basis != at) {
-                return Ok(Err(invalidated("the group selections observed different book sequences")));
-            }
-            known_at = Some(at);
-            let ordinal = usize::from(selection.payment_leg);
-            proposal.legs[ordinal].settles = part.proposal().legs[ordinal].settles.clone();
-            allocations.push(SettlementLegAllocation {
-                payment_leg: selection.payment_leg, allocation: part.allocation().clone(),
-            });
-        }
-        if let Err(error) = proposal.validate() {
-            return Ok(Err(invalid(error.to_string())));
-        }
-        let Some(known_at) = known_at else {
-            return Ok(Err(invalid("no settlement selection was prepared")));
-        };
-        query.checkpoint().map_err(BookError::Context)?;
-        Ok(Ok(PreparedSettlementGroup { request, proposal, allocations, known_at }))
+        self.prepare_settlement_group_snapshot(cx, request, capability)
     }
 
     /// Convenience preparation plus rehearsal. Supplied approvals must bind
