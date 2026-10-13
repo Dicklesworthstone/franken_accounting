@@ -37,9 +37,11 @@ use std::collections::BTreeSet;
 use fa_model::symbols::{label, property};
 use fa_model::{Id128, Writer, domain_digest};
 use fgdb::{Database, WriteBatch, WriteMismatchPolicy, WriteTxnError};
-use fgdb_delta_types::{DeltaRow, ElementId, LabelId, LogicalDeltaBatch, PropertyKeyId};
+use fgdb_delta_types::{
+    DeltaRow, ElementId, LabelId, LogicalDeltaBatch, PropertyKeyId, RelationId,
+};
 use fgdb_types::context::PurposeContexts;
-use fgdb_types::{CommitSeq, EId, VId};
+use fgdb_types::{CanonicalScalar, CommitSeq, EId, VId};
 
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 
@@ -167,14 +169,26 @@ fn unsupported(seq: CommitSeq, what: &str) -> Refusal {
     )
 }
 
-/// The replayable part of one source commit: its rows minus maintenance,
-/// as per-relation batches in the source's order (empty when the commit was
-/// only maintenance).
+/// One replayed create, with its coordinate's relation.
+enum Create {
+    Vertex(VId, Vec<LabelId>, Vec<(PropertyKeyId, CanonicalScalar)>),
+    Edge(EId, VId, VId, Vec<(PropertyKeyId, CanonicalScalar)>),
+}
+
+/// The replayable part of one source commit: its rows minus maintenance
+/// (empty when the commit was only maintenance). The creates come first, in
+/// the source's birth order: the substrate allocates birth ordinals as
+/// statements stage, while a delta batch lists rows per coordinate in
+/// canonical order, so replaying coordinate by coordinate would allocate the
+/// same elements in a different order (the book root, born first, would be
+/// born after the genesis unit table). Every other row follows, per
+/// relation, in the batch's order; each names an element that exists by then.
 pub fn replayable(
     batch: &LogicalDeltaBatch,
     maintenance: &mut Maintenance,
 ) -> Result<Vec<WriteBatch>, Refusal> {
     let seq = batch.commit_seq();
+    let mut creates: Vec<(u64, RelationId, Create)> = Vec::new();
     let mut out = Vec::new();
     for entry in batch.coordinate_entries() {
         let mut w = WriteBatch::new(entry.relation);
@@ -182,10 +196,10 @@ pub fn replayable(
             match row {
                 DeltaRow::CreateVertex {
                     vid,
+                    birth_ordinal,
                     labels,
                     props,
                     valid_time,
-                    ..
                 } => {
                     if valid_time.is_some() {
                         return Err(unsupported(seq, "a valid-time vertex"));
@@ -194,10 +208,15 @@ pub fn replayable(
                         maintenance.vertices.insert(*vid);
                         continue;
                     }
-                    w.create_vertex(*vid, labels.clone(), props.clone());
+                    creates.push((
+                        *birth_ordinal,
+                        entry.relation,
+                        Create::Vertex(*vid, labels.clone(), props.clone()),
+                    ));
                 }
                 DeltaRow::CreateEdge {
                     eid,
+                    birth_ordinal,
                     src,
                     dst,
                     canonical_key,
@@ -212,7 +231,11 @@ pub fn replayable(
                         maintenance.edges.insert(*eid);
                         continue;
                     }
-                    w.add_edge(*eid, *src, *dst, props.clone());
+                    creates.push((
+                        *birth_ordinal,
+                        entry.relation,
+                        Create::Edge(*eid, *src, *dst, props.clone()),
+                    ));
                 }
                 DeltaRow::Property {
                     elem,
@@ -289,7 +312,35 @@ pub fn replayable(
             out.push(w);
         }
     }
-    Ok(out)
+    // Vertices and edges share one birth counter, so the source's order also
+    // creates every endpoint before its edges.
+    creates.sort_by_key(|(ordinal, ..)| *ordinal);
+    let mut staged: Vec<WriteBatch> = Vec::new();
+    let mut current: Option<(RelationId, WriteBatch)> = None;
+    for (_, relation, create) in creates {
+        if current.as_ref().is_none_or(|(r, _)| *r != relation) {
+            if let Some((_, done)) = current.take() {
+                staged.push(done);
+            }
+            current = Some((relation, WriteBatch::new(relation)));
+        }
+        let Some((_, w)) = current.as_mut() else {
+            continue;
+        };
+        match create {
+            Create::Vertex(vid, labels, props) => {
+                w.create_vertex(vid, labels, props);
+            }
+            Create::Edge(eid, src, dst, props) => {
+                w.add_edge(eid, src, dst, props);
+            }
+        }
+    }
+    if let Some((_, done)) = current {
+        staged.push(done);
+    }
+    staged.extend(out);
+    Ok(staged)
 }
 
 /// Make the source's whole committed history readable (a checkpoint-opened
