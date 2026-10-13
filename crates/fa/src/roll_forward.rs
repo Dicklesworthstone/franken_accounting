@@ -3,8 +3,15 @@
 //! Opening stock, posted movements and closing stock share one recorded
 //! prefix. The register fold's migration visibility predicate is reused;
 //! current chart and mutable leg/register mirrors are not source authority.
-//! This embedded read returns exact arithmetic and entry citations, NOT a
-//! retained certificate or an outsider completeness/authorization proof.
+//! The plain read returns exact arithmetic and entry citations. Certification
+//! additionally binds native history for replay, not outsider authorization.
+
+mod certificate;
+
+pub use certificate::{
+    CertifiedRollForward, MAX_ROLL_FORWARD_CERTIFICATE_BYTES, ROLL_FORWARD_CERTIFICATE_FORMAT,
+    RollForwardCertificate,
+};
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -229,6 +236,8 @@ fn as_account(account: &AccountRow) -> Account {
 
 #[cfg(test)]
 mod tests {
+    mod certification;
+
     use super::*;
     use std::path::Path;
     use asupersync::runtime::{Runtime, RuntimeBuilder};
@@ -248,6 +257,7 @@ mod tests {
         runtime: Runtime,
         root: Cx,
         book: AsyncBook<MemVfs>,
+        vfs: MemVfs,
         usd: UnitId,
         jpy: UnitId,
         evidence: Vec<EvidenceRef>,
@@ -269,7 +279,7 @@ mod tests {
             };
             let vfs = cx.commit().with_restriction(MemVfs::new).unwrap();
             let mut book = runtime.block_on(AsyncBook::create_with_vfs(
-                &cx, vfs, Path::new("roll-forward-book"), BookKeys::for_development(113),
+                &cx, vfs.clone(), Path::new("roll-forward-book"), BookKeys::for_development(113),
                 spec, Entropy::deterministic(113),
             )).unwrap();
             let accounts: Vec<_> = [("1000", AccountType::ASSET), ("3000", AccountType::EQUITY),
@@ -286,7 +296,7 @@ mod tests {
             let doc = Document { book_id, kind: 1, mime: "text/plain".into(), grade: 3,
                 retrieved_by: PRINCIPAL, bytes: b"Admitted lead schedule evidence".to_vec() };
             runtime.block_on(book.add_document(&cx, &doc)).unwrap().unwrap();
-            Self { runtime, root, book, usd, jpy, evidence: vec![doc.evidence_ref(1)] }
+            Self { runtime, root, book, vfs, usd, jpy, evidence: vec![doc.evidence_ref(1)] }
         }
         fn cx(&self) -> PurposeContexts { PurposeContexts::narrow_runtime_root(&self.root) }
         fn id(&self, code: &str) -> VId { account_vid(self.book.context().book_id, code) }
