@@ -2,6 +2,8 @@
 //! Parsing completes before any input file is opened. A successful report
 //! contains metadata only; neither stdout nor diagnostics dump source bytes.
 
+mod view;
+
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -15,8 +17,13 @@ const HELP: &str = "Usage:
   fa-verify document --proof DISCLOSURE --entry-proof INCLUSION --checkpoint TRUSTED_FILE \\
     --expect-entry HEX64 --expect-document HEX64 --expect-role U8 --chunks 0,4 [--json]
 
-DISCLOSURE is raw fa:document-disclosure:v1, not a kernel RedactedView or a
-bundle. --chunks is the recipient's exact nonempty, strictly increasing
+In journal-authenticated mode, replace --proof DISCLOSURE with --view VIEW
+to check a raw kernel RedactedView v1. The two options are mutually exclusive;
+--view requires the journal anchor, never --document-commit.
+
+DISCLOSURE is raw fa:document-disclosure:v1; VIEW is raw RedactedView v1,
+not a bundle. Views have a 64 MiB document bound plus canonical framing.
+View chunk indices must be below 16384; compact proofs retain u64 indices. --chunks is the recipient's exact nonempty, strictly increasing
 comma-separated decimal request. No requested index is inferred from input.
 
 Choose exactly ONE trust mode:
@@ -35,7 +42,10 @@ The report distinguishes journal inclusion from document membership_only.
 It never prints document bytes or claims signature verification, authority
 to disclose, provenance, truth of the citation role, accounting correctness,
 redaction-policy compliance or complete production of evidence.
-Each proof file is bounded to 64 MiB. No book, keys or network are needed.
+Compact and inclusion proofs are bounded to 64 MiB; the view bound also
+includes framing. A view's locator must match the authenticated citation;
+its contract and computed view digest are not independently authenticated.
+No book, keys or network are needed.
 Exit codes: 0 verified/help; 2 usage; 5 file/output I/O; 8 verification failed.";
 
 enum Anchor {
@@ -47,8 +57,15 @@ enum Anchor {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DisclosureKind {
+    Compact,
+    View,
+}
+
 struct Request {
     proof: PathBuf,
+    kind: DisclosureKind,
     anchor: Anchor,
     indexes: Vec<u64>,
 }
@@ -112,7 +129,7 @@ fn required<'a>(value: Option<&'a OsString>, name: &str) -> Result<&'a OsString,
 }
 
 fn parse(args: &[OsString]) -> Result<Request, Failure> {
-    let (mut proof, mut commitment, mut requested) = (None, None, None);
+    let (mut proof, mut view, mut commitment, mut requested) = (None, None, None, None);
     let (mut entry_proof, mut checkpoint) = (None, None);
     let (mut entry, mut document, mut expected_role) = (None, None, None);
     let mut json = false;
@@ -128,6 +145,7 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
         }
         let (name, slot) = match argument.to_str() {
             Some("--proof") => ("--proof", &mut proof),
+            Some("--view") => ("--view", &mut view),
             Some("--document-commit") => ("--document-commit", &mut commitment),
             Some("--chunks") => ("--chunks", &mut requested),
             Some("--entry-proof") => ("--entry-proof", &mut entry_proof),
@@ -152,7 +170,11 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
         *slot = Some(value);
         index += 2;
     }
-    let proof = PathBuf::from(proof.ok_or_else(|| Failure::usage("--proof is required"))?);
+    let (proof, kind) = match (proof, view) {
+        (Some(path), None) => (PathBuf::from(path), DisclosureKind::Compact),
+        (None, Some(path)) => (PathBuf::from(path), DisclosureKind::View),
+        _ => return Err(Failure::usage("supply exactly one of --proof or --view")),
+    };
     let requested = requested.ok_or_else(|| Failure::usage(
         "--chunks is required; specify the recipient's exact request, never infer it from the proof"
     ))?;
@@ -179,7 +201,16 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
             },
         },
     };
-    Ok(Request { proof, anchor, indexes })
+    if kind == DisclosureKind::View {
+        if !matches!(&anchor, Anchor::Entry { .. }) {
+            return Err(Failure::usage("--view requires journal-authenticated evidence options"));
+        }
+        // Compact proofs can sparsely name u64 indices. Only the complete
+        // kernel-view format inherits the shipped kernel's document bound.
+        evidence::validate_request(&indexes)
+            .map_err(|error| Failure::usage(error.to_string()))?;
+    }
+    Ok(Request { proof, kind, anchor, indexes })
 }
 
 pub(super) fn run(args: &[OsString], json: bool) -> Result<String, Failure> {
@@ -194,6 +225,11 @@ pub(super) fn run(args: &[OsString], json: bool) -> Result<String, Failure> {
         Anchor::Entry { proof, checkpoint, expected } => {
             let checkpoint = read_checkpoint(checkpoint)?;
             let entry_proof = read_bounded(proof, evidence::MAX_PROOF_BYTES)?;
+            if request.kind == DisclosureKind::View {
+                return view::run(
+                    &request.proof, &entry_proof, &checkpoint, expected, &request.indexes, json,
+                );
+            }
             let disclosure = read_bounded(&request.proof, disclosure::MAX_PROOF_BYTES)?;
             let report = evidence::verify_evidence_disclosure_for(
                 &entry_proof, &disclosure, &checkpoint, expected, &request.indexes,
@@ -394,4 +430,37 @@ mod tests {
             assert!(role(&OsString::from(value)).is_ok());
         }
     }
+
+    #[test]
+    fn view_mode_requires_one_artifact_and_journal_authority_before_io() {
+        let mut args = journal_args();
+        args[1] = "--view".into();
+        assert_eq!(parse(&args).unwrap_or_else(|e| panic!("{}", e.message)).kind, DisclosureKind::View);
+        for extra in [vec!["--proof", "other"], vec!["--view", "other"],
+            vec!["--document-commit", "other"]]
+        {
+            let mut invalid = args.clone();
+            invalid.extend(extra.into_iter().map(OsString::from));
+            assert_eq!(run(&invalid, true).err().expect("usage before missing files").exit, 2);
+        }
+        let direct = ["document", "--view", "absent", "--document-commit", "absent", "--chunks", "0"]
+            .map(OsString::from);
+        assert_eq!(run(&direct, true).err().expect("no anchor fallback").exit, 2);
+    }
+
+    #[test]
+    fn view_request_bounds_do_not_weaken_sparse_compact_requests() {
+        let mut args = journal_args();
+        args[1] = "--view".into();
+        args[4] = "16383".into();
+        assert!(parse(&args).is_ok());
+        for value in ["16384", "18446744073709551615"] {
+            args[4] = value.into();
+            assert_eq!(run(&args, true).err().expect("view usage bound").exit, 2);
+            args[1] = "--proof".into();
+            assert!(parse(&args).is_ok(), "compact sparse index {value}");
+            args[1] = "--view".into();
+        }
+    }
+
 }
