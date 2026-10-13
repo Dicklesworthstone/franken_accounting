@@ -195,6 +195,15 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
         let listener = UnixListener::bind(&socket)
             .await
             .map_err(|e| format!("bind {}: {e}", socket.display()))?;
+        // Only the daemon's own user may connect (fa-een): connecting to a
+        // Unix socket needs write permission on it, so 0600 keeps every
+        // other user from sending any request, `stop` included. The daemon
+        // refuses to serve a socket it could not restrict.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| format!("restrict {} to its owner: {e}", socket.display()))?;
+        }
         let mut serving = vec![
             ("book_id", s(&book_id)),
             ("dir", s(dir.display().to_string())),

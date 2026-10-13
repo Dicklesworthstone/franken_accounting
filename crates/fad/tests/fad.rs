@@ -262,6 +262,16 @@ fn one_daemon_per_book_and_fa_gets_byte_identical_answers_through_it() {
 
     let daemon = start(&book);
     assert_eq!(field(&daemon.serving, "dir"), Some(b.as_str()));
+    // fa-een: only the daemon's own user can connect (and so `stop` it).
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let socket = field(&daemon.serving, "socket").expect("socket path");
+        let mode = std::fs::metadata(socket)
+            .expect("socket metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "socket mode {mode:o}");
+    }
     assert_eq!(field(&daemon.serving, "timed_work_enabled"), Some("false"));
     assert_eq!(field(&daemon.serving, "timed_authority"), Some("null"));
     // A second daemon for the same book is refused: the lease is held.
