@@ -23,6 +23,8 @@ use fgdb_types::{CommitSeq, VId};
 use super::{AgingAmounts, AgingBuckets, EffectiveDateAging, MAX_AGING_BUCKET_BOUNDS};
 use crate::{AsyncBook, BookError, Outcome};
 
+pub mod portfolio;
+
 mod certificate;
 pub use certificate::{
     AgingReconciliationCertificate, CertifiedAgingReconciliation, MAX_AGING_RECONCILIATION_BYTES,

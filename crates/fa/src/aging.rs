@@ -15,6 +15,7 @@ pub use certificate::{
 };
 
 mod reconciliation;
+pub use reconciliation::portfolio;
 pub use reconciliation::{
     AgingReconciliation, AgingReconciliationCertificate, AgingReconciliationRequest,
     AgingReconciliationRow, CertifiedAgingReconciliation, MAX_AGING_RECONCILIATION_BYTES,
