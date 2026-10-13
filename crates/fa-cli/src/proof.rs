@@ -12,7 +12,7 @@ use crate::args::Args;
 use crate::cli::{Ctx, Fail, hex, usage};
 use crate::json::{Json, obj, s};
 
-const EXAMPLE: &str = "fa proof checkpoint|inclusion|consistency|prefix|balance --state <oid|latest> [--out <new-file>] --json";
+const EXAMPLE: &str = "fa proof signed-checkpoint|checkpoint|inclusion|consistency|prefix|balance --state <oid|latest> [--out <new-file>] --json";
 
 fn fixed_hex<const N: usize>(text: &str, what: &str) -> Result<[u8; N], Fail> {
     if text.len() != N * 2 || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -22,7 +22,7 @@ fn fixed_hex<const N: usize>(text: &str, what: &str) -> Result<[u8; N], Fail> {
         ));
     }
     let mut result = [0; N];
-    for (byte, pair) in result.iter_mut().zip(text.as_bytes().chunks_exact(2)) {
+    for (byte, pair) in result.iter_mut().zip(text.as_bytes().as_chunks::<2>().0) {
         let pair = std::str::from_utf8(pair)
             .map_err(|_| usage(format!("invalid {what} hexadecimal input"), EXAMPLE))?;
         *byte = u8::from_str_radix(pair, 16)
@@ -70,7 +70,7 @@ pub(crate) fn proof_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         return Err(usage("proof takes --with-record only once", EXAMPLE));
     }
     let applicable: &[&str] = match kind {
-        "checkpoint" | "prefix" => &[],
+        "signed-checkpoint" | "checkpoint" | "prefix" => &[],
         "inclusion" => &["--entry"],
         "consistency" => &["--next-state"],
         "balance" => &["--account", "--unit", "--as-of"],
@@ -148,6 +148,7 @@ pub(crate) fn proof_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let book = ctx.books.open(args)?;
     let proof_kind = match kind {
         "checkpoint" => ProofKind::Checkpoint,
+        "signed-checkpoint" => ProofKind::SignedCheckpoint,
         "prefix" => ProofKind::Prefix,
         "inclusion" => ProofKind::Inclusion {
             entry: entry.ok_or_else(|| usage("--entry is required", EXAMPLE))?,
@@ -245,8 +246,19 @@ pub(crate) fn proof_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ctx.out.effective(format!("as-of:{day}"));
     }
     let encoded = output.is_none().then(|| hex(&artifact.bytes));
+    let public_key = hex(&book.checkpoint_public_key());
+    let signed = matches!(proof_kind, ProofKind::SignedCheckpoint);
+    let trust_note = if signed {
+        format!(
+            "This is the signed TransparencyCheckpoint; check it with `fa-verify checkpoint <file> --key {public_key}`, and judge proofs against it with `--checkpoint <file> --key {public_key}`."
+        )
+    } else {
+        format!(
+            "Judge it against the state's signed checkpoint (`fa proof signed-checkpoint`) with `--key {public_key}`, or against the raw statement with `--unsigned-checkpoint` once you trust that statement independently."
+        )
+    };
     let human = format!(
-        "Exported {} (scope: {}) from unsigned checkpoint {} through sequence {}: {} bytes{}.\nEstablish trust in the checkpoint separately before using fa-verify.{}",
+        "Exported {} (scope: {}) from checkpoint {} through sequence {}: {} bytes{}.\n{trust_note}{}",
         proof_kind.name(),
         proof_kind.scope(),
         hex(&state.oid.0),
@@ -284,8 +296,16 @@ pub(crate) fn proof_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     .as_ref()
                     .map_or(Json::Null, |bytes| s(hex(bytes))),
             ),
-            ("signatures", s("unsigned")),
-            ("trust", s("external_checkpoint_required")),
+            ("signatures", s(if signed { "ed25519" } else { "unsigned" })),
+            (
+                "trust",
+                s(if signed {
+                    "checkpoint_public_key"
+                } else {
+                    "external_checkpoint_required"
+                }),
+            ),
+            ("checkpoint_public_key", s(&public_key)),
             ("claim", claim),
             ("byte_len", Json::Int(artifact.bytes.len() as i128)),
             ("bytes", encoded.as_ref().map_or(Json::Null, s)),

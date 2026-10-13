@@ -1,4 +1,4 @@
-//! Real persisted-book coverage for the unsigned entry accumulator (fa-l3c).
+//! Real persisted-book coverage for the entry accumulator and its signed checkpoints (fa-l3c).
 
 #![forbid(unsafe_code)]
 
@@ -104,7 +104,9 @@ fn checkpoints_and_verification_survive_reopen_and_include_later_postings() {
         &["checkpoint", "create", "--grant", "witness", "--json"],
     ));
     assert_eq!(text(&first, "event"), "checkpoint_created");
-    assert_eq!(text(&first, "signatures"), "unsigned");
+    assert_eq!(text(&first, "signatures"), "ed25519");
+    assert_eq!(text(&first, "public_key").len(), 64);
+    assert_eq!(text(&first, "checkpoint_oid").len(), 64);
     assert_eq!(text(&first, "scope"), "entry_prefix");
     assert_eq!(integer(&first, "leaf_count"), 0);
     assert_eq!(get(&first, "prev_state_oid"), Some(&Json::Null));
@@ -181,7 +183,7 @@ fn checkpoints_and_verification_survive_reopen_and_include_later_postings() {
     let verified_bytes = ok(&book, &["verify", "accumulator", "--json"]);
     let verified = parsed(&verified_bytes);
     assert_eq!(text(&verified, "status"), "verified");
-    assert_eq!(text(&verified, "signatures"), "unsigned");
+    assert_eq!(text(&verified, "signatures"), "ed25519");
     assert_eq!(text(&verified, "scope"), "entry_prefix");
     assert_eq!(get(&verified, "broken"), Some(&Json::Null));
     assert_eq!(integer(&verified, "states_checked"), 2);
@@ -205,12 +207,12 @@ fn checkpoints_and_verification_survive_reopen_and_include_later_postings() {
     );
     let human = ok(&book, &["verify", "accumulator"]);
     assert!(
-        human.contains("2 checkpoints") && human.contains("unsigned"),
+        human.contains("2 checkpoints") && human.contains("signed checkpoint reproduced"),
         "{human}"
     );
     let human_created = ok(&book, &["checkpoint", "create", "--grant", "witness"]);
     assert!(
-        human_created.contains("unsigned") && human_created.contains("entry"),
+        human_created.contains("Signed TransparencyCheckpoint") && human_created.contains("entry"),
         "{human_created}"
     );
     let after_human = parsed(&ok(&book, &["verify", "accumulator", "--json"]));

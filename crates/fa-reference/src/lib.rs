@@ -735,6 +735,9 @@ pub struct Oracle {
     revoked: BTreeSet<u64>,
     /// The security policy epoch: the number of activations so far.
     epoch: u64,
+    /// True only while the model mints its own scheduled reversal: the one
+    /// path that may cite ScheduledAccrualReversal (fa-cvg).
+    minting_scheduled: bool,
 }
 
 impl Oracle {
@@ -770,6 +773,7 @@ impl Oracle {
             sod,
             revoked: BTreeSet::new(),
             epoch: 0,
+            minting_scheduled: false,
         }
     }
 
@@ -1158,7 +1162,10 @@ impl Oracle {
             resolves: None,
             settles: Vec::new(),
         };
-        match self.post_inner(&intent, None, None, None, None, &PostClaims::default()) {
+        self.minting_scheduled = true;
+        let minted = self.post_inner(&intent, None, None, None, None, &PostClaims::default());
+        self.minting_scheduled = false;
+        match minted {
             Verdict::Posted { index, .. } => {
                 if let Some((_, content)) = self.reversed.get_mut(&target) {
                     content.by_sweep = true;
@@ -1445,7 +1452,8 @@ impl Oracle {
         if !shape_ok
             || intent.key.is_empty()
             || intent.key.len() > 64
-            || intent.legs.iter().any(|l| l.mantissa < 0)
+            // A leg moves a positive amount (plan §4.4): never negative, never zero.
+            || intent.legs.iter().any(|l| l.mantissa <= 0)
         {
             return Verdict::Refused {
                 code: code::STRUCTURE,
@@ -1685,10 +1693,13 @@ impl Oracle {
         if is_reversal {
             let reasons =
                 fa_registry::reason_codes::ReasonCodes::embedded().expect("reason registry");
-            if !reasons
-                .rows
-                .iter()
-                .any(|row| row.scope == "supersession" && row.code == intent.supersession_reason)
+            let reserved = intent.supersession_reason
+                == fa_registry::reason_codes::SCHEDULED_ACCRUAL_REVERSAL
+                && !self.minting_scheduled;
+            if reserved
+                || !reasons.rows.iter().any(|row| {
+                    row.scope == "supersession" && row.code == intent.supersession_reason
+                })
             {
                 return Verdict::Refused {
                     code: code::SUPERSESSION_REASON,

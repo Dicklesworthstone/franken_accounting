@@ -47,7 +47,6 @@
 //! hexadecimal text instead (whitespace ignored), as the golden fixtures
 //! store them.
 
-use crate::verify_balance;
 use crate::blake3::hex;
 use crate::bundle::{BundleReport, BundleScope, Grade, verify_bundle};
 use crate::checkpoint::{SignedCheckpoint, verify_checkpoint};
@@ -58,6 +57,7 @@ use crate::proof::{
 };
 use crate::scope::{IndexDerivation, ScopeClaim, verify_scope};
 use crate::state::verify_state;
+use crate::verify_balance;
 
 /// What a run prints and how it exits.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -152,12 +152,9 @@ const SWITCHES: [&str; 3] = ["--json", "--hex", "--unsigned-checkpoint"];
 fn admitted(command: &str) -> &'static [&'static str] {
     match command {
         "checkpoint" => &["--key"],
-        "inclusion" | "prefix" | "balance" => &[
-            "--proof",
-            "--checkpoint",
-            "--key",
-            "--unsigned-checkpoint",
-        ],
+        "inclusion" | "prefix" | "balance" => {
+            &["--proof", "--checkpoint", "--key", "--unsigned-checkpoint"]
+        }
         // `--unsigned-checkpoint` is admitted only to be refused with the
         // reason: a scope proof rests on the signed scope-index root.
         "scope" => &[
@@ -796,11 +793,7 @@ fn trust(args: &Args) -> Result<Trust, Usage> {
 }
 
 /// The checkpoint file a command names under `flag` (or its `alias`).
-fn checkpoint_path<'a>(
-    args: &'a Args,
-    flag: &str,
-    alias: Option<&str>,
-) -> Result<&'a str, Usage> {
+fn checkpoint_path<'a>(args: &'a Args, flag: &str, alias: Option<&str>) -> Result<&'a str, Usage> {
     let path = match alias {
         Some(alias) => args.either(flag, alias)?,
         None => args.one(flag),
@@ -813,6 +806,10 @@ fn checkpoint_path<'a>(
     })
 }
 
+/// A checkpoint whose anchor check passed, with its signed form when the
+/// caller trusted it through `--key`.
+type Anchored = Option<(Checkpoint, Option<SignedCheckpoint>)>;
+
 /// The checkpoint a proof is judged against: its check, and the checkpoint
 /// itself when that check passed.
 fn anchor(
@@ -821,7 +818,7 @@ fn anchor(
     role: &'static str,
     args: &Args,
     read: Read<'_>,
-) -> Result<(Check, Option<(Checkpoint, Option<SignedCheckpoint>)>), Usage> {
+) -> Result<(Check, Anchored), Usage> {
     let bytes = load(read, path, args.hex)?;
     Ok(match trust {
         Trust::Keys(keys) => {
@@ -850,7 +847,10 @@ fn anchor(
                         s("not_verified_by_consistency"),
                     ));
                 }
-                (Check::pass(role, unsigned_scope(role), detail), Some((cp, None)))
+                (
+                    Check::pass(role, unsigned_scope(role), detail),
+                    Some((cp, None)),
+                )
             }
         },
     })
@@ -868,7 +868,8 @@ fn unsigned_scope(role: &str) -> &'static str {
 
 fn subject<'a>(args: &'a Args, what: &str) -> Result<&'a str, Usage> {
     match (args.positional.as_slice(), args.one("--proof")) {
-        ([one], None) | ([], Some(one)) => Ok(one),
+        ([one], None) => Ok(one.as_str()),
+        ([], Some(one)) => Ok(one),
         ([], None) => Err(usage(
             format!("`{}` needs {what}", args.command),
             format!("fa-verify {} <file> …", args.command),
@@ -1072,27 +1073,24 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
             let trusted_file = checkpoint_path(args, "--trusted", Some("--checkpoint"))?;
             let claimed_file = checkpoint_path(args, "--claimed", Some("--next-checkpoint"))?;
             let trust = trust(args)?;
-            let (trusted_check, trusted) =
-                anchor(&trust, trusted_file, "checkpoint", args, read)?;
+            let (trusted_check, trusted) = anchor(&trust, trusted_file, "checkpoint", args, read)?;
             let (claimed_check, claimed) =
                 anchor(&trust, claimed_file, "claimed_checkpoint", args, read)?;
             let proof = load(read, proof_path, args.hex)?;
             let mut checks = vec![trusted_check, claimed_check];
             if let (Some((t, _)), Some((c, _))) = (&trusted, &claimed) {
-                checks.push(
-                    match verify_consistency(&proof, t, c) {
-                        Err(e) => Check::fail("consistency", "consistency", &e),
-                        Ok(r) => Check::pass(
-                            "consistency",
-                            r.scope,
-                            vec![
-                                ("trusted_leaf_count", n(r.trusted.leaf_count)),
-                                ("extended_leaf_count", n(r.extended.leaf_count)),
-                                ("extended_through_seq", n(r.extended.through_seq)),
-                            ],
-                        ),
-                    },
-                );
+                checks.push(match verify_consistency(&proof, t, c) {
+                    Err(e) => Check::fail("consistency", "consistency", &e),
+                    Ok(r) => Check::pass(
+                        "consistency",
+                        r.scope,
+                        vec![
+                            ("trusted_leaf_count", n(r.trusted.leaf_count)),
+                            ("extended_leaf_count", n(r.extended.leaf_count)),
+                            ("extended_through_seq", n(r.extended.through_seq)),
+                        ],
+                    ),
+                });
             }
             Ok(checks)
         }

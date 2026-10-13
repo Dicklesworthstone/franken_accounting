@@ -1112,6 +1112,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         ) {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
+        // A bundle discloses its scope's entries (every leaf of a Prefix
+        // scope), so producing one also needs whole-book read authority, as
+        // a proof export does: `produce` alone never discloses the journal.
+        if let Err(denial) = fa_policy::admit_read(capability, principal, self.context.book_id) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
         let at = self.head(cx)?;
         if let Err(denial) = fa_policy::current(capability, at) {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
@@ -1179,7 +1185,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         request: crate::ProofRequest,
     ) -> Outcome<crate::ProofArtifact> {
         self.query(cx, |db, book| {
-            crate::proof::export(db, book, principal, capability, request)
+            crate::proof::export(db, cx, book, &self.signer, principal, capability, request)
         })
     }
 

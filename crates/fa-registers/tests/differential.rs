@@ -207,7 +207,8 @@ fn correction_period_order_and_reasons_match_independent_oracle_across_seeds() {
                 Err("FA-REF-053"),
             );
             let chosen_reason = reversal.supersession_reason;
-            for invalid_reason in [0, u16::MAX] {
+            // 12 (ScheduledAccrualReversal) is reserved for the scheduler (fa-cvg).
+            for invalid_reason in [0, 12, u16::MAX] {
                 reversal.supersession_reason = invalid_reason;
                 correction_outcome(
                     &mut kernel,

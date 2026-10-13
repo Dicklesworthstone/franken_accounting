@@ -3486,7 +3486,7 @@ mod tests {
             balances: Vec::new(),
             inline_documents: true,
         };
-        let producer = PolicyCapability::embedded(principal, &["produce"]).unwrap();
+        let producer = PolicyCapability::embedded(principal, &["produce", "read"]).unwrap();
         assert_eq!(
             book.produce_bundle(principal, &producer, None, &request)
                 .unwrap()
@@ -3508,8 +3508,17 @@ mod tests {
                 .unwrap_err();
             assert_eq!((refusal.code, refusal.exit), (code, 7));
         }
+        // `produce` alone never discloses the journal: a Prefix bundle lists
+        // every leaf, so production also needs whole-book read (fa-ku9).
+        let produce_only = PolicyCapability::embedded(principal, &["produce"]).unwrap();
+        let refusal = book
+            .produce_bundle(principal, &produce_only, None, &request)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", 7));
         let agent =
-            PolicyCapability::new(principal, Profile::Agent, &[Op::Produce], VId(1)).unwrap();
+            PolicyCapability::new(principal, Profile::Agent, &[Op::Produce, Op::Read], VId(1))
+                .unwrap();
         let by_agent = book
             .produce_bundle(principal, &agent, None, &request)
             .unwrap()

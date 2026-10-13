@@ -80,8 +80,18 @@ fn exported(book: &Path, args: &[&str]) -> Json {
     let line = ok(book, &argv);
     assert_eq!(text(&line, "event"), "proof_exported");
     assert_eq!(text(&line, "kind"), args[0]);
-    assert_eq!(text(&line, "signatures"), "unsigned");
-    assert_eq!(text(&line, "trust"), "external_checkpoint_required");
+    if args[0] == "signed-checkpoint" {
+        assert_eq!(text(&line, "signatures"), "ed25519");
+        assert_eq!(text(&line, "trust"), "checkpoint_public_key");
+    } else {
+        assert_eq!(text(&line, "signatures"), "unsigned");
+        assert_eq!(text(&line, "trust"), "external_checkpoint_required");
+    }
+    assert_eq!(
+        unhex(text(&line, "checkpoint_public_key")).len(),
+        32,
+        "every export names the book's checkpoint public key"
+    );
     assert_eq!(
         integer(get(&line, "coordinate"), "known_at"),
         integer(&line, "through_seq")
@@ -103,7 +113,9 @@ fn unhex(value: &str) -> Vec<u8> {
     assert_eq!(value.len() % 2, 0, "even hex length");
     value
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             u8::from_str_radix(std::str::from_utf8(pair).expect("ASCII hex"), 16).expect("hex byte")
         })
@@ -219,6 +231,58 @@ impl Fixture {
             &["post", "--intent", &intent, "--evidence", evidence],
         )
     }
+}
+
+/// The signed anchor end to end through the CLI: `fa proof signed-checkpoint`
+/// exports the journaled TransparencyCheckpoint, the independent verifier
+/// checks its signature against the public key every export names, and a
+/// prefix proof is judged against the checkpoint that signature covers. A
+/// flipped byte or another key is refused.
+#[test]
+fn a_signed_checkpoint_export_verifies_against_the_named_public_key() {
+    let f = Fixture::new();
+    let evidence = f.chart_and_evidence();
+    f.post("signed-sale", "2026-03-10", "5.00", &evidence);
+    let created = f.checkpoint();
+    assert_eq!(text(&created, "signatures"), "ed25519");
+    let signed = exported(&f.book, &["signed-checkpoint"]);
+    let key: [u8; 32] = unhex(text(&signed, "checkpoint_public_key"))
+        .try_into()
+        .expect("32-byte key");
+    assert_eq!(
+        text(&created, "public_key"),
+        text(&signed, "checkpoint_public_key")
+    );
+    let verified = fa_verify::verify_checkpoint(&bytes(&signed), &[key])
+        .expect("the book's own key verifies its checkpoint");
+    let raw = Checkpoint::decode(&unhex(text(&signed, "checkpoint_bytes")))
+        .expect("the raw statement of the same state");
+    assert_eq!(
+        verified.checkpoint, raw,
+        "the signature covers this statement"
+    );
+    assert_eq!(
+        fa_verify::blake3::hex(&verified.oid),
+        text(&created, "checkpoint_oid")
+    );
+    let prefix = exported(&f.book, &["prefix"]);
+    let complete = fa_verify::verify_prefix(&bytes(&prefix), &verified.checkpoint)
+        .expect("the prefix proof verifies against the signed anchor");
+    assert_eq!(
+        complete.envelopes.len() as u64,
+        verified.checkpoint.leaf_count
+    );
+
+    let mut flipped = bytes(&signed);
+    let last = flipped.len() - 1;
+    flipped[last] ^= 1;
+    assert!(fa_verify::verify_checkpoint(&flipped, &[key]).is_err());
+    let mut stranger = key;
+    stranger[0] ^= 0x80;
+    assert!(
+        fa_verify::verify_checkpoint(&bytes(&signed), &[stranger]).is_err(),
+        "another key never verifies it"
+    );
 }
 
 #[test]

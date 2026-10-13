@@ -1,9 +1,12 @@
-//! Portable, unsigned accounting proofs (plan §13.1–§13.3).
+//! Portable accounting proofs (plan §13.1–§13.3).
 //!
-//! Exports use the existing canonical Notary formats. An outsider supplies
-//! their own trusted checkpoint to the independent `fa-verify` program.
-//! The exported checkpoint is a candidate trust anchor, never its own proof
-//! of authenticity. These artifacts carry no signatures or document receipts.
+//! Exports use the existing canonical Notary formats. An outsider checks a
+//! proof with the independent `fa-verify` program against a checkpoint it
+//! trusts: either the state's `TransparencyCheckpoint` signed by the book's
+//! key ([`ProofKind::SignedCheckpoint`], checked with `--key`), or the raw
+//! 80-byte statement ([`ProofKind::Checkpoint`]) whose trust the outsider
+//! establishes separately. A proof never authenticates its own anchor, and
+//! no artifact here carries document receipts.
 //! Balance exports automatically use migration-aware v2 when necessary;
 //! scopes without migration candidates retain their exact v1 wire bytes.
 
@@ -35,6 +38,10 @@ pub mod code {
 pub enum ProofKind {
     /// The exact 80-byte checkpoint statement, for separate distribution.
     Checkpoint,
+    /// The state's journaled `TransparencyCheckpoint`, signed by the book's
+    /// key and recomputed from the journal before export: the anchor
+    /// `fa-verify … --key <public key>` checks instead of trusting it.
+    SignedCheckpoint,
     Inclusion {
         entry: VId,
         with_record: bool,
@@ -58,6 +65,7 @@ impl ProofKind {
     pub fn name(self) -> &'static str {
         match self {
             Self::Checkpoint => "checkpoint",
+            Self::SignedCheckpoint => "signed-checkpoint",
             Self::Inclusion { .. } => "inclusion",
             Self::Consistency { .. } => "consistency",
             Self::Prefix => "prefix",
@@ -68,7 +76,7 @@ impl ProofKind {
     #[must_use]
     pub fn scope(self) -> &'static str {
         match self {
-            Self::Checkpoint => "entry_prefix",
+            Self::Checkpoint | Self::SignedCheckpoint => "entry_prefix",
             Self::Inclusion { .. } => "inclusion",
             Self::Consistency { .. } => "consistency",
             Self::Prefix => "seq_range_complete",
@@ -128,7 +136,9 @@ fn select(states: &[StoredState], oid: Option<Oid>) -> Result<StoredState, Refus
 
 pub(crate) fn export<V: Vfs + Clone>(
     db: &Database<V>,
+    ctx: &fgdb_types::context::PurposeContexts,
     book: &BookContext,
+    signer: &dyn fa_notary::CheckpointSigner,
     principal: VId,
     capability: &Capability,
     request: ProofRequest,
@@ -149,7 +159,9 @@ pub(crate) fn export<V: Vfs + Clone>(
     if let Err(refusal) = fa_journal::policy::capability_admitted(db, book, capability)? {
         return Ok(Err(refusal));
     }
-    let verified = fa_notary::verify_accumulator(db, book)?;
+    // States and their signed checkpoints are both recomputed from the
+    // journal and the book's key before any proof is cut from them.
+    let verified = fa_notary::verify_accumulator(db, ctx, book, signer)?;
     if !verified.is_green() {
         return Ok(Err(Refusal::new(
             fa_notary::code::ACCUMULATOR_DRIFT,
@@ -167,6 +179,10 @@ pub(crate) fn export<V: Vfs + Clone>(
     let mut next_checkpoint = None;
     let produced = match request.kind {
         ProofKind::Checkpoint => Ok(checkpoint_bytes(&checkpoint)?),
+        ProofKind::SignedCheckpoint => {
+            fa_notary::stored_checkpoint(db, ctx, book, &checkpoint, signer)?
+                .map(|stored| stored.bytes)
+        }
         ProofKind::Inclusion { entry, with_record } => {
             fa_notary::prove_inclusion(db, book, &checkpoint.state, entry, with_record)?
         }

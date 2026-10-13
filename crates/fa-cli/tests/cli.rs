@@ -2478,7 +2478,8 @@ fn timed_cli_intents_preserve_their_requests_and_execute_under_recorded_ticks()
     use asupersync::runtime::RuntimeBuilder;
     use fa::{Book, BookKeys, Entropy};
     use fa_journal::{Capability, ReversalStatus};
-    use fa_model::{Disposition, EntryClass, Side};
+    use fa_model::{Disposition, EntryClass};
+    use fa_money::Side;
     use fa_policy::{Op, Profile};
     use fa_time::DateDay;
     use fgdb_types::VId;
@@ -2542,7 +2543,15 @@ fn timed_cli_intents_preserve_their_requests_and_execute_under_recorded_ticks()
     // Typos, inapplicable fields, duplicate sources, and wrong types never
     // become permanent or unscheduled entries. Valid but inadmissible data
     // still reaches the kernel's registered refusal unchanged.
-    let bad_intents: &[(&str, &str, &[&str], i32, Option<&str>)] = &[
+    /// `(class, extra intent fields, extra argv, exit, refusal id)`.
+    type BadIntent = (
+        &'static str,
+        &'static str,
+        &'static [&'static str],
+        i32,
+        Option<&'static str>,
+    );
+    let bad_intents: &[BadIntent] = &[
         ("Pending", r#","timeout_ns":-1"#, &[], 2, None),
         (
             "Pending",

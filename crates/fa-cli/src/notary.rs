@@ -382,13 +382,16 @@ pub(crate) fn checkpoint_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail>
             ("leaf_count", Json::Int(i128::from(state.leaf_count))),
             ("root", s(hex(&state.root))),
             ("prev_state_oid", state.prev_state_oid.map_or(Json::Null, |oid| s(hex(&oid.0)))),
-            ("signatures", s("unsigned")),
+            ("signatures", s("ed25519")),
+            ("checkpoint_oid", s(hex(&created.checkpoint.oid.0))),
+            ("public_key", s(hex(&book.checkpoint_public_key()))),
             ("scope", s("entry_prefix")),
         ],
         &format!(
-            "Created unsigned entry accumulator checkpoint {}: {} entries through sequence {}, recorded at {}. Root {}.",
+            "Created entry accumulator checkpoint {}: {} entries through sequence {}, recorded at {}. Root {}.\nSigned TransparencyCheckpoint {} (Ed25519 public key {}); export it with `fa proof signed-checkpoint` and check it with `fa-verify checkpoint <file> --key <public key>`.",
             hex(&stored.oid.0), state.leaf_count, state.through_seq.0,
             stored.recorded_at.0, hex(&state.root),
+            hex(&created.checkpoint.oid.0), hex(&book.checkpoint_public_key()),
         ),
     );
     Ok(())
@@ -426,7 +429,7 @@ pub(crate) fn verify_accumulator(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), F
         .collect();
     let fields = vec![
         ("status", s(status)),
-        ("signatures", s("unsigned")),
+        ("signatures", s("ed25519")),
         ("scope", s("entry_prefix")),
         ("states_checked", Json::Int(result.states.len() as i128)),
         ("broken", result.broken.as_ref().map_or(Json::Null, s)),
@@ -470,7 +473,7 @@ pub(crate) fn verify_accumulator(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), F
         None => "No accumulator checkpoints to verify; run `fa checkpoint create --grant witness`."
             .to_string(),
         Some(seq) => format!(
-            "Entry accumulator verified by recomputation: {} checkpoints through sequence {seq} (unsigned).",
+            "Entry accumulator verified by recomputation: {} checkpoints through sequence {seq}, each signed checkpoint reproduced from the journal and the book's key.",
             result.states.len(),
         ),
     };
