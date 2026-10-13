@@ -220,7 +220,7 @@ planned = true
 name = "fa-conformance"
 layer = "verification"
 path = "crates/fa-conformance"
-planned = true
+planned = false
 
 [[crate]]
 name = "fa-fuzz"

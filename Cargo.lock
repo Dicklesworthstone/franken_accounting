@@ -829,6 +829,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fa-conformance"
+version = "0.0.1"
+dependencies = [
+ "asupersync",
+ "fgdb",
+ "fgdb-delta-types",
+ "fgdb-gql",
+ "fgdb-types",
+]
+
+[[package]]
 name = "fa-intents"
 version = "0.0.1"
 dependencies = [
