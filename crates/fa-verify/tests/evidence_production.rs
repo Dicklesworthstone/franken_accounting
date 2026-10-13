@@ -4,6 +4,8 @@
 mod fixture;
 #[path = "support/evidence_production.rs"]
 mod production_fixture;
+#[path = "evidence_production/cli.rs"]
+mod cli;
 
 use fa_verify::evidence::EvidenceError;
 use fa_verify::evidence::inventory::production::{
