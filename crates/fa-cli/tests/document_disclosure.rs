@@ -286,12 +286,24 @@ fn external_document_storage_and_empty_documents_use_the_same_public_export() {
     let keys = BookKeys::for_development(76);
     let mut book =
         Book::create_dir(&directory, keys.clone(), spec(), Entropy::deterministic(76)).unwrap();
-    // One byte beyond the current 16 MiB inline policy uses the configured
-    // blob store. The public API accepts no caller-selected storage path.
+    // Past the inline bound (what one substrate row holds) a document uses
+    // the configured blob store; this one is past even the 16 MiB one-piece
+    // policy bound. The public API accepts no caller-selected storage path.
     let large = document(1, 16 * 1024 * 1024 + 17);
     book.add_document(&large).unwrap().unwrap();
+    // Zero bytes are not evidence (FA-REF-083, fa-lp6): intake refuses an
+    // empty document before any write, so it never reaches the export.
+    // Whether an empty document should be recordable for disclosure is an
+    // open owner decision; the established intake law stands meanwhile.
     let empty = document(1, 0);
-    book.add_document(&empty).unwrap().unwrap();
+    let before = book.head().unwrap();
+    let refused = book.add_document(&empty).unwrap().unwrap_err();
+    assert_eq!(
+        refused.code,
+        fa_journal::refusal::code::DOCUMENT_INTAKE,
+        "{refused}"
+    );
+    assert_eq!(book.head().unwrap(), before);
     let head = book.head().unwrap();
     drop(book);
     let mut reopened = Book::open_dir(&directory, keys, Entropy::deterministic(77)).unwrap();
@@ -302,10 +314,5 @@ fn external_document_storage_and_empty_documents_use_the_same_public_export() {
         .unwrap();
     assert_verified(&large_proof, &large, &[0, last]);
     assert!(large_proof.bytes.len() < 8192);
-    let empty_proof = reopened
-        .export_document_disclosure(&cap(&["read", "produce"]), &empty.oid(), &[0])
-        .unwrap()
-        .unwrap();
-    assert_verified(&empty_proof, &empty, &[0]);
     assert_eq!(reopened.head().unwrap(), head);
 }
