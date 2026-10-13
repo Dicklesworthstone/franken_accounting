@@ -51,6 +51,7 @@ pub mod certificate;
 mod certificate_store;
 pub mod document_disclosure;
 pub mod evidence_disclosure;
+pub mod general_ledger;
 pub mod proof;
 pub mod roll_forward;
 pub mod settlement;
@@ -87,6 +88,10 @@ pub use fa_registers::open_items::OpenItemsReport;
 pub use fa_statements::{
     AccountMapping, Column as StatementColumn, Statement, StatementDefinition, StatementKind,
     StatementLine,
+};
+pub use general_ledger::{
+    GENERAL_LEDGER_FORMAT, GeneralLedger, GeneralLedgerCell, GeneralLedgerLine,
+    MAX_GENERAL_LEDGER_BYTES, MAX_GENERAL_LEDGER_CELLS, MAX_GENERAL_LEDGER_LINES,
 };
 pub use proof::{MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest};
 pub use roll_forward::{RollForward, RollForwardRequest};
