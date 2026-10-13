@@ -16,7 +16,8 @@ pub use certificate::{
 
 mod reconciliation;
 pub use reconciliation::{
-    AgingReconciliation, AgingReconciliationRequest, AgingReconciliationRow,
+    AgingReconciliation, AgingReconciliationCertificate, AgingReconciliationRequest,
+    AgingReconciliationRow, CertifiedAgingReconciliation, MAX_AGING_RECONCILIATION_BYTES,
 };
 
 pub use fa_registers::open_items::aging::{

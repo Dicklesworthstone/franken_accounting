@@ -23,6 +23,11 @@ use fgdb_types::{CommitSeq, VId};
 use super::{AgingAmounts, AgingBuckets, EffectiveDateAging, MAX_AGING_BUCKET_BOUNDS};
 use crate::{AsyncBook, BookError, Outcome};
 
+mod certificate;
+pub use certificate::{
+    AgingReconciliationCertificate, CertifiedAgingReconciliation, MAX_AGING_RECONCILIATION_BYTES,
+};
+
 /// The account is an explicit posting-leaf selection, not an access scope.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgingReconciliationRequest {
@@ -137,11 +142,20 @@ fn selected_account<V: Vfs + Clone, B: Vfs + Clone>(
     query.checkpoint().map_err(BookError::Context)?;
     query.with_restriction(|| {
         crate::certificate::context_at(&book.db, book.context(), at)?;
-        let chart = fa_journal::chart::read_at(&book.db, book.context(), at)?;
-        match chart.accounts().get(&account) {
-            Some(account) if account.is_leaf => Ok(Ok(account.clone())),
-            _ => Ok(Err(selection_error("reconciliation requires an existing posting leaf at its selected prefix"))),
+        // This comparison reads Account vertices, already inside both native
+        // certificate closures. It does not depend on unauthenticated chart
+        // hierarchy edges or reinterpret the selection as a subtree.
+        let Some(row) = book.db.vertex_at(account, at).map_err(KernelError::from)?
+            .filter(|row| row.labels.contains(&fa_model::symbols::label::ACCOUNT))
+        else { return Ok(Err(selection_error("reconciliation account is absent at its selected prefix"))); };
+        let selected = AccountRow::decode(&row)?;
+        if AccountRow::vid_for(book.context().book_id, &selected.code) != account {
+            return Err(corruption("reconciliation account identity disagrees with its historical code"));
         }
+        if !selected.is_leaf {
+            return Ok(Err(selection_error("reconciliation requires a posting leaf, not a summary")));
+        }
+        Ok(Ok(selected))
     })
 }
 
@@ -194,6 +208,15 @@ fn assemble(account: AccountRow, aging: EffectiveDateAging, control: TrialBalanc
     Ok(AgingReconciliation { account, aging, control_rows: controls.into_values().collect(), rows })
 }
 
+fn validate_units(report: &AgingReconciliation, units: &fa_money::UnitRegistry) -> Result<(), BookError> {
+    for row in &report.rows {
+        if units.get(UnitId(row.unit_id)).is_none() {
+            return Err(corruption("reconciliation source has an unregistered native unit"));
+        }
+    }
+    Ok(())
+}
+
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// Compare the production historical open-item fold with the production
     /// stock trial balance, under current whole-book read authority. Neither
@@ -225,11 +248,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let control = query.with_restriction(|| fa_registers::balance_as_of(
             &self.db, self.context(), request.effective_through, Some(at)))?;
         let report = assemble(account, aging, control)?;
-        for row in &report.rows {
-            if self.context().units.get(UnitId(row.unit_id)).is_none() {
-                return Err(corruption("reconciliation source has an unregistered native unit"));
-            }
-        }
+        validate_units(&report, &self.context().units)?;
         query.checkpoint().map_err(BookError::Context)?;
         Ok(Ok(report))
     }

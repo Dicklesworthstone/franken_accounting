@@ -271,3 +271,5 @@ fn changed_coordinates_duplicate_units_negative_sums_and_overflow_are_rejected()
     let mut debit = control; debit.rows[0].debits = i128::MAX; debit.rows[0].credits = 0;
     assert!(matches!(assemble(account, credit, debit), Err(BookError::Registers(RegisterError::Overflow))));
 }
+
+mod certificate;
