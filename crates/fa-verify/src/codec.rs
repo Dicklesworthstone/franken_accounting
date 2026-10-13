@@ -197,6 +197,7 @@ impl Writer {
         self
     }
 
+    #[cfg(test)]
     pub(crate) fn i128(&mut self, v: i128) -> &mut Self {
         self.buf.extend_from_slice(&v.to_le_bytes());
         self
@@ -208,6 +209,7 @@ impl Writer {
     }
 
     /// A byte string already bounded by its caller, with canonical framing.
+    #[cfg(test)]
     pub(crate) fn bytes(&mut self, b: &[u8]) -> &mut Self {
         self.count(b.len()).fixed(b)
     }

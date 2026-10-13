@@ -38,11 +38,12 @@ pub mod blake3;
 pub mod codec;
 pub mod document;
 pub mod envelope;
+pub mod migration_balance;
 pub mod proof;
 pub mod state;
 pub mod tree;
 
-pub use balance::{Balance, BalanceClaim, verify_balance};
+pub use balance::{Balance, BalanceClaim};
 pub use codec::DecodeError;
 pub use envelope::{LeafEnvelope, RecordError};
 pub use proof::{
@@ -50,3 +51,57 @@ pub use proof::{
     verify_inclusion, verify_prefix,
 };
 pub use state::{Signatures, State, verify_state};
+
+/// Verify either supported balance format against an independently trusted
+/// checkpoint. V1 remains byte-compatible for non-migration scopes; v2
+/// authenticates the migration lifecycle and required run-body policies.
+/// Neither format accepts a checkpoint merely because the proof supplies it.
+pub fn verify_balance(
+    proof: &[u8],
+    trusted_checkpoint: &Checkpoint,
+) -> Result<Balance, VerifyError> {
+    let mut reader = codec::Reader::new(proof);
+    if reader.bytes(128, "proof.format")? == migration_balance::BALANCE_FORMAT_V2 {
+        migration_balance::verify_balance(proof, trusted_checkpoint)
+    } else {
+        balance::verify_balance(proof, trusted_checkpoint)
+    }
+}
+
+#[cfg(test)]
+mod balance_dispatch_tests {
+    use super::*;
+
+    #[test]
+    fn public_balance_verifier_accepts_both_versions_without_changing_v1() {
+        let checkpoint = Checkpoint {
+            book_id: [1; 16],
+            branch_id: [0; 16],
+            through_seq: 0,
+            leaf_count: 0,
+            root: tree::empty_root(),
+        };
+        for format in [balance::BALANCE_FORMAT, migration_balance::BALANCE_FORMAT_V2] {
+            let mut w = codec::Writer::default();
+            w.bytes(format)
+                .fixed(&checkpoint.encode())
+                .u128(10)
+                .u32(1)
+                .u8(0)
+                .i128(0)
+                .i128(0)
+                .count(0)
+                .count(0);
+            if format == migration_balance::BALANCE_FORMAT_V2 {
+                w.count(0);
+            }
+            let report = verify_balance(&w.buf, &checkpoint).unwrap();
+            assert_eq!(report.scope, "recomputation");
+            assert!(report.contributing.is_empty());
+            assert_eq!((report.claim.debits, report.claim.credits), (0, 0));
+            if format == balance::BALANCE_FORMAT {
+                assert_eq!(balance::verify_balance(&w.buf, &checkpoint).unwrap(), report);
+            }
+        }
+    }
+}
