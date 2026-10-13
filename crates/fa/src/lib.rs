@@ -45,6 +45,7 @@
 #![forbid(unsafe_code)]
 
 pub mod aging;
+pub mod allocation_review;
 pub mod async_book;
 pub mod book;
 pub mod certificate;
@@ -70,6 +71,7 @@ pub use aging::{
     AgedOpenItem, AgingAmounts, AgingBand, AgingBuckets, AgingCell, AgingTotal, EffectiveDateAging,
     OpenItemSnapshot,
 };
+pub use allocation_review::{AllocationReview, AllocationReviewError, MAX_ALLOCATION_REVIEW_BYTES};
 pub use async_book::AsyncBook;
 pub use book::{Book, BookError, BookKeys, Entropy, Outcome};
 pub use certificate::{
