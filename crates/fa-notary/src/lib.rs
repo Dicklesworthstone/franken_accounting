@@ -23,6 +23,7 @@
 #![forbid(unsafe_code)]
 
 pub mod journal;
+pub mod migration_balance;
 pub mod state;
 pub mod tree;
 
@@ -30,6 +31,7 @@ use fa_model::{Id128, Writer};
 use fgdb_types::CommitSeq;
 
 pub use journal::{Journal, Leaf, LeafEnvelope};
+pub use migration_balance::prove_balance_with_migrations;
 pub use state::{
     AccumulatorState, AccumulatorVerification, Checkpointed, StateCheck, StoredState, chain,
     checkpoint, latest, prove_balance, prove_consistency, prove_inclusion, prove_prefix, state_oid,
