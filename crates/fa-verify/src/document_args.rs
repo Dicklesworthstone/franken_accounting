@@ -237,7 +237,7 @@ mod tests {
             vec!["--chunks", "0", "--checkpoint", "checkpoint"],
             vec!["--chunks", "0", "--expect-account", "0"],
         ] {
-            let error = run(&args(&extra), true).err().expect("usage refusal");
+            let error = run(&args(&extra), true).expect_err("usage refusal");
             assert_eq!(error.exit, 2, "{:?}: {}", extra, error.message);
         }
     }

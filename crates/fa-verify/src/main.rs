@@ -870,9 +870,7 @@ Exit codes: 0 verified/help; 2 usage; 5 file/output I/O; 8 verification failed."
             assert!(!human.contains(std::str::from_utf8(secret).unwrap()));
             let mut corrupt = bytes.clone();
             *corrupt.last_mut().unwrap() ^= 1;
-            let failure = check(&request, &corrupt, true)
-                .err()
-                .expect("tamper rejected");
+            let failure = check(&request, &corrupt, true).expect_err("tamper rejected");
             assert_eq!(failure.exit, 8);
             assert!(failure.json().contains("\"verified\":false"));
             assert!(!failure.json().contains("proof_verified"));

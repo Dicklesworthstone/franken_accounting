@@ -5960,307 +5960,6 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The other half of the parity gate (the binary tests prove every
-    /// registered verb and subcommand reaches a handler): a handler whose
-    /// verb is not in verbs.toml would be unreachable, so the two lists are
-    /// the same verbs in the same order.
-    #[test]
-    fn handlers_and_the_verb_registry_name_the_same_verbs() {
-        let reg = verbs::registry().expect("verbs.toml");
-        let handled: Vec<&str> = HANDLERS.iter().map(|(name, _)| *name).collect();
-        let registered: Vec<&str> = reg.verbs.iter().map(|v| v.name.as_str()).collect();
-        assert_eq!(handled, registered);
-    }
-
-    fn render_fixture(unit: fa_money::UnitId) -> fa_registers::TrialBalance {
-        fa_registers::TrialBalance {
-            periods: vec!["FY2026-P03".into()],
-            known_at: CommitSeq(9),
-            effective_through: Some(DateDay(0)),
-            activity: false,
-            rows: vec![fa_registers::TbRow {
-                account: VId(1),
-                code: "1000".into(),
-                name: "Cash".into(),
-                account_type: AccountType(1),
-                unit_id: unit.0,
-                debits: 1_234,
-                credits: 1_234,
-                debits_pending: 25,
-                credits_pending: 25,
-            }],
-            unit_totals: [(unit.0, (1_234, 1_234))].into_iter().collect(),
-            pending_unit_totals: [(unit.0, (25, 25))].into_iter().collect(),
-        }
-    }
-
-    #[test]
-    fn unknown_units_refuse_reports_before_any_success_output() {
-        let units = fa_money::UnitRegistry::with_defaults();
-        let usd = units.lookup("USD").unwrap();
-        let unknown = fa_money::UnitId(u32::MAX);
-        assert!(units.get(unknown).is_none());
-        let certificate = "a".repeat(64);
-        let reg = verbs::registry().expect("verbs.toml");
-        for location in ["row", "posted total", "pending total"] {
-            let mut tb = render_fixture(usd);
-            match location {
-                "row" => tb.rows.push(fa_registers::TbRow {
-                    account: VId(2),
-                    code: "2000".into(),
-                    unit_id: unknown.0,
-                    ..tb.rows[0].clone()
-                }),
-                "posted total" => {
-                    tb.unit_totals.insert(unknown.0, (0, 0));
-                }
-                _ => {
-                    tb.pending_unit_totals.insert(unknown.0, (0, 0));
-                }
-            }
-            let selection = TrialBalanceSelection::Periods(tb.periods.clone());
-            for json in [false, true] {
-                let out = Out::new(json, true);
-                let result = render_trial_balance_with_units(
-                    &out,
-                    &units,
-                    &tb,
-                    &selection,
-                    Some(&certificate),
-                );
-                assert!(matches!(
-                    &result,
-                    Err(Fail::Book(BookError::Kernel(
-                        fa_journal::KernelError::Corrupt(_)
-                    )))
-                ));
-                let (code, captured) = finish_into(out, result);
-                assert_eq!(code, exit::FOUNDATION, "{location}: {}", captured.stderr);
-                assert!(
-                    captured.stderr.contains("unknown unit"),
-                    "{}",
-                    captured.stderr
-                );
-                assert!(
-                    captured.stderr.contains("unit reconciliation"),
-                    "{}",
-                    captured.stderr
-                );
-                if json {
-                    assert_eq!(captured.stdout.lines().count(), 1, "{}", captured.stdout);
-                    assert_eq!(
-                        reg.check_line(captured.stdout.trim_end()),
-                        Ok("error"),
-                        "{}",
-                        captured.stdout
-                    );
-                    assert!(captured.stdout.contains(r#""exit":5"#));
-                    assert!(captured.stdout.contains(r#""class":"foundation""#));
-                    assert!(captured.stdout.contains(r#""certificate":null"#));
-                    assert!(!captured.stdout.contains(r#""event":"trial_balance""#));
-                } else {
-                    assert!(
-                        captured.stdout.is_empty(),
-                        "{location}: {}",
-                        captured.stdout
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn registered_amounts_keep_report_text_and_certificate_binding() {
-        let units = fa_money::UnitRegistry::with_defaults();
-        let tb = render_fixture(units.lookup("USD").unwrap());
-        let selection = TrialBalanceSelection::Periods(tb.periods.clone());
-        let certificate = "b".repeat(64);
-        let reg = verbs::registry().expect("verbs.toml");
-        for json in [false, true] {
-            let out = Out::new(json, true);
-            out.said.borrow_mut().at = Some(At {
-                book: "0a1b".into(),
-                known_at: CommitSeq(10),
-                effective: "all".into(),
-            });
-            let result =
-                render_trial_balance_with_units(&out, &units, &tb, &selection, Some(&certificate));
-            let (code, captured) = finish_into(out, result);
-            assert_eq!(code, exit::SUCCESS, "{}", captured.stderr);
-            assert!(captured.stderr.is_empty(), "{}", captured.stderr);
-            assert!(captured.stdout.contains("12.34 USD"), "{}", captured.stdout);
-            assert!(captured.stdout.contains("0.25 USD"), "{}", captured.stdout);
-            if json {
-                assert_eq!(
-                    reg.check_line(captured.stdout.trim_end()),
-                    Ok("trial_balance"),
-                    "{}",
-                    captured.stdout
-                );
-                assert!(captured.stdout.contains(r#""net":"0.00 USD""#));
-                assert!(captured.stdout.contains(r#""known_at":9"#));
-                assert!(
-                    captured
-                        .stdout
-                        .contains(&format!(r#""certificate":"{certificate}""#)),
-                    "{}",
-                    captured.stdout
-                );
-            } else {
-                assert!(captured.stdout.contains("balanced: true"));
-            }
-        }
-    }
-
-    /// A drift row only arises from a tampered store, which no binary test
-    /// can produce: check the rendered rows (a cell rebound to another
-    /// account, a missing cell) against the robot schema here.
-    #[test]
-    fn availability_drift_rows_render_to_the_schema() {
-        let reg = verbs::registry().expect("verbs.toml");
-        let cell = |posted: i128| fa_journal::LimitCell {
-            debits_posted: posted,
-            credits_posted: 0,
-            debits_pending: 0,
-            credits_pending: 0,
-            generation: 1,
-        };
-        let v = fa_registers::AvailabilityVerification {
-            known_at: CommitSeq(9),
-            accounts_checked: 2,
-            cells_checked: 2,
-            accounts: vec![fa_registers::AccountAvailability {
-                account: VId(1),
-                code: "1000".into(),
-                period: None,
-                normal: Side::Debit,
-                limit: BalanceLimit {
-                    lower: Some(0),
-                    upper: None,
-                    scope: fa_journal::LimitScope::Lifetime,
-                },
-                cell: cell(4_000),
-                net: 4_000,
-                pending_out: 0,
-                pending_in: 0,
-            }],
-            drift: vec![
-                fa_registers::AvailabilityDrift {
-                    account: VId(1),
-                    code: "1000".into(),
-                    stored: Some(cell(4_000)),
-                    refolded: cell(4_000),
-                    stored_account: Some(VId(2)),
-                    stored_account_code: Some("1100".into()),
-                    period: None,
-                    stored_period: None,
-                },
-                fa_registers::AvailabilityDrift {
-                    account: VId(3),
-                    code: "1200".into(),
-                    stored: None,
-                    refolded: cell(0),
-                    stored_account: None,
-                    stored_account_code: None,
-                    // A budget cap's cell that claims another period.
-                    period: Some("FY2026-P03".into()),
-                    stored_period: Some("FY2026-P04".into()),
-                },
-            ],
-        };
-        let amount = |_: &str, m: i128| -> Result<Json, Fail> {
-            Ok(s(format!("{}.{:02} USD", m / 100, m % 100)))
-        };
-        let rendered = availability_fields(&v, &amount);
-        assert!(rendered.is_ok(), "every amount renders");
-        let at = At {
-            book: "0a1b".into(),
-            known_at: CommitSeq(9),
-            effective: "all".into(),
-        };
-        let data = obj(rendered.unwrap_or_default());
-        let line = robot_line("availability_verified", data, Some(&at), &[]).render();
-        assert_eq!(reg.check_line(&line), Ok("availability_verified"), "{line}");
-        assert!(
-            line.contains(&format!(r#""stored_account":"{:032x}""#, 2))
-                && line.contains(r#""stored_account_code":"1100""#)
-                && line.contains(r#""stored":null"#)
-                && line.contains(r#""period":"FY2026-P03""#)
-                && line.contains(r#""stored_period":"FY2026-P04""#)
-                && line.contains(r#""cells_checked":2"#)
-                && line.contains(r#""net":"40.00 USD""#),
-            "{line}"
-        );
-        let missing_units = fa_money::UnitRegistry::empty();
-        let corrupt_amount = |_: &str, m: i128| -> Result<Json, Fail> {
-            Ok(s(render_amount(
-                Amount::new(fa_money::UnitId(7), m),
-                &missing_units,
-            )?))
-        };
-        assert!(matches!(
-            availability_fields(&v, &corrupt_amount),
-            Err(Fail::Book(BookError::Kernel(
-                fa_journal::KernelError::Corrupt(_)
-            )))
-        ));
-    }
-
-    /// Styling is resolved once (plan Appendix D determinism): only a
-    /// terminal with nothing asking for plain output is styled; robot mode,
-    /// a daemon capture, --no-color, NO_COLOR, CI and TERM=dumb never are,
-    /// and an empty NO_COLOR or CI=false/0 asks for nothing.
-    #[test]
-    fn styling_is_off_unless_a_terminal_asks_for_nothing_plain() {
-        let none = |_: &str| None::<String>;
-        let styled = Style::resolve(false, false, false, true, none);
-        assert_eq!(styled.header("code"), "\u{1b}[1mcode\u{1b}[0m");
-        let only = |name: &'static str, value: &'static str| {
-            move |k: &str| (k == name).then(|| value.to_string())
-        };
-        for (what, style) in [
-            ("robot mode", Style::resolve(true, false, false, true, none)),
-            ("--no-color", Style::resolve(false, true, false, true, none)),
-            (
-                "a daemon capture",
-                Style::resolve(false, false, true, true, none),
-            ),
-            (
-                "not a terminal",
-                Style::resolve(false, false, false, false, none),
-            ),
-            (
-                "NO_COLOR",
-                Style::resolve(false, false, false, true, only("NO_COLOR", "1")),
-            ),
-            (
-                "CI",
-                Style::resolve(false, false, false, true, only("CI", "true")),
-            ),
-            (
-                "TERM=dumb",
-                Style::resolve(false, false, false, true, only("TERM", "dumb")),
-            ),
-        ] {
-            assert_eq!(style, Style::PLAIN, "{what}");
-            assert_eq!(style.header("code"), "code", "{what}");
-        }
-        for (name, value) in [
-            ("NO_COLOR", ""),
-            ("CI", "false"),
-            ("CI", "0"),
-            ("TERM", "xterm-256color"),
-        ] {
-            let style = Style::resolve(false, false, false, true, only(name, value));
-            assert_eq!(style, styled, "{name}={value}");
-        }
-    }
-}
-
 // ---- procedure: Lantern over the CLI (plan §11, Appendix D) ----------------
 
 /// A procedure's registry or parameter refusal as a usage error naming the
@@ -6581,5 +6280,306 @@ fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             Ok(())
         }
         _ => Err(unhandled("procedure", sub)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The other half of the parity gate (the binary tests prove every
+    /// registered verb and subcommand reaches a handler): a handler whose
+    /// verb is not in verbs.toml would be unreachable, so the two lists are
+    /// the same verbs in the same order.
+    #[test]
+    fn handlers_and_the_verb_registry_name_the_same_verbs() {
+        let reg = verbs::registry().expect("verbs.toml");
+        let handled: Vec<&str> = HANDLERS.iter().map(|(name, _)| *name).collect();
+        let registered: Vec<&str> = reg.verbs.iter().map(|v| v.name.as_str()).collect();
+        assert_eq!(handled, registered);
+    }
+
+    fn render_fixture(unit: fa_money::UnitId) -> fa_registers::TrialBalance {
+        fa_registers::TrialBalance {
+            periods: vec!["FY2026-P03".into()],
+            known_at: CommitSeq(9),
+            effective_through: Some(DateDay(0)),
+            activity: false,
+            rows: vec![fa_registers::TbRow {
+                account: VId(1),
+                code: "1000".into(),
+                name: "Cash".into(),
+                account_type: AccountType(1),
+                unit_id: unit.0,
+                debits: 1_234,
+                credits: 1_234,
+                debits_pending: 25,
+                credits_pending: 25,
+            }],
+            unit_totals: [(unit.0, (1_234, 1_234))].into_iter().collect(),
+            pending_unit_totals: [(unit.0, (25, 25))].into_iter().collect(),
+        }
+    }
+
+    #[test]
+    fn unknown_units_refuse_reports_before_any_success_output() {
+        let units = fa_money::UnitRegistry::with_defaults();
+        let usd = units.lookup("USD").unwrap();
+        let unknown = fa_money::UnitId(u32::MAX);
+        assert!(units.get(unknown).is_none());
+        let certificate = "a".repeat(64);
+        let reg = verbs::registry().expect("verbs.toml");
+        for location in ["row", "posted total", "pending total"] {
+            let mut tb = render_fixture(usd);
+            match location {
+                "row" => tb.rows.push(fa_registers::TbRow {
+                    account: VId(2),
+                    code: "2000".into(),
+                    unit_id: unknown.0,
+                    ..tb.rows[0].clone()
+                }),
+                "posted total" => {
+                    tb.unit_totals.insert(unknown.0, (0, 0));
+                }
+                _ => {
+                    tb.pending_unit_totals.insert(unknown.0, (0, 0));
+                }
+            }
+            let selection = TrialBalanceSelection::Periods(tb.periods.clone());
+            for json in [false, true] {
+                let out = Out::new(json, true);
+                let result = render_trial_balance_with_units(
+                    &out,
+                    &units,
+                    &tb,
+                    &selection,
+                    Some(&certificate),
+                );
+                assert!(matches!(
+                    &result,
+                    Err(Fail::Book(BookError::Kernel(
+                        fa_journal::KernelError::Corrupt(_)
+                    )))
+                ));
+                let (code, captured) = finish_into(out, result);
+                assert_eq!(code, exit::FOUNDATION, "{location}: {}", captured.stderr);
+                assert!(
+                    captured.stderr.contains("unknown unit"),
+                    "{}",
+                    captured.stderr
+                );
+                assert!(
+                    captured.stderr.contains("unit reconciliation"),
+                    "{}",
+                    captured.stderr
+                );
+                if json {
+                    assert_eq!(captured.stdout.lines().count(), 1, "{}", captured.stdout);
+                    assert_eq!(
+                        reg.check_line(captured.stdout.trim_end()),
+                        Ok("error"),
+                        "{}",
+                        captured.stdout
+                    );
+                    assert!(captured.stdout.contains(r#""exit":5"#));
+                    assert!(captured.stdout.contains(r#""class":"foundation""#));
+                    assert!(captured.stdout.contains(r#""certificate":null"#));
+                    assert!(!captured.stdout.contains(r#""event":"trial_balance""#));
+                } else {
+                    assert!(
+                        captured.stdout.is_empty(),
+                        "{location}: {}",
+                        captured.stdout
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn registered_amounts_keep_report_text_and_certificate_binding() {
+        let units = fa_money::UnitRegistry::with_defaults();
+        let tb = render_fixture(units.lookup("USD").unwrap());
+        let selection = TrialBalanceSelection::Periods(tb.periods.clone());
+        let certificate = "b".repeat(64);
+        let reg = verbs::registry().expect("verbs.toml");
+        for json in [false, true] {
+            let out = Out::new(json, true);
+            out.said.borrow_mut().at = Some(At {
+                book: "0a1b".into(),
+                known_at: CommitSeq(10),
+                effective: "all".into(),
+            });
+            let result =
+                render_trial_balance_with_units(&out, &units, &tb, &selection, Some(&certificate));
+            let (code, captured) = finish_into(out, result);
+            assert_eq!(code, exit::SUCCESS, "{}", captured.stderr);
+            assert!(captured.stderr.is_empty(), "{}", captured.stderr);
+            assert!(captured.stdout.contains("12.34 USD"), "{}", captured.stdout);
+            assert!(captured.stdout.contains("0.25 USD"), "{}", captured.stdout);
+            if json {
+                assert_eq!(
+                    reg.check_line(captured.stdout.trim_end()),
+                    Ok("trial_balance"),
+                    "{}",
+                    captured.stdout
+                );
+                assert!(captured.stdout.contains(r#""net":"0.00 USD""#));
+                assert!(captured.stdout.contains(r#""known_at":9"#));
+                assert!(
+                    captured
+                        .stdout
+                        .contains(&format!(r#""certificate":"{certificate}""#)),
+                    "{}",
+                    captured.stdout
+                );
+            } else {
+                assert!(captured.stdout.contains("balanced: true"));
+            }
+        }
+    }
+
+    /// A drift row only arises from a tampered store, which no binary test
+    /// can produce: check the rendered rows (a cell rebound to another
+    /// account, a missing cell) against the robot schema here.
+    #[test]
+    fn availability_drift_rows_render_to_the_schema() {
+        let reg = verbs::registry().expect("verbs.toml");
+        let cell = |posted: i128| fa_journal::LimitCell {
+            debits_posted: posted,
+            credits_posted: 0,
+            debits_pending: 0,
+            credits_pending: 0,
+            generation: 1,
+        };
+        let v = fa_registers::AvailabilityVerification {
+            known_at: CommitSeq(9),
+            accounts_checked: 2,
+            cells_checked: 2,
+            accounts: vec![fa_registers::AccountAvailability {
+                account: VId(1),
+                code: "1000".into(),
+                period: None,
+                normal: Side::Debit,
+                limit: BalanceLimit {
+                    lower: Some(0),
+                    upper: None,
+                    scope: fa_journal::LimitScope::Lifetime,
+                },
+                cell: cell(4_000),
+                net: 4_000,
+                pending_out: 0,
+                pending_in: 0,
+            }],
+            drift: vec![
+                fa_registers::AvailabilityDrift {
+                    account: VId(1),
+                    code: "1000".into(),
+                    stored: Some(cell(4_000)),
+                    refolded: cell(4_000),
+                    stored_account: Some(VId(2)),
+                    stored_account_code: Some("1100".into()),
+                    period: None,
+                    stored_period: None,
+                },
+                fa_registers::AvailabilityDrift {
+                    account: VId(3),
+                    code: "1200".into(),
+                    stored: None,
+                    refolded: cell(0),
+                    stored_account: None,
+                    stored_account_code: None,
+                    // A budget cap's cell that claims another period.
+                    period: Some("FY2026-P03".into()),
+                    stored_period: Some("FY2026-P04".into()),
+                },
+            ],
+        };
+        let amount = |_: &str, m: i128| -> Result<Json, Fail> {
+            Ok(s(format!("{}.{:02} USD", m / 100, m % 100)))
+        };
+        let rendered = availability_fields(&v, &amount);
+        assert!(rendered.is_ok(), "every amount renders");
+        let at = At {
+            book: "0a1b".into(),
+            known_at: CommitSeq(9),
+            effective: "all".into(),
+        };
+        let data = obj(rendered.unwrap_or_default());
+        let line = robot_line("availability_verified", data, Some(&at), &[]).render();
+        assert_eq!(reg.check_line(&line), Ok("availability_verified"), "{line}");
+        assert!(
+            line.contains(&format!(r#""stored_account":"{:032x}""#, 2))
+                && line.contains(r#""stored_account_code":"1100""#)
+                && line.contains(r#""stored":null"#)
+                && line.contains(r#""period":"FY2026-P03""#)
+                && line.contains(r#""stored_period":"FY2026-P04""#)
+                && line.contains(r#""cells_checked":2"#)
+                && line.contains(r#""net":"40.00 USD""#),
+            "{line}"
+        );
+        let missing_units = fa_money::UnitRegistry::empty();
+        let corrupt_amount = |_: &str, m: i128| -> Result<Json, Fail> {
+            Ok(s(render_amount(
+                Amount::new(fa_money::UnitId(7), m),
+                &missing_units,
+            )?))
+        };
+        assert!(matches!(
+            availability_fields(&v, &corrupt_amount),
+            Err(Fail::Book(BookError::Kernel(
+                fa_journal::KernelError::Corrupt(_)
+            )))
+        ));
+    }
+
+    /// Styling is resolved once (plan Appendix D determinism): only a
+    /// terminal with nothing asking for plain output is styled; robot mode,
+    /// a daemon capture, --no-color, NO_COLOR, CI and TERM=dumb never are,
+    /// and an empty NO_COLOR or CI=false/0 asks for nothing.
+    #[test]
+    fn styling_is_off_unless_a_terminal_asks_for_nothing_plain() {
+        let none = |_: &str| None::<String>;
+        let styled = Style::resolve(false, false, false, true, none);
+        assert_eq!(styled.header("code"), "\u{1b}[1mcode\u{1b}[0m");
+        let only = |name: &'static str, value: &'static str| {
+            move |k: &str| (k == name).then(|| value.to_string())
+        };
+        for (what, style) in [
+            ("robot mode", Style::resolve(true, false, false, true, none)),
+            ("--no-color", Style::resolve(false, true, false, true, none)),
+            (
+                "a daemon capture",
+                Style::resolve(false, false, true, true, none),
+            ),
+            (
+                "not a terminal",
+                Style::resolve(false, false, false, false, none),
+            ),
+            (
+                "NO_COLOR",
+                Style::resolve(false, false, false, true, only("NO_COLOR", "1")),
+            ),
+            (
+                "CI",
+                Style::resolve(false, false, false, true, only("CI", "true")),
+            ),
+            (
+                "TERM=dumb",
+                Style::resolve(false, false, false, true, only("TERM", "dumb")),
+            ),
+        ] {
+            assert_eq!(style, Style::PLAIN, "{what}");
+            assert_eq!(style.header("code"), "code", "{what}");
+        }
+        for (name, value) in [
+            ("NO_COLOR", ""),
+            ("CI", "false"),
+            ("CI", "0"),
+            ("TERM", "xterm-256color"),
+        ] {
+            let style = Style::resolve(false, false, false, true, only(name, value));
+            assert_eq!(style, styled, "{name}={value}");
+        }
     }
 }

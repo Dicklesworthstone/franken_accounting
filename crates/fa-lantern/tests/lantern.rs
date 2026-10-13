@@ -827,8 +827,7 @@ fn aging_buckets_open_items_to_the_declared_date() {
     // Without a declared effective date there is no historical fold to age:
     // the refusal names the coordinate to declare.
     let err = run(&h.db, &h.book, None, None, &OpenItemsAging::new().unwrap())
-        .err()
-        .expect("aging without an effective date is refused");
+        .expect_err("aging without an effective date is refused");
     assert!(
         matches!(&err, LanternError::Parameter { name, message, .. }
             if name == "effective_through" && message.contains("effective date")),
@@ -1394,8 +1393,7 @@ fn tracing_laws_follow_the_planted_deposit_and_agree_with_the_oracle() {
         Some(claim),
         &Trace::new(Law::Libr, account, stranger).unwrap(),
     )
-    .err()
-    .expect("a stranger entry is refused");
+    .expect_err("a stranger entry is refused");
     assert!(
         matches!(&err, LanternError::Parameter { name, .. } if name == "source"),
         "{err:?}"

@@ -421,7 +421,7 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let scope = if let Some(code) = account {
         let from = day("--from", interval.0)?;
         let to = day("--to", interval.1)?;
-        fa_notary::BundleScope::Index(fa_notary::ScopeRequest::Account {
+        fa::BundleScope::Index(fa::ScopeRequest::Account {
             account: account_vid(book_id, code),
             from,
             to,
@@ -432,14 +432,14 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let bytes = fixed_hex::<16>(text.strip_prefix("E:").unwrap_or(text), "--entry")?;
             vids.push(VId(u128::from_be_bytes(bytes)));
         }
-        fa_notary::BundleScope::Entries(vids)
+        fa::BundleScope::Entries(vids)
     } else {
-        fa_notary::BundleScope::Prefix
+        fa::BundleScope::Prefix
     };
     let scope_name = match &scope {
-        fa_notary::BundleScope::Prefix => "prefix",
-        fa_notary::BundleScope::Index(_) => "account",
-        fa_notary::BundleScope::Entries(_) => "entries",
+        fa::BundleScope::Prefix => "prefix",
+        fa::BundleScope::Index(_) => "account",
+        fa::BundleScope::Entries(_) => "entries",
     };
     let mut balances = Vec::new();
     for spec in args.flag_all("--balance") {
@@ -473,13 +473,13 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 "use an exact unit code from this book's canonical registry",
             )
         })?;
-        balances.push(fa_notary::BalanceRequest {
+        balances.push(fa::BalanceRequest {
             account: account_vid(book_id, code),
             unit: unit.0,
             effective_through,
         });
     }
-    let request = fa_notary::BundleRequest {
+    let request = fa::BundleRequest {
         scope,
         balances,
         inline_documents: args.switch("--inline-documents"),

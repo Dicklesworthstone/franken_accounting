@@ -200,7 +200,7 @@ mod tests {
     #[test]
     fn duplicate_options_including_unbounded_cutoff_are_usage_errors() {
         for pair in FLAGS {
-            let failure = parse(&[pair, pair], true).err().expect("duplicate refused");
+            let failure = parse(&[pair, pair], true).expect_err("duplicate refused");
             assert!(failure.message.contains("only once"));
         }
     }

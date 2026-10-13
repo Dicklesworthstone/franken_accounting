@@ -31,7 +31,10 @@ fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(bytes);
 }
 
-fn wire(kind: u8, length: u64, chunks: &[(u64, &[u8], Vec<[u8; 32]>)]) -> Vec<u8> {
+/// One disclosed chunk: `(index, bytes, sibling path)`.
+type DisclosedChunk<'a> = (u64, &'a [u8], Vec<[u8; 32]>);
+
+fn wire(kind: u8, length: u64, chunks: &[DisclosedChunk<'_>]) -> Vec<u8> {
     let mut out = Vec::new();
     put_bytes(&mut out, FORMAT);
     out.push(kind);
