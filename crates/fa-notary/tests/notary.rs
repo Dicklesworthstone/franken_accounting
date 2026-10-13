@@ -794,14 +794,14 @@ fn checkpointed_entries_must_remain_unchanged_before_verification_or_production(
                     Some(CanonicalScalar::bytes(vec![0xed; 32]).unwrap()),
                 );
             }
-            "malformed payload" => {
+            other => {
+                assert_eq!(other, "malformed payload", "the cases above are exhaustive");
                 batch.set_vertex_property(
                     target,
                     property::FA_PAYLOAD,
                     Some(CanonicalScalar::bytes(b"invalid entry bytes".to_vec()).unwrap()),
                 );
             }
-            _ => unreachable!("the cases above are exhaustive"),
         }
         h.write_raw(batch);
         let attacked_head = h.db.frontier().unwrap();
