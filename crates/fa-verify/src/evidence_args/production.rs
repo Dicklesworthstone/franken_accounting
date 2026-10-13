@@ -1,5 +1,7 @@
 //! Offline complete-scope evidence inventories using existing raw proofs.
 
+mod documents;
+
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -14,6 +16,9 @@ const HELP: &str = "Usage:
   fa-verify evidence production --prefix PREFIX --checkpoint TRUSTED_FILE \\
     --expect-first-seq U64 --expect-known-at U64 --expect-account HEX32|all \\
     --expect-days FIRST:LAST|all [--record INCLUSION ...] [--json]
+
+For full cited document bytes as well, run:
+  fa-verify evidence production documents --help
 
 PREFIX is the existing raw complete-prefix proof. Supply precisely the
 matching record-bearing inclusion proofs with repeated --record options,
@@ -146,6 +151,9 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
 }
 
 pub(super) fn run(args: &[OsString], json: bool) -> Result<String, Failure> {
+    if args.get(1).is_some_and(|argument| argument == "documents") {
+        return documents::run(&args[1..], json);
+    }
     if args.len() == 2 && matches!(args[1].to_str(), Some("--help" | "-h" | "help")) {
         return Ok(HELP.into());
     }

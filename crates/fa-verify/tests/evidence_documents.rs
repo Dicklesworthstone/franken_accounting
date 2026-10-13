@@ -4,6 +4,8 @@
 mod fixture;
 #[path = "support/evidence_production.rs"]
 mod production_fixture;
+#[path = "evidence_documents/cli.rs"]
+mod cli;
 
 use fa_verify::document::{DOC_CHUNK_BYTES, doc_commit};
 use fa_verify::evidence::EvidenceCitation;
