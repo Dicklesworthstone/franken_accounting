@@ -1,0 +1,23 @@
+# Plan §6.3 / fa-joq. This is an explicit native-total allocation, not a
+# current-balance sweep, FX rule, settlement, or signed evidence claim.
+schema_version = 1
+name = "fa:allocation-posting:v1"
+entry_extension_tag = 5
+entry_schema_minor = 2
+max_targets = 1024
+document_kind = 21
+evidence_role = 1
+scope = "explicit-total-single-unit-shared-dimensions"
+# The ordered basis encodes FA-ALLOC-BASIS NUL, version u16=1, source u128,
+# source_side u8 (0 debit, 1 credit), dimensions list(u32,u128), and a
+# length-prefixed fa-money canonical AllocationRequest. Target IDs are actual
+# account VIds. All integers are little-endian. Dimensions are sorted by ID;
+# target order is semantic and is never sorted. The source amount is positive.
+# Extension 5 encodes FA-ALLOC-POST NUL, version u16=1, bytes(basis),
+# law_digest[32], basis_digest[32]. Domains are fa:allocation-law:v1 over
+# law ID u16 and version u16, and fa:allocation-basis:v1 over basis bytes.
+# Every leg inherits this immutable binding from its enclosing proposal.
+# Evidence must cite the exact canonical basis as a Source-role Workpaper;
+# the normal evidence pipeline witnesses the document and its provenance.
+# Zero shares retain their targets in the basis and are omitted from legs;
+# all declared target accounts are witnessed, including those receiving zero.

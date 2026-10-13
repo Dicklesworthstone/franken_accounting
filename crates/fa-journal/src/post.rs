@@ -35,7 +35,10 @@
 //! identified by `H("fa:vid:migration-entry:v1" ‖ book ‖ run ‖ key)`, and
 //! staged invisible until the run's Finalize (`migration::visible_at`). A
 //! chunk carries no `settles`; once its run is Finalized, a counting chunk's
-//! legs are open items (ruling 3733). Every other registered
+//! legs are open items (ruling 3733). `Allocation` redistributes an explicit
+//! native amount under a registered law and a committed driver Workpaper
+//! (`crate::allocation`); all targets, including zero shares, are witnessed.
+//! Its exact side-swap is reversible. Every other registered
 //! class is refused with the bead that lands it; no class passes through a
 //! generic two-leg check.
 
@@ -374,7 +377,7 @@ fn not_implemented(class_name: &str) -> Refusal {
             "the restatement-case slice (fa-azu children)"
         }
         "Closing" => "the incremental closing slice (plan §7.5)",
-        "Allocation" | "Revaluation" | "Elimination" => "Canon rules (plan §10)",
+        "Revaluation" | "Elimination" => "Canon rules (plan §10)",
         "Migration into a limited account" => {
             "the migration availability slice (a staged chunk must not move a LimitCell before Finalize)"
         }
@@ -508,9 +511,17 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
             | EntryClass::PENDING
             | EntryClass::RESOLUTION
             | EntryClass::MIGRATION
+            | EntryClass::ALLOCATION
     ) {
         return Ok(Err(not_implemented(class_name)));
     }
+    // Allocation is admitted only by recomputing its exact, evidence-bound
+    // native legs. This also rejects its provenance on a different class.
+    let allocation = match crate::allocation::admit(proposal) {
+        Ok(basis) => basis,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
     // 1b'. Migration provenance (plan §8.6): a Migration entry names its run
     //      in its origin, and no other class carries migration provenance.
     let migration_run = match (&proposal.origin, proposal.class == EntryClass::MIGRATION) {
@@ -1213,6 +1224,15 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
         }
     };
 
+    // The driver citation above is witnessed under the same transaction.
+    // Zero shares omit journal legs, not account legality or dependencies.
+    if let Some(basis) = &allocation
+        && let Err(refusal) = crate::allocation::witness_targets(&txn, db, book, basis)?
+    {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
+
     // 6. Accounts: exist, leaf-only, unit policy (plan §4.3).
     let mut accounts: Vec<AccountRow> = Vec::with_capacity(proposal.legs.len());
     for (i, leg) in proposal.legs.iter().enumerate() {
@@ -1514,7 +1534,10 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
         // nothing (release it), a release posted nothing (it is final), and
         // the classes this slice does not post are not reversed through it.
         let reversible = match original.proposal.class {
-            EntryClass::ORIGINAL | EntryClass::ADJUSTING | EntryClass::REVERSAL => true,
+            EntryClass::ORIGINAL
+            | EntryClass::ADJUSTING
+            | EntryClass::REVERSAL
+            | EntryClass::ALLOCATION => true,
             EntryClass::RESOLUTION => matches!(
                 original.proposal.pending,
                 Some(Pending {

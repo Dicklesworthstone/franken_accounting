@@ -17,6 +17,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod allocation;
 pub mod attestation;
 pub mod blob;
 pub mod chart;
@@ -42,6 +43,7 @@ pub mod sweep;
 pub mod temporal;
 pub mod upload;
 
+pub use allocation::AllocationPosting;
 pub use attestation::{
     AttestationClaim, Attested, read_attestation, record_manual_assertion, record_review,
 };
