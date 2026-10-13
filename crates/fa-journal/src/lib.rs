@@ -19,6 +19,7 @@
 
 pub mod attestation;
 pub mod blob;
+pub mod chart;
 pub mod custody;
 pub mod entity;
 pub mod evidence;
