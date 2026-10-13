@@ -32,6 +32,8 @@ pub const MAX_PROOF_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_EVIDENCE_PER_ENTRY: usize = 1024;
 const DOCUMENT_OID_DOMAIN: &[u8] = b"fa:oid:document:v1";
 
+pub mod inventory;
+
 /// Recipient-owned question, never learned from the untrusted artifacts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EvidenceExpectation {
@@ -244,11 +246,26 @@ fn authenticated_citation(
     checkpoint: &Checkpoint,
     expected: &EvidenceExpectation,
 ) -> Result<(Inclusion, EvidenceCitation), EvidenceError> {
+    let (inclusion, proposal) = authenticated_entry(proof, checkpoint, &expected.entry_digest)?;
+    let citation = read_citation(proposal, expected)?;
+    if document_oid(&checkpoint.book_id, &citation.doc_commit) != citation.document_oid {
+        return Err(EvidenceError::DocumentIdentity);
+    }
+    Ok((inclusion, citation))
+}
+
+/// One authenticated immutable proposal, shared by selected disclosures and
+/// complete citation inventories. A digest alone cannot reveal its citations.
+fn authenticated_entry<'a>(
+    proof: &'a [u8],
+    checkpoint: &Checkpoint,
+    expected_entry_digest: &[u8; 32],
+) -> Result<(Inclusion, &'a [u8]), EvidenceError> {
     if proof.len() > MAX_PROOF_BYTES {
         return Err(EvidenceError::InputLimit);
     }
     let inclusion = crate::verify_inclusion(proof, checkpoint)?;
-    if inclusion.envelope.record_digest != expected.entry_digest {
+    if inclusion.envelope.record_digest != *expected_entry_digest {
         return Err(EvidenceError::EntryMismatch);
     }
     if inclusion.record != RecordCheck::Recomputed {
@@ -259,11 +276,7 @@ fn authenticated_citation(
     // the fixed v1 header below only borrows the already checked proposal;
     // it neither accepts a second payload nor repeats the cryptographic work.
     let proposal = included_proposal(proof)?;
-    let citation = read_citation(proposal, expected)?;
-    if document_oid(&checkpoint.book_id, &citation.doc_commit) != citation.document_oid {
-        return Err(EvidenceError::DocumentIdentity);
-    }
-    Ok((inclusion, citation))
+    Ok((inclusion, proposal))
 }
 
 fn document_oid(book: &[u8; 16], commitment: &[u8; 32]) -> [u8; 32] {
@@ -382,7 +395,7 @@ fn skip_origin(r: &mut Reader<'_>) -> Result<(), DecodeError> {
             r.bytes(64, "origin.source_system")?;
             skip_erasable(r, "origin.source_id")?;
             if r.present("origin.source_recorded_at")? {
-                r.u64("origin.source_recorded_at")?; // signed timestamp, same wire width
+                r.u64("origin.source_recorded_at")?;
             }
             for field in ["origin.source_entered_by", "origin.source_approved_by"] {
                 if r.present(field)? { skip_erasable(r, field)?; }
@@ -407,6 +420,25 @@ fn read_citation(
     proposal: &[u8],
     expected: &EvidenceExpectation,
 ) -> Result<EvidenceCitation, EvidenceError> {
+    let mut found = None;
+    visit_citations(proposal, |citation| {
+        if citation.document_oid == expected.document_oid
+            && citation.role == expected.role
+            && found.replace(citation).is_some()
+        {
+            return Err(EvidenceError::CitationAmbiguous);
+        }
+        Ok(())
+    })?;
+    found.ok_or(EvidenceError::CitationMissing)
+}
+
+/// Walk the complete canonical evidence list, then validate the remaining
+/// proposal frame. Callers must not publish visitor results before success.
+fn visit_citations(
+    proposal: &[u8],
+    mut visit: impl FnMut(EvidenceCitation) -> Result<(), EvidenceError>,
+) -> Result<(), EvidenceError> {
     let mut schema = Reader::new(proposal);
     schema.u16("entry.schema_major")?;
     let minor = schema.u16("entry.schema_minor")?;
@@ -428,7 +460,6 @@ fn read_citation(
     optional_vid(&mut r, "entry.session_ref")?;
     let count = r.count(MAX_EVIDENCE_PER_ENTRY, 65, "entry.evidence")?;
     let mut previous = None;
-    let mut found = None;
     for _ in 0..count {
         let citation = EvidenceCitation {
             document_oid: r.fixed("evidence.document_oid")?,
@@ -441,19 +472,14 @@ fn read_citation(
             return Err(r.error("entry.evidence", Reason::Unsorted).into());
         }
         previous = Some(citation);
-        if citation.document_oid == expected.document_oid
-            && citation.role == expected.role
-            && found.replace(citation).is_some()
-        {
-            return Err(EvidenceError::CitationAmbiguous);
-        }
+        visit(citation)?;
     }
     // Do not return on the first match: a later malformed citation invalidates
     // the list. Validate the remaining frame too, without claiming its semantic
     // content has been checked. Additive minor versions only append extensions.
     skip_proposal_tail(&mut r, minor)?;
     r.finish("entry proposal")?;
-    found.ok_or(EvidenceError::CitationMissing)
+    Ok(())
 }
 
 fn skip_proposal_tail(r: &mut Reader<'_>, minor: u16) -> Result<(), DecodeError> {
