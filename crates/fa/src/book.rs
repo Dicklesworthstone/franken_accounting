@@ -799,8 +799,10 @@ impl Book {
 
     /// Record a document (plan §9.1): content-addressed; the same bytes of
     /// the same kind are the recorded outcome. A document past the inline
-    /// bound (`evidence_policy.toml max_document_bytes`) keeps its bytes in
-    /// the book's blob store, its commitment inline.
+    /// bound (`fa_journal::evidence::inline_document_bound`: what one
+    /// substrate row holds, at most `evidence_policy.toml
+    /// max_document_bytes`) keeps its bytes in the book's blob store, its
+    /// commitment inline.
     pub fn add_document(
         &mut self,
         doc: &fa_journal::Document,

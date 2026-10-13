@@ -17,8 +17,9 @@
 //! Interim postures, stated rather than hidden (the pinned substrate has no
 //! object store, Appendix H):
 //! - the canonical bytes ride inline in the Document's `fa:document:v1`
-//!   payload up to `max_document_bytes`; past it they live in the book's
-//!   blob store behind the inline commitment (`blob`,
+//!   payload up to [`inline_document_bound`] (what one substrate row holds);
+//!   past it they live in the book's blob store behind the inline commitment
+//!   (`blob`,
 //!   `document_stores.toml`). Custody and import runs (`custody`, `import`),
 //!   legal holds (`legal_hold`) and redacted views (`redaction`) are their
 //!   own modules; parsed projections are a later slice;
@@ -65,6 +66,23 @@ pub const CHUNK_BYTES: usize = 4096;
 /// later, larger registry bound never makes a stored document unreadable.
 const MAX_DECODED_DOCUMENT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_DECODED_MIME_BYTES: usize = 1024;
+
+/// The bytes a Document carries inline. The pinned substrate refuses a
+/// vertex row above 16384 encoded bytes (`RowExceedsStorageLimit`); the
+/// payload is one byte scalar stored as 8-byte memcomparable groups (about
+/// 9/8 of its length) beside the digest, book and kind mirrors and a MIME of
+/// up to `max_mime_bytes`. 12 KiB leaves that headroom, as for retained
+/// certificates (`fa` certificate_store). A larger document lives in the
+/// book's blob store behind its inline commitment.
+pub const MAX_INLINE_DOCUMENT_BYTES: u64 = 12 * 1024;
+
+/// The inline intake bound: the policy's document bound, capped by what one
+/// substrate row holds ([`MAX_INLINE_DOCUMENT_BYTES`]). Every intake path
+/// routes or refuses on this bound, never on the policy bound alone.
+#[must_use]
+pub fn inline_document_bound(policy: &EvidencePolicy) -> u64 {
+    policy.max_document_bytes.min(MAX_INLINE_DOCUMENT_BYTES)
+}
 
 /// Storage tags of `fa:document:v1`.
 const STORAGE_INLINE: u8 = 0;
@@ -542,7 +560,7 @@ pub(crate) fn intake_check(
         ));
     }
     if len_u64(doc.bytes.len()) > max_bytes {
-        let fix = if max_bytes == policy.max_document_bytes {
+        let fix = if max_bytes == inline_document_bound(policy) {
             "record it in the book's blob store: `fa document add` routes a document past the inline bound there (library: add_document_external with a registered store)"
         } else {
             "split the document: it is past every registered store's bound (document_stores.toml)"
@@ -655,7 +673,7 @@ pub async fn add_document<V: asupersync::fs::Vfs + Clone>(
     doc: &Document,
 ) -> Outcome<DocumentAdded> {
     let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
-    let kind_name = match intake_check(&policy, book, doc, policy.max_document_bytes) {
+    let kind_name = match intake_check(&policy, book, doc, inline_document_bound(&policy)) {
         Ok(name) => name,
         Err(r) => return Ok(Err(r)),
     };

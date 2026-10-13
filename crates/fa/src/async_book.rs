@@ -669,8 +669,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         doc: &fa_journal::Document,
     ) -> Outcome<fa_journal::DocumentAdded> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
-        let inline_bound =
-            fa_registry::evidence_policy::EvidencePolicy::embedded()?.max_document_bytes;
+        let inline_bound = fa_journal::evidence::inline_document_bound(
+            &fa_registry::evidence_policy::EvidencePolicy::embedded()?,
+        );
         Ok(
             if u64::try_from(doc.bytes.len()).unwrap_or(u64::MAX) > inline_bound {
                 fa_journal::add_document_external(&mut self.db, cx, &self.context, &self.blobs, doc)

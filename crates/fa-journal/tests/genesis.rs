@@ -2436,6 +2436,43 @@ fn document_intake_refuses_empty_oversized_unregistered_and_unverifiable_input()
     );
 }
 
+/// The inline bound is what one substrate row holds: a document at the
+/// bound with the longest admitted MIME is recorded inline and reads back,
+/// and one byte more is the typed intake refusal naming the blob store,
+/// never the substrate's RowExceedsStorageLimit (exit 5). Before the bound
+/// was derived from the row, a 16 KiB document failed in storage while the
+/// policy promised inline bytes up to 16 MiB.
+#[test]
+fn the_inline_document_bound_fits_one_substrate_row() {
+    use fa_journal::evidence::{MAX_INLINE_DOCUMENT_BYTES, inline_document_bound};
+    let mut h = harness();
+    let policy = fa_registry::evidence_policy::EvidencePolicy::embedded().unwrap();
+    let bound = inline_document_bound(&policy);
+    assert_eq!(
+        bound,
+        MAX_INLINE_DOCUMENT_BYTES.min(policy.max_document_bytes)
+    );
+    let size = usize::try_from(bound).unwrap();
+
+    let mut at_bound = h.document(INVOICE, HUMAN_UPLOAD, &vec![b'q'; size]);
+    at_bound.mime = "m".repeat(policy.max_mime_bytes);
+    let added = h.add_document(&at_bound).expect("the bound fits one row");
+    assert_eq!(added.size, bound);
+    let record = document_record(&h.db, &added.oid).unwrap().unwrap();
+    assert!(matches!(record.storage, Storage::Inline(_)));
+    assert_eq!(
+        read_document(&h.db, &added.oid).unwrap().unwrap(),
+        Some(at_bound)
+    );
+
+    let head = h.db.frontier().unwrap();
+    let past = h.document(INVOICE, HUMAN_UPLOAD, &vec![b'r'; size + 1]);
+    let r = h.add_document(&past).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-083", exit::USAGE), "{r}");
+    assert!(r.fix.contains("blob store"), "{r}");
+    assert_eq!(h.db.frontier().unwrap(), head);
+}
+
 // ---------------------------------------------------------------------------
 // Evidence minimum at commit (fa-lp6, FA-INV-05 `evidence-minimum`)
 // ---------------------------------------------------------------------------

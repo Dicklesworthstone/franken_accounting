@@ -294,9 +294,9 @@ pub fn prepare_upload<V: asupersync::fs::Vfs + Clone>(
     capability: &Capability,
     request: UploadRequest,
 ) -> Outcome<UploadPreparation> {
-    let max_bytes = EvidencePolicy::embedded()
-        .map_err(|error| KernelError::Corrupt(error.to_string()))?
-        .max_document_bytes;
+    let max_bytes = crate::evidence::inline_document_bound(
+        &EvidencePolicy::embedded().map_err(|error| KernelError::Corrupt(error.to_string()))?,
+    );
     let admitted = match admit_upload(db, cx, book, capability, request, max_bytes)? {
         Err(refusal) => return Ok(Err(refusal)),
         Ok(UploadAdmission::AlreadyRecorded(added)) => {

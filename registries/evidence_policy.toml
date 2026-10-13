@@ -28,8 +28,11 @@
 
 schema_version = 1
 
-# Bytes a Document may carry inline in this slice (the substrate has no
-# object store yet; the canonical bytes ride the Document's payload).
+# The largest Document payload carried in one piece (inline in an evidence
+# bundle; fa-verify bundle MAX_DOCUMENT_BYTES mirrors it). A book row holds
+# at most fa-journal MAX_INLINE_DOCUMENT_BYTES (12 KiB) of it inline: the
+# substrate refuses a row above 16384 encoded bytes, so a larger document's
+# bytes live in the book's blob store behind its inline commitment.
 max_document_bytes = 16777216
 max_mime_bytes = 128
 
