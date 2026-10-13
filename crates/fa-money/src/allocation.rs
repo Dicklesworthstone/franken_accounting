@@ -3,11 +3,19 @@
 //! remainders in deterministic order. Conservation (`Σ shares = total`) is a
 //! theorem, and the test below checks it on a grid.
 
+mod catalog;
 mod ordered;
 mod pro_rata;
+mod receipt;
+mod request;
 
+pub use catalog::{AllocationCatalog, AllocationLaw, MAX_ALLOCATION_TARGETS};
 pub use ordered::{equal_split_residual_first, waterfall};
 pub use pro_rata::{ProRataAllocation, pro_rata_residual_to_named};
+pub use receipt::{MAX_ALLOCATION_RECEIPT_BYTES, MAX_ALLOCATION_REQUEST_BYTES};
+pub use request::{
+    AllocationError, AllocationMethod, AllocationOutcome, AllocationRequest, AllocationTarget,
+};
 
 use crate::amount::{Amount, AmountError, signed_magnitude};
 use crate::wide::U256;
