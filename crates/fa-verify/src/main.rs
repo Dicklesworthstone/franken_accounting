@@ -7,6 +7,8 @@
 
 #![forbid(unsafe_code)]
 
+mod balance_args;
+
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -15,8 +17,8 @@ use std::process::ExitCode;
 
 use fa_verify::blake3::hex;
 use fa_verify::{
-    Checkpoint, RecordCheck, VerifyError, verify_balance, verify_consistency, verify_inclusion,
-    verify_prefix,
+    BalanceExpectation, Checkpoint, RecordCheck, VerifyError, verify_balance, verify_balance_for,
+    verify_consistency, verify_inclusion, verify_prefix,
 };
 
 /// A process-level allocation/input bound, independent of each format's
@@ -40,6 +42,16 @@ Inclusion proofs may already contain their record; output says whether
 its payload was recomputed. Prefix proofs check envelopes, not payloads.
 Balance proofs check posted amounts in one account/unit from inception,
 with an optional inclusive civil-day cutoff carried in the proof.
+
+To require a balance proof to answer YOUR independently chosen question:
+  --expect-account HEX32 --expect-unit U32 --expect-through DAY|none
+All three are required together. DAY is the signed i32 civil-day number
+reported as effective_through_day; none explicitly means no cutoff, never
+any cutoff. Optional --expect-debits I128 --expect-credits I128 must appear
+together and are exact nonnegative gross mantissas, not decimal amounts.
+A valid proof for a different scope or amount fails with exit 8. Without
+these options only the proof's own claim is verified. Never copy expected
+values from the untrusted proof or its packaging.
 
 Proof files are limited to 64 MiB. No book, keys, or network are required.
 Exit codes: 0 verified/help; 2 usage; 5 file/output I/O; 8 verification failed.";
@@ -68,6 +80,7 @@ struct Request {
     proof: PathBuf,
     checkpoint: PathBuf,
     next_checkpoint: Option<PathBuf>,
+    expectation: Option<BalanceExpectation>,
 }
 
 struct Failure {
@@ -135,6 +148,7 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
         }
     };
     let (mut proof, mut checkpoint, mut next_checkpoint) = (None, None, None);
+    let mut balance = balance_args::BalanceArgs::default();
     let mut json = false;
     let mut index = 1;
     while let Some(argument) = args.get(index) {
@@ -144,6 +158,10 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
             }
             json = true;
             index += 1;
+            continue;
+        }
+        if balance.consume(args, index)? {
+            index += 2;
             continue;
         }
         let (name, slot) = match argument.to_str() {
@@ -193,6 +211,7 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
         proof,
         checkpoint,
         next_checkpoint,
+        expectation: balance.finish(matches!(kind, Kind::Balance))?,
     })
 }
 
@@ -318,7 +337,17 @@ fn verify(request: &Request) -> Result<Report, Failure> {
             );
         }
         Kind::Balance => {
-            let verified = verify_balance(&proof, &checkpoint)?;
+            let verified = match &request.expectation {
+                Some(expected) => verify_balance_for(&proof, &checkpoint, expected)
+                    .map_err(|error| Failure::verification(error.to_string()))?,
+                None => verify_balance(&proof, &checkpoint)?,
+            };
+            if let Some(expected) = &request.expectation {
+                report.checks.push("requested_balance_scope");
+                if expected.amounts.is_some() {
+                    report.checks.push("requested_balance_amounts");
+                }
+            }
             let claim = verified.claim;
             report.scope = verified.scope;
             report.checks.extend([
@@ -352,6 +381,12 @@ fn verify(request: &Request) -> Result<Report, Failure> {
                 verified.contributing.len(),
                 claim.effective_through
             );
+            report.detail.push_str(match request.expectation {
+                Some(BalanceExpectation { amounts: Some(_), .. }) =>
+                    "; recipient scope and exact gross amounts matched",
+                Some(_) => "; recipient scope matched; amounts learned from the verified proof",
+                None => "; no independently specified balance request was checked",
+            });
         }
     }
     Ok(report)
