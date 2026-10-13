@@ -42,6 +42,7 @@ mod certificate_store;
 pub mod proof;
 pub mod settlement;
 pub mod statement_diff;
+pub mod statement_diff_workpaper;
 pub mod statements;
 pub mod summary;
 pub mod summary_certificate;
@@ -74,6 +75,7 @@ pub use statement_diff::{
     CertifiedStatementDiff, MAX_STATEMENT_DIFF_CERTIFICATE_BYTES, StatementDiff,
     StatementDiffCertificate, StatementDiffRequest, StatementLineChange, StatementMappingChange,
 };
+pub use statement_diff_workpaper::{MAX_STATEMENT_DIFF_WORKPAPER_BYTES, StatementDiffWorkpaper};
 pub use statements::{CertifiedStatement, StatementSelection};
 pub use summary::{SummaryGroup, SummaryRequest, SummaryScope, SummaryTrialBalance};
 pub use summary_certificate::{
