@@ -2256,6 +2256,7 @@ mod tests {
         assert_eq!(
             schema["properties"]["kind"]["enum"],
             json!([
+                "signed-checkpoint",
                 "checkpoint",
                 "inclusion",
                 "consistency",
@@ -2269,6 +2270,10 @@ mod tests {
         let next = "b".repeat(64);
         let entry = "c".repeat(32);
         for (arguments, expected) in [
+            (
+                json!({"kind": "signed-checkpoint"}),
+                vec!["proof", "signed-checkpoint", "--json"],
+            ),
             (
                 json!({"kind": "checkpoint"}),
                 vec!["proof", "checkpoint", "--json"],

@@ -502,6 +502,20 @@ pub fn assemble(
     request: &BundleRequest,
     documents: &BTreeMap<Oid, DocumentRead>,
 ) -> Outcome<Bundle> {
+    assemble_with_runs(journal, checkpoint, request, documents, &BTreeMap::new())
+}
+
+/// [`assemble`], with the migration run bodies its balances need (read with
+/// [`crate::migration_balance::bundle_run_bodies`]): a balance whose cell
+/// selects migration candidates is proved in the migration-aware v2 format,
+/// any other in v1, and a needed body that is absent is refused.
+pub fn assemble_with_runs(
+    journal: &Journal,
+    checkpoint: &StoredCheckpoint,
+    request: &BundleRequest,
+    documents: &BTreeMap<Oid, DocumentRead>,
+    run_bodies: &BTreeMap<VId, fa_journal::migration::RunBody>,
+) -> Outcome<Bundle> {
     let statement = journal.statement();
     if checkpoint.checkpoint.body.statement != statement {
         return Err(corrupt(
@@ -533,7 +547,7 @@ pub fn assemble(
     }
     let mut balances = Vec::with_capacity(request.balances.len());
     for b in &request.balances {
-        match journal.balance_proof(b.account, b.unit, b.effective_through)? {
+        match journal.balance_proof_auto(b.account, b.unit, b.effective_through, run_bodies)? {
             Ok(proof) => balances.push(proof),
             Err(refusal) => return Ok(Err(refusal)),
         }

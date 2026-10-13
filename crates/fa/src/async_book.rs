@@ -1162,8 +1162,23 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Err(refusal) => return Ok(Err(refusal)),
             }
         }
-        let bundle = match fa_notary::bundle::assemble(&journal, &checkpoint, request, &documents)?
-        {
+        // A balance over migration-run entries is proved in v2, which needs
+        // each run's immutable body (fa-e00).
+        let run_bodies = match self.query(cx, |db, _book| {
+            Ok(fa_notary::migration_balance::bundle_run_bodies(
+                db, &journal, request,
+            )?)
+        })? {
+            Ok(bodies) => bodies,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let bundle = match fa_notary::bundle::assemble_with_runs(
+            &journal,
+            &checkpoint,
+            request,
+            &documents,
+            &run_bodies,
+        )? {
             Ok(bundle) => bundle,
             Err(refusal) => return Ok(Err(refusal)),
         };

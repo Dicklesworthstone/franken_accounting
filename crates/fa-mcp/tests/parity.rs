@@ -314,6 +314,20 @@ fn the_gate_fails_on_planted_defects() {
         .expect("hidden flags");
     let exposed_identity = hidden_line.replace(", \"--as\"", "");
     assert_ne!(hidden_line, exposed_identity);
+    // The post tool's own flags line, read from the registry (it grows as
+    // posting gains flags), and the same line with a caller grant exposed.
+    let post_tool_head = "name = \"post\"\nverb = \"post\"\nsubcommands = []\npositionals = []\n";
+    let post_flags = {
+        let start = SOURCE.find(post_tool_head).expect("post tool row") + post_tool_head.len();
+        let end = start + SOURCE[start..].find('\n').expect("end of post flags line");
+        &SOURCE[start..end]
+    };
+    assert!(post_flags.starts_with("flags = [") && post_flags.ends_with(']'));
+    let post_row = format!("{post_tool_head}{post_flags}");
+    let granted_row = format!(
+        "{post_tool_head}{}, \"--grant\"]",
+        &post_flags[..post_flags.len() - 1]
+    );
     let cases: Vec<(&str, &str, Result<McpRegistry, String>)> = vec![
         (
             "a verb that is neither a tool nor an exclusion",
@@ -358,13 +372,7 @@ fn the_gate_fails_on_planted_defects() {
         (
             "a tool explicitly exposing caller grants",
             "hidden flag --grant cannot be exposed",
-            plant(|s| {
-                s.replacen(
-                    "name = \"post\"\nverb = \"post\"\nsubcommands = []\npositionals = []\nflags = [\"--intent\", \"--evidence\", \"--balancing\"]",
-                    "name = \"post\"\nverb = \"post\"\nsubcommands = []\npositionals = []\nflags = [\"--intent\", \"--evidence\", \"--balancing\", \"--grant\"]",
-                    1,
-                )
-            }),
+            plant(|s| s.replacen(&post_row, &granted_row, 1)),
         ),
     ];
     for (what, expect, result) in cases {

@@ -3862,6 +3862,8 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         0
     );
     assert_eq!(run(true, &["verify", "accumulator"]).0, 0);
+    assert_eq!(run(true, &["proof", "signed-checkpoint"]).0, 0);
+    assert_eq!(run(true, &["bundle", "produce"]).0, 0);
     let chart = write(
         &dir,
         "chart.json",

@@ -526,6 +526,18 @@ pub enum Books<'a> {
     /// The directory `--book` (or `FA_BOOK`) names, opened for this one
     /// command while the command holds the book's writer lease.
     Dir,
+    /// The same directory, with its writer lease taken only when a handler
+    /// first opens the book: after the command's authority admission, so a
+    /// refused launch-bound command never touches the book (fa-23r,
+    /// authorization precedes observation). The lease is then held until the
+    /// command ends.
+    LeasedOnOpen {
+        /// The registry's lease file name.
+        lease: String,
+        /// The holder note written into the lease.
+        note: String,
+        held: Option<crate::lease::Lease>,
+    },
     /// The book a daemon holds open under its writer lease.
     Held { book: &'a mut Book, dir: PathBuf },
 }
@@ -564,6 +576,32 @@ impl Books<'_> {
         let dir = book_dir(args, cwd)?;
         match self {
             Self::Dir => {
+                let keys = BookKeys::load(&keys_path(args, &dir, cwd))?;
+                Ok(BookRef::Owned(Box::new(Book::open_dir(
+                    &dir,
+                    keys,
+                    Entropy::production(),
+                )?)))
+            }
+            Self::LeasedOnOpen { lease, note, held } => {
+                if held.is_none() {
+                    match crate::lease::Lease::acquire(&dir, lease, note) {
+                        Ok(acquired) => *held = Some(acquired),
+                        Err(error @ crate::lease::LeaseError::Held { .. }) => {
+                            let mut refusal = error.refusal(&dir);
+                            refusal.message.push_str(
+                                "; launch-bound authority cannot be forwarded through the unauthenticated fad protocol",
+                            );
+                            refusal.fix = "ask the operator to release the book's writer lease, then retry this launch-bound session; authenticated daemon sessions are not yet available (fa-r3q)".into();
+                            return Err(Fail::Refusal(refusal));
+                        }
+                        Err(error @ crate::lease::LeaseError::Io { .. }) => {
+                            return Err(Fail::Environment(format!(
+                                "cannot acquire the configured book's writer lease: {error}"
+                            )));
+                        }
+                    }
+                }
                 let keys = BookKeys::load(&keys_path(args, &dir, cwd))?;
                 Ok(BookRef::Owned(Box::new(Book::open_dir(
                     &dir,

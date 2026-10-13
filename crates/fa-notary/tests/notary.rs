@@ -1272,12 +1272,14 @@ fn approve_two(h: &mut Harness, digest: [u8; 32]) -> Vec<fa_model::ApprovalRef> 
         .collect()
 }
 
-/// fa-xo0 interim (ruling 3243): the accumulator keeps a staged migration
-/// chunk (it is journaled), but a balance proof never counts it — the
-/// register fold does not, and `fa-verify` cannot yet see the run — so a
-/// proof touching a staged chunk's account refuses FA-REF-133 while every
-/// other account proves; once the run's Finalize is in the prefix, the same
-/// account proves and verifies, and the earlier prefix still refuses.
+/// fa-e00: the accumulator keeps a staged migration chunk (it is
+/// journaled), but a balance never counts it before the run finalizes. A
+/// proof touching a staged chunk's account is the migration-aware v2 format,
+/// which authenticates the run's state, so it proves exactly the register
+/// fold (the chunk excluded) and a v1-only verifier cannot read it; this
+/// replaces the interim FA-REF-133 refusal (fa-xo0, ruling 3243). Once the
+/// run's Finalize is in the prefix, the same account proves the chunk, and
+/// the earlier prefix still proves it excluded.
 #[test]
 fn a_staged_migration_chunk_blocks_its_balance_proof_until_the_run_finalizes() {
     let mut h = harness();
@@ -1472,23 +1474,43 @@ fn a_staged_migration_chunk_blocks_its_balance_proof_until_the_run_finalizes() {
         inline_documents: true,
     };
     let before_refusal = h.db.frontier().unwrap();
+    let staged_register = fa_registers::balance_as_of(
+        &h.db,
+        &h.book,
+        DateDay::from_ymd(2026, 12, 31).unwrap(),
+        Some(staged.state.through_seq),
+    )
+    .expect("register fold");
+    let usd = h.usd.0;
+    let staged_expected = |account: VId| {
+        staged_register
+            .rows
+            .iter()
+            .find(|r| r.account == account && r.unit_id == usd)
+            .map_or((0, 0), |r| (r.debits, r.credits))
+    };
     for account in [h.cash, h.rent] {
-        let r = prove_balance(&h.db, &h.book, &staged.state, account, h.usd.0, None)
+        let proof = prove_balance(&h.db, &h.book, &staged.state, account, h.usd.0, None)
             .unwrap()
-            .expect_err("a staged chunk's account does not prove");
-        assert_eq!(
-            (r.code, r.exit),
-            (code::MIGRATION_STAGED, exit::REFUSAL),
-            "{r}"
+            .expect("a staged chunk's account proves in v2");
+        assert!(
+            fa_verify::balance::verify_balance(&proof, &staged_trusted).is_err(),
+            "a v1-only verifier cannot read the migration-aware proof"
         );
-        let refusal = h
+        let report = fa_verify::verify_balance(&proof, &staged_trusted).expect("v2 refold");
+        assert_eq!(
+            (report.claim.debits, report.claim.credits),
+            staged_expected(account),
+            "the staged chunk is excluded exactly as the register excludes it"
+        );
+        let bundle = h
             .bundle(&staged, &bundle_request(account, h.usd))
-            .expect_err("bundle assembly preserves the staged-balance refusal");
-        assert_eq!(
-            (refusal.code, refusal.exit),
-            (code::MIGRATION_STAGED, exit::REFUSAL),
-            "{refusal}"
-        );
+            .expect("the staged balance bundles in v2");
+        let receipt = h.receipt(&bundle, before_refusal);
+        let report =
+            fa_verify::verify_bundle(&bundle.bytes, &[h.signer.public_key()], Some(&receipt))
+                .expect("readable bundle");
+        assert!(report.verified(), "{:#?}", not_passed(&report));
     }
     assert_eq!(h.db.frontier().unwrap(), before_refusal);
     // An account the chunk does not touch proves as before.
@@ -1558,15 +1580,16 @@ fn a_staged_migration_chunk_blocks_its_balance_proof_until_the_run_finalizes() {
                 .expect("readable bundle");
         assert!(report.verified(), "{:#?}", not_passed(&report));
     }
-    // The earlier prefix holds no Finalize leaf: it still refuses.
-    let r = prove_balance(&h.db, &h.book, &staged.state, h.cash, h.usd.0, None)
+    // The earlier prefix holds no Finalize leaf: it still proves the chunk
+    // excluded.
+    let proof = prove_balance(&h.db, &h.book, &staged.state, h.cash, h.usd.0, None)
         .unwrap()
-        .expect_err("the staged prefix never proves the chunk");
-    assert_eq!(r.code, code::MIGRATION_STAGED);
-    let refusal = h
-        .bundle(&staged, &bundle_request(h.cash, h.usd))
-        .expect_err("the earlier bundle prefix still lacks Finalize");
-    assert_eq!(refusal.code, code::MIGRATION_STAGED);
+        .expect("the staged prefix proves");
+    let report = fa_verify::verify_balance(&proof, &staged_trusted).expect("v2 refold");
+    assert_eq!(
+        (report.claim.debits, report.claim.credits),
+        staged_expected(h.cash)
+    );
 }
 
 fn seal_text(h: &Harness, text: &str) -> Erasable<String> {
@@ -1868,8 +1891,10 @@ fn finalized_full_detail_history_before_the_opening_date_never_proves() {
 
 /// fa-e00 supplemental controls. A finalized sole-source run counts its
 /// prior-year detail in registers, but v1 leaves cannot authenticate that
-/// mode: the producer conservatively refuses. Detail on/after OPEN still
-/// proves, and raw inclusion never depends on balance visibility.
+/// mode: the v1 journal fold and v1 producer conservatively refuse, while
+/// the auto-versioned checkpoint proof is v2, which authenticates the mode
+/// and proves the register value. Detail on/after OPEN proves too, and raw
+/// inclusion never depends on balance visibility.
 #[test]
 fn full_detail_proof_boundary_preserves_inclusion_and_supported_balances() {
     let opening = DateDay::from_ymd(2026, 1, 1).unwrap();
@@ -2029,11 +2054,12 @@ fn full_detail_proof_boundary_preserves_inclusion_and_supported_balances() {
                     .expect_err("v1 producer remains conservative");
                 assert_eq!((r.code, r.exit), (code::MIGRATION_STAGED, exit::REFUSAL));
                 assert!(r.message.contains("before its run's opening date"));
-                let r = prove_balance(&h.db, &h.book, &active.state, h.rent, h.usd.0, cutoff)
+                let proof = prove_balance(&h.db, &h.book, &active.state, h.rent, h.usd.0, cutoff)
                     .unwrap()
-                    .expect_err("checkpoint proof also refuses");
-                assert_eq!((r.code, r.exit), (code::MIGRATION_STAGED, exit::REFUSAL));
-                assert!(r.message.contains("before its run's opening date"));
+                    .expect("the checkpoint proof is v2, which authenticates the mode");
+                assert!(fa_verify::balance::verify_balance(&proof, &trusted).is_err());
+                let report = fa_verify::verify_balance(&proof, &trusted).expect("v2 refold");
+                assert_eq!((report.claim.debits, report.claim.credits), (counted, 0));
             } else {
                 assert_eq!(
                     journal
@@ -2724,7 +2750,10 @@ impl Harness {
                 .expect("a cited document is held");
             documents.insert(oid, DocumentRead::Full(doc));
         }
-        fa_notary::bundle::assemble(&journal, &checkpoint, request, &documents).expect("kernel")
+        let runs = fa_notary::migration_balance::bundle_run_bodies(&self.db, &journal, request)
+            .expect("kernel")?;
+        fa_notary::bundle::assemble_with_runs(&journal, &checkpoint, request, &documents, &runs)
+            .expect("kernel")
     }
 
     fn receipt(&self, bundle: &fa_notary::Bundle, at: CommitSeq) -> Vec<u8> {

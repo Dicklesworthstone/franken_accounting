@@ -430,8 +430,33 @@ fn prove<V: asupersync::fs::Vfs + Clone>(
     if !force_v2 && needed.is_empty() {
         return journal.balance_proof(account, unit, through);
     }
-    let mut bodies = Vec::with_capacity(needed.len());
-    for run in &needed {
+    let bodies = match run_bodies(db, &journal, &needed)? {
+        Ok(bodies) => bodies,
+        Err(r) => return Ok(Err(r)),
+    };
+    encode(&journal, &records, &needed, account, unit, through, &bodies)
+}
+
+/// The migration runs whose candidates a balance cell and cutoff select:
+/// empty exactly when a v1 proof is exact for it.
+pub fn runs_needed(
+    journal: &Journal,
+    account: VId,
+    unit: u32,
+    through: Option<i32>,
+) -> Outcome<BTreeSet<VId>> {
+    Ok(select(journal, account, unit, through)?.map(|(_, needed)| needed))
+}
+
+/// The immutable bodies of `runs` as retained at the journal's prefix, in
+/// `runs` order, each checked against the identity it must derive.
+pub fn run_bodies<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    journal: &Journal,
+    runs: &BTreeSet<VId>,
+) -> Outcome<Vec<RunBody>> {
+    let mut bodies = Vec::with_capacity(runs.len());
+    for run in runs {
         // Only immutable body bytes are needed. read_run also decodes the
         // derived STATE mirror, so it is deliberately not used here: a
         // projection must neither authorize nor prevent the journal proof.
@@ -462,5 +487,59 @@ fn prove<V: asupersync::fs::Vfs + Clone>(
         }
         bodies.push(body);
     }
-    encode(&journal, &records, &needed, account, unit, through, &bodies)
+    Ok(Ok(bodies))
+}
+
+/// Every run body the balances of a bundle request need, keyed by run, for
+/// [`crate::bundle::assemble_with_runs`].
+pub fn bundle_run_bodies<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    journal: &Journal,
+    request: &crate::bundle::BundleRequest,
+) -> Outcome<BTreeMap<VId, RunBody>> {
+    let mut runs = BTreeSet::new();
+    for b in &request.balances {
+        match runs_needed(journal, b.account, b.unit, b.effective_through)? {
+            Ok(needed) => runs.extend(needed),
+            Err(r) => return Ok(Err(r)),
+        }
+    }
+    let bodies = match run_bodies(db, journal, &runs)? {
+        Ok(bodies) => bodies,
+        Err(r) => return Ok(Err(r)),
+    };
+    Ok(Ok(runs.into_iter().zip(bodies).collect()))
+}
+
+impl Journal {
+    /// The automatically versioned balance proof over this journal: exactly
+    /// the v1 bytes when the cell and cutoff have no migration candidates,
+    /// otherwise v2 with the needed run bodies taken from `bodies` (see
+    /// [`bundle_run_bodies`]). A missing body is refused, never skipped.
+    pub fn balance_proof_auto(
+        &self,
+        account: VId,
+        unit: u32,
+        through: Option<i32>,
+        bodies: &BTreeMap<VId, RunBody>,
+    ) -> Outcome<Vec<u8>> {
+        let (records, needed) = match select(self, account, unit, through)? {
+            Ok(selection) => selection,
+            Err(r) => return Ok(Err(r)),
+        };
+        if needed.is_empty() {
+            return self.balance_proof(account, unit, through);
+        }
+        let mut chosen = Vec::with_capacity(needed.len());
+        for run in &needed {
+            let Some(body) = bodies.get(run) else {
+                return Ok(Err(refusal(format!(
+                    "migration run {:032x}'s body was not supplied for this balance",
+                    run.0
+                ))));
+            };
+            chosen.push(body.clone());
+        }
+        encode(self, &records, &needed, account, unit, through, &chosen)
+    }
 }

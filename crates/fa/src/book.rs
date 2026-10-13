@@ -5715,9 +5715,18 @@ mod tests {
         let original_root = with_store!(&book.store, core => core.db.vertex_at(root_vid, genesis))
             .unwrap()
             .unwrap();
-        let replayed_root = with_store!(&historical.store, core => core.db.vertex(root_vid))
-            .unwrap()
-            .unwrap();
+        // The replayed root as of its own genesis: later replayed controls
+        // may re-version the root (a row's created_at starts its current
+        // version), so its birth is read from the creating commit.
+        let replayed_genesis =
+            with_store!(&historical.store, core => fa_journal::scratch::source_genesis(&core.db))
+                .unwrap()
+                .expect("the scratch book has a genesis");
+        assert_eq!(replayed_genesis, first.scratch_seq);
+        let replayed_root =
+            with_store!(&historical.store, core => core.db.vertex_at(root_vid, first.scratch_seq))
+                .unwrap()
+                .unwrap();
         assert_eq!(replayed_root.created_at, first.scratch_seq);
         assert_eq!(replayed_root.birth_ordinal, original_root.birth_ordinal);
         assert_eq!(replayed_root.props, original_root.props);

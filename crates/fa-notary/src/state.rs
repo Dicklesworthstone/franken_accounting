@@ -934,7 +934,10 @@ pub fn prove_scope<V: asupersync::fs::Vfs + Clone>(
 
 /// The balance-recomputation proof of (account, unit) — posted debits and
 /// credits through the inclusive civil-day cutoff, or every effective day —
-/// against the journaled `state`.
+/// against the journaled `state`. Versioned automatically: the exact v1
+/// bytes when the cell has no migration candidates, otherwise the v2 format
+/// that authenticates each run's visibility, since a v1 verifier cannot
+/// (fa-e00); see [`crate::migration_balance::prove_balance`].
 pub fn prove_balance<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
@@ -943,10 +946,7 @@ pub fn prove_balance<V: asupersync::fs::Vfs + Clone>(
     unit: u32,
     effective_through: Option<i32>,
 ) -> Outcome<Vec<u8>> {
-    match supported(db, book, state)? {
-        Ok(journal) => journal.balance_proof(account, unit, effective_through),
-        Err(r) => Ok(Err(r)),
-    }
+    crate::migration_balance::prove_balance(db, book, state, account, unit, effective_through)
 }
 
 /// What an evidence bundle against the journaled `state` is assembled over

@@ -139,27 +139,14 @@ pub fn fa_with_authority(
         std::process::id(),
         authority.principal()
     );
-    match Lease::acquire(authority.book(), &reg.daemon.lease, &note) {
-        Ok(lease) => {
-            let result = cli::run_with_authority(argv, Books::Dir, files, authority, capture);
-            drop(lease);
-            result
-        }
-        Err(held @ LeaseError::Held { .. }) => {
-            let mut refusal = held.refusal(authority.book());
-            refusal.message.push_str(
-                "; launch-bound authority cannot be forwarded through the unauthenticated fad protocol",
-            );
-            refusal.fix = "ask the operator to release the book's writer lease, then retry this launch-bound session; authenticated daemon sessions are not yet available (fa-r3q)".into();
-            cli::refuse_with_authority(argv, refusal, authority, capture)
-        }
-        Err(error @ LeaseError::Io { .. }) => cli::environment_error_with_authority(
-            argv,
-            format!("cannot acquire the configured book's writer lease: {error}"),
-            authority,
-            capture,
-        ),
-    }
+    // The writer lease is taken when the handler opens the book, after the
+    // command's authority admission: a refused call never touches the book.
+    let books = Books::LeasedOnOpen {
+        lease: reg.daemon.lease.clone(),
+        note,
+        held: None,
+    };
+    cli::run_with_authority(argv, books, files, authority, capture)
 }
 
 /// The command line as the daemon should run it: without `--via`, and with

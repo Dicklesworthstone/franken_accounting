@@ -1395,7 +1395,8 @@ mod tests {
         );
         assert_eq!(out.exit, 2);
         assert!(
-            out.stderr.contains("applies to `bundle` only"),
+            out.stderr
+                .contains("`--receipt` does not apply to `checkpoint`"),
             "{}",
             out.stderr
         );
