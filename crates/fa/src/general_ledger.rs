@@ -11,6 +11,12 @@
 //! not claims about the balance actually known on each movement's recorded day.
 //! Entry digests/ordinals are drilldown citations. No protected text is opened.
 
+pub mod cash_flow;
+pub use cash_flow::{
+    CASH_FLOW_FORMAT, CashFlow, CashFlowActivity, CashFlowAssignment, CashFlowDefinition,
+    CashFlowSection, CashFlowUnit,
+};
+
 mod workpaper;
 pub use workpaper::{CertifiedGeneralLedger, GENERAL_LEDGER_WORKPAPER_FORMAT};
 
@@ -103,6 +109,16 @@ impl GeneralLedger {
     pub fn cells(&self) -> &[GeneralLedgerCell] { &self.cells }
     #[must_use]
     pub fn lines(&self) -> &[GeneralLedgerLine] { &self.lines }
+
+    /// Classify an already admitted immutable cash-ledger snapshot without a
+    /// second database read. Its original known-at coordinate and all source
+    /// citations are retained. The query context supplies cancellation/budget,
+    /// not authority over any additional data. No journal mutation occurs.
+    pub fn classify_cash_flow(
+        self, query: &QueryCx, definition: &CashFlowDefinition,
+    ) -> Outcome<CashFlow> {
+        cash_flow::project(self, definition, query)
+    }
 
     /// A missing account/unit is outside the selected scope, NOT a zero cell.
     #[must_use]
@@ -315,6 +331,27 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(source) => source, Err(refusal) => return Ok(Err(refusal)),
         };
         project(source, &cx.query())
+    }
+
+    /// Read and classify native cash movements under CURRENT read authority.
+    /// The general-ledger reader pins one known-at prefix and supplies the
+    /// independent opening/closing stocks. All selected accounts must be
+    /// explicitly designated cash/equivalents/overdrafts in the definition.
+    /// Missing, stale, duplicated or foreign leg classifications fail closed.
+    ///
+    /// Prepare assignments from `general_ledger` at a fixed `known_at`, or use
+    /// `GeneralLedger::classify_cash_flow` to consume that exact admitted view
+    /// without re-reading. Classifications are retained accounting assertions,
+    /// not engine-certified GAAP/IFRS judgments. No writes or private-text reads
+    /// occur, and native currencies are never netted together.
+    pub fn cash_flow(
+        &self, cx: &PurposeContexts, principal: VId, capability: &Capability,
+        request: &RollForwardRequest, definition: &CashFlowDefinition,
+    ) -> Outcome<CashFlow> {
+        let source = match self.general_ledger(cx, principal, capability, request)? {
+            Ok(source) => source, Err(refusal) => return Ok(Err(refusal)),
+        };
+        source.classify_cash_flow(&cx.query(), definition)
     }
 }
 
