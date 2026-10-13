@@ -82,12 +82,12 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("checkpoint", notary::checkpoint_cmd),
     ("proof", crate::proof::proof_cmd),
     ("bundle", crate::proof::bundle_cmd),
-    ("doctor", crate::triage::doctor_cmd),
-    ("triage", crate::triage::triage_cmd),
-    ("next", crate::triage::next_cmd),
     ("verify", verify_cmd),
     ("registers", registers_cmd),
     ("entry", entry_cmd),
+    ("doctor", crate::triage::doctor_cmd),
+    ("triage", crate::triage::triage_cmd),
+    ("next", crate::triage::next_cmd),
     ("capabilities", capabilities_cmd),
     ("robot-docs", robot_docs_cmd),
     ("help", help_cmd),
@@ -6218,7 +6218,9 @@ fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let built = fa_lantern::catalog::build(id, params, inputs).map_err(lantern_usage)?;
             let run = book.run_procedure(built.as_ref(), known_at, effective_through)?;
             out.known_at(run.coordinate.known_at);
-            for f in &run.findings {
+            // Human mode prints one finding per line; robot mode carries
+            // them in the event alone (stdout is one JSON object a line).
+            for f in run.findings.iter().filter(|_| !out.json) {
                 out.line(format!(
                     "{} {} {}={} {}",
                     f.severity.name(),
