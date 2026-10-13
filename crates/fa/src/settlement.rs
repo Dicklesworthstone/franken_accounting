@@ -206,9 +206,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             if let Err(refusal) = fa_journal::policy::capability_admitted(&self.db, book, capability)? {
                 return Ok(Err(refusal));
             }
-            let report = fa_registers::open_items::open_items_report(
+            let report = match fa_registers::open_items::open_items_report(
                 &self.db, book, Some(selection.account), Some(at),
-            )?;
+            ) {
+                Ok(report) => report,
+                Err(RegisterError::InvalidSelection(message)) => return Ok(Err(invalid(message))),
+                Err(error) => return Err(error.into()),
+            };
             let allocation = match report.plan_settlement(&selection) {
                 Ok(allocation) => allocation,
                 Err(RegisterError::InvalidSelection(message)) => return Ok(Err(invalid(message))),
@@ -256,14 +260,21 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             }).collect::<Result<Vec<_>, KernelError>>()?;
             let mut proposal = request.proposal;
             proposal.legs[usize::from(request.payment_leg)].settles = settles;
+            // Model validation checks structure and redundant unit totals. It
+            // does not reseal the caller's text or judge economic posting laws.
+            if let Err(error) = proposal.validate() {
+                return Ok(Err(invalid(error.to_string())));
+            }
             query.checkpoint().map_err(BookError::Context)?;
             Ok(Ok(PreparedSettlement { allocation, proposal }))
         })
     }
 
     /// Rehearse the completed proposal through all ordinary production laws.
-    /// Planning publishes nothing. Approvals must bind the completed proposal,
-    /// not the original proposal with empty settles lists.
+    /// Planning publishes nothing. This convenience path allocates at the
+    /// current HEAD; use [`Self::plan_prepared_settlement`] to bind planning to
+    /// a preparation already reviewed by the caller. Approvals must bind the
+    /// completed proposal, not the original proposal with empty settles lists.
     pub fn plan_settlement(
         &mut self,
         cx: &PurposeContexts,
@@ -275,6 +286,43 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(prepared) => prepared,
             Err(refusal) => return Ok(Err(refusal)),
         };
+        self.plan_prepared_settlement(cx, prepared, approvals, capability)
+    }
+
+    /// Rehearse the EXACT preparation the caller reviewed, without allocating
+    /// again or silently accepting a newer open-item snapshot. The private
+    /// preparation retains the reviewed proposal and its original basis.
+    /// A newer basis (even an unrelated publication) requires explicit review
+    /// of a fresh preparation. If a target was consumed meanwhile, the kernel
+    /// may refuse the application before this method's strict basis check.
+    ///
+    /// This is not an approval-refresh path: recording a new approval advances
+    /// HEAD. To obtain approvals, prepare the proposal, record its digest's
+    /// approvals, then use [`Self::plan_settlement`] with the original request;
+    /// the kernel checks those approvals against the newly completed proposal.
+    /// Review the returned plan before publishing it. Neither path automatically
+    /// retries a refusal or submits a payment.
+    pub fn plan_prepared_settlement(
+        &mut self,
+        cx: &PurposeContexts,
+        prepared: PreparedSettlement,
+        approvals: Vec<ApprovalRef>,
+        capability: &Capability,
+    ) -> Outcome<SettlementPostPlan> {
+        let book = self.context();
+        if let Err(denial) = fa_policy::admit_read(
+            capability, prepared.proposal.principal_ref, book.book_id,
+        ) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        if prepared.proposal.book_id != book.book_id
+            || prepared.proposal.branch_id != Id128::TRUNK
+        {
+            return Ok(Err(invalid("the reviewed payment belongs to another book or branch")));
+        }
+        // The real kernel performs current posting admission, revocation and
+        // expiry checks before returning an authenticated rehearsal. A prior
+        // preparation is never an authority grant, even at the same sequence.
         let intent = match PostIntent::new(prepared.proposal, approvals) {
             Ok(intent) => intent,
             Err(error) => return Ok(Err(invalid(error.to_string()))),
