@@ -797,12 +797,12 @@ waiver = "forbidden"
 invariant = "FA-INV-14"
 id = "consistency"
 status = "live"
-statement = "Each AccumulatorState extends the previous and is recomputed from the journal prefix; a forged or non-extending state is found and never published over."
+statement = "Each AccumulatorState extends the previous and is recomputed from the journal prefix; a forged or non-extending state is found and never published over, and a checkpointed entry rewritten or retired in place after its checkpoint is found and blocks verification, proofs, bundles and the next checkpoint."
 evidence_class = "invariant"
 first_gate = "G1"
 owner = "fa-l3c"
 checkers = ["fa-notary::tests/notary.rs::a_later_state_extends_the_earlier_and_consistency_verifies", "fa-notary::tests/notary.rs::recomputation_finds_a_forged_state_and_blocks_checkpoints_over_it"]
-negatives = ["fa-notary::tests/differential.rs::more_leaves_at_the_same_sequence_are_a_regression_not_an_extension", "fa-notary::tests/notary.rs::checkpoint_refuses_a_predecessor_with_a_falsely_advanced_sequence", "fa-verify::lib::tree::tests::every_consistency_path_verifies_and_every_wrong_claim_fails"]
+negatives = ["fa-notary::tests/differential.rs::more_leaves_at_the_same_sequence_are_a_regression_not_an_extension", "fa-notary::tests/notary.rs::checkpoint_refuses_a_predecessor_with_a_falsely_advanced_sequence", "fa-verify::lib::tree::tests::every_consistency_path_verifies_and_every_wrong_claim_fails", "fa-notary::tests/notary.rs::checkpointed_entries_must_remain_unchanged_before_verification_or_production", "fa-cli::tests/notary.rs::a_checkpointed_entry_rewritten_or_retired_in_place_fails_verification"]
 depends = ["FA-INV-14.leaf-envelope"]
 waiver = "forbidden"
 
