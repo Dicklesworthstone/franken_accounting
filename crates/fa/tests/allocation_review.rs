@@ -227,3 +227,6 @@ fn portable_review_can_be_planned_after_reopen_without_resealing_the_description
     runtime.block_on(book.commit_plan(&cx, plan, &author())).unwrap().unwrap();
     assert!(book.verify_projections(&cx, None).unwrap().is_green());
 }
+
+#[path = "allocation_review/approval.rs"]
+mod approval;

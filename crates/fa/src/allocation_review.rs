@@ -19,14 +19,14 @@ use asupersync::fs::Vfs;
 use fa_intents::{IntentError, PostIntent, PostPlan};
 use fa_journal::{AllocationPosting, Refusal, exit};
 use fa_model::limits::{MAX_DIMENSIONS_PER_LEG, MAX_ENTRY_BYTES};
-use fa_model::{ApprovalRef, DecodeError, EncodeError, EntryPayload, Reader, Writer, domain_digest};
+use fa_model::{ApprovalRef, DecodeError, EncodeError, EntryPayload, Id128, Reader, Writer, domain_digest};
 use fa_money::allocation::{AllocationError, AllocationOutcome, AllocationRequest, MAX_ALLOCATION_REQUEST_BYTES};
 use fa_money::Side;
 use fa_policy::{Capability, Op};
 use fgdb_types::VId;
 use fgdb_types::context::PurposeContexts;
 
-use crate::{AsyncBook, BookError, Outcome};
+use crate::{AsyncBook, Book, BookError, Outcome};
 
 const MAGIC: &[u8; 16] = b"FA-ALLOC-REVIEW\0";
 const VERSION: u16 = 1;
@@ -248,24 +248,53 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
     ) -> Outcome<PostPlan> {
         cx.txn().checkpoint().map_err(BookError::Context)?;
-        let explicit: Vec<_> = review.proposal().legs.iter()
-            .map(|leg| (leg.amount.unit, leg.amount.mantissa)).collect();
-        if let Err(denial) = fa_policy::admit(capability, &fa_policy::Intent {
-            principal: review.proposal().principal_ref, trunk: true, op: Op::Post,
-            book: self.context().book_id, legs: &explicit,
-        }) {
-            return Ok(Err(fa_journal::policy::refusal(&denial)));
-        }
-        if let Err(error) = review.verify_for(&expected_review_digest) {
-            return Ok(Err(refusal(error)));
-        }
-        let intent = match PostIntent::new(review.proposal().clone(), approvals) {
+        let intent = match reviewed_intent(self.context().book_id, review, expected_review_digest, approvals, capability) {
             Ok(intent) => intent,
-            Err(error) => return Ok(Err(refusal(error.into()))),
+            Err(refusal) => return Ok(Err(refusal)),
         };
         self.plan(cx, intent, capability)
     }
 }
+
+// The synchronous and async adapters share this exact payload-only guard.
+fn reviewed_intent(
+    book: Id128,
+    review: &AllocationReview,
+    expected: [u8; 32],
+    approvals: Vec<ApprovalRef>,
+    capability: &Capability,
+) -> Result<PostIntent, Refusal> {
+    let explicit: Vec<_> = review.proposal().legs.iter()
+        .map(|leg| (leg.amount.unit, leg.amount.mantissa)).collect();
+    fa_policy::admit(capability, &fa_policy::Intent {
+        principal: review.proposal().principal_ref, trunk: true, op: Op::Post,
+        book, legs: &explicit,
+    }).map_err(|denial| fa_journal::policy::refusal(&denial))?;
+    review.verify_for(&expected).map_err(refusal)?;
+    PostIntent::new(review.proposal().clone(), approvals)
+        .map_err(|error| refusal(error.into()))
+}
+
+impl Book {
+    /// Synchronous counterpart of AsyncBook::plan_allocation_review. Reuse the
+    /// same guard and this Book's existing native planning/runtime adapter.
+    /// Preserve the resulting PostPlan before calling Book::commit_plan.
+    pub fn plan_allocation_review(
+        &mut self,
+        review: &AllocationReview,
+        expected_review_digest: [u8; 32],
+        approvals: Vec<ApprovalRef>,
+        capability: &Capability,
+    ) -> Outcome<PostPlan> {
+        let intent = match reviewed_intent(self.context().book_id, review, expected_review_digest, approvals, capability) {
+            Ok(intent) => intent,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        self.plan(intent, capability)
+    }
+}
+
+mod approval;
 
 #[cfg(test)]
 mod tests;
