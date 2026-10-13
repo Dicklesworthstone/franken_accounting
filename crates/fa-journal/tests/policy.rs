@@ -2712,34 +2712,41 @@ fn ambiguous_dates_are_out_of_scope_until_the_period_mirror_exists() {
             h.leg(Side::Credit, h.cash, 100),
         ]
     };
+    // An Adjustment period admits no Pending (the special-period allowlist,
+    // admissibility.toml), so a hold can never sit in FY2026-A1 itself; the
+    // ambiguity is the date: December 31 is shared by P12 and A1.
     let mut adjustment = h.hold(legs(&h), b"a1-hold", dec31);
     adjustment.effective_period = Some(fa_model::PeriodRef {
         calendar: "cal".into(),
         code: "FY2026-A1".into(),
     });
-    let a1_hold = h.commit(adjustment, controller());
+    let refused = h
+        .post(adjustment, controller(), Vec::new())
+        .expect_err("an Adjustment period admits no Pending");
+    assert_eq!(refused.code, "FA-REF-010", "{refused}");
     let p12_hold = h.commit(h.hold(legs(&h), b"p12-hold", dec31), controller());
     let plain_hold = h.commit(h.hold(legs(&h), b"dec15-hold", dec15), controller());
     let p12 = h.period_of(dec15);
     let december = human(PREPARER, &["post"])
         .for_periods(&[p12.as_str()])
         .unwrap();
-    for hold in [a1_hold, p12_hold] {
-        let before = h.db.frontier().unwrap();
-        let refused = h.post(h.voids(hold, b"void", dec15), december.clone(), Vec::new());
-        let absent = h.post(
-            h.voids(NOWHERE, b"void-0", dec15),
-            december.clone(),
-            Vec::new(),
-        );
-        assert_like_absent(
-            &h,
-            before,
-            (refused.unwrap_err(), hold.vid),
-            (absent.unwrap_err(), NOWHERE.vid),
-        );
-    }
+    let before = h.db.frontier().unwrap();
+    let refused = h.post(
+        h.voids(p12_hold, b"void", dec15),
+        december.clone(),
+        Vec::new(),
+    );
+    let absent = h.post(
+        h.voids(NOWHERE, b"void-0", dec15),
+        december.clone(),
+        Vec::new(),
+    );
+    assert_like_absent(
+        &h,
+        before,
+        (refused.unwrap_err(), p12_hold.vid),
+        (absent.unwrap_err(), NOWHERE.vid),
+    );
     h.post_ok(h.voids(plain_hold, b"void", dec15), december);
-    h.post_ok(h.voids(a1_hold, b"void", dec15), controller());
     h.post_ok(h.voids(p12_hold, b"void", dec15), controller());
 }
