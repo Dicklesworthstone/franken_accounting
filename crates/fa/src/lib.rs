@@ -68,4 +68,5 @@ pub use statements::{CertifiedStatement, StatementSelection};
 pub use summary::{SummaryGroup, SummaryRequest, SummaryScope, SummaryTrialBalance};
 pub use summary_certificate::{
     CertifiedSummaryTrialBalance, MAX_SUMMARY_CERTIFICATE_BYTES, SummaryCertificate,
+    SummaryCertificateStatus,
 };

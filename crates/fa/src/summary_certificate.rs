@@ -401,3 +401,64 @@ mod tests {
         assert!(read_scope(&mut Reader::new(&[2])).is_err());
     }
 }
+
+/// Freshness of a successfully replayed summary. `Changed` is not a new
+/// certificate: it carries the present literal report for inspection only.
+/// A malformed source, lost history or corrupted chart is an error/refusal,
+/// never Current and never a silently substituted present-day report.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SummaryCertificateStatus {
+    Current {
+        checked_at: CommitSeq,
+    },
+    Changed {
+        checked_at: CommitSeq,
+        current: Box<SummaryTrialBalance>,
+    },
+}
+
+impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
+    /// Replay first, then compare the same effective/root selector at HEAD.
+    /// Only the observation's known-at is normalized for comparison. Exact
+    /// amounts, posted/pending columns, source metadata, group membership,
+    /// empty roots and uncovered leaves remain significant. In particular,
+    /// installing an unposted account can change completeness without moving
+    /// a penny and must not leave the certificate reported as Current.
+    pub fn summary_certificate_status(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        certificate: &SummaryCertificate,
+    ) -> Outcome<SummaryCertificateStatus> {
+        let original = match self.replay_summary_trial_balance(cx, principal, capability, certificate)? {
+            Ok(report) => report,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let mut request = match certificate.request() {
+            Ok(request) => request,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        request.known_at = None;
+        let mut current = match self.summary_trial_balance(cx, principal, capability, &request)? {
+            Ok(report) => report,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let checked_at = current.source.known_at;
+        current.source.known_at = original.source.known_at;
+        let unchanged = current == original;
+        current.source.known_at = checked_at;
+        cx.query().checkpoint().map_err(BookError::Context)?;
+        Ok(Ok(if unchanged {
+            SummaryCertificateStatus::Current { checked_at }
+        } else {
+            SummaryCertificateStatus::Changed {
+                checked_at,
+                current: Box::new(current),
+            }
+        }))
+    }
+}
+
+#[cfg(test)]
+mod acceptance;
