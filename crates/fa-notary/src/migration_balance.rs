@@ -148,9 +148,7 @@ fn encode(
             spec_body_digest,
         } = &p.origin
         else {
-            return Ok(Err(refusal(format!(
-                "leaf {index} lacks a control origin"
-            ))));
+            return Ok(Err(refusal(format!("leaf {index} lacks a control origin"))));
         };
         if *control_kind != ControlKind::MIGRATION_RUN || !p.legs.is_empty() {
             return Ok(Err(refusal(format!(
@@ -188,9 +186,7 @@ fn encode(
                     ))));
                 };
                 if run.terminal.is_some() {
-                    return Ok(Err(refusal(format!(
-                        "leaf {index} terminates a run twice"
-                    ))));
+                    return Ok(Err(refusal(format!("leaf {index} terminates a run twice"))));
                 }
                 run.terminal = Some((*index, *transition));
             }
@@ -262,9 +258,7 @@ fn encode(
         }
         if let EntryOrigin::Migration { run_ref, .. } = &p.origin {
             let Some(run) = runs.get(run_ref) else {
-                return Ok(Err(refusal(format!(
-                    "chunk {index} names an unopened run"
-                ))));
+                return Ok(Err(refusal(format!("chunk {index} names an unopened run"))));
             };
             if *index <= run.open_index
                 || run.terminal.is_some_and(|(terminal, _)| *index >= terminal)

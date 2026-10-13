@@ -48,6 +48,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         request: UploadRequest,
     ) -> Outcome<DocumentAdded> {
-        self.upload_in_configured_store(cx, capability, request).await
+        self.upload_in_configured_store(cx, capability, request)
+            .await
     }
 }

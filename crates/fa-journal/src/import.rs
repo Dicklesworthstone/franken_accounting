@@ -497,7 +497,12 @@ pub async fn import_run<V: asupersync::fs::Vfs + Clone>(
     let derived_grade = crate::upload::upload_grade(&policy, capability.profile())?;
     let machine_grade = crate::upload::upload_grade(&policy, fa_policy::Profile::Agent)?;
     let (proposal, docs) = match prepare(
-        book, &policy, capability, derived_grade, machine_grade, &req,
+        book,
+        &policy,
+        capability,
+        derived_grade,
+        machine_grade,
+        &req,
     ) {
         Ok(prepared) => prepared,
         Err(refused) => return Ok(Err(refused)),

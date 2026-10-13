@@ -96,7 +96,10 @@ fn success(output: &Output) -> String {
     assert!(stderr.is_empty(), "robot mode keeps stderr empty: {stderr}");
     assert_eq!(stdout.lines().count(), 1, "{stdout}");
     assert!(stdout.contains("\"verdict\":\"verified\""), "{stdout}");
-    assert!(stdout.contains("\"scope\":\"operator_trusted\""), "{stdout}");
+    assert!(
+        stdout.contains("\"scope\":\"operator_trusted\""),
+        "{stdout}"
+    );
     assert!(stdout.contains("\"format\":\"unsigned_raw_checkpoint\""));
     assert!(stdout.contains("\"signature_verification\":\"not_performed\""));
     stdout
@@ -255,7 +258,10 @@ fn every_raw_proof_verifies_against_an_operator_trusted_checkpoint() {
         };
         let stdout = success(&run_proof(kind, &proof, anchor, next));
         assert!(stdout.contains(&format!("\"command\":\"{kind}\"")));
-        assert!(stdout.contains(&format!("\"scope\":\"{scope}\"")), "{stdout}");
+        assert!(
+            stdout.contains(&format!("\"scope\":\"{scope}\"")),
+            "{stdout}"
+        );
         assert!(stdout.contains(&format!("\"book_id\":\"{}\"", "5a".repeat(16))));
         match kind {
             "inclusion" => {
@@ -518,7 +524,11 @@ fn io_failures_are_distinct_from_oversized_or_invalid_proofs() {
     let dir = directory("io");
     let (_, current) = checkpoints(&dir);
     let missing = dir.join("missing-\"quoted\"\nfile");
-    let stdout = failure(&run_proof("prefix", &missing, &current, None), 5, "io_error");
+    let stdout = failure(
+        &run_proof("prefix", &missing, &current, None),
+        5,
+        "io_error",
+    );
     assert!(stdout.contains("\\\"quoted\\\"\\nfile"), "{stdout}");
 
     // A sparse oversized file tests the size check without allocating or
@@ -528,7 +538,11 @@ fn io_failures_are_distinct_from_oversized_or_invalid_proofs() {
         .unwrap()
         .set_len(64 * 1024 * 1024 + 1)
         .unwrap();
-    let stdout = failure(&run_proof("prefix", &oversized, &current, None), 8, "failed");
+    let stdout = failure(
+        &run_proof("prefix", &oversized, &current, None),
+        8,
+        "failed",
+    );
     assert!(stdout.contains("67108864-byte bound"), "{stdout}");
 }
 
@@ -544,7 +558,10 @@ fn a_file_name_that_is_not_utf8_stays_usable() {
     let proof = dir.join(name);
     fs::write(&proof, vector("prefix")).expect("write non-UTF-8 named proof");
     let stdout = success(&run_proof("prefix", &proof, &current, None));
-    assert!(stdout.contains("\"scope\":\"seq_range_complete\""), "{stdout}");
+    assert!(
+        stdout.contains("\"scope\":\"seq_range_complete\""),
+        "{stdout}"
+    );
 }
 
 #[test]
@@ -570,7 +587,10 @@ fn help_and_human_output_explain_the_trust_boundary_and_json_is_deterministic() 
     assert_eq!(code, 0, "{plain}{err}");
     assert!(err.is_empty());
     assert!(plain.starts_with("fa-verify balance: VERIFIED"), "{plain}");
-    assert!(plain.contains("PASS checkpoint (operator_trusted)"), "{plain}");
+    assert!(
+        plain.contains("PASS checkpoint (operator_trusted)"),
+        "{plain}"
+    );
     assert!(plain.contains("signature_verification: not_performed"));
     assert!(plain.contains("PASS balance (recomputation)"), "{plain}");
     assert!(plain.contains("credits: 120550"), "{plain}");

@@ -11,15 +11,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use fa_model::symbols::{label, property};
-use fa_model::{AccountType, ControlKind, ControlPayload, DecodeError, Entry, EntryClass,
-    EntryOrigin, Id128, Reader, account_vid};
+use fa_model::{
+    AccountType, ControlKind, ControlPayload, DecodeError, Entry, EntryClass, EntryOrigin, Id128,
+    Reader, account_vid,
+};
 use fgdb::Database;
 use fgdb_types::{CommitSeq, VId};
 
+use crate::KernelError;
 use crate::genesis::{AccountSpec, BookContext, UnitPolicy};
 use crate::limit::{BalanceLimit, LimitScope};
 use crate::rows::{AccountRow, bytes};
-use crate::KernelError;
 
 /// A validated forest at one recorded frontier. Fields stay private so a
 /// caller cannot introduce a cycle or an unjournaled parent after validation.
@@ -57,7 +59,9 @@ impl ChartSnapshot {
         let mut leaves = BTreeSet::new();
         let mut pending = vec![root];
         while let Some(vid) = pending.pop() {
-            let account = self.accounts.get(&vid)
+            let account = self
+                .accounts
+                .get(&vid)
                 .ok_or_else(|| corrupt("validated chart lost an account"))?;
             if account.is_leaf {
                 leaves.insert(vid);
@@ -96,17 +100,27 @@ pub fn read_at<V: asupersync::fs::Vfs + Clone>(
             continue;
         }
         if entry.proposal.book_id != book.book_id || entry.proposal.branch_id != Id128::TRUNK {
-            return Err(corrupt("a schema control belongs to another book or branch"));
+            return Err(corrupt(
+                "a schema control belongs to another book or branch",
+            ));
         }
-        if !matches!(entry.proposal.origin,
-            EntryOrigin::Control { control_kind: ControlKind::CHART_INSTALL, .. })
-        {
+        if !matches!(
+            entry.proposal.origin,
+            EntryOrigin::Control {
+                control_kind: ControlKind::CHART_INSTALL,
+                ..
+            }
+        ) {
             return Err(corrupt("unsupported schema-control origin"));
         }
-        let Some(ControlPayload::SchemaChange { kind: 1, canonical_bytes }) =
-            &entry.proposal.control
+        let Some(ControlPayload::SchemaChange {
+            kind: 1,
+            canonical_bytes,
+        }) = &entry.proposal.control
         else {
-            return Err(corrupt("unsupported schema change; its chart effect must be implemented before reporting"));
+            return Err(corrupt(
+                "unsupported schema change; its chart effect must be implemented before reporting",
+            ));
         };
         let accounts = decode_install(canonical_bytes)
             .map_err(|error| corrupt(format!("control {:032x}: {error}", row.vid.0)))?;
@@ -120,23 +134,36 @@ pub fn read_at<V: asupersync::fs::Vfs + Clone>(
         if !row.labels.contains(&label::ACCOUNT) {
             continue;
         }
-        let expected = chart.accounts.get(&row.vid)
-            .ok_or_else(|| corrupt(format!("account {:032x} has no chart-install declaration", row.vid.0)))?;
+        let expected = chart.accounts.get(&row.vid).ok_or_else(|| {
+            corrupt(format!(
+                "account {:032x} has no chart-install declaration",
+                row.vid.0
+            ))
+        })?;
         if bytes(row, property::BOOK_ID, "account.book_id")? != book.book_id.0
             || AccountRow::decode(row)? != *expected
         {
-            return Err(corrupt(format!("account `{}` differs from its immutable declaration", expected.code)));
+            return Err(corrupt(format!(
+                "account `{}` differs from its immutable declaration",
+                expected.code
+            )));
         }
         if let UnitPolicy::Single(unit) = expected.unit_policy
             && book.units.get(unit).is_none()
         {
-            return Err(corrupt(format!("account `{}` names unregistered unit {}", expected.code, unit.0)));
+            return Err(corrupt(format!(
+                "account `{}` names unregistered unit {}",
+                expected.code, unit.0
+            )));
         }
         observed.insert(row.vid);
     }
     for (vid, account) in &chart.accounts {
         if !observed.contains(vid) {
-            return Err(corrupt(format!("declared account `{}` is absent at {}", account.code, known_at.0)));
+            return Err(corrupt(format!(
+                "declared account `{}` is absent at {}",
+                account.code, known_at.0
+            )));
         }
     }
     Ok(chart)
@@ -153,13 +180,19 @@ fn assemble(
         if created_at > known_at {
             return Err(corrupt("a declaration lies after the selected frontier"));
         }
-        if spec.code.is_empty() || spec.code.len() > 64
-            || !AccountType(spec.account_type).is_registered() || spec.normal_balance > 1
+        if spec.code.is_empty()
+            || spec.code.len() > 64
+            || !AccountType(spec.account_type).is_registered()
+            || spec.normal_balance > 1
         {
-            return Err(corrupt(format!("invalid account declaration `{}`", spec.code)));
+            return Err(corrupt(format!(
+                "invalid account declaration `{}`",
+                spec.code
+            )));
         }
         if let Some(limit) = spec.limit
-            && (!limit.is_well_formed() || !spec.is_leaf
+            && (!limit.is_well_formed()
+                || !spec.is_leaf
                 || !matches!(spec.unit_policy, UnitPolicy::Single(_)))
         {
             return Err(corrupt(format!("invalid balance limit on `{}`", spec.code)));
@@ -180,13 +213,20 @@ fn assemble(
             created_at,
         };
         if accounts.insert(vid, row).is_some() {
-            return Err(corrupt(format!("duplicate account identity {:032x}", vid.0)));
+            return Err(corrupt(format!(
+                "duplicate account identity {:032x}",
+                vid.0
+            )));
         }
     }
     let mut children: BTreeMap<VId, Vec<VId>> = BTreeMap::new();
     for (child, parent) in &parents {
-        let row = accounts.get(parent)
-            .ok_or_else(|| corrupt(format!("account {:032x} has an absent parent {:032x}", child.0, parent.0)))?;
+        let row = accounts.get(parent).ok_or_else(|| {
+            corrupt(format!(
+                "account {:032x} has an absent parent {:032x}",
+                child.0, parent.0
+            ))
+        })?;
         if row.is_leaf {
             return Err(corrupt(format!("posting leaf `{}` has a child", row.code)));
         }
@@ -209,7 +249,12 @@ fn assemble(
         }
         complete.extend(path);
     }
-    Ok(ChartSnapshot { known_at, accounts, parents, children })
+    Ok(ChartSnapshot {
+        known_at,
+        accounts,
+        parents,
+        children,
+    })
 }
 
 // install_chart's existing canonical format: list(AccountSpec base fields),
@@ -228,7 +273,8 @@ fn decode_install(payload: &[u8]) -> Result<Vec<AccountSpec>, DecodeError> {
             is_leaf: reader.bool("account.is_leaf")?,
             unit_policy: {
                 let value = reader.i64("account.unit_policy")?;
-                UnitPolicy::from_mirror(value).ok_or_else(|| reader.invalid("account.unit_policy"))?
+                UnitPolicy::from_mirror(value)
+                    .ok_or_else(|| reader.invalid("account.unit_policy"))?
             },
             parent_code: reader.opt("account.parent", |reader| {
                 Ok(reader.str(64, "account.parent_code")?.to_string())
@@ -247,7 +293,9 @@ fn decode_install(payload: &[u8]) -> Result<Vec<AccountSpec>, DecodeError> {
         let mut seen = BTreeSet::new();
         for _ in 0..count {
             let code = reader.str(64, "limit.account")?.to_string();
-            let index = *by_code.get(&code).ok_or_else(|| reader.invalid("limit.account"))?;
+            let index = *by_code
+                .get(&code)
+                .ok_or_else(|| reader.invalid("limit.account"))?;
             if !seen.insert(index) {
                 return Err(reader.invalid("chart.duplicate_limit"));
             }
@@ -263,11 +311,15 @@ fn decode_install(payload: &[u8]) -> Result<Vec<AccountSpec>, DecodeError> {
         let mut seen = BTreeSet::new();
         for _ in 0..count {
             let code = reader.str(64, "period_limit.account")?.to_string();
-            let index = *by_code.get(&code).ok_or_else(|| reader.invalid("period_limit.account"))?;
+            let index = *by_code
+                .get(&code)
+                .ok_or_else(|| reader.invalid("period_limit.account"))?;
             if !seen.insert(index) {
                 return Err(reader.invalid("chart.duplicate_period_limit"));
             }
-            let limit = accounts[index].limit.as_mut()
+            let limit = accounts[index]
+                .limit
+                .as_mut()
                 .ok_or_else(|| reader.invalid("period_limit.missing_limit"))?;
             limit.scope = LimitScope::Period;
         }
@@ -286,14 +338,23 @@ mod tests {
 
     fn account(code: &str, parent: Option<&str>, leaf: bool) -> AccountSpec {
         AccountSpec {
-            code: code.into(), name: code.into(), account_type: 1, normal_balance: 0,
-            is_leaf: leaf, unit_policy: UnitPolicy::Single(UnitId(1)),
-            parent_code: parent.map(str::to_string), limit: None,
+            code: code.into(),
+            name: code.into(),
+            account_type: 1,
+            normal_balance: 0,
+            is_leaf: leaf,
+            unit_policy: UnitPolicy::Single(UnitId(1)),
+            parent_code: parent.map(str::to_string),
+            limit: None,
         }
     }
 
     fn forest(accounts: Vec<AccountSpec>) -> Result<ChartSnapshot, KernelError> {
-        assemble(BOOK, CommitSeq(5), accounts.into_iter().map(|a| (a, CommitSeq(2))).collect())
+        assemble(
+            BOOK,
+            CommitSeq(5),
+            accounts.into_iter().map(|a| (a, CommitSeq(2))).collect(),
+        )
     }
 
     // Independent encoding of the documented base layout, not the reader's
@@ -301,9 +362,15 @@ mod tests {
     fn wire(accounts: &[AccountSpec]) -> Writer {
         let mut w = Writer::new();
         w.list(accounts, |w, a| {
-            w.str(&a.code).str(&a.name).u8(a.account_type).u8(a.normal_balance)
-                .bool(a.is_leaf).i64(a.unit_policy.mirror())
-                .opt(a.parent_code.as_ref(), |w, parent| { w.str(parent); });
+            w.str(&a.code)
+                .str(&a.name)
+                .u8(a.account_type)
+                .u8(a.normal_balance)
+                .bool(a.is_leaf)
+                .i64(a.unit_policy.mirror())
+                .opt(a.parent_code.as_ref(), |w, parent| {
+                    w.str(parent);
+                });
         });
         w
     }
@@ -311,18 +378,34 @@ mod tests {
     #[test]
     fn subtree_membership_uses_parentage_not_codes_and_never_includes_summaries() {
         let chart = forest(vec![
-            account("assets", None, false), account("nested", Some("assets"), false),
-            account("cash", Some("nested"), true), account("receivable", Some("assets"), true),
-            account("assets-looking-but-unrelated", None, true), account("empty", None, false),
-        ]).unwrap();
+            account("assets", None, false),
+            account("nested", Some("assets"), false),
+            account("cash", Some("nested"), true),
+            account("receivable", Some("assets"), true),
+            account("assets-looking-but-unrelated", None, true),
+            account("empty", None, false),
+        ])
+        .unwrap();
         assert_eq!(chart.known_at(), CommitSeq(5));
-        assert_eq!(chart.leaves_under(account_vid(BOOK, "assets")).unwrap(),
-            BTreeSet::from([account_vid(BOOK, "cash"), account_vid(BOOK, "receivable")]));
-        assert_eq!(chart.leaves_under(account_vid(BOOK, "cash")).unwrap(),
-            BTreeSet::from([account_vid(BOOK, "cash")]));
-        assert!(chart.leaves_under(account_vid(BOOK, "empty")).unwrap().is_empty());
+        assert_eq!(
+            chart.leaves_under(account_vid(BOOK, "assets")).unwrap(),
+            BTreeSet::from([account_vid(BOOK, "cash"), account_vid(BOOK, "receivable")])
+        );
+        assert_eq!(
+            chart.leaves_under(account_vid(BOOK, "cash")).unwrap(),
+            BTreeSet::from([account_vid(BOOK, "cash")])
+        );
+        assert!(
+            chart
+                .leaves_under(account_vid(BOOK, "empty"))
+                .unwrap()
+                .is_empty()
+        );
         assert!(chart.leaves_under(account_vid(BOOK, "absent")).is_err());
-        assert_eq!(chart.parents()[&account_vid(BOOK, "cash")], account_vid(BOOK, "nested"));
+        assert_eq!(
+            chart.parents()[&account_vid(BOOK, "cash")],
+            account_vid(BOOK, "nested")
+        );
     }
 
     #[test]
@@ -332,44 +415,79 @@ mod tests {
             vec![account("a", Some("missing"), true)],
             vec![account("a", None, true), account("b", Some("a"), true)],
             vec![account("a", Some("a"), false)],
-            vec![account("a", Some("b"), false), account("b", Some("a"), false)],
+            vec![
+                account("a", Some("b"), false),
+                account("b", Some("a"), false),
+            ],
         ] {
             assert!(forest(definitions).is_err());
         }
-        assert!(assemble(BOOK, CommitSeq(1), vec![(account("late", None, true), CommitSeq(2))]).is_err());
+        assert!(
+            assemble(
+                BOOK,
+                CommitSeq(1),
+                vec![(account("late", None, true), CommitSeq(2))]
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn deep_forests_are_iterative_and_input_order_independent() {
         let mut accounts = vec![account("0", None, false)];
         for n in 1..2048 {
-            accounts.push(account(&n.to_string(), Some(&(n - 1).to_string()), n == 2047));
+            accounts.push(account(
+                &n.to_string(),
+                Some(&(n - 1).to_string()),
+                n == 2047,
+            ));
         }
         let first = forest(accounts.clone()).unwrap();
         accounts.reverse();
         let second = forest(accounts).unwrap();
         let root = account_vid(BOOK, "0");
-        assert_eq!(first.leaves_under(root).unwrap(), BTreeSet::from([account_vid(BOOK, "2047")]));
-        assert_eq!(first.leaves_under(root).unwrap(), second.leaves_under(root).unwrap());
+        assert_eq!(
+            first.leaves_under(root).unwrap(),
+            BTreeSet::from([account_vid(BOOK, "2047")])
+        );
+        assert_eq!(
+            first.leaves_under(root).unwrap(),
+            second.leaves_under(root).unwrap()
+        );
     }
 
     #[test]
     fn installed_chart_codec_retains_lifetime_and_period_limits() {
-        let accounts = vec![account("summary", None, false), account("cash", Some("summary"), true)];
+        let accounts = vec![
+            account("summary", None, false),
+            account("cash", Some("summary"), true),
+        ];
         let raw = wire(&accounts).finish().unwrap();
         assert_eq!(decode_install(&raw).unwrap(), accounts);
         for scope in [LimitScope::Lifetime, LimitScope::Period] {
             let mut w = wire(&accounts);
-            w.u32(1).str("cash").u8(1).i128(i128::MIN).u8(1).i128(i128::MAX);
+            w.u32(1)
+                .str("cash")
+                .u8(1)
+                .i128(i128::MIN)
+                .u8(1)
+                .i128(i128::MAX);
             if scope == LimitScope::Period {
                 w.u32(1).str("cash");
             }
             let mut expected = accounts.clone();
-            expected[1].limit = Some(BalanceLimit { lower: Some(i128::MIN), upper: Some(i128::MAX), scope });
+            expected[1].limit = Some(BalanceLimit {
+                lower: Some(i128::MIN),
+                upper: Some(i128::MAX),
+                scope,
+            });
             assert_eq!(decode_install(&w.finish().unwrap()).unwrap(), expected);
         }
         for end in 0..raw.len() {
-            assert!(decode_install(&raw[..end]).is_err(), "truncated base at {end}");
+            assert!(
+                decode_install(&raw[..end]).is_err(),
+                "truncated base at {end}"
+            );
         }
         let mut trailing = raw;
         trailing.push(0xff);
@@ -380,8 +498,16 @@ mod tests {
     fn malformed_optional_limit_lists_do_not_reassign_policy() {
         let accounts = vec![account("cash", None, true)];
         let mut duplicate = wire(&accounts);
-        duplicate.u32(2).str("cash").u8(1).i128(0).u8(0)
-            .str("cash").u8(1).i128(1).u8(0);
+        duplicate
+            .u32(2)
+            .str("cash")
+            .u8(1)
+            .i128(0)
+            .u8(0)
+            .str("cash")
+            .u8(1)
+            .i128(1)
+            .u8(0);
         assert!(decode_install(&duplicate.finish().unwrap()).is_err());
         let mut unknown = wire(&accounts);
         unknown.u32(1).str("other").u8(1).i128(0).u8(0);

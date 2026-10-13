@@ -109,7 +109,10 @@ mod balance_dispatch_tests {
             leaf_count: 0,
             root: tree::empty_root(),
         };
-        for format in [balance::BALANCE_FORMAT, migration_balance::BALANCE_FORMAT_V2] {
+        for format in [
+            balance::BALANCE_FORMAT,
+            migration_balance::BALANCE_FORMAT_V2,
+        ] {
             let mut w = codec::Writer::default();
             w.bytes(format)
                 .fixed(&checkpoint.encode())
@@ -128,7 +131,10 @@ mod balance_dispatch_tests {
             assert!(report.contributing.is_empty());
             assert_eq!((report.claim.debits, report.claim.credits), (0, 0));
             if format == balance::BALANCE_FORMAT {
-                assert_eq!(balance::verify_balance(&w.buf, &checkpoint).unwrap(), report);
+                assert_eq!(
+                    balance::verify_balance(&w.buf, &checkpoint).unwrap(),
+                    report
+                );
             }
         }
     }

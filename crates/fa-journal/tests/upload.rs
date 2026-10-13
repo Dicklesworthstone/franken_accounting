@@ -2,7 +2,9 @@
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
 use fa_journal::evidence::{document_vid, read_document};
-use fa_journal::upload::{PreparedUpload, UploadPreparation, UploadRequest, prepare_upload, upload_document};
+use fa_journal::upload::{
+    PreparedUpload, UploadPreparation, UploadRequest, prepare_upload, upload_document,
+};
 use fa_journal::{BookContext, BookSpec, Refusal, create_book};
 use fa_model::symbols::{property, relation};
 use fa_model::{Id128, SealKey, SymbolTable};
@@ -27,10 +29,12 @@ impl Harness {
         let runtime = RuntimeBuilder::new().build().unwrap();
         let root = runtime.request_cx_with_budget(Budget::INFINITE);
         let cx = PurposeContexts::narrow_runtime_root(&root);
-        let mut db = runtime.block_on(Database::open_memory(
-            &cx.commit(),
-            DatabaseKeys::new([31; 32], DatabaseSecurityNamespaceId([32; 32]), [33; 32]),
-        )).unwrap();
+        let mut db = runtime
+            .block_on(Database::open_memory(
+                &cx.commit(),
+                DatabaseKeys::new([31; 32], DatabaseSecurityNamespaceId([32; 32]), [33; 32]),
+            ))
+            .unwrap();
         let units = UnitRegistry::with_defaults();
         let calendar = FiscalCalendar::monthly("upload-calendar", 1, 1).unwrap();
         let symbols = SymbolTable::compiled();
@@ -50,30 +54,51 @@ impl Harness {
             entities: Vec::new(),
             opening_date: None,
         };
-        runtime.block_on(create_book(&mut db, &cx, &spec, &units, &symbols)).unwrap();
-        Self { runtime, root, db, book }
+        runtime
+            .block_on(create_book(&mut db, &cx, &spec, &units, &symbols))
+            .unwrap();
+        Self {
+            runtime,
+            root,
+            db,
+            book,
+        }
     }
 
     fn cx(&self) -> PurposeContexts {
         PurposeContexts::narrow_runtime_root(&self.root)
     }
 
-    fn upload(&mut self, cap: &Capability, req: UploadRequest) -> Result<fa_journal::DocumentAdded, Refusal> {
+    fn upload(
+        &mut self,
+        cap: &Capability,
+        req: UploadRequest,
+    ) -> Result<fa_journal::DocumentAdded, Refusal> {
         let cx = self.cx();
-        self.runtime.block_on(upload_document(&mut self.db, &cx, &self.book, cap, req)).unwrap()
+        self.runtime
+            .block_on(upload_document(&mut self.db, &cx, &self.book, cap, req))
+            .unwrap()
     }
 
     fn prepare(&mut self, cap: &Capability, req: UploadRequest) -> Box<PreparedUpload> {
         let cx = self.cx();
-        match prepare_upload(&mut self.db, &cx, &self.book, cap, req).unwrap().unwrap() {
+        match prepare_upload(&mut self.db, &cx, &self.book, cap, req)
+            .unwrap()
+            .unwrap()
+        {
             UploadPreparation::Ready(prepared) => prepared,
             other => panic!("expected new upload: {other:?}"),
         }
     }
 
-    fn commit(&mut self, prepared: Box<PreparedUpload>) -> Result<fa_journal::DocumentAdded, Refusal> {
+    fn commit(
+        &mut self,
+        prepared: Box<PreparedUpload>,
+    ) -> Result<fa_journal::DocumentAdded, Refusal> {
         let cx = self.cx();
-        self.runtime.block_on(prepared.commit(&mut self.db, &cx)).unwrap()
+        self.runtime
+            .block_on(prepared.commit(&mut self.db, &cx))
+            .unwrap()
     }
 }
 
@@ -82,12 +107,20 @@ fn cap(profile: Profile, holder: u128) -> Capability {
 }
 
 fn grade(name: &str) -> u8 {
-    EvidencePolicy::embedded().unwrap().grade_by_name(name).unwrap().tag
+    EvidencePolicy::embedded()
+        .unwrap()
+        .grade_by_name(name)
+        .unwrap()
+        .tag
 }
 
 fn request(bytes: &[u8]) -> UploadRequest {
     UploadRequest {
-        kind: EvidencePolicy::embedded().unwrap().kind_by_name("Invoice").unwrap().tag,
+        kind: EvidencePolicy::embedded()
+            .unwrap()
+            .kind_by_name("Invoice")
+            .unwrap()
+            .tag,
         mime: "text/plain".into(),
         bytes: bytes.to_vec(),
         asserted_grade: None,
@@ -115,7 +148,10 @@ fn uploader_and_grade_come_from_the_session_and_receipt_is_atomic() {
         assert_eq!(added.recorded_at.0, head.0 + 1);
         let chain = fa_journal::custody_chain(&h.db, &added.oid).unwrap();
         assert_eq!(chain.len(), 1);
-        assert_eq!(chain[0].1, added.recorded_at, "receipt and bytes have one publication");
+        assert_eq!(
+            chain[0].1, added.recorded_at,
+            "receipt and bytes have one publication"
+        );
     }
 }
 
@@ -136,22 +172,35 @@ fn forged_grade_assertions_refuse_before_any_write_including_on_retry() {
     req.asserted_grade = Some(grade("AgentUpload"));
     let retry = h.upload(&agent, req).unwrap();
     assert!(retry.already_recorded);
-    assert_eq!((retry.oid, retry.recorded_at), (added.oid, added.recorded_at));
+    assert_eq!(
+        (retry.oid, retry.recorded_at),
+        (added.oid, added.recorded_at)
+    );
 }
 
 #[test]
 fn human_reupload_cannot_launder_an_existing_agent_receipt() {
     let mut h = Harness::new();
-    let first = h.upload(&cap(Profile::Agent, 30), request(b"shared bytes")).unwrap();
+    let first = h
+        .upload(&cap(Profile::Agent, 30), request(b"shared bytes"))
+        .unwrap();
     let before = h.db.frontier().unwrap();
-    let retry = h.upload(&cap(Profile::Human, 31), request(b"shared bytes")).unwrap();
+    let retry = h
+        .upload(&cap(Profile::Human, 31), request(b"shared bytes"))
+        .unwrap();
     assert!(retry.already_recorded);
     assert_eq!(retry.grade, grade("AgentUpload"));
-    assert_eq!((retry.oid, retry.recorded_at), (first.oid, first.recorded_at));
+    assert_eq!(
+        (retry.oid, retry.recorded_at),
+        (first.oid, first.recorded_at)
+    );
     assert_eq!(h.db.frontier().unwrap(), before);
     let stored = read_document(&h.db, &first.oid).unwrap().unwrap().unwrap();
     assert_eq!(stored.retrieved_by, VId(30));
-    assert_eq!(fa_journal::custody_chain(&h.db, &first.oid).unwrap().len(), 1);
+    assert_eq!(
+        fa_journal::custody_chain(&h.db, &first.oid).unwrap().len(),
+        1
+    );
 }
 
 #[test]
@@ -160,9 +209,17 @@ fn missing_authority_excluded_books_and_expiry_refuse_without_writes() {
     let head = h.db.frontier().unwrap();
     let reader = Capability::new(VId(40), Profile::Human, &[Op::Read], VId(1)).unwrap();
     // Missing authority takes precedence even over malformed input.
-    assert_eq!(h.upload(&reader, request(b"")).unwrap_err().code, "FA-REF-011");
-    let excluded = cap(Profile::Human, 40).for_books(&[Id128([99; 16])]).unwrap();
-    assert_eq!(h.upload(&excluded, request(b"off book")).unwrap_err().exit, 7);
+    assert_eq!(
+        h.upload(&reader, request(b"")).unwrap_err().code,
+        "FA-REF-011"
+    );
+    let excluded = cap(Profile::Human, 40)
+        .for_books(&[Id128([99; 16])])
+        .unwrap();
+    assert_eq!(
+        h.upload(&excluded, request(b"off book")).unwrap_err().exit,
+        7
+    );
     let expired = cap(Profile::Human, 40).expiring_at(head);
     let denial = h.upload(&expired, request(b"expired")).unwrap_err();
     assert!(denial.message.contains("expir"), "{denial}");
@@ -202,7 +259,10 @@ fn prepared_duplicate_has_one_winner_and_retry_is_read_only() {
     assert!(retry.already_recorded);
     assert_eq!(retry.oid, added.oid);
     assert_eq!(h.db.frontier().unwrap(), head);
-    assert_eq!(fa_journal::custody_chain(&h.db, &added.oid).unwrap().len(), 1);
+    assert_eq!(
+        fa_journal::custody_chain(&h.db, &added.oid).unwrap().len(),
+        1
+    );
 }
 
 #[test]
@@ -212,7 +272,8 @@ fn expiry_is_checked_again_at_publication() {
     let capability = cap(Profile::Human, 70).expiring_at(expires);
     let prepared = h.prepare(&capability, request(b"too late"));
     let oid = prepared.document_oid();
-    h.upload(&cap(Profile::Human, 71), request(b"advance frontier")).unwrap();
+    h.upload(&cap(Profile::Human, 71), request(b"advance frontier"))
+        .unwrap();
     let head = h.db.frontier().unwrap();
     let refusal = h.commit(prepared).unwrap_err();
     assert!(refusal.message.contains("expir"), "{refusal}");
@@ -228,7 +289,8 @@ fn policy_epoch_is_an_original_witness_not_refreshed_at_publication() {
     // A planted mutation isolates the exact property a lawful policy activation moves.
     let mut batch = WriteBatch::new(relation::IN_BOOK);
     batch.set_vertex_property(
-        fa_journal::rows::book_root(), property::SECURITY_POLICY_EPOCH,
+        fa_journal::rows::book_root(),
+        property::SECURITY_POLICY_EPOCH,
         Some(CanonicalScalar::Int(1)),
     );
     let cx = h.cx();
@@ -241,11 +303,19 @@ fn policy_epoch_is_an_original_witness_not_refreshed_at_publication() {
 
 fn import_cap(profile: Profile, holder: u128) -> Capability {
     let key = fa_policy::sod::control_key("ImportControl", None, "Import");
-    let op = fa_journal::policy::steward().unwrap().preparer_op(&key).unwrap();
+    let op = fa_journal::policy::steward()
+        .unwrap()
+        .preparer_op(&key)
+        .unwrap();
     Capability::new(VId(holder), profile, &[op], VId(1)).unwrap()
 }
 
-fn import_document(h: &Harness, capability: &Capability, bytes: &[u8], name: &str) -> fa_journal::Document {
+fn import_document(
+    h: &Harness,
+    capability: &Capability,
+    bytes: &[u8],
+    name: &str,
+) -> fa_journal::Document {
     let req = request(bytes);
     fa_journal::Document {
         book_id: h.book.book_id,
@@ -265,12 +335,18 @@ fn import_request(
 ) -> fa_journal::ImportRequest {
     fa_journal::ImportRequest {
         principal: capability.holder(),
-        source: fa_model::IntakeSource::Upload { principal: capability.holder() },
+        source: fa_model::IntakeSource::Upload {
+            principal: capability.holder(),
+        },
         idempotency_key: key.to_vec(),
         effective_date: fa_time::DateDay::EPOCH,
         // A constant plaintext for these deterministic test-only sealing inputs.
         description: fa_model::Erasable::seal(
-            &"authorized import".to_string(), None, &h.book.seal_key, [51; 32], [52; 24],
+            &"authorized import".to_string(),
+            None,
+            &h.book.seal_key,
+            [51; 32],
+            [52; 24],
         ),
         documents,
     }
@@ -282,9 +358,11 @@ fn run_import(
     request: fa_journal::ImportRequest,
 ) -> Result<fa_journal::ImportRecorded, Refusal> {
     let cx = h.cx();
-    h.runtime.block_on(fa_journal::import_run(
-        &mut h.db, &cx, &h.book, capability, request,
-    )).unwrap()
+    h.runtime
+        .block_on(fa_journal::import_run(
+            &mut h.db, &cx, &h.book, capability, request,
+        ))
+        .unwrap()
 }
 
 #[test]
@@ -301,7 +379,10 @@ fn a_forged_document_uploader_refuses_the_whole_import_before_any_staging() {
     let before = h.db.frontier().unwrap();
     let denied = run_import(&mut h, &capability, forged).unwrap_err();
     assert_eq!(denied.exit, 7, "{denied}");
-    assert!(denied.message.contains("documents[1].retrieved_by"), "{denied}");
+    assert!(
+        denied.message.contains("documents[1].retrieved_by"),
+        "{denied}"
+    );
     assert_eq!(h.db.frontier().unwrap(), before);
     for doc in &valid.documents {
         assert!(h.db.vertex(document_vid(&doc.oid())).unwrap().is_none());
@@ -309,7 +390,9 @@ fn a_forged_document_uploader_refuses_the_whole_import_before_any_staging() {
         assert!(h.db.vertex(receipt).unwrap().is_none());
     }
     let run_id = fa_model::entry_vid(
-        h.book.book_id, &capability.holder().0.to_le_bytes(), &valid.idempotency_key,
+        h.book.book_id,
+        &capability.holder().0.to_le_bytes(),
+        &valid.idempotency_key,
     );
     assert!(h.db.vertex(run_id).unwrap().is_none());
     let mut oids: Vec<_> = valid.documents.iter().map(|doc| doc.oid()).collect();
@@ -318,7 +401,8 @@ fn a_forged_document_uploader_refuses_the_whole_import_before_any_staging() {
     assert_eq!(imported.recorded, oids);
     assert_eq!(imported.receipt.recorded_at.0, before.0 + 1);
     fa_journal::verify_receipt_in(&h.db, h.book.book_id, &imported.receipt, &oids)
-        .unwrap().unwrap();
+        .unwrap()
+        .unwrap();
     for oid in oids {
         let chain = fa_journal::custody_chain(&h.db, &oid).unwrap();
         assert_eq!(chain.len(), 1);
@@ -332,7 +416,9 @@ fn an_import_source_cannot_claim_another_uploading_principal() {
     let capability = import_cap(Profile::Human, 100);
     let doc = import_document(&h, &capability, b"source binding", "HumanUpload");
     let mut req = import_request(&h, &capability, b"source-bound", vec![doc]);
-    req.source = fa_model::IntakeSource::Upload { principal: VId(101) };
+    req.source = fa_model::IntakeSource::Upload {
+        principal: VId(101),
+    };
     let before = h.db.frontier().unwrap();
     let denied = run_import(&mut h, &capability, req).unwrap_err();
     assert_eq!(denied.exit, 7, "{denied}");
@@ -347,9 +433,16 @@ fn registered_connector_names_do_not_let_machine_imports_claim_human_provenance(
     let doc = import_document(&h, &machine, b"automated invoice", "HumanUpload");
     let mut req = import_request(&h, &machine, b"machine-import", vec![doc]);
     let sources = [
-        fa_model::IntakeSource::Upload { principal: machine.holder() },
-        fa_model::IntakeSource::Connector { name: "fa-import".into(), version: "1".into() },
-        fa_model::IntakeSource::Email { message_id: "declared-message-id".into() },
+        fa_model::IntakeSource::Upload {
+            principal: machine.holder(),
+        },
+        fa_model::IntakeSource::Connector {
+            name: "fa-import".into(),
+            version: "1".into(),
+        },
+        fa_model::IntakeSource::Email {
+            message_id: "declared-message-id".into(),
+        },
     ];
     let before = h.db.frontier().unwrap();
     for source in sources {
@@ -359,7 +452,9 @@ fn registered_connector_names_do_not_let_machine_imports_claim_human_provenance(
         assert!(denied.message.contains("documents[0]"), "{denied}");
         assert_eq!(h.db.frontier().unwrap(), before);
     }
-    req.source = fa_model::IntakeSource::Upload { principal: machine.holder() };
+    req.source = fa_model::IntakeSource::Upload {
+        principal: machine.holder(),
+    };
     req.documents[0].grade = grade("AgentUpload");
     let expected = req.documents[0].oid();
     let imported = run_import(&mut h, &machine, req).unwrap();
@@ -390,7 +485,8 @@ fn human_imports_preserve_conservative_grades_and_existing_custody() {
     assert_eq!(chain.len(), 1);
     assert_eq!(chain[0].1, first.receipt.recorded_at);
     fa_journal::verify_receipt_in(&h.db, h.book.book_id, &second.receipt, &[oid])
-        .unwrap().unwrap();
+        .unwrap()
+        .unwrap();
 }
 
 #[test]
@@ -406,10 +502,20 @@ fn recorded_import_retries_do_not_bypass_current_provenance_admission() {
     assert_eq!(retry.receipt, original.receipt);
     let mut wrong_doc = req.clone();
     wrong_doc.documents[0].retrieved_by = VId(131);
-    assert_eq!(run_import(&mut h, &capability, wrong_doc).unwrap_err().exit, 7);
+    assert_eq!(
+        run_import(&mut h, &capability, wrong_doc).unwrap_err().exit,
+        7
+    );
     let mut wrong_source = req;
-    wrong_source.source = fa_model::IntakeSource::Upload { principal: VId(131) };
-    assert_eq!(run_import(&mut h, &capability, wrong_source).unwrap_err().exit, 7);
+    wrong_source.source = fa_model::IntakeSource::Upload {
+        principal: VId(131),
+    };
+    assert_eq!(
+        run_import(&mut h, &capability, wrong_source)
+            .unwrap_err()
+            .exit,
+        7
+    );
     assert_eq!(h.db.frontier().unwrap(), before);
 }
 
@@ -419,12 +525,18 @@ fn import_authority_precedes_document_processing_and_agent_trunk_policy_stays_in
     let reader = Capability::new(VId(140), Profile::Human, &[], VId(1)).unwrap();
     let malformed = import_request(&h, &reader, b"no-authority", Vec::new());
     let before = h.db.frontier().unwrap();
-    assert_eq!(run_import(&mut h, &reader, malformed).unwrap_err().code, "FA-REF-011");
+    assert_eq!(
+        run_import(&mut h, &reader, malformed).unwrap_err().code,
+        "FA-REF-011"
+    );
     // Supplying an evidence object is not permission to append ImportControl.
     let agent = import_cap(Profile::Agent, 141);
     let doc = import_document(&h, &agent, b"agent bulk attempt", "AgentUpload");
     let req = import_request(&h, &agent, b"no-trunk", vec![doc]);
-    assert_eq!(run_import(&mut h, &agent, req).unwrap_err().code, "FA-REF-013");
+    assert_eq!(
+        run_import(&mut h, &agent, req).unwrap_err().code,
+        "FA-REF-013"
+    );
     assert_eq!(h.db.frontier().unwrap(), before);
 }
 
@@ -432,7 +544,9 @@ fn import_authority_precedes_document_processing_and_agent_trunk_policy_stays_in
 fn a_real_revocation_invalidates_prepared_uploads_and_blocks_recorded_retries() {
     let mut h = Harness::new();
     let capability = cap(Profile::Agent, 150);
-    let prior = h.upload(&capability, request(b"uploaded before revocation")).unwrap();
+    let prior = h
+        .upload(&capability, request(b"uploaded before revocation"))
+        .unwrap();
     let prepared = h.prepare(&capability, request(b"prepared before revocation"));
     let oid = prepared.document_oid();
     let revoker = Capability::new(VId(1), Profile::Human, &[Op::IssueCapability], VId(1)).unwrap();
@@ -442,17 +556,26 @@ fn a_real_revocation_invalidates_prepared_uploads_and_blocks_recorded_retries() 
         effective_date: fa_time::DateDay::EPOCH,
         idempotency_key: b"revoke-uploader".to_vec(),
         description: fa_model::Erasable::seal(
-            &"revoke upload authority".to_string(), None, &h.book.seal_key, [61; 32], [62; 24],
+            &"revoke upload authority".to_string(),
+            None,
+            &h.book.seal_key,
+            [61; 32],
+            [62; 24],
         ),
     };
     let cx = h.cx();
-    let revoked = h.runtime.block_on(fa_journal::revoke_capability(
-        &mut h.db, &cx, &h.book, req,
-    )).unwrap().unwrap();
+    let revoked = h
+        .runtime
+        .block_on(fa_journal::revoke_capability(&mut h.db, &cx, &h.book, req))
+        .unwrap()
+        .unwrap();
     let before = h.db.frontier().unwrap();
     assert_eq!(before, revoked.recorded_at);
     assert_eq!(h.commit(prepared).unwrap_err().exit, 6);
-    for bytes in [b"uploaded before revocation".as_slice(), b"prepared before revocation".as_slice()] {
+    for bytes in [
+        b"uploaded before revocation".as_slice(),
+        b"prepared before revocation".as_slice(),
+    ] {
         let denied = h.upload(&capability, request(bytes)).unwrap_err();
         assert_eq!(denied.exit, 7, "{denied}");
         assert!(denied.message.contains("revok"), "{denied}");
