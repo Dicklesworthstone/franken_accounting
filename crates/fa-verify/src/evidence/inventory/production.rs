@@ -12,6 +12,8 @@
 //! are not verified. An empty list is not a claim that evidence was required
 //! or sufficient. The full prefix exposes out-of-scope envelope metadata.
 
+pub mod documents;
+
 use core::fmt;
 
 use super::citations_from_proposal;
