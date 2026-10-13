@@ -1223,7 +1223,7 @@ fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fa
             | ("chart" | "period", Some("list"))
             | (
                 "tb" | "statement" | "open-items" | "explain" | "replay" | "certificate" | "entry"
-                | "procedure" | "triage" | "next",
+                | "procedure" | "triage" | "next" | "doctor",
                 _,
             ) => &[Op::Read],
             ("verify" | "registers", _) => &[Op::Read, Op::Verify],

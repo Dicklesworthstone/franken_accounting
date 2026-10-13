@@ -1198,11 +1198,6 @@ name = "fa.proof"
 doc = "Portable accounting proofs from recorded checkpoints (signed by the book's key, or raw statements), checked independently without book keys."
 
 [[mcp.excluded]]
-verb = "doctor"
-reason = "host-only: inspects the book directory, the key file's permissions and the writer lease on the host, outside the launch-bound book (plan §15.4 registered exclusion)"
-
-
-[[mcp.excluded]]
 verb = "fad"
 subcommand = "serve"
 reason = "host-only: controls the daemon process that will host fa-mcp (plan §15.4 registered exclusion)"
@@ -1273,6 +1268,16 @@ positionals = []
 required = []
 dont = ["Don't run the command blindly when it names a grant the launch does not hold (`--grant approve`, `--grant witness`): ask the operator."]
 mistakes = ["Treating a null command as an error: it means there is nothing to do."]
+
+[[mcp.tool]]
+cluster = "fa.orient"
+name = "doctor"
+verb = "doctor"
+subcommands = []
+positionals = []
+required = []
+dont = ["Don't repair what a failing check names yourself: each check carries its exact fix, and key-file or lease problems are the operator's."]
+mistakes = ["Reading the writer_lease check as another process's lock: under fa-mcp the launch-bound session itself holds the book's lease once a command has opened it."]
 
 
 # ---- fa.book ----------------------------------------------------------------
