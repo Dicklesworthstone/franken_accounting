@@ -22,6 +22,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod disclosure;
 pub mod journal;
 pub mod migration_balance;
 pub mod state;

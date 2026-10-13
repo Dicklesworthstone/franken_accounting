@@ -39,6 +39,7 @@ pub mod balance;
 pub mod balance_request;
 pub mod blake3;
 pub mod codec;
+pub mod disclosure;
 pub mod document;
 pub mod envelope;
 pub mod migration_balance;
