@@ -177,6 +177,11 @@ pub enum VerifyError {
     RecordSet {
         index: u64,
     },
+    /// An in-scope Migration leaf needs authenticated lifecycle and run
+    /// policy evidence that a v1 balance proof does not carry (fa-e00).
+    MigrationVisibility {
+        index: u64,
+    },
     /// A leg amount is negative or a sum overflowed `i128`.
     Arithmetic,
     /// The refold differs from the claim; these are the refolded sums.
@@ -253,6 +258,10 @@ impl fmt::Display for VerifyError {
             Self::RecordSet { index } => write!(
                 f,
                 "the records are not exactly the in-scope leaves (leaf {index} is missing or extra)"
+            ),
+            Self::MigrationVisibility { index } => write!(
+                f,
+                "Migration leaf {index}: a v1 balance proof cannot establish migration visibility; authenticated lifecycle and run-policy witnesses are required (fa-e00)"
             ),
             Self::Arithmetic => write!(f, "a leg amount is negative or a sum overflowed"),
             Self::Claim { debits, credits } => write!(

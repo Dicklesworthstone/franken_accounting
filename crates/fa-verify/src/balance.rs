@@ -11,13 +11,20 @@
 //!
 //! A stock balance is a fold over every contributing entry from inception
 //! through the cutoff, so the proof carries the trusted checkpoint's
-//! complete prefix — which makes the in-scope set authenticated — and the
-//! payload of exactly the in-scope leaves, ascending. In scope: an entry
-//! whose envelope names the account and the unit, whose class is not
-//! `Pending`, and whose effective day is at or before the cutoff when one
-//! is given. Each record must rebuild its own envelope (both digests
-//! recomputed), and the verifier refolds the posted debits and credits of
-//! (account, unit) with checked `i128` and compares them with the claim.
+//! complete prefix — which makes the candidate set authenticated — and the
+//! payload of exactly the candidate leaves, ascending. A candidate names the
+//! account and unit, is not `Pending`, and is within the optional cutoff.
+//! Each record must rebuild its own envelope (both digests recomputed), and
+//! the verifier refolds the posted debits and credits of (account, unit)
+//! with checked `i128` and compares them with the claim.
+//!
+//! A v1 proof cannot establish a Migration entry's visibility: an authentic
+//! journal leaf can still belong to an Open or Abandoned run, or excluded
+//! pre-opening history. Such candidates refuse before amount recomputation,
+//! even when the producer claims zero or omits their records. Producer-side
+//! guards are not a verifier trust boundary. Full migration support requires
+//! authenticated lifecycle and run-policy witnesses (fa-e00); ordinary v1
+//! proofs and raw inclusion/prefix proofs retain their existing formats.
 //!
 //! Not covered: pending reservations (a hold's release depends on every
 //! resolution's target, which this proof does not carry), periods (the
@@ -34,6 +41,9 @@ pub const SCOPE_RECOMPUTATION: &str = "recomputation";
 /// The `Pending` entry class tag (`registries/entry_classes.toml`): a hold
 /// reserves and never posts.
 pub const CLASS_PENDING: u16 = 2;
+/// A Migration leaf is not sufficient evidence that its amounts are visible.
+/// The immutable class tag is registered in `entry_classes.toml`.
+pub const CLASS_MIGRATION: u16 = 12;
 
 /// What a balance proof claims about one (account, unit).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,7 +65,9 @@ pub struct Balance {
     pub contributing: Vec<u64>,
 }
 
-/// Whether a leaf contributes posted legs to (account, unit) by the cutoff.
+/// Whether a leaf is a candidate for (account, unit) by the cutoff.
+/// This selection predicate alone does not establish migration visibility;
+/// callers must not treat it as an independent recomputation verdict.
 #[must_use]
 pub fn in_scope(e: &LeafEnvelope, account: u128, unit: u32, through: Option<i32>) -> bool {
     e.class != CLASS_PENDING
@@ -104,6 +116,18 @@ pub fn verify_balance(
     r.finish("balance proof")?;
 
     let envelopes = complete_prefix(&raw, &checkpoint)?;
+    // Authenticate the entire prefix first, then examine its candidates —
+    // never only the records the untrusted producer chose to supply. Merely
+    // skipping Migration would falsely certify zero for finalized runs.
+    for (index, envelope) in envelopes.iter().enumerate() {
+        if envelope.class == CLASS_MIGRATION
+            && in_scope(envelope, claim.account, claim.unit, claim.effective_through)
+        {
+            return Err(VerifyError::MigrationVisibility {
+                index: u64::try_from(index).unwrap_or(u64::MAX),
+            });
+        }
+    }
     let expected: Vec<u64> = envelopes
         .iter()
         .enumerate()
