@@ -178,6 +178,52 @@ fn assert_cash_credits(out: &str, expected: &str) {
     assert_eq!(field(out, "balanced"), Some("true"), "{out}");
 }
 
+/// fa-l93 D13: an identical `fa period <t> --key K` retry is the recorded
+/// outcome (exit 0, one `recorded` event naming the same control entry);
+/// without the key, the second open is the state machine's refusal.
+#[test]
+fn an_identical_period_transition_retry_is_the_recorded_outcome() -> std::io::Result<()> {
+    let dir = tmp("transition-retry")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Retry Co", "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    let open = [
+        "period",
+        "open",
+        "FY2026-P03",
+        "--key",
+        "open-p03",
+        "--json",
+    ];
+    let first = ok(&open);
+    assert_eq!(
+        field(&first, "event"),
+        Some("period_transitioned"),
+        "{first}"
+    );
+    let entry = field(&first, "control_entry")
+        .unwrap_or_default()
+        .to_string();
+    assert_eq!(entry.len(), 32, "{first}");
+    let again = ok(&open);
+    assert_eq!(field(&again, "event"), Some("recorded"), "{again}");
+    assert_eq!(field(&again, "vid"), Some(entry.as_str()), "{again}");
+    assert_eq!(
+        field(&again, "recorded_at"),
+        field(&first, "recorded_at"),
+        "{again}"
+    );
+    let (code, out, _) = fa(Some(&book), &["period", "open", "FY2026-P03", "--json"]);
+    assert_eq!(code, 7, "a keyless second open is a new request: {out}");
+    assert!(out.contains("\"refusal_id\":\"FA-REF-040\""), "{out}");
+    Ok(())
+}
+
 /// fa-ih4: posting ahead of the book's fiscal years is a safety refusal
 /// (FA-REF-021, exit 7) naming the command that creates the year, never a
 /// "corrupt row" foundation failure; following the fix admits the post.
