@@ -226,6 +226,21 @@ impl BookKeys {
     pub(crate) fn seal_key(&self) -> SealKey {
         SealKey(derive_key("fa:erasable:book:v1", self.inner.dek()))
     }
+
+    /// The book's checkpoint signing key (plan §13.2): an Ed25519 seed
+    /// `KDF(k_oid ‖ namespace, "fa:checkpoint-signing-seed:v1")`, so the key
+    /// file format is unchanged and the signing key is domain-separated
+    /// from every other use of the book's secrets.
+    pub(crate) fn checkpoint_signing_key(&self) -> fa_notary::SigningKey {
+        let mut material = [0u8; 64];
+        material[..32].copy_from_slice(self.inner.k_oid());
+        material[32..].copy_from_slice(&self.namespace);
+        let mut seed = derive_key("fa:checkpoint-signing-seed:v1", &material);
+        let key = fa_notary::SigningKey::from_seed(&seed);
+        fgdb_crypto::zeroize::scrub_slice(&mut material);
+        fgdb_crypto::zeroize::scrub_slice(&mut seed);
+        key
+    }
 }
 
 impl fmt::Debug for BookKeys {
@@ -308,6 +323,9 @@ pub enum BookError {
     Entropy(EntropyError),
     /// The substrate refused a native read needed by a report certificate.
     CertifiedRead(fgdb::QueryError),
+    /// A Lantern procedure refused or failed outside the kernel, registers
+    /// and registry (those map to their own variants).
+    Lantern(fa_lantern::LanternError),
 }
 
 impl BookError {
@@ -315,9 +333,11 @@ impl BookError {
     #[must_use]
     pub fn exit(&self) -> u8 {
         match self {
-            Self::Registers(fa_registers::RegisterError::InvalidSelection(_)) => {
-                fa_journal::exit::USAGE
-            }
+            Self::Registers(fa_registers::RegisterError::InvalidSelection(_))
+            | Self::Lantern(
+                fa_lantern::LanternError::Unregistered { .. }
+                | fa_lantern::LanternError::Parameter { .. },
+            ) => fa_journal::exit::USAGE,
             Self::Runtime(_) | Self::Open(_) | Self::Io(..) | Self::KeyFile(_) | Self::NoBook => {
                 fa_journal::exit::ENVIRONMENT
             }
@@ -326,7 +346,8 @@ impl BookError {
             | Self::Registers(_)
             | Self::Registry(_)
             | Self::Entropy(_)
-            | Self::CertifiedRead(_) => fa_journal::exit::FOUNDATION,
+            | Self::CertifiedRead(_)
+            | Self::Lantern(_) => fa_journal::exit::FOUNDATION,
         }
     }
 }
@@ -345,6 +366,7 @@ impl fmt::Display for BookError {
             Self::Registry(e) => write!(f, "registry: {e}"),
             Self::Entropy(e) => write!(f, "entropy: {e:?}"),
             Self::CertifiedRead(e) => write!(f, "certified report input: {e}"),
+            Self::Lantern(e) => write!(f, "procedure: {e}"),
         }
     }
 }
@@ -371,6 +393,16 @@ impl From<fa_registry::RegistryError> for BookError {
         Self::Registry(e)
     }
 }
+impl From<fa_lantern::LanternError> for BookError {
+    fn from(e: fa_lantern::LanternError) -> Self {
+        match e {
+            fa_lantern::LanternError::Kernel(k) => Self::Kernel(k),
+            fa_lantern::LanternError::Register(r) => Self::Registers(r),
+            fa_lantern::LanternError::Registry(r) => Self::Registry(r),
+            other => Self::Lantern(other),
+        }
+    }
+}
 impl From<EntropyError> for BookError {
     fn from(e: EntropyError) -> Self {
         Self::Entropy(e)
@@ -394,6 +426,15 @@ macro_rules! with_store {
             Store::ScratchDir($db) => $body,
         }
     };
+}
+
+/// An evidence bundle and its detached production receipt (plan §13.2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProducedBundle {
+    /// The deterministic body (`.fab`) and its digest.
+    pub bundle: fa_notary::Bundle,
+    /// The `ProductionReceipt`'s canonical bytes, signed by the book's key.
+    pub receipt: Vec<u8>,
 }
 
 /// One open book.
@@ -704,9 +745,10 @@ impl Book {
     /// objects, byte for byte, one scratch commit per source commit that
     /// carries any, under the scratch book's own commit sequences. Returns
     /// the scratch book (its database opened with `keys`, sealing with
-    /// `entropy`) and the [`fa_journal::SeqMap`] binding the two histories.
-    /// External documents remain in the source's immutable blob store;
-    /// that store must remain available for subsequent scratch reads.
+    /// `entropy`, its checkpoints signed with `keys`' checkpoint key) and
+    /// the [`fa_journal::SeqMap`] binding the two histories. External
+    /// documents remain in the source's immutable blob store; that store
+    /// must remain available for subsequent scratch reads.
     pub fn replay_into_scratch(
         &mut self,
         prefix: Option<CommitSeq>,
@@ -720,13 +762,13 @@ impl Book {
         })?;
         let replayed = match &mut self.store {
             Store::Memory(core) => scratch_runtime
-                .block_on(core.replay_into(&scratch_purposes, db, prefix, entropy))?
+                .block_on(core.replay_into(&scratch_purposes, db, &keys, prefix, entropy))?
                 .map(|(copy, map)| (Store::Memory(copy), map)),
             Store::Dir(core) => scratch_runtime
-                .block_on(core.replay_into(&scratch_purposes, db, prefix, entropy))?
+                .block_on(core.replay_into(&scratch_purposes, db, &keys, prefix, entropy))?
                 .map(|(copy, map)| (Store::ScratchDir(copy), map)),
             Store::ScratchDir(core) => scratch_runtime
-                .block_on(core.replay_into(&scratch_purposes, db, prefix, entropy))?
+                .block_on(core.replay_into(&scratch_purposes, db, &keys, prefix, entropy))?
                 .map(|(copy, map)| (Store::ScratchDir(copy), map)),
         };
         let (store, map) = match replayed {
@@ -765,6 +807,24 @@ impl Book {
     ) -> Outcome<fa_journal::DocumentAdded> {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(core.add_document(&purposes, doc)))
+    }
+
+    /// Supply evidence under the calling session's capability. The kernel
+    /// derives the uploader and provenance grade and checks current authority
+    /// before observing an existing document or publishing its custody receipt.
+    /// Inline and large documents use this book's configured storage, never
+    /// the trusted owner intake path. A retry preserves the original provenance.
+    /// Hosts bind the capability; this method does not authenticate a transport
+    /// or grant an Agent monetary posting authority on trunk.
+    pub fn upload_document(
+        &mut self,
+        capability: &fa_journal::Capability,
+        request: fa_journal::UploadRequest,
+    ) -> Outcome<fa_journal::DocumentAdded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.upload_document(
+            &purposes, capability, request,
+        )))
     }
 
     /// Record an import run (plan §9.3): the batch's documents and their
@@ -1171,7 +1231,8 @@ impl Book {
 
     /// Load a retained artifact by its full public certificate digest.
     pub fn read_certificate(&self, digest: &[u8; 32]) -> Outcome<crate::ReportCertificate> {
-        with_store!(&self.store, core => core.read_certificate(&self.purposes(), digest))
+        let purposes = self.purposes();
+        with_store!(&self.store, core => self.runtime.block_on(core.read_certificate(&purposes, digest)))
     }
 
     /// Materialize a period's registers from a fresh fold.
@@ -1211,7 +1272,16 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.rebuild_registers(&purposes, period_code)))
     }
 
-    /// Publish an unsigned accumulator state for this book's entry prefix.
+    /// The public key this book's transparency checkpoints are signed with
+    /// (Ed25519, plan §13.2). An outsider is given it out of band and
+    /// passes it to `fa_verify::verify_checkpoint`.
+    #[must_use]
+    pub fn checkpoint_public_key(&self) -> [u8; 32] {
+        with_store!(&self.store, core => core.checkpoint_public_key())
+    }
+
+    /// Publish an accumulator state for this book's entry prefix and the
+    /// transparency checkpoint beside it, signed with the book's key.
     /// `witness` authorizes publication, not changing its recomputed contents.
     /// Admission precedes storage observation; Agent profiles cannot publish
     /// on trunk. Expiry is checked at the single-writer admission frontier.
@@ -1224,12 +1294,56 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.checkpoint(&purposes, principal, capability)))
     }
 
-    /// Recompute every accumulator state from its journal prefix.
+    /// Recompute every accumulator state from its journal prefix, and every
+    /// checkpoint from the same prefix and the book's key.
     /// This reads the whole open embedded book, like the other current read
     /// methods; scoped session admission is not implemented here. The result
-    /// verifies entry prefixes, without signatures or document-receipt claims.
+    /// verifies entry prefixes and the book's own checkpoint signatures, not
+    /// witnesses or document-receipt claims.
     pub fn verify_accumulator(&self) -> Result<fa_notary::AccumulatorVerification, BookError> {
         with_store!(&self.store, core => core.verify_accumulator(&self.purposes()))
+    }
+
+    /// Export a raw Notary proof or 80-byte checkpoint for the independent
+    /// `fa-verify` program. The holder must have current read and produce
+    /// authority for this book. The selected checkpoint is recomputed from
+    /// retained journal history; no new checkpoint or other write occurs.
+    /// Outsiders establish trust in the unsigned checkpoint separately.
+    pub fn export_proof(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: crate::ProofRequest,
+    ) -> Outcome<crate::ProofArtifact> {
+        with_store!(&self.store, core => core.export_proof(&self.purposes(), principal, capability, request))
+    }
+
+    /// Produce an evidence bundle (plan §13.2) and its detached production
+    /// receipt. The bundle is produced against the journaled state `state`
+    /// (default: the latest), whose checkpoint is recomputed from the
+    /// journal and the book's key first; it is a pure function of the
+    /// request and that checkpoint, so producing it again gives the same
+    /// bytes. The receipt records `principal`, the recorded sequence the
+    /// production was admitted at and `capability`'s commitment, signed
+    /// with the book's key. `produce` authorizes the production, and
+    /// admission (current, not revoked) precedes every read of the journal.
+    /// Each cited document is read as `capability` may see it
+    /// ([`Book::read_document_for`], decided before any read of its bytes):
+    /// a document it sees only as a redacted view gets a stub without bytes,
+    /// and inlining one is refused (FA-REF-128). `None` when the book has no
+    /// published state to produce against (publish one with
+    /// [`Book::checkpoint`]) or `state` is not on the chain.
+    pub fn produce_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        request: &fa_notary::BundleRequest,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_bundle(
+            &purposes, principal, capability, state, request,
+        )))
     }
 
     /// Open items (plan §5.7): every leg of a live posted entry, optionally
@@ -1288,6 +1402,18 @@ impl Book {
         with_store!(&self.store, core => core.explain_balance(&self.purposes(), account, period_code, known_at))
     }
 
+    /// Run a registered Lantern procedure over the trunk as known at
+    /// `known_at` (the head when `None`) and, for the historical folds,
+    /// through `effective_through`: a pure read (plan §11).
+    pub fn run_procedure(
+        &self,
+        procedure: &dyn fa_lantern::Procedure,
+        known_at: Option<CommitSeq>,
+        effective_through: Option<fa_time::DateDay>,
+    ) -> Result<fa_lantern::ProcedureRun, BookError> {
+        with_store!(&self.store, core => core.run_procedure(&self.purposes(), procedure, known_at, effective_through))
+    }
+
     /// Stock balances from inception through the latest selected period's end.
     pub fn trial_balance(&self, periods: &[String]) -> Result<TrialBalance, BookError> {
         self.trial_balance_at(periods, None)
@@ -1320,6 +1446,12 @@ impl Book {
         known_at: Option<CommitSeq>,
     ) -> Result<TrialBalance, BookError> {
         with_store!(&self.store, core => core.period_activity(&self.purposes(), periods, known_at))
+    }
+
+    /// The genesis spec journaled on the book root (base unit, calendar,
+    /// opening date, entities).
+    pub fn spec(&self) -> Result<BookSpec, BookError> {
+        with_store!(&self.store, core => core.spec(&self.purposes()))
     }
 
     /// Open reads under `capability` for `principal` (plan §14.2), through
@@ -1765,7 +1897,13 @@ mod tests {
             .unwrap();
             let replay_events_start = vfs.events().len();
             let (mut scratch, map) = book
-                .replay_into(&cx, scratch_db, None, Entropy::deterministic(seed + 1))
+                .replay_into(
+                    &cx,
+                    scratch_db,
+                    &BookKeys::for_development(0x63),
+                    None,
+                    Entropy::deterministic(seed + 1),
+                )
                 .await
                 .unwrap()
                 .unwrap();
@@ -2236,7 +2374,13 @@ mod tests {
                 .unwrap();
                 let replay_events_start = vfs.events().len();
                 let (scratch, map) = book
-                    .replay_into(&cx, scratch_db, None, Entropy::deterministic(seed + 100))
+                    .replay_into(
+                        &cx,
+                        scratch_db,
+                        &BookKeys::for_development(0x6a),
+                        None,
+                        Entropy::deterministic(seed + 100),
+                    )
                     .await
                     .unwrap()
                     .unwrap();
@@ -3682,6 +3826,97 @@ mod tests {
             .expect("another capability of the same reader still reads");
     }
 
+    /// `produce` authorizes a production and is checked before any read;
+    /// the body names no producer (an Agent's production is the same bytes)
+    /// while the receipt does; an outsider verifies both with the book's
+    /// public key; with no published state there is nothing to produce.
+    #[test]
+    fn bundles_require_produce_and_verify_with_the_book_key() {
+        use fa_policy::{Capability as PolicyCapability, Op, Profile};
+
+        let (spec, _) = spec(Id128([0x47; 16]));
+        let mut book = Book::create_memory(
+            BookKeys::for_development(47),
+            spec,
+            Entropy::deterministic(47),
+        )
+        .unwrap();
+        let principal = VId(47);
+        let request = fa_notary::BundleRequest {
+            scope: fa_notary::BundleScope::Prefix,
+            balances: Vec::new(),
+            inline_documents: true,
+        };
+        let producer = PolicyCapability::embedded(principal, &["produce", "read"]).unwrap();
+        assert_eq!(
+            book.produce_bundle(principal, &producer, None, &request)
+                .unwrap()
+                .unwrap(),
+            None,
+            "no published state"
+        );
+        let witness = PolicyCapability::embedded(principal, &["witness"]).unwrap();
+        let published = book.checkpoint(principal, &witness).unwrap().unwrap();
+        let at = book.head().unwrap();
+        for (actor, cap, code) in [
+            (principal, witness, "FA-REF-011"),
+            (VId(48), producer.clone(), "FA-REF-011"),
+            (principal, producer.clone().expiring_at(at), "FA-REF-014"),
+        ] {
+            let refusal = book
+                .produce_bundle(actor, &cap, None, &request)
+                .unwrap()
+                .unwrap_err();
+            assert_eq!((refusal.code, refusal.exit), (code, 7));
+        }
+        // `produce` alone never discloses the journal: a Prefix bundle lists
+        // every leaf, so production also needs whole-book read (fa-ku9).
+        let produce_only = PolicyCapability::embedded(principal, &["produce"]).unwrap();
+        let refusal = book
+            .produce_bundle(principal, &produce_only, None, &request)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", 7));
+        let agent =
+            PolicyCapability::new(principal, Profile::Agent, &[Op::Produce, Op::Read], VId(1))
+                .unwrap();
+        let by_agent = book
+            .produce_bundle(principal, &agent, None, &request)
+            .unwrap()
+            .unwrap()
+            .expect("the latest state");
+        let produced = book
+            .produce_bundle(principal, &producer, Some(published.stored.oid), &request)
+            .unwrap()
+            .unwrap()
+            .expect("the named state");
+        assert_eq!(
+            produced.bundle, by_agent.bundle,
+            "the body names no producer"
+        );
+        assert_ne!(produced.receipt, by_agent.receipt, "the receipt does");
+        let report = fa_verify::verify_bundle(
+            &produced.bundle.bytes,
+            &[book.checkpoint_public_key()],
+            Some(&produced.receipt),
+        )
+        .unwrap();
+        assert!(report.verified(), "{:#?}", report.checks);
+        let facts = report.receipt.expect("the receipt verified");
+        assert_eq!(
+            (facts.producer_principal, facts.produced_at_seq),
+            (principal.0, at.0)
+        );
+        assert_eq!(facts.capability_commitment, producer.commitment().unwrap());
+        assert_eq!(
+            book.produce_bundle(principal, &producer, Some(fa_model::Oid([9; 32])), &request)
+                .unwrap()
+                .unwrap(),
+            None,
+            "a state not on the chain"
+        );
+    }
+
     fn spec(book_id: Id128) -> (BookSpec, fa_money::UnitId) {
         let calendar = FiscalCalendar::monthly("cal", 1, 1).unwrap();
         let units = fa_money::UnitRegistry::embedded().unwrap();
@@ -3708,6 +3943,27 @@ mod tests {
         key: &[u8],
         cents_credit: i128,
     ) -> Outcome<Posted> {
+        let source = fa_journal::Document {
+            book_id: book.context().book_id,
+            kind: 1,
+            mime: "text/plain".into(),
+            grade: 3,
+            retrieved_by: principal,
+            bytes: b"INVOICE (facade fixture source document)".to_vec(),
+        };
+        post_rent_citing(book, usd, principal, day, key, cents_credit, &source)
+    }
+
+    /// [`post_rent`], citing `source` (added to the book first).
+    fn post_rent_citing(
+        book: &mut Book,
+        usd: fa_money::UnitId,
+        principal: VId,
+        day: DateDay,
+        key: &[u8],
+        cents_credit: i128,
+        source: &fa_journal::Document,
+    ) -> Outcome<Posted> {
         let book_id = book.context().book_id;
         let legs = vec![
             LegPayload::simple(
@@ -3721,15 +3977,7 @@ mod tests {
                 Amount::new(usd, cents_credit),
             ),
         ];
-        let source = fa_journal::Document {
-            book_id,
-            kind: 1,
-            mime: "text/plain".into(),
-            grade: 3,
-            retrieved_by: principal,
-            bytes: b"INVOICE (facade fixture source document)".to_vec(),
-        };
-        book.add_document(&source)?
+        book.add_document(source)?
             .expect("the fixture document is admitted");
         let proposal = EntryPayload {
             schema_minor: 0,
@@ -4753,6 +5001,114 @@ mod tests {
     }
 
     #[test]
+    fn historical_inline_certificate_retries_do_not_reselect_placement() {
+        use crate::TrialBalanceSelection;
+        use fa_model::symbols::{label, property, relation};
+        use fgdb_types::CanonicalScalar;
+
+        let (mut book, usd, day, original) = certified_fixture();
+        let template = book.read_entry(original).unwrap().unwrap().0.proposal;
+        let mut selected = None;
+        // Add distinct, posted leaf accounts: more entries on the same
+        // accounts change totals, but do not add trial-balance rows. Do not
+        // pad a certificate or alter its committed output to create a size.
+        for n in 0..128 {
+            let certified = book
+                .certify_trial_balance(TrialBalanceSelection::AsOf(day), None)
+                .unwrap()
+                .unwrap();
+            assert_eq!(certified.report.rows.len(), n + 2);
+            let bytes = certified.certificate.canonical_bytes().unwrap();
+            let payload = CanonicalScalar::bytes(bytes.clone()).unwrap();
+            if payload.canonical_encoded_len().unwrap()
+                > crate::certificate_store::MAX_INLINE_CERTIFICATE_BYTES
+            {
+                selected = Some((certified, bytes, payload));
+                break;
+            }
+            let code = format!("7{n:03}");
+            book.install_chart(
+                &[AccountSpec {
+                    code: code.clone(),
+                    name: format!("Rent allocation {n}"),
+                    account_type: 5,
+                    normal_balance: 0,
+                    is_leaf: true,
+                    unit_policy: UnitPolicy::Single(usd),
+                    parent_code: None,
+                    limit: None,
+                }],
+                VId(1),
+                day,
+                format!("legacy-inline-chart-{n}").as_bytes(),
+            )
+            .unwrap()
+            .unwrap();
+            let mut proposal = template.clone();
+            proposal.idempotency_key = format!("legacy-inline-rent-{n}").into_bytes();
+            proposal.legs[0].account_ref = account_vid(book.context().book_id, &code);
+            book.post(PostRequest {
+                proposal,
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: Capability::embedded(VId(1), &["post"]).unwrap(),
+            })
+            .unwrap()
+            .unwrap();
+        }
+        let (certified, bytes, payload) =
+            selected.expect("the bounded real history crosses the inline policy cutoff");
+        let certificate = certified.certificate;
+        let vid =
+            crate::certificate_store::certificate_vid(book.context().book_id, &certificate.digest);
+
+        // Reproduce the historical producer's first retention, which always
+        // stored canonical bytes inline. Native admission must accept the
+        // complete row: a format-valid but oversized fixture is not enough.
+        let mut properties = vec![
+            (property::FA_PAYLOAD, payload),
+            (
+                property::FA_DIGEST,
+                CanonicalScalar::bytes(certificate.digest.to_vec()).unwrap(),
+            ),
+            (
+                property::BOOK_ID,
+                CanonicalScalar::bytes(book.context().book_id.0.to_vec()).unwrap(),
+            ),
+        ];
+        properties.sort_by_key(|(key, _)| key.0);
+        let purposes = book.purposes();
+        let mut create = fgdb::WriteBatch::new(relation::DERIVED_FROM);
+        create.create_vertex(vid, vec![label::CERTIFICATE], properties);
+        with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&purposes.commit(), create)))
+            .expect("the historical inline representation fits the native row");
+        let recorded_at = book.head().unwrap();
+        assert!(recorded_at > certificate.known_at);
+
+        assert_eq!(
+            book.read_certificate(&certificate.digest).unwrap().unwrap(),
+            certificate
+        );
+        assert_eq!(
+            book.replay_trial_balance(&certificate).unwrap().unwrap(),
+            certified.report
+        );
+        let retained = book.retain_certificate(&certificate).unwrap().unwrap();
+        assert_eq!(retained.digest, certificate.digest);
+        assert_eq!(retained.recorded_at, recorded_at);
+        assert_eq!(book.head().unwrap(), recorded_at);
+        let row = with_store!(&book.store, core => core.db.vertex(vid))
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.created_at, recorded_at);
+        assert_eq!(
+            fa_journal::rows::bytes(&row, property::FA_PAYLOAD, "historical certificate").unwrap(),
+            bytes,
+            "retry preserves the original inline bytes despite the new placement policy"
+        );
+    }
+
+    #[test]
     fn initial_certificate_retention_can_follow_unrelated_commits() {
         use crate::TrialBalanceSelection;
 
@@ -5587,8 +5943,9 @@ mod tests {
 
     /// Plan §15.2 through the facade: the scratch book (its own runtime and
     /// store) folds as the source does and verifies against its SeqMap; a
-    /// scenario post lands in the scratch book only; a map with a pair
-    /// removed is FA-REF-135.
+    /// later checkpoint cannot invalidate a historical replay. A scenario
+    /// post lands in the scratch book only; a map with a pair removed is
+    /// FA-REF-135.
     #[test]
     fn a_scratch_replay_reproduces_the_book_and_scenario_posts_stay_in_it() {
         let book_id = Id128([0x5c; 16]);
@@ -5599,6 +5956,7 @@ mod tests {
             Entropy::deterministic(0x5c),
         )
         .expect("create");
+        let genesis = book.head().unwrap();
         let principal = VId(1);
         let day = DateDay::from_ymd(2026, 3, 15).unwrap();
         book.install_chart(&chart(usd), principal, day, b"chart")
@@ -5627,6 +5985,7 @@ mod tests {
                 .expect("kernel")
                 .expect("admitted");
         }
+        let historical_prefix = book.head().unwrap();
         // Maintained registers and source-bound report artifacts are not
         // accounting inputs to a scratch book.
         assert!(book.advance_registers(&march).expect("maintained").wrote);
@@ -5636,7 +5995,71 @@ mod tests {
             .unwrap()
             .certificate;
         let retained = book.retain_certificate(&certificate).unwrap().unwrap();
+        let checkpoint = book
+            .checkpoint(
+                principal,
+                &Capability::embedded(principal, &["witness"]).unwrap(),
+            )
+            .unwrap()
+            .unwrap();
         let source_head = book.head().unwrap();
+        let root_vid = fa_journal::rows::book_root();
+        let current_root = with_store!(&book.store, core => core.db.vertex(root_vid))
+            .unwrap()
+            .unwrap();
+        assert_eq!(current_root.created_at, checkpoint.stored.recorded_at);
+        assert!(current_root.created_at > historical_prefix);
+
+        // The root's current version starts at the checkpoint, but its
+        // original creating commit still admits this earlier monetary prefix.
+        let (historical, historical_map) = book
+            .replay_into_scratch(
+                Some(historical_prefix),
+                BookKeys::for_development(0x5e),
+                Entropy::deterministic(0x5e),
+            )
+            .unwrap()
+            .expect("checkpoint maintenance cannot move genesis");
+        book.verify_replay(&historical, &historical_map)
+            .unwrap()
+            .expect("the historical map still verifies after the checkpoint");
+        assert_eq!(historical_map.source_prefix, historical_prefix);
+        let first = historical_map.pairs.first().expect("the genesis pair");
+        assert_eq!(first.source_seq, genesis);
+        let genesis_marker = with_store!(&book.store, core => {
+            core.db.delta_since(CommitSeq(0)).map(|mut history| {
+                history
+                    .find(|batch| batch.commit_seq() == genesis)
+                    .expect("the authenticated genesis commit")
+                    .commit_marker_identity()
+                    .marker_oid
+                    .0
+            })
+        })
+        .unwrap();
+        assert_eq!(first.source_marker, genesis_marker);
+        let original_root = with_store!(&book.store, core => core.db.vertex_at(root_vid, genesis))
+            .unwrap()
+            .unwrap();
+        // The replayed root as of its own genesis: later replayed controls
+        // may re-version the root (a row's created_at starts its current
+        // version), so its birth is read from the creating commit.
+        let replayed_genesis =
+            with_store!(&historical.store, core => fa_journal::scratch::source_genesis(&core.db))
+                .unwrap()
+                .expect("the scratch book has a genesis");
+        assert_eq!(replayed_genesis, first.scratch_seq);
+        let replayed_root =
+            with_store!(&historical.store, core => core.db.vertex_at(root_vid, first.scratch_seq))
+                .unwrap()
+                .unwrap();
+        assert_eq!(replayed_root.created_at, first.scratch_seq);
+        assert_eq!(replayed_root.birth_ordinal, original_root.birth_ordinal);
+        assert_eq!(replayed_root.props, original_root.props);
+        assert_eq!(
+            historical.fold_period(&march).unwrap().cells,
+            book.fold_period(&march).unwrap().cells
+        );
 
         let before_genesis = book
             .replay_into_scratch(
@@ -5669,6 +6092,15 @@ mod tests {
             .expect("verifies");
         assert_eq!(verified.pairs_checked, map.pairs.len());
         assert!(verified.entries_checked >= 2, "{verified:?}");
+        assert_eq!(
+            map.pairs, historical_map.pairs,
+            "only maintenance followed the historical accounting prefix"
+        );
+        assert_eq!(
+            map.translate(checkpoint.stored.recorded_at),
+            historical_map.translate(historical_prefix),
+            "a checkpoint translates to the preceding accounting commit"
+        );
         assert!(
             !map.pairs
                 .iter()
@@ -6206,6 +6638,134 @@ mod tests {
                 .expect("the bytes"),
             fa_journal::DocumentRead::Full(statement)
         );
+    }
+
+    /// A bundle reads each cited document as the producing capability may
+    /// see it (plan §9.6, doctrine 8). A bank statement is governed by
+    /// redaction contract 1. Before its view is derived, a reader without
+    /// `privileged` produces nothing over it (142), and `produce` without
+    /// `read` is refused at the document (011). With the view, the reader's
+    /// stub-only bundle is byte for byte the privileged holder's (the view
+    /// proves the kind, length and chunk root the bytes give) and carries
+    /// none of the bytes, while inlining is refused (128). The privileged
+    /// holder inlines the bytes, and both bundles verify. Once revoked, the
+    /// reader is refused before the journal is read (023).
+    #[test]
+    fn a_bundle_inlines_a_governed_document_only_for_a_capability_that_reveals_it() {
+        let book_id = Id128([0x4a; 16]);
+        let (spec, usd) = spec(book_id);
+        let mut book = Book::create_memory(
+            BookKeys::for_development(0x4a),
+            spec,
+            Entropy::deterministic(0x4a),
+        )
+        .expect("create");
+        let (counsel, reader) = (VId(1), VId(2));
+        let day = DateDay::from_ymd(2026, 3, 15).unwrap();
+        book.install_chart(&chart(usd), counsel, day, b"chart")
+            .expect("kernel")
+            .expect("installs");
+        let (_, periods) = book.create_periods(2026).expect("periods");
+        let march = periods
+            .iter()
+            .find(|p| p.contains(day) && p.kind == PeriodKind::Normal)
+            .unwrap()
+            .code
+            .clone();
+        book.transition_period(
+            &march,
+            PeriodTransition::Open,
+            counsel,
+            1,
+            day,
+            b"open",
+            &Capability::embedded(counsel, &["close"]).expect("close"),
+        )
+        .expect("kernel")
+        .expect("opens");
+        let statement = fa_journal::Document {
+            book_id,
+            kind: 5,
+            mime: "text/plain".into(),
+            grade: 3,
+            retrieved_by: counsel,
+            bytes: b"ACCOUNT 0012-3456-7890 (bundle fixture)\n".repeat(200),
+        };
+        post_rent_citing(&mut book, usd, counsel, day, b"rent", 150_000, &statement)
+            .expect("kernel")
+            .expect("admitted");
+        let witness = Capability::embedded(counsel, &["witness"]).expect("witness");
+        book.checkpoint(counsel, &witness).unwrap().unwrap();
+
+        let produce = |book: &mut Book, who: VId, cap: &Capability, inline_documents: bool| {
+            let request = fa_notary::BundleRequest {
+                scope: fa_notary::BundleScope::Prefix,
+                balances: Vec::new(),
+                inline_documents,
+            };
+            book.produce_bundle(who, cap, None, &request)
+                .expect("kernel")
+                .map(|produced| produced.expect("the latest state"))
+        };
+        let revealing =
+            Capability::embedded(counsel, &["produce", "read", "privileged"]).expect("privileged");
+        let viewing = Capability::embedded(reader, &["produce", "read"]).expect("read");
+        for inline in [true, false] {
+            let r = produce(&mut book, reader, &viewing, inline).unwrap_err();
+            assert_eq!((r.code, r.exit), ("FA-REF-142", 3), "{r}");
+        }
+        let unread = Capability::embedded(reader, &["produce"]).expect("produce");
+        let r = produce(&mut book, reader, &unread, false).unwrap_err();
+        assert_eq!((r.code, r.exit), ("FA-REF-011", 7), "{r}");
+
+        book.derive_redacted_view(&revealing, &statement.oid())
+            .expect("kernel")
+            .expect("derived");
+        let r = produce(&mut book, reader, &viewing, true).unwrap_err();
+        assert_eq!((r.code, r.exit), ("FA-REF-128", 3), "{r}");
+        let stubbed = produce(&mut book, reader, &viewing, false).expect("a stub-only bundle");
+        let by_counsel = produce(&mut book, counsel, &revealing, false).expect("the same bundle");
+        assert_eq!(
+            stubbed.bundle, by_counsel.bundle,
+            "the view proves the stub the bytes give"
+        );
+        let inlined = produce(&mut book, counsel, &revealing, true).expect("an inline bundle");
+        let holds = |bytes: &[u8]| bytes.windows(22).any(|w| w == b"ACCOUNT 0012-3456-7890");
+        assert!(holds(&inlined.bundle.bytes), "the statement is inlined");
+        assert!(
+            !holds(&stubbed.bundle.bytes),
+            "a stub carries none of its bytes"
+        );
+        let key = book.checkpoint_public_key();
+        for produced in [&stubbed, &inlined] {
+            let report =
+                fa_verify::verify_bundle(&produced.bundle.bytes, &[key], Some(&produced.receipt))
+                    .unwrap();
+            assert!(report.verified(), "{:#?}", report.checks);
+        }
+
+        let req = fa_journal::RevocationRequest {
+            capability: Capability::embedded(counsel, &["issue_capability"]).unwrap(),
+            revoked: viewing.commitment().unwrap(),
+            effective_date: DateDay::from_ymd(2026, 1, 1).unwrap(),
+            idempotency_key: b"revoke-viewing".to_vec(),
+            description: fa_model::Erasable::seal(
+                &"revoke".to_string(),
+                None,
+                &book.context().seal_key,
+                [0x4a; 32],
+                [0x4a; 24],
+            ),
+        };
+        let purposes = book.purposes();
+        let ctx = book.context().clone();
+        with_store!(&mut book.store, core => book.runtime.block_on(async {
+            fa_journal::revoke_capability(&mut core.db, &purposes, &ctx, req).await
+        }))
+        .unwrap()
+        .expect("revoked");
+        let r = produce(&mut book, reader, &viewing, false).unwrap_err();
+        assert_eq!((r.code, r.exit), ("FA-REF-023", 7), "{r}");
     }
 
     #[test]

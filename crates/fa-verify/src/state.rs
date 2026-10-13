@@ -14,8 +14,9 @@
 //! witnessed, or reached through `prev_state_oid` links from one they
 //! trust) gets the [`Checkpoint`] to verify proofs against.
 //!
-//! The state is unsigned: signed, witnessed `TransparencyCheckpoint`s
-//! (plan §13.5) are not implemented, and [`State::signatures`] says so.
+//! The state object itself is unsigned, and [`State::signatures`] says so.
+//! The signed object is the `TransparencyCheckpoint` journaled beside it,
+//! which names this state's oid: [`crate::verify_checkpoint`].
 
 use crate::blake3::hash_parts;
 use crate::codec::{DecodeError, Reader, Reason};
@@ -29,9 +30,10 @@ pub const STATE_SCHEMA_MINOR: u16 = 0;
 /// Whether the checkpoint carries signatures a verifier checked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Signatures {
-    /// No signature scheme is implemented (plan §13.5 is open): the
-    /// checkpoint is exactly as trustworthy as the channel its oid came
-    /// through.
+    /// The state object carries no signature: on its own it is exactly as
+    /// trustworthy as the channel its oid came through. A signed
+    /// `TransparencyCheckpoint` naming its oid is what binds it to a key
+    /// ([`crate::verify_checkpoint`]).
     Unsigned,
 }
 

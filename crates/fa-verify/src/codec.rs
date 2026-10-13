@@ -50,7 +50,7 @@ impl<'a> Reader<'a> {
         Self { buf, at: 0 }
     }
 
-    fn remaining(&self) -> usize {
+    pub(crate) fn remaining(&self) -> usize {
         self.buf.len() - self.at
     }
 
@@ -108,6 +108,10 @@ impl<'a> Reader<'a> {
         Ok(i128::from_le_bytes(self.fixed(what)?))
     }
 
+    pub(crate) fn i64(&mut self, what: &'static str) -> Result<i64, DecodeError> {
+        Ok(i64::from_le_bytes(self.fixed(what)?))
+    }
+
     fn length(&mut self, max: usize, what: &'static str) -> Result<usize, DecodeError> {
         let n = usize::try_from(self.u32(what)?).unwrap_or(usize::MAX);
         if n > max {
@@ -160,51 +164,63 @@ impl<'a> Reader<'a> {
 }
 
 /// Little-endian canonical bytes, the writer half the verifier needs to
-/// recompute an envelope from a payload.
+/// recompute an envelope from a payload. Public so tests and embedders
+/// build proof vectors with exactly the framing the reader checks instead
+/// of re-implementing it.
 #[derive(Default)]
-pub(crate) struct Writer {
-    pub(crate) buf: Vec<u8>,
+pub struct Writer {
+    pub buf: Vec<u8>,
 }
 
 impl Writer {
-    pub(crate) fn u8(&mut self, v: u8) -> &mut Self {
+    pub fn u8(&mut self, v: u8) -> &mut Self {
         self.buf.push(v);
         self
     }
 
-    pub(crate) fn u16(&mut self, v: u16) -> &mut Self {
+    pub fn u16(&mut self, v: u16) -> &mut Self {
         self.buf.extend_from_slice(&v.to_le_bytes());
         self
     }
 
-    pub(crate) fn u32(&mut self, v: u32) -> &mut Self {
+    pub fn u32(&mut self, v: u32) -> &mut Self {
         self.buf.extend_from_slice(&v.to_le_bytes());
         self
     }
 
-    pub(crate) fn u64(&mut self, v: u64) -> &mut Self {
+    pub fn u64(&mut self, v: u64) -> &mut Self {
         self.buf.extend_from_slice(&v.to_le_bytes());
         self
     }
 
-    pub(crate) fn u128(&mut self, v: u128) -> &mut Self {
+    pub fn u128(&mut self, v: u128) -> &mut Self {
         self.buf.extend_from_slice(&v.to_le_bytes());
         self
     }
 
-    pub(crate) fn i32(&mut self, v: i32) -> &mut Self {
+    pub fn i32(&mut self, v: i32) -> &mut Self {
         self.buf.extend_from_slice(&v.to_le_bytes());
         self
     }
 
-    pub(crate) fn fixed(&mut self, b: &[u8]) -> &mut Self {
+    pub fn i128(&mut self, v: i128) -> &mut Self {
+        self.buf.extend_from_slice(&v.to_le_bytes());
+        self
+    }
+
+    pub fn fixed(&mut self, b: &[u8]) -> &mut Self {
         self.buf.extend_from_slice(b);
         self
     }
 
+    /// A byte string already bounded by its caller, with canonical framing.
+    pub fn bytes(&mut self, b: &[u8]) -> &mut Self {
+        self.count(b.len()).fixed(b)
+    }
+
     /// A list count. Every list the verifier writes is bounded far below
     /// `u32::MAX` by the decoder that produced it.
-    pub(crate) fn count(&mut self, n: usize) -> &mut Self {
+    pub fn count(&mut self, n: usize) -> &mut Self {
         self.u32(u32::try_from(n).unwrap_or(u32::MAX))
     }
 }
@@ -257,5 +273,21 @@ mod tests {
         assert_eq!(r.fixed::<1>("g").unwrap(), [7]);
         assert_eq!(r.u32("h").unwrap(), 8);
         r.finish("all").unwrap();
+    }
+
+    #[test]
+    fn proof_fields_preserve_signed_boundaries_and_binary_string_framing() {
+        for amount in [i128::MIN, -1, 0, 1, i128::MAX] {
+            let mut w = Writer::default();
+            w.i128(amount).bytes(&[]).bytes(&[0, 255, 128]);
+            assert_eq!(&w.buf[..16], &amount.to_le_bytes());
+            assert_eq!(&w.buf[16..20], &0u32.to_le_bytes());
+            assert_eq!(&w.buf[20..24], &3u32.to_le_bytes());
+            let mut r = Reader::new(&w.buf);
+            assert_eq!(r.i128("amount").unwrap(), amount);
+            assert!(r.bytes(0, "empty").unwrap().is_empty());
+            assert_eq!(r.bytes(3, "binary").unwrap(), &[0, 255, 128]);
+            r.finish("proof fields").unwrap();
+        }
     }
 }

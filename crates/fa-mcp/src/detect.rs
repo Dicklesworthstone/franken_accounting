@@ -509,8 +509,10 @@ pub fn remember(
     }
     if reply.exit == 0 {
         for line in &reply.lines {
-            if matches!(line.event.as_str(), "period_planned" | "period_plan" | "plan")
-                && let Some(digest) = line.data.get("proposal_digest").and_then(Json::as_str)
+            if matches!(
+                line.event.as_str(),
+                "period_planned" | "period_plan" | "plan"
+            ) && let Some(digest) = line.data.get("proposal_digest").and_then(Json::as_str)
             {
                 memory.planned.push(Planned {
                     digest: digest.to_string(),

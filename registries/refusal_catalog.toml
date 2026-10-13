@@ -267,10 +267,21 @@ fix = "select --as-known-at HEAD or an existing commit sequence; an instant befo
 [[refusal]]
 code = "FA-REF-152"
 name = "STATEMENT_INVALID"
-owners = ["fa", "fa-statements"]
+owners = ["fa"]
 exit = "refusal"
 cite = "plan §12.1 / FA-INV-04 mapping-partition (exact statement over the journal)"
 fix = "select balance-sheet or income-statement with an existing period; correct the named mapping or input and recompute from the journal without adding a balancing entry"
+
+# ---- Front door (153) -----------------------------------------------------
+# The `fa` binary reports an unwinding panic as one error event instead of
+# exit 101 (bead fa-y9z; plan §15.3, never silent).
+[[refusal]]
+code = "FA-REF-153"
+name = "INTERNAL_PANIC"
+owners = ["fa-cli"]
+exit = "foundation"
+cite = "plan §15.3 (never silent: every non-zero exit emits exactly one error event)"
+fix = "report the command line and this message; a write either committed before the panic or did not (run `fa verify registers` and `fa verify projections`)"
 
 # ---- Supersession (050–054) ----------------------------------------------
 [[refusal]]
@@ -697,6 +708,30 @@ exit = "usage"
 cite = "plan §13.1 (a prefix cannot extend past the head)"
 fix = "select a sequence at or before the head"
 
+[[refusal]]
+code = "FA-REF-126"
+name = "SCOPE_UNSUPPORTED"
+owners = ["fa-notary"]
+exit = "refusal"
+cite = "plan §13.1 (ScopeIndexComplete is admissible only for an exact-account effective-day interval)"
+fix = "prove the complete prefix (SeqRangeComplete) and apply the predicate to its envelopes, or claim membership only"
+
+[[refusal]]
+code = "FA-REF-127"
+name = "CHECKPOINT_INVALID"
+owners = ["fa-notary"]
+exit = "verification"
+cite = "FA-INV-14 (a checkpoint is recomputed from the journal prefix and the book's key)"
+fix = "run `fa verify accumulator` and preserve the store for investigation; no proof is issued against it"
+
+[[refusal]]
+code = "FA-REF-128"
+name = "INLINE_WITHHELD"
+owners = ["fa-notary"]
+exit = "refusal"
+cite = "plan §9.6, §13.2 (a production discloses no more of a document than its capability may read)"
+fix = "produce without inline documents (each stub still carries the commitment, kind, length and chunk root), or with a capability that also holds privileged"
+
 # ---- Migration runs and scratch replay (130–139) -------------------------
 [[refusal]]
 code = "FA-REF-130"
@@ -793,3 +828,20 @@ owners = ["fa-journal"]
 exit = "refusal"
 cite = "plan §5.4, §7.1a, §7.6 (automatic effects take time only from a corroborated committed tick)"
 fix = "journal a newer TimeEvidence tick that its source's monotonic clock corroborates (Book::record_tick or AsyncBook::record_tick with monotonic_ok true, by the caller that holds the clock), then rerun the sweep under it (Book::sweep or AsyncBook::sweep)"
+
+# ---- Proof export (145–146; renumbered from main's 126/127, which staging's Notary codes hold) ---
+[[refusal]]
+code = "FA-REF-145"
+name = "PROOF_STATE_UNKNOWN"
+owners = ["fa"]
+exit = "usage"
+cite = "plan §13.2 (proofs select an existing journaled AccumulatorState)"
+fix = "use fa verify accumulator --json to select a recorded state; the owner may publish one with fa checkpoint create --grant witness"
+
+[[refusal]]
+code = "FA-REF-146"
+name = "PROOF_EXPORT_LIMIT"
+owners = ["fa"]
+exit = "usage"
+cite = "plan §13.1–§13.3 (bounded complete portable proofs)"
+fix = "choose an earlier checkpoint or an inclusion proof, or export a binary file when only the inline transport is too small; a complete-prefix proof is never truncated"

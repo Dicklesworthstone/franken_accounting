@@ -195,7 +195,10 @@ mod tests {
             1,
             day,
             EntryClass::ORIGINAL,
-            vec![leg(Side::Debit, RECEIVABLE, 100), leg(Side::Credit, REVENUE, 100)],
+            vec![
+                leg(Side::Debit, RECEIVABLE, 100),
+                leg(Side::Credit, REVENUE, 100),
+            ],
             Vec::new(),
         )
     }
@@ -267,10 +270,7 @@ mod tests {
         assert_eq!(invoice_item(&february).open, 60);
         assert_eq!(invoice_item(&february).applied, 40);
         assert_eq!(invoice_item(&february).applications.len(), 1);
-        assert_eq!(
-            february.iter().find(|i| i.entry == VId(2)).unwrap().open,
-            0
-        );
+        assert_eq!(february.iter().find(|i| i.entry == VId(2)).unwrap().open, 0);
     }
 
     #[test]

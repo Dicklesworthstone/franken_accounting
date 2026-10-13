@@ -13,9 +13,55 @@
 
 </div>
 
-> **Status (2026-10-11): implementation in progress.** The Rust workspace includes the embedded library, persistent CLI, book writer-lease daemon and registered MCP tools, exact money and calendar primitives, chart installation, period transitions, posting and reasoned reversal, register folds and verification, and an independent arithmetic oracle. Trial balances support stock balances, period activity, civil-date cutoffs, and historical commit-sequence snapshots. Trial balances, leaf-account balance explanations, and open-items reports support retained certificates that replay their exact historical results through native certified reads. Gate G0 and the full Genesis acceptance criteria remain open. Signed outsider evidence bundles and the broader workflows below remain design targets.
+> **Status (2026-10-12): implementation in progress.** The Rust workspace includes the embedded library, persistent CLI, book writer-lease daemon and registered MCP tools, exact money and calendar primitives, chart installation, period transitions, posting and reasoned reversal, register folds and verification, and an independent arithmetic oracle. Trial balances support stock balances, period activity, civil-date cutoffs, and historical commit-sequence snapshots. Trial balances, leaf-account balance explanations, and open-items reports support retained certificates that replay their exact historical results through native certified reads. Recorded checkpoints and portable inclusion, consistency, prefix and balance proofs can be exported for the standalone, std-only `fa-verify`. An explicitly configured daemon records clock evidence and processes timed holds and scheduled reversals. Gate G0 and the full Genesis acceptance criteria remain open. Signed outsider evidence bundles and the broader workflows below remain design targets.
 
 > **A note on tense.** The rest of this README is written in the **present tense, as if the entire design in [`COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md`](./COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md) is fully realized**: the 1.0 target state. This is deliberate — it describes the *finished* system so it gets trued-up in place as milestones land (§19's gates G1→G4) rather than rewritten later. Where the plan stages something as future work, this README says so plainly.
+
+### Try it today
+
+<!-- try-it-today: crates/fa-cli/tests/readme.rs runs this section against the real `fa` binary.
+It writes each `file:` block below verbatim, runs every `fa` line of the commands block in order
+in a fresh directory, fills `<document-oid>` from the `oid` the line before printed, and requires
+exit 0 from every line; the replay must reproduce the trial balance's data. Edit a line and the
+test fails. The same test checks every `fa` line above `## TL;DR` against the verb registry. -->
+
+Write an invoice and the entry it supports next to the book:
+
+<!-- file: invoice.txt -->
+```text
+Invoice 10442 to ACME-CUST-17: 10 widgets at 125.00 USD, total 1,250.00 USD.
+```
+
+<!-- file: sale.json -->
+```json
+{"effective_date":"2026-03-14","idempotency_key":"inv-10442","legs":[{"side":"debit","account":"1200","amount":"1250.00 USD"},{"side":"credit","account":"4000","amount":"1250.00 USD"}]}
+```
+
+Then create a book with a template chart, open March, and record the invoice. Rehearse the entry it supports as a sealed plan (replace `<document-oid>` with the `oid` that `fa document add` printed), commit exactly that plan, and get a certified trial balance that `fa replay` reproduces:
+
+<!-- commands -->
+```bash
+fa book create --book acme --name "Acme Co" --base-unit USD
+fa chart import --template us-gaap-smb --book acme
+fa period create --fiscal-year 2026 --book acme
+fa period open FY2026-P03 --book acme
+fa document add invoice.txt --kind Invoice --grade HumanUpload --book acme --json
+fa post --intent sale.json --evidence <document-oid> --dry-run --plan-out sale.plan --book acme --json
+fa commit --plan sale.plan --book acme --json
+fa tb --period FY2026-P03 --certificate-out march.cert --book acme --json
+fa replay march.cert --book acme --json
+fa certificate status march.cert --book acme --json
+fa statement income-statement --for FY2026-P03 --book acme --json
+fa statement balance-sheet --for FY2026-P03 --book acme --json
+fa explain balance 1200 --period FY2026-P03 --book acme --json
+fa registers materialize --period FY2026-P03 --book acme --json
+fa verify registers --period FY2026-P03 --book acme --json
+fa verify projections --book acme --json
+fa checkpoint create --grant witness --book acme --json
+fa verify accumulator --book acme --json
+```
+
+`fa chart templates` lists the charts (`us-gaap-smb`, `ifrs-sme`, `us-bank-call-report`); they are starting points, not GAAP, IFRS or regulatory advice. `--grade HumanUpload` declares that a human supplied the document; an agent's own upload is `AgentUpload`. Bare `fa`, `fa --help` and `fa robot-docs guide` orient an agent.
 
 ### Reporting available now
 
@@ -34,11 +80,65 @@ fa registers materialize --book ./books/acme --period FY2026-P03 --json
 
 Omitting `--as-known-at` selects the current head; the response records the resolved sequence. A later backdated entry appears at head but cannot change a report at an earlier sequence. `--as-known-at` also accepts an RFC 3339 instant when the book contains retained TimeEvidence ticks. It resolves the latest recorded sequence in the matching tick bucket, reports the original frontier and both brackets under `coordinate.time_evidence`, and refuses an instant before the first tick. Numeric UTC offsets and up to nine fractional digits are exact. `--as-of` remains a civil-date selector. These reports are exact payload folds; `tb` can retain a replay certificate as described below. The [persistent CLI tests](./crates/fa-cli/tests/cli.rs) exercise book creation, chart installation, posting, reporting, retained replay, refusals and recovery with the actual binary.
 
-Reports show posted and pending amounts separately. A hold reserves its original period; a later partial posting releases the entire hold and posts only the explicitly selected sub-vector in the resolution's period. A void releases the hold without posting. Earlier recorded snapshots still show the unresolved reservation. Limited accounts reserve pending outflows; pending inflows cannot fund spending. `fa verify availability` compares each limited account's expected cell, including its account binding, with a journal fold. Library sweeps expire holds using committed ticks; daemon scheduling and full timing simulation remain unfinished.
+Reports show posted and pending amounts separately. A hold reserves its original period; a later partial posting releases the entire hold and posts only the explicitly selected sub-vector in the resolution's period. A void releases the hold without posting. Earlier recorded snapshots still show the unresolved reservation. Limited accounts reserve pending outflows; pending inflows cannot fund spending. `fa verify availability` compares each limited account's expected cell, including its account binding, with a journal fold. Timed holds expire through the configured daemon's committed, corroborated ticks, as described below.
 
 Register verification compares both amount columns, counts, identity, period membership, watermark and fold checksum against the journal payloads. Rebuilding repairs derived rows and retires phantom cells without changing journal entries. Existing register caches from before the pending-column format must be rebuilt; their missing columns are reported as drift rather than assumed to be zero.
 
 The embedded API's `Book::advance_registers(period)` consumes new committed entry payloads through `delta_since` for native posted/pending period cells. It publishes cells and the consumed cursor atomically; `Book::rebuild_registers(period)` replaces them from a fresh journal fold. Reopening rehydrates the delta window, and an actually retired cursor falls back to a full rebuild. Staged migration chunks stay invisible; finalizing a run triggers a full fold to include newly activated chunks older than the cursor. Pending-sum overflow also falls back to the final fold, so holds released later in the same suffix do not prevent advancement; a genuinely oversized final sum still fails. `verify_registers` also checks the maintenance state against its journal prefix. This slice still scans projection metadata and writes the period's cells; it makes no throughput claim. Reports retain their literal folds. Historical register checkpoints, cadence policies, other register families, supervised daemon maintenance and cached report reads remain unfinished.
+
+### Timed holds and scheduled reversals
+
+The CLI and MCP accept the kernel's timed accounting inputs. A Pending intent
+may carry an unsigned integer `timeout_ns`, or the caller may supply
+`--timeout-ns`. An Adjusting intent may carry a civil-date `reverse_on`, or
+the caller may supply `--reverse-on`. Supplying a value twice, using a float
+or a negative timeout, or attaching either field to the wrong entry class
+refuses before opening the book. A timeout requires an existing committed
+TimeEvidence anchor; it never reads the caller's wall clock.
+
+Scheduled reversals require an explicit book civil-day policy. Set the
+currently supported UTC policy when creating a book:
+
+```bash
+fa book create --name Acme --time-zone UTC --book ./books/acme --json
+# After preparing the chart and fiscal periods, run this in its own terminal.
+fad serve --book ./books/acme --bootstrap-system --json
+```
+
+The explicit `--bootstrap-system` option authorizes the local book-key holder
+to run timed effects. Merely holding the writer lease does not enable them.
+The daemon journals UTC clock observations and compares their progress with
+its monotonic timer. Its first observation, each restart's first observation,
+and observations inconsistent with the configured drift allowance do not
+authorize automatic effects. Rejected jumps retain the original comparison
+baseline; repeated bad samples cannot gradually establish trust in a jump.
+Monotonic agreement is corroboration, not proof of UTC accuracy.
+
+After the daemon has recorded an anchor, submit ordinary evidence-backed
+intent files through the same CLI:
+
+```bash
+# A Pending intent: reserve for 60 seconds from the latest committed tick.
+fa reserve --book ./books/acme --intent hold.json --timeout-ns 60000000000 --json
+# An Adjusting intent: journal a reversal schedule for the declared civil day.
+fa post --book ./books/acme --intent adjustment.json --reverse-on 2026-11-01 --json
+fad status --book ./books/acme --json
+fad stop --book ./books/acme --json
+```
+
+The registered defaults are one observation per second, a 250 ms clock-drift
+allowance, and up to 64 expiries plus 64 reversals per cycle. A cycle must use
+the latest committed, corroborated tick. The daemon keeps request reads alive
+across timer wakes, so idle clients and partial frames do not stop timed work
+or lose request bytes. Status reports whether timing is enabled, its authority,
+cycle count, latest tick, corroboration and the last cycle error. Cancellation
+and Stop end timed work through the server's structured lifetime.
+
+These bounds limit published effects per cycle; candidate discovery still
+scans the book. Journaled capability issuance, a sweep-now command, paged
+backlog discovery and the full timing simulation campaign remain unfinished.
+MCP exposes the same intent fields as `timeout_ns` and `reverse_on`, subject
+to its fixed launch capability; it cannot grant itself System authority.
 
 ### Stored unit identity
 
@@ -93,8 +193,7 @@ and tick identities. Replay uses those saved brackets even after later ticks or
 postings arrive. An open upper bracket is explicit; this is a clock-observation
 bucket, without a claim about the physical instant of each commit. The same
 instant selector is available on `open-items` and `explain balance`. Ticks are
-currently journaled through the existing library API; automatic daemon tick
-scheduling remains unfinished.
+journaled through the library API and by `fad serve --bootstrap-system`.
 
 The original call emits two robot lines: `trial_balance`, `balance_explained`,
 or `open_items`, followed by `report_certificate`, with the certificate digest
@@ -209,6 +308,14 @@ under `fa-we7` and its dependent beads.
 
 ### MCP launch authority
 
+The stdio server uses MCP `2026-07-28`. Clients discover it with
+`server/discover` and send `io.modelcontextprotocol/protocolVersion` and
+`io.modelcontextprotocol/clientCapabilities` in each request's `params._meta`.
+Legacy `initialize` negotiation is refused. Resource refusals retain their
+structured `error.data`, including the launch authority.
+Resource reads have private, zero-lifetime cache hints because their URIs
+resolve the current book state.
+
 Start the stdio server against a book the operator has already prepared:
 
 ```bash
@@ -270,7 +377,10 @@ its cursor. These are committed-tick semantics, not a guarantee of clock accurac
 The lab smoke tests cover a posted entry, exact expected register cells,
 external evidence, virtual sync latency, crash/reopen, idempotency, caller
 cancellation, tick-driven expiry and reversal, and an injected write failure.
-The timing test calls the library; it does not run the daemon scheduler.
+Additional daemon lab tests exercise bounded expiry and reversal cycles,
+clock uncertainty, stale ticks, cancellation and partial request frames
+across virtual timer wakes. These test sources require the normal Rust gates;
+source inspection alone does not establish a passing simulation campaign.
 The full registered crash-point
 matrix, concurrency exploration and 1,000-seed Genesis campaign remain open
 under `fa-0fl`; these smoke tests do not establish that broader claim.
@@ -329,10 +439,88 @@ checkpoints it returns `status: "no_checkpoints"` and a null
 finding; checkpoint creation refuses a corrupt predecessor. Verification
 and proof generation also reject later rewrites or retirements of checkpointed
 entries, even when the original historical snapshot is still readable.
-These states cover entries, including control entries. Signed transparency checkpoints,
-document-receipt coverage and evidence bundles remain unfinished. The
+These states cover entries, including control entries. The library also signs
+each published checkpoint with the book's Ed25519 key
+(`Book::checkpoint_public_key`) as a `TransparencyCheckpoint` and produces
+evidence bundles with detached production receipts (`Book::produce_bundle`);
+`fa-verify checkpoint|scope|bundle` check them. The CLI exports both (see
+below); document-receipt coverage, witnesses and key rotation remain
+unfinished. The
 [CLI tests](./crates/fa-cli/tests/notary.rs) exercise persistence, later
 postings, authorization and real storage corruption.
+
+### Portable proofs and the offline verifier
+
+Export one of the existing recorded states without creating a new checkpoint
+or changing the book. Omit `--state`, or use `latest`, to select the newest
+recorded checkpoint. A full 64-hex state digest selects a historical one.
+The exporter verifies the retained chain first and refuses damaged history.
+
+```bash
+# Publish a checkpoint separately, using witness authority.
+fa checkpoint create --grant witness --book ./books/acme --json
+# Save its raw 80-byte statement and a complete prefix proof.
+fa proof checkpoint --state latest --out acme.checkpoint --book ./books/acme --json
+fa proof prefix --state latest --out acme.prefix --book ./books/acme --json
+# Export an exact account/unit recomputation through an inclusive civil date.
+fa proof balance --account 1000 --unit USD --as-of 2026-09-30 \
+  --state latest --out cash.balance --book ./books/acme --json
+```
+
+Select the same explicit state digest for separate exports if another writer
+may publish checkpoints between commands. `proof inclusion --entry <vid>`
+proves one entry's inclusion; `--with-record` also supplies its payload for
+recomputation. `proof consistency --state <old-oid> --next-state <new-oid>`
+proves extension between two recorded states.
+
+After independently establishing trust in the checkpoint, an outsider can
+check the raw files with no book, keys, accounting dependencies or network:
+
+```bash
+fa-verify prefix --proof acme.prefix --checkpoint acme.checkpoint --unsigned-checkpoint --json
+fa-verify balance --proof cash.balance --checkpoint acme.checkpoint --unsigned-checkpoint --json
+# A consistency check additionally names the producer's claimed new statement.
+fa-verify consistency --proof extension.proof --checkpoint old.checkpoint \
+  --next-checkpoint next.checkpoint --unsigned-checkpoint --json
+```
+
+These checkpoints are unsigned, and `--unsigned-checkpoint` says so: you trust
+the 80-byte statement through some other channel. The signed alternative needs
+no side channel beyond the book's public key, which every export names as
+`checkpoint_public_key`:
+
+```bash
+fa proof signed-checkpoint --state latest --out acme.ckpt --book ./books/acme --json
+fa-verify prefix --proof acme.prefix --checkpoint acme.ckpt --key <checkpoint_public_key> --json
+# An evidence bundle: one account's month, a recomputed balance, a signed receipt.
+fa bundle produce --account 1000 --from 2026-03-01 --to 2026-03-31 \
+  --balance 1000:USD:2026-03-31 --out cash.fab --receipt-out cash.receipt --book ./books/acme --json
+fa-verify bundle cash.fab --key <checkpoint_public_key> --receipt cash.receipt --json
+```
+
+`--key` (repeatable) is required for `scope` and `bundle`; run
+`fa-verify --help` for the grammar. Receiving a proof and its checkpoint together
+does not authenticate their origin. The verifier requires the trust anchor
+as a separate input and reports the exact predicate it checked: inclusion,
+tree extension, complete prefix envelopes, or posted debit/credit arithmetic
+for one account/unit through the optional date. Exact amounts are integer
+mantissa strings. It does not claim witness signatures, document receipts,
+FX conversion, financial-statement validity or full evidence-bundle replay.
+
+`--out` creates a private raw binary file and refuses to overwrite an existing
+path. Without it, the `proof_exported` event includes complete hex bytes and
+checkpoint metadata. Binary proofs are bounded to 64 MiB; inline JSON has the
+smaller daemon frame bound. The standalone verifier returns exit 2 for usage,
+5 for I/O failure, and 8 for failed verification.
+
+The embedded entrypoints are `Book::export_proof` and
+`AsyncBook::export_proof`, using `ProofRequest` and `ProofKind`. They check
+the holder, book scope, current expiry and journaled revocation, and require
+both Read and Produce before scanning protected history. MCP exposes
+`fa_proof_export` with a `kind` selector and inline results. Its fixed launch
+capability must include `--grant read --grant produce`; per-call authority
+and host output paths are refused. Complete-prefix and balance proofs disclose
+every journal envelope, so they require whole-book read authority.
 
 ### Exact arithmetic available now
 

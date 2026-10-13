@@ -1946,7 +1946,7 @@ fn reversals_by_target_and_idempotency_conflicts_follow_the_contract() -> std::i
     let before = report(&book, &["tb", "--period", "FY2026-P03", "--json"]);
     for (reason, expected) in [
         (None, "registered reason"),
-        (Some("WrongAcount"), "did you mean `WrongAccount`"),
+        (Some("WrongAccout"), "did you mean `WrongAccount`"),
         (Some("0"), "not registered"),
         (Some("65535"), "not registered"),
         (Some("Other"), "requires a description"),
@@ -2422,6 +2422,413 @@ fn raw_reversal_retries_preserve_legacy_zero_reasons_without_admitting_new_ones(
 }
 
 #[test]
+fn book_time_zone_rejects_unsupported_or_inapplicable_options_before_creation()
+-> std::io::Result<()> {
+    let dir = tmp("book-time-zone")?;
+    for (index, args) in [
+        vec![
+            "book",
+            "create",
+            "--name",
+            "Zone Co",
+            "--time-zone",
+            "America/New_York",
+            "--json",
+        ],
+        vec![
+            "book",
+            "create",
+            "--name",
+            "Zone Co",
+            "--time-zone",
+            "utc",
+            "--json",
+        ],
+        vec![
+            "book",
+            "create",
+            "--name",
+            "Zone Co",
+            "--time-zone",
+            "UTC",
+            "--time-zone",
+            "UTC",
+            "--json",
+        ],
+        vec!["book", "info", "--time-zone", "UTC", "--json"],
+    ]
+    .iter()
+    .enumerate()
+    {
+        let book = dir.join(format!("refused-{index}"));
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 2, "args={args:?}\n{out}\n{err}");
+        assert!(
+            !book.exists(),
+            "invalid book policy must not create a directory or keys"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn timed_cli_intents_preserve_their_requests_and_execute_under_recorded_ticks()
+-> std::io::Result<()> {
+    use asupersync::Budget;
+    use asupersync::runtime::RuntimeBuilder;
+    use fa::{Book, BookKeys, Entropy};
+    use fa_journal::{Capability, ReversalStatus};
+    use fa_model::{Disposition, EntryClass};
+    use fa_money::Side;
+    use fa_policy::{Op, Profile};
+    use fa_time::DateDay;
+    use fgdb_types::VId;
+
+    // Declared observations, independent of process wall time: March 15
+    // noon and April 1 midnight UTC. Only the host fixture records ticks.
+    const ANCHOR_NS: u64 = 1_773_576_000_000_000_000;
+    const APRIL_NS: u64 = 1_775_001_600_000_000_000;
+    let dir = tmp("timed-intents")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        assert!(err.is_empty(), "{err}");
+        out
+    };
+    ok(&[
+        "book",
+        "create",
+        "--name",
+        "Timed Co",
+        "--time-zone",
+        "UTC",
+        "--json",
+    ]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    ok(&["period", "open", "FY2026-P04", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let keys = BookKeys::load(&book.join("book.keys")).unwrap();
+    let open = || Book::open_dir(&book, keys.clone(), Entropy::production()).unwrap();
+    let head = || open().head().unwrap();
+    let runtime = RuntimeBuilder::new().build().unwrap();
+    let root = runtime.request_cx_with_budget(Budget::INFINITE);
+    let witness = Capability::embedded(VId(7), &["witness"]).unwrap();
+    let tick = |ns| {
+        let mut handle = open();
+        runtime
+            .block_on(handle.record_tick(&root, ns, true, &witness))
+            .unwrap()
+            .unwrap()
+    };
+    let system = fa_journal::rows::system_principal(open().context().book_id);
+    let sweeper = Capability::new(system, Profile::System, &[Op::Post], system).unwrap();
+    let anchor = tick(ANCHOR_NS);
+    let intent = |key: &str, class: &str, extra: &str| {
+        write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"class":"{class}","effective_date":"2026-03-15","idempotency_key":"{key}","legs":[{{"side":"debit","account":"6000","amount":"1.00 USD"}},{{"side":"credit","account":"1000","amount":"1.00 USD"}}]{extra}}}"#
+            ),
+        )
+    };
+    // Typos, inapplicable fields, duplicate sources, and wrong types never
+    // become permanent or unscheduled entries. Valid but inadmissible data
+    // still reaches the kernel's registered refusal unchanged.
+    /// `(class, extra intent fields, extra argv, exit, refusal id)`.
+    type BadIntent = (
+        &'static str,
+        &'static str,
+        &'static [&'static str],
+        i32,
+        Option<&'static str>,
+    );
+    let bad_intents: &[BadIntent] = &[
+        ("Pending", r#","timeout_ns":-1"#, &[], 2, None),
+        (
+            "Pending",
+            r#","timeout_ns":18446744073709551616"#,
+            &[],
+            2,
+            None,
+        ),
+        ("Pending", r#","timeout_ns":"5""#, &[], 2, None),
+        ("Pending", r#","timeout_ns":null"#, &[], 2, None),
+        ("Pending", r#","timeout_ns":1.5"#, &[], 2, None),
+        ("Pending", r#","timeout":5"#, &[], 2, None),
+        ("Pending", r#","timeout_nss":5"#, &[], 2, None),
+        ("Pending", r#","expires_at":"2026-04-01""#, &[], 2, None),
+        ("Original", r#","timeout_ns":5"#, &[], 2, None),
+        ("Resolution", r#","timeout_ns":5"#, &[], 2, None),
+        ("Pending", r#","reverse_on":"2026-04-01""#, &[], 2, None),
+        ("Original", r#","reverse_on":"2026-04-01""#, &[], 2, None),
+        ("Adjusting", r#","reverse_on":5"#, &[], 2, None),
+        ("Adjusting", r#","reverse_on":null"#, &[], 2, None),
+        ("Adjusting", r#","reverse_on":"2026-02-30""#, &[], 2, None),
+        (
+            "Adjusting",
+            r#","auto_reverse_on":"2026-04-01""#,
+            &[],
+            2,
+            None,
+        ),
+        ("Pending", "", &["--timeout-ns", "-1"], 2, None),
+        ("Pending", "", &["--timeout-ns", "+5"], 2, None),
+        (
+            "Pending",
+            "",
+            &["--timeout-ns", "18446744073709551616"],
+            2,
+            None,
+        ),
+        ("Original", "", &["--timeout-ns", "5"], 2, None),
+        ("Original", "", &["--reverse-on", "2026-04-01"], 2, None),
+        ("Adjusting", "", &["--reverse-on", "2026-04-31"], 2, None),
+        (
+            "Pending",
+            "",
+            &["--timeout-ns", "5", "--timeout-ns", "5"],
+            2,
+            None,
+        ),
+        (
+            "Pending",
+            r#","timeout_ns":5"#,
+            &["--timeout-ns", "5"],
+            2,
+            None,
+        ),
+        (
+            "Adjusting",
+            r#","reverse_on":"2026-04-01""#,
+            &["--reverse-on", "2026-04-01"],
+            2,
+            None,
+        ),
+        (
+            "Adjusting",
+            "",
+            &["--reverse-on", "2026-04-01", "--reverse-on", "2026-04-01"],
+            2,
+            None,
+        ),
+        (
+            "Pending",
+            r#","timeout_ns":18446744073709551615"#,
+            &[],
+            3,
+            Some("FA-REF-096"),
+        ),
+        (
+            "Adjusting",
+            r#","reverse_on":"2026-03-15""#,
+            &[],
+            2,
+            Some("FA-REF-100"),
+        ),
+    ];
+    let before_invalid = head();
+    for (index, (class, extra, flags, expected_exit, refusal)) in bad_intents.iter().enumerate() {
+        let path = intent(&format!("invalid-{index}"), class, extra);
+        let mut args = vec!["post", "--intent", &path, "--evidence", &evidence, "--json"];
+        args.extend_from_slice(flags);
+        let (code, out, err) = fa(Some(&book), &args);
+        assert_eq!(code, *expected_exit, "case {index}: {args:?}\n{out}\n{err}");
+        if let Some(refusal) = refusal {
+            assert_eq!(field(&out, "refusal_id"), Some(*refusal), "{out}");
+        }
+        assert_eq!(head(), before_invalid, "case {index} must publish nothing");
+    }
+    let vid = |out: &str| VId(u128::from_str_radix(text(&doc(out), "vid"), 16).unwrap());
+    let mut holds = Vec::new();
+    for (key, verb, extra, flag, timeout) in [
+        ("hold-json", "reserve", r#","timeout_ns":5"#, None, 5),
+        ("hold-flag", "reserve", "", Some("7"), 7),
+        ("post-hold", "post", "", Some("9"), 9),
+    ] {
+        let path = intent(key, "Pending", extra);
+        let mut args = vec![verb, "--intent", &path, "--evidence", &evidence, "--json"];
+        if let Some(value) = flag {
+            args.extend(["--timeout-ns", value]);
+        }
+        let before = head();
+        let mut plan_args = args.clone();
+        plan_args.push("--dry-run");
+        assert_eq!(field(&ok(&plan_args), "event"), Some("plan"));
+        assert_eq!(head(), before, "planning must not acquire a reservation");
+        let out = ok(&args);
+        let (entry, seq) = open().read_entry(vid(&out)).unwrap().unwrap();
+        assert!(seq > anchor.recorded_at);
+        assert_eq!(entry.proposal.class, EntryClass::PENDING);
+        assert_eq!(
+            entry.proposal.pending.as_ref().unwrap().timeout_ns,
+            Some(timeout)
+        );
+        holds.push(entry.entry_ref(vid(&out)));
+        let before = head();
+        assert_eq!(field(&ok(&args), "event"), Some("recorded"));
+        assert_eq!(head(), before, "an exact timed retry cannot reserve twice");
+    }
+    let reverse_day = DateDay::parse("2026-04-01").unwrap();
+    let mut adjustments = Vec::new();
+    for (key, extra, flag) in [
+        ("adjust-json", r#","reverse_on":"2026-04-01""#, None),
+        ("adjust-flag", "", Some("2026-04-01")),
+    ] {
+        let path = intent(key, "Adjusting", extra);
+        let mut args = vec!["post", "--intent", &path, "--evidence", &evidence, "--json"];
+        if let Some(value) = flag {
+            args.extend(["--reverse-on", value]);
+        }
+        let out = ok(&args);
+        let (entry, _) = open().read_entry(vid(&out)).unwrap().unwrap();
+        assert_eq!(
+            fa_journal::schedule::auto_reverse(&entry.proposal).unwrap(),
+            Some((reverse_day, fa_journal::schedule::RULE_EXACT_NEGATION))
+        );
+        adjustments.push(entry.entry_ref(vid(&out)));
+    }
+    assert!(open().due_holds().unwrap().is_empty());
+    assert!(open().due_reversals().unwrap().is_empty());
+
+    // Being due does not itself release the money. Until the sweep commits,
+    // the pending columns retain all three reservations.
+    let reached = tick(ANCHOR_NS + 10);
+    let due = open().due_holds().unwrap();
+    assert_eq!(due.iter().map(|h| h.hold).collect::<Vec<_>>(), holds);
+    assert_eq!(
+        due.iter().map(|h| h.deadline_ns).collect::<Vec<_>>(),
+        vec![ANCHOR_NS + 5, ANCHOR_NS + 7, ANCHOR_NS + 9]
+    );
+    let tb = doc(&report(&book, &["tb", "--period", "FY2026-P03", "--json"]));
+    let cash = arr(&tb, "rows")
+        .iter()
+        .find(|row| text(row, "code") == "1000")
+        .unwrap();
+    assert_eq!(text(cash, "credits_pending"), "3.00 USD");
+    let resolution = write(
+        &dir,
+        "too-late.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-15","idempotency_key":"too-late","resolves":"{:032x}","disposition":"posts","legs":[{{"side":"debit","account":"6000","amount":"1.00 USD"}},{{"side":"credit","account":"1000","amount":"1.00 USD"}}]}}"#,
+            holds[0].vid.0
+        ),
+    );
+    let before = head();
+    let (code, out, _) = fa(Some(&book), &["resolve", "--intent", &resolution, "--json"]);
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-097"), "{out}");
+    assert_eq!(
+        head(),
+        before,
+        "a due hold cannot be posted by a manual resolution"
+    );
+    {
+        let mut handle = open();
+        for (expected, remaining) in [(&holds[..2], 1), (&holds[2..], 0)] {
+            let batch = runtime
+                .block_on(handle.sweep_expiry(&root, &sweeper, 2))
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(batch.tick, reached.tick);
+            assert_eq!(batch.remaining_due, remaining);
+            assert_eq!(
+                batch
+                    .expired
+                    .iter()
+                    .map(|(hold, _)| *hold)
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            for (_, expiry) in batch.expired {
+                let (entry, _) = handle.read_entry(expiry.vid).unwrap().unwrap();
+                assert_eq!(
+                    entry.proposal.pending.as_ref().unwrap().disposition,
+                    Some(Disposition::Expires {
+                        at_tick: ANCHOR_NS + 10
+                    })
+                );
+            }
+        }
+        assert!(handle.due_holds().unwrap().is_empty());
+        let before = handle.head().unwrap();
+        assert!(
+            runtime
+                .block_on(handle.sweep_expiry(&root, &sweeper, 2))
+                .unwrap()
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(handle.head().unwrap(), before);
+    }
+    assert_cash_credits(
+        &report(&book, &["tb", "--period", "FY2026-P03", "--json"]),
+        "2.00 USD",
+    );
+
+    // The civil-date policy declared through book create enables real
+    // schedule execution. Only this System host fixture invokes the sweeps.
+    let april = tick(APRIL_NS);
+    let mut handle = open();
+    let due = handle.due_reversals().unwrap();
+    assert_eq!(
+        due.iter().map(|r| r.schedule.target).collect::<Vec<_>>(),
+        adjustments
+    );
+    assert!(due.iter().all(|r| r.status == ReversalStatus::Due));
+    let batch = runtime
+        .block_on(handle.sweep_reversals(&root, &sweeper, 2))
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(batch.tick, april.tick);
+    assert!(batch.blocked.is_empty());
+    assert_eq!(batch.minted.len(), 2);
+    for (target, reversal) in batch.minted {
+        let (original, _) = handle.read_entry(target.vid).unwrap().unwrap();
+        let (reversed, _) = handle.read_entry(reversal.vid).unwrap().unwrap();
+        assert_eq!(reversed.proposal.class, EntryClass::REVERSAL);
+        assert_eq!(reversed.proposal.effective_date, reverse_day);
+        for (source, actual) in original.proposal.legs.iter().zip(&reversed.proposal.legs) {
+            let mut expected = source.clone();
+            expected.side = if source.side == Side::Debit {
+                Side::Credit
+            } else {
+                Side::Debit
+            };
+            assert_eq!(
+                *actual, expected,
+                "the schedule retains the exact requested effects"
+            );
+        }
+    }
+    assert!(handle.due_reversals().unwrap().is_empty());
+    let before = handle.head().unwrap();
+    assert!(
+        runtime
+            .block_on(handle.sweep_reversals(&root, &sweeper, 2))
+            .unwrap()
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        handle.head().unwrap(),
+        before,
+        "a schedule executes at most once"
+    );
+    Ok(())
+}
+
+#[test]
 fn two_phase_reserve_and_resolve_follow_the_contract() -> std::io::Result<()> {
     let dir = tmp("two-phase")?;
     let book = dir.join("book");
@@ -2445,6 +2852,17 @@ fn two_phase_reserve_and_resolve_follow_the_contract() -> std::io::Result<()> {
     let (code, _, _) = fa(Some(&book), &["period", "open", "FY2026-P03", "--json"]);
     assert_eq!(code, 0);
     let ev = source_doc(&dir, &book);
+    let scheduled = write(
+        &dir,
+        "without-zone.json",
+        r#"{"class":"Adjusting","effective_date":"2026-03-10","reverse_on":"2026-04-01","idempotency_key":"without-zone","legs":[{"side":"debit","account":"6000","amount":"1.00 USD"},{"side":"credit","account":"1000","amount":"1.00 USD"}]}"#,
+    );
+    let (code, out, _) = fa(
+        Some(&book),
+        &["post", "--intent", &scheduled, "--evidence", &ev, "--json"],
+    );
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-102"), "{out}");
     let row = |out: &str, code: &str| -> String {
         let found = out
             .split('{')
@@ -2489,7 +2907,7 @@ fn two_phase_reserve_and_resolve_follow_the_contract() -> std::io::Result<()> {
     assert_eq!(code, 2, "{out}");
     assert!(out.contains("--as-of"), "{out}");
 
-    // A requested timeout is refused, never silently dropped into a
+    // A requested timeout needs committed clock evidence, never a silently
     // permanent hold; `source_ordinal` outside a Resolution(Posts) is refused.
     let timed = write(
         &dir,
@@ -2500,8 +2918,9 @@ fn two_phase_reserve_and_resolve_follow_the_contract() -> std::io::Result<()> {
         Some(&book),
         &["reserve", "--intent", &timed, "--evidence", &ev, "--json"],
     );
-    assert_eq!(code, 2, "{out}");
-    assert!(out.contains("timed holds"), "{out}");
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-095"), "{out}");
+    assert!(out.contains("TimeEvidence"), "{out}");
     let stray = write(
         &dir,
         "stray.json",
@@ -3033,7 +3452,7 @@ fn robot_docs_schema_prints_the_envelope_and_every_event_from_the_registry() {
     let (code, human, _) = fa(None, &["robot-docs", "schema"]);
     assert_eq!(code, 0);
     assert!(
-        human.contains("event balance_explained (explain)")
+        human.contains("event balance_explained (replay, explain)")
             && human.contains("  contributions: [contribution]")
             && human.contains("shape contribution"),
         "{human}"
@@ -3433,6 +3852,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(false, &["capabilities"]).0, 0);
     assert_eq!(run(false, &["robot-docs", "guide"]).0, 0);
     assert_eq!(run(false, &["robot-docs", "schema"]).0, 0);
+    assert_eq!(run(false, &["chart", "templates"]).0, 0);
     assert_eq!(run(false, &["nosuchverb"]).0, 2);
     assert_eq!(run(true, &["book", "info"]).0, 4);
     assert_eq!(run(true, &["book", "create", "--name", "Events Co"]).0, 0);
@@ -3442,6 +3862,8 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         0
     );
     assert_eq!(run(true, &["verify", "accumulator"]).0, 0);
+    assert_eq!(run(true, &["proof", "signed-checkpoint"]).0, 0);
+    assert_eq!(run(true, &["bundle", "produce"]).0, 0);
     let chart = write(
         &dir,
         "chart.json",
@@ -3497,6 +3919,8 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     assert_eq!(run(true, &["tb", "--period", "FY2026-P03"]).0, 0);
     assert_eq!(run(true, &["open-items"]).0, 0);
+    assert_eq!(run(true, &["procedure", "list"]).0, 0);
+    assert_eq!(run(true, &["procedure", "run", "jet.round_amounts"]).0, 0);
     assert_eq!(run(true, &["entry", "show", &vid]).0, 0);
     assert_eq!(run(true, &["entry", "show", "00"]).0, 0);
     assert_eq!(
@@ -3595,6 +4019,12 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(true, &["certificate", "status", &certificate]).0, 0);
     assert_eq!(
         run(true, &["statement", "balance-sheet", "--for", "FY2026-P03"]).0,
+        0
+    );
+    let (code, out) = run(true, &["registers", "advance", "--period", "FY2026-P03"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        run(true, &["verify", "registers", "--period", "FY2026-P03"]).0,
         0
     );
     // A planned, approved lock (R4): `period_planned`, then `approved`.
@@ -4498,6 +4928,7 @@ const DANGEROUS: &[(&str, Option<&str>, &str)] = &[
     ("period", Some("lock"), "always"),
     ("period", Some("reopen"), "always"),
     ("post", None, "grant:post_closed"),
+    ("reverse", None, "grant:post_closed"),
     ("resolve", None, "disposition:voids"),
     ("registers", Some("materialize"), "existing-cells"),
 ];
@@ -5310,6 +5741,20 @@ fn instant_selected_cli_reports_retain_tick_evidence_and_replay() -> std::io::Re
 
 #[test]
 fn projection_verification_reports_drift_deterministically_without_writes() -> std::io::Result<()> {
+    projection_verification_case("side")
+}
+
+#[test]
+fn projection_verification_refuses_a_changed_amount_without_writes() -> std::io::Result<()> {
+    projection_verification_case("amount")
+}
+
+#[test]
+fn projection_verification_refuses_a_missing_has_leg_without_writes() -> std::io::Result<()> {
+    projection_verification_case("missing-has-leg")
+}
+
+fn projection_verification_case(plant: &str) -> std::io::Result<()> {
     use asupersync::runtime::RuntimeBuilder;
     use asupersync::types::Budget;
     use fa::{Book, BookKeys, Entropy};
@@ -5321,7 +5766,7 @@ fn projection_verification_reports_drift_deterministically_without_writes() -> s
     use fgdb_types::context::PurposeContexts;
     use fgdb_types::ids::DatabaseSecurityNamespaceId;
 
-    let dir = tmp("verify-projections")?;
+    let dir = tmp(&format!("verify-projections-{plant}"))?;
     let book = dir.join("book");
     let keys = BookKeys::for_development(91);
     let handle = Book::create_dir(
@@ -5399,8 +5844,8 @@ fn projection_verification_reports_drift_deterministically_without_writes() -> s
     );
     drop(handle);
 
-    // Plant a bad scalar mirror through the real substrate while leaving
-    // the canonical payload and journal balances unchanged.
+    // Each case starts from a fresh, verified book. Change exactly one
+    // projection through the real substrate; the immutable entry stays intact.
     let runtime = RuntimeBuilder::new().build().unwrap();
     let root = runtime.request_cx_with_budget(Budget::INFINITE);
     let cx = PurposeContexts::narrow_runtime_root(&root);
@@ -5418,9 +5863,51 @@ fn projection_verification_reports_drift_deterministically_without_writes() -> s
         .find(|row| row.labels.contains(&label::LEG))
         .expect("posted leg")
         .vid;
+    let edge = db
+        .edges()
+        .unwrap()
+        .into_iter()
+        .find(|edge| edge.entry.relation == relation::HAS_LEG && edge.entry.dst == leg)
+        .expect("the posted leg belongs to an entry");
+    let entry = edge.entry.src;
+    let payload = fa_journal::rows::bytes(
+        &db.vertex(entry).unwrap().unwrap(),
+        property::FA_PAYLOAD,
+        "authoritative entry",
+    )
+    .unwrap();
     let mut batch = WriteBatch::new(relation::HAS_LEG);
-    batch.set_vertex_property(leg, property::SIDE, Some(CanonicalScalar::Int(99)));
+    let (identity, expected_drift) = match plant {
+        "side" => {
+            batch.set_vertex_property(leg, property::SIDE, Some(CanonicalScalar::Int(99)));
+            (leg.0, "side mirror")
+        }
+        "amount" => {
+            let changed = fgdb_types::CanonicalDecimal::from_scaled_half_even(1_100, 2).unwrap();
+            batch.set_vertex_property(
+                leg,
+                property::AMOUNT,
+                Some(CanonicalScalar::Decimal(changed)),
+            );
+            (leg.0, "amount mirror")
+        }
+        "missing-has-leg" => {
+            batch.delete_edge(edge.entry.eid);
+            (edge.entry.eid.0, "missing HAS_LEG edge")
+        }
+        _ => unreachable!("unknown projection plant {plant}"),
+    };
     let damaged_at = runtime.block_on(db.write(&cx.commit(), batch)).unwrap();
+    assert_eq!(
+        fa_journal::rows::bytes(
+            &db.vertex(entry).unwrap().unwrap(),
+            property::FA_PAYLOAD,
+            "authoritative entry",
+        )
+        .unwrap(),
+        payload,
+        "{plant}: projection damage leaves the complete journal payload intact"
+    );
     drop(db);
 
     let (code, red, err) = fa(Some(&book), &verify);
@@ -5435,13 +5922,14 @@ fn projection_verification_reports_drift_deterministically_without_writes() -> s
         int(robot_line(&red).get("coordinate").unwrap(), "known_at"),
         Some(i128::from(damaged_at.0))
     );
-    let leg_hex = format!("{:032x}", leg.0);
+    let identity_hex = format!("{identity:032x}");
+    assert_eq!(arr(detail, "drift").len(), 1, "{plant}: {red}");
     assert!(
         arr(detail, "drift")
             .iter()
             .filter_map(Json::as_str)
-            .any(|finding| finding.contains(&leg_hex) && finding.contains("side mirror")),
-        "{red}"
+            .any(|finding| finding.contains(&identity_hex) && finding.contains(expected_drift)),
+        "{plant}: {red}"
     );
     let repeated = fa(Some(&book), &verify);
     assert_eq!(repeated.0, 8, "{}\n{}", repeated.1, repeated.2);
@@ -5597,8 +6085,7 @@ fn directory_reopen_refuses_changed_or_missing_unit_facts_through_facade_and_cli
         drop(db);
 
         let error = Book::open_dir(&book, keys.clone(), Entropy::deterministic(57))
-            .err()
-            .expect("reopen must refuse changed historical unit facts");
+            .expect_err("reopen must refuse changed historical unit facts");
         assert_eq!(error.exit(), 5, "{damage}: {error}");
         let expected = match damage {
             "kind" | "ISO" => "kind/ISO",
@@ -5616,8 +6103,8 @@ fn directory_reopen_refuses_changed_or_missing_unit_facts_through_facade_and_cli
         assert_eq!(code, 5, "{damage}: {out}\n{err}");
         assert!(out.contains(expected), "{damage}: {out}\n{err}");
         if damage.starts_with("missing") {
-            assert!(out.contains("backfill"), "{out}");
-            assert!(out.contains("not available yet"), "{out}");
+            assert!(out.contains("no backfill"), "{out}");
+            assert!(out.contains("creating binary"), "{out}");
         }
 
         let db = runtime
@@ -5633,5 +6120,195 @@ fn directory_reopen_refuses_changed_or_missing_unit_facts_through_facade_and_cli
             "{damage}: facade and CLI refusals must preserve the journal"
         );
     }
+    Ok(())
+}
+
+/// `fa procedure list|run`: Lantern over a persisted book through the CLI
+/// (plan §11, Appendix D). The planted round amount is found and cited by
+/// its posted vid; a parameter override changes the result; the registry
+/// refuses what it does not know, naming the fix; historical folds refuse
+/// to run without an effective date; a tracing law runs once its inputs
+/// are passed by handle and refuses a source that never deposited.
+#[test]
+fn procedures_run_over_a_persisted_book_and_cite_resolving_handles() -> std::io::Result<()> {
+    let dir = tmp("procedures")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&book), &argv);
+        assert_eq!(code, 0, "{argv:?}\n{out}\n{err}");
+        out
+    };
+    let refused = |args: &[&str]| -> (i32, String) {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, _) = fa(Some(&book), &argv);
+        (code, out)
+    };
+    ok(&["book", "create", "--name", "Procedures Co"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"1010","name":"Bank B","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart]);
+    ok(&["period", "create", "--fiscal-year", "2026"]);
+    ok(&["period", "open", "FY2026-P03"]);
+    let source = write(&dir, "source.txt", "INVOICE (procedure fixture)");
+    let added = ok(&[
+        "document",
+        "add",
+        &source,
+        "--kind",
+        "Invoice",
+        "--grade",
+        "HumanUpload",
+    ]);
+    let ev = field(&added, "oid").unwrap_or_default().to_string();
+    let round = write(
+        &dir,
+        "round.json",
+        r#"{"effective_date":"2026-03-10","idempotency_key":"round-rent","legs":[{"side":"debit","account":"6000","amount":"5000.00 USD"},{"side":"credit","account":"1000","amount":"5000.00 USD"}],"description":"March rent, round"}"#,
+    );
+    let posted = ok(&["post", "--intent", &round, "--evidence", &ev]);
+    let round_vid = field(&posted, "vid").unwrap_or_default().to_string();
+    let plain = write(
+        &dir,
+        "plain.json",
+        r#"{"effective_date":"2026-03-11","idempotency_key":"plain-rent","legs":[{"side":"debit","account":"6000","amount":"1234.56 USD"},{"side":"credit","account":"1000","amount":"1234.56 USD"}],"description":"March rent, not round"}"#,
+    );
+    ok(&["post", "--intent", &plain, "--evidence", &ev]);
+
+    // The registry is listed in full, with its pinned defaults.
+    let listed = ok(&["procedure", "list"]);
+    let listed_doc = doc(&listed);
+    let rows = arr(&listed_doc, "procedures");
+    assert_eq!(rows.len(), 18, "{listed}");
+    assert!(
+        rows.iter()
+            .any(|r| r.get("id").and_then(Json::as_str) == Some("jet.round_amounts")),
+        "{listed}"
+    );
+
+    // The planted round amount is found, cited by the posted entry's vid.
+    let out = ok(&["procedure", "run", "jet.round_amounts"]);
+    let data = doc(&out);
+    assert_eq!(text(&data, "procedure"), "jet.round_amounts");
+    assert_eq!(text(&data, "claim"), "statistical");
+    let findings = arr(&data, "findings");
+    assert_eq!(findings.len(), 1, "{out}");
+    let cites = findings[0]
+        .get("cites")
+        .and_then(Json::as_arr)
+        .expect("cites");
+    assert!(
+        cites.iter().any(|c| {
+            c.get("kind").and_then(Json::as_str) == Some("entry")
+                && c.get("entry").and_then(Json::as_str) == Some(round_vid.as_str())
+        }),
+        "the finding cites the round entry by vid: {out}"
+    );
+    assert_eq!(int(&data, "finding_count"), Some(1));
+    assert!(int(&data, "population").is_some_and(|n| n >= 2), "{out}");
+    assert!(
+        data.get("effective_through") == Some(&Json::Null),
+        "no effective date was declared: {out}"
+    );
+    // A parameter override is honoured: at round_power 6 nothing is round.
+    let none = ok(&[
+        "procedure",
+        "run",
+        "jet.round_amounts",
+        "--param",
+        "round_power=6",
+    ]);
+    assert_eq!(int(&doc(&none), "finding_count"), Some(0), "{none}");
+    assert_eq!(
+        arr(&doc(&none), "parameters")
+            .iter()
+            .find(|p| p.get("name").and_then(Json::as_str) == Some("round_power"))
+            .and_then(|p| int(p, "value")),
+        Some(6)
+    );
+    // An effective date selects the historical folds; aging runs with it.
+    let aged = ok(&[
+        "procedure",
+        "run",
+        "aging.open_items",
+        "--effective-through",
+        "2026-04-30",
+    ]);
+    assert_eq!(text(&doc(&aged), "effective_through"), "2026-04-30");
+    // A tracing law runs once its inputs are passed by handle: the round
+    // rent is the deposit into 6000; the later rent is a clean inflow, so
+    // the lowest intermediate balance never dips below the deposit.
+    let traced = ok(&[
+        "procedure",
+        "run",
+        "trace.libr",
+        "--effective-through",
+        "2026-04-30",
+        "--account",
+        "6000",
+        "--source",
+        &round_vid,
+    ]);
+    let traced_doc = doc(&traced);
+    let traced_findings = arr(&traced_doc, "findings");
+    assert_eq!(traced_findings.len(), 1, "{traced}");
+    assert_eq!(
+        traced_findings[0]
+            .get("statistic")
+            .and_then(|st| int(st, "value")),
+        Some(500_000),
+        "{traced}"
+    );
+    // Planted negatives, each naming the fix.
+    let (code, out) = refused(&["procedure", "run", "aging.open_items"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("effective_through"), "{out}");
+    let (code, out) = refused(&["procedure", "run", "graph.kiting"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("fa procedure list"), "{out}");
+    let (code, out) = refused(&[
+        "procedure",
+        "run",
+        "jet.round_amounts",
+        "--param",
+        "round_power=two",
+    ]);
+    assert_eq!(code, 2, "{out}");
+    let (code, out) = refused(&[
+        "procedure",
+        "run",
+        "jet.round_amounts",
+        "--param",
+        "no_such=1",
+    ]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("not a registered parameter"), "{out}");
+    let (code, out) = refused(&[
+        "procedure",
+        "run",
+        "trace.libr",
+        "--effective-through",
+        "2026-04-30",
+    ]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("account"), "{out}");
+    let (code, out) = refused(&[
+        "procedure",
+        "run",
+        "trace.libr",
+        "--effective-through",
+        "2026-04-30",
+        "--account",
+        "1000",
+        "--source",
+        &round_vid,
+    ]);
+    assert_eq!(code, 2, "a credit to cash is not a deposit into it: {out}");
+    assert!(out.contains("source"), "{out}");
     Ok(())
 }

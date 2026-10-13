@@ -281,6 +281,12 @@ pub struct Daemon {
     pub max_frame_bytes: usize,
     /// How long a connection may sit between frames before the daemon closes it.
     pub idle_timeout_ms: u64,
+    /// Interval between daemon clock observations, in nanoseconds.
+    pub tick_ns: u64,
+    /// Maximum accounting entries per expiry or reversal batch in one cycle.
+    pub sweep_batch: usize,
+    /// Maximum UTC/monotonic elapsed-time disagreement admitted by the clock judge.
+    pub clock_drift_ns: u64,
     pub verbs: Vec<String>,
     pub flags: Vec<String>,
     pub switches: Vec<String>,
@@ -516,6 +522,12 @@ impl Registry {
                 .map_err(|_| "verbs.toml: daemon: max_frame_bytes out of range".to_string())?,
             idle_timeout_ms: u64::try_from(int("idle_timeout_ms")?)
                 .map_err(|_| "verbs.toml: daemon: idle_timeout_ms out of range".to_string())?,
+            tick_ns: u64::try_from(int("tick_ns")?)
+                .map_err(|_| "verbs.toml: daemon: tick_ns out of range".to_string())?,
+            sweep_batch: usize::try_from(int("sweep_batch")?)
+                .map_err(|_| "verbs.toml: daemon: sweep_batch out of range".to_string())?,
+            clock_drift_ns: u64::try_from(int("clock_drift_ns")?)
+                .map_err(|_| "verbs.toml: daemon: clock_drift_ns out of range".to_string())?,
             verbs: get_strs(d, "verbs", "daemon")?,
             flags: get_strs(d, "flags", "daemon")?,
             switches: get_strs(d, "switches", "daemon")?,
@@ -633,12 +645,15 @@ impl Registry {
             || d.max_frame_bytes == 0
             || u32::try_from(d.max_frame_bytes).is_err()
             || d.idle_timeout_ms == 0
+            || d.tick_ns == 0
+            || d.sweep_batch == 0
+            || d.sweep_batch > fa_model::limits::MAX_BATCH_ENTRIES
             || d.socket.contains('/')
             || d.lease.contains('/')
             || d.socket == d.lease
         {
             return Err(
-                "verbs.toml: daemon: protocol ≥ 1, a frame limit that fits the 4-byte prefix, a non-zero idle timeout, and two distinct plain file names".into(),
+                "verbs.toml: daemon: protocol ≥ 1, a frame limit that fits the 4-byte prefix, non-zero idle and tick intervals, sweep_batch within the model batch limit, and two distinct plain file names".into(),
             );
         }
         for e in &self.events {

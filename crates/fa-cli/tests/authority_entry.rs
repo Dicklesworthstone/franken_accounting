@@ -136,6 +136,43 @@ fn discovery_and_parser_failures_preserve_authority_without_a_book() {
 }
 
 #[test]
+fn an_agent_launch_lists_chart_templates_but_cannot_import_one() {
+    // The templates are data embedded in the build (fa-48m): a launch with
+    // no operations lists them under the configured directory's lease, which
+    // need not hold a book yet. Installing one stays an owner operation.
+    let dir = fixture("templates");
+    let authority = authority(dir);
+    let (exit, out) = run(&authority, &["chart", "templates", "--json"]);
+    assert_eq!(exit, 0, "{out:?}");
+    let listed = line(&out);
+    assert_eq!(
+        listed.get("event").and_then(Json::as_str),
+        Some("chart_templates")
+    );
+    assert!(
+        listed
+            .get("data")
+            .and_then(|data| data.get("templates"))
+            .and_then(Json::as_arr)
+            .is_some_and(|templates| !templates.is_empty()),
+        "{out:?}"
+    );
+    let (exit, out) = run(
+        &authority,
+        &["chart", "import", "--template", "us-gaap-smb", "--json"],
+    );
+    assert_eq!(exit, 7, "{out:?}");
+    assert_eq!(
+        line(&out)
+            .get("data")
+            .and_then(|data| data.get("refusal_id"))
+            .and_then(Json::as_str),
+        Some("FA-REF-011"),
+        "{out:?}"
+    );
+}
+
+#[test]
 fn planning_and_plan_commit_cannot_add_post_to_a_read_only_launch() {
     let book = fixture("read-only-plans");
     let authority = LaunchAuthority::new(book, None, "agent-7", LaunchProfile::Preparer, &["read"])

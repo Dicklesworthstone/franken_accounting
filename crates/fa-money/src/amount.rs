@@ -322,9 +322,8 @@ impl Amount {
     /// error. This existing String-returning API remains panic-free: unknown
     /// units are explicitly labelled raw mantissas, with no guessed scale.
     pub fn render(self, reg: &UnitRegistry) -> String {
-        self.try_render(reg).unwrap_or_else(|_| {
-            format!("{} (mantissa of unknown {})", self.mantissa, self.unit)
-        })
+        self.try_render(reg)
+            .unwrap_or_else(|_| format!("{} (mantissa of unknown {})", self.mantissa, self.unit))
     }
 
     /// Canonical encoding: `unit_id: u32 LE ‖ mantissa: i128 LE` (plan §6.6).

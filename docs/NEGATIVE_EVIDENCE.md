@@ -158,3 +158,45 @@ and MCP no-op data. The compiled schema was compared before editing its pin:
 exactly `registers_advanced` was added (34 events to 35); every old event,
 ordering, shape and envelope field was unchanged. The corrected Rust fixtures
 and final integration gate still require execution.
+
+## 2026-10-12 — RECON catch-up: certificate row capacity and the MCP error contract
+
+- **Retained certificates outgrew one substrate row.** A comparative statement
+  certificate with later and backdated postings is 17,205 encoded bytes, and the
+  pinned substrate refuses a vertex row above 16,384, so main's own retention
+  test failed on the first gate that ran it. Certificates whose payload scalar
+  exceeds 12 KiB encoded are now retained through the book's content-addressed
+  blob store under the certificate digest, with a versioned descriptor as the
+  vertex payload; small certificates are stored as before, an exact retry
+  compares canonical bytes rather than a recomputed placement, and a missing or
+  changed blob is refused, never substituted. Regressions cover a directory
+  book's reopen, missing and damaged blobs, and a historical inline record above
+  the new bound.
+- **Resource refusals lost their structured data, and the first repair weakened
+  the test.** The stdio end-to-end client negotiated the legacy 2024 era by
+  sending `initialize`; the pinned framework's legacy adapter forwards only the
+  code and message of a handler error, so `error.data` with the launch
+  authority never reached the client. The first attempted repair (909cf25)
+  replaced the structured assertion with a message check; it was withdrawn on
+  review as a gate weakening (e53572b restored the assertion byte for byte).
+  The repair moves the server and the test client to MCP 2026-07-28
+  (`server/discover`, per-request `_meta`), refuses legacy `initialize`, and
+  keeps the structured assertions. That tree landed as part of 538af18 on
+  2026-10-12 with the complete gate green (run 3 on hz4, 772 tests).
+- **Host-path refusals vanished behind the modern router's schema refusal,
+  and the first repair narrowed the proof.** After the move to MCP
+  2026-07-28 the framework validates tool arguments against the declared
+  schema before the handler runs, so an agent that sent a host path alone on
+  a tool with a required inline property (`plan`, `certificate`) received the
+  generic "Tool arguments do not match the declared input schema." instead of
+  the promised structured `forbidden_path` refusal (two stdio tests on the
+  3e02da1 gate). Repair 24 (fc97b75) first made those calls schema-valid,
+  which proved the refusal only for well-formed calls and no longer exercised
+  the ordinary mistake; review caught it. Repair 25 keeps both: an
+  `on_response` middleware enriches exactly the router's generic refusal
+  content for a registered tool call with the same authority-first,
+  path-second structured refusal the handler applies, with the launch
+  authority attached, while requests, schemas and admission stay untouched
+  and ordinary missing required inputs keep the generic error. The landing
+  gate on that tree (538af18, run 3 on hz4) passed every step with 772
+  tests green and reached origin/staging at 16:39:42Z on 2026-10-12.

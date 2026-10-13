@@ -645,15 +645,16 @@ mod tests {
             .map(|account| oracle::Account {
                 code: account.code.clone(),
                 kind: match account.account_type {
-                    1 => oracle::AccountKind::Asset,
-                    2 => oracle::AccountKind::Liability,
-                    3 => oracle::AccountKind::Equity,
-                    4 => oracle::AccountKind::Revenue,
-                    5 => oracle::AccountKind::Expense,
-                    6 => oracle::AccountKind::Memo,
-                    7 => oracle::AccountKind::Statistical,
-                    _ => panic!("registered test type"),
-                },
+                    1 => Some(oracle::AccountKind::Asset),
+                    2 => Some(oracle::AccountKind::Liability),
+                    3 => Some(oracle::AccountKind::Equity),
+                    4 => Some(oracle::AccountKind::Revenue),
+                    5 => Some(oracle::AccountKind::Expense),
+                    6 => Some(oracle::AccountKind::Memo),
+                    7 => Some(oracle::AccountKind::Statistical),
+                    _ => None,
+                }
+                .expect("registered test type"),
                 is_leaf: account.is_leaf,
             })
             .collect()
@@ -757,13 +758,14 @@ mod tests {
         );
         let definition = StatementDefinition::from_toml(&text).unwrap();
         let source = source(definition.kind());
-        let StatementError::Partition {
-            unmapped,
-            multiply_mapped,
-        } = evaluate(&definition, &source).unwrap_err()
-        else {
-            panic!("partition refusal")
-        };
+        let (unmapped, multiply_mapped) = match evaluate(&definition, &source).unwrap_err() {
+            StatementError::Partition {
+                unmapped,
+                multiply_mapped,
+            } => Some((unmapped, multiply_mapped)),
+            _ => None,
+        }
+        .expect("partition refusal");
         assert_eq!(unmapped, ["5000", "5999"]);
         assert_eq!(
             multiply_mapped,

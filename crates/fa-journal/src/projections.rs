@@ -78,12 +78,7 @@ pub(crate) fn stage_legs(
             .get(leg.amount.unit)
             .ok_or_else(|| KernelError::Corrupt("unregistered projected unit".into()))?;
         let uvid = unit_vid(book.book_id, &format!("{}@v{}", unit.code, unit.version));
-        in_unit.add_edge(
-            edge_id(relation::IN_UNIT, lvid, uvid),
-            lvid,
-            uvid,
-            vec![],
-        );
+        in_unit.add_edge(edge_id(relation::IN_UNIT, lvid, uvid), lvid, uvid, vec![]);
         for (dimension, value) in &leg.dimension_set {
             dimensions.add_edge(
                 edge_id(relation::FOR, lvid, *value),
@@ -224,10 +219,7 @@ pub fn verify_projections<V: asupersync::fs::Vfs + Clone>(
                 u16::try_from(i).map_err(|_| KernelError::Corrupt("more than u16 legs".into()))?;
             let lvid = leg_vid(row.vid, ordinal);
             let owner = (row.vid, ordinal);
-            let description = format!(
-                "entry {:032x} leg {ordinal} ({:032x})",
-                row.vid.0, lvid.0
-            );
+            let description = format!("entry {:032x} leg {ordinal} ({:032x})", row.vid.0, lvid.0);
             report.legs_checked += 1;
             if !expected_legs.insert(lvid) {
                 return Err(KernelError::Corrupt(format!(
@@ -245,7 +237,9 @@ pub fn verify_projections<V: asupersync::fs::Vfs + Clone>(
                     }
                 };
             match vertices.get(&lvid) {
-                None => report.drift.push(format!("{description}: missing Leg vertex")),
+                None => report
+                    .drift
+                    .push(format!("{description}: missing Leg vertex")),
                 Some(stored) => {
                     if stored.labels != vec![label::LEG] {
                         report.drift.push(format!(
@@ -288,7 +282,9 @@ pub fn verify_projections<V: asupersync::fs::Vfs + Clone>(
                 ));
             }
             let Some(unit) = book.units.get(leg.amount.unit) else {
-                report.drift.push(format!("{description}: unit is not registered"));
+                report
+                    .drift
+                    .push(format!("{description}: unit is not registered"));
                 continue;
             };
             let uvid = unit_vid(book.book_id, &format!("{}@v{}", unit.code, unit.version));

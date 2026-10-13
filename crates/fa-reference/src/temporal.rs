@@ -161,9 +161,7 @@ mod tests {
 mod instant_tests {
     use std::collections::BTreeMap;
 
-    use fa_time::{
-        InstantResolution, InstantResolutionError, TimeObservation, resolve_instant,
-    };
+    use fa_time::{InstantResolution, InstantResolutionError, TimeObservation, resolve_instant};
 
     /// Deliberately literal oracle: at every commit position, look up its
     /// latest retained observation and apply the request's time predicate.
@@ -217,11 +215,10 @@ mod instant_tests {
                 selected = Some((seq, *observation));
             }
         }
-        let (resolved_seq, lower) =
-            selected.ok_or(InstantResolutionError::BeforeFirstTick {
-                requested_utc_ns,
-                first,
-            })?;
+        let (resolved_seq, lower) = selected.ok_or(InstantResolutionError::BeforeFirstTick {
+            requested_utc_ns,
+            first,
+        })?;
         let upper = by_sequence
             .values()
             .find(|tick| tick.recorded_at > resolved_seq)

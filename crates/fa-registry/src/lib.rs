@@ -13,6 +13,7 @@ pub mod evidence_policy;
 pub mod foundations;
 pub mod intake_sources;
 pub mod invariants;
+pub mod procedures;
 pub mod reason_codes;
 pub mod redaction_contracts;
 pub mod refusal_catalog;
@@ -904,8 +905,8 @@ pub fn parse_units(text: &str) -> Result<Vec<UnitRow>, RegistryError> {
     let mut rows = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     for t in doc.arrays.get("unit").unwrap_or(&Vec::new()) {
-        let id = u32::try_from(req_int(R, t, "id")?)
-            .map_err(|_| invalid(R, "unit id out of range"))?;
+        let id =
+            u32::try_from(req_int(R, t, "id")?).map_err(|_| invalid(R, "unit id out of range"))?;
         if usize::try_from(id).ok() != Some(rows.len()) {
             return Err(invalid(
                 R,
@@ -937,9 +938,7 @@ pub fn parse_units(text: &str) -> Result<Vec<UnitRow>, RegistryError> {
         if !rounding_laws.iter().any(|law| law.id == rounding_default) {
             return Err(invalid(
                 R,
-                format!(
-                    "`{code}` names unregistered default rounding law {rounding_default}"
-                ),
+                format!("`{code}` names unregistered default rounding law {rounding_default}"),
             ));
         }
         if !seen.insert((code.clone(), version)) {

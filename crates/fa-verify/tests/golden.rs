@@ -6,6 +6,9 @@
 //! consistency proof between the two states, and the complete prefix. The
 //! producer (`fa-notary`) must reproduce these bytes exactly; here the
 //! verifier must accept them — and refuse every one of them once altered.
+//! `fixtures/checkpoint_v1.txt` and `fixtures/bundle_v1.txt` pin the signed
+//! checkpoint with its scope proofs, and the evidence bundles with a
+//! production receipt, the same way.
 
 use fa_verify::{
     Checkpoint, RecordCheck, VerifyError, verify_balance, verify_consistency, verify_inclusion,
@@ -171,6 +174,17 @@ fn a_checkpoint_encodes_to_its_80_bytes() {
     let inclusion = vector("inclusion");
     let at = 4 + b"fa:acc-inclusion-proof:v1".len();
     assert_eq!(&inclusion[at..at + Checkpoint::ENCODED_LEN], &bytes[..]);
+    assert_eq!(Checkpoint::decode(&bytes).unwrap(), cp);
+    assert_eq!(
+        Checkpoint::decode(&inclusion[at..at + Checkpoint::ENCODED_LEN]).unwrap(),
+        cp
+    );
+    for end in 0..Checkpoint::ENCODED_LEN {
+        assert!(Checkpoint::decode(&bytes[..end]).is_err());
+    }
+    let mut trailing = bytes;
+    trailing.push(0);
+    assert!(Checkpoint::decode(&trailing).is_err());
 }
 
 /// The 3 → 5 vector takes the non-power-of-two branch of RFC 9162
@@ -220,4 +234,241 @@ fn the_pinned_balance_proof_refolds_cash() {
     assert_eq!(report.claim.effective_through, None);
     assert_eq!((report.claim.debits, report.claim.credits), (0, 120_550));
     assert_eq!(report.contributing, vec![2, 3]);
+}
+
+const CHECKPOINT_FIXTURE: &str = include_str!("fixtures/checkpoint_v1.txt");
+
+fn checkpoint_vector(name: &str) -> Vec<u8> {
+    let line = CHECKPOINT_FIXTURE
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .find_map(|l| l.strip_prefix(name)?.strip_prefix(' '))
+        .unwrap_or("");
+    assert!(!line.is_empty(), "fixture has no `{name}` vector");
+    unhex(line)
+}
+
+/// The pinned scope proofs, the scope each answers, and its in-scope
+/// leaves (the fixture header describes them).
+fn pinned_scopes() -> [(&'static str, fa_verify::ScopeClaim, Vec<u64>); 3] {
+    let claim = |account, from, to| fa_verify::ScopeClaim { account, from, to };
+    [
+        ("scope", claim(0x10, 20_527, 20_527), vec![2, 3]),
+        ("scope_empty", claim(0x20, 20_528, 20_600), vec![]),
+        ("scope_last", claim(0x30, i32::MIN, i32::MAX), vec![2, 3]),
+    ]
+}
+
+fn pinned_key() -> [u8; 32] {
+    checkpoint_vector("public_key")
+        .try_into()
+        .expect("a 32-byte key")
+}
+
+/// The pinned checkpoint is signed by the pinned key, names the pinned
+/// state of `accumulator_v1.txt`, and every pinned scope proof verifies
+/// against it: the run at the start of the index, an empty run between two
+/// neighbours, and the run at the end, each with the index recomputed from
+/// the pinned complete prefix.
+#[test]
+fn the_pinned_checkpoint_is_signed_and_its_scopes_verify() {
+    use fa_verify::{IndexDerivation, verify_checkpoint, verify_scope};
+
+    let signed = verify_checkpoint(&checkpoint_vector("checkpoint"), &[pinned_key()])
+        .expect("the pinned key signed the pinned checkpoint");
+    let state = verify_state(&vector("state")).unwrap();
+    assert_eq!(signed.checkpoint, state.checkpoint);
+    assert_eq!(signed.state_oid, state.oid);
+    assert_eq!(signed.substrate_chain_commitment, [0xc0; 32]);
+    assert_eq!(signed.witness_policy_oid, None);
+    assert_eq!(signed.time_evidence_oid, None);
+    let prefix = vector("prefix");
+    for (name, claim, leaves) in pinned_scopes() {
+        let proof = checkpoint_vector(name);
+        let signed_only = verify_scope(&proof, &signed, &claim, None).expect(name);
+        assert_eq!(signed_only.account, claim.account, "{name}");
+        assert_eq!(
+            signed_only
+                .leaves
+                .iter()
+                .map(|(i, _)| *i)
+                .collect::<Vec<_>>(),
+            leaves,
+            "{name}"
+        );
+        assert_eq!(
+            signed_only.index_derivation,
+            IndexDerivation::Signed {
+                by: signed.signed_by.clone()
+            }
+        );
+        let recomputed = verify_scope(&proof, &signed, &claim, Some(&prefix)).expect(name);
+        assert_eq!(recomputed.index_derivation, IndexDerivation::Recomputed);
+    }
+}
+
+/// Every flipped bit of every pinned scope proof is refused, and so is a
+/// flipped bit at every seventh position of the checkpoint (each such check
+/// is a full signature verification) and at every bit of its last byte.
+#[test]
+fn every_pinned_checkpoint_vector_refuses_flipped_bits() {
+    use fa_verify::{verify_checkpoint, verify_scope};
+
+    let checkpoint = checkpoint_vector("checkpoint");
+    let key = pinned_key();
+    let signed = verify_checkpoint(&checkpoint, &[key]).unwrap();
+    let last = checkpoint.len() * 8 - 8;
+    for bit in (0..checkpoint.len() * 8).filter(|b| b % 7 == 0 || *b >= last) {
+        let mut forged = checkpoint.clone();
+        forged[bit / 8] ^= 1 << (bit % 8);
+        assert!(
+            verify_checkpoint(&forged, &[key]).is_err(),
+            "checkpoint bit {bit} accepted"
+        );
+    }
+    for (name, claim, _) in pinned_scopes() {
+        let proof = checkpoint_vector(name);
+        for bit in 0..proof.len() * 8 {
+            let mut forged = proof.clone();
+            forged[bit / 8] ^= 1 << (bit % 8);
+            assert!(
+                verify_scope(&forged, &signed, &claim, None).is_err(),
+                "{name} bit {bit} accepted"
+            );
+        }
+    }
+}
+
+const BUNDLE_FIXTURE: &str = include_str!("fixtures/bundle_v1.txt");
+
+fn bundle_vector(name: &str) -> Vec<u8> {
+    let line = BUNDLE_FIXTURE
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .find_map(|l| l.strip_prefix(name)?.strip_prefix(' '))
+        .unwrap_or("");
+    assert!(!line.is_empty(), "fixture has no `{name}` vector");
+    unhex(line)
+}
+
+fn bundle_key() -> [u8; 32] {
+    bundle_vector("public_key")
+        .try_into()
+        .expect("a 32-byte key")
+}
+
+/// The pinned bundles verify predicate by predicate with the pinned key
+/// alone, each under its own completeness claim and with the counts the
+/// fixture header describes; the pinned digest is the prefix bundle's; its
+/// receipt verifies with it and fails, alone, against another bundle.
+#[test]
+fn the_pinned_bundles_verify_with_the_pinned_key() {
+    use fa_verify::{BundleScope, Completeness, ScopeClaim, verify_bundle};
+
+    let key = bundle_key();
+    let prefix = bundle_vector("bundle_prefix");
+    let digest: [u8; 32] = bundle_vector("digest_prefix").try_into().unwrap();
+    assert_eq!(fa_verify::bundle::bundle_digest(&prefix), digest);
+    let receipt = bundle_vector("receipt");
+
+    let report = verify_bundle(&prefix, &[key], Some(&receipt)).unwrap();
+    assert!(report.verified(), "{:#?}", report.checks);
+    assert_eq!(report.digest, digest);
+    assert_eq!(report.manifest.scope, BundleScope::Prefix);
+    assert_eq!(
+        report.manifest.completeness,
+        Completeness::SeqRangeComplete { from: 0, to: 5 }
+    );
+    assert_eq!(
+        (
+            report.summary.entries,
+            report.summary.documents,
+            report.summary.inline
+        ),
+        (5, 2, 2)
+    );
+    assert_eq!(
+        report.summary.balances,
+        vec![(b"fa:register-fold:v2".to_vec(), 2)]
+    );
+    let facts = report.receipt.expect("the receipt verified");
+    assert_eq!((facts.producer_principal, facts.produced_at_seq), (7, 9));
+    assert_eq!(facts.capability_commitment, [0xcc; 32]);
+    assert_eq!(facts.time_evidence_oid, None);
+
+    let account = bundle_vector("bundle_account");
+    let report = verify_bundle(&account, &[key], None).unwrap();
+    assert!(report.verified(), "{:#?}", report.checks);
+    assert_eq!(
+        report.manifest.scope,
+        BundleScope::Account(ScopeClaim {
+            account: 0x10,
+            from: i32::MIN,
+            to: i32::MAX
+        })
+    );
+    assert_eq!(
+        report.manifest.completeness,
+        Completeness::ScopeIndexComplete
+    );
+    assert_eq!(
+        (
+            report.summary.entries,
+            report.summary.documents,
+            report.summary.inline
+        ),
+        (3, 2, 0)
+    );
+    let elsewhere = verify_bundle(&account, &[key], Some(&receipt)).unwrap();
+    let failed: Vec<&str> = elsewhere
+        .checks
+        .iter()
+        .filter(|c| !matches!(c.grade, fa_verify::Grade::Pass))
+        .map(|c| c.check)
+        .collect();
+    assert_eq!(failed, ["production_receipt"]);
+
+    let entries = bundle_vector("bundle_entries");
+    let report = verify_bundle(&entries, &[key], None).unwrap();
+    assert!(report.verified(), "{:#?}", report.checks);
+    assert_eq!(report.manifest.scope, BundleScope::Entries(vec![3, 4]));
+    assert_eq!(report.manifest.completeness, Completeness::FilterAttested);
+    assert_eq!(report.manifest.completeness.label(), "membership_only");
+    assert_eq!(
+        (
+            report.summary.entries,
+            report.summary.documents,
+            report.summary.inline
+        ),
+        (2, 2, 2)
+    );
+}
+
+/// Sampled bits of every pinned bundle and of the receipt are bound: with
+/// one flipped, the bundle is refused whole or at least one predicate does
+/// not pass.
+#[test]
+fn every_pinned_bundle_refuses_sampled_flipped_bits() {
+    use fa_verify::verify_bundle;
+
+    let key = bundle_key();
+    for name in ["bundle_prefix", "bundle_account", "bundle_entries"] {
+        let v = bundle_vector(name);
+        let step = (v.len() / 256).max(1);
+        for i in (0..v.len()).step_by(step) {
+            let mut b = v.clone();
+            b[i] ^= 1 << (i % 8);
+            if let Ok(report) = verify_bundle(&b, &[key], None) {
+                assert!(!report.verified(), "{name}: byte {i} is not bound");
+            }
+        }
+    }
+    let prefix = bundle_vector("bundle_prefix");
+    let receipt = bundle_vector("receipt");
+    for i in 0..receipt.len() {
+        let mut r = receipt.clone();
+        r[i] ^= 1 << (i % 8);
+        let report = verify_bundle(&prefix, &[key], Some(&r)).unwrap();
+        assert!(!report.verified(), "receipt byte {i} is not bound");
+    }
 }

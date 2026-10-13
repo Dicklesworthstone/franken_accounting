@@ -791,6 +791,7 @@ dependencies = [
  "asupersync",
  "fa-intents",
  "fa-journal",
+ "fa-lantern",
  "fa-model",
  "fa-money",
  "fa-notary",
@@ -799,6 +800,7 @@ dependencies = [
  "fa-registry",
  "fa-statements",
  "fa-time",
+ "fa-verify",
  "fgdb",
  "fgdb-crypto",
  "fgdb-gql",
@@ -813,6 +815,7 @@ dependencies = [
  "asupersync",
  "fa",
  "fa-journal",
+ "fa-lantern",
  "fa-model",
  "fa-money",
  "fa-notary",
@@ -820,7 +823,19 @@ dependencies = [
  "fa-registers",
  "fa-registry",
  "fa-time",
+ "fa-verify",
  "fgdb",
+ "fgdb-types",
+]
+
+[[package]]
+name = "fa-conformance"
+version = "0.0.1"
+dependencies = [
+ "asupersync",
+ "fgdb",
+ "fgdb-delta-types",
+ "fgdb-gql",
  "fgdb-types",
 ]
 
@@ -847,6 +862,25 @@ dependencies = [
  "fgdb-crypto",
  "fgdb-delta-types",
  "fgdb-sim",
+ "fgdb-types",
+]
+
+[[package]]
+name = "fa-lantern"
+version = "0.0.1"
+dependencies = [
+ "asupersync",
+ "fa-journal",
+ "fa-model",
+ "fa-money",
+ "fa-policy",
+ "fa-reference",
+ "fa-registers",
+ "fa-registry",
+ "fa-time",
+ "fgdb",
+ "fgdb-crypto",
+ "fgdb-delta-types",
  "fgdb-types",
 ]
 
@@ -898,6 +932,7 @@ dependencies = [
  "fa-verify",
  "fgdb",
  "fgdb-crypto",
+ "fgdb-gql",
  "fgdb-types",
 ]
 
@@ -970,6 +1005,12 @@ dependencies = [
  "asupersync",
  "fa",
  "fa-cli",
+ "fa-journal",
+ "fa-model",
+ "fa-money",
+ "fa-time",
+ "fgdb",
+ "fgdb-types",
 ]
 
 [[package]]

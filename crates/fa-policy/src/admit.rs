@@ -594,11 +594,13 @@ mod tests {
 
     #[test]
     fn an_agent_can_read_trunk_but_still_cannot_write_it() {
+        // A ceiling must be positive (`BadCeiling` otherwise); the trunk
+        // refusal below is the Agent profile's, not the ceiling's.
         let agent = Capability::new(VId(5), Profile::Agent, &[Op::Read, Op::Post], VId(1))
             .unwrap()
             .for_books(&[BOOK])
             .unwrap()
-            .with_ceiling(USD, 0)
+            .with_ceiling(USD, 1)
             .unwrap();
         assert_eq!(admit_read(&agent, VId(5), BOOK), Ok(()));
         assert_eq!(current(&agent, CommitSeq(42)), Ok(()));

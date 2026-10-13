@@ -49,6 +49,7 @@ use crate::authority::{LaunchAuthority, owner_envelope};
 use crate::document;
 use crate::json::{self, Json, obj, s};
 use crate::notary;
+use crate::templates;
 use crate::verbs::{self, Condition, Dangerous, Registry, Verb};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -77,7 +78,10 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("certificate", notary::certificate_cmd),
     ("open-items", open_items_cmd),
     ("explain", explain_cmd),
+    ("procedure", procedure_cmd),
     ("checkpoint", notary::checkpoint_cmd),
+    ("proof", crate::proof::proof_cmd),
+    ("bundle", crate::proof::bundle_cmd),
     ("verify", verify_cmd),
     ("registers", registers_cmd),
     ("entry", entry_cmd),
@@ -107,6 +111,8 @@ pub(crate) enum Fail {
     /// The registry and this binary disagree (a parity defect), or the
     /// embedded registry is unreadable: a foundation failure, exit 5.
     Internal(String),
+    /// A command's artifact input/output failed: a foundation I/O failure, exit 5.
+    Io(String),
     /// The environment cannot serve the command (no daemon where one was
     /// asked for): exit 4.
     Environment(String),
@@ -520,6 +526,18 @@ pub enum Books<'a> {
     /// The directory `--book` (or `FA_BOOK`) names, opened for this one
     /// command while the command holds the book's writer lease.
     Dir,
+    /// The same directory, with its writer lease taken only when a handler
+    /// first opens the book: after the command's authority admission, so a
+    /// refused launch-bound command never touches the book (fa-23r,
+    /// authorization precedes observation). The lease is then held until the
+    /// command ends.
+    LeasedOnOpen {
+        /// The registry's lease file name.
+        lease: String,
+        /// The holder note written into the lease.
+        note: String,
+        held: Option<crate::lease::Lease>,
+    },
     /// The book a daemon holds open under its writer lease.
     Held { book: &'a mut Book, dir: PathBuf },
 }
@@ -558,6 +576,32 @@ impl Books<'_> {
         let dir = book_dir(args, cwd)?;
         match self {
             Self::Dir => {
+                let keys = BookKeys::load(&keys_path(args, &dir, cwd))?;
+                Ok(BookRef::Owned(Box::new(Book::open_dir(
+                    &dir,
+                    keys,
+                    Entropy::production(),
+                )?)))
+            }
+            Self::LeasedOnOpen { lease, note, held } => {
+                if held.is_none() {
+                    match crate::lease::Lease::acquire(&dir, lease, note) {
+                        Ok(acquired) => *held = Some(acquired),
+                        Err(error @ crate::lease::LeaseError::Held { .. }) => {
+                            let mut refusal = error.refusal(&dir);
+                            refusal.message.push_str(
+                                "; launch-bound authority cannot be forwarded through the unauthenticated fad protocol",
+                            );
+                            refusal.fix = "ask the operator to release the book's writer lease, then retry this launch-bound session; authenticated daemon sessions are not yet available (fa-r3q)".into();
+                            return Err(Fail::Refusal(refusal));
+                        }
+                        Err(error @ crate::lease::LeaseError::Io { .. }) => {
+                            return Err(Fail::Environment(format!(
+                                "cannot acquire the configured book's writer lease: {error}"
+                            )));
+                        }
+                    }
+                }
                 let keys = BookKeys::load(&keys_path(args, &dir, cwd))?;
                 Ok(BookRef::Owned(Box::new(Book::open_dir(
                     &dir,
@@ -993,7 +1037,7 @@ fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
             fix,
             detail,
         },
-        Err(Fail::Internal(message)) => Failure {
+        Err(Fail::Internal(message) | Fail::Io(message)) => Failure {
             exit: exit::FOUNDATION,
             refusal_id: None,
             diag: format!("error (exit {}): {message}", exit::FOUNDATION),
@@ -1161,17 +1205,21 @@ fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fa
         &[Op::Read]
     } else {
         match (verb.name.as_str(), sub) {
-            ("capabilities" | "robot-docs" | "help", _) => &[],
+            // The chart templates are data embedded in this build; listing
+            // them reads nothing from the book.
+            ("capabilities" | "robot-docs" | "help", _) | ("chart", Some("templates")) => &[],
             ("book", Some("info"))
             | ("chart" | "period", Some("list"))
             | (
-                "tb" | "statement" | "open-items" | "explain" | "replay" | "certificate" | "entry",
+                "tb" | "statement" | "open-items" | "explain" | "replay" | "certificate" | "entry"
+                | "procedure",
                 _,
             ) => &[Op::Read],
             ("verify" | "registers", _) => &[Op::Read, Op::Verify],
             ("post" | "commit" | "reverse" | "reserve" | "resolve", _) => &[Op::Post],
             ("approve", _) => &[Op::Approve],
             ("checkpoint", _) => &[Op::Witness],
+            ("proof" | "bundle", _) => &[Op::Read, Op::Produce],
             _ => {
                 return Err(Refusal::new(
                     fa_journal::refusal::code::CAPABILITY,
@@ -1207,7 +1255,7 @@ fn admit_bound_files(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fail
             fix,
         )
     };
-    for flag in ["--plan-out", "--certificate-out"] {
+    for flag in ["--plan-out", "--certificate-out", "--out"] {
         if args.flag(flag).is_some() {
             return Err(blocked(
                 flag,
@@ -2030,8 +2078,32 @@ fn req_str<'a>(doc: &'a Json, key: &str, what: &str) -> Result<&'a str, Fail> {
 
 fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
+    if args.flag("--time-zone").is_some()
+        && args.positional.get(1).map(String::as_str) != Some("create")
+    {
+        return Err(usage(
+            "--time-zone declares the policy of a new book; it belongs to book create",
+            "fa book create --name \"My Co\" --time-zone UTC",
+        ));
+    }
     match args.positional.get(1).map(String::as_str) {
         Some("create") => {
+            if args.flag_all("--time-zone").len() > 1 {
+                return Err(usage(
+                    "--time-zone may be supplied only once",
+                    "--time-zone UTC",
+                ));
+            }
+            let time_zone_policy = match args.flag("--time-zone") {
+                None => None,
+                Some("UTC") => Some(fa_journal::TimeZonePolicy::Utc),
+                Some(zone) => {
+                    return Err(usage(
+                        format!("time zone `{zone}` is not supported"),
+                        "--time-zone UTC (the registered policy), or omit it to leave the policy undeclared",
+                    ));
+                }
+            };
             if ctx.books.is_held() {
                 return Err(usage(
                     "`fa book create` makes a new book directory; a daemon serves an existing one",
@@ -2092,7 +2164,7 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     name: name.to_string(),
                     base_unit,
                     calendar,
-                    time_zone_policy: None,
+                    time_zone_policy,
                     entities: Vec::new(),
                     opening_date: None,
                 },
@@ -2120,6 +2192,7 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         }
         Some("info") => {
             let book = ctx.books.open(args)?;
+            let base_unit = book.spec()?.base_unit;
             let ctx = book.context();
             let periods = book.periods()?;
             let mut by_state: Vec<(String, i128)> = Vec::new();
@@ -2129,15 +2202,17 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     None => by_state.push((p.state.name().to_string(), 1)),
                 }
             }
+            // The base unit journaled at genesis, not a guess.
             let unit = ctx
                 .units
-                .get(ctx.units.lookup("USD").unwrap_or(fa_money::UnitId(0)))
+                .get(base_unit)
                 .map(|u| u.code.clone())
                 .unwrap_or_default();
             out.event(
                 "book",
                 vec![
                     ("book_id", s(ctx.book_id.to_hex())),
+                    ("base_unit", s(&unit)),
                     ("calendar", s(&ctx.calendar.id)),
                     ("periods", Json::Int(periods.len() as i128)),
                     (
@@ -2179,15 +2254,40 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     match args.positional.get(1).map(String::as_str) {
         Some("import") => {
-            let path = args.positional.get(2).ok_or_else(|| {
-                usage(
-                    "chart import needs a file",
-                    "fa chart import chart.json --book <dir>",
-                )
-            })?;
-            let text = ctx.files.read_text(path)?;
+            // A chart comes from a file (or `-`), or from an embedded
+            // template (plan §4.3, fa-48m): exactly one of the two.
+            let template = match args.flag("--template") {
+                None => None,
+                Some(name) => Some(templates::find(name).ok_or_else(|| {
+                    let known: Vec<&str> = templates::TEMPLATES.iter().map(|t| t.name).collect();
+                    usage(
+                        format!("unknown chart template `{name}`"),
+                        format!("fa chart templates --json lists them: {}", known.join(", ")),
+                    )
+                })?),
+            };
+            let (path, text) = match (template, args.positional.get(2)) {
+                (Some(_), Some(file)) => {
+                    return Err(usage(
+                        format!("chart import takes a file or --template, not both (got `{file}`)"),
+                        "fa chart import --template us-gaap-smb --book <dir>",
+                    ));
+                }
+                (Some(t), None) => (format!("template:{}", t.name), t.text.to_string()),
+                (None, Some(file)) => (file.clone(), ctx.files.read_text(file)?),
+                (None, None) => {
+                    return Err(usage(
+                        "chart import needs a file or --template <name>",
+                        "fa chart import chart.json --book <dir>  (or --template us-gaap-smb)",
+                    ));
+                }
+            };
+            let path = &path;
             let doc = parse_json(path, &text)?;
             let mut book = ctx.books.open(args)?;
+            // `"unit": "base"` is the book's own base unit, journaled at
+            // genesis, so one chart document serves a book in any currency.
+            let base_unit = book.spec()?.base_unit;
             let units = &book.context().units;
             let rows = doc.get("accounts").and_then(Json::as_arr).ok_or_else(|| {
                 usage(
@@ -2216,10 +2316,11 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 let unit_policy = match row.get("unit").and_then(Json::as_str) {
                     None | Some("any") => UnitPolicy::AnyUnit,
                     Some("any-currency") => UnitPolicy::AnyCurrency,
+                    Some("base") => UnitPolicy::Single(base_unit),
                     Some(u) => UnitPolicy::Single(units.lookup(u).ok_or_else(|| {
                         usage(
                             format!("{what}: unknown unit `{u}`"),
-                            "unit: USD|EUR|…|any|any-currency",
+                            "unit: USD|EUR|…|base|any|any-currency",
                         )
                     })?),
                 };
@@ -2295,11 +2396,7 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let date = date_flag(args, DateDay(0))?;
             let key = match args.flag("--key") {
                 Some(k) => k.as_bytes().to_vec(),
-                None => format!(
-                    "chart:{}",
-                    hex(&fa_model::domain_digest(b"fa:chart:v1", &[text.as_bytes()])[..8])
-                )
-                .into_bytes(),
+                None => templates::chart_key(&text).into_bytes(),
             };
             let installed = book.install_chart(&accounts, who, date, &key)??;
             out.at_book(&book)?;
@@ -2315,11 +2412,46 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         "recorded_at",
                         Json::Int(i128::from(installed.recorded_at.0)),
                     ),
+                    ("template", template.map_or(Json::Null, |t| s(t.name))),
                 ],
                 &format!(
-                    "installed {} accounts (control entry {:032x}, recorded at {})",
-                    installed.accounts, installed.control_entry.0, installed.recorded_at.0
+                    "installed {} accounts{} (control entry {:032x}, recorded at {})",
+                    installed.accounts,
+                    template.map_or_else(String::new, |t| format!(" from template {}", t.name)),
+                    installed.control_entry.0,
+                    installed.recorded_at.0
                 ),
+            );
+            Ok(())
+        }
+        Some("templates") => {
+            if let Some(extra) = args.positional.get(2) {
+                return Err(usage(
+                    format!("unexpected argument `{extra}`"),
+                    "fa chart templates --json",
+                ));
+            }
+            let mut items = Vec::with_capacity(templates::TEMPLATES.len());
+            let mut human = Vec::with_capacity(templates::TEMPLATES.len());
+            for template in templates::TEMPLATES {
+                let listed = templates::listing(template).map_err(Fail::Internal)?;
+                human.push(format!(
+                    "{:<22} v{}  {:>3} accounts ({} leaves)  {}",
+                    listed.name, listed.version, listed.accounts, listed.leaves, listed.description
+                ));
+                items.push(obj(vec![
+                    ("name", s(listed.name)),
+                    ("version", Json::Int(listed.version)),
+                    ("description", s(&listed.description)),
+                    ("accounts", Json::Int(listed.accounts as i128)),
+                    ("leaves", Json::Int(listed.leaves as i128)),
+                    ("key", s(&listed.key)),
+                ]));
+            }
+            out.event(
+                "chart_templates",
+                vec![("templates", Json::Arr(items))],
+                &human.join("\n"),
             );
             Ok(())
         }
@@ -3025,6 +3157,110 @@ struct BuiltPost {
     reversal_detail: Option<(String, Reason)>,
 }
 
+/// Timing is request data. The posting kernel resolves its committed tick
+/// anchor and schedule law; the CLI never reads a clock or creates an effect.
+fn post_timing(
+    args: &Args,
+    doc: &Json,
+    class: EntryClass,
+) -> Result<(Option<u64>, Option<DateDay>), Fail> {
+    let Json::Obj(fields) = doc else {
+        return Err(usage("intent must be an object", "fa robot-docs examples"));
+    };
+    const FIELDS: &[&str] = &[
+        "class",
+        "effective_date",
+        "effective_period",
+        "idempotency_key",
+        "description",
+        "legs",
+        "evidence",
+        "reverses",
+        "reason",
+        "resolves",
+        "disposition",
+        "timeout_ns",
+        "reverse_on",
+    ];
+    if let Some((field, _)) = fields
+        .iter()
+        .find(|(field, _)| !FIELDS.contains(&field.as_str()))
+    {
+        return Err(usage(
+            format!("intent: unknown field `{field}`"),
+            "use timeout_ns for a Pending duration in nanoseconds, or reverse_on for an Adjusting reversal date; fa robot-docs examples lists the supported intent fields",
+        ));
+    }
+    for (field, flag, allowed, name) in [
+        ("timeout_ns", "--timeout-ns", EntryClass::PENDING, "Pending"),
+        (
+            "reverse_on",
+            "--reverse-on",
+            EntryClass::ADJUSTING,
+            "Adjusting",
+        ),
+    ] {
+        if args.flag_all(flag).len() > 1 {
+            return Err(usage(
+                format!("{flag} may be supplied only once"),
+                format!("supply one {flag} value, or use the intent's {field} field"),
+            ));
+        }
+        if doc.get(field).is_some() && args.flag(flag).is_some() {
+            return Err(usage(
+                format!("{field} was supplied in both the intent and {flag}"),
+                format!("supply {field} in the intent or {flag}, once"),
+            ));
+        }
+        if (doc.get(field).is_some() || args.flag(flag).is_some()) && class != allowed {
+            return Err(usage(
+                format!("{field} belongs to a {name} entry only"),
+                format!("remove {field}/{flag}, or use class {name}"),
+            ));
+        }
+    }
+    let bad_timeout = || {
+        usage(
+            "timeout_ns must be an integer from 0 through 18446744073709551615 nanoseconds",
+            "timeout_ns: 5000000000, or --timeout-ns 5000000000 (five seconds from the latest committed TimeEvidence tick)",
+        )
+    };
+    let timeout_ns = match doc.get("timeout_ns") {
+        Some(Json::Int(n)) => Some(u64::try_from(*n).map_err(|_| bad_timeout())?),
+        Some(_) => return Err(bad_timeout()),
+        None => args
+            .flag("--timeout-ns")
+            .map(|text| {
+                if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(bad_timeout());
+                }
+                text.parse::<u64>().map_err(|_| bad_timeout())
+            })
+            .transpose()?,
+    };
+    let reverse_text = match doc.get("reverse_on") {
+        Some(Json::Str(text)) => Some(text.as_str()),
+        Some(_) => {
+            return Err(usage(
+                "reverse_on must be a civil-date string",
+                "reverse_on: \"YYYY-MM-DD\", or --reverse-on YYYY-MM-DD",
+            ));
+        }
+        None => args.flag("--reverse-on"),
+    };
+    let reverse_on = reverse_text
+        .map(|text| {
+            DateDay::parse(text).map_err(|e| {
+                usage(
+                    format!("reverse_on `{text}`: {e:?}"),
+                    "reverse_on: \"YYYY-MM-DD\", or --reverse-on YYYY-MM-DD",
+                )
+            })
+        })
+        .transpose()?;
+    Ok((timeout_ns, reverse_on))
+}
+
 /// Resolve and seal the request once. Planning and posting must use these
 /// same bytes; rebuilding a description would change its randomized seal.
 fn build_post_request(
@@ -3037,31 +3273,27 @@ fn build_post_request(
     capability: Capability,
 ) -> Result<BuiltPost, Fail> {
     let ctx = book.context().clone();
-    let class_name = doc
-        .get("class")
-        .and_then(Json::as_str)
-        .unwrap_or(match forced {
+    let class_name = match doc.get("class") {
+        None => match forced {
             Some(EntryClass::PENDING) => "Pending",
             Some(EntryClass::RESOLUTION) => "Resolution",
             Some(EntryClass::REVERSAL) => "Reversal",
             _ => "Original",
-        });
+        },
+        Some(Json::Str(name)) => name,
+        Some(_) => {
+            return Err(usage(
+                "intent: class must be a string",
+                "class: Pending|Adjusting|Original|…",
+            ));
+        }
+    };
     let class = EntryClass::from_name(class_name).ok_or_else(|| {
         usage(
             format!("unknown class `{class_name}`"),
             "class: Original|Adjusting|Reversal|Pending|Resolution|…",
         )
     })?;
-    for key in ["timeout_ns", "timeout", "expires", "expiry", "expires_at"] {
-        if doc.get(key).is_some() {
-            return Err(usage(
-                format!(
-                    "`{key}`: timed holds are not available yet, and a timed reservation is never silently made permanent"
-                ),
-                "remove the field to reserve without a timeout, or wait for the TimeEvidence tick and expiry-sweep slice (plan §5.4)",
-            ));
-        }
-    }
     if forced.is_some_and(|f| f != class) {
         return Err(usage(
             format!(
@@ -3075,6 +3307,7 @@ fn build_post_request(
             "remove `class` from the intent, or use `fa post`",
         ));
     }
+    let (timeout_ns, reverse_on) = post_timing(args, doc, class)?;
     let typed_reversal = forced == Some(EntryClass::REVERSAL);
     let supplied_date = if typed_reversal && doc.get("effective_date").is_none() {
         None
@@ -3278,7 +3511,7 @@ fn build_post_request(
     } else {
         if class == EntryClass::PENDING {
             pending = Some(Pending {
-                timeout_ns: None,
+                timeout_ns,
                 resolution_of: None,
                 disposition: None,
             });
@@ -3344,6 +3577,10 @@ fn build_post_request(
         external_ids: Vec::new(),
         extensions: Vec::new(),
         tags: Vec::new(),
+    };
+    let proposal = match reverse_on {
+        Some(day) => fa_journal::with_auto_reverse(proposal, day),
+        None => proposal,
     };
     Ok(BuiltPost {
         request: PostRequest {
@@ -3525,7 +3762,9 @@ fn read_plan_bytes(files: &Files, path: &str, domain: &[u8], kind: &str) -> Resu
     }
     let decoded = text
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let digits = std::str::from_utf8(pair)
                 .map_err(|_| usage("invalid plan hex", "pass the complete plan bytes string"))?;
@@ -5718,6 +5957,329 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             }
         }
         other => Err(unhandled("entry", other)),
+    }
+}
+
+// ---- procedure: Lantern over the CLI (plan §11, Appendix D) ----------------
+
+/// A procedure's registry or parameter refusal as a usage error naming the
+/// registry; a version mismatch is a parity defect of this build.
+fn lantern_usage(error: fa_lantern::LanternError) -> Fail {
+    use fa_lantern::LanternError as E;
+    match error {
+        E::Unregistered { procedure } => usage(
+            format!("`{procedure}` is not a registered procedure"),
+            "fa procedure list --json names every registered procedure id",
+        ),
+        E::Parameter {
+            procedure,
+            name,
+            message,
+        } => usage(
+            format!("{procedure}: {name}: {message}"),
+            "fa procedure list --json shows each procedure's registered parameters and inputs",
+        ),
+        E::Version {
+            procedure,
+            code,
+            registry,
+        } => Fail::Internal(format!(
+            "{procedure}: this build implements version {code} but procedures.toml registers {registry}"
+        )),
+        other => Fail::Internal(format!("procedure: {other}")),
+    }
+}
+
+fn tie_break_name(t: &fa_registry::procedures::TieBreak) -> &'static str {
+    use fa_registry::procedures::TieBreak as T;
+    match t {
+        T::EntryVid => "entry_vid",
+        T::AccountVid => "account_vid",
+        T::None => "none",
+    }
+}
+
+fn calibration_name(c: &fa_registry::procedures::Calibration) -> &'static str {
+    use fa_registry::procedures::Calibration as C;
+    match c {
+        C::Planted => "planted",
+        C::Corpus => "corpus",
+        C::Uncalibrated => "uncalibrated",
+    }
+}
+
+fn procedure_row_json(row: &fa_registry::procedures::Procedure) -> Json {
+    obj(vec![
+        ("id", s(&row.id)),
+        ("version", Json::Int(i128::from(row.version))),
+        ("claim", s(row.claim.name())),
+        ("evidence", s(&row.evidence)),
+        ("tie_break", s(tie_break_name(&row.tie_break))),
+        ("complexity", s(&row.complexity)),
+        ("calibration", s(calibration_name(&row.calibration))),
+        ("summary", s(&row.summary)),
+        (
+            "inputs",
+            Json::Arr(
+                row.inputs
+                    .iter()
+                    .map(|i| {
+                        obj(vec![
+                            ("name", s(&i.name)),
+                            ("kind", s(&i.kind)),
+                            ("meaning", s(&i.meaning)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+        (
+            "parameters",
+            Json::Arr(
+                row.parameters
+                    .iter()
+                    .map(|p| {
+                        obj(vec![
+                            ("name", s(&p.name)),
+                            ("default", Json::Int(p.default)),
+                            ("meaning", s(&p.meaning)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+    ])
+}
+
+/// A typed citation as one object: `kind` plus the handle fields, every
+/// field present and null when it does not apply.
+fn cite_json(c: &fa_lantern::Cite) -> Json {
+    use fa_lantern::Cite as C;
+    let vid = |v: &VId| s(format!("{:032x}", v.0));
+    let mut fields: Vec<(&str, Json)> = vec![
+        ("entry", Json::Null),
+        ("ordinal", Json::Null),
+        ("account", Json::Null),
+        ("period", Json::Null),
+        ("document", Json::Null),
+        ("principal", Json::Null),
+        ("approval", Json::Null),
+    ];
+    let (kind, set): (&str, Vec<(&str, Json)>) = match c {
+        C::Entry(v) => ("entry", vec![("entry", vid(v))]),
+        C::Leg { entry, ordinal } => (
+            "leg",
+            vec![
+                ("entry", vid(entry)),
+                ("ordinal", Json::Int(i128::from(*ordinal))),
+            ],
+        ),
+        C::Account(v) => ("account", vec![("account", vid(v))]),
+        C::Period(code) => ("period", vec![("period", s(code.as_str()))]),
+        C::Document(oid) => ("document", vec![("document", s(hex(&oid.0)))]),
+        C::Principal(v) => ("principal", vec![("principal", vid(v))]),
+        C::Approval(v) => ("approval", vec![("approval", vid(v))]),
+    };
+    for (key, value) in set {
+        if let Some(slot) = fields.iter_mut().find(|(name, _)| *name == key) {
+            slot.1 = value;
+        }
+    }
+    fields.push(("kind", s(kind)));
+    obj(fields)
+}
+
+fn finding_json(f: &fa_lantern::Finding) -> Json {
+    obj(vec![
+        ("severity", s(f.severity.name())),
+        (
+            "statistic",
+            obj(vec![
+                ("name", s(&f.statistic.name)),
+                ("value", Json::Int(f.statistic.value)),
+                ("scale", Json::Int(i128::from(f.statistic.scale))),
+                ("population", Json::Int(i128::from(f.statistic.population))),
+            ]),
+        ),
+        ("cites", Json::Arr(f.cites.iter().map(cite_json).collect())),
+        ("narrative", s(&f.narrative)),
+    ])
+}
+
+/// `fa procedure list` and `fa procedure run <id>`: Lantern's registered
+/// procedures over the book's trunk, a pure read (plan §11; FA-INV-04: a
+/// finding is derived, never authoritative).
+fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let out = &ctx.out;
+    let sub = args.positional.get(1).map(String::as_str);
+    let example = "fa procedure run jet.round_amounts --book <dir> --json";
+    match sub {
+        Some("list") => {
+            if let Some(extra) = args.positional.get(2) {
+                return Err(usage(
+                    format!("unexpected argument `{extra}`"),
+                    "fa procedure list --json",
+                ));
+            }
+            let rows = fa_lantern::catalog::registered().map_err(lantern_usage)?;
+            for row in &rows {
+                out.line(format!(
+                    "{} v{} {} {}",
+                    row.id,
+                    row.version,
+                    row.claim.name(),
+                    row.summary
+                ));
+            }
+            out.event(
+                "procedure_list",
+                vec![
+                    (
+                        "procedures",
+                        Json::Arr(rows.iter().map(procedure_row_json).collect()),
+                    ),
+                    ("count", Json::Int(rows.len() as i128)),
+                ],
+                &format!("{} registered procedure(s)", rows.len()),
+            );
+            Ok(())
+        }
+        Some("run") => {
+            let id = args
+                .positional
+                .get(2)
+                .ok_or_else(|| usage("procedure run needs a procedure id", example))?;
+            if let Some(extra) = args.positional.get(3) {
+                return Err(usage(format!("unexpected argument `{extra}`"), example));
+            }
+            for flag in ["--effective-through", "--account", "--source"] {
+                if args.flag_all(flag).len() > 1 {
+                    return Err(usage(
+                        format!("procedure run takes only one {flag}"),
+                        example,
+                    ));
+                }
+            }
+            let mut params = fa_lantern::Params::defaults(id).map_err(lantern_usage)?;
+            for assignment in args.flag_all("--param") {
+                let Some((name, value)) = assignment.split_once('=') else {
+                    return Err(usage(
+                        format!("--param `{assignment}` is not name=value"),
+                        "--param round_power=2",
+                    ));
+                };
+                let value: i128 = value.trim().parse().map_err(|_| {
+                    usage(
+                        format!("--param {name}: `{value}` is not an integer"),
+                        "--param name=<integer, in the parameter's registered unit>",
+                    )
+                })?;
+                params = params.set(name.trim(), value).map_err(lantern_usage)?;
+            }
+            let effective_through = match args.flag("--effective-through") {
+                None => None,
+                Some(d) => Some(DateDay::parse(d).map_err(|e| {
+                    usage(
+                        format!("--effective-through `{d}`: {e:?}"),
+                        "--effective-through YYYY-MM-DD",
+                    )
+                })?),
+            };
+            let book = ctx.books.open(args)?;
+            let (known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
+            if requested_utc_ns.is_some() {
+                return Err(usage(
+                    "procedures run at a recorded sequence, not at an instant",
+                    "--known-at HEAD or --known-at <commit sequence>",
+                ));
+            }
+            let inputs = fa_lantern::catalog::Inputs {
+                account: args
+                    .flag("--account")
+                    .map(|code| account_vid(book.context().book_id, code)),
+                source: args
+                    .flag("--source")
+                    .map(|text| parse_vid(text.strip_prefix("E:").unwrap_or(text), "--source"))
+                    .transpose()?,
+            };
+            let built = fa_lantern::catalog::build(id, params, inputs).map_err(lantern_usage)?;
+            let run = book.run_procedure(built.as_ref(), known_at, effective_through)?;
+            out.known_at(run.coordinate.known_at);
+            for f in &run.findings {
+                out.line(format!(
+                    "{} {} {}={} {}",
+                    f.severity.name(),
+                    run.procedure,
+                    f.statistic.name,
+                    f.statistic.value,
+                    f.narrative
+                ));
+            }
+            let human = format!(
+                "{}: {} finding(s) over {} entries",
+                run.procedure,
+                run.findings.len(),
+                run.population
+            );
+            out.event(
+                "procedure_run",
+                vec![
+                    ("procedure", s(&run.procedure)),
+                    ("version", Json::Int(i128::from(run.version))),
+                    ("claim", s(run.claim.name())),
+                    ("evidence", s(&run.evidence)),
+                    ("known_at", Json::Int(i128::from(run.coordinate.known_at.0))),
+                    (
+                        "effective_through",
+                        run.coordinate
+                            .effective_through
+                            .map_or(Json::Null, |d| s(d.render())),
+                    ),
+                    (
+                        "parameters",
+                        Json::Arr(
+                            run.parameters
+                                .iter()
+                                .map(|(k, v)| {
+                                    obj(vec![("name", s(k.as_str())), ("value", Json::Int(*v))])
+                                })
+                                .collect(),
+                        ),
+                    ),
+                    (
+                        "inputs",
+                        Json::Arr(
+                            run.inputs
+                                .iter()
+                                .map(|(k, v)| {
+                                    obj(vec![("name", s(k.as_str())), ("value", s(v.as_str()))])
+                                })
+                                .collect(),
+                        ),
+                    ),
+                    ("parameters_digest", s(hex(&run.parameters_digest))),
+                    ("inputs_digest", s(hex(&run.inputs_digest))),
+                    ("population", Json::Int(i128::from(run.population))),
+                    (
+                        "work",
+                        obj(vec![
+                            ("entries", Json::Int(i128::from(run.work.entries))),
+                            ("legs", Json::Int(i128::from(run.work.legs))),
+                            ("comparisons", Json::Int(i128::from(run.work.comparisons))),
+                        ]),
+                    ),
+                    (
+                        "findings",
+                        Json::Arr(run.findings.iter().map(finding_json).collect()),
+                    ),
+                    ("finding_count", Json::Int(run.findings.len() as i128)),
+                    ("findings_digest", s(hex(&run.findings_digest))),
+                ],
+                &human,
+            );
+            Ok(())
+        }
+        _ => Err(unhandled("procedure", sub)),
     }
 }
 

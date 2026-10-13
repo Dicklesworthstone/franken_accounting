@@ -62,7 +62,8 @@ const MAX_PATH: usize = 64;
 /// A prefix proof lists every leaf; the bound only guards allocation (the
 /// reader also refuses a count the input cannot hold).
 const MAX_PREFIX_LEAVES: usize = 1 << 24;
-const MAX_ENVELOPE_BYTES: usize = 1 + 16 + 16 + 8 + 4 + 32 + 2 + 5 + 4 + 4 + 4096 * (16 + 4);
+pub(crate) const MAX_ENVELOPE_BYTES: usize =
+    1 + 16 + 16 + 8 + 4 + 32 + 2 + 5 + 4 + 4 + 4096 * (16 + 4);
 
 /// What a checkpoint commits: the root over the first `leaf_count` leaves
 /// of one book branch's journal, which are exactly the records committed at
@@ -78,6 +79,16 @@ pub struct Checkpoint {
 
 impl Checkpoint {
     pub const ENCODED_LEN: usize = 16 + 16 + 8 + 8 + 32;
+
+    /// Read exactly one canonical 80-byte checkpoint. This parses an anchor;
+    /// it does not authenticate its origin or make it trusted. The operator
+    /// must supply that trust independently of the proof being checked.
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        let mut reader = Reader::new(bytes);
+        let checkpoint = Self::read(&mut reader)?;
+        reader.finish("checkpoint")?;
+        Ok(checkpoint)
+    }
 
     pub(crate) fn read(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
         Ok(Self {
@@ -167,12 +178,43 @@ pub enum VerifyError {
     RecordSet {
         index: u64,
     },
+    /// An in-scope Migration leaf needs authenticated lifecycle and run
+    /// policy evidence that a v1 balance proof does not carry (fa-e00).
+    MigrationVisibility {
+        index: u64,
+    },
     /// A leg amount is negative or a sum overflowed `i128`.
     Arithmetic,
     /// The refold differs from the claim; these are the refolded sums.
     Claim {
         debits: i128,
         credits: i128,
+    },
+    /// The checkpoint's signatures do not verify ([`crate::checkpoint`]).
+    Checkpoint(crate::checkpoint::CheckpointError),
+    /// The scope proof answers another scope than the one asked.
+    ScopeClaim,
+    /// The scope proof's paths do not open the checkpoint's signed
+    /// scope-index root.
+    ScopeRoot,
+    /// The scope proof does not show a gap-free run: positions not
+    /// consecutive, a neighbour missing or inside the interval, or a run
+    /// claimed to touch an end of the index it does not touch.
+    ScopeRun,
+    /// An in-scope tuple is outside the interval, out of order, or not
+    /// what its leaf envelope says (the account or the effective day).
+    ScopeTuple {
+        leaf_index: u64,
+    },
+    /// The scope index recomputed from the complete prefix is not the one
+    /// the checkpoint signs.
+    ScopeIndexDerivation,
+    /// A bundle's balance names a register fold law this verifier does not
+    /// implement: its claim is defined under that law, so recomputing it
+    /// under another would answer a different question.
+    FoldLaw {
+        domain: Vec<u8>,
+        version: u16,
     },
 }
 
@@ -244,10 +286,42 @@ impl fmt::Display for VerifyError {
                 f,
                 "the records are not exactly the in-scope leaves (leaf {index} is missing or extra)"
             ),
+            Self::MigrationVisibility { index } => write!(
+                f,
+                "Migration leaf {index}: a v1 balance proof cannot establish migration visibility; authenticated lifecycle and run-policy witnesses are required (fa-e00)"
+            ),
             Self::Arithmetic => write!(f, "a leg amount is negative or a sum overflowed"),
             Self::Claim { debits, credits } => write!(
                 f,
                 "the journal refolds to debits {debits}, credits {credits}, not the claimed amounts"
+            ),
+            Self::Checkpoint(e) => write!(f, "checkpoint: {e}"),
+            Self::ScopeClaim => write!(
+                f,
+                "the scope proof answers another scope than the one asked"
+            ),
+            Self::ScopeRoot => write!(
+                f,
+                "the scope paths do not open the checkpoint's signed scope-index root"
+            ),
+            Self::ScopeRun => write!(
+                f,
+                "the scope proof does not show a gap-free run with its neighbours outside the interval"
+            ),
+            Self::ScopeTuple { leaf_index } => write!(
+                f,
+                "the scope tuple for leaf {leaf_index} is outside the interval, out of order, or not what its envelope says"
+            ),
+            Self::ScopeIndexDerivation => write!(
+                f,
+                "the scope index recomputed from the complete prefix is not the one the checkpoint signs"
+            ),
+            Self::FoldLaw { domain, version } => write!(
+                f,
+                "the balance is defined under register fold `{}` version {version}; this verifier implements `{}` version {} only — use a verifier that implements the named law",
+                String::from_utf8_lossy(domain),
+                String::from_utf8_lossy(crate::bundle::FOLD_DOMAIN),
+                crate::bundle::FOLD_VERSION
             ),
         }
     }
@@ -314,7 +388,7 @@ pub(crate) fn trusted(proof: Checkpoint, trusted: &Checkpoint) -> Result<Checkpo
     Ok(proof)
 }
 
-fn read_path(r: &mut Reader<'_>) -> Result<Vec<Digest>, DecodeError> {
+pub(crate) fn read_path(r: &mut Reader<'_>) -> Result<Vec<Digest>, DecodeError> {
     let n = r.count(MAX_PATH, 32, "proof.path")?;
     let mut path = Vec::with_capacity(n);
     for _ in 0..n {
@@ -323,7 +397,7 @@ fn read_path(r: &mut Reader<'_>) -> Result<Vec<Digest>, DecodeError> {
     Ok(path)
 }
 
-fn within(envelope: &LeafEnvelope, cp: &Checkpoint) -> Result<(), VerifyError> {
+pub(crate) fn within(envelope: &LeafEnvelope, cp: &Checkpoint) -> Result<(), VerifyError> {
     if envelope.book_id != cp.book_id || envelope.branch_id != cp.branch_id {
         return Err(VerifyError::Coordinate);
     }

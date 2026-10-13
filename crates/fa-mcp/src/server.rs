@@ -16,11 +16,15 @@ use std::sync::{Arc, Mutex};
 use fa_cli::authority::{LaunchAuthority, LaunchProfile};
 use fa_cli::json::Json;
 use fa_cli::verbs::Registry;
-use fastmcp_rust::auto::{Server, ServerBuilder};
-use fastmcp_rust::server::{ResourceHandler, ToolHandler, UriParams};
+use fastmcp_rust::modern::{AbsoluteUri, Server, ServerBuilder};
+use fastmcp_rust::server::{
+    FinalResourceReadCacheHintProvenance, ResourceHandler, ToolHandler, UriParams,
+};
 use fastmcp_rust::{
-    Content, JsonValue, McpContext, McpError, McpErrorCode, McpResult, Resource, ResourceContent,
-    ResourceTemplate, Tool, ToolAnnotations, json,
+    CacheScope, CacheTtl, CompleteResult, Content, EmbeddedResourceContents,
+    FinalReadResourceResult, JsonRpcRequest, JsonValue, McpContext, McpError, McpErrorCode,
+    McpResult, Middleware, Resource, ResourceContent, ResourceTemplate, ResultMeta, Tool,
+    ToolAnnotations, json,
 };
 
 use crate::detect::{self, Memory};
@@ -223,11 +227,8 @@ impl Adapter {
         tool: &ToolSpec,
         arguments: &JsonValue,
     ) -> Result<CallOutput, StructuredError> {
-        if let Some(argument) = crate::registry::forbidden_argument(arguments) {
-            return Err(StructuredError::forbidden_argument(argument));
-        }
-        if let Some((argument, fix)) = tool.forbidden_path_argument(arguments) {
-            return Err(StructuredError::forbidden_path(&argument, fix));
+        if let Some(error) = forbidden_tool_argument(tool, arguments) {
+            return Err(error);
         }
         if let Some(e) = detect::floats(arguments)
             .or_else(|| detect::instants(tool, arguments))
@@ -427,6 +428,66 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// The same authority-first refusal applies before dispatch and when the
+/// framework has already rejected a call's ordinary input schema.
+fn forbidden_tool_argument(tool: &ToolSpec, arguments: &JsonValue) -> Option<StructuredError> {
+    crate::registry::forbidden_argument(arguments)
+        .map(StructuredError::forbidden_argument)
+        .or_else(|| {
+            tool.forbidden_path_argument(arguments)
+                .map(|(argument, fix)| StructuredError::forbidden_path(&argument, fix))
+        })
+}
+
+/// Preserve the structured refusal when required inline content is absent.
+/// The framework rejects that schema before entering the tool handler. Only
+/// its exact error content is enriched; schemas, requests, successful results
+/// and protected response metadata stay under the framework's admission.
+struct ToolArgumentErrors {
+    adapter: Arc<Adapter>,
+}
+
+impl Middleware for ToolArgumentErrors {
+    fn on_response(
+        &self,
+        ctx: &McpContext,
+        request: &JsonRpcRequest,
+        mut response: JsonValue,
+    ) -> McpResult<JsonValue> {
+        ctx.checkpoint()?;
+        if request.method != "tools/call"
+            || response["resultType"] != "complete"
+            || response["isError"] != true
+            || response["content"]
+                != json!([{
+                    "type": "text",
+                    "text": "Tool arguments do not match the declared input schema.",
+                }])
+        {
+            return Ok(response);
+        }
+        let Some(params) = request.params.as_ref() else {
+            return Ok(response);
+        };
+        let Some(tool) = params["name"]
+            .as_str()
+            .and_then(|name| self.adapter.mcp.tool_by_wire(name))
+        else {
+            return Ok(response);
+        };
+        let Some(arguments) = params.get("arguments").filter(|args| args.is_object()) else {
+            return Ok(response);
+        };
+        if let Some(error) = forbidden_tool_argument(tool, arguments) {
+            response["content"] = json!([{
+                "type": "text",
+                "text": error.with_authority(self.adapter.authority_json()).render(),
+            }]);
+        }
+        Ok(response)
+    }
+}
+
 /// One registry tool as a fastmcp tool.
 pub struct VerbTool {
     adapter: Arc<Adapter>,
@@ -547,6 +608,52 @@ impl ResourceHandler for FaResource {
         self.read_with_uri(ctx, self.uri, &HashMap::new())
     }
 
+    fn read_final(&self, ctx: &McpContext) -> McpResult<CompleteResult<FinalReadResourceResult>> {
+        self.read_final_with_uri(ctx, self.uri, &HashMap::new())
+    }
+
+    fn final_resource_read_cache_hint_provenance(&self) -> FinalResourceReadCacheHintProvenance {
+        FinalResourceReadCacheHintProvenance::Explicit
+    }
+
+    fn read_final_with_uri(
+        &self,
+        ctx: &McpContext,
+        uri: &str,
+        params: &UriParams,
+    ) -> McpResult<CompleteResult<FinalReadResourceResult>> {
+        let contents = self
+            .read_with_uri(ctx, uri, params)?
+            .into_iter()
+            .map(|content| {
+                let (Some(text), None) = (content.text, content.blob) else {
+                    return Err(McpError::internal_error(
+                        "accounting resources must be text",
+                    ));
+                };
+                Ok(EmbeddedResourceContents::Text {
+                    uri: AbsoluteUri::parse(content.uri)
+                        .map_err(|_| McpError::internal_error("invalid accounting resource URI"))?,
+                    text,
+                    mime_type: content.mime_type,
+                    meta: None,
+                    additional: Default::default(),
+                })
+            })
+            .collect::<McpResult<Vec<_>>>()?;
+        // These URIs resolve the current book, not an immutable snapshot.
+        // Explicit provenance prevents the router's one-hour default from
+        // letting clients reuse a pre-posting or pre-close response.
+        Ok(CompleteResult::new(
+            FinalReadResourceResult {
+                contents,
+                ttl_ms: CacheTtl::milliseconds(0),
+                cache_scope: CacheScope::Private,
+            },
+            ResultMeta::empty(),
+        ))
+    }
+
     fn read_with_uri(
         &self,
         ctx: &McpContext,
@@ -581,7 +688,9 @@ impl ResourceHandler for FaResource {
     }
 }
 
-/// Build the server: every registry tool, every resource, the instructions.
+/// Build the MCP 2026-07-28 server: every registry tool and resource.
+/// The explicit facade prevents a legacy initialize request from selecting
+/// the pinned framework's code/message-only resource error adapter.
 pub fn build_server(config: ServerConfig) -> Result<Server, ServerError> {
     let adapter = Arc::new(Adapter::new(config)?);
     let instructions = format!(
@@ -589,8 +698,11 @@ pub fn build_server(config: ServerConfig) -> Result<Server, ServerError> {
         adapter.mcp.instructions(),
         adapter.authority_json(),
     );
-    let mut builder =
-        ServerBuilder::new(adapter.mcp.server.clone(), crate::VERSION).instructions(instructions);
+    let mut builder = ServerBuilder::new(adapter.mcp.server.clone(), crate::VERSION)
+        .instructions(instructions)
+        .middleware(ToolArgumentErrors {
+            adapter: Arc::clone(&adapter),
+        });
     for spec in adapter.mcp.tools.clone() {
         builder = builder.tool(VerbTool::new(Arc::clone(&adapter), spec));
     }

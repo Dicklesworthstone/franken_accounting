@@ -1,0 +1,408 @@
+# procedures.toml — the Lantern procedure registry (plan §11.1; bead fa-nlu).
+#
+# Every analytic is registered here before it can run: its id and version,
+# the claim class of its output (`statistical` for every score and threshold
+# test; `invariant` only for an exact reconciliation), its declared inputs,
+# its parameters with pinned deterministic defaults (the decision card's
+# fallback, plan §11.1), its CGSE tie-break policy for rankings, its
+# complexity bound (checked by a work counter in the tests), its FA-EVID
+# evidence row, and its calibration status. A procedure runs over a pinned
+# snapshot `(book, known_at)` under no clock, entropy, network or filesystem
+# capability; the same inputs produce the same findings bit-for-bit.
+#
+# A finding is a reproducible observation with a score and typed citations.
+# It is never an accusation or a legal conclusion (AGENTS.md doctrine).
+#
+# Consumer: fa-lantern (a procedure binds to its row at construction and
+# refuses to run unregistered or at another version), fa-cli `fa lantern
+# run`, fa-mcp tool docs, fa-vpk (independent statistical oracles), fa-fk5
+# (graph procedures). Gate: a duplicate id, an unknown claim class or
+# calibration, a parameter or input without a procedure, a duplicate
+# parameter name, or an evidence row outside FA-EVID-L01..L99 fails at load.
+
+schema_version = 1
+
+# ---- Journal-entry testing (plan §11.2; AS 2401 ¶61, ISA 240 ¶A41) --------
+
+[[procedure]]
+id = "jet.round_amounts"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L01"
+tie_break = "entry_vid"
+complexity = "O(legs)"
+calibration = "planted"
+summary = "Entries with a leg whose magnitude is a multiple of 10^round_power whole units: round-number postings."
+
+[[parameter]]
+procedure = "jet.round_amounts"
+name = "round_power"
+default = 3
+meaning = "A leg is round when its magnitude is a whole multiple of 10^round_power units (3 = a multiple of 1,000.00)."
+
+[[procedure]]
+id = "jet.period_end_timing"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L02"
+tie_break = "entry_vid"
+complexity = "O(entries)"
+calibration = "planted"
+summary = "Entries effective in the last window_days days of their period."
+
+[[parameter]]
+procedure = "jet.period_end_timing"
+name = "window_days"
+default = 3
+meaning = "An entry effective within this many days of its period's last day (inclusive of the last day) is late-period."
+
+[[procedure]]
+id = "jet.post_closing"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L03"
+tie_break = "entry_vid"
+complexity = "O(entries + transitions)"
+calibration = "planted"
+summary = "Entries recorded after their period's first SoftClose, Close or Lock transition: the post-closing population (bitemporal)."
+
+[[procedure]]
+id = "jet.weekend"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L04"
+tie_break = "entry_vid"
+complexity = "O(entries)"
+calibration = "planted"
+summary = "Entries whose effective date (or document date when present) falls on a Saturday or Sunday. Holiday tables are data and land with the business-day calendar."
+
+[[procedure]]
+id = "jet.self_approved"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L05"
+tie_break = "entry_vid"
+complexity = "O(entries + approvals)"
+calibration = "planted"
+summary = "Entries one of whose recorded approvals was made by the preparing principal. For a class sod_policy.toml covers a hit proves a capability misconfiguration; for an uncovered class it is a control finding."
+
+[[procedure]]
+id = "jet.thin_descriptions"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L06"
+tie_break = "entry_vid"
+complexity = "O(entries)"
+calibration = "planted"
+summary = "Entries whose description opens to fewer than min_chars characters. A description that cannot be opened under the book's seal key is counted as unreadable, never as thin."
+
+[[parameter]]
+procedure = "jet.thin_descriptions"
+name = "min_chars"
+default = 4
+meaning = "A description with fewer characters than this is thin."
+
+# ---- Duplicates and numbers (plan §11.3) -----------------------------------
+
+[[procedure]]
+id = "duplicates.same_same_same"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L07"
+tie_break = "entry_vid"
+complexity = "O(legs log legs)"
+calibration = "planted"
+summary = "Groups of two or more entries with the same leg multiset (account, side, unit, magnitude) and the same effective date."
+
+[[procedure]]
+id = "duplicates.same_same_different"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L08"
+tie_break = "entry_vid"
+complexity = "O(legs log legs)"
+calibration = "planted"
+summary = "Pairs of entries with the same leg multiset on different effective dates at most window_days apart."
+
+[[parameter]]
+procedure = "duplicates.same_same_different"
+name = "window_days"
+default = 30
+meaning = "Two same-leg entries whose effective dates differ by 1..=window_days days form a pair."
+
+[[procedure]]
+id = "numbers.sequence_gaps"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L09"
+tie_break = "entry_vid"
+complexity = "O(ids log ids)"
+calibration = "planted"
+summary = "Gaps in the numeric tail of external ids per (system, prefix): the completeness assertion's mechanical half."
+
+[[procedure]]
+id = "benford.first_digit"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L10"
+tie_break = "none"
+complexity = "O(legs)"
+calibration = "planted"
+summary = "First-digit distribution of posted leg magnitudes of at least one whole unit against Benford's law: the mean absolute deviation (Nigrini's conformity ranges) and the chi-square statistic in fixed point, with the population stated. Assumes naturally occurring, multi-magnitude, non-assigned numbers."
+
+[[parameter]]
+procedure = "benford.first_digit"
+name = "min_population"
+default = 500
+meaning = "Below this many legs no conformity score is claimed; the finding reports the population only."
+
+[[parameter]]
+procedure = "benford.first_digit"
+name = "mad_close"
+default = 6
+meaning = "Nigrini first-digit MAD upper bound for close conformity, in thousandths (0.006)."
+
+[[parameter]]
+procedure = "benford.first_digit"
+name = "mad_acceptable"
+default = 12
+meaning = "Nigrini first-digit MAD upper bound for acceptable conformity, in thousandths (0.012)."
+
+[[parameter]]
+procedure = "benford.first_digit"
+name = "mad_marginal"
+default = 15
+meaning = "Nigrini first-digit MAD upper bound for marginal conformity, in thousandths (0.015); above it is nonconformity."
+
+# ---- Cutoff and aging (plan §11.7) -----------------------------------------
+
+[[procedure]]
+id = "cutoff.period_boundary"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L11"
+tie_break = "entry_vid"
+complexity = "O(entries)"
+calibration = "planted"
+summary = "Entries whose document date resolves to a different period than their effective date: candidates for the cutoff assertion."
+
+[[procedure]]
+id = "aging.open_items"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L12"
+tie_break = "account_vid"
+complexity = "O(open items)"
+calibration = "planted"
+summary = "fa-registers' historical open-item fold through the coordinate's effective date (open_items_as_of), bucketed by civil days from each item's effective date, per account, unit and side; debits and credits are never netted; the date is a declared coordinate, never a clock."
+
+[[parameter]]
+procedure = "aging.open_items"
+name = "bucket_1"
+default = 30
+meaning = "Upper edge in days of the first bucket (0..=bucket_1)."
+
+[[parameter]]
+procedure = "aging.open_items"
+name = "bucket_2"
+default = 60
+meaning = "Upper edge in days of the second bucket (bucket_1+1..=bucket_2)."
+
+[[parameter]]
+procedure = "aging.open_items"
+name = "bucket_3"
+default = 90
+meaning = "Upper edge in days of the third bucket; anything older is the fourth bucket."
+
+# ---- Graph procedures over the money flow (plan §11.9; bet A4) -----------
+# Both walk the entry-level flow legs (every credit leg's allocated share to
+# each debit account of its entry under the largest-remainder law), so each
+# amount is exact and each citation resolves. A motif is a score, never a
+# finding of fact.
+
+[[procedure]]
+id = "graph.round_trips"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L13"
+tie_break = "entry_vid"
+complexity = "O(flow legs × returns per account pair)"
+calibration = "planted"
+summary = "Value that leaves one asset account for another and returns in the same exact amount within window_days (the kiting motif): over the entry-level money flow between asset accounts, reversals excluded; a trip whose outbound or return falls within period_end_days of its period's end scores High, otherwise Medium."
+
+[[parameter]]
+procedure = "graph.round_trips"
+name = "window_days"
+default = 5
+meaning = "Maximum days from the outbound entry's effective date to the return's."
+
+[[parameter]]
+procedure = "graph.round_trips"
+name = "period_end_days"
+default = 7
+meaning = "A trip whose outbound or return is effective within this many days of its period's end scores High."
+
+[[procedure]]
+id = "graph.structuring"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L14"
+tie_break = "entry_vid"
+complexity = "O(flow legs log flow legs)"
+calibration = "planted"
+summary = "Sub-threshold clustering between one payer account and one receiving account in one registered currency: a chain of allocated transfers each at least floor and below threshold, consecutive ones at most window_days apart, numbering at least min_count and summing to at least threshold; reversals excluded."
+
+[[parameter]]
+procedure = "graph.structuring"
+name = "threshold"
+default = 1000000
+meaning = "The reporting threshold in the unit's mantissa scale (10,000.00 at scale 2); a counted transfer is below it and a reported chain sums to at least it."
+
+[[parameter]]
+procedure = "graph.structuring"
+name = "floor"
+default = 800000
+meaning = "The smallest transfer counted, in the unit's mantissa scale; must be below threshold."
+
+[[parameter]]
+procedure = "graph.structuring"
+name = "window_days"
+default = 7
+meaning = "Maximum days between consecutive transfers of one chain."
+
+[[parameter]]
+procedure = "graph.structuring"
+name = "min_count"
+default = 3
+meaning = "The fewest transfers a reported chain has."
+
+[[parameter]]
+procedure = "graph.structuring"
+name = "currency_iso4217"
+default = 840
+meaning = "The ISO 4217 numeric code of the one currency whose transfers are examined (840 = USD); threshold and floor are mantissas at that currency's scale, and transfers in other units are not examined, since one threshold is a different amount in every unit."
+
+# ---- Tracing laws (plan §11.5) --------------------------------------------
+# The traceable share of one deposit (`source`, an entry) through one
+# commingled `account` up to the coordinate's effective date. Each law is an
+# exact computation whose evidentiary weight is the law's; the registry has
+# two claim classes and a tracing result is not a reconciliation, so it is
+# recorded as statistical. One account, one hop.
+
+[[procedure]]
+id = "trace.libr"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L15"
+tie_break = "entry_vid"
+complexity = "O(movements log movements)"
+calibration = "planted"
+summary = "Lowest intermediate balance rule (Restatement (Third) of Restitution §59): the traceable amount never exceeds the lowest balance of the account between the deposit and the claim date, and later deposits never replenish it."
+
+[[input]]
+procedure = "trace.libr"
+name = "account"
+kind = "account"
+meaning = "The commingled account the deposit went into."
+
+[[input]]
+procedure = "trace.libr"
+name = "source"
+kind = "entry"
+meaning = "The entry whose inflow to the account is the claimant's deposit."
+
+[[parameter]]
+procedure = "trace.libr"
+name = "intraday_order"
+default = 0
+meaning = "How same-day movements are sequenced: 0 StatementOrdinal (recorded order), 2 WithdrawalsFirst, 3 DepositsFirst; 1 ValueDate is reserved until value dates are retained."
+
+[[parameter]]
+procedure = "trace.libr"
+name = "replenishment"
+default = 0
+meaning = "0 Never; OnEvidence(docs) is reserved for a later slice."
+
+[[procedure]]
+id = "trace.fifo"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L16"
+tie_break = "entry_vid"
+complexity = "O(movements log movements)"
+calibration = "planted"
+summary = "Clayton's rule (Devaynes v Noble, Clayton's Case (1816)): withdrawals draw the oldest money in the account first, so the deposit is consumed only after every earlier balance."
+
+[[input]]
+procedure = "trace.fifo"
+name = "account"
+kind = "account"
+meaning = "The commingled account the deposit went into."
+
+[[input]]
+procedure = "trace.fifo"
+name = "source"
+kind = "entry"
+meaning = "The entry whose inflow to the account is the claimant's deposit."
+
+[[parameter]]
+procedure = "trace.fifo"
+name = "intraday_order"
+default = 0
+meaning = "How same-day movements are sequenced: 0 StatementOrdinal (recorded order), 2 WithdrawalsFirst, 3 DepositsFirst; 1 ValueDate is reserved until value dates are retained."
+
+[[procedure]]
+id = "trace.lifo"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L17"
+tie_break = "entry_vid"
+complexity = "O(movements log movements)"
+calibration = "planted"
+summary = "Withdrawals draw the newest money in the account first, so the deposit is consumed before every earlier balance and after every later one."
+
+[[input]]
+procedure = "trace.lifo"
+name = "account"
+kind = "account"
+meaning = "The commingled account the deposit went into."
+
+[[input]]
+procedure = "trace.lifo"
+name = "source"
+kind = "entry"
+meaning = "The entry whose inflow to the account is the claimant's deposit."
+
+[[parameter]]
+procedure = "trace.lifo"
+name = "intraday_order"
+default = 0
+meaning = "How same-day movements are sequenced: 0 StatementOrdinal (recorded order), 2 WithdrawalsFirst, 3 DepositsFirst; 1 ValueDate is reserved until value dates are retained."
+
+[[procedure]]
+id = "trace.pro_rata"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L18"
+tie_break = "entry_vid"
+complexity = "O(movements log movements)"
+calibration = "planted"
+summary = "Pro-rata sharing (Cunningham v. Brown): every withdrawal carries tainted and clean value in proportion to their shares of the balance at that moment, split exactly under the registered largest-remainder law."
+
+[[input]]
+procedure = "trace.pro_rata"
+name = "account"
+kind = "account"
+meaning = "The commingled account the deposit went into."
+
+[[input]]
+procedure = "trace.pro_rata"
+name = "source"
+kind = "entry"
+meaning = "The entry whose inflow to the account is the claimant's deposit."
+
+[[parameter]]
+procedure = "trace.pro_rata"
+name = "intraday_order"
+default = 0
+meaning = "How same-day movements are sequenced: 0 StatementOrdinal (recorded order), 2 WithdrawalsFirst, 3 DepositsFirst; 1 ValueDate is reserved until value dates are retained."
