@@ -5,6 +5,8 @@
 //! inventory lists every citation in that entry, including multiple roles
 //! for one document. It does not verify or disclose document bytes.
 
+pub mod production;
+
 use core::fmt;
 
 use super::{
@@ -89,15 +91,25 @@ pub fn verify_evidence_inventory_for(
     expected_entry_digest: &[u8; 32],
 ) -> Result<VerifiedEvidenceInventory, InventoryError> {
     let (inclusion, proposal) = authenticated_entry(proof, checkpoint, expected_entry_digest)?;
+    let citations = citations_from_proposal(proposal, &checkpoint.book_id)?;
+    Ok(VerifiedEvidenceInventory { inclusion, citations })
+}
+
+// This only reads framing and citation identities. Callers must authenticate
+// the exact immutable proposal first; it is deliberately not a public API.
+fn citations_from_proposal(
+    proposal: &[u8],
+    book: &[u8; 16],
+) -> Result<Vec<EvidenceCitation>, EvidenceError> {
     let mut citations = Vec::new();
     visit_citations(proposal, |citation| {
-        if document_oid(&checkpoint.book_id, &citation.doc_commit) != citation.document_oid {
+        if document_oid(book, &citation.doc_commit) != citation.document_oid {
             return Err(EvidenceError::DocumentIdentity);
         }
         citations.push(citation);
         Ok(())
     })?;
-    Ok(VerifiedEvidenceInventory { inclusion, citations })
+    Ok(citations)
 }
 
 /// Additionally require exactly the recipient-owned citation inventory.
