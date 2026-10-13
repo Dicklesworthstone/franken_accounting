@@ -529,6 +529,17 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     }
 }
 
+/// The classes this kernel slice posts (step 1b); every other registered
+/// class is refused as not implemented, and no refusal suggests one.
+const POSTED_CLASSES: [EntryClass; 6] = [
+    EntryClass::ORIGINAL,
+    EntryClass::ADJUSTING,
+    EntryClass::REVERSAL,
+    EntryClass::PENDING,
+    EntryClass::RESOLUTION,
+    EntryClass::MIGRATION,
+];
+
 /// Run the production posting pipeline through staging, retaining its
 /// witnesses at one prefix without publishing a commit. Another prepared
 /// operation may commit before this one; the ordinary validator decides
@@ -647,15 +658,7 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
     }
     // 1b. The supported subset.
     let is_reversal = proposal.class == EntryClass::REVERSAL;
-    if !matches!(
-        proposal.class,
-        EntryClass::ORIGINAL
-            | EntryClass::ADJUSTING
-            | EntryClass::REVERSAL
-            | EntryClass::PENDING
-            | EntryClass::RESOLUTION
-            | EntryClass::MIGRATION
-    ) {
+    if !POSTED_CLASSES.contains(&proposal.class) {
         return Ok(Err(not_implemented(class_name)));
     }
     // 1b'. Migration provenance (plan §8.6): a Migration entry names its run
@@ -1345,10 +1348,45 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
                     state.name()
                 )
             } else {
-                format!(
-                    "post in an Open period, or use an admissible class for a {} period (Reversal/Adjusting with post_closed)",
-                    state.name()
-                )
+                // Name what the matrix admits in this state, never a class
+                // it refuses there (a Locked period admits no posting class;
+                // fa-l93 D8).
+                // Only classes this slice posts, and never Migration, which
+                // reaches only its own run's periods.
+                let postable = |class: &str| {
+                    class != "Migration" && POSTED_CLASSES.iter().any(|c| c.name() == Some(class))
+                };
+                let postings: Vec<String> = matrix
+                    .admitting(state, false)
+                    .into_iter()
+                    .filter(|(class, _)| postable(class))
+                    .map(|(class, op)| match op {
+                        None => class.to_string(),
+                        Some(op) => format!("{class} (with {op})"),
+                    })
+                    .collect();
+                let releases: Vec<String> = matrix
+                    .admitting(state, true)
+                    .into_iter()
+                    .filter(|(class, _)| postable(class))
+                    .map(|(class, _)| format!("{class} releases"))
+                    .collect();
+                match (postings.is_empty(), releases.is_empty()) {
+                    (false, _) => format!(
+                        "post in an Open period, or use a class a {} period admits: {}",
+                        state.name(),
+                        postings.join(", ")
+                    ),
+                    (true, false) => format!(
+                        "date the entry in an Open period; a {} period admits only {}",
+                        state.name(),
+                        releases.join(", ")
+                    ),
+                    (true, true) => format!(
+                        "date the entry in an Open period; a {} period admits no entry",
+                        state.name()
+                    ),
+                }
             };
             return Ok(Err(Refusal::new(
                 code::PERIOD_LAW,
@@ -1430,6 +1468,19 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
                 "fa chart list --json to find the account, or fa chart import to add it",
             )));
         };
+        // A caller-supplied vid that names some other vertex (an entry, a
+        // period, a document) is the same lawful mistake as a missing one,
+        // never a corrupt Account row (fa-l93 D9).
+        if !row.labels.contains(&label::ACCOUNT) {
+            txn.abort();
+            return Ok(Err(Refusal::new(
+                code::UNKNOWN_ACCOUNT,
+                exit::REFUSAL,
+                format!("leg {i} names a vertex that is not an account of this book"),
+                "plan §4.3",
+                "fa chart list --json to find the account, or fa chart import to add it",
+            )));
+        }
         let account = AccountRow::decode(&row)?;
         if !account.is_leaf {
             txn.abort();

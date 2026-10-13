@@ -1213,6 +1213,18 @@ fn period_control_is_admitted_under_close_and_a_lock_needs_a_distinct_human_appr
     let (entry, _) = read_entry(&h.db, done.control_entry).unwrap().unwrap();
     assert_eq!(entry.approvals, vec![alice]);
     assert_eq!(entry.proposal_digest, digest);
+
+    // fa-l93 D8: a Locked period admits no class this slice posts, so the
+    // fix never suggests a Reversal or Adjusting entry there.
+    let late = h.proposal(PREPARER, 5, b"late-into-locked", EntryClass::ORIGINAL);
+    let r = h
+        .post(late, human(PREPARER, &["post", "post_closed"]), Vec::new())
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-010", exit::SAFETY), "{r}");
+    assert_eq!(
+        r.fix,
+        "date the entry in an Open period; a Locked period admits only Resolution releases"
+    );
 }
 
 #[test]

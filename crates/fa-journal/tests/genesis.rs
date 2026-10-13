@@ -758,6 +758,12 @@ fn closed_period_refuses_originals_and_admits_an_exact_reversal_under_post_close
         "{}",
         r.cite
     );
+    // The fix names exactly the posted classes the matrix admits here
+    // (fa-l93 D8), each with the op its cell requires.
+    assert_eq!(
+        r.fix,
+        "post in an Open period, or use a class a Closed period admits: Adjusting (with post_closed), Resolution (with post_closed), Reversal (with post_closed)"
+    );
 
     // Reversal in a Closed period: needs post_closed.
     let reversal = h.reversal_of(original, 5_000, b"rev-1");
@@ -1205,6 +1211,23 @@ fn uncreated_periods_and_unregistered_units_are_refused_not_corrupt() {
         .unwrap(),
         Posted::Committed { .. }
     ));
+
+    // fa-l93 D9: a leg naming a live vertex that is not an Account (here
+    // the book root) is the unknown-account refusal, not a corrupt row.
+    let head = h.db.frontier().unwrap();
+    let legs = vec![
+        LegPayload::simple(Side::Debit, book_root(), Amount::new(h.usd, 100)),
+        LegPayload::simple(Side::Credit, h.cash, Amount::new(h.usd, 100)),
+    ];
+    let r = h
+        .post(h.request(
+            h.proposal(legs, b"not-an-account", EntryClass::ORIGINAL),
+            &["post"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-004", exit::REFUSAL), "{r}");
+    assert!(r.message.contains("not an account"), "{r}");
+    assert_eq!(h.db.frontier().unwrap(), head);
 }
 
 #[test]
