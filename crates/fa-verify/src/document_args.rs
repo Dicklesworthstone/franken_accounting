@@ -530,17 +530,17 @@ mod tests {
         for index in (1..15).step_by(2) {
             let mut missing = args.clone();
             drop(missing.drain(index..index + 2));
-            assert_eq!(run(&missing, true).err().expect("usage").exit, 2);
+            assert_eq!(run(&missing, true).expect_err("usage").exit, 2);
             let mut duplicate = args.clone();
             duplicate.extend_from_slice(&args[index..index + 2]);
-            assert_eq!(run(&duplicate, true).err().expect("usage").exit, 2);
+            assert_eq!(run(&duplicate, true).expect_err("usage").exit, 2);
         }
         let mut mixed = args;
         mixed.extend([
             OsString::from("--document-commit"),
             OsString::from("absent-anchor"),
         ]);
-        assert_eq!(run(&mixed, true).err().expect("mixed trust modes").exit, 2);
+        assert_eq!(run(&mixed, true).expect_err("mixed trust modes").exit, 2);
     }
 
     #[test]
@@ -555,13 +555,13 @@ mod tests {
             ] {
                 let mut args = journal_args();
                 args[index] = OsString::from(value);
-                assert_eq!(run(&args, true).err().expect("invalid digest").exit, 2);
+                assert_eq!(run(&args, true).expect_err("invalid digest").exit, 2);
             }
         }
         for value in ["", "+1", "-1", "1.0", " 1", "256", "65535", "１"] {
             let mut args = journal_args();
             args[14] = OsString::from(value);
-            assert_eq!(run(&args, true).err().expect("invalid role").exit, 2);
+            assert_eq!(run(&args, true).expect_err("invalid role").exit, 2);
         }
         for value in ["0", "255"] {
             assert!(role(&OsString::from(value)).is_ok());
