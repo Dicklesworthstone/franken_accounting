@@ -51,6 +51,7 @@ pub mod settlement;
 pub mod settlement_review;
 pub mod statement_diff;
 pub mod statement_diff_workpaper;
+pub mod statement_trace;
 pub mod statements;
 pub mod summary;
 pub mod summary_certificate;
@@ -88,6 +89,10 @@ pub use statement_diff::{
     StatementDiffCertificate, StatementDiffRequest, StatementLineChange, StatementMappingChange,
 };
 pub use statement_diff_workpaper::{MAX_STATEMENT_DIFF_WORKPAPER_BYTES, StatementDiffWorkpaper};
+pub use statement_trace::{
+    MAX_STATEMENT_TRACE_BYTES, MAX_STATEMENT_TRACE_PUBLICATIONS, StatementEntryEvent,
+    StatementEntryLink, StatementPublication, StatementTrace, StatementTraceRequest,
+};
 pub use statements::{CertifiedStatement, StatementSelection};
 pub use summary::{SummaryGroup, SummaryRequest, SummaryScope, SummaryTrialBalance};
 pub use summary_certificate::{
