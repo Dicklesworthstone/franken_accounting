@@ -314,12 +314,17 @@ pub mod redaction {
         if hash_parts(DOC_DOMAIN, &[&[kind], &size.to_le_bytes(), &leaves[0]]) != doc_commit {
             return Err(ViewError::Commitment);
         }
+        // Unlike the document tree's raw transcripts, the kernel derives
+        // this identity with fa_model::domain_digest: each part has a u32
+        // byte-length prefix. MAX_VIEW_BYTES already bounds this conversion.
+        let view_length =
+            u32::try_from(bytes.len()).map_err(|_| ViewError::Bound("encoded bytes"))?;
         Ok(VerifiedView {
             scope: "membership_only",
             kind,
             size,
             doc_commit,
-            view_commit: hash_parts(VIEW_DOMAIN, &[bytes]),
+            view_commit: hash_parts(VIEW_DOMAIN, &[&view_length.to_le_bytes(), bytes]),
             unverified_metadata,
             withheld_chunks: (count - disclosed.len()) as u64,
             disclosed,
@@ -357,6 +362,40 @@ pub mod redaction {
 
         fn document(len: usize) -> Vec<u8> {
             (0..len).map(|i| ((i * 17 + i / DOC_CHUNK_BYTES) % 251) as u8).collect()
+        }
+
+        #[test]
+        fn view_identity_uses_model_length_framing_not_the_raw_tree_transcript() {
+            // Existing wire format: original [17; 32], contract 7, kind 1.
+            // Goldens independently calculated with a Python BLAKE3 model
+            // checked against the repository's official-convention vectors.
+            for (doc, shown, expected) in [
+                (
+                    Vec::new(),
+                    vec![0],
+                    "3f0c42ba104ed3e9c08d79d58146bc32c667665caba76ce4680eb0be9f0c86da",
+                ),
+                (
+                    b"abc".to_vec(),
+                    vec![0],
+                    "2eb7705bf26d6dcb9a683af37aded44f06e8fdba7902dcc30a282958da47be64",
+                ),
+                (
+                    document(8193),
+                    vec![0, 2],
+                    "8e18d8cd374945329a705b3e07e6e2315a66b8067301c96209870a63c5232c02",
+                ),
+            ] {
+                let bytes = encode(&doc, 1, &shown);
+                let report = verify_view_for(&bytes, &doc_commit(1, &doc), &shown).unwrap();
+                let mut transcript = VIEW_DOMAIN.to_vec();
+                let length = u32::try_from(bytes.len()).unwrap().to_le_bytes();
+                transcript.extend_from_slice(&length);
+                transcript.extend_from_slice(&bytes);
+                assert_eq!(report.view_commit, crate::blake3::hash(&transcript));
+                assert_ne!(report.view_commit, hash_parts(VIEW_DOMAIN, &[&bytes]));
+                assert_eq!(crate::blake3::hex(&report.view_commit), expected);
+            }
         }
 
         #[test]
