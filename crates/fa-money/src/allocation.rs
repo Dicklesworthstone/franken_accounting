@@ -3,6 +3,10 @@
 //! remainders in deterministic order. Conservation (`Σ shares = total`) is a
 //! theorem, and the test below checks it on a grid.
 
+mod ordered;
+
+pub use ordered::{equal_split_residual_first, waterfall};
+
 use crate::amount::{Amount, AmountError, signed_magnitude};
 use crate::wide::U256;
 
