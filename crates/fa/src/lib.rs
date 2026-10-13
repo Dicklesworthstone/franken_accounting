@@ -70,7 +70,10 @@ pub use fa_statements::{
 };
 pub use proof::{MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest};
 pub use settlement::{PreparedSettlement, SettlementPostPlan, SettlementPostRequest};
-pub use statement_diff::{StatementDiff, StatementDiffRequest, StatementLineChange, StatementMappingChange};
+pub use statement_diff::{
+    CertifiedStatementDiff, MAX_STATEMENT_DIFF_CERTIFICATE_BYTES, StatementDiff,
+    StatementDiffCertificate, StatementDiffRequest, StatementLineChange, StatementMappingChange,
+};
 pub use statements::{CertifiedStatement, StatementSelection};
 pub use summary::{SummaryGroup, SummaryRequest, SummaryScope, SummaryTrialBalance};
 pub use summary_certificate::{

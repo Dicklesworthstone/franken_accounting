@@ -15,6 +15,9 @@ use fgdb_types::CommitSeq;
 
 use crate::StatementSelection;
 
+mod certificate;
+pub use certificate::{CertifiedStatementDiff, StatementDiffCertificate, MAX_STATEMENT_DIFF_CERTIFICATE_BYTES};
+
 pub const OUTPUT_FORMAT: &[u8] = b"fa:statement-diff:v1";
 const SOURCE_DOMAIN: &[u8] = b"fa:statement-diff-source:v1";
 const MAX_SOURCE_BYTES: usize = 32 * 1024 * 1024;
