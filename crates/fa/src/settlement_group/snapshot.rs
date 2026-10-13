@@ -62,6 +62,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Err(error) => return Err(error.into()),
             };
             query.checkpoint().map_err(BookError::Context)?;
+            let index = match report.settlement_index() {
+                Ok(index) => index,
+                Err(RegisterError::InvalidSelection(message)) => return Ok(Err(invalid(message))),
+                Err(error) => return Err(error.into()),
+            };
+            query.checkpoint().map_err(BookError::Context)?;
             let mut proposal = request.proposal.clone();
             let mut allocations = Vec::with_capacity(request.payments.len());
             let mut entries = BTreeMap::<VId, (Entry, EntryRef)>::new();
@@ -79,7 +85,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 };
                 // Keep the same allocator as single-leg preparation: exact
                 // native amounts, oldest-first order and all-target validation.
-                let allocation = match report.plan_settlement(&demand) {
+                let allocation = match index.plan_settlement(&demand) {
                     Ok(allocation) => allocation,
                     Err(RegisterError::InvalidSelection(message)) => return Ok(Err(invalid(message))),
                     Err(error) => return Err(error.into()),
