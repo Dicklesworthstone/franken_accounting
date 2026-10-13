@@ -11,8 +11,14 @@
 //! This is embedded-owner retained-history replay, not a signed checkpoint,
 //! outsider proof, recipient authorization or attestation to economic truth.
 //! Canonical bytes may be saved by the caller. Nothing is appended to the book.
+//! The nested source contains whole-book information despite selected output
+//! scope: keep certificate bytes confidential. Selected JSONL workpapers do
+//! not include that native source closure.
 
 mod codec;
+mod workpaper;
+
+pub use workpaper::MAX_ROLL_FORWARD_WORKPAPER_BYTES;
 
 use std::collections::BTreeMap;
 
@@ -188,5 +194,32 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         }
         cx.query().checkpoint().map_err(BookError::Context)?;
         Ok(Ok(report))
+    }
+}
+
+impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
+    /// Replay only the independently supplied expected scope and coordinate.
+    /// Account/unit permutations are equivalent; duplicates, different labels,
+    /// dates, omitted zero leaves, different units and a different prefix are
+    /// not. `known_at` MUST be explicit: accepting HEAD here could silently
+    /// accept an older delivered artifact. Do not obtain `expected` from the
+    /// artifact itself when checking another party's response to a request.
+    pub fn replay_roll_forward_for(
+        &self, cx: &PurposeContexts, principal: VId, capability: &Capability,
+        certificate: &RollForwardCertificate, expected: &RollForwardRequest,
+    ) -> Outcome<RollForward> {
+        if let Err(refusal) = authorize(self, cx, principal, capability, false)? {
+            return Ok(Err(refusal));
+        }
+        let Some(at) = expected.known_at else {
+            return Ok(Err(invalid("roll-forward replay needs an independently selected fixed prefix")));
+        };
+        let expected = match codec::normalize(expected, at) {
+            Ok(expected) => expected, Err(refusal) => return Ok(Err(refusal)),
+        };
+        if expected != certificate.request {
+            return Ok(Err(invalid("delivered roll-forward differs from the expected scope or coordinate")));
+        }
+        self.replay_roll_forward(cx, principal, capability, certificate)
     }
 }

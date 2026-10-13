@@ -9,7 +9,8 @@
 mod certificate;
 
 pub use certificate::{
-    CertifiedRollForward, MAX_ROLL_FORWARD_CERTIFICATE_BYTES, ROLL_FORWARD_CERTIFICATE_FORMAT,
+    CertifiedRollForward, MAX_ROLL_FORWARD_CERTIFICATE_BYTES, MAX_ROLL_FORWARD_WORKPAPER_BYTES,
+    ROLL_FORWARD_CERTIFICATE_FORMAT,
     RollForwardCertificate,
 };
 
@@ -237,6 +238,7 @@ fn as_account(account: &AccountRow) -> Account {
 #[cfg(test)]
 mod tests {
     mod certification;
+    mod workpaper;
 
     use super::*;
     use std::path::Path;
