@@ -1946,7 +1946,7 @@ fn reversals_by_target_and_idempotency_conflicts_follow_the_contract() -> std::i
     let before = report(&book, &["tb", "--period", "FY2026-P03", "--json"]);
     for (reason, expected) in [
         (None, "registered reason"),
-        (Some("WrongAcount"), "did you mean `WrongAccount`"),
+        (Some("WrongAccout"), "did you mean `WrongAccount`"),
         (Some("0"), "not registered"),
         (Some("65535"), "not registered"),
         (Some("Other"), "requires a description"),
@@ -3443,7 +3443,7 @@ fn robot_docs_schema_prints_the_envelope_and_every_event_from_the_registry() {
     let (code, human, _) = fa(None, &["robot-docs", "schema"]);
     assert_eq!(code, 0);
     assert!(
-        human.contains("event balance_explained (explain)")
+        human.contains("event balance_explained (replay, explain)")
             && human.contains("  contributions: [contribution]")
             && human.contains("shape contribution"),
         "{human}"
@@ -4005,6 +4005,12 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(true, &["certificate", "status", &certificate]).0, 0);
     assert_eq!(
         run(true, &["statement", "balance-sheet", "--for", "FY2026-P03"]).0,
+        0
+    );
+    let (code, out) = run(true, &["registers", "advance", "--period", "FY2026-P03"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        run(true, &["verify", "registers", "--period", "FY2026-P03"]).0,
         0
     );
     // A planned, approved lock (R4): `period_planned`, then `approved`.
@@ -4908,6 +4914,7 @@ const DANGEROUS: &[(&str, Option<&str>, &str)] = &[
     ("period", Some("lock"), "always"),
     ("period", Some("reopen"), "always"),
     ("post", None, "grant:post_closed"),
+    ("reverse", None, "grant:post_closed"),
     ("resolve", None, "disposition:voids"),
     ("registers", Some("materialize"), "existing-cells"),
 ];
@@ -5720,6 +5727,20 @@ fn instant_selected_cli_reports_retain_tick_evidence_and_replay() -> std::io::Re
 
 #[test]
 fn projection_verification_reports_drift_deterministically_without_writes() -> std::io::Result<()> {
+    projection_verification_case("side")
+}
+
+#[test]
+fn projection_verification_refuses_a_changed_amount_without_writes() -> std::io::Result<()> {
+    projection_verification_case("amount")
+}
+
+#[test]
+fn projection_verification_refuses_a_missing_has_leg_without_writes() -> std::io::Result<()> {
+    projection_verification_case("missing-has-leg")
+}
+
+fn projection_verification_case(plant: &str) -> std::io::Result<()> {
     use asupersync::runtime::RuntimeBuilder;
     use asupersync::types::Budget;
     use fa::{Book, BookKeys, Entropy};
@@ -5731,7 +5752,7 @@ fn projection_verification_reports_drift_deterministically_without_writes() -> s
     use fgdb_types::context::PurposeContexts;
     use fgdb_types::ids::DatabaseSecurityNamespaceId;
 
-    let dir = tmp("verify-projections")?;
+    let dir = tmp(&format!("verify-projections-{plant}"))?;
     let book = dir.join("book");
     let keys = BookKeys::for_development(91);
     let handle = Book::create_dir(
@@ -5809,8 +5830,8 @@ fn projection_verification_reports_drift_deterministically_without_writes() -> s
     );
     drop(handle);
 
-    // Plant a bad scalar mirror through the real substrate while leaving
-    // the canonical payload and journal balances unchanged.
+    // Each case starts from a fresh, verified book. Change exactly one
+    // projection through the real substrate; the immutable entry stays intact.
     let runtime = RuntimeBuilder::new().build().unwrap();
     let root = runtime.request_cx_with_budget(Budget::INFINITE);
     let cx = PurposeContexts::narrow_runtime_root(&root);
@@ -5828,9 +5849,51 @@ fn projection_verification_reports_drift_deterministically_without_writes() -> s
         .find(|row| row.labels.contains(&label::LEG))
         .expect("posted leg")
         .vid;
+    let edge = db
+        .edges()
+        .unwrap()
+        .into_iter()
+        .find(|edge| edge.entry.relation == relation::HAS_LEG && edge.entry.dst == leg)
+        .expect("the posted leg belongs to an entry");
+    let entry = edge.entry.src;
+    let payload = fa_journal::rows::bytes(
+        &db.vertex(entry).unwrap().unwrap(),
+        property::FA_PAYLOAD,
+        "authoritative entry",
+    )
+    .unwrap();
     let mut batch = WriteBatch::new(relation::HAS_LEG);
-    batch.set_vertex_property(leg, property::SIDE, Some(CanonicalScalar::Int(99)));
+    let (identity, expected_drift) = match plant {
+        "side" => {
+            batch.set_vertex_property(leg, property::SIDE, Some(CanonicalScalar::Int(99)));
+            (leg.0, "side mirror")
+        }
+        "amount" => {
+            let changed = fgdb_types::CanonicalDecimal::from_scaled_half_even(1_100, 2).unwrap();
+            batch.set_vertex_property(
+                leg,
+                property::AMOUNT,
+                Some(CanonicalScalar::Decimal(changed)),
+            );
+            (leg.0, "amount mirror")
+        }
+        "missing-has-leg" => {
+            batch.delete_edge(edge.entry.eid);
+            (edge.entry.eid.0, "missing HAS_LEG edge")
+        }
+        _ => unreachable!("unknown projection plant {plant}"),
+    };
     let damaged_at = runtime.block_on(db.write(&cx.commit(), batch)).unwrap();
+    assert_eq!(
+        fa_journal::rows::bytes(
+            &db.vertex(entry).unwrap().unwrap(),
+            property::FA_PAYLOAD,
+            "authoritative entry",
+        )
+        .unwrap(),
+        payload,
+        "{plant}: projection damage leaves the complete journal payload intact"
+    );
     drop(db);
 
     let (code, red, err) = fa(Some(&book), &verify);
@@ -5845,13 +5908,14 @@ fn projection_verification_reports_drift_deterministically_without_writes() -> s
         int(robot_line(&red).get("coordinate").unwrap(), "known_at"),
         Some(i128::from(damaged_at.0))
     );
-    let leg_hex = format!("{:032x}", leg.0);
+    let identity_hex = format!("{identity:032x}");
+    assert_eq!(arr(detail, "drift").len(), 1, "{plant}: {red}");
     assert!(
         arr(detail, "drift")
             .iter()
             .filter_map(Json::as_str)
-            .any(|finding| finding.contains(&leg_hex) && finding.contains("side mirror")),
-        "{red}"
+            .any(|finding| finding.contains(&identity_hex) && finding.contains(expected_drift)),
+        "{plant}: {red}"
     );
     let repeated = fa(Some(&book), &verify);
     assert_eq!(repeated.0, 8, "{}\n{}", repeated.1, repeated.2);
@@ -6007,8 +6071,7 @@ fn directory_reopen_refuses_changed_or_missing_unit_facts_through_facade_and_cli
         drop(db);
 
         let error = Book::open_dir(&book, keys.clone(), Entropy::deterministic(57))
-            .err()
-            .expect("reopen must refuse changed historical unit facts");
+            .expect_err("reopen must refuse changed historical unit facts");
         assert_eq!(error.exit(), 5, "{damage}: {error}");
         let expected = match damage {
             "kind" | "ISO" => "kind/ISO",
@@ -6026,8 +6089,8 @@ fn directory_reopen_refuses_changed_or_missing_unit_facts_through_facade_and_cli
         assert_eq!(code, 5, "{damage}: {out}\n{err}");
         assert!(out.contains(expected), "{damage}: {out}\n{err}");
         if damage.starts_with("missing") {
-            assert!(out.contains("backfill"), "{out}");
-            assert!(out.contains("not available yet"), "{out}");
+            assert!(out.contains("no backfill"), "{out}");
+            assert!(out.contains("creating binary"), "{out}");
         }
 
         let db = runtime

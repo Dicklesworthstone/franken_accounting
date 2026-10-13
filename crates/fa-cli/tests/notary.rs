@@ -370,7 +370,9 @@ fn assert_corruption_refused(corrupt_head: bool) {
             text(&report, "message").contains("broken chain"),
             "{failed}"
         );
-        assert_eq!(array(detail, "unchained").len(), 1);
+        // The dangling head strands the one real state and the signed
+        // checkpoint beside it (fa-l3c slice 3 reports both).
+        assert_eq!(array(detail, "unchained").len(), 2, "{failed}");
     } else {
         assert_eq!(detail.get("broken"), Some(&Json::Null));
         assert!(

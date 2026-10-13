@@ -65,6 +65,7 @@ symbols!(
         (CUSTODY_TRANSFER, "CustodyTransfer", 37),
         (REDACTED_VIEW, "RedactedView", 38),
         (LEGAL_HOLD_CELL, "LegalHoldCell", 39),
+        (TRANSPARENCY_CHECKPOINT, "TransparencyCheckpoint", 40),
         (REGISTER_STATE, "RegisterState", 41),
     ]
 );
@@ -173,6 +174,7 @@ symbols!(
         (IMPORTED_BY, "IMPORTED_BY", 32),
         (REDACTS, "REDACTS", 33),
         (HOLDS, "HOLDS", 34),
+        (CHECKPOINTS, "CHECKPOINTS", 35),
     ]
 );
 

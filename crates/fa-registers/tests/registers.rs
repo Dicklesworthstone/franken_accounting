@@ -6,6 +6,7 @@
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
 use fa_journal::evidence::{Document, add_document};
+use fa_journal::post::read_entry;
 use fa_journal::rows::edge_id;
 use fa_journal::*;
 use fa_model::symbols::{label, property, relation};

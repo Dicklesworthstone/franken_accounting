@@ -103,14 +103,16 @@ fn write_str(out: &mut String, s: &str) {
     out.push('"');
 }
 
-/// A tiny builder so call sites read like literals.
+/// A tiny builder so call sites read like literals. Fields are kept sorted
+/// by key, the order `render` writes and `parse` reads back, so a
+/// constructed object equals its own rendered-and-parsed form.
 pub fn obj(fields: Vec<(&str, Json)>) -> Json {
-    Json::Obj(
-        fields
-            .into_iter()
-            .map(|(k, v)| (k.to_string(), v))
-            .collect(),
-    )
+    let mut fields: Vec<(String, Json)> = fields
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+    fields.sort_by(|a, b| a.0.cmp(&b.0));
+    Json::Obj(fields)
 }
 
 pub fn s(v: impl Into<String>) -> Json {

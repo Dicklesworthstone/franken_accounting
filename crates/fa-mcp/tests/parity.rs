@@ -151,7 +151,12 @@ fn tool_names_and_schemas_are_host_safe_and_registry_derived() {
         assert!(name.starts_with(&format!("{}_", t.cluster.replace('.', "_"))));
         let schema = t.input_schema(&mcp, reg);
         assert_eq!(schema["type"], JsonValue::String("object".into()));
-        assert_eq!(schema["additionalProperties"], JsonValue::Bool(false));
+        // Was `additionalProperties == false` (fa-23r): `ToolSpec::invocation`,
+        // not a closed schema, refuses undeclared keys (proved over stdio).
+        assert!(
+            schema.get("additionalProperties").is_none(),
+            "{name}: a closed schema pre-empts the server's structured refusal"
+        );
         let props = schema["properties"].as_object().expect("properties");
         for hidden in &mcp.hidden_flags {
             let prop = fa_mcp::registry::property(hidden);
@@ -184,8 +189,25 @@ fn tool_names_and_schemas_are_host_safe_and_registry_derived() {
                 "{name}: {f} is not a flag of {}",
                 t.verb
             );
+            // The flag that is the stdin route's `via` is carried by the stdin
+            // property; its `<flag>_file` host-path property is deliberately
+            // absent from the schema. A host-path flag (`--plan-out`,
+            // `--certificate-out`) has no property at all, by design, and is
+            // refused before any observation. Every other flag has its own
+            // property.
+            let carried_by = match &t.stdin {
+                Some(stdin) if &stdin.via == f => stdin.property.clone(),
+                _ => t.flag_property(f),
+            };
+            if t.is_host_path_property(&carried_by) {
+                assert!(
+                    !props.contains_key(&carried_by),
+                    "{name}: exposes the host path {carried_by}"
+                );
+                continue;
+            }
             assert!(
-                props.contains_key(&t.flag_property(f)),
+                props.contains_key(&carried_by),
                 "{name}: {f} has no property"
             );
         }
@@ -337,10 +359,11 @@ fn the_gate_fails_on_planted_defects() {
             "a tool explicitly exposing caller grants",
             "hidden flag --grant cannot be exposed",
             plant(|s| {
-                s.replace(
-                "name = \"post\"\nverb = \"post\"\nsubcommands = []\npositionals = []",
-                "name = \"post\"\nverb = \"post\"\nsubcommands = []\npositionals = []\nflags = [\"--intent\", \"--grant\"]",
-            )
+                s.replacen(
+                    "name = \"post\"\nverb = \"post\"\nsubcommands = []\npositionals = []\nflags = [\"--intent\", \"--evidence\", \"--balancing\"]",
+                    "name = \"post\"\nverb = \"post\"\nsubcommands = []\npositionals = []\nflags = [\"--intent\", \"--evidence\", \"--balancing\", \"--grant\"]",
+                    1,
+                )
             }),
         ),
     ];

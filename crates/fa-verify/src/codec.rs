@@ -50,7 +50,7 @@ impl<'a> Reader<'a> {
         Self { buf, at: 0 }
     }
 
-    fn remaining(&self) -> usize {
+    pub(crate) fn remaining(&self) -> usize {
         self.buf.len() - self.at
     }
 
@@ -106,6 +106,10 @@ impl<'a> Reader<'a> {
 
     pub(crate) fn i128(&mut self, what: &'static str) -> Result<i128, DecodeError> {
         Ok(i128::from_le_bytes(self.fixed(what)?))
+    }
+
+    pub(crate) fn i64(&mut self, what: &'static str) -> Result<i64, DecodeError> {
+        Ok(i64::from_le_bytes(self.fixed(what)?))
     }
 
     fn length(&mut self, max: usize, what: &'static str) -> Result<usize, DecodeError> {

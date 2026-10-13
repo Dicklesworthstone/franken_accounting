@@ -124,9 +124,7 @@ impl UtcInstant {
 
         let offset_seconds = match bytes.get(cursor) {
             Some(b'Z' | b'z') if cursor + 1 == bytes.len() => 0i32,
-            Some(b'+' | b'-')
-                if cursor + 6 == bytes.len() && bytes[cursor + 3] == b':' =>
-            {
+            Some(b'+' | b'-') if cursor + 6 == bytes.len() && bytes[cursor + 3] == b':' => {
                 let hours = pair(&bytes[cursor + 1..cursor + 3])?;
                 let minutes = pair(&bytes[cursor + 4..cursor + 6])?;
                 if hours > 23 || minutes > 59 {
@@ -372,12 +370,14 @@ pub fn resolve_instant(
         first,
     })?;
     let resolved_seq = match upper {
-        Some(tick) => tick.recorded_at.checked_sub(1).ok_or(
-            InstantResolutionError::SequenceOrder {
-                previous: lower.recorded_at,
-                next: tick.recorded_at,
-            },
-        )?,
+        Some(tick) => {
+            tick.recorded_at
+                .checked_sub(1)
+                .ok_or(InstantResolutionError::SequenceOrder {
+                    previous: lower.recorded_at,
+                    next: tick.recorded_at,
+                })?
+        }
         None => frontier,
     };
     Ok(InstantResolution {
@@ -430,7 +430,9 @@ mod tests {
         }
         assert_eq!(epoch.to_string(), "1970-01-01T00:00:00.000000000Z");
         assert_eq!(
-            UtcInstant::parse("2000-02-29T08:34:56.123456789-04:00").unwrap().to_string(),
+            UtcInstant::parse("2000-02-29T08:34:56.123456789-04:00")
+                .unwrap()
+                .to_string(),
             "2000-02-29T12:34:56.123456789Z",
         );
     }
@@ -464,17 +466,26 @@ mod tests {
             "2026-00-01T12:00:00Z",
             "2026-04-31T12:00:00Z",
         ] {
-            assert!(matches!(UtcInstant::parse(input), Err(InstantParseError::InvalidDate(_))));
+            assert!(matches!(
+                UtcInstant::parse(input),
+                Err(InstantParseError::InvalidDate(_))
+            ));
         }
         for input in [
             "2026-10-11T24:00:00Z",
             "2026-10-11T12:60:00Z",
             "2026-10-11T12:00:61Z",
         ] {
-            assert_eq!(UtcInstant::parse(input), Err(InstantParseError::InvalidTime));
+            assert_eq!(
+                UtcInstant::parse(input),
+                Err(InstantParseError::InvalidTime)
+            );
         }
         for input in ["2026-10-11T12:00:00+24:00", "2026-10-11T12:00:00-00:60"] {
-            assert_eq!(UtcInstant::parse(input), Err(InstantParseError::InvalidOffset));
+            assert_eq!(
+                UtcInstant::parse(input),
+                Err(InstantParseError::InvalidOffset)
+            );
         }
         assert_eq!(
             UtcInstant::parse("2016-12-31T23:59:60Z"),
@@ -496,7 +507,9 @@ mod tests {
         assert_eq!(UtcInstant::parse(last).unwrap().unix_ns(), u64::MAX);
         assert_eq!(UtcInstant::from_unix_ns(u64::MAX).to_string(), last);
         assert_eq!(
-            UtcInstant::parse("2554-07-22T00:34:33.709551615+01:00").unwrap().unix_ns(),
+            UtcInstant::parse("2554-07-22T00:34:33.709551615+01:00")
+                .unwrap()
+                .unix_ns(),
             u64::MAX,
         );
         for input in [
@@ -507,11 +520,22 @@ mod tests {
             "0000-01-01T00:00:00Z",
             "9999-12-31T23:59:59Z",
         ] {
-            assert_eq!(UtcInstant::parse(input), Err(InstantParseError::OutOfRange), "{input}");
+            assert_eq!(
+                UtcInstant::parse(input),
+                Err(InstantParseError::OutOfRange),
+                "{input}"
+            );
         }
         for ns in [
-            0, 1, 999_999_999, 1_000_000_000, NS_PER_DAY - 1, NS_PER_DAY,
-            951_827_696_123_456_789, u64::MAX - 1, u64::MAX,
+            0,
+            1,
+            999_999_999,
+            1_000_000_000,
+            NS_PER_DAY - 1,
+            NS_PER_DAY,
+            951_827_696_123_456_789,
+            u64::MAX - 1,
+            u64::MAX,
         ] {
             let instant = UtcInstant::from_unix_ns(ns);
             assert_eq!(instant.to_string().parse::<UtcInstant>(), Ok(instant));
@@ -546,13 +570,26 @@ mod tests {
             (u64::MAX, 25, 25, 2, None),
         ] {
             let got = resolve_instant(&ticks, instant, frontier).unwrap();
-            assert_eq!(got.resolved_seq, seq, "instant {instant}, frontier {frontier}");
+            assert_eq!(
+                got.resolved_seq, seq,
+                "instant {instant}, frontier {frontier}"
+            );
             assert_eq!(got.lower, ticks[lower]);
             assert_eq!(got.upper, upper.map(|index| ticks[index]));
         }
         let at_end = [tick(u64::MAX - 1, 100), tick(u64::MAX, 110)];
-        assert_eq!(resolve_instant(&at_end, 105, u64::MAX).unwrap().resolved_seq, u64::MAX - 1);
-        assert_eq!(resolve_instant(&at_end, 110, u64::MAX).unwrap().resolved_seq, u64::MAX);
+        assert_eq!(
+            resolve_instant(&at_end, 105, u64::MAX)
+                .unwrap()
+                .resolved_seq,
+            u64::MAX - 1
+        );
+        assert_eq!(
+            resolve_instant(&at_end, 110, u64::MAX)
+                .unwrap()
+                .resolved_seq,
+            u64::MAX
+        );
     }
 
     #[test]

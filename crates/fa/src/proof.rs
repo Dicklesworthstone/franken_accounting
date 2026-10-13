@@ -26,9 +26,9 @@ pub const MAX_PROOF_BYTES: usize = 64 * 1024 * 1024;
 
 pub mod code {
     /// The requested checkpoint is not on this book's recorded state chain.
-    pub const PROOF_STATE_UNKNOWN: &str = "FA-REF-126";
+    pub const PROOF_STATE_UNKNOWN: &str = "FA-REF-145";
     /// This export cannot fit the bounded portable proof transport.
-    pub const PROOF_EXPORT_LIMIT: &str = "FA-REF-127";
+    pub const PROOF_EXPORT_LIMIT: &str = "FA-REF-146";
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

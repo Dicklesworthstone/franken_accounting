@@ -53,17 +53,42 @@ fn split(n: usize) -> usize {
     k
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tree {
+    /// The domain of interior nodes: [`NODE_DOMAIN`] for the accumulator,
+    /// another for a derived index with the same shape (the scope index).
+    node_domain: &'static [u8],
     /// `levels[0]` are the leaves; `levels[h][i]` is the root of the
     /// complete subtree over leaves `[i·2^h, (i+1)·2^h)`.
     levels: Vec<Vec<Digest>>,
 }
 
+impl Default for Tree {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Tree {
+    /// The accumulator tree.
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self::with_node_domain(NODE_DOMAIN)
+    }
+
+    /// A tree of the same shape whose interior nodes hash under
+    /// `node_domain`. Its empty root is the accumulator's: an index with
+    /// its own empty commitment handles size 0 itself.
+    #[must_use]
+    pub fn with_node_domain(node_domain: &'static [u8]) -> Self {
+        Self {
+            node_domain,
+            levels: Vec::new(),
+        }
+    }
+
+    fn node(&self, left: &Digest, right: &Digest) -> Digest {
+        hash(self.node_domain, &[left, right])
     }
 
     #[must_use]
@@ -86,7 +111,7 @@ impl Tree {
         let mut h = 0;
         while self.levels[h].len().is_multiple_of(2) {
             let n = self.levels[h].len();
-            let node = node_hash(&self.levels[h][n - 2], &self.levels[h][n - 1]);
+            let node = self.node(&self.levels[h][n - 2], &self.levels[h][n - 1]);
             if self.levels.len() == h + 1 {
                 self.levels.push(Vec::new());
             }
@@ -104,7 +129,7 @@ impl Tree {
             return self.levels[h][a >> h];
         }
         let k = split(n);
-        node_hash(&self.subtree(a, a + k), &self.subtree(a + k, b))
+        self.node(&self.subtree(a, a + k), &self.subtree(a + k, b))
     }
 
     /// The root over the first `size` leaves, or `None` beyond the tree.

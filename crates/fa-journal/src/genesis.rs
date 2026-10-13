@@ -605,9 +605,11 @@ pub fn read_units<V: asupersync::fs::Vfs + Clone>(
 ) -> Result<UnitRegistry, KernelError> {
     use crate::rows::{int, prop, text};
 
-    let pre_payload = |what: &str| KernelError::Corrupt(format!(
-        "pre-payload unit table: {what}; this binary cannot infer missing unit facts. Keep the book unchanged and use its creating binary; upgrade requires an authorized journaled unit-payload backfill (fa-k1u), which is not available yet"
-    ));
+    let pre_payload = |what: &str| {
+        KernelError::Corrupt(format!(
+            "pre-payload unit table: {what}; this binary cannot infer missing unit facts, and no backfill exists before 1.0: keep the book unchanged and open it with its creating binary"
+        ))
+    };
     let root = db
         .vertex(book_root())?
         .ok_or_else(|| KernelError::Corrupt("unit table has no Book root".into()))?;
@@ -631,7 +633,11 @@ pub fn read_units<V: asupersync::fs::Vfs + Clone>(
             continue;
         }
         let payload = match prop(&row, property::FA_PAYLOAD) {
-            None => return Err(pre_payload(&format!("unit {vid:?} has no canonical payload"))),
+            None => {
+                return Err(pre_payload(&format!(
+                    "unit {vid:?} has no canonical payload"
+                )));
+            }
             Some(CanonicalScalar::Bytes(bytes)) => bytes.as_slice(),
             _ => {
                 return Err(KernelError::Corrupt(format!(
@@ -643,10 +649,12 @@ pub fn read_units<V: asupersync::fs::Vfs + Clone>(
             .map_err(|e| KernelError::Corrupt(format!("unit {vid:?}: {e}")))?;
         let id = definition.id;
         let unit = &definition.unit;
-        let mismatch = |field: &str| KernelError::Corrupt(format!(
-            "unit {} ({}@v{}) {field} differs from its journaled definition; refuse reinterpretation of historical amounts",
-            id.0, unit.code, unit.version
-        ));
+        let mismatch = |field: &str| {
+            KernelError::Corrupt(format!(
+                "unit {} ({}@v{}) {field} differs from its journaled definition; refuse reinterpretation of historical amounts",
+                id.0, unit.code, unit.version
+            ))
+        };
         if bytes(&row, property::BOOK_ID, "unit.book_id")? != book_id.0 {
             return Err(mismatch("book_id mirror"));
         }

@@ -72,7 +72,8 @@ impl AgingBuckets {
     }
 
     fn index(&self, age: u64) -> usize {
-        self.upper_bounds.partition_point(|upper| u64::from(*upper) < age)
+        self.upper_bounds
+            .partition_point(|upper| u64::from(*upper) < age)
     }
 }
 
@@ -97,8 +98,13 @@ impl AgingAmounts {
             Side::Debit => &mut self.debits,
             Side::Credit => &mut self.credits,
         };
-        *column = column.checked_add(item.open).ok_or(RegisterError::Overflow)?;
-        self.item_count = self.item_count.checked_add(1).ok_or(RegisterError::Overflow)?;
+        *column = column
+            .checked_add(item.open)
+            .ok_or(RegisterError::Overflow)?;
+        self.item_count = self
+            .item_count
+            .checked_add(1)
+            .ok_or(RegisterError::Overflow)?;
         Ok(())
     }
 }
@@ -314,7 +320,12 @@ mod tests {
         assert_eq!(all.index(u64::from(u32::MAX)), 0);
         let maximum = AgingBuckets::new(vec![u32::MAX]).unwrap();
         assert_eq!(maximum.bands()[1].lower_inclusive, 4_294_967_296);
-        assert!(age_snapshot(snapshot(Vec::new()), &all).unwrap().cells.is_empty());
+        assert!(
+            age_snapshot(snapshot(Vec::new()), &all)
+                .unwrap()
+                .cells
+                .is_empty()
+        );
     }
 
     #[test]
@@ -346,7 +357,10 @@ mod tests {
                 item_count: 2,
             }
         );
-        assert_eq!((report.totals[1].unit_id, report.totals[1].amounts.debits), (2, 500));
+        assert_eq!(
+            (report.totals[1].unit_id, report.totals[1].amounts.debits),
+            (2, 500)
+        );
         assert_eq!(report.totals[2].account, VId(200));
         assert_eq!(report.totals[2].amounts.debits, 7);
     }
@@ -365,7 +379,10 @@ mod tests {
             let mut permuted = rows.clone();
             permuted.rotate_left(shift);
             permuted.reverse();
-            assert_eq!(age_snapshot(snapshot(permuted), &buckets).unwrap(), expected);
+            assert_eq!(
+                age_snapshot(snapshot(permuted), &buckets).unwrap(),
+                expected
+            );
         }
         for total in &expected.totals {
             let matching: Vec<_> = expected

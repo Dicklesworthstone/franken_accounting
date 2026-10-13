@@ -43,7 +43,7 @@ fn certificate_digest(text: &str) -> Result<Option<[u8; 32]>, Fail> {
         };
     }
     let mut digest = [0; 32];
-    for (byte, pair) in digest.iter_mut().zip(digits.as_bytes().chunks_exact(2)) {
+    for (byte, pair) in digest.iter_mut().zip(digits.as_bytes().as_chunks::<2>().0) {
         let pair = std::str::from_utf8(pair)
             .map_err(|_| certificate_invalid("invalid certificate digest hex"))?;
         *byte = u8::from_str_radix(pair, 16)
@@ -132,7 +132,9 @@ fn read_report_certificate(
     }
     let decoded = text
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let digits = std::str::from_utf8(pair)
                 .map_err(|_| certificate_invalid("invalid certificate hex"))?;

@@ -829,7 +829,10 @@ impl ToolSpec {
         }
     }
 
-    fn is_host_path_property(&self, property: &str) -> bool {
+    /// Whether `property` names a host filesystem path: never exposed in the
+    /// tool's input schema and refused before any observation.
+    #[must_use]
+    pub fn is_host_path_property(&self, property: &str) -> bool {
         matches!(
             property,
             "file" | "intent_file" | "plan_file" | "plan_out" | "certificate_out"
@@ -980,11 +983,19 @@ impl ToolSpec {
                 required.push(prop);
             }
         }
+        // No `additionalProperties: false` (fa-23r): the fastmcp router
+        // validates every call against this schema before the handler runs
+        // (fastmcp-server 0.12.0 router.rs:5575, strict or not), so a closed
+        // schema answers an undeclared key with a bare JSON-RPC -32602 and
+        // the server's structured refusals never reach the host.
+        // `ToolSpec::invocation` is the one refusal point for undeclared keys:
+        // `forbidden_argument` for FORBIDDEN_ARGUMENTS, the `arguments` usage
+        // error otherwise, with a spelling hint or the tool's declared
+        // properties.
         json!({
             "type": "object",
             "properties": props,
             "required": required,
-            "additionalProperties": false,
         })
     }
 
@@ -1107,6 +1118,14 @@ impl ToolSpec {
             d.push_str(&format!("- {m}\n"));
         }
         d.push_str("- Amounts as JSON numbers (write \"1500.00 USD\"); instants where a civil date is required (write YYYY-MM-DD); placeholders such as \"<document oid>\" or TODO — all refused before dispatch.\n");
+        d.push_str(&format!(
+            "- An argument the input schema does not declare: the server refuses it before dispatch — {} with `forbidden_argument` (fixed when the server starts), any other with a spelling hint or the tool's declared properties.\n",
+            FORBIDDEN_ARGUMENTS
+                .iter()
+                .map(|a| format!("`{a}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
         let exits = fa_registry::ExitCodes::embedded()
             .map(|e| e.rows)
             .unwrap_or_default();
@@ -1739,8 +1758,17 @@ mod tests {
         assert_eq!(props["period"]["type"], json!(["string", "array"]));
         assert_eq!(props["fiscal_year"]["type"], json!(["string", "integer"]));
         assert_eq!(props["activity"]["type"], json!("boolean"));
-        assert_eq!(schema["additionalProperties"], json!(false));
+        // Was `additionalProperties == false` (fa-23r): a closed schema makes
+        // fastmcp refuse an undeclared key with a bare -32602 before
+        // `invocation` can answer it with a structured error, so no schema
+        // closes itself; tests/e2e_stdio.rs proves both refusals (forbidden
+        // and ordinary unknown keys) over stdio.
+        assert!(schema.get("additionalProperties").is_none(), "{schema}");
         let doc = tb.description(&mcp, reg);
+        assert!(
+            doc.contains("An argument the input schema does not declare: the server refuses it"),
+            "{doc}"
+        );
         for section in [
             "Do:",
             "Don't:",

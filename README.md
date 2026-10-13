@@ -262,6 +262,14 @@ under `fa-we7` and its dependent beads.
 
 ### MCP launch authority
 
+The stdio server uses MCP `2026-07-28`. Clients discover it with
+`server/discover` and send `io.modelcontextprotocol/protocolVersion` and
+`io.modelcontextprotocol/clientCapabilities` in each request's `params._meta`.
+Legacy `initialize` negotiation is refused. Resource refusals retain their
+structured `error.data`, including the launch authority.
+Resource reads have private, zero-lifetime cache hints because their URIs
+resolve the current book state.
+
 Start the stdio server against a book the operator has already prepared:
 
 ```bash
@@ -385,8 +393,13 @@ checkpoints it returns `status: "no_checkpoints"` and a null
 finding; checkpoint creation refuses a corrupt predecessor. Verification
 and proof generation also reject later rewrites or retirements of checkpointed
 entries, even when the original historical snapshot is still readable.
-These states cover entries, including control entries. Signed transparency checkpoints,
-document-receipt coverage and evidence bundles remain unfinished. The
+These states cover entries, including control entries. The library also signs
+each published checkpoint with the book's Ed25519 key
+(`Book::checkpoint_public_key`) as a `TransparencyCheckpoint` and produces
+evidence bundles with detached production receipts (`Book::produce_bundle`);
+`fa-verify checkpoint|scope|bundle` check them. The CLI does not emit signed
+checkpoints or bundles yet, and document-receipt coverage, witnesses and key
+rotation remain unfinished. The
 [CLI tests](./crates/fa-cli/tests/notary.rs) exercise persistence, later
 postings, authorization and real storage corruption.
 
@@ -418,14 +431,18 @@ After independently establishing trust in the checkpoint, an outsider can
 check the raw files with no book, keys, accounting dependencies or network:
 
 ```bash
-fa-verify prefix --proof acme.prefix --checkpoint acme.checkpoint --json
-fa-verify balance --proof cash.balance --checkpoint acme.checkpoint --json
+fa-verify prefix --proof acme.prefix --checkpoint acme.checkpoint --unsigned-checkpoint --json
+fa-verify balance --proof cash.balance --checkpoint acme.checkpoint --unsigned-checkpoint --json
 # A consistency check additionally names the producer's claimed new statement.
 fa-verify consistency --proof extension.proof --checkpoint old.checkpoint \
-  --next-checkpoint next.checkpoint --json
+  --next-checkpoint next.checkpoint --unsigned-checkpoint --json
 ```
 
-The checkpoint is unsigned. Receiving a proof and its checkpoint together
+These checkpoints are unsigned, and `--unsigned-checkpoint` says so: you trust
+the 80-byte statement through some other channel. A signed
+`TransparencyCheckpoint` is checked instead with `--key <64 hex>` (repeatable),
+which is required for `scope` and `bundle`; run `fa-verify --help` for the
+grammar. Receiving a proof and its checkpoint together
 does not authenticate their origin. The verifier requires the trust anchor
 as a separate input and reports the exact predicate it checked: inclusion,
 tree extension, complete prefix envelopes, or posted debit/credit arithmetic

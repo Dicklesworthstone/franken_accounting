@@ -77,11 +77,12 @@ impl OpenItemsReport {
     /// account metadata. Reversed applications remain visible with live=false.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, EncodeError> {
         let mut w = Writer::new();
-        w.fixed(OUTPUT_FORMAT)
-            .u64(self.known_at.0)
-            .opt(self.account_filter.as_ref(), |w, account| {
+        w.fixed(OUTPUT_FORMAT).u64(self.known_at.0).opt(
+            self.account_filter.as_ref(),
+            |w, account| {
                 w.u128(account.0);
-            });
+            },
+        );
         let accounts: Vec<_> = self.accounts.iter().collect();
         w.list(&accounts, |w, (vid, account)| {
             w.u128(vid.0);
@@ -416,9 +417,11 @@ mod tests {
         };
         let original = report.canonical_bytes().unwrap();
         assert!(original.starts_with(OUTPUT_FORMAT));
-        assert!(original.windows(16).any(|bytes| {
-            bytes == 9_007_199_254_740_993i128.to_le_bytes().as_slice()
-        }));
+        assert!(
+            original
+                .windows(16)
+                .any(|bytes| { bytes == 9_007_199_254_740_993i128.to_le_bytes().as_slice() })
+        );
         // An undone application remains part of the certified history even
         // though it contributes zero to the current applied/open amounts.
         let history = report.items[0].applications.pop().unwrap();

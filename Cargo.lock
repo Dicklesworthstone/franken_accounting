@@ -799,6 +799,7 @@ dependencies = [
  "fa-registry",
  "fa-statements",
  "fa-time",
+ "fa-verify",
  "fgdb",
  "fgdb-crypto",
  "fgdb-gql",
@@ -899,6 +900,7 @@ dependencies = [
  "fa-verify",
  "fgdb",
  "fgdb-crypto",
+ "fgdb-gql",
  "fgdb-types",
 ]
 

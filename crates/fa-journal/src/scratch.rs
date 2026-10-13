@@ -57,12 +57,16 @@ pub const SCOPE_ACCOUNTING_OBJECTS_ONLY: u8 = 1;
 const MAINTENANCE_PROPERTIES: [PropertyKeyId; 1] = [property::ACCUMULATOR_HEAD];
 
 /// Labels excluded from accounting-object replay: maintenance, checkpoints,
-/// and report certificates whose native snapshot identities bind the source
-/// database. A scratch report must issue its own certificate; the source's
+/// and certificates whose native snapshot identities bind the source database.
+/// A `TransparencyCheckpoint` signs the source's prefix by its sequence
+/// numbers, which a scratch book does not share; it is written in the same
+/// commit as the `AccumulatorState` it signs.
+/// A scratch report must issue its own certificate; the source's
 /// retained artifact remains unchanged in its original book.
-const MAINTENANCE: [LabelId; 4] = [
+const MAINTENANCE: [LabelId; 5] = [
     label::REGISTER,
     label::ACCUMULATOR_STATE,
+    label::TRANSPARENCY_CHECKPOINT,
     label::REGISTER_STATE,
     label::CERTIFICATE,
 ];

@@ -2,10 +2,10 @@
 //!
 //! [`Book`] creates and opens memory or persisted books on FrankenGraphDB,
 //! installs charts, transitions periods, admits postings, folds historical
-//! reports, and verifies derived registers. It also publishes unsigned entry
-//! accumulator checkpoints under witness authority and recomputes their
-//! journal prefixes. These checkpoints do not certify later postings or
-//! document receipts.
+//! reports, and verifies derived registers. It also publishes signed entry
+//! accumulator checkpoints under witness authority, recomputes their journal
+//! prefixes, and produces evidence bundles with detached production receipts.
+//! Checkpoints cover their recorded prefixes, not later postings.
 //!
 //! [`AsyncBook`] takes the caller's purpose contexts and filesystem; [`Book`]
 //! supplies a production runtime and delegates to the same implementation.
@@ -22,8 +22,7 @@
 //! committed from an authenticated portable plan under current authority.
 //! Their graph certificates are retained atomically with the resulting entry;
 //! this slice requires an unchanged book sequence and existing approvals.
-//! Sessions, drafts, signed transparency
-//! checkpoints and bundles remain later slices of the embedded API described
+//! Sessions and drafts remain later slices of the embedded API described
 //! in `COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md` (§15.2).
 
 #![forbid(unsafe_code)]
@@ -43,7 +42,7 @@ pub use aging::{
     OpenItemSnapshot,
 };
 pub use async_book::AsyncBook;
-pub use book::{Book, BookError, BookKeys, Entropy, Outcome};
+pub use book::{Book, BookError, BookKeys, Entropy, Outcome, ProducedBundle};
 pub use certificate::{
     CertificateStatus, CertifiedReport, CertifiedTrialBalance, ReportCertificate, ReportOutput,
     ReportSelection, TrialBalanceSelection,
@@ -51,7 +50,9 @@ pub use certificate::{
 pub use certificate_store::RetainedCertificate;
 pub use fa_intents::{IntentError, MAX_PLAN_BYTES, PlanCertificate, PostIntent, PostPlan};
 pub use fa_journal::{InstantSelection, UploadRequest};
-pub use fa_notary::{AccumulatorVerification, Checkpointed};
+pub use fa_notary::{
+    AccumulatorVerification, BalanceRequest, BundleRequest, BundleScope, Checkpointed,
+};
 pub use fa_policy::{Capability, Op, Profile};
 pub use fa_registers::Advance;
 pub use fa_registers::open_items::OpenItemsReport;

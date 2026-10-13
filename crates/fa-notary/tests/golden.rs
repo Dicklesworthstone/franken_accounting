@@ -10,8 +10,8 @@
 //! make a change pass: a format change is a new `v2` file.
 
 use fa_model::{
-    ControlPayload, Entry, EntryClass, EntryOrigin, EntryPayload, Erasable, Id128, LegPayload, Oid,
-    PeriodRef, SealKey,
+    ControlPayload, Entry, EntryClass, EntryOrigin, EntryPayload, Erasable, EvidenceRef, Id128,
+    LegPayload, Oid, PeriodRef, SealKey,
 };
 use fa_money::{Amount, Side, UnitId};
 use fa_notary::{AccumulatorState, Journal, state_oid};
@@ -52,6 +52,10 @@ fn payload(class: EntryClass, legs: Vec<LegPayload>, key: &[u8]) -> EntryPayload
     }
 }
 
+/// A control record for the codec vectors only. These records are never
+/// staged: they pin the model codec's bytes, not an admissible journal — the
+/// PeriodControl leaf's `control_kind` 1 would be refused by `entry_mirrors`
+/// if it were staged (ruling 3412: the pinned bytes stay).
 fn control(class: EntryClass, control: ControlPayload, key: &[u8]) -> Entry {
     let mut p = payload(class, Vec::new(), key);
     p.control = Some(control);
@@ -261,6 +265,270 @@ fn odd_sized_consistency_equals_the_pinned_vectors() {
     assert!(
         drift.is_empty(),
         "accumulator bytes differ from the pinned v1 vectors:\n{}",
+        drift.join("\n")
+    );
+}
+
+const CHECKPOINT_FIXTURE: &str = include_str!("../../fa-verify/tests/fixtures/checkpoint_v1.txt");
+
+fn checkpoint_fixture(name: &str) -> String {
+    CHECKPOINT_FIXTURE
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .find_map(|l| l.strip_prefix(name)?.strip_prefix(' ').map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// The signed checkpoint and scope-proof formats (fa-l3c slice 3): a
+/// checkpoint over the pinned 4-leaf state, signed with a fixed key, and
+/// three scope proofs over its index, must equal
+/// `crates/fa-verify/tests/fixtures/checkpoint_v1.txt` byte for byte.
+#[test]
+fn checkpoint_formats_equal_the_pinned_vectors() {
+    use fa_notary::checkpoint::CheckpointBody;
+    use fa_notary::{ScopeIndex, SigningKey, TransparencyCheckpoint};
+
+    let full = Journal::from_records(BOOK, CommitSeq(6), records()).unwrap();
+    let first_two: Vec<_> = records().into_iter().filter(|(_, _, s)| s.0 <= 4).collect();
+    let early = Journal::from_records(BOOK, CommitSeq(4), first_two).unwrap();
+    let old_bytes = AccumulatorState::of_journal(&early, None)
+        .canonical_bytes()
+        .unwrap();
+    let state = AccumulatorState::of_journal(&full, Some(state_oid(&old_bytes)));
+    let index = ScopeIndex::of(&full);
+    assert_eq!(index.tuples().len(), 5, "rent ×2, fx ×1, cash ×2");
+    let key = SigningKey::from_seed(&[0x11; 32]);
+    let body = CheckpointBody {
+        statement: full.statement(),
+        state_oid: state.oid().unwrap(),
+        scope_index_root: index.root(),
+        substrate_chain_commitment: [0xc0; 32],
+        witness_policy_oid: None,
+        time_evidence_oid: None,
+    };
+    let checkpoint = TransparencyCheckpoint::sign(body, &[&key]).unwrap();
+    let bytes = checkpoint.canonical_bytes().unwrap();
+    assert_eq!(TransparencyCheckpoint::decode(&bytes).unwrap(), checkpoint);
+
+    let actual = [
+        ("public_key", hex(&key.public_key())),
+        ("checkpoint", hex(&bytes)),
+        (
+            "scope",
+            hex(&index.proof(&full, 0x10, 20_527, 20_527).unwrap()),
+        ),
+        (
+            "scope_empty",
+            hex(&index.proof(&full, 0x20, 20_528, 20_600).unwrap()),
+        ),
+        (
+            "scope_last",
+            hex(&index.proof(&full, 0x30, i32::MIN, i32::MAX).unwrap()),
+        ),
+    ];
+    let mut drift = Vec::new();
+    for (name, bytes) in &actual {
+        if !checkpoint_fixture(name).eq(bytes) {
+            drift.push(format!("{name} {bytes}"));
+        }
+    }
+    assert!(
+        drift.is_empty(),
+        "checkpoint bytes differ from the pinned v1 vectors:\n{}",
+        drift.join("\n")
+    );
+}
+
+const BUNDLE_FIXTURE: &str = include_str!("../../fa-verify/tests/fixtures/bundle_v1.txt");
+
+fn bundle_fixture(name: &str) -> String {
+    BUNDLE_FIXTURE
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .find_map(|l| l.strip_prefix(name)?.strip_prefix(' ').map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// The two documents the fifth posting cites: (kind, bytes).
+const GOLDEN_DOCUMENTS: [(u8, &[u8]); 2] = [(1, b"INVOICE golden"), (1, b"LEASE golden")];
+
+fn golden_document_oid(kind: u8, bytes: &[u8]) -> Oid {
+    fa_journal::evidence::document_oid(BOOK, &fa_journal::evidence::doc_commit(kind, bytes))
+}
+
+/// `records()` and a fifth posting at seq 7, `Dr rent / Cr cash` 99.00 USD,
+/// citing both documents.
+fn bundle_records() -> Vec<(VId, Entry, CommitSeq)> {
+    let usd = UnitId(1);
+    let mut evidence: Vec<EvidenceRef> = GOLDEN_DOCUMENTS
+        .iter()
+        .map(|(kind, bytes)| EvidenceRef {
+            document_oid: golden_document_oid(*kind, bytes),
+            doc_commit: fa_journal::evidence::doc_commit(*kind, bytes),
+            role: 1,
+        })
+        .collect();
+    evidence.sort();
+    let mut cited = payload(
+        EntryClass::ORIGINAL,
+        vec![
+            LegPayload::simple(Side::Debit, VId(0x10), Amount::new(usd, 9_900)),
+            LegPayload::simple(Side::Credit, VId(0x30), Amount::new(usd, 9_900)),
+        ],
+        b"cited",
+    );
+    cited.evidence = evidence;
+    let mut all = records();
+    all.push((
+        VId(0x105),
+        cited.seal(Vec::new(), None).unwrap(),
+        CommitSeq(7),
+    ));
+    all
+}
+
+/// Every golden document, read whole: a stub reads only its kind and bytes.
+fn golden_documents() -> std::collections::BTreeMap<Oid, fa_journal::DocumentRead> {
+    GOLDEN_DOCUMENTS
+        .iter()
+        .map(|(kind, bytes)| {
+            (
+                golden_document_oid(*kind, bytes),
+                fa_journal::DocumentRead::Full(fa_journal::Document {
+                    book_id: BOOK,
+                    kind: *kind,
+                    mime: "text/plain".into(),
+                    grade: 3,
+                    retrieved_by: VId(0),
+                    bytes: bytes.to_vec(),
+                }),
+            )
+        })
+        .collect()
+}
+
+/// The evidence bundle and production receipt formats (fa-l3c slice 5):
+/// three bundles over a synthetic five-leaf journal against a checkpoint
+/// signed with a fixed key, and a receipt over the first, must equal
+/// `crates/fa-verify/tests/fixtures/bundle_v1.txt` byte for byte; and the
+/// independent verifier accepts every one.
+#[test]
+fn bundle_formats_equal_the_pinned_vectors() {
+    use fa_notary::bundle::{
+        BalanceRequest, BundleRequest, BundleScope, ProductionReceipt, ReceiptBody, assemble,
+        cited_documents,
+    };
+    use fa_notary::checkpoint::{CheckpointBody, checkpoint_oid, checkpoint_vid};
+    use fa_notary::{
+        ScopeIndex, ScopeRequest, SigningKey, StoredCheckpoint, TransparencyCheckpoint,
+    };
+
+    let journal = Journal::from_records(BOOK, CommitSeq(7), bundle_records()).unwrap();
+    assert_eq!(journal.len(), 5);
+    let state_oid = AccumulatorState::of_journal(&journal, None).oid().unwrap();
+    let key = SigningKey::from_seed(&[0x11; 32]);
+    let checkpoint = TransparencyCheckpoint::sign(
+        CheckpointBody {
+            statement: journal.statement(),
+            state_oid,
+            scope_index_root: ScopeIndex::of(&journal).root(),
+            substrate_chain_commitment: [0xc0; 32],
+            witness_policy_oid: None,
+            time_evidence_oid: None,
+        },
+        &[&key],
+    )
+    .unwrap();
+    let bytes = checkpoint.canonical_bytes().unwrap();
+    let stored = StoredCheckpoint {
+        oid: checkpoint_oid(&bytes),
+        vid: checkpoint_vid(&state_oid),
+        checkpoint,
+        bytes,
+    };
+    let produce = |scope: BundleScope, balances: Vec<BalanceRequest>, inline_documents: bool| {
+        let request = BundleRequest {
+            scope,
+            balances,
+            inline_documents,
+        };
+        let documents = golden_documents();
+        let cited = cited_documents(&journal, &request).unwrap().unwrap();
+        assert!(cited.iter().all(|oid| documents.contains_key(oid)));
+        assemble(&journal, &stored, &request, &documents)
+            .unwrap()
+            .unwrap()
+    };
+    let everything = BundleRequest {
+        scope: BundleScope::Prefix,
+        balances: Vec::new(),
+        inline_documents: true,
+    };
+    let mut cited = cited_documents(&journal, &everything).unwrap().unwrap();
+    cited.sort();
+    let mut golden: Vec<Oid> = golden_documents().into_keys().collect();
+    golden.sort();
+    assert_eq!(
+        cited, golden,
+        "the prefix cites both golden documents, once each"
+    );
+    let prefix = produce(
+        BundleScope::Prefix,
+        vec![BalanceRequest {
+            account: VId(0x30),
+            unit: 1,
+            effective_through: None,
+        }],
+        true,
+    );
+    let account = produce(
+        BundleScope::Index(ScopeRequest::Account {
+            account: VId(0x10),
+            from: i32::MIN,
+            to: i32::MAX,
+        }),
+        Vec::new(),
+        false,
+    );
+    let entries = produce(
+        BundleScope::Entries(vec![VId(0x105), VId(0x104)]),
+        Vec::new(),
+        true,
+    );
+    let receipt = ProductionReceipt::sign(
+        ReceiptBody {
+            bundle_digest: prefix.digest,
+            producer_principal: VId(7),
+            produced_at_seq: CommitSeq(9),
+            capability_commitment: [0xcc; 32],
+            time_evidence_oid: None,
+        },
+        &key,
+    )
+    .unwrap()
+    .canonical_bytes()
+    .unwrap();
+    for b in [&prefix, &account, &entries] {
+        let report = fa_verify::verify_bundle(&b.bytes, &[key.public_key()], None).unwrap();
+        assert!(report.verified(), "{:#?}", report.checks);
+    }
+
+    let actual = [
+        ("public_key", hex(&key.public_key())),
+        ("bundle_prefix", hex(&prefix.bytes)),
+        ("digest_prefix", hex(&prefix.digest)),
+        ("bundle_account", hex(&account.bytes)),
+        ("bundle_entries", hex(&entries.bytes)),
+        ("receipt", hex(&receipt)),
+    ];
+    let drift: Vec<String> = actual
+        .iter()
+        .filter(|(name, bytes)| bundle_fixture(name) != *bytes)
+        .map(|(name, bytes)| format!("{name} {bytes}"))
+        .collect();
+    assert!(
+        drift.is_empty(),
+        "bundle bytes differ from the pinned v1 vectors:\n{}",
         drift.join("\n")
     );
 }
