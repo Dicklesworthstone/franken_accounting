@@ -105,6 +105,10 @@ impl Trace {
 struct Movement {
     entry: VId,
     date: DateDay,
+    /// The entry's recorded commit sequence: the statement order of
+    /// movements on one effective day (`StatementOrdinal`). Entry VIds are
+    /// identity hashes and carry no order.
+    recorded: u64,
     inflow: bool,
     magnitude: i128,
 }
@@ -168,7 +172,7 @@ impl Trace {
             ));
         };
         // Net each entry's legs on the account, per side, in that unit.
-        let mut per_entry: BTreeMap<(VId, bool), (DateDay, i128)> = BTreeMap::new();
+        let mut per_entry: BTreeMap<(VId, bool), (DateDay, u64, i128)> = BTreeMap::new();
         for e in snapshot.entries.iter().filter(|e| e.posts()) {
             if e.entry.proposal.effective_date > claim {
                 continue;
@@ -184,19 +188,20 @@ impl Trace {
                     .ok_or(LanternError::Overflow("trace magnitude"))?;
                 let slot = per_entry
                     .entry((e.vid, leg.side == inflow_side))
-                    .or_insert((e.entry.proposal.effective_date, 0));
-                slot.1 = slot
-                    .1
+                    .or_insert((e.entry.proposal.effective_date, e.recorded_at.0, 0));
+                slot.2 = slot
+                    .2
                     .checked_add(magnitude)
                     .ok_or(LanternError::Overflow("trace movement"))?;
             }
         }
         let mut moves: Vec<Movement> = per_entry
             .into_iter()
-            .filter(|(_, (_, m))| *m != 0)
-            .map(|((entry, inflow), (date, magnitude))| Movement {
+            .filter(|(_, (_, _, m))| *m != 0)
+            .map(|((entry, inflow), (date, recorded, magnitude))| Movement {
                 entry,
                 date,
+                recorded,
                 inflow,
                 magnitude,
             })
@@ -206,8 +211,16 @@ impl Trace {
             DEPOSITS_FIRST => u8::from(!m.inflow),
             _ => 0,
         };
+        // Same-day movements follow the statement (recorded) order; the
+        // entry identity only breaks ties inside one commit, deterministically.
         moves.sort_by(|a, b| {
-            (a.date, rank(a), a.entry, a.inflow).cmp(&(b.date, rank(b), b.entry, b.inflow))
+            (a.date, rank(a), a.recorded, a.entry, a.inflow).cmp(&(
+                b.date,
+                rank(b),
+                b.recorded,
+                b.entry,
+                b.inflow,
+            ))
         });
         let source_at = moves
             .iter()
@@ -257,21 +270,37 @@ fn run_law(law: Law, stream: &Stream, work: &mut Work) -> Result<Traced, Lantern
     let mut balance = add(opening, deposit, "balance")?;
     let mut lowest = (balance, None);
     let mut carriers: BTreeMap<VId, i128> = BTreeMap::new();
+    // An overdrawn account owes before it holds: an inflow first repays the
+    // overdraft and only the rest becomes money in the account. So a deposit
+    // into an account overdrawn by d is traceable only for what exceeds d,
+    // and a withdrawal beyond the money held deepens the overdraft. With
+    // this, the layers (and the pools) always sum to max(balance, 0).
+    let mut debt = sub(0, opening.min(0), "overdraft")?;
+    let repaid = deposit.min(debt);
+    debt = sub(debt, repaid, "overdraft")?;
+    let traceable = sub(deposit, repaid, "traceable deposit")?;
     // Layered money for FIFO/LIFO: `(tainted, amount)`, oldest first.
     let mut layers: VecDeque<(bool, i128)> = VecDeque::new();
     if opening > 0 {
         layers.push_back((false, opening));
     }
-    layers.push_back((true, deposit));
+    if traceable > 0 {
+        layers.push_back((true, traceable));
+    }
     // Pooled money for pro rata and LIBR.
-    let mut tainted = deposit;
+    let mut tainted = traceable;
     let mut clean = opening.max(0);
     for m in &stream.moves[stream.source_at + 1..] {
         work.leg();
         if m.inflow {
             balance = add(balance, m.magnitude, "balance")?;
-            layers.push_back((false, m.magnitude));
-            clean = add(clean, m.magnitude, "clean pool")?;
+            let repaid = m.magnitude.min(debt);
+            debt = sub(debt, repaid, "overdraft")?;
+            let held = sub(m.magnitude, repaid, "inflow")?;
+            if held > 0 {
+                layers.push_back((false, held));
+                clean = add(clean, held, "clean pool")?;
+            }
             continue;
         }
         balance = sub(balance, m.magnitude, "balance")?;
@@ -291,6 +320,8 @@ fn run_law(law: Law, stream: &Stream, work: &mut Work) -> Result<Traced, Lantern
                     } else {
                         layers.back_mut()
                     }) else {
+                        // Nothing held: the rest of the withdrawal overdraws.
+                        debt = add(debt, remaining, "overdraft")?;
                         break;
                     };
                     let take = remaining.min(front.1);
@@ -311,10 +342,11 @@ fn run_law(law: Law, stream: &Stream, work: &mut Work) -> Result<Traced, Lantern
             }
             Law::ProRata => {
                 let pool = add(tainted, clean, "pool")?;
-                if pool <= 0 {
+                let drawn = m.magnitude.min(pool.max(0));
+                debt = add(debt, sub(m.magnitude, drawn, "overdraft")?, "overdraft")?;
+                if drawn == 0 {
                     continue;
                 }
-                let drawn = m.magnitude.min(pool);
                 let weights = [tainted.unsigned_abs(), clean.unsigned_abs()];
                 let shares = largest_remainder(Amount::new(stream.unit, drawn), &weights)?;
                 let (Some(t), Some(c)) = (shares.first(), shares.get(1)) else {
@@ -363,7 +395,7 @@ impl Procedure for Trace {
     fn run(
         &self,
         snapshot: &Snapshot,
-        _book: &BookContext,
+        book: &BookContext,
         work: &mut Work,
     ) -> Result<Vec<Finding>, LanternError> {
         let Some(claim) = snapshot.coordinate.effective_through else {
@@ -421,7 +453,7 @@ impl Procedure for Trace {
             Statistic {
                 name: "traced_mantissa".into(),
                 value: t.traced,
-                scale: 0,
+                scale: crate::unit_scale(book, stream.unit.0)?,
                 population: movements,
             },
             cites,

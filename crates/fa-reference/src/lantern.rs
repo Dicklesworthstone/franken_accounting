@@ -132,19 +132,30 @@ pub fn same_same_same(rows: &[Row]) -> Vec<Vec<usize>> {
     out
 }
 
-/// Pairs `(i, j)` with `i < j` of rows with the same legs whose dates differ
-/// by 1..=window days.
+/// Pairs `(i, j)` with `i < j`: for each row `a`, the rows with the same legs
+/// on later dates are found by brute force; the earliest such date, if it is
+/// at most `window` days after `a`'s, contributes its lowest-index row `b`
+/// (the first recorded) as `a`'s pair.
 pub fn same_same_different(rows: &[Row], window: i32) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     for a in rows {
-        for b in rows {
-            if a.index < b.index && leg_key(a) == leg_key(b) {
-                let apart = (a.date.0 - b.date.0).abs();
-                if (1..=window).contains(&apart) {
-                    out.push((a.index, b.index));
-                }
-            }
+        let later: Vec<&Row> = rows
+            .iter()
+            .filter(|b| leg_key(b) == leg_key(a) && b.date.0 > a.date.0)
+            .collect();
+        let Some(next_day) = later.iter().map(|b| b.date.0).min() else {
+            continue;
+        };
+        if next_day - a.date.0 > window {
+            continue;
         }
+        let b = later
+            .iter()
+            .filter(|b| b.date.0 == next_day)
+            .map(|b| b.index)
+            .min()
+            .expect("a row on the earliest later date");
+        out.push((a.index.min(b), a.index.max(b)));
     }
     out.sort_unstable();
     out
@@ -347,9 +358,12 @@ pub enum TraceLaw {
 /// The traceable share of row `source`'s deposit into `account` at `claim`
 /// under `law`, and the rows whose withdrawals carried tainted value (for
 /// LIBR, the row at which the lowest balance was reached). Movements are
-/// each row's debits minus credits on the account, in date then row order;
-/// money before the deposit is clean; pro rata splits a withdrawal by exact
-/// integer proportion, which the planted corpus keeps exact.
+/// each row's debits minus credits on the account, in date then row
+/// (recorded) order; money before the deposit is clean; an overdraft is
+/// repaid by the next money in, so a deposit into an overdrawn account is
+/// traceable only above the overdraft, and a withdrawal beyond the money
+/// held overdraws; pro rata splits a withdrawal by exact integer proportion,
+/// which the planted corpus keeps exact.
 pub fn trace(
     rows: &[Row],
     account: &str,
@@ -387,19 +401,28 @@ pub fn trace(
     let deposit = moves[at].2;
     let mut balance = opening + deposit;
     let mut lowest = (balance, None);
-    let mut tainted = deposit;
+    let mut overdraft = (-opening).max(0);
+    let traceable = (deposit - overdraft).max(0);
+    overdraft = (overdraft - deposit).max(0);
+    let mut tainted = traceable;
     let mut clean = opening.max(0);
     let mut layers: Vec<(bool, i128)> = Vec::new();
     if opening > 0 {
         layers.push((false, opening));
     }
-    layers.push((true, deposit));
+    if traceable > 0 {
+        layers.push((true, traceable));
+    }
     let mut carriers: Vec<usize> = Vec::new();
     for m in &moves[at + 1..] {
         if m.2 > 0 {
             balance += m.2;
-            clean += m.2;
-            layers.push((false, m.2));
+            let held = (m.2 - overdraft).max(0);
+            overdraft = (overdraft - m.2).max(0);
+            if held > 0 {
+                clean += held;
+                layers.push((false, held));
+            }
             continue;
         }
         let w = -m.2;
@@ -431,13 +454,15 @@ pub fn trace(
                         layers.remove(i);
                     }
                 }
+                overdraft += remaining;
             }
             TraceLaw::ProRata => {
                 let pool = tainted + clean;
-                if pool <= 0 {
+                let drawn = w.min(pool.max(0));
+                overdraft += w - drawn;
+                if drawn == 0 {
                     continue;
                 }
-                let drawn = w.min(pool);
                 let t_out = drawn * tainted / pool;
                 if t_out > 0 {
                     carriers.push(m.1);

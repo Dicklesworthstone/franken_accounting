@@ -250,7 +250,7 @@ evidence = "FA-EVID-L14"
 tie_break = "entry_vid"
 complexity = "O(flow legs log flow legs)"
 calibration = "planted"
-summary = "Sub-threshold clustering between one payer account and one receiving account in one unit: a chain of allocated transfers each at least floor and below threshold, consecutive ones at most window_days apart, numbering at least min_count and summing to at least threshold; reversals excluded."
+summary = "Sub-threshold clustering between one payer account and one receiving account in one registered currency: a chain of allocated transfers each at least floor and below threshold, consecutive ones at most window_days apart, numbering at least min_count and summing to at least threshold; reversals excluded."
 
 [[parameter]]
 procedure = "graph.structuring"
@@ -275,6 +275,12 @@ procedure = "graph.structuring"
 name = "min_count"
 default = 3
 meaning = "The fewest transfers a reported chain has."
+
+[[parameter]]
+procedure = "graph.structuring"
+name = "currency_iso4217"
+default = 840
+meaning = "The ISO 4217 numeric code of the one currency whose transfers are examined (840 = USD); threshold and floor are mantissas at that currency's scale, and transfers in other units are not examined, since one threshold is a different amount in every unit."
 
 # ---- Tracing laws (plan §11.5) --------------------------------------------
 # The traceable share of one deposit (`source`, an entry) through one

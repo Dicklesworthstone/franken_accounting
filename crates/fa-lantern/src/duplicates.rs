@@ -12,8 +12,8 @@ use fgdb_types::VId;
 
 use crate::jet::{finding, procedure_boilerplate};
 use crate::{
-    Cite, Finding, LanternError, Params, Procedure, Severity, Snapshot, SnapshotEntry, Statistic,
-    Work,
+    Cite, Finding, LanternError, MAX_CITES, Params, Procedure, Severity, Snapshot, SnapshotEntry,
+    Statistic, Work,
 };
 
 type Signature = Vec<(u128, u8, u32, i128)>;
@@ -80,12 +80,20 @@ impl Procedure for SameSameSame {
             .map(|mut g| {
                 g.sort_unstable();
                 let n = g.len() as u64;
+                // A finding cites at most MAX_CITES handles; a larger group is
+                // still one finding, its full size in the statistic.
+                let cited = if g.len() > MAX_CITES {
+                    format!(" (the first {MAX_CITES} by entry id cited)")
+                } else {
+                    String::new()
+                };
+                g.truncate(MAX_CITES);
                 finding(
                     Self::ID,
                     Severity::Medium,
                     Statistic::count("entries", n, population),
                     g.into_iter().map(Cite::Entry).collect(),
-                    format!("{n} entries share the same legs and effective date"),
+                    format!("{n} entries share the same legs and effective date{cited}"),
                 )
             })
             .collect())
@@ -93,7 +101,10 @@ impl Procedure for SameSameSame {
 }
 
 /// `duplicates.same_same_different`: same legs, different effective dates at
-/// most `window_days` apart.
+/// most `window_days` apart. Each entry is paired with the next occurrence of
+/// its legs on a later date (the first recorded entry on that date), so a
+/// group of k identical entries yields at most k pairs: a retail book with
+/// identical daily sales reports a chain, not every pair of days.
 pub struct SameSameDifferent {
     params: Params,
 }
@@ -117,38 +128,49 @@ impl Procedure for SameSameDifferent {
     ) -> Result<Vec<Finding>, LanternError> {
         let window = i32::try_from(self.params.get_u32("window_days")?)
             .map_err(|_| LanternError::Overflow("window_days"))?;
-        let mut groups: BTreeMap<Signature, Vec<(i32, VId)>> = BTreeMap::new();
+        // `(effective day, recorded sequence, entry)` per signature.
+        let mut groups: BTreeMap<Signature, Vec<(i32, u64, VId)>> = BTreeMap::new();
         let mut population = 0u64;
         for e in snapshot.entries.iter().filter(|e| e.posts()) {
             work.entry();
             population += 1;
-            groups
-                .entry(signature(e, work))
-                .or_default()
-                .push((e.entry.proposal.effective_date.0, e.vid));
+            groups.entry(signature(e, work)).or_default().push((
+                e.entry.proposal.effective_date.0,
+                e.recorded_at.0,
+                e.vid,
+            ));
         }
         let mut out = Vec::new();
         for list in groups.values_mut() {
             list.sort_unstable();
+            // `next` is the first index on a later date than `list[i]`; it
+            // only moves forward, so the scan is linear after the sort.
+            let mut next = 0usize;
             for i in 0..list.len() {
-                for j in (i + 1)..list.len() {
+                next = next.max(i + 1);
+                while next < list.len() && list[next].0 == list[i].0 {
                     work.compare(1);
-                    let apart = list[j].0 - list[i].0;
-                    if apart > window {
-                        break;
-                    }
-                    if apart >= 1 {
-                        let mut pair = [list[i].1, list[j].1];
-                        pair.sort_unstable();
-                        out.push(finding(
-                            Self::ID,
-                            Severity::Low,
-                            Statistic::count("days_apart", apart as u64, population),
-                            pair.into_iter().map(Cite::Entry).collect(),
-                            format!("two entries share the same legs {apart} day(s) apart (window {window})"),
-                        ));
-                    }
+                    next += 1;
                 }
+                let Some(&(day, _, later)) = list.get(next) else {
+                    break;
+                };
+                work.compare(1);
+                let apart = day - list[i].0;
+                if apart > window {
+                    continue;
+                }
+                let mut pair = [list[i].2, later];
+                pair.sort_unstable();
+                out.push(finding(
+                    Self::ID,
+                    Severity::Low,
+                    Statistic::count("days_apart", apart as u64, population),
+                    pair.into_iter().map(Cite::Entry).collect(),
+                    format!(
+                        "two entries share the same legs {apart} day(s) apart (window {window})"
+                    ),
+                ));
             }
         }
         Ok(out)

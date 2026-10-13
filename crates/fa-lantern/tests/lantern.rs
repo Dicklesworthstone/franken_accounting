@@ -1438,6 +1438,130 @@ fn tracing_laws_follow_the_planted_deposit_and_agree_with_the_oracle() {
     assert_eq!(early.coordinate.effective_through, Some(day(2026, 4, 7)));
 }
 
+/// fa-jt7p defects 1 and 2, planted: same-day movements follow the recorded
+/// (statement) order, never the entry identity hash; and a deposit into an
+/// overdrawn account is traceable only above the overdraft. Every law
+/// agrees with the oracle on both.
+#[test]
+fn tracing_follows_recorded_same_day_order_and_repays_an_overdraft_first() {
+    let mut h = harness();
+    let traced = |h: &Harness, law: Law, account: VId, source: VId, params: Option<Params>| {
+        let procedure = match params {
+            Some(p) => Trace::with(law, p, account, source),
+            None => Trace::new(law, account, source).unwrap(),
+        };
+        let r = run(&h.db, &h.book, None, Some(day(2026, 3, 31)), &procedure).unwrap();
+        println!("trace law={} {}", law.name(), r.findings[0].narrative);
+        r.findings[0].statistic.value
+    };
+    let rows_of = |h: &Harness, specs: &[Spec]| -> Vec<naive::Row> {
+        specs
+            .iter()
+            .enumerate()
+            .map(|(index, spec)| naive::Row {
+                index,
+                date: spec.date,
+                document_date: None,
+                period: h.period_code(spec.date),
+                period_end: h.period_end(spec.date),
+                legs: spec
+                    .legs
+                    .iter()
+                    .map(|(code, side, cents)| naive::Leg {
+                        account: (*code).to_string(),
+                        debit: *side == Side::Debit,
+                        unit: 0,
+                        scale: 2,
+                        mantissa: *cents,
+                    })
+                    .collect(),
+                preparer: String::new(),
+                approvers: Vec::new(),
+                description_chars: Some(0),
+                external_ids: Vec::new(),
+                recorded_after_close: false,
+            })
+            .collect()
+    };
+
+    // Same-day order on the trust account: clean opening money, then the
+    // tainted deposit S and a withdrawal W recorded after it on one day.
+    // Recorded order: S then W, so LIFO draws the deposit first.
+    let ordered = vec![
+        Spec::simple(day(2026, 3, 2), "1020", "4000", 100_000),
+        Spec::simple(day(2026, 3, 9), "1020", "4000", 50_000),
+        Spec::simple(day(2026, 3, 9), "6000", "1020", 60_000),
+    ];
+    let first = h.posted.len();
+    for spec in &ordered {
+        h.post(spec);
+    }
+    assert!(
+        h.posted[first + 1].1 < h.posted[first + 2].1,
+        "S is recorded before W"
+    );
+    let trust = h.account("1020");
+    let source = h.posted[first + 1].0;
+    let rows = rows_of(&h, &ordered);
+    for (law, naive_law, expected) in [
+        (Law::Libr, naive::TraceLaw::Libr, 50_000),
+        (Law::Fifo, naive::TraceLaw::Fifo, 50_000),
+        (Law::Lifo, naive::TraceLaw::Lifo, 0),
+        (Law::ProRata, naive::TraceLaw::ProRata, 30_000),
+    ] {
+        let value = traced(&h, law, trust, source, None);
+        assert_eq!(value, expected, "{}", law.name());
+        let (naive_value, _) = naive::trace(&rows, "1020", 1, day(2026, 3, 31), naive_law);
+        assert_eq!(value, naive_value, "{} vs the oracle", law.name());
+    }
+    // WithdrawalsFirst puts W before S on that day: every law then traces
+    // the whole deposit.
+    for law in [Law::Libr, Law::Fifo, Law::Lifo, Law::ProRata] {
+        let params = Params::defaults(law.id())
+            .unwrap()
+            .set("intraday_order", 2)
+            .unwrap();
+        assert_eq!(
+            traced(&h, law, trust, source, Some(params)),
+            50_000,
+            "{}",
+            law.name()
+        );
+    }
+
+    // An overdraft on bank B: 100.00 overdrawn, then a 500.00 deposit, then
+    // a 1,000.00 deposit and a 700.00 withdrawal. Only 400.00 of the first
+    // deposit ever sat in the account.
+    let overdrawn = vec![
+        Spec::simple(day(2026, 3, 3), "7000", "1010", 10_000),
+        Spec::simple(day(2026, 3, 10), "1010", "4000", 50_000),
+        Spec::simple(day(2026, 3, 11), "1010", "4000", 100_000),
+        Spec::simple(day(2026, 3, 12), "6000", "1010", 70_000),
+    ];
+    let first = h.posted.len();
+    for spec in &overdrawn {
+        h.post(spec);
+    }
+    let bank = h.account("1010");
+    let source = h.posted[first + 1].0;
+    let rows = rows_of(&h, &overdrawn);
+    // After the deposit: 400 tainted. The 1,000 deposit is clean. The 700
+    // withdrawal: FIFO takes the 400 tainted then 300 clean; LIFO takes 700
+    // clean; pro rata splits 700 by 400:1000 (200 tainted); LIBR's lowest
+    // balance after the deposit is 400 + 1000 - 700 = 700, so it keeps 400.
+    for (law, naive_law, expected) in [
+        (Law::Libr, naive::TraceLaw::Libr, 40_000),
+        (Law::Fifo, naive::TraceLaw::Fifo, 0),
+        (Law::Lifo, naive::TraceLaw::Lifo, 40_000),
+        (Law::ProRata, naive::TraceLaw::ProRata, 20_000),
+    ] {
+        let value = traced(&h, law, bank, source, None);
+        assert_eq!(value, expected, "{}", law.name());
+        let (naive_value, _) = naive::trace(&rows, "1010", 1, day(2026, 3, 31), naive_law);
+        assert_eq!(value, naive_value, "{} vs the oracle", law.name());
+    }
+}
+
 #[test]
 fn the_catalog_builds_every_registered_procedure_and_refuses_what_it_cannot() {
     let (h, _) = posted_corpus();

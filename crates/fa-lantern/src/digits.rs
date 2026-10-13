@@ -144,7 +144,19 @@ impl Procedure for FirstDigit {
             )]);
         }
         let mad = mad_1e9(&counts)?;
-        let chi = chi_square_1e6(&counts)?;
+        // The chi-square rides in the narrative only; above the population
+        // its exact i128 arithmetic admits, the scored MAD still stands and
+        // the narrative says the chi-square was not computed.
+        let chi = if population <= MAX_POPULATION {
+            format!(
+                "chi-square {}e-6 with 8 degrees of freedom",
+                chi_square_1e6(&counts)?
+            )
+        } else {
+            format!(
+                "chi-square not computed above {MAX_POPULATION} legs (its exact arithmetic bound); MAD is the scored statistic"
+            )
+        };
         let severity = if mad <= close {
             Severity::Info
         } else if mad <= acceptable {
@@ -165,7 +177,7 @@ impl Procedure for FirstDigit {
             },
             Vec::new(),
             format!(
-                "first-digit counts {counts:?} over {population} legs; MAD {mad}e-9 (close ≤ {close}e-9, acceptable ≤ {acceptable}e-9, marginal ≤ {marginal}e-9); chi-square {chi}e-6 with 8 degrees of freedom"
+                "first-digit counts {counts:?} over {population} legs; MAD {mad}e-9 (close ≤ {close}e-9, acceptable ≤ {acceptable}e-9, marginal ≤ {marginal}e-9); {chi}"
             ),
         )])
     }

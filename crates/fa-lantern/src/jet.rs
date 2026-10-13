@@ -10,7 +10,9 @@ use fa_model::limits::MAX_DESCRIPTION_BYTES;
 use fa_time::{PeriodState, Weekday};
 use fgdb_types::VId;
 
-use crate::{Cite, Finding, LanternError, Params, Procedure, Severity, Snapshot, Statistic, Work};
+use crate::{
+    Cite, Finding, LanternError, MAX_CITES, Params, Procedure, Severity, Snapshot, Statistic, Work,
+};
 
 pub(crate) fn finding(
     procedure: &str,
@@ -407,6 +409,7 @@ impl Procedure for ThinDescriptions {
         let min = self.params.get_u32("min_chars")? as usize;
         let mut population = 0u64;
         let mut hits = Vec::new();
+        let mut unreadable: Vec<VId> = Vec::new();
         for e in snapshot.entries.iter().filter(|e| e.posts()) {
             work.entry();
             let Ok(text) = e
@@ -415,6 +418,7 @@ impl Procedure for ThinDescriptions {
                 .description
                 .open(&book.seal_key, MAX_DESCRIPTION_BYTES)
             else {
+                unreadable.push(e.vid);
                 continue;
             };
             population += 1;
@@ -423,7 +427,7 @@ impl Procedure for ThinDescriptions {
                 hits.push((e.vid, chars));
             }
         }
-        Ok(hits
+        let mut out: Vec<Finding> = hits
             .into_iter()
             .map(|(vid, chars)| {
                 finding(
@@ -434,6 +438,23 @@ impl Procedure for ThinDescriptions {
                     format!("description has {chars} character(s); fewer than {min}"),
                 )
             })
-            .collect())
+            .collect();
+        // Unreadable descriptions (erased, or sealed under another key) are
+        // counted and reported as such: never thin, never silently skipped.
+        if !unreadable.is_empty() {
+            let n = unreadable.len() as u64;
+            unreadable.sort_unstable();
+            unreadable.truncate(MAX_CITES);
+            out.push(finding(
+                Self::ID,
+                Severity::Info,
+                Statistic::count("unreadable_descriptions", n, population + n),
+                unreadable.into_iter().map(Cite::Entry).collect(),
+                format!(
+                    "{n} description(s) could not be opened under the book's seal key; counted as unreadable, not thin"
+                ),
+            ));
+        }
+        Ok(out)
     }
 }

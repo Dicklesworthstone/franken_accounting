@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 
 use fa_journal::genesis::BookContext;
 use fa_model::{AccountType, EntryClass};
+use fa_money::{UnitId, UnitKind};
 use fgdb_types::VId;
 
 use crate::jet::finding;
@@ -74,7 +75,7 @@ impl Procedure for RoundTrips {
     fn run(
         &self,
         snapshot: &Snapshot,
-        _book: &BookContext,
+        book: &BookContext,
         work: &mut Work,
     ) -> Result<Vec<Finding>, LanternError> {
         let window_days = days(&self.params, "window_days")?;
@@ -135,7 +136,7 @@ impl Procedure for RoundTrips {
                         Statistic {
                             name: "round_trip_mantissa".into(),
                             value: o.mantissa,
-                            scale: 0,
+                            scale: crate::unit_scale(book, *unit_id)?,
                             population: candidates,
                         },
                         vec![
@@ -186,12 +187,16 @@ impl Structuring {
     }
 }
 
-/// The registered bounds of one structuring run.
+/// The registered bounds of one structuring run. A reporting threshold is
+/// an amount in one currency, so a run examines that currency's transfers
+/// only (`currency_iso4217`); the same mantissa in another unit is another
+/// amount (10,000.00 USD, JPY 1,000,000 and 0.01 BTC are not one threshold).
 struct Rule {
     threshold: i128,
     floor: i128,
     window_days: i32,
     min_count: usize,
+    currency: u16,
 }
 
 impl Rule {
@@ -202,7 +207,21 @@ impl Rule {
             window_days: days(params, "window_days")?,
             min_count: usize::try_from(params.get_u32("min_count")?)
                 .map_err(|_| LanternError::Overflow("min_count"))?,
+            currency: u16::try_from(params.get_u32("currency_iso4217")?).map_err(|_| {
+                LanternError::Parameter {
+                    procedure: Structuring::ID.into(),
+                    name: "currency_iso4217".into(),
+                    message: "an ISO 4217 numeric currency code (1..=999)".into(),
+                }
+            })?,
         };
+        if rule.currency == 0 || rule.currency > 999 {
+            return Err(LanternError::Parameter {
+                procedure: Structuring::ID.into(),
+                name: "currency_iso4217".into(),
+                message: "an ISO 4217 numeric currency code (1..=999)".into(),
+            });
+        }
         if rule.threshold <= 0 || rule.floor < 0 || rule.floor >= rule.threshold {
             return Err(LanternError::Parameter {
                 procedure: Structuring::ID.into(),
@@ -227,6 +246,7 @@ impl Rule {
         chain: &[&FlowLeg],
         key: (VId, VId, u32),
         population: u64,
+        scale: u8,
     ) -> Result<(), LanternError> {
         let (from, to, unit_id) = key;
         let (Some(first), Some(last)) = (chain.first(), chain.last()) else {
@@ -262,12 +282,13 @@ impl Rule {
             Statistic {
                 name: "chain_mantissa".into(),
                 value: sum,
-                scale: 0,
+                scale,
                 population,
             },
             cites,
             format!(
-                "unit {unit_id}: {} transfer(s) each in {}..{} (mantissas) within {span} day(s) summing to {sum}",
+                "unit {unit_id} (ISO 4217 {}): {} transfer(s) each in {}..{} (mantissas) within {span} day(s) summing to {sum}",
+                self.currency,
                 chain.len(),
                 self.floor,
                 self.threshold
@@ -290,7 +311,7 @@ impl Procedure for Structuring {
     fn run(
         &self,
         snapshot: &Snapshot,
-        _book: &BookContext,
+        book: &BookContext,
         work: &mut Work,
     ) -> Result<Vec<Finding>, LanternError> {
         let rule = Rule::from(&self.params)?;
@@ -299,7 +320,12 @@ impl Procedure for Structuring {
         let mut candidates = 0u64;
         for l in &legs {
             work.leg();
-            if l.class == EntryClass::REVERSAL
+            let in_currency = matches!(
+                book.units.get(UnitId(l.unit_id)).map(|u| u.kind),
+                Some(UnitKind::Currency { iso4217 }) if iso4217 == rule.currency
+            );
+            if !in_currency
+                || l.class == EntryClass::REVERSAL
                 || l.from == l.to
                 || l.mantissa < rule.floor
                 || l.mantissa >= rule.threshold
@@ -311,6 +337,7 @@ impl Procedure for Structuring {
         }
         let mut out = Vec::new();
         for (key, mut group) in groups {
+            let scale = crate::unit_scale(book, key.2)?;
             group.sort_by_key(|l| (l.effective_date, l.entry));
             work.compare(group.len() as u64);
             let mut chain: Vec<&FlowLeg> = Vec::new();
@@ -318,12 +345,12 @@ impl Procedure for Structuring {
                 if let Some(last) = chain.last()
                     && l.effective_date.0 - last.effective_date.0 > rule.window_days
                 {
-                    rule.report(&mut out, &chain, key, candidates)?;
+                    rule.report(&mut out, &chain, key, candidates, scale)?;
                     chain.clear();
                 }
                 chain.push(l);
             }
-            rule.report(&mut out, &chain, key, candidates)?;
+            rule.report(&mut out, &chain, key, candidates, scale)?;
         }
         Ok(out)
     }

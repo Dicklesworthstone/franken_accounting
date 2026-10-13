@@ -127,6 +127,18 @@ impl fmt::Display for LanternError {
 
 impl core::error::Error for LanternError {}
 
+/// The registered decimal places of `unit`: a statistic that is an amount
+/// carries its unit's scale, never a bare mantissa at scale 0.
+pub(crate) fn unit_scale(
+    book: &fa_journal::genesis::BookContext,
+    unit: u32,
+) -> Result<u8, LanternError> {
+    book.units
+        .get(fa_money::UnitId(unit))
+        .map(|u| u.scale)
+        .ok_or_else(|| KernelError::Corrupt("a leg names an unregistered unit".into()).into())
+}
+
 impl From<KernelError> for LanternError {
     fn from(e: KernelError) -> Self {
         Self::Kernel(e)
@@ -737,6 +749,9 @@ mod tests {
             include_str!("cutoff.rs"),
             include_str!("aging.rs"),
             include_str!("witness.rs"),
+            include_str!("graph.rs"),
+            include_str!("trace.rs"),
+            include_str!("catalog.rs"),
         ];
         let forbidden = [
             "std::time",

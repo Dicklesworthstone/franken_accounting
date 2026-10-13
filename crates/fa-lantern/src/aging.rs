@@ -68,7 +68,7 @@ impl Procedure for OpenItemsAging {
     fn run(
         &self,
         snapshot: &Snapshot,
-        _book: &BookContext,
+        book: &BookContext,
         work: &mut Work,
     ) -> Result<Vec<Finding>, LanternError> {
         let edges = [
@@ -144,7 +144,7 @@ impl Procedure for OpenItemsAging {
                 Statistic {
                     name: format!("open_past_{}_days", edges[2]),
                     value: past,
-                    scale: 0,
+                    scale: crate::unit_scale(book, unit_id)?,
                     population,
                 },
                 cites,
