@@ -18,7 +18,9 @@
 //! - a verified balance answers the recipient's independently specified
 //!   account, unit, cutoff and optional exact amounts ([`verify_balance_for`]);
 //! - a document's bytes and kind produce the public `doc_commit` an
-//!   entry's evidence cites ([`document::doc_commit`]).
+//!   entry's evidence cites ([`document::doc_commit`]);
+//! - requested redacted chunks belong to the document cited, with the
+//!   requested role, by an included entry ([`verify_evidence_view_for`]).
 //!
 //! What it does not prove (plan §13.1): that an entry reflects what
 //! actually happened, that a checkpoint was signed by anyone (signatures and
@@ -42,6 +44,7 @@ pub mod codec;
 pub mod disclosure;
 pub mod document;
 pub mod envelope;
+pub mod evidence;
 pub mod migration_balance;
 pub mod proof;
 pub mod state;
@@ -53,6 +56,10 @@ pub use balance_request::{
 };
 pub use codec::DecodeError;
 pub use envelope::{LeafEnvelope, RecordError};
+pub use evidence::{
+    EvidenceCitation, EvidenceError, EvidenceExpectation, VerifiedEvidenceView,
+    verify_evidence_view_for,
+};
 pub use proof::{
     Checkpoint, Consistency, Inclusion, Prefix, RecordCheck, VerifyError, verify_consistency,
     verify_inclusion, verify_prefix,
