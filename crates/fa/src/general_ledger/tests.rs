@@ -207,7 +207,7 @@ fn corrupted_stock_duplicate_citations_and_out_of_scope_movements_are_not_render
 }
 
 #[test]
-fn same_entry_same_day_legs_have_a_total_order_independent_of_input_storage_order() {
+fn same_day_legs_have_a_total_order_independent_of_input_storage_order() {
     let mut h = Harness::new();
     h.post(10, b"one", h.usd, 20);
     h.post(10, b"two", h.usd, -5);
@@ -241,3 +241,5 @@ fn byte_layout_is_little_endian_length_prefixed_and_keeps_large_signed_values() 
     assert_eq!(&out.0[..7], &[3, 0, 0, 0, 0xe2, 0x82, 0xac]);
     assert_eq!(i128::from_le_bytes(out.0[7..].try_into().unwrap()), -((1i128 << 100) + 17));
 }
+
+mod replay;

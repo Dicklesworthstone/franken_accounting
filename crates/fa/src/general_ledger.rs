@@ -11,6 +11,9 @@
 //! not claims about the balance actually known on each movement's recorded day.
 //! Entry digests/ordinals are drilldown citations. No protected text is opened.
 
+mod workpaper;
+pub use workpaper::{CertifiedGeneralLedger, GENERAL_LEDGER_WORKPAPER_FORMAT};
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use asupersync::fs::Vfs;
