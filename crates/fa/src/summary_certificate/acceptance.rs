@@ -349,12 +349,26 @@ fn period_stock_activity_and_inclusive_dates_keep_their_exact_source_selector() 
         ),
         (TrialBalanceSelection::AsOf(day("2026-03-14")), 10),
         (TrialBalanceSelection::AsOf(day("2026-03-15")), 30),
-        (TrialBalanceSelection::Periods(Vec::new()), 30),
     ] {
         let certified = h.certify(&h.request(SummaryScope::AllRoots, selection));
         assert_eq!(certified.report.unit_totals[&h.usd.0], (expected, expected));
         assert_eq!(h.replay(&certified.certificate), certified.report);
     }
+    // An empty period list selects nothing: it is refused like every trial
+    // balance selection, never read as "every period".
+    assert!(
+        h.book
+            .certify_summary_trial_balance(
+                &h.cx(),
+                PRINCIPAL,
+                &cap(&["read", "produce"]),
+                &h.request(
+                    SummaryScope::AllRoots,
+                    TrialBalanceSelection::Periods(Vec::new())
+                ),
+            )
+            .is_err()
+    );
 }
 
 #[test]
@@ -398,13 +412,14 @@ fn later_relevant_postings_change_freshness_without_rewriting_the_historical_res
     ));
     h.post("retroactive", "2026-03-14", h.usd, 50, false);
     let at = h.head();
-    let SummaryCertificateStatus::Changed {
-        checked_at,
-        current,
-    } = h.status(&certified.certificate)
-    else {
-        panic!("the same effective selector includes the newly recorded posting");
-    };
+    let (checked_at, current) = match h.status(&certified.certificate) {
+        SummaryCertificateStatus::Changed {
+            checked_at,
+            current,
+        } => Some((checked_at, current)),
+        _ => None,
+    }
+    .expect("the same effective selector includes the newly recorded posting");
     assert_eq!(checked_at, at);
     assert_eq!(current.source.known_at, at);
     assert_eq!(current.unit_totals[&h.usd.0], (150, 150));
@@ -421,10 +436,11 @@ fn a_chart_only_change_is_not_current_merely_because_money_totals_still_match() 
     let partial = h.certify(&h.request(h.selected(&["assets", "equity"]), march()));
     h.install_empty_root();
     for certified in [all, partial] {
-        let SummaryCertificateStatus::Changed { current, .. } = h.status(&certified.certificate)
-        else {
-            panic!("new unposted chart membership must change the exact report");
-        };
+        let current = match h.status(&certified.certificate) {
+            SummaryCertificateStatus::Changed { current, .. } => Some(current),
+            _ => None,
+        }
+        .expect("new unposted chart membership must change the exact report");
         assert_eq!(current.unit_totals, certified.report.unit_totals);
         assert_eq!(
             current.pending_unit_totals,

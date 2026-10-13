@@ -283,9 +283,11 @@ mod tests {
         ]))
         .ok()
         .unwrap();
-        let Mode::Produce(request) = request.mode else {
-            panic!("wrong mode");
-        };
+        let request = match request.mode {
+            Mode::Produce(request) => Some(request),
+            _ => None,
+        }
+        .expect("produce mode");
         assert_eq!(request.before, CommitSeq(20));
         assert_eq!(request.after, None);
         assert_eq!(request.selection.comparative, vec!["FY2025-P03"]);

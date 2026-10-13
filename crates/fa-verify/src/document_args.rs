@@ -187,8 +187,9 @@ mod tests {
 
     #[test]
     fn recipient_indexes_are_exact_bounded_and_never_sorted_or_deduplicated() {
-        let valid =
-            indexes("0,4,18446744073709551615").unwrap_or_else(|error| panic!("{}", error.message));
+        let valid = indexes("0,4,18446744073709551615")
+            .map_err(|error| error.message)
+            .expect("valid indexes");
         assert_eq!(valid, vec![0, 4, u64::MAX]);
         for value in [
             "",
@@ -224,7 +225,8 @@ mod tests {
     #[test]
     fn missing_duplicate_and_foreign_options_refuse_before_any_file_observation() {
         let valid = parse(&args(&["--chunks", "0,4", "--json"]))
-            .unwrap_or_else(|error| panic!("{}", error.message));
+            .map_err(|error| error.message)
+            .expect("valid request");
         assert_eq!(valid.indexes, vec![0, 4]);
         for extra in [
             vec![],

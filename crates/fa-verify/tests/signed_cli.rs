@@ -511,7 +511,7 @@ fn ambiguous_and_inapplicable_flags_refuse_before_file_io() {
             u,
             "--json",
         ],
-        vec!["balance", "--proof", "--json"],
+        vec!["balance", "--proof", u, "--json"],
         vec!["prefix", "--proof", "", "--checkpoint", file, u, "--json"],
         vec!["state", file, u, "--json"],
         vec!["other", "--proof", file, "--checkpoint", file, u, "--json"],

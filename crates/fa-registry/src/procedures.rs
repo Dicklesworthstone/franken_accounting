@@ -427,6 +427,9 @@ meaning = "power of ten"
             "family.name",
         );
         // Version zero.
-        refused(&MINIMAL.replace("version = 1", "version = 0"), "1..=65535");
+        refused(
+            &MINIMAL.replace("\nversion = 1", "\nversion = 0"),
+            "1..=65535",
+        );
     }
 }

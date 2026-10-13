@@ -6133,7 +6133,9 @@ fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ));
             }
             let rows = fa_lantern::catalog::registered().map_err(lantern_usage)?;
-            for row in &rows {
+            // Human mode lists one procedure per line; robot mode carries the
+            // same rows in the event alone (stdout is one JSON object a line).
+            for row in rows.iter().filter(|_| !out.json) {
                 out.line(format!(
                     "{} v{} {} {}",
                     row.id,

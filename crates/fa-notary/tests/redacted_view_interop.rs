@@ -130,9 +130,12 @@ fn withheld_hash_and_final_disclosure_corruption_are_rejected() {
     let doc = document(8193, 1);
     let original = view_for(&doc, &[0, 2]);
     let mut withheld = original.clone();
-    match &mut withheld.chunks[1] {
-        ViewChunk::Withheld(digest) => digest[0] ^= 1,
-        _ => panic!("chunk one was withheld"),
+    assert!(
+        matches!(withheld.chunks[1], ViewChunk::Withheld(_)),
+        "chunk one was withheld"
+    );
+    if let ViewChunk::Withheld(digest) = &mut withheld.chunks[1] {
+        digest[0] ^= 1;
     }
     let bytes = withheld.canonical_bytes().unwrap();
     assert_eq!(
@@ -140,9 +143,12 @@ fn withheld_hash_and_final_disclosure_corruption_are_rejected() {
         Err(ViewError::Commitment)
     );
     let mut final_chunk = original;
-    match &mut final_chunk.chunks[2] {
-        ViewChunk::Disclosed(bytes) => bytes.push(0),
-        _ => panic!("final chunk was disclosed"),
+    assert!(
+        matches!(final_chunk.chunks[2], ViewChunk::Disclosed(_)),
+        "final chunk was disclosed"
+    );
+    if let ViewChunk::Disclosed(bytes) = &mut final_chunk.chunks[2] {
+        bytes.push(0);
     }
     let bytes = final_chunk.canonical_bytes().unwrap();
     assert!(matches!(

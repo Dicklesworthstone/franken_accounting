@@ -65,7 +65,8 @@ impl BalanceArgs {
             }
             "--expect-debits" => set(&mut self.debits, decimal(value, name, false)?, name)?,
             "--expect-credits" => set(&mut self.credits, decimal(value, name, false)?, name)?,
-            _ => unreachable!("recognized expectation option"),
+            // Not an expectation option: not consumed here.
+            _ => return Ok(false),
         }
         Ok(true)
     }
@@ -175,7 +176,8 @@ mod tests {
     #[test]
     fn boundaries_are_exact_and_none_is_an_explicit_value() {
         let parsed = parse(&FLAGS, true)
-            .unwrap_or_else(|failure| panic!("{}", failure.message))
+            .map_err(|failure| failure.message)
+            .expect("accepted")
             .unwrap();
         assert_eq!(parsed.scope.account, 0x30);
         assert_eq!(parsed.scope.effective_through, None);
@@ -189,7 +191,8 @@ mod tests {
             ("--expect-credits", "0"),
         ];
         let parsed = parse(&pairs, true)
-            .unwrap_or_else(|failure| panic!("{}", failure.message))
+            .map_err(|failure| failure.message)
+            .expect("accepted")
             .unwrap();
         assert_eq!(parsed.scope.account, u128::MAX);
         assert_eq!(parsed.scope.unit, u32::MAX);
@@ -257,19 +260,22 @@ mod tests {
         assert!(parse(&FLAGS, false).is_err());
         assert!(
             parse(&[], false)
-                .unwrap_or_else(|failure| panic!("{}", failure.message))
+                .map_err(|failure| failure.message)
+                .expect("accepted")
                 .is_none()
         );
         let mut parsed = BalanceArgs::default();
         assert!(
             !parsed
                 .consume(&["--proof".into(), "file".into()], 0)
-                .unwrap_or_else(|failure| panic!("{}", failure.message))
+                .map_err(|failure| failure.message)
+                .expect("accepted")
         );
         assert!(
             !parsed
                 .consume(&["--expect-unknown".into()], 0)
-                .unwrap_or_else(|failure| panic!("{}", failure.message))
+                .map_err(|failure| failure.message)
+                .expect("accepted")
         );
     }
 }

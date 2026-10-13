@@ -46,10 +46,54 @@ pub fn handles(args: &[OsString]) -> bool {
     }
     match first {
         Some(f) if LIBRARY_COMMANDS.contains(&f) => true,
-        Some(f) if SHARED_COMMANDS.contains(&f) => !has("--proof"),
+        // A shared command is the library's only when it names its proof
+        // positionally; `--proof` marks the raw grammar, and anything else
+        // (including a raw-grammar usage error) is the raw parser's to judge.
+        Some(f) if SHARED_COMMANDS.contains(&f) => !has("--proof") && has_positional(&args[1..]),
         Some(f) => !f.starts_with("--"),
         None => false,
     }
+}
+
+/// Flags of either grammar that take a value.
+const VALUE_FLAGS: [&str; 18] = [
+    "--proof",
+    "--checkpoint",
+    "--next-checkpoint",
+    "--trusted",
+    "--claimed",
+    "--key",
+    "--account",
+    "--from",
+    "--to",
+    "--prefix",
+    "--kind",
+    "--expect",
+    "--receipt",
+    "--expect-account",
+    "--expect-unit",
+    "--expect-through",
+    "--expect-debits",
+    "--expect-credits",
+];
+
+/// Whether `rest` (the arguments after the command) holds an argument that
+/// is neither a flag nor a flag's value.
+fn has_positional(rest: &[OsString]) -> bool {
+    let mut skip_value = false;
+    for argument in rest {
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
+        match argument.to_str() {
+            Some(flag) if flag.starts_with("--") => {
+                skip_value = !flag.contains('=') && VALUE_FLAGS.contains(&flag);
+            }
+            _ => return true,
+        }
+    }
+    false
 }
 
 /// The library's usage text, appended to this binary's `--help`.

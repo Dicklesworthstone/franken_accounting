@@ -31,8 +31,12 @@ fn directory(name: &str) -> PathBuf {
             std::env::temp_dir().join(format!("fa-verify-{}-{name}-{index}", std::process::id()));
         match fs::create_dir(&path) {
             Ok(()) => return path,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => panic!("create {}: {error}", path.display()),
+            Err(error) => assert_eq!(
+                error.kind(),
+                std::io::ErrorKind::AlreadyExists,
+                "create {}: {error}",
+                path.display()
+            ),
         }
     }
 }
@@ -150,7 +154,8 @@ fn every_supported_proof_verifies_in_a_separate_process() {
                 assert!(stdout.contains("\"envelopes\":4"));
                 assert!(stdout.contains("\"record_check\":\"not_supplied\""));
             }
-            "balance" => {
+            other => {
+                assert_eq!(other, "balance");
                 assert!(stdout.contains("\"account\":\"00000000000000000000000000000030\""));
                 assert!(stdout.contains("\"unit\":1"));
                 assert!(stdout.contains("\"debits_mantissa\":\"0\""));
@@ -158,7 +163,6 @@ fn every_supported_proof_verifies_in_a_separate_process() {
                 assert!(stdout.contains("\"effective_through_day\":null"));
                 assert!(stdout.contains("\"contributing_leaves\":2"));
             }
-            _ => unreachable!(),
         }
     }
 }

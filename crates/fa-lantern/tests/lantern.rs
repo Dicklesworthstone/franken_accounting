@@ -504,9 +504,11 @@ fn corpus() -> Corpus {
     s.push(cut);
     // 12: weekend (Saturday).
     s.push(Spec::simple(day(2026, 3, 28), "7000", "1000", 7330));
-    // 13: self-approved; 14: reviewed (the control).
-    let mut own = Spec::simple(day(2026, 3, 10), "6000", "1000", 30_000);
-    own.self_approve = true;
+    // 13: an entry its preparer would have approved. The kernel refuses a
+    // self-approval outright (SoD on every attached approval), so a
+    // kernel-posted book never holds one and jet.self_approved finds none
+    // here; the detector is for imported history. 14: reviewed (the control).
+    let own = Spec::simple(day(2026, 3, 10), "6000", "1000", 30_000);
     s.push(own);
     let mut reviewed = Spec::simple(day(2026, 3, 11), "6000", "1000", 31_000);
     reviewed.review = true;
@@ -546,7 +548,7 @@ fn corpus() -> Corpus {
         weekend: [0, 12].into(),
         period_end: [3].into(),
         post_closing: [15].into(),
-        self_approved: [13].into(),
+        self_approved: BTreeSet::new(),
         thin: [2].into(),
         same_same_same: vec![vec![7, 8]],
         same_same_different: vec![(7, 9), (8, 9)],
@@ -642,13 +644,9 @@ fn procedures_find_the_planted_anomalies_and_cite_only_resolving_handles() {
     let r = h.run(&SelfApproved::new().unwrap());
     h.assert_cites_resolve(&r);
     calibrate("jet.self_approved", &c.self_approved, &h.cited_entries(&r));
-    assert_eq!(r.findings[0].severity, Severity::High);
     assert!(
-        r.findings[0]
-            .cites
-            .iter()
-            .any(|c| matches!(c, Cite::Approval(_))),
-        "the self-approval is cited by handle"
+        r.findings.is_empty(),
+        "the kernel admits no self-approval to find"
     );
 
     let r = h.run(&ThinDescriptions::new().unwrap());

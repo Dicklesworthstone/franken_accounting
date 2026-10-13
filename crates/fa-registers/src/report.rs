@@ -381,7 +381,7 @@ mod tests {
                         row.push(std::mem::take(&mut field));
                         rows.push(std::mem::take(&mut row));
                     }
-                    '\n' => panic!("bare record newline"),
+                    '\n' => assert_eq!(character, '\r', "bare record newline"),
                     other => field.push(other),
                 }
             }

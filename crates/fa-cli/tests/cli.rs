@@ -6063,8 +6063,10 @@ fn directory_reopen_refuses_changed_or_missing_unit_facts_through_facade_and_cli
                         damaged.pop();
                     }
                     "major" => damaged[4] = 2,
-                    "minor" => damaged[6] = 1,
-                    _ => unreachable!(),
+                    other => {
+                        assert_eq!(other, "minor");
+                        damaged[6] = 1;
+                    }
                 }
                 batch.set_vertex_property(
                     vid,

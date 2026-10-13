@@ -202,13 +202,14 @@ mod tests {
         // legs) deviates by nothing but the table's own rounding.
         let counts: [u64; 9] = core::array::from_fn(|d| BENFORD_1E9[d] as u64);
         assert_eq!(mad_1e9(&counts).unwrap(), 0);
-        // A uniform population is far from Benford: MAD ≈ 0.0684.
+        // A uniform population is far from Benford: MAD = Σ|1/9 − P_d| / 9
+        // ≈ 0.0597 (0.53745 / 9), exactly 59_717_035e-9 in this arithmetic.
         let uniform = [100u64; 9];
         let mad = mad_1e9(&uniform).unwrap();
-        assert!((68_000_000..69_000_000).contains(&mad), "{mad}");
+        assert_eq!(mad, 59_717_035);
         let chi = chi_square_1e6(&uniform).unwrap();
-        // χ² for 900 uniform legs ≈ 155.6.
-        assert!((155_000_000..156_000_000).contains(&chi), "{chi}");
+        // χ² for 900 uniform legs = Σ (100 − 900·P_d)² / (900·P_d) ≈ 361.53.
+        assert_eq!(chi, 361_528_463);
         let mut too_many = [0u64; 9];
         too_many[0] = MAX_POPULATION + 1;
         assert!(matches!(

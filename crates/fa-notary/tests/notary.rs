@@ -1716,19 +1716,19 @@ fn stage_rent_chunk(
         .expect("the chunk stages");
 }
 
-/// fa-e00 interim under ruling 3675 F3 (WhiteCreek 3897): a finalized,
+/// fa-e00 (ruling 3675 F3, WhiteCreek 3897; the v2 resolution): a finalized,
 /// non-sole FullDetail run's detail dated before its opening date is
-/// summarized by the Opening chunk, so no fold counts it — and no balance
-/// proof may either, since `fa-verify` cannot tell it from a counting
-/// chunk. A book going live 2026-01-01 imports a June 2025 rent payment as
-/// detail and the same balances as its Opening chunk. A planted state
-/// projection (Finalized, with no Finalize record) authorizes no proof:
-/// only the journal's leaves decide (WhiteCreek 3905). After Finalize the
-/// accumulator holds both chunks and the register counts the Opening chunk
-/// only; cash and rent refuse FA-REF-133 (the detail is dated before its
-/// run's Open record), while utilities proves and verifies.
+/// summarized by the Opening chunk, so no fold counts it. A book going live
+/// 2026-01-01 imports a June 2025 rent payment as detail and the same
+/// balances as its Opening chunk. A planted state projection (Finalized,
+/// with no Finalize record) authorizes nothing: the v2 proof reads the run
+/// lifecycle from the journal's leaves alone (WhiteCreek 3905) and proves
+/// the staged chunk excluded. After Finalize the accumulator holds both
+/// chunks and the register counts the Opening chunk only; the v2 proofs of
+/// cash and rent equal that register (the June detail is never counted),
+/// the v1 producer still refuses FA-REF-133, and utilities proves too.
 #[test]
-fn finalized_full_detail_history_before_the_opening_date_never_proves() {
+fn finalized_full_detail_history_before_the_opening_date_never_counts() {
     let opening = DateDay::from_ymd(2026, 1, 1).unwrap();
     let mut h = harness_with(Some(opening));
     let ctx = h.ctx();
@@ -1806,12 +1806,31 @@ fn finalized_full_detail_history_before_the_opening_date_never_proves() {
     };
     h.write_raw(run_state(0, 1));
     let drifted = h.checkpoint();
+    let drifted_trusted = outsider_checkpoint(&drifted);
+    let drifted_register = fa_registers::balance_as_of(
+        &h.db,
+        &h.book,
+        DateDay::from_ymd(2026, 12, 31).unwrap(),
+        Some(drifted.state.through_seq),
+    )
+    .expect("register fold");
     for account in [h.cash, h.rent] {
-        let r = prove_balance(&h.db, &h.book, &drifted.state, account, h.usd.0, None)
+        // fa-e00: the proof is v2, whose run lifecycle comes from the
+        // journal's leaves alone; the planted projection counts nothing.
+        let proof = prove_balance(&h.db, &h.book, &drifted.state, account, h.usd.0, None)
             .unwrap()
-            .expect_err("a state projection authorizes no proof");
-        assert_eq!(r.code, code::MIGRATION_STAGED, "{r}");
-        assert!(r.message.contains("no Finalize record"), "{r}");
+            .expect("the staged chunk's account proves in v2");
+        let report = fa_verify::verify_balance(&proof, &drifted_trusted).expect("v2 refold");
+        let expected = drifted_register
+            .rows
+            .iter()
+            .find(|r| r.account == account && r.unit_id == h.usd.0)
+            .map_or((0, 0), |r| (r.debits, r.credits));
+        assert_eq!(
+            (report.claim.debits, report.claim.credits),
+            expected,
+            "a state projection authorizes nothing: the chunk stays excluded"
+        );
     }
     h.write_raw(run_state(1, 0));
     let june = DateDay::from_ymd(2025, 6, 10).unwrap();
@@ -1873,15 +1892,28 @@ fn finalized_full_detail_history_before_the_opening_date_never_proves() {
         "the register counts the Opening chunk only"
     );
     for account in [h.cash, h.rent] {
-        let r = prove_balance(&h.db, &h.book, &active.state, account, h.usd.0, None)
+        // fa-e00: summarized history is excluded by the v2 proof exactly as
+        // the register excludes it (the Opening chunk counts, June does not);
+        // the v1 journal fold still refuses it.
+        let proof = prove_balance(&h.db, &h.book, &active.state, account, h.usd.0, None)
             .unwrap()
-            .expect_err("summarized history never proves");
+            .expect("summarized history proves excluded in v2");
+        let report = fa_verify::verify_balance(&proof, &trusted).expect("v2 refold");
+        let expected = register
+            .rows
+            .iter()
+            .find(|r| r.account == account && r.unit_id == h.usd.0)
+            .map_or((0, 0), |r| (r.debits, r.credits));
+        assert_eq!((report.claim.debits, report.claim.credits), expected);
+        let r = journal
+            .balance_proof(account, h.usd.0, None)
+            .unwrap()
+            .expect_err("the v1 producer stays conservative");
         assert_eq!(
             (r.code, r.exit),
             (code::MIGRATION_STAGED, exit::REFUSAL),
             "{r}"
         );
-        assert!(r.message.contains("before its run's opening date"), "{r}");
     }
     let utilities = prove_balance(&h.db, &h.book, &active.state, h.utilities, h.usd.0, None)
         .unwrap()

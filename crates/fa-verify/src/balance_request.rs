@@ -240,7 +240,10 @@ mod tests {
                         assert_eq!(expected, wanted.scope);
                         assert_eq!(got, actual);
                     }
-                    error => panic!("unexpected error: {error}"),
+                    error => assert!(
+                        matches!(error, BalanceExpectationError::Scope { .. }),
+                        "unexpected error: {error}"
+                    ),
                 }
             }
         }
@@ -321,7 +324,10 @@ mod tests {
                             }
                         );
                     }
-                    error => panic!("unexpected error: {error}"),
+                    error => assert!(
+                        matches!(error, BalanceExpectationError::Amounts { .. }),
+                        "unexpected error: {error}"
+                    ),
                 }
             }
         }

@@ -771,7 +771,8 @@ Exit codes: 0 verified/help; 2 usage; 5 file/output I/O; 8 verification failed."
 
         fn request() -> ViewRequest {
             parse(&args(&"ab".repeat(32), "0,2"))
-                .unwrap_or_else(|failure| panic!("{}", failure.message))
+                .map_err(|failure| failure.message)
+                .expect("the fixture is accepted")
         }
 
         #[test]
@@ -848,7 +849,8 @@ Exit codes: 0 verified/help; 2 usage; 5 file/output I/O; 8 verification failed."
                 indexes: vec![0],
             };
             let json = check(&request, &bytes, true)
-                .unwrap_or_else(|failure| panic!("{}", failure.message));
+                .map_err(|failure| failure.message)
+                .expect("the fixture is accepted");
             for field in [
                 "\"scope\":\"membership_only\"",
                 "\"verified\":true",
@@ -865,7 +867,8 @@ Exit codes: 0 verified/help; 2 usage; 5 file/output I/O; 8 verification failed."
             assert!(!json.contains(&secret_hex));
             assert!(!json.contains('\n'));
             let human = check(&request, &bytes, false)
-                .unwrap_or_else(|failure| panic!("{}", failure.message));
+                .map_err(|failure| failure.message)
+                .expect("the fixture is accepted");
             assert!(human.contains("unverified metadata"));
             assert!(!human.contains(std::str::from_utf8(secret).unwrap()));
             let mut corrupt = bytes.clone();

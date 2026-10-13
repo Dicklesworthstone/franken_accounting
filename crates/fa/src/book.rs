@@ -6049,13 +6049,25 @@ mod tests {
                 .unwrap()
                 .expect("the scratch book has a genesis");
         assert_eq!(replayed_genesis, first.scratch_seq);
-        let replayed_root =
-            with_store!(&historical.store, core => core.db.vertex_at(root_vid, first.scratch_seq))
+        // The replayed root is the source root as of the replayed prefix: the
+        // same birth, the same properties, and its current version created by
+        // the scratch commit that replays the source version's commit.
+        let source_root_at_prefix =
+            with_store!(&book.store, core => core.db.vertex_at(root_vid, historical_prefix))
                 .unwrap()
                 .unwrap();
-        assert_eq!(replayed_root.created_at, first.scratch_seq);
+        let replayed_root = with_store!(&historical.store, core => core.db.vertex(root_vid))
+            .unwrap()
+            .unwrap();
+        let mapped = historical_map
+            .pairs
+            .iter()
+            .find(|pair| pair.source_seq == source_root_at_prefix.created_at)
+            .expect("the root's version at the prefix is a replayed commit")
+            .scratch_seq;
+        assert_eq!(replayed_root.created_at, mapped);
         assert_eq!(replayed_root.birth_ordinal, original_root.birth_ordinal);
-        assert_eq!(replayed_root.props, original_root.props);
+        assert_eq!(replayed_root.props, source_root_at_prefix.props);
         assert_eq!(
             historical.fold_period(&march).unwrap().cells,
             book.fold_period(&march).unwrap().cells
@@ -6956,7 +6968,7 @@ mod tests {
         fn note(&self, op: &'static str, paths: &[&Path]) {
             self.calls
                 .lock()
-                .expect("recorder lock")
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push((op, paths.iter().map(|p| p.to_path_buf()).collect()));
         }
 
