@@ -29,6 +29,9 @@ use fgdb_types::{CommitSeq, VId};
 
 use crate::{AsyncBook, BookError, Outcome, Statement, StatementDiff, StatementDiffRequest, StatementLineChange, StatementMappingChange};
 
+mod certificate;
+pub use certificate::{CertifiedStatementTrace, StatementTraceCertificate, MAX_STATEMENT_TRACE_CERTIFICATE_BYTES};
+
 pub const OUTPUT_FORMAT: &[u8] = b"fa:statement-trace:v1";
 const SOURCE_DOMAIN: &[u8] = b"fa:statement-trace-source:v1";
 pub const MAX_STATEMENT_TRACE_PUBLICATIONS: usize = 256;
