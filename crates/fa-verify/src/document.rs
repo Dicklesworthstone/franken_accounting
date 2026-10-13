@@ -173,7 +173,7 @@ pub fn verify_chunk(
     while width > 1 {
         if (position ^ 1) < width {
             let sibling = &siblings[used];
-            root = if position % 2 == 0 {
+            root = if position.is_multiple_of(2) {
                 hash_parts(DOC_NODE_DOMAIN, &[&root, sibling])
             } else {
                 hash_parts(DOC_NODE_DOMAIN, &[sibling, &root])
@@ -197,6 +197,100 @@ pub fn verify_chunk(
         index,
         byte_length: chunk.len(),
     })
+}
+
+/// One untrusted disclosure in a recipient-requested set. Sibling sides are
+/// implicit in the canonical tree; there are no producer-selected directions.
+#[derive(Clone, Copy, Debug)]
+pub struct ChunkDisclosure<'a> {
+    pub index: u64,
+    pub bytes: &'a [u8],
+    pub siblings: &'a [[u8; 32]],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DisclosureError {
+    EmptyRequest,
+    RequestOrder,
+    Set {
+        position: usize,
+        expected: Option<u64>,
+        actual: Option<u64>,
+    },
+    Chunk {
+        index: u64,
+        error: ChunkProofError,
+    },
+}
+
+impl core::fmt::Display for DisclosureError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::EmptyRequest => write!(f, "a document disclosure request must name a chunk"),
+            Self::RequestOrder => write!(f, "requested document chunks must be strictly ascending and unique"),
+            Self::Set { position, expected, actual } => write!(
+                f,
+                "document disclosure set mismatch at {position}: requested {expected:?}, got {actual:?}",
+            ),
+            Self::Chunk { index, error } => write!(f, "document chunk {index}: {error}"),
+        }
+    }
+}
+
+impl core::error::Error for DisclosureError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Chunk { error, .. } => Some(error),
+            _ => None,
+        }
+    }
+}
+
+/// Authenticate exactly the whole chunks the recipient requested, and no
+/// others. The request and trusted commitment must be chosen independently
+/// of the incoming disclosures. An empty request is refused rather than
+/// returning a vacuous verification success. Requests must be sorted and
+/// unique; proofs must have precisely the same indexes in the same order.
+///
+/// This catches omission, duplication and substitution that individual valid
+/// membership proofs alone cannot catch. Every proof uses the same document
+/// kind, length and separately trusted commitment. No partial result escapes
+/// if any chunk fails. Work and result allocation are bounded by the explicit
+/// recipient request after the complete index set is checked.
+///
+/// Results retain the membership_only scope even when all chunks are requested:
+/// matching a request is not evidence of provenance, authorization or the
+/// completeness of a legal production or an accounting-evidence closure.
+pub fn verify_disclosure_for(
+    kind: u8,
+    document_length: u64,
+    disclosures: &[ChunkDisclosure<'_>],
+    requested_indexes: &[u64],
+    trusted_doc_commit: &[u8; 32],
+) -> Result<Vec<VerifiedChunk>, DisclosureError> {
+    if requested_indexes.is_empty() {
+        return Err(DisclosureError::EmptyRequest);
+    }
+    if requested_indexes.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(DisclosureError::RequestOrder);
+    }
+    for position in 0..requested_indexes.len().max(disclosures.len()) {
+        let expected = requested_indexes.get(position).copied();
+        let actual = disclosures.get(position).map(|chunk| chunk.index);
+        if actual != expected {
+            return Err(DisclosureError::Set { position, expected, actual });
+        }
+    }
+    disclosures.iter().map(|chunk| {
+        verify_chunk(
+            kind,
+            document_length,
+            chunk.index,
+            chunk.bytes,
+            chunk.siblings,
+            trusted_doc_commit,
+        ).map_err(|error| DisclosureError::Chunk { index: chunk.index, error })
+    }).collect()
 }
 
 #[cfg(test)]
@@ -404,5 +498,83 @@ mod chunk_proof_tests {
         assert_eq!(verify_chunk(1, u64::MAX, 0, &first, &[], &[0; 32]), Err(ChunkProofError::PathLength { expected: 52, actual: 0 }));
         let last = [0; DOC_CHUNK_BYTES - 1];
         assert_eq!(verify_chunk(1, u64::MAX, count - 1, &last, &[[0; 32]; 52], &[0; 32]), Err(ChunkProofError::Commitment));
+    }
+}
+
+#[cfg(test)]
+mod disclosure_tests {
+    use super::*;
+
+    fn check(
+        requested: &[u64],
+        supplied: &[u64],
+        corrupt_last: bool,
+    ) -> Result<Vec<VerifiedChunk>, DisclosureError> {
+        let first = vec![7; DOC_CHUNK_BYTES];
+        let mut last = vec![9; 13];
+        let mut document = first.clone();
+        document.extend_from_slice(&last);
+        let trusted = doc_commit(2, &document);
+        // Two literal sibling paths, without using a proof builder.
+        let paths = [[leaf(1, &last)], [leaf(0, &first)]];
+        if corrupt_last {
+            last[0] ^= 1;
+        }
+        let disclosures = supplied.iter().map(|&index| ChunkDisclosure {
+            index,
+            bytes: if index == 0 { &first } else { &last },
+            siblings: &paths[index as usize],
+        }).collect::<Vec<_>>();
+        verify_disclosure_for(2, document.len() as u64, &disclosures, requested, &trusted)
+    }
+
+    #[test]
+    fn an_exact_request_accepts_all_or_only_the_explicitly_requested_chunks() {
+        let all = check(&[0, 1], &[0, 1], false).unwrap();
+        assert_eq!(all.iter().map(|chunk| chunk.index).collect::<Vec<_>>(), vec![0, 1]);
+        assert_eq!(all[0].byte_length, DOC_CHUNK_BYTES);
+        assert_eq!(all[1].byte_length, 13);
+        assert!(all.iter().all(|chunk| chunk.scope == "membership_only"));
+        let selected = check(&[1], &[1], false).unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].index, 1);
+        assert_eq!(selected[0].scope, "membership_only");
+        // Withholding another chunk is permitted only when it was not requested.
+        assert_eq!(check(&[0], &[0], true).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn independently_valid_chunks_cannot_hide_omissions_duplicates_or_reordering() {
+        for (requested, supplied) in [
+            (&[0, 1][..], &[0][..]),
+            (&[0, 1][..], &[1][..]),
+            (&[0, 1][..], &[0, 0][..]),
+            (&[0, 1][..], &[1, 0][..]),
+            (&[0][..], &[0, 1][..]),
+            (&[0][..], &[1][..]),
+            (&[1][..], &[][..]),
+        ] {
+            assert!(matches!(check(requested, supplied, false), Err(DisclosureError::Set { .. })));
+        }
+        assert_eq!(
+            check(&[0, 1], &[0], false),
+            Err(DisclosureError::Set { position: 1, expected: Some(1), actual: None }),
+        );
+    }
+
+    #[test]
+    fn empty_noncanonical_and_duplicate_requests_do_not_gain_a_success_grade() {
+        assert_eq!(check(&[], &[], false), Err(DisclosureError::EmptyRequest));
+        assert_eq!(check(&[], &[0], false), Err(DisclosureError::EmptyRequest));
+        assert_eq!(check(&[0, 0], &[0, 0], false), Err(DisclosureError::RequestOrder));
+        assert_eq!(check(&[1, 0], &[1, 0], false), Err(DisclosureError::RequestOrder));
+    }
+
+    #[test]
+    fn a_bad_later_chunk_fails_the_entire_disclosure_after_a_valid_first_chunk() {
+        assert_eq!(
+            check(&[0, 1], &[0, 1], true),
+            Err(DisclosureError::Chunk { index: 1, error: ChunkProofError::Commitment }),
+        );
     }
 }
