@@ -23,6 +23,9 @@ const DIGEST_DOMAIN: &[u8] = b"fa:statement-trace-certificate-digest:v1";
 pub const MAX_STATEMENT_TRACE_CERTIFICATE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_SOURCES: usize = MAX_STATEMENT_TRACE_PUBLICATIONS + 1;
 
+#[path = "export.rs"]
+mod export;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StatementTraceCertificate {
     sources: Vec<ReportCertificate>,
