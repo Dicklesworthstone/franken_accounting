@@ -14,6 +14,9 @@
 //! aging with explicit buckets; those projections are not certified reports.
 //! Summary trial balances preserve historical chart membership, exact native
 //! units and leaf drilldown under a current whole-book read capability.
+//! [`SummaryCertificate`] composes a retained-history source certificate with
+//! the root selector and exact summary output; AsyncBook can certify and replay
+//! it under caller authority without publishing a journal object.
 //! Trial balances, balance explanations and open items can carry retained-history
 //! replay certificates binding the native reads, journal prefix, report selector,
 //! historical account metadata, registries and exact output. Certificates may be
@@ -36,6 +39,7 @@ mod certificate_store;
 pub mod proof;
 pub mod statements;
 pub mod summary;
+pub mod summary_certificate;
 pub mod upload;
 
 pub use aging::{
@@ -62,3 +66,6 @@ pub use fa_statements::{
 pub use proof::{MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest};
 pub use statements::{CertifiedStatement, StatementSelection};
 pub use summary::{SummaryGroup, SummaryRequest, SummaryScope, SummaryTrialBalance};
+pub use summary_certificate::{
+    CertifiedSummaryTrialBalance, MAX_SUMMARY_CERTIFICATE_BYTES, SummaryCertificate,
+};
