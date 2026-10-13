@@ -7,14 +7,17 @@
 //! The independent `fa-verify` implementation consumes the same wire format.
 //!
 //! This is posted-balance recomputation, not a proof of migration approval,
-//! trial-balance tie-out, or economic truth. V1 APIs remain unchanged.
+//! trial-balance tie-out, or economic truth. Automatic exports retain v1 for
+//! scopes with no migration candidates; explicit v2 generation is available.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use fa_journal::KernelError;
 use fa_journal::genesis::BookContext;
-use fa_journal::migration::{RunBody, RunMode, kind, read_run};
+use fa_journal::migration::{RunBody, RunMode, kind};
 use fa_journal::refusal::{Outcome, Refusal, exit};
+use fa_journal::rows::bytes;
+use fa_model::symbols::{label, property};
 use fa_model::{ControlKind, ControlPayload, Entry, EntryClass, EntryOrigin, Writer};
 use fa_money::Side;
 use fgdb::Database;
@@ -75,7 +78,9 @@ fn select(
             leaf.envelope.within_commit_ordinal,
         );
         if rebuilt != leaf.envelope
-            || rebuilt.canonical_bytes().map_err(fa_model::EntryError::Encode)?
+            || rebuilt
+                .canonical_bytes()
+                .map_err(fa_model::EntryError::Encode)?
                 != leaf.envelope_bytes
             || p.canonical_bytes()?.len() != leaf.proposal_len
         {
@@ -134,41 +139,66 @@ fn encode(
             tie_out_digest,
         }) = &p.control
         else {
-            return Ok(Err(refusal(format!("leaf {index} lacks migration control data"))));
+            return Ok(Err(refusal(format!(
+                "leaf {index} lacks migration control data"
+            ))));
         };
-        let EntryOrigin::Control { control_kind, spec_body_digest } = &p.origin else {
-            return Ok(Err(refusal(format!("leaf {index} lacks a control origin"))));
+        let EntryOrigin::Control {
+            control_kind,
+            spec_body_digest,
+        } = &p.origin
+        else {
+            return Ok(Err(refusal(format!(
+                "leaf {index} lacks a control origin"
+            ))));
         };
         if *control_kind != ControlKind::MIGRATION_RUN || !p.legs.is_empty() {
-            return Ok(Err(refusal(format!("leaf {index} is not a migration-run control"))));
+            return Ok(Err(refusal(format!(
+                "leaf {index} is not a migration-run control"
+            ))));
         }
         match *transition {
             kind::OPEN => {
                 let Some(open_day) = leaf.envelope.effective_day else {
-                    return Ok(Err(refusal(format!("Open leaf {index} has no opening day"))));
+                    return Ok(Err(refusal(format!(
+                        "Open leaf {index} has no opening day"
+                    ))));
                 };
                 if runs.contains_key(run_ref) || spec_body_digest != tie_out_digest {
-                    return Ok(Err(refusal(format!("duplicate or inconsistent Open at leaf {index}"))));
+                    return Ok(Err(refusal(format!(
+                        "duplicate or inconsistent Open at leaf {index}"
+                    ))));
                 }
-                runs.insert(*run_ref, Run {
-                    open_index: *index,
-                    open_day,
-                    body_digest: *tie_out_digest,
-                    terminal: None,
-                    body: None,
-                });
+                runs.insert(
+                    *run_ref,
+                    Run {
+                        open_index: *index,
+                        open_day,
+                        body_digest: *tie_out_digest,
+                        terminal: None,
+                        body: None,
+                    },
+                );
                 open_order.push((*index, *run_ref));
             }
             kind::FINALIZE | kind::ABANDON => {
                 let Some(run) = runs.get_mut(run_ref) else {
-                    return Ok(Err(refusal(format!("leaf {index} terminates an unopened run"))));
+                    return Ok(Err(refusal(format!(
+                        "leaf {index} terminates an unopened run"
+                    ))));
                 };
                 if run.terminal.is_some() {
-                    return Ok(Err(refusal(format!("leaf {index} terminates a run twice"))));
+                    return Ok(Err(refusal(format!(
+                        "leaf {index} terminates a run twice"
+                    ))));
                 }
                 run.terminal = Some((*index, *transition));
             }
-            _ => return Ok(Err(refusal(format!("leaf {index} has an unknown run transition")))),
+            _ => {
+                return Ok(Err(refusal(format!(
+                    "leaf {index} has an unknown run transition"
+                ))));
+            }
         }
     }
 
@@ -176,31 +206,50 @@ fn encode(
     for body in bodies {
         let vid = body.vid();
         if body.book_id != journal.book_id || !needed.contains(&vid) || !supplied.insert(vid) {
-            return Ok(Err(refusal("foreign, unrelated, or duplicate migration body")));
+            return Ok(Err(refusal(
+                "foreign, unrelated, or duplicate migration body",
+            )));
         }
         let Some(run) = runs.get_mut(&vid) else {
-            return Ok(Err(refusal("a selected migration run has no Open in this prefix")));
+            return Ok(Err(refusal(
+                "a selected migration run has no Open in this prefix",
+            )));
         };
         if body.digest()? != run.body_digest || body.opening_date.0 != run.open_day {
             return Ok(Err(refusal(format!(
-                "migration body does not match its Open at leaf {}", run.open_index
+                "migration body does not match its Open at leaf {}",
+                run.open_index
             ))));
         }
         run.body = Some(body);
     }
     if supplied != *needed {
-        return Ok(Err(refusal("a selected migration run's authenticated body is missing")));
+        return Ok(Err(refusal(
+            "a selected migration run's authenticated body is missing",
+        )));
     }
     let mut witnesses = Vec::new();
     for (index, vid) in open_order {
         if !needed.contains(&vid) {
             continue;
         }
-        let body = runs.get(&vid).and_then(|run| run.body)
+        let body = runs
+            .get(&vid)
+            .and_then(|run| run.body)
             .ok_or_else(|| KernelError::Corrupt("selected migration body disappeared".into()))?;
         let bytes = body.canonical_bytes()?;
         if bytes.len() > MAX_BODY_BYTES {
-            return Ok(Err(refusal("migration body exceeds the v2 proof's 8 MiB limit")));
+            return Ok(Err(refusal(
+                "migration body exceeds the v2 proof's 8 MiB limit",
+            )));
+        }
+        // Public RunBody values must be representable by the bounded wire
+        // decoder, including fields omitted by a mode's canonical encoding.
+        // Never return a proof the independent reader cannot consume.
+        if RunBody::decode(&bytes)? != *body {
+            return Ok(Err(refusal(
+                "migration body does not round-trip through its canonical format",
+            )));
         }
         witnesses.push((index, bytes));
     }
@@ -213,17 +262,25 @@ fn encode(
         }
         if let EntryOrigin::Migration { run_ref, .. } = &p.origin {
             let Some(run) = runs.get(run_ref) else {
-                return Ok(Err(refusal(format!("chunk {index} names an unopened run"))));
+                return Ok(Err(refusal(format!(
+                    "chunk {index} names an unopened run"
+                ))));
             };
             if *index <= run.open_index
                 || run.terminal.is_some_and(|(terminal, _)| *index >= terminal)
             {
-                return Ok(Err(refusal(format!("chunk {index} is outside its run's staging window"))));
+                return Ok(Err(refusal(format!(
+                    "chunk {index} is outside its run's staging window"
+                ))));
             }
             let Some(body) = run.body else {
-                return Ok(Err(refusal(format!("chunk {index} lacks an authenticated run body"))));
+                return Ok(Err(refusal(format!(
+                    "chunk {index} lacks an authenticated run body"
+                ))));
             };
-            let visible = run.terminal.is_some_and(|(_, state)| state == kind::FINALIZE)
+            let visible = run
+                .terminal
+                .is_some_and(|(_, state)| state == kind::FINALIZE)
                 && (body.mode != RunMode::FullDetail
                     || body.sole_opening_source
                     || p.effective_date >= body.opening_date);
@@ -231,7 +288,11 @@ fn encode(
                 continue;
             }
         }
-        for leg in p.legs.iter().filter(|l| l.account_ref == account && l.amount.unit.0 == unit) {
+        for leg in p
+            .legs
+            .iter()
+            .filter(|l| l.account_ref == account && l.amount.unit.0 == unit)
+        {
             if leg.amount.mantissa < 0 {
                 return Ok(Err(refusal("negative amount in a posted balance leg")));
             }
@@ -239,16 +300,24 @@ fn encode(
                 Side::Debit => &mut debits,
                 Side::Credit => &mut credits,
             };
-            *column = column.checked_add(leg.amount.mantissa)
+            *column = column
+                .checked_add(leg.amount.mantissa)
                 .ok_or_else(|| KernelError::Corrupt("a posted balance overflowed i128".into()))?;
         }
     }
     let mut w = Writer::new();
     w.bytes(BALANCE_FORMAT_V2);
     journal.statement().encode(&mut w);
-    w.u128(account.0).u32(unit).opt(through.as_ref(), |w, day| { w.i32(*day); })
-        .i128(debits).i128(credits)
-        .list(&journal.leaves, |w, leaf| { w.bytes(&leaf.envelope_bytes); });
+    w.u128(account.0)
+        .u32(unit)
+        .opt(through.as_ref(), |w, day| {
+            w.i32(*day);
+        })
+        .i128(debits)
+        .i128(credits)
+        .list(&journal.leaves, |w, leaf| {
+            w.bytes(&leaf.envelope_bytes);
+        });
     let mut wire_records = Vec::with_capacity(records.len());
     for (index, leaf, _) in records {
         let index = u64::try_from(*index)
@@ -260,11 +329,17 @@ fn encode(
     w.list(&wire_records, |w, (index, len, payload)| {
         w.u64(*index).u32(*len).bytes(payload);
     });
-    let witnesses = witnesses.into_iter().map(|(index, body)| {
-        u64::try_from(index).map(|index| (index, body))
-            .map_err(|_| KernelError::Corrupt("Open index exceeds u64".into()))
-    }).collect::<Result<Vec<_>, _>>()?;
-    w.list(&witnesses, |w, (index, body)| { w.u64(*index).bytes(body); });
+    let witnesses = witnesses
+        .into_iter()
+        .map(|(index, body)| {
+            u64::try_from(index)
+                .map(|index| (index, body))
+                .map_err(|_| KernelError::Corrupt("Open index exceeds u64".into()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    w.list(&witnesses, |w, (index, body)| {
+        w.u64(*index).bytes(body);
+    });
     Ok(Ok(w.finish().map_err(fa_model::EntryError::Encode)?))
 }
 
@@ -288,12 +363,25 @@ impl Journal {
     }
 }
 
-/// Produce a v2 balance proof at a fixed accumulator state. Read historical
-/// body bytes at the same prefix, then authenticate them against the Open
-/// records. In particular, the run vertex's current/state mirror is NOT the
-/// visibility witness. As with the other state-backed proof APIs, the state
-/// must be reproduced and its journal must remain unchanged at the observed
-/// head before a proof is issued.
+/// Export an automatically versioned balance proof. V1 bytes are preserved
+/// exactly when the selected cell and cutoff have no migration candidates.
+/// Otherwise v2 authenticates visibility, including candidates that do not
+/// count yet or will never count. This choice is made from the journal, not
+/// from a refusal code or a producer-supplied visibility flag.
+pub fn prove_balance<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    state: &AccumulatorState,
+    account: VId,
+    unit: u32,
+    through: Option<i32>,
+) -> Outcome<Vec<u8>> {
+    prove(db, book, state, account, unit, through, false)
+}
+
+/// Explicitly produce v2 at a fixed accumulator state, even for a scope
+/// without migration candidates. Read historical body bytes at that prefix
+/// and authenticate them against Open records; state mirrors are not read.
 pub fn prove_balance_with_migrations<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
@@ -301,6 +389,18 @@ pub fn prove_balance_with_migrations<V: asupersync::fs::Vfs + Clone>(
     account: VId,
     unit: u32,
     through: Option<i32>,
+) -> Outcome<Vec<u8>> {
+    prove(db, book, state, account, unit, through, true)
+}
+
+fn prove<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    state: &AccumulatorState,
+    account: VId,
+    unit: u32,
+    through: Option<i32>,
+    force_v2: bool,
 ) -> Outcome<Vec<u8>> {
     let observed_at = db.frontier()?;
     let journal = match Journal::read(db, book, Some(state.through_seq))? {
@@ -323,12 +423,40 @@ pub fn prove_balance_with_migrations<V: asupersync::fs::Vfs + Clone>(
         Ok(selection) => selection,
         Err(r) => return Ok(Err(r)),
     };
+    if !force_v2 && needed.is_empty() {
+        return journal.balance_proof(account, unit, through);
+    }
     let mut bodies = Vec::with_capacity(needed.len());
     for run in &needed {
-        let Some(historical) = read_run(db, *run, Some(journal.through_seq))? else {
-            return Ok(Err(refusal(format!("migration run {:032x} has no retained body", run.0))));
+        // Only immutable body bytes are needed. read_run also decodes the
+        // derived STATE mirror, so it is deliberately not used here: a
+        // projection must neither authorize nor prevent the journal proof.
+        let Some(row) = db.vertex_at(*run, journal.through_seq)? else {
+            return Ok(Err(refusal(format!(
+                "migration run {:032x} has no retained body",
+                run.0
+            ))));
         };
-        bodies.push(historical.body);
+        if !row.labels.contains(&label::MIGRATION_RUN) {
+            return Ok(Err(refusal(format!(
+                "migration run {:032x} has no MigrationRun label",
+                run.0
+            ))));
+        }
+        let raw = bytes(&row, property::FA_PAYLOAD, "migration run body")?;
+        if raw.len() > MAX_BODY_BYTES {
+            return Ok(Err(refusal(
+                "migration body exceeds the v2 proof's 8 MiB limit",
+            )));
+        }
+        let body = RunBody::decode(&raw)?;
+        if body.vid() != *run {
+            return Ok(Err(refusal(format!(
+                "migration body does not derive run identity {:032x}",
+                run.0
+            ))));
+        }
+        bodies.push(body);
     }
     encode(&journal, &records, &needed, account, unit, through, &bodies)
 }

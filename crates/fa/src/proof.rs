@@ -4,6 +4,8 @@
 //! their own trusted checkpoint to the independent `fa-verify` program.
 //! The exported checkpoint is a candidate trust anchor, never its own proof
 //! of authenticity. These artifacts carry no signatures or document receipts.
+//! Balance exports automatically use migration-aware v2 when necessary;
+//! scopes without migration candidates retain their exact v1 wire bytes.
 
 use asupersync::fs::Vfs;
 use fa_journal::genesis::BookContext;
@@ -207,7 +209,9 @@ pub(crate) fn export<V: Vfs + Clone>(
                     "select a unit from this book's canonical registry",
                 )));
             }
-            fa_notary::prove_balance(
+            // All admission, current-authority and accumulator checks above
+            // remain mandatory before the versioned producer reads witnesses.
+            fa_notary::migration_balance::prove_balance(
                 db,
                 book,
                 &checkpoint.state,
