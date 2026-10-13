@@ -286,3 +286,47 @@ fn future_reversed_and_changed_report_questions_refuse_without_writes() {
     assert_eq!(h.certify(&same).certificate, good.certificate);
     assert_eq!(h.head(), at);
 }
+
+#[test]
+fn replayed_workpapers_keep_exact_rows_and_do_not_drift_after_later_postings() {
+    let mut h = Harness::new(); h.initial(); let before = h.head();
+    h.post("workpaper-expense", "2026-03-15", h.usd, ("expense", "cash"), 15, false);
+    let cx = h.cx();
+    h.runtime.block_on(h.book.install_chart(&cx, &[account("unposted", AccountType::EXPENSE)],
+        PRINCIPAL, day("2026-03-20"), b"workpaper-chart")).unwrap().unwrap();
+    let certified = h.certify(&h.request(before, "balance-sheet"));
+    let authority = cap(&["read", "produce"]);
+    let first = h.book.statement_diff_workpaper(&cx, PRINCIPAL, &authority, &certified.certificate)
+        .unwrap().unwrap();
+    assert_eq!(first.certificate_bytes(), certified.certificate.canonical_bytes().unwrap());
+    assert_eq!(first.jsonl().lines().count(), 1 + certified.report.before().columns.len()
+        + certified.report.lines().len() + certified.report.mapping_changes().len());
+    assert!(first.jsonl().contains("\"delta_mantissas\":[\"-15\",\"0\"]"));
+    assert!(first.jsonl().contains("\"event\":\"mapping_change\""));
+    assert!(first.jsonl().contains("\"code\":\"unposted\""));
+    assert!(first.markdown().contains("Account mapping changes"));
+    assert!(first.markdown().contains("unposted"));
+    assert!(first.markdown().contains("not an assertion of issuance"));
+    assert!(first.markdown().contains("| 150 | 135 | -15 |"));
+    let at = h.head();
+    assert!(h.book.statement_diff_workpaper(&cx, PRINCIPAL, &cap(&["read"]), &certified.certificate)
+        .unwrap().is_err());
+    assert_eq!(h.head(), at);
+    h.post("after-workpaper", "2026-03-25", h.usd, ("cash", "sales"), 17, false);
+    let again = h.book.statement_diff_workpaper(&cx, PRINCIPAL, &authority, &certified.certificate)
+        .unwrap().unwrap();
+    assert_eq!(again, first, "a saved workpaper replays its original two prefixes");
+}
+
+#[test]
+fn workpaper_generation_never_discloses_an_unreplayable_comparison() {
+    let mut h = Harness::new(); h.initial();
+    let c = h.certify(&h.request(h.head(), "balance-sheet")).certificate;
+    let mut wrong = c.output.clone(); *wrong.last_mut().unwrap() ^= 1;
+    let fake = StatementDiffCertificate::seal(c.before, c.after, c.producer,
+        c.capability_commitment, wrong).unwrap();
+    let r = h.book.statement_diff_workpaper(&h.cx(), PRINCIPAL, &cap(&["read", "produce"]), &fake)
+        .unwrap().unwrap_err();
+    assert_eq!(r.exit, exit::VERIFICATION);
+    assert_eq!(r.code, crate::certificate::code::CERTIFICATE_INVALID);
+}
