@@ -355,3 +355,174 @@ fn independently_saved_source_and_review_can_be_revalidated_after_reopen() {
     assert_eq!(retry.entry_ref(), posted.entry_ref());
     assert_eq!(book.head(&cx).unwrap(), head);
 }
+
+fn approver() -> Capability { Capability::embedded(VId(8), &["read", "approve"]).unwrap() }
+
+#[test]
+fn source_revalidating_approver_needs_no_post_and_can_complete_the_workflow() {
+    let mut h = Harness::new();
+    h.movement("initial", "source", "offset", h.usd, 100, "2026-03-10");
+    let prepared = h.prepare(&h.request());
+    let review = h.review(&prepared, "reviewed");
+    let cx = h.cx();
+    let digest = review.digest().unwrap();
+    let approved = h.runtime.block_on(h.book.approve_balance_allocation_review(
+        &cx, prepared.request(), prepared.source_digest(), &review, digest, &approver(),
+    )).unwrap().unwrap();
+    assert_eq!(approved.approval().approved_digest, review.proposal_digest().unwrap());
+    assert_ne!(approved.approval().approved_digest, digest);
+    assert_ne!(approved.approval().approved_digest, prepared.source_digest());
+    let at = h.head();
+    let retry = h.runtime.block_on(h.book.approve_balance_allocation_review(
+        &cx, prepared.request(), prepared.source_digest(), &review, digest, &approver(),
+    )).unwrap().unwrap();
+    assert!(matches!(retry, fa_journal::Approved::AlreadyRecorded { .. }));
+    assert_eq!(retry.approval(), approved.approval());
+    assert_eq!(h.head(), at);
+    let plan = h.book.plan_balance_allocation_review(
+        &cx, prepared.request(), prepared.source_digest(), &review, digest, vec![approved.approval()], &cap(),
+    ).unwrap().unwrap();
+    h.commit(plan).unwrap();
+    assert_eq!(h.net("source"), 0);
+}
+
+#[test]
+fn changed_source_cannot_receive_a_source_bound_approval_even_with_the_same_total() {
+    let mut h = Harness::new();
+    h.movement("initial", "source", "offset", h.usd, 100, "2026-03-10");
+    let prepared = h.prepare(&h.request());
+    let review = h.review(&prepared, "reviewed");
+    h.movement("plus", "source", "offset", h.usd, 10, "2026-03-11");
+    h.movement("minus", "offset", "source", h.usd, 10, "2026-03-12");
+    assert_eq!(h.prepare(&h.request()).posting(), prepared.posting());
+    let cx = h.cx();
+    let at = h.head();
+    let refusal = h.runtime.block_on(h.book.approve_balance_allocation_review(
+        &cx, prepared.request(), prepared.source_digest(), &review, review.digest().unwrap(), &approver(),
+    )).unwrap().unwrap_err();
+    assert_eq!(refusal.code, code::PLAN_INVALIDATED);
+    assert_eq!(h.head(), at);
+}
+
+#[test]
+fn source_approval_enforces_read_approve_separation_expiry_scope_and_ceilings() {
+    let mut h = Harness::new();
+    h.movement("initial", "source", "offset", h.usd, 100, "2026-03-10");
+    let prepared = h.prepare(&h.request());
+    let review = h.review(&prepared, "reviewed");
+    let at = h.head();
+    let cx = h.cx();
+    let denied = [
+        Capability::embedded(PRINCIPAL, &["read", "approve"]).unwrap(),
+        Capability::embedded(VId(8), &["approve"]).unwrap(),
+        Capability::embedded(VId(8), &["read"]).unwrap(),
+        Capability::embedded(VId(8), &["read", "post"]).unwrap(),
+        approver().expiring_at(at),
+        approver().for_books(&[Id128([0xFF; 16])]).unwrap(),
+        approver().with_ceiling(h.usd, 99).unwrap(),
+    ];
+    for authority in denied {
+        assert!(h.runtime.block_on(h.book.approve_balance_allocation_review(
+            &cx, prepared.request(), prepared.source_digest(), &review, review.digest().unwrap(), &authority,
+        )).unwrap().is_err());
+        assert_eq!(h.head(), at);
+    }
+}
+
+#[test]
+fn source_approval_requires_both_independently_retained_digests() {
+    let mut h = Harness::new();
+    h.movement("initial", "source", "offset", h.usd, 100, "2026-03-10");
+    let prepared = h.prepare(&h.request());
+    let review = h.review(&prepared, "reviewed");
+    let cx = h.cx();
+    let at = h.head();
+    let mut wrong_source = prepared.source_digest();
+    wrong_source[0] ^= 1;
+    let mut wrong_review = review.digest().unwrap();
+    wrong_review[0] ^= 1;
+    for (source, digest) in [(wrong_source, review.digest().unwrap()), (prepared.source_digest(), wrong_review)] {
+        let refusal = h.runtime.block_on(h.book.approve_balance_allocation_review(
+            &cx, prepared.request(), source, &review, digest, &approver(),
+        )).unwrap().unwrap_err();
+        assert_eq!(refusal.code, code::PLAN_INVALIDATED);
+        assert_eq!(h.head(), at);
+    }
+}
+
+#[test]
+fn source_approval_does_not_grant_closed_period_posting_authority() {
+    let mut h = Harness::new();
+    h.movement("initial", "source", "offset", h.usd, 100, "2026-03-10");
+    let prepared = h.prepare(&h.request());
+    let review = h.review(&prepared, "reviewed");
+    let cx = h.cx();
+    h.runtime.block_on(h.book.transition_period(
+        &cx, "FY2026-P03", PeriodTransition::Close, PRINCIPAL, 1, day("2026-03-31"), b"close-march",
+        &Capability::embedded(PRINCIPAL, &["close"]).unwrap(),
+    )).unwrap().unwrap();
+    let approval = h.runtime.block_on(h.book.approve_balance_allocation_review(
+        &cx, prepared.request(), prepared.source_digest(), &review, review.digest().unwrap(), &approver(),
+    )).unwrap().unwrap();
+    let at = h.head();
+    assert!(h.book.plan_balance_allocation_review(
+        &cx, prepared.request(), prepared.source_digest(), &review, review.digest().unwrap(), vec![approval.approval()], &cap(),
+    ).unwrap().is_err());
+    assert_eq!(h.head(), at);
+    let closed = Capability::embedded(PRINCIPAL, &["read", "post", "post_closed"]).unwrap();
+    assert!(h.book.plan_balance_allocation_review(
+        &cx, prepared.request(), prepared.source_digest(), &review, review.digest().unwrap(), Vec::new(), &closed,
+    ).unwrap().is_err(), "period permission alone must not substitute for the approval");
+    assert_eq!(h.head(), at);
+    let plan = h.book.plan_balance_allocation_review(
+        &cx, prepared.request(), prepared.source_digest(), &review, review.digest().unwrap(), vec![approval.approval()], &closed,
+    ).unwrap().unwrap();
+    h.runtime.block_on(h.book.commit_plan(&cx, plan, &closed)).unwrap().unwrap();
+    assert_eq!(h.net("source"), 0);
+}
+
+#[test]
+fn source_approval_survives_reopen_and_retries_without_a_second_publication() {
+    let mut h = Harness::new();
+    h.movement("initial", "source", "offset", h.usd, 100, "2026-03-10");
+    let prepared = h.prepare(&h.request());
+    let review = h.review(&prepared, "reviewed");
+    let cx = h.cx();
+    let digest = review.digest().unwrap();
+    let approval = h.runtime.block_on(h.book.approve_balance_allocation_review(
+        &cx, prepared.request(), prepared.source_digest(), &review, digest, &approver(),
+    )).unwrap().unwrap();
+    let at = h.head();
+    let bytes = review.canonical_bytes().unwrap();
+    let Harness { runtime, root, book, vfs, .. } = h;
+    drop(book);
+    let cx = PurposeContexts::narrow_runtime_root(&root);
+    let mut book = runtime.block_on(AsyncBook::open_with_vfs(
+        &cx, vfs, Path::new("balance-allocation"), BookKeys::for_development(186), Entropy::deterministic(187),
+    )).unwrap();
+    let retry = runtime.block_on(book.approve_balance_allocation_review(
+        &cx, prepared.request(), prepared.source_digest(), &AllocationReview::decode(&bytes).unwrap(), digest, &approver(),
+    )).unwrap().unwrap();
+    assert!(matches!(retry, fa_journal::Approved::AlreadyRecorded { .. }));
+    assert_eq!(retry.approval(), approval.approval());
+    assert_eq!(retry.recorded_at(), approval.recorded_at());
+    assert_eq!(book.head(&cx).unwrap(), at);
+}
+
+#[test]
+fn a_depleted_reviewed_source_is_a_conflict_for_both_planning_and_approval() {
+    let mut h = Harness::new();
+    h.movement("initial", "source", "offset", h.usd, 100, "2026-03-10");
+    let prepared = h.prepare(&h.request());
+    let review = h.review(&prepared, "reviewed");
+    h.movement("depleted", "offset", "source", h.usd, 100, "2026-03-11");
+    assert_eq!(h.net("source"), 0);
+    let at = h.head();
+    assert_eq!(h.plan(&prepared, &review).unwrap_err().code, code::PLAN_INVALIDATED);
+    let cx = h.cx();
+    let refusal = h.runtime.block_on(h.book.approve_balance_allocation_review(
+        &cx, prepared.request(), prepared.source_digest(), &review, review.digest().unwrap(), &approver(),
+    )).unwrap().unwrap_err();
+    assert_eq!(refusal.code, code::PLAN_INVALIDATED);
+    assert_eq!(h.head(), at);
+}

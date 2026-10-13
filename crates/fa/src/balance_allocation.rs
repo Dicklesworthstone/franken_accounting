@@ -162,7 +162,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         if let Err(refusal) = admit(capability, self.context().book_id, capability.holder(), Op::Post, &[]) {
             return Ok(Err(refusal));
         }
-        let prepared = match self.observe_balance_allocation(cx, request, capability)? {
+        let prepared = match self.observe_balance_allocation(cx, request, capability, false)? {
             Ok(prepared) => prepared,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -216,7 +216,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         {
             return Ok(Err(changed()));
         }
-        let prepared = match self.observe_balance_allocation(cx, request, capability)? {
+        let prepared = match self.observe_balance_allocation(cx, request, capability, true)? {
             Ok(prepared) => prepared,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -233,6 +233,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         cx: &PurposeContexts,
         request: &BalanceAllocationRequest,
         capability: &Capability,
+        revalidating: bool,
     ) -> Outcome<PreparedBalanceAllocation> {
         let book = self.context();
         if let Err(denial) = fa_policy::admit_read(capability, capability.holder(), book.book_id) {
@@ -304,7 +305,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     .u8(match leg.side { Side::Debit => 0, Side::Credit => 1 }).i128(leg.amount.mantissa);
             }
             let net = debits.checked_sub(credits).ok_or(fa_registers::RegisterError::Overflow)?;
-            if net == 0 { return Ok(Err(structure("selected posted source balance is zero"))); }
+            if net == 0 {
+                return Ok(Err(if revalidating { changed() } else {
+                    structure("selected posted source balance is zero")
+                }));
+            }
             let total = net.checked_abs().ok_or(fa_registers::RegisterError::Overflow)?;
             let source_side = if net > 0 { Side::Credit } else { Side::Debit };
             witnesses.u64(count as u64).i128(debits).i128(credits);
@@ -318,5 +323,64 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 debits, credits, contributions: count, posting,
             }))
         })
+    }
+}
+
+impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
+    /// Approve the exact instruction only while its independently retained
+    /// source expectation still holds. Unlike approving a supplied allocation
+    /// alone, source inspection requires Read as well as Approve. Post is
+    /// neither required nor manufactured. The preparer cannot self-approve.
+    ///
+    /// Reuse the same authoritative source selection as planning, including
+    /// migration visibility and exact dimensions. Then record the ordinary
+    /// proposal-bound approval under current native policy. The approval does
+    /// not certify the source digest to third parties, attest driver truth,
+    /// import evidence, or grant period/limit permissions. Planning revalidates
+    /// the source again after approvals and retains all economic admission.
+    ///
+    /// An exact approval retry is idempotent while the source is unchanged.
+    /// After payment publication, retry the original PostPlan instead.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn approve_balance_allocation_review(
+        &mut self,
+        cx: &PurposeContexts,
+        request: &BalanceAllocationRequest,
+        expected_source_digest: [u8; 32],
+        review: &AllocationReview,
+        expected_review_digest: [u8; 32],
+        capability: &Capability,
+    ) -> Outcome<fa_journal::Approved> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        let explicit: Vec<_> = review.proposal().legs.iter()
+            .map(|leg| (leg.amount.unit, leg.amount.mantissa)).collect();
+        if let Err(refusal) = admit(capability, self.context().book_id, capability.holder(), Op::Approve, &explicit) {
+            return Ok(Err(refusal));
+        }
+        if capability.holder() == review.proposal().principal_ref {
+            return Ok(Err(Refusal::new(
+                fa_journal::refusal::code::APPROVALS, exit::REFUSAL,
+                "the balance allocation preparer cannot approve their own proposal",
+                "plan §14.3 (separation of preparer and approver)",
+                "have a distinct principal inspect the source and review using their own read and approve authority",
+            )));
+        }
+        if review.proposal().book_id != self.context().book_id
+            || review.proposal().branch_id != Id128::TRUNK
+            || review.verify_for(&expected_review_digest).is_err()
+        {
+            return Ok(Err(changed()));
+        }
+        let prepared = match self.observe_balance_allocation(cx, request, capability, true)? {
+            Ok(prepared) => prepared,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if prepared.source_digest != expected_source_digest || prepared.posting != *review.posting() {
+            return Ok(Err(changed()));
+        }
+        // The exclusive book handle is retained through native publication.
+        // Native approval checks expiry/revocation and policy again; the exact
+        // same capability is supplied, with no synthesized Read or Post grant.
+        self.approve_allocation_review(cx, review, expected_review_digest, capability).await
     }
 }
