@@ -151,3 +151,49 @@ fn genuine_producer_outputs_cannot_be_mixed_into_an_uncited_disclosure() {
     assert_eq!(verify_evidence_view_for(&proof, &relabeled, &checkpoint, &expected, &[0, 2]),
         Err(EvidenceError::ViewLocator));
 }
+
+#[test]
+fn compact_export_of_only_requested_readable_chunks_has_the_same_authenticated_chain() {
+    use fa_notary::disclosure::disclosure_from_view;
+    use fa_verify::evidence::verify_evidence_disclosure_for;
+
+    let doc = document(8193);
+    let record = entry(&doc, b"compact", 1);
+    let expected = EvidenceExpectation {
+        entry_digest: record.entry_digest,
+        document_oid: doc.oid().0,
+        role: 3,
+    };
+    let journal = Journal::from_records(BOOK, CommitSeq(20), vec![
+        (VId(101), record, CommitSeq(7)),
+    ]).unwrap();
+    let checkpoint = checkpoint(&journal);
+    let proof = journal.inclusion_proof(VId(101), true).unwrap().unwrap();
+    let view = RedactedView::derive(&doc, 7, &[(4096, 4096)]);
+    // The authorized view permits 0 and 2, but the recipient asks only for 2.
+    // Export the subset, not the other readable chunk or withheld chunk 1.
+    let compact = disclosure_from_view(&view, &[2], &doc.doc_commit()).unwrap();
+    assert!(compact.len() < view.canonical_bytes().unwrap().len());
+    let verified = verify_evidence_disclosure_for(
+        &proof, &compact, &checkpoint, &expected, &[2],
+    ).unwrap();
+    assert_eq!(verified.citation.doc_commit, doc.doc_commit());
+    assert_eq!(verified.disclosure.scope, "membership_only");
+    assert_eq!(verified.disclosure.chunks.len(), 1);
+    assert_eq!(verified.disclosure.chunks[0].index, 2);
+    assert_eq!(verified.disclosure.chunks[0].byte_length, 1);
+    assert!(verify_evidence_disclosure_for(
+        &proof, &compact, &checkpoint, &expected, &[0, 2],
+    ).is_err());
+    assert!(disclosure_from_view(&view, &[1], &doc.doc_commit()).is_err());
+    let envelope_only = journal.inclusion_proof(VId(101), false).unwrap().unwrap();
+    assert_eq!(verify_evidence_disclosure_for(
+        &envelope_only, &compact, &checkpoint, &expected, &[2],
+    ), Err(EvidenceError::RecordRequired));
+    let other = document(8194);
+    let other_view = RedactedView::derive(&other, 7, &[(4096, 4096)]);
+    let other_compact = disclosure_from_view(&other_view, &[2], &other.doc_commit()).unwrap();
+    assert!(verify_evidence_disclosure_for(
+        &proof, &other_compact, &checkpoint, &expected, &[2],
+    ).is_err());
+}

@@ -5,7 +5,8 @@
 //! commitment. The recipient chooses the entry digest, document locator,
 //! evidence role and exact chunk set independently of both artifacts.
 //!
-//! This composes the existing inclusion and RedactedView v1 formats. It
+//! This composes existing inclusion proofs with either RedactedView v1 or
+//! compact document-disclosure v1 exports. It
 //! does not invent a bundle, accept an envelope-only citation, or upgrade
 //! chunk membership to production completeness. The authenticated proposal
 //! has its evidence list and remaining wire framing checked. Fields outside
@@ -16,6 +17,7 @@ use core::fmt;
 
 use crate::blake3::hash_parts;
 use crate::codec::{DecodeError, Reader, Reason};
+use crate::disclosure::{self, DisclosureProofError, VerifiedDisclosure};
 use crate::envelope::{
     MAX_ENVELOPE_LIST, MAX_RECORD_BYTES, RecordError, proposal_after_legs, skip_erasable,
 };
@@ -70,11 +72,23 @@ pub struct VerifiedEvidenceView<'a> {
     pub unverified_contract: u16,
 }
 
+/// A compact export authenticated through its entry citation. The compact
+/// format carries no locator or contract metadata to mistake for authority.
+/// Its report contains chunk metadata only, never document payload bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedEvidenceDisclosure {
+    pub inclusion: Inclusion,
+    pub citation: EvidenceCitation,
+    /// Scope remains `membership_only`, not completeness or provenance.
+    pub disclosure: VerifiedDisclosure,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EvidenceError {
     Proof(VerifyError),
     Decode(DecodeError),
     View(ViewError),
+    Disclosure(DisclosureProofError),
     Request(&'static str),
     InputLimit,
     RecordRequired,
@@ -91,6 +105,7 @@ impl fmt::Display for EvidenceError {
             Self::Proof(error) => write!(f, "{error}"),
             Self::Decode(error) => write!(f, "{error}"),
             Self::View(error) => write!(f, "{error}"),
+            Self::Disclosure(error) => write!(f, "{error}"),
             Self::Request(why) => write!(f, "invalid evidence disclosure request: {why}"),
             Self::InputLimit => write!(f, "inclusion proof exceeds the 64 MiB input bound"),
             Self::RecordRequired => write!(f,
@@ -115,6 +130,7 @@ impl core::error::Error for EvidenceError {
             Self::Proof(error) => Some(error),
             Self::Decode(error) => Some(error),
             Self::View(error) => Some(error),
+            Self::Disclosure(error) => Some(error),
             _ => None,
         }
     }
@@ -138,7 +154,13 @@ impl From<ViewError> for EvidenceError {
     }
 }
 
-/// Validate the exact recipient-owned chunk set before reading any artifact.
+impl From<DisclosureProofError> for EvidenceError {
+    fn from(error: DisclosureProofError) -> Self {
+        Self::Disclosure(error)
+    }
+}
+
+/// Validate a recipient-owned kernel-view chunk set before reading artifacts.
 /// It is not sorted, deduplicated, widened or derived from a view.
 pub fn validate_request(requested: &[u64]) -> Result<(), EvidenceError> {
     if requested.is_empty() || requested.len() > MAX_VIEW_CHUNKS {
@@ -168,11 +190,62 @@ pub fn verify_evidence_view_for<'a>(
     requested: &[u64],
 ) -> Result<VerifiedEvidenceView<'a>, EvidenceError> {
     validate_request(requested)?;
-    if proof.len() > MAX_PROOF_BYTES {
-        return Err(EvidenceError::InputLimit);
-    }
     if view.len() > MAX_VIEW_BYTES {
         return Err(ViewError::Bound("encoded bytes").into());
+    }
+    let (inclusion, citation) = authenticated_citation(proof, checkpoint, expected)?;
+    let verified = verify_view_for(view, &citation.doc_commit, requested)?;
+    if verified.unverified_metadata.original != citation.document_oid {
+        return Err(EvidenceError::ViewLocator);
+    }
+    Ok(VerifiedEvidenceView {
+        inclusion,
+        citation,
+        disclosure_scope: verified.scope,
+        kind: verified.kind,
+        size: verified.size,
+        view_commit: verified.view_commit,
+        disclosed: verified.disclosed,
+        withheld_chunks: verified.withheld_chunks,
+        unverified_contract: verified.unverified_metadata.contract,
+    })
+}
+
+/// Verify the compact bytes produced by the authorized document exporter
+/// through the same independently trusted entry citation as a kernel view.
+/// Only the exact requested subset is needed; other readable chunks need
+/// not be exported. Neither input format contains a replacement trust anchor.
+///
+/// Compact proofs retain their own bounded count/byte/path policy and u64
+/// document indexes. Do not accidentally impose the full kernel-view size
+/// ceiling on a sparse membership proof. Signatures, authorization, contract
+/// compliance and complete evidence production remain outside this check.
+pub fn verify_evidence_disclosure_for(
+    proof: &[u8],
+    disclosure_bytes: &[u8],
+    checkpoint: &Checkpoint,
+    expected: &EvidenceExpectation,
+    requested: &[u64],
+) -> Result<VerifiedEvidenceDisclosure, EvidenceError> {
+    disclosure::validate_request(requested)?;
+    if disclosure_bytes.len() > disclosure::MAX_PROOF_BYTES {
+        return Err(DisclosureProofError::InputLimit {
+            maximum: disclosure::MAX_PROOF_BYTES,
+            actual: disclosure_bytes.len(),
+        }.into());
+    }
+    let (inclusion, citation) = authenticated_citation(proof, checkpoint, expected)?;
+    let disclosure = disclosure::verify(disclosure_bytes, requested, &citation.doc_commit)?;
+    Ok(VerifiedEvidenceDisclosure { inclusion, citation, disclosure })
+}
+
+fn authenticated_citation(
+    proof: &[u8],
+    checkpoint: &Checkpoint,
+    expected: &EvidenceExpectation,
+) -> Result<(Inclusion, EvidenceCitation), EvidenceError> {
+    if proof.len() > MAX_PROOF_BYTES {
+        return Err(EvidenceError::InputLimit);
     }
     let inclusion = crate::verify_inclusion(proof, checkpoint)?;
     if inclusion.envelope.record_digest != expected.entry_digest {
@@ -190,21 +263,7 @@ pub fn verify_evidence_view_for<'a>(
     if document_oid(&checkpoint.book_id, &citation.doc_commit) != citation.document_oid {
         return Err(EvidenceError::DocumentIdentity);
     }
-    let verified = verify_view_for(view, &citation.doc_commit, requested)?;
-    if verified.unverified_metadata.original != citation.document_oid {
-        return Err(EvidenceError::ViewLocator);
-    }
-    Ok(VerifiedEvidenceView {
-        inclusion,
-        citation,
-        disclosure_scope: verified.scope,
-        kind: verified.kind,
-        size: verified.size,
-        view_commit: verified.view_commit,
-        disclosed: verified.disclosed,
-        withheld_chunks: verified.withheld_chunks,
-        unverified_contract: verified.unverified_metadata.contract,
-    })
+    Ok((inclusion, citation))
 }
 
 fn document_oid(book: &[u8; 16], commitment: &[u8; 32]) -> [u8; 32] {
@@ -560,9 +619,116 @@ mod tests {
         }
     }
 
+    fn compact(chunk: &[u8], size: u64, index: u64, siblings: &[[u8; 32]]) -> Vec<u8> {
+        let mut w = Writer::default();
+        w.bytes(disclosure::FORMAT).u8(1).u64(size).count(1)
+            .u64(index).bytes(chunk).count(siblings.len());
+        for sibling in siblings {
+            w.fixed(sibling);
+        }
+        w.buf
+    }
+
+    #[test]
+    fn compact_exports_take_their_anchor_from_the_included_citation() {
+        for doc in [Vec::new(), b"cited document".to_vec()] {
+            let citation = citation(&doc);
+            let proposal = proposal(&[citation], &[0], &origin());
+            let (proof, checkpoint, digest) = proof(&proposal, &[0; 5], true);
+            let expected = request(digest, citation);
+            let bytes = compact(&doc, doc.len() as u64, 0, &[]);
+            let verified = verify_evidence_disclosure_for(
+                &proof, &bytes, &checkpoint, &expected, &[0],
+            ).unwrap();
+            assert_eq!(verified.inclusion.scope, "inclusion");
+            assert_eq!(verified.inclusion.record, RecordCheck::Recomputed);
+            assert_eq!(verified.citation, citation);
+            assert_eq!(verified.disclosure.scope, "membership_only");
+            assert_eq!(verified.disclosure.chunks[0].byte_length, doc.len());
+            let unrelated = compact(b"other", 5, 0, &[]);
+            assert!(verify_evidence_disclosure_for(
+                &proof, &unrelated, &checkpoint, &expected, &[0],
+            ).is_err());
+            let mut wrong = expected;
+            wrong.entry_digest[0] ^= 1;
+            assert_eq!(verify_evidence_disclosure_for(
+                &proof, &bytes, &checkpoint, &wrong, &[0],
+            ), Err(EvidenceError::EntryMismatch));
+        }
+    }
+
+    #[test]
+    fn compact_framing_and_exact_request_checks_cannot_return_partial_success() {
+        let doc = b"cited document";
+        let citation = citation(doc);
+        let proposal = proposal(&[citation], &[0], &origin());
+        let (proof, checkpoint, digest) = proof(&proposal, &[0; 5], true);
+        let expected = request(digest, citation);
+        let bytes = compact(doc, doc.len() as u64, 0, &[]);
+        for end in 0..bytes.len() {
+            assert!(verify_evidence_disclosure_for(
+                &proof, &bytes[..end], &checkpoint, &expected, &[0],
+            ).is_err(), "compact prefix {end}");
+        }
+        let mut trailing = bytes.clone();
+        trailing.push(0);
+        assert!(verify_evidence_disclosure_for(
+            &proof, &trailing, &checkpoint, &expected, &[0],
+        ).is_err());
+        assert!(verify_evidence_disclosure_for(
+            &proof, &view(doc, &[0]), &checkpoint, &expected, &[0],
+        ).is_err());
+        for requested in [vec![], vec![0, 0], vec![1, 0], vec![0, 1], vec![1]] {
+            assert!(verify_evidence_disclosure_for(
+                &proof, &bytes, &checkpoint, &expected, &requested,
+            ).is_err());
+        }
+    }
+
+    #[test]
+    fn sparse_compact_proofs_keep_their_own_index_and_sibling_policy() {
+        use crate::document::{DOC_DOMAIN, DOC_NODE_DOMAIN};
+
+        // The compact verifier admits u64 indexes without allocating a full
+        // document. A promoted final leaf at 16384 needs only one sibling.
+        let index = MAX_VIEW_CHUNKS as u64;
+        let size = (index + 1) * DOC_CHUNK_BYTES as u64;
+        let chunk = vec![42; DOC_CHUNK_BYTES];
+        let sibling = [7; 32];
+        let leaf = hash_parts(DOC_LEAF_DOMAIN, &[
+            &index.to_le_bytes(), &(chunk.len() as u64).to_le_bytes(), &chunk,
+        ]);
+        let root = hash_parts(DOC_NODE_DOMAIN, &[&sibling, &leaf]);
+        let doc_commit = hash_parts(DOC_DOMAIN, &[&[1], &size.to_le_bytes(), &root]);
+        let citation = EvidenceCitation {
+            document_oid: document_oid(&BOOK, &doc_commit), doc_commit, role: 3,
+        };
+        // Independently calculated with the session's Python BLAKE3 model,
+        // checked against 31 reference vectors; these are not producer output.
+        assert_eq!(crate::blake3::hex(&citation.doc_commit),
+            "5f120b0c4da0fc5463ba30e795aecae7c5c01905ad59a63369bc0fe15cbbb312");
+        assert_eq!(crate::blake3::hex(&citation.document_oid),
+            "00c6f3858a9acfe43935d6837690669088813736a290888ff540265bbf07c535");
+        let proposal = proposal(&[citation], &[0], &origin());
+        let (proof, checkpoint, digest) = proof(&proposal, &[0; 5], true);
+        let expected = request(digest, citation);
+        let bytes = compact(&chunk, size, index, &[sibling]);
+        assert!(validate_request(&[index]).is_err()); // Full kernel-view policy.
+        let verified = verify_evidence_disclosure_for(
+            &proof, &bytes, &checkpoint, &expected, &[index],
+        ).unwrap();
+        assert_eq!(verified.disclosure.document_length, size);
+        assert_eq!(verified.disclosure.chunks[0].index, index);
+        let mut corrupt = bytes;
+        *corrupt.last_mut().unwrap() ^= 1;
+        assert!(verify_evidence_disclosure_for(
+            &proof, &corrupt, &checkpoint, &expected, &[index],
+        ).is_err());
+    }
+
     #[test]
     fn checkpoint_entry_citation_and_exact_chunks_form_one_verified_chain() {
-        for length in [0, 1, 4095, 4096, 4097, 8193, 5 * 4096 + 3] {
+        for length in [0usize, 1, 4095, 4096, 4097, 8193, 5 * 4096 + 3] {
             let doc: Vec<u8> = (0..length).map(|i| (i % 251) as u8).collect();
             let citation = citation(&doc);
             let count = length.div_ceil(DOC_CHUNK_BYTES).max(1);
