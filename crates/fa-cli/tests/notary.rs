@@ -403,3 +403,153 @@ fn assert_corruption_refused(corrupt_head: bool) {
         "a refused checkpoint must not hide the false state"
     );
 }
+
+/// fa-mwy: an entry inside a checkpointed prefix that is rewritten in place
+/// (its digest mirror changed) or retired afterwards, through the real
+/// substrate with the book's keys, fails `fa verify accumulator` with exit 8
+/// naming the entry, and blocks the next checkpoint, through the binary.
+#[test]
+fn a_checkpointed_entry_rewritten_or_retired_in_place_fails_verification() {
+    for retire in [false, true] {
+        assert_checkpointed_entry_tamper_refused(retire);
+    }
+}
+
+fn assert_checkpointed_entry_tamper_refused(retire: bool) {
+    use asupersync::Budget;
+    use asupersync::runtime::RuntimeBuilder;
+    use fa::book::{Book, BookKeys, Entropy};
+    use fa_journal::BookSpec;
+    use fa_model::Id128;
+    use fa_model::symbols::{property, relation};
+    use fgdb::{Database, DatabaseKeys, WriteBatch};
+    use fgdb_types::context::PurposeContexts;
+    use fgdb_types::ids::DatabaseSecurityNamespaceId;
+    use fgdb_types::{CanonicalScalar, VId};
+
+    let dir = fixture();
+    let book = dir.join("book");
+    let units = fa_money::UnitRegistry::embedded().expect("units");
+    let keys = BookKeys::for_development(47);
+    let handle = Book::create_dir(
+        &book,
+        keys.clone(),
+        BookSpec {
+            book_id: Id128([0x32; 16]),
+            name: "Rewrite fixture".into(),
+            base_unit: units.lookup("USD").expect("USD"),
+            calendar: fa_time::FiscalCalendar::monthly("fiscal", 1, 1).expect("calendar"),
+            time_zone_policy: None,
+            entities: Vec::new(),
+            opening_date: None,
+        },
+        Entropy::deterministic(47),
+    )
+    .expect("create real persisted book");
+    keys.save(&book.join("book.keys"))
+        .expect("save fixture keys");
+    drop(handle);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"}]}"#,
+    );
+    ok(&book, &["chart", "import", &chart, "--json"]);
+    ok(
+        &book,
+        &["period", "create", "--fiscal-year", "2026", "--json"],
+    );
+    ok(&book, &["period", "open", "FY2026-P03", "--json"]);
+    let source = write(
+        &dir,
+        "receipt.txt",
+        "Fixture receipt: 5.00 USD for services.",
+    );
+    let document = parsed(&ok(
+        &book,
+        &[
+            "document",
+            "add",
+            &source,
+            "--kind",
+            "Receipt",
+            "--grade",
+            "HumanUpload",
+            "--json",
+        ],
+    ));
+    let intent = write(
+        &dir,
+        "sale.json",
+        r#"{"effective_date":"2026-03-10","idempotency_key":"sale","legs":[{"side":"debit","account":"1000","amount":"5.00 USD"},{"side":"credit","account":"4000","amount":"5.00 USD"}]}"#,
+    );
+    let posted = parsed(&ok(
+        &book,
+        &[
+            "post",
+            "--intent",
+            &intent,
+            "--evidence",
+            text(&document, "oid"),
+            "--json",
+        ],
+    ));
+    let entry_hex = text(&posted, "vid").to_string();
+    let entry = VId(u128::from_str_radix(&entry_hex, 16).expect("entry vid hex"));
+    ok(
+        &book,
+        &["checkpoint", "create", "--grant", "witness", "--json"],
+    );
+    ok(&book, &["verify", "accumulator", "--json"]);
+
+    // The adversary holds the book keys and writes the substrate directly,
+    // bypassing Folio: a rewritten digest mirror, or a retired entry.
+    let runtime = RuntimeBuilder::new().build().expect("runtime");
+    let root = runtime.request_cx_with_budget(Budget::INFINITE);
+    let ctx = PurposeContexts::narrow_runtime_root(&root);
+    let db_keys = DatabaseKeys::new([47; 32], DatabaseSecurityNamespaceId([48; 32]), [49; 32]);
+    let mut db = runtime
+        .block_on(async { Database::open(&ctx.commit(), &book.join("store"), db_keys).await })
+        .expect("reopen fixture through substrate");
+    let mut batch = WriteBatch::new(relation::DERIVED_FROM);
+    if retire {
+        batch.delete_vertex(entry);
+    } else {
+        batch.set_vertex_property(
+            entry,
+            property::FA_DIGEST,
+            Some(CanonicalScalar::bytes(vec![0xed; 32]).expect("bounded fixture scalar")),
+        );
+    }
+    runtime
+        .block_on(async { db.write(&ctx.commit(), batch).await })
+        .expect("plant the in-place change");
+    drop(db);
+    drop(runtime);
+
+    let (code, failed, diagnostics) = run(&book, &["verify", "accumulator", "--json"]);
+    assert_eq!(code, 8, "retire={retire}: {failed}\n{diagnostics}");
+    let report = parsed(&failed);
+    assert_eq!(text(&report, "event"), "error");
+    assert_eq!(text(&report, "class"), "verification");
+    let detail = get(&report, "detail").expect("failure detail");
+    let named = format!("checkpointed journal entry {entry_hex}");
+    assert!(
+        array(detail, "states").iter().any(|state| {
+            state
+                .get("finding")
+                .and_then(Json::as_str)
+                .is_some_and(|finding| finding.contains(&named))
+        }),
+        "retire={retire}: the finding names the entry: {failed}"
+    );
+    let (code, blocked, diagnostics) = run(
+        &book,
+        &["checkpoint", "create", "--grant", "witness", "--json"],
+    );
+    assert_eq!(code, 8, "retire={retire}: {blocked}\n{diagnostics}");
+    assert_eq!(
+        text(&parsed(&blocked), "refusal_id"),
+        fa_notary::code::ACCUMULATOR_DRIFT
+    );
+}
