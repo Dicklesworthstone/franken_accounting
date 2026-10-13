@@ -1804,14 +1804,19 @@ fn finalized_full_detail_history_before_the_opening_date_never_counts() {
         );
         batch
     };
+    // The honest fold is the register before the planted projection: the
+    // same entries (only the raw write and the checkpoint follow), with the
+    // run still Open. The register reads the projection, so after the plant
+    // it would count the staged chunk; the proof must not.
+    let honest = h.db.frontier().unwrap();
     h.write_raw(run_state(0, 1));
     let drifted = h.checkpoint();
     let drifted_trusted = outsider_checkpoint(&drifted);
-    let drifted_register = fa_registers::balance_as_of(
+    let honest_register = fa_registers::balance_as_of(
         &h.db,
         &h.book,
         DateDay::from_ymd(2026, 12, 31).unwrap(),
-        Some(drifted.state.through_seq),
+        Some(honest),
     )
     .expect("register fold");
     for account in [h.cash, h.rent] {
@@ -1821,7 +1826,7 @@ fn finalized_full_detail_history_before_the_opening_date_never_counts() {
             .unwrap()
             .expect("the staged chunk's account proves in v2");
         let report = fa_verify::verify_balance(&proof, &drifted_trusted).expect("v2 refold");
-        let expected = drifted_register
+        let expected = honest_register
             .rows
             .iter()
             .find(|r| r.account == account && r.unit_id == h.usd.0)
