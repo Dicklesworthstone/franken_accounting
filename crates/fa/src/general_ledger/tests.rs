@@ -242,4 +242,154 @@ fn byte_layout_is_little_endian_length_prefixed_and_keeps_large_signed_values() 
     assert_eq!(i128::from_le_bytes(out.0[7..].try_into().unwrap()), -((1i128 << 100) + 17));
 }
 
+fn cash_selection(h: &Harness) -> RollForwardRequest {
+    RollForwardRequest {
+        accounts: vec![h.id("1000")], known_at: Some(h.head()), ..h.request()
+    }
+}
+
+// The harness posts cash against equity, so these are explicitly financing
+// movements. Production classifications remain the caller's accounting input.
+fn cash_definition(source: &GeneralLedger) -> CashFlowDefinition {
+    CashFlowDefinition {
+        name: "owner-funding-v1".into(),
+        cash_accounts: source.accounts().iter().map(|account| account.id).collect(),
+        assignments: source.lines().iter().map(|line| CashFlowAssignment {
+            entry_digest: line.entry_digest, leg_index: line.leg_index,
+            activity: CashFlowActivity::Financing,
+        }).collect(),
+    }
+}
+
+#[test]
+fn native_cash_flow_matches_the_admitted_snapshot_without_posting() {
+    let mut h = Harness::new();
+    h.post(1, b"cash-opening", h.usd, 100);
+    h.post(10, b"cash-first-boundary", h.usd, 50);
+    h.post(15, b"cash-withdrawal", h.usd, -20);
+    h.post(20, b"cash-last-boundary", h.usd, 30);
+    h.post(21, b"cash-outside-window", h.usd, 700);
+    let request = cash_selection(&h);
+    let source = h.read(&request);
+    let definition = cash_definition(&source);
+    let original = source.canonical_bytes().unwrap();
+    let before = h.head();
+    let classified = source.classify_cash_flow(&h.cx().query(), &definition).unwrap().unwrap();
+    let report = h.book.cash_flow(&h.cx(), PRINCIPAL, &cap(&["read"]), &request, &definition)
+        .unwrap().unwrap();
+    assert_eq!(report.canonical_bytes().unwrap(), classified.canonical_bytes().unwrap());
+    assert_eq!(report.source().canonical_bytes().unwrap(), original);
+    assert_eq!(report.source().known_at(), before);
+    assert_eq!(report.source().lines().len(), 3);
+    let unit = &report.units()[0];
+    assert_eq!((unit.opening, unit.net_change, unit.closing), (100, 60, 160));
+    assert_eq!(unit.financing, CashFlowSection { inflows: 80, outflows: 20, net: 60 });
+    assert_eq!(h.head(), before);
+}
+
+#[test]
+fn native_cash_flow_requires_current_read_authority_even_for_an_empty_period() {
+    let h = Harness::new();
+    let request = cash_selection(&h);
+    let definition = cash_definition(&h.read(&request));
+    let before = h.head();
+    for (principal, capability) in [(PRINCIPAL, cap(&["post"])), (VId(99), cap(&["read"]))] {
+        assert!(h.book.cash_flow(&h.cx(), principal, &capability, &request, &definition)
+            .unwrap().is_err());
+    }
+    assert_eq!(h.head(), before);
+}
+
+#[test]
+fn native_cash_flow_keeps_a_pinned_prefix_and_refuses_stale_unpinned_assignments() {
+    let mut h = Harness::new();
+    h.post(1, b"cash-opening", h.usd, 100);
+    h.post(15, b"cash-original", h.usd, 10);
+    let pinned = cash_selection(&h);
+    let definition = cash_definition(&h.read(&pinned));
+    let original = h.book.cash_flow(&h.cx(), PRINCIPAL, &cap(&["read"]), &pinned, &definition)
+        .unwrap().unwrap().canonical_bytes().unwrap();
+    h.post(10, b"cash-late-effective", h.usd, -20);
+    assert_eq!(h.book.cash_flow(&h.cx(), PRINCIPAL, &cap(&["read"]), &pinned, &definition)
+        .unwrap().unwrap().canonical_bytes().unwrap(), original);
+    let current = RollForwardRequest { known_at: None, ..pinned };
+    assert!(h.book.cash_flow(&h.cx(), PRINCIPAL, &cap(&["read"]), &current, &definition)
+        .unwrap().is_err());
+}
+
+#[test]
+fn native_cash_flow_keeps_large_opposing_currencies_separate() {
+    let mut h = Harness::new();
+    let large = (1i128 << 100) + 17;
+    h.post(10, b"cash-usd", h.usd, large);
+    h.post(20, b"cash-jpy", h.jpy, -large);
+    let mut request = cash_selection(&h);
+    request.units.push(h.jpy.0);
+    let definition = cash_definition(&h.read(&request));
+    let report = h.book.cash_flow(&h.cx(), PRINCIPAL, &cap(&["read"]), &request, &definition)
+        .unwrap().unwrap();
+    assert_eq!(report.units().len(), 2);
+    for (unit_id, expected) in [(h.usd.0, large), (h.jpy.0, -large)] {
+        let unit = report.units().iter().find(|unit| unit.unit_id == unit_id).unwrap();
+        assert_eq!((unit.opening, unit.net_change, unit.closing), (0, expected, expected));
+        assert_eq!(unit.financing.net, expected);
+    }
+}
+
+#[test]
+fn native_cash_flow_requires_every_citation_even_when_cash_change_is_zero() {
+    let mut h = Harness::new();
+    h.post(10, b"cash-plus", h.usd, 20);
+    h.post(15, b"cash-minus", h.usd, -20);
+    let request = cash_selection(&h);
+    let definition = cash_definition(&h.read(&request));
+    let mut missing = definition.clone();
+    missing.assignments.clear();
+    let mut duplicate = definition.clone();
+    duplicate.assignments[1] = duplicate.assignments[0].clone();
+    let mut foreign = definition;
+    foreign.assignments[0].entry_digest = [255; 32];
+    let before = h.head();
+    for invalid in [missing, duplicate, foreign] {
+        assert!(h.book.cash_flow(&h.cx(), PRINCIPAL, &cap(&["read"]), &request, &invalid)
+            .unwrap().is_err());
+    }
+    assert_eq!(h.head(), before);
+}
+
+#[test]
+fn native_cash_flow_does_not_drop_opening_stock_in_an_empty_window() {
+    let mut h = Harness::new();
+    h.post(1, b"cash-before-window", h.usd, 100);
+    let request = cash_selection(&h);
+    let definition = cash_definition(&h.read(&request));
+    assert!(definition.assignments.is_empty());
+    let report = h.book.cash_flow(&h.cx(), PRINCIPAL, &cap(&["read"]), &request, &definition)
+        .unwrap().unwrap();
+    assert_eq!((report.units()[0].opening, report.units()[0].net_change, report.units()[0].closing), (100, 0, 100));
+}
+
+#[test]
+fn native_cash_flow_refuses_non_cash_account_types_instead_of_filtering_them() {
+    let h = Harness::new();
+    let request = h.request();
+    let definition = cash_definition(&h.read(&request));
+    assert!(h.book.cash_flow(&h.cx(), PRINCIPAL, &cap(&["read"]), &request, &definition)
+        .unwrap().is_err());
+}
+
+#[test]
+fn native_cash_flow_does_not_invent_internal_transfers_from_net_zero_cash() {
+    let mut h = Harness::new();
+    h.post(10, b"cash-contribution", h.usd, 20);
+    h.post(15, b"cash-distribution", h.usd, -20);
+    let request = cash_selection(&h);
+    let mut definition = cash_definition(&h.read(&request));
+    for assignment in &mut definition.assignments {
+        assignment.activity = CashFlowActivity::InternalTransfer;
+    }
+    assert!(h.book.cash_flow(&h.cx(), PRINCIPAL, &cap(&["read"]), &request, &definition)
+        .unwrap().is_err());
+}
+
 mod replay;
