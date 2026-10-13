@@ -295,6 +295,10 @@ pub fn round_trips(
     out
 }
 
+/// Transfers between one ordered account pair in one unit:
+/// `(date, row index, magnitude)` keyed by `(from, to, unit)`.
+type TransferGroups = BTreeMap<(String, String, u32), Vec<(i32, usize, i128)>>;
+
 /// `(from account, to account, row indexes)` of every chain of two-leg
 /// transfers between one pair of accounts in one unit whose magnitudes lie in
 /// `floor..threshold`, with consecutive dates at most `window` days apart,
@@ -306,7 +310,7 @@ pub fn structuring(
     window: i32,
     min_count: usize,
 ) -> Vec<(String, String, Vec<usize>)> {
-    let mut groups: BTreeMap<(String, String, u32), Vec<(i32, usize, i128)>> = BTreeMap::new();
+    let mut groups: TransferGroups = BTreeMap::new();
     for r in rows {
         if let Some((from, to, unit, m)) = transfer(r)
             && m >= floor
