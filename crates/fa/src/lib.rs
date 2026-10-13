@@ -28,12 +28,16 @@
 //! Explicit receivable/payable allocations can be prepared for approval and
 //! rehearsed through that same kernel with [`SettlementPostRequest`]. The
 //! unchanged portable plan supports atomic publication and exact retries.
+//! [`SettlementGroupRequest`] prepares disjoint selections on multiple legs of
+//! one complete entry; the kernel publishes all applications atomically.
 //! [`SettlementReview`] preserves the sealed proposal and observed allocations
 //! across approval publications and process restarts. Explicit revalidation
 //! requires the same proposal and amounts; a review itself grants no authority.
 //! [`Book::export_document_disclosure`] and its async counterpart export only
 //! requested permitted chunks under current read/produce authority, retaining
 //! the protected reader's governed redactions for offline membership checks.
+//! [`Book::export_evidence_disclosure`] binds that protected export to an exact
+//! journal entry and citation role, with its independent inclusion proof.
 //! Sessions, drafts, signed transparency
 //! checkpoints and bundles remain later slices of the embedded API described
 //! in `COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md` (§15.2).
@@ -46,8 +50,12 @@ pub mod book;
 pub mod certificate;
 mod certificate_store;
 pub mod document_disclosure;
+pub mod evidence_disclosure;
 pub mod proof;
+pub mod roll_forward;
 pub mod settlement;
+pub mod settlement_group;
+pub mod settlement_group_review;
 pub mod settlement_review;
 pub mod statement_diff;
 pub mod statement_diff_workpaper;
@@ -69,6 +77,7 @@ pub use certificate::{
 };
 pub use certificate_store::RetainedCertificate;
 pub use document_disclosure::{DisclosureAccess, DocumentDisclosureArtifact};
+pub use evidence_disclosure::{EvidenceDisclosureArtifact, EvidenceDisclosureRequest};
 pub use fa_intents::{IntentError, MAX_PLAN_BYTES, PlanCertificate, PostIntent, PostPlan};
 pub use fa_journal::{InstantSelection, UploadRequest};
 pub use fa_notary::{AccumulatorVerification, Checkpointed};
@@ -80,7 +89,13 @@ pub use fa_statements::{
     StatementLine,
 };
 pub use proof::{MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest};
+pub use roll_forward::{RollForward, RollForwardRequest};
 pub use settlement::{PreparedSettlement, SettlementPostPlan, SettlementPostRequest};
+pub use settlement_group::{
+    MAX_SETTLEMENT_GROUP_LEGS, MAX_SETTLEMENT_GROUP_TARGETS, PreparedSettlementGroup,
+    SettlementGroupPostPlan, SettlementGroupRequest, SettlementLegAllocation, SettlementLegSelection,
+};
+pub use settlement_group_review::{MAX_SETTLEMENT_GROUP_REVIEW_BYTES, SettlementGroupReview};
 pub use settlement_review::{
     MAX_SETTLEMENT_REVIEW_BYTES, SettlementReview, SettlementReviewError,
 };

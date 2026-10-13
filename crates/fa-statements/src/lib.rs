@@ -20,6 +20,9 @@
 
 mod definition;
 
+/// Exact account lead schedules with classified activity and stock tie-outs.
+pub mod roll_forward;
+
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 

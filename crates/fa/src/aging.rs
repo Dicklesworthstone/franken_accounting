@@ -8,6 +8,18 @@ use fgdb_types::{CommitSeq, VId};
 
 use crate::{AsyncBook, BookError};
 
+mod certificate;
+pub use certificate::{
+    AGING_CERTIFICATE_FORMAT, AGING_OUTPUT_FORMAT, AgingCertificate, AgingRequest, CertifiedAging,
+    MAX_AGING_BUCKET_BOUNDS, MAX_AGING_CERTIFICATE_BYTES,
+};
+
+mod reconciliation;
+pub use reconciliation::{
+    AgingReconciliation, AgingReconciliationCertificate, AgingReconciliationRequest,
+    AgingReconciliationRow, CertifiedAgingReconciliation, MAX_AGING_RECONCILIATION_BYTES,
+};
+
 pub use fa_registers::open_items::aging::{
     AgedOpenItem, AgingAmounts, AgingBand, AgingBuckets, AgingCell, AgingTotal, EffectiveDateAging,
 };
