@@ -62,6 +62,17 @@ exit = "refusal"
 cite = "plan §4.1, §5.2 (legal_entity is a mandatory balancing dimension in a multi-entity book; FA-INV-01 per-entity)"
 fix = "add the legal-entity dimension to leg {i}: one of {entities}"
 
+# Folio, later code: a library or MCP caller can name a raw unit id that no
+# registered unit version carries; an AnyUnit account would otherwise admit
+# it and fail as corruption at projection (bead fa-ih4).
+[[refusal]]
+code = "FA-REF-154"
+name = "UNIT_UNREGISTERED"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §4.4 (amounts are mantissas at a registered unit version's scale)"
+fix = "post in a unit registered in registries/units.toml (fa book info --json reports units_registered)"
+
 # ---- Teller: dangerous operations (007) ----------------------------------
 [[refusal]]
 code = "FA-REF-007"

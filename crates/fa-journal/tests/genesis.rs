@@ -1120,6 +1120,93 @@ fn summary_account_unknown_account_and_unit_policy_are_refused() {
     assert!(r.message.contains("EUR"), "{}", r.message);
 }
 
+/// fa-ih4: lawful requests ahead of the book's setup are typed refusals,
+/// never `KernelError::Corrupt` (exit 5): a date in a fiscal year nobody
+/// created, and a raw unit id no registered unit version carries on an
+/// account whose policy admits any unit. Nothing is written either way.
+#[test]
+fn uncreated_periods_and_unregistered_units_are_refused_not_corrupt() {
+    let mut h = harness();
+    let head = h.db.frontier().unwrap();
+
+    let mut ahead = h.proposal(h.rent_legs(100), b"ahead", EntryClass::ORIGINAL);
+    ahead.effective_date = DateDay::from_ymd(2028, 2, 10).unwrap();
+    let r = h.post(h.request(ahead, &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-021", exit::SAFETY), "{r}");
+    assert!(r.message.contains("FY2028-P02"), "{r}");
+    assert_eq!(
+        r.fix,
+        "fa period create --fiscal-year 2028, then open `FY2028-P02`"
+    );
+    assert_eq!(h.db.frontier().unwrap(), head);
+
+    let any_unit = |code: &str| AccountSpec {
+        code: code.into(),
+        name: format!("Clearing {code}"),
+        account_type: 1,
+        normal_balance: 0,
+        is_leaf: true,
+        unit_policy: UnitPolicy::AnyUnit,
+        parent_code: None,
+        limit: None,
+    };
+    let ctx = h.ctx();
+    let day = h.day();
+    h.runtime
+        .block_on(install_chart(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &[any_unit("9100"), any_unit("9200")],
+            PRINCIPAL,
+            day,
+            b"chart-any-unit",
+            Erasable::seal(
+                &"clearing".to_string(),
+                None,
+                &h.book.seal_key,
+                [7; 32],
+                [8; 24],
+            ),
+        ))
+        .expect("kernel")
+        .expect("the clearing accounts install");
+    let head = h.db.frontier().unwrap();
+    let unregistered = UnitId(4242);
+    assert!(h.book.units.get(unregistered).is_none());
+    let (debit, credit) = (
+        account_vid(h.book.book_id, "9100"),
+        account_vid(h.book.book_id, "9200"),
+    );
+    let legs = vec![
+        LegPayload::simple(Side::Debit, debit, Amount::new(unregistered, 100)),
+        LegPayload::simple(Side::Credit, credit, Amount::new(unregistered, 100)),
+    ];
+    let r = h
+        .post(h.request(
+            h.proposal(legs, b"raw-unit", EntryClass::ORIGINAL),
+            &["post"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-154", exit::REFUSAL), "{r}");
+    assert!(r.message.contains("unit id 4242"), "{r}");
+    assert_eq!(h.db.frontier().unwrap(), head);
+
+    // The same accounts accept a registered unit of any kind.
+    let legs = vec![
+        LegPayload::simple(Side::Debit, debit, Amount::new(h.usd, 100)),
+        LegPayload::simple(Side::Credit, credit, Amount::new(h.usd, 100)),
+    ];
+    assert!(matches!(
+        h.post(h.request(
+            h.proposal(legs, b"usd-clearing", EntryClass::ORIGINAL),
+            &["post"]
+        ))
+        .unwrap(),
+        Posted::Committed { .. }
+    ));
+}
+
 #[test]
 fn control_classes_unsupported_classes_and_structure_errors_are_refused_by_kind() {
     let mut h = harness();

@@ -178,6 +178,56 @@ fn assert_cash_credits(out: &str, expected: &str) {
     assert_eq!(field(out, "balanced"), Some("true"), "{out}");
 }
 
+/// fa-ih4: posting ahead of the book's fiscal years is a safety refusal
+/// (FA-REF-021, exit 7) naming the command that creates the year, never a
+/// "corrupt row" foundation failure; following the fix admits the post.
+#[test]
+fn posting_into_an_uncreated_fiscal_year_names_the_period_create_command() -> std::io::Result<()> {
+    let dir = tmp("uncreated-year")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Ahead Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let ahead = write(
+        &dir,
+        "ahead.json",
+        r#"{"effective_date":"2028-02-10","idempotency_key":"ahead","legs":[{"side":"debit","account":"6000","amount":"5.00 USD"},{"side":"credit","account":"1000","amount":"5.00 USD"}]}"#,
+    );
+    let post = [
+        "post",
+        "--intent",
+        &ahead,
+        "--evidence",
+        &evidence,
+        "--json",
+    ];
+    let (code, out, err) = fa(Some(&book), &post);
+    assert_eq!(code, 7, "{out}\n{err}");
+    assert!(
+        out.contains("\"event\":\"error\"")
+            && out.contains("\"refusal_id\":\"FA-REF-021\"")
+            && out.contains("fa period create --fiscal-year 2028, then open `FY2028-P02`"),
+        "{out}"
+    );
+    assert!(!out.contains("corrupt"), "{out}");
+    ok(&["period", "create", "--fiscal-year", "2028", "--json"]);
+    ok(&["period", "open", "FY2028-P02", "--json"]);
+    let posted = ok(&post);
+    assert_eq!(field(&posted, "event"), Some("posted"), "{posted}");
+    Ok(())
+}
+
 #[test]
 fn retained_trial_balances_replay_exactly_and_report_later_relevant_entries() -> std::io::Result<()>
 {

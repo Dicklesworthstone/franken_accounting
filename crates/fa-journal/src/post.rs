@@ -1192,6 +1192,27 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
     let state = state_from_scalar(state_scalar.as_ref())
         .ok_or_else(|| KernelError::Corrupt(format!("period `{}` state mirror", period.code)))?;
     let kind_scalar = txn.vertex_property(db, pvid, property::PERIOD_KIND)?;
+    // Every created period carries its kind, so a missing kind is a period
+    // the calendar defines but nobody created (a lawful request ahead of
+    // `fa period create`), unless the vertex exists without it (corruption).
+    if kind_scalar.is_none() && txn.vertex(db, pvid)?.is_none() {
+        txn.abort();
+        return Ok(Err(Refusal::new(
+            code::PERIOD_UNKNOWN,
+            exit::SAFETY,
+            format!(
+                "effective date {} falls in period `{}` of fiscal year {}, which was never created",
+                proposal.effective_date.render(),
+                period.code,
+                period.fiscal_year
+            ),
+            "plan §7.3 (periods are created per fiscal year)",
+            format!(
+                "fa period create --fiscal-year {}, then open `{}`",
+                period.fiscal_year, period.code
+            ),
+        )));
+    }
     let born = crate::rows::kind_from_scalar(kind_scalar.as_ref())
         .ok_or_else(|| KernelError::Corrupt(format!("period `{}` kind mirror", period.code)))?;
     // 5'. The security policy epoch, a point witness exactly like the period
@@ -1418,6 +1439,19 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
                 format!("leg {i} posts to `{}`, a summary account", account.code),
                 "plan §4.3 (only leaves accept legs)",
                 format!("post to a leaf under `{}`", account.code),
+            )));
+        }
+        if book.units.get(leg.amount.unit).is_none() {
+            txn.abort();
+            return Ok(Err(Refusal::new(
+                code::UNIT_UNREGISTERED,
+                exit::REFUSAL,
+                format!(
+                    "leg {i}: unit id {} is not registered in this book",
+                    leg.amount.unit.0
+                ),
+                "plan §4.4 (amounts are mantissas at a registered unit version's scale)",
+                "post in a unit registered in registries/units.toml (fa book info --json reports units_registered)",
             )));
         }
         let unit_ok = match account.unit_policy {
