@@ -9,7 +9,7 @@
 //! against `registries/verbs.toml`.
 
 use std::collections::BTreeSet;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -561,6 +561,36 @@ fn stdin_and_relative_paths_travel_with_the_request() {
     }
     assert_eq!(unrooted.0, 2, "{unrooted:?}");
     assert!(unrooted.1.contains("this fad serves"), "{unrooted:?}");
+}
+
+/// fa-een: a client that connected, sent part of a frame and went quiet
+/// does not hold the daemon. `fa` is answered through it at once (the
+/// serial server made it wait out the stalled peer's 30 s idle bound), and
+/// `fad stop` still stops it.
+#[test]
+fn a_stalled_client_does_not_hold_the_daemon() {
+    let dir = tmp("stalled");
+    let (book, _) = book(&dir);
+    let b = book.display().to_string();
+    let reg = registry().expect("verbs.toml");
+    let daemon = start(&book);
+    let mut stalled = std::os::unix::net::UnixStream::connect(book.join(&reg.daemon.socket))
+        .expect("connect to fad");
+    stalled
+        .write_all(&[0, 0])
+        .expect("two bytes of a length prefix");
+    let started = std::time::Instant::now();
+    let tb = ok(&["tb", "--period", "FY2026-P03", "--book", &b, "--json"]);
+    let waited = started.elapsed();
+    assert!(tb.contains("\"credits\":\"10.00 USD\""), "{tb}");
+    assert!(
+        waited < std::time::Duration::from_secs(15),
+        "answered while the stalled peer stays open, not after its idle bound: {waited:?}"
+    );
+    let (code, _, _) = fad(&["stop", "--book", &b, "--json"]);
+    assert_eq!(code, 0);
+    assert_eq!(daemon.finish().0, 0);
+    drop(stalled);
 }
 
 #[test]

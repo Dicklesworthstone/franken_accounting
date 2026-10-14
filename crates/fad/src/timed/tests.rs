@@ -440,7 +440,9 @@ impl crate::Service for Fragmented {
             crate::Next::Stop,
         )
     }
+}
 
+impl crate::Ticks for Fragmented {
     fn deadline(&self) -> Option<Time> {
         self.work.deadline()
     }
@@ -492,6 +494,7 @@ fn partial_prefix_and_payload_survive_multiple_real_timed_cycles_and_idle_is_bou
                 protocol: 1,
                 max_frame_bytes: 4096,
                 idle: Some(Duration::from_nanos(25)),
+                max_connections: 1,
             };
             let ended = crate::serve_connection_with(
                 &root,

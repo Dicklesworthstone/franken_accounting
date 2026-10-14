@@ -61,6 +61,10 @@ socket = "fad.sock"
 lease = "fad.lease"
 max_frame_bytes = 67108864
 idle_timeout_ms = 30000
+# Connections one fad serves at once (fa-een): its single serving task waits
+# on all of them and answers ready ones in turn; at the bound it stops
+# accepting until one closes.
+max_connections = 64
 tick_ns = 1000000000
 sweep_batch = 64
 clock_drift_ns = 250000000

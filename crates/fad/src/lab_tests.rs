@@ -16,6 +16,7 @@ const LIMITS: Limits = Limits {
     protocol: 1,
     max_frame_bytes: MAX,
     idle: None,
+    max_connections: 8,
 };
 
 fn addr(port: u16) -> std::net::SocketAddr {
@@ -134,6 +135,81 @@ fn requests_are_answered_one_for_one_in_order() {
             sent.iter().map(|r| r.argv.join(" ")).collect::<Vec<_>>(),
             "seed {seed}"
         );
+    }
+}
+
+/// fa-een: one task serves every connection. A peer that sent only part of
+/// a frame and stays open holds nothing: the next connection's request is
+/// answered, and its stop ends the server, though the stalled peer was
+/// accepted first and never finishes (no idle bound here).
+#[test]
+fn a_stalled_peer_cannot_starve_another_connection() {
+    for seed in 0..8 {
+        let ((seen, served, stalled_got, frames), _) = run_async_under_lab(seed, |cx| async move {
+            let (stalled_server, mut stalled_client) = VirtualTcpStream::pair(addr(1), addr(2));
+            let (server, mut client) = VirtualTcpStream::pair(addr(3), addr(4));
+            let partial = frame(&request(Op::Run, 0));
+            let _ = stalled_client.write_all(&partial[..2]).await;
+            let bytes: Vec<u8> = [request(Op::Run, 1), request(Op::Stop, 2)]
+                .iter()
+                .flat_map(frame)
+                .collect();
+            let _ = client.write_all(&bytes).await;
+            // Accepted in this order: the stalled peer first.
+            let mut queue = vec![server, stalled_server];
+            let accept = move || {
+                let next = queue.pop();
+                async move {
+                    match next {
+                        Some(stream) => Ok(stream),
+                        None => std::future::pending().await,
+                    }
+                }
+            };
+            let mut seen: Vec<Vec<String>> = Vec::new();
+            let mut handle = |r: Request| {
+                seen.push(r.argv.clone());
+                let next = if r.op == Op::Stop {
+                    Next::Stop
+                } else {
+                    Next::Continue
+                };
+                (
+                    Response {
+                        op: r.op,
+                        exit: 0,
+                        stdout: r.argv.join(" "),
+                        stderr: String::new(),
+                    },
+                    next,
+                )
+            };
+            let dir = std::path::Path::new(BOOK);
+            let served = serve_many(&cx, accept, LIMITS, dir, &mut Untimed(&mut handle)).await;
+            let mut stalled_got = Vec::new();
+            let _ = stalled_client.read_to_end(&mut stalled_got).await;
+            let mut received = Vec::new();
+            let _ = client.read_to_end(&mut received).await;
+            let mut decoder = Decoder::new(MAX);
+            decoder.push(&received);
+            let mut frames = Vec::new();
+            while let Ok(Some(f)) = decoder.next_frame() {
+                frames.push(f);
+            }
+            (seen, served.is_ok(), stalled_got, frames)
+        });
+        assert!(served, "seed {seed}: the stop ends the server");
+        assert_eq!(
+            seen,
+            vec![request(Op::Run, 1).argv, request(Op::Stop, 2).argv],
+            "seed {seed}: only the whole frames were handled"
+        );
+        assert!(
+            stalled_got.is_empty(),
+            "seed {seed}: nothing answered the partial frame"
+        );
+        schema_checked(&frames);
+        assert_eq!(responses(&frames).len(), 2, "seed {seed}");
     }
 }
 
