@@ -203,7 +203,7 @@ impl IndirectCashFlow {
 fn invalid(message: impl Into<String>) -> Refusal {
     Refusal::new(
         fa_journal::refusal::code::STRUCTURE,
-        exit::REFUSAL,
+        exit::USAGE,
         message,
         "plan §12.1 / fa-i9yn (native earnings + sourced adjustments = operating cash)",
         "select whole historical periods and explicit non-cash journal legs with their intended signs; reconcile each native unit to direct cash without inserting a balancing amount",

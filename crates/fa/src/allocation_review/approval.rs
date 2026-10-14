@@ -46,7 +46,7 @@ fn checked_digest(
     if capability.holder() == proposal.principal_ref {
         return Err(Refusal::new(
             fa_journal::refusal::code::APPROVALS,
-            exit::REFUSAL,
+            exit::SAFETY,
             "the allocation preparer cannot approve their own proposal",
             "plan §14.3 (separation of preparer and approver)",
             "have a distinct principal review the exact instruction with their own approve capability",

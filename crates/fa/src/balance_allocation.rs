@@ -485,7 +485,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         if capability.holder() == review.proposal().principal_ref {
             return Ok(Err(Refusal::new(
                 fa_journal::refusal::code::APPROVALS,
-                exit::REFUSAL,
+                exit::SAFETY,
                 "the balance allocation preparer cannot approve their own proposal",
                 "plan §14.3 (separation of preparer and approver)",
                 "have a distinct principal inspect the source and review using their own read and approve authority",

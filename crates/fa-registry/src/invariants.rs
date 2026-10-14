@@ -793,17 +793,13 @@ mod tests {
             ),
             (
                 "dormant with no activating bead",
-                good.replacen(
-                    "activating = [\"fa-we7\", \"fa-9ae\"]",
-                    "activating = []",
-                    1,
-                ),
+                good.replacen("activating = [\"fa-bvx\"]", "activating = []", 1),
             ),
             (
                 "activating twice",
                 good.replacen(
-                    "activating = [\"fa-we7\", \"fa-9ae\"]",
-                    "activating = [\"fa-we7\", \"fa-we7\"]",
+                    "activating = [\"fa-bvx\"]",
+                    "activating = [\"fa-bvx\", \"fa-bvx\"]",
                     1,
                 ),
             ),
