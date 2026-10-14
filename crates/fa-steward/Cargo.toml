@@ -1,0 +1,19 @@
+[package]
+name = "fa-steward"
+version = "0.0.1"
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "Steward — capabilities, caveats, profiles, SoD policy, policy epoch activation, capability revocation, access audit, legal holds, and erasure governance (plan §14). Bead fa-jgqi."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+fa-docket = { path = "../fa-docket", version = "=0.0.1" }
+fa-journal = { path = "../fa-journal", version = "=0.0.1" }
+fa-model = { path = "../fa-model", version = "=0.0.1" }
+fa-policy = { path = "../fa-policy", version = "=0.0.1" }
+fa-registry = { path = "../fa-registry", version = "=0.0.1" }
+fgdb-types = { workspace = true }

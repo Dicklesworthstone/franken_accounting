@@ -10002,9 +10002,7 @@ fn migrate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             if !has_class {
                 filtered.push(("class".to_string(), s("Migration")));
             }
-            if !has_period
-                && let Some(p_flag) = args.flag("--period")
-            {
+            if !has_period && let Some(p_flag) = args.flag("--period") {
                 filtered.push(("effective_period".to_string(), s(p_flag)));
             }
             let post_doc = Json::Obj(filtered);

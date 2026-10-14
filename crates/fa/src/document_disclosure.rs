@@ -16,42 +16,7 @@ use fgdb_types::context::PurposeContexts;
 
 use crate::{AsyncBook, Book, BookError, Outcome};
 
-/// The protected reader's decision, not a permission supplied by a request.
-/// This local metadata is not authenticated by the compact membership proof.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DisclosureAccess {
-    Full,
-    Redacted { contract: u16 },
-}
-
-/// Only the requested chunks and their paths leave the book. The document
-/// commitment is convenient for citation matching, but recipients must obtain
-/// and trust it separately rather than treating this artifact as its own anchor.
-#[derive(Clone, PartialEq, Eq)]
-pub struct DocumentDisclosureArtifact {
-    pub document: Oid,
-    pub doc_commit: [u8; 32],
-    pub kind: u8,
-    pub document_length: u64,
-    pub requested_chunks: Vec<u64>,
-    pub access: DisclosureAccess,
-    /// Raw fa:document-disclosure:v1 bytes for `fa-verify document`.
-    /// These contain sensitive disclosed data; Debug deliberately omits them.
-    pub bytes: Vec<u8>,
-}
-
-impl core::fmt::Debug for DocumentDisclosureArtifact {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("DocumentDisclosureArtifact")
-            .field("document", &self.document)
-            .field("kind", &self.kind)
-            .field("document_length", &self.document_length)
-            .field("requested_chunks", &self.requested_chunks)
-            .field("access", &self.access)
-            .field("proof_byte_length", &self.bytes.len())
-            .finish_non_exhaustive()
-    }
-}
+pub use fa_docket::{DisclosureAccess, DocumentDisclosureArtifact};
 
 fn export_refusal(error: DisclosureExportError) -> Refusal {
     let (code, class, fix) = match &error {

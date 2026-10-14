@@ -1,0 +1,17 @@
+[package]
+name = "fa-palimpsest"
+version = "0.0.1"
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "Supersession lineage, Reverse/Replace/Reclass/Restate, RestatementCase lifecycle, migration run state, and scratch-book sequence maps (plan §8, §15.2). Bead fa-jgqi."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+fa-model = { path = "../fa-model", version = "=0.0.1" }
+fa-money = { path = "../fa-money", version = "=0.0.1" }
+fa-time = { path = "../fa-time", version = "=0.0.1" }
+fgdb-types = { workspace = true }

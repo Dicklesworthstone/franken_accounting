@@ -1947,9 +1947,9 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
                 let ordinal = u16::try_from(i)
                     .map_err(|_| KernelError::Corrupt("more than u16 legs".into()))?;
                 let lvid = leg_vid(anc_vid, ordinal);
-                let row = txn
-                    .vertex(db, lvid)?
-                    .ok_or_else(|| KernelError::Corrupt("reversal target leg row missing".into()))?;
+                let row = txn.vertex(db, lvid)?.ok_or_else(|| {
+                    KernelError::Corrupt("reversal target leg row missing".into())
+                })?;
                 let live = applied_witness(&row)?;
                 if live != 0 {
                     txn.abort();

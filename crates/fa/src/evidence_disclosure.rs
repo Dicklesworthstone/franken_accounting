@@ -8,38 +8,26 @@
 
 use asupersync::fs::Vfs;
 use fa_journal::{KernelError, Refusal, exit};
-use fa_model::{Entry, EvidenceRef, Id128, Oid};
+use fa_model::{Entry, EvidenceRef, Id128};
 use fa_notary::disclosure;
 use fa_policy::{Capability, Op};
+use fgdb_types::CommitSeq;
 use fgdb_types::context::PurposeContexts;
-use fgdb_types::{CommitSeq, VId};
 
 use crate::{
     AsyncBook, Book, BookError, DocumentDisclosureArtifact, Outcome, ProofArtifact, ProofKind,
     ProofRequest,
 };
 
-/// Select a recorded entry and one of its exact evidence citations. A caller
-/// must obtain the expected entry digest independently of the returned proof.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct EvidenceDisclosureRequest {
-    /// None selects the latest already recorded checkpoint; none is created.
-    pub state: Option<Oid>,
-    pub entry: VId,
-    pub expected_entry_digest: [u8; 32],
-    pub document: Oid,
-    pub role: u8,
-}
+pub use fa_docket::EvidenceDisclosureRequest;
 
-impl EvidenceDisclosureRequest {
-    fn proof_request(self) -> ProofRequest {
-        ProofRequest {
-            state: self.state,
-            kind: ProofKind::Inclusion {
-                entry: self.entry,
-                with_record: true,
-            },
-        }
+fn proof_request(req: EvidenceDisclosureRequest) -> ProofRequest {
+    ProofRequest {
+        state: req.state,
+        kind: ProofKind::Inclusion {
+            entry: req.entry,
+            with_record: true,
+        },
     }
 }
 
@@ -173,7 +161,7 @@ impl Book {
             return Ok(Err(refusal));
         }
         let inclusion =
-            match self.export_proof(capability.holder(), capability, request.proof_request())? {
+            match self.export_proof(capability.holder(), capability, proof_request(request))? {
                 Ok(proof) => proof,
                 Err(refusal) => return Ok(Err(refusal)),
             };
@@ -212,15 +200,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         }
         let query = cx.query();
         query.checkpoint().map_err(BookError::Context)?;
-        let inclusion = match self.export_proof(
-            cx,
-            capability.holder(),
-            capability,
-            request.proof_request(),
-        )? {
-            Ok(proof) => proof,
-            Err(refusal) => return Ok(Err(refusal)),
-        };
+        let inclusion =
+            match self.export_proof(cx, capability.holder(), capability, proof_request(request))? {
+                Ok(proof) => proof,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
         query.checkpoint().map_err(BookError::Context)?;
         let citation = match select_citation(
             book,

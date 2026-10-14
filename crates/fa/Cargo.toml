@@ -11,16 +11,20 @@ publish = false
 workspace = true
 
 [dependencies]
+fa-docket = { path = "../fa-docket", version = "=0.0.1" }
+fa-escrow = { path = "../fa-escrow", version = "=0.0.1" }
 fa-intents = { path = "../fa-intents", version = "=0.0.1" }
 fa-journal = { path = "../fa-journal", version = "=0.0.1" }
 fa-lantern = { path = "../fa-lantern", version = "=0.0.1" }
 fa-model = { path = "../fa-model", version = "=0.0.1" }
 fa-money = { path = "../fa-money", version = "=0.0.1" }
 fa-notary = { path = "../fa-notary", version = "=0.0.1" }
+fa-palimpsest = { path = "../fa-palimpsest", version = "=0.0.1" }
 fa-policy = { path = "../fa-policy", version = "=0.0.1" }
 fa-registers = { path = "../fa-registers", version = "=0.0.1" }
 fa-registry = { path = "../fa-registry", version = "=0.0.1" }
 fa-statements = { path = "../fa-statements", version = "=0.0.1" }
+fa-steward = { path = "../fa-steward", version = "=0.0.1" }
 fa-time = { path = "../fa-time", version = "=0.0.1" }
 asupersync = { workspace = true }
 fgdb = { workspace = true }

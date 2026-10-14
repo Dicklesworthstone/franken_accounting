@@ -34,8 +34,12 @@
 
 use std::collections::BTreeSet;
 
+use fa_model::Id128;
 use fa_model::symbols::{label, property};
-use fa_model::{Id128, Writer, domain_digest};
+pub use fa_palimpsest::{
+    SCOPE_ACCOUNTING_OBJECTS_ONLY, SEQ_MAP_DOMAIN, SEQ_MAP_VERSION, SeqPair, encode_seq_map,
+    seq_map_digest, seq_pairs_are_monotone, translate_seq,
+};
 use fgdb::{Database, WriteBatch, WriteMismatchPolicy, WriteTxnError};
 use fgdb_delta_types::{
     DeltaRow, ElementId, LabelId, LogicalDeltaBatch, PropertyKeyId, RelationId,
@@ -44,12 +48,6 @@ use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, EId, VId};
 
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
-
-/// `H(domain ‖ canonical SeqMap)`.
-pub const SEQ_MAP_DOMAIN: &[u8] = b"fa:seq-map:v1";
-pub const SEQ_MAP_VERSION: u16 = 1;
-/// The scope a scratch book replays: accounting objects only (§15.2).
-pub const SCOPE_ACCOUNTING_OBJECTS_ONLY: u8 = 1;
 
 /// Properties that are maintenance wherever they sit: the notary's
 /// checkpoint head on the book root (fa-notary `checkpoint` moves it in the
@@ -73,15 +71,6 @@ const MAINTENANCE: [LabelId; 5] = [
     label::CERTIFICATE,
 ];
 
-/// One replayed source commit and the scratch commit that reproduces it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SeqPair {
-    pub source_seq: CommitSeq,
-    /// The source commit's marker object id (its place in the source chain).
-    pub source_marker: [u8; 32],
-    pub scratch_seq: CommitSeq,
-}
-
 /// The map from source `CommitSeq`s to scratch `CommitSeq`s (plan §15.2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SeqMap {
@@ -96,29 +85,19 @@ impl SeqMap {
     /// `u16 version ‖ book[16] ‖ u64 prefix ‖ u8 scope ‖ list(u64 source ‖
     /// marker[32] ‖ u64 scratch)`.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, KernelError> {
-        let mut w = Writer::new();
-        w.u16(SEQ_MAP_VERSION)
-            .fixed(&self.source_book.0)
-            .u64(self.source_prefix.0)
-            .u8(SCOPE_ACCOUNTING_OBJECTS_ONLY)
-            .list(&self.pairs, |w, p| {
-                w.u64(p.source_seq.0)
-                    .fixed(&p.source_marker)
-                    .u64(p.scratch_seq.0);
-            });
-        w.finish().map_err(|e| KernelError::Model(e.into()))
+        encode_seq_map(self.source_book, self.source_prefix, &self.pairs)
+            .map_err(|e| KernelError::Model(e.into()))
     }
 
     pub fn digest(&self) -> Result<[u8; 32], KernelError> {
-        Ok(domain_digest(SEQ_MAP_DOMAIN, &[&self.canonical_bytes()?]))
+        seq_map_digest(self.source_book, self.source_prefix, &self.pairs)
+            .map_err(|e| KernelError::Model(e.into()))
     }
 
     /// Both sides strictly increasing.
     #[must_use]
     pub fn is_monotone(&self) -> bool {
-        self.pairs
-            .windows(2)
-            .all(|w| w[0].source_seq < w[1].source_seq && w[0].scratch_seq < w[1].scratch_seq)
+        seq_pairs_are_monotone(&self.pairs)
     }
 
     /// The scratch coordinate that knows exactly the accounting objects the
@@ -128,14 +107,7 @@ impl SeqMap {
     /// hold: a floor is only lawful inside `[0, source_prefix]`.
     #[must_use]
     pub fn translate(&self, source_known_at: CommitSeq) -> Option<CommitSeq> {
-        if source_known_at > self.source_prefix {
-            return None;
-        }
-        self.pairs
-            .iter()
-            .take_while(|p| p.source_seq <= source_known_at)
-            .last()
-            .map(|p| p.scratch_seq)
+        translate_seq(self.source_prefix, &self.pairs, source_known_at)
     }
 }
 

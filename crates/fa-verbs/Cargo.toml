@@ -1,0 +1,15 @@
+[package]
+name = "fa-verbs"
+version = "0.0.1"
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "Single verb registry, robot-mode envelope schema validator, and integer-only JSON codec for CLI, daemon, and MCP. Bead fa-jgqi."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+fa-model = { path = "../fa-model", version = "=0.0.1" }
+fa-registry = { path = "../fa-registry", version = "=0.0.1" }

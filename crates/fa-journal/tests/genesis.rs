@@ -2296,7 +2296,10 @@ fn a_reversal_chain_of_any_length_keeps_liveness_by_parity_and_settles_the_reviv
     let r67_refused = h
         .post(h.request(h.reversal_of_entry(tip, b"rev-66"), &["post"]))
         .unwrap_err();
-    assert_eq!((r67_refused.code, r67_refused.exit), ("FA-REF-073", exit::REFUSAL));
+    assert_eq!(
+        (r67_refused.code, r67_refused.exit),
+        ("FA-REF-073", exit::REFUSAL)
+    );
     assert!(
         r67_refused
             .message

@@ -11,11 +11,13 @@ publish = false
 workspace = true
 
 [dependencies]
+fa-escrow = { path = "../fa-escrow", version = "=0.0.1" }
 fa-intents = { path = "../fa-intents", version = "=0.0.1" }
 fa-money = { path = "../fa-money", version = "=0.0.1" }
 fa-time = { path = "../fa-time", version = "=0.0.1" }
 fa-registry = { path = "../fa-registry", version = "=0.0.1" }
 fa-model = { path = "../fa-model", version = "=0.0.1" }
+fa-palimpsest = { path = "../fa-palimpsest", version = "=0.0.1" }
 fa-policy = { path = "../fa-policy", version = "=0.0.1" }
 asupersync = { workspace = true }
 fgdb = { workspace = true }

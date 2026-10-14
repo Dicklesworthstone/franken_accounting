@@ -789,16 +789,20 @@ name = "fa"
 version = "0.0.1"
 dependencies = [
  "asupersync",
+ "fa-docket",
+ "fa-escrow",
  "fa-intents",
  "fa-journal",
  "fa-lantern",
  "fa-model",
  "fa-money",
  "fa-notary",
+ "fa-palimpsest",
  "fa-policy",
  "fa-registers",
  "fa-registry",
  "fa-statements",
+ "fa-steward",
  "fa-time",
  "fa-verify",
  "fgdb",
@@ -823,6 +827,7 @@ dependencies = [
  "fa-registers",
  "fa-registry",
  "fa-time",
+ "fa-verbs",
  "fa-verify",
  "fgdb",
  "fgdb-types",
@@ -840,6 +845,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "fa-docket"
+version = "0.0.1"
+dependencies = [
+ "fa-journal",
+ "fa-model",
+ "fa-policy",
+ "fa-registry",
+ "fgdb-types",
+]
+
+[[package]]
+name = "fa-escrow"
+version = "0.0.1"
+dependencies = [
+ "fa-model",
+ "fa-money",
+ "fgdb-crypto",
+ "fgdb-types",
+]
+
+[[package]]
 name = "fa-intents"
 version = "0.0.1"
 dependencies = [
@@ -852,9 +878,11 @@ name = "fa-journal"
 version = "0.0.1"
 dependencies = [
  "asupersync",
+ "fa-escrow",
  "fa-intents",
  "fa-model",
  "fa-money",
+ "fa-palimpsest",
  "fa-policy",
  "fa-registry",
  "fa-time",
@@ -937,6 +965,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fa-palimpsest"
+version = "0.0.1"
+dependencies = [
+ "fa-model",
+ "fa-money",
+ "fa-time",
+ "fgdb-types",
+]
+
+[[package]]
 name = "fa-policy"
 version = "0.0.1"
 dependencies = [
@@ -991,8 +1029,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "fa-steward"
+version = "0.0.1"
+dependencies = [
+ "fa-docket",
+ "fa-journal",
+ "fa-model",
+ "fa-policy",
+ "fa-registry",
+ "fgdb-types",
+]
+
+[[package]]
 name = "fa-time"
 version = "0.0.1"
+
+[[package]]
+name = "fa-verbs"
+version = "0.0.1"
+dependencies = [
+ "fa-model",
+ "fa-registry",
+]
 
 [[package]]
 name = "fa-verify"

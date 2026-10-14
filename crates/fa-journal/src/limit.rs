@@ -59,7 +59,6 @@ use fa_model::{EntryClass, EntryPayload, LegPayload};
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_time::resolve_period;
 use fgdb::{Database, VertexRow, WriteBatch, WriteMismatchPolicy, WriteTxn};
-use fgdb_crypto::Hasher;
 use fgdb_delta_types::PropertyKeyId;
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, VId};
@@ -69,15 +68,10 @@ use crate::post::{PostRequest, Posted, post, read_entry};
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{AccountRow, mantissa_scalar, prop, scalar_bytes, scalar_text};
 
-/// What a limit's bounds apply to (plan §5.5).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum LimitScope {
-    /// The account's whole history (an overdraft floor, a facility cap).
-    #[default]
-    Lifetime,
-    /// Each fiscal period separately (a budget cap on an expense account).
-    Period,
-}
+pub use fa_escrow::{
+    Breach, LimitScope, admissible_balancing_amount, availability_of, balancing_bytes,
+    balancing_request, cell_vid, limit_cell_vid, period_cell_vid,
+};
 
 /// A per-account limit in the account's registered unit and normal-balance
 /// sign. At least one bound is named, and `lower ≤ upper` when both are.
@@ -161,47 +155,6 @@ fn i128_of(row: &VertexRow, key: PropertyKeyId, what: &str) -> Result<Option<i12
             Ok(Some(i128::from_le_bytes(raw)))
         }
         other => Err(KernelError::Corrupt(format!("{what}: {other:?}"))),
-    }
-}
-
-/// `vid(LimitCell) = H("fa:vid:limit-cell:v1" ‖ account_vid)`: one cell per
-/// limited account, found by identity.
-#[must_use]
-pub fn limit_cell_vid(account: VId) -> VId {
-    let mut h = Hasher::new();
-    h.update(b"fa:vid:limit-cell:v1");
-    h.update(&account.0.to_le_bytes());
-    let d = h.finalize();
-    let mut lo = [0u8; 16];
-    lo.copy_from_slice(&d.0[..16]);
-    VId(u128::from_le_bytes(lo))
-}
-
-/// `vid(period LimitCell) = H("fa:vid:limit-period-cell:v1" ‖ account_vid ‖
-/// len ‖ period)`: one cell per period of a period-scoped (budget) limit.
-#[must_use]
-pub fn period_cell_vid(account: VId, period: &str) -> VId {
-    let mut h = Hasher::new();
-    h.update(b"fa:vid:limit-period-cell:v1");
-    h.update(&account.0.to_le_bytes());
-    h.update(
-        &u32::try_from(period.len())
-            .unwrap_or(u32::MAX)
-            .to_le_bytes(),
-    );
-    h.update(period.as_bytes());
-    let d = h.finalize();
-    let mut lo = [0u8; 16];
-    lo.copy_from_slice(&d.0[..16]);
-    VId(u128::from_le_bytes(lo))
-}
-
-/// The cell a limit judges: the lifetime cell, or the named period's cell.
-#[must_use]
-pub fn cell_vid(account: VId, period: Option<&str>) -> VId {
-    match period {
-        None => limit_cell_vid(account),
-        Some(p) => period_cell_vid(account, p),
     }
 }
 
@@ -415,37 +368,14 @@ impl LimitCell {
     /// `(net, pending_out, pending_in)` in the normal-balance sign. A cell
     /// with a negative sum is corruption; otherwise every value fits `i128`.
     pub fn availability(&self, normal: Side) -> Result<(i128, i128, i128), KernelError> {
-        if [
+        availability_of(
             self.debits_posted,
             self.credits_posted,
             self.debits_pending,
             self.credits_pending,
-        ]
-        .iter()
-        .any(|v| *v < 0)
-        {
-            return Err(KernelError::Corrupt(
-                "a limit cell sum is negative; `fa verify availability` names it".into(),
-            ));
-        }
-        let (normal_posted, opposite_posted, pending_in, pending_out) = match normal {
-            Side::Debit => (
-                self.debits_posted,
-                self.credits_posted,
-                self.debits_pending,
-                self.credits_pending,
-            ),
-            Side::Credit => (
-                self.credits_posted,
-                self.debits_posted,
-                self.credits_pending,
-                self.debits_pending,
-            ),
-        };
-        let net = normal_posted
-            .checked_sub(opposite_posted)
-            .ok_or_else(|| KernelError::Corrupt("limit cell net".into()))?;
-        Ok((net, pending_out, pending_in))
+            normal,
+        )
+        .map_err(KernelError::Corrupt)
     }
 }
 
@@ -493,29 +423,6 @@ impl Movement {
             Side::Credit => Self::add(&mut self.released_credits, m),
         }
     }
-}
-
-/// Why an entry is refused on a limited account. Amounts are mantissas in
-/// the account's unit, in its normal-balance sign; `None` is a value beyond
-/// the `i128` domain (which is itself beyond every bound).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Breach {
-    Lower {
-        bound: i128,
-        net: i128,
-        pending_out: i128,
-        outflow: u128,
-        after: Option<i128>,
-    },
-    Upper {
-        bound: i128,
-        net: i128,
-        pending_in: i128,
-        inflow: u128,
-        after: Option<i128>,
-    },
-    /// A posted or reserved sum would leave the `i128` register ceiling.
-    Ceiling,
 }
 
 /// The law: `before` moved by `m` under `limit`. `Ok(Ok(next))` is the cell
@@ -646,33 +553,6 @@ pub struct CellMove {
 pub struct Judged {
     pub moves: Vec<CellMove>,
     pub resolved_legs: Option<Vec<LegPayload>>,
-}
-
-/// The `fa:balancing:v1` extension bytes: `leg ‖ requested`.
-#[must_use]
-pub fn balancing_bytes(leg: u16, requested: i128) -> Vec<u8> {
-    let mut b = Vec::with_capacity(18);
-    b.extend_from_slice(&leg.to_le_bytes());
-    b.extend_from_slice(&requested.to_le_bytes());
-    b
-}
-
-/// The balancing request an entry carries: `Ok(None)` without the
-/// extension, `Err(why)` when its bytes are malformed.
-pub fn balancing_request(p: &EntryPayload) -> Result<Option<(u16, i128)>, String> {
-    let Some((_, b)) = p.extensions.iter().find(|(t, _)| *t == BALANCING_EXTENSION) else {
-        return Ok(None);
-    };
-    let (Ok(leg), Ok(req)) = (
-        <[u8; 2]>::try_from(b.get(..2).unwrap_or_default()),
-        <[u8; 16]>::try_from(b.get(2..).unwrap_or_default()),
-    ) else {
-        return Err(format!(
-            "the fa:balancing:v1 extension is {} bytes, not 18",
-            b.len()
-        ));
-    };
-    Ok(Some((u16::from_le_bytes(leg), i128::from_le_bytes(req))))
 }
 
 /// The request form of a balancing entry (identity, plan §5.5): its legs at

@@ -92,19 +92,19 @@ planned = false
 name = "fa-escrow"
 layer = "kernel"
 path = "crates/fa-escrow"
-planned = true
+planned = false
 
 [[crate]]
 name = "fa-palimpsest"
 layer = "kernel"
 path = "crates/fa-palimpsest"
-planned = true
+planned = false
 
 [[crate]]
 name = "fa-docket"
 layer = "evidence"
 path = "crates/fa-docket"
-planned = true
+planned = false
 
 [[crate]]
 name = "fa-notary"
@@ -140,7 +140,7 @@ planned = true
 name = "fa-steward"
 layer = "governance"
 path = "crates/fa-steward"
-planned = true
+planned = false
 
 [[crate]]
 name = "fa-formats"
@@ -152,7 +152,7 @@ planned = true
 name = "fa-verbs"
 layer = "surface"
 path = "crates/fa-verbs"
-planned = true
+planned = false
 
 [[crate]]
 name = "fa"
