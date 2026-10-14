@@ -313,7 +313,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             let total = net.checked_abs().ok_or(fa_registers::RegisterError::Overflow)?;
             let source_side = if net > 0 { Side::Credit } else { Side::Debit };
             witnesses.u64(count as u64).i128(debits).i128(credits);
-            let witness_bytes = witnesses.finish().map_err(KernelError::from)?;
+            let witness_bytes = witnesses.finish().map_err(|error| {\n                corrupt(&format!("allocation source witness encoding failed: {error}"))\n            })?;
             let source_digest = domain_digest(b"fa:balance-allocation-source:v1", &[&witness_bytes]);
             let posting = request.posting(total, source_side);
             if let Err(refusal) = posting.basis_bytes() { return Ok(Err(refusal)); }
