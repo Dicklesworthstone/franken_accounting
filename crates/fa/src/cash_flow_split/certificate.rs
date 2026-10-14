@@ -164,14 +164,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let source = match self.certify_general_ledger(cx, principal, capability, request)? {
             Ok(value) => value, Err(refusal) => return Ok(Err(refusal)),
         };
-        let report = match source.report().clone().split_cash_flow(&cx.query(), definition)? {
-            Ok(value) => value, Err(refusal) => return Ok(Err(refusal)),
-        };
-        let certificate = match CashFlowSplitCertificate::seal(source.into_source_certificate(), &report) {
-            Ok(value) => value, Err(refusal) => return Ok(Err(refusal)),
-        };
-        cx.query().checkpoint().map_err(BookError::Context)?;
-        Ok(Ok(CertifiedSplitCashFlow { report, certificate }))
+        certify_source(source, &cx.query(), definition)
     }
 
     /// Verify CURRENT Read authority and native history before recomputing each
@@ -185,24 +178,113 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let source = match self.replay_general_ledger(cx, principal, capability, &certificate.source, expected)? {
             Ok(value) => value, Err(refusal) => return Ok(Err(refusal)),
         };
-        let definition = match codec::normalize(expected_definition).map_err(as_invalid) {
+        replay_source(source, &cx.query(), certificate, expected_definition)
+    }
+}
+
+// These are the only projection/sealing and exact-output replay paths. The
+// sync and async adapters differ solely in how they obtain the native source.
+fn certify_source(
+    source: crate::general_ledger::CertifiedGeneralLedger,
+    query: &QueryCx,
+    definition: &CashFlowSplitDefinition,
+) -> Outcome<CertifiedSplitCashFlow> {
+    query.checkpoint().map_err(BookError::Context)?;
+    let report = match source.report().clone().split_cash_flow(query, definition)? {
+        Ok(value) => value, Err(refusal) => return Ok(Err(refusal)),
+    };
+    let certificate = match CashFlowSplitCertificate::seal(source.into_source_certificate(), &report) {
+        Ok(value) => value, Err(refusal) => return Ok(Err(refusal)),
+    };
+    query.checkpoint().map_err(BookError::Context)?;
+    Ok(Ok(CertifiedSplitCashFlow { report, certificate }))
+}
+
+fn replay_source(
+    source: GeneralLedger,
+    query: &QueryCx,
+    certificate: &CashFlowSplitCertificate,
+    expected_definition: &CashFlowSplitDefinition,
+) -> Outcome<SplitCashFlow> {
+    query.checkpoint().map_err(BookError::Context)?;
+    let definition = match codec::normalize(expected_definition).map_err(as_invalid) {
+        Ok(value) => value, Err(refusal) => return Ok(Err(refusal)),
+    };
+    if definition != certificate.definition {
+        return Ok(Err(invalid("delivered cash portions or reasons differ from independent expected decisions")));
+    }
+    if let Err(refusal) = certificate.canonical_bytes() { return Ok(Err(refusal)); }
+    let report = match source.split_cash_flow(query, &definition)? {
+        Ok(value) => value, Err(refusal) => return Ok(Err(as_invalid(refusal))),
+    };
+    let output = match report.canonical_bytes().map_err(as_invalid) {
+        Ok(value) => value, Err(refusal) => return Ok(Err(refusal)),
+    };
+    if output != certificate.output {
+        return Ok(Err(invalid("cash split portions, original citations or exact amounts did not replay")));
+    }
+    query.checkpoint().map_err(BookError::Context)?;
+    Ok(Ok(report))
+}
+
+impl crate::Book {
+    /// Read split cash through this synchronous book's native ledger. The
+    /// caller's query context meters the pure projection; native reads retain
+    /// this Book's existing runtime/context. A cancelled caller is refused
+    /// before source observation. No runtime is created by this adapter.
+    pub fn split_cash_flow(
+        &self,
+        query: &QueryCx,
+        principal: VId,
+        capability: &Capability,
+        request: &RollForwardRequest,
+        definition: &CashFlowSplitDefinition,
+    ) -> Outcome<SplitCashFlow> {
+        query.checkpoint().map_err(BookError::Context)?;
+        let source = match self.general_ledger(principal, capability, request)? {
             Ok(value) => value, Err(refusal) => return Ok(Err(refusal)),
         };
-        if definition != certificate.definition {
-            return Ok(Err(invalid("delivered cash portions or reasons differ from independent expected decisions")));
-        }
-        if let Err(refusal) = certificate.canonical_bytes() { return Ok(Err(refusal)); }
-        let report = match source.split_cash_flow(&cx.query(), &definition)? {
-            Ok(value) => value, Err(refusal) => return Ok(Err(as_invalid(refusal))),
-        };
-        let output = match report.canonical_bytes().map_err(as_invalid) {
+        source.split_cash_flow(query, definition)
+    }
+
+    /// Certify with current Read+Produce authority using exactly the same
+    /// native source, split projection, encoding and seal as AsyncBook.
+    /// This returns a portable confidential artifact without a book write.
+    pub fn certify_split_cash_flow(
+        &self,
+        query: &QueryCx,
+        principal: VId,
+        capability: &Capability,
+        request: &RollForwardRequest,
+        definition: &CashFlowSplitDefinition,
+    ) -> Outcome<CertifiedSplitCashFlow> {
+        query.checkpoint().map_err(BookError::Context)?;
+        let source = match self.certify_general_ledger(principal, capability, request)? {
             Ok(value) => value, Err(refusal) => return Ok(Err(refusal)),
         };
-        if output != certificate.output {
-            return Ok(Err(invalid("cash split portions, original citations or exact amounts did not replay")));
-        }
-        cx.query().checkpoint().map_err(BookError::Context)?;
-        Ok(Ok(report))
+        certify_source(source, query, definition)
+    }
+
+    /// Replay only after current authority, the independently fixed request,
+    /// and the complete native source pass the existing Book verifier. The
+    /// common projection then checks every expected portion, reason and byte.
+    #[allow(clippy::too_many_arguments)]
+    pub fn replay_split_cash_flow(
+        &self,
+        query: &QueryCx,
+        principal: VId,
+        capability: &Capability,
+        certificate: &CashFlowSplitCertificate,
+        expected: &RollForwardRequest,
+        expected_definition: &CashFlowSplitDefinition,
+    ) -> Outcome<SplitCashFlow> {
+        query.checkpoint().map_err(BookError::Context)?;
+        let source = match self.replay_general_ledger(
+            principal, capability, &certificate.source, expected,
+        )? {
+            Ok(value) => value, Err(refusal) => return Ok(Err(refusal)),
+        };
+        replay_source(source, query, certificate, expected_definition)
     }
 }
 
