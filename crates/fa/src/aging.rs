@@ -14,6 +14,13 @@ pub use certificate::{
     MAX_AGING_BUCKET_BOUNDS, MAX_AGING_CERTIFICATE_BYTES,
 };
 
+mod reconciliation;
+pub use reconciliation::portfolio;
+pub use reconciliation::{
+    AgingReconciliation, AgingReconciliationCertificate, AgingReconciliationRequest,
+    AgingReconciliationRow, CertifiedAgingReconciliation, MAX_AGING_RECONCILIATION_BYTES,
+};
+
 pub use fa_registers::open_items::aging::{
     AgedOpenItem, AgingAmounts, AgingBand, AgingBuckets, AgingCell, AgingTotal, EffectiveDateAging,
 };

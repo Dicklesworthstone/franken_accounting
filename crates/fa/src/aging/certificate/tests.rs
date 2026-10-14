@@ -698,3 +698,6 @@ fn backdated_application_cutoff_is_refused_instead_of_losing_balances() {
     );
     assert_eq!(h.head(), head);
 }
+
+#[path = "export_tests.rs"]
+mod export_tests;

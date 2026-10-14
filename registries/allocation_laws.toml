@@ -1,0 +1,42 @@
+# Plan §6.3 / fa-joq. Executable arithmetic laws, not posting authorization.
+# IDs follow the plan's catalog order. 4 (Tiered) and 6 (ByUnitsThenValue)
+# remain unsupported and are deliberately absent, not aliases of other laws.
+# Target order is part of the basis: never sort a caller's waterfall or ties.
+schema_version = 1
+max_targets = 4096
+
+[[law]]
+id = 1
+version = 1
+name = "LargestRemainder"
+basis = "weights"
+ordering = "input-order; remainder-descending; ties-lowest-index"
+rounding = "floor-magnitude; distribute-one-unit"
+signed = "magnitude-then-restore-sign"
+
+[[law]]
+id = 2
+version = 1
+name = "ProRataResidualToNamed"
+basis = "weights"
+ordering = "input-order; explicit-recipient-id"
+rounding = "explicit-registered-rounding-law"
+signed = "signed-rounding; signed-residual-to-recipient"
+
+[[law]]
+id = 3
+version = 1
+name = "Waterfall"
+basis = "native-mantissa-caps"
+ordering = "input-order; fill-earlier-cap-first"
+rounding = "none"
+signed = "magnitude-then-restore-sign"
+
+[[law]]
+id = 5
+version = 1
+name = "EqualSplitResidualFirst"
+basis = "one-per-target"
+ordering = "input-order; entire-residual-to-first"
+rounding = "truncate-magnitude"
+signed = "magnitude-then-restore-sign"

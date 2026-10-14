@@ -42,6 +42,8 @@
 //!   trusted checkpoint's prefix, in journal order, so a scope predicate
 //!   over them is complete for that prefix — and for no later known-at.
 
+pub mod production;
+
 use core::fmt;
 
 use crate::blake3::hex;
