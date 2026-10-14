@@ -159,6 +159,205 @@ exactly `registers_advanced` was added (34 events to 35); every old event,
 ordering, shape and envelope field was unchanged. The corrected Rust fixtures
 and final integration gate still require execution.
 
+## Reference period laws shared the production implementation (fa-vfu)
+
+Source review found that the reference oracle called the same admission,
+transition and calendar functions as the kernel. Agreement could
+therefore preserve a wrong accounting law. The oracle now contains a literal
+Appendix C table, explicit transition edges, kind restrictions and a linear
+half-open period resolver, retaining its unique-match check. Special-period
+classes retain the independent raw registry reader. Its application law and open-item fold use its own
+limb arithmetic, narrowing only admitted, bounded output values.
+
+New tests compare every posting class/state/disposition, expiry cell, period
+kind and transition action. A planted Original/SoftClosed production cell
+admits without `post_softclosed`; the oracle receives that same matrix as
+policy data and must refuse FA-REF-011, then post when authority is supplied.
+A separate real-kernel differential checks that refusal without mutation and
+the subsequent successful posting and register fold. Application tests cover
+joint over-application, exact i128 leg bounds and an intermediate above i128.
+These reference and focused kernel tests passed in build 1099 on 2026-10-12;
+this was not a full mutant-kernel run.
+
+Calendar generation and fiscal-year selection now walk civil days using
+independent month/week boundaries and year-end candidate enumeration. Source
+tests cover each calendar family, all year-end months and weekdays, both
+year-end rules, 52/53-week years, century dates and DateDay endpoints. These
+tests still share primitive date operations; policy parsing also remains
+shared. Reparenting onto current main also requires the calendar prerequisite:
+reject unsupported adjustment counts instead of clamping, validate directly
+constructed month fields, check adjacent-year arithmetic, and continue past
+an unrepresentable adjacent fiscal year when a valid containing year exists.
+These use main's checked date helpers and preserve its newer civil-date APIs.
+Constructor and boundary regressions passed in build 1099 (40 fa-time unit
+tests and 28 fa-reference unit tests). Integrated full-gate proof remains pending.
+
+The differential request adapter also replaced each declared leg and
+settlement unit with USD. It now preserves those units. A fixed 32-seed
+campaign exercises USD, JPY, BTC and ETH through actual kernel postings,
+applications, reversals, retries and register folds, with literal balance
+checkpoints and isolated per-unit imbalance refusals. After representable
+near-boundary totals, an additional balanced posting crosses a register
+column to i128::MAX + 1: the oracle retains that exact value, while the
+production fold, report and maintainer must refuse overflow without publishing
+partial cached state. This documents the current report bound; it does not
+claim arbitrary-size production registers. All 32 seeds passed in build 1099.
+The seven longer generated-history tests now each run 32 fixed distinct
+seeds, with the original seed first, unchanged assertions and a replay command
+printed for each seed. Their coverage floors remain intact; any newly exposed
+failure must be investigated rather than excluded. Build 1099 passed the
+limited-account, period-authority and per-entity campaigns, but failed four
+other campaigns as detailed below. The 10k-seed worker campaign and actual
+mutant-kernel receipts remain open.
+
+Repeated oracle `create_periods` also overwrote transitioned period states.
+It now checks all identities before mutation and returns a typed error for
+duplicates or invalid ranges. The kernel comparison requires its actual
+AlreadyLive refusal with unchanged period rows and frontier, followed by
+successful creation of another year and the original authorized posting.
+Invalid-year controls retain the oracle's existing definitions and states.
+
+A per-crate Clippy configuration now lists the eight production calendar,
+resolution, transition and admission methods. Normal oracle library builds
+forbid those calls; existing comparison tests expect each configured lint
+separately, including an alias and a re-export. The mandatory Clippy pass
+must execute before this boundary can be claimed enforced; that Clippy run
+remains pending. No valid-history arithmetic panic has been
+demonstrated; the arithmetic change removes shared fixed-width decisioning.
+
+### Public register-cell subtraction (fa-645, 2026-10-11)
+
+Source review found unchecked subtraction in `Cell::net()`. Valid folded
+cells have nonnegative columns and a representable difference, but callers
+can construct public cells such as `(debits = i128::MAX, credits = -1)`.
+The method now returns `RegisterError::Overflow` for an unrepresentable
+difference, and its migration-test caller explicitly requires a valid net.
+New tests pin exact positive and negative boundaries, cancellation, and both
+overflow directions. Build 1099 passed all 22 fa-registers unit tests and all
+14 migration tests. The complete gate remains pending. No journal-produced cell
+overflow or enlargement of the register's column bound is claimed.
+
+### Generated-history failures exposed by the wider campaign (2026-10-12)
+
+Build 1099 on `74c69f9` exited 101: 127 tests passed and four differential
+tests failed. The original transcript is retained; no seed or assertion was
+removed. These were caller/coverage failures, not observed engine/oracle
+disagreements:
+
+- Seed `9e3779b97f4a7c15` asked `explain_balance` for summary account `1`
+  and unwrapped its `InvalidSelection`. The test now asserts that refusal
+  explicitly and retains every leaf-account contribution and history check.
+- Seed `7135eed50fa0c7f2` recorded no Closed-period expiry. Random manual
+  resolutions could consume the planted holds, and final-drain expiries were
+  omitted from the state counters. Additional real holds now reach their
+  exact deadline immediately after close/lock and must expire through the
+  actual sweep. Every returned final-drain batch is counted as well.
+- Seed `0badc0de5eed124a` hit an exact budget boundary only once. After all
+  640 original generated steps, two untouched periods receive real exact-cap
+  holds and one-unit-over-cap refusals, checked against the oracle and stored
+  cells; the refusals must preserve the frontier.
+- Seed `5c4ed01ed0af7e75` minted only one reversal at Open. Two additional
+  March accruals scheduled for April 1 now become due before April opens;
+  the Open helper must return both actual reversal identities.
+
+The original 32 seeds, generated step counts and coverage floors remain.
+The repairs are awaiting a new runtime verdict and do not close `fa-vfu`.
+
+Build 1110 on `095a797` exited 101 on 2026-10-12: 129 tests passed and
+two differential tests failed. All 32 seeds passed for the multi-unit,
+period-authority, budget, limited-account, scheduled-reversal and per-entity
+campaigns. All reference, register-cell, migration and calendar tests passed.
+The two remaining failures exposed additional generator coverage gaps:
+
+- Seed `9e3779b97f4a7c16` posted applications but no random reversal undid
+  one. After all 640 generated steps, a history with zero undos now reverses
+  a real applying receipt in untouched June. The test checks exact released
+  amounts against both implementations, then verifies projections and open
+  items. The later corruption probe retains its live application targets.
+- Seed `7135eed50fa0c80b` exercised `FA-REF-097` once, below its floor of
+  three. After all 600 generated steps, missing cases now create distinct
+  timed holds in open March and reach their exact deadline. Posts must
+  refuse without changing either journal; Voids must then succeed using
+  the refused request's key. Due backlogs and pending registers are checked
+  against the independent oracle before and after resolution.
+
+Neither failure showed an engine/oracle disagreement before the coverage
+assertion. All original seeds, random draws, floors and assertions remain.
+The two affected campaign wrappers now retain each panic diagnostic and run
+the remaining independent histories before failing with every failed seed.
+No failed history can become a passing test. These two new repairs have
+passed source review and static checks; their runtime verdict, the actual
+Clippy boundary checks and the final integrated gate remain pending.
+
+### Reversal ancestry can strand a live application (2026-10-12, fa-wck)
+
+Build 1120 on `791216f` ran all 32 generated histories. Twelve failed:
+ten stopped at evidence-refusal coverage floors, one lacked reversal-shape
+refusal `FA-REF-051`, and seed `9e3779b97f4a7c2d` exposed a product defect.
+At commit sequence 182, open-item verification found entry
+`284225560683079585833914309786111446645`, leg 0, with an applied mirror
+of 57,917 but a literal journal fold of zero. The kernel and reference
+admission had agreed before this independent mirror check failed. The
+separate timed-expiry campaign passed all 32 seeds, including the formerly
+deficient `7135eed50fa0c80b`. Cargo reported one passed test and one failed
+test after 2,703.83 seconds of test execution; the complete run remains red.
+
+Source inspection identifies a matching counterexample: reverse an invoice,
+reverse that reversal to revive the invoice, apply a payment to it, then
+reverse the second reversal. Admission previously checked only the immediate
+target's legs. A reversal cannot receive applications, so its zero mirrors
+hid the live application on the invoice ancestor. Both literal folds correctly
+exclude that now-inactive invoice. The old log does not record this particular
+entry's complete lineage, so attribution of that exact runtime identity to
+this sequence remains an inference until replay.
+
+The repair witnesses and authenticates the full reversal ancestry before
+admission and applies the existing live-application refusal to every affected
+ancestor. The reference independently traverses its journal indices and
+counts applications from its own fold. A short real-kernel regression requires
+the third reversal to refuse without writes, then allows the identical
+proposal after the payment is reversed. Direct receipt undo remains supported;
+unsupported reapplication by reversing its reversal remains refused.
+
+An existing 67-reversal test explicitly required the defective admission.
+Its correction preserves all 66 lawful reversals and the successful payment,
+adds the exact `FA-REF-073` refusal and unchanged frontier/mirror, reverses
+the actual payment, requires the same 67th proposal to commit, and retains
+the final `FA-REF-070` refusal on another payment. This changes a demonstrably
+wrong expectation; it does not drop the positive chain or weaken the mirror
+verifier. Independent source review found no blocker. On `b1a8d83`, both
+reversal regressions and the SoftClosed and reversal-period controls passed
+in remote build 1129. Three isolated production mutations then failed their
+intended real-kernel differential, after the independent reference decision
+had already been asserted:
+
+- Build 1131 stopped ancestry inspection at the immediate target. The kernel
+  committed the third reversal at sequence 14 instead of refusing FA-REF-073.
+- Build 1132 changed Original/SoftClosed admission to unconditional admission.
+  The kernel committed at sequence 9 instead of refusing FA-REF-011.
+- Build 1133 removed the production reversal-period check. The kernel
+  committed an April target's reversal in March at sequence 16 instead of
+  refusing FA-REF-053.
+
+Each mutant was the sole source change and exited 101 from the intended
+assertion, not setup or compilation. After removal of every mutation, the
+source was byte-identical to `b1a8d83`; all four positive controls passed
+again in build 1134. The wider repaired campaign, mandatory Clippy boundary
+checks and final integrated gate remain pending. These results are bounded
+runtime evidence, not a general proof or a closure of `fa-vfu`.
+
+The generator's separate coverage gaps are supplemented only after all
+640 original draws, in untouched August. Each deficient evidence case must
+produce the independent evidence oracle's actual refusal without changing
+frontier, journal, or folds; corrected evidence must then post under the same
+key. The missing reversal-shape case uses a balanced same-period reversal
+with the wrong leaf account, followed by its exact side-swap under the same
+refused key. All 32 seeds, original draws and coverage floors remain. The
+SoftClosed mutation probe also now captures both kernel and independent
+oracle verdicts before asserting refusal, so an admitted mutant cannot panic
+before the reference decision is observed. The coverage supplements still
+await their full generated-history runtime verdict.
+
 ## 2026-10-12 — RECON catch-up: certificate row capacity and the MCP error contract
 
 - **Retained certificates outgrew one substrate row.** A comparative statement
@@ -201,13 +400,36 @@ and final integration gate still require execution.
   gate on that tree (538af18, run 3 on hz4) passed every step with 772
   tests green and reached origin/staging at 16:39:42Z on 2026-10-12.
 
-### Public register-cell subtraction (fa-645, 2026-10-11)
 
-Source review found unchecked subtraction in `Cell::net()`. Valid folded
-cells have nonnegative columns and a representable difference, but callers
-can construct public cells such as `(debits = i128::MAX, credits = -1)`.
-The method now returns `RegisterError::Overflow` for an unrepresentable
-difference, and its migration-test caller explicitly requires a valid net.
-New tests pin exact positive and negative boundaries, cancellation, and both
-overflow directions. No journal-produced cell overflow or enlargement of the
-register's column bound is claimed.
+## 2026-10-12 — Bundle producer and verifier size admission (fa-5hs)
+
+Source review found that external evidence can exceed the independent
+verifier's 16 MiB inline-document bound, while the producer cloned those
+bytes into a bundle without that admission check. Balance requests also
+lacked the verifier's 4096-proof bound. This was a source finding; no
+pre-repair runtime verdict is claimed.
+
+The producer now refuses these two over-limit requests with FA-REF-129.
+Balance count is checked before requesting cited documents. Inline size is
+checked against verified metadata after authority, revocation and disclosure
+admission, before fetching the external blob, and again before assembly
+hashes or clones supplied document bytes. A redacted view never invokes the
+full-document callback. Stub production still reads and verifies available
+source bytes; it does not fabricate evidence when the blob is missing.
+
+The verifier's bounds and decoder behavior remain unchanged. Independent
+production constants are compared in dev-only contract tests, preserving
+the verifier's empty normal dependency set. Tests retain the exact 16 MiB
+inline and 4096-proof positive boundaries, the 16 MiB-plus-one stub positive,
+missing-blob and denied-authority precedence, and independent over-limit
+decoder refusals. A fresh large-document stub and its signed receipt are
+also passed to Cargo's built standalone verifier, with a one-byte commitment
+mutation that must fail only the public-commitment check. These new runtime
+tests and the final integrated gate have not executed yet.
+
+The first static scan of the partial scratch copy classified an unchanged
+genesis integration-test panic as library code because that crate's Cargo
+manifest was absent. Supplying its exact existing manifest changed the
+classification; the same Rust source then scanned with zero critical issues.
+No test assertion, scanner rule or exclusion changed. Both transcripts are
+retained; this static result does not establish runtime correctness.

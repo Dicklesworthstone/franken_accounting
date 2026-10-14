@@ -6522,7 +6522,7 @@ mod tests {
     fn a_document_past_the_inline_bound_lives_in_the_blob_store_and_every_read_verifies() {
         let dir = std::env::temp_dir().join(format!("fa-blobs-{}", std::process::id()));
         let keys = BookKeys::generate(&Entropy::deterministic(11)).unwrap();
-        let (spec, _usd) = spec(Id128([0x48; 16]));
+        let (spec, usd) = spec(Id128([0x48; 16]));
         let principal = VId(3);
         let document = |bytes: Vec<u8>| fa_journal::Document {
             book_id: spec.book_id,
@@ -6569,6 +6569,77 @@ mod tests {
             book.read_document_for(&reader, &oid).unwrap().unwrap(),
             fa_journal::DocumentRead::Full(big.clone())
         );
+        // Production consumes this real external document. The stub
+        // verifies, while inline admission runs before fetching its bytes.
+        let day = DateDay::from_ymd(2026, 3, 15).unwrap();
+        book.install_chart(&chart(usd), principal, day, b"bundle-chart")
+            .unwrap()
+            .unwrap();
+        let (_, periods) = book.create_periods(2026).unwrap();
+        let march = periods
+            .iter()
+            .find(|p| p.contains(day) && p.kind == PeriodKind::Normal)
+            .unwrap()
+            .code
+            .clone();
+        book.transition_period(
+            &march,
+            PeriodTransition::Open,
+            principal,
+            1,
+            day,
+            b"bundle-open",
+            &Capability::embedded(principal, &["close"]).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+        post_rent_citing(
+            &mut book,
+            usd,
+            principal,
+            day,
+            b"bundle-rent",
+            150_000,
+            &big,
+        )
+        .unwrap()
+        .unwrap();
+        book.checkpoint(
+            principal,
+            &Capability::embedded(principal, &["witness"]).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+        let producer = Capability::embedded(principal, &["produce", "read", "privileged"]).unwrap();
+        let request = fa_notary::BundleRequest {
+            scope: fa_notary::BundleScope::Prefix,
+            balances: Vec::new(),
+            inline_documents: false,
+        };
+        let before = book.head().unwrap();
+        let stubbed = book
+            .produce_bundle(principal, &producer, None, &request)
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let report = fa_verify::verify_bundle(
+            &stubbed.bundle.bytes,
+            &[book.checkpoint_public_key()],
+            Some(&stubbed.receipt),
+        )
+        .unwrap();
+        assert!(report.verified(), "{:#?}", report.checks);
+        assert_eq!((report.summary.documents, report.summary.inline), (1, 0));
+        let inline = fa_notary::BundleRequest {
+            inline_documents: true,
+            ..request.clone()
+        };
+        let r = book
+            .produce_bundle(principal, &producer, None, &inline)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((r.code, r.exit), ("FA-REF-129", 3), "{r}");
+        assert_eq!(book.head().unwrap(), before);
         // A byte changed on disk: refused (exit 8), never the changed bytes.
         let path = dir.join("blobs").join(&locator[..2]).join(&locator);
         let mut changed = big.bytes.clone();
@@ -6580,6 +6651,26 @@ mod tests {
         std::fs::rename(&path, path.with_extension("moved")).unwrap();
         let r = book.read_document_for(&reader, &oid).unwrap().unwrap_err();
         assert_eq!((r.code, r.exit), ("FA-REF-116", 5), "{r}");
+        // Inline admission precedes the now-proven missing blob. Stub
+        // production still fetches/verifies bytes; it cannot invent evidence.
+        let r = book
+            .produce_bundle(principal, &producer, None, &inline)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((r.code, r.exit), ("FA-REF-129", 3), "{r}");
+        let r = book
+            .produce_bundle(principal, &producer, None, &request)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((r.code, r.exit), ("FA-REF-116", 5), "{r}");
+        let no_read = Capability::embedded(principal, &["produce", "privileged"]).unwrap();
+        let r = book
+            .produce_bundle(principal, &no_read, None, &inline)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((r.code, r.exit), ("FA-REF-011", 7), "{r}");
+        assert!(!r.message.contains("16777217"), "{r}");
+        assert_eq!(book.head().unwrap(), before);
     }
 
     #[test]

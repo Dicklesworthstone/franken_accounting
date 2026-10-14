@@ -2986,6 +2986,368 @@ fn bundles_of_every_scope_verify_predicate_by_predicate_and_reproduce_byte_for_b
     assert_eq!(two_documents, 3, "utilities, the hold, and the later rent");
 }
 
+// ---- bundle wire-size boundaries -------------------------------------------
+
+/// Exercise the admitted boundary through both independent codecs with a
+/// real external document, signed checkpoint and production receipt.
+#[test]
+fn an_external_document_at_the_bundle_inline_limit_verifies_with_its_bytes() {
+    const INLINE_BOUND: usize = 16 * 1024 * 1024;
+    let mut h = harness();
+    let ctx = h.ctx();
+    let directory = h
+        .runtime
+        .block_on(fa_journal::blob::DurableDirectory::create(
+            &ctx.commit(),
+            MemVfs::new().expect("blob memvfs"),
+            std::path::Path::new("bundle-exact-limit-blobs"),
+        ))
+        .expect("durable blob directory");
+    let store = BlobStore::open(1, directory).expect("registered blob store");
+    let doc = Document {
+        book_id: h.book.book_id,
+        kind: 1,
+        mime: "application/octet-stream".into(),
+        grade: 3,
+        retrieved_by: PRINCIPAL,
+        bytes: vec![b'b'; INLINE_BOUND],
+    };
+    let added = h
+        .runtime
+        .block_on(add_document_external(
+            &mut h.db, &ctx, &h.book, &store, &doc,
+        ))
+        .expect("kernel")
+        .expect("the exact-bound external document is admitted");
+    let record = document_record(&h.db, &added.oid)
+        .expect("stored document")
+        .expect("document exists");
+    assert_eq!(record.size, INLINE_BOUND as u64);
+    assert!(matches!(record.storage, Storage::External { store: 1, .. }));
+    h.evidence = vec![doc.evidence_ref(1)];
+    h.post(h.rent, 1_000, b"exact-limit-bundle-document");
+    let c = h.checkpointed();
+    let (journal, checkpoint) = bundle_basis(&h.db, &ctx, &h.book, &c.stored, &h.signer)
+        .expect("kernel")
+        .expect("the real signed checkpoint is reproduced");
+    let request = BundleRequest {
+        scope: BundleScope::Prefix,
+        balances: Vec::new(),
+        inline_documents: true,
+    };
+    let cited = fa_notary::bundle::cited_documents(&journal, &request)
+        .expect("kernel")
+        .expect("the scope is admitted");
+    assert_eq!(cited, vec![added.oid]);
+    let fetched = h
+        .runtime
+        .block_on(fetch_document(&h.db, &ctx, &store, &added.oid))
+        .expect("kernel")
+        .expect("verified external read")
+        .expect("the cited document exists");
+    assert_eq!(fetched, doc, "the real external blob is read byte for byte");
+    let documents = std::collections::BTreeMap::from([(added.oid, DocumentRead::Full(fetched))]);
+    let before = h.db.frontier().unwrap();
+    let bundle = fa_notary::bundle::assemble(&journal, &checkpoint, &request, &documents)
+        .expect("kernel")
+        .expect("the producer admits exactly 16 MiB inline");
+    let receipt = h.receipt(&bundle, before);
+    let report = fa_verify::verify_bundle(&bundle.bytes, &[h.signer.public_key()], Some(&receipt))
+        .expect("the independent decoder admits exactly 16 MiB inline");
+    assert!(report.verified(), "{:#?}", not_passed(&report));
+    assert_eq!((report.summary.documents, report.summary.inline), (1, 1));
+    assert_eq!(report.digest, bundle.digest);
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+/// A real external document remains usable as evidence above the inline
+/// bound: inlining refuses, and its public stub verifies independently.
+#[test]
+fn an_external_document_above_the_bundle_inline_limit_refuses_then_verifies_as_a_stub() {
+    const INLINE_BOUND: usize = 16 * 1024 * 1024;
+    assert_eq!(fa_notary::bundle::MAX_INLINE_DOCUMENT_BYTES, INLINE_BOUND);
+    assert_eq!(
+        fa_notary::bundle::MAX_INLINE_DOCUMENT_BYTES,
+        fa_verify::bundle::MAX_DOCUMENT_BYTES
+    );
+    let mut h = harness();
+    let ctx = h.ctx();
+    let directory = h
+        .runtime
+        .block_on(fa_journal::blob::DurableDirectory::create(
+            &ctx.commit(),
+            MemVfs::new().expect("blob memvfs"),
+            std::path::Path::new("bundle-size-blobs"),
+        ))
+        .expect("durable blob directory");
+    let store = BlobStore::open(1, directory).expect("registered blob store");
+    let doc = Document {
+        book_id: h.book.book_id,
+        kind: 1,
+        mime: "application/octet-stream".into(),
+        grade: 3,
+        retrieved_by: PRINCIPAL,
+        bytes: vec![b'x'; INLINE_BOUND + 1],
+    };
+    let added = h
+        .runtime
+        .block_on(add_document_external(
+            &mut h.db, &ctx, &h.book, &store, &doc,
+        ))
+        .expect("kernel")
+        .expect("the external document is admitted");
+    let record = document_record(&h.db, &added.oid)
+        .expect("stored document")
+        .expect("document exists");
+    assert_eq!(record.size, (INLINE_BOUND + 1) as u64);
+    assert!(matches!(record.storage, Storage::External { store: 1, .. }));
+    h.evidence = vec![doc.evidence_ref(1)];
+    h.post(h.rent, 1_000, b"large-bundle-document");
+    let c = h.checkpointed();
+    let (journal, checkpoint) = bundle_basis(&h.db, &ctx, &h.book, &c.stored, &h.signer)
+        .expect("kernel")
+        .expect("the real checkpoint is reproduced");
+    let mut request = BundleRequest {
+        scope: BundleScope::Prefix,
+        balances: Vec::new(),
+        inline_documents: true,
+    };
+    let cited = fa_notary::bundle::cited_documents(&journal, &request)
+        .expect("kernel")
+        .expect("the scope is admitted");
+    assert_eq!(cited, vec![added.oid]);
+    let mut documents = std::collections::BTreeMap::new();
+    for oid in cited {
+        let fetched = h
+            .runtime
+            .block_on(fetch_document(&h.db, &ctx, &store, &oid))
+            .expect("kernel")
+            .expect("verified external read")
+            .expect("the cited document exists");
+        assert_eq!(fetched, doc, "the real blob is read byte for byte");
+        documents.insert(oid, DocumentRead::Full(fetched));
+    }
+    let before = h.db.frontier().unwrap();
+    let refusal = fa_notary::bundle::assemble(&journal, &checkpoint, &request, &documents)
+        .expect("kernel")
+        .expect_err("the verifier cannot decode an oversized inline document");
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-129", 3));
+    assert!(refusal.message.contains(&(INLINE_BOUND + 1).to_string()));
+    assert!(refusal.message.contains(&INLINE_BOUND.to_string()));
+    assert!(refusal.fix.contains("inline_documents=false"));
+    assert_eq!(h.db.frontier().unwrap(), before);
+
+    request.inline_documents = false;
+    let bundle = fa_notary::bundle::assemble(&journal, &checkpoint, &request, &documents)
+        .expect("kernel")
+        .expect("the oversized document can be represented by its stub");
+    let receipt = h.receipt(&bundle, before);
+    let report = fa_verify::verify_bundle(&bundle.bytes, &[h.signer.public_key()], Some(&receipt))
+        .expect("the independent verifier decodes the bundle");
+    assert!(report.verified(), "{:#?}", not_passed(&report));
+    assert_eq!((report.summary.documents, report.summary.inline), (1, 0));
+    assert_eq!(report.digest, bundle.digest);
+    assert_eq!(h.db.frontier().unwrap(), before);
+
+    // Execute Cargo's exact standalone binary on the freshly produced
+    // large-document stub, its signed receipt and the fixture owner's key.
+    let directory = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        "fa-notary-large-stub-binary-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&directory).expect("binary test directory");
+    let bundle_path = directory.join("large-stub.fab");
+    let receipt_path = directory.join("large-stub.receipt");
+    let key_path = directory.join("checkpoint-key.hex");
+    let key = fa_verify::blake3::hex(&h.signer.public_key());
+    std::fs::write(&bundle_path, &bundle.bytes).expect("write the real bundle");
+    std::fs::write(&receipt_path, &receipt).expect("write its signed receipt");
+    std::fs::write(&key_path, &key).expect("write the matching public key");
+    let positive = std::process::Command::new(env!("CARGO_BIN_FILE_FA_VERIFY"))
+        .arg("bundle")
+        .arg(&bundle_path)
+        .arg("--key")
+        .arg(std::fs::read_to_string(&key_path).expect("read the public key"))
+        .arg("--receipt")
+        .arg(&receipt_path)
+        .arg("--json")
+        .output()
+        .expect("run the standalone verifier");
+    assert_eq!(positive.status.code(), Some(0), "{positive:?}");
+    assert!(positive.stderr.is_empty(), "{positive:?}");
+    let stdout = String::from_utf8(positive.stdout).expect("verifier JSON is UTF-8");
+    assert_eq!(stdout.lines().count(), 1, "{stdout}");
+    assert!(
+        stdout.starts_with(
+            "{\"v\":1,\"tool\":\"fa-verify\",\"command\":\"bundle\",\"verdict\":\"verified\","
+        ),
+        "{stdout}"
+    );
+    assert!(stdout.contains("\"documents\":1,\"inline\":0,"), "{stdout}");
+    assert!(
+        stdout.contains(
+            "\"check\":\"production_receipt\",\"scope\":\"production\",\"result\":\"pass\""
+        ),
+        "{stdout}"
+    );
+    assert_eq!(stdout.matches("\"result\":\"fail\"").count(), 0, "{stdout}");
+    assert_eq!(
+        stdout.matches("\"result\":\"unrun\"").count(),
+        0,
+        "{stdout}"
+    );
+
+    let mut cut = Cut::of(&bundle.bytes);
+    assert_eq!(cut.bytes(), bundle.bytes, "the unmodified cut is lossless");
+    assert_eq!(cut.entries.iter().map(|e| e.stubs.len()).sum::<usize>(), 1);
+    let entry = cut
+        .entries
+        .iter_mut()
+        .find(|entry| !entry.stubs.is_empty())
+        .expect("the posted entry cites the external document");
+    let stub = &mut entry.stubs[0];
+    assert!(
+        stub.4.is_none(),
+        "the document is represented only by its stub"
+    );
+    assert_eq!(stub.2, (INLINE_BOUND + 1) as u64);
+    stub.3[0] ^= 1;
+    let expected_subject = format!(
+        "document {} of leaf {} (not included)",
+        fa_verify::blake3::hex(&stub.0),
+        entry.leaf_index
+    );
+    let expected_reason = format!(
+        "kind {}, length {} and chunk root {} commit to {}, not {}",
+        stub.1,
+        stub.2,
+        fa_verify::blake3::hex(&stub.3),
+        fa_verify::blake3::hex(&fa_verify::document::commit_of(stub.1, stub.2, &stub.3)),
+        fa_verify::blake3::hex(&stub.0)
+    );
+    let corrupted = cut.bytes();
+    assert_eq!(corrupted.len(), bundle.bytes.len());
+    assert_eq!(
+        corrupted
+            .iter()
+            .zip(&bundle.bytes)
+            .filter(|(changed, original)| changed != original)
+            .count(),
+        1,
+        "only one chunk-root byte changes"
+    );
+    // Omit the receipt so its digest binding cannot mask the independent
+    // public-commitment predicate being tested.
+    let failed = fa_verify::verify_bundle(&corrupted, &[h.signer.public_key()], None)
+        .expect("the one-byte corruption preserves the wire format");
+    assert_eq!(
+        not_passed(&failed),
+        vec![(
+            "public_commitment",
+            expected_subject.clone(),
+            expected_reason.clone()
+        )]
+    );
+    let corrupted_path = directory.join("large-stub-corrupted.fab");
+    std::fs::write(&corrupted_path, &corrupted).expect("write the one-byte negative");
+    let negative = std::process::Command::new(env!("CARGO_BIN_FILE_FA_VERIFY"))
+        .arg("bundle")
+        .arg(&corrupted_path)
+        .arg("--key")
+        .arg(&key)
+        .arg("--json")
+        .output()
+        .expect("run the same standalone verifier on the negative");
+    assert_eq!(negative.status.code(), Some(8), "{negative:?}");
+    assert!(negative.stderr.is_empty(), "{negative:?}");
+    let stdout = String::from_utf8(negative.stdout).expect("verifier JSON is UTF-8");
+    assert_eq!(stdout.lines().count(), 1, "{stdout}");
+    assert!(
+        stdout.starts_with(
+            "{\"v\":1,\"tool\":\"fa-verify\",\"command\":\"bundle\",\"verdict\":\"failed\","
+        ),
+        "{stdout}"
+    );
+    assert_eq!(stdout.matches("\"result\":\"fail\"").count(), 1, "{stdout}");
+    assert_eq!(
+        stdout.matches("\"result\":\"unrun\"").count(),
+        0,
+        "{stdout}"
+    );
+    let expected_check = format!(
+        "{{\"check\":\"public_commitment\",\"scope\":\"document\",\"result\":\"fail\",\"detail\":{{\"subject\":\"{expected_subject}\"}},\"reason\":\"{expected_reason}\"}}"
+    );
+    assert!(stdout.contains(&expected_check), "{stdout}");
+    assert!(
+        !stdout.contains("\"check\":\"production_receipt\""),
+        "{stdout}"
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+/// Count admission precedes document observation and direct assembly.
+/// At the boundary, every real proof passes the independent verifier.
+#[test]
+fn bundle_balance_count_refuses_above_the_wire_limit_and_verifies_at_the_limit() {
+    const BALANCE_BOUND: usize = 4096;
+    assert_eq!(fa_notary::bundle::MAX_BALANCES, BALANCE_BOUND);
+    assert_eq!(
+        fa_notary::bundle::MAX_BALANCES,
+        fa_verify::bundle::MAX_BALANCES
+    );
+    let mut h = harness();
+    let c = h.checkpointed();
+    let (journal, checkpoint) = bundle_basis(&h.db, &h.ctx(), &h.book, &c.stored, &h.signer)
+        .expect("kernel")
+        .expect("the real checkpoint is reproduced");
+    let mut request = BundleRequest {
+        scope: BundleScope::Entries(Vec::new()),
+        balances: vec![balance(h.rent, h.usd, None); BALANCE_BOUND + 1],
+        inline_documents: false,
+    };
+    let before = h.db.frontier().unwrap();
+    let documents = std::collections::BTreeMap::new();
+    let refusals = [
+        fa_notary::bundle::cited_documents(&journal, &request)
+            .expect("kernel")
+            .expect_err("refuse before requesting any document"),
+        fa_notary::bundle::assemble(&journal, &checkpoint, &request, &documents)
+            .expect("kernel")
+            .expect_err("direct assembly also enforces the wire count"),
+    ];
+    for refusal in refusals {
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-129", 3));
+        assert!(refusal.message.contains(&(BALANCE_BOUND + 1).to_string()));
+        assert!(refusal.message.contains(&BALANCE_BOUND.to_string()));
+        assert!(refusal.fix.contains("split the balance requests"));
+    }
+    assert_eq!(h.db.frontier().unwrap(), before);
+    request.balances.truncate(BALANCE_BOUND);
+    assert!(
+        fa_notary::bundle::cited_documents(&journal, &request)
+            .expect("kernel")
+            .expect("the maximum balance count is admitted")
+            .is_empty()
+    );
+    let bundle = fa_notary::bundle::assemble(&journal, &checkpoint, &request, &documents)
+        .expect("kernel")
+        .expect("the maximum balance count assembles");
+    let report = fa_verify::verify_bundle(&bundle.bytes, &[h.signer.public_key()], None)
+        .expect("the independent verifier decodes the maximum count");
+    assert!(report.verified(), "{:#?}", not_passed(&report));
+    assert_eq!(report.summary.entries, 0);
+    assert_eq!(report.summary.balances.len(), BALANCE_BOUND);
+    assert_eq!(
+        report
+            .checks
+            .iter()
+            .filter(|check| check.check == "recomputation")
+            .count(),
+        BALANCE_BOUND
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
 /// An import run's control record (fa-txf part A, control tag 13) decodes
 /// in fa-verify exactly: the decoder differential holds on its leaf (it
 /// cites no document), and a prefix bundle over a book holding one

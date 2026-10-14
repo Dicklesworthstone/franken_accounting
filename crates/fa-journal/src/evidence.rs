@@ -808,11 +808,31 @@ where
     V: asupersync::fs::Vfs + Clone,
     W: asupersync::fs::Vfs + Clone,
 {
+    fetch_document_checked(db, ctx, store, oid, |_| Ok(())).await
+}
+
+/// Apply the consumer's size admission to verified metadata before any
+/// external bytes are fetched. The caller must already have admitted the
+/// capability and decided whether a full document may be disclosed.
+pub(crate) async fn fetch_document_checked<V, W>(
+    db: &Database<V>,
+    ctx: &PurposeContexts,
+    store: &crate::blob::BlobStore<W>,
+    oid: &Oid,
+    check_size: impl FnOnce(u64) -> Result<(), Refusal>,
+) -> Outcome<Option<Document>>
+where
+    V: asupersync::fs::Vfs + Clone,
+    W: asupersync::fs::Vfs + Clone,
+{
     let record = match record_or_drift(db, oid)? {
         Ok(Some(record)) => record,
         Ok(None) => return Ok(Ok(None)),
         Err(r) => return Ok(Err(r)),
     };
+    if let Err(refusal) = check_size(record.size) {
+        return Ok(Err(refusal));
+    }
     let bytes = match &record.storage {
         Storage::Inline(bytes) => bytes.clone(),
         Storage::External { store: id, locator } => {

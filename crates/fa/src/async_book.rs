@@ -883,6 +883,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 capability,
                 &self.blobs,
                 *oid,
+                |_| Ok(()),
             ))
             .await?)
     }
@@ -1162,7 +1163,25 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         };
         let mut documents = BTreeMap::new();
         for oid in cited {
-            match self.read_document_for(cx, capability, &oid).await? {
+            // Admit authority and disclosure before checking verified size
+            // metadata; refuse excessive inline bytes before external I/O.
+            // Redacted reads keep their own disclosure law.
+            let query = cx.query();
+            query.checkpoint().map_err(BookError::Context)?;
+            match query
+                .with_restriction_async(fa_journal::read_document_for(
+                    &mut self.db,
+                    cx,
+                    &self.context,
+                    capability,
+                    &self.blobs,
+                    oid,
+                    |size| {
+                        fa_notary::bundle::check_document_size(request.inline_documents, &oid, size)
+                    },
+                ))
+                .await?
+            {
                 Ok(read) => {
                     documents.insert(oid, read);
                 }

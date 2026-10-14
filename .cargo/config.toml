@@ -1,0 +1,4 @@
+# fa-5hs: build the standalone verifier for producer integration tests.
+# Consumer: fa-notary's producer-to-binary differential; gate: FA-REF-129 and verifier independence (plan §13.3); retire when bindeps stabilizes or the artifact dependency goes away.
+[unstable]
+bindeps = true

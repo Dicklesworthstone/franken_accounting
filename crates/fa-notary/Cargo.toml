@@ -23,7 +23,9 @@ fgdb-gql = { workspace = true }
 [dev-dependencies]
 # The independent verifier is the producer's differential oracle (plan
 # §13.3): it shares no hashing, codec, or tree code with this crate.
-fa-verify = { path = "../fa-verify", version = "=0.0.1" }
+# Cargo builds the real executable for the producer-to-binary test;
+# the independent verifier itself retains its empty dependency set.
+fa-verify = { path = "../fa-verify", version = "=0.0.1", artifact = "bin:fa-verify", lib = true }
 # The register folds are the in-book oracle for the balance proof.
 fa-registers = { path = "../fa-registers", version = "=0.0.1" }
 fa-time = { path = "../fa-time", version = "=0.0.1" }

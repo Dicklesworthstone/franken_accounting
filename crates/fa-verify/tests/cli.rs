@@ -9,6 +9,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use fa_verify::{Checkpoint, verify_state};
 
+const CHECKPOINT: &str = include_str!("fixtures/checkpoint_v1.txt");
+const BUNDLE: &str = include_str!("fixtures/bundle_v1.txt");
+
 const FIXTURE: &str = include_str!("fixtures/accumulator_v1.txt");
 
 fn vector(name: &str) -> Vec<u8> {
@@ -443,4 +446,187 @@ fn help_and_human_output_explain_the_trust_boundary_and_json_is_deterministic() 
         outputs.push(success(&output));
     }
     assert_eq!(outputs[0], outputs[1]);
+}
+
+fn unhex(s: &str) -> Vec<u8> {
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("hex"))
+        .collect()
+}
+
+/// A pinned vector from the accumulator fixture, then the signed-checkpoint
+/// fixture (the bundle-limit test needs the book key and signed checkpoint).
+fn pinned(name: &str) -> Vec<u8> {
+    FIXTURE
+        .lines()
+        .chain(CHECKPOINT.lines())
+        .filter(|l| !l.starts_with('#'))
+        .find_map(|l| l.strip_prefix(name)?.strip_prefix(' '))
+        .map(unhex)
+        .expect("pinned vector")
+}
+
+/// Run the binary: exit code, stdout, stderr.
+fn fa_verify(args: &[&str]) -> (i32, String, String) {
+    let output = run(args);
+    (
+        output.status.code().expect("exit code"),
+        String::from_utf8(output.stdout).expect("UTF-8 stdout"),
+        String::from_utf8(output.stderr).expect("UTF-8 stderr"),
+    )
+}
+
+fn bytes(out: &mut Vec<u8>, value: &[u8]) {
+    out.extend_from_slice(
+        &u32::try_from(value.len())
+            .expect("bounded fixture")
+            .to_le_bytes(),
+    );
+    out.extend_from_slice(value);
+}
+
+/// Hand-encode the published bundle 1.0 prefix layout using existing
+/// checkpoint/proof vectors. The synthetic bodies below test decoding;
+/// they make no claim of semantic validity.
+fn bundle_header() -> Vec<u8> {
+    let key: [u8; 32] = pinned("public_key").try_into().expect("public key");
+    let checkpoint = pinned("checkpoint");
+    let signed = fa_verify::verify_checkpoint(&checkpoint, &[key]).expect("pinned checkpoint");
+    let cp = signed.checkpoint;
+    let mut out = Vec::new();
+    bytes(&mut out, b"fa:bundle:v1");
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&cp.book_id);
+    out.extend_from_slice(&cp.branch_id);
+    out.extend_from_slice(&cp.through_seq.to_le_bytes());
+    out.extend_from_slice(&cp.leaf_count.to_le_bytes());
+    out.extend_from_slice(&signed.oid);
+    out.push(1); // Prefix scope.
+    out.push(1); // SeqRangeComplete.
+    out.extend_from_slice(&0u64.to_le_bytes());
+    out.extend_from_slice(&cp.leaf_count.to_le_bytes());
+    bytes(&mut out, &checkpoint);
+    bytes(&mut out, &pinned("prefix"));
+    out
+}
+
+#[test]
+fn the_binary_rejects_oversized_inline_bytes_and_balance_counts_at_the_named_field() {
+    use fa_verify::codec::Reason;
+    use fa_verify::{BundleError, DecodeError};
+
+    // Separate files keep this independent of the original CLI test.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("fa-verify-cli-bundle-limits");
+    std::fs::create_dir_all(&dir).expect("bundle-limit directory");
+    let key_bytes: [u8; 32] = pinned("public_key").try_into().expect("public key");
+    let key = key_bytes
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    // This same executable must first accept an existing valid bundle.
+    let pinned = BUNDLE
+        .lines()
+        .find_map(|line| line.strip_prefix("bundle_prefix "))
+        .map(unhex)
+        .expect("pinned bundle");
+    let pinned_key = BUNDLE
+        .lines()
+        .find_map(|line| line.strip_prefix("public_key "))
+        .expect("pinned bundle key");
+    let control = dir.join("pinned.fab");
+    std::fs::write(&control, pinned).expect("write pinned bundle");
+    let (code, out, err) = fa_verify(&[
+        "bundle",
+        control.to_str().expect("path"),
+        "--key",
+        pinned_key,
+        "--json",
+    ]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert!(out.contains("\"verdict\":\"verified\""), "{out}");
+    assert!(err.is_empty(), "{err}");
+
+    const INLINE_MAX: usize = 16 * 1024 * 1024;
+    let mut inline = bundle_header();
+    inline.extend_from_slice(&1u32.to_le_bytes()); // One entry.
+    inline.extend_from_slice(&0u64.to_le_bytes()); // Leaf index.
+    inline.extend_from_slice(&0u32.to_le_bytes()); // Proposal length.
+    bytes(&mut inline, &[]); // Record semantics follow decoding.
+    inline.extend_from_slice(&1u32.to_le_bytes()); // One stub.
+    inline.extend_from_slice(&[0x41; 32]);
+    inline.push(1); // Document kind.
+    inline.extend_from_slice(&((INLINE_MAX + 1) as u64).to_le_bytes());
+    inline.extend_from_slice(&[0x42; 32]); // Chunk root.
+    inline.push(1); // Inline document present.
+    inline.extend_from_slice(&((INLINE_MAX + 1) as u32).to_le_bytes());
+    let inline_offset = inline.len();
+    inline.resize(inline_offset + INLINE_MAX + 1, b'x');
+    inline.extend_from_slice(&0u32.to_le_bytes()); // No balances.
+    bytes(&mut inline, &[]);
+
+    const BALANCE_MAX: usize = 4096;
+    let mut balances = bundle_header();
+    balances.extend_from_slice(&0u32.to_le_bytes()); // No entries.
+    balances.extend_from_slice(&((BALANCE_MAX + 1) as u32).to_le_bytes());
+    let balances_offset = balances.len();
+    for _ in 0..=BALANCE_MAX {
+        bytes(&mut balances, b"fa:register-fold:v2");
+        balances.extend_from_slice(&2u16.to_le_bytes());
+        bytes(&mut balances, &[]); // Proof semantics follow count admission.
+    }
+    bytes(&mut balances, &[]);
+
+    for (name, wire, field, offset, max) in [
+        (
+            "inline-too-large.fab",
+            inline,
+            "stub.document",
+            inline_offset,
+            INLINE_MAX,
+        ),
+        (
+            "too-many-balances.fab",
+            balances,
+            "bundle.balances",
+            balances_offset,
+            BALANCE_MAX,
+        ),
+    ] {
+        let expected = BundleError::Decode(DecodeError {
+            offset,
+            what: field,
+            reason: Reason::TooLong {
+                max,
+                actual: max + 1,
+            },
+        });
+        assert_eq!(
+            fa_verify::verify_bundle(&wire, &[key_bytes], None).expect_err("wire limit"),
+            expected
+        );
+        let path = dir.join(name);
+        std::fs::write(&path, wire).expect("write generated over-limit bundle");
+        let (code, out, err) = fa_verify(&[
+            "bundle",
+            path.to_str().expect("path"),
+            "--key",
+            &key,
+            "--json",
+        ]);
+        assert_eq!(code, 8, "{name}: {out}\n{err}");
+        let reason = format!(
+            "decode `{field}` at byte {offset}: length {} exceeds bound {max}",
+            max + 1
+        );
+        assert_eq!(
+            out,
+            format!(
+                "{{\"v\":1,\"tool\":\"fa-verify\",\"command\":\"bundle\",\"verdict\":\"failed\",\"checks\":[{{\"check\":\"bundle\",\"scope\":\"format\",\"result\":\"fail\",\"detail\":{{}},\"reason\":\"{reason}\"}}],\"error\":null}}\n"
+            ),
+            "{name}"
+        );
+        assert!(err.is_empty(), "robot failure stays on stdout: {err}");
+    }
 }

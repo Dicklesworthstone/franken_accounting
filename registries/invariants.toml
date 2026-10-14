@@ -350,7 +350,7 @@ evidence_class = "invariant"
 first_gate = "G2"
 owner = "fa-omi"
 checkers = ["fa-registers::lib::open_items::tests::liveness_is_parity_over_arbitrarily_long_chains_and_cycles_are_corruption", "fa-journal::tests/genesis.rs::applications_settle_open_items_within_the_open_amount_and_reversal_undoes_them"]
-negatives = ["fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_a_generated_history"]
+negatives = ["fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_a_generated_history", "fa-registers::tests/differential.rs::a_reversal_chain_cannot_strand_payments_on_a_revived_invoice"]
 waiver = "forbidden"
 
 [[clause]]
