@@ -1054,13 +1054,17 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         "resources/read",
         json!({"uri": "resource://fa/open-items/default/all"}),
     );
-    let text = read["contents"][0]["text"].as_str().expect("open-items all");
+    let text = read["contents"][0]["text"]
+        .as_str()
+        .expect("open-items all");
     assert_eq!(text, cli_data(&["open-items", "--book", &b, "--json"]));
     let read = mcp.result(
         "resources/read",
         json!({"uri": "resource://fa/open-items/default/1000"}),
     );
-    let text = read["contents"][0]["text"].as_str().expect("open-items 1000");
+    let text = read["contents"][0]["text"]
+        .as_str()
+        .expect("open-items 1000");
     assert_eq!(
         text,
         cli_data(&["open-items", "--account", "1000", "--book", &b, "--json"])

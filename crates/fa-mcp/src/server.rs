@@ -416,12 +416,7 @@ impl Adapter {
                     (
                         "close_plan",
                         "fa_time_period_transition",
-                        vec![
-                            "period".into(),
-                            "close".into(),
-                            period,
-                            "--dry-run".into(),
-                        ],
+                        vec!["period".into(), "close".into(), period, "--dry-run".into()],
                     ),
                 ]
             }

@@ -3517,10 +3517,9 @@ fn the_bundle_balance_law_is_the_register_fold_law() {
 #[test]
 fn bundle_limits_refuse_too_many_balances_and_oversized_inline_documents_while_admitting_stubs() {
     let (h, c, _) = bundle_book();
-    let (journal, checkpoint) =
-        bundle_basis(&h.db, &h.ctx(), &h.book, &c.stored, &h.signer)
-            .unwrap()
-            .unwrap();
+    let (journal, checkpoint) = bundle_basis(&h.db, &h.ctx(), &h.book, &c.stored, &h.signer)
+        .unwrap()
+        .unwrap();
 
     // 1. More than MAX_BUNDLE_BALANCES (4096) balance claims are refused
     // cleanly with FA-REF-129 in both cited_documents and assemble.

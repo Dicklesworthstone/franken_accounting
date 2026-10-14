@@ -7937,7 +7937,10 @@ fn a_reversal_chain_cannot_strand_payments_on_a_revived_invoice() {
         }
         let model = oracle.post(intent);
         let check = verify_open_items(&k.db, &k.book, None).unwrap();
-        assert!(check.is_green(), "open items drifted after {intent:?}: {check:?}");
+        assert!(
+            check.is_green(),
+            "open items drifted after {intent:?}: {check:?}"
+        );
         (kernel, model)
     };
 
@@ -8084,4 +8087,3 @@ fn a_reversal_chain_cannot_strand_payments_on_a_revived_invoice() {
     );
     assert!(oracle.open_items().is_empty());
 }
-
