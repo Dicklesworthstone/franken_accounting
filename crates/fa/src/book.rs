@@ -1845,6 +1845,218 @@ impl Book {
             authority,
         }))
     }
+
+    /// Derive a period-balance allocation instruction from the current immutable journal.
+    pub fn prepare_balance_allocation(
+        &self,
+        request: &crate::BalanceAllocationRequest,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::PreparedBalanceAllocation> {
+        let purposes = self.purposes();
+        with_store!(&self.store, core => core.prepare_balance_allocation(&purposes, request, capability))
+    }
+
+    /// Revalidate a source-bound balance allocation review and rehearse through the real kernel.
+    pub fn plan_balance_allocation(
+        &mut self,
+        review: &crate::BalanceAllocationReview,
+        expected_digest: [u8; 32],
+        approvals: Vec<fa_model::ApprovalRef>,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::PostPlan> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => core.plan_balance_allocation(
+            &purposes,
+            review,
+            expected_digest,
+            approvals,
+            capability,
+        ))
+    }
+
+    /// Record an approval from a restored source-bound balance allocation review.
+    pub fn approve_balance_allocation(
+        &mut self,
+        review: &crate::BalanceAllocationReview,
+        expected_digest: [u8; 32],
+        capability: &fa_policy::Capability,
+    ) -> Outcome<fa_journal::Approved> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.approve_balance_allocation(
+            &purposes,
+            review,
+            expected_digest,
+            capability,
+        )))
+    }
+
+    /// Prepare a single-leg open-item settlement against the current HEAD snapshot.
+    pub fn prepare_settlement(
+        &self,
+        request: crate::SettlementPostRequest,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::PreparedSettlement> {
+        let purposes = self.purposes();
+        with_store!(&self.store, core => core.prepare_settlement(&purposes, request, capability))
+    }
+
+    /// Prepare and rehearse a single-leg open-item settlement through the real kernel.
+    pub fn plan_settlement(
+        &mut self,
+        request: crate::SettlementPostRequest,
+        approvals: Vec<fa_model::ApprovalRef>,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::SettlementPostPlan> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => core.plan_settlement(
+            &purposes,
+            request,
+            approvals,
+            capability,
+        ))
+    }
+
+    /// Rehearse an exact prepared single-leg settlement through the real kernel.
+    pub fn plan_prepared_settlement(
+        &mut self,
+        prepared: crate::PreparedSettlement,
+        approvals: Vec<fa_model::ApprovalRef>,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::SettlementPostPlan> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => core.plan_prepared_settlement(
+            &purposes,
+            prepared,
+            approvals,
+            capability,
+        ))
+    }
+
+    /// Revalidate a saved single-leg settlement review against current HEAD.
+    pub fn refresh_settlement_review(
+        &self,
+        review: &crate::SettlementReview,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::PreparedSettlement> {
+        let purposes = self.purposes();
+        with_store!(&self.store, core => core.refresh_settlement_review(&purposes, review, capability))
+    }
+
+    /// Revalidate a saved single-leg settlement review and rehearse through the real kernel.
+    pub fn plan_settlement_review(
+        &mut self,
+        review: &crate::SettlementReview,
+        approvals: Vec<fa_model::ApprovalRef>,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::SettlementPostPlan> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => core.plan_settlement_review(
+            &purposes,
+            review,
+            approvals,
+            capability,
+        ))
+    }
+
+    /// Record an approval of an exact saved single-leg settlement review.
+    pub fn approve_settlement_review(
+        &mut self,
+        review: &crate::SettlementReview,
+        expected_review_digest: [u8; 32],
+        capability: &fa_policy::Capability,
+    ) -> Outcome<fa_journal::Approved> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.approve_settlement_review(
+            &purposes,
+            review,
+            expected_review_digest,
+            capability,
+        )))
+    }
+
+    /// Prepare a multi-leg open-item settlement group against the current HEAD snapshot.
+    pub fn prepare_settlement_group(
+        &self,
+        request: crate::SettlementGroupRequest,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::PreparedSettlementGroup> {
+        let purposes = self.purposes();
+        with_store!(&self.store, core => core.prepare_settlement_group(&purposes, request, capability))
+    }
+
+    /// Prepare and rehearse a multi-leg open-item settlement group through the real kernel.
+    pub fn plan_settlement_group(
+        &mut self,
+        request: crate::SettlementGroupRequest,
+        approvals: Vec<fa_model::ApprovalRef>,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::SettlementGroupPostPlan> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => core.plan_settlement_group(
+            &purposes,
+            request,
+            approvals,
+            capability,
+        ))
+    }
+
+    /// Rehearse an exact prepared multi-leg settlement group through the real kernel.
+    pub fn plan_prepared_settlement_group(
+        &mut self,
+        prepared: crate::PreparedSettlementGroup,
+        approvals: Vec<fa_model::ApprovalRef>,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::SettlementGroupPostPlan> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => core.plan_prepared_settlement_group(
+            &purposes,
+            prepared,
+            approvals,
+            capability,
+        ))
+    }
+
+    /// Revalidate a saved multi-leg settlement group review against current HEAD.
+    pub fn refresh_settlement_group_review(
+        &self,
+        review: &crate::SettlementGroupReview,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::PreparedSettlementGroup> {
+        let purposes = self.purposes();
+        with_store!(&self.store, core => core.refresh_settlement_group_review(&purposes, review, capability))
+    }
+
+    /// Revalidate a saved multi-leg settlement group review and rehearse through the real kernel.
+    pub fn plan_settlement_group_review(
+        &mut self,
+        review: &crate::SettlementGroupReview,
+        approvals: Vec<fa_model::ApprovalRef>,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::SettlementGroupPostPlan> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => core.plan_settlement_group_review(
+            &purposes,
+            review,
+            approvals,
+            capability,
+        ))
+    }
+
+    /// Record an approval of an exact saved multi-leg settlement group review.
+    pub fn approve_settlement_group_review(
+        &mut self,
+        review: &crate::SettlementGroupReview,
+        expected_review_digest: [u8; 32],
+        capability: &fa_policy::Capability,
+    ) -> Outcome<fa_journal::Approved> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.approve_settlement_group_review(
+            &purposes,
+            review,
+            expected_review_digest,
+            capability,
+        )))
+    }
 }
 
 /// Reads of one book under one admitted capability (see [`Book::read_scope`]):

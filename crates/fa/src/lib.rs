@@ -107,6 +107,9 @@ pub use fa_journal::{
     AllocationPosting, InstantSelection, PeriodBalance, Run, RunBody, RunChunk, RunControlRequest,
     RunControlled, RunMode, RunState, TieOut, TieOutLine, TrialBalanceLine, UploadRequest,
 };
+pub use fa_money::allocation::{
+    AllocationMethod, AllocationOutcome, AllocationRequest, AllocationTarget,
+};
 pub use fa_notary::{
     AccumulatorVerification, BalanceRequest, BundleRequest, BundleScope, Checkpointed, ScopeRequest,
 };

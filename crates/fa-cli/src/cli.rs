@@ -27,12 +27,16 @@ use std::rc::Rc;
 
 use fa::book::{Book, BookError, BookKeys, Entropy};
 use fa::{
-    AdjustmentCategory, AdjustmentSign, AgingBuckets, AgingReconciliationRequest, CashFlowActivity,
-    CashFlowAssignment, CashFlowDefinition, CashFlowSection, IndirectCashFlowAdjustment,
-    IndirectCashFlowDefinition, IndirectCashFlowRequest, MAX_PLAN_BYTES, PostIntent, PostPlan,
-    ReportOutput, ReportSelection, RollForwardRequest, Statement, StatementDefinition,
-    StatementDiffRequest, StatementEntryEvent, StatementSelection, StatementTraceRequest,
-    SummaryRequest, SummaryScope, TrialBalanceSelection,
+    AdjustmentCategory, AdjustmentSign, AgingBuckets, AgingReconciliationRequest, AllocationMethod,
+    AllocationPosting, AllocationRequest, AllocationReview, AllocationTarget,
+    BalanceAllocationRequest, BalanceAllocationReview, CashFlowActivity, CashFlowAssignment,
+    CashFlowDefinition, CashFlowSection, IndirectCashFlowAdjustment, IndirectCashFlowDefinition,
+    IndirectCashFlowRequest, MAX_ALLOCATION_REVIEW_BYTES, MAX_BALANCE_ALLOCATION_REVIEW_BYTES,
+    MAX_PLAN_BYTES, MAX_SETTLEMENT_GROUP_REVIEW_BYTES, MAX_SETTLEMENT_REVIEW_BYTES, PostIntent,
+    PostPlan, ReportOutput, ReportSelection, RollForwardRequest, SettlementGroupRequest,
+    SettlementGroupReview, SettlementLegSelection, SettlementPostRequest, SettlementReview,
+    Statement, StatementDefinition, StatementDiffRequest, StatementEntryEvent, StatementSelection,
+    StatementTraceRequest, SummaryRequest, SummaryScope, TrialBalanceSelection,
 };
 use fa_journal::BookContext;
 use fa_journal::{
@@ -71,6 +75,8 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("period", period_cmd),
     ("approve", approve_cmd),
     ("post", post_cmd),
+    ("allocate", allocate_cmd),
+    ("settle", settle_cmd),
     ("commit", commit_cmd),
     ("reverse", reverse_cmd),
     ("reserve", reserve_cmd),
@@ -1205,7 +1211,8 @@ fn period_plan_only(verb: &str, args: &Args) -> bool {
 /// These concrete handlers prepare and abort the real posting transaction.
 /// No other verb may use a dry-run flag to bypass its confirmation gate.
 fn post_plan_only(verb: &str, args: &Args) -> bool {
-    matches!(verb, "post" | "reverse" | "reserve" | "resolve") && args.switch("--dry-run")
+    matches!(verb, "post" | "allocate" | "settle" | "reverse" | "reserve" | "resolve")
+        && (args.switch("--dry-run") || args.switch("--review-only") || args.flag("--review-out").is_some())
 }
 
 /// Admit the concrete operation before handlers read input files or the
@@ -1234,7 +1241,20 @@ fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fa
             ) => &[Op::Read],
             ("verify" | "registers", _) => &[Op::Read, Op::Verify],
             ("post" | "commit" | "reverse" | "reserve" | "resolve", _) => &[Op::Post],
-            ("approve", _) => &[Op::Approve],
+            ("allocate" | "settle", _) => {
+                if sub == Some("approve") || args.switch("--approve") {
+                    &[Op::Read, Op::Approve]
+                } else {
+                    &[Op::Read, Op::Post]
+                }
+            }
+            ("approve", _) => {
+                if args.flag("--review").is_some() {
+                    &[Op::Read, Op::Approve]
+                } else {
+                    &[Op::Approve]
+                }
+            }
             ("checkpoint", _) => &[Op::Witness],
             ("proof" | "bundle", _) => &[Op::Read, Op::Produce],
             ("document", Some("read")) => &[Op::Read],
@@ -1306,11 +1326,11 @@ fn admit_bound_files(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fail
             fix,
         )
     };
-    for flag in ["--plan-out", "--certificate-out", "--out"] {
+    for flag in ["--plan-out", "--certificate-out", "--out", "--review-out"] {
         if args.flag(flag).is_some() {
             return Err(blocked(
                 flag,
-                "use --dry-run for inline plan bytes or --certify for a retained certificate; MCP accepts no output paths (fa-yha)",
+                "use --dry-run for inline plan bytes, --review-only for inline review bytes, or --certify for a retained certificate; MCP accepts no output paths (fa-yha)",
             ));
         }
     }
@@ -1319,6 +1339,17 @@ fn admit_bound_files(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fail
             return Err(blocked(
                 flag,
                 "forward the complete content on stdin with -; MCP takes the inline intent, plan, or policy property, never a file path (fa-yha)",
+            ));
+        }
+    }
+    for value in args.flag_all("--review") {
+        let is_hex = !value.is_empty()
+            && value.len() % 2 == 0
+            && value.bytes().all(|b| b.is_ascii_hexdigit());
+        if value != "-" && !is_hex {
+            return Err(blocked(
+                "--review",
+                "pass the review event's complete bytes hex string in review, or forward it on stdin with -; MCP accepts no host file paths (fa-yha)",
             ));
         }
     }
@@ -2946,15 +2977,31 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 // approve
 // ---------------------------------------------------------------------------
 
-/// `fa approve --proposal <digest>` (R4): record an Approval binding a
-/// planned proposal's digest under the caller's capability (embedded
-/// posture: `--as` names the principal; `approve` is implied and `--grant`
-/// adds ops, as for `post`). A second approver is a second invocation as a
-/// second principal; the commit cites each approval's vid.
+/// `fa approve --proposal <digest>` (R4) or `fa approve --review <file|-|hex> --digest <64-hex>`:
+/// record an Approval binding a planned proposal's digest or a portable allocation/settlement
+/// review under the caller's capability.
 fn approve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if let Some(review_arg) = args.flag("--review") {
+        if args.flag("--proposal").is_some() {
+            return Err(usage(
+                "supply either --proposal <digest> or --review <file|-|hex> --digest <64-hex>, not both",
+                "fa approve --review <file|-|hex> --digest <review_digest>",
+            ));
+        }
+        let digest_text = args.require("--digest", "<64-hex review_digest>")?;
+        let digest = parse_digest(digest_text, "--digest")?;
+        let bytes = read_review_bytes(&ctx.files, review_arg, ctx.out.is_bound())?;
+        return approve_any_review_bytes(ctx, args, &bytes, digest);
+    }
+    if args.flag("--digest").is_some() {
+        return Err(usage(
+            "--digest requires --review",
+            "fa approve --review <file|-|hex> --digest <review_digest>, or fa approve --proposal <proposal_digest>",
+        ));
+    }
     let text = args.flag("--proposal").ok_or_else(|| {
         usage(
-            "approve needs --proposal <digest>",
+            "approve needs --proposal <digest> (or --review <file|-|hex> --digest <review_digest>)",
             "fa approve --proposal <proposal_digest> (64 hex, printed by `fa period <t> <code> --plan-out <file>`)",
         )
     })?;
@@ -2962,7 +3009,11 @@ fn approve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let capability = ctx.capability(args, &["approve"])?;
     let mut book = ctx.books.open(args)?;
     let approved = book.approve(capability, digest)??;
-    ctx.out.at_book(&book)?;
+    emit_approved(&ctx.out, &book, approved)
+}
+
+fn emit_approved(out: &Out, book: &Book, approved: fa_journal::Approved) -> Result<(), Fail> {
+    out.at_book(book)?;
     let approval = approved.approval();
     let recorded_at = approved.recorded_at();
     let (epoch, already) = match approved {
@@ -2972,7 +3023,7 @@ fn approve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         } => (Json::Int(i128::from(security_policy_epoch)), false),
         fa_journal::Approved::AlreadyRecorded { .. } => (Json::Null, true),
     };
-    ctx.out.event(
+    out.event(
         "approved",
         vec![
             (
@@ -4357,6 +4408,1352 @@ fn emit_posted(
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// allocate / settle
+// ---------------------------------------------------------------------------
+
+const MAX_REVIEW_BYTES: usize = {
+    let a = if MAX_ALLOCATION_REVIEW_BYTES > MAX_BALANCE_ALLOCATION_REVIEW_BYTES {
+        MAX_ALLOCATION_REVIEW_BYTES
+    } else {
+        MAX_BALANCE_ALLOCATION_REVIEW_BYTES
+    };
+    let b = if MAX_SETTLEMENT_REVIEW_BYTES > MAX_SETTLEMENT_GROUP_REVIEW_BYTES {
+        MAX_SETTLEMENT_REVIEW_BYTES
+    } else {
+        MAX_SETTLEMENT_GROUP_REVIEW_BYTES
+    };
+    if a > b { a } else { b }
+};
+
+fn decode_hex_bytes(text: &str, what: &str) -> Result<Vec<u8>, Fail> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed.len() % 2 != 0 || !trimmed.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(usage(
+            format!("expected a canonical binary {what} or its complete hex encoding"),
+            format!("pass --review <file> or the {what} event's complete bytes hex string"),
+        ));
+    }
+    if trimmed.len() / 2 > MAX_REVIEW_BYTES {
+        return Err(usage(
+            format!("{what} exceeds its canonical format limit"),
+            format!("pass the complete {what} bytes from a successful review"),
+        ));
+    }
+    trimmed
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| {
+            let digits = std::str::from_utf8(pair)
+                .map_err(|_| usage("invalid review hex", "pass the complete review bytes string"))?;
+            u8::from_str_radix(digits, 16)
+                .map_err(|_| usage("invalid review hex", "pass the complete review bytes string"))
+        })
+        .collect()
+}
+
+fn read_review_bytes(files: &Files, path: &str, bound: bool) -> Result<Vec<u8>, Fail> {
+    let is_inline_hex = path != "-"
+        && path.len() >= 28
+        && path.len() % 2 == 0
+        && path.bytes().all(|b| b.is_ascii_hexdigit());
+    if is_inline_hex {
+        return decode_hex_bytes(path, "review");
+    }
+    if bound && path != "-" {
+        return Err(usage(
+            "--review cannot name a host filesystem path in a launch-bound request",
+            "pass the review event's complete bytes hex string in review, or forward it on stdin with -",
+        ));
+    }
+    let limit = MAX_REVIEW_BYTES * 2 + 2;
+    let read = |reader: &mut dyn Read| -> Result<Vec<u8>, Fail> {
+        let mut bytes = Vec::new();
+        reader
+            .take(limit as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| {
+                usage(
+                    format!("{path}: {e}"),
+                    "pass a readable review file, - for stdin, or complete review bytes in hex",
+                )
+            })?;
+        Ok(bytes)
+    };
+    let bytes = if path == "-" {
+        match &files.stdin {
+            Stdin::Forwarded(bytes) => {
+                if bytes.len() > limit {
+                    return Err(usage(
+                        "review input exceeds its bounded wire size",
+                        "pass the complete review bytes from a successful review",
+                    ));
+                }
+                bytes.clone()
+            }
+            Stdin::Missing => {
+                return Err(usage(
+                    "- names review stdin, but no bytes reached the command",
+                    "forward the review event's bytes string, or pass its saved review file",
+                ));
+            }
+            Stdin::Process => read(&mut std::io::stdin().lock())?,
+        }
+    } else {
+        let mut file = std::fs::File::open(files.resolve(path)).map_err(|e| {
+            usage(
+                format!("{path}: {e}"),
+                "pass the review file saved with --review-out, or its complete hex bytes",
+            )
+        })?;
+        read(&mut file)?
+    };
+    if bytes.len() > limit {
+        return Err(usage(
+            "review input exceeds its bounded wire size",
+            "pass the complete review bytes from a successful review",
+        ));
+    }
+    if bytes.starts_with(b"FA-ALLOC-REVIEW\0")
+        || bytes.starts_with(b"FA-BAL-REVIEW\0")
+        || bytes.starts_with(b"FA-SETTLEMENT-REVIEW\0")
+        || bytes.starts_with(b"FA-SETTLEMENT-GROUP-REVIEW\0")
+    {
+        if bytes.len() > MAX_REVIEW_BYTES {
+            return Err(usage(
+                "review exceeds its bounded input size",
+                "pass the complete review bytes from a successful review",
+            ));
+        }
+        return Ok(bytes);
+    }
+    let text = std::str::from_utf8(&bytes).map_err(|_| {
+        usage(
+            "expected a canonical binary review or its complete hex encoding",
+            "pass --review <file> or the review event's complete bytes hex string",
+        )
+    })?;
+    decode_hex_bytes(text, "review")
+}
+
+fn write_review_file(files: &Files, path: &str, bytes: &[u8]) -> Result<(), Fail> {
+    if path == "-" {
+        return Err(usage(
+            "--review-out names a new file; - is not an output file",
+            "use --review-only to receive the complete review bytes as hex on stdout without writing a file",
+        ));
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(files.resolve(path)).map_err(|e| {
+        usage(
+            format!("cannot create review file {path}: {e}"),
+            "choose a new --review-out path; an existing file is never overwritten",
+        )
+    })?;
+    file.write_all(bytes).and_then(|()| file.sync_all()).map_err(|e| {
+        Fail::Environment(format!(
+            "could not finish review file {path}: {e}; preserve the partial file and retry with a new output path"
+        ))
+    })
+}
+
+fn approve_any_review_bytes(
+    ctx: &mut Ctx<'_>,
+    args: &Args,
+    bytes: &[u8],
+    digest: [u8; 32],
+) -> Result<(), Fail> {
+    if bytes.starts_with(b"FA-BAL-REVIEW\0") || bytes.starts_with(b"FA-ALLOC-REVIEW\0") {
+        approve_allocation_review_bytes(ctx, args, bytes, digest)
+    } else if bytes.starts_with(b"FA-SETTLEMENT-GROUP-REVIEW\0")
+        || bytes.starts_with(b"FA-SETTLEMENT-REVIEW\0")
+    {
+        approve_settlement_review_bytes(ctx, args, bytes, digest)
+    } else {
+        Err(usage(
+            "unrecognized review artifact format",
+            "supply a review exported by `fa allocate --review-out` or `fa settle --review-out`",
+        ))
+    }
+}
+
+fn approve_allocation_review_bytes(
+    ctx: &mut Ctx<'_>,
+    args: &Args,
+    bytes: &[u8],
+    digest: [u8; 32],
+) -> Result<(), Fail> {
+    let capability = ctx.capability(args, &["read", "approve"])?;
+    let mut book = ctx.books.open(args)?;
+    let approved = if bytes.starts_with(b"FA-BAL-REVIEW\0") {
+        let review = BalanceAllocationReview::decode(bytes).map_err(|e| {
+            usage(
+                format!("invalid balance allocation review: {e}"),
+                "supply the unchanged review exported by `fa allocate --review-out`",
+            )
+        })?;
+        book.approve_balance_allocation(&review, digest, &capability)??
+    } else {
+        let review = AllocationReview::decode(bytes).map_err(|e| {
+            usage(
+                format!("invalid allocation review: {e}"),
+                "supply the unchanged review exported by `fa allocate --review-out`",
+            )
+        })?;
+        book.approve_allocation_review(&review, digest, &capability)??
+    };
+    emit_approved(&ctx.out, &book, approved)
+}
+
+fn approve_settlement_review_bytes(
+    ctx: &mut Ctx<'_>,
+    args: &Args,
+    bytes: &[u8],
+    digest: [u8; 32],
+) -> Result<(), Fail> {
+    let capability = ctx.capability(args, &["read", "approve"])?;
+    let mut book = ctx.books.open(args)?;
+    let approved = if bytes.starts_with(b"FA-SETTLEMENT-GROUP-REVIEW\0") {
+        let review = SettlementGroupReview::decode(bytes).map_err(|e| {
+            usage(
+                format!("invalid settlement group review: {e}"),
+                "supply the unchanged review exported by `fa settle --review-out`",
+            )
+        })?;
+        book.approve_settlement_group_review(&review, digest, &capability)??
+    } else {
+        let review = SettlementReview::decode(bytes).map_err(|e| {
+            usage(
+                format!("invalid settlement review: {e}"),
+                "supply the unchanged review exported by `fa settle --review-out`",
+            )
+        })?;
+        book.approve_settlement_review(&review, digest, &capability)??
+    };
+    emit_approved(&ctx.out, &book, approved)
+}
+
+fn ensure_allocation_driver_imported(
+    book: &mut Book,
+    posting: &AllocationPosting,
+    who: VId,
+    capability: &Capability,
+) -> Result<fa_model::EvidenceRef, Fail> {
+    let book_id = book.context().book_id;
+    let driver_ev = posting.driver_evidence(book_id)?;
+    if book.document_commitment(&driver_ev.document_oid)?.is_none() {
+        let basis_bytes = posting.basis_bytes()?;
+        let grade = if capability.profile() == fa_policy::Profile::Agent {
+            4
+        } else {
+            3
+        };
+        let doc = fa_journal::Document {
+            book_id,
+            kind: fa_journal::allocation::ALLOCATION_DOCUMENT_KIND,
+            mime: "application/x-fa-allocation-basis".into(),
+            grade,
+            retrieved_by: who,
+            bytes: basis_bytes,
+        };
+        book.add_document(&doc)??;
+    }
+    Ok(driver_ev)
+}
+
+fn parse_rounding_law(name: &str) -> Result<fa_money::RoundingLaw, Fail> {
+    match name {
+        "HalfEven" | "half_even" | "half-even" => Ok(fa_money::RoundingLaw::HalfEven),
+        "HalfUp" | "half_up" | "half-up" => Ok(fa_money::RoundingLaw::HalfUp),
+        "HalfDown" | "half_down" | "half-down" => Ok(fa_money::RoundingLaw::HalfDown),
+        "HalfAwayFromZero" | "half_away_from_zero" => Ok(fa_money::RoundingLaw::HalfAwayFromZero),
+        "HalfTowardZero" | "half_toward_zero" => Ok(fa_money::RoundingLaw::HalfTowardZero),
+        "Down" | "down" | "TowardZero" | "toward_zero" => Ok(fa_money::RoundingLaw::TowardZero),
+        "Up" | "up" | "AwayFromZero" | "away_from_zero" => Ok(fa_money::RoundingLaw::AwayFromZero),
+        "Floor" | "floor" | "TowardNegativeInfinity" => Ok(fa_money::RoundingLaw::Floor),
+        "Ceiling" | "ceiling" | "TowardPositiveInfinity" => Ok(fa_money::RoundingLaw::Ceiling),
+        other => Err(usage(
+            format!("unknown rounding law `{other}`"),
+            "rounding: HalfEven|HalfUp|HalfDown|HalfAwayFromZero|HalfTowardZero|TowardZero|AwayFromZero|Floor|Ceiling",
+        )),
+    }
+}
+
+fn parse_allocation_method(doc: &Json, book_id: Id128) -> Result<AllocationMethod, Fail> {
+    let method_name = doc
+        .get("method")
+        .or_else(|| doc.get("law"))
+        .and_then(Json::as_str)
+        .unwrap_or("largest_remainder");
+    match method_name {
+        "largest_remainder" | "LargestRemainder" | "hamilton" => {
+            Ok(AllocationMethod::LargestRemainder)
+        }
+        "waterfall" | "Waterfall" => Ok(AllocationMethod::Waterfall),
+        "equal_split_residual_first" | "EqualSplitResidualFirst" | "equal_split" => {
+            Ok(AllocationMethod::EqualSplitResidualFirst)
+        }
+        "pro_rata_residual_to_named" | "ProRataResidualToNamed" | "pro_rata" => {
+            let rounding = match doc.get("rounding").and_then(Json::as_str) {
+                Some(r) => parse_rounding_law(r)?,
+                None => fa_money::RoundingLaw::HalfEven,
+            };
+            let recipient_code = doc
+                .get("recipient")
+                .or_else(|| doc.get("residual_account"))
+                .and_then(Json::as_str)
+                .ok_or_else(|| {
+                    usage(
+                        "allocation method pro_rata: `recipient` (or `residual_account`) must be a string",
+                        "recipient: \"6099\" (target account code that receives the rounding residual)",
+                    )
+                })?;
+            let recipient = account_vid(book_id, recipient_code).0;
+            Ok(AllocationMethod::ProRataResidualToNamed {
+                rounding,
+                recipient,
+            })
+        }
+        other => Err(usage(
+            format!("unknown allocation method `{other}`"),
+            "method: largest_remainder|pro_rata_residual_to_named|waterfall|equal_split_residual_first",
+        )),
+    }
+}
+
+fn allocation_method_name(method: AllocationMethod) -> &'static str {
+    match method {
+        AllocationMethod::LargestRemainder => "largest_remainder",
+        AllocationMethod::ProRataResidualToNamed { .. } => "pro_rata_residual_to_named",
+        AllocationMethod::Waterfall => "waterfall",
+        AllocationMethod::EqualSplitResidualFirst => "equal_split_residual_first",
+    }
+}
+
+fn parse_allocation_targets(
+    doc: &Json,
+    book_id: Id128,
+    method: AllocationMethod,
+    units: &fa_money::UnitRegistry,
+    unit: fa_money::UnitId,
+) -> Result<Vec<AllocationTarget>, Fail> {
+    let targets_arr = doc
+        .get("targets")
+        .and_then(Json::as_arr)
+        .ok_or_else(|| {
+            usage(
+                "allocation intent requires a `targets` array",
+                "targets: [{\"account\": \"5100\", \"basis\": 60}, {\"account\": \"5200\", \"basis\": 40}]",
+            )
+        })?;
+    let mut out = Vec::with_capacity(targets_arr.len());
+    for (i, item) in targets_arr.iter().enumerate() {
+        let what = format!("targets[{i}]");
+        let account_code = req_str(item, "account", &what)?;
+        let id = account_vid(book_id, account_code).0;
+        let basis_val = item
+            .get("basis")
+            .or_else(|| item.get("weight"))
+            .or_else(|| item.get("cap"));
+        let basis = match basis_val {
+            Some(Json::Int(n)) => u128::try_from(*n).map_err(|_| {
+                usage(
+                    format!("{what}: basis must be a non-negative integer"),
+                    "basis: non-negative integer weight or cap",
+                )
+            })?,
+            Some(Json::Str(text)) => {
+                if let Ok(n) = text.parse::<u128>() {
+                    n
+                } else {
+                    let amt = Amount::parse(text, units).map_err(|e| {
+                        usage(
+                            format!("{what}: basis `{text}`: {e:?}"),
+                            "basis: non-negative integer weight, or exact amount string for waterfall cap",
+                        )
+                    })?;
+                    if amt.unit != unit || amt.mantissa < 0 {
+                        return Err(usage(
+                            format!("{what}: basis amount must be non-negative in the allocation unit"),
+                            "use the same unit as the allocation source",
+                        ));
+                    }
+                    amt.mantissa.unsigned_abs()
+                }
+            }
+            Some(_) => {
+                return Err(usage(
+                    format!("{what}: basis must be a non-negative integer"),
+                    "basis: 100",
+                ));
+            }
+            None if matches!(method, AllocationMethod::EqualSplitResidualFirst) => 1,
+            None => {
+                return Err(usage(
+                    format!("{what}: missing `basis` (or `weight`/`cap`)"),
+                    "targets: [{\"account\": \"5100\", \"basis\": 1}]",
+                ));
+            }
+        };
+        out.push(AllocationTarget { id, basis });
+    }
+    Ok(out)
+}
+
+fn parse_allocation_dimensions(doc: &Json) -> Result<Vec<(u32, VId)>, Fail> {
+    let Some(dims) = doc.get("dimensions") else {
+        return Ok(Vec::new());
+    };
+    let Some(arr) = dims.as_arr() else {
+        return Err(usage(
+            "allocation `dimensions` must be an array",
+            "dimensions: [{\"dimension\": 1, \"value\": \"<32-hex-vid>\"}]",
+        ));
+    };
+    let mut out = Vec::with_capacity(arr.len());
+    for (i, item) in arr.iter().enumerate() {
+        let what = format!("dimensions[{i}]");
+        let dim = match item.get("dimension") {
+            Some(Json::Int(n)) => u32::try_from(*n).map_err(|_| {
+                usage(format!("{what}: dimension id out of u32 range"), "dimension: 1")
+            })?,
+            _ => return Err(usage(format!("{what}: missing integer `dimension`"), "dimension: 1")),
+        };
+        let val_s = req_str(item, "value", &what)?;
+        let vid = parse_vid(val_s, &format!("{what}.value"))?;
+        out.push((dim, vid));
+    }
+    Ok(out)
+}
+
+fn render_proposal_legs(
+    book: &Book,
+    proposal: &EntryPayload,
+) -> Result<(Vec<Json>, Vec<String>), Fail> {
+    let accounts: std::collections::BTreeMap<_, _> =
+        book.accounts()?.into_iter().map(|a| (a.vid, a)).collect();
+    let mut human_legs = Vec::new();
+    let legs = proposal
+        .legs
+        .iter()
+        .enumerate()
+        .map(|(ordinal, leg)| {
+            let account = accounts.get(&leg.account_ref).ok_or_else(|| {
+                usage(
+                    format!(
+                        "allocation/settlement leg {ordinal} names an unknown account {:032x}",
+                        leg.account_ref.0
+                    ),
+                    "fa chart list shows the installed account codes",
+                )
+            })?;
+            let amount = render_amount(leg.amount, &book.context().units)?;
+            let side = side_name(leg.side);
+            human_legs.push(format!(
+                "  {ordinal}: {side} {} ({}) {amount}",
+                account.code, account.name
+            ));
+            Ok(obj(vec![
+                ("ordinal", Json::Int(ordinal as i128)),
+                ("account", s(&account.code)),
+                ("account_vid", s(format!("{:032x}", leg.account_ref.0))),
+                ("side", s(side)),
+                ("amount", s(amount)),
+            ]))
+        })
+        .collect::<Result<Vec<_>, Fail>>()?;
+    Ok((legs, human_legs))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_allocation_reviewed(
+    out: &Out,
+    book: &Book,
+    files: &Files,
+    args: &Args,
+    kind: &str,
+    source_code: &str,
+    source_period: Option<&str>,
+    source_digest: Option<[u8; 32]>,
+    posting: &AllocationPosting,
+    proposal: &EntryPayload,
+    review_digest: [u8; 32],
+    proposal_digest: [u8; 32],
+    driver_oid: Oid,
+    bytes: &[u8],
+) -> Result<(), Fail> {
+    if let Some(path) = args.flag("--review-out") {
+        write_review_file(files, path, bytes)?;
+    }
+    out.at_book(book)?;
+    let (legs, human_legs) = render_proposal_legs(book, proposal)?;
+    let total_str = render_amount(posting.request.total, &book.context().units)?;
+    let method_str = allocation_method_name(posting.request.method);
+    let side_str = side_name(posting.source_side);
+    let review_hex = hex(&review_digest);
+    let proposal_hex = hex(&proposal_digest);
+    let driver_hex = hex(&driver_oid.0);
+    let encoded = hex(bytes);
+    let human = format!(
+        "Reviewed {kind} allocation from {source_code} ({side_str} {total_str}, {method_str})\nReview digest: {review_hex}\nProposal digest: {proposal_hex}\nDriver workpaper: {driver_hex}\n{}",
+        human_legs.join("\n")
+    );
+    out.event(
+        "allocation_reviewed",
+        vec![
+            ("kind", s(kind)),
+            ("source", s(source_code)),
+            ("source_period", source_period.map_or(Json::Null, s)),
+            (
+                "source_digest",
+                source_digest.map_or(Json::Null, |d| s(hex(&d))),
+            ),
+            ("source_side", s(side_str)),
+            ("total", s(total_str)),
+            ("method", s(method_str)),
+            ("review_digest", s(review_hex)),
+            ("proposal_digest", s(proposal_hex)),
+            ("driver_document_oid", s(driver_hex)),
+            ("legs", Json::Arr(legs)),
+            ("bytes", s(encoded)),
+            ("file", args.flag("--review-out").map_or(Json::Null, s)),
+        ],
+        &human,
+    );
+    Ok(())
+}
+
+fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    check_post_planning_options(args)?;
+    let sub = args.positional.get(1).map(String::as_str);
+    if let Some(other) = sub.filter(|s| *s != "approve") {
+        return Err(usage(
+            format!("`fa allocate` has no subcommand `{other}`"),
+            "fa allocate --intent <file.json|->, fa allocate --review <file|-|hex> --digest <64-hex>, or fa allocate approve --review <file|-|hex> --digest <64-hex>",
+        ));
+    }
+    if sub == Some("approve") || args.switch("--approve") {
+        if args.flag("--intent").is_some()
+            || args.flag("--review-out").is_some()
+            || args.switch("--review-only")
+            || args.switch("--dry-run")
+        {
+            return Err(usage(
+                "allocate approve takes only --review <file|-|hex> and --digest <64-hex>",
+                "fa allocate approve --review <file|-|hex> --digest <review_digest>",
+            ));
+        }
+        let review_arg = args.require("--review", "<file|-|hex>")?;
+        let digest_text = args.require("--digest", "<64-hex review_digest>")?;
+        let digest = parse_digest(digest_text, "--digest")?;
+        let bytes = read_review_bytes(&ctx.files, review_arg, ctx.out.is_bound())?;
+        return approve_allocation_review_bytes(ctx, args, &bytes, digest);
+    }
+
+    let who = ctx.principal(args);
+    let capability = ctx.capability(args, &["read", "post"])?;
+    let out = &ctx.out;
+
+    if let Some(review_arg) = args.flag("--review") {
+        if args.flag("--intent").is_some()
+            || args.flag("--review-out").is_some()
+            || args.switch("--review-only")
+        {
+            return Err(usage(
+                "--review cannot be combined with --intent, --review-out, or --review-only",
+                "fa allocate --review <file|-|hex> --digest <64-hex> [--approval <vid>]... [--dry-run]",
+            ));
+        }
+        let digest_text = args.require("--digest", "<64-hex review_digest>")?;
+        let digest = parse_digest(digest_text, "--digest")?;
+        let bytes = read_review_bytes(&ctx.files, review_arg, out.is_bound())?;
+        let mut book = ctx.books.open(args)?;
+        let plan = if bytes.starts_with(b"FA-BAL-REVIEW\0") {
+            let review = BalanceAllocationReview::decode(&bytes).map_err(|e| {
+                usage(
+                    format!("invalid balance allocation review: {e}"),
+                    "supply the unchanged review exported by `fa allocate --review-out`",
+                )
+            })?;
+            ensure_allocation_driver_imported(
+                &mut book,
+                review.review().posting(),
+                who,
+                &capability,
+            )?;
+            let prop_digest = review.review().proposal_digest().map_err(|e| {
+                usage(
+                    format!("invalid allocation review proposal: {e}"),
+                    "supply an unchanged review",
+                )
+            })?;
+            let approvals = args
+                .flag_all("--approval")
+                .iter()
+                .map(|v| {
+                    Ok(fa_model::ApprovalRef {
+                        approval_vid: parse_vid(v, "--approval")?,
+                        approved_digest: prop_digest,
+                    })
+                })
+                .collect::<Result<Vec<_>, Fail>>()?;
+            book.plan_balance_allocation(&review, digest, approvals, &capability)??
+        } else {
+            let review = AllocationReview::decode(&bytes).map_err(|e| {
+                usage(
+                    format!("invalid allocation review: {e}"),
+                    "supply the unchanged review exported by `fa allocate --review-out`",
+                )
+            })?;
+            ensure_allocation_driver_imported(&mut book, review.posting(), who, &capability)?;
+            let prop_digest = review.proposal_digest().map_err(|e| {
+                usage(
+                    format!("invalid allocation review proposal: {e}"),
+                    "supply an unchanged review",
+                )
+            })?;
+            let approvals = args
+                .flag_all("--approval")
+                .iter()
+                .map(|v| {
+                    Ok(fa_model::ApprovalRef {
+                        approval_vid: parse_vid(v, "--approval")?,
+                        approved_digest: prop_digest,
+                    })
+                })
+                .collect::<Result<Vec<_>, Fail>>()?;
+            book.plan_allocation_review(&review, digest, approvals, &capability)??
+        };
+        if args.switch("--dry-run") {
+            return emit_post_plan(out, &book, &ctx.files, args, &plan);
+        }
+        let posted = book.commit_plan(plan, &capability)??;
+        out.at_book(&book)?;
+        return emit_posted(out, posted, "Allocation", false, None, None);
+    }
+
+    let path = args.require("--intent", "allocation.json (or - for stdin)")?;
+    let text = ctx.files.read_text(path)?;
+    let doc = parse_json(path, &text)?;
+    let mut book = ctx.books.open(args)?;
+    let book_ctx = book.context().clone();
+    let source_code = req_str(&doc, "source", "allocation intent")?;
+    let source_vid = account_vid(book_ctx.book_id, source_code);
+    let date_s = req_str(&doc, "effective_date", "allocation intent")?;
+    let effective_date = DateDay::parse(date_s).map_err(|e| {
+        usage(
+            format!("effective_date `{date_s}`: {e:?}"),
+            "effective_date: \"YYYY-MM-DD\"",
+        )
+    })?;
+    let effective_period = doc
+        .get("effective_period")
+        .and_then(Json::as_str)
+        .map(|c| PeriodRef {
+            calendar: book_ctx.calendar.id.clone(),
+            code: c.to_string(),
+        });
+    let key = req_str(&doc, "idempotency_key", "allocation intent")?;
+    let description = doc.get("description").and_then(Json::as_str).unwrap_or("");
+    let method = parse_allocation_method(&doc, book_ctx.book_id)?;
+    let dimensions = parse_allocation_dimensions(&doc)?;
+    let review_mode = args.flag("--review-out").is_some() || args.switch("--review-only");
+    if review_mode && args.switch("--dry-run") {
+        return Err(usage(
+            "cannot combine --review-out/--review-only with --dry-run",
+            "export the review first, or omit --review-out/--review-only to rehearse a PostPlan with --dry-run",
+        ));
+    }
+
+    let source_period = doc
+        .get("source_period")
+        .and_then(Json::as_str)
+        .or_else(|| args.flag("--period"))
+        .map(str::to_string);
+
+    if let Some(period) = source_period {
+        if doc.get("total").is_some() {
+            return Err(usage(
+                "supply either `total` (explicit allocation) or `source_period`/`--period` (journal-derived balance allocation), not both",
+                "remove `total` to derive the balance from the journal period, or remove `source_period`/`--period`",
+            ));
+        }
+        let unit = match doc.get("unit").and_then(Json::as_str) {
+            Some(code) => book_ctx
+                .units
+                .lookup(code)
+                .ok_or_else(|| usage(format!("unknown unit `{code}`"), "use a registered unit code such as USD"))?,
+            None => book.spec()?.base_unit,
+        };
+        let targets = parse_allocation_targets(&doc, book_ctx.book_id, method, &book_ctx.units, unit)?;
+        let bal_req = BalanceAllocationRequest {
+            source: source_vid,
+            period: period.clone(),
+            unit,
+            dimensions,
+            method,
+            targets,
+        };
+        let prepared = book.prepare_balance_allocation(&bal_req, &capability)??;
+        let driver_ev = if review_mode {
+            prepared.posting().driver_evidence(book_ctx.book_id)?
+        } else {
+            ensure_allocation_driver_imported(&mut book, prepared.posting(), who, &capability)?
+        };
+        let mut evidence = document::parse_evidence(&doc, args, &mut book)?;
+        if !evidence.contains(&driver_ev) {
+            evidence.push(driver_ev);
+        }
+        let template = EntryPayload {
+            schema_minor: 0,
+            book_id: book_ctx.book_id,
+            branch_id: Id128::TRUNK,
+            class: EntryClass::ALLOCATION,
+            effective_date,
+            document_date: None,
+            description: book.seal_text(description)?,
+            effective_period,
+            legs: Vec::new(),
+            control: None,
+            unit_totals: Vec::new(),
+            base_totals: None,
+            idempotency_key: key.as_bytes().to_vec(),
+            origin: EntryOrigin::Intent {
+                intent_oid: Oid(fa_model::domain_digest(
+                    b"fa:intent:v1",
+                    &[&book_ctx.book_id.0, &who.0.to_le_bytes(), key.as_bytes()],
+                )),
+                intent_kind: 1,
+            },
+            principal_ref: who,
+            session_ref: None,
+            evidence,
+            supersession: Vec::new(),
+            pending: None,
+            external_ids: Vec::new(),
+            extensions: Vec::new(),
+            tags: Vec::new(),
+        };
+        let review = BalanceAllocationReview::new(&prepared, template).map_err(|e| {
+            usage(
+                format!("cannot build balance allocation review: {e}"),
+                "check the allocation targets and template fields",
+            )
+        })?;
+        let review_digest = review.digest().map_err(|e| {
+            Fail::Internal(format!("balance allocation review digest: {e}"))
+        })?;
+        let proposal_digest = review.review().proposal_digest().map_err(|e| {
+            Fail::Internal(format!("balance allocation proposal digest: {e}"))
+        })?;
+        let bytes = review.canonical_bytes().map_err(|e| {
+            Fail::Internal(format!("balance allocation review bytes: {e}"))
+        })?;
+        if review_mode {
+            return emit_allocation_reviewed(
+                out,
+                &book,
+                &ctx.files,
+                args,
+                "balance",
+                source_code,
+                Some(&period),
+                Some(review.source_digest()),
+                review.review().posting(),
+                review.review().proposal(),
+                review_digest,
+                proposal_digest,
+                driver_ev.document_oid,
+                &bytes,
+            );
+        }
+        let approvals = args
+            .flag_all("--approval")
+            .iter()
+            .map(|v| {
+                Ok(fa_model::ApprovalRef {
+                    approval_vid: parse_vid(v, "--approval")?,
+                    approved_digest: proposal_digest,
+                })
+            })
+            .collect::<Result<Vec<_>, Fail>>()?;
+        let plan = book.plan_balance_allocation(&review, review_digest, approvals, &capability)??;
+        if args.switch("--dry-run") {
+            return emit_post_plan(out, &book, &ctx.files, args, &plan);
+        }
+        let posted = book.commit_plan(plan, &capability)??;
+        out.at_book(&book)?;
+        emit_posted(out, posted, "Allocation", false, None, None)
+    } else {
+        let total_s = req_str(&doc, "total", "explicit allocation intent (or supply source_period/--period)")?;
+        let total = Amount::parse(total_s, &book_ctx.units).map_err(|e| {
+            usage(
+                format!("total `{total_s}`: {e:?}"),
+                "total: \"100.00 USD\" (positive amount in a registered unit)",
+            )
+        })?;
+        let source_side = match req_str(&doc, "source_side", "explicit allocation intent")? {
+            "debit" | "dr" | "Debit" => Side::Debit,
+            "credit" | "cr" | "Credit" => Side::Credit,
+            other => {
+                return Err(usage(
+                    format!("source_side `{other}`"),
+                    "source_side: debit|credit (the side posted to the source account)",
+                ));
+            }
+        };
+        let targets =
+            parse_allocation_targets(&doc, book_ctx.book_id, method, &book_ctx.units, total.unit)?;
+        let posting = AllocationPosting {
+            source: source_vid,
+            source_side,
+            dimensions,
+            request: AllocationRequest {
+                total,
+                method,
+                targets,
+            },
+        };
+        let driver_ev = if review_mode {
+            posting.driver_evidence(book_ctx.book_id)?
+        } else {
+            ensure_allocation_driver_imported(&mut book, &posting, who, &capability)?
+        };
+        let mut evidence = document::parse_evidence(&doc, args, &mut book)?;
+        if !evidence.contains(&driver_ev) {
+            evidence.push(driver_ev);
+        }
+        let template = EntryPayload {
+            schema_minor: 0,
+            book_id: book_ctx.book_id,
+            branch_id: Id128::TRUNK,
+            class: EntryClass::ALLOCATION,
+            effective_date,
+            document_date: None,
+            description: book.seal_text(description)?,
+            effective_period,
+            legs: Vec::new(),
+            control: None,
+            unit_totals: Vec::new(),
+            base_totals: None,
+            idempotency_key: key.as_bytes().to_vec(),
+            origin: EntryOrigin::Intent {
+                intent_oid: Oid(fa_model::domain_digest(
+                    b"fa:intent:v1",
+                    &[&book_ctx.book_id.0, &who.0.to_le_bytes(), key.as_bytes()],
+                )),
+                intent_kind: 1,
+            },
+            principal_ref: who,
+            session_ref: None,
+            evidence,
+            supersession: Vec::new(),
+            pending: None,
+            external_ids: Vec::new(),
+            extensions: Vec::new(),
+            tags: Vec::new(),
+        };
+        let review = AllocationReview::new(posting, template).map_err(|e| {
+            usage(
+                format!("cannot build allocation review: {e}"),
+                "check the allocation total, source_side, and targets",
+            )
+        })?;
+        let review_digest = review.digest().map_err(|e| {
+            Fail::Internal(format!("allocation review digest: {e}"))
+        })?;
+        let proposal_digest = review.proposal_digest().map_err(|e| {
+            Fail::Internal(format!("allocation proposal digest: {e}"))
+        })?;
+        let bytes = review.canonical_bytes().map_err(|e| {
+            Fail::Internal(format!("allocation review bytes: {e}"))
+        })?;
+        if review_mode {
+            return emit_allocation_reviewed(
+                out,
+                &book,
+                &ctx.files,
+                args,
+                "explicit",
+                source_code,
+                None,
+                None,
+                review.posting(),
+                review.proposal(),
+                review_digest,
+                proposal_digest,
+                driver_ev.document_oid,
+                &bytes,
+            );
+        }
+        let approvals = args
+            .flag_all("--approval")
+            .iter()
+            .map(|v| {
+                Ok(fa_model::ApprovalRef {
+                    approval_vid: parse_vid(v, "--approval")?,
+                    approved_digest: proposal_digest,
+                })
+            })
+            .collect::<Result<Vec<_>, Fail>>()?;
+        let plan = book.plan_allocation_review(&review, review_digest, approvals, &capability)??;
+        if args.switch("--dry-run") {
+            return emit_post_plan(out, &book, &ctx.files, args, &plan);
+        }
+        let posted = book.commit_plan(plan, &capability)??;
+        out.at_book(&book)?;
+        emit_posted(out, posted, "Allocation", false, None, None)
+    }
+}
+
+fn parse_settlement_targets(item: &Json, what: &str) -> Result<Vec<(VId, u16)>, Fail> {
+    let arr = item
+        .get("targets")
+        .and_then(Json::as_arr)
+        .ok_or_else(|| {
+            usage(
+                format!("{what}: missing `targets` array"),
+                "targets: [{\"entry\": \"<32-hex-vid>\", \"ordinal\": 0}]",
+            )
+        })?;
+    let mut out = Vec::with_capacity(arr.len());
+    for (i, t) in arr.iter().enumerate() {
+        let twhat = format!("{what}.targets[{i}]");
+        let vid_s = req_str(t, "entry", &twhat)?;
+        let vid = parse_vid(vid_s, &format!("{twhat}.entry"))?;
+        let ordinal = match t.get("ordinal") {
+            Some(Json::Int(n)) => u16::try_from(*n).map_err(|_| {
+                usage(
+                    format!("{twhat}: ordinal {n} is out of u16 range"),
+                    "ordinal: 0-based leg index on the target entry",
+                )
+            })?,
+            None => 0,
+            _ => {
+                return Err(usage(
+                    format!("{twhat}: ordinal must be a non-negative integer"),
+                    "ordinal: 0",
+                ));
+            }
+        };
+        out.push((vid, ordinal));
+    }
+    Ok(out)
+}
+
+fn parse_payment_leg(item: &Json, what: &str) -> Result<u16, Fail> {
+    match item.get("payment_leg") {
+        Some(Json::Int(n)) => u16::try_from(*n).map_err(|_| {
+            usage(
+                format!("{what}: payment_leg {n} is out of u16 range"),
+                "payment_leg: 0-based index of the applying leg in `legs`",
+            )
+        }),
+        _ => Err(usage(
+            format!("{what}: missing integer `payment_leg`"),
+            "payment_leg: 0 (the 0-based index of the applying leg in `legs`)",
+        )),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_settlement_reviewed(
+    out: &Out,
+    book: &Book,
+    files: &Files,
+    args: &Args,
+    kind: &str,
+    known_at: CommitSeq,
+    proposal: &EntryPayload,
+    applications: Vec<Json>,
+    review_digest: [u8; 32],
+    proposal_digest: [u8; 32],
+    bytes: &[u8],
+) -> Result<(), Fail> {
+    if let Some(path) = args.flag("--review-out") {
+        write_review_file(files, path, bytes)?;
+    }
+    out.at_book(book)?;
+    out.known_at(known_at);
+    let (legs, human_legs) = render_proposal_legs(book, proposal)?;
+    let review_hex = hex(&review_digest);
+    let proposal_hex = hex(&proposal_digest);
+    let encoded = hex(bytes);
+    let human = format!(
+        "Reviewed {kind} settlement at sequence {}\nReview digest: {review_hex}\nProposal digest: {proposal_hex}\n{}",
+        known_at.0,
+        human_legs.join("\n")
+    );
+    out.event(
+        "settlement_reviewed",
+        vec![
+            ("kind", s(kind)),
+            ("known_at", Json::Int(i128::from(known_at.0))),
+            ("review_digest", s(review_hex)),
+            ("proposal_digest", s(proposal_hex)),
+            ("applications", Json::Arr(applications)),
+            ("legs", Json::Arr(legs)),
+            ("bytes", s(encoded)),
+            ("file", args.flag("--review-out").map_or(Json::Null, s)),
+        ],
+        &human,
+    );
+    Ok(())
+}
+
+fn settle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    check_post_planning_options(args)?;
+    let sub = args.positional.get(1).map(String::as_str);
+    if let Some(other) = sub.filter(|s| *s != "approve") {
+        return Err(usage(
+            format!("`fa settle` has no subcommand `{other}`"),
+            "fa settle --intent <file.json|->, fa settle --review <file|-|hex> [--digest <64-hex>], or fa settle approve --review <file|-|hex> --digest <64-hex>",
+        ));
+    }
+    if sub == Some("approve") || args.switch("--approve") {
+        if args.flag("--intent").is_some()
+            || args.flag("--review-out").is_some()
+            || args.switch("--review-only")
+            || args.switch("--dry-run")
+        {
+            return Err(usage(
+                "settle approve takes only --review <file|-|hex> and --digest <64-hex>",
+                "fa settle approve --review <file|-|hex> --digest <review_digest>",
+            ));
+        }
+        let review_arg = args.require("--review", "<file|-|hex>")?;
+        let digest_text = args.require("--digest", "<64-hex review_digest>")?;
+        let digest = parse_digest(digest_text, "--digest")?;
+        let bytes = read_review_bytes(&ctx.files, review_arg, ctx.out.is_bound())?;
+        return approve_settlement_review_bytes(ctx, args, &bytes, digest);
+    }
+
+    let who = ctx.principal(args);
+    let capability = ctx.capability(args, &["read", "post"])?;
+    let out = &ctx.out;
+
+    if let Some(review_arg) = args.flag("--review") {
+        if args.flag("--intent").is_some()
+            || args.flag("--review-out").is_some()
+            || args.switch("--review-only")
+        {
+            return Err(usage(
+                "--review cannot be combined with --intent, --review-out, or --review-only",
+                "fa settle --review <file|-|hex> [--digest <64-hex>] [--approval <vid>]... [--dry-run]",
+            ));
+        }
+        let expected_digest = args
+            .flag("--digest")
+            .map(|t| parse_digest(t, "--digest"))
+            .transpose()?;
+        let bytes = read_review_bytes(&ctx.files, review_arg, out.is_bound())?;
+        let mut book = ctx.books.open(args)?;
+        let (plan, class_name) = if bytes.starts_with(b"FA-SETTLEMENT-GROUP-REVIEW\0") {
+            let review = SettlementGroupReview::decode(&bytes).map_err(|e| {
+                usage(
+                    format!("invalid settlement group review: {e}"),
+                    "supply the unchanged review exported by `fa settle --review-out`",
+                )
+            })?;
+            if let Some(expected) = expected_digest {
+                let actual = review.digest().map_err(|e| {
+                    usage(format!("invalid settlement group review: {e}"), "supply an unchanged review")
+                })?;
+                if actual != expected {
+                    return Err(Refusal::new(
+                        fa_journal::refusal::code::PLAN_INVALIDATED,
+                        exit::CONFLICT,
+                        "settlement group review digest does not match --digest",
+                        "fa:settlement-group-review:v1; plan §5.7 / §10.4",
+                        "supply the unchanged review and its matching --digest",
+                    )
+                    .into());
+                }
+            }
+            let prop_digest = review.proposal().proposal_digest().map_err(|e| {
+                usage(format!("invalid settlement proposal: {e}"), "supply an unchanged review")
+            })?;
+            let approvals = args
+                .flag_all("--approval")
+                .iter()
+                .map(|v| {
+                    Ok(fa_model::ApprovalRef {
+                        approval_vid: parse_vid(v, "--approval")?,
+                        approved_digest: prop_digest,
+                    })
+                })
+                .collect::<Result<Vec<_>, Fail>>()?;
+            let class_name = review.proposal().class.name().unwrap_or("Original").to_string();
+            let group_plan = book.plan_settlement_group_review(&review, approvals, &capability)??;
+            (group_plan.into_post_plan(), class_name)
+        } else {
+            let review = SettlementReview::decode(&bytes).map_err(|e| {
+                usage(
+                    format!("invalid settlement review: {e}"),
+                    "supply the unchanged review exported by `fa settle --review-out`",
+                )
+            })?;
+            if let Some(expected) = expected_digest {
+                let actual = review.digest().map_err(|e| {
+                    usage(format!("invalid settlement review: {e}"), "supply an unchanged review")
+                })?;
+                if actual != expected {
+                    return Err(Refusal::new(
+                        fa_journal::refusal::code::PLAN_INVALIDATED,
+                        exit::CONFLICT,
+                        "settlement review digest does not match --digest",
+                        "fa:settlement-review:v1; plan §5.7 / §10.4",
+                        "supply the unchanged review and its matching --digest",
+                    )
+                    .into());
+                }
+            }
+            let prop_digest = review.proposal().proposal_digest().map_err(|e| {
+                usage(format!("invalid settlement proposal: {e}"), "supply an unchanged review")
+            })?;
+            let approvals = args
+                .flag_all("--approval")
+                .iter()
+                .map(|v| {
+                    Ok(fa_model::ApprovalRef {
+                        approval_vid: parse_vid(v, "--approval")?,
+                        approved_digest: prop_digest,
+                    })
+                })
+                .collect::<Result<Vec<_>, Fail>>()?;
+            let class_name = review.proposal().class.name().unwrap_or("Original").to_string();
+            let single_plan = book.plan_settlement_review(&review, approvals, &capability)??;
+            (single_plan.into_post_plan(), class_name)
+        };
+        if args.switch("--dry-run") {
+            return emit_post_plan(out, &book, &ctx.files, args, &plan);
+        }
+        let posted = book.commit_plan(plan, &capability)??;
+        out.at_book(&book)?;
+        return emit_posted(out, posted, &class_name, false, None, None);
+    }
+
+    let path = args.require("--intent", "settlement.json (or - for stdin)")?;
+    let text = ctx.files.read_text(path)?;
+    let doc = parse_json(path, &text)?;
+    let Json::Obj(fields) = &doc else {
+        return Err(usage("settlement intent must be a JSON object", "fa settle --help"));
+    };
+    let review_mode = args.flag("--review-out").is_some() || args.switch("--review-only");
+    if review_mode && args.switch("--dry-run") {
+        return Err(usage(
+            "cannot combine --review-out/--review-only with --dry-run",
+            "export the review first, or omit --review-out/--review-only to rehearse a PostPlan with --dry-run",
+        ));
+    }
+
+    let base_fields: Vec<(String, Json)> = fields
+        .iter()
+        .filter(|(k, _)| {
+            !matches!(
+                k.as_str(),
+                "payment_leg" | "targets" | "payments" | "applications"
+            )
+        })
+        .cloned()
+        .collect();
+    let base_doc = Json::Obj(base_fields);
+
+    let mut book = ctx.books.open(args)?;
+    let proposal =
+        build_proposal_from_intent(out, &mut book, args, &base_doc, who, capability.clone())?;
+    let class_name = proposal.class.name().unwrap_or("Original").to_string();
+    let accounts: std::collections::BTreeMap<_, _> =
+        book.accounts()?.into_iter().map(|a| (a.vid, a)).collect();
+
+    if let Some(payments_val) = doc.get("payments").or_else(|| doc.get("applications")) {
+        if doc.get("payment_leg").is_some() || doc.get("targets").is_some() {
+            return Err(usage(
+                "supply either `payments` (multi-leg group) or `payment_leg` + `targets` (single-leg), not both",
+                "put each leg selection inside `payments: [{\"payment_leg\": 0, \"targets\": [...]}]`",
+            ));
+        }
+        let payments_arr = payments_val.as_arr().ok_or_else(|| {
+            usage(
+                "`payments` must be an array of leg selections",
+                "payments: [{\"payment_leg\": 0, \"targets\": [{\"entry\": \"<vid>\", \"ordinal\": 0}]}]",
+            )
+        })?;
+        let mut payments = Vec::with_capacity(payments_arr.len());
+        for (i, p) in payments_arr.iter().enumerate() {
+            let what = format!("payments[{i}]");
+            let payment_leg = parse_payment_leg(p, &what)?;
+            let targets = parse_settlement_targets(p, &what)?;
+            payments.push(SettlementLegSelection {
+                payment_leg,
+                targets,
+            });
+        }
+        let req = SettlementGroupRequest { proposal, payments };
+        let prepared = book.prepare_settlement_group(req, &capability)??;
+        if review_mode {
+            let review = prepared.export_review().map_err(|e| {
+                usage(
+                    format!("cannot export settlement group review: {e}"),
+                    "check the settlement group proposal and targets",
+                )
+            })?;
+            let review_digest = review.digest().map_err(|e| {
+                Fail::Internal(format!("settlement group review digest: {e}"))
+            })?;
+            let proposal_digest = review.proposal().proposal_digest().map_err(|e| {
+                Fail::Internal(format!("settlement group proposal digest: {e}"))
+            })?;
+            let bytes = review.canonical_bytes().map_err(|e| {
+                Fail::Internal(format!("settlement group review bytes: {e}"))
+            })?;
+            let apps = review
+                .allocations()
+                .iter()
+                .map(|part| {
+                    let code = accounts
+                        .get(&part.allocation.request.account)
+                        .map_or("?", |a| a.code.as_str());
+                    let unapplied = render_amount(
+                        Amount::new(
+                            fa_money::UnitId(part.allocation.request.unit_id),
+                            part.allocation.unapplied,
+                        ),
+                        &book.context().units,
+                    )?;
+                    Ok(obj(vec![
+                        ("payment_leg", Json::Int(i128::from(part.payment_leg))),
+                        ("account", s(code)),
+                        (
+                            "applied_count",
+                            Json::Int(part.allocation.allocations.len() as i128),
+                        ),
+                        ("unapplied", s(unapplied)),
+                    ]))
+                })
+                .collect::<Result<Vec<_>, Fail>>()?;
+            return emit_settlement_reviewed(
+                out,
+                &book,
+                &ctx.files,
+                args,
+                "group",
+                review.known_at(),
+                review.proposal(),
+                apps,
+                review_digest,
+                proposal_digest,
+                &bytes,
+            );
+        }
+        let prop_digest = prepared.proposal().proposal_digest().map_err(|e| {
+            Fail::Internal(format!("settlement group proposal digest: {e}"))
+        })?;
+        let approvals = args
+            .flag_all("--approval")
+            .iter()
+            .map(|v| {
+                Ok(fa_model::ApprovalRef {
+                    approval_vid: parse_vid(v, "--approval")?,
+                    approved_digest: prop_digest,
+                })
+            })
+            .collect::<Result<Vec<_>, Fail>>()?;
+        let plan = book
+            .plan_prepared_settlement_group(prepared, approvals, &capability)??
+            .into_post_plan();
+        if args.switch("--dry-run") {
+            return emit_post_plan(out, &book, &ctx.files, args, &plan);
+        }
+        let posted = book.commit_plan(plan, &capability)??;
+        out.at_book(&book)?;
+        emit_posted(out, posted, &class_name, false, None, None)
+    } else {
+        let payment_leg = parse_payment_leg(&doc, "settlement intent")?;
+        let targets = parse_settlement_targets(&doc, "settlement intent")?;
+        let req = SettlementPostRequest {
+            proposal,
+            payment_leg,
+            targets,
+        };
+        let prepared = book.prepare_settlement(req, &capability)??;
+        if review_mode {
+            let review = prepared.export_review().map_err(|e| {
+                usage(
+                    format!("cannot export settlement review: {e}"),
+                    "check the settlement proposal and targets",
+                )
+            })?;
+            let review_digest = review.digest().map_err(|e| {
+                Fail::Internal(format!("settlement review digest: {e}"))
+            })?;
+            let proposal_digest = review.proposal().proposal_digest().map_err(|e| {
+                Fail::Internal(format!("settlement proposal digest: {e}"))
+            })?;
+            let bytes = review.canonical_bytes().map_err(|e| {
+                Fail::Internal(format!("settlement review bytes: {e}"))
+            })?;
+            let alloc = review.allocation();
+            let code = accounts
+                .get(&alloc.request.account)
+                .map_or("?", |a| a.code.as_str());
+            let unapplied = render_amount(
+                Amount::new(fa_money::UnitId(alloc.request.unit_id), alloc.unapplied),
+                &book.context().units,
+            )?;
+            let apps = vec![obj(vec![
+                ("payment_leg", Json::Int(i128::from(review.payment_leg()))),
+                ("account", s(code)),
+                ("applied_count", Json::Int(alloc.allocations.len() as i128)),
+                ("unapplied", s(unapplied)),
+            ])];
+            return emit_settlement_reviewed(
+                out,
+                &book,
+                &ctx.files,
+                args,
+                "single",
+                alloc.known_at,
+                review.proposal(),
+                apps,
+                review_digest,
+                proposal_digest,
+                &bytes,
+            );
+        }
+        let prop_digest = prepared.proposal().proposal_digest().map_err(|e| {
+            Fail::Internal(format!("settlement proposal digest: {e}"))
+        })?;
+        let approvals = args
+            .flag_all("--approval")
+            .iter()
+            .map(|v| {
+                Ok(fa_model::ApprovalRef {
+                    approval_vid: parse_vid(v, "--approval")?,
+                    approved_digest: prop_digest,
+                })
+            })
+            .collect::<Result<Vec<_>, Fail>>()?;
+        let plan = book
+            .plan_prepared_settlement(prepared, approvals, &capability)??
+            .into_post_plan();
+        if args.switch("--dry-run") {
+            return emit_post_plan(out, &book, &ctx.files, args, &plan);
+        }
+        let posted = book.commit_plan(plan, &capability)??;
+        out.at_book(&book)?;
+        emit_posted(out, posted, &class_name, false, None, None)
+    }
 }
 
 // ---------------------------------------------------------------------------

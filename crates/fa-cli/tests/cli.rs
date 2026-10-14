@@ -4115,6 +4115,320 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         .0,
         0
     );
+
+    // Additional report, docket, steward, migration, allocation, and settlement events.
+    let book2 = dir.join("book2");
+    let mut run2 = |args: &[&str]| -> (i32, String) {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(book2.as_path()), &argv);
+        assert_eq!(code, 0, "args={argv:?}\n{out}\n{err}");
+        seen.extend(check_robot_output(&argv, code, &out));
+        (code, out)
+    };
+    run2(&[
+        "book",
+        "create",
+        "--name",
+        "Events Co 2",
+        "--opening-date",
+        "2026-01-01",
+    ]);
+    let chart2 = write(
+        &dir,
+        "chart2.json",
+        r#"{"accounts":[
+            {"code":"100","name":"Assets","type":"Asset","leaf":false,"unit":"USD"},
+            {"code":"1000","name":"Cash","type":"Asset","parent":"100","leaf":true,"unit":"USD"},
+            {"code":"3000","name":"Equity","type":"Equity","leaf":true,"unit":"USD"},
+            {"code":"6000","name":"Rent","type":"Expense","leaf":true,"unit":"USD"}
+        ]}"#,
+    );
+    run2(&["chart", "import", &chart2, "--date", "2026-01-01"]);
+    run2(&["period", "create", "--fiscal-year", "2026"]);
+    run2(&["period", "open", "FY2026-P01"]);
+    let close_plan = dir.join("p01_close.plan").display().to_string();
+    let (_, cp_out) = run2(&["period", "close", "FY2026-P01", "--plan-out", &close_plan]);
+    let cp_digest = field(&cp_out, "proposal_digest")
+        .unwrap_or_default()
+        .to_string();
+    let (_, cp_app_out) = run2(&["approve", "--proposal", &cp_digest, "--as", "controller"]);
+    let cp_app = field(&cp_app_out, "approval_vid")
+        .unwrap_or_default()
+        .to_string();
+    run2(&[
+        "period",
+        "close",
+        "FY2026-P01",
+        "--plan",
+        &close_plan,
+        "--approval",
+        &cp_app,
+    ]);
+    let lock_plan = dir.join("p01_lock.plan").display().to_string();
+    let (_, lp_out) = run2(&["period", "lock", "FY2026-P01", "--plan-out", &lock_plan]);
+    let lp_digest = field(&lp_out, "proposal_digest")
+        .unwrap_or_default()
+        .to_string();
+    let (_, lp_app_out) = run2(&["approve", "--proposal", &lp_digest, "--as", "controller"]);
+    let lp_app = field(&lp_app_out, "approval_vid")
+        .unwrap_or_default()
+        .to_string();
+    run2(&[
+        "period",
+        "lock",
+        "FY2026-P01",
+        "--plan",
+        &lock_plan,
+        "--approval",
+        &lp_app,
+    ]);
+    run2(&["period", "open", "FY2026-P03"]);
+
+    run2(&["tb", "--summary", "--period", "FY2026-P03"]);
+    run2(&[
+        "gl",
+        "detail",
+        "--account",
+        "1000",
+        "--from",
+        "2026-03-01",
+        "--to",
+        "2026-03-31",
+    ]);
+    run2(&[
+        "gl",
+        "roll-forward",
+        "--account",
+        "1000",
+        "--from",
+        "2026-03-01",
+        "--to",
+        "2026-03-31",
+    ]);
+    run2(&["gl", "aging", "--as-of", "2026-03-25", "--account", "1000"]);
+    run2(&[
+        "aging",
+        "--as-of",
+        "2026-03-25",
+        "--account",
+        "1000",
+        "--reconcile",
+    ]);
+    let cf_direct = write(
+        &dir,
+        "cf_direct.json",
+        r#"{"name":"cf-d","cash_accounts":["1000"],"assignments":[]}"#,
+    );
+    run2(&[
+        "gl",
+        "cash-flow",
+        "--account",
+        "1000",
+        "--from",
+        "2026-03-01",
+        "--to",
+        "2026-03-31",
+        "--policy",
+        &cf_direct,
+    ]);
+    let cf_indirect = write(
+        &dir,
+        "cf_indirect.json",
+        r#"{"name":"cf-i","cash_policy":"cf-d","cash_accounts":["1000"],"assignments":[],"adjustments":[]}"#,
+    );
+    run2(&[
+        "gl",
+        "cash-flow",
+        "--indirect",
+        "--income-period",
+        "FY2026-P03",
+        "--account",
+        "1000",
+        "--from",
+        "2026-03-01",
+        "--to",
+        "2026-03-31",
+        "--policy",
+        &cf_indirect,
+    ]);
+    run2(&[
+        "statement",
+        "diff",
+        "--definition",
+        "balance-sheet",
+        "--for",
+        "FY2026-P03",
+        "--before",
+        "8",
+        "--after",
+        "HEAD",
+    ]);
+    run2(&[
+        "statement",
+        "trace",
+        "--definition",
+        "balance-sheet",
+        "--for",
+        "FY2026-P03",
+        "--before",
+        "8",
+        "--after",
+        "HEAD",
+    ]);
+
+    let mut bank_bytes = String::from("HEADER_PAGE_1_ACCOUNT_NUMBER_SECRET\n");
+    while bank_bytes.len() < 4096 {
+        bank_bytes.push('A');
+    }
+    bank_bytes.push_str("CHUNK_1_DISCLOSED_STATEMENT_LINES\n");
+    let bank_path = write(&dir, "bank_ev.txt", &bank_bytes);
+    let (_, added_bank) = run2(&[
+        "document",
+        "add",
+        &bank_path,
+        "--kind",
+        "BankStatement",
+        "--grade",
+        "AgentUpload",
+    ]);
+    let bank_oid = field(&added_bank, "oid").unwrap_or_default().to_string();
+    run2(&["document", "redact", &bank_oid, "--grant", "privileged"]);
+    run2(&["document", "read", &bank_oid]);
+    run2(&["document", "disclose", &bank_oid, "--chunk", "1"]);
+    run2(&["document", "custody", &bank_oid, "--to", "records_clerk"]);
+    run2(&["document", "custody", &bank_oid]);
+    run2(&["attest", "review", &bank_oid, "--as", "reviewer"]);
+    let fee_entry = write(
+        &dir,
+        "fee_ev.json",
+        r#"{"effective_date":"2026-03-10","idempotency_key":"ev-fee","legs":[{"side":"debit","account":"6000","amount":"25.00 USD"},{"side":"credit","account":"1000","amount":"25.00 USD"}],"description":"Fee"}"#,
+    );
+    let (_, fee_posted) = run2(&["post", "--intent", &fee_entry, "--evidence", &bank_oid]);
+    let fee_vid = field(&fee_posted, "vid").unwrap_or_default().to_string();
+    run2(&["checkpoint", "create", "--grant", "witness"]);
+    run2(&[
+        "proof",
+        "evidence-disclosure",
+        "--entry",
+        &fee_vid,
+        "--document",
+        &bank_oid,
+        "--chunk",
+        "1",
+    ]);
+
+    let order_path = write(&dir, "order_ev.txt", "PRESERVATION ORDER");
+    let (_, added_order) = run2(&[
+        "document",
+        "add",
+        &order_path,
+        "--kind",
+        "CourtOrder",
+        "--grade",
+        "HumanUpload",
+    ]);
+    let order_oid = field(&added_order, "oid").unwrap_or_default().to_string();
+    let (_, placed_hold) = run2(&[
+        "hold",
+        "place",
+        "--authority",
+        &order_oid,
+        "--subject",
+        &bank_oid,
+        "--effective",
+        "2026-03-15",
+        "--description",
+        "Hold",
+    ]);
+    let hold_vid = field(&placed_hold, "hold_vid")
+        .unwrap_or_default()
+        .to_string();
+    run2(&["hold", "show", &hold_vid]);
+    let rel_plan = dir.join("rel_ev.plan").display().to_string();
+    let (_, rel_planned) = run2(&[
+        "hold",
+        "release",
+        &hold_vid,
+        "--effective",
+        "2026-03-20",
+        "--plan-out",
+        &rel_plan,
+    ]);
+    let rel_digest = field(&rel_planned, "proposal_digest")
+        .unwrap_or_default()
+        .to_string();
+    let (_, rel_app_out) = run2(&[
+        "approve",
+        "--proposal",
+        &rel_digest,
+        "--as",
+        "general_counsel",
+    ]);
+    let rel_app = field(&rel_app_out, "approval_vid")
+        .unwrap_or_default()
+        .to_string();
+    run2(&[
+        "hold",
+        "release",
+        &hold_vid,
+        "--plan",
+        &rel_plan,
+        "--approval",
+        &rel_app,
+    ]);
+
+    let tb_doc_path = write(&dir, "tb_ev.json", r#"{"legacy":"tb"}"#);
+    let (_, added_tb) = run2(&[
+        "document",
+        "add",
+        &tb_doc_path,
+        "--kind",
+        "Spreadsheet",
+        "--grade",
+        "HumanUpload",
+    ]);
+    let tb_oid = field(&added_tb, "oid").unwrap_or_default().to_string();
+    let mig_open = write(
+        &dir,
+        "mig_open_ev.json",
+        &format!(
+            r#"{{
+                "run_key":"mig-ev",
+                "source_system":"legacy",
+                "mode":"OpeningOnly",
+                "trial_balance":"{tb_oid}",
+                "opening_date":"2026-01-01",
+                "lines":[
+                    {{"account":"1000","unit":"USD","debit":"500.00"}},
+                    {{"account":"3000","unit":"USD","credit":"500.00"}}
+                ]
+            }}"#
+        ),
+    );
+    let (_, mig_opened) = run2(&["migrate", "open", "--intent", &mig_open]);
+    let run_vid = field(&mig_opened, "run_vid")
+        .unwrap_or_default()
+        .to_string();
+    run2(&["migrate", "show", &run_vid]);
+    let mig_plan = dir.join("mig_ev.plan").display().to_string();
+    run2(&["migrate", "abandon", "mig-ev", "--plan-out", &mig_plan]);
+
+    let alloc_ev = write(
+        &dir,
+        "alloc_ev.json",
+        r#"{"source":"6000","source_side":"credit","total":"1.00 USD","effective_date":"2026-03-20","idempotency_key":"alloc-ev","method":"largest_remainder","targets":[{"account":"1000","weight":1}]}"#,
+    );
+    run2(&["allocate", "--intent", &alloc_ev, "--review-only"]);
+    let settle_ev = write(
+        &dir,
+        "settle_ev.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-20","idempotency_key":"settle-ev","evidence":["{bank_oid}"],"legs":[{{"side":"debit","account":"1000","amount":"25.00 USD"}},{{"side":"credit","account":"6000","amount":"25.00 USD"}}],"payment_leg":0,"targets":[{{"entry":"{fee_vid}","ordinal":1}}]}}"#
+        ),
+    );
+    run2(&["settle", "--intent", &settle_ev, "--review-only"]);
+
     // The daemon's frames and its own output are fad's to emit (crates/fad tests).
     let declared: BTreeSet<String> = reg
         .events
@@ -7694,4 +8008,352 @@ fn docket_steward_and_migration_controls_round_trip() -> std::io::Result<()> {
     assert_eq!(field(&finalized, "to"), Some("Finalized"));
     Ok(())
 }
+
+#[test]
+fn allocate_and_settle_review_approve_plan_and_commit_workflows() -> std::io::Result<()> {
+    let dir = tmp("allocate-and-settle-e2e")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        assert!(err.is_empty(), "{err}");
+        out
+    };
+
+    ok(&["book", "create", "--name", "Alloc & Settle Co", "--json"]);
+    let chart_path = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[
+            {"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD"},
+            {"code":"1100","name":"Accounts Receivable","type":"Asset","leaf":true,"unit":"USD"},
+            {"code":"2100","name":"Unapplied Cash","type":"Liability","leaf":true,"unit":"USD"},
+            {"code":"4000","name":"Service Revenue","type":"Revenue","leaf":true,"unit":"USD"},
+            {"code":"6000","name":"Shared Rent Pool","type":"Expense","leaf":true,"unit":"USD"},
+            {"code":"6010","name":"Rent Dept A","type":"Expense","leaf":true,"unit":"USD"},
+            {"code":"6020","name":"Rent Dept B","type":"Expense","leaf":true,"unit":"USD"},
+            {"code":"6099","name":"Allocation Residual","type":"Expense","leaf":true,"unit":"USD"}
+        ]}"#,
+    );
+    ok(&["chart", "import", &chart_path, "--date", "2026-01-01", "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+
+    let doc_file = write(&dir, "invoice1.txt", "Customer Invoice #101 and Rent Bill");
+    let doc_added = ok(&[
+        "document",
+        "add",
+        &doc_file,
+        "--kind",
+        "Invoice",
+        "--mime",
+        "text/plain",
+        "--grade",
+        "HumanUpload",
+        "--json",
+    ]);
+    let doc_oid = field(&doc_added, "oid").unwrap_or_default().to_string();
+
+    // 1. Post rent pool expense (100.00 USD to 6000) and two AR invoices (60.00 USD and 40.00 USD to 1100).
+    let pool_intent = write(
+        &dir,
+        "pool.json",
+        &format!(
+            r#"{{
+                "effective_date": "2026-03-05",
+                "idempotency_key": "rent-pool-01",
+                "description": "March shared rent pool",
+                "evidence": ["{doc_oid}"],
+                "legs": [
+                    {{"side": "debit", "account": "6000", "amount": "100.00 USD"}},
+                    {{"side": "credit", "account": "1000", "amount": "100.00 USD"}}
+                ]
+            }}"#
+        ),
+    );
+    ok(&["post", "--intent", &pool_intent, "--json"]);
+
+    let inv1_intent = write(
+        &dir,
+        "inv1.json",
+        &format!(
+            r#"{{
+                "effective_date": "2026-03-06",
+                "idempotency_key": "ar-inv-101",
+                "description": "Invoice 101",
+                "evidence": ["{doc_oid}"],
+                "legs": [
+                    {{"side": "debit", "account": "1100", "amount": "60.00 USD"}},
+                    {{"side": "credit", "account": "4000", "amount": "60.00 USD"}}
+                ]
+            }}"#
+        ),
+    );
+    let inv1_posted = ok(&["post", "--intent", &inv1_intent, "--json"]);
+    let inv1_vid = field(&inv1_posted, "vid").unwrap_or_default().to_string();
+
+    let inv2_intent = write(
+        &dir,
+        "inv2.json",
+        &format!(
+            r#"{{
+                "effective_date": "2026-03-07",
+                "idempotency_key": "ar-inv-102",
+                "description": "Invoice 102",
+                "evidence": ["{doc_oid}"],
+                "legs": [
+                    {{"side": "debit", "account": "1100", "amount": "40.00 USD"}},
+                    {{"side": "credit", "account": "4000", "amount": "40.00 USD"}}
+                ]
+            }}"#
+        ),
+    );
+    let inv2_posted = ok(&["post", "--intent", &inv2_intent, "--json"]);
+    let inv2_vid = field(&inv2_posted, "vid").unwrap_or_default().to_string();
+
+    // 2. Explicit allocation: review -> approve -> commit (40.00 USD from 6000 to 6010/6020)
+    let explicit_alloc = write(
+        &dir,
+        "alloc_explicit.json",
+        r#"{
+            "source": "6000",
+            "source_side": "credit",
+            "total": "40.00 USD",
+            "effective_date": "2026-03-10",
+            "idempotency_key": "alloc-exp-01",
+            "description": "Partial explicit rent allocation",
+            "method": "largest_remainder",
+            "targets": [
+                {"account": "6010", "weight": 1},
+                {"account": "6020", "weight": 3}
+            ]
+        }"#,
+    );
+    let alloc_rev_path = dir.join("alloc_exp.review");
+    let alloc_rev_s = alloc_rev_path.to_str().unwrap();
+    let alloc_reviewed = ok(&[
+        "allocate",
+        "--intent",
+        &explicit_alloc,
+        "--review-out",
+        alloc_rev_s,
+        "--json",
+    ]);
+    assert_eq!(field(&alloc_reviewed, "event"), Some("allocation_reviewed"));
+    assert_eq!(field(&alloc_reviewed, "kind"), Some("explicit"));
+    assert_eq!(field(&alloc_reviewed, "total"), Some("40.00 USD"));
+    let alloc_rev_digest = field(&alloc_reviewed, "review_digest")
+        .unwrap_or_default()
+        .to_string();
+
+    let alloc_approved = ok(&[
+        "allocate",
+        "approve",
+        "--review",
+        alloc_rev_s,
+        "--digest",
+        &alloc_rev_digest,
+        "--as",
+        "controller",
+        "--json",
+    ]);
+    assert_eq!(field(&alloc_approved, "event"), Some("approved"));
+    let alloc_app_vid = field(&alloc_approved, "approval_vid")
+        .unwrap_or_default()
+        .to_string();
+
+    let alloc_posted = ok(&[
+        "allocate",
+        "--review",
+        alloc_rev_s,
+        "--digest",
+        &alloc_rev_digest,
+        "--approval",
+        &alloc_app_vid,
+        "--json",
+    ]);
+    assert_eq!(field(&alloc_posted, "event"), Some("posted"));
+    assert_eq!(field(&alloc_posted, "class"), Some("Allocation"));
+
+    // 3. Balance-derived allocation: allocate remaining 60.00 USD in 6000 for FY2026-P03
+    let bal_alloc = write(
+        &dir,
+        "alloc_balance.json",
+        r#"{
+            "source": "6000",
+            "source_period": "FY2026-P03",
+            "effective_date": "2026-03-12",
+            "idempotency_key": "alloc-bal-01",
+            "description": "Allocate remaining rent pool balance",
+            "method": "pro_rata_residual_to_named",
+            "rounding": "TowardZero",
+            "residual_account": "6099",
+            "targets": [
+                {"account": "6010", "weight": 1},
+                {"account": "6020", "weight": 6},
+                {"account": "6099", "weight": 0}
+            ]
+        }"#,
+    );
+    let bal_reviewed = ok(&[
+        "allocate",
+        "--intent",
+        &bal_alloc,
+        "--review-only",
+        "--json",
+    ]);
+    assert_eq!(field(&bal_reviewed, "event"), Some("allocation_reviewed"));
+    assert_eq!(field(&bal_reviewed, "kind"), Some("balance"));
+    assert_eq!(field(&bal_reviewed, "total"), Some("60.00 USD"));
+    let bal_rev_bytes = field(&bal_reviewed, "bytes")
+        .unwrap_or_default()
+        .to_string();
+    let bal_rev_digest = field(&bal_reviewed, "review_digest")
+        .unwrap_or_default()
+        .to_string();
+
+    let bal_approved = ok(&[
+        "approve",
+        "--review",
+        &bal_rev_bytes,
+        "--digest",
+        &bal_rev_digest,
+        "--as",
+        "controller",
+        "--json",
+    ]);
+    assert_eq!(field(&bal_approved, "event"), Some("approved"));
+    let bal_app_vid = field(&bal_approved, "approval_vid")
+        .unwrap_or_default()
+        .to_string();
+
+    let bal_posted = ok(&[
+        "allocate",
+        "--review",
+        &bal_rev_bytes,
+        "--digest",
+        &bal_rev_digest,
+        "--approval",
+        &bal_app_vid,
+        "--json",
+    ]);
+    assert_eq!(field(&bal_posted, "event"), Some("posted"));
+
+    // 4. Single-leg settlement: review -> approve -> dry-run -> commit against Invoice 101
+    let settle1 = write(
+        &dir,
+        "settle1.json",
+        &format!(
+            r#"{{
+                "effective_date": "2026-03-15",
+                "idempotency_key": "settle-inv-101",
+                "description": "Cash receipt for Invoice 101",
+                "evidence": ["{doc_oid}"],
+                "legs": [
+                    {{"side": "debit", "account": "1000", "amount": "60.00 USD"}},
+                    {{"side": "credit", "account": "1100", "amount": "60.00 USD"}}
+                ],
+                "payment_leg": 1,
+                "targets": [
+                    {{"entry": "{inv1_vid}", "ordinal": 0}}
+                ]
+            }}"#
+        ),
+    );
+    let settle_rev_path = dir.join("settle1.review");
+    let settle_rev_s = settle_rev_path.to_str().unwrap();
+    let settle_reviewed = ok(&[
+        "settle",
+        "--intent",
+        &settle1,
+        "--review-out",
+        settle_rev_s,
+        "--json",
+    ]);
+    assert_eq!(field(&settle_reviewed, "event"), Some("settlement_reviewed"));
+    assert_eq!(field(&settle_reviewed, "kind"), Some("single"));
+    let settle_rev_digest = field(&settle_reviewed, "review_digest")
+        .unwrap_or_default()
+        .to_string();
+
+    let settle_approved = ok(&[
+        "settle",
+        "approve",
+        "--review",
+        settle_rev_s,
+        "--digest",
+        &settle_rev_digest,
+        "--as",
+        "controller",
+        "--json",
+    ]);
+    assert_eq!(field(&settle_approved, "event"), Some("approved"));
+    let settle_app_vid = field(&settle_approved, "approval_vid")
+        .unwrap_or_default()
+        .to_string();
+
+    let settle_planned = ok(&[
+        "settle",
+        "--review",
+        settle_rev_s,
+        "--digest",
+        &settle_rev_digest,
+        "--approval",
+        &settle_app_vid,
+        "--dry-run",
+        "--json",
+    ]);
+    assert_eq!(field(&settle_planned, "event"), Some("plan"));
+
+    let settle_posted = ok(&[
+        "settle",
+        "--review",
+        settle_rev_s,
+        "--digest",
+        &settle_rev_digest,
+        "--approval",
+        &settle_app_vid,
+        "--json",
+    ]);
+    assert_eq!(field(&settle_posted, "event"), Some("posted"));
+
+    // 5. Multi-leg settlement group: settle Invoice 102 (40.00 USD) with 50.00 USD cash and 10.00 USD unapplied to 2100
+    let settle_group = write(
+        &dir,
+        "settle_group.json",
+        &format!(
+            r#"{{
+                "effective_date": "2026-03-18",
+                "idempotency_key": "settle-group-102",
+                "description": "Multi-leg receipt settling Invoice 102 with unapplied excess",
+                "evidence": ["{doc_oid}"],
+                "legs": [
+                    {{"side": "debit", "account": "1000", "amount": "50.00 USD"}},
+                    {{"side": "credit", "account": "1100", "amount": "40.00 USD"}},
+                    {{"side": "credit", "account": "2100", "amount": "10.00 USD"}}
+                ],
+                "payments": [
+                    {{
+                        "payment_leg": 1,
+                        "targets": [
+                            {{"entry": "{inv2_vid}", "ordinal": 0}}
+                        ]
+                    }}
+                ]
+            }}"#
+        ),
+    );
+    let group_posted = ok(&["settle", "--intent", &settle_group, "--json"]);
+    assert_eq!(field(&group_posted, "event"), Some("posted"));
+
+    // Verify open items on 1100 are now all settled (every leg has 0.00 USD open)
+    let open_ar = ok(&["open-items", "--account", "1100", "--json"]);
+    let open_doc = doc(&open_ar);
+    assert_eq!(int(&open_doc, "count"), Some(4));
+    for item in arr(&open_doc, "items") {
+        assert_eq!(text(&item, "open"), "0.00 USD");
+    }
+    Ok(())
+}
+
 
