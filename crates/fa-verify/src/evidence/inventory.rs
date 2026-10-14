@@ -11,8 +11,8 @@ pub mod production;
 use core::fmt;
 
 use super::{
-    EvidenceCitation, EvidenceError, MAX_EVIDENCE_PER_ENTRY, authenticated_entry,
-    document_oid, visit_citations,
+    EvidenceCitation, EvidenceError, MAX_EVIDENCE_PER_ENTRY, authenticated_entry, document_oid,
+    visit_citations,
 };
 use crate::{Checkpoint, Inclusion};
 
@@ -33,7 +33,9 @@ pub enum InventoryError {
     Request(&'static str),
     /// Zero-based ordinal of the first missing, extra, or changed citation.
     /// No payload bytes or unverified metadata are retained in diagnostics.
-    CitationSetMismatch { ordinal: usize },
+    CitationSetMismatch {
+        ordinal: usize,
+    },
 }
 
 impl fmt::Display for InventoryError {
@@ -93,7 +95,10 @@ pub fn verify_evidence_inventory_for(
 ) -> Result<VerifiedEvidenceInventory, InventoryError> {
     let (inclusion, proposal) = authenticated_entry(proof, checkpoint, expected_entry_digest)?;
     let citations = citations_from_proposal(proposal, &checkpoint.book_id)?;
-    Ok(VerifiedEvidenceInventory { inclusion, citations })
+    Ok(VerifiedEvidenceInventory {
+        inclusion,
+        citations,
+    })
 }
 
 // This only reads framing and citation identities. Callers must authenticate
@@ -127,7 +132,10 @@ pub fn verify_evidence_inventory_exact(
     validate_citation_request(expected)?;
     let inventory = verify_evidence_inventory_for(proof, checkpoint, expected_entry_digest)?;
     let actual = &inventory.citations;
-    let ordinal = expected.iter().zip(actual).position(|(left, right)| left != right);
+    let ordinal = expected
+        .iter()
+        .zip(actual)
+        .position(|(left, right)| left != right);
     if let Some(ordinal) = ordinal {
         return Err(InventoryError::CitationSetMismatch { ordinal });
     }

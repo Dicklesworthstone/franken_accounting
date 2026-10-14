@@ -58,7 +58,9 @@ struct Request {
 
 fn digest(text: &str) -> Result<[u8; 32], Failure> {
     if text.len() != 64 || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(Failure::usage("digests require exactly 64 ASCII hexadecimal digits"));
+        return Err(Failure::usage(
+            "digests require exactly 64 ASCII hexadecimal digits",
+        ));
     }
     let mut result = [0; 32];
     for (index, byte) in result.iter_mut().enumerate() {
@@ -71,21 +73,28 @@ fn digest(text: &str) -> Result<[u8; 32], Failure> {
 fn citation(text: &str) -> Result<EvidenceCitation, Failure> {
     // Two fixed-width digests, two separators, and at most three role digits.
     if !(131..=133).contains(&text.len()) || !text.is_ascii() {
-        return Err(Failure::usage("--expect-citation requires OID64:COMMIT64:ROLE"));
+        return Err(Failure::usage(
+            "--expect-citation requires OID64:COMMIT64:ROLE",
+        ));
     }
     let mut fields = text.split(':');
     let oid = fields.next().unwrap_or_default();
     let commitment = fields.next().unwrap_or_default();
     let role = fields.next().unwrap_or_default();
-    if fields.next().is_some() || role.is_empty() || role.len() > 3
+    if fields.next().is_some()
+        || role.is_empty()
+        || role.len() > 3
         || !role.bytes().all(|byte| byte.is_ascii_digit())
     {
-        return Err(Failure::usage("--expect-citation requires OID64:COMMIT64:ROLE"));
+        return Err(Failure::usage(
+            "--expect-citation requires OID64:COMMIT64:ROLE",
+        ));
     }
     Ok(EvidenceCitation {
         document_oid: digest(oid)?,
         doc_commit: digest(commitment)?,
-        role: role.parse::<u8>()
+        role: role
+            .parse::<u8>()
             .map_err(|_| Failure::usage("citation role must be a decimal integer 0..255"))?,
     })
 }
@@ -97,19 +106,33 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
     let mut index = 1;
     while let Some(argument) = args.get(index) {
         if argument == "--json" || argument == "--expect-empty" {
-            let seen = if argument == "--json" { &mut json } else { &mut expect_empty };
+            let seen = if argument == "--json" {
+                &mut json
+            } else {
+                &mut expect_empty
+            };
             if *seen {
-                return Err(Failure::usage("each boolean option may be supplied only once"));
+                return Err(Failure::usage(
+                    "each boolean option may be supplied only once",
+                ));
             }
             *seen = true;
             index += 1;
             continue;
         }
-        let name = argument.to_str().ok_or_else(|| Failure::usage("unknown evidence option"))?;
-        if !matches!(name, "--proof" | "--checkpoint" | "--expect-entry" | "--expect-citation") {
-            return Err(Failure::usage("unknown evidence option; run fa-verify evidence --help"));
+        let name = argument
+            .to_str()
+            .ok_or_else(|| Failure::usage("unknown evidence option"))?;
+        if !matches!(
+            name,
+            "--proof" | "--checkpoint" | "--expect-entry" | "--expect-citation"
+        ) {
+            return Err(Failure::usage(
+                "unknown evidence option; run fa-verify evidence --help",
+            ));
         }
-        let value = args.get(index + 1)
+        let value = args
+            .get(index + 1)
             .ok_or_else(|| Failure::usage(format!("{name} requires a value")))?;
         if value.is_empty() || value.to_str().is_some_and(|text| text.starts_with("--")) {
             return Err(Failure::usage(format!(
@@ -118,9 +141,13 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
         }
         if name == "--expect-citation" {
             if citations.len() == MAX_EVIDENCE_PER_ENTRY {
-                return Err(Failure::usage("at most 1024 expected citations are permitted"));
+                return Err(Failure::usage(
+                    "at most 1024 expected citations are permitted",
+                ));
             }
-            let text = value.to_str().ok_or_else(|| Failure::usage("citations must be ASCII"))?;
+            let text = value
+                .to_str()
+                .ok_or_else(|| Failure::usage("citations must be ASCII"))?;
             citations.push(citation(text)?);
         } else {
             let slot = match name {
@@ -135,18 +162,27 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
         index += 2;
     }
     if expect_empty && !citations.is_empty() {
-        return Err(Failure::usage("--expect-empty cannot be combined with --expect-citation"));
+        return Err(Failure::usage(
+            "--expect-empty cannot be combined with --expect-citation",
+        ));
     }
     validate_citation_request(&citations).map_err(|error| Failure::usage(error.to_string()))?;
     let proof = proof.ok_or_else(|| Failure::usage("--proof is required"))?;
     let checkpoint = checkpoint.ok_or_else(|| Failure::usage("--checkpoint is required"))?;
-    let entry = entry.ok_or_else(|| Failure::usage("--expect-entry is required independently of the proof"))?;
-    let text = entry.to_str().ok_or_else(|| Failure::usage("--expect-entry must be ASCII hex"))?;
+    let entry = entry
+        .ok_or_else(|| Failure::usage("--expect-entry is required independently of the proof"))?;
+    let text = entry
+        .to_str()
+        .ok_or_else(|| Failure::usage("--expect-entry must be ASCII hex"))?;
     Ok(Request {
         proof: PathBuf::from(proof),
         checkpoint: PathBuf::from(checkpoint),
         entry_digest: digest(text)?,
-        citations: if expect_empty || !citations.is_empty() { Some(citations) } else { None },
+        citations: if expect_empty || !citations.is_empty() {
+            Some(citations)
+        } else {
+            None
+        },
     })
 }
 
@@ -164,27 +200,36 @@ pub(super) fn run(args: &[OsString], json: bool) -> Result<String, Failure> {
     let checkpoint = read_checkpoint(&request.checkpoint)?;
     let proof = read_bounded(&request.proof, MAX_PROOF_BYTES)?;
     let report = match &request.citations {
-        Some(citations) => verify_evidence_inventory_exact(
-            &proof, &checkpoint, &request.entry_digest, citations,
-        ),
+        Some(citations) => {
+            verify_evidence_inventory_exact(&proof, &checkpoint, &request.entry_digest, citations)
+        }
         None => verify_evidence_inventory_for(&proof, &checkpoint, &request.entry_digest),
-    }.map_err(|error| Failure::verification(error.to_string()))?;
+    }
+    .map_err(|error| Failure::verification(error.to_string()))?;
     Ok(render(&report, request.citations.is_some(), json))
 }
 
 fn render(report: &VerifiedEvidenceInventory, exact: bool, json: bool) -> String {
     let inclusion = &report.inclusion;
-    let request_check = if exact { "entry_and_exact_citations" } else { "entry_only" };
+    let request_check = if exact {
+        "entry_and_exact_citations"
+    } else {
+        "entry_only"
+    };
     if !json {
         let mut text = format!(
             "Verified evidence inventory (scope: {}): {} citations in entry {} at sequence {}.\nCoverage: complete citation list for this entry only. Request check: {request_check}.\n",
-            inclusion.scope, report.citations.len(), hex(&inclusion.envelope.record_digest),
+            inclusion.scope,
+            report.citations.len(),
+            hex(&inclusion.envelope.record_digest),
             inclusion.envelope.commit_seq,
         );
         for citation in &report.citations {
             text.push_str(&format!(
                 "document {} commit {} role {}\n",
-                hex(&citation.document_oid), hex(&citation.doc_commit), citation.role,
+                hex(&citation.document_oid),
+                hex(&citation.doc_commit),
+                citation.role,
             ));
         }
         text.push_str("Document bytes, signatures, custody, role truth, accounting laws, authorization, redaction policy, journal coverage and production completeness were not checked. No payload bytes are printed.");
@@ -192,50 +237,97 @@ fn render(report: &VerifiedEvidenceInventory, exact: bool, json: bool) -> String
     }
     let checkpoint = &inclusion.checkpoint;
     let mut checks = vec![
-        "trusted_checkpoint_matches", "requested_entry_digest", "record_recomputation",
-        "leaf_inclusion", "canonical_complete_citation_list", "book_scoped_document_identities",
+        "trusted_checkpoint_matches",
+        "requested_entry_digest",
+        "record_recomputation",
+        "leaf_inclusion",
+        "canonical_complete_citation_list",
+        "book_scoped_document_identities",
         "entry_frame",
     ];
-    if exact { checks.push("exact_requested_citation_set"); }
+    if exact {
+        checks.push("exact_requested_citation_set");
+    }
     object([
-        ("anchor", object([
-            ("format", quote("unsigned_raw_checkpoint")),
-            ("source", quote("operator_trusted_checkpoint")),
-            ("signature_verification", quote("not_performed")),
-        ])),
+        (
+            "anchor",
+            object([
+                ("format", quote("unsigned_raw_checkpoint")),
+                ("source", quote("operator_trusted_checkpoint")),
+                ("signature_verification", quote("not_performed")),
+            ]),
+        ),
         // u64 coordinates remain exact for JSON consumers using IEEE doubles.
-        ("checkpoint", object([
-            ("book_id", quote(&hex(&checkpoint.book_id))),
-            ("branch_id", quote(&hex(&checkpoint.branch_id))),
-            ("leaf_count", quote(&checkpoint.leaf_count.to_string())),
-            ("root", quote(&hex(&checkpoint.root))),
-            ("through_seq", quote(&checkpoint.through_seq.to_string())),
-        ])),
-        ("checks", array(checks.into_iter().map(|name| object([
-            ("name", quote(name)), ("status", quote("pass")),
-        ])))),
-        ("coverage", object([
-            ("citations", quote("complete_for_requested_entry")),
-            ("journal", quote("single_included_entry")),
-            ("document_bytes", quote("not_verified")),
-        ])),
-        ("data", object([
-            ("entry_digest", quote(&hex(&inclusion.envelope.record_digest))),
-            ("leaf_index", quote(&inclusion.leaf_index.to_string())),
-            ("recorded_at", quote(&inclusion.envelope.commit_seq.to_string())),
-            ("record_check", quote("recomputed")),
-            ("citation_count", report.citations.len().to_string()),
-            ("citations", array(report.citations.iter().map(|citation| object([
-                ("document_oid", quote(&hex(&citation.document_oid))),
-                ("doc_commit", quote(&hex(&citation.doc_commit))),
-                ("role", citation.role.to_string()),
-            ])))),
-        ])),
+        (
+            "checkpoint",
+            object([
+                ("book_id", quote(&hex(&checkpoint.book_id))),
+                ("branch_id", quote(&hex(&checkpoint.branch_id))),
+                ("leaf_count", quote(&checkpoint.leaf_count.to_string())),
+                ("root", quote(&hex(&checkpoint.root))),
+                ("through_seq", quote(&checkpoint.through_seq.to_string())),
+            ]),
+        ),
+        (
+            "checks",
+            array(
+                checks
+                    .into_iter()
+                    .map(|name| object([("name", quote(name)), ("status", quote("pass"))])),
+            ),
+        ),
+        (
+            "coverage",
+            object([
+                ("citations", quote("complete_for_requested_entry")),
+                ("journal", quote("single_included_entry")),
+                ("document_bytes", quote("not_verified")),
+            ]),
+        ),
+        (
+            "data",
+            object([
+                (
+                    "entry_digest",
+                    quote(&hex(&inclusion.envelope.record_digest)),
+                ),
+                ("leaf_index", quote(&inclusion.leaf_index.to_string())),
+                (
+                    "recorded_at",
+                    quote(&inclusion.envelope.commit_seq.to_string()),
+                ),
+                ("record_check", quote("recomputed")),
+                ("citation_count", report.citations.len().to_string()),
+                (
+                    "citations",
+                    array(report.citations.iter().map(|citation| {
+                        object([
+                            ("document_oid", quote(&hex(&citation.document_oid))),
+                            ("doc_commit", quote(&hex(&citation.doc_commit))),
+                            ("role", citation.role.to_string()),
+                        ])
+                    })),
+                ),
+            ]),
+        ),
         ("request_check", quote(request_check)),
-        ("not_checked", array([
-            "document_bytes", "signatures", "custody", "citation_role_truth", "accounting_laws",
-            "authorization", "redaction_policy", "journal_coverage", "production_completeness",
-        ].map(quote))),
+        (
+            "not_checked",
+            array(
+                [
+                    "document_bytes",
+                    "signatures",
+                    "custody",
+                    "citation_role_truth",
+                    "accounting_laws",
+                    "authorization",
+                    "redaction_policy",
+                    "journal_coverage",
+                    "production_completeness",
+                ]
+                .map(quote),
+            ),
+        ),
         ("event", quote("proof_verified")),
         ("proof_kind", quote("evidence_inventory")),
         ("scope", quote(inclusion.scope)),

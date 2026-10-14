@@ -6,8 +6,8 @@ use fa_model::{ApprovalRef, Id128};
 use fa_policy::{Capability, Op};
 use fgdb_types::context::PurposeContexts;
 
-use crate::{AllocationReviewError, AsyncBook, BookError, Outcome, PostPlan};
 use super::BalanceAllocationReview;
+use crate::{AllocationReviewError, AsyncBook, BookError, Outcome, PostPlan};
 
 fn refusal(error: AllocationReviewError) -> Refusal {
     let (code, status) = if matches!(error, AllocationReviewError::Mismatch) {
@@ -16,7 +16,10 @@ fn refusal(error: AllocationReviewError) -> Refusal {
         (fa_journal::refusal::code::STRUCTURE, exit::USAGE)
     };
     Refusal::new(
-        code, status, error.to_string(), "fa:balance-allocation-review:v1; plan §5.3 / §6.3 / §10.4",
+        code,
+        status,
+        error.to_string(),
+        "fa:balance-allocation-review:v1; plan §5.3 / §6.3 / §10.4",
         "use the unchanged saved source review and its independently retained compound digest; after an attempted commit retry the original PostPlan",
     )
 }
@@ -34,12 +37,27 @@ fn checked_review_digest(
     fa_policy::admit_read(capability, capability.holder(), book)
         .map_err(|denial| fa_journal::policy::refusal(&denial))?;
     let proposal = artifact.review().proposal();
-    let explicit: Vec<_> = proposal.legs.iter()
-        .map(|leg| (leg.amount.unit, leg.amount.mantissa)).collect();
-    let principal = if matches!(op, Op::Approve) { capability.holder() } else { proposal.principal_ref };
-    fa_policy::admit(capability, &fa_policy::Intent {
-        principal, trunk: true, op, book, legs: &explicit,
-    }).map_err(|denial| fa_journal::policy::refusal(&denial))?;
+    let explicit: Vec<_> = proposal
+        .legs
+        .iter()
+        .map(|leg| (leg.amount.unit, leg.amount.mantissa))
+        .collect();
+    let principal = if matches!(op, Op::Approve) {
+        capability.holder()
+    } else {
+        proposal.principal_ref
+    };
+    fa_policy::admit(
+        capability,
+        &fa_policy::Intent {
+            principal,
+            trunk: true,
+            op,
+            book,
+            legs: &explicit,
+        },
+    )
+    .map_err(|denial| fa_journal::policy::refusal(&denial))?;
     artifact.verify_for(&expected).map_err(refusal)?;
     artifact.review().digest().map_err(refusal)
 }
@@ -65,14 +83,24 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     ) -> Outcome<PostPlan> {
         cx.txn().checkpoint().map_err(BookError::Context)?;
         let inner_digest = match checked_review_digest(
-            self.context().book_id, review, expected_digest, Op::Post, capability,
+            self.context().book_id,
+            review,
+            expected_digest,
+            Op::Post,
+            capability,
         ) {
             Ok(digest) => digest,
             Err(refusal) => return Ok(Err(refusal)),
         };
         let request = review.request();
         self.plan_balance_allocation_review(
-            cx, &request, review.source_digest(), review.review(), inner_digest, approvals, capability,
+            cx,
+            &request,
+            review.source_digest(),
+            review.review(),
+            inner_digest,
+            approvals,
+            capability,
         )
     }
 
@@ -96,14 +124,24 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     ) -> Outcome<Approved> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
         let inner_digest = match checked_review_digest(
-            self.context().book_id, review, expected_digest, Op::Approve, capability,
+            self.context().book_id,
+            review,
+            expected_digest,
+            Op::Approve,
+            capability,
         ) {
             Ok(digest) => digest,
             Err(refusal) => return Ok(Err(refusal)),
         };
         let request = review.request();
         self.approve_balance_allocation_review(
-            cx, &request, review.source_digest(), review.review(), inner_digest, capability,
-        ).await
+            cx,
+            &request,
+            review.source_digest(),
+            review.review(),
+            inner_digest,
+            capability,
+        )
+        .await
     }
 }

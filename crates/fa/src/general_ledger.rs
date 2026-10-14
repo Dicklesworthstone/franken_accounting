@@ -88,34 +88,58 @@ pub struct GeneralLedger {
 
 impl GeneralLedger {
     #[must_use]
-    pub fn book_id(&self) -> Id128 { self.book_id }
+    pub fn book_id(&self) -> Id128 {
+        self.book_id
+    }
     #[must_use]
-    pub fn branch_id(&self) -> Id128 { self.branch_id }
+    pub fn branch_id(&self) -> Id128 {
+        self.branch_id
+    }
     #[must_use]
-    pub fn known_at(&self) -> CommitSeq { self.known_at }
+    pub fn known_at(&self) -> CommitSeq {
+        self.known_at
+    }
     #[must_use]
-    pub fn label(&self) -> &str { &self.label }
+    pub fn label(&self) -> &str {
+        &self.label
+    }
     #[must_use]
-    pub fn effective_from(&self) -> DateDay { self.effective_from }
+    pub fn effective_from(&self) -> DateDay {
+        self.effective_from
+    }
     #[must_use]
-    pub fn effective_through(&self) -> DateDay { self.effective_through }
+    pub fn effective_through(&self) -> DateDay {
+        self.effective_through
+    }
     #[must_use]
-    pub fn accounts(&self) -> &[Account] { &self.accounts }
+    pub fn accounts(&self) -> &[Account] {
+        &self.accounts
+    }
     #[must_use]
-    pub fn units(&self) -> &[u32] { &self.units }
+    pub fn units(&self) -> &[u32] {
+        &self.units
+    }
     #[must_use]
-    pub fn buckets(&self) -> &[Bucket] { &self.buckets }
+    pub fn buckets(&self) -> &[Bucket] {
+        &self.buckets
+    }
     #[must_use]
-    pub fn cells(&self) -> &[GeneralLedgerCell] { &self.cells }
+    pub fn cells(&self) -> &[GeneralLedgerCell] {
+        &self.cells
+    }
     #[must_use]
-    pub fn lines(&self) -> &[GeneralLedgerLine] { &self.lines }
+    pub fn lines(&self) -> &[GeneralLedgerLine] {
+        &self.lines
+    }
 
     /// Classify an already admitted immutable cash-ledger snapshot without a
     /// second database read. Its original known-at coordinate and all source
     /// citations are retained. The query context supplies cancellation/budget,
     /// not authority over any additional data. No journal mutation occurs.
     pub fn classify_cash_flow(
-        self, query: &QueryCx, definition: &CashFlowDefinition,
+        self,
+        query: &QueryCx,
+        definition: &CashFlowDefinition,
     ) -> Outcome<CashFlow> {
         cash_flow::project(self, definition, query)
     }
@@ -123,7 +147,9 @@ impl GeneralLedger {
     /// A missing account/unit is outside the selected scope, NOT a zero cell.
     #[must_use]
     pub fn cell(&self, account: VId, unit: u32) -> Option<&GeneralLedgerCell> {
-        self.cells.iter().find(|cell| cell.account_id == account.0 && cell.unit_id == unit)
+        self.cells
+            .iter()
+            .find(|cell| cell.account_id == account.0 && cell.unit_id == unit)
     }
 
     /// Canonical bounded output. No partial bytes escape on size/allocation
@@ -145,21 +171,32 @@ impl GeneralLedger {
             out.add(&[account.account_type, u8::from(account.is_leaf)])?;
         }
         out.count(self.units.len())?;
-        for unit in &self.units { out.add(&unit.to_le_bytes())?; }
+        for unit in &self.units {
+            out.add(&unit.to_le_bytes())?;
+        }
         out.count(self.buckets.len())?;
         for bucket in &self.buckets {
             out.add(&bucket.class.0.to_le_bytes())?;
             out.string(&bucket.reason_code)?;
             match bucket.rule_digest {
                 None => out.add(&[0])?,
-                Some(digest) => { out.add(&[1])?; out.add(&digest)?; }
+                Some(digest) => {
+                    out.add(&[1])?;
+                    out.add(&digest)?;
+                }
             }
         }
         out.count(self.cells.len())?;
         for cell in &self.cells {
             out.add(&cell.account_id.to_le_bytes())?;
             out.add(&cell.unit_id.to_le_bytes())?;
-            for amount in [cell.opening, cell.debits, cell.credits, cell.net_change, cell.closing] {
+            for amount in [
+                cell.opening,
+                cell.debits,
+                cell.credits,
+                cell.net_change,
+                cell.closing,
+            ] {
                 out.add(&amount.to_le_bytes())?;
             }
             out.add(&cell.line_start.to_le_bytes())?;
@@ -192,7 +229,9 @@ fn invalid(message: impl Into<String>) -> Refusal {
 }
 
 fn length(current: usize, additional: usize) -> Result<usize, Refusal> {
-    current.checked_add(additional).filter(|n| *n <= MAX_GENERAL_LEDGER_BYTES)
+    current
+        .checked_add(additional)
+        .filter(|n| *n <= MAX_GENERAL_LEDGER_BYTES)
         .ok_or_else(|| invalid("general-ledger output exceeds its 64 MiB bound"))
 }
 
@@ -201,12 +240,15 @@ struct Bytes(Vec<u8>);
 impl Bytes {
     fn add(&mut self, bytes: &[u8]) -> Result<(), Refusal> {
         length(self.0.len(), bytes.len())?;
-        self.0.try_reserve(bytes.len()).map_err(|_| invalid("cannot reserve general-ledger output"))?;
+        self.0
+            .try_reserve(bytes.len())
+            .map_err(|_| invalid("cannot reserve general-ledger output"))?;
         self.0.extend_from_slice(bytes);
         Ok(())
     }
     fn count(&mut self, count: usize) -> Result<(), Refusal> {
-        let count = u32::try_from(count).map_err(|_| invalid("general-ledger count exceeds its wire bound"))?;
+        let count = u32::try_from(count)
+            .map_err(|_| invalid("general-ledger count exceeds its wire bound"))?;
         self.add(&count.to_le_bytes())
     }
     fn string(&mut self, value: &str) -> Result<(), Refusal> {
@@ -216,96 +258,173 @@ impl Bytes {
 }
 
 fn add(left: i128, right: i128) -> Result<i128, Refusal> {
-    left.checked_add(right).ok_or_else(|| invalid("general-ledger running balance or turnover exceeds i128"))
+    left.checked_add(right)
+        .ok_or_else(|| invalid("general-ledger running balance or turnover exceeds i128"))
 }
 
 fn sub(left: i128, right: i128) -> Result<i128, Refusal> {
-    left.checked_sub(right).ok_or_else(|| invalid("general-ledger running balance or turnover exceeds i128"))
+    left.checked_sub(right)
+        .ok_or_else(|| invalid("general-ledger running balance or turnover exceeds i128"))
 }
 
-enum ProjectionError { Refusal(Refusal), Book(BookError) }
-impl From<Refusal> for ProjectionError { fn from(r: Refusal) -> Self { Self::Refusal(r) } }
-impl From<BookError> for ProjectionError { fn from(e: BookError) -> Self { Self::Book(e) } }
+enum ProjectionError {
+    Refusal(Refusal),
+    Book(BookError),
+}
+impl From<Refusal> for ProjectionError {
+    fn from(r: Refusal) -> Self {
+        Self::Refusal(r)
+    }
+}
+impl From<BookError> for ProjectionError {
+    fn from(e: BookError) -> Self {
+        Self::Book(e)
+    }
+}
 
 fn project(mut source: RollForward, query: &QueryCx) -> Outcome<GeneralLedger> {
     query.checkpoint().map_err(BookError::Context)?;
     // The source is exclusively a native reader/replay result, never caller
     // supplied advice. Still reconcile independent stocks and defend indexing.
-    if source.rows.len() > MAX_GENERAL_LEDGER_CELLS || source.movements.len() > MAX_GENERAL_LEDGER_LINES {
-        return Ok(Err(invalid("general-ledger detail exceeds 65,536 cells or 250,000 lines; narrow the scope")));
+    if source.rows.len() > MAX_GENERAL_LEDGER_CELLS
+        || source.movements.len() > MAX_GENERAL_LEDGER_LINES
+    {
+        return Ok(Err(invalid(
+            "general-ledger detail exceeds 65,536 cells or 250,000 lines; narrow the scope",
+        )));
     }
     let build = || -> Result<GeneralLedger, ProjectionError> {
         let mut cells = Vec::new();
-        cells.try_reserve(source.rows.len()).map_err(|_| invalid("cannot reserve general-ledger cells"))?;
+        cells
+            .try_reserve(source.rows.len())
+            .map_err(|_| invalid("cannot reserve general-ledger cells"))?;
         let mut indexes = BTreeMap::new();
         for (ordinal, row) in source.rows.iter().enumerate() {
-            if ordinal % 256 == 0 { query.checkpoint().map_err(BookError::Context)?; }
+            if ordinal % 256 == 0 {
+                query.checkpoint().map_err(BookError::Context)?;
+            }
             let index = cells.len();
-            if indexes.insert((row.account_id, row.unit_id), index).is_some() {
+            if indexes
+                .insert((row.account_id, row.unit_id), index)
+                .is_some()
+            {
                 return Err(invalid("native general-ledger scope repeats a cell").into());
             }
             cells.push(GeneralLedgerCell {
-                account_id: row.account_id, unit_id: row.unit_id, opening: row.opening,
-                debits: 0, credits: 0, net_change: row.net_change, closing: row.closing,
-                line_start: 0, line_end: 0,
+                account_id: row.account_id,
+                unit_id: row.unit_id,
+                opening: row.opening,
+                debits: 0,
+                credits: 0,
+                net_change: row.net_change,
+                closing: row.closing,
+                line_start: 0,
+                line_end: 0,
             });
         }
-        let buckets: BTreeMap<_, _> = source.buckets.iter().cloned().enumerate()
-            .map(|(index, bucket)| (bucket, index)).collect();
+        let buckets: BTreeMap<_, _> = source
+            .buckets
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, bucket)| (bucket, index))
+            .collect();
         let mut seen = BTreeSet::new();
         for (ordinal, movement) in source.movements.iter().enumerate() {
-            if ordinal % 256 == 0 { query.checkpoint().map_err(BookError::Context)?; }
+            if ordinal % 256 == 0 {
+                query.checkpoint().map_err(BookError::Context)?;
+            }
             if !indexes.contains_key(&(movement.account_id, movement.unit_id))
                 || !buckets.contains_key(&movement.bucket)
                 || !seen.insert((movement.entry_digest, movement.leg_index))
-                || movement.recorded_seq == 0 || movement.recorded_seq > source.known_at
+                || movement.recorded_seq == 0
+                || movement.recorded_seq > source.known_at
                 || movement.effective_day < source.effective_from
                 || movement.effective_day > source.effective_through
-                || movement.debits < 0 || movement.credits < 0
+                || movement.debits < 0
+                || movement.credits < 0
                 || (movement.debits > 0) == (movement.credits > 0)
             {
-                return Err(invalid("native general-ledger movement has an invalid scope, citation or coordinate").into());
+                return Err(invalid(
+                    "native general-ledger movement has an invalid scope, citation or coordinate",
+                )
+                .into());
             }
         }
         query.checkpoint().map_err(BookError::Context)?;
-        source.movements.sort_unstable_by_key(|m| (
-            indexes[&(m.account_id, m.unit_id)], m.effective_day, m.recorded_seq,
-            m.entry_digest, m.leg_index,
-        ));
+        source.movements.sort_unstable_by_key(|m| {
+            (
+                indexes[&(m.account_id, m.unit_id)],
+                m.effective_day,
+                m.recorded_seq,
+                m.entry_digest,
+                m.leg_index,
+            )
+        });
         query.checkpoint().map_err(BookError::Context)?;
         let mut lines = Vec::new();
-        lines.try_reserve(source.movements.len()).map_err(|_| invalid("cannot reserve general-ledger lines"))?;
+        lines
+            .try_reserve(source.movements.len())
+            .map_err(|_| invalid("cannot reserve general-ledger lines"))?;
         let mut movements = source.movements.into_iter().peekable();
         for (index, cell) in cells.iter_mut().enumerate() {
-            if index % 256 == 0 { query.checkpoint().map_err(BookError::Context)?; }
-            cell.line_start = u32::try_from(lines.len()).map_err(|_| invalid("general-ledger line index overflow"))?;
+            if index % 256 == 0 {
+                query.checkpoint().map_err(BookError::Context)?;
+            }
+            cell.line_start = u32::try_from(lines.len())
+                .map_err(|_| invalid("general-ledger line index overflow"))?;
             let mut running = cell.opening;
-            while movements.peek().is_some_and(|m| (m.account_id, m.unit_id) == (cell.account_id, cell.unit_id)) {
-                if lines.len() % 256 == 0 { query.checkpoint().map_err(BookError::Context)?; }
-                let Some(m) = movements.next() else { return Err(invalid("general-ledger movement disappeared").into()); };
+            while movements
+                .peek()
+                .is_some_and(|m| (m.account_id, m.unit_id) == (cell.account_id, cell.unit_id))
+            {
+                if lines.len() % 256 == 0 {
+                    query.checkpoint().map_err(BookError::Context)?;
+                }
+                let Some(m) = movements.next() else {
+                    return Err(invalid("general-ledger movement disappeared").into());
+                };
                 cell.debits = add(cell.debits, m.debits)?;
                 cell.credits = add(cell.credits, m.credits)?;
                 running = sub(add(running, m.debits)?, m.credits)?;
                 lines.push(GeneralLedgerLine {
-                    cell_index: u32::try_from(index).map_err(|_| invalid("general-ledger cell index overflow"))?,
-                    entry_digest: m.entry_digest, leg_index: m.leg_index,
-                    recorded_seq: m.recorded_seq, effective_day: m.effective_day,
-                    bucket_index: u32::try_from(buckets[&m.bucket]).map_err(|_| invalid("general-ledger bucket index overflow"))?,
-                    debits: m.debits, credits: m.credits, running_balance: running,
+                    cell_index: u32::try_from(index)
+                        .map_err(|_| invalid("general-ledger cell index overflow"))?,
+                    entry_digest: m.entry_digest,
+                    leg_index: m.leg_index,
+                    recorded_seq: m.recorded_seq,
+                    effective_day: m.effective_day,
+                    bucket_index: u32::try_from(buckets[&m.bucket])
+                        .map_err(|_| invalid("general-ledger bucket index overflow"))?,
+                    debits: m.debits,
+                    credits: m.credits,
+                    running_balance: running,
                 });
             }
-            cell.line_end = u32::try_from(lines.len()).map_err(|_| invalid("general-ledger line index overflow"))?;
-            if sub(cell.debits, cell.credits)? != cell.net_change || running != cell.closing
+            cell.line_end = u32::try_from(lines.len())
+                .map_err(|_| invalid("general-ledger line index overflow"))?;
+            if sub(cell.debits, cell.credits)? != cell.net_change
+                || running != cell.closing
                 || add(cell.opening, cell.net_change)? != cell.closing
             {
                 return Err(invalid("general-ledger movements do not reconcile to the native opening and closing stocks").into());
             }
         }
-        if movements.next().is_some() { return Err(invalid("unconsumed native general-ledger movements").into()); }
+        if movements.next().is_some() {
+            return Err(invalid("unconsumed native general-ledger movements").into());
+        }
         Ok(GeneralLedger {
-            book_id: source.book_id, branch_id: source.branch_id, known_at: CommitSeq(source.known_at),
-            label: source.label, effective_from: source.effective_from, effective_through: source.effective_through,
-            accounts: source.accounts, units: source.units, buckets: source.buckets, cells, lines,
+            book_id: source.book_id,
+            branch_id: source.branch_id,
+            known_at: CommitSeq(source.known_at),
+            label: source.label,
+            effective_from: source.effective_from,
+            effective_through: source.effective_through,
+            accounts: source.accounts,
+            units: source.units,
+            buckets: source.buckets,
+            cells,
+            lines,
         })
     };
     let result = build();
@@ -324,11 +443,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// dates and explicit account/unit scope match RollForwardRequest. No writes,
     /// private-text reads, invented entries or cross-unit totals are performed.
     pub fn general_ledger(
-        &self, cx: &PurposeContexts, principal: VId, capability: &Capability,
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
         request: &RollForwardRequest,
     ) -> Outcome<GeneralLedger> {
         let source = match self.roll_forward(cx, principal, capability, request)? {
-            Ok(source) => source, Err(refusal) => return Ok(Err(refusal)),
+            Ok(source) => source,
+            Err(refusal) => return Ok(Err(refusal)),
         };
         project(source, &cx.query())
     }
@@ -345,11 +468,16 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// not engine-certified GAAP/IFRS judgments. No writes or private-text reads
     /// occur, and native currencies are never netted together.
     pub fn cash_flow(
-        &self, cx: &PurposeContexts, principal: VId, capability: &Capability,
-        request: &RollForwardRequest, definition: &CashFlowDefinition,
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        request: &RollForwardRequest,
+        definition: &CashFlowDefinition,
     ) -> Outcome<CashFlow> {
         let source = match self.general_ledger(cx, principal, capability, request)? {
-            Ok(source) => source, Err(refusal) => return Ok(Err(refusal)),
+            Ok(source) => source,
+            Err(refusal) => return Ok(Err(refusal)),
         };
         source.classify_cash_flow(&cx.query(), definition)
     }

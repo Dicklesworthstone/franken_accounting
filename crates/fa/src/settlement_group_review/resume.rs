@@ -22,18 +22,24 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
     ) -> Outcome<PreparedSettlementGroup> {
         if let Err(denial) = fa_policy::admit_read(
-            capability, review.proposal().principal_ref, self.context().book_id,
+            capability,
+            review.proposal().principal_ref,
+            self.context().book_id,
         ) {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
         cx.query().checkpoint().map_err(BookError::Context)?;
         let request = match review.request() {
             Ok(request) => request,
-            Err(error) => return Ok(Err(fa_journal::Refusal::new(
-                fa_journal::refusal::code::STRUCTURE, fa_journal::exit::USAGE,
-                error.to_string(), "fa:settlement-group-review:v1 (bounded canonical request)",
-                "load an unchanged review exported from settlement-group preparation",
-            ))),
+            Err(error) => {
+                return Ok(Err(fa_journal::Refusal::new(
+                    fa_journal::refusal::code::STRUCTURE,
+                    fa_journal::exit::USAGE,
+                    error.to_string(),
+                    "fa:settlement-group-review:v1 (bounded canonical request)",
+                    "load an unchanged review exported from settlement-group preparation",
+                )));
+            }
         };
         let fresh = match self.prepare_settlement_group(cx, request, capability)? {
             Ok(fresh) => fresh,
@@ -42,15 +48,20 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         if fresh.known_at() < review.known_at()
             || fresh.proposal() != review.proposal()
             || fresh.allocations().len() != review.allocations().len()
-            || fresh.allocations().iter().zip(review.allocations()).any(|(new, old)| {
-                new.payment_leg != old.payment_leg
-                    || new.allocation.request != old.allocation.request
-                    || new.allocation.allocations != old.allocation.allocations
-                    || new.allocation.unapplied != old.allocation.unapplied
-            })
+            || fresh
+                .allocations()
+                .iter()
+                .zip(review.allocations())
+                .any(|(new, old)| {
+                    new.payment_leg != old.payment_leg
+                        || new.allocation.request != old.allocation.request
+                        || new.allocation.allocations != old.allocation.allocations
+                        || new.allocation.unapplied != old.allocation.unapplied
+                })
         {
             return Ok(Err(fa_journal::Refusal::new(
-                fa_journal::refusal::code::PLAN_INVALIDATED, fa_journal::exit::CONFLICT,
+                fa_journal::refusal::code::PLAN_INVALIDATED,
+                fa_journal::exit::CONFLICT,
                 "the complete payment or its saved group allocation observations changed",
                 "plan §5.7 / §10.4 (exact reviewed effects and current approval applicability)",
                 "review a fresh group and obtain required approvals; after an attempted commit retry the saved PostPlan instead",

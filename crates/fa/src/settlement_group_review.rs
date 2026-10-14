@@ -15,11 +15,11 @@ use fa_model::{EntryClass, EntryOrigin, EntryPayload, Reader, Writer};
 use fa_registers::open_items::{SettlementAllocation, SettlementPlan, SettlementRequest};
 use fgdb_types::{CommitSeq, VId};
 
+use crate::SettlementReviewError;
 use crate::settlement_group::{
     MAX_SETTLEMENT_GROUP_LEGS, MAX_SETTLEMENT_GROUP_TARGETS, PreparedSettlementGroup,
     SettlementGroupRequest, SettlementLegAllocation, SettlementLegSelection,
 };
-use crate::SettlementReviewError;
 
 const MAGIC: &[u8; 27] = b"FA-SETTLEMENT-GROUP-REVIEW\0";
 const MAJOR: u16 = 1;
@@ -36,7 +36,8 @@ fn invalid(message: &'static str) -> SettlementReviewError {
 fn bounded(bytes: &[u8]) -> Result<(), SettlementReviewError> {
     if bytes.len() > MAX_SETTLEMENT_GROUP_REVIEW_BYTES {
         return Err(SettlementReviewError::TooLarge {
-            max: MAX_SETTLEMENT_GROUP_REVIEW_BYTES, actual: bytes.len(),
+            max: MAX_SETTLEMENT_GROUP_REVIEW_BYTES,
+            actual: bytes.len(),
         });
     }
     Ok(())
@@ -69,16 +70,22 @@ impl PreparedSettlementGroup {
 impl SettlementGroupReview {
     /// The complete sealed entry whose proposal digest the approvers approve.
     #[must_use]
-    pub fn proposal(&self) -> &EntryPayload { self.intent.proposal() }
+    pub fn proposal(&self) -> &EntryPayload {
+        self.intent.proposal()
+    }
 
     /// Claimed old coordinate, not authenticated by this transport envelope.
     #[must_use]
-    pub fn known_at(&self) -> CommitSeq { self.known_at }
+    pub fn known_at(&self) -> CommitSeq {
+        self.known_at
+    }
 
     /// Per-leg witnesses in ascending applying-leg order; allocation order
     /// within a leg remains the preparer's FIFO order, not identity order.
     #[must_use]
-    pub fn allocations(&self) -> &[SettlementLegAllocation] { &self.allocations }
+    pub fn allocations(&self) -> &[SettlementLegAllocation] {
+        &self.allocations
+    }
 
     fn validate(&self) -> Result<(), SettlementReviewError> {
         let proposal = self.proposal();
@@ -86,71 +93,108 @@ impl SettlementGroupReview {
             || !matches!(proposal.class, EntryClass::ORIGINAL | EntryClass::ADJUSTING)
             || !matches!(&proposal.origin, EntryOrigin::Intent { .. })
         {
-            return Err(invalid("group review must be an unapproved Original or Adjusting Intent"));
+            return Err(invalid(
+                "group review must be an unapproved Original or Adjusting Intent",
+            ));
         }
-        if self.allocations.is_empty() || self.allocations.len() > MAX_SETTLEMENT_GROUP_LEGS
-            || !self.allocations.windows(2).all(|p| p[0].payment_leg < p[1].payment_leg)
+        if self.allocations.is_empty()
+            || self.allocations.len() > MAX_SETTLEMENT_GROUP_LEGS
+            || !self
+                .allocations
+                .windows(2)
+                .all(|p| p[0].payment_leg < p[1].payment_leg)
         {
-            return Err(invalid("group applying legs must be bounded, nonempty and strictly ascending"));
+            return Err(invalid(
+                "group applying legs must be bounded, nonempty and strictly ascending",
+            ));
         }
         let mut selected = BTreeSet::new();
         let mut eligible = BTreeSet::new();
         let mut count = 0_usize;
         for part in &self.allocations {
             selected.insert(usize::from(part.payment_leg));
-            let leg = proposal.legs.get(usize::from(part.payment_leg))
+            let leg = proposal
+                .legs
+                .get(usize::from(part.payment_leg))
                 .ok_or_else(|| invalid("group applying leg is missing"))?;
             let allocation = &part.allocation;
             let request = &allocation.request;
-            if allocation.known_at != self.known_at || leg.amount.mantissa <= 0
-                || request.account != leg.account_ref || request.unit_id != leg.amount.unit.0
-                || request.side != leg.side || request.amount != leg.amount.mantissa
+            if allocation.known_at != self.known_at
+                || leg.amount.mantissa <= 0
+                || request.account != leg.account_ref
+                || request.unit_id != leg.amount.unit.0
+                || request.side != leg.side
+                || request.amount != leg.amount.mantissa
                 || request.effective_date != proposal.effective_date
             {
-                return Err(invalid("group request differs from its applying leg or common basis"));
+                return Err(invalid(
+                    "group request differs from its applying leg or common basis",
+                ));
             }
-            if request.targets.is_empty() || request.targets.len() > MAX_SETTLES_PER_LEG
+            if request.targets.is_empty()
+                || request.targets.len() > MAX_SETTLES_PER_LEG
                 || !request.targets.windows(2).all(|p| p[0] < p[1])
             {
-                return Err(invalid("group targets must be bounded, nonempty and strictly ascending"));
+                return Err(invalid(
+                    "group targets must be bounded, nonempty and strictly ascending",
+                ));
             }
-            count = count.checked_add(request.targets.len())
+            count = count
+                .checked_add(request.targets.len())
                 .filter(|n| *n <= MAX_SETTLEMENT_GROUP_TARGETS)
                 .ok_or_else(|| invalid("group exceeds the aggregate eligible-target bound"))?;
             for target in &request.targets {
                 if !eligible.insert(*target) {
-                    return Err(invalid("group target sets overlap, including unused targets"));
+                    return Err(invalid(
+                        "group target sets overlap, including unused targets",
+                    ));
                 }
             }
             let applications = &allocation.allocations;
-            if applications.is_empty() || applications.len() > MAX_SETTLES_PER_LEG
+            if applications.is_empty()
+                || applications.len() > MAX_SETTLES_PER_LEG
                 || applications.len() != leg.settles.len()
             {
-                return Err(invalid("group allocations differ from the nonempty applying list"));
+                return Err(invalid(
+                    "group allocations differ from the nonempty applying list",
+                ));
             }
             let mut seen = BTreeSet::new();
             let mut total = 0_i128;
             for (application, link) in applications.iter().zip(&leg.settles) {
                 let target = (application.entry, application.ordinal);
-                if !seen.insert(target) || request.targets.binary_search(&target).is_err()
+                if !seen.insert(target)
+                    || request.targets.binary_search(&target).is_err()
                     || target != (link.target.vid, link.ordinal)
                     || link.amount.unit != leg.amount.unit
-                    || application.amount != link.amount.mantissa || application.amount <= 0
+                    || application.amount != link.amount.mantissa
+                    || application.amount <= 0
                     || application.open_before < application.amount
-                    || application.open_before.checked_sub(application.amount) != Some(application.open_after)
+                    || application.open_before.checked_sub(application.amount)
+                        != Some(application.open_after)
                 {
-                    return Err(invalid("group allocation identity, unit or open-amount mismatch"));
+                    return Err(invalid(
+                        "group allocation identity, unit or open-amount mismatch",
+                    ));
                 }
-                total = total.checked_add(application.amount)
+                total = total
+                    .checked_add(application.amount)
                     .ok_or_else(|| invalid("group allocation sum overflow"))?;
             }
-            if total > request.amount || request.amount.checked_sub(total) != Some(allocation.unapplied) {
-                return Err(invalid("group unapplied amount does not conserve its payment"));
+            if total > request.amount
+                || request.amount.checked_sub(total) != Some(allocation.unapplied)
+            {
+                return Err(invalid(
+                    "group unapplied amount does not conserve its payment",
+                ));
             }
         }
-        if proposal.legs.iter().enumerate().any(|(i, leg)| {
-            !selected.contains(&i) && !leg.settles.is_empty()
-        }) {
+        if proposal
+            .legs
+            .iter()
+            .enumerate()
+            .any(|(i, leg)| !selected.contains(&i) && !leg.settles.is_empty())
+        {
             return Err(invalid("group contains applications on an unreviewed leg"));
         }
         Ok(())
@@ -162,15 +206,21 @@ impl SettlementGroupReview {
         self.validate()?;
         let intent = self.intent.canonical_bytes()?;
         let mut w = Writer::new();
-        w.fixed(MAGIC).u16(MAJOR).u16(MINOR).u64(self.known_at.0).bytes(&intent)
+        w.fixed(MAGIC)
+            .u16(MAJOR)
+            .u16(MINOR)
+            .u64(self.known_at.0)
+            .bytes(&intent)
             .list(&self.allocations, |w, part| {
                 w.u16(part.payment_leg)
                     .list(&part.allocation.request.targets, |w, (entry, ordinal)| {
                         w.u128(entry.0).u16(*ordinal);
                     })
                     .list(&part.allocation.allocations, |w, application| {
-                        w.u128(application.entry.0).u16(application.ordinal)
-                            .i128(application.amount).i128(application.open_before)
+                        w.u128(application.entry.0)
+                            .u16(application.ordinal)
+                            .i128(application.amount)
+                            .i128(application.open_before)
                             .i128(application.open_after);
                     })
                     .i128(part.allocation.unapplied);
@@ -187,12 +237,14 @@ impl SettlementGroupReview {
         bounded(bytes)?;
         let mut r = Reader::new(bytes);
         if r.fixed::<27>("group.magic")? != *MAGIC
-            || r.u16("group.major")? != MAJOR || r.u16("group.minor")? != MINOR
+            || r.u16("group.major")? != MAJOR
+            || r.u16("group.minor")? != MINOR
         {
             return Err(invalid("unsupported group review framing or version"));
         }
         let known_at = CommitSeq(r.u64("group.known_at")?);
-        let intent = PostIntent::decode(r.bytes(MAX_SETTLEMENT_GROUP_REVIEW_BYTES, "group.intent")?)?;
+        let intent =
+            PostIntent::decode(r.bytes(MAX_SETTLEMENT_GROUP_REVIEW_BYTES, "group.intent")?)?;
         // Reject authority-bearing transport before allocating annotation lists.
         if !intent.approvals().is_empty() {
             return Err(invalid("group review must not carry approvals"));
@@ -202,9 +254,8 @@ impl SettlementGroupReview {
             let payment_leg = r.u16("group.payment_leg")?;
             let targets = r.list(
                 MAX_SETTLES_PER_LEG.min(MAX_SETTLEMENT_GROUP_TARGETS - count),
-                "group.targets", |r| {
-                    Ok((VId(r.u128("target.entry")?), r.u16("target.ordinal")?))
-                },
+                "group.targets",
+                |r| Ok((VId(r.u128("target.entry")?), r.u16("target.ordinal")?)),
             )?;
             count += targets.len();
             let applications = r.list(targets.len(), "group.allocations", |r| {
@@ -225,15 +276,25 @@ impl SettlementGroupReview {
                 unit_id: leg.map_or(0, |l| l.amount.unit.0),
                 side: leg.map_or(fa_money::Side::Debit, |l| l.side),
                 amount: leg.map_or(0, |l| l.amount.mantissa),
-                effective_date: intent.proposal().effective_date, targets,
+                effective_date: intent.proposal().effective_date,
+                targets,
             };
             Ok(SettlementLegAllocation {
                 payment_leg,
-                allocation: SettlementPlan { known_at, request, allocations: applications, unapplied },
+                allocation: SettlementPlan {
+                    known_at,
+                    request,
+                    allocations: applications,
+                    unapplied,
+                },
             })
         })?;
         r.finish()?;
-        let review = Self { intent, known_at, allocations };
+        let review = Self {
+            intent,
+            known_at,
+            allocations,
+        };
         review.validate()?;
         Ok(review)
     }
@@ -241,7 +302,10 @@ impl SettlementGroupReview {
     /// Content identity to compare against an independently saved review.
     /// This is neither an approval digest nor a signature or native ObjectId.
     pub fn digest(&self) -> Result<[u8; 32], SettlementReviewError> {
-        Ok(fa_model::domain_digest(b"fa:settlement-group-review:v1", &[&self.canonical_bytes()?]))
+        Ok(fa_model::domain_digest(
+            b"fa:settlement-group-review:v1",
+            &[&self.canonical_bytes()?],
+        ))
     }
 
     /// Restore exactly the original empty-settles request. This request is not
@@ -254,7 +318,8 @@ impl SettlementGroupReview {
         for part in &self.allocations {
             proposal.legs[usize::from(part.payment_leg)].settles.clear();
             payments.push(SettlementLegSelection {
-                payment_leg: part.payment_leg, targets: part.allocation.request.targets.clone(),
+                payment_leg: part.payment_leg,
+                targets: part.allocation.request.targets.clone(),
             });
         }
         Ok(SettlementGroupRequest { proposal, payments })

@@ -2,8 +2,8 @@
 //! the producer's fa-money/U256 implementation: base-2^32 schoolbook products
 //! and an aligned-divisor quotient over eight little-endian limbs.
 
-use core::cmp::Ordering;
 use super::AllocationError;
+use core::cmp::Ordering;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Wide([u32; 8]);
@@ -27,7 +27,9 @@ impl Wide {
             *limb = sum as u32;
             carry = sum >> 32;
         }
-        if carry != 0 { return Err(AllocationError::Arithmetic); }
+        if carry != 0 {
+            return Err(AllocationError::Arithmetic);
+        }
         Ok(Self(result))
     }
 
@@ -40,7 +42,9 @@ impl Wide {
             *limb = left.wrapping_sub(right) as u32;
             borrow = u64::from(left < right);
         }
-        if borrow != 0 { return Err(AllocationError::Arithmetic); }
+        if borrow != 0 {
+            return Err(AllocationError::Arithmetic);
+        }
         Ok(Self(result))
     }
 
@@ -52,8 +56,7 @@ impl Wide {
             let mut carry = 0u64;
             for j in 0..4 {
                 // (B-1)^2 + (B-1) + (B-1) <= u64::MAX, B=2^32.
-                let value = u64::from(a.0[i]) * u64::from(b.0[j])
-                    + u64::from(limbs[i + j]) + carry;
+                let value = u64::from(a.0[i]) * u64::from(b.0[j]) + u64::from(limbs[i + j]) + carry;
                 limbs[i + j] = value as u32;
                 carry = value >> 32;
             }
@@ -64,7 +67,9 @@ impl Wide {
     }
 
     fn bits(self) -> usize {
-        self.0.iter().rposition(|limb| *limb != 0)
+        self.0
+            .iter()
+            .rposition(|limb| *limb != 0)
             .map_or(0, |i| 32 * i + (32 - self.0[i].leading_zeros()) as usize)
     }
 
@@ -82,10 +87,14 @@ impl Wide {
     }
 
     pub(super) fn div_rem(self, divisor: Self) -> Result<(Self, Self), AllocationError> {
-        if divisor == Self::ZERO { return Err(AllocationError::Arithmetic); }
+        if divisor == Self::ZERO {
+            return Err(AllocationError::Arithmetic);
+        }
         let mut remainder = self;
         let mut quotient = Self::ZERO;
-        if self < divisor { return Ok((quotient, remainder)); }
+        if self < divisor {
+            return Ok((quotient, remainder));
+        }
         let shift = self.bits() - divisor.bits();
         for bit in (0..=shift).rev() {
             // The initial alignment fits the dividend's highest bit; every
@@ -103,8 +112,12 @@ impl Wide {
         if self.0[4..].iter().any(|limb| *limb != 0) {
             return Err(AllocationError::Arithmetic);
         }
-        Ok(self.0[..4].iter().enumerate()
-            .fold(0u128, |value, (i, limb)| value | (u128::from(*limb) << (32 * i))))
+        Ok(self.0[..4]
+            .iter()
+            .enumerate()
+            .fold(0u128, |value, (i, limb)| {
+                value | (u128::from(*limb) << (32 * i))
+            }))
     }
 }
 
@@ -114,7 +127,9 @@ impl Ord for Wide {
     }
 }
 impl PartialOrd for Wide {
-    fn partial_cmp(&self, rhs: &Self) -> Option<Ordering> { Some(self.cmp(rhs)) }
+    fn partial_cmp(&self, rhs: &Self) -> Option<Ordering> {
+        Some(self.cmp(rhs))
+    }
 }
 
 #[cfg(test)]
@@ -132,9 +147,10 @@ mod tests {
         assert!(Wide::ZERO.sub(max).is_err());
         assert!(max.div_rem(Wide::ZERO).is_err());
         assert!(square.narrow().is_err());
-        assert_eq!(square.div_rem(sum).unwrap(), (
-            Wide::of(u128::MAX / 2), max,
-        ));
+        assert_eq!(
+            square.div_rem(sum).unwrap(),
+            (Wide::of(u128::MAX / 2), max,)
+        );
         assert!(Wide([u32::MAX; 8]).add(Wide::of(1)).is_err());
     }
 
@@ -146,8 +162,10 @@ mod tests {
                 assert_eq!(Wide::product(left, right).narrow().unwrap(), product);
                 for divisor in [1, 2, 7, u64::MAX as u128] {
                     let (q, r) = Wide::of(product).div_rem(Wide::of(divisor)).unwrap();
-                    assert_eq!((q.narrow().unwrap(), r.narrow().unwrap()),
-                        (product / divisor, product % divisor));
+                    assert_eq!(
+                        (q.narrow().unwrap(), r.narrow().unwrap()),
+                        (product / divisor, product % divisor)
+                    );
                 }
             }
         }

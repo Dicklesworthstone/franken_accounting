@@ -6,8 +6,8 @@ use fa_model::Id128;
 use fa_policy::{Capability, Op};
 use fgdb_types::context::PurposeContexts;
 
-use crate::{AsyncBook, Book, BookError, Outcome};
 use super::{AllocationReview, refusal};
+use crate::{AsyncBook, Book, BookError, Outcome};
 
 // No storage observation occurs here. Both adapters then record the same
 // proposal digest through their existing native approval implementation.
@@ -18,15 +18,26 @@ fn checked_digest(
     capability: &Capability,
 ) -> Result<[u8; 32], Refusal> {
     let proposal = review.proposal();
-    let explicit: Vec<_> = proposal.legs.iter()
-        .map(|leg| (leg.amount.unit, leg.amount.mantissa)).collect();
-    fa_policy::admit(capability, &fa_policy::Intent {
-        principal: capability.holder(), trunk: true, op: Op::Approve,
-        book, legs: &explicit,
-    }).map_err(|denial| fa_journal::policy::refusal(&denial))?;
+    let explicit: Vec<_> = proposal
+        .legs
+        .iter()
+        .map(|leg| (leg.amount.unit, leg.amount.mantissa))
+        .collect();
+    fa_policy::admit(
+        capability,
+        &fa_policy::Intent {
+            principal: capability.holder(),
+            trunk: true,
+            op: Op::Approve,
+            book,
+            legs: &explicit,
+        },
+    )
+    .map_err(|denial| fa_journal::policy::refusal(&denial))?;
     if proposal.book_id != book || proposal.branch_id != Id128::TRUNK {
         return Err(Refusal::new(
-            fa_journal::refusal::code::COORDINATE, exit::USAGE,
+            fa_journal::refusal::code::COORDINATE,
+            exit::USAGE,
             "allocation review belongs to a different book or branch",
             "plan §2.2 / §14.3 (approvals belong to the proposal's book)",
             "open the review's book and use authority scoped to that book",
@@ -34,7 +45,8 @@ fn checked_digest(
     }
     if capability.holder() == proposal.principal_ref {
         return Err(Refusal::new(
-            fa_journal::refusal::code::APPROVALS, exit::REFUSAL,
+            fa_journal::refusal::code::APPROVALS,
+            exit::REFUSAL,
             "the allocation preparer cannot approve their own proposal",
             "plan §14.3 (separation of preparer and approver)",
             "have a distinct principal review the exact instruction with their own approve capability",
@@ -71,7 +83,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
     ) -> Outcome<Approved> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
-        let digest = match checked_digest(self.context().book_id, review, expected_review_digest, capability) {
+        let digest = match checked_digest(
+            self.context().book_id,
+            review,
+            expected_review_digest,
+            capability,
+        ) {
             Ok(digest) => digest,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -91,7 +108,12 @@ impl Book {
         expected_review_digest: [u8; 32],
         capability: &Capability,
     ) -> Outcome<Approved> {
-        let digest = match checked_digest(self.context().book_id, review, expected_review_digest, capability) {
+        let digest = match checked_digest(
+            self.context().book_id,
+            review,
+            expected_review_digest,
+            capability,
+        ) {
             Ok(digest) => digest,
             Err(refusal) => return Ok(Err(refusal)),
         };

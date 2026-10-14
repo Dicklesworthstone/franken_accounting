@@ -110,30 +110,39 @@ impl AllocationCatalog {
         {
             return Err(invalid("unsupported allocation catalog schema"));
         }
-        let max_targets = doc.root.get("max_targets").and_then(Value::as_int)
+        let max_targets = doc
+            .root
+            .get("max_targets")
+            .and_then(Value::as_int)
             .and_then(|value| usize::try_from(value).ok())
             .filter(|value| (1..=MAX_ALLOCATION_TARGETS).contains(value))
             .ok_or_else(|| invalid("max_targets is outside the implementation bound"))?;
-        let rows = doc.arrays.get("law")
+        let rows = doc
+            .arrays
+            .get("law")
             .ok_or_else(|| invalid("missing law rows"))?;
         if rows.len() != AllocationLaw::ALL.len() {
             return Err(invalid("every implemented law needs exactly one row"));
         }
         let mut seen = std::collections::BTreeSet::new();
         for row in rows {
-            let id = row.get("id").and_then(Value::as_int)
+            let id = row
+                .get("id")
+                .and_then(Value::as_int)
                 .and_then(|value| u16::try_from(value).ok())
                 .ok_or_else(|| invalid("invalid allocation law id"))?;
             let law = AllocationLaw::from_id(id)
                 .ok_or_else(|| invalid("allocation law has no implementation"))?;
-            if !seen.insert(id) || row.len() != 7
+            if !seen.insert(id)
+                || row.len() != 7
                 || text_field(row, "name")? != law.name()
                 || row.get("version").and_then(Value::as_int) != Some(i128::from(law.version()))
             {
                 return Err(invalid("duplicate or incompatible allocation law row"));
             }
             for (field, expected) in ["basis", "ordering", "rounding", "signed"]
-                .into_iter().zip(law.semantics())
+                .into_iter()
+                .zip(law.semantics())
             {
                 if text_field(row, field)? != expected {
                     return Err(invalid("registry semantics differ from the executable law"));
@@ -153,12 +162,16 @@ impl AllocationCatalog {
 }
 
 fn text_field<'a>(row: &'a Table, name: &str) -> Result<&'a str, RegistryError> {
-    row.get(name).and_then(Value::as_str)
+    row.get(name)
+        .and_then(Value::as_str)
         .ok_or_else(|| invalid("missing allocation law string field"))
 }
 
 fn invalid(message: &str) -> RegistryError {
-    RegistryError::Invalid { registry: REGISTRY, message: message.into() }
+    RegistryError::Invalid {
+        registry: REGISTRY,
+        message: message.into(),
+    }
 }
 
 #[cfg(test)]
@@ -169,7 +182,14 @@ mod tests {
     fn embedded_catalog_has_exact_executable_correspondence() {
         let catalog = AllocationCatalog::embedded().unwrap();
         assert_eq!(catalog.max_targets(), MAX_ALLOCATION_TARGETS);
-        assert_eq!(catalog.laws().iter().map(|law| law.id()).collect::<Vec<_>>(), [1, 2, 3, 5]);
+        assert_eq!(
+            catalog
+                .laws()
+                .iter()
+                .map(|law| law.id())
+                .collect::<Vec<_>>(),
+            [1, 2, 3, 5]
+        );
         for law in AllocationLaw::ALL {
             assert_eq!(AllocationLaw::from_id(law.id()), Some(law));
         }
@@ -189,7 +209,11 @@ mod tests {
             EMBEDDED.replacen("max_targets = 4096", "max_targets = 0", 1),
             EMBEDDED.replacen("schema_version = 1", "schema_version = 2", 1),
             format!("{EMBEDDED}\nunknown = true\n"),
-            EMBEDDED.split("[[law]]").take(4).collect::<Vec<_>>().join("[[law]]"),
+            EMBEDDED
+                .split("[[law]]")
+                .take(4)
+                .collect::<Vec<_>>()
+                .join("[[law]]"),
         ] {
             assert!(AllocationCatalog::parse(&text).is_err(), "{text}");
         }

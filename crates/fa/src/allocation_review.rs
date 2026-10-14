@@ -19,9 +19,13 @@ use asupersync::fs::Vfs;
 use fa_intents::{IntentError, PostIntent, PostPlan};
 use fa_journal::{AllocationPosting, Refusal, exit};
 use fa_model::limits::{MAX_DIMENSIONS_PER_LEG, MAX_ENTRY_BYTES};
-use fa_model::{ApprovalRef, DecodeError, EncodeError, EntryPayload, Id128, Reader, Writer, domain_digest};
-use fa_money::allocation::{AllocationError, AllocationOutcome, AllocationRequest, MAX_ALLOCATION_REQUEST_BYTES};
+use fa_model::{
+    ApprovalRef, DecodeError, EncodeError, EntryPayload, Id128, Reader, Writer, domain_digest,
+};
 use fa_money::Side;
+use fa_money::allocation::{
+    AllocationError, AllocationOutcome, AllocationRequest, MAX_ALLOCATION_REQUEST_BYTES,
+};
 use fa_policy::{Capability, Op};
 use fgdb_types::VId;
 use fgdb_types::context::PurposeContexts;
@@ -57,7 +61,10 @@ impl fmt::Display for AllocationReviewError {
             Self::Arithmetic(e) => write!(f, "{e}"),
             Self::Posting(e) => write!(f, "{e}"),
             Self::Invalid(why) => write!(f, "invalid allocation review: {why}"),
-            Self::Mismatch => write!(f, "allocation review differs from the independently retained digest"),
+            Self::Mismatch => write!(
+                f,
+                "allocation review differs from the independently retained digest"
+            ),
             Self::TooLarge { maximum, actual } => {
                 write!(f, "allocation review length {actual} exceeds {maximum}")
             }
@@ -66,19 +73,29 @@ impl fmt::Display for AllocationReviewError {
 }
 impl core::error::Error for AllocationReviewError {}
 impl From<DecodeError> for AllocationReviewError {
-    fn from(e: DecodeError) -> Self { Self::Decode(e) }
+    fn from(e: DecodeError) -> Self {
+        Self::Decode(e)
+    }
 }
 impl From<EncodeError> for AllocationReviewError {
-    fn from(e: EncodeError) -> Self { Self::Encode(e) }
+    fn from(e: EncodeError) -> Self {
+        Self::Encode(e)
+    }
 }
 impl From<IntentError> for AllocationReviewError {
-    fn from(e: IntentError) -> Self { Self::Intent(e) }
+    fn from(e: IntentError) -> Self {
+        Self::Intent(e)
+    }
 }
 impl From<AllocationError> for AllocationReviewError {
-    fn from(e: AllocationError) -> Self { Self::Arithmetic(e) }
+    fn from(e: AllocationError) -> Self {
+        Self::Arithmetic(e)
+    }
 }
 impl From<Refusal> for AllocationReviewError {
-    fn from(e: Refusal) -> Self { Self::Posting(e) }
+    fn from(e: Refusal) -> Self {
+        Self::Posting(e)
+    }
 }
 
 /// An exact allocation proposal and its explicit instruction. Fields are
@@ -104,7 +121,10 @@ impl AllocationReview {
     /// Build once from an empty-effect Allocation template and an explicit
     /// instruction. The template must already cite the exact driver Workpaper.
     /// No evidence, signature, capability, approval or snapshot is invented.
-    pub fn new(posting: AllocationPosting, template: EntryPayload) -> Result<Self, AllocationReviewError> {
+    pub fn new(
+        posting: AllocationPosting,
+        template: EntryPayload,
+    ) -> Result<Self, AllocationReviewError> {
         let proposal = posting.proposal(template)?;
         Self::from_proposal(posting, proposal)
     }
@@ -112,14 +132,24 @@ impl AllocationReview {
     /// Adopt an existing sealed proposal only if the constructor independently
     /// reproduces EVERY field from the given instruction and original metadata.
     /// Same-total changes, extra effects, memos and alternate extensions refuse.
-    pub fn from_proposal(posting: AllocationPosting, proposal: EntryPayload) -> Result<Self, AllocationReviewError> {
-        let review = Self { posting, intent: PostIntent::new(proposal, Vec::new())? };
+    pub fn from_proposal(
+        posting: AllocationPosting,
+        proposal: EntryPayload,
+    ) -> Result<Self, AllocationReviewError> {
+        let review = Self {
+            posting,
+            intent: PostIntent::new(proposal, Vec::new())?,
+        };
         review.canonical_bytes()?;
         Ok(review)
     }
 
-    pub fn proposal(&self) -> &EntryPayload { self.intent.proposal() }
-    pub fn posting(&self) -> &AllocationPosting { &self.posting }
+    pub fn proposal(&self) -> &EntryPayload {
+        self.intent.proposal()
+    }
+    pub fn posting(&self) -> &AllocationPosting {
+        &self.posting
+    }
 
     /// Recomputed shares and the full signed rounding transcript, not a claim
     /// that their referenced accounts or evidence have passed kernel admission.
@@ -131,13 +161,16 @@ impl AllocationReview {
     /// The digest ApprovalRefs must bind. This is NOT the review digest.
     pub fn proposal_digest(&self) -> Result<[u8; 32], AllocationReviewError> {
         self.validate()?;
-        self.proposal().proposal_digest()
+        self.proposal()
+            .proposal_digest()
             .map_err(|error| AllocationReviewError::Intent(IntentError::Entry(error)))
     }
 
     fn validate(&self) -> Result<(), AllocationReviewError> {
         if !self.intent.approvals().is_empty() {
-            return Err(AllocationReviewError::Invalid("a review carries no approvals"));
+            return Err(AllocationReviewError::Invalid(
+                "a review carries no approvals",
+            ));
         }
         // Reuse the production constructor, not a second interpretation of
         // allocation extension bytes. Keep all metadata and lifecycle fields:
@@ -147,7 +180,9 @@ impl AllocationReview {
         template.unit_totals.clear();
         template.extensions.clear();
         if self.posting.proposal(template)? != *self.proposal() {
-            return Err(AllocationReviewError::Invalid("proposal differs from the explicit allocation instruction"));
+            return Err(AllocationReviewError::Invalid(
+                "proposal differs from the explicit allocation instruction",
+            ));
         }
         Ok(())
     }
@@ -159,12 +194,19 @@ impl AllocationReview {
         let request = self.posting.request.canonical_bytes()?;
         let intent = self.intent.canonical_bytes()?;
         let mut w = Writer::new();
-        w.fixed(MAGIC).u16(VERSION).u16(0).u128(self.posting.source.0)
-            .u8(match self.posting.source_side { Side::Debit => 0, Side::Credit => 1 })
+        w.fixed(MAGIC)
+            .u16(VERSION)
+            .u16(0)
+            .u128(self.posting.source.0)
+            .u8(match self.posting.source_side {
+                Side::Debit => 0,
+                Side::Credit => 1,
+            })
             .list(&self.posting.dimensions, |w, (dimension, value)| {
                 w.u32(*dimension).u128(value.0);
             })
-            .bytes(&request).bytes(&intent);
+            .bytes(&request)
+            .bytes(&intent);
         let bytes = w.finish()?;
         bounded(&bytes)?;
         Ok(bytes)
@@ -188,13 +230,25 @@ impl AllocationReview {
             1 => Side::Credit,
             _ => return Err(AllocationReviewError::Invalid("unknown source side")),
         };
-        let dimensions = r.list(MAX_DIMENSIONS_PER_LEG, "allocation_review.dimensions", |r| {
-            Ok((r.u32("dimension.id")?, VId(r.u128("dimension.value")?)))
-        })?;
-        let request = AllocationRequest::decode(r.bytes(MAX_ALLOCATION_REQUEST_BYTES, "allocation_review.request")?)?;
+        let dimensions = r.list(
+            MAX_DIMENSIONS_PER_LEG,
+            "allocation_review.dimensions",
+            |r| Ok((r.u32("dimension.id")?, VId(r.u128("dimension.value")?))),
+        )?;
+        let request = AllocationRequest::decode(
+            r.bytes(MAX_ALLOCATION_REQUEST_BYTES, "allocation_review.request")?,
+        )?;
         let intent = PostIntent::decode(r.bytes(MAX_INTENT_BYTES, "allocation_review.intent")?)?;
         r.finish()?;
-        let review = Self { posting: AllocationPosting { source, source_side, dimensions, request }, intent };
+        let review = Self {
+            posting: AllocationPosting {
+                source,
+                source_side,
+                dimensions,
+                request,
+            },
+            intent,
+        };
         if review.canonical_bytes()?.as_slice() != bytes {
             return Err(AllocationReviewError::Invalid("noncanonical review bytes"));
         }
@@ -203,19 +257,27 @@ impl AllocationReview {
 
     /// Content identity, not a signature or native object-store identifier.
     pub fn digest(&self) -> Result<[u8; 32], AllocationReviewError> {
-        Ok(domain_digest(b"fa:allocation-review:v1", &[&self.canonical_bytes()?]))
+        Ok(domain_digest(
+            b"fa:allocation-review:v1",
+            &[&self.canonical_bytes()?],
+        ))
     }
 
     /// Bind the artifact to the recipient's independently saved review.
     pub fn verify_for(&self, expected: &[u8; 32]) -> Result<(), AllocationReviewError> {
-        if self.digest()? != *expected { return Err(AllocationReviewError::Mismatch); }
+        if self.digest()? != *expected {
+            return Err(AllocationReviewError::Mismatch);
+        }
         Ok(())
     }
 }
 
 fn bounded(bytes: &[u8]) -> Result<(), AllocationReviewError> {
     if bytes.len() > MAX_ALLOCATION_REVIEW_BYTES {
-        return Err(AllocationReviewError::TooLarge { maximum: MAX_ALLOCATION_REVIEW_BYTES, actual: bytes.len() });
+        return Err(AllocationReviewError::TooLarge {
+            maximum: MAX_ALLOCATION_REVIEW_BYTES,
+            actual: bytes.len(),
+        });
     }
     Ok(())
 }
@@ -226,8 +288,13 @@ fn refusal(error: AllocationReviewError) -> Refusal {
     } else {
         (fa_journal::refusal::code::STRUCTURE, exit::USAGE)
     };
-    Refusal::new(code, exit, error.to_string(), "fa:allocation-review:v1; plan §6.3 / §10.4 / §14.3",
-        "use the unchanged saved review and independently retained digest; review any changed instruction before obtaining new approvals")
+    Refusal::new(
+        code,
+        exit,
+        error.to_string(),
+        "fa:allocation-review:v1; plan §6.3 / §10.4 / §14.3",
+        "use the unchanged saved review and independently retained digest; review any changed instruction before obtaining new approvals",
+    )
 }
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
@@ -248,7 +315,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
     ) -> Outcome<PostPlan> {
         cx.txn().checkpoint().map_err(BookError::Context)?;
-        let intent = match reviewed_intent(self.context().book_id, review, expected_review_digest, approvals, capability) {
+        let intent = match reviewed_intent(
+            self.context().book_id,
+            review,
+            expected_review_digest,
+            approvals,
+            capability,
+        ) {
             Ok(intent) => intent,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -264,15 +337,25 @@ fn reviewed_intent(
     approvals: Vec<ApprovalRef>,
     capability: &Capability,
 ) -> Result<PostIntent, Refusal> {
-    let explicit: Vec<_> = review.proposal().legs.iter()
-        .map(|leg| (leg.amount.unit, leg.amount.mantissa)).collect();
-    fa_policy::admit(capability, &fa_policy::Intent {
-        principal: review.proposal().principal_ref, trunk: true, op: Op::Post,
-        book, legs: &explicit,
-    }).map_err(|denial| fa_journal::policy::refusal(&denial))?;
+    let explicit: Vec<_> = review
+        .proposal()
+        .legs
+        .iter()
+        .map(|leg| (leg.amount.unit, leg.amount.mantissa))
+        .collect();
+    fa_policy::admit(
+        capability,
+        &fa_policy::Intent {
+            principal: review.proposal().principal_ref,
+            trunk: true,
+            op: Op::Post,
+            book,
+            legs: &explicit,
+        },
+    )
+    .map_err(|denial| fa_journal::policy::refusal(&denial))?;
     review.verify_for(&expected).map_err(refusal)?;
-    PostIntent::new(review.proposal().clone(), approvals)
-        .map_err(|error| refusal(error.into()))
+    PostIntent::new(review.proposal().clone(), approvals).map_err(|error| refusal(error.into()))
 }
 
 impl Book {
@@ -286,7 +369,13 @@ impl Book {
         approvals: Vec<ApprovalRef>,
         capability: &Capability,
     ) -> Outcome<PostPlan> {
-        let intent = match reviewed_intent(self.context().book_id, review, expected_review_digest, approvals, capability) {
+        let intent = match reviewed_intent(
+            self.context().book_id,
+            review,
+            expected_review_digest,
+            approvals,
+            capability,
+        ) {
             Ok(intent) => intent,
             Err(refusal) => return Ok(Err(refusal)),
         };

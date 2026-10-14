@@ -70,21 +70,35 @@ pub struct AgingReconciliation {
 
 impl AgingReconciliation {
     #[must_use]
-    pub fn account(&self) -> &AccountRow { &self.account }
+    pub fn account(&self) -> &AccountRow {
+        &self.account
+    }
     #[must_use]
-    pub fn aging(&self) -> &EffectiveDateAging { &self.aging }
+    pub fn aging(&self) -> &EffectiveDateAging {
+        &self.aging
+    }
     #[must_use]
-    pub fn control_rows(&self) -> &[TbRow] { &self.control_rows }
+    pub fn control_rows(&self) -> &[TbRow] {
+        &self.control_rows
+    }
     #[must_use]
-    pub fn rows(&self) -> &[AgingReconciliationRow] { &self.rows }
+    pub fn rows(&self) -> &[AgingReconciliationRow] {
+        &self.rows
+    }
     #[must_use]
-    pub fn known_at(&self) -> CommitSeq { self.aging.known_at }
+    pub fn known_at(&self) -> CommitSeq {
+        self.aging.known_at
+    }
     #[must_use]
-    pub fn effective_through(&self) -> DateDay { self.aging.effective_through }
+    pub fn effective_through(&self) -> DateDay {
+        self.aging.effective_through
+    }
     /// Only the explicitly named account, at this report's two coordinates.
     /// A valid empty account reconciles without inventing a currency row.
     #[must_use]
-    pub fn is_reconciled(&self) -> bool { self.rows.iter().all(|row| row.difference == 0) }
+    pub fn is_reconciled(&self) -> bool {
+        self.rows.iter().all(|row| row.difference == 0)
+    }
 }
 
 fn selection_error(message: impl Into<String>) -> Refusal {
@@ -104,14 +118,27 @@ fn corruption(message: impl Into<String>) -> BookError {
 /// Authority precedes frontier, chart, or financial data observation. Selecting
 /// one account does not authorize a restricted caller to scan the whole book.
 fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
-    book: &AsyncBook<V, B>, cx: &PurposeContexts, principal: VId,
-    capability: &Capability, produce: bool,
+    book: &AsyncBook<V, B>,
+    cx: &PurposeContexts,
+    principal: VId,
+    capability: &Capability,
+    produce: bool,
 ) -> Outcome<CommitSeq> {
-    let admitted = fa_policy::admit_read(capability, principal, book.context().book_id)
-        .and_then(|()| if produce {
-            fa_policy::require(capability, Op::Produce, "certifying open-item reconciliation")
-        } else { Ok(()) });
-    if let Err(denial) = admitted { return Ok(Err(fa_journal::policy::refusal(&denial))); }
+    let admitted =
+        fa_policy::admit_read(capability, principal, book.context().book_id).and_then(|()| {
+            if produce {
+                fa_policy::require(
+                    capability,
+                    Op::Produce,
+                    "certifying open-item reconciliation",
+                )
+            } else {
+                Ok(())
+            }
+        });
+    if let Err(denial) = admitted {
+        return Ok(Err(fa_journal::policy::refusal(&denial)));
+    }
     let query = cx.query();
     query.checkpoint().map_err(BookError::Context)?;
     query.with_restriction(|| {
@@ -119,26 +146,39 @@ fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
         if let Err(denial) = fa_policy::current(capability, head) {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
-        if let Err(refusal) = fa_journal::policy::capability_admitted(&book.db, book.context(), capability)? {
+        if let Err(refusal) =
+            fa_journal::policy::capability_admitted(&book.db, book.context(), capability)?
+        {
             return Ok(Err(refusal));
         }
         Ok(Ok(head))
     })
 }
 
-fn fixed_request(request: &AgingReconciliationRequest, head: CommitSeq)
-    -> Result<AgingReconciliationRequest, Refusal>
-{
+fn fixed_request(
+    request: &AgingReconciliationRequest,
+    head: CommitSeq,
+) -> Result<AgingReconciliationRequest, Refusal> {
     if request.buckets.upper_bounds().len() > MAX_AGING_BUCKET_BOUNDS {
         return Err(selection_error("too many finite aging bounds"));
     }
     let at = request.known_at.unwrap_or(head);
-    if at > head { return Err(selection_error("reconciliation known-at is beyond the book head")); }
-    Ok(AgingReconciliationRequest { known_at: Some(at), ..request.clone() })
+    if at > head {
+        return Err(selection_error(
+            "reconciliation known-at is beyond the book head",
+        ));
+    }
+    Ok(AgingReconciliationRequest {
+        known_at: Some(at),
+        ..request.clone()
+    })
 }
 
 fn selected_account<V: Vfs + Clone, B: Vfs + Clone>(
-    book: &AsyncBook<V, B>, cx: &PurposeContexts, account: VId, at: CommitSeq,
+    book: &AsyncBook<V, B>,
+    cx: &PurposeContexts,
+    account: VId,
+    at: CommitSeq,
 ) -> Outcome<AccountRow> {
     let query = cx.query();
     query.checkpoint().map_err(BookError::Context)?;
@@ -147,34 +187,63 @@ fn selected_account<V: Vfs + Clone, B: Vfs + Clone>(
         // This comparison reads Account vertices, already inside both native
         // certificate closures. It does not depend on unauthenticated chart
         // hierarchy edges or reinterpret the selection as a subtree.
-        let Some(row) = book.db.vertex_at(account, at).map_err(KernelError::from)?
+        let Some(row) = book
+            .db
+            .vertex_at(account, at)
+            .map_err(KernelError::from)?
             .filter(|row| row.labels.contains(&fa_model::symbols::label::ACCOUNT))
-        else { return Ok(Err(selection_error("reconciliation account is absent at its selected prefix"))); };
+        else {
+            return Ok(Err(selection_error(
+                "reconciliation account is absent at its selected prefix",
+            )));
+        };
         let selected = AccountRow::decode(&row)?;
         if AccountRow::vid_for(book.context().book_id, &selected.code) != account {
-            return Err(corruption("reconciliation account identity disagrees with its historical code"));
+            return Err(corruption(
+                "reconciliation account identity disagrees with its historical code",
+            ));
         }
         if !selected.is_leaf {
-            return Ok(Err(selection_error("reconciliation requires a posting leaf, not a summary")));
+            return Ok(Err(selection_error(
+                "reconciliation requires a posting leaf, not a summary",
+            )));
         }
         Ok(Ok(selected))
     })
 }
 
-fn assemble(account: AccountRow, aging: EffectiveDateAging, control: TrialBalance)
-    -> Result<AgingReconciliation, BookError>
-{
-    if !account.is_leaf || aging.account != Some(account.vid)
-        || aging.known_at != control.known_at || control.activity
+fn assemble(
+    account: AccountRow,
+    aging: EffectiveDateAging,
+    control: TrialBalance,
+) -> Result<AgingReconciliation, BookError> {
+    if !account.is_leaf
+        || aging.account != Some(account.vid)
+        || aging.known_at != control.known_at
+        || control.activity
         || control.effective_through != Some(aging.effective_through)
     {
-        return Err(corruption("aging and control folds disagree on their selection"));
+        return Err(corruption(
+            "aging and control folds disagree on their selection",
+        ));
     }
     let mut controls = BTreeMap::new();
-    for row in control.rows.into_iter().filter(|row| row.account == account.vid) {
-        if row.code != account.code || row.name != account.name
+    for row in control
+        .rows
+        .into_iter()
+        .filter(|row| row.account == account.vid)
+    {
+        if row.code != account.code
+            || row.name != account.name
             || row.account_type.0 != account.account_type
-            || [row.debits, row.credits, row.debits_pending, row.credits_pending].iter().any(|n| *n < 0)
+            || [
+                row.debits,
+                row.credits,
+                row.debits_pending,
+                row.credits_pending,
+            ]
+            .iter()
+            .any(|n| *n < 0)
             || controls.insert(row.unit_id, row).is_some()
         {
             return Err(corruption("invalid or repeated control-account row"));
@@ -182,7 +251,9 @@ fn assemble(account: AccountRow, aging: EffectiveDateAging, control: TrialBalanc
     }
     let mut opens = BTreeMap::new();
     for total in &aging.totals {
-        if total.account != account.vid || total.amounts.debits < 0 || total.amounts.credits < 0
+        if total.account != account.vid
+            || total.amounts.debits < 0
+            || total.amounts.credits < 0
             || opens.insert(total.unit_id, &total.amounts).is_some()
         {
             return Err(corruption("invalid or repeated aging-account total"));
@@ -196,24 +267,47 @@ fn assemble(account: AccountRow, aging: EffectiveDateAging, control: TrialBalanc
         let open = opens.get(&unit_id).copied().unwrap_or(&empty);
         let posted_debits = source.map_or(0, |row| row.debits);
         let posted_credits = source.map_or(0, |row| row.credits);
-        let posted_net = posted_debits.checked_sub(posted_credits).ok_or(RegisterError::Overflow)?;
-        let open_net = open.debits.checked_sub(open.credits).ok_or(RegisterError::Overflow)?;
-        let difference = posted_net.checked_sub(open_net).ok_or(RegisterError::Overflow)?;
+        let posted_net = posted_debits
+            .checked_sub(posted_credits)
+            .ok_or(RegisterError::Overflow)?;
+        let open_net = open
+            .debits
+            .checked_sub(open.credits)
+            .ok_or(RegisterError::Overflow)?;
+        let difference = posted_net
+            .checked_sub(open_net)
+            .ok_or(RegisterError::Overflow)?;
         rows.push(AgingReconciliationRow {
-            unit_id, posted_debits, posted_credits,
+            unit_id,
+            posted_debits,
+            posted_credits,
             pending_debits: source.map_or(0, |row| row.debits_pending),
             pending_credits: source.map_or(0, |row| row.credits_pending),
-            open_debits: open.debits, open_credits: open.credits,
-            open_item_count: open.item_count, posted_net, open_net, difference,
+            open_debits: open.debits,
+            open_credits: open.credits,
+            open_item_count: open.item_count,
+            posted_net,
+            open_net,
+            difference,
         });
     }
-    Ok(AgingReconciliation { account, aging, control_rows: controls.into_values().collect(), rows })
+    Ok(AgingReconciliation {
+        account,
+        aging,
+        control_rows: controls.into_values().collect(),
+        rows,
+    })
 }
 
-fn validate_units(report: &AgingReconciliation, units: &fa_money::UnitRegistry) -> Result<(), BookError> {
+fn validate_units(
+    report: &AgingReconciliation,
+    units: &fa_money::UnitRegistry,
+) -> Result<(), BookError> {
     for row in &report.rows {
         if units.get(UnitId(row.unit_id)).is_none() {
-            return Err(corruption("reconciliation source has an unregistered native unit"));
+            return Err(corruption(
+                "reconciliation source has an unregistered native unit",
+            ));
         }
     }
     Ok(())
@@ -225,30 +319,48 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// today's mutable applied mirrors nor maintained register cells are used.
     /// A mismatching unit is data, not an automatic write or a false success.
     pub fn reconcile_effective_date_aging(
-        &self, cx: &PurposeContexts, principal: VId, capability: &Capability,
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
         request: &AgingReconciliationRequest,
     ) -> Outcome<AgingReconciliation> {
         let head = match authorize(self, cx, principal, capability, false)? {
-            Ok(head) => head, Err(refusal) => return Ok(Err(refusal)),
+            Ok(head) => head,
+            Err(refusal) => return Ok(Err(refusal)),
         };
         let request = match fixed_request(request, head) {
-            Ok(request) => request, Err(refusal) => return Ok(Err(refusal)),
+            Ok(request) => request,
+            Err(refusal) => return Ok(Err(refusal)),
         };
         let at = request.known_at.unwrap_or(head);
         let account = match selected_account(self, cx, request.account, at)? {
-            Ok(account) => account, Err(refusal) => return Ok(Err(refusal)),
+            Ok(account) => account,
+            Err(refusal) => return Ok(Err(refusal)),
         };
         let query = cx.query();
-        let aging = match self.effective_date_aging(cx, Some(request.account), request.effective_through,
-            Some(at), &request.buckets)
-        {
+        let aging = match self.effective_date_aging(
+            cx,
+            Some(request.account),
+            request.effective_through,
+            Some(at),
+            &request.buckets,
+        ) {
             Ok(report) => report,
-            Err(BookError::Registers(RegisterError::InvalidSelection(message))) => return Ok(Err(selection_error(message))),
+            Err(BookError::Registers(RegisterError::InvalidSelection(message))) => {
+                return Ok(Err(selection_error(message)));
+            }
             Err(error) => return Err(error),
         };
         query.checkpoint().map_err(BookError::Context)?;
-        let control = query.with_restriction(|| fa_registers::balance_as_of(
-            &self.db, self.context(), request.effective_through, Some(at)))?;
+        let control = query.with_restriction(|| {
+            fa_registers::balance_as_of(
+                &self.db,
+                self.context(),
+                request.effective_through,
+                Some(at),
+            )
+        })?;
         let report = assemble(account, aging, control)?;
         validate_units(&report, &self.context().units)?;
         query.checkpoint().map_err(BookError::Context)?;

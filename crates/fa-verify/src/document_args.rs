@@ -222,14 +222,20 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
     };
     if kind == DisclosureKind::View {
         if !matches!(&anchor, Anchor::Entry { .. }) {
-            return Err(Failure::usage("--view requires journal-authenticated evidence options"));
+            return Err(Failure::usage(
+                "--view requires journal-authenticated evidence options",
+            ));
         }
         // Compact proofs can sparsely name u64 indices. Only the complete
         // kernel-view format inherits the shipped kernel's document bound.
-        evidence::validate_request(&indexes)
-            .map_err(|error| Failure::usage(error.to_string()))?;
+        evidence::validate_request(&indexes).map_err(|error| Failure::usage(error.to_string()))?;
     }
-    Ok(Request { proof, kind, anchor, indexes })
+    Ok(Request {
+        proof,
+        kind,
+        anchor,
+        indexes,
+    })
 }
 
 pub(super) fn run(args: &[OsString], json: bool) -> Result<String, Failure> {
@@ -250,7 +256,12 @@ pub(super) fn run(args: &[OsString], json: bool) -> Result<String, Failure> {
             let entry_proof = read_bounded(proof, evidence::MAX_PROOF_BYTES)?;
             if request.kind == DisclosureKind::View {
                 return view::run(
-                    &request.proof, &entry_proof, &checkpoint, expected, &request.indexes, json,
+                    &request.proof,
+                    &entry_proof,
+                    &checkpoint,
+                    expected,
+                    &request.indexes,
+                    json,
                 );
             }
             let disclosure = read_bounded(&request.proof, disclosure::MAX_PROOF_BYTES)?;
@@ -604,17 +615,41 @@ mod tests {
     fn view_mode_requires_one_artifact_and_journal_authority_before_io() {
         let mut args = journal_args();
         args[1] = "--view".into();
-        assert_eq!(parse(&args).unwrap_or_else(|e| panic!("{}", e.message)).kind, DisclosureKind::View);
-        for extra in [vec!["--proof", "other"], vec!["--view", "other"],
-            vec!["--document-commit", "other"]]
-        {
+        assert_eq!(
+            parse(&args)
+                .unwrap_or_else(|e| panic!("{}", e.message))
+                .kind,
+            DisclosureKind::View
+        );
+        for extra in [
+            vec!["--proof", "other"],
+            vec!["--view", "other"],
+            vec!["--document-commit", "other"],
+        ] {
             let mut invalid = args.clone();
             invalid.extend(extra.into_iter().map(OsString::from));
-            assert_eq!(run(&invalid, true).err().expect("usage before missing files").exit, 2);
+            assert_eq!(
+                run(&invalid, true)
+                    .err()
+                    .expect("usage before missing files")
+                    .exit,
+                2
+            );
         }
-        let direct = ["document", "--view", "absent", "--document-commit", "absent", "--chunks", "0"]
-            .map(OsString::from);
-        assert_eq!(run(&direct, true).err().expect("no anchor fallback").exit, 2);
+        let direct = [
+            "document",
+            "--view",
+            "absent",
+            "--document-commit",
+            "absent",
+            "--chunks",
+            "0",
+        ]
+        .map(OsString::from);
+        assert_eq!(
+            run(&direct, true).err().expect("no anchor fallback").exit,
+            2
+        );
     }
 
     #[test]
@@ -631,5 +666,4 @@ mod tests {
             args[1] = "--view".into();
         }
     }
-
 }

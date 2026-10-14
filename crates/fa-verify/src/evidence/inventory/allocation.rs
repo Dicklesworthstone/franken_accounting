@@ -16,11 +16,11 @@ mod arithmetic;
 mod basis;
 mod entry;
 
-use core::fmt;
+use super::authenticated_entry;
 use crate::codec::DecodeError;
 use crate::evidence::{EvidenceCitation, EvidenceError};
 use crate::{Checkpoint, Inclusion};
-use super::authenticated_entry;
+use core::fmt;
 
 pub use basis::{AllocationBasis, AllocationTarget};
 
@@ -47,12 +47,27 @@ impl fmt::Display for AllocationError {
         match self {
             Self::Evidence(error) => write!(f, "{error}"),
             Self::Decode(error) => write!(f, "{error}"),
-            Self::InputLimit => write!(f, "allocation input or allocation capacity exceeds its bound"),
+            Self::InputLimit => write!(
+                f,
+                "allocation input or allocation capacity exceeds its bound"
+            ),
             Self::Invalid(why) => write!(f, "invalid allocation: {why}"),
-            Self::Arithmetic => write!(f, "allocation does not conserve a representable journal turnover"),
-            Self::BasisMismatch => write!(f, "allocation does not bind the recipient's exact driver and law"),
-            Self::LegMismatch { ordinal } => write!(f, "allocation leg {ordinal} differs from independent recomputation"),
-            Self::DriverMissing => write!(f, "entry does not cite the exact driver Workpaper as Source evidence"),
+            Self::Arithmetic => write!(
+                f,
+                "allocation does not conserve a representable journal turnover"
+            ),
+            Self::BasisMismatch => write!(
+                f,
+                "allocation does not bind the recipient's exact driver and law"
+            ),
+            Self::LegMismatch { ordinal } => write!(
+                f,
+                "allocation leg {ordinal} differs from independent recomputation"
+            ),
+            Self::DriverMissing => write!(
+                f,
+                "entry does not cite the exact driver Workpaper as Source evidence"
+            ),
         }
     }
 }
@@ -66,10 +81,14 @@ impl core::error::Error for AllocationError {
     }
 }
 impl From<EvidenceError> for AllocationError {
-    fn from(error: EvidenceError) -> Self { Self::Evidence(error) }
+    fn from(error: EvidenceError) -> Self {
+        Self::Evidence(error)
+    }
 }
 impl From<DecodeError> for AllocationError {
-    fn from(error: DecodeError) -> Self { Self::Decode(error) }
+    fn from(error: DecodeError) -> Self {
+        Self::Decode(error)
+    }
 }
 
 /// A complete result: no partially verified allocation is returned.
@@ -95,26 +114,46 @@ pub fn verify_allocation_for(
     expected_entry_digest: &[u8; 32],
     expected_basis: &[u8],
 ) -> Result<VerifiedAllocation, AllocationError> {
-    if proof.len().checked_add(expected_basis.len())
+    if proof
+        .len()
+        .checked_add(expected_basis.len())
         .is_none_or(|size| size > MAX_ALLOCATION_INPUT_BYTES)
-    { return Err(AllocationError::InputLimit); }
+    {
+        return Err(AllocationError::InputLimit);
+    }
     let basis = AllocationBasis::decode(expected_basis)?;
     let shares = basis.shares()?;
     let (inclusion, proposal) = authenticated_entry(proof, checkpoint, expected_entry_digest)?;
     let law_digest = law_digest(basis.law);
     let basis_digest = basis_digest(expected_basis);
     let driver = entry::verify(proposal, checkpoint, expected_basis, &basis, &shares)?;
-    Ok(VerifiedAllocation { inclusion, basis, shares, law_digest, basis_digest, driver })
+    Ok(VerifiedAllocation {
+        inclusion,
+        basis,
+        shares,
+        law_digest,
+        basis_digest,
+        driver,
+    })
 }
 
 fn law_digest(law: u16) -> [u8; 32] {
-    crate::blake3::hash_parts(b"fa:allocation-law:v1", &[
-        &2u32.to_le_bytes(), &law.to_le_bytes(), &2u32.to_le_bytes(), &1u16.to_le_bytes(),
-    ])
+    crate::blake3::hash_parts(
+        b"fa:allocation-law:v1",
+        &[
+            &2u32.to_le_bytes(),
+            &law.to_le_bytes(),
+            &2u32.to_le_bytes(),
+            &1u16.to_le_bytes(),
+        ],
+    )
 }
 fn basis_digest(bytes: &[u8]) -> [u8; 32] {
     // The public callers have admitted the <=64 KiB bound before this cast.
-    crate::blake3::hash_parts(b"fa:allocation-basis:v1", &[&(bytes.len() as u32).to_le_bytes(), bytes])
+    crate::blake3::hash_parts(
+        b"fa:allocation-basis:v1",
+        &[&(bytes.len() as u32).to_le_bytes(), bytes],
+    )
 }
 
 #[cfg(test)]
