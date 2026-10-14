@@ -248,7 +248,6 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fmt::Write as _;
 
     #[test]
     fn json_escapes_source_text_and_preserves_exact_integer_mantissas() {

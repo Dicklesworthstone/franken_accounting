@@ -2478,7 +2478,8 @@ fn timed_cli_intents_preserve_their_requests_and_execute_under_recorded_ticks()
     use asupersync::runtime::RuntimeBuilder;
     use fa::{Book, BookKeys, Entropy};
     use fa_journal::{Capability, ReversalStatus};
-    use fa_model::{Disposition, EntryClass, Side};
+    use fa_model::entry::Side;
+    use fa_model::{Disposition, EntryClass};
     use fa_policy::{Op, Profile};
     use fa_time::DateDay;
     use fgdb_types::VId;

@@ -4682,7 +4682,7 @@ mod tests {
                 ),
                 3 => change.set_vertex_label(vid, label::CERTIFICATE, false),
                 _ => change.delete_vertex(vid),
-            }
+            };
             let purposes = book.purposes();
             with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&purposes.commit(), change)))
                 .unwrap();

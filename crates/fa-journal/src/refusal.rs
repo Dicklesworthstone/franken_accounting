@@ -290,6 +290,11 @@ impl From<fa_model::EntryError> for KernelError {
         Self::Model(e)
     }
 }
+impl From<fa_model::EncodeError> for KernelError {
+    fn from(e: fa_model::EncodeError) -> Self {
+        Self::Model(fa_model::EntryError::from(e))
+    }
+}
 impl From<fa_model::MirrorError> for KernelError {
     fn from(e: fa_model::MirrorError) -> Self {
         Self::Mirror(e)

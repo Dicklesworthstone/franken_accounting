@@ -509,8 +509,10 @@ mod tests {
         sum.signed(1).unwrap();
         assert!(sum.value().is_err());
         assert!(sum.section().is_err());
-        assert!(Exact::ZERO.sides(0, -1).is_err());
-        assert!(Exact::ZERO.sides(1, 1).is_err());
+        let mut neg = Exact::ZERO;
+        assert!(neg.sides(0, -1).is_err());
+        let mut both = Exact::ZERO;
+        assert!(both.sides(1, 1).is_err());
     }
 
     #[test]
