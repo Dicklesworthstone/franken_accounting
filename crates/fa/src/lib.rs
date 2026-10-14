@@ -63,6 +63,7 @@ mod certificate_store;
 pub mod document_disclosure;
 pub mod evidence_disclosure;
 pub mod general_ledger;
+pub mod indirect_cash_flow;
 pub mod proof;
 pub mod roll_forward;
 pub mod settlement;
@@ -114,6 +115,11 @@ pub use fa_statements::{
 pub use general_ledger::{
     GENERAL_LEDGER_FORMAT, GeneralLedger, GeneralLedgerCell, GeneralLedgerLine,
     MAX_GENERAL_LEDGER_BYTES, MAX_GENERAL_LEDGER_CELLS, MAX_GENERAL_LEDGER_LINES,
+};
+pub use indirect_cash_flow::{
+    AdjustmentCategory, AdjustmentSign, INDIRECT_CASH_FLOW_FORMAT, IndirectCashFlow,
+    IndirectCashFlowAdjustment, IndirectCashFlowContribution, IndirectCashFlowDefinition,
+    IndirectCashFlowRequest, IndirectCashFlowUnit, MAX_INDIRECT_CASH_FLOW_BYTES,
 };
 pub use proof::{MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest};
 pub use roll_forward::{RollForward, RollForwardRequest};
