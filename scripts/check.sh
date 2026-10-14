@@ -251,6 +251,9 @@ fi
 run_gate "foundations" "$ROOT/scripts/check-forbidden-deps.sh" "$LOG_DIR/foundations"
 run_step "foundations-negative" python3 -B "$ROOT/scripts/tests/foundation_negative.py" \
   "$LOG_DIR/foundations" "$LOG_DIR/foundations-negative"
+run_gate "doctrine" "$ROOT/scripts/doctrine_check.sh" "$ROOT" "$LOG_DIR/foundations"
+run_gate "doctrine-negative" "$ROOT/scripts/tests/doctrine_negative.sh" \
+  "$LOG_DIR/foundations" "$LOG_DIR/doctrine-negative"
 
 # The reference model must not reach the production arithmetic through a
 # registry dependency. Observed before fa-pri: fa-reference -> fa-registry ->
