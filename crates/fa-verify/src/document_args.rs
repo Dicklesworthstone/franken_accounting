@@ -630,8 +630,7 @@ mod tests {
             invalid.extend(extra.into_iter().map(OsString::from));
             assert_eq!(
                 run(&invalid, true)
-                    .err()
-                    .expect("usage before missing files")
+                    .expect_err("usage before missing files")
                     .exit,
                 2
             );
@@ -646,10 +645,7 @@ mod tests {
             "0",
         ]
         .map(OsString::from);
-        assert_eq!(
-            run(&direct, true).err().expect("no anchor fallback").exit,
-            2
-        );
+        assert_eq!(run(&direct, true).expect_err("no anchor fallback").exit, 2);
     }
 
     #[test]
@@ -660,7 +656,7 @@ mod tests {
         assert!(parse(&args).is_ok());
         for value in ["16384", "18446744073709551615"] {
             args[4] = value.into();
-            assert_eq!(run(&args, true).err().expect("view usage bound").exit, 2);
+            assert_eq!(run(&args, true).expect_err("view usage bound").exit, 2);
             args[1] = "--proof".into();
             assert!(parse(&args).is_ok(), "compact sparse index {value}");
             args[1] = "--view".into();

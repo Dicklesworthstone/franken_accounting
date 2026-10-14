@@ -135,11 +135,11 @@ fn parse(args: &[OsString]) -> Result<(super::Request, Vec<DocumentFile>), Failu
             index += 1;
             // Consume a base option's value as a unit; never mistake a path
             // or missing-value token for a new document declaration.
-            if argument != "--json" {
-                if let Some(value) = args.get(index) {
-                    base.push(value.clone());
-                    index += 1;
-                }
+            if argument != "--json"
+                && let Some(value) = args.get(index)
+            {
+                base.push(value.clone());
+                index += 1;
             }
         }
     }
