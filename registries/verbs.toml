@@ -83,7 +83,7 @@ flags = ["--name", "--base-unit", "--calendar", "--year-start-month", "--adjustm
 switches = []
 events = ["book_created", "book"]
 exits = [0, 2, 4, 5]
-usage = ["book create --name \"My Co\" [--base-unit USD] [--calendar monthly] [--year-start-month 1] [--adjustment-periods 1] [--time-zone UTC]", "--time-zone UTC records the explicit civil-day policy required by scheduled reversals. Omitting it leaves the policy unset; the machine's local zone is never assumed.", "book info"]
+usage = ["book create --name \"My Co\" [--base-unit USD] [--calendar monthly|4-4-5|4-5-4|5-4-4|52-53[:last|nearest:<weekday>[:<month>]]] [--year-start-month 1] [--adjustment-periods 1] [--time-zone UTC]", "--time-zone UTC records the explicit civil-day policy required by scheduled reversals. Omitting it leaves the policy unset; the machine's local zone is never assumed.", "book info"]
 example = "fa book create --book ./books/myco --name \"My Co\" --json"
 
 [[verb]]

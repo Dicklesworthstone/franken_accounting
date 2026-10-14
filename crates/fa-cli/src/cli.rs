@@ -2087,6 +2087,116 @@ fn req_str<'a>(doc: &'a Json, key: &str, what: &str) -> Result<&'a str, Fail> {
 // book
 // ---------------------------------------------------------------------------
 
+fn parse_cli_weekday(text: &str) -> Option<fa_time::Weekday> {
+    use fa_time::Weekday as W;
+    match text.to_ascii_lowercase().as_str() {
+        "monday" | "mon" => Some(W::Monday),
+        "tuesday" | "tue" => Some(W::Tuesday),
+        "wednesday" | "wed" => Some(W::Wednesday),
+        "thursday" | "thu" => Some(W::Thursday),
+        "friday" | "fri" => Some(W::Friday),
+        "saturday" | "sat" => Some(W::Saturday),
+        "sunday" | "sun" => Some(W::Sunday),
+        _ => None,
+    }
+}
+
+fn parse_cli_calendar(
+    kind_arg: &str,
+    ysm_arg: Option<&str>,
+    adj: u8,
+) -> Result<FiscalCalendar, Fail> {
+    use fa_time::{WeekPattern, Weekday, YearEndRule};
+    const FIX: &str = "--calendar monthly|4-4-5|4-5-4|5-4-4|52-53[:last|nearest:<weekday>[:<month>]] --year-start-month 1..=12 --adjustment-periods 0..=4";
+    let ysm: Option<u8> = match ysm_arg {
+        None => None,
+        Some(raw) => {
+            let m: u8 = raw
+                .parse()
+                .map_err(|_| usage("--year-start-month must be 1..=12", "--year-start-month 1"))?;
+            if !(1..=12).contains(&m) {
+                return Err(usage(
+                    "--year-start-month must be 1..=12",
+                    "--year-start-month 1",
+                ));
+            }
+            Some(m)
+        }
+    };
+    let parts: Vec<&str> = kind_arg.split(':').collect();
+    let head = parts[0];
+    if head == "monthly" {
+        if parts.len() > 1 {
+            return Err(usage(
+                "monthly calendar uses --year-start-month 1..=12, not a weekday year-end rule",
+                "--calendar monthly --year-start-month 1",
+            ));
+        }
+        return FiscalCalendar::monthly("fiscal", ysm.unwrap_or(1), adj)
+            .map_err(|e| usage(format!("calendar: {e}"), FIX));
+    }
+    let default_end_month = match ysm.unwrap_or(1) {
+        1 => 12,
+        m => m - 1,
+    };
+    let end_rule = match parts.as_slice() {
+        [_] => YearEndRule::WeekdayNearestEnd {
+            weekday: Weekday::Saturday,
+            month: default_end_month,
+        },
+        [_, rule_name, weekday_name] | [_, rule_name, weekday_name, _] => {
+            let weekday = parse_cli_weekday(weekday_name).ok_or_else(|| {
+                usage(
+                    format!("unknown weekday `{weekday_name}` in --calendar `{kind_arg}`"),
+                    FIX,
+                )
+            })?;
+            let month = if let Some(month_str) = parts.get(3) {
+                if ysm.is_some() {
+                    return Err(usage(
+                        "pass either --year-start-month or an explicit month in --calendar, not both",
+                        FIX,
+                    ));
+                }
+                let m: u8 = month_str
+                    .parse()
+                    .map_err(|_| usage("calendar end month must be 1..=12", FIX))?;
+                if !(1..=12).contains(&m) {
+                    return Err(usage("calendar end month must be 1..=12", FIX));
+                }
+                m
+            } else {
+                default_end_month
+            };
+            match *rule_name {
+                "last" => YearEndRule::LastWeekdayOfMonth { weekday, month },
+                "nearest" => YearEndRule::WeekdayNearestEnd { weekday, month },
+                _ => {
+                    return Err(usage(
+                        format!(
+                            "unknown year-end rule `{rule_name}` in --calendar `{kind_arg}`; expected `last` or `nearest`"
+                        ),
+                        FIX,
+                    ));
+                }
+            }
+        }
+        _ => {
+            return Err(usage(format!("malformed --calendar `{kind_arg}`"), FIX));
+        }
+    };
+    let calendar = match head {
+        "4-4-5" | "445" => FiscalCalendar::weeks("fiscal", WeekPattern::W445, end_rule, adj),
+        "4-5-4" | "454" => FiscalCalendar::weeks("fiscal", WeekPattern::W454, end_rule, adj),
+        "5-4-4" | "544" => FiscalCalendar::weeks("fiscal", WeekPattern::W544, end_rule, adj),
+        "52-53" | "52/53" | "13x4" => FiscalCalendar::week_52_53("fiscal", end_rule, adj),
+        _ => {
+            return Err(usage(format!("unknown calendar `{kind_arg}`"), FIX));
+        }
+    };
+    calendar.map_err(|e| usage(format!("calendar: {e}"), FIX))
+}
+
 fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     if args.flag("--time-zone").is_some()
@@ -2132,17 +2242,6 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 )
             })?;
             let kind = args.flag("--calendar").unwrap_or("monthly");
-            if kind != "monthly" {
-                return Err(usage(
-                    format!("calendar `{kind}` is not available from the CLI yet"),
-                    "--calendar monthly (4-4-5 and 52/53-week calendars land with the next slice)",
-                ));
-            }
-            let ysm: u8 = args
-                .flag("--year-start-month")
-                .unwrap_or("1")
-                .parse()
-                .map_err(|_| usage("--year-start-month must be 1..=12", "--year-start-month 1"))?;
             let adj: u8 = args
                 .flag("--adjustment-periods")
                 .unwrap_or("1")
@@ -2153,34 +2252,27 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         "--adjustment-periods 1",
                     )
                 })?;
-            let calendar = FiscalCalendar::monthly("fiscal", ysm, adj).map_err(|e| {
-                usage(
-                    format!("calendar: {e:?}"),
-                    "--year-start-month 1..=12 --adjustment-periods 0..=4",
-                )
-            })?;
+            let calendar = parse_cli_calendar(kind, args.flag("--year-start-month"), adj)?;
             let entropy = Entropy::production();
             let keys = BookKeys::generate(&entropy)?;
             let mut id = [0u8; 16];
             entropy.fill(&mut id).map_err(BookError::Entropy)?;
             let book_id = Id128(id);
+            let spec = BookSpec {
+                book_id,
+                name: name.to_string(),
+                base_unit,
+                calendar,
+                time_zone_policy,
+                entities: Vec::new(),
+                opening_date: None,
+            };
+            spec.validate()
+                .map_err(|m| usage(m, "fa book create --book <dir> --name \"My Co\""))?;
             let keys_file = keys_path(args, &dir, ctx.files.cwd.as_deref());
             std::fs::create_dir_all(&dir).map_err(|e| BookError::Io(dir.clone(), e))?;
             keys.save(&keys_file)?;
-            let book = Book::create_dir(
-                &dir,
-                keys,
-                BookSpec {
-                    book_id,
-                    name: name.to_string(),
-                    base_unit,
-                    calendar,
-                    time_zone_policy,
-                    entities: Vec::new(),
-                    opening_date: None,
-                },
-                entropy,
-            )?;
+            let book = Book::create_dir(&dir, keys, spec, entropy)?;
             out.at_book(&book)?;
             out.event(
                 "book_created",

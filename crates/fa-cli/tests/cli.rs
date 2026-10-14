@@ -6595,3 +6595,161 @@ fn triage_names_the_next_step_from_the_books_state() -> std::io::Result<()> {
     assert!(human.contains("FY2026-P03"), "{human}");
     Ok(())
 }
+
+/// `fa-os2` (plan §7.1): retail 4-4-5 / 4-5-4 / 5-4-4 and 52/53-week fiscal
+/// calendars create 52- and 53-week fiscal years, post and report end-to-end,
+/// and invalid book specifications fail before creating the directory or keys.
+#[test]
+fn retail_and_weekly_52_53_calendars_and_book_create_validation() -> std::io::Result<()> {
+    let dir = tmp("retail-calendar")?;
+
+    // Planted negatives: invalid calendar, adjustment_periods > 4, and
+    // oversized book name fail with exit 2 and never create the book dir.
+    let bad_book = dir.join("never-created");
+    for args in [
+        vec![
+            "book",
+            "create",
+            "--name",
+            "Bad Calendar",
+            "--calendar",
+            "4-4-5:nearest:funday",
+            "--json",
+        ],
+        vec![
+            "book",
+            "create",
+            "--name",
+            "Bad Adj",
+            "--adjustment-periods",
+            "5",
+            "--json",
+        ],
+        vec![
+            "book",
+            "create",
+            "--name",
+            "Bad Conflict",
+            "--calendar",
+            "4-4-5:nearest:saturday:12",
+            "--year-start-month",
+            "1",
+            "--json",
+        ],
+    ] {
+        let (code, out, err) = fa(Some(&bad_book), &args);
+        assert_eq!(code, 2, "args={args:?}\n{out}\n{err}");
+        assert!(
+            !bad_book.exists(),
+            "failed book create must not leave directory or keys: {args:?}"
+        );
+    }
+    let long_name = "N".repeat(257);
+    let (code, out, err) = fa(
+        Some(&bad_book),
+        &["book", "create", "--name", &long_name, "--json"],
+    );
+    assert_eq!(code, 2, "{out}\n{err}");
+    assert!(!bad_book.exists());
+
+    // Positive: 4-4-5 retail calendar with Nearest Saturday in December and 1 adjustment period.
+    // FY2025 under Nearest Saturday to Dec 31 ends on Saturday 2026-01-03 (a 53-week year:
+    // 2024-12-29 ..= 2026-01-03, where P12 has 6 weeks = 42 days).
+    let book = dir.join("retail-book");
+    let (code, out, err) = fa(
+        Some(&book),
+        &[
+            "book",
+            "create",
+            "--name",
+            "Retail 445 Co",
+            "--calendar",
+            "4-4-5:nearest:saturday:12",
+            "--adjustment-periods",
+            "1",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    let (code, info_out, err) = fa(Some(&book), &["book", "info", "--json"]);
+    assert_eq!(code, 0, "{info_out}\n{err}");
+    let info = doc(&info_out);
+    assert_eq!(text(&info, "calendar"), "fiscal");
+
+    let (code, out, err) = fa(
+        Some(&book),
+        &["period", "create", "--fiscal-year", "2025", "--json"],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    let created = doc(&out);
+    assert_eq!(arr(&created, "periods").len(), 15, "{out}");
+
+    let (code, list_out, err) = fa(Some(&book), &["period", "list", "--json"]);
+    assert_eq!(code, 0, "{list_out}\n{err}");
+    let periods = doc(&list_out);
+    let list = arr(&periods, "periods");
+    assert_eq!(list.len(), 15, "{periods:?}");
+    let p01 = &list[0];
+    assert_eq!(text(p01, "code"), "FY2025-P01");
+    assert_eq!(text(p01, "start"), "2024-12-29");
+    assert_eq!(text(p01, "end"), "2025-01-26");
+    let p12 = &list[11];
+    assert_eq!(text(p12, "code"), "FY2025-P12");
+    assert_eq!(text(p12, "start"), "2025-11-23");
+    assert_eq!(text(p12, "end"), "2026-01-04");
+    let adj = &list[13];
+    assert_eq!(text(adj, "code"), "FY2025-A1");
+    assert_eq!(text(adj, "start"), "2026-01-03");
+    assert_eq!(text(adj, "end"), "2026-01-04");
+
+    // Post in the 53rd week (2026-01-02 falls into FY2025-P12) and run Trial Balance.
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD"},{"code":"4000","name":"Sales","type":"Revenue","leaf":true,"unit":"USD"}]}"#,
+    );
+    assert_eq!(fa(Some(&book), &["chart", "import", &chart, "--json"]).0, 0);
+    assert_eq!(
+        fa(Some(&book), &["period", "open", "FY2025-P12", "--json"]).0,
+        0
+    );
+    let ev = source_doc(&dir, &book);
+    let entry = write(
+        &dir,
+        "entry.json",
+        r#"{"effective_date":"2026-01-02","description":"53rd week retail sales","idempotency_key":"wk53-1","legs":[{"side":"debit","account":"1000","amount":"530.00 USD"},{"side":"credit","account":"4000","amount":"530.00 USD"}]}"#,
+    );
+    let (code, out, err) = fa(
+        Some(&book),
+        &["post", "--intent", &entry, "--evidence", &ev, "--json"],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert!(out.contains(r#""period":"FY2025-P12""#), "{out}");
+
+    let tb = report(&book, &["tb", "--period", "FY2025-P12", "--json"]);
+    assert!(tb.contains(r#""effective_through":"2026-01-03""#), "{tb}");
+    assert!(tb.contains(r#""530.00 USD""#), "{tb}");
+
+    // Also verify 52-53 week calendar (13x4) via CLI.
+    let wk_book = dir.join("weekly-book");
+    let (code, out, err) = fa(
+        Some(&wk_book),
+        &[
+            "book",
+            "create",
+            "--name",
+            "Weekly 52-53 Co",
+            "--calendar",
+            "52-53:last:friday:12",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    let (code, out, err) = fa(
+        Some(&wk_book),
+        &["period", "create", "--fiscal-year", "2026", "--json"],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert_eq!(arr(&doc(&out), "periods").len(), 16, "{out}");
+    Ok(())
+}

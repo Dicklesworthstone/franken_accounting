@@ -57,35 +57,94 @@ pub struct FiscalCalendar {
     pub adjustment_periods: u8,
 }
 
+pub const MAX_ADJUSTMENT_PERIODS: u8 = 4;
+
 impl FiscalCalendar {
+    pub fn validate(&self) -> Result<(), DateError> {
+        if self.id.is_empty() {
+            return Err(DateError::InvalidCalendar(
+                "calendar id must not be empty".into(),
+            ));
+        }
+        if self.adjustment_periods > MAX_ADJUSTMENT_PERIODS {
+            return Err(DateError::InvalidCalendar(format!(
+                "adjustment_periods {} exceeds the maximum of {MAX_ADJUSTMENT_PERIODS}",
+                self.adjustment_periods
+            )));
+        }
+        let month = match &self.kind {
+            CalendarKind::Monthly12 { year_start_month } => *year_start_month,
+            CalendarKind::Weeks { end_rule, .. } | CalendarKind::Week5253 { end_rule } => {
+                match end_rule {
+                    YearEndRule::LastWeekdayOfMonth { month, .. }
+                    | YearEndRule::WeekdayNearestEnd { month, .. } => *month,
+                }
+            }
+        };
+        if !(1..=12).contains(&month) {
+            return Err(DateError::InvalidYmd {
+                year: 0,
+                month,
+                day: 1,
+            });
+        }
+        Ok(())
+    }
+
     pub fn monthly(
         id: &str,
         year_start_month: u8,
         adjustment_periods: u8,
     ) -> Result<Self, DateError> {
-        if !(1..=12).contains(&year_start_month) {
-            return Err(DateError::InvalidYmd {
-                year: 0,
-                month: year_start_month,
-                day: 1,
-            });
-        }
-        Ok(Self {
+        let cal = Self {
             id: id.into(),
             kind: CalendarKind::Monthly12 { year_start_month },
-            adjustment_periods: adjustment_periods.min(4),
-        })
+            adjustment_periods,
+        };
+        cal.validate()?;
+        Ok(cal)
+    }
+
+    pub fn weeks(
+        id: &str,
+        pattern: WeekPattern,
+        end_rule: YearEndRule,
+        adjustment_periods: u8,
+    ) -> Result<Self, DateError> {
+        let cal = Self {
+            id: id.into(),
+            kind: CalendarKind::Weeks { pattern, end_rule },
+            adjustment_periods,
+        };
+        cal.validate()?;
+        Ok(cal)
+    }
+
+    pub fn week_52_53(
+        id: &str,
+        end_rule: YearEndRule,
+        adjustment_periods: u8,
+    ) -> Result<Self, DateError> {
+        let cal = Self {
+            id: id.into(),
+            kind: CalendarKind::Week5253 { end_rule },
+            adjustment_periods,
+        };
+        cal.validate()?;
+        Ok(cal)
     }
 
     /// First and last civil day (inclusive) of fiscal year `fy`.
     pub fn year_bounds(&self, fy: i32) -> Result<(DateDay, DateDay), DateError> {
+        self.validate()?;
         match &self.kind {
             CalendarKind::Monthly12 { year_start_month } => {
                 let m = *year_start_month;
                 let start = if m == 1 {
                     DateDay::from_ymd(fy, 1, 1)?
                 } else {
-                    DateDay::from_ymd(fy - 1, m, 1)?
+                    let prev_fy = fy.checked_sub(1).ok_or(DateError::OutOfRange)?;
+                    DateDay::from_ymd(prev_fy, m, 1)?
                 };
                 let end = start
                     .add_months(12, MonthEndPolicy::ClampToMonthEnd)?
@@ -93,8 +152,9 @@ impl FiscalCalendar {
                 Ok((start, end))
             }
             CalendarKind::Weeks { end_rule, .. } | CalendarKind::Week5253 { end_rule } => {
+                let prev_fy = fy.checked_sub(1).ok_or(DateError::OutOfRange)?;
                 let end = year_end(*end_rule, fy)?;
-                let prev_end = year_end(*end_rule, fy - 1)?;
+                let prev_end = year_end(*end_rule, prev_fy)?;
                 Ok((prev_end.succ()?, end))
             }
         }
@@ -113,7 +173,7 @@ impl FiscalCalendar {
                 for ordinal in 1..=12u16 {
                     let next = cursor
                         .add_months(1, MonthEndPolicy::ClampToMonthEnd)?
-                        .month_start();
+                        .try_month_start()?;
                     out.push(PeriodDef {
                         code: format!("FY{fy}-P{ordinal:02}"),
                         fiscal_year: fy,
@@ -210,21 +270,27 @@ impl FiscalCalendar {
 
     /// The fiscal year containing `day`.
     pub fn fiscal_year_of(&self, day: DateDay) -> Result<i32, DateError> {
+        self.validate()?;
         let (y, m, _) = day.ymd();
         let guess = match &self.kind {
             CalendarKind::Monthly12 { year_start_month } => {
                 if *year_start_month == 1 || m < *year_start_month {
                     y
                 } else {
-                    y + 1
+                    y.checked_add(1).ok_or(DateError::OutOfRange)?
                 }
             }
             _ => y,
         };
         // Week-based years can end up to ±6 days from the calendar boundary.
-        for fy in [guess - 1, guess, guess + 1] {
-            let (s, e) = self.year_bounds(fy)?;
-            if day >= s && day <= e {
+        for fy in [guess.checked_sub(1), Some(guess), guess.checked_add(1)]
+            .into_iter()
+            .flatten()
+        {
+            if let Ok((s, e)) = self.year_bounds(fy)
+                && day >= s
+                && day <= e
+            {
                 return Ok(fy);
             }
         }
@@ -236,11 +302,11 @@ fn year_end(rule: YearEndRule, fy: i32) -> Result<DateDay, DateError> {
     match rule {
         YearEndRule::LastWeekdayOfMonth { weekday, month } => {
             let last = DateDay::from_ymd(fy, month, days_in_month(fy, month))?;
-            Ok(last.last_weekday_on_or_before(weekday))
+            last.try_last_weekday_on_or_before(weekday)
         }
         YearEndRule::WeekdayNearestEnd { weekday, month } => {
             let last = DateDay::from_ymd(fy, month, days_in_month(fy, month))?;
-            Ok(last.nearest_weekday(weekday))
+            last.try_nearest_weekday(weekday)
         }
     }
 }
@@ -401,6 +467,68 @@ mod tests {
                 2
             );
             assert_eq!(e.weekday(), Weekday::Sunday);
+        }
+    }
+
+    #[test]
+    fn adjustment_periods_above_max_are_refused_never_clamped() {
+        for adj in 0..=MAX_ADJUSTMENT_PERIODS {
+            assert_eq!(
+                FiscalCalendar::monthly("cy", 1, adj)
+                    .unwrap()
+                    .adjustment_periods,
+                adj
+            );
+        }
+        let rule = YearEndRule::WeekdayNearestEnd {
+            weekday: Weekday::Saturday,
+            month: 12,
+        };
+        for adj in 5..=10 {
+            assert!(matches!(
+                FiscalCalendar::monthly("cy", 1, adj),
+                Err(DateError::InvalidCalendar(_))
+            ));
+            assert!(matches!(
+                FiscalCalendar::weeks("retail", WeekPattern::W445, rule, adj),
+                Err(DateError::InvalidCalendar(_))
+            ));
+            assert!(matches!(
+                FiscalCalendar::week_52_53("13p", rule, adj),
+                Err(DateError::InvalidCalendar(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn all_calendar_kinds_enumerate_1900_through_2100_and_refuse_out_of_range_years() {
+        let nearest_sat = YearEndRule::WeekdayNearestEnd {
+            weekday: Weekday::Saturday,
+            month: 1,
+        };
+        let last_sun = YearEndRule::LastWeekdayOfMonth {
+            weekday: Weekday::Sunday,
+            month: 12,
+        };
+        let calendars = [
+            FiscalCalendar::monthly("m12", 4, 1).unwrap(),
+            FiscalCalendar::weeks("w445", WeekPattern::W445, nearest_sat, 1).unwrap(),
+            FiscalCalendar::weeks("w454", WeekPattern::W454, last_sun, 1).unwrap(),
+            FiscalCalendar::weeks("w544", WeekPattern::W544, nearest_sat, 1).unwrap(),
+            FiscalCalendar::week_52_53("w5253", last_sun, 1).unwrap(),
+        ];
+        for cal in &calendars {
+            for fy in 1900..=2100 {
+                let (s, e) = cal.year_bounds(fy).unwrap();
+                let ps = cal.periods_for_year(fy).unwrap();
+                check_contiguous(&ps, s, e);
+                assert_eq!(cal.fiscal_year_of(s).unwrap(), fy);
+                assert_eq!(cal.fiscal_year_of(e).unwrap(), fy);
+            }
+            for bad_fy in [i32::MIN, i32::MAX] {
+                assert_eq!(cal.year_bounds(bad_fy), Err(DateError::OutOfRange));
+                assert_eq!(cal.periods_for_year(bad_fy), Err(DateError::OutOfRange));
+            }
         }
     }
 }

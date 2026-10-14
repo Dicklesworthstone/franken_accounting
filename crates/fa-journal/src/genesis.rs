@@ -206,6 +206,21 @@ impl BookSpec {
     /// non-empty, at most 32 bytes, unique; at most 256 entities; names at
     /// most 256 bytes.
     pub fn validate(&self) -> Result<(), String> {
+        if self.name.len() > MAX_BOOK_NAME_BYTES {
+            return Err(format!(
+                "book name exceeds {MAX_BOOK_NAME_BYTES} bytes ({} bytes)",
+                self.name.len()
+            ));
+        }
+        if self.calendar.id.is_empty() || self.calendar.id.len() > MAX_CALENDAR_ID_BYTES {
+            return Err(format!(
+                "calendar id `{}` must be 1..={MAX_CALENDAR_ID_BYTES} bytes",
+                self.calendar.id
+            ));
+        }
+        self.calendar
+            .validate()
+            .map_err(|e| format!("calendar `{}`: {e}", self.calendar.id))?;
         if self.entities.len() > MAX_ENTITIES {
             return Err(format!(
                 "a book declares at most {MAX_ENTITIES} legal entities"

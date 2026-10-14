@@ -66,6 +66,7 @@ pub enum DateError {
     InvalidYmd { year: i32, month: u8, day: u8 },
     Malformed(String),
     OutOfRange,
+    InvalidCalendar(String),
 }
 
 impl fmt::Display for DateError {
@@ -76,6 +77,7 @@ impl fmt::Display for DateError {
             }
             Self::Malformed(s) => write!(f, "malformed date `{s}`; expected YYYY-MM-DD"),
             Self::OutOfRange => f.write_str("date out of representable range"),
+            Self::InvalidCalendar(s) => f.write_str(s),
         }
     }
 }
