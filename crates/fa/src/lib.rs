@@ -78,8 +78,11 @@ pub mod summary_certificate;
 pub mod upload;
 
 pub use aging::{
-    AgedOpenItem, AgingAmounts, AgingBand, AgingBuckets, AgingCell, AgingTotal, EffectiveDateAging,
-    OpenItemSnapshot,
+    AGING_CERTIFICATE_FORMAT, AGING_OUTPUT_FORMAT, AgedOpenItem, AgingAmounts, AgingBand,
+    AgingBuckets, AgingCell, AgingCertificate, AgingReconciliation, AgingReconciliationCertificate,
+    AgingReconciliationRequest, AgingReconciliationRow, AgingRequest, AgingTotal, CertifiedAging,
+    CertifiedAgingReconciliation, EffectiveDateAging, MAX_AGING_BUCKET_BOUNDS,
+    MAX_AGING_CERTIFICATE_BYTES, MAX_AGING_RECONCILIATION_BYTES, OpenItemSnapshot,
 };
 pub use allocation_review::{AllocationReview, AllocationReviewError, MAX_ALLOCATION_REVIEW_BYTES};
 pub use async_book::AsyncBook;
@@ -112,7 +115,9 @@ pub use fa_statements::{
     StatementLine,
 };
 pub use general_ledger::{
-    GENERAL_LEDGER_FORMAT, GeneralLedger, GeneralLedgerCell, GeneralLedgerLine,
+    CASH_FLOW_FORMAT, CashFlow, CashFlowActivity, CashFlowAssignment, CashFlowDefinition,
+    CashFlowSection, CashFlowUnit, CertifiedGeneralLedger, GENERAL_LEDGER_FORMAT,
+    GENERAL_LEDGER_WORKPAPER_FORMAT, GeneralLedger, GeneralLedgerCell, GeneralLedgerLine,
     MAX_GENERAL_LEDGER_BYTES, MAX_GENERAL_LEDGER_CELLS, MAX_GENERAL_LEDGER_LINES,
 };
 pub use indirect_cash_flow::{
@@ -123,7 +128,10 @@ pub use indirect_cash_flow::{
     MAX_INDIRECT_CASH_FLOW_BYTES, MAX_INDIRECT_CASH_FLOW_CERTIFICATE_BYTES,
 };
 pub use proof::{MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest};
-pub use roll_forward::{RollForward, RollForwardRequest};
+pub use roll_forward::{
+    CertifiedRollForward, MAX_ROLL_FORWARD_CERTIFICATE_BYTES, MAX_ROLL_FORWARD_WORKPAPER_BYTES,
+    ROLL_FORWARD_CERTIFICATE_FORMAT, RollForward, RollForwardCertificate, RollForwardRequest,
+};
 pub use settlement::{PreparedSettlement, SettlementPostPlan, SettlementPostRequest};
 pub use settlement_group::{
     MAX_SETTLEMENT_GROUP_LEGS, MAX_SETTLEMENT_GROUP_TARGETS, PreparedSettlementGroup,

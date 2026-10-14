@@ -1425,6 +1425,249 @@ impl Book {
         ))
     }
 
+    /// Produce a historical account lead schedule under current whole-book read authority.
+    pub fn roll_forward(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::RollForwardRequest,
+    ) -> Outcome<crate::RollForward> {
+        with_store!(&self.store, core => core.roll_forward(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Certify an exact lead schedule against its native chart, journal, migration and registry closure.
+    pub fn certify_roll_forward(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::RollForwardRequest,
+    ) -> Outcome<crate::CertifiedRollForward> {
+        with_store!(&self.store, core => core.certify_roll_forward(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Replay a certified roll-forward at its original prefix under current read authority.
+    pub fn replay_roll_forward(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::RollForwardCertificate,
+    ) -> Outcome<crate::RollForward> {
+        with_store!(&self.store, core => core.replay_roll_forward(
+            &self.purposes(), principal, capability, certificate
+        ))
+    }
+
+    /// Fold open items through an inclusive civil date at one known-at frontier.
+    pub fn open_items_as_of(
+        &self,
+        account: Option<VId>,
+        effective_through: DateDay,
+        known_at: Option<CommitSeq>,
+    ) -> Result<crate::OpenItemSnapshot, BookError> {
+        with_store!(&self.store, core => core.open_items_as_of(
+            &self.purposes(), account, effective_through, known_at
+        ))
+    }
+
+    /// Group historical open amounts into explicit age bands by effective date.
+    pub fn effective_date_aging(
+        &self,
+        account: Option<VId>,
+        effective_through: DateDay,
+        known_at: Option<CommitSeq>,
+        buckets: &crate::AgingBuckets,
+    ) -> Result<crate::EffectiveDateAging, BookError> {
+        with_store!(&self.store, core => core.effective_date_aging(
+            &self.purposes(), account, effective_through, known_at, buckets
+        ))
+    }
+
+    /// Certify one explicit effective-date aging request under current read+produce authority.
+    pub fn certify_effective_date_aging(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::AgingRequest,
+    ) -> Outcome<crate::CertifiedAging> {
+        with_store!(&self.store, core => core.certify_effective_date_aging(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Replay a certified effective-date aging report under current read authority.
+    pub fn replay_effective_date_aging(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::AgingCertificate,
+    ) -> Outcome<crate::EffectiveDateAging> {
+        with_store!(&self.store, core => core.replay_effective_date_aging(
+            &self.purposes(), principal, capability, certificate
+        ))
+    }
+
+    /// Compare the historical open-item fold with the stock trial balance under current read authority.
+    pub fn reconcile_effective_date_aging(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::AgingReconciliationRequest,
+    ) -> Outcome<crate::AgingReconciliation> {
+        with_store!(&self.store, core => core.reconcile_effective_date_aging(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Fold a summary trial balance by chart roots under current whole-book read authority.
+    pub fn summary_trial_balance(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::SummaryRequest,
+    ) -> Outcome<crate::SummaryTrialBalance> {
+        with_store!(&self.store, core => core.summary_trial_balance(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Certify a summary trial balance under current read+produce authority.
+    pub fn certify_summary_trial_balance(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::SummaryRequest,
+    ) -> Outcome<crate::CertifiedSummaryTrialBalance> {
+        with_store!(&self.store, core => core.certify_summary_trial_balance(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Read the same stock/activity statement at two fixed recorded frontiers.
+    pub fn statement_diff(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::StatementDiffRequest,
+    ) -> Outcome<crate::StatementDiff> {
+        with_store!(&self.store, core => core.statement_diff(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Produce both native source certificates and the exact statement comparison bridge.
+    pub fn certify_statement_diff(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::StatementDiffRequest,
+    ) -> Outcome<crate::CertifiedStatementDiff> {
+        with_store!(&self.store, core => core.certify_statement_diff(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Replay a certified statement comparison under current read authority.
+    pub fn replay_statement_diff(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::StatementDiffCertificate,
+    ) -> Outcome<crate::StatementDiff> {
+        with_store!(&self.store, core => core.replay_statement_diff(
+            &self.purposes(), principal, capability, certificate
+        ))
+    }
+
+    /// Reconcile a complete adjacent-publication trace to its net statement comparison.
+    pub fn statement_trace(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::StatementTraceRequest,
+    ) -> Outcome<crate::StatementTrace> {
+        with_store!(&self.store, core => core.statement_trace(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Retain a source certificate for every adjacent frontier in a statement trace.
+    pub fn certify_statement_trace(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::StatementTraceRequest,
+    ) -> Outcome<crate::CertifiedStatementTrace> {
+        with_store!(&self.store, core => core.certify_statement_trace(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Replay a certified statement trace under current read authority.
+    pub fn replay_statement_trace(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::StatementTraceCertificate,
+    ) -> Outcome<crate::StatementTrace> {
+        with_store!(&self.store, core => core.replay_statement_trace(
+            &self.purposes(), principal, capability, certificate
+        ))
+    }
+
+    /// Read and classify native cash movements under current read authority.
+    pub fn cash_flow(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::RollForwardRequest,
+        definition: &crate::CashFlowDefinition,
+    ) -> Outcome<crate::CashFlow> {
+        with_store!(&self.store, core => core.cash_flow(
+            &self.purposes(), principal, capability, request, definition
+        ))
+    }
+
+    /// Certify classified cash movements under current read+produce authority.
+    pub fn certify_cash_flow(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::RollForwardRequest,
+        definition: &crate::CashFlowDefinition,
+    ) -> Outcome<crate::CertifiedCashFlow> {
+        with_store!(&self.store, core => core.certify_cash_flow(
+            &self.purposes(), principal, capability, request, definition
+        ))
+    }
+
+    /// Read an indirect earnings-to-cash workpaper at one native prefix under current read authority.
+    pub fn indirect_cash_flow(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::IndirectCashFlowRequest,
+    ) -> Outcome<crate::IndirectCashFlow> {
+        with_store!(&self.store, core => core.indirect_cash_flow(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Certify an indirect earnings-to-cash workpaper under current read+produce authority.
+    pub fn certify_indirect_cash_flow(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::IndirectCashFlowRequest,
+    ) -> Outcome<crate::CertifiedIndirectCashFlow> {
+        with_store!(&self.store, core => core.certify_indirect_cash_flow(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
     /// Compare immutable leg mirrors and topology with canonical entry payloads.
     /// `None` selects the current head; an explicit sequence checks that prefix.
     /// Drift is reported without changing the book.

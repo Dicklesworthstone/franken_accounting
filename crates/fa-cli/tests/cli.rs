@@ -6753,3 +6753,432 @@ fn retail_and_weekly_52_53_calendars_and_book_create_validation() -> std::io::Re
     assert_eq!(arr(&doc(&out), "periods").len(), 16, "{out}");
     Ok(())
 }
+
+/// fa-w5m6: GL detail, roll-forward, aging (+ reconciliation), direct/indirect
+/// cash-flow, summary trial balance, statement diff/trace, and open-items --as-of
+/// are wired end-to-end on the CLI and conform to the robot schema.
+#[test]
+fn gl_detail_roll_forward_aging_cash_flow_summary_tb_and_statement_diff_trace_end_to_end()
+-> std::io::Result<()> {
+    let dir = tmp("fa-w5m6-reports")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        assert!(err.is_empty(), "args={args:?}\nstderr={err}");
+        out
+    };
+
+    ok(&["book", "create", "--name", "Reports & GL Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[
+            {"code":"10","name":"Assets","type":"Asset","leaf":false,"unit":"USD"},
+            {"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD","parent":"10"},
+            {"code":"1200","name":"Accounts Receivable","type":"Asset","leaf":true,"unit":"USD","parent":"10"},
+            {"code":"1500","name":"Equipment","type":"Asset","leaf":true,"unit":"USD","parent":"10"},
+            {"code":"4000","name":"Sales Revenue","type":"Revenue","leaf":true,"unit":"USD"},
+            {"code":"6000","name":"Depreciation Expense","type":"Expense","leaf":true,"unit":"USD"}
+        ]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let ev = source_doc(&dir, &book);
+
+    // Entry 1: Cash sale on 2026-03-05 (1000.00 USD)
+    let e1 = write(
+        &dir,
+        "e1.json",
+        r#"{"effective_date":"2026-03-05","description":"cash sale","idempotency_key":"w5m6-1","legs":[{"side":"debit","account":"1000","amount":"1000.00 USD"},{"side":"credit","account":"4000","amount":"1000.00 USD"}]}"#,
+    );
+    let posted_e1 = doc(&ok(&["post", "--intent", &e1, "--evidence", &ev, "--json"]));
+    let e1_digest = text(&posted_e1, "entry_digest").to_string();
+
+    // Entry 2: Credit invoice on 2026-03-10 (400.00 USD)
+    let e2 = write(
+        &dir,
+        "e2.json",
+        r#"{"effective_date":"2026-03-10","description":"credit invoice","idempotency_key":"w5m6-2","legs":[{"side":"debit","account":"1200","amount":"400.00 USD"},{"side":"credit","account":"4000","amount":"400.00 USD"}]}"#,
+    );
+    let posted_e2 = doc(&ok(&["post", "--intent", &e2, "--evidence", &ev, "--json"]));
+    let e2_digest = text(&posted_e2, "entry_digest").to_string();
+    let seq_before = int(&posted_e2, "recorded_at").unwrap().to_string();
+
+    // Entry 3: Non-cash depreciation on 2026-03-20 (150.00 USD)
+    let e3 = write(
+        &dir,
+        "e3.json",
+        r#"{"effective_date":"2026-03-20","description":"depreciation","idempotency_key":"w5m6-3","legs":[{"side":"debit","account":"6000","amount":"150.00 USD"},{"side":"credit","account":"1500","amount":"150.00 USD"}]}"#,
+    );
+    let posted_e3 = doc(&ok(&["post", "--intent", &e3, "--evidence", &ev, "--json"]));
+    let e3_digest = text(&posted_e3, "entry_digest").to_string();
+    let seq_after = int(&posted_e3, "recorded_at").unwrap().to_string();
+
+    // 1. Summary Trial Balance (`fa tb --summary` and `fa tb --summary --root 10`)
+    let full_stb_out = ok(&["tb", "--period", "FY2026-P03", "--summary", "--json"]);
+    assert_eq!(field(&full_stb_out, "event"), Some("summary_trial_balance"));
+    let full_stb = doc(&full_stb_out);
+    assert_eq!(
+        full_stb.get("complete"),
+        Some(&Json::Bool(true)),
+        "{full_stb_out}"
+    );
+    assert_eq!(
+        full_stb.get("balanced"),
+        Some(&Json::Bool(true)),
+        "{full_stb_out}"
+    );
+
+    let stb_out = ok(&[
+        "tb",
+        "--period",
+        "FY2026-P03",
+        "--summary",
+        "--root",
+        "10",
+        "--json",
+    ]);
+    assert_eq!(field(&stb_out, "event"), Some("summary_trial_balance"));
+    let stb = doc(&stb_out);
+    assert_eq!(stb.get("complete"), Some(&Json::Bool(false)), "{stb_out}");
+    let groups = arr(&stb, "groups");
+    assert_eq!(groups.len(), 1, "{stb_out}");
+    assert_eq!(text(&groups[0], "code"), "10");
+    let group_rows = arr(&groups[0], "rows");
+    assert_eq!(group_rows.len(), 1, "{stb_out}");
+    assert_eq!(text(&group_rows[0], "net"), "1250.00 USD");
+    let stb_human = ok(&["tb", "--period", "FY2026-P03", "--summary", "--root", "10"]);
+    assert!(stb_human.contains("summary trial balance"), "{stb_human}");
+
+    // 2. Statement Diff & Trace (`fa statement diff`, `fa statement trace`)
+    let diff_out = ok(&[
+        "statement",
+        "diff",
+        "--definition",
+        "balance-sheet",
+        "--for",
+        "FY2026-P03",
+        "--before",
+        &seq_before,
+        "--after",
+        &seq_after,
+        "--json",
+    ]);
+    assert_eq!(field(&diff_out, "event"), Some("statement_diff"));
+    let sdiff = doc(&diff_out);
+    assert_eq!(sdiff.get("amounts_changed"), Some(&Json::Bool(true)));
+    assert_eq!(sdiff.get("unchanged"), Some(&Json::Bool(false)));
+    assert!(!arr(&sdiff, "lines").is_empty(), "{diff_out}");
+    let diff_human = ok(&[
+        "statement",
+        "diff",
+        "--definition",
+        "balance-sheet",
+        "--for",
+        "FY2026-P03",
+        "--before",
+        &seq_before,
+        "--after",
+        &seq_after,
+    ]);
+    assert!(diff_human.contains("balance-sheet diff"), "{diff_human}");
+
+    let trace_out = ok(&[
+        "statement",
+        "trace",
+        "--definition",
+        "balance-sheet",
+        "--for",
+        "FY2026-P03",
+        "--before",
+        &seq_before,
+        "--after",
+        &seq_after,
+        "--json",
+    ]);
+    assert_eq!(text(&robot_line(&trace_out), "event"), "statement_trace");
+    let strace = doc(&trace_out);
+    assert_eq!(strace.get("had_changes"), Some(&Json::Bool(true)));
+    assert!(!arr(&strace, "publications").is_empty(), "{trace_out}");
+    let trace_human = ok(&[
+        "statement",
+        "trace",
+        "--definition",
+        "balance-sheet",
+        "--for",
+        "FY2026-P03",
+        "--before",
+        &seq_before,
+        "--after",
+        &seq_after,
+    ]);
+    assert!(trace_human.contains("balance-sheet"), "{trace_human}");
+
+    // 3. Open-Items `--as-of`
+    let oi_early_raw = ok(&[
+        "open-items",
+        "--account",
+        "1200",
+        "--as-of",
+        "2026-03-08",
+        "--json",
+    ]);
+    let oi_early = doc(&oi_early_raw);
+    assert_eq!(int(&oi_early, "count"), Some(0));
+    assert!(oi_early_raw.contains(r#""effective":"as-of:2026-03-08""#));
+    let oi_late_raw = ok(&[
+        "open-items",
+        "--account",
+        "1200",
+        "--as-of",
+        "2026-03-15",
+        "--json",
+    ]);
+    let oi_late = doc(&oi_late_raw);
+    assert_eq!(int(&oi_late, "count"), Some(1));
+    assert!(oi_late_raw.contains(r#""effective":"as-of:2026-03-15""#));
+
+    // 4. GL Detail (`fa gl detail` and alias `fa gl-detail`)
+    let gld_out = ok(&[
+        "gl",
+        "detail",
+        "--account",
+        "1000",
+        "--from",
+        "2026-03-01",
+        "--to",
+        "2026-03-31",
+        "--json",
+    ]);
+    assert_eq!(field(&gld_out, "event"), Some("general_ledger"));
+    let gld = doc(&gld_out);
+    let gld_cells = arr(&gld, "cells");
+    assert_eq!(gld_cells.len(), 1);
+    assert_eq!(text(&gld_cells[0], "account"), "1000");
+    assert_eq!(text(&gld_cells[0], "closing"), "1000.00 USD");
+    assert_eq!(int(&gld_cells[0], "line_count"), Some(1));
+    let gld_alias = ok(&[
+        "gl-detail",
+        "--account",
+        "1000",
+        "--from",
+        "2026-03-01",
+        "--to",
+        "2026-03-31",
+        "--json",
+    ]);
+    assert_eq!(gld_alias, gld_out);
+    let gld_human = ok(&[
+        "gl",
+        "detail",
+        "--account",
+        "1000",
+        "--from",
+        "2026-03-01",
+        "--to",
+        "2026-03-31",
+    ]);
+    assert!(gld_human.contains("gl detail"), "{gld_human}");
+
+    // 5. Roll-Forward (`fa gl roll-forward` and alias `fa roll-forward`)
+    let rf_out = ok(&[
+        "gl",
+        "roll-forward",
+        "--account",
+        "1000,1200",
+        "--from",
+        "2026-03-01",
+        "--to",
+        "2026-03-31",
+        "--json",
+    ]);
+    assert_eq!(field(&rf_out, "event"), Some("roll_forward"));
+    let rf = doc(&rf_out);
+    assert_eq!(arr(&rf, "rows").len(), 2);
+    assert_eq!(int(&rf, "movement_count"), Some(2));
+    let rf_alias = ok(&[
+        "roll-forward",
+        "--account",
+        "1000,1200",
+        "--from",
+        "2026-03-01",
+        "--to",
+        "2026-03-31",
+        "--json",
+    ]);
+    assert_eq!(rf_alias, rf_out);
+    let rf_human = ok(&[
+        "gl",
+        "roll-forward",
+        "--account",
+        "1000,1200",
+        "--from",
+        "2026-03-01",
+        "--to",
+        "2026-03-31",
+    ]);
+    assert!(rf_human.contains("roll-forward"), "{rf_human}");
+
+    // 6. Aging & Reconciled Aging (`fa gl aging` and alias `fa aging`)
+    let aging_out = ok(&[
+        "gl",
+        "aging",
+        "--as-of",
+        "2026-03-25",
+        "--account",
+        "1200",
+        "--bucket",
+        "0",
+        "--bucket",
+        "10",
+        "--bucket",
+        "30",
+        "--json",
+    ]);
+    assert_eq!(field(&aging_out, "event"), Some("aging"));
+    let aging = doc(&aging_out);
+    assert_eq!(arr(&aging, "items").len(), 1);
+    let aging_rec_out = ok(&[
+        "aging",
+        "--as-of",
+        "2026-03-25",
+        "--account",
+        "1200",
+        "--reconcile",
+        "--json",
+    ]);
+    assert_eq!(field(&aging_rec_out, "event"), Some("aging_reconciled"));
+    let aging_rec = doc(&aging_rec_out);
+    assert_eq!(aging_rec.get("reconciled"), Some(&Json::Bool(true)));
+    let rec_rows = arr(&aging_rec, "rows");
+    assert_eq!(rec_rows.len(), 1);
+    assert_eq!(text(&rec_rows[0], "open_net"), "400.00 USD");
+    assert_eq!(text(&rec_rows[0], "posted_net"), "400.00 USD");
+    assert_eq!(text(&rec_rows[0], "difference"), "0.00 USD");
+    let aging_human = ok(&[
+        "gl",
+        "aging",
+        "--as-of",
+        "2026-03-25",
+        "--account",
+        "1200",
+        "--reconcile",
+    ]);
+    assert!(aging_human.contains("reconciled=true"), "{aging_human}");
+
+    // 7. Cash Flow — Direct & Indirect (`fa gl cash-flow` and alias `fa cash-flow`)
+    let direct_policy = write(
+        &dir,
+        "direct_cf.json",
+        &format!(
+            r#"{{
+                "name":"cf-direct-v1",
+                "cash_accounts":["1000"],
+                "assignments":[
+                    {{"entry_digest":"{e1_digest}","leg_index":0,"activity":"operating"}}
+                ]
+            }}"#
+        ),
+    );
+    let cf_out = ok(&[
+        "gl",
+        "cash-flow",
+        "--account",
+        "1000",
+        "--from",
+        "2026-03-01",
+        "--to",
+        "2026-03-31",
+        "--policy",
+        &direct_policy,
+        "--json",
+    ]);
+    assert_eq!(field(&cf_out, "event"), Some("cash_flow"));
+    let cf = doc(&cf_out);
+    assert_eq!(text(&cf, "policy"), "cf-direct-v1");
+    let cf_units = arr(&cf, "units");
+    assert_eq!(cf_units.len(), 1);
+    assert_eq!(text(&cf_units[0], "net_change"), "1000.00 USD");
+    assert_eq!(text(&cf_units[0], "closing"), "1000.00 USD");
+    let cf_human = ok(&[
+        "cash-flow",
+        "--account",
+        "1000",
+        "--from",
+        "2026-03-01",
+        "--to",
+        "2026-03-31",
+        "--policy",
+        &direct_policy,
+    ]);
+    assert!(cf_human.contains("cash flow `cf-direct-v1`"), "{cf_human}");
+
+    let indirect_policy = write(
+        &dir,
+        "indirect_cf.json",
+        &format!(
+            r#"{{
+                "name":"cf-indirect-v1",
+                "cash_policy":"cf-direct-v1",
+                "cash_accounts":["1000"],
+                "assignments":[
+                    {{"entry_digest":"{e1_digest}","leg_index":0,"activity":"operating"}}
+                ],
+                "adjustments":[
+                    {{"entry_digest":"{e3_digest}","leg_index":0,"category":"non_cash","sign":"debit_minus_credit","reason":"depreciation expense"}},
+                    {{"entry_digest":"{e2_digest}","leg_index":0,"category":"working_capital","sign":"credit_minus_debit","reason":"increase in AR"}}
+                ]
+            }}"#
+        ),
+    );
+    let icf_out = ok(&[
+        "gl",
+        "cash-flow",
+        "--indirect",
+        "--income-period",
+        "FY2026-P03",
+        "--account",
+        "1000",
+        "--from",
+        "2026-03-01",
+        "--to",
+        "2026-03-31",
+        "--policy",
+        &indirect_policy,
+        "--json",
+    ]);
+    assert_eq!(field(&icf_out, "event"), Some("indirect_cash_flow"));
+    let icf = doc(&icf_out);
+    let icf_units = arr(&icf, "units");
+    assert_eq!(icf_units.len(), 1);
+    assert_eq!(text(&icf_units[0], "net_income"), "1250.00 USD");
+    assert_eq!(text(&icf_units[0], "non_cash"), "150.00 USD");
+    assert_eq!(text(&icf_units[0], "working_capital"), "-400.00 USD");
+    assert_eq!(text(&icf_units[0], "operating"), "1000.00 USD");
+    assert_eq!(text(&icf_units[0], "direct_operating"), "1000.00 USD");
+    assert_eq!(text(&icf_units[0], "operating_residual"), "0.00 USD");
+    assert_eq!(text(&icf_units[0], "net_change"), "1000.00 USD");
+    assert_eq!(text(&icf_units[0], "closing"), "1000.00 USD");
+    let icf_human = ok(&[
+        "gl",
+        "cash-flow",
+        "--indirect",
+        "--income-period",
+        "FY2026-P03",
+        "--account",
+        "1000",
+        "--from",
+        "2026-03-01",
+        "--to",
+        "2026-03-31",
+        "--policy",
+        &indirect_policy,
+    ]);
+    assert!(
+        icf_human.contains("indirect cash flow `cf-indirect-v1`"),
+        "{icf_human}"
+    );
+    Ok(())
+}

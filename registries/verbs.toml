@@ -199,23 +199,23 @@ name = "tb"
 summary = "Trial balance: stock or period activity at a known-at frontier; opt-in certification retains an immutable certificate in the book."
 writes = true
 subcommands = []
-flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at", "--certificate-out"]
-switches = ["--activity", "--certify"]
-events = ["trial_balance", "report_certificate"]
-exits = [0, 2, 3, 4, 5, 8]
-usage = ["tb ((--period <code>)... | --fiscal-year N) [--activity] [--as-known-at HEAD|<seq>|<RFC3339>]", "tb --as-of YYYY-MM-DD [--as-known-at HEAD|<seq>|<RFC3339>]", "Add --certify to retain a content-addressed certificate in the book and emit its complete canonical bytes as hex; --certificate-out <new-file> implies certification and also saves canonical binary bytes without replacing any existing file. Uncertified reports do not write; retention advances the metadata frontier while the report's known-at remains fixed.", "Stock balances include opening history; --activity is selected-period movement. Known-at instants resolve from retained TimeEvidence and report the observed frontier and tick brackets; as-of remains a civil date. Certificates preserve the original instant resolution, with embedded-owner authority and fa-fold-over-prefix replay scope; no witness signature or physical timestamp claim."]
+flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at", "--root", "--certificate-out"]
+switches = ["--activity", "--summary", "--certify"]
+events = ["trial_balance", "summary_trial_balance", "report_certificate"]
+exits = [0, 2, 3, 4, 5, 7, 8]
+usage = ["tb ((--period <code>)... | --fiscal-year N) [--activity] [--summary [--root <code>]...] [--as-known-at HEAD|<seq>|<RFC3339>]", "tb --as-of YYYY-MM-DD [--summary [--root <code>]...] [--as-known-at HEAD|<seq>|<RFC3339>]", "Add --certify to retain a content-addressed certificate in the book and emit its complete canonical bytes as hex; --certificate-out <new-file> implies certification and also saves canonical binary bytes without replacing any existing file. Uncertified reports do not write; retention advances the metadata frontier while the report's known-at remains fixed.", "Stock balances include opening history; --activity is selected-period movement. --summary folds disjoint leaf subtrees under each root account (all roots by default, or --root <code>...). Known-at instants resolve from retained TimeEvidence and report the observed frontier and tick brackets; as-of remains a civil date. Certificates preserve the original instant resolution, with embedded-owner authority and fa-fold-over-prefix replay scope; no witness signature or physical timestamp claim."]
 example = "fa tb --period FY2026-P03 --book ./books/myco --json"
 
 [[verb]]
 name = "statement"
-summary = "Balance sheet or income statement from exact journal folds under a registered definition, with optional period comparatives and retained replay certificates."
+summary = "Balance sheet or income statement from exact journal folds under a registered definition, with optional period comparatives, retained replay certificates, and frontier diff/trace bridges."
 writes = true
 subcommands = []
-flags = ["--for", "--compare", "--known-at", "--as-known-at", "--certificate-out"]
+flags = ["--for", "--compare", "--definition", "--before", "--after", "--max-publications", "--known-at", "--as-known-at", "--certificate-out"]
 switches = ["--certify"]
-events = ["statement", "report_certificate"]
+events = ["statement", "statement_diff", "statement_trace", "report_certificate"]
 exits = [0, 2, 3, 4, 5, 7, 8]
-usage = ["statement balance-sheet|income-statement --for <period> [--compare <period>] [--known-at HEAD|<seq>|<RFC3339>]", "Both columns use the same known-at snapshot and the registered definition. Balance sheets carry opening history through each selected period; income statements show that period's activity. Native units remain separate; there is no implicit FX conversion or presentation rounding.", "--as-known-at is an alias for --known-at; supply only one. Add --certify to retain an immutable certificate and emit its complete bytes inline. --certificate-out <new-file> also saves a binary copy without replacing a file. Uncertified statements do not publish metadata. Certificates prove replay and arithmetic over the journal, not GAAP conformity."]
+usage = ["statement balance-sheet|income-statement --for <period> [--compare <period>] [--known-at HEAD|<seq>|<RFC3339>]", "statement diff --definition balance-sheet|income-statement --for <period> [--compare <period>] --before <seq> [--after HEAD|<seq>]", "statement trace --definition balance-sheet|income-statement --for <period> [--compare <period>] --before <seq> [--after HEAD|<seq>] [--max-publications 1..=256]", "Both columns use the same known-at snapshot and the registered definition. Balance sheets carry opening history through each selected period; income statements show that period's activity. Native units remain separate; there is no implicit FX conversion or presentation rounding.", "--as-known-at is an alias for --known-at; supply only one. Add --certify to retain an immutable certificate and emit its complete bytes inline. --certificate-out <new-file> also saves a binary copy without replacing a file. Uncertified statements do not publish metadata. Certificates prove replay and arithmetic over the journal, not GAAP conformity."]
 example = "fa statement balance-sheet --for FY2026-P03 --compare FY2026-P02 --certify --book ./books/myco --json"
 
 [[verb]]
@@ -247,12 +247,24 @@ name = "open-items"
 summary = "Open items (plan §5.7): each live posted leg, its applications, and its open amount, with account metadata at the selected historical snapshot."
 writes = true
 subcommands = []
-flags = ["--account", "--as-known-at", "--certificate-out"]
+flags = ["--account", "--as-of", "--as-known-at", "--certificate-out"]
 switches = ["--certify"]
 events = ["open_items", "report_certificate"]
 exits = [0, 2, 3, 4, 5, 8]
-usage = ["open-items [--account <code>] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]", "Without certification this is a pure read. --certify retains an immutable report certificate in the book; --certificate-out also creates a new external copy. Unknown account filters refuse, including accounts absent at the selected known-at. Replay fixes that snapshot, account metadata, and application/reversal lineage."]
+usage = ["open-items [--account <code>] [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]", "Without certification this is a pure read. --as-of folds open items through an inclusive civil date. --certify retains an immutable report certificate in the book; --certificate-out also creates a new external copy. Unknown account filters refuse, including accounts absent at the selected known-at. Replay fixes that snapshot, account metadata, and application/reversal lineage."]
 example = "fa open-items --account 1200 --book ./books/myco --json"
+
+[[verb]]
+name = "gl"
+summary = "General-ledger detail, account roll-forward lead schedules, effective-date open-item aging and control reconciliation, and direct/indirect cash-flow workpapers over one recorded snapshot."
+writes = false
+subcommands = ["detail", "roll-forward", "aging", "cash-flow"]
+flags = ["--account", "--unit", "--from", "--to", "--label", "--as-of", "--bucket", "--policy", "--income-period", "--as-known-at", "--grant"]
+switches = ["--reconcile", "--indirect"]
+events = ["general_ledger", "roll_forward", "aging", "aging_reconciled", "cash_flow", "indirect_cash_flow"]
+exits = [0, 2, 3, 4, 5, 7, 8]
+usage = ["gl detail --account <code[,code...]> [--unit <CODE[,CODE...]>] --from YYYY-MM-DD --to YYYY-MM-DD [--label <text>] [--as-known-at HEAD|<seq>]", "gl roll-forward --account <code[,code...]> [--unit <CODE[,CODE...]>] --from YYYY-MM-DD --to YYYY-MM-DD [--label <text>] [--as-known-at HEAD|<seq>]", "gl aging [--account <code>] --as-of YYYY-MM-DD [--bucket <days>]... [--reconcile] [--as-known-at HEAD|<seq>]", "gl cash-flow --account <code[,code...]> [--unit <CODE[,CODE...]>] --from YYYY-MM-DD --to YYYY-MM-DD --policy <file.json|-> [--indirect --income-period <code>...] [--label <text>] [--as-known-at HEAD|<seq>]", "Pure historical folds: opening stock, posted movements and closing stock share one known-at frontier. --reconcile ties an account's open-item fold to its control balance. Cash-flow policies classify each cash leg (or indirect non-cash adjustment) explicitly without inventing a balancing plug."]
+example = "fa gl detail --account 1000 --from 2026-03-01 --to 2026-03-31 --book ./books/myco --json"
 
 [[verb]]
 name = "explain"
@@ -437,6 +449,22 @@ expands = ["explain", "balance"]
 [[alias]]
 name = "journal"
 expands = ["post"]
+
+[[alias]]
+name = "gl-detail"
+expands = ["gl", "detail"]
+
+[[alias]]
+name = "roll-forward"
+expands = ["gl", "roll-forward"]
+
+[[alias]]
+name = "aging"
+expands = ["gl", "aging"]
+
+[[alias]]
+name = "cash-flow"
+expands = ["gl", "cash-flow"]
 
 # Operations that cannot be undone in practice (plan §15.3, Appendix D
 # FA-REF-007). Without --yes, or a --plan file naming the exact proposal,
@@ -727,6 +755,60 @@ doc = "A registered financial statement evaluated from exact journal folds. The 
 fields = ["name:string", "definition_version:int", "definition_digest:hex", "known_at:seq", "columns:[statement_column]", "lines:[statement_line]", "mappings:[statement_mapping]", "scope:string"]
 
 [[event]]
+name = "summary_trial_balance"
+book = true
+doc = "A summary-account trial balance (plan §4.3/§5.6): disjoint leaf subtrees folded under each selected root account at one known-at frontier. `complete` is true when no leaf account is uncovered; `balanced` is true only when `complete` is true and the whole-book leaf fold balances."
+fields = ["periods:[string]", "known_at:seq", "effective_through:date?", "activity:bool", "mode:string", "complete:bool", "balanced:bool", "groups:[summary_group]", "uncovered_leaves:[string]", "unit_totals:[unit_total]", "pending_unit_totals:[pending_unit_total]"]
+
+[[event]]
+name = "statement_diff"
+book = true
+doc = "An exact statement bridge between two recorded frontiers (`before_known_at` and `after_known_at`) for the same definition and period columns (plan §8.3/§12.5). `mapping_changes` lists any chart mapping differences even when monetary deltas are zero."
+fields = ["name:string", "definition_version:int", "definition_digest:hex", "before_known_at:seq", "after_known_at:seq", "amounts_changed:bool", "unchanged:bool", "columns:[statement_column]", "lines:[statement_line_change]", "mapping_changes:[statement_mapping_change]"]
+
+[[event]]
+name = "statement_trace"
+book = true
+doc = "Publication-by-publication attribution of a statement bridge over `(before_known_at, after_known_at]`. Each step refolds the statement at the adjacent recorded sequence and lists the entries published or made visible at that step."
+fields = ["name:string", "definition_version:int", "definition_digest:hex", "before_known_at:seq", "after_known_at:seq", "had_changes:bool", "publication_count:int", "columns:[statement_column]", "lines:[statement_line_change]", "mapping_changes:[statement_mapping_change]", "publications:[statement_publication]"]
+
+[[event]]
+name = "general_ledger"
+book = true
+doc = "General-ledger detail at one recorded frontier over `[effective_from, effective_through]`: opening stock, ordered posted movements with running balances, and closing stock for each selected account and unit."
+fields = ["label:string", "known_at:seq", "effective_from:date", "effective_through:date", "cells:[gl_cell]", "lines:[gl_line]"]
+
+[[event]]
+name = "roll_forward"
+book = true
+doc = "Account roll-forward lead schedule (plan §12.1) at one recorded frontier over `[effective_from, effective_through]`: opening stock plus activity partitioned by `(class, reason_code, rule_digest)` equals closing stock for each selected account and unit."
+fields = ["label:string", "known_at:seq", "effective_from:date", "effective_through:date", "buckets:[roll_forward_bucket]", "rows:[roll_forward_row]", "movement_count:int"]
+
+[[event]]
+name = "aging"
+book = true
+doc = "Effective-date open-item aging (plan §5.7/§7.5) through `effective_through` at `known_at`: open items bucketed by civil days since their effective date, with separate debit and credit totals per native unit."
+fields = ["account:string?", "known_at:seq", "effective_through:date", "bands:[aging_band]", "items:[aged_open_item]", "cells:[aging_cell]", "totals:[aging_total]"]
+
+[[event]]
+name = "aging_reconciled"
+book = true
+doc = "Control reconciliation of one posting leaf's effective-date open-item fold against its trial-balance control net at `known_at` through `effective_through` (plan §5.6–§5.7)."
+fields = ["account:string", "account_vid:hex", "name:string", "known_at:seq", "effective_through:date", "reconciled:bool", "rows:[aging_reconciliation_row]", "bands:[aging_band]", "item_count:int"]
+
+[[event]]
+name = "cash_flow"
+book = true
+doc = "Direct cash-flow workpaper over the native general ledger at `known_at` for `[effective_from, effective_through]`, classified under `policy` into operating, investing, financing, exchange effects, and internal transfers."
+fields = ["policy:string", "label:string", "known_at:seq", "effective_from:date", "effective_through:date", "cash_accounts:[string]", "units:[cash_flow_unit]"]
+
+[[event]]
+name = "indirect_cash_flow"
+book = true
+doc = "Indirect operating-cash reconciliation at `known_at` for `[effective_from, effective_through]`: net income from the registered income statement over `income_periods` plus explicit non-cash, working-capital, and non-operating leg adjustments reconciled to direct operating cash in each native unit."
+fields = ["policy:string", "cash_policy:string", "label:string", "known_at:seq", "effective_from:date", "effective_through:date", "income_periods:[string]", "cash_accounts:[string]", "units:[indirect_cash_flow_unit]", "contributions:[indirect_cash_flow_contribution]"]
+
+[[event]]
 name = "report_certificate"
 book = true
 doc = "The certificate retained in this book for the preceding trial_balance, statement, balance_explained, or open_items report. oid resolves through fa replay or certificate status; recorded_at is the immutable certificate object's sequence, distinct from the report's known_at. bytes is the complete canonical certificate in hex and file is an optional external copy. output_digest commits the exact binary result named by output_format. Retention advances the metadata frontier without posting accounting entries. The explicit replay_scope and authority limit the claim."
@@ -997,6 +1079,96 @@ doc = "A historical leaf account and its unique registered mapped line; computed
 fields = ["account_vid:hex", "account:string", "name:string", "type:string", "line:string"]
 
 [[shape]]
+name = "summary_group"
+doc = "One root account and its disjoint leaf partition in a summary trial balance."
+fields = ["code:string", "name:string", "type:string", "leaf:bool", "leaves:[string]", "rows:[tb_row]"]
+
+[[shape]]
+name = "statement_line_change"
+doc = "One statement line's before, after, and exact `after - before` delta amounts across the statement columns."
+fields = ["code:string", "label:string", "unit:string", "before:[amount]", "after:[amount]", "delta:[amount]"]
+
+[[shape]]
+name = "statement_mapping_change"
+doc = "A leaf account whose statement mapping changed between `before_known_at` and `after_known_at`."
+fields = ["account_vid:hex", "before:statement_mapping?", "after:statement_mapping?"]
+
+[[shape]]
+name = "statement_publication"
+doc = "One adjacent recorded sequence step in a statement trace, with its entry links and sparse line/mapping changes."
+fields = ["recorded_at:seq", "unchanged:bool", "entries:[statement_entry_link]", "changes:[statement_line_change]", "mapping_changes:[statement_mapping_change]"]
+
+[[shape]]
+name = "statement_entry_link"
+doc = "Metadata-only entry link for a statement trace publication step (`recorded` or `became_visible`)."
+fields = ["event:string", "vid:hex", "entry_digest:hex", "class:string", "recorded_at:seq", "posting_date:date?", "principal:hex", "references:[hex]", "migration_run:hex?"]
+
+[[shape]]
+name = "gl_cell"
+doc = "One selected account/unit cell in a general-ledger detail report."
+fields = ["account:string", "account_vid:hex", "name:string", "type:string", "unit:string", "opening:amount", "debits:amount", "credits:amount", "net_change:amount", "closing:amount", "line_count:int"]
+
+[[shape]]
+name = "gl_line"
+doc = "One ordered posted leg movement with running balance in a general-ledger detail report."
+fields = ["account:string", "unit:string", "entry_digest:hex", "leg_index:int", "recorded_at:seq", "effective_date:date", "class:string", "reason_code:string", "debits:amount", "credits:amount", "running_balance:amount"]
+
+[[shape]]
+name = "roll_forward_bucket"
+doc = "One activity classification bucket in a roll-forward lead schedule."
+fields = ["class:string", "reason_code:string", "rule_digest:hex?"]
+
+[[shape]]
+name = "roll_forward_row"
+doc = "One account/unit row in a roll-forward lead schedule: `opening` plus `activity` aligned with `buckets` equals `closing`."
+fields = ["account:string", "account_vid:hex", "name:string", "type:string", "unit:string", "opening:amount", "activity:[amount]", "net_change:amount", "closing:amount"]
+
+[[shape]]
+name = "aging_band"
+doc = "One effective-date age band in days (`upper_inclusive` is null for the open-ended final band)."
+fields = ["lower_inclusive:int", "upper_inclusive:int?"]
+
+[[shape]]
+name = "aged_open_item"
+doc = "One open item with its effective-date age in civil days and assigned band index."
+fields = ["entry:hex", "ordinal:int", "account:string", "side:string", "effective_date:date", "recorded_at:seq", "original:amount", "applied:amount", "applied_out:amount", "open:amount", "age_days:int", "bucket:int"]
+
+[[shape]]
+name = "aging_cell"
+doc = "Nonnegative debit and credit open-item sums for one account, native unit, and age band."
+fields = ["account:string", "unit:string", "bucket:int", "debits:amount", "credits:amount", "item_count:int"]
+
+[[shape]]
+name = "aging_total"
+doc = "Nonnegative debit and credit open-item totals across all age bands for one account and native unit."
+fields = ["account:string", "unit:string", "debits:amount", "credits:amount", "item_count:int"]
+
+[[shape]]
+name = "aging_reconciliation_row"
+doc = "One native-unit row tying an account's posted trial-balance net to its open-item net (`difference` = `posted_net - open_net`)."
+fields = ["unit:string", "posted_debits:amount", "posted_credits:amount", "pending_debits:amount", "pending_credits:amount", "open_debits:amount", "open_credits:amount", "open_item_count:int", "posted_net:amount", "open_net:amount", "difference:amount"]
+
+[[shape]]
+name = "cash_flow_section"
+doc = "Gross inflows, gross outflows, and net movement for one cash-flow activity section in one native unit."
+fields = ["inflows:amount", "outflows:amount", "net:amount"]
+
+[[shape]]
+name = "cash_flow_unit"
+doc = "Direct cash-flow summary for one native unit: `opening` plus `net_change` across operating, investing, financing, and exchange effects equals `closing`."
+fields = ["unit:string", "opening:amount", "operating:cash_flow_section", "investing:cash_flow_section", "financing:cash_flow_section", "exchange_effects:cash_flow_section", "net_change:amount", "closing:amount"]
+
+[[shape]]
+name = "indirect_cash_flow_unit"
+doc = "Indirect cash-flow reconciliation for one native unit: `net_income` plus `non_cash`, `working_capital`, and `non_operating` equals `operating` (`direct_operating` with zero `operating_residual`)."
+fields = ["unit:string", "net_income:amount", "non_cash:amount", "working_capital:amount", "non_operating:amount", "operating:amount", "direct_operating:amount", "operating_residual:amount", "opening:amount", "investing:amount", "financing:amount", "exchange_effects:amount", "net_change:amount", "closing:amount"]
+
+[[shape]]
+name = "indirect_cash_flow_contribution"
+doc = "One non-cash leg adjustment's signed contribution to the indirect operating-cash reconciliation."
+fields = ["entry_digest:hex", "leg_index:int", "account:string", "account_vid:hex", "unit:string", "amount:amount"]
+
+[[shape]]
 name = "unit_total"
 doc = "Posted totals of one unit."
 fields = ["unit:string", "debits:amount", "credits:amount"]
@@ -1161,9 +1333,9 @@ max_tools_per_cluster = 7
 # The server fixes authority and book selection once; it never forwards caller grants.
 hidden_flags = ["--json", "--via", "--no-color", "--help", "--version", "--as", "--grant", "--yes", "--keys", "--book"]
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
-repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance"]
+repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
-integer_flags = ["--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns"]
+integer_flags = ["--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications"]
 
 [[mcp.cluster]]
 name = "fa.orient"
@@ -1474,12 +1646,28 @@ dont = ["The launch capability must include read and produce. Output paths are f
 mistakes = ["Combining account with entry: a bundle has one scope.", "Passing from/to without account.", "Writing balance as an amount: it is <account-code>:<UNIT>[:YYYY-MM-DD], and the amount is recomputed."]
 
 [[mcp.tool]]
+cluster = "fa.proof"
+name = "gl"
+verb = "gl"
+subcommands = ["detail", "roll-forward", "aging", "cash-flow"]
+selector = "view"
+positionals = []
+flags = ["--account", "--unit", "--from", "--to", "--label", "--as-of", "--bucket", "--policy", "--income-period", "--as-known-at"]
+switches = ["--reconcile", "--indirect"]
+stdin_property = "policy"
+stdin_kind = "object"
+stdin_via = "--policy"
+required = []
+dont = ["Don't treat running balances as balances known on each movement's recorded day: they are effective-date running balances at the selected known-at snapshot.", "Don't invent a balancing plug in a cash-flow policy: every selected cash leg (or indirect non-cash adjustment) must be explicitly classified and tie out to the native fold."]
+mistakes = ["Passing policy_file: MCP refuses host filesystem paths; supply the policy object inline as policy.", "Running view aging with reconcile: true without an explicit account code."]
+
+[[mcp.tool]]
 cluster = "fa.read"
 name = "trial_balance"
 verb = "tb"
 subcommands = []
 positionals = []
-flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at"]
+flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at", "--root"]
 required = []
 dont = ["Don't pass an instant to `as_of`: a civil date, never a timestamp; instants are unsupported here.", "Don't mix `as_of` with `period`, `fiscal_year` or `activity`.", "Use certify: true to retain the certificate in the book and receive the report and complete certificate as two data items. Replay accepts its oid or bytes string. Certification writes metadata only; MCP exposes no certificate_out host-file write."]
 mistakes = ["Reading `activity` rows as stock: stock includes opening history, `activity: true` is the selected periods' movement.", "Treating a known-at instant as an exact physical commit timestamp: it is a retained TimeEvidence bucket, with its frontier and brackets in the coordinate."]
@@ -1490,9 +1678,9 @@ name = "statement"
 verb = "statement"
 subcommands = []
 positionals = ["name"]
-flags = ["--for", "--compare", "--known-at", "--as-known-at"]
+flags = ["--for", "--compare", "--definition", "--before", "--after", "--max-publications", "--known-at", "--as-known-at"]
 required = ["name", "--for"]
-dont = ["Use name balance-sheet or income-statement, for a fiscal period code, and optionally compare for another period. Both columns share one known-at snapshot.", "Keep native units separate: no implicit FX, consolidation or GAAP conformity is claimed. A balance sheet includes opening history; an income statement shows selected-period activity.", "Use certify: true for a retained certificate and replay it with fa_read_replay. certificate_out is forbidden; certificate bytes and oid are returned inline."]
+dont = ["Use name balance-sheet or income-statement (or diff|trace with definition and before), for a fiscal period code, and optionally compare for another period. Both columns share one known-at snapshot.", "Keep native units separate: no implicit FX, consolidation or GAAP conformity is claimed. A balance sheet includes opening history; an income statement shows selected-period activity.", "Use certify: true for a retained certificate and replay it with fa_read_replay. certificate_out is forbidden; certificate bytes and oid are returned inline."]
 mistakes = ["Omitting for, passing multiple for or compare periods, or using a date where a period code is required.", "Supplying known_at and as_known_at together: they name the same selector.", "Treating a later-period comparative as a different known-at snapshot; use a separate statement call for that question."]
 
 [[mcp.tool]]
@@ -1538,7 +1726,7 @@ name = "open_items"
 verb = "open-items"
 subcommands = []
 positionals = []
-flags = ["--account", "--as-known-at"]
+flags = ["--account", "--as-of", "--as-known-at"]
 required = []
 dont = ["Don't apply more than an item's `open` amount; FA-REF-072 names what is open."]
 mistakes = ["Passing an account name as `account` (it takes the account code)."]

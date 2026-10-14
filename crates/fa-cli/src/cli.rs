@@ -27,8 +27,12 @@ use std::rc::Rc;
 
 use fa::book::{Book, BookError, BookKeys, Entropy};
 use fa::{
-    MAX_PLAN_BYTES, PostIntent, PostPlan, ReportOutput, ReportSelection, Statement,
-    StatementDefinition, StatementSelection, TrialBalanceSelection,
+    AdjustmentCategory, AdjustmentSign, AgingBuckets, AgingReconciliationRequest, CashFlowActivity,
+    CashFlowAssignment, CashFlowDefinition, CashFlowSection, IndirectCashFlowAdjustment,
+    IndirectCashFlowDefinition, IndirectCashFlowRequest, MAX_PLAN_BYTES, PostIntent, PostPlan,
+    ReportOutput, ReportSelection, RollForwardRequest, Statement, StatementDefinition,
+    StatementDiffRequest, StatementEntryEvent, StatementSelection, StatementTraceRequest,
+    SummaryRequest, SummaryScope, TrialBalanceSelection,
 };
 use fa_journal::BookContext;
 use fa_journal::{
@@ -77,6 +81,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("replay", notary::replay_cmd),
     ("certificate", notary::certificate_cmd),
     ("open-items", open_items_cmd),
+    ("gl", gl_cmd),
     ("explain", explain_cmd),
     ("procedure", procedure_cmd),
     ("checkpoint", notary::checkpoint_cmd),
@@ -1222,8 +1227,8 @@ fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fa
             ("book", Some("info"))
             | ("chart" | "period", Some("list"))
             | (
-                "tb" | "statement" | "open-items" | "explain" | "replay" | "certificate" | "entry"
-                | "procedure" | "triage" | "next" | "doctor",
+                "tb" | "statement" | "open-items" | "gl" | "explain" | "replay" | "certificate"
+                | "entry" | "procedure" | "triage" | "next" | "doctor",
                 _,
             ) => &[Op::Read],
             ("verify" | "registers", _) => &[Op::Read, Op::Verify],
@@ -1274,11 +1279,11 @@ fn admit_bound_files(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fail
             ));
         }
     }
-    for flag in ["--intent", "--plan"] {
+    for flag in ["--intent", "--plan", "--policy"] {
         if args.flag_all(flag).iter().any(|value| *value != "-") {
             return Err(blocked(
                 flag,
-                "forward the complete content on stdin with -; MCP takes the inline intent or plan property, never a file path (fa-yha)",
+                "forward the complete content on stdin with -; MCP takes the inline intent, plan, or policy property, never a file path (fa-yha)",
             ));
         }
     }
@@ -4418,6 +4423,12 @@ fn selected_periods(args: &Args, book: &Book) -> Result<Vec<String>, Fail> {
 }
 
 fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let who = ctx.principal(args);
+    let summary_cap = if args.switch("--summary") {
+        Some(ctx.capability(args, &["read"])?)
+    } else {
+        None
+    };
     let out = &ctx.out;
     let mut book = ctx.books.open(args)?;
     if args.positional.len() != 1 {
@@ -4430,6 +4441,12 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         return Err(usage(
             "--certificate-out may be supplied only once",
             "fa tb --help",
+        ));
+    }
+    if !args.flag_all("--root").is_empty() && !args.switch("--summary") {
+        return Err(usage(
+            "--root requires --summary",
+            "fa tb --period <code> --summary --root <code> --json",
         ));
     }
     let (known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
@@ -4458,6 +4475,37 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             TrialBalanceSelection::Periods(periods)
         }
     };
+    if let Some(capability) = summary_cap {
+        if args.switch("--certify") || args.flag("--certificate-out").is_some() {
+            return Err(usage(
+                "--summary does not emit a trial-balance report_certificate event",
+                "omit --certify / --certificate-out when running `fa tb --summary`",
+            ));
+        }
+        let roots: Vec<VId> = args
+            .flag_all("--root")
+            .into_iter()
+            .flat_map(|r| r.split(','))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|code| account_vid(book.context().book_id, code))
+            .collect();
+        let scope = if roots.is_empty() {
+            SummaryScope::AllRoots
+        } else {
+            SummaryScope::Selected(roots)
+        };
+        let summary = book.summary_trial_balance(
+            who,
+            &capability,
+            &SummaryRequest {
+                selection: selection.clone(),
+                scope,
+                known_at,
+            },
+        )??;
+        return render_summary_trial_balance(out, &book, &summary, &selection);
+    }
     let (tb, certificate) = if args.switch("--certify") || args.flag("--certificate-out").is_some()
     {
         let certified = match requested_utc_ns {
@@ -4493,14 +4541,149 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
+fn render_summary_trial_balance(
+    out: &Out,
+    book: &Book,
+    summary: &fa::SummaryTrialBalance,
+    selection: &TrialBalanceSelection,
+) -> Result<(), Fail> {
+    let units = &book.context().units;
+    validate_trial_balance_units(&summary.source, units)?;
+    let periods: &[String] = match selection {
+        TrialBalanceSelection::Periods(periods) | TrialBalanceSelection::Activity(periods) => {
+            periods
+        }
+        TrialBalanceSelection::AsOf(_) => &[],
+    };
+    out.known_at(summary.source.known_at);
+    out.effective(match selection {
+        TrialBalanceSelection::AsOf(date) => format!("as-of:{date}"),
+        _ => periods_selector(periods),
+    });
+    let render = |unit: u32, m: i128| render_amount(Amount::new(fa_money::UnitId(unit), m), units);
+    let groups: Vec<Json> = summary
+        .groups
+        .iter()
+        .map(|g| {
+            let rows: Vec<Json> = g
+                .rows
+                .iter()
+                .map(|r| {
+                    Ok(obj(vec![
+                        ("code", s(&r.code)),
+                        ("name", s(&r.name)),
+                        ("type", s(r.account_type.name().unwrap_or("?"))),
+                        ("debits", s(render(r.unit_id, r.debits)?)),
+                        ("credits", s(render(r.unit_id, r.credits)?)),
+                        ("net", s(render(r.unit_id, r.debits - r.credits)?)),
+                        ("debits_pending", s(render(r.unit_id, r.debits_pending)?)),
+                        ("credits_pending", s(render(r.unit_id, r.credits_pending)?)),
+                    ]))
+                })
+                .collect::<Result<_, Fail>>()?;
+            Ok(obj(vec![
+                ("code", s(&g.account.code)),
+                ("name", s(&g.account.name)),
+                (
+                    "type",
+                    s(AccountType(g.account.account_type).name().unwrap_or("?")),
+                ),
+                ("leaf", Json::Bool(g.account.is_leaf)),
+                (
+                    "leaves",
+                    Json::Arr(g.leaves.iter().map(|l| s(&l.code)).collect()),
+                ),
+                ("rows", Json::Arr(rows)),
+            ]))
+        })
+        .collect::<Result<_, Fail>>()?;
+    let pending_totals: Vec<Json> = summary
+        .pending_unit_totals
+        .iter()
+        .map(|(u, (d, c))| {
+            Ok(obj(vec![
+                (
+                    "unit",
+                    s(registered_unit_code(fa_money::UnitId(*u), units)?),
+                ),
+                ("debits_pending", s(render(*u, *d)?)),
+                ("credits_pending", s(render(*u, *c)?)),
+            ]))
+        })
+        .collect::<Result<_, Fail>>()?;
+    let totals: Vec<Json> = summary
+        .unit_totals
+        .iter()
+        .map(|(u, (d, c))| {
+            Ok(obj(vec![
+                (
+                    "unit",
+                    s(registered_unit_code(fa_money::UnitId(*u), units)?),
+                ),
+                ("debits", s(render(*u, *d)?)),
+                ("credits", s(render(*u, *c)?)),
+            ]))
+        })
+        .collect::<Result<_, Fail>>()?;
+    let uncovered: Vec<Json> = summary
+        .uncovered_leaves
+        .iter()
+        .map(|l| s(&l.code))
+        .collect();
+    out.event(
+        "summary_trial_balance",
+        vec![
+            ("periods", Json::Arr(periods.iter().map(s).collect())),
+            ("known_at", Json::Int(i128::from(summary.source.known_at.0))),
+            (
+                "effective_through",
+                summary
+                    .source
+                    .effective_through
+                    .map_or(Json::Null, |d| s(d.render())),
+            ),
+            ("activity", Json::Bool(summary.source.activity)),
+            (
+                "mode",
+                s(if summary.source.activity {
+                    "activity"
+                } else {
+                    "stock"
+                }),
+            ),
+            ("complete", Json::Bool(summary.is_complete())),
+            ("balanced", Json::Bool(summary.is_complete_and_balanced())),
+            ("groups", Json::Arr(groups)),
+            ("uncovered_leaves", Json::Arr(uncovered)),
+            ("unit_totals", Json::Arr(totals)),
+            ("pending_unit_totals", Json::Arr(pending_totals)),
+        ],
+        &format!(
+            "summary trial balance · {} group(s) · complete={} · balanced={}",
+            summary.groups.len(),
+            summary.is_complete(),
+            summary.is_complete_and_balanced()
+        ),
+    );
+    Ok(())
+}
+
 fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.positional.len() != 2 {
         return Err(usage(
-            "statement needs exactly one registered definition name",
+            "statement needs a registered definition name or diff|trace",
             "fa statement balance-sheet|income-statement --for <period> [--compare <period>] --json",
         ));
     }
-    for flag in ["--for", "--compare", "--certificate-out"] {
+    for flag in [
+        "--for",
+        "--compare",
+        "--definition",
+        "--before",
+        "--after",
+        "--max-publications",
+        "--certificate-out",
+    ] {
         if args.flag_all(flag).len() > 1 {
             return Err(usage(
                 format!("{flag} may be supplied only once"),
@@ -4515,7 +4698,73 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "--for FY2026-P03 [--compare FY2026-P02]",
         ));
     }
-    let definition = StatementDefinition::embedded(&args.positional[1]).map_err(|error| {
+    let mode = args.positional[1].as_str();
+    if matches!(mode, "diff" | "trace") {
+        let def_name = args.require("--definition", "balance-sheet|income-statement")?;
+        let definition = StatementDefinition::embedded(def_name).map_err(|error| {
+            usage(
+                format!("statement definition: {error}"),
+                "fa statement diff --definition balance-sheet --for <period> --before <seq> --json",
+            )
+        })?;
+        let before_raw = args.require("--before", "<seq>")?;
+        let before = CommitSeq(before_raw.parse::<u64>().map_err(|_| {
+            usage(
+                "--before must be a recorded CommitSeq integer",
+                "--before 1",
+            )
+        })?);
+        let after = match args.flag("--after") {
+            None | Some("HEAD") => None,
+            Some(raw) => Some(CommitSeq(raw.parse::<u64>().map_err(|_| {
+                usage(
+                    "--after must be HEAD or a recorded CommitSeq integer",
+                    "--after HEAD",
+                )
+            })?)),
+        };
+        let selection = StatementSelection {
+            definition,
+            periods: vec![period.to_string()],
+            comparative: args
+                .flag("--compare")
+                .into_iter()
+                .map(String::from)
+                .collect(),
+        };
+        let who = ctx.principal(args);
+        let capability = ctx.capability(args, &["read"])?;
+        let book = ctx.books.open(args)?;
+        let comparison = StatementDiffRequest {
+            selection,
+            before,
+            after,
+        };
+        if mode == "diff" {
+            let diff = book.statement_diff(who, &capability, &comparison)??;
+            return render_statement_diff(&ctx.out, &book, &diff);
+        }
+        let max_publications: usize = args
+            .flag("--max-publications")
+            .unwrap_or("64")
+            .parse()
+            .map_err(|_| {
+                usage(
+                    "--max-publications must be an integer in 1..=256",
+                    "--max-publications 64",
+                )
+            })?;
+        let trace = book.statement_trace(
+            who,
+            &capability,
+            &StatementTraceRequest {
+                comparison,
+                max_publications,
+            },
+        )??;
+        return render_statement_trace(&ctx.out, &book, &trace);
+    }
+    let definition = StatementDefinition::embedded(mode).map_err(|error| {
         usage(
             format!("statement definition: {error}"),
             "fa statement balance-sheet|income-statement --for <period> --json",
@@ -4560,6 +4809,250 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if let (Some(certificate), Some((bytes, retained))) = (certificate.as_ref(), retained) {
         notary::emit_report_certificate(&ctx.out, args, certificate, &bytes, &retained);
     }
+    Ok(())
+}
+
+fn statement_columns_json(statement: &Statement) -> Vec<Json> {
+    statement
+        .columns
+        .iter()
+        .map(|column| {
+            let mode = if column.effective_from.is_some() {
+                "activity"
+            } else {
+                "stock"
+            };
+            obj(vec![
+                ("label", s(&column.label)),
+                ("periods", Json::Arr(column.periods.iter().map(s).collect())),
+                ("mode", s(mode)),
+                (
+                    "effective_from",
+                    column
+                        .effective_from
+                        .map_or(Json::Null, |day| s(day.render())),
+                ),
+                ("effective_through", s(column.effective_through.render())),
+            ])
+        })
+        .collect()
+}
+
+fn statement_line_changes_json(
+    changes: &[fa::StatementLineChange],
+    units: &fa_money::UnitRegistry,
+) -> Result<Vec<Json>, Fail> {
+    changes
+        .iter()
+        .map(|line| {
+            let unit = fa_money::UnitId(line.unit_id);
+            let code = registered_unit_code(unit, units)?;
+            let fmt_vec = |vals: &[i128]| -> Result<Json, Fail> {
+                Ok(Json::Arr(
+                    vals.iter()
+                        .map(|m| Ok(s(render_amount(Amount::new(unit, *m), units)?)))
+                        .collect::<Result<Vec<_>, Fail>>()?,
+                ))
+            };
+            Ok(obj(vec![
+                ("code", s(&line.code)),
+                ("label", s(&line.label)),
+                ("unit", s(code)),
+                ("before", fmt_vec(&line.before)?),
+                ("after", fmt_vec(&line.after)?),
+                ("delta", fmt_vec(&line.delta)?),
+            ]))
+        })
+        .collect()
+}
+
+fn statement_mapping_json(mapping: &fa::AccountMapping) -> Result<Json, Fail> {
+    let account_type = AccountType(mapping.account.account_type)
+        .name()
+        .ok_or_else(|| {
+            Fail::Internal(format!(
+                "statement mapping {} has an unregistered account type",
+                mapping.account.code
+            ))
+        })?;
+    Ok(obj(vec![
+        ("account_vid", s(format!("{:032x}", mapping.account.id))),
+        ("account", s(&mapping.account.code)),
+        ("name", s(&mapping.account.name)),
+        ("type", s(account_type)),
+        ("line", s(&mapping.line_code)),
+    ]))
+}
+
+fn statement_mapping_changes_json(
+    changes: &[fa::StatementMappingChange],
+) -> Result<Vec<Json>, Fail> {
+    changes
+        .iter()
+        .map(|c| {
+            Ok(obj(vec![
+                ("account_vid", s(format!("{:032x}", c.account_id))),
+                (
+                    "before",
+                    match &c.before {
+                        Some(m) => statement_mapping_json(m)?,
+                        None => Json::Null,
+                    },
+                ),
+                (
+                    "after",
+                    match &c.after {
+                        Some(m) => statement_mapping_json(m)?,
+                        None => Json::Null,
+                    },
+                ),
+            ]))
+        })
+        .collect()
+}
+
+fn render_statement_diff(out: &Out, book: &Book, diff: &fa::StatementDiff) -> Result<(), Fail> {
+    let units = &book.context().units;
+    let before = diff.before();
+    let after = diff.after();
+    let periods: Vec<String> = after
+        .columns
+        .iter()
+        .flat_map(|column| column.periods.iter().cloned())
+        .collect();
+    out.known_at(CommitSeq(after.known_at));
+    out.effective(periods_selector(&periods));
+    let columns = statement_columns_json(after);
+    let lines = statement_line_changes_json(diff.lines(), units)?;
+    let mapping_changes = statement_mapping_changes_json(diff.mapping_changes())?;
+    out.event(
+        "statement_diff",
+        vec![
+            ("name", s(&after.definition_name)),
+            (
+                "definition_version",
+                Json::Int(i128::from(after.definition_version)),
+            ),
+            ("definition_digest", s(hex(&after.definition_digest))),
+            ("before_known_at", Json::Int(i128::from(before.known_at))),
+            ("after_known_at", Json::Int(i128::from(after.known_at))),
+            ("amounts_changed", Json::Bool(diff.amounts_changed())),
+            ("unchanged", Json::Bool(diff.is_unchanged())),
+            ("columns", Json::Arr(columns)),
+            ("lines", Json::Arr(lines)),
+            ("mapping_changes", Json::Arr(mapping_changes)),
+        ],
+        &format!(
+            "{} diff · {} -> {} · unchanged={}",
+            after.definition_name,
+            before.known_at,
+            after.known_at,
+            diff.is_unchanged()
+        ),
+    );
+    Ok(())
+}
+
+fn render_statement_trace(out: &Out, book: &Book, trace: &fa::StatementTrace) -> Result<(), Fail> {
+    let units = &book.context().units;
+    let summary = trace.summary();
+    let before = summary.before();
+    let after = summary.after();
+    let periods: Vec<String> = after
+        .columns
+        .iter()
+        .flat_map(|column| column.periods.iter().cloned())
+        .collect();
+    out.known_at(CommitSeq(after.known_at));
+    out.effective(periods_selector(&periods));
+    let columns = statement_columns_json(after);
+    let lines = statement_line_changes_json(summary.lines(), units)?;
+    let mapping_changes = statement_mapping_changes_json(summary.mapping_changes())?;
+    let publications = trace
+        .publications()
+        .iter()
+        .map(|pub_step| {
+            let entries: Vec<Json> = pub_step
+                .entries
+                .iter()
+                .map(|link| {
+                    let event_name = match link.event {
+                        StatementEntryEvent::Recorded => "recorded",
+                        StatementEntryEvent::BecameVisible => "became_visible",
+                    };
+                    obj(vec![
+                        ("event", s(event_name)),
+                        ("vid", s(format!("{:032x}", link.entry_ref.vid.0))),
+                        ("entry_digest", s(hex(&link.entry_ref.entry_digest))),
+                        ("class", s(link.class.name().unwrap_or("?"))),
+                        ("recorded_at", Json::Int(i128::from(link.recorded_at.0))),
+                        (
+                            "posting_date",
+                            link.posting_date.map_or(Json::Null, |d| s(d.render())),
+                        ),
+                        ("principal", s(format!("{:032x}", link.principal.0))),
+                        (
+                            "references",
+                            Json::Arr(
+                                link.references
+                                    .iter()
+                                    .map(|r| s(format!("{:032x}", r.vid.0)))
+                                    .collect(),
+                            ),
+                        ),
+                        (
+                            "migration_run",
+                            link.migration_run
+                                .map_or(Json::Null, |v| s(format!("{:032x}", v.0))),
+                        ),
+                    ])
+                })
+                .collect();
+            Ok(obj(vec![
+                ("recorded_at", Json::Int(i128::from(pub_step.recorded_at.0))),
+                ("unchanged", Json::Bool(pub_step.is_unchanged())),
+                ("entries", Json::Arr(entries)),
+                (
+                    "changes",
+                    Json::Arr(statement_line_changes_json(&pub_step.changes, units)?),
+                ),
+                (
+                    "mapping_changes",
+                    Json::Arr(statement_mapping_changes_json(&pub_step.mapping_changes)?),
+                ),
+            ]))
+        })
+        .collect::<Result<Vec<_>, Fail>>()?;
+    out.event(
+        "statement_trace",
+        vec![
+            ("name", s(&after.definition_name)),
+            (
+                "definition_version",
+                Json::Int(i128::from(after.definition_version)),
+            ),
+            ("definition_digest", s(hex(&after.definition_digest))),
+            ("before_known_at", Json::Int(i128::from(before.known_at))),
+            ("after_known_at", Json::Int(i128::from(after.known_at))),
+            ("had_changes", Json::Bool(trace.had_changes())),
+            (
+                "publication_count",
+                Json::Int(trace.publications().len() as i128),
+            ),
+            ("columns", Json::Arr(columns)),
+            ("lines", Json::Arr(lines)),
+            ("mapping_changes", Json::Arr(mapping_changes)),
+            ("publications", Json::Arr(publications)),
+        ],
+        &format!(
+            "{} trace · {} -> {} · {} publication(s) · had_changes={}",
+            after.definition_name,
+            before.known_at,
+            after.known_at,
+            trace.publications().len(),
+            trace.had_changes()
+        ),
+    );
     Ok(())
 }
 
@@ -5248,7 +5741,13 @@ fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.positional.len() != 1 {
         return Err(usage(
             "unexpected open-items argument",
-            "fa open-items [--account <code>] [--as-known-at HEAD|<seq>|<RFC3339>] --book <dir>",
+            "fa open-items [--account <code>] [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>|<RFC3339>] --book <dir>",
+        ));
+    }
+    if args.flag_all("--as-of").len() > 1 {
+        return Err(usage(
+            "--as-of may be supplied only once",
+            "fa open-items --help",
         ));
     }
     if args.flag_all("--certificate-out").len() > 1 {
@@ -5261,23 +5760,70 @@ fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .flag("--account")
         .map(|code| account_vid(book.context().book_id, code));
     let (known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
-    let (report, certificate) =
+    let (report, certificate) = if let Some(as_of) = args.flag("--as-of") {
         if args.switch("--certify") || args.flag("--certificate-out").is_some() {
-            let selection = ReportSelection::OpenItems { account };
-            let certified = match requested_utc_ns {
-                Some(instant) => book.certify_report_at_instant(selection, instant)??,
-                None => book.certify_report(selection, known_at)??,
-            };
-            out.time_selection(certified.certificate.time_selection.as_ref());
-            let ReportOutput::OpenItems(report) = certified.report else {
-                return Err(Fail::Internal(
-                    "open-items certification returned another report kind".into(),
-                ));
-            };
-            (report, Some(certified.certificate))
-        } else {
-            (book.open_items_report(account, known_at)?, None)
+            return Err(usage(
+                "--as-of open-items snapshot cannot be combined with --certify; use `fa gl aging` for effective-date aging",
+                "fa open-items [--account <code>] --as-of YYYY-MM-DD --book <dir>",
+            ));
+        }
+        let day = DateDay::parse(as_of).map_err(|e| {
+            usage(
+                format!("{e}; --as-of requires a civil date; instant selectors are unsupported"),
+                "--as-of YYYY-MM-DD",
+            )
+        })?;
+        let snapshot = book.open_items_as_of(account, day, known_at)?;
+        out.effective(format!("as-of:{day}"));
+        let chart = book.accounts()?;
+        let needed: std::collections::BTreeSet<VId> = snapshot
+            .items
+            .iter()
+            .map(|i| i.account)
+            .chain(account)
+            .collect();
+        let mut accounts = std::collections::BTreeMap::new();
+        for row in chart {
+            if row.created_at <= snapshot.known_at && needed.contains(&row.vid) {
+                accounts.insert(row.vid, row);
+            }
+        }
+        if let Some(acc) = account
+            && !accounts.contains_key(&acc)
+        {
+            return Err(
+                BookError::Registers(fa_registers::RegisterError::InvalidSelection(format!(
+                    "unknown account {:032x} at sequence {}",
+                    acc.0, snapshot.known_at.0
+                )))
+                .into(),
+            );
+        }
+        (
+            fa_registers::open_items::OpenItemsReport {
+                known_at: snapshot.known_at,
+                account_filter: account,
+                accounts,
+                items: snapshot.items,
+            },
+            None,
+        )
+    } else if args.switch("--certify") || args.flag("--certificate-out").is_some() {
+        let selection = ReportSelection::OpenItems { account };
+        let certified = match requested_utc_ns {
+            Some(instant) => book.certify_report_at_instant(selection, instant)??,
+            None => book.certify_report(selection, known_at)??,
         };
+        out.time_selection(certified.certificate.time_selection.as_ref());
+        let ReportOutput::OpenItems(report) = certified.report else {
+            return Err(Fail::Internal(
+                "open-items certification returned another report kind".into(),
+            ));
+        };
+        (report, Some(certified.certificate))
+    } else {
+        (book.open_items_report(account, known_at)?, None)
+    };
     validate_open_items_report(&report, &book.context().units)?;
     let retained = certificate
         .as_ref()
@@ -5426,6 +5972,1027 @@ pub(crate) fn render_open_items(
         out.line(format!("{} open item(s)", items.len()));
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// gl (detail | roll-forward | aging | cash-flow)
+// ---------------------------------------------------------------------------
+
+fn parse_gl_scope(
+    args: &Args,
+    book: &Book,
+    out: &Out,
+    default_label: &str,
+    example: &str,
+) -> Result<RollForwardRequest, Fail> {
+    let accounts: Vec<VId> = args
+        .flag_all("--account")
+        .into_iter()
+        .flat_map(|s| s.split(','))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|code| account_vid(book.context().book_id, code))
+        .collect();
+    if accounts.is_empty() {
+        return Err(usage("--account is required", example));
+    }
+    let unit_codes: Vec<&str> = args
+        .flag_all("--unit")
+        .into_iter()
+        .flat_map(|s| s.split(','))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    let units: Vec<u32> = if unit_codes.is_empty() {
+        vec![book.spec()?.base_unit.0]
+    } else {
+        unit_codes
+            .into_iter()
+            .map(|code| {
+                book.context()
+                    .units
+                    .lookup(code)
+                    .map(|u| u.0)
+                    .ok_or_else(|| {
+                        usage(
+                            format!("unknown unit `{code}`"),
+                            "pass a registered currency/unit code such as USD",
+                        )
+                    })
+            })
+            .collect::<Result<_, Fail>>()?
+    };
+    let from = DateDay::parse(args.require("--from", "YYYY-MM-DD")?).map_err(|e| {
+        usage(
+            format!("{e}; --from requires a civil date"),
+            "--from YYYY-MM-DD",
+        )
+    })?;
+    let to = DateDay::parse(args.require("--to", "YYYY-MM-DD")?).map_err(|e| {
+        usage(
+            format!("{e}; --to requires a civil date"),
+            "--to YYYY-MM-DD",
+        )
+    })?;
+    let label = args.flag("--label").unwrap_or(default_label).to_string();
+    let (known_at, _) = known_at_flag(args, book, out)?;
+    out.effective(format!("between:{from}..{to}"));
+    Ok(RollForwardRequest {
+        accounts,
+        units,
+        label,
+        effective_from: from,
+        effective_through: to,
+        known_at,
+    })
+}
+
+fn parse_digest32(text: &str, what: &str) -> Result<[u8; 32], Fail> {
+    if text.len() != 64 {
+        return Err(usage(
+            format!("{what} must be a 64-character hex digest"),
+            "pass the entry's 64-hex entry_digest",
+        ));
+    }
+    let mut out = [0u8; 32];
+    for (idx, chunk) in text.as_bytes().chunks_exact(2).enumerate() {
+        let s = core::str::from_utf8(chunk).unwrap_or("");
+        out[idx] = u8::from_str_radix(s, 16).map_err(|_| {
+            usage(
+                format!("{what} must be valid hexadecimal"),
+                "pass the entry's 64-hex entry_digest",
+            )
+        })?;
+    }
+    Ok(out)
+}
+
+fn parse_cash_flow_definition(
+    doc: &Json,
+    book_id: Id128,
+    default_accounts: &[VId],
+    default_name: &str,
+) -> Result<CashFlowDefinition, Fail> {
+    let Json::Obj(fields) = doc else {
+        return Err(usage(
+            "cash-flow policy must be a JSON object",
+            r#"{"name":"cash-v1","assignments":[...]}"#,
+        ));
+    };
+    let get = |k: &str| fields.iter().find(|(name, _)| name == k).map(|(_, v)| v);
+    let name = match get("name") {
+        Some(Json::Str(s)) => s.clone(),
+        None => default_name.to_string(),
+        _ => {
+            return Err(usage(
+                "policy `name` must be a string",
+                r#"{"name":"cash-v1","assignments":[...]}"#,
+            ));
+        }
+    };
+    let cash_accounts: Vec<u128> = match get("cash_accounts") {
+        None => default_accounts.iter().map(|v| v.0).collect(),
+        Some(Json::Arr(items)) => items
+            .iter()
+            .map(|item| {
+                let Json::Str(code) = item else {
+                    return Err(usage(
+                        "cash_accounts entries must be account code strings",
+                        r#""cash_accounts":["1000"]"#,
+                    ));
+                };
+                if code.len() == 32 && code.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    u128::from_str_radix(code, 16).map_err(|_| {
+                        usage("invalid 32-hex account vid", r#""cash_accounts":["1000"]"#)
+                    })
+                } else {
+                    Ok(account_vid(book_id, code).0)
+                }
+            })
+            .collect::<Result<_, Fail>>()?,
+        _ => {
+            return Err(usage(
+                "`cash_accounts` must be an array of account codes",
+                r#""cash_accounts":["1000"]"#,
+            ));
+        }
+    };
+    let assignments = match get("assignments") {
+        None => Vec::new(),
+        Some(Json::Arr(items)) => items
+            .iter()
+            .map(|item| {
+                let Json::Obj(af) = item else {
+                    return Err(usage(
+                        "each assignment must be a JSON object",
+                        r#"{"entry_digest":"...","leg_index":0,"activity":"operating"}"#,
+                    ));
+                };
+                let aget = |k: &str| af.iter().find(|(n, _)| n == k).map(|(_, v)| v);
+                let Some(Json::Str(digest_hex)) = aget("entry_digest") else {
+                    return Err(usage(
+                        "assignment requires string `entry_digest`",
+                        r#"{"entry_digest":"<64-hex>","leg_index":0,"activity":"operating"}"#,
+                    ));
+                };
+                let entry_digest = parse_digest32(digest_hex, "assignment.entry_digest")?;
+                let Some(Json::Int(leg_idx)) = aget("leg_index") else {
+                    return Err(usage(
+                        "assignment requires integer `leg_index`",
+                        r#"{"entry_digest":"<64-hex>","leg_index":0,"activity":"operating"}"#,
+                    ));
+                };
+                let leg_index = u32::try_from(*leg_idx).map_err(|_| {
+                    usage("assignment `leg_index` must fit in u32", r#""leg_index":0"#)
+                })?;
+                let Some(Json::Str(act)) = aget("activity") else {
+                    return Err(usage(
+                        "assignment requires string `activity`",
+                        r#""activity":"operating|investing|financing|exchange_effect|internal_transfer""#,
+                    ));
+                };
+                let activity = match act.as_str() {
+                    "operating" | "Operating" => CashFlowActivity::Operating,
+                    "investing" | "Investing" => CashFlowActivity::Investing,
+                    "financing" | "Financing" => CashFlowActivity::Financing,
+                    "exchange_effect" | "exchange_effects" | "ExchangeEffect" => {
+                        CashFlowActivity::ExchangeEffect
+                    }
+                    "internal_transfer" | "InternalTransfer" => CashFlowActivity::InternalTransfer,
+                    other => {
+                        return Err(usage(
+                            format!("unknown cash-flow activity `{other}`"),
+                            "use operating, investing, financing, exchange_effect, or internal_transfer",
+                        ));
+                    }
+                };
+                Ok(CashFlowAssignment {
+                    entry_digest,
+                    leg_index,
+                    activity,
+                })
+            })
+            .collect::<Result<_, Fail>>()?,
+        _ => {
+            return Err(usage(
+                "`assignments` must be an array",
+                r#""assignments":[{"entry_digest":"...","leg_index":0,"activity":"operating"}]"#,
+            ));
+        }
+    };
+    Ok(CashFlowDefinition {
+        name,
+        cash_accounts,
+        assignments,
+    })
+}
+
+fn parse_indirect_cash_flow_definition(
+    doc: &Json,
+    default_name: &str,
+) -> Result<(String, IndirectCashFlowDefinition), Fail> {
+    let Json::Obj(fields) = doc else {
+        return Err(usage(
+            "indirect cash-flow policy must be a JSON object",
+            r#"{"name":"indirect-v1","assignments":[...],"adjustments":[...]}"#,
+        ));
+    };
+    let get = |k: &str| fields.iter().find(|(name, _)| name == k).map(|(_, v)| v);
+    let name = match get("name") {
+        Some(Json::Str(s)) => s.clone(),
+        None => default_name.to_string(),
+        _ => {
+            return Err(usage(
+                "policy `name` must be a string",
+                r#"{"name":"indirect-v1"}"#,
+            ));
+        }
+    };
+    let cash_policy = match get("cash_policy") {
+        Some(Json::Str(s)) => s.clone(),
+        None => name.clone(),
+        _ => {
+            return Err(usage(
+                "policy `cash_policy` must be a string",
+                r#"{"cash_policy":"direct-v1"}"#,
+            ));
+        }
+    };
+    let adjustments = match get("adjustments") {
+        None => Vec::new(),
+        Some(Json::Arr(items)) => items
+            .iter()
+            .map(|item| {
+                let Json::Obj(af) = item else {
+                    return Err(usage(
+                        "each adjustment must be a JSON object",
+                        r#"{"entry_digest":"...","leg_index":0,"category":"non_cash","sign":"debit_minus_credit","reason":"..."}"#,
+                    ));
+                };
+                let aget = |k: &str| af.iter().find(|(n, _)| n == k).map(|(_, v)| v);
+                let Some(Json::Str(digest_hex)) = aget("entry_digest") else {
+                    return Err(usage(
+                        "adjustment requires string `entry_digest`",
+                        r#"{"entry_digest":"<64-hex>","leg_index":0,"category":"non_cash","sign":"debit_minus_credit","reason":"..."}"#,
+                    ));
+                };
+                let entry_digest = parse_digest32(digest_hex, "adjustment.entry_digest")?;
+                let Some(Json::Int(leg_idx)) = aget("leg_index") else {
+                    return Err(usage(
+                        "adjustment requires integer `leg_index`",
+                        r#""leg_index":0"#,
+                    ));
+                };
+                let leg_index = u32::try_from(*leg_idx).map_err(|_| {
+                    usage("adjustment `leg_index` must fit in u32", r#""leg_index":0"#)
+                })?;
+                let Some(Json::Str(cat)) = aget("category") else {
+                    return Err(usage(
+                        "adjustment requires string `category`",
+                        r#""category":"non_cash|working_capital|non_operating""#,
+                    ));
+                };
+                let category = match cat.as_str() {
+                    "non_cash" | "NonCash" => AdjustmentCategory::NonCash,
+                    "working_capital" | "WorkingCapital" => AdjustmentCategory::WorkingCapital,
+                    "non_operating" | "NonOperating" => AdjustmentCategory::NonOperating,
+                    other => {
+                        return Err(usage(
+                            format!("unknown adjustment category `{other}`"),
+                            "use non_cash, working_capital, or non_operating",
+                        ));
+                    }
+                };
+                let Some(Json::Str(sgn)) = aget("sign") else {
+                    return Err(usage(
+                        "adjustment requires string `sign`",
+                        r#""sign":"debit_minus_credit|credit_minus_debit""#,
+                    ));
+                };
+                let sign = match sgn.as_str() {
+                    "debit_minus_credit" | "DebitMinusCredit" => AdjustmentSign::DebitMinusCredit,
+                    "credit_minus_debit" | "CreditMinusDebit" => AdjustmentSign::CreditMinusDebit,
+                    other => {
+                        return Err(usage(
+                            format!("unknown adjustment sign `{other}`"),
+                            "use debit_minus_credit or credit_minus_debit",
+                        ));
+                    }
+                };
+                let Some(Json::Str(reason)) = aget("reason") else {
+                    return Err(usage(
+                        "adjustment requires string `reason`",
+                        r#""reason":"depreciation expense""#,
+                    ));
+                };
+                Ok(IndirectCashFlowAdjustment {
+                    entry_digest,
+                    leg_index,
+                    category,
+                    sign,
+                    reason: reason.clone(),
+                })
+            })
+            .collect::<Result<_, Fail>>()?,
+        _ => {
+            return Err(usage(
+                "`adjustments` must be an array",
+                r#""adjustments":[...]"#,
+            ));
+        }
+    };
+    Ok((
+        cash_policy,
+        IndirectCashFlowDefinition { name, adjustments },
+    ))
+}
+
+fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let who = ctx.principal(args);
+    let capability = ctx.capability(args, &["read"])?;
+    let out = &ctx.out;
+    let sub = args.positional.get(1).map(String::as_str);
+    match sub {
+        Some("detail") => {
+            if args.positional.len() != 2 {
+                return Err(usage(
+                    "unexpected gl detail argument",
+                    "fa gl detail --account <code> --from YYYY-MM-DD --to YYYY-MM-DD --book <dir>",
+                ));
+            }
+            let book = ctx.books.open(args)?;
+            let req = parse_gl_scope(
+                args,
+                &book,
+                out,
+                "gl-detail",
+                "fa gl detail --account 1000 --from 2026-03-01 --to 2026-03-31 --book <dir>",
+            )?;
+            let gl = book.general_ledger(who, &capability, &req)??;
+            out.known_at(gl.known_at());
+            let units = &book.context().units;
+            let accounts_by_id: std::collections::BTreeMap<u128, _> =
+                gl.accounts().iter().map(|a| (a.id, a)).collect();
+            let cells: Vec<Json> = gl
+                .cells()
+                .iter()
+                .map(|c| {
+                    let acc = accounts_by_id.get(&c.account_id).ok_or_else(|| {
+                        Fail::Internal(format!(
+                            "gl cell references missing account {:032x}",
+                            c.account_id
+                        ))
+                    })?;
+                    let unit_code =
+                        registered_unit_code(fa_money::UnitId(c.unit_id), units)?.to_string();
+                    let fmt =
+                        |m: i128| render_amount(Amount::new(fa_money::UnitId(c.unit_id), m), units);
+                    let line_count = c.line_end.saturating_sub(c.line_start);
+                    Ok(obj(vec![
+                        ("account", s(&acc.code)),
+                        ("account_vid", s(format!("{:032x}", c.account_id))),
+                        ("name", s(&acc.name)),
+                        (
+                            "type",
+                            s(AccountType(acc.account_type).name().unwrap_or("unknown")),
+                        ),
+                        ("unit", s(&unit_code)),
+                        ("opening", s(fmt(c.opening)?)),
+                        ("debits", s(fmt(c.debits)?)),
+                        ("credits", s(fmt(c.credits)?)),
+                        ("net_change", s(fmt(c.net_change)?)),
+                        ("closing", s(fmt(c.closing)?)),
+                        ("line_count", Json::Int(i128::from(line_count))),
+                    ]))
+                })
+                .collect::<Result<_, Fail>>()?;
+            let lines: Vec<Json> = gl
+                .lines()
+                .iter()
+                .map(|line| {
+                    let cell = gl
+                        .cells()
+                        .get(line.cell_index as usize)
+                        .ok_or_else(|| Fail::Internal("gl line cell_index out of bounds".into()))?;
+                    let acc = accounts_by_id
+                        .get(&cell.account_id)
+                        .ok_or_else(|| Fail::Internal("gl cell account missing".into()))?;
+                    let bucket = gl
+                        .buckets()
+                        .get(line.bucket_index as usize)
+                        .ok_or_else(|| {
+                            Fail::Internal("gl line bucket_index out of bounds".into())
+                        })?;
+                    let unit_code =
+                        registered_unit_code(fa_money::UnitId(cell.unit_id), units)?.to_string();
+                    let fmt = |m: i128| {
+                        render_amount(Amount::new(fa_money::UnitId(cell.unit_id), m), units)
+                    };
+                    Ok(obj(vec![
+                        ("account", s(&acc.code)),
+                        ("unit", s(&unit_code)),
+                        ("entry_digest", s(hex(&line.entry_digest))),
+                        ("leg_index", Json::Int(i128::from(line.leg_index))),
+                        ("recorded_at", Json::Int(i128::from(line.recorded_seq))),
+                        ("effective_date", s(line.effective_day.render())),
+                        ("class", s(bucket.class.name().unwrap_or("unknown"))),
+                        ("reason_code", s(&bucket.reason_code)),
+                        ("debits", s(fmt(line.debits)?)),
+                        ("credits", s(fmt(line.credits)?)),
+                        ("running_balance", s(fmt(line.running_balance)?)),
+                    ]))
+                })
+                .collect::<Result<_, Fail>>()?;
+            let human = format!(
+                "gl detail `{}` ({}..={}): {} cell(s), {} line(s)",
+                gl.label(),
+                gl.effective_from().render(),
+                gl.effective_through().render(),
+                gl.cells().len(),
+                gl.lines().len()
+            );
+            out.event(
+                "general_ledger",
+                vec![
+                    ("label", s(gl.label())),
+                    ("known_at", Json::Int(i128::from(gl.known_at().0))),
+                    ("effective_from", s(gl.effective_from().render())),
+                    ("effective_through", s(gl.effective_through().render())),
+                    ("cells", Json::Arr(cells)),
+                    ("lines", Json::Arr(lines)),
+                ],
+                &human,
+            );
+            Ok(())
+        }
+        Some("roll-forward") => {
+            if args.positional.len() != 2 {
+                return Err(usage(
+                    "unexpected gl roll-forward argument",
+                    "fa gl roll-forward --account <code> --from YYYY-MM-DD --to YYYY-MM-DD --book <dir>",
+                ));
+            }
+            let book = ctx.books.open(args)?;
+            let req = parse_gl_scope(
+                args,
+                &book,
+                out,
+                "roll-forward",
+                "fa gl roll-forward --account 1000 --from 2026-03-01 --to 2026-03-31 --book <dir>",
+            )?;
+            let rf = book.roll_forward(who, &capability, &req)??;
+            out.known_at(CommitSeq(rf.known_at));
+            let units = &book.context().units;
+            let accounts_by_id: std::collections::BTreeMap<u128, _> =
+                rf.accounts.iter().map(|a| (a.id, a)).collect();
+            let buckets: Vec<Json> = rf
+                .buckets
+                .iter()
+                .map(|b| {
+                    obj(vec![
+                        ("class", s(b.class.name().unwrap_or("unknown"))),
+                        ("reason_code", s(&b.reason_code)),
+                        (
+                            "rule_digest",
+                            b.rule_digest.as_ref().map_or(Json::Null, |d| s(hex(d))),
+                        ),
+                    ])
+                })
+                .collect();
+            let rows: Vec<Json> = rf
+                .rows
+                .iter()
+                .map(|row| {
+                    let acc = accounts_by_id
+                        .get(&row.account_id)
+                        .ok_or_else(|| Fail::Internal("roll-forward row account missing".into()))?;
+                    let unit_code =
+                        registered_unit_code(fa_money::UnitId(row.unit_id), units)?.to_string();
+                    let fmt = |m: i128| {
+                        render_amount(Amount::new(fa_money::UnitId(row.unit_id), m), units)
+                    };
+                    let activity: Vec<Json> = row
+                        .activity
+                        .iter()
+                        .map(|m| Ok(s(fmt(*m)?)))
+                        .collect::<Result<_, Fail>>()?;
+                    Ok(obj(vec![
+                        ("account", s(&acc.code)),
+                        ("account_vid", s(format!("{:032x}", row.account_id))),
+                        ("name", s(&acc.name)),
+                        (
+                            "type",
+                            s(AccountType(acc.account_type).name().unwrap_or("unknown")),
+                        ),
+                        ("unit", s(&unit_code)),
+                        ("opening", s(fmt(row.opening)?)),
+                        ("activity", Json::Arr(activity)),
+                        ("net_change", s(fmt(row.net_change)?)),
+                        ("closing", s(fmt(row.closing)?)),
+                    ]))
+                })
+                .collect::<Result<_, Fail>>()?;
+            let human = format!(
+                "roll-forward `{}` ({}..={}): {} row(s), {} movement(s)",
+                rf.label,
+                rf.effective_from.render(),
+                rf.effective_through.render(),
+                rf.rows.len(),
+                rf.movements.len()
+            );
+            out.event(
+                "roll_forward",
+                vec![
+                    ("label", s(&rf.label)),
+                    ("known_at", Json::Int(i128::from(rf.known_at))),
+                    ("effective_from", s(rf.effective_from.render())),
+                    ("effective_through", s(rf.effective_through.render())),
+                    ("buckets", Json::Arr(buckets)),
+                    ("rows", Json::Arr(rows)),
+                    ("movement_count", Json::Int(rf.movements.len() as i128)),
+                ],
+                &human,
+            );
+            Ok(())
+        }
+        Some("aging") => {
+            if args.positional.len() != 2 {
+                return Err(usage(
+                    "unexpected gl aging argument",
+                    "fa gl aging [--account <code>] --as-of YYYY-MM-DD [--bucket <days>]... [--reconcile] --book <dir>",
+                ));
+            }
+            let book = ctx.books.open(args)?;
+            let as_of = args.require("--as-of", "YYYY-MM-DD")?;
+            let day = DateDay::parse(as_of).map_err(|e| {
+                usage(
+                    format!("{e}; --as-of requires a civil date"),
+                    "--as-of YYYY-MM-DD",
+                )
+            })?;
+            let raw_buckets: Vec<&str> = args
+                .flag_all("--bucket")
+                .into_iter()
+                .flat_map(|s| s.split(','))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect();
+            let buckets = if raw_buckets.is_empty() {
+                AgingBuckets::thirty_day()
+            } else {
+                let bounds: Vec<u32> = raw_buckets
+                    .into_iter()
+                    .map(|b| {
+                        b.parse::<u32>().map_err(|_| {
+                            usage(
+                                format!(
+                                    "invalid aging bucket `{b}`: expected nonnegative integer days"
+                                ),
+                                "--bucket 0 --bucket 30 --bucket 60 --bucket 90",
+                            )
+                        })
+                    })
+                    .collect::<Result<_, Fail>>()?;
+                AgingBuckets::new(bounds)
+                    .map_err(|e| usage(e.to_string(), "--bucket 0 --bucket 30 --bucket 60"))?
+            };
+            let account_code = args.flag("--account");
+            let account = account_code.map(|code| account_vid(book.context().book_id, code));
+            let (known_at, _) = known_at_flag(args, &book, out)?;
+            out.effective(format!("as-of:{day}"));
+            let units = &book.context().units;
+            if args.switch("--reconcile") {
+                let Some(acc_vid) = account else {
+                    return Err(usage(
+                        "--reconcile requires --account <code>",
+                        "fa gl aging --account 1200 --as-of YYYY-MM-DD --reconcile --book <dir>",
+                    ));
+                };
+                let rec = book.reconcile_effective_date_aging(
+                    who,
+                    &capability,
+                    &AgingReconciliationRequest {
+                        account: acc_vid,
+                        effective_through: day,
+                        known_at,
+                        buckets,
+                    },
+                )??;
+                out.known_at(rec.known_at());
+                let bands: Vec<Json> = rec
+                    .aging()
+                    .bands
+                    .iter()
+                    .map(|b| {
+                        obj(vec![
+                            ("lower_inclusive", Json::Int(i128::from(b.lower_inclusive))),
+                            (
+                                "upper_inclusive",
+                                b.upper_inclusive
+                                    .map_or(Json::Null, |u| Json::Int(i128::from(u))),
+                            ),
+                        ])
+                    })
+                    .collect();
+                let rows: Vec<Json> = rec
+                    .rows()
+                    .iter()
+                    .map(|r| {
+                        let unit_code =
+                            registered_unit_code(fa_money::UnitId(r.unit_id), units)?.to_string();
+                        let fmt = |m: i128| {
+                            render_amount(Amount::new(fa_money::UnitId(r.unit_id), m), units)
+                        };
+                        Ok(obj(vec![
+                            ("unit", s(&unit_code)),
+                            ("posted_debits", s(fmt(r.posted_debits)?)),
+                            ("posted_credits", s(fmt(r.posted_credits)?)),
+                            ("pending_debits", s(fmt(r.pending_debits)?)),
+                            ("pending_credits", s(fmt(r.pending_credits)?)),
+                            ("open_debits", s(fmt(r.open_debits)?)),
+                            ("open_credits", s(fmt(r.open_credits)?)),
+                            ("open_item_count", Json::Int(i128::from(r.open_item_count))),
+                            ("posted_net", s(fmt(r.posted_net)?)),
+                            ("open_net", s(fmt(r.open_net)?)),
+                            ("difference", s(fmt(r.difference)?)),
+                        ]))
+                    })
+                    .collect::<Result<_, Fail>>()?;
+                let human = format!(
+                    "aging reconciliation for {} ({}) as of {}: reconciled={}",
+                    rec.account().code,
+                    rec.account().name,
+                    rec.effective_through().render(),
+                    rec.is_reconciled()
+                );
+                out.event(
+                    "aging_reconciled",
+                    vec![
+                        ("account", s(&rec.account().code)),
+                        ("account_vid", s(format!("{:032x}", rec.account().vid.0))),
+                        ("name", s(&rec.account().name)),
+                        ("known_at", Json::Int(i128::from(rec.known_at().0))),
+                        ("effective_through", s(rec.effective_through().render())),
+                        ("reconciled", Json::Bool(rec.is_reconciled())),
+                        ("rows", Json::Arr(rows)),
+                        ("bands", Json::Arr(bands)),
+                        ("item_count", Json::Int(rec.aging().items.len() as i128)),
+                    ],
+                    &human,
+                );
+                Ok(())
+            } else {
+                let aging = book.effective_date_aging(account, day, known_at, &buckets)?;
+                out.known_at(aging.known_at);
+                let chart = book.accounts()?;
+                let accounts_by_vid: std::collections::BTreeMap<VId, String> = chart
+                    .into_iter()
+                    .filter(|r| r.created_at <= aging.known_at)
+                    .map(|r| (r.vid, r.code))
+                    .collect();
+                if let Some(acc) = account
+                    && !accounts_by_vid.contains_key(&acc)
+                {
+                    return Err(BookError::Registers(
+                        fa_registers::RegisterError::InvalidSelection(format!(
+                            "unknown account {:032x} at sequence {}",
+                            acc.0, aging.known_at.0
+                        )),
+                    )
+                    .into());
+                }
+                let code_of = |vid: VId| -> Result<&str, Fail> {
+                    accounts_by_vid
+                        .get(&vid)
+                        .map(String::as_str)
+                        .ok_or_else(|| {
+                            Fail::Internal(format!("aging omits account {:032x}", vid.0))
+                        })
+                };
+                let bands: Vec<Json> = aging
+                    .bands
+                    .iter()
+                    .map(|b| {
+                        obj(vec![
+                            ("lower_inclusive", Json::Int(i128::from(b.lower_inclusive))),
+                            (
+                                "upper_inclusive",
+                                b.upper_inclusive
+                                    .map_or(Json::Null, |u| Json::Int(i128::from(u))),
+                            ),
+                        ])
+                    })
+                    .collect();
+                let items: Vec<Json> = aging
+                    .items
+                    .iter()
+                    .map(|aged| {
+                        let i = &aged.item;
+                        let fmt = |m: i128| {
+                            render_amount(Amount::new(fa_money::UnitId(i.unit_id), m), units)
+                        };
+                        Ok(obj(vec![
+                            ("entry", s(format!("{:032x}", i.entry.0))),
+                            ("ordinal", Json::Int(i128::from(i.ordinal))),
+                            ("account", s(code_of(i.account)?)),
+                            (
+                                "side",
+                                s(if i.side == Side::Debit {
+                                    "debit"
+                                } else {
+                                    "credit"
+                                }),
+                            ),
+                            ("effective_date", s(i.effective_date.render())),
+                            ("recorded_at", Json::Int(i128::from(i.recorded_at.0))),
+                            ("original", s(fmt(i.original)?)),
+                            ("applied", s(fmt(i.applied)?)),
+                            ("applied_out", s(fmt(i.applied_out)?)),
+                            ("open", s(fmt(i.open)?)),
+                            ("age_days", Json::Int(i128::from(aged.age_days))),
+                            ("bucket", Json::Int(aged.bucket as i128)),
+                        ]))
+                    })
+                    .collect::<Result<_, Fail>>()?;
+                let cells: Vec<Json> = aging
+                    .cells
+                    .iter()
+                    .map(|c| {
+                        let unit_code =
+                            registered_unit_code(fa_money::UnitId(c.unit_id), units)?.to_string();
+                        let fmt = |m: i128| {
+                            render_amount(Amount::new(fa_money::UnitId(c.unit_id), m), units)
+                        };
+                        Ok(obj(vec![
+                            ("account", s(code_of(c.account)?)),
+                            ("unit", s(&unit_code)),
+                            ("bucket", Json::Int(c.bucket as i128)),
+                            ("debits", s(fmt(c.amounts.debits)?)),
+                            ("credits", s(fmt(c.amounts.credits)?)),
+                            ("item_count", Json::Int(i128::from(c.amounts.item_count))),
+                        ]))
+                    })
+                    .collect::<Result<_, Fail>>()?;
+                let totals: Vec<Json> = aging
+                    .totals
+                    .iter()
+                    .map(|t| {
+                        let unit_code =
+                            registered_unit_code(fa_money::UnitId(t.unit_id), units)?.to_string();
+                        let fmt = |m: i128| {
+                            render_amount(Amount::new(fa_money::UnitId(t.unit_id), m), units)
+                        };
+                        Ok(obj(vec![
+                            ("account", s(code_of(t.account)?)),
+                            ("unit", s(&unit_code)),
+                            ("debits", s(fmt(t.amounts.debits)?)),
+                            ("credits", s(fmt(t.amounts.credits)?)),
+                            ("item_count", Json::Int(i128::from(t.amounts.item_count))),
+                        ]))
+                    })
+                    .collect::<Result<_, Fail>>()?;
+                let human = format!(
+                    "effective-date aging through {}: {} open item(s) across {} cell(s)",
+                    aging.effective_through.render(),
+                    aging.items.len(),
+                    aging.cells.len()
+                );
+                out.event(
+                    "aging",
+                    vec![
+                        ("account", account_code.map_or(Json::Null, s)),
+                        ("known_at", Json::Int(i128::from(aging.known_at.0))),
+                        ("effective_through", s(aging.effective_through.render())),
+                        ("bands", Json::Arr(bands)),
+                        ("items", Json::Arr(items)),
+                        ("cells", Json::Arr(cells)),
+                        ("totals", Json::Arr(totals)),
+                    ],
+                    &human,
+                );
+                Ok(())
+            }
+        }
+        Some("cash-flow") => {
+            if args.positional.len() != 2 {
+                return Err(usage(
+                    "unexpected gl cash-flow argument",
+                    "fa gl cash-flow --account <code> --from YYYY-MM-DD --to YYYY-MM-DD --policy <file.json|-> --book <dir>",
+                ));
+            }
+            let policy_path = args.require("--policy", "<policy.json|->")?;
+            let policy_text = ctx.files.read_text(policy_path)?;
+            let policy_doc = crate::json::parse(&policy_text).map_err(|e| {
+                usage(
+                    format!("invalid cash-flow policy JSON: {e}"),
+                    "pass a valid JSON object for --policy",
+                )
+            })?;
+            let book = ctx.books.open(args)?;
+            let req = parse_gl_scope(
+                args,
+                &book,
+                out,
+                "cash-flow",
+                "fa gl cash-flow --account 1000 --from 2026-03-01 --to 2026-03-31 --policy policy.json --book <dir>",
+            )?;
+            let units = &book.context().units;
+            if args.switch("--indirect") {
+                let income_periods: Vec<String> = args
+                    .flag_all("--income-period")
+                    .into_iter()
+                    .flat_map(|s| s.split(','))
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                if income_periods.is_empty() {
+                    return Err(usage(
+                        "--indirect requires at least one --income-period <code>",
+                        "fa gl cash-flow --indirect --income-period FY2026-P03 --account 1000 --from 2026-03-01 --to 2026-03-31 --policy policy.json --book <dir>",
+                    ));
+                }
+                let (cash_policy_name, indirect_def) =
+                    parse_indirect_cash_flow_definition(&policy_doc, "indirect-cash-flow")?;
+                let mut cash_def = parse_cash_flow_definition(
+                    &policy_doc,
+                    book.context().book_id,
+                    &req.accounts,
+                    &cash_policy_name,
+                )?;
+                cash_def.name = cash_policy_name;
+                let report = book.indirect_cash_flow(
+                    who,
+                    &capability,
+                    &IndirectCashFlowRequest {
+                        cash: req,
+                        cash_definition: cash_def,
+                        income_periods: income_periods.clone(),
+                        definition: indirect_def,
+                    },
+                )??;
+                let source = report.cash().source();
+                out.known_at(source.known_at());
+                let cash_accounts: Vec<Json> =
+                    source.accounts().iter().map(|a| s(&a.code)).collect();
+                let mut accounts_by_id: std::collections::BTreeMap<u128, String> = source
+                    .accounts()
+                    .iter()
+                    .map(|a| (a.id, a.code.clone()))
+                    .collect();
+                if let Some(nc) = report.non_cash_source() {
+                    for a in nc.accounts() {
+                        accounts_by_id.entry(a.id).or_insert_with(|| a.code.clone());
+                    }
+                }
+                let unit_rows: Vec<Json> = report
+                    .units()
+                    .iter()
+                    .map(|u| {
+                        let unit_code =
+                            registered_unit_code(fa_money::UnitId(u.unit_id), units)?.to_string();
+                        let fmt = |m: i128| {
+                            render_amount(Amount::new(fa_money::UnitId(u.unit_id), m), units)
+                        };
+                        Ok(obj(vec![
+                            ("unit", s(&unit_code)),
+                            ("net_income", s(fmt(u.net_income)?)),
+                            ("non_cash", s(fmt(u.non_cash)?)),
+                            ("working_capital", s(fmt(u.working_capital)?)),
+                            ("non_operating", s(fmt(u.non_operating)?)),
+                            ("operating", s(fmt(u.operating)?)),
+                            ("direct_operating", s(fmt(u.direct_operating)?)),
+                            ("operating_residual", s(fmt(u.operating_residual)?)),
+                            ("opening", s(fmt(u.opening)?)),
+                            ("investing", s(fmt(u.investing)?)),
+                            ("financing", s(fmt(u.financing)?)),
+                            ("exchange_effects", s(fmt(u.exchange_effects)?)),
+                            ("net_change", s(fmt(u.net_change)?)),
+                            ("closing", s(fmt(u.closing)?)),
+                        ]))
+                    })
+                    .collect::<Result<_, Fail>>()?;
+                let contributions: Vec<Json> = report
+                    .contributions()
+                    .iter()
+                    .map(|c| {
+                        let unit_code =
+                            registered_unit_code(fa_money::UnitId(c.unit_id), units)?.to_string();
+                        let fmt = |m: i128| {
+                            render_amount(Amount::new(fa_money::UnitId(c.unit_id), m), units)
+                        };
+                        let acc_code = accounts_by_id
+                            .get(&c.account_id)
+                            .cloned()
+                            .unwrap_or_else(|| format!("{:032x}", c.account_id));
+                        Ok(obj(vec![
+                            ("entry_digest", s(hex(&c.entry_digest))),
+                            ("leg_index", Json::Int(i128::from(c.leg_index))),
+                            ("account", s(&acc_code)),
+                            ("account_vid", s(format!("{:032x}", c.account_id))),
+                            ("unit", s(&unit_code)),
+                            ("amount", s(fmt(c.amount)?)),
+                        ]))
+                    })
+                    .collect::<Result<_, Fail>>()?;
+                let human = format!(
+                    "indirect cash flow `{}` ({}..={}): {} unit(s), {} adjustment contribution(s)",
+                    report.definition().name,
+                    source.effective_from().render(),
+                    source.effective_through().render(),
+                    report.units().len(),
+                    report.contributions().len()
+                );
+                out.event(
+                    "indirect_cash_flow",
+                    vec![
+                        ("policy", s(&report.definition().name)),
+                        ("cash_policy", s(&report.cash().definition().name)),
+                        ("label", s(source.label())),
+                        ("known_at", Json::Int(i128::from(source.known_at().0))),
+                        ("effective_from", s(source.effective_from().render())),
+                        ("effective_through", s(source.effective_through().render())),
+                        (
+                            "income_periods",
+                            Json::Arr(income_periods.iter().map(|p| s(p)).collect()),
+                        ),
+                        ("cash_accounts", Json::Arr(cash_accounts)),
+                        ("units", Json::Arr(unit_rows)),
+                        ("contributions", Json::Arr(contributions)),
+                    ],
+                    &human,
+                );
+                Ok(())
+            } else {
+                let cash_def = parse_cash_flow_definition(
+                    &policy_doc,
+                    book.context().book_id,
+                    &req.accounts,
+                    "cash-flow",
+                )?;
+                let cf = book.cash_flow(who, &capability, &req, &cash_def)??;
+                let source = cf.source();
+                out.known_at(source.known_at());
+                let cash_accounts: Vec<Json> =
+                    source.accounts().iter().map(|a| s(&a.code)).collect();
+                let section_json = |sec: CashFlowSection, unit_id: u32| -> Result<Json, Fail> {
+                    let fmt =
+                        |m: i128| render_amount(Amount::new(fa_money::UnitId(unit_id), m), units);
+                    Ok(obj(vec![
+                        ("inflows", s(fmt(sec.inflows)?)),
+                        ("outflows", s(fmt(sec.outflows)?)),
+                        ("net", s(fmt(sec.net)?)),
+                    ]))
+                };
+                let unit_rows: Vec<Json> = cf
+                    .units()
+                    .iter()
+                    .map(|u| {
+                        let unit_code =
+                            registered_unit_code(fa_money::UnitId(u.unit_id), units)?.to_string();
+                        let fmt = |m: i128| {
+                            render_amount(Amount::new(fa_money::UnitId(u.unit_id), m), units)
+                        };
+                        Ok(obj(vec![
+                            ("unit", s(&unit_code)),
+                            ("opening", s(fmt(u.opening)?)),
+                            ("operating", section_json(u.operating, u.unit_id)?),
+                            ("investing", section_json(u.investing, u.unit_id)?),
+                            ("financing", section_json(u.financing, u.unit_id)?),
+                            (
+                                "exchange_effects",
+                                section_json(u.exchange_effects, u.unit_id)?,
+                            ),
+                            ("net_change", s(fmt(u.net_change)?)),
+                            ("closing", s(fmt(u.closing)?)),
+                        ]))
+                    })
+                    .collect::<Result<_, Fail>>()?;
+                let human = format!(
+                    "cash flow `{}` ({}..={}): {} unit(s)",
+                    cf.definition().name,
+                    source.effective_from().render(),
+                    source.effective_through().render(),
+                    cf.units().len()
+                );
+                out.event(
+                    "cash_flow",
+                    vec![
+                        ("policy", s(&cf.definition().name)),
+                        ("label", s(source.label())),
+                        ("known_at", Json::Int(i128::from(source.known_at().0))),
+                        ("effective_from", s(source.effective_from().render())),
+                        ("effective_through", s(source.effective_through().render())),
+                        ("cash_accounts", Json::Arr(cash_accounts)),
+                        ("units", Json::Arr(unit_rows)),
+                    ],
+                    &human,
+                );
+                Ok(())
+            }
+        }
+        other => Err(unhandled("gl", other)),
+    }
 }
 
 // ---------------------------------------------------------------------------
