@@ -18,15 +18,16 @@
 //! [`fa_with_authority`], which keeps its launch capability and never routes
 //! through the unauthenticated daemon protocol.
 
-use std::io::{IsTerminal, Read, Write};
+use std::io::Write;
 
 use crate::args;
 use crate::authority::LaunchAuthority;
-use crate::cli::{self, Books, Captured, Files, Stdin};
+use crate::cli::{self, Books, Captured, Files};
 use crate::client::{self, ClientError};
 use crate::lease::{Lease, LeaseError};
 use crate::verbs;
-use crate::wire::{Op, Request};
+
+mod routing;
 
 /// Run one `fa` command line. With `capture`, the output is returned instead
 /// of written to stdio.
@@ -61,7 +62,7 @@ pub fn fa_with(argv: &[String], files: Files, capture: bool) -> (u8, Captured) {
         return cli::run(argv, Books::Dir, files, capture);
     };
     if via == Some("fad") {
-        return through_daemon(argv, &dir, None, &files, capture);
+        return through_daemon(argv, &parsed, &dir, None, &files, capture);
     }
     // Genesis is a write too. Create only the directory here, then compete
     // for the same lease as every later writer BEFORE the dispatcher creates
@@ -101,7 +102,7 @@ pub fn fa_with(argv: &[String], files: Files, capture: bool) -> (u8, Captured) {
             if via == Some("direct") {
                 cli::refuse(argv, held.refusal(&dir), capture)
             } else {
-                through_daemon(argv, &dir, Some(held), &files, capture)
+                through_daemon(argv, &parsed, &dir, Some(held), &files, capture)
             }
         }
     }
@@ -203,34 +204,9 @@ fn discovery(parsed: &args::Args, reg: &verbs::Registry) -> bool {
         )
 }
 
-/// The command line as the daemon should run it: without `--via`, and with
-/// the book named by its absolute path (the daemon's working directory is
-/// not the client's).
-fn for_daemon(argv: &[String], dir: &std::path::Path) -> Vec<String> {
-    let mut out = Vec::with_capacity(argv.len() + 2);
-    let mut skip = false;
-    for a in argv {
-        if skip {
-            skip = false;
-            continue;
-        }
-        if a == "--via" || a == "--book" {
-            skip = true;
-            continue;
-        }
-        if a.starts_with("--via=") || a.starts_with("--book=") {
-            continue;
-        }
-        out.push(a.clone());
-    }
-    let absolute = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-    out.push("--book".into());
-    out.push(absolute.display().to_string());
-    out
-}
-
 fn through_daemon(
     argv: &[String],
+    parsed: &args::Args,
     dir: &std::path::Path,
     held: Option<LeaseError>,
     files: &Files,
@@ -239,36 +215,19 @@ fn through_daemon(
     let Ok(reg) = verbs::registry() else {
         return cli::run(argv, Books::Dir, files.clone(), capture);
     };
-    let forwarded = for_daemon(argv, dir);
-    // stdin travels only when an argument asks for it: the host's forwarded
-    // bytes, or this process's stdin when something is piped to it. A host
-    // that forwarded none (Missing) sends none, and the daemon refuses `-`.
-    let wants_stdin = forwarded.iter().any(|a| a == "-");
-    let stdin = match &files.stdin {
-        Stdin::Forwarded(bytes) if wants_stdin => Some(bytes.clone()),
-        Stdin::Process if wants_stdin && !std::io::stdin().is_terminal() => {
-            let mut bytes = Vec::new();
-            if let Err(e) = std::io::stdin().read_to_end(&mut bytes) {
-                return cli::usage_error(
-                    argv,
-                    format!("stdin: {e}"),
-                    "pipe the document to stdin",
-                    capture,
-                );
-            }
-            Some(bytes)
+    let request = match routing::request(parsed, dir, files, &reg.daemon) {
+        Ok(request) => request,
+        Err(routing::Error::Usage(message)) => {
+            return cli::usage_error(
+                argv,
+                message,
+                "pass the unchanged plan or intent through a readable input file, or reduce the complete request size",
+                capture,
+            );
         }
-        _ => None,
-    };
-    let request = Request {
-        op: Op::Run,
-        argv: forwarded,
-        cwd: files
-            .cwd
-            .clone()
-            .or_else(|| std::env::current_dir().ok())
-            .map(|d| d.display().to_string()),
-        stdin,
+        Err(routing::Error::Environment(message)) => {
+            return cli::environment_error(argv, message, capture);
+        }
     };
     let socket = dir.join(&reg.daemon.socket);
     match client::call(&socket, &request, &reg.daemon) {
@@ -310,24 +269,24 @@ mod tests {
 
     #[test]
     fn the_forwarded_command_line_drops_via_and_names_the_book_absolutely() {
+        let reg = verbs::registry().unwrap();
         let argv: Vec<String> = [
-            "tb",
-            "--via",
-            "fad",
-            "--book",
-            "rel",
-            "--period",
-            "P",
-            "--via=fad",
-            "--json",
-        ]
-        .iter()
-        .map(|s| (*s).to_string())
-        .collect();
-        let out = for_daemon(&argv, std::path::Path::new("/abs/book"));
-        assert_eq!(
-            out,
-            vec!["tb", "--period", "P", "--json", "--book", "/abs/book"]
-        );
+            "tb", "--via", "fad", "--book", "rel", "--period", "P", "--via=fad", "--json",
+        ].iter().map(|s| (*s).to_string()).collect();
+        let parsed = args::parse(&argv, &reg.value_flags(), &reg.switches()).unwrap();
+        let request = routing::request(
+            &parsed,
+            std::path::Path::new("/abs/book"),
+            &Files { cwd: Some("/client".into()), stdin: crate::cli::Stdin::Missing },
+            &reg.daemon,
+        ).unwrap();
+        let out = args::parse(&request.argv, &reg.value_flags(), &reg.switches()).unwrap();
+        assert_eq!(out.positional, vec!["tb"]);
+        assert_eq!(out.flag_all("--via"), Vec::<&str>::new());
+        assert_eq!(out.flag_all("--book"), vec!["/abs/book"]);
+        assert_eq!(out.flag_all("--period"), vec!["P"]);
+        assert_eq!(out.switches, vec!["--json"]);
+        assert_eq!(out.flags.len(), 2);
+        assert_eq!(request.cwd.as_deref(), Some("/client"));
     }
 }
