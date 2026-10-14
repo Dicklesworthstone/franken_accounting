@@ -49,8 +49,8 @@ use fa_model::{Id128, Writer};
 use fgdb_types::CommitSeq;
 
 pub use bundle::{
-    BalanceRequest, Bundle, BundleRequest, BundleScope, DocumentStub, ProductionReceipt,
-    ReceiptBody,
+    BalanceRequest, Bundle, BundleRequest, BundleScope, DocumentStub, MAX_BUNDLE_BALANCES,
+    MAX_INLINE_DOCUMENT_BYTES, ProductionReceipt, ReceiptBody,
 };
 pub use checkpoint::TransparencyCheckpoint;
 pub use journal::{Journal, Leaf, LeafEnvelope};
@@ -86,6 +86,9 @@ pub mod code {
     /// A bundle would inline a document its capability reads only as a
     /// redacted view.
     pub const INLINE_WITHHELD: &str = "FA-REF-128";
+    /// A bundle would inline a document exceeding 16 MiB or carry more than
+    /// 4096 balance proofs, which the standalone verifier's bounds reject.
+    pub const BUNDLE_LIMIT: &str = "FA-REF-129";
     /// A balance proof would count a migration chunk with unsupported
     /// visibility: its run has no Finalize in the prefix, or it predates
     /// the run's opening date. The latter may be summarized history or

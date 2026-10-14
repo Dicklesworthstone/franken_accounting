@@ -1941,25 +1941,33 @@ impl Oracle {
                     code: code::REVERSAL_SHAPE,
                 };
             }
-            // 7c. Application effects (plan §5.7, §8.2): an item with live
-            //     applications is not reversed; re-applying by reversing a
-            //     reversal waits for the full netting law.
-            for i in 0..original.legs.len() {
-                if self.applied_to(target, i) != 0 {
-                    return Verdict::Refused {
-                        code: code::LIVE_APPLICATIONS,
-                    };
+            // 7c. Application effects (plan §5.7, §8.2): an item or any ancestor
+            //     in its reversal chain with live applications is not reversed;
+            //     re-applying by reversing a reversal waits for the full netting law.
+            let mut anc = Some(target);
+            while let Some(idx) = anc {
+                let entry = &self.journal[idx];
+                for i in 0..entry.legs.len() {
+                    if self.applied_to(idx, i) != 0 {
+                        return Verdict::Refused {
+                            code: code::LIVE_APPLICATIONS,
+                        };
+                    }
                 }
-            }
-            if original.class == "Reversal"
-                && original
-                    .reverses
-                    .and_then(|g| self.journal.get(g))
-                    .is_some_and(|g| !g.settles.is_empty())
-            {
-                return Verdict::Refused {
-                    code: code::CLASS_NOT_IMPLEMENTED,
-                };
+                if entry.class == "Reversal" {
+                    if entry
+                        .reverses
+                        .and_then(|g| self.journal.get(g))
+                        .is_some_and(|g| !g.settles.is_empty())
+                    {
+                        return Verdict::Refused {
+                            code: code::CLASS_NOT_IMPLEMENTED,
+                        };
+                    }
+                    anc = entry.reverses;
+                } else {
+                    anc = None;
+                }
             }
         }
         // 7b. Resolution law: the target is a pending entry; a Posts

@@ -1245,8 +1245,32 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(refusal) => return Ok(Err(refusal)),
         };
         let mut documents = BTreeMap::new();
+        let inline_documents = request.inline_documents;
+        let query = cx.query();
         for oid in cited {
-            match self.read_document_for(cx, capability, &oid).await? {
+            query.checkpoint().map_err(BookError::Context)?;
+            let read = query
+                .with_restriction_async(fa_journal::read_document_for_with(
+                    &mut self.db,
+                    cx,
+                    &self.context,
+                    capability,
+                    &self.blobs,
+                    oid,
+                    |record| {
+                        if inline_documents
+                            && record.size > fa_notary::MAX_INLINE_DOCUMENT_BYTES as u64
+                        {
+                            return Err(fa_notary::bundle::inline_document_limit(
+                                &oid,
+                                record.size,
+                            ));
+                        }
+                        Ok(())
+                    },
+                ))
+                .await?;
+            match read {
                 Ok(read) => {
                     documents.insert(oid, read);
                 }

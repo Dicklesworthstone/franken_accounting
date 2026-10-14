@@ -743,6 +743,14 @@ exit = "refusal"
 cite = "plan §9.6, §13.2 (a production discloses no more of a document than its capability may read)"
 fix = "produce without inline documents (each stub still carries the commitment, kind, length and chunk root), or with a capability that also holds privileged"
 
+[[refusal]]
+code = "FA-REF-129"
+name = "BUNDLE_LIMIT"
+owners = ["fa-notary"]
+exit = "refusal"
+cite = "plan §13.2, §13.3 (a bundle never signs an inline document or balance list the standalone verifier's bounds reject)"
+fix = "produce without inline documents (each stub still carries the commitment, kind, length and chunk root) when a cited document exceeds 16 MiB, or split the balance requests across bundles of at most 4096 balances"
+
 # ---- Migration runs and scratch replay (130–139) -------------------------
 [[refusal]]
 code = "FA-REF-130"

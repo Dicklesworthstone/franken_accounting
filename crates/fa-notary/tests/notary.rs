@@ -3513,3 +3513,145 @@ fn the_bundle_balance_law_is_the_register_fold_law() {
         fa_registers::FOLD_DIGEST_DOMAIN.ends_with(format!(":v{BALANCE_FOLD_VERSION}").as_bytes())
     );
 }
+
+#[test]
+fn bundle_limits_refuse_too_many_balances_and_oversized_inline_documents_while_admitting_stubs() {
+    let (h, c, _) = bundle_book();
+    let (journal, checkpoint) =
+        bundle_basis(&h.db, &h.ctx(), &h.book, &c.stored, &h.signer)
+            .unwrap()
+            .unwrap();
+
+    // 1. More than MAX_BUNDLE_BALANCES (4096) balance claims are refused
+    // cleanly with FA-REF-129 in both cited_documents and assemble.
+    let too_many_balances = BundleRequest {
+        scope: BundleScope::Prefix,
+        balances: vec![balance(h.cash, h.usd, None); fa_notary::MAX_BUNDLE_BALANCES + 1],
+        inline_documents: false,
+    };
+    let cited_err = fa_notary::bundle::cited_documents(&journal, &too_many_balances)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(cited_err.code, code::BUNDLE_LIMIT);
+    assert_eq!(cited_err.exit, exit::REFUSAL);
+    let assemble_err = fa_notary::bundle::assemble(
+        &journal,
+        &checkpoint,
+        &too_many_balances,
+        &std::collections::BTreeMap::new(),
+    )
+    .unwrap()
+    .unwrap_err();
+    assert_eq!(assemble_err.code, code::BUNDLE_LIMIT);
+    assert_eq!(assemble_err.exit, exit::REFUSAL);
+
+    // 2. An entry citing a document over MAX_INLINE_DOCUMENT_BYTES (16 MiB)
+    // is refused with FA-REF-129 when inline_documents is true, and succeeds
+    // as a stub-only .fab bundle when inline_documents is false.
+    let oversized_doc = Document {
+        book_id: h.book.book_id,
+        kind: 1,
+        mime: "application/octet-stream".into(),
+        grade: 3,
+        retrieved_by: PRINCIPAL,
+        bytes: vec![0xab; fa_notary::MAX_INLINE_DOCUMENT_BYTES + 1],
+    };
+    let doc_oid = oversized_doc.oid();
+    let legs = vec![
+        LegPayload::simple(Side::Debit, h.rent, Amount::new(h.usd, 500)),
+        LegPayload::simple(Side::Credit, h.cash, Amount::new(h.usd, 500)),
+    ];
+    let proposal = EntryPayload {
+        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        book_id: h.book.book_id,
+        branch_id: Id128::TRUNK,
+        class: EntryClass::ORIGINAL,
+        effective_date: DateDay::from_ymd(2026, 3, 21).unwrap(),
+        document_date: None,
+        description: Erasable::seal(
+            &"oversized evidence".to_string(),
+            None,
+            &h.book.seal_key,
+            [1; 32],
+            [2; 24],
+        ),
+        effective_period: None,
+        unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
+        legs,
+        control: None,
+        base_totals: None,
+        idempotency_key: b"oversized-doc".to_vec(),
+        origin: EntryOrigin::Intent {
+            intent_oid: Oid([1; 32]),
+            intent_kind: 1,
+        },
+        principal_ref: PRINCIPAL,
+        session_ref: None,
+        evidence: vec![oversized_doc.evidence_ref(1)],
+        supersession: Vec::new(),
+        pending: None,
+        external_ids: Vec::new(),
+        extensions: Vec::new(),
+        tags: Vec::new(),
+    };
+    let entry = proposal.seal(Vec::new(), None).unwrap();
+    let synthetic = Journal::from_records(
+        h.book.book_id,
+        CommitSeq(10),
+        vec![(VId(999), entry, CommitSeq(5))],
+    )
+    .unwrap();
+    let state = AccumulatorState::of_journal(&synthetic, None);
+    let state_oid = state_oid(&state.canonical_bytes().unwrap());
+    let body = fa_notary::checkpoint::CheckpointBody {
+        statement: synthetic.statement(),
+        state_oid,
+        scope_index_root: [0; 32],
+        substrate_chain_commitment: [0; 32],
+        witness_policy_oid: None,
+        time_evidence_oid: None,
+    };
+    let signed = fa_notary::TransparencyCheckpoint::sign(body, &[&h.signer]).unwrap();
+    let signed_bytes = signed.canonical_bytes().unwrap();
+    let stored_cp = fa_notary::StoredCheckpoint {
+        oid: fa_notary::checkpoint::checkpoint_oid(&signed_bytes),
+        vid: checkpoint_vid(&state_oid),
+        checkpoint: signed,
+        bytes: signed_bytes,
+    };
+    let mut docs = std::collections::BTreeMap::new();
+    docs.insert(doc_oid, DocumentRead::Full(oversized_doc));
+
+    let inline_err = fa_notary::bundle::assemble(
+        &synthetic,
+        &stored_cp,
+        &BundleRequest {
+            scope: BundleScope::Prefix,
+            balances: Vec::new(),
+            inline_documents: true,
+        },
+        &docs,
+    )
+    .unwrap()
+    .unwrap_err();
+    assert_eq!(inline_err.code, code::BUNDLE_LIMIT);
+    assert_eq!(inline_err.exit, exit::REFUSAL);
+
+    let stub_only = fa_notary::bundle::assemble(
+        &synthetic,
+        &stored_cp,
+        &BundleRequest {
+            scope: BundleScope::Prefix,
+            balances: Vec::new(),
+            inline_documents: false,
+        },
+        &docs,
+    )
+    .unwrap()
+    .expect("stub-only bundle succeeds on >16 MiB document");
+    let report =
+        fa_verify::verify_bundle(&stub_only.bytes, &[h.signer.public_key()], None).unwrap();
+    assert!(report.verified(), "{:#?}", not_passed(&report));
+    assert_eq!(report.summary.documents, 1);
+    assert_eq!(report.summary.inline, 0);
+}

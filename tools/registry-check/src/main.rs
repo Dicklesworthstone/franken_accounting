@@ -49,6 +49,7 @@ const IMMUTABLE_REFUSALS: &[(&str, &str, &str)] = &[
     ("FA-REF-070", "SETTLE_TARGET", "refusal"),
     ("FA-REF-080", "EVIDENCE_MINIMUM", "refusal"),
     ("FA-REF-090", "AVAILABILITY_LOWER", "refusal"),
+    ("FA-REF-129", "BUNDLE_LIMIT", "refusal"),
 ];
 
 const EXPECTED_REGISTRIES: &[&str] = &[

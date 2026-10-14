@@ -7915,3 +7915,173 @@ fn case_bound(t: PeriodTransition, from: PeriodState) -> bool {
     matches!(t, PeriodTransition::Reopen { .. })
         && matches!(from, PeriodState::Closed | PeriodState::Locked)
 }
+
+#[test]
+fn a_reversal_chain_cannot_strand_payments_on_a_revived_invoice() {
+    let (mut k, mut oracle, periods) = setup();
+    open_period(&mut k, &mut oracle, &periods[0], 1);
+    let usd = k.book.units.lookup("USD").unwrap();
+    let jan = DateDay::from_ymd(2026, 1, 15).unwrap();
+    let leg = |side, account: &str, mantissa| Leg {
+        side,
+        account: account.into(),
+        unit: usd.0,
+        entity: None,
+        mantissa,
+    };
+    let mut refs: Vec<EntryRef> = Vec::new();
+    let mut post_both = |intent: &Intent| {
+        let kernel = kernel_post(&mut k, intent, usd, &refs);
+        if let Ok(Posted::Committed { entry_ref, .. }) = &kernel {
+            refs.push(*entry_ref);
+        }
+        let model = oracle.post(intent);
+        let check = verify_open_items(&k.db, &k.book, None).unwrap();
+        assert!(check.is_green(), "open items drifted after {intent:?}: {check:?}");
+        (kernel, model)
+    };
+
+    // 0: Invoice I (1200 Dr 100 / 4000 Cr 100)
+    let inv = Intent {
+        class: "Original".into(),
+        date: jan,
+        discriminator: None,
+        legs: vec![
+            leg(fa_reference::Side::Debit, "1200", 100),
+            leg(fa_reference::Side::Credit, "4000", 100),
+        ],
+        key: b"inv-chain-0".to_vec(),
+        ops: vec!["post".into()],
+        approvals: 0,
+        reverses: None,
+        supersession_reason: 1,
+        resolves: None,
+        settles: Vec::new(),
+    };
+    let (Ok(Posted::Committed { .. }), Verdict::Posted { index: 0, .. }) = post_both(&inv) else {
+        panic!("invoice must post");
+    };
+
+    // 1: R1 reverses I
+    let r1 = Intent {
+        class: "Reversal".into(),
+        date: jan,
+        discriminator: None,
+        legs: vec![
+            leg(fa_reference::Side::Credit, "1200", 100),
+            leg(fa_reference::Side::Debit, "4000", 100),
+        ],
+        key: b"rev-1".to_vec(),
+        ops: vec!["post".into()],
+        approvals: 0,
+        reverses: Some(0),
+        supersession_reason: 1,
+        resolves: None,
+        settles: Vec::new(),
+    };
+    let (Ok(Posted::Committed { .. }), Verdict::Posted { index: 1, .. }) = post_both(&r1) else {
+        panic!("R1 must post");
+    };
+
+    // 2: R2 reverses R1 (revives I)
+    let r2 = Intent {
+        class: "Reversal".into(),
+        date: jan,
+        discriminator: None,
+        legs: vec![
+            leg(fa_reference::Side::Debit, "1200", 100),
+            leg(fa_reference::Side::Credit, "4000", 100),
+        ],
+        key: b"rev-2".to_vec(),
+        ops: vec!["post".into()],
+        approvals: 0,
+        reverses: Some(1),
+        supersession_reason: 1,
+        resolves: None,
+        settles: Vec::new(),
+    };
+    let (Ok(Posted::Committed { .. }), Verdict::Posted { index: 2, .. }) = post_both(&r2) else {
+        panic!("R2 must post");
+    };
+
+    // 3: Receipt S settles 40 against revived I (index 0, leg 0)
+    let rcpt = Intent {
+        class: "Original".into(),
+        date: jan,
+        discriminator: None,
+        legs: vec![
+            leg(fa_reference::Side::Debit, "1000", 40),
+            leg(fa_reference::Side::Credit, "1200", 40),
+        ],
+        key: b"rcpt-s".to_vec(),
+        ops: vec!["post".into()],
+        approvals: 0,
+        reverses: None,
+        supersession_reason: 1,
+        resolves: None,
+        settles: vec![Settle {
+            leg: 1,
+            target: 0,
+            ordinal: 0,
+            mantissa: 40,
+        }],
+    };
+    let (Ok(Posted::Committed { .. }), Verdict::Posted { index: 3, .. }) = post_both(&rcpt) else {
+        panic!("receipt S must post against revived invoice");
+    };
+
+    // R3 reversing R2 while S is live on I must be refused with FA-REF-073 by both!
+    let r3 = Intent {
+        class: "Reversal".into(),
+        date: jan,
+        discriminator: None,
+        legs: vec![
+            leg(fa_reference::Side::Credit, "1200", 100),
+            leg(fa_reference::Side::Debit, "4000", 100),
+        ],
+        key: b"rev-3".to_vec(),
+        ops: vec!["post".into()],
+        approvals: 0,
+        reverses: Some(2),
+        supersession_reason: 1,
+        resolves: None,
+        settles: Vec::new(),
+    };
+    let (Err(refusal), Verdict::Refused { code }) = post_both(&r3) else {
+        panic!("R3 must be refused while S is applied to I");
+    };
+    assert_eq!(refusal.code, "FA-REF-073");
+    assert_eq!(code, "FA-REF-073");
+
+    // 4: Reverse S first, undoing the application on I
+    let rev_s = Intent {
+        class: "Reversal".into(),
+        date: jan,
+        discriminator: None,
+        legs: vec![
+            leg(fa_reference::Side::Credit, "1000", 40),
+            leg(fa_reference::Side::Debit, "1200", 40),
+        ],
+        key: b"rev-s".to_vec(),
+        ops: vec!["post".into()],
+        approvals: 0,
+        reverses: Some(3),
+        supersession_reason: 1,
+        resolves: None,
+        settles: Vec::new(),
+    };
+    let (Ok(Posted::Committed { .. }), Verdict::Posted { index: 4, .. }) = post_both(&rev_s) else {
+        panic!("reversal of receipt S must post");
+    };
+
+    // 5: Now R3 reversing R2 succeeds and leaves open items green!
+    let (Ok(Posted::Committed { .. }), Verdict::Posted { index: 5, .. }) = post_both(&r3) else {
+        panic!("R3 must post once S is reversed");
+    };
+    assert!(
+        open_items(&k.db, &k.book, None, None).unwrap().is_empty(),
+        "reversed invoice has no open item"
+    );
+    assert!(oracle.open_items().is_empty());
+}
+

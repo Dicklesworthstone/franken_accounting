@@ -808,11 +808,31 @@ where
     V: asupersync::fs::Vfs + Clone,
     W: asupersync::fs::Vfs + Clone,
 {
+    fetch_document_with(db, ctx, store, oid, |_| Ok(())).await
+}
+
+/// Like [`fetch_document`], admitting the verified [`DocumentRecord`]
+/// through `before_fetch` before reading any external blob bytes.
+pub async fn fetch_document_with<V, W, F>(
+    db: &Database<V>,
+    ctx: &PurposeContexts,
+    store: &crate::blob::BlobStore<W>,
+    oid: &Oid,
+    before_fetch: F,
+) -> Outcome<Option<Document>>
+where
+    V: asupersync::fs::Vfs + Clone,
+    W: asupersync::fs::Vfs + Clone,
+    F: FnOnce(&DocumentRecord) -> Result<(), Refusal>,
+{
     let record = match record_or_drift(db, oid)? {
         Ok(Some(record)) => record,
         Ok(None) => return Ok(Ok(None)),
         Err(r) => return Ok(Err(r)),
     };
+    if let Err(r) = before_fetch(&record) {
+        return Ok(Err(r));
+    }
     let bytes = match &record.storage {
         Storage::Inline(bytes) => bytes.clone(),
         Storage::External { store: id, locator } => {

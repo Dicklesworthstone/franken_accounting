@@ -557,6 +557,26 @@ where
     V: asupersync::fs::Vfs + Clone,
     B: asupersync::fs::Vfs + Clone,
 {
+    read_document_for_with(db, ctx, book, capability, store, oid, |_| Ok(())).await
+}
+
+/// Like [`read_document_for`], running `before_fetch` on the verified
+/// [`crate::DocumentRecord`] after capability and redaction-contract admission
+/// and before reading any external blob bytes.
+pub async fn read_document_for_with<V, B, F>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capability: &Capability,
+    store: &BlobStore<B>,
+    oid: Oid,
+    before_fetch: F,
+) -> Outcome<DocumentRead>
+where
+    V: asupersync::fs::Vfs + Clone,
+    B: asupersync::fs::Vfs + Clone,
+    F: FnOnce(&crate::DocumentRecord) -> Result<(), Refusal>,
+{
     if let Err(d) = fa_policy::admit_read(capability, capability.holder(), book.book_id) {
         return Ok(Err(refusal(&d)));
     }
@@ -580,7 +600,9 @@ where
         Err(r) => Err(r),
     };
     if capability.holds(Op::Privileged) {
-        return Ok(full(fetch_document(db, ctx, store, &oid).await?));
+        return Ok(full(
+            crate::evidence::fetch_document_with(db, ctx, store, &oid, before_fetch).await?,
+        ));
     }
     let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
     let txn_cx = ctx.txn();
@@ -606,7 +628,9 @@ where
     };
     let Some(contract) = contracts()?.for_kind(kind) else {
         txn.abort();
-        return Ok(full(fetch_document(db, ctx, store, &oid).await?));
+        return Ok(full(
+            crate::evidence::fetch_document_with(db, ctx, store, &oid, before_fetch).await?,
+        ));
     };
     let vid = redacted_view_vid(book.book_id, &oid, contract.id);
     let row = txn.vertex(db, vid)?;

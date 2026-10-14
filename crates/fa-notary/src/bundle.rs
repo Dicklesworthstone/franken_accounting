@@ -321,6 +321,43 @@ fn inline_withheld(oid: &Oid, contract: u16) -> Refusal {
     )
 }
 
+/// The standalone verifier's inline-document bound (`16 MiB`, matching
+/// `registries/evidence_policy.toml` `max_document_bytes` and
+/// `fa_verify::bundle::MAX_DOCUMENT_BYTES`).
+pub const MAX_INLINE_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
+/// The standalone verifier's balance-proof list bound (`4096`, matching
+/// `fa_verify::bundle::MAX_BALANCES`).
+pub const MAX_BUNDLE_BALANCES: usize = 4096;
+
+/// Refusal when a bundle request exceeds [`MAX_BUNDLE_BALANCES`].
+#[must_use]
+pub fn balance_limit(count: usize) -> Refusal {
+    Refusal::new(
+        code::BUNDLE_LIMIT,
+        exit::REFUSAL,
+        format!(
+            "bundle requests {count} balances, exceeding the standalone verifier's limit of {MAX_BUNDLE_BALANCES}"
+        ),
+        "plan §13.2, §13.3 (a bundle never signs an inline document or balance list the standalone verifier's bounds reject)",
+        "produce without inline documents (each stub still carries the commitment, kind, length and chunk root) when a cited document exceeds 16 MiB, or split the balance requests across bundles of at most 4096 balances",
+    )
+}
+
+/// Refusal when an inline document in a bundle exceeds [`MAX_INLINE_DOCUMENT_BYTES`].
+#[must_use]
+pub fn inline_document_limit(oid: &Oid, length: u64) -> Refusal {
+    Refusal::new(
+        code::BUNDLE_LIMIT,
+        exit::REFUSAL,
+        format!(
+            "document {} is {length} bytes, exceeding the standalone verifier's inline document limit of {MAX_INLINE_DOCUMENT_BYTES} bytes",
+            hex(&oid.0)
+        ),
+        "plan §13.2, §13.3 (a bundle never signs an inline document or balance list the standalone verifier's bounds reject)",
+        "produce without inline documents (each stub still carries the commitment, kind, length and chunk root) when a cited document exceeds 16 MiB, or split the balance requests across bundles of at most 4096 balances",
+    )
+}
+
 /// What an entry's evidence list cites, ascending by `doc_commit`, one
 /// citation per document (one document cited in two roles is one stub).
 fn citations(payload: &[u8]) -> Result<Vec<([u8; 32], Oid)>, KernelError> {
@@ -339,7 +376,9 @@ fn citations(payload: &[u8]) -> Result<Vec<([u8; 32], Oid)>, KernelError> {
 /// The stubs of the documents an entry cites, from what the producing
 /// capability read of each ([`cited_documents`]). A document read only as
 /// its redacted view gives the stub the view proves, without bytes, and
-/// cannot be inlined (FA-REF-128).
+/// cannot be inlined (FA-REF-128). An inline document over 16 MiB is refused
+/// (FA-REF-129) before hashing or cloning so the producer never signs a
+/// bundle the standalone verifier rejects.
 fn stubs(
     payload: &[u8],
     inline: bool,
@@ -355,13 +394,18 @@ fn stubs(
             )));
         };
         out.push(match read {
-            DocumentRead::Full(doc) => DocumentStub {
-                doc_commit: commit,
-                kind: doc.kind,
-                length: doc.bytes.len() as u64,
-                chunk_root: fa_journal::evidence::chunk_root(&doc.bytes),
-                inline: inline.then(|| doc.bytes.clone()),
-            },
+            DocumentRead::Full(doc) => {
+                if inline && doc.bytes.len() > MAX_INLINE_DOCUMENT_BYTES {
+                    return Ok(Err(inline_document_limit(&oid, doc.bytes.len() as u64)));
+                }
+                DocumentStub {
+                    doc_commit: commit,
+                    kind: doc.kind,
+                    length: doc.bytes.len() as u64,
+                    chunk_root: fa_journal::evidence::chunk_root(&doc.bytes),
+                    inline: inline.then(|| doc.bytes.clone()),
+                }
+            }
             DocumentRead::Redacted(view) if inline => {
                 return Ok(Err(inline_withheld(&oid, view.contract)));
             }
@@ -398,10 +442,13 @@ struct InScope {
     leaves: Vec<u64>,
 }
 
-/// The scope `request` names over `journal`, or its refusal (FA-REF-126 for
-/// an index scope other than one account, FA-REF-120 for a named entry
-/// outside the prefix).
+/// The scope `request` names over `journal`, or its refusal (FA-REF-129 when
+/// `request.balances` exceeds 4096, FA-REF-126 for an index scope other than
+/// one account, FA-REF-120 for a named entry outside the prefix).
 fn in_scope(journal: &Journal, request: &BundleRequest) -> Outcome<InScope> {
+    if request.balances.len() > MAX_BUNDLE_BALANCES {
+        return Ok(Err(balance_limit(request.balances.len())));
+    }
     let (indices, proof, leaves): (Vec<usize>, Vec<u8>, Vec<u64>) = match &request.scope {
         BundleScope::Prefix => (
             (0..journal.leaves.len()).collect(),

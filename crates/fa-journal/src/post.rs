@@ -454,22 +454,39 @@ fn footprint_refusal<V: asupersync::fs::Vfs + Clone>(
 ) -> Result<Option<Refusal>, KernelError> {
     let reached = |vid: VId| reaches(txn, db, book, req, scope, vid);
     if let Some(target) = reversal_target {
-        if !reached(target.vid)? {
-            return Ok(Some(no_reversal_target(target.vid)));
-        }
-        let row = txn
-            .vertex(db, target.vid)?
-            .ok_or_else(|| KernelError::Corrupt("an admitted reversal target vanished".into()))?;
-        let (original, _) = checked_entry(db, &row)?;
-        let predecessors = original.proposal.supersession.iter().map(|s| s.target.vid);
-        let applied = original
-            .proposal
-            .legs
-            .iter()
-            .flat_map(|l| l.settles.iter().map(|s| s.target.vid));
-        for vid in predecessors.chain(applied) {
-            if !reached(vid)? {
+        let mut current = target.vid;
+        let mut seen: BTreeSet<VId> = BTreeSet::new();
+        loop {
+            if !seen.insert(current) {
+                return Err(KernelError::Corrupt(format!(
+                    "reversal ancestry of {:032x} cycles",
+                    target.vid.0
+                )));
+            }
+            if !reached(current)? {
                 return Ok(Some(no_reversal_target(target.vid)));
+            }
+            let row = txn.vertex(db, current)?.ok_or_else(|| {
+                KernelError::Corrupt("an admitted reversal target vanished".into())
+            })?;
+            let (entry, _) = checked_entry(db, &row)?;
+            let predecessors = entry.proposal.supersession.iter().map(|s| s.target.vid);
+            let applied = entry
+                .proposal
+                .legs
+                .iter()
+                .flat_map(|l| l.settles.iter().map(|s| s.target.vid));
+            for vid in predecessors.chain(applied) {
+                if !reached(vid)? {
+                    return Ok(Some(no_reversal_target(target.vid)));
+                }
+            }
+            if entry.proposal.class == EntryClass::REVERSAL
+                && let [first] = entry.proposal.supersession.as_slice()
+            {
+                current = first.target.vid;
+            } else {
+                break;
             }
         }
     }
@@ -1909,44 +1926,63 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
                 "post the same accounts and amounts in the same order with debit and credit exchanged; a different correction is a Replacement",
             )));
         }
-        // 7c. Application effects (plan §5.7, §8.2): a target with live
-        //     applications against its legs is not reversed — the applying
-        //     entries come first; the target's own applications are undone
-        //     exactly as derived UNSETTLES effects, never re-entered. Reversing
-        //     a reversal that undid applications would re-apply them; that
-        //     waits for the full netting law.
-        for i in 0..original.proposal.legs.len() {
-            let ordinal =
-                u16::try_from(i).map_err(|_| KernelError::Corrupt("more than u16 legs".into()))?;
-            let lvid = leg_vid(target.vid, ordinal);
-            let row = txn
-                .vertex(db, lvid)?
-                .ok_or_else(|| KernelError::Corrupt("reversal target leg row missing".into()))?;
-            let live = applied_witness(&row)?;
-            if live != 0 {
-                txn.abort();
-                return Ok(Err(Refusal::new(
-                    code::LIVE_APPLICATIONS,
-                    exit::REFUSAL,
-                    format!(
-                        "leg {i} of entry {:032x} has {live} applied against it",
-                        target.vid.0
-                    ),
-                    "plan §5.7 (reversing an open item with live applications would strand them)",
-                    "reverse the applying entries first (fa open-items --account <code> lists them), then reverse this entry",
+        // 7c. Application effects (plan §5.7, §8.2): a target or any ancestor
+        //     in its witnessed reversal chain with live applications against its
+        //     legs is not reversed — the applying entries come first; the
+        //     target's own applications are undone exactly as derived UNSETTLES
+        //     effects, never re-entered. Reversing a reversal that undid
+        //     applications would re-apply them; that waits for the full netting
+        //     law.
+        let mut anc_vid = target.vid;
+        let mut anc_entry = original.clone();
+        let mut seen_ancestors: BTreeSet<VId> = BTreeSet::new();
+        loop {
+            if !seen_ancestors.insert(anc_vid) {
+                return Err(KernelError::Corrupt(format!(
+                    "reversal ancestry of {:032x} cycles",
+                    target.vid.0
                 )));
             }
-        }
-        if original.proposal.class == EntryClass::REVERSAL
-            && let [first] = original.proposal.supersession.as_slice()
-            && let Some(grand) = txn.vertex(db, first.target.vid)?
-        {
-            let (grand, _) = checked_entry(db, &grand)?;
-            if grand.proposal.legs.iter().any(|l| !l.settles.is_empty()) {
-                txn.abort();
-                return Ok(Err(not_implemented(
-                    "re-application by reversing a reversal",
-                )));
+            for i in 0..anc_entry.proposal.legs.len() {
+                let ordinal = u16::try_from(i)
+                    .map_err(|_| KernelError::Corrupt("more than u16 legs".into()))?;
+                let lvid = leg_vid(anc_vid, ordinal);
+                let row = txn
+                    .vertex(db, lvid)?
+                    .ok_or_else(|| KernelError::Corrupt("reversal target leg row missing".into()))?;
+                let live = applied_witness(&row)?;
+                if live != 0 {
+                    txn.abort();
+                    return Ok(Err(Refusal::new(
+                        code::LIVE_APPLICATIONS,
+                        exit::REFUSAL,
+                        format!(
+                            "leg {i} of entry {:032x} has {live} applied against it",
+                            anc_vid.0
+                        ),
+                        "plan §5.7 (reversing an open item with live applications would strand them)",
+                        "reverse the applying entries first (fa open-items --account <code> lists them), then reverse this entry",
+                    )));
+                }
+            }
+            if anc_entry.proposal.class == EntryClass::REVERSAL
+                && let [first] = anc_entry.proposal.supersession.as_slice()
+            {
+                let next_vid = first.target.vid;
+                let Some(grand) = txn.vertex(db, next_vid)? else {
+                    break;
+                };
+                let (grand, _) = checked_entry(db, &grand)?;
+                if grand.proposal.legs.iter().any(|l| !l.settles.is_empty()) {
+                    txn.abort();
+                    return Ok(Err(not_implemented(
+                        "re-application by reversing a reversal",
+                    )));
+                }
+                anc_vid = next_vid;
+                anc_entry = grand;
+            } else {
+                break;
             }
         }
         let mut undone: BTreeSet<VId> = BTreeSet::new();

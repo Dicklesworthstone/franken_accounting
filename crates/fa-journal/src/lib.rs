@@ -51,7 +51,7 @@ pub use blob::BlobStore;
 pub use custody::{CustodyBody, CustodyEvent, CustodyMoved, custody_chain, transfer_custody};
 pub use evidence::{
     Document, DocumentAdded, DocumentRecord, Storage, add_document, add_document_external,
-    document_record, fetch_document, read_document,
+    document_record, fetch_document, fetch_document_with, read_document,
 };
 pub use genesis::{
     AccountSpec, BookContext, BookSpec, ChartInstalled, LegalEntitySpec, TimeZonePolicy,
@@ -88,7 +88,7 @@ pub use post::{
 };
 pub use redaction::{
     DocumentRead, RedactedView, ViewChunk, ViewDerived, derive_redacted_view, read_document_for,
-    redacted_view_vid,
+    read_document_for_with, redacted_view_vid,
 };
 pub use refusal::{KernelError, Refusal, exit};
 pub use rows::{AccountRow, PeriodRow};
