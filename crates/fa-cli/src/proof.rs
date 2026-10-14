@@ -166,7 +166,12 @@ pub(crate) fn proof_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let role_spec = args.flag("--role").unwrap_or("Source");
         let role_row = policy
             .role_by_name(role_spec)
-            .or_else(|| role_spec.parse::<u8>().ok().and_then(|t| policy.role_by_tag(t)))
+            .or_else(|| {
+                role_spec
+                    .parse::<u8>()
+                    .ok()
+                    .and_then(|t| policy.role_by_tag(t))
+            })
             .ok_or_else(|| usage(format!("unknown evidence role {role_spec}"), EXAMPLE))?;
         let chunk_args = args.flag_all("--chunk");
         let requested_chunks: Vec<u64> = if chunk_args.is_empty() {
@@ -176,7 +181,10 @@ pub(crate) fn proof_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 .iter()
                 .map(|c| {
                     c.parse::<u64>().map_err(|_| {
-                        usage(format!("--chunk {c} must be a non-negative integer"), EXAMPLE)
+                        usage(
+                            format!("--chunk {c} must be a non-negative integer"),
+                            EXAMPLE,
+                        )
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?

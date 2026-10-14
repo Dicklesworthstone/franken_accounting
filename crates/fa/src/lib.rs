@@ -114,10 +114,10 @@ pub use fa_notary::{
     AccumulatorVerification, BalanceRequest, BundleRequest, BundleScope, Checkpointed, ScopeRequest,
 };
 pub use fa_policy::{Capability, Op, Profile};
+pub use fa_registers::open_items::OpenItemsReport;
 pub use fa_registers::{
     Advance, EntityCell, EntityCellKey, EntityFold, EntityVerification, RegisterEquals,
 };
-pub use fa_registers::open_items::OpenItemsReport;
 pub use fa_statements::{
     AccountMapping, Column as StatementColumn, Statement, StatementDefinition, StatementKind,
     StatementLine,

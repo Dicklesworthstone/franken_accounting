@@ -7637,14 +7637,7 @@ fn docket_steward_and_migration_controls_round_trip() -> std::io::Result<()> {
     assert!(read_full_path.exists());
 
     // Disclose chunk 1 (`fa document disclose`)
-    let disclose_out = ok(&[
-        "document",
-        "disclose",
-        &bank_oid,
-        "--chunk",
-        "1",
-        "--json",
-    ]);
+    let disclose_out = ok(&["document", "disclose", &bank_oid, "--chunk", "1", "--json"]);
     assert_eq!(
         field(&disclose_out, "event"),
         Some("document_disclosure_exported")
@@ -7666,14 +7659,7 @@ fn docket_steward_and_migration_controls_round_trip() -> std::io::Result<()> {
     assert_eq!(arr(&doc(&cust_chain), "events").len(), 2);
 
     // 3. Attestations (`fa attest review`, `fa attest manual`, `fa attest register-equals`)
-    let rev_att = ok(&[
-        "attest",
-        "review",
-        &bank_oid,
-        "--as",
-        "reviewer",
-        "--json",
-    ]);
+    let rev_att = ok(&["attest", "review", &bank_oid, "--as", "reviewer", "--json"]);
     assert_eq!(field(&rev_att, "event"), Some("attestation_recorded"));
     assert_eq!(field(&rev_att, "claim"), Some("Reviewed"));
 
@@ -7683,7 +7669,14 @@ fn docket_steward_and_migration_controls_round_trip() -> std::io::Result<()> {
         "fee.json",
         r#"{"effective_date":"2026-03-10","idempotency_key":"march-bank-fee","legs":[{"side":"debit","account":"6000","amount":"25.00 USD"},{"side":"credit","account":"1000","amount":"25.00 USD"}],"description":"March wire fee"}"#,
     );
-    let fee_posted = ok(&["post", "--intent", &fee_entry, "--evidence", &bank_oid, "--json"]);
+    let fee_posted = ok(&[
+        "post",
+        "--intent",
+        &fee_entry,
+        "--evidence",
+        &bank_oid,
+        "--json",
+    ]);
     let fee_vid = field(&fee_posted, "vid").unwrap_or_default().to_string();
 
     // Create checkpoint & export `fa proof evidence-disclosure`
@@ -8035,7 +8028,14 @@ fn allocate_and_settle_review_approve_plan_and_commit_workflows() -> std::io::Re
             {"code":"6099","name":"Allocation Residual","type":"Expense","leaf":true,"unit":"USD"}
         ]}"#,
     );
-    ok(&["chart", "import", &chart_path, "--date", "2026-01-01", "--json"]);
+    ok(&[
+        "chart",
+        "import",
+        &chart_path,
+        "--date",
+        "2026-01-01",
+        "--json",
+    ]);
     ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
     ok(&["period", "open", "FY2026-P03", "--json"]);
 
@@ -8270,7 +8270,10 @@ fn allocate_and_settle_review_approve_plan_and_commit_workflows() -> std::io::Re
         settle_rev_s,
         "--json",
     ]);
-    assert_eq!(field(&settle_reviewed, "event"), Some("settlement_reviewed"));
+    assert_eq!(
+        field(&settle_reviewed, "event"),
+        Some("settlement_reviewed")
+    );
     assert_eq!(field(&settle_reviewed, "kind"), Some("single"));
     let settle_rev_digest = field(&settle_reviewed, "review_digest")
         .unwrap_or_default()
@@ -8355,5 +8358,3 @@ fn allocate_and_settle_review_approve_plan_and_commit_workflows() -> std::io::Re
     }
     Ok(())
 }
-
-

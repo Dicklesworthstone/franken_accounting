@@ -1211,8 +1211,12 @@ fn period_plan_only(verb: &str, args: &Args) -> bool {
 /// These concrete handlers prepare and abort the real posting transaction.
 /// No other verb may use a dry-run flag to bypass its confirmation gate.
 fn post_plan_only(verb: &str, args: &Args) -> bool {
-    matches!(verb, "post" | "allocate" | "settle" | "reverse" | "reserve" | "resolve")
-        && (args.switch("--dry-run") || args.switch("--review-only") || args.flag("--review-out").is_some())
+    matches!(
+        verb,
+        "post" | "allocate" | "settle" | "reverse" | "reserve" | "resolve"
+    ) && (args.switch("--dry-run")
+        || args.switch("--review-only")
+        || args.flag("--review-out").is_some())
 }
 
 /// Admit the concrete operation before handlers read input files or the
@@ -3907,7 +3911,11 @@ pub(crate) fn build_proposal_from_intent(
     who: VId,
     capability: Capability,
 ) -> Result<EntryPayload, Fail> {
-    Ok(build_post_request(out, book, args, None, doc, who, capability)?.request.proposal)
+    Ok(
+        build_post_request(out, book, args, None, doc, who, capability)?
+            .request
+            .proposal,
+    )
 }
 
 /// Both plan transports accept their existing canonical binary form and
@@ -4430,7 +4438,10 @@ const MAX_REVIEW_BYTES: usize = {
 
 fn decode_hex_bytes(text: &str, what: &str) -> Result<Vec<u8>, Fail> {
     let trimmed = text.trim();
-    if trimmed.is_empty() || trimmed.len() % 2 != 0 || !trimmed.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if trimmed.is_empty()
+        || trimmed.len() % 2 != 0
+        || !trimmed.bytes().all(|b| b.is_ascii_hexdigit())
+    {
         return Err(usage(
             format!("expected a canonical binary {what} or its complete hex encoding"),
             format!("pass --review <file> or the {what} event's complete bytes hex string"),
@@ -4448,10 +4459,18 @@ fn decode_hex_bytes(text: &str, what: &str) -> Result<Vec<u8>, Fail> {
         .0
         .iter()
         .map(|pair| {
-            let digits = std::str::from_utf8(pair)
-                .map_err(|_| usage("invalid review hex", "pass the complete review bytes string"))?;
-            u8::from_str_radix(digits, 16)
-                .map_err(|_| usage("invalid review hex", "pass the complete review bytes string"))
+            let digits = std::str::from_utf8(pair).map_err(|_| {
+                usage(
+                    "invalid review hex",
+                    "pass the complete review bytes string",
+                )
+            })?;
+            u8::from_str_radix(digits, 16).map_err(|_| {
+                usage(
+                    "invalid review hex",
+                    "pass the complete review bytes string",
+                )
+            })
         })
         .collect()
 }
@@ -4784,7 +4803,9 @@ fn parse_allocation_targets(
                     })?;
                     if amt.unit != unit || amt.mantissa < 0 {
                         return Err(usage(
-                            format!("{what}: basis amount must be non-negative in the allocation unit"),
+                            format!(
+                                "{what}: basis amount must be non-negative in the allocation unit"
+                            ),
                             "use the same unit as the allocation source",
                         ));
                     }
@@ -4825,9 +4846,17 @@ fn parse_allocation_dimensions(doc: &Json) -> Result<Vec<(u32, VId)>, Fail> {
         let what = format!("dimensions[{i}]");
         let dim = match item.get("dimension") {
             Some(Json::Int(n)) => u32::try_from(*n).map_err(|_| {
-                usage(format!("{what}: dimension id out of u32 range"), "dimension: 1")
+                usage(
+                    format!("{what}: dimension id out of u32 range"),
+                    "dimension: 1",
+                )
             })?,
-            _ => return Err(usage(format!("{what}: missing integer `dimension`"), "dimension: 1")),
+            _ => {
+                return Err(usage(
+                    format!("{what}: missing integer `dimension`"),
+                    "dimension: 1",
+                ));
+            }
         };
         let val_s = req_str(item, "value", &what)?;
         let vid = parse_vid(val_s, &format!("{what}.value"))?;
@@ -5089,13 +5118,16 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ));
         }
         let unit = match doc.get("unit").and_then(Json::as_str) {
-            Some(code) => book_ctx
-                .units
-                .lookup(code)
-                .ok_or_else(|| usage(format!("unknown unit `{code}`"), "use a registered unit code such as USD"))?,
+            Some(code) => book_ctx.units.lookup(code).ok_or_else(|| {
+                usage(
+                    format!("unknown unit `{code}`"),
+                    "use a registered unit code such as USD",
+                )
+            })?,
             None => book.spec()?.base_unit,
         };
-        let targets = parse_allocation_targets(&doc, book_ctx.book_id, method, &book_ctx.units, unit)?;
+        let targets =
+            parse_allocation_targets(&doc, book_ctx.book_id, method, &book_ctx.units, unit)?;
         let bal_req = BalanceAllocationRequest {
             source: source_vid,
             period: period.clone(),
@@ -5150,15 +5182,16 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 "check the allocation targets and template fields",
             )
         })?;
-        let review_digest = review.digest().map_err(|e| {
-            Fail::Internal(format!("balance allocation review digest: {e}"))
-        })?;
-        let proposal_digest = review.review().proposal_digest().map_err(|e| {
-            Fail::Internal(format!("balance allocation proposal digest: {e}"))
-        })?;
-        let bytes = review.canonical_bytes().map_err(|e| {
-            Fail::Internal(format!("balance allocation review bytes: {e}"))
-        })?;
+        let review_digest = review
+            .digest()
+            .map_err(|e| Fail::Internal(format!("balance allocation review digest: {e}")))?;
+        let proposal_digest = review
+            .review()
+            .proposal_digest()
+            .map_err(|e| Fail::Internal(format!("balance allocation proposal digest: {e}")))?;
+        let bytes = review
+            .canonical_bytes()
+            .map_err(|e| Fail::Internal(format!("balance allocation review bytes: {e}")))?;
         if review_mode {
             return emit_allocation_reviewed(
                 out,
@@ -5187,7 +5220,8 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 })
             })
             .collect::<Result<Vec<_>, Fail>>()?;
-        let plan = book.plan_balance_allocation(&review, review_digest, approvals, &capability)??;
+        let plan =
+            book.plan_balance_allocation(&review, review_digest, approvals, &capability)??;
         if args.switch("--dry-run") {
             return emit_post_plan(out, &book, &ctx.files, args, &plan);
         }
@@ -5195,7 +5229,11 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         out.at_book(&book)?;
         emit_posted(out, posted, "Allocation", false, None, None)
     } else {
-        let total_s = req_str(&doc, "total", "explicit allocation intent (or supply source_period/--period)")?;
+        let total_s = req_str(
+            &doc,
+            "total",
+            "explicit allocation intent (or supply source_period/--period)",
+        )?;
         let total = Amount::parse(total_s, &book_ctx.units).map_err(|e| {
             usage(
                 format!("total `{total_s}`: {e:?}"),
@@ -5269,15 +5307,15 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 "check the allocation total, source_side, and targets",
             )
         })?;
-        let review_digest = review.digest().map_err(|e| {
-            Fail::Internal(format!("allocation review digest: {e}"))
-        })?;
-        let proposal_digest = review.proposal_digest().map_err(|e| {
-            Fail::Internal(format!("allocation proposal digest: {e}"))
-        })?;
-        let bytes = review.canonical_bytes().map_err(|e| {
-            Fail::Internal(format!("allocation review bytes: {e}"))
-        })?;
+        let review_digest = review
+            .digest()
+            .map_err(|e| Fail::Internal(format!("allocation review digest: {e}")))?;
+        let proposal_digest = review
+            .proposal_digest()
+            .map_err(|e| Fail::Internal(format!("allocation proposal digest: {e}")))?;
+        let bytes = review
+            .canonical_bytes()
+            .map_err(|e| Fail::Internal(format!("allocation review bytes: {e}")))?;
         if review_mode {
             return emit_allocation_reviewed(
                 out,
@@ -5306,7 +5344,8 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 })
             })
             .collect::<Result<Vec<_>, Fail>>()?;
-        let plan = book.plan_allocation_review(&review, review_digest, approvals, &capability)??;
+        let plan =
+            book.plan_allocation_review(&review, review_digest, approvals, &capability)??;
         if args.switch("--dry-run") {
             return emit_post_plan(out, &book, &ctx.files, args, &plan);
         }
@@ -5317,15 +5356,12 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 }
 
 fn parse_settlement_targets(item: &Json, what: &str) -> Result<Vec<(VId, u16)>, Fail> {
-    let arr = item
-        .get("targets")
-        .and_then(Json::as_arr)
-        .ok_or_else(|| {
-            usage(
-                format!("{what}: missing `targets` array"),
-                "targets: [{\"entry\": \"<32-hex-vid>\", \"ordinal\": 0}]",
-            )
-        })?;
+    let arr = item.get("targets").and_then(Json::as_arr).ok_or_else(|| {
+        usage(
+            format!("{what}: missing `targets` array"),
+            "targets: [{\"entry\": \"<32-hex-vid>\", \"ordinal\": 0}]",
+        )
+    })?;
     let mut out = Vec::with_capacity(arr.len());
     for (i, t) in arr.iter().enumerate() {
         let twhat = format!("{what}.targets[{i}]");
@@ -5467,7 +5503,10 @@ fn settle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             })?;
             if let Some(expected) = expected_digest {
                 let actual = review.digest().map_err(|e| {
-                    usage(format!("invalid settlement group review: {e}"), "supply an unchanged review")
+                    usage(
+                        format!("invalid settlement group review: {e}"),
+                        "supply an unchanged review",
+                    )
                 })?;
                 if actual != expected {
                     return Err(Refusal::new(
@@ -5481,7 +5520,10 @@ fn settle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 }
             }
             let prop_digest = review.proposal().proposal_digest().map_err(|e| {
-                usage(format!("invalid settlement proposal: {e}"), "supply an unchanged review")
+                usage(
+                    format!("invalid settlement proposal: {e}"),
+                    "supply an unchanged review",
+                )
             })?;
             let approvals = args
                 .flag_all("--approval")
@@ -5493,8 +5535,14 @@ fn settle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     })
                 })
                 .collect::<Result<Vec<_>, Fail>>()?;
-            let class_name = review.proposal().class.name().unwrap_or("Original").to_string();
-            let group_plan = book.plan_settlement_group_review(&review, approvals, &capability)??;
+            let class_name = review
+                .proposal()
+                .class
+                .name()
+                .unwrap_or("Original")
+                .to_string();
+            let group_plan =
+                book.plan_settlement_group_review(&review, approvals, &capability)??;
             (group_plan.into_post_plan(), class_name)
         } else {
             let review = SettlementReview::decode(&bytes).map_err(|e| {
@@ -5505,7 +5553,10 @@ fn settle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             })?;
             if let Some(expected) = expected_digest {
                 let actual = review.digest().map_err(|e| {
-                    usage(format!("invalid settlement review: {e}"), "supply an unchanged review")
+                    usage(
+                        format!("invalid settlement review: {e}"),
+                        "supply an unchanged review",
+                    )
                 })?;
                 if actual != expected {
                     return Err(Refusal::new(
@@ -5519,7 +5570,10 @@ fn settle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 }
             }
             let prop_digest = review.proposal().proposal_digest().map_err(|e| {
-                usage(format!("invalid settlement proposal: {e}"), "supply an unchanged review")
+                usage(
+                    format!("invalid settlement proposal: {e}"),
+                    "supply an unchanged review",
+                )
             })?;
             let approvals = args
                 .flag_all("--approval")
@@ -5531,7 +5585,12 @@ fn settle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     })
                 })
                 .collect::<Result<Vec<_>, Fail>>()?;
-            let class_name = review.proposal().class.name().unwrap_or("Original").to_string();
+            let class_name = review
+                .proposal()
+                .class
+                .name()
+                .unwrap_or("Original")
+                .to_string();
             let single_plan = book.plan_settlement_review(&review, approvals, &capability)??;
             (single_plan.into_post_plan(), class_name)
         };
@@ -5547,7 +5606,10 @@ fn settle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let text = ctx.files.read_text(path)?;
     let doc = parse_json(path, &text)?;
     let Json::Obj(fields) = &doc else {
-        return Err(usage("settlement intent must be a JSON object", "fa settle --help"));
+        return Err(usage(
+            "settlement intent must be a JSON object",
+            "fa settle --help",
+        ));
     };
     let review_mode = args.flag("--review-out").is_some() || args.switch("--review-only");
     if review_mode && args.switch("--dry-run") {
@@ -5608,15 +5670,16 @@ fn settle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "check the settlement group proposal and targets",
                 )
             })?;
-            let review_digest = review.digest().map_err(|e| {
-                Fail::Internal(format!("settlement group review digest: {e}"))
-            })?;
-            let proposal_digest = review.proposal().proposal_digest().map_err(|e| {
-                Fail::Internal(format!("settlement group proposal digest: {e}"))
-            })?;
-            let bytes = review.canonical_bytes().map_err(|e| {
-                Fail::Internal(format!("settlement group review bytes: {e}"))
-            })?;
+            let review_digest = review
+                .digest()
+                .map_err(|e| Fail::Internal(format!("settlement group review digest: {e}")))?;
+            let proposal_digest = review
+                .proposal()
+                .proposal_digest()
+                .map_err(|e| Fail::Internal(format!("settlement group proposal digest: {e}")))?;
+            let bytes = review
+                .canonical_bytes()
+                .map_err(|e| Fail::Internal(format!("settlement group review bytes: {e}")))?;
             let apps = review
                 .allocations()
                 .iter()
@@ -5656,9 +5719,10 @@ fn settle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 &bytes,
             );
         }
-        let prop_digest = prepared.proposal().proposal_digest().map_err(|e| {
-            Fail::Internal(format!("settlement group proposal digest: {e}"))
-        })?;
+        let prop_digest = prepared
+            .proposal()
+            .proposal_digest()
+            .map_err(|e| Fail::Internal(format!("settlement group proposal digest: {e}")))?;
         let approvals = args
             .flag_all("--approval")
             .iter()
@@ -5694,15 +5758,16 @@ fn settle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "check the settlement proposal and targets",
                 )
             })?;
-            let review_digest = review.digest().map_err(|e| {
-                Fail::Internal(format!("settlement review digest: {e}"))
-            })?;
-            let proposal_digest = review.proposal().proposal_digest().map_err(|e| {
-                Fail::Internal(format!("settlement proposal digest: {e}"))
-            })?;
-            let bytes = review.canonical_bytes().map_err(|e| {
-                Fail::Internal(format!("settlement review bytes: {e}"))
-            })?;
+            let review_digest = review
+                .digest()
+                .map_err(|e| Fail::Internal(format!("settlement review digest: {e}")))?;
+            let proposal_digest = review
+                .proposal()
+                .proposal_digest()
+                .map_err(|e| Fail::Internal(format!("settlement proposal digest: {e}")))?;
+            let bytes = review
+                .canonical_bytes()
+                .map_err(|e| Fail::Internal(format!("settlement review bytes: {e}")))?;
             let alloc = review.allocation();
             let code = accounts
                 .get(&alloc.request.account)
@@ -5731,9 +5796,10 @@ fn settle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 &bytes,
             );
         }
-        let prop_digest = prepared.proposal().proposal_digest().map_err(|e| {
-            Fail::Internal(format!("settlement proposal digest: {e}"))
-        })?;
+        let prop_digest = prepared
+            .proposal()
+            .proposal_digest()
+            .map_err(|e| Fail::Internal(format!("settlement proposal digest: {e}")))?;
         let approvals = args
             .flag_all("--approval")
             .iter()
@@ -9445,11 +9511,7 @@ fn resolve_migration_run_vid(book_id: Id128, text: &str) -> VId {
     fa_model::migration_run_vid(book_id, trimmed)
 }
 
-fn encode_migrate_plan(
-    action_tag: u8,
-    run: VId,
-    proposal: &EntryPayload,
-) -> Result<Vec<u8>, Fail> {
+fn encode_migrate_plan(action_tag: u8, run: VId, proposal: &EntryPayload) -> Result<Vec<u8>, Fail> {
     let payload_bytes = proposal
         .clone()
         .seal(Vec::new(), None)
@@ -9471,27 +9533,26 @@ fn decode_migrate_plan(
     action_name: &str,
 ) -> Result<(VId, EntryPayload), Fail> {
     let mut r = fa_model::Reader::new(bytes);
-    let (tag, run, payload_bytes) =
-        (|| -> Result<(u8, VId, Vec<u8>), fa_model::DecodeError> {
-            let domain: [u8; 16] = r.fixed("migrate_plan.domain")?;
-            if domain != *MIGRATE_PLAN_DOMAIN {
-                return Err(r.invalid("migrate_plan.domain"));
-            }
-            if r.u16("migrate_plan.version")? != MIGRATE_PLAN_VERSION {
-                return Err(r.invalid("migrate_plan.version"));
-            }
-            let tag = r.u8("migrate_plan.action")?;
-            let run = VId(r.u128("migrate_plan.run")?);
-            let payload = r.bytes(MAX_PLAN_BYTES, "migrate_plan.proposal")?.to_vec();
-            r.finish()?;
-            Ok((tag, run, payload))
-        })()
-        .map_err(|e| {
-            usage(
-                format!("invalid migration plan: {e}"),
-                format!("plan first with `fa migrate {action_name} ... --dry-run`"),
-            )
-        })?;
+    let (tag, run, payload_bytes) = (|| -> Result<(u8, VId, Vec<u8>), fa_model::DecodeError> {
+        let domain: [u8; 16] = r.fixed("migrate_plan.domain")?;
+        if domain != *MIGRATE_PLAN_DOMAIN {
+            return Err(r.invalid("migrate_plan.domain"));
+        }
+        if r.u16("migrate_plan.version")? != MIGRATE_PLAN_VERSION {
+            return Err(r.invalid("migrate_plan.version"));
+        }
+        let tag = r.u8("migrate_plan.action")?;
+        let run = VId(r.u128("migrate_plan.run")?);
+        let payload = r.bytes(MAX_PLAN_BYTES, "migrate_plan.proposal")?.to_vec();
+        r.finish()?;
+        Ok((tag, run, payload))
+    })()
+    .map_err(|e| {
+        usage(
+            format!("invalid migration plan: {e}"),
+            format!("plan first with `fa migrate {action_name} ... --dry-run`"),
+        )
+    })?;
     if tag != expected_tag {
         return Err(usage(
             format!("plan file was prepared for a different migration action (tag {tag})"),
@@ -9598,12 +9659,8 @@ fn parse_migration_tb_lines(
             })?;
             (amt.unit, neg)
         } else if let Some(n_str) = item.get("net").and_then(Json::as_str) {
-            let amt = parse_tb_amount_str(
-                n_str,
-                unit_code,
-                &ctx.units,
-                &format!("{what}[{idx}].net"),
-            )?;
+            let amt =
+                parse_tb_amount_str(n_str, unit_code, &ctx.units, &format!("{what}[{idx}].net"))?;
             (amt.unit, amt.mantissa)
         } else {
             return Err(usage(
@@ -9766,9 +9823,7 @@ fn emit_migration_controlled(
 ) {
     let run_hex = format!("{:032x}", controlled.run.0);
     let ctrl_hex = format!("{:032x}", controlled.control_entry.0);
-    let from_json = controlled
-        .from
-        .map_or(Json::Null, |st| s(st.name()));
+    let from_json = controlled.from.map_or(Json::Null, |st| s(st.name()));
     let to_name = controlled.to.name();
     let tie_hex = hex(tie_out_digest);
     out.event(
@@ -9814,16 +9869,15 @@ fn migrate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let description = book.seal_text(description_text)?;
             let mut citations = Vec::new();
             for doc_oid in body.documents() {
-                let commit = book
-                    .document_commitment(&doc_oid)?
-                    .unwrap_or([0u8; 32]);
+                let commit = book.document_commitment(&doc_oid)?.unwrap_or([0u8; 32]);
                 citations.push(fa_model::EvidenceRef {
                     document_oid: doc_oid,
                     doc_commit: commit,
                     role: 1,
                 });
             }
-            let proposal = book.open_migration_proposal(who, &body, citations, &key, description)?;
+            let proposal =
+                book.open_migration_proposal(who, &body, citations, &key, description)?;
             let body_digest = body.digest().map_err(BookError::Kernel)?;
             let controlled = book.open_migration_run(
                 &body,
@@ -9856,7 +9910,12 @@ fn migrate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "migration stage",
                 )?;
                 let (run_vid, proposal) = decode_migrate_plan(&plan_bytes, 0, "stage")?;
-                if let Some(arg_run) = args.positional.get(2).map(String::as_str).or_else(|| args.flag("--run")) {
+                if let Some(arg_run) = args
+                    .positional
+                    .get(2)
+                    .map(String::as_str)
+                    .or_else(|| args.flag("--run"))
+                {
                     let expected = resolve_migration_run_vid(book.context().book_id, arg_run);
                     if expected != run_vid {
                         return Err(usage(
@@ -10073,7 +10132,9 @@ fn migrate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let (run_vid, proposal) = if let Some(plan_path) = args.flag("--plan") {
                 if args.switch("--dry-run") || args.flag("--plan-out").is_some() {
                     return Err(usage(
-                        format!("--plan commits a previously prepared {sub} plan; do not combine with --dry-run or --plan-out"),
+                        format!(
+                            "--plan commits a previously prepared {sub} plan; do not combine with --dry-run or --plan-out"
+                        ),
                         format!("fa migrate {sub} --plan <file>"),
                     ));
                 }
@@ -10084,7 +10145,12 @@ fn migrate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     &format!("migration {sub}"),
                 )?;
                 let (plan_run, decoded) = decode_migrate_plan(&plan_bytes, plan_tag, sub)?;
-                if let Some(arg_run) = args.positional.get(2).map(String::as_str).or_else(|| args.flag("--run")) {
+                if let Some(arg_run) = args
+                    .positional
+                    .get(2)
+                    .map(String::as_str)
+                    .or_else(|| args.flag("--run"))
+                {
                     let expected = resolve_migration_run_vid(book_id, arg_run);
                     if expected != plan_run {
                         return Err(usage(
@@ -10115,7 +10181,8 @@ fn migrate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     .map(|k| k.as_bytes().to_vec())
                     .unwrap_or_else(|| format!("migrate:{sub}:{:032x}", r_vid.0).into_bytes());
                 let description = book.seal_text(args.flag("--description").unwrap_or(""))?;
-                let planned = book.plan_migration_transition(r_vid, kind, who, &key, description)??;
+                let planned =
+                    book.plan_migration_transition(r_vid, kind, who, &key, description)??;
                 (r_vid, planned)
             };
             let digest = proposal

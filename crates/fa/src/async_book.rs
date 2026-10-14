@@ -1020,7 +1020,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         subject: VId,
     ) -> Result<fa_journal::Refusal, BookError> {
         self.query(cx, |db, book| {
-            Ok(fa_journal::evidence::erasure_cut(db, book, capability, subject)?)
+            Ok(fa_journal::evidence::erasure_cut(
+                db, book, capability, subject,
+            )?)
         })
     }
 

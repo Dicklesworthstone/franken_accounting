@@ -13,7 +13,9 @@ use fa::{BookError, PostIntent};
 use fa_journal::custody::CustodyBody;
 use fa_journal::evidence::{Document, document_vid, self_sourced};
 use fa_journal::redaction::{DocumentRead, ViewChunk};
-use fa_model::{ApprovalRef, Erasable, EvidenceRef, Oid, Reader, Writer, account_vid, principal_vid};
+use fa_model::{
+    ApprovalRef, Erasable, EvidenceRef, Oid, Reader, Writer, account_vid, principal_vid,
+};
 use fa_registry::evidence_policy::EvidencePolicy;
 use fa_registry::reason_codes::ReasonCodes;
 use fa_time::DateDay;
@@ -690,8 +692,12 @@ fn hold_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 subjects.push(parse_subject_vid(s_flag, "--subject")?);
             }
             let date = match args.flag("--effective").or_else(|| args.flag("--date")) {
-                Some(d) => DateDay::parse(d)
-                    .map_err(|e| usage(format!("effective date `{d}`: {e:?}"), "--effective YYYY-MM-DD"))?,
+                Some(d) => DateDay::parse(d).map_err(|e| {
+                    usage(
+                        format!("effective date `{d}`: {e:?}"),
+                        "--effective YYYY-MM-DD",
+                    )
+                })?,
                 None => DateDay(0),
             };
             let description = args.flag("--description").unwrap_or("");
@@ -704,14 +710,8 @@ fn hold_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 });
             let capability = ctx.capability(args, &["hold"])?;
             let mut book = ctx.books.open(args)?;
-            let placed = book.place_legal_hold(
-                &capability,
-                subjects,
-                &authority,
-                &key,
-                date,
-                description,
-            )??;
+            let placed =
+                book.place_legal_hold(&capability, subjects, &authority, &key, date, description)??;
             ctx.out.at_book(&book)?;
             let hold_hex = format!("{:032x}", placed.hold.0);
             let subj_json: Vec<Json> = placed
@@ -752,8 +752,12 @@ fn hold_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let who = ctx.principal(args);
             let capability = ctx.capability(args, &["hold"])?;
             let date = match args.flag("--effective").or_else(|| args.flag("--date")) {
-                Some(d) => DateDay::parse(d)
-                    .map_err(|e| usage(format!("effective date `{d}`: {e:?}"), "--effective YYYY-MM-DD"))?,
+                Some(d) => DateDay::parse(d).map_err(|e| {
+                    usage(
+                        format!("effective date `{d}`: {e:?}"),
+                        "--effective YYYY-MM-DD",
+                    )
+                })?,
                 None => DateDay(0),
             };
             let key = args
@@ -795,12 +799,8 @@ fn hold_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             }
             let plan = match args.flag("--plan") {
                 Some(path) => {
-                    let bytes = read_plan_bytes(
-                        &ctx.files,
-                        path,
-                        HOLD_PLAN_DOMAIN,
-                        "legal hold release",
-                    )?;
+                    let bytes =
+                        read_plan_bytes(&ctx.files, path, HOLD_PLAN_DOMAIN, "legal hold release")?;
                     let decoded = decode_release_plan(&bytes)?;
                     if decoded.hold != hold {
                         return Err(usage(
@@ -872,10 +872,7 @@ fn hold_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 .map(|v| s(format!("{:032x}", v.0)))
                 .collect();
             let (release_vid, released_at) = match hold.released {
-                Some((vid, seq)) => (
-                    s(format!("{:032x}", vid.0)),
-                    Json::Int(i128::from(seq.0)),
-                ),
+                Some((vid, seq)) => (s(format!("{:032x}", vid.0)), Json::Int(i128::from(seq.0))),
                 None => (Json::Null, Json::Null),
             };
             ctx.out.event(
@@ -977,10 +974,7 @@ fn attest_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     .ok_or_else(|| {
                         usage(
                             format!("manual assertion reason `{reason_text}` is not registered"),
-                            format!(
-                                "one of: {}",
-                                reasons.listing("manual_assertion")
-                            ),
+                            format!("one of: {}", reasons.listing("manual_assertion")),
                         )
                     })?
             };
@@ -989,17 +983,20 @@ fn attest_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let text = ctx.files.read_text(intent_path)?;
             let doc = parse_json(intent_path, &text)?;
             let mut book = ctx.books.open(args)?;
-            let proposal = build_proposal_from_intent(&ctx.out, &mut book, args, &doc, who, capability.clone())?;
+            let proposal = build_proposal_from_intent(
+                &ctx.out,
+                &mut book,
+                args,
+                &doc,
+                who,
+                capability.clone(),
+            )?;
             let proposal_digest = proposal
                 .proposal_digest()
                 .map_err(fa_journal::KernelError::Model)
                 .map_err(BookError::Kernel)?;
-            let attested = book.record_manual_assertion(
-                &capability,
-                &proposal,
-                reason_code,
-                statement,
-            )??;
+            let attested =
+                book.record_manual_assertion(&capability, &proposal, reason_code, statement)??;
             if let Some(plan_out) = args.flag("--plan-out") {
                 let intent = PostIntent::new(proposal, Vec::new()).map_err(|e| {
                     usage(
@@ -1134,4 +1131,3 @@ fn attest_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         )),
     }
 }
-
