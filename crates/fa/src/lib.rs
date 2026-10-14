@@ -103,12 +103,17 @@ pub use certificate_store::RetainedCertificate;
 pub use document_disclosure::{DisclosureAccess, DocumentDisclosureArtifact};
 pub use evidence_disclosure::{EvidenceDisclosureArtifact, EvidenceDisclosureRequest};
 pub use fa_intents::{IntentError, MAX_PLAN_BYTES, PlanCertificate, PostIntent, PostPlan};
-pub use fa_journal::{AllocationPosting, InstantSelection, UploadRequest};
+pub use fa_journal::{
+    AllocationPosting, InstantSelection, PeriodBalance, Run, RunBody, RunChunk, RunControlRequest,
+    RunControlled, RunMode, RunState, TieOut, TieOutLine, TrialBalanceLine, UploadRequest,
+};
 pub use fa_notary::{
     AccumulatorVerification, BalanceRequest, BundleRequest, BundleScope, Checkpointed, ScopeRequest,
 };
 pub use fa_policy::{Capability, Op, Profile};
-pub use fa_registers::Advance;
+pub use fa_registers::{
+    Advance, EntityCell, EntityCellKey, EntityFold, EntityVerification, RegisterEquals,
+};
 pub use fa_registers::open_items::OpenItemsReport;
 pub use fa_statements::{
     AccountMapping, Column as StatementColumn, Statement, StatementDefinition, StatementKind,

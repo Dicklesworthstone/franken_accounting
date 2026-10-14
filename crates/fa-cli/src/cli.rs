@@ -76,6 +76,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("reserve", reserve_cmd),
     ("resolve", resolve_cmd),
     ("document", document::document_cmd),
+    ("migrate", migrate_cmd),
     ("tb", tb_cmd),
     ("statement", statement_cmd),
     ("replay", notary::replay_cmd),
@@ -1236,6 +1237,40 @@ fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fa
             ("approve", _) => &[Op::Approve],
             ("checkpoint", _) => &[Op::Witness],
             ("proof" | "bundle", _) => &[Op::Read, Op::Produce],
+            ("document", Some("read")) => &[Op::Read],
+            ("document", Some("redact")) => &[Op::Privileged],
+            ("document", Some("disclose")) => &[Op::Read, Op::Produce],
+            ("document", Some("custody")) => {
+                if args.flag("--to").is_some() {
+                    &[Op::Post]
+                } else {
+                    &[Op::Read]
+                }
+            }
+            ("document", Some("erase")) => &[Op::Erase],
+            ("document", Some("hold")) => {
+                if args.positional.get(2).map(String::as_str) == Some("show") {
+                    &[Op::Read]
+                } else {
+                    &[Op::Hold]
+                }
+            }
+            ("document", Some("attest")) => match args.positional.get(2).map(String::as_str) {
+                Some("review") => &[Op::Approve],
+                Some("manual") => &[Op::Post],
+                Some("register-equals") => {
+                    if args.flag("--account").is_some() {
+                        &[Op::Reconcile]
+                    } else {
+                        &[Op::Read]
+                    }
+                }
+                _ => &[Op::Read],
+            },
+            ("migrate", Some("show")) => &[Op::Read],
+            ("migrate", Some("open" | "stage" | "finalize" | "abandon")) => {
+                &[Op::Post, Op::Migrate]
+            }
             _ => {
                 return Err(Refusal::new(
                     fa_journal::refusal::code::CAPABILITY,
@@ -2075,7 +2110,7 @@ pub(crate) fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
-fn parse_json(path: &str, text: &str) -> Result<Json, Fail> {
+pub(crate) fn parse_json(path: &str, text: &str) -> Result<Json, Fail> {
     json::parse(text).map_err(|e| usage(format!("{path}: {e}"), "fa robot-docs examples"))
 }
 
@@ -2212,12 +2247,26 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "fa book create --name \"My Co\" --time-zone UTC",
         ));
     }
+    if args.flag("--opening-date").is_some()
+        && args.positional.get(1).map(String::as_str) != Some("create")
+    {
+        return Err(usage(
+            "--opening-date declares the opening date of a new book; it belongs to book create",
+            "fa book create --name \"My Co\" --opening-date YYYY-MM-DD",
+        ));
+    }
     match args.positional.get(1).map(String::as_str) {
         Some("create") => {
             if args.flag_all("--time-zone").len() > 1 {
                 return Err(usage(
                     "--time-zone may be supplied only once",
                     "--time-zone UTC",
+                ));
+            }
+            if args.flag_all("--opening-date").len() > 1 {
+                return Err(usage(
+                    "--opening-date may be supplied only once",
+                    "--opening-date YYYY-MM-DD",
                 ));
             }
             let time_zone_policy = match args.flag("--time-zone") {
@@ -2229,6 +2278,15 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         "--time-zone UTC (the registered policy), or omit it to leave the policy undeclared",
                     ));
                 }
+            };
+            let opening_date = match args.flag("--opening-date") {
+                None => None,
+                Some(d) => Some(DateDay::parse(d).map_err(|e| {
+                    usage(
+                        format!("--opening-date `{d}`: {e:?}"),
+                        "--opening-date YYYY-MM-DD",
+                    )
+                })?),
             };
             if ctx.books.is_held() {
                 return Err(usage(
@@ -2270,7 +2328,7 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 calendar,
                 time_zone_policy,
                 entities: Vec::new(),
-                opening_date: None,
+                opening_date,
             };
             spec.validate()
                 .map_err(|m| usage(m, "fa book create --book <dir> --name \"My Co\""))?;
@@ -3790,9 +3848,25 @@ fn read_post_plan(files: &Files, path: &str) -> Result<PostPlan, Fail> {
     })
 }
 
+pub(crate) fn build_proposal_from_intent(
+    out: &Out,
+    book: &mut Book,
+    args: &Args,
+    doc: &Json,
+    who: VId,
+    capability: Capability,
+) -> Result<EntryPayload, Fail> {
+    Ok(build_post_request(out, book, args, None, doc, who, capability)?.request.proposal)
+}
+
 /// Both plan transports accept their existing canonical binary form and
 /// its complete hex encoding. Bound allocation before either codec runs.
-fn read_plan_bytes(files: &Files, path: &str, domain: &[u8], kind: &str) -> Result<Vec<u8>, Fail> {
+pub(crate) fn read_plan_bytes(
+    files: &Files,
+    path: &str,
+    domain: &[u8],
+    kind: &str,
+) -> Result<Vec<u8>, Fail> {
     let limit = MAX_PLAN_BYTES * 2 + 2; // hex, optionally followed by CRLF
     let read = |reader: &mut dyn Read| -> Result<Vec<u8>, Fail> {
         let mut bytes = Vec::new();
@@ -3883,7 +3957,7 @@ fn read_plan_bytes(files: &Files, path: &str, domain: &[u8], kind: &str) -> Resu
     Ok(decoded)
 }
 
-fn write_post_plan(files: &Files, path: &str, bytes: &[u8]) -> Result<(), Fail> {
+pub(crate) fn write_post_plan(files: &Files, path: &str, bytes: &[u8]) -> Result<(), Fail> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -7954,6 +8028,846 @@ fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             Ok(())
         }
         _ => Err(unhandled("procedure", sub)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// migrate (plan §8.6, Appendix A MigrationRun, bead fa-wk4h)
+// ---------------------------------------------------------------------------
+
+const MIGRATE_PLAN_DOMAIN: &[u8; 16] = b"FA-MIGRATE-PLAN\0";
+const MIGRATE_PLAN_VERSION: u16 = 1;
+
+fn resolve_migration_run_vid(book_id: Id128, text: &str) -> VId {
+    let trimmed = text.strip_prefix("MR:").unwrap_or(text);
+    if trimmed.len() == 32 && trimmed.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if let Ok(v) = u128::from_str_radix(trimmed, 16) {
+            return VId(v);
+        }
+    }
+    fa_model::migration_run_vid(book_id, trimmed)
+}
+
+fn encode_migrate_plan(
+    action_tag: u8,
+    run: VId,
+    proposal: &EntryPayload,
+) -> Result<Vec<u8>, Fail> {
+    let payload_bytes = proposal
+        .clone()
+        .seal(Vec::new(), None)
+        .and_then(|entry| entry.encode())
+        .map_err(|e| Fail::Internal(format!("encode migration proposal: {e}")))?;
+    let mut w = fa_model::Writer::new();
+    w.fixed(MIGRATE_PLAN_DOMAIN)
+        .u16(MIGRATE_PLAN_VERSION)
+        .u8(action_tag)
+        .u128(run.0)
+        .bytes(&payload_bytes);
+    w.finish()
+        .map_err(|e| Fail::Internal(format!("encode migration plan: {e}")))
+}
+
+fn decode_migrate_plan(
+    bytes: &[u8],
+    expected_tag: u8,
+    action_name: &str,
+) -> Result<(VId, EntryPayload), Fail> {
+    let mut r = fa_model::Reader::new(bytes);
+    let (tag, run, payload_bytes) =
+        (|| -> Result<(u8, VId, Vec<u8>), fa_model::DecodeError> {
+            let domain: [u8; 16] = r.fixed("migrate_plan.domain")?;
+            if domain != *MIGRATE_PLAN_DOMAIN {
+                return Err(r.invalid("migrate_plan.domain"));
+            }
+            if r.u16("migrate_plan.version")? != MIGRATE_PLAN_VERSION {
+                return Err(r.invalid("migrate_plan.version"));
+            }
+            let tag = r.u8("migrate_plan.action")?;
+            let run = VId(r.u128("migrate_plan.run")?);
+            let payload = r.bytes(MAX_PLAN_BYTES, "migrate_plan.proposal")?.to_vec();
+            r.finish()?;
+            Ok((tag, run, payload))
+        })()
+        .map_err(|e| {
+            usage(
+                format!("invalid migration plan: {e}"),
+                format!("plan first with `fa migrate {action_name} ... --dry-run`"),
+            )
+        })?;
+    if tag != expected_tag {
+        return Err(usage(
+            format!("plan file was prepared for a different migration action (tag {tag})"),
+            format!("pass a plan prepared with `fa migrate {action_name} --dry-run`"),
+        ));
+    }
+    let proposal = fa_model::Entry::decode(&payload_bytes)
+        .map(|entry| entry.proposal)
+        .map_err(|e| {
+            usage(
+                format!("invalid migration proposal in plan: {e}"),
+                format!("plan first with `fa migrate {action_name} ... --dry-run`"),
+            )
+        })?;
+    Ok((run, proposal))
+}
+
+fn parse_tb_amount_str(
+    raw: &str,
+    unit_code: &str,
+    units: &fa_money::UnitRegistry,
+    what: &str,
+) -> Result<Amount, Fail> {
+    let trimmed = raw.trim();
+    let candidate = if trimmed.contains(' ') {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed} {unit_code}")
+    };
+    Amount::parse(&candidate, units).map_err(|e| {
+        usage(
+            format!("{what}: invalid amount `{raw}`: {e}"),
+            "\"10.00\" or \"10.00 USD\"",
+        )
+    })
+}
+
+fn parse_migration_tb_lines(
+    book: &Book,
+    value: Option<&Json>,
+    what: &str,
+) -> Result<Vec<fa_journal::TrialBalanceLine>, Fail> {
+    let Some(Json::Arr(items)) = value else {
+        return Err(usage(
+            format!("{what} must be a JSON array of trial balance lines"),
+            "lines: [{\"account\": \"1000\", \"unit\": \"USD\", \"debit\": \"10.00\"}]",
+        ));
+    };
+    let default_unit = book.spec()?.base_unit;
+    let ctx = book.context();
+    let default_unit_code = ctx
+        .units
+        .get(default_unit)
+        .map(|u| u.code.as_str())
+        .unwrap_or("USD");
+    let mut out = Vec::with_capacity(items.len());
+    for (idx, item) in items.iter().enumerate() {
+        let acct = item
+            .get("account")
+            .or_else(|| item.get("account_code"))
+            .and_then(Json::as_str)
+            .ok_or_else(|| {
+                usage(
+                    format!("{what}[{idx}]: `account` (or `account_code`) must be a string"),
+                    "{\"account\": \"1000\", \"debit\": \"10.00\"}",
+                )
+            })?;
+        let unit = match item.get("unit").and_then(Json::as_str) {
+            None => default_unit,
+            Some(code) => ctx.units.lookup(code).ok_or_else(|| {
+                usage(
+                    format!("{what}[{idx}]: unknown unit `{code}`"),
+                    "use a registered unit code such as USD",
+                )
+            })?,
+        };
+        let unit_code = ctx
+            .units
+            .get(unit)
+            .map(|u| u.code.as_str())
+            .unwrap_or(default_unit_code);
+        let (line_unit, mantissa) = if let Some(Json::Int(m)) = item.get("mantissa") {
+            (unit, *m)
+        } else if let Some(d_str) = item.get("debit").and_then(Json::as_str) {
+            let amt = parse_tb_amount_str(
+                d_str,
+                unit_code,
+                &ctx.units,
+                &format!("{what}[{idx}].debit"),
+            )?;
+            (amt.unit, amt.mantissa)
+        } else if let Some(c_str) = item.get("credit").and_then(Json::as_str) {
+            let amt = parse_tb_amount_str(
+                c_str,
+                unit_code,
+                &ctx.units,
+                &format!("{what}[{idx}].credit"),
+            )?;
+            let neg = amt.mantissa.checked_neg().ok_or_else(|| {
+                usage(
+                    format!("{what}[{idx}]: credit amount overflows"),
+                    "\"credit\": \"10.00\"",
+                )
+            })?;
+            (amt.unit, neg)
+        } else if let Some(n_str) = item.get("net").and_then(Json::as_str) {
+            let amt = parse_tb_amount_str(
+                n_str,
+                unit_code,
+                &ctx.units,
+                &format!("{what}[{idx}].net"),
+            )?;
+            (amt.unit, amt.mantissa)
+        } else {
+            return Err(usage(
+                format!(
+                    "{what}[{idx}]: supply `debit`, `credit`, `net`, or `mantissa` on each trial balance line"
+                ),
+                "{\"account\": \"1000\", \"debit\": \"10.00\"}",
+            ));
+        };
+        out.push(fa_journal::TrialBalanceLine {
+            account_code: acct.to_string(),
+            unit: line_unit,
+            mantissa,
+        });
+    }
+    Ok(out)
+}
+
+fn parse_migration_run_body(
+    book: &Book,
+    args: &Args,
+    doc: &Json,
+) -> Result<fa_journal::RunBody, Fail> {
+    let run_key = doc
+        .get("run_key")
+        .and_then(Json::as_str)
+        .or_else(|| args.flag("--run"))
+        .or_else(|| args.flag("--key"))
+        .ok_or_else(|| {
+            usage(
+                "migration run requires `run_key` in the intent or `--run <key>`",
+                "\"run_key\": \"go-live-2026\"",
+            )
+        })?
+        .to_string();
+    let source_system = doc
+        .get("source_system")
+        .and_then(Json::as_str)
+        .unwrap_or("legacy")
+        .to_string();
+    let mode_str = doc
+        .get("mode")
+        .and_then(Json::as_str)
+        .unwrap_or("OpeningOnly");
+    let mode = match mode_str {
+        "OpeningOnly" | "opening_only" | "opening-only" => fa_journal::RunMode::OpeningOnly,
+        "PeriodBalances" | "period_balances" | "period-balances" => {
+            fa_journal::RunMode::PeriodBalances
+        }
+        "FullDetail" | "full_detail" | "full-detail" => fa_journal::RunMode::FullDetail,
+        other => {
+            return Err(usage(
+                format!("unknown migration mode `{other}`"),
+                "mode: OpeningOnly | PeriodBalances | FullDetail",
+            ));
+        }
+    };
+    let tb_str = doc
+        .get("trial_balance")
+        .and_then(Json::as_str)
+        .or_else(|| args.flag("--evidence"))
+        .ok_or_else(|| {
+            usage(
+                "migration run requires `trial_balance` document oid in the intent or `--evidence <oid>`",
+                "\"trial_balance\": \"<64-hex-oid>\"",
+            )
+        })?;
+    let trial_balance = Oid(document::hex32(tb_str, "trial_balance")?);
+    let opening_date_str = req_str(doc, "opening_date", "migration run")?;
+    let opening_date = DateDay::parse(opening_date_str).map_err(|e| {
+        usage(
+            format!("opening_date `{opening_date_str}`: {e:?}"),
+            "\"opening_date\": \"YYYY-MM-DD\"",
+        )
+    })?;
+    let sole_opening_source = match doc.get("sole_opening_source") {
+        None => false,
+        Some(Json::Bool(b)) => *b,
+        Some(_) => {
+            return Err(usage(
+                "sole_opening_source must be a boolean",
+                "\"sole_opening_source\": true|false",
+            ));
+        }
+    };
+    let lines = if doc.get("lines").is_none() && sole_opening_source {
+        Vec::new()
+    } else {
+        parse_migration_tb_lines(book, doc.get("lines"), "lines")?
+    };
+    let periods = match doc.get("periods") {
+        None => Vec::new(),
+        Some(Json::Arr(items)) => {
+            let mut ps = Vec::with_capacity(items.len());
+            for (i, p) in items.iter().enumerate() {
+                let code = p
+                    .get("period")
+                    .or_else(|| p.get("period_code"))
+                    .and_then(Json::as_str)
+                    .ok_or_else(|| {
+                        usage(
+                            format!("periods[{i}]: `period` (or `period_code`) must be a string"),
+                            "\"period\": \"FY2025-P12\"",
+                        )
+                    })?
+                    .to_string();
+                let p_tb = match p.get("trial_balance").and_then(Json::as_str) {
+                    Some(s_oid) => Oid(document::hex32(s_oid, "period.trial_balance")?),
+                    None => trial_balance,
+                };
+                let p_lines =
+                    parse_migration_tb_lines(book, p.get("lines"), &format!("periods[{i}].lines"))?;
+                ps.push(fa_journal::PeriodBalance {
+                    period_code: code,
+                    trial_balance: p_tb,
+                    lines: p_lines,
+                });
+            }
+            ps
+        }
+        Some(_) => {
+            return Err(usage(
+                "`periods` must be a JSON array",
+                "periods: [{\"period\": \"FY2025-P12\", \"lines\": [...]}]",
+            ));
+        }
+    };
+    let detail_base = match doc.get("detail_base") {
+        None => Vec::new(),
+        Some(v) => parse_migration_tb_lines(book, Some(v), "detail_base")?,
+    };
+    Ok(fa_journal::RunBody {
+        book_id: book.context().book_id,
+        run_key,
+        source_system,
+        mode,
+        trial_balance,
+        opening_date,
+        lines,
+        periods,
+        detail_base,
+        sole_opening_source,
+    })
+}
+
+fn run_mode_name(mode: fa_journal::RunMode) -> &'static str {
+    match mode {
+        fa_journal::RunMode::OpeningOnly => "OpeningOnly",
+        fa_journal::RunMode::PeriodBalances => "PeriodBalances",
+        fa_journal::RunMode::FullDetail => "FullDetail",
+    }
+}
+
+fn emit_migration_controlled(
+    out: &Out,
+    action: &str,
+    run_key: &str,
+    tie_out_digest: &[u8; 32],
+    controlled: &fa_journal::RunControlled,
+) {
+    let run_hex = format!("{:032x}", controlled.run.0);
+    let ctrl_hex = format!("{:032x}", controlled.control_entry.0);
+    let from_json = controlled
+        .from
+        .map_or(Json::Null, |st| s(st.name()));
+    let to_name = controlled.to.name();
+    let tie_hex = hex(tie_out_digest);
+    out.event(
+        "migration_controlled",
+        vec![
+            ("run_vid", s(&run_hex)),
+            ("run_key", s(run_key)),
+            ("action", s(action)),
+            ("from", from_json),
+            ("to", s(to_name)),
+            ("control_entry", s(&ctrl_hex)),
+            ("recorded_at", Json::Int(i128::from(controlled.recorded_at.0))),
+            ("already_recorded", Json::Bool(controlled.already_recorded)),
+            ("chunk_count", Json::Int(controlled.chunks.len() as i128)),
+            ("tie_out_digest", s(&tie_hex)),
+        ],
+        &format!(
+            "migration run `{run_key}` ({run_hex}): {action} -> {to_name} at {} (control entry {ctrl_hex})",
+            controlled.recorded_at.0
+        ),
+    );
+}
+
+fn migrate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    match args.positional.get(1).map(String::as_str) {
+        Some("open") => {
+            let path = args.require("--intent", "run.json (or - for stdin)")?;
+            let text = ctx.files.read_text(path)?;
+            let doc = parse_json(path, &text)?;
+            let who = ctx.principal(args);
+            let capability = ctx.capability(args, &["migrate"])?;
+            let mut book = ctx.books.open(args)?;
+            let body = parse_migration_run_body(&book, args, &doc)?;
+            let key = args
+                .flag("--key")
+                .or_else(|| doc.get("idempotency_key").and_then(Json::as_str))
+                .map(|k| k.as_bytes().to_vec())
+                .unwrap_or_else(|| format!("migrate:open:{}", body.run_key).into_bytes());
+            let description_text = args
+                .flag("--description")
+                .or_else(|| doc.get("description").and_then(Json::as_str))
+                .unwrap_or("");
+            let description = book.seal_text(description_text)?;
+            let mut citations = Vec::new();
+            for doc_oid in body.documents() {
+                let commit = book
+                    .document_commitment(&doc_oid)?
+                    .unwrap_or([0u8; 32]);
+                citations.push(fa_model::EvidenceRef {
+                    document_oid: doc_oid,
+                    doc_commit: commit,
+                    role: 1,
+                });
+            }
+            let proposal = book.open_migration_proposal(who, &body, citations, &key, description)?;
+            let body_digest = body.digest().map_err(BookError::Kernel)?;
+            let controlled = book.open_migration_run(
+                &body,
+                fa_journal::RunControlRequest {
+                    proposal,
+                    capability,
+                    approvals: Vec::new(),
+                },
+            )??;
+            ctx.out.at_book(&book)?;
+            emit_migration_controlled(&ctx.out, "open", &body.run_key, &body_digest, &controlled);
+            Ok(())
+        }
+        Some("stage") => {
+            let who = ctx.principal(args);
+            let capability = ctx.capability(args, &["post", "migrate"])?;
+            let approval_flags = args.flag_all("--approval");
+            let mut book = ctx.books.open(args)?;
+            if let Some(plan_path) = args.flag("--plan") {
+                if args.switch("--dry-run") || args.flag("--plan-out").is_some() {
+                    return Err(usage(
+                        "--plan commits a previously prepared stage plan; do not combine with --dry-run or --plan-out",
+                        "fa migrate stage --plan <file> --approval <vid> --approval <vid>",
+                    ));
+                }
+                let plan_bytes = read_plan_bytes(
+                    &ctx.files,
+                    plan_path,
+                    MIGRATE_PLAN_DOMAIN,
+                    "migration stage",
+                )?;
+                let (run_vid, proposal) = decode_migrate_plan(&plan_bytes, 0, "stage")?;
+                if let Some(arg_run) = args.positional.get(2).map(String::as_str).or_else(|| args.flag("--run")) {
+                    let expected = resolve_migration_run_vid(book.context().book_id, arg_run);
+                    if expected != run_vid {
+                        return Err(usage(
+                            format!(
+                                "{plan_path} stages into run {:032x}, not {:032x}",
+                                run_vid.0, expected.0
+                            ),
+                            "pass the stage plan prepared for this migration run",
+                        ));
+                    }
+                }
+                let digest = proposal
+                    .proposal_digest()
+                    .map_err(|e| Fail::Internal(format!("proposal digest: {e}")))?;
+                let approvals = approval_flags
+                    .iter()
+                    .map(|v| {
+                        Ok(fa_model::ApprovalRef {
+                            approval_vid: parse_vid(v, "--approval")?,
+                            approved_digest: digest,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, Fail>>()?;
+                let posted = book.post(PostRequest {
+                    proposal,
+                    approvals,
+                    plan_certificate: None,
+                    capability,
+                })??;
+                ctx.out.at_book(&book)?;
+                return emit_posted(&ctx.out, posted, "Migration", false, None, None);
+            }
+            let path = args.require("--intent", "chunk.json (or - for stdin)")?;
+            let text = ctx.files.read_text(path)?;
+            let doc = parse_json(path, &text)?;
+            let Json::Obj(raw_fields) = &doc else {
+                return Err(usage(
+                    "migration chunk intent must be a JSON object",
+                    "fa robot-docs examples",
+                ));
+            };
+            let run_str = args
+                .positional
+                .get(2)
+                .map(String::as_str)
+                .or_else(|| args.flag("--run"))
+                .or_else(|| doc.get("run").and_then(Json::as_str))
+                .or_else(|| doc.get("run_key").and_then(Json::as_str))
+                .ok_or_else(|| {
+                    usage(
+                        "`fa migrate stage` needs a migration run key or vid (`--run <key|vid>` or positional)",
+                        "fa migrate stage <run_key_or_vid> --intent chunk.json --book <dir> --json",
+                    )
+                })?;
+            let book_id = book.context().book_id;
+            let run_vid = resolve_migration_run_vid(book_id, run_str);
+            let run_row = book.migration_run(run_vid, None)?;
+            let mut filtered = Vec::new();
+            let mut has_class = false;
+            let mut has_period = false;
+            for (k, v) in raw_fields {
+                if matches!(
+                    k.as_str(),
+                    "run"
+                        | "run_key"
+                        | "source_system"
+                        | "source_id"
+                        | "source_recorded_at_ns"
+                        | "source_entered_by"
+                        | "source_approved_by"
+                        | "batch_oid"
+                ) {
+                    continue;
+                }
+                if k == "class" {
+                    has_class = true;
+                }
+                if k == "effective_period" {
+                    has_period = true;
+                }
+                filtered.push((k.clone(), v.clone()));
+            }
+            if !has_class {
+                filtered.push(("class".to_string(), s("Migration")));
+            }
+            if !has_period {
+                if let Some(p_flag) = args.flag("--period") {
+                    filtered.push(("effective_period".to_string(), s(p_flag)));
+                }
+            }
+            let post_doc = Json::Obj(filtered);
+            let mut proposal = build_proposal_from_intent(
+                &ctx.out,
+                &mut book,
+                args,
+                &post_doc,
+                who,
+                capability.clone(),
+            )?;
+            proposal.class = EntryClass::MIGRATION;
+            let source_system = doc
+                .get("source_system")
+                .and_then(Json::as_str)
+                .map(str::to_string)
+                .or_else(|| run_row.as_ref().map(|r| r.body.source_system.clone()))
+                .unwrap_or_else(|| "legacy".to_string());
+            let default_source_id = String::from_utf8_lossy(&proposal.idempotency_key).into_owned();
+            let source_id_str = doc
+                .get("source_id")
+                .and_then(Json::as_str)
+                .unwrap_or(&default_source_id);
+            let source_id = book.seal_text(source_id_str)?;
+            let source_recorded_at_ns = match doc.get("source_recorded_at_ns") {
+                None | Some(Json::Null) => None,
+                Some(Json::Int(n)) => Some(i64::try_from(*n).map_err(|_| {
+                    usage(
+                        "source_recorded_at_ns must fit in i64",
+                        "\"source_recorded_at_ns\": 1700000000000000000",
+                    )
+                })?),
+                Some(_) => {
+                    return Err(usage(
+                        "source_recorded_at_ns must be an integer",
+                        "\"source_recorded_at_ns\": 1700000000000000000",
+                    ));
+                }
+            };
+            let source_entered_by = match doc.get("source_entered_by").and_then(Json::as_str) {
+                Some(v) => Some(book.seal_text(v)?),
+                None => None,
+            };
+            let source_approved_by = match doc.get("source_approved_by").and_then(Json::as_str) {
+                Some(v) => Some(book.seal_text(v)?),
+                None => None,
+            };
+            let batch_oid = match doc.get("batch_oid").and_then(Json::as_str) {
+                Some(b_str) => Oid(document::hex32(b_str, "batch_oid")?),
+                None => proposal
+                    .evidence
+                    .first()
+                    .map(|e| e.document_oid)
+                    .or_else(|| run_row.as_ref().map(|r| r.body.trial_balance))
+                    .unwrap_or(Oid([0u8; 32])),
+            };
+            proposal.origin = EntryOrigin::Migration {
+                run_ref: run_vid,
+                source_system,
+                source_id,
+                source_recorded_at_ns,
+                source_entered_by,
+                source_approved_by,
+                batch_oid,
+            };
+            let digest = proposal
+                .proposal_digest()
+                .map_err(|e| Fail::Internal(format!("proposal digest: {e}")))?;
+            if args.switch("--dry-run") || args.flag("--plan-out").is_some() {
+                let bytes = encode_migrate_plan(0, run_vid, &proposal)?;
+                let plan_out = args.flag("--plan-out");
+                if let Some(out_path) = plan_out {
+                    write_post_plan(&ctx.files, out_path, &bytes)?;
+                }
+                ctx.out.at_book(&book)?;
+                let run_hex = format!("{:032x}", run_vid.0);
+                let digest_hex = hex(&digest);
+                ctx.out.event(
+                    "migration_planned",
+                    vec![
+                        ("run_vid", s(&run_hex)),
+                        ("action", s("stage")),
+                        ("proposal_digest", s(&digest_hex)),
+                        ("tie_out_digest", Json::Null),
+                        ("chunk_count", Json::Int(0)),
+                        ("bytes", s(hex(&bytes))),
+                        ("plan", plan_out.map_or(Json::Null, s)),
+                    ],
+                    &format!(
+                        "planned migration chunk for run {run_hex}; approvals bind proposal {digest_hex}"
+                    ),
+                );
+                return Ok(());
+            }
+            let approvals = approval_flags
+                .iter()
+                .map(|v| {
+                    Ok(fa_model::ApprovalRef {
+                        approval_vid: parse_vid(v, "--approval")?,
+                        approved_digest: digest,
+                    })
+                })
+                .collect::<Result<Vec<_>, Fail>>()?;
+            let posted = book.post(PostRequest {
+                proposal,
+                approvals,
+                plan_certificate: None,
+                capability,
+            })??;
+            ctx.out.at_book(&book)?;
+            emit_posted(&ctx.out, posted, "Migration", false, None, None)
+        }
+        Some(sub @ ("finalize" | "abandon")) => {
+            let is_finalize = sub == "finalize";
+            let kind = if is_finalize {
+                fa_journal::migration::kind::FINALIZE
+            } else {
+                fa_journal::migration::kind::ABANDON
+            };
+            let plan_tag: u8 = if is_finalize { 1 } else { 2 };
+            let who = ctx.principal(args);
+            let capability = ctx.capability(args, &["migrate"])?;
+            let approval_flags = args.flag_all("--approval");
+            let mut book = ctx.books.open(args)?;
+            let book_id = book.context().book_id;
+            let (run_vid, proposal) = if let Some(plan_path) = args.flag("--plan") {
+                if args.switch("--dry-run") || args.flag("--plan-out").is_some() {
+                    return Err(usage(
+                        format!("--plan commits a previously prepared {sub} plan; do not combine with --dry-run or --plan-out"),
+                        format!("fa migrate {sub} --plan <file>"),
+                    ));
+                }
+                let plan_bytes = read_plan_bytes(
+                    &ctx.files,
+                    plan_path,
+                    MIGRATE_PLAN_DOMAIN,
+                    &format!("migration {sub}"),
+                )?;
+                let (plan_run, decoded) = decode_migrate_plan(&plan_bytes, plan_tag, sub)?;
+                if let Some(arg_run) = args.positional.get(2).map(String::as_str).or_else(|| args.flag("--run")) {
+                    let expected = resolve_migration_run_vid(book_id, arg_run);
+                    if expected != plan_run {
+                        return Err(usage(
+                            format!(
+                                "{plan_path} plans {sub} of run {:032x}, not {:032x}",
+                                plan_run.0, expected.0
+                            ),
+                            "pass the migration plan prepared for this run",
+                        ));
+                    }
+                }
+                (plan_run, decoded)
+            } else {
+                let run_str = args
+                    .positional
+                    .get(2)
+                    .map(String::as_str)
+                    .or_else(|| args.flag("--run"))
+                    .ok_or_else(|| {
+                        usage(
+                            format!("`fa migrate {sub}` needs a migration run key or vid"),
+                            format!("fa migrate {sub} <run_key_or_vid> --book <dir> --json"),
+                        )
+                    })?;
+                let r_vid = resolve_migration_run_vid(book_id, run_str);
+                let key = args
+                    .flag("--key")
+                    .map(|k| k.as_bytes().to_vec())
+                    .unwrap_or_else(|| format!("migrate:{sub}:{:032x}", r_vid.0).into_bytes());
+                let description = book.seal_text(args.flag("--description").unwrap_or(""))?;
+                let planned = book.plan_migration_transition(r_vid, kind, who, &key, description)??;
+                (r_vid, planned)
+            };
+            let digest = proposal
+                .proposal_digest()
+                .map_err(|e| Fail::Internal(format!("proposal digest: {e}")))?;
+            let tie_out_digest = match &proposal.control {
+                Some(ControlPayload::MigrationControl { tie_out_digest, .. }) => *tie_out_digest,
+                _ => [0u8; 32],
+            };
+            let run_row = book.migration_run(run_vid, None)?;
+            let chunk_count = match &run_row {
+                Some(r) => book.migration_tie_out(r, None)?.chunks.len(),
+                None => 0,
+            };
+            if args.switch("--dry-run") || args.flag("--plan-out").is_some() {
+                let bytes = encode_migrate_plan(plan_tag, run_vid, &proposal)?;
+                let plan_out = args.flag("--plan-out");
+                if let Some(out_path) = plan_out {
+                    write_post_plan(&ctx.files, out_path, &bytes)?;
+                }
+                ctx.out.at_book(&book)?;
+                let run_hex = format!("{:032x}", run_vid.0);
+                let digest_hex = hex(&digest);
+                let tie_hex = hex(&tie_out_digest);
+                ctx.out.event(
+                    "migration_planned",
+                    vec![
+                        ("run_vid", s(&run_hex)),
+                        ("action", s(sub)),
+                        ("proposal_digest", s(&digest_hex)),
+                        ("tie_out_digest", s(&tie_hex)),
+                        ("chunk_count", Json::Int(chunk_count as i128)),
+                        ("bytes", s(hex(&bytes))),
+                        ("plan", plan_out.map_or(Json::Null, s)),
+                    ],
+                    &format!(
+                        "planned {sub} of migration run {run_hex} ({chunk_count} chunk(s), tie-out {tie_hex}); approvals bind proposal {digest_hex}"
+                    ),
+                );
+                return Ok(());
+            }
+            let approvals = approval_flags
+                .iter()
+                .map(|v| {
+                    Ok(fa_model::ApprovalRef {
+                        approval_vid: parse_vid(v, "--approval")?,
+                        approved_digest: digest,
+                    })
+                })
+                .collect::<Result<Vec<_>, Fail>>()?;
+            let controlled = book.transition_migration_run(fa_journal::RunControlRequest {
+                proposal,
+                capability,
+                approvals,
+            })??;
+            ctx.out.at_book(&book)?;
+            let run_key = run_row
+                .as_ref()
+                .map(|r| r.body.run_key.as_str())
+                .unwrap_or("");
+            emit_migration_controlled(&ctx.out, sub, run_key, &tie_out_digest, &controlled);
+            Ok(())
+        }
+        Some("show") => {
+            let run_str = args
+                .positional
+                .get(2)
+                .map(String::as_str)
+                .or_else(|| args.flag("--run"))
+                .ok_or_else(|| {
+                    usage(
+                        "`fa migrate show` needs a migration run key or vid",
+                        "fa migrate show <run_key_or_vid> --book <dir> --json",
+                    )
+                })?;
+            let book = ctx.books.open(args)?;
+            let (known_at, _requested_utc_ns) = known_at_flag(args, &book, &ctx.out)?;
+            let run_vid = resolve_migration_run_vid(book.context().book_id, run_str);
+            let Some(run) = book.migration_run(run_vid, known_at)? else {
+                return Err(Refusal::new(
+                    fa_journal::refusal::code::MIGRATION_OUTSIDE_RUN,
+                    exit::REFUSAL,
+                    format!("no migration run {:032x} in this book", run_vid.0),
+                    "plan §8.6 (MigrationRun)",
+                    "open the run first with `fa migrate open`",
+                )
+                .into());
+            };
+            let tie = book.migration_tie_out(&run, known_at)?;
+            ctx.out.at_book(&book)?;
+            let units = &book.context().units;
+            let run_hex = format!("{:032x}", run.vid.0);
+            let chunks_json: Vec<Json> = tie
+                .chunks
+                .iter()
+                .map(|c| {
+                    obj(vec![
+                        ("vid", s(format!("{:032x}", c.vid.0))),
+                        ("proposal_digest", s(hex(&c.proposal_digest))),
+                        ("recorded_at", Json::Int(i128::from(c.recorded_at.0))),
+                    ])
+                })
+                .collect();
+            let mut mismatches_json = Vec::with_capacity(tie.mismatches.len());
+            for m in &tie.mismatches {
+                let unit_code = units
+                    .get(m.unit)
+                    .map(|u| u.code.clone())
+                    .unwrap_or_else(|| format!("{}", m.unit.0));
+                let declared_s = render_amount(Amount::new(m.unit, m.declared), units)?;
+                let folded_s = render_amount(Amount::new(m.unit, m.folded), units)?;
+                mismatches_json.push(obj(vec![
+                    ("period", m.period.as_deref().map_or(Json::Null, s)),
+                    ("account_code", s(&m.account_code)),
+                    ("unit", s(&unit_code)),
+                    ("declared", s(&declared_s)),
+                    ("folded", s(&folded_s)),
+                ]));
+            }
+            let ties_out = tie.mismatches.is_empty();
+            let tie_hex = hex(&tie.digest);
+            ctx.out.event(
+                "migration_run",
+                vec![
+                    ("run_vid", s(&run_hex)),
+                    ("run_key", s(&run.body.run_key)),
+                    ("source_system", s(&run.body.source_system)),
+                    ("mode", s(run_mode_name(run.body.mode))),
+                    ("state", s(run.state.name())),
+                    ("opened_at", Json::Int(i128::from(run.opened_at.0))),
+                    ("opening_date", s(run.body.opening_date.render())),
+                    ("trial_balance_oid", s(hex(&run.body.trial_balance.0))),
+                    ("chunk_count", Json::Int(tie.chunks.len() as i128)),
+                    ("chunks", Json::Arr(chunks_json)),
+                    ("tie_out_digest", s(&tie_hex)),
+                    ("ties_out", Json::Bool(ties_out)),
+                    ("mismatches", Json::Arr(mismatches_json)),
+                ],
+                &format!(
+                    "migration run `{}` ({run_hex}): {} · mode {} · {} chunk(s) · ties_out={ties_out}",
+                    run.body.run_key,
+                    run.state.name(),
+                    run_mode_name(run.body.mode),
+                    tie.chunks.len()
+                ),
+            );
+            Ok(())
+        }
+        other => Err(unhandled("migrate", other)),
     }
 }
 

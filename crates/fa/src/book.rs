@@ -693,6 +693,21 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.post_balancing(&purposes, req, leg)))
     }
 
+    /// Build the `Open` control proposal for `body` (plan §8.6).
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_migration_proposal(
+        &self,
+        principal: VId,
+        body: &fa_journal::RunBody,
+        citations: Vec<fa_model::EvidenceRef>,
+        idempotency_key: &[u8],
+        description: Erasable<String>,
+    ) -> Result<fa_model::EntryPayload, BookError> {
+        with_store!(&self.store, core => core.open_migration_proposal(
+            principal, body, citations, idempotency_key, description,
+        ))
+    }
+
     /// Open a migration run (plan §8.6): journal its body — the legacy trial
     /// balance as typed lines — and its `Open` record citing the trial
     /// balance document. Chunks then post as `Migration` entries naming the
@@ -738,6 +753,16 @@ impl Book {
         known_at: Option<CommitSeq>,
     ) -> Result<Option<fa_journal::Run>, BookError> {
         with_store!(&self.store, core => core.migration_run(&self.purposes(), run, known_at))
+    }
+
+    /// Fold `run`'s chunks as known at `known_at` (head when `None`) against
+    /// its declared trial balance lines (plan §8.6).
+    pub fn migration_tie_out(
+        &self,
+        run: &fa_journal::Run,
+        known_at: Option<CommitSeq>,
+    ) -> Result<fa_journal::TieOut, BookError> {
+        with_store!(&self.store, core => core.migration_tie_out(&self.purposes(), run, known_at))
     }
 
     /// Replay this book's accounting history through `prefix` (head when
@@ -1030,6 +1055,48 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.record_manual_assertion(
             &purposes, capability, proposal, reason_code, statement,
         )))
+    }
+
+    /// Evaluate a lawful erasure request for `subject` (plan §8.5): admits
+    /// `erase` before any read, checks capability currency and revocation,
+    /// refuses active legal holds (`FA-REF-117`), and otherwise returns the
+    /// registered interim absence (`FA-REF-088`).
+    pub fn erasure_cut(
+        &self,
+        capability: &fa_journal::Capability,
+        subject: VId,
+    ) -> Result<Refusal, BookError> {
+        with_store!(&self.store, core => core.erasure_cut(&self.purposes(), capability, subject))
+    }
+
+    /// Evaluate a `RegisterEquals` balance assertion for `key` at `known_at`
+    /// (head when `None`; plan §9.4).
+    pub fn evaluate_register_equals(
+        &self,
+        key: &fa_registers::EntityCellKey,
+        known_at: Option<CommitSeq>,
+    ) -> Result<fa_registers::RegisterEquals, BookError> {
+        with_store!(&self.store, core => core.evaluate_register_equals(&self.purposes(), key, known_at))
+    }
+
+    /// Record `claim` as an immutable `RegisterEquals` attestation resting on
+    /// `evidence` (plan §9.4).
+    pub fn record_register_equals(
+        &mut self,
+        capability: &fa_journal::Capability,
+        claim: &fa_registers::RegisterEquals,
+        evidence: Vec<fa_model::Oid>,
+    ) -> Outcome<fa_journal::Attested> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.record_register_equals(
+            &purposes, capability, claim, evidence,
+        )))
+    }
+
+    /// Check whether the `RegisterEquals` attestation at `vid` holds at its
+    /// recorded sequence (plan §9.4).
+    pub fn assertion_holds(&self, vid: VId) -> Result<Option<bool>, BookError> {
+        with_store!(&self.store, core => core.assertion_holds(&self.purposes(), vid))
     }
 
     /// Read a committed entry back by its derived identity, verifying its digests.

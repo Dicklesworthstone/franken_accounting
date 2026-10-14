@@ -12,7 +12,7 @@ use crate::args::Args;
 use crate::cli::{Ctx, Fail, hex, usage};
 use crate::json::{Json, obj, s};
 
-const EXAMPLE: &str = "fa proof signed-checkpoint|checkpoint|inclusion|consistency|prefix|balance --state <oid|latest> [--out <new-file>] --json";
+const EXAMPLE: &str = "fa proof signed-checkpoint|checkpoint|inclusion|consistency|prefix|balance|evidence-disclosure --state <oid|latest> [--out <new-file>] --json";
 
 fn fixed_hex<const N: usize>(text: &str, what: &str) -> Result<[u8; N], Fail> {
     if text.len() != N * 2 || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -55,6 +55,8 @@ pub(crate) fn proof_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "--unit",
         "--as-of",
         "--out",
+        "--document",
+        "--role",
     ] {
         if args.flag_all(flag).len() > 1 {
             return Err(usage(format!("proof takes only one {flag}"), EXAMPLE));
@@ -74,9 +76,19 @@ pub(crate) fn proof_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "inclusion" => &["--entry"],
         "consistency" => &["--next-state"],
         "balance" => &["--account", "--unit", "--as-of"],
+        "evidence-disclosure" => &["--entry", "--document", "--role", "--chunk"],
         _ => return Err(usage(format!("unknown proof kind {kind}"), EXAMPLE)),
     };
-    for flag in ["--next-state", "--entry", "--account", "--unit", "--as-of"] {
+    for flag in [
+        "--next-state",
+        "--entry",
+        "--account",
+        "--unit",
+        "--as-of",
+        "--document",
+        "--role",
+        "--chunk",
+    ] {
         if args.flag(flag).is_some() && !applicable.contains(&flag) {
             return Err(usage(
                 format!("{flag} does not apply to proof {kind}"),
@@ -94,7 +106,7 @@ pub(crate) fn proof_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         None | Some("latest") => None,
         Some(text) => Some(Oid(fixed_hex(text, "--state")?)),
     };
-    let entry = if kind == "inclusion" {
+    let entry = if matches!(kind, "inclusion" | "evidence-disclosure") {
         let text = required(args, "--entry")?;
         let bytes = fixed_hex::<16>(text.strip_prefix("E:").unwrap_or(text), "--entry")?;
         Some(VId(u128::from_be_bytes(bytes)))
@@ -145,7 +157,129 @@ pub(crate) fn proof_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         fa_policy::require(&capability, op, "exporting accounting proofs")
             .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
     }
-    let book = ctx.books.open(args)?;
+    let mut book = ctx.books.open(args)?;
+    if kind == "evidence-disclosure" {
+        let entry_vid = entry.ok_or_else(|| usage("--entry is required", EXAMPLE))?;
+        let document = Oid(fixed_hex(required(args, "--document")?, "--document")?);
+        let policy = fa_registry::evidence_policy::EvidencePolicy::embedded()
+            .map_err(|e| Fail::Internal(format!("evidence policy: {e}")))?;
+        let role_spec = args.flag("--role").unwrap_or("Source");
+        let role_row = policy
+            .role_by_name(role_spec)
+            .or_else(|| role_spec.parse::<u8>().ok().and_then(|t| policy.role_by_tag(t)))
+            .ok_or_else(|| usage(format!("unknown evidence role {role_spec}"), EXAMPLE))?;
+        let chunk_args = args.flag_all("--chunk");
+        let requested_chunks: Vec<u64> = if chunk_args.is_empty() {
+            vec![0]
+        } else {
+            chunk_args
+                .iter()
+                .map(|c| {
+                    c.parse::<u64>().map_err(|_| {
+                        usage(format!("--chunk {c} must be a non-negative integer"), EXAMPLE)
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let Some((stored_entry, _)) = book.read_entry(entry_vid)? else {
+            return Err(usage(
+                format!("entry {:032x} is not in this book", entry_vid.0),
+                EXAMPLE,
+            ));
+        };
+        let artifact = book.export_evidence_disclosure(
+            &capability,
+            fa::EvidenceDisclosureRequest {
+                state,
+                entry: entry_vid,
+                expected_entry_digest: stored_entry.entry_digest,
+                document,
+                role: role_row.tag,
+            },
+            &requested_chunks,
+        )??;
+        let max_inline = crate::verbs::registry()
+            .map_err(|e| Fail::Internal(e.into()))?
+            .daemon
+            .max_frame_bytes
+            .saturating_sub(32 * 1024)
+            / 2;
+        if output.is_none()
+            && artifact.inclusion.bytes.len() + artifact.disclosure.bytes.len() > max_inline
+        {
+            return Err(fa_journal::Refusal::new(
+                fa::proof::code::PROOF_EXPORT_LIMIT,
+                fa_journal::exit::USAGE,
+                "the evidence disclosure is too large for the inline JSON transport",
+                "plan §13.1–§13.3 (complete proofs are never truncated)",
+                "the owner can export a binary --out file; a bound MCP caller must request a smaller chunk subset",
+            )
+            .into());
+        }
+        if let Some(path) = output {
+            write_new(
+                &ctx.files.resolve(path),
+                path,
+                &artifact.disclosure.bytes,
+                "evidence disclosure",
+                "--out",
+            )?;
+        }
+        let cp = &artifact.inclusion.checkpoint;
+        let public_key = hex(&book.checkpoint_public_key());
+        ctx.out.at_book(&book)?;
+        ctx.out.known_at(cp.state.through_seq);
+        let (access_str, contract_val) = match artifact.disclosure.access {
+            fa::DisclosureAccess::Full => ("full", Json::Null),
+            fa::DisclosureAccess::Redacted { contract } => {
+                ("redacted", Json::Int(i128::from(contract)))
+            }
+        };
+        let disclosure_hex = output.is_none().then(|| hex(&artifact.disclosure.bytes));
+        let human = format!(
+            "Exported journal-authenticated evidence disclosure for entry {:032x} citing document {} (role {}, access {access_str}, {} chunk(s)) from checkpoint {} through sequence {}.",
+            entry_vid.0,
+            hex(&artifact.citation.document_oid.0),
+            role_row.name,
+            artifact.disclosure.requested_chunks.len(),
+            hex(&cp.oid.0),
+            cp.state.through_seq.0,
+        );
+        ctx.out.event(
+            "evidence_disclosure_exported",
+            vec![
+                ("entry", s(format!("{:032x}", entry_vid.0))),
+                ("entry_digest", s(hex(&artifact.entry_digest))),
+                ("document_oid", s(hex(&artifact.citation.document_oid.0))),
+                ("doc_commit", s(hex(&artifact.citation.doc_commit))),
+                ("role", s(&role_row.name)),
+                ("state_oid", s(hex(&cp.oid.0))),
+                ("through_seq", Json::Int(i128::from(cp.state.through_seq.0))),
+                (
+                    "requested_chunks",
+                    Json::Arr(
+                        artifact
+                            .disclosure
+                            .requested_chunks
+                            .iter()
+                            .map(|c| Json::Int(i128::from(*c)))
+                            .collect(),
+                    ),
+                ),
+                ("access", s(access_str)),
+                ("contract", contract_val),
+                ("inclusion_bytes", s(hex(&artifact.inclusion.bytes))),
+                (
+                    "disclosure_bytes",
+                    disclosure_hex.as_ref().map_or(Json::Null, s),
+                ),
+                ("file", output.map_or(Json::Null, s)),
+                ("checkpoint_public_key", s(&public_key)),
+            ],
+            &human,
+        );
+        return Ok(());
+    }
     let proof_kind = match kind {
         "checkpoint" => ProofKind::Checkpoint,
         "signed-checkpoint" => ProofKind::SignedCheckpoint,
@@ -312,7 +446,7 @@ pub(crate) fn proof_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 
 /// Write `bytes` to a new private file (`0600`); an existing path is never
 /// overwritten.
-fn write_new(
+pub(crate) fn write_new(
     target: &std::path::Path,
     path: &str,
     bytes: &[u8],

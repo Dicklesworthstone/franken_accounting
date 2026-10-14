@@ -79,11 +79,11 @@ name = "book"
 summary = "Create a book directory (store + key file), or describe one."
 writes = true
 subcommands = ["create", "info"]
-flags = ["--name", "--base-unit", "--calendar", "--year-start-month", "--adjustment-periods", "--time-zone"]
+flags = ["--name", "--base-unit", "--calendar", "--year-start-month", "--adjustment-periods", "--time-zone", "--opening-date"]
 switches = []
 events = ["book_created", "book"]
 exits = [0, 2, 4, 5]
-usage = ["book create --name \"My Co\" [--base-unit USD] [--calendar monthly|4-4-5|4-5-4|5-4-4|52-53[:last|nearest:<weekday>[:<month>]]] [--year-start-month 1] [--adjustment-periods 1] [--time-zone UTC]", "--time-zone UTC records the explicit civil-day policy required by scheduled reversals. Omitting it leaves the policy unset; the machine's local zone is never assumed.", "book info"]
+usage = ["book create --name \"My Co\" [--base-unit USD] [--calendar monthly|4-4-5|4-5-4|5-4-4|52-53[:last|nearest:<weekday>[:<month>]]] [--year-start-month 1] [--adjustment-periods 1] [--time-zone UTC] [--opening-date YYYY-MM-DD]", "--time-zone UTC records the explicit civil-day policy required by scheduled reversals. Omitting it leaves the policy unset; the machine's local zone is never assumed.", "book info"]
 example = "fa book create --book ./books/myco --name \"My Co\" --json"
 
 [[verb]]
@@ -184,15 +184,27 @@ example = "fa resolve --intent res.json --book ./books/myco --json"
 
 [[verb]]
 name = "document"
-summary = "Record a source document, content-addressed; its doc_commit is the public commitment an entry's evidence cites."
+summary = "Record a source document, read or redact one, export a document disclosure proof, manage custody, evaluate erasure against legal holds, or record legal holds and attestations."
 writes = true
-subcommands = ["add"]
-flags = ["--kind", "--mime", "--grade"]
-switches = []
-events = ["document"]
-exits = [0, 2, 3, 4, 5]
-usage = ["document add <file|-> [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload]"]
+subcommands = ["add", "read", "redact", "disclose", "custody", "erase", "hold", "attest"]
+flags = ["--kind", "--mime", "--grade", "--chunk", "--to", "--authority", "--subject", "--hold", "--effective", "--date", "--description", "--key", "--plan-out", "--plan", "--approval", "--document", "--against", "--intent", "--reason", "--statement", "--evidence", "--attestation", "--account", "--period", "--entity", "--unit", "--as-known-at", "--out", "--grant"]
+switches = ["--dry-run"]
+events = ["document", "document_read", "redacted_view_derived", "document_disclosure_exported", "custody_transferred", "custody_chain", "legal_hold_placed", "legal_hold_release_planned", "legal_hold_released", "legal_hold", "attestation_recorded"]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
+usage = ["document add <file|-> [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload]", "document read <oid> [--out <new-file>] [--grant <op>]...", "document redact <oid> [--grant privileged]", "document disclose <oid> [--chunk <idx>]... [--out <new-file>]", "document custody <oid> [--to <principal>]", "document erase <subject-vid|oid> [--grant erase]", "document hold place --authority <document-oid> --subject <vid|oid>... [--effective YYYY-MM-DD] [--description <text>] [--key K]", "document hold release <hold-vid> [--effective YYYY-MM-DD] [--key K] [--dry-run | --plan-out <new-file> | --plan <file|-> --approval <vid>...]", "document hold show <hold-vid>", "document attest review <oid> [--against <oid>]...", "document attest manual --intent <file.json|-> --reason <name|code> --statement <text> [--plan-out <new-file>]", "document attest register-equals [<attestation-vid> | --account <code> --period <code> [--unit <CODE>] [--entity <id>] [--evidence <oid>]... [--as-known-at HEAD|<seq>]]"]
 example = "fa document add invoice.pdf --kind Invoice --mime application/pdf --grade HumanUpload --book ./books/myco --json"
+
+[[verb]]
+name = "migrate"
+summary = "Control a legacy-migration run (open, stage entries into the book's opening Locked period, tie out and finalize with dual approval, abandon, or inspect)."
+writes = true
+subcommands = ["open", "stage", "finalize", "abandon", "show"]
+flags = ["--run", "--period", "--key", "--intent", "--evidence", "--description", "--as-known-at", "--plan-out", "--plan", "--approval", "--grant"]
+switches = ["--dry-run"]
+events = ["migration_controlled", "migration_planned", "migration_run", "posted", "recorded"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["migrate open --intent <run.json|-> [--key K] [--description <text>]", "migrate stage <run-key|vid> --intent <chunk.json|-> [--period <code>] [--evidence <oid>]... [--dry-run | --plan-out <new-file> | --plan <file|-> --approval <vid>...]", "migrate finalize <run-key|vid> [--key K] [--description <text>] [--dry-run | --plan-out <new-file> | --plan <file|-> --approval <vid>...]", "migrate abandon <run-key|vid> [--key K] [--description <text>] [--dry-run | --plan-out <new-file> | --plan <file|-> --approval <vid>...]", "migrate show <run-key|vid> [--as-known-at HEAD|<seq>]"]
+example = "fa migrate show go-live-2026 --book ./books/myco --json"
 
 [[verb]]
 name = "tb"
@@ -306,12 +318,12 @@ example = "fa checkpoint create --grant witness --book ./books/myco --json"
 name = "proof"
 summary = "Export a recorded checkpoint (signed TransparencyCheckpoint or raw 80-byte statement) or a portable accounting proof for independent fa-verify verification."
 writes = false
-subcommands = ["signed-checkpoint", "checkpoint", "inclusion", "consistency", "prefix", "balance"]
-flags = ["--state", "--next-state", "--entry", "--account", "--unit", "--as-of", "--out", "--grant"]
+subcommands = ["signed-checkpoint", "checkpoint", "inclusion", "consistency", "prefix", "balance", "evidence-disclosure"]
+flags = ["--state", "--next-state", "--entry", "--document", "--role", "--chunk", "--account", "--unit", "--as-of", "--out", "--grant"]
 switches = ["--with-record"]
-events = ["proof_exported"]
+events = ["proof_exported", "evidence_disclosure_exported"]
 exits = [0, 2, 3, 4, 5, 7, 8]
-usage = ["proof signed-checkpoint [--state <64-hex-oid|latest>] [--out <new-file>]   (the TransparencyCheckpoint signed by the book's key; checkpoint_public_key names the key)", "proof checkpoint [--state <64-hex-oid|latest>] [--out <new-file>]", "proof inclusion --entry <vid|E:vid> [--with-record] [--state <oid|latest>] [--out <new-file>]", "proof consistency --state <old-oid> --next-state <new-oid> [--out <new-file>]", "proof prefix [--state <oid|latest>] [--out <new-file>]", "proof balance --account <code> --unit <CODE> [--as-of YYYY-MM-DD] [--state <oid|latest>] [--out <new-file>]", "Export never creates a checkpoint or changes the book. Missing --state selects the latest recorded state. --out writes a new raw binary file; otherwise bytes is complete hex. Checkpoints are exact 80-byte statements. Binary proofs are limited to 64 MiB; inline output has the smaller daemon frame bound.", "fa-verify <kind> --proof <file> --checkpoint <signed-checkpoint-file> --key <checkpoint_public_key> --json, or --checkpoint <raw-80-byte-file> --unsigned-checkpoint once that statement is trusted outside the proof; consistency also takes --next-checkpoint <claimed-file>. Prefix verifies all envelopes, inclusion optionally recomputes a payload, and balance recomputes exact posted debits/credits for one account/unit through an inclusive effective cutoff. No signatures, document receipts, FX or general statement replay are claimed."]
+usage = ["proof signed-checkpoint [--state <64-hex-oid|latest>] [--out <new-file>]   (the TransparencyCheckpoint signed by the book's key; checkpoint_public_key names the key)", "proof checkpoint [--state <64-hex-oid|latest>] [--out <new-file>]", "proof inclusion --entry <vid|E:vid> [--with-record] [--state <oid|latest>] [--out <new-file>]", "proof consistency --state <old-oid> --next-state <new-oid> [--out <new-file>]", "proof prefix [--state <oid|latest>] [--out <new-file>]", "proof balance --account <code> --unit <CODE> [--as-of YYYY-MM-DD] [--state <oid|latest>] [--out <new-file>]", "proof evidence-disclosure --entry <vid|E:vid> --document <oid> [--role <name>] [--chunk <idx>]... [--state <oid|latest>] [--out <new-file>]", "Export never creates a checkpoint or changes the book. Missing --state selects the latest recorded state. --out writes a new raw binary file; otherwise bytes is complete hex. Checkpoints are exact 80-byte statements. Binary proofs are limited to 64 MiB; inline output has the smaller daemon frame bound.", "fa-verify <kind> --proof <file> --checkpoint <signed-checkpoint-file> --key <checkpoint_public_key> --json, or --checkpoint <raw-80-byte-file> --unsigned-checkpoint once that statement is trusted outside the proof; consistency also takes --next-checkpoint <claimed-file>. Prefix verifies all envelopes, inclusion optionally recomputes a payload, and balance recomputes exact posted debits/credits for one account/unit through an inclusive effective cutoff. No signatures, document receipts, FX or general statement replay are claimed."]
 example = "fa proof balance --account 1000 --unit USD --state latest --book ./books/myco --json"
 
 [[verb]]
@@ -465,6 +477,18 @@ expands = ["gl", "aging"]
 [[alias]]
 name = "cash-flow"
 expands = ["gl", "cash-flow"]
+
+[[alias]]
+name = "hold"
+expands = ["document", "hold"]
+
+[[alias]]
+name = "erase"
+expands = ["document", "erase"]
+
+[[alias]]
+name = "attest"
+expands = ["document", "attest"]
 
 # Operations that cannot be undone in practice (plan §15.3, Appendix D
 # FA-REF-007). Without --yes, or a --plan file naming the exact proposal,
@@ -916,9 +940,108 @@ book = true
 doc = "A leaf account's register cells in one period at the `known_at` snapshot: the cells (one per unit, both columns), the fold they belong to (its digest and watermark), every contributing leg with its entry and recorded sequence, and the cells' known-at history. The legs re-add to the cells exactly or the command fails. With --certify, `certificate` identifies the retained native-read certificate emitted next; otherwise it is null."
 fields = ["account:string", "account_vid:hex", "name:string", "type:string", "period:string", "known_at:seq", "watermark:seq?", "fold_digest:hex", "certificate:hex?", "cells:[explained_cell]", "contributions:[contribution]", "history:[cell_change]", "last_changed_at:seq?"]
 
+[[event]]
+name = "document_read"
+book = true
+doc = "A document read under the caller's capability (plan §9.7): `view` is `full` or `redacted`, `bytes_hex` carries the full content when unredacted, and `disclosed_chunks`/`withheld_chunks`/`view_commit` describe a redacted view."
+fields = ["oid:hex", "doc_commit:hex", "view:string", "kind:string", "mime:string?", "grade:string?", "size:int", "bytes_hex:hex?", "disclosed_chunks:int?", "withheld_chunks:int?", "view_commit:hex?", "out:string?"]
+
+[[event]]
+name = "redacted_view_derived"
+book = true
+doc = "A redacted document view derived over the source document's 4 KiB chunk Merkle tree under a registered redaction contract (plan §9.7)."
+fields = ["oid:hex", "view_vid:hex", "view_commit:hex", "contract:int", "recorded_at:seq", "already_recorded:bool"]
+
+[[event]]
+name = "document_disclosure_exported"
+book = true
+doc = "A selective 4 KiB-chunk Merkle disclosure proof for one document (`fa:document-disclosure:v1`, plan §9.7) under current read, produce, and redaction authority."
+fields = ["oid:hex", "doc_commit:hex", "kind:string", "document_length:int", "requested_chunks:[int]", "access:string", "contract:int?", "byte_len:int", "bytes:hex?", "out:string?"]
+
+[[event]]
+name = "evidence_disclosure_exported"
+book = true
+doc = "An end-to-end evidence disclosure proof (plan §9.7/§13.2) pairing a checkpoint entry-inclusion proof with a 4 KiB-chunk document disclosure proof."
+fields = ["entry:hex", "entry_digest:hex", "document_oid:hex", "doc_commit:hex", "role:string", "state_oid:hex", "through_seq:seq", "requested_chunks:[int]", "access:string", "contract:int?", "inclusion_bytes:hex", "disclosure_bytes:hex?", "file:string?", "checkpoint_public_key:hex"]
+
+[[event]]
+name = "custody_transferred"
+book = true
+doc = "A journaled `CustodyEvent` transferring physical/logical custody of `oid` to `to` (plan §9.1)."
+fields = ["oid:hex", "event_vid:hex", "index:int", "to:hex", "recorded_at:seq"]
+
+[[event]]
+name = "custody_chain"
+book = true
+doc = "The ordered chain of journaled `CustodyEvent` vertices (`receipt` then `transfer`) for `oid` (plan §9.1)."
+fields = ["oid:hex", "events:[custody_event]"]
+
+[[event]]
+name = "legal_hold_placed"
+book = true
+doc = "A journaled `LegalHold` (`HoldControl(Place)`, plan §8.5/§14.6) pinning its `subjects` against erasure, GC, and retention expiry."
+fields = ["hold_vid:hex", "subjects:[hex]", "authority:hex", "recorded_at:seq", "already_recorded:bool"]
+
+[[event]]
+name = "legal_hold_release_planned"
+book = true
+doc = "A sealed legal-hold release plan prepared for independent Human approval (`fa approve --proposal <proposal_digest>`) before releasing `hold_vid`."
+fields = ["hold_vid:hex", "proposal_digest:hex", "bytes:hex", "plan:string?"]
+
+[[event]]
+name = "legal_hold_released"
+book = true
+doc = "A journaled `HoldControl(Release)` releasing `hold_vid` after independent Human approval (plan §8.5/§14.6)."
+fields = ["release_vid:hex", "hold_vid:hex", "recorded_at:seq", "already_recorded:bool"]
+
+[[event]]
+name = "legal_hold"
+book = true
+doc = "The current state and subject closure of one `LegalHold` vertex."
+fields = ["hold_vid:hex", "authority:hex", "subjects:[hex]", "issued_by:hex", "placed_at:seq", "active:bool", "release_vid:hex?", "released_at:seq?"]
+
+[[event]]
+name = "attestation_recorded"
+book = true
+doc = "A journaled attestation vertex (`Reviewed`, `ManualAssertion`, or `RegisterEquals`, plan §9.3–§9.4) or its live holds evaluation."
+fields = ["attestation_vid:hex", "claim:string", "subject:hex", "signed_digest:hex?", "recorded_at:seq", "already_recorded:bool", "holds:bool?"]
+
+[[event]]
+name = "migration_controlled"
+book = true
+doc = "A journaled `MigrationControl` transition (`open`, `finalize`, or `abandon`, plan §8.6) on `run_vid`."
+fields = ["run_vid:hex", "run_key:string", "action:string", "from:string?", "to:string", "control_entry:hex", "recorded_at:seq", "already_recorded:bool", "chunk_count:int", "tie_out_digest:hex"]
+
+[[event]]
+name = "migration_planned"
+book = true
+doc = "A sealed migration plan prepared for `stage`, `finalize` (including the verified `tie_out_digest` for two-approver SoD), or `abandon`."
+fields = ["run_vid:hex", "action:string", "proposal_digest:hex", "tie_out_digest:hex?", "chunk_count:int", "bytes:hex", "plan:string?"]
+
+[[event]]
+name = "migration_run"
+book = true
+doc = "The state, staged chunk list, and live opening-balance tie-out of a `MigrationRun` (plan §8.6)."
+fields = ["run_vid:hex", "run_key:string", "source_system:string", "mode:string", "state:string", "opened_at:seq", "opening_date:date", "trial_balance_oid:hex", "chunk_count:int", "chunks:[migration_chunk]", "tie_out_digest:hex", "ties_out:bool", "mismatches:[migration_mismatch]"]
+
 # ---------------------------------------------------------------------------
 # Shapes: the objects events nest.
 # ---------------------------------------------------------------------------
+
+[[shape]]
+name = "custody_event"
+doc = "One journaled custody event (`receipt` or `transfer`) on a document."
+fields = ["index:int", "kind:string", "holder:hex", "from:hex?", "digest:hex", "prev_digest:hex", "recorded_at:seq"]
+
+[[shape]]
+name = "migration_chunk"
+doc = "One staged migration chunk entry and its proposal digest."
+fields = ["vid:hex", "proposal_digest:hex", "recorded_at:seq"]
+
+[[shape]]
+name = "migration_mismatch"
+doc = "One account/unit difference between a migration run's declared trial balance and the folded staged chunks."
+fields = ["period:string?", "account_code:string", "unit:string", "declared:amount", "folded:amount"]
 
 [[shape]]
 name = "doctor_check"
@@ -1333,9 +1456,9 @@ max_tools_per_cluster = 7
 # The server fixes authority and book selection once; it never forwards caller grants.
 hidden_flags = ["--json", "--via", "--no-color", "--help", "--version", "--as", "--grant", "--yes", "--keys", "--book"]
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
-repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period"]
+repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
-integer_flags = ["--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications"]
+integer_flags = ["--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk"]
 
 [[mcp.cluster]]
 name = "fa.orient"
@@ -1515,6 +1638,22 @@ required = []
 dont = ["Don't treat the cursor or digest as a certified checkpoint; reports still fold the journal.", "Don't silently rebuild a damaged cache: verify and retain the finding, then explicitly materialize with yes if repair is intended."]
 mistakes = ["Expecting a second advance to write when no journal input changed: wrote=false is success.", "Assuming a fiscal-year advance is one transaction: each period publishes atomically on its own."]
 
+[[mcp.tool]]
+cluster = "fa.book"
+name = "migrate"
+verb = "migrate"
+subcommands = ["open", "stage", "finalize", "abandon", "show"]
+selector = "action"
+positionals = ["run?"]
+flags = ["--period", "--key", "--intent", "--evidence", "--description", "--as-known-at", "--approval"]
+switches = ["--dry-run"]
+stdin_property = "intent"
+stdin_kind = "object"
+stdin_via = "--intent"
+required = []
+dont = ["Don't expect staged migration entries to appear in trial balances or statements before finalize: staged entries stay unpublished until finalize verifies the tie-out against the book's opening_balances and commits with two independent Human approvals.", "Don't pass host filesystem paths in intent_file, plan_file or plan_out: supply a migration intent inline as intent and use dry_run: true to receive canonical migration proposal bytes inline."]
+mistakes = ["Staging into a period that is not Locked or not the book's earliest period (FA-REF-081).", "Finalizing before staged entries tie out to the book's opening_balances (FA-REF-082)."]
+
 # ---- fa.chart ---------------------------------------------------------------
 
 [[mcp.tool]]
@@ -1624,10 +1763,10 @@ mistakes = ["Passing plan_file: host paths are refused; supply the plan event's 
 cluster = "fa.proof"
 name = "export"
 verb = "proof"
-subcommands = ["signed-checkpoint", "checkpoint", "inclusion", "consistency", "prefix", "balance"]
+subcommands = ["signed-checkpoint", "checkpoint", "inclusion", "consistency", "prefix", "balance", "evidence-disclosure"]
 selector = "kind"
 positionals = []
-flags = ["--state", "--next-state", "--entry", "--account", "--unit", "--as-of"]
+flags = ["--state", "--next-state", "--entry", "--document", "--role", "--chunk", "--account", "--unit", "--as-of"]
 switches = ["--with-record"]
 required = []
 dont = ["The launch capability must include read and produce. Per-call grants, book selection and output paths are forbidden. Proofs and checkpoint bytes are returned as complete hex.", "Judge proofs against the signed checkpoint (kind signed-checkpoint) with fa-verify --key <checkpoint_public_key>, or establish trust in the raw checkpoint independently and pass --unsigned-checkpoint; the proof never authenticates its own anchor. Complete-prefix and balance formats disclose every journal envelope and require whole-book read authority.", "A balance proof checks posted debits and credits for one account/unit from inception through an optional inclusive as_of date. It is not a financial-statement, FX, signatures or document-receipt proof."]
@@ -1798,12 +1937,45 @@ name = "import_document"
 verb = "document"
 subcommands = ["add"]
 positionals = ["file?"]
+flags = ["--kind", "--mime", "--grade"]
+switches = []
 stdin_property = "text"
 stdin_kind = "string"
 stdin_via = "file"
 required = []
 dont = ["Don't grade your own upload `HumanUpload`: an agent's document is `AgentUpload` and needs a human `Reviewed` attestation before promotion.", "Don't write a plausible document to stand in for a missing one; record an explicit manual assertion instead."]
 mistakes = ["Passing a host path as `file`: supply the document inline as `text`; this does not grant document-import authority.", "Citing `doc_commit` where an intent's `evidence` wants the document `oid`."]
+
+[[mcp.tool]]
+cluster = "fa.evidence"
+name = "steward"
+verb = "document"
+subcommands = ["read", "redact", "disclose", "custody", "erase", "hold"]
+selector = "action"
+positionals = ["target?", "arg?"]
+flags = ["--chunk", "--to", "--authority", "--subject", "--hold", "--effective", "--date", "--description", "--key", "--plan", "--approval", "--document"]
+switches = ["--dry-run"]
+stdin_property = "plan"
+stdin_kind = "string"
+stdin_via = "--plan"
+required = []
+dont = ["Don't release a legal hold you placed yourself: HoldControl(Release) requires an independent Human approval (`fa_time_approve`).", "Don't pass host filesystem paths in plan_file, plan_out or out: MCP returns disclosure proofs and release plans inline."]
+mistakes = ["Attempting to erase a document under an active legal hold (FA-REF-117, exit 7) or without an eligible erasure class (FA-REF-088, exit 3).", "Passing a document's doc_commit where the 64-hex document oid is required."]
+
+[[mcp.tool]]
+cluster = "fa.evidence"
+name = "attest"
+verb = "document"
+subcommands = ["attest"]
+positionals = ["claim", "target?"]
+flags = ["--document", "--against", "--intent", "--reason", "--statement", "--evidence", "--attestation", "--account", "--period", "--entity", "--unit", "--as-known-at"]
+switches = []
+stdin_property = "intent"
+stdin_kind = "object"
+stdin_via = "--intent"
+required = ["claim"]
+dont = ["Don't record a Reviewed attestation from an Agent profile: promoting an AgentUpload document requires a human reviewer with approve authority.", "Don't pass host filesystem paths in intent_file or plan_out: supply the entry intent inline as intent."]
+mistakes = ["Recording a ManualAssertion without a registered manual_assertion reason code and explicit statement.", "Passing an unknown account code or period code to register-equals."]
 
 [[mcp.tool]]
 cluster = "fa.forensics"

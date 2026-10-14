@@ -7182,3 +7182,516 @@ fn gl_detail_roll_forward_aging_cash_flow_summary_tb_and_statement_diff_trace_en
     );
     Ok(())
 }
+
+/// Docket, Steward & Migration controls end-to-end (bead fa-wk4h):
+/// - `fa book create --opening-date`
+/// - `fa document read|redact|disclose|custody`
+/// - `fa hold place|show|release` (alias + `fa document hold ...`)
+/// - `fa erase` (alias + `fa document erase ...`): refused with exit 7 (`FA-REF-117`)
+///   under active legal hold, and exit 3 (`FA-REF-088`) once released
+/// - `fa attest review|manual|register-equals` (alias + `fa document attest ...`)
+/// - `fa proof evidence-disclosure`
+/// - `fa migrate open|stage|show|finalize|abandon`
+#[test]
+fn docket_steward_and_migration_controls_round_trip() -> std::io::Result<()> {
+    let dir = tmp("docket-steward-migrate")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "{args:?}\n{out}\n{err}");
+        out
+    };
+    let fail = |args: &[&str], expected_code: i32| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, expected_code, "{args:?}\n{out}\n{err}");
+        out
+    };
+
+    // 1. Create book with `--opening-date 2026-01-01`, chart, and periods
+    ok(&[
+        "book",
+        "create",
+        "--name",
+        "Migration & Steward Co",
+        "--opening-date",
+        "2026-01-01",
+        "--json",
+    ]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[
+            {"code":"1000","name":"Cash","type":"Asset","unit":"USD"},
+            {"code":"3000","name":"Opening Equity","type":"Equity","unit":"USD"},
+            {"code":"6000","name":"Bank Fees","type":"Expense","unit":"USD"}
+        ]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-OPEN", "--json"]);
+    ok(&["period", "soft-close", "FY2026-OPEN", "--json"]);
+    ok(&["period", "close", "FY2026-OPEN", "--yes", "--json"]);
+    let lock_plan = dir.join("lock_open.plan");
+    let lock_plan_s = lock_plan.to_str().unwrap();
+    let lock_planned = ok(&[
+        "period",
+        "lock",
+        "FY2026-OPEN",
+        "--plan-out",
+        lock_plan_s,
+        "--json",
+    ]);
+    let lock_digest = field(&lock_planned, "proposal_digest")
+        .unwrap_or_default()
+        .to_string();
+    let lock_app = ok(&[
+        "approve",
+        "--proposal",
+        &lock_digest,
+        "--as",
+        "controller",
+        "--json",
+    ]);
+    let lock_app_vid = field(&lock_app, "approval_vid")
+        .unwrap_or_default()
+        .to_string();
+    ok(&[
+        "period",
+        "lock",
+        "FY2026-OPEN",
+        "--plan",
+        lock_plan_s,
+        "--approval",
+        &lock_app_vid,
+        "--json",
+    ]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+
+    // 2. Add a 2-chunk BankStatement document (governed by redaction contract 1)
+    let mut bank_bytes = String::from("HEADER_PAGE_1_ACCOUNT_NUMBER_SECRET\n");
+    while bank_bytes.len() < 4096 {
+        bank_bytes.push('A');
+    }
+    bank_bytes.push_str("CHUNK_1_DISCLOSED_STATEMENT_LINES\n");
+    let bank_path = write(&dir, "bank_stmt.txt", &bank_bytes);
+    let added_bank = ok(&[
+        "document",
+        "add",
+        &bank_path,
+        "--kind",
+        "BankStatement",
+        "--grade",
+        "AgentUpload",
+        "--json",
+    ]);
+    let bank_oid = field(&added_bank, "oid").unwrap_or_default().to_string();
+
+    // Derive redacted view (`fa document redact`)
+    let redacted_out = ok(&[
+        "document",
+        "redact",
+        &bank_oid,
+        "--grant",
+        "privileged",
+        "--json",
+    ]);
+    assert_eq!(field(&redacted_out, "event"), Some("redacted_view_derived"));
+    assert_eq!(int(&doc(&redacted_out), "contract"), Some(1));
+
+    // Read without `privileged` -> returns redacted view
+    let read_redacted = ok(&["document", "read", &bank_oid, "--json"]);
+    assert_eq!(field(&read_redacted, "event"), Some("document_read"));
+    assert_eq!(field(&read_redacted, "view"), Some("redacted"));
+    assert_eq!(int(&doc(&read_redacted), "disclosed_chunks"), Some(1));
+    assert_eq!(int(&doc(&read_redacted), "withheld_chunks"), Some(1));
+
+    // Read with `read` + `privileged` -> returns full view
+    let read_full_path = dir.join("bank_full_copy.txt");
+    let read_full = ok(&[
+        "document",
+        "read",
+        &bank_oid,
+        "--out",
+        read_full_path.to_str().unwrap(),
+        "--grant",
+        "read",
+        "--grant",
+        "privileged",
+        "--json",
+    ]);
+    assert_eq!(field(&read_full, "view"), Some("full"));
+    assert!(read_full_path.exists());
+
+    // Disclose chunk 1 (`fa document disclose`)
+    let disclose_out = ok(&[
+        "document",
+        "disclose",
+        &bank_oid,
+        "--chunk",
+        "1",
+        "--json",
+    ]);
+    assert_eq!(
+        field(&disclose_out, "event"),
+        Some("document_disclosure_exported")
+    );
+    assert_eq!(field(&disclose_out, "access"), Some("redacted"));
+
+    // Custody transfer & chain (`fa document custody`)
+    let cust_xfer = ok(&[
+        "document",
+        "custody",
+        &bank_oid,
+        "--to",
+        "records_clerk",
+        "--json",
+    ]);
+    assert_eq!(field(&cust_xfer, "event"), Some("custody_transferred"));
+    let cust_chain = ok(&["document", "custody", &bank_oid, "--json"]);
+    assert_eq!(field(&cust_chain, "event"), Some("custody_chain"));
+    assert_eq!(arr(&doc(&cust_chain), "events").len(), 2);
+
+    // 3. Attestations (`fa attest review`, `fa attest manual`, `fa attest register-equals`)
+    let rev_att = ok(&[
+        "attest",
+        "review",
+        &bank_oid,
+        "--as",
+        "reviewer",
+        "--json",
+    ]);
+    assert_eq!(field(&rev_att, "event"), Some("attestation_recorded"));
+    assert_eq!(field(&rev_att, "claim"), Some("Reviewed"));
+
+    // Post an entry citing `bank_oid` and export `fa proof evidence-disclosure`
+    let fee_entry = write(
+        &dir,
+        "fee.json",
+        r#"{"effective_date":"2026-03-10","idempotency_key":"march-bank-fee","legs":[{"side":"debit","account":"6000","amount":"25.00 USD"},{"side":"credit","account":"1000","amount":"25.00 USD"}],"description":"March wire fee"}"#,
+    );
+    let fee_posted = ok(&["post", "--intent", &fee_entry, "--evidence", &bank_oid, "--json"]);
+    let fee_vid = field(&fee_posted, "vid").unwrap_or_default().to_string();
+
+    // Create checkpoint & export `fa proof evidence-disclosure`
+    ok(&["checkpoint", "create", "--grant", "witness", "--json"]);
+    let ev_disc = ok(&[
+        "proof",
+        "evidence-disclosure",
+        "--entry",
+        &fee_vid,
+        "--document",
+        &bank_oid,
+        "--chunk",
+        "1",
+        "--json",
+    ]);
+    assert_eq!(
+        field(&ev_disc, "event"),
+        Some("evidence_disclosure_exported")
+    );
+    assert_eq!(field(&ev_disc, "access"), Some("redacted"));
+
+    // ManualAssertion attestation (`fa attest manual`)
+    let manual_intent = write(
+        &dir,
+        "manual_fee.json",
+        r#"{"effective_date":"2026-03-12","idempotency_key":"manual-fee-1","legs":[{"side":"debit","account":"6000","amount":"10.00 USD"},{"side":"credit","account":"1000","amount":"10.00 USD"}],"description":"Uninvoiced bank charge"}"#,
+    );
+    let man_att = ok(&[
+        "attest",
+        "manual",
+        "--intent",
+        &manual_intent,
+        "--reason",
+        "NoDocumentIssued",
+        "--statement",
+        "bank fee below invoice threshold",
+        "--json",
+    ]);
+    assert_eq!(field(&man_att, "event"), Some("attestation_recorded"));
+    assert_eq!(field(&man_att, "claim"), Some("ManualAssertion"));
+
+    // RegisterEquals attestation (`fa attest register-equals`)
+    let reg_att = ok(&[
+        "attest",
+        "register-equals",
+        "--account",
+        "1000",
+        "--period",
+        "FY2026-P03",
+        "--evidence",
+        &bank_oid,
+        "--json",
+    ]);
+    assert_eq!(field(&reg_att, "event"), Some("attestation_recorded"));
+    assert_eq!(field(&reg_att, "claim"), Some("RegisterEquals"));
+    assert_eq!(doc(&reg_att).get("holds"), Some(&Json::Bool(true)));
+    let reg_att_vid = field(&reg_att, "attestation_vid")
+        .unwrap_or_default()
+        .to_string();
+    let reg_check = ok(&["attest", "register-equals", &reg_att_vid, "--json"]);
+    assert_eq!(doc(&reg_check).get("holds"), Some(&Json::Bool(true)));
+
+    // 4. Legal Holds & Erasure (`fa hold place|show|release` and `fa erase`)
+    let court_order_path = write(&dir, "court_order.txt", "PRESERVATION ORDER 2026-CV-99");
+    let added_order = ok(&[
+        "document",
+        "add",
+        &court_order_path,
+        "--kind",
+        "CourtOrder",
+        "--grade",
+        "HumanUpload",
+        "--json",
+    ]);
+    let order_oid = field(&added_order, "oid").unwrap_or_default().to_string();
+
+    let placed_hold = ok(&[
+        "hold",
+        "place",
+        "--authority",
+        &order_oid,
+        "--subject",
+        &bank_oid,
+        "--effective",
+        "2026-03-15",
+        "--description",
+        "Subpoena preservation",
+        "--json",
+    ]);
+    assert_eq!(field(&placed_hold, "event"), Some("legal_hold_placed"));
+    let hold_vid = field(&placed_hold, "hold_vid")
+        .unwrap_or_default()
+        .to_string();
+
+    let shown_hold = ok(&["hold", "show", &hold_vid, "--json"]);
+    assert_eq!(field(&shown_hold, "event"), Some("legal_hold"));
+    assert_eq!(doc(&shown_hold).get("active"), Some(&Json::Bool(true)));
+
+    // Erase while under active legal hold -> refused with exit 7 (FA-REF-117)
+    let erase_held = fail(&["erase", &bank_oid, "--yes", "--json"], 7);
+    assert!(erase_held.contains("FA-REF-117"), "{erase_held}");
+
+    // Plan and release legal hold with independent approver
+    let rel_plan = dir.join("release.plan");
+    let rel_plan_s = rel_plan.to_str().unwrap();
+    let rel_planned = ok(&[
+        "hold",
+        "release",
+        &hold_vid,
+        "--effective",
+        "2026-03-20",
+        "--plan-out",
+        rel_plan_s,
+        "--json",
+    ]);
+    assert_eq!(
+        field(&rel_planned, "event"),
+        Some("legal_hold_release_planned")
+    );
+    let rel_digest = field(&rel_planned, "proposal_digest")
+        .unwrap_or_default()
+        .to_string();
+    let rel_app = ok(&[
+        "approve",
+        "--proposal",
+        &rel_digest,
+        "--as",
+        "general_counsel",
+        "--json",
+    ]);
+    let rel_app_vid = field(&rel_app, "approval_vid")
+        .unwrap_or_default()
+        .to_string();
+    let released = ok(&[
+        "hold",
+        "release",
+        &hold_vid,
+        "--plan",
+        rel_plan_s,
+        "--approval",
+        &rel_app_vid,
+        "--json",
+    ]);
+    assert_eq!(field(&released, "event"), Some("legal_hold_released"));
+
+    // Erase after hold release -> refused with exit 3 (FA-REF-088: financial records not erasable)
+    let erase_after = fail(&["erase", &bank_oid, "--yes", "--json"], 3);
+    assert!(erase_after.contains("FA-REF-088"), "{erase_after}");
+
+    // 5. Migration run (`fa migrate open|stage|show|finalize|abandon`)
+    let tb_doc_path = write(&dir, "legacy_tb.json", r#"{"legacy":"tb-2026-01-01"}"#);
+    let added_tb = ok(&[
+        "document",
+        "add",
+        &tb_doc_path,
+        "--kind",
+        "Spreadsheet",
+        "--grade",
+        "HumanUpload",
+        "--json",
+    ]);
+    let tb_oid = field(&added_tb, "oid").unwrap_or_default().to_string();
+
+    let run_intent = write(
+        &dir,
+        "mig_open.json",
+        &format!(
+            r#"{{
+                "run_key":"go-live-2026",
+                "source_system":"netsuite",
+                "mode":"OpeningOnly",
+                "trial_balance":"{tb_oid}",
+                "opening_date":"2026-01-01",
+                "lines":[
+                    {{"account":"1000","unit":"USD","debit":"500.00"}},
+                    {{"account":"3000","unit":"USD","credit":"500.00"}}
+                ]
+            }}"#
+        ),
+    );
+    let mig_opened = ok(&["migrate", "open", "--intent", &run_intent, "--json"]);
+    assert_eq!(field(&mig_opened, "event"), Some("migration_controlled"));
+    assert_eq!(field(&mig_opened, "to"), Some("Open"));
+    let run_vid = field(&mig_opened, "run_vid")
+        .unwrap_or_default()
+        .to_string();
+
+    // Stage migration chunk with two independent approvals
+    let chunk_intent = write(
+        &dir,
+        "mig_chunk.json",
+        &format!(
+            r#"{{
+                "effective_date":"2026-01-01",
+                "effective_period":"FY2026-OPEN",
+                "idempotency_key":"mig-chunk-1",
+                "evidence":["{tb_oid}"],
+                "legs":[
+                    {{"side":"debit","account":"1000","amount":"500.00 USD"}},
+                    {{"side":"credit","account":"3000","amount":"500.00 USD"}}
+                ],
+                "description":"Opening balance migration chunk"
+            }}"#
+        ),
+    );
+    let stage_plan_path = dir.join("mig_stage.plan");
+    let stage_plan_s = stage_plan_path.to_str().unwrap();
+    let stage_planned = ok(&[
+        "migrate",
+        "stage",
+        "go-live-2026",
+        "--intent",
+        &chunk_intent,
+        "--plan-out",
+        stage_plan_s,
+        "--json",
+    ]);
+    assert_eq!(field(&stage_planned, "event"), Some("migration_planned"));
+    let stage_digest = field(&stage_planned, "proposal_digest")
+        .unwrap_or_default()
+        .to_string();
+    let s_app1 = field(
+        &ok(&[
+            "approve",
+            "--proposal",
+            &stage_digest,
+            "--as",
+            "mig_approver_1",
+            "--json",
+        ]),
+        "approval_vid",
+    )
+    .unwrap_or_default()
+    .to_string();
+    let s_app2 = field(
+        &ok(&[
+            "approve",
+            "--proposal",
+            &stage_digest,
+            "--as",
+            "mig_approver_2",
+            "--json",
+        ]),
+        "approval_vid",
+    )
+    .unwrap_or_default()
+    .to_string();
+    let staged = ok(&[
+        "migrate",
+        "stage",
+        "go-live-2026",
+        "--plan",
+        stage_plan_s,
+        "--approval",
+        &s_app1,
+        "--approval",
+        &s_app2,
+        "--json",
+    ]);
+    assert_eq!(field(&staged, "event"), Some("posted"));
+
+    // Show migration run (`fa migrate show`)
+    let mig_shown = ok(&["migrate", "show", &run_vid, "--json"]);
+    assert_eq!(field(&mig_shown, "event"), Some("migration_run"));
+    assert_eq!(doc(&mig_shown).get("ties_out"), Some(&Json::Bool(true)));
+    assert_eq!(int(&doc(&mig_shown), "chunk_count"), Some(1));
+
+    // Finalize migration run with two independent approvals
+    let fin_plan_path = dir.join("mig_fin.plan");
+    let fin_plan_s = fin_plan_path.to_str().unwrap();
+    let fin_planned = ok(&[
+        "migrate",
+        "finalize",
+        "go-live-2026",
+        "--plan-out",
+        fin_plan_s,
+        "--json",
+    ]);
+    assert_eq!(field(&fin_planned, "event"), Some("migration_planned"));
+    let fin_digest = field(&fin_planned, "proposal_digest")
+        .unwrap_or_default()
+        .to_string();
+    let f_app1 = field(
+        &ok(&[
+            "approve",
+            "--proposal",
+            &fin_digest,
+            "--as",
+            "fin_approver_1",
+            "--json",
+        ]),
+        "approval_vid",
+    )
+    .unwrap_or_default()
+    .to_string();
+    let f_app2 = field(
+        &ok(&[
+            "approve",
+            "--proposal",
+            &fin_digest,
+            "--as",
+            "fin_approver_2",
+            "--json",
+        ]),
+        "approval_vid",
+    )
+    .unwrap_or_default()
+    .to_string();
+    let finalized = ok(&[
+        "migrate",
+        "finalize",
+        "go-live-2026",
+        "--plan",
+        fin_plan_s,
+        "--approval",
+        &f_app1,
+        "--approval",
+        &f_app2,
+        "--json",
+    ]);
+    assert_eq!(field(&finalized, "event"), Some("migration_controlled"));
+    assert_eq!(field(&finalized, "to"), Some("Finalized"));
+    Ok(())
+}
+

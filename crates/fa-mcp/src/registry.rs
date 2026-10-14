@@ -2261,14 +2261,19 @@ mod tests {
                 "inclusion",
                 "consistency",
                 "prefix",
-                "balance"
+                "balance",
+                "evidence-disclosure"
             ])
         );
-        assert_eq!(tool.events(reg), vec!["proof_exported"]);
+        assert_eq!(
+            tool.events(reg),
+            vec!["proof_exported", "evidence_disclosure_exported"]
+        );
         assert!(!reg.verb("proof").unwrap().writes);
         let state = "a".repeat(64);
         let next = "b".repeat(64);
         let entry = "c".repeat(32);
+        let doc = "d".repeat(64);
         for (arguments, expected) in [
             (
                 json!({"kind": "signed-checkpoint"}),
@@ -2320,6 +2325,24 @@ mod tests {
                     "USD",
                     "--as-of",
                     "2026-03-31",
+                    "--json",
+                ],
+            ),
+            (
+                json!({"kind": "evidence-disclosure", "state": state, "entry": entry, "document": doc, "role": "source_document", "chunk": ["0"]}),
+                vec![
+                    "proof",
+                    "evidence-disclosure",
+                    "--state",
+                    &state,
+                    "--entry",
+                    &entry,
+                    "--document",
+                    &doc,
+                    "--role",
+                    "source_document",
+                    "--chunk",
+                    "0",
                     "--json",
                 ],
             ),

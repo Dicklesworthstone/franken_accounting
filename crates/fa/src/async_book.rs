@@ -529,6 +529,25 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         Ok(fa_journal::sweep(&mut self.db, cx, book, &req, &mut describe).await?)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_migration_proposal(
+        &self,
+        principal: VId,
+        body: &fa_journal::RunBody,
+        citations: Vec<fa_model::EvidenceRef>,
+        idempotency_key: &[u8],
+        description: Erasable<String>,
+    ) -> Result<fa_model::EntryPayload, BookError> {
+        Ok(fa_journal::migration::open_proposal(
+            &self.context,
+            principal,
+            body,
+            citations,
+            idempotency_key,
+            description,
+        )?)
+    }
+
     pub async fn open_migration_run(
         &mut self,
         cx: &PurposeContexts,
@@ -579,6 +598,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     ) -> Result<Option<fa_journal::Run>, BookError> {
         self.query(cx, |db, _| {
             Ok(fa_journal::migration::read_run(db, run, known_at)?)
+        })
+    }
+
+    pub fn migration_tie_out(
+        &self,
+        cx: &PurposeContexts,
+        run: &fa_journal::Run,
+        known_at: Option<CommitSeq>,
+    ) -> Result<fa_journal::TieOut, BookError> {
+        self.query(cx, |db, book| {
+            let seq = fa_registers::resolve_known_at(db, known_at)?;
+            Ok(fa_journal::migration::tie_out(db, book, run, seq)?)
         })
     }
 
@@ -980,6 +1011,57 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             statement,
         )
         .await?)
+    }
+
+    pub fn erasure_cut(
+        &self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        subject: VId,
+    ) -> Result<fa_journal::Refusal, BookError> {
+        self.query(cx, |db, book| {
+            Ok(fa_journal::evidence::erasure_cut(db, book, capability, subject)?)
+        })
+    }
+
+    pub fn evaluate_register_equals(
+        &self,
+        cx: &PurposeContexts,
+        key: &fa_registers::EntityCellKey,
+        known_at: Option<CommitSeq>,
+    ) -> Result<fa_registers::RegisterEquals, BookError> {
+        self.query(cx, |db, book| {
+            Ok(fa_registers::register_equals(db, book, key, known_at)?)
+        })
+    }
+
+    pub async fn record_register_equals(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        claim: &fa_registers::RegisterEquals,
+        evidence: Vec<fa_model::Oid>,
+    ) -> Outcome<fa_journal::Attested> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        Ok(fa_registers::assertion::record_register_equals(
+            &mut self.db,
+            cx,
+            &self.context,
+            capability,
+            claim,
+            evidence,
+        )
+        .await?)
+    }
+
+    pub fn assertion_holds(
+        &self,
+        cx: &PurposeContexts,
+        vid: VId,
+    ) -> Result<Option<bool>, BookError> {
+        self.query(cx, |db, book| {
+            Ok(fa_registers::assertion::assertion_holds(db, book, vid)?)
+        })
     }
 
     pub fn read_entry(
