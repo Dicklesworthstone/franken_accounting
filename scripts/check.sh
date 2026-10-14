@@ -206,6 +206,9 @@ for f in registries/*.toml; do
   fi
 done
 [ "$REG_FAIL" -eq 0 ] && gate_pass "registries — every registries/*.toml is embedded by code"
+if [ "$QUICK" -eq 0 ]; then
+  cargo_build "registry-check" test -p registry-check --bins
+fi
 
 # Forbidden dependencies (plan §1 constraint 1): every first-party crate may
 # depend DIRECTLY only on first-party crates and the admitted foundations. The

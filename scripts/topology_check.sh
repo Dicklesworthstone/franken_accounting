@@ -120,7 +120,7 @@ done <<<"$ROWS"
 # with a Cargo.toml (a crate not yet added to the workspace still needs a row).
 MEMBERS="$(jq -r '.workspace_members as $ws | .packages[] | select(.id as $id | $ws | index($id)) | .name' "$META")" \
   || gate_abort_unrun "topology — $META is not cargo metadata"
-DIRS="$(for manifest in "$ROOT"/crates/*/Cargo.toml; do
+DIRS="$(for manifest in "$ROOT"/crates/*/Cargo.toml "$ROOT"/tools/*/Cargo.toml; do
   [ -f "$manifest" ] && awk '/^\[package\]/ { p = 1; next } /^\[/ { p = 0 } p && /^name = / { gsub(/"/, "", $3); print $3; exit }' "$manifest"
 done)"
 PRESENT="$(printf '%s\n%s\n' "$MEMBERS" "$DIRS" | awk 'NF && !seen[$0]++')"

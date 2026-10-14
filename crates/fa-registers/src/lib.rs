@@ -127,10 +127,11 @@ pub struct Cell {
 }
 
 impl Cell {
-    /// Debits minus credits (positive = debit balance).
+    /// Checked debits minus credits (positive = debit balance).
+    /// Returns `None` if the subtraction overflows `i128`.
     #[must_use]
-    pub fn net(&self) -> i128 {
-        self.debits - self.credits
+    pub fn net(&self) -> Option<i128> {
+        self.debits.checked_sub(self.credits)
     }
 }
 
@@ -1359,5 +1360,37 @@ mod tests {
             register_vid(Id128([1; 16]), &key),
             register_vid(Id128([2; 16]), &key)
         );
+    }
+
+    #[test]
+    fn cell_net_uses_checked_subtraction_and_detects_overflow() {
+        let key = CellKey {
+            account: VId(1),
+            unit_id: 1,
+            period: "P".into(),
+        };
+        let normal = Cell {
+            key: key.clone(),
+            debits: 250,
+            credits: 100,
+            entry_count: 2,
+        };
+        assert_eq!(normal.net(), Some(150));
+
+        let credit_heavy = Cell {
+            key: key.clone(),
+            debits: 100,
+            credits: 250,
+            entry_count: 2,
+        };
+        assert_eq!(credit_heavy.net(), Some(-150));
+
+        let overflow = Cell {
+            key,
+            debits: i128::MAX,
+            credits: -1,
+            entry_count: 2,
+        };
+        assert_eq!(overflow.net(), None);
     }
 }

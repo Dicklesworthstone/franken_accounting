@@ -1208,7 +1208,12 @@ fn opening_net(k: &Kernel, at: Option<CommitSeq>) -> BTreeMap<String, i128> {
         .expect("fold")
         .cells
         .iter()
-        .map(|c| (codes[&c.key.account].to_string(), c.net()))
+        .map(|c| {
+            (
+                codes[&c.key.account].to_string(),
+                c.net().expect("cell net fits in i128"),
+            )
+        })
         .filter(|(_, net)| *net != 0)
         .collect()
 }

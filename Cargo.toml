@@ -30,6 +30,8 @@ members = [
     "crates/fa-intents",
     "crates/fad",
     "crates/fa-mcp",
+    "tools/registry-check",
+    "tools/xtask",
 ]
 
 [workspace.package]

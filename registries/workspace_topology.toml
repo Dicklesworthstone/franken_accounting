@@ -239,10 +239,13 @@ allowlist = []
 name = "registry-check"
 layer = "tooling"
 path = "tools/registry-check"
-planned = true
+planned = false
+allowlist = ["fa-registry"]
 
 [[crate]]
 name = "xtask"
 layer = "tooling"
 path = "tools/xtask"
-planned = true
+planned = false
+allowlist = ["fa-registry"]
+

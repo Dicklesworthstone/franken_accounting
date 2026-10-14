@@ -2478,6 +2478,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "registry-check"
+version = "0.0.1"
+dependencies = [
+ "fa-registry",
+]
+
+[[package]]
 name = "rich_rust"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3654,6 +3661,13 @@ checksum = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
 dependencies = [
  "libc",
  "rustix",
+]
+
+[[package]]
+name = "xtask"
+version = "0.0.1"
+dependencies = [
+ "fa-registry",
 ]
 
 [[package]]

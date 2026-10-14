@@ -62,6 +62,12 @@ pub enum ValuationError {
     NoLegToAbsorb {
         law: RoundingLaw,
     },
+    /// `value_legs` converts at a single foreign->base rate; multiple foreign
+    /// units in one valuation call cannot share a single `Rate`.
+    MultipleForeignUnits {
+        first: UnitId,
+        second: UnitId,
+    },
 }
 
 impl fmt::Display for ValuationError {
@@ -83,6 +89,10 @@ impl fmt::Display for ValuationError {
                     law.name()
                 )
             }
+            Self::MultipleForeignUnits { first, second } => write!(
+                f,
+                "single-rate valuation cannot convert multiple foreign units ({first} and {second})"
+            ),
         }
     }
 }
@@ -111,7 +121,7 @@ pub fn value_legs(
     if reg.get(base).is_none() {
         return Err(AmountError::UnknownUnit(base.to_string()).into());
     }
-    check_native_balance(budget, legs, reg)?;
+    check_native_balance(budget, legs, base, reg)?;
     let bytes = legs
         .len()
         .checked_mul(core::mem::size_of::<Amount>())
@@ -202,6 +212,7 @@ pub fn value_legs(
 fn check_native_balance(
     budget: &mut ArithmeticBudget<'_, impl Sized>,
     legs: &[LegValue],
+    base: UnitId,
     reg: &UnitRegistry,
 ) -> Result<(), ValuationError> {
     let bytes = legs
@@ -217,6 +228,7 @@ fn check_native_balance(
             crate::rate::RationalArithmeticError::AllocationFailure,
         ))
     })?;
+    let mut foreign_unit: Option<UnitId> = None;
     for (ordinal, leg) in legs.iter().enumerate() {
         budget
             .charge(crate::rate::Dimension::ComputeSteps, 1)
@@ -226,6 +238,18 @@ fn check_native_balance(
         }
         if reg.get(leg.amount.unit).is_none() {
             return Err(AmountError::UnknownUnit(leg.amount.unit.to_string()).into());
+        }
+        if leg.amount.unit != base {
+            match foreign_unit {
+                None => foreign_unit = Some(leg.amount.unit),
+                Some(first) if first != leg.amount.unit => {
+                    return Err(ValuationError::MultipleForeignUnits {
+                        first,
+                        second: leg.amount.unit,
+                    });
+                }
+                Some(_) => {}
+            }
         }
         sorted.push(*leg);
     }
@@ -551,5 +575,77 @@ mod tests {
             value_legs(&mut budget, &bad, usd, &one, RoundingLaw::HalfUp, &reg),
             Err(ValuationError::NegativeLeg { ordinal: 0 })
         );
+    }
+
+    #[test]
+    fn multiple_foreign_units_are_refused_in_single_rate_valuation() {
+        let cx = asupersync::Cx::detached_cancel_context();
+        let reg = UnitRegistry::with_defaults();
+        let usd = reg.lookup("USD").unwrap();
+        let eur = reg.lookup("EUR").unwrap();
+        let gbp = reg.lookup("GBP").unwrap();
+
+        let eur_then_gbp = [
+            LegValue {
+                side: Side::Debit,
+                amount: Amount::new(eur, 10_000),
+            },
+            LegValue {
+                side: Side::Credit,
+                amount: Amount::new(eur, 10_000),
+            },
+            LegValue {
+                side: Side::Debit,
+                amount: Amount::new(gbp, 5_000),
+            },
+            LegValue {
+                side: Side::Credit,
+                amount: Amount::new(gbp, 5_000),
+            },
+        ];
+        let gbp_then_eur = [
+            eur_then_gbp[2],
+            eur_then_gbp[3],
+            eur_then_gbp[0],
+            eur_then_gbp[1],
+        ];
+        let zero_eur_then_gbp = [
+            LegValue {
+                side: Side::Debit,
+                amount: Amount::new(eur, 0),
+            },
+            LegValue {
+                side: Side::Credit,
+                amount: Amount::new(eur, 0),
+            },
+            eur_then_gbp[2],
+            eur_then_gbp[3],
+        ];
+
+        for law in RoundingLaw::ALL {
+            let mut budget = crate::test_budget(&cx);
+            let rate = Rate::from_decimal(&mut budget, "1.10").unwrap();
+            assert_eq!(
+                value_legs(&mut budget, &eur_then_gbp, usd, &rate, law, &reg),
+                Err(ValuationError::MultipleForeignUnits {
+                    first: eur,
+                    second: gbp,
+                })
+            );
+            assert_eq!(
+                value_legs(&mut budget, &gbp_then_eur, usd, &rate, law, &reg),
+                Err(ValuationError::MultipleForeignUnits {
+                    first: gbp,
+                    second: eur,
+                })
+            );
+            assert_eq!(
+                value_legs(&mut budget, &zero_eur_then_gbp, usd, &rate, law, &reg),
+                Err(ValuationError::MultipleForeignUnits {
+                    first: eur,
+                    second: gbp,
+                })
+            );
+        }
     }
 }
