@@ -1291,6 +1291,10 @@ fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fa
                 }
                 _ => &[Op::Read],
             },
+            ("document", Some("import")) => match args.positional.get(2).map(String::as_str) {
+                Some("run") => &[Op::Post],
+                _ => &[Op::Read],
+            },
             ("migrate", Some("show")) => &[Op::Read],
             ("migrate", Some("open" | "stage" | "finalize" | "abandon")) => {
                 &[Op::Post, Op::Migrate]
@@ -1338,7 +1342,7 @@ fn admit_bound_files(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fail
             ));
         }
     }
-    for flag in ["--intent", "--plan", "--policy"] {
+    for flag in ["--intent", "--plan", "--policy", "--file"] {
         if args.flag_all(flag).iter().any(|value| *value != "-") {
             return Err(blocked(
                 flag,
@@ -1358,6 +1362,16 @@ fn admit_bound_files(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fail
         }
     }
     let sub = args.positional.get(1).map(String::as_str);
+    if verb.name == "document"
+        && sub == Some("import")
+        && args.positional.get(2).map(String::as_str) == Some("run")
+        && args.positional.iter().skip(3).any(|p| p != "-")
+    {
+        return Err(blocked(
+            "file",
+            "forward the complete input on stdin with -; MCP accepts no host file paths (fa-yha)",
+        ));
+    }
     let input = match (verb.name.as_str(), sub) {
         ("chart", Some("import")) | ("document", Some("add")) => args.positional.get(2),
         ("replay", _) => args.positional.get(1),

@@ -122,7 +122,7 @@ fn named(what: &str, given: &str, names: &[&str]) -> Fail {
     )
 }
 
-/// `fa document <add|read|redact|disclose|custody|erase|hold|attest> ...`.
+/// `fa document <add|read|redact|disclose|custody|erase|hold|attest|import> ...`.
 pub(crate) fn document_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     // Dispatch has already refused a subcommand verbs.toml does not register.
     match args.positional.get(1).map(String::as_str) {
@@ -134,6 +134,7 @@ pub(crate) fn document_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("erase") => erase_doc(ctx, args),
         Some("hold") => hold_doc(ctx, args),
         Some("attest") => attest_doc(ctx, args),
+        Some("import") => import_doc(ctx, args),
         None => Err(usage("`fa document` needs a subcommand", ADD_EXAMPLE)),
         other => Err(unhandled("document", other)),
     }
@@ -1129,6 +1130,221 @@ fn attest_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 other.map_or_else(String::new, |o| format!(" (got `{o}`)"))
             ),
             "fa attest review|manual|register-equals ...",
+        )),
+    }
+}
+
+fn parse_intake_source(raw: Option<&str>, who: VId) -> fa_model::IntakeSource {
+    match raw {
+        None | Some("Connector") | Some("fa-import") => fa_model::IntakeSource::Connector {
+            name: "fa-import".to_string(),
+            version: "1".to_string(),
+        },
+        Some("Upload") => fa_model::IntakeSource::Upload { principal: who },
+        Some(s) if s.starts_with("Connector:") => {
+            let rest = &s["Connector:".len()..];
+            let (name, version) = rest.split_once(':').unwrap_or((rest, "1"));
+            fa_model::IntakeSource::Connector {
+                name: name.to_string(),
+                version: version.to_string(),
+            }
+        }
+        Some("Email") => fa_model::IntakeSource::Email {
+            message_id: String::new(),
+        },
+        Some(s) if s.starts_with("Email:") => fa_model::IntakeSource::Email {
+            message_id: s["Email:".len()..].to_string(),
+        },
+        Some("Scan") => fa_model::IntakeSource::Scan {
+            device: "scanner".to_string(),
+        },
+        Some(s) if s.starts_with("Scan:") => fa_model::IntakeSource::Scan {
+            device: s["Scan:".len()..].to_string(),
+        },
+        Some(other) => fa_model::IntakeSource::Connector {
+            name: other.to_string(),
+            version: "1".to_string(),
+        },
+    }
+}
+
+fn import_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    match args.positional.get(2).map(String::as_str) {
+        Some("run") => {
+            let policy = policy()?;
+            let kind_name = args.flag("--kind").unwrap_or("Other");
+            let kind = policy.kind_by_name(kind_name).ok_or_else(|| {
+                let names: Vec<&str> = policy.kinds.iter().map(|k| k.name.as_str()).collect();
+                named("document kind", kind_name, &names)
+            })?;
+            let grade_name = args.flag("--grade").unwrap_or("AgentUpload");
+            let grade = policy.grade_by_name(grade_name).ok_or_else(|| {
+                let names: Vec<&str> = policy.grades.iter().map(|g| g.name.as_str()).collect();
+                named("provenance grade", grade_name, &names)
+            })?;
+            let mime = args.flag("--mime").unwrap_or("application/octet-stream");
+            let date_str = args
+                .flag("--date")
+                .or_else(|| args.flag("--effective"))
+                .unwrap_or("2026-01-01");
+            let date = DateDay::parse(date_str).map_err(|e| {
+                usage(
+                    format!("invalid date `{date_str}`: {e}"),
+                    "--date YYYY-MM-DD",
+                )
+            })?;
+            let description = args.flag("--description").unwrap_or("import run");
+            let mut paths: Vec<&str> = args.flag_all("--file");
+            paths.extend(args.positional.iter().skip(3).map(String::as_str));
+            if paths.is_empty() && args.flag("--plan") == Some("-") {
+                paths.push("-");
+            }
+            if paths.is_empty() {
+                return Err(usage(
+                    "`fa import run` needs at least one --file <path> (or - for stdin)",
+                    "fa import run --source Connector --file invoice.pdf --book <dir> --json",
+                ));
+            }
+            let who = ctx.principal(args);
+            let capability = ctx.capability(args, &["post"])?;
+            let source = parse_intake_source(args.flag("--source"), who);
+            let mut raw_bytes = Vec::with_capacity(paths.len());
+            for path in paths {
+                raw_bytes.push(ctx.files.read_bytes(path)?);
+            }
+            let mut book = ctx.books.open(args)?;
+            let book_id = book.context().book_id;
+            let docs: Vec<Document> = raw_bytes
+                .into_iter()
+                .map(|bytes| Document {
+                    book_id,
+                    kind: kind.tag,
+                    mime: mime.to_string(),
+                    grade: grade.tag,
+                    retrieved_by: who,
+                    bytes,
+                })
+                .collect();
+            let idempotency_key: Vec<u8> = match args.flag("--key") {
+                Some(k) => k.as_bytes().to_vec(),
+                None => {
+                    let mut oids: Vec<Oid> = docs.iter().map(Document::oid).collect();
+                    oids.sort_unstable();
+                    fa_journal::import::oids_root(&oids).to_vec()
+                }
+            };
+            let recorded = book.import_run(
+                &capability,
+                source,
+                &idempotency_key,
+                date,
+                description,
+                docs,
+            )??;
+            ctx.out.at_book(&book)?;
+            let run_hex = format!("{:032x}", recorded.receipt.run.0);
+            let src_kind = recorded.receipt.source.kind_name();
+            let root_hex = hex(&recorded.receipt.oids_root);
+            let hash_hex = hex(&recorded.receipt.receipt_hash);
+            let rec_arr: Vec<Json> = recorded.recorded.iter().map(|o| s(hex(&o.0))).collect();
+            let held_arr: Vec<Json> = recorded.already_held.iter().map(|o| s(hex(&o.0))).collect();
+            ctx.out.event(
+                "import_recorded",
+                vec![
+                    ("run_vid", s(&run_hex)),
+                    ("source_kind", s(src_kind)),
+                    (
+                        "document_count",
+                        Json::Int(i128::from(recorded.receipt.document_count)),
+                    ),
+                    (
+                        "byte_count",
+                        Json::Int(i128::from(recorded.receipt.byte_count)),
+                    ),
+                    ("oids_root", s(&root_hex)),
+                    ("receipt_hash", s(&hash_hex)),
+                    ("recorded", Json::Arr(rec_arr)),
+                    ("already_held", Json::Arr(held_arr)),
+                    (
+                        "recorded_at",
+                        Json::Int(i128::from(recorded.receipt.recorded_at.0)),
+                    ),
+                    ("already_recorded", Json::Bool(recorded.already_recorded)),
+                ],
+                &format!(
+                    "import run {run_hex} ({src_kind}, {} docs, {} bytes, receipt {hash_hex}) at {}",
+                    recorded.receipt.document_count,
+                    recorded.receipt.byte_count,
+                    recorded.receipt.recorded_at.0
+                ),
+            );
+            Ok(())
+        }
+        Some("receipt") => {
+            let run_text = args
+                .positional
+                .get(3)
+                .map(String::as_str)
+                .or_else(|| args.flag("--run"))
+                .ok_or_else(|| {
+                    usage(
+                        "`fa import receipt` needs a run vid",
+                        "fa import receipt <run-vid> [--evidence <oid>]... --book <dir> --json",
+                    )
+                })?;
+            let run_vid = parse_vid_arg(run_text, "import run vid")?;
+            let _capability = ctx.capability(args, &["read"])?;
+            let cited = args.flag_all("--evidence");
+            let mut oids = Vec::with_capacity(cited.len());
+            for raw in cited {
+                oids.push(Oid(hex32(raw, "--evidence")?));
+            }
+            let book = ctx.books.open(args)?;
+            let Some(receipt) = book.read_run(run_vid)? else {
+                return Err(usage(
+                    format!("no import run {:032x} in this book", run_vid.0),
+                    "pass the run_vid printed by `fa import run --json`",
+                ));
+            };
+            let verified = if !oids.is_empty() {
+                fa_journal::verify_receipt(&receipt, book.context().book_id, &oids)?;
+                true
+            } else {
+                false
+            };
+            ctx.out.at_book(&book)?;
+            let run_hex = format!("{:032x}", receipt.run.0);
+            let src_kind = receipt.source.kind_name();
+            let root_hex = hex(&receipt.oids_root);
+            let hash_hex = hex(&receipt.receipt_hash);
+            ctx.out.event(
+                "import_receipt",
+                vec![
+                    ("run_vid", s(&run_hex)),
+                    ("source_kind", s(src_kind)),
+                    (
+                        "document_count",
+                        Json::Int(i128::from(receipt.document_count)),
+                    ),
+                    ("byte_count", Json::Int(i128::from(receipt.byte_count))),
+                    ("oids_root", s(&root_hex)),
+                    ("receipt_hash", s(&hash_hex)),
+                    ("recorded_at", Json::Int(i128::from(receipt.recorded_at.0))),
+                    ("verified", Json::Bool(verified)),
+                ],
+                &format!(
+                    "import receipt {run_hex} ({src_kind}, {} docs, {} bytes, receipt {hash_hex}, verified={verified})",
+                    receipt.document_count, receipt.byte_count
+                ),
+            );
+            Ok(())
+        }
+        other => Err(usage(
+            format!(
+                "`fa import` needs `run` or `receipt`{}",
+                other.map_or_else(String::new, |o| format!(" (got `{o}`)"))
+            ),
+            "fa import run|receipt ...",
         )),
     }
 }

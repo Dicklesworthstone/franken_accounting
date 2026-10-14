@@ -208,14 +208,14 @@ example = "fa settle --intent settle.json --book ./books/myco --json"
 
 [[verb]]
 name = "document"
-summary = "Record a source document, read or redact one, export a document disclosure proof, manage custody, evaluate erasure against legal holds, or record legal holds and attestations."
+summary = "Record a source document, run a batch import with a content-addressed receipt, read or redact a document, export a disclosure proof, manage custody, evaluate erasure against legal holds, or record legal holds and attestations."
 writes = true
-subcommands = ["add", "read", "redact", "disclose", "custody", "erase", "hold", "attest"]
-flags = ["--kind", "--mime", "--grade", "--chunk", "--to", "--authority", "--subject", "--hold", "--effective", "--date", "--description", "--key", "--plan-out", "--plan", "--approval", "--document", "--against", "--intent", "--reason", "--statement", "--evidence", "--attestation", "--account", "--period", "--entity", "--unit", "--as-known-at", "--out", "--grant"]
+subcommands = ["add", "read", "redact", "disclose", "custody", "erase", "hold", "attest", "import"]
+flags = ["--kind", "--mime", "--grade", "--chunk", "--to", "--authority", "--subject", "--hold", "--effective", "--date", "--description", "--key", "--plan-out", "--plan", "--approval", "--document", "--against", "--intent", "--reason", "--statement", "--evidence", "--attestation", "--account", "--period", "--entity", "--unit", "--as-known-at", "--source", "--file", "--run", "--out", "--grant"]
 switches = ["--dry-run"]
-events = ["document", "document_read", "redacted_view_derived", "document_disclosure_exported", "custody_transferred", "custody_chain", "legal_hold_placed", "legal_hold_release_planned", "legal_hold_released", "legal_hold", "attestation_recorded"]
+events = ["document", "document_read", "redacted_view_derived", "document_disclosure_exported", "custody_transferred", "custody_chain", "legal_hold_placed", "legal_hold_release_planned", "legal_hold_released", "legal_hold", "attestation_recorded", "import_recorded", "import_receipt"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["document add <file|-> [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload]", "document read <oid> [--out <new-file>] [--grant <op>]...", "document redact <oid> [--grant privileged]", "document disclose <oid> [--chunk <idx>]... [--out <new-file>]", "document custody <oid> [--to <principal>]", "document erase <subject-vid|oid> [--grant erase]", "document hold place --authority <document-oid> --subject <vid|oid>... [--effective YYYY-MM-DD] [--description <text>] [--key K]", "document hold release <hold-vid> [--effective YYYY-MM-DD] [--key K] [--dry-run | --plan-out <new-file> | --plan <file|-> --approval <vid>...]", "document hold show <hold-vid>", "document attest review <oid> [--against <oid>]...", "document attest manual --intent <file.json|-> --reason <name|code> --statement <text> [--plan-out <new-file>]", "document attest register-equals [<attestation-vid> | --account <code> --period <code> [--unit <CODE>] [--entity <id>] [--evidence <oid>]... [--as-known-at HEAD|<seq>]]"]
+usage = ["document add <file|-> [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload]", "document read <oid> [--out <new-file>] [--grant <op>]...", "document redact <oid> [--grant privileged]", "document disclose <oid> [--chunk <idx>]... [--out <new-file>]", "document custody <oid> [--to <principal>]", "document erase <subject-vid|oid> [--grant erase]", "document hold place --authority <document-oid> --subject <vid|oid>... [--effective YYYY-MM-DD] [--description <text>] [--key K]", "document hold release <hold-vid> [--effective YYYY-MM-DD] [--key K] [--dry-run | --plan-out <new-file> | --plan <file|-> --approval <vid>...]", "document hold show <hold-vid>", "document attest review <oid> [--against <oid>]...", "document attest manual --intent <file.json|-> --reason <name|code> --statement <text> [--plan-out <new-file>]", "document attest register-equals [<attestation-vid> | --account <code> --period <code> [--unit <CODE>] [--entity <id>] [--evidence <oid>]... [--as-known-at HEAD|<seq>]]", "document import run [--source Connector|Upload|Email:<id>|Scan:<dev>] --file <file|->... [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload] [--date YYYY-MM-DD] [--description <text>] [--key K]", "document import receipt <run-vid> [--evidence <oid>]..."]
 example = "fa document add invoice.pdf --kind Invoice --mime application/pdf --grade HumanUpload --book ./books/myco --json"
 
 [[verb]]
@@ -513,6 +513,10 @@ expands = ["document", "erase"]
 [[alias]]
 name = "attest"
 expands = ["document", "attest"]
+
+[[alias]]
+name = "import"
+expands = ["document", "import"]
 
 # Operations that cannot be undone in practice (plan §15.3, Appendix D
 # FA-REF-007). Without --yes, or a --plan file naming the exact proposal,
@@ -1029,6 +1033,18 @@ name = "attestation_recorded"
 book = true
 doc = "A journaled attestation vertex (`Reviewed`, `ManualAssertion`, or `RegisterEquals`, plan §9.3–§9.4) or its live holds evaluation."
 fields = ["attestation_vid:hex", "claim:string", "subject:hex", "signed_digest:hex?", "recorded_at:seq", "already_recorded:bool", "holds:bool?"]
+
+[[event]]
+name = "import_recorded"
+book = true
+doc = "A journaled `ImportControl` run receipt (plan §9.3) recording a batch of documents from a registered intake source in one commit, with `oids_root` and `receipt_hash`."
+fields = ["run_vid:hex", "source_kind:string", "document_count:int", "byte_count:int", "oids_root:hex", "receipt_hash:hex", "recorded:[hex]", "already_held:[hex]", "recorded_at:seq", "already_recorded:bool"]
+
+[[event]]
+name = "import_receipt"
+book = true
+doc = "The journaled `RunReceipt` of an `ImportControl` entry (`fa import receipt <run-vid>`), optionally verified against presented `--evidence <oid>...` (`FA-REF-115` on mismatch)."
+fields = ["run_vid:hex", "source_kind:string", "document_count:int", "byte_count:int", "oids_root:hex", "receipt_hash:hex", "recorded_at:seq", "verified:bool"]
 
 [[event]]
 name = "migration_controlled"
@@ -2022,10 +2038,10 @@ mistakes = ["Passing a host path as `file`: supply the document inline as `text`
 cluster = "fa.evidence"
 name = "steward"
 verb = "document"
-subcommands = ["read", "redact", "disclose", "custody", "erase", "hold", "attest"]
+subcommands = ["read", "redact", "disclose", "custody", "erase", "hold", "attest", "import"]
 selector = "action"
 positionals = ["target?", "arg?"]
-flags = ["--chunk", "--to", "--authority", "--subject", "--hold", "--effective", "--date", "--description", "--key", "--plan", "--approval", "--document", "--against", "--reason", "--statement", "--evidence", "--attestation", "--account", "--period", "--entity", "--unit", "--as-known-at"]
+flags = ["--chunk", "--to", "--authority", "--subject", "--hold", "--effective", "--date", "--description", "--key", "--plan", "--approval", "--document", "--against", "--reason", "--statement", "--evidence", "--attestation", "--account", "--period", "--entity", "--unit", "--as-known-at", "--source", "--run"]
 switches = ["--dry-run"]
 stdin_property = "plan"
 stdin_kind = "string"

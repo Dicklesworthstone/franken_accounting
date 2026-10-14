@@ -411,11 +411,13 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-05"
 id = "closure"
-status = "dormant"
+status = "live"
 statement = "The provenance closure is enumerable and strongly retained for the retention floor; unknown references are unencodable."
 evidence_class = "invariant"
 first_gate = "G2"
-activating = ["fa-txf"]
+owner = "fa-txf"
+checkers = ["fa-registers::tests/evidence_oracle.rs::custody_and_import_receipts_on_the_real_kernel_agree_with_the_oracle", "fa-registers::tests/evidence_oracle.rs::legal_holds_on_the_real_kernel_agree_with_a_literal_model"]
+negatives = ["fa-journal::lib::import::tests::a_receipt_verifies_only_against_its_exact_oid_list", "fa-journal::tests/genesis.rs::an_entry_below_its_evidence_minimum_is_refused_and_a_cited_document_is_linked"]
 waiver = "forbidden"
 
 [[clause]]
@@ -485,7 +487,7 @@ evidence_class = "invariant"
 first_gate = "G1"
 owner = "fa-xwv"
 checkers = ["fa-registers::tests/differential.rs::temporal_stock_and_activity_agree_with_literal_journal_prefixes", "fa::lib::book::tests::explain_balance_resolves_the_account_at_the_requested_sequence"]
-negatives = ["fa-registers::tests/differential.rs::temporal_reports_resolve_period_metadata_at_the_recorded_snapshot"]
+negatives = ["fa-registers::tests/differential.rs::temporal_reports_resolve_period_metadata_at_the_recorded_snapshot", "fa-cli::tests/cli.rs::recorded_time_is_never_user_supplied_across_model_cli_and_mcp"]
 waiver = "forbidden"
 
 [[clause]]
@@ -521,11 +523,13 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-07"
 id = "migration-disjoint"
-status = "dormant"
+status = "live"
 statement = "Imported history never double counts with opening balances."
 evidence_class = "invariant"
 first_gate = "G2"
-activating = ["fa-xo0"]
+owner = "fa-xo0"
+checkers = ["fa-registers::tests/migration.rs::kernel_and_oracle_agree_on_migration_runs", "fa-registers::tests/migration.rs::full_detail_counts_detail_by_date_and_ties_the_opening_to_the_chain"]
+negatives = ["fa-registers::tests/migration.rs::income_activity_refuses_visible_migration_in_a_closing_period", "fa-registers::tests/migration.rs::period_balances_tie_out_cumulatively_and_historical_periods_admit_only_migration"]
 waiver = "forbidden"
 
 [[clause]]

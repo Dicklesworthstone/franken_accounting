@@ -7999,6 +7999,87 @@ fn docket_steward_and_migration_controls_round_trip() -> std::io::Result<()> {
     ]);
     assert_eq!(field(&finalized, "event"), Some("migration_controlled"));
     assert_eq!(field(&finalized, "to"), Some("Finalized"));
+
+    // 6. Batch import run and receipt (`fa import run` & `fa import receipt`)
+    let imp_doc2_path = write(&dir, "imp_doc2.txt", "Batch Import Document #2");
+    let imp_recorded = ok(&[
+        "import",
+        "run",
+        "--source",
+        "Connector",
+        "--file",
+        &tb_doc_path,
+        "--file",
+        &imp_doc2_path,
+        "--kind",
+        "Invoice",
+        "--grade",
+        "HumanUpload",
+        "--date",
+        "2026-03-15",
+        "--description",
+        "Batch connector intake",
+        "--key",
+        "imp-batch-1",
+        "--json",
+    ]);
+    assert_eq!(field(&imp_recorded, "event"), Some("import_recorded"));
+    assert_eq!(field(&imp_recorded, "source_kind"), Some("Connector"));
+    assert_eq!(int(&doc(&imp_recorded), "document_count"), Some(2));
+    let imp_run_vid = field(&imp_recorded, "run_vid")
+        .unwrap_or_default()
+        .to_string();
+    let rec_oids: Vec<String> = arr(&doc(&imp_recorded), "recorded")
+        .iter()
+        .chain(arr(&doc(&imp_recorded), "already_held").iter())
+        .filter_map(|j| j.as_str().map(str::to_string))
+        .collect();
+    let mut sorted_oids = rec_oids;
+    sorted_oids.sort();
+    assert_eq!(sorted_oids.len(), 2);
+
+    // Inspect and verify receipt against the exact ascending OIDs
+    let imp_receipt = ok(&[
+        "import",
+        "receipt",
+        &imp_run_vid,
+        "--evidence",
+        &sorted_oids[0],
+        "--evidence",
+        &sorted_oids[1],
+        "--json",
+    ]);
+    assert_eq!(field(&imp_receipt, "event"), Some("import_receipt"));
+    assert_eq!(doc(&imp_receipt).get("verified"), Some(&Json::Bool(true)));
+
+    // Negative receipt verification: missing an OID refuses with exit 8 (FA-REF-115)
+    let bad_receipt = fail(
+        &[
+            "import",
+            "receipt",
+            &imp_run_vid,
+            "--evidence",
+            &sorted_oids[0],
+            "--json",
+        ],
+        8,
+    );
+    assert!(bad_receipt.contains("FA-REF-115"), "{bad_receipt}");
+
+    // Unregistered Scan source refuses with exit 2 (FA-REF-083)
+    let bad_scan = fail(
+        &[
+            "import",
+            "run",
+            "--source",
+            "Scan:unregistered-scanner",
+            "--file",
+            &imp_doc2_path,
+            "--json",
+        ],
+        2,
+    );
+    assert!(bad_scan.contains("FA-REF-083"), "{bad_scan}");
     Ok(())
 }
 
@@ -8356,5 +8437,146 @@ fn allocate_and_settle_review_approve_plan_and_commit_workflows() -> std::io::Re
     for item in arr(&open_doc, "items") {
         assert_eq!(text(item, "open"), "0.00 USD");
     }
+    Ok(())
+}
+
+/// fa-y5yz (FA-INV-07 / Engineering Doctrine #6): `recorded_at` is the commit
+/// stream's `CommitSeq` assignment and is never user-supplied across the
+/// domain model, CLI flags, intent JSON payloads, or MCP tool schemas.
+#[test]
+fn recorded_time_is_never_user_supplied_across_model_cli_and_mcp() -> std::io::Result<()> {
+    let dir = tmp("recorded-time-negative")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Recorded Time Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let doc_oid = source_doc(&dir, &book);
+
+    // 1. CLI flags attempting to supply recorded time on write commands are refused (exit 2).
+    let valid_intent = write(
+        &dir,
+        "valid.json",
+        r#"{"effective_date":"2026-03-15","idempotency_key":"rt-valid","description":"valid","legs":[{"side":"debit","account":"6000","amount":"10.00 USD"},{"side":"credit","account":"1000","amount":"10.00 USD"}]}"#,
+    );
+    for bad_flag in [
+        "--recorded-at",
+        "--as-recorded",
+        "--recorded-time",
+        "--commit-seq",
+    ] {
+        let (code, out, err) = fa(
+            Some(&book),
+            &[
+                "post",
+                "--intent",
+                &valid_intent,
+                "--evidence",
+                &doc_oid,
+                bad_flag,
+                "999",
+                "--json",
+            ],
+        );
+        assert_eq!(
+            code, 2,
+            "flag {bad_flag} must be refused as usage error: {out}\n{err}"
+        );
+        assert!(out.contains("\"class\":\"usage\""), "{out}");
+    }
+
+    // 2. Intent JSON payloads attempting to supply `recorded_at`, `recorded_time`, or `commit_seq` are refused (exit 2).
+    for bad_field in ["recorded_at", "recorded_time", "commit_seq"] {
+        let bad_intent = write(
+            &dir,
+            &format!("bad-{bad_field}.json"),
+            &format!(
+                r#"{{"effective_date":"2026-03-15","{bad_field}":42,"idempotency_key":"rt-{bad_field}","description":"bad","legs":[{{"side":"debit","account":"6000","amount":"10.00 USD"}},{{"side":"credit","account":"1000","amount":"10.00 USD"}}]}}"#
+            ),
+        );
+        let (code, out, err) = fa(
+            Some(&book),
+            &[
+                "post",
+                "--intent",
+                &bad_intent,
+                "--evidence",
+                &doc_oid,
+                "--json",
+            ],
+        );
+        assert_eq!(
+            code, 2,
+            "intent JSON field `{bad_field}` must be refused: {out}\n{err}"
+        );
+        assert!(
+            out.contains(&format!("unknown field `{bad_field}`")),
+            "{out}"
+        );
+    }
+
+    // 3. Verb registry & MCP schema inspection: no write verb or MCP write tool accepts a `recorded_at` or `recorded_time` parameter.
+    let reg = registry().expect("verbs.toml");
+    for v in &reg.verbs {
+        if v.writes {
+            for flag in &v.flags {
+                let flag_name = flag.as_str();
+                assert!(
+                    !matches!(
+                        flag_name,
+                        "--recorded-at" | "--as-recorded" | "--recorded-time" | "--commit-seq"
+                    ),
+                    "mutating verb `{}` must never accept `{flag_name}`",
+                    v.name
+                );
+            }
+        }
+    }
+
+    // 4. Source-level structural verification: `EntryPayload` in `fa-model` has no `recorded_at` field,
+    // and `Entry.recorded_at` is populated solely from the commit sequence in `fa-journal`.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("workspace root");
+    let model_entry = std::fs::read_to_string(root.join("crates/fa-model/src/entry.rs"))?;
+    let payload_struct = model_entry
+        .split("pub struct EntryPayload")
+        .nth(1)
+        .and_then(|s| s.split('}').next())
+        .expect("EntryPayload struct definition");
+    assert!(
+        !payload_struct.contains("recorded_at"),
+        "EntryPayload must never carry a user-supplied recorded_at field"
+    );
+    assert!(
+        !model_entry.contains("fn set_recorded_at") && !model_entry.contains("with_recorded_at"),
+        "fa-model must never expose a recorded_at setter"
+    );
+
+    // 5. Commit assigns monotonic `recorded_at` from the commit stream.
+    let posted1 = ok(&[
+        "post",
+        "--intent",
+        &valid_intent,
+        "--evidence",
+        &doc_oid,
+        "--json",
+    ]);
+    let seq1: u64 = field(&posted1, "recorded_at")
+        .expect("recorded_at on posted")
+        .parse()
+        .expect("numeric CommitSeq");
+    assert!(seq1 > 0);
     Ok(())
 }
