@@ -13,7 +13,13 @@
 //! The retained sources include whole-book income and non-cash ledger detail;
 //! unlike a selected cash workpaper, this report must be kept confidential.
 
+mod certificate;
 mod native;
+
+pub use certificate::{
+    CertifiedIndirectCashFlow, INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT, IndirectCashFlowCertificate,
+    MAX_INDIRECT_CASH_FLOW_CERTIFICATE_BYTES,
+};
 
 use std::collections::{BTreeMap, BTreeSet};
 

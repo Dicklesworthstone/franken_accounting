@@ -210,3 +210,6 @@ fn opposing_currency_residuals_do_not_cancel_and_current_authority_is_required()
     request.cash.known_at = None;
     assert!(h.book.indirect_cash_flow(&h.cx(), PRINCIPAL, &cap(&["read"]), &request).unwrap().is_err());
 }
+
+#[path = "indirect_cash_flow/certificates.rs"]
+mod certificates;

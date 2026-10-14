@@ -117,9 +117,11 @@ pub use general_ledger::{
     MAX_GENERAL_LEDGER_BYTES, MAX_GENERAL_LEDGER_CELLS, MAX_GENERAL_LEDGER_LINES,
 };
 pub use indirect_cash_flow::{
-    AdjustmentCategory, AdjustmentSign, INDIRECT_CASH_FLOW_FORMAT, IndirectCashFlow,
+    AdjustmentCategory, AdjustmentSign, CertifiedIndirectCashFlow, INDIRECT_CASH_FLOW_FORMAT,
+    INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT, IndirectCashFlow, IndirectCashFlowCertificate,
     IndirectCashFlowAdjustment, IndirectCashFlowContribution, IndirectCashFlowDefinition,
     IndirectCashFlowRequest, IndirectCashFlowUnit, MAX_INDIRECT_CASH_FLOW_BYTES,
+    MAX_INDIRECT_CASH_FLOW_CERTIFICATE_BYTES,
 };
 pub use proof::{MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest};
 pub use roll_forward::{RollForward, RollForwardRequest};
