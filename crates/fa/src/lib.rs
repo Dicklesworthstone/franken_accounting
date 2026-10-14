@@ -59,6 +59,7 @@ pub mod balance_allocation_review;
 pub mod book;
 pub mod cash_flow_certificate;
 pub mod cash_flow_policy;
+pub mod cash_flow_split;
 pub mod certificate;
 mod certificate_store;
 pub mod document_disclosure;
