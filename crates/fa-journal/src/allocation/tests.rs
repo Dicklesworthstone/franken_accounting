@@ -138,7 +138,7 @@ fn maximum_posting_basis_fits_the_existing_entry_extension_limit() {
 
 #[test]
 fn schema_registry_matches_the_live_posting_format() {
-    let schema = fa_registry::toml::parse(include_str!("../../../../../registries/object_schemas/allocation.toml")).unwrap();
+    let schema = fa_registry::toml::parse(include_str!("../../../../registries/object_schemas/allocation.toml")).unwrap();
     let integer = |name| schema.root.get(name).and_then(fa_registry::toml::Value::as_int).unwrap();
     assert_eq!(integer("entry_extension_tag"), i128::from(ALLOCATION_EXTENSION));
     assert_eq!(integer("entry_schema_minor"), i128::from(ALLOCATION_SCHEMA_MINOR));
