@@ -357,10 +357,13 @@ fn approve(book: &mut Book, proposal: &EntryPayload) -> Vec<ApprovalRef> {
     [VId(8), VId(9)]
         .into_iter()
         .map(|principal| {
-            book.approve(Capability::embedded(principal, &["approve"]).unwrap(), digest)
-                .unwrap()
-                .unwrap()
-                .approval()
+            book.approve(
+                Capability::embedded(principal, &["approve"]).unwrap(),
+                digest,
+            )
+            .unwrap()
+            .unwrap()
+            .approval()
         })
         .collect()
 }
@@ -377,7 +380,9 @@ fn text<'a>(value: &'a Json, key: &str) -> &'a str {
 fn unhex(text: &str) -> Vec<u8> {
     assert_eq!(text.len() % 2, 0);
     text.as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|bytes| u8::from_str_radix(std::str::from_utf8(bytes).unwrap(), 16).unwrap())
         .collect()
 }

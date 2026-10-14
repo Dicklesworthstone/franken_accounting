@@ -6,28 +6,57 @@ use fa_time::DateDay;
 
 fn posting(total: i128, method: AllocationMethod, weights: &[u128]) -> AllocationPosting {
     AllocationPosting {
-        source: VId(10), source_side: Side::Credit, dimensions: Vec::new(),
+        source: VId(10),
+        source_side: Side::Credit,
+        dimensions: Vec::new(),
         request: AllocationRequest {
-            total: Amount::new(UnitId(7), total), method,
-            targets: weights.iter().enumerate().map(|(i, weight)| AllocationTarget {
-                id: 20 + i as u128, basis: *weight,
-            }).collect(),
+            total: Amount::new(UnitId(7), total),
+            method,
+            targets: weights
+                .iter()
+                .enumerate()
+                .map(|(i, weight)| AllocationTarget {
+                    id: 20 + i as u128,
+                    basis: *weight,
+                })
+                .collect(),
         },
     }
 }
 
 fn template(posting: &AllocationPosting, key: &[u8]) -> EntryPayload {
     EntryPayload {
-        schema_minor: 1, book_id: Id128([1; 16]), branch_id: Id128::TRUNK,
-        class: EntryClass::ALLOCATION, effective_date: DateDay(20_527), document_date: None,
-        description: Erasable::seal(&"private review description".to_string(), None, &SealKey([3; 32]), [4; 32], [5; 24]),
-        effective_period: None, legs: Vec::new(), control: None, unit_totals: Vec::new(),
-        base_totals: None, idempotency_key: key.to_vec(),
-        origin: EntryOrigin::Intent { intent_oid: Oid([6; 32]), intent_kind: 1 },
-        principal_ref: VId(7), session_ref: None,
+        schema_minor: 1,
+        book_id: Id128([1; 16]),
+        branch_id: Id128::TRUNK,
+        class: EntryClass::ALLOCATION,
+        effective_date: DateDay(20_527),
+        document_date: None,
+        description: Erasable::seal(
+            &"private review description".to_string(),
+            None,
+            &SealKey([3; 32]),
+            [4; 32],
+            [5; 24],
+        ),
+        effective_period: None,
+        legs: Vec::new(),
+        control: None,
+        unit_totals: Vec::new(),
+        base_totals: None,
+        idempotency_key: key.to_vec(),
+        origin: EntryOrigin::Intent {
+            intent_oid: Oid([6; 32]),
+            intent_kind: 1,
+        },
+        principal_ref: VId(7),
+        session_ref: None,
         evidence: vec![posting.driver_evidence(Id128([1; 16])).unwrap()],
-        supersession: Vec::new(), pending: None, external_ids: Vec::new(),
-        extensions: Vec::new(), tags: Vec::new(),
+        supersession: Vec::new(),
+        pending: None,
+        external_ids: Vec::new(),
+        extensions: Vec::new(),
+        tags: Vec::new(),
     }
 }
 
@@ -42,11 +71,22 @@ fn all_laws_preserve_the_exact_proposal_through_transport() {
         posting(101, AllocationMethod::LargestRemainder, &[1, 2, 3]),
         posting(7, AllocationMethod::Waterfall, &[2, 0, 9]),
         posting(2, AllocationMethod::EqualSplitResidualFirst, &[1; 5]),
-        posting(i128::MAX, AllocationMethod::LargestRemainder, &[u128::MAX; 3]),
+        posting(
+            i128::MAX,
+            AllocationMethod::LargestRemainder,
+            &[u128::MAX; 3],
+        ),
     ];
     for rounding in RoundingLaw::ALL {
         for recipient in 20..23 {
-            cases.push(posting(1, AllocationMethod::ProRataResidualToNamed { rounding, recipient }, &[1; 3]));
+            cases.push(posting(
+                1,
+                AllocationMethod::ProRataResidualToNamed {
+                    rounding,
+                    recipient,
+                },
+                &[1; 3],
+            ));
         }
     }
     for mut basis in cases {
@@ -58,7 +98,10 @@ fn all_laws_preserve_the_exact_proposal_through_transport() {
             assert_eq!(decoded, review);
             assert_eq!(decoded.canonical_bytes().unwrap(), bytes);
             assert_eq!(decoded.outcome().unwrap(), basis.request.execute().unwrap());
-            assert_eq!(decoded.proposal_digest().unwrap(), review.proposal().proposal_digest().unwrap());
+            assert_eq!(
+                decoded.proposal_digest().unwrap(),
+                review.proposal().proposal_digest().unwrap()
+            );
             decoded.verify_for(&review.digest().unwrap()).unwrap();
             assert!(decoded.intent.approvals().is_empty());
         }
@@ -72,11 +115,20 @@ fn same_result_driver_substitution_is_not_the_same_review() {
     let mut changed = basis;
     changed.request.targets[0].basis = 2;
     changed.request.targets[1].basis = 4;
-    assert_eq!(changed.request.execute().unwrap().shares(), original.outcome().unwrap().shares());
+    assert_eq!(
+        changed.request.execute().unwrap().shares(),
+        original.outcome().unwrap().shares()
+    );
     assert!(AllocationReview::from_proposal(changed.clone(), original.proposal().clone()).is_err());
     let replacement = review(changed);
-    assert!(matches!(replacement.verify_for(&original.digest().unwrap()), Err(AllocationReviewError::Mismatch)));
-    assert_ne!(original.proposal_digest().unwrap(), replacement.proposal_digest().unwrap());
+    assert!(matches!(
+        replacement.verify_for(&original.digest().unwrap()),
+        Err(AllocationReviewError::Mismatch)
+    ));
+    assert_ne!(
+        original.proposal_digest().unwrap(),
+        replacement.proposal_digest().unwrap()
+    );
 }
 
 #[test]
@@ -87,15 +139,22 @@ fn balanced_resealed_shares_and_extra_effects_cannot_be_adopted() {
     bad.legs[1].amount.mantissa -= 1;
     bad.legs[2].amount.mantissa += 1;
     bad.unit_totals = EntryPayload::fold_unit_totals(&bad.legs).unwrap();
-    assert!(PostIntent::new(bad.clone(), Vec::new()).is_ok(), "outer structure and balance are insufficient");
+    assert!(
+        PostIntent::new(bad.clone(), Vec::new()).is_ok(),
+        "outer structure and balance are insufficient"
+    );
     assert!(AllocationReview::from_proposal(review.posting.clone(), bad).is_err());
-    let mut bad = original.clone(); bad.legs[1].memo = Some(original.description.clone());
+    let mut bad = original.clone();
+    bad.legs[1].memo = Some(original.description.clone());
     assert!(AllocationReview::from_proposal(review.posting.clone(), bad).is_err());
-    let mut bad = original.clone(); bad.extensions.push((6, Vec::new()));
+    let mut bad = original.clone();
+    bad.extensions.push((6, Vec::new()));
     assert!(AllocationReview::from_proposal(review.posting.clone(), bad).is_err());
-    let mut bad = original.clone(); bad.evidence.clear();
+    let mut bad = original.clone();
+    bad.evidence.clear();
     assert!(AllocationReview::from_proposal(review.posting.clone(), bad).is_err());
-    let mut bad = original.clone(); bad.class = EntryClass::ORIGINAL;
+    let mut bad = original.clone();
+    bad.class = EntryClass::ORIGINAL;
     assert!(AllocationReview::from_proposal(review.posting.clone(), bad).is_err());
 }
 
@@ -110,14 +169,26 @@ fn review_identity_binds_metadata_not_only_arithmetic() {
             1 => changed.principal_ref = VId(8),
             2 => changed.idempotency_key = b"different-key".to_vec(),
             3 => changed.session_ref = Some(VId(99)),
-            _ => changed.description = Erasable::seal(
-                &"different text".to_string(), None, &SealKey([3; 32]), [8; 32], [9; 24],
-            ),
+            _ => {
+                changed.description = Erasable::seal(
+                    &"different text".to_string(),
+                    None,
+                    &SealKey([3; 32]),
+                    [8; 32],
+                    [9; 24],
+                )
+            }
         }
         let changed = AllocationReview::from_proposal(original.posting.clone(), changed).unwrap();
         assert_eq!(changed.outcome().unwrap(), original.outcome().unwrap());
-        assert!(matches!(changed.verify_for(&digest), Err(AllocationReviewError::Mismatch)));
-        assert_ne!(changed.proposal_digest().unwrap(), original.proposal_digest().unwrap());
+        assert!(matches!(
+            changed.verify_for(&digest),
+            Err(AllocationReviewError::Mismatch)
+        ));
+        assert_ne!(
+            changed.proposal_digest().unwrap(),
+            original.proposal_digest().unwrap()
+        );
     }
 }
 
@@ -150,18 +221,29 @@ fn truncated_hostile_and_inconsistent_containers_refuse() {
     let review = review(posting(7, AllocationMethod::LargestRemainder, &[1, 0, 2]));
     let bytes = review.canonical_bytes().unwrap();
     for cut in 0..bytes.len() {
-        assert!(AllocationReview::decode(&bytes[..cut]).is_err(), "cut {cut}");
+        assert!(
+            AllocationReview::decode(&bytes[..cut]).is_err(),
+            "cut {cut}"
+        );
     }
     for offset in [0, 16, 18, 20, 36, 37, 41] {
-        let mut changed = bytes.clone(); changed[offset] ^= 0xff;
-        assert!(AllocationReview::decode(&changed).is_err(), "offset {offset}");
+        let mut changed = bytes.clone();
+        changed[offset] ^= 0xff;
+        assert!(
+            AllocationReview::decode(&changed).is_err(),
+            "offset {offset}"
+        );
     }
-    let mut changed = bytes.clone(); changed[37..41].copy_from_slice(&u32::MAX.to_le_bytes());
+    let mut changed = bytes.clone();
+    changed[37..41].copy_from_slice(&u32::MAX.to_le_bytes());
     assert!(AllocationReview::decode(&changed).is_err());
-    let mut changed = bytes; changed.push(0);
+    let mut changed = bytes;
+    changed.push(0);
     assert!(AllocationReview::decode(&changed).is_err());
-    assert!(matches!(AllocationReview::decode(&vec![0; MAX_ALLOCATION_REVIEW_BYTES + 1]),
-        Err(AllocationReviewError::TooLarge { .. })));
+    assert!(matches!(
+        AllocationReview::decode(&vec![0; MAX_ALLOCATION_REVIEW_BYTES + 1]),
+        Err(AllocationReviewError::TooLarge { .. })
+    ));
 }
 
 #[test]
@@ -175,16 +257,35 @@ fn maximum_targets_and_dimensions_keep_zero_shares_and_fit_the_bound() {
     assert_eq!(decoded.posting().request.targets.len(), 1024);
     assert_eq!(decoded.posting().dimensions.len(), 64);
     assert_eq!(decoded.proposal().legs.len(), 2);
-    assert_eq!(decoded.outcome().unwrap().shares().iter().filter(|share| share.mantissa == 0).count(), 1023);
+    assert_eq!(
+        decoded
+            .outcome()
+            .unwrap()
+            .shares()
+            .iter()
+            .filter(|share| share.mantissa == 0)
+            .count(),
+        1023
+    );
     assert_eq!(decoded, review);
 }
 
 #[test]
 fn diagnostics_do_not_dump_driver_or_proposal_bytes() {
-    let review = review(posting(7, AllocationMethod::LargestRemainder, &[123456789, 1]));
+    let review = review(posting(
+        7,
+        AllocationMethod::LargestRemainder,
+        &[123456789, 1],
+    ));
     let diagnostic = format!("{review:?}");
     assert!(diagnostic.contains("AllocationReview"));
-    for sensitive in ["123456789", "private review description", "idempotency_key", "ciphertext", "posting:"] {
+    for sensitive in [
+        "123456789",
+        "private review description",
+        "idempotency_key",
+        "ciphertext",
+        "posting:",
+    ] {
         assert!(!diagnostic.contains(sensitive));
     }
 }

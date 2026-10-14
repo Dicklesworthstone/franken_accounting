@@ -73,22 +73,25 @@ impl OpenItemsReport {
             "applied_out_mantissa,open_mantissa\r\n"
         ));
         for (item, account) in items {
-            csv_row(&mut out, &[
-                self.known_at.0.to_string(),
-                format!("{:032x}", item.account.0),
-                account.code.clone(),
-                account.name.clone(),
-                item.unit_id.to_string(),
-                format!("{:032x}", item.entry.0),
-                item.ordinal.to_string(),
-                side_name(item.side).into(),
-                item.effective_date.0.to_string(),
-                item.recorded_at.0.to_string(),
-                item.original.to_string(),
-                item.applied.to_string(),
-                item.applied_out.to_string(),
-                item.open.to_string(),
-            ]);
+            csv_row(
+                &mut out,
+                &[
+                    self.known_at.0.to_string(),
+                    format!("{:032x}", item.account.0),
+                    account.code.clone(),
+                    account.name.clone(),
+                    item.unit_id.to_string(),
+                    format!("{:032x}", item.entry.0),
+                    item.ordinal.to_string(),
+                    side_name(item.side).into(),
+                    item.effective_date.0.to_string(),
+                    item.recorded_at.0.to_string(),
+                    item.original.to_string(),
+                    item.applied.to_string(),
+                    item.applied_out.to_string(),
+                    item.open.to_string(),
+                ],
+            );
         }
         Ok(out)
     }
@@ -116,19 +119,22 @@ impl OpenItemsReport {
                 )
             });
             for application in history {
-                csv_row(&mut out, &[
-                    self.known_at.0.to_string(),
-                    format!("{:032x}", item.account.0),
-                    account.code.clone(),
-                    item.unit_id.to_string(),
-                    format!("{:032x}", item.entry.0),
-                    item.ordinal.to_string(),
-                    format!("{:032x}", application.entry.0),
-                    application.ordinal.to_string(),
-                    application.recorded_at.0.to_string(),
-                    application.amount.to_string(),
-                    application.live.to_string(),
-                ]);
+                csv_row(
+                    &mut out,
+                    &[
+                        self.known_at.0.to_string(),
+                        format!("{:032x}", item.account.0),
+                        account.code.clone(),
+                        item.unit_id.to_string(),
+                        format!("{:032x}", item.entry.0),
+                        item.ordinal.to_string(),
+                        format!("{:032x}", application.entry.0),
+                        application.ordinal.to_string(),
+                        application.recorded_at.0.to_string(),
+                        application.amount.to_string(),
+                        application.live.to_string(),
+                    ],
+                );
             }
         }
         Ok(out)
@@ -184,10 +190,11 @@ impl SettlementPlan {
 
 // Validate metadata before producing output; never manufacture a display name
 // or silently collapse two rows with the same durable entry/leg identity.
-fn csv_items(
-    report: &OpenItemsReport,
-) -> Result<Vec<(&OpenItem, &AccountRow)>, RegisterError> {
-    if report.account_filter.is_some_and(|account| !report.accounts.contains_key(&account)) {
+fn csv_items(report: &OpenItemsReport) -> Result<Vec<(&OpenItem, &AccountRow)>, RegisterError> {
+    if report
+        .account_filter
+        .is_some_and(|account| !report.accounts.contains_key(&account))
+    {
         return Err(RegisterError::InvalidSelection(
             "CSV report account filter has no snapshot metadata".into(),
         ));
@@ -206,7 +213,9 @@ fn csv_items(
         if account.vid != item.account
             || account.created_at > report.known_at
             || item.recorded_at > report.known_at
-            || report.account_filter.is_some_and(|selected| selected != item.account)
+            || report
+                .account_filter
+                .is_some_and(|selected| selected != item.account)
         {
             return Err(RegisterError::InvalidSelection(
                 "CSV item or account metadata is outside the report selection".into(),
@@ -223,7 +232,10 @@ fn csv_row(out: &mut String, fields: &[String]) {
         if index != 0 {
             out.push(',');
         }
-        if field.bytes().any(|byte| matches!(byte, b',' | b'"' | b'\r' | b'\n')) {
+        if field
+            .bytes()
+            .any(|byte| matches!(byte, b',' | b'"' | b'\r' | b'\n'))
+        {
             out.push('"');
             for character in field.chars() {
                 if character == '"' {
@@ -369,7 +381,7 @@ mod tests {
                         row.push(std::mem::take(&mut field));
                         rows.push(std::mem::take(&mut row));
                     }
-                    '\n' => panic!("bare record newline"),
+                    '\n' => assert_eq!(character, '\r', "bare record newline"),
                     other => field.push(other),
                 }
             }
@@ -444,9 +456,7 @@ mod tests {
     fn settlement_csv_always_accounts_for_unapplied_cash() {
         let report = fixture();
         let mut request = SettlementRequest {
-            account: fa_journal::rows::AccountRow::clone(
-                report.accounts.get(&VId(9)).unwrap(),
-            ).vid,
+            account: fa_journal::rows::AccountRow::clone(report.accounts.get(&VId(9)).unwrap()).vid,
             unit_id: 1,
             side: Side::Credit,
             amount: 9_007_199_254_741_000,

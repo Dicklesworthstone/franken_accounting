@@ -16,13 +16,16 @@ fn directory() -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     loop {
         let dir = std::env::temp_dir().join(format!(
-            "fa-evidence-documents-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed),
+            "fa-evidence-documents-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
         ));
-        match std::fs::create_dir(&dir) {
-            Ok(()) => return dir,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => panic!("create retained fixture: {error}"),
+        let result = std::fs::create_dir(&dir);
+        if matches!(&result, Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists) {
+            continue;
         }
+        result.expect("create retained fixture");
+        return dir;
     }
 }
 
@@ -31,25 +34,41 @@ fn args(j: &Journal, indexes: &[usize], docs: &[DocumentContent<'_>]) -> (Vec<Os
     std::fs::write(dir.join("prefix"), &j.prefix).unwrap();
     std::fs::write(dir.join("checkpoint"), j.checkpoint.encode()).unwrap();
     let mut args = vec![
-        "evidence".into(), "production".into(), "documents".into(),
-        "--prefix".into(), dir.join("prefix").into_os_string(),
-        "--checkpoint".into(), dir.join("checkpoint").into_os_string(),
-        "--expect-first-seq".into(), "0".into(),
-        "--expect-known-at".into(), j.checkpoint.through_seq.to_string().into(),
-        "--expect-account".into(), "all".into(),
-        "--expect-days".into(), "all".into(), "--json".into(),
+        "evidence".into(),
+        "production".into(),
+        "documents".into(),
+        "--prefix".into(),
+        dir.join("prefix").into_os_string(),
+        "--checkpoint".into(),
+        dir.join("checkpoint").into_os_string(),
+        "--expect-first-seq".into(),
+        "0".into(),
+        "--expect-known-at".into(),
+        j.checkpoint.through_seq.to_string().into(),
+        "--expect-account".into(),
+        "all".into(),
+        "--expect-days".into(),
+        "all".into(),
+        "--json".into(),
     ];
     for (index, record) in j.records.iter().enumerate() {
         std::fs::write(dir.join(format!("record-{index}")), record).unwrap();
     }
     for index in indexes {
-        args.extend(["--record".into(), dir.join(format!("record-{index}")).into_os_string()]);
+        args.extend([
+            "--record".into(),
+            dir.join(format!("record-{index}")).into_os_string(),
+        ]);
     }
     for (index, doc) in docs.iter().enumerate() {
         let path = dir.join(format!("document-{index}"));
         std::fs::write(&path, doc.bytes).unwrap();
-        args.extend(["--document".into(), hex(&doc.document_oid).into(),
-            doc.kind.to_string().into(), path.into_os_string()]);
+        args.extend([
+            "--document".into(),
+            hex(&doc.document_oid).into(),
+            doc.kind.to_string().into(),
+            path.into_os_string(),
+        ]);
     }
     (args, dir)
 }
@@ -60,7 +79,10 @@ fn set(args: &mut [OsString], flag: &str, offset: usize, value: impl Into<OsStri
 }
 
 fn run(args: &[OsString]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_fa-verify")).args(args).output().expect("execute offline verifier")
+    Command::new(env!("CARGO_BIN_EXE_fa-verify"))
+        .args(args)
+        .output()
+        .expect("execute offline verifier")
 }
 
 fn result(output: Output, exit: i32) -> String {
@@ -76,18 +98,27 @@ fn result(output: Output, exit: i32) -> String {
     }
     if exit == 0 {
         assert!(err.is_empty(), "{err}");
-        for field in ["\"verified\":true", "\"proof_kind\":\"evidence_document_production\"",
-            "\"scope\":\"seq_range_complete\"", "\"document_scope\":\"recomputation\"",
+        for field in [
+            "\"verified\":true",
+            "\"proof_kind\":\"evidence_document_production\"",
+            "\"scope\":\"seq_range_complete\"",
+            "\"document_scope\":\"recomputation\"",
             "\"original_cited_document_bytes\":\"complete_and_recomputed\"",
             "\"full_provenance_closure\":\"not_verified\"",
-            "\"supplemental_evidence\":\"not_verified\"", "\"signature_verification\":\"not_performed\""]
-        {
+            "\"supplemental_evidence\":\"not_verified\"",
+            "\"signature_verification\":\"not_performed\"",
+        ] {
             assert!(out.contains(field), "missing {field}: {out}");
         }
     } else {
         assert!(out.contains("\"verified\":false"));
         assert!(out.contains("\"event\":\"error\""));
-        for partial in ["proof_verified", "\"entries\":[", "\"citations\":[", "\"documents\":["] {
+        for partial in [
+            "proof_verified",
+            "\"entries\":[",
+            "\"citations\":[",
+            "\"documents\":[",
+        ] {
             assert!(!out.contains(partial), "partial verification report: {out}");
         }
     }
@@ -101,29 +132,55 @@ fn full_bytes_binary_reports_all_associations_and_exact_coordinates_without_payl
     let mut refs = citations(&docs, 3);
     refs.extend(citations(&docs[..1], 4));
     refs.sort();
-    let j = journal(&[entry(&refs, 7, i32::MIN), entry(&[], 11, 10), entry(&refs, u64::MAX, i32::MAX)]);
+    let j = journal(&[
+        entry(&refs, 7, i32::MIN),
+        entry(&[], 11, 10),
+        entry(&refs, u64::MAX, i32::MAX),
+    ]);
     let (mut input, dir) = args(&j, &[0, 1, 2], &docs);
     set(&mut input, "--expect-days", 1, "-2147483648:2147483647");
     let json = result(run(&input), 0);
-    for field in ["\"entry_count\":3", "\"citation_count\":6", "\"document_count\":2", "\"citations\":[]",
-        "\"byte_length\":\"0\"", "\"first\":\"-2147483648\"", "\"last\":\"2147483647\""]
-    {
+    for field in [
+        "\"entry_count\":3",
+        "\"citation_count\":6",
+        "\"document_count\":2",
+        "\"citations\":[]",
+        "\"byte_length\":\"0\"",
+        "\"first\":\"-2147483648\"",
+        "\"last\":\"2147483647\"",
+    ] {
         assert!(json.contains(field));
     }
     for field in ["through_seq", "known_at", "recorded_at"] {
         assert!(json.contains(&format!("\"{field}\":\"18446744073709551615\"")));
     }
     assert_eq!(std::fs::read(dir.join("prefix")).unwrap(), j.prefix);
-    assert_eq!(std::fs::read(dir.join("checkpoint")).unwrap(), j.checkpoint.encode());
+    assert_eq!(
+        std::fs::read(dir.join("checkpoint")).unwrap(),
+        j.checkpoint.encode()
+    );
     for (index, doc) in docs.iter().enumerate() {
-        assert_eq!(std::fs::read(dir.join(format!("document-{index}"))).unwrap().as_slice(), doc.bytes);
+        assert_eq!(
+            std::fs::read(dir.join(format!("document-{index}")))
+                .unwrap()
+                .as_slice(),
+            doc.bytes
+        );
     }
-    assert_eq!(result(run(&input), 0), json, "deterministic metadata report");
+    assert_eq!(
+        result(run(&input), 0),
+        json,
+        "deterministic metadata report"
+    );
 }
 
 #[test]
 fn document_omissions_extras_duplicate_locators_and_wrong_bytes_fail_without_partial_output() {
-    let mut docs = [document(1, b"one"), document(2, b"two"), document(3, b"extra")];
+    let mut docs = [
+        document(1, b"one"),
+        document(2, b"two"),
+        document(3, b"extra"),
+    ];
     docs.sort_by_key(|doc| doc.document_oid);
     let j = journal(&[entry(&citations(&docs[..2], 3), 7, 10)]);
     for supplied in [vec![], vec![docs[0]], docs.to_vec(), vec![docs[0], docs[2]]] {
@@ -139,31 +196,86 @@ fn document_omissions_extras_duplicate_locators_and_wrong_bytes_fail_without_par
     set(&mut input, "--document", 2, "254");
     result(run(&input), 8);
     set(&mut input, "--document", 2, docs[0].kind.to_string());
-    set(&mut input, "--document", 3, dir.join("absent-file").into_os_string());
+    set(
+        &mut input,
+        "--document",
+        3,
+        dir.join("absent-file").into_os_string(),
+    );
     result(run(&input), 5);
 }
 
 #[test]
 fn complete_argument_validation_precedes_even_the_checkpoint_open() {
-    let base: Vec<OsString> = ["evidence", "production", "documents", "--prefix", "absent-prefix",
-        "--checkpoint", "absent-checkpoint", "--expect-first-seq", "0", "--expect-known-at", "0",
-        "--expect-account", "all", "--expect-days", "all", "--json"]
-        .into_iter().map(OsString::from).collect();
+    let base: Vec<OsString> = [
+        "evidence",
+        "production",
+        "documents",
+        "--prefix",
+        "absent-prefix",
+        "--checkpoint",
+        "absent-checkpoint",
+        "--expect-first-seq",
+        "0",
+        "--expect-known-at",
+        "0",
+        "--expect-account",
+        "all",
+        "--expect-days",
+        "all",
+        "--json",
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .collect();
     let zero = "0".repeat(64);
     let extra = vec![
         vec!["--document".into()],
         vec!["--document".into(), zero.clone(), "1".into()],
-        vec!["--document".into(), "g".repeat(64), "1".into(), "file".into()],
-        vec!["--document".into(), "0".repeat(63), "1".into(), "file".into()],
-        vec!["--document".into(), zero.clone(), "256".into(), "file".into()],
-        vec!["--document".into(), zero.clone(), "+1".into(), "file".into()],
-        vec!["--document".into(), zero.clone(), "1".into(), "--record".into()],
+        vec![
+            "--document".into(),
+            "g".repeat(64),
+            "1".into(),
+            "file".into(),
+        ],
+        vec![
+            "--document".into(),
+            "0".repeat(63),
+            "1".into(),
+            "file".into(),
+        ],
+        vec![
+            "--document".into(),
+            zero.clone(),
+            "256".into(),
+            "file".into(),
+        ],
+        vec![
+            "--document".into(),
+            zero.clone(),
+            "+1".into(),
+            "file".into(),
+        ],
+        vec![
+            "--document".into(),
+            zero.clone(),
+            "1".into(),
+            "--record".into(),
+        ],
         vec!["--document".into(), zero.clone(), "1".into(), "".into()],
         vec!["--json".into()],
         vec!["--expect-known-at".into(), "0".into()],
         vec!["--unknown".into(), "value".into()],
-        vec!["--document".into(), zero.clone(), "1".into(), "file".into(),
-            "--document".into(), zero, "2".into(), "other".into()],
+        vec![
+            "--document".into(),
+            zero.clone(),
+            "1".into(),
+            "file".into(),
+            "--document".into(),
+            zero,
+            "2".into(),
+            "other".into(),
+        ],
     ];
     for suffix in extra {
         let mut bad = base.clone();
@@ -182,8 +294,10 @@ fn one_total_byte_budget_applies_before_loading_the_second_large_document() {
     let j = journal(&[entry(&citations(&docs, 3), 7, 10)]);
     let (input, dir) = args(&j, &[0], &docs);
     for index in 0..2 {
-        let file = std::fs::OpenOptions::new().write(true)
-            .open(dir.join(format!("document-{index}"))).unwrap();
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(dir.join(format!("document-{index}")))
+            .unwrap();
         file.set_len((MAX_PRODUCTION_BYTES / 2 + 1) as u64).unwrap();
     }
     let error = result(run(&input), 8);
@@ -194,14 +308,22 @@ fn one_total_byte_budget_applies_before_loading_the_second_large_document() {
 fn historical_and_empty_scopes_determine_documents_not_the_supplied_file_list() {
     let one = document(1, b"old");
     let two = document(2, b"late effective");
-    let j = journal(&[entry(&citations(&[one], 3), 7, 10), entry(&citations(&[two], 3), 30, 10)]);
+    let j = journal(&[
+        entry(&citations(&[one], 3), 7, 10),
+        entry(&citations(&[two], 3), 30, 10),
+    ]);
     let (mut input, _) = args(&j, &[0], &[one]);
     set(&mut input, "--expect-known-at", 1, "7");
     assert!(result(run(&input), 0).contains("\"document_count\":1"));
     set(&mut input, "--expect-known-at", 1, "30");
     result(run(&input), 8); // late-effective entry omitted
     let (mut empty, _) = args(&j, &[], &[]);
-    set(&mut empty, "--expect-account", 1, format!("{:032x}", u128::MAX));
+    set(
+        &mut empty,
+        "--expect-account",
+        1,
+        format!("{:032x}", u128::MAX),
+    );
     assert!(result(run(&empty), 0).contains("\"document_count\":0"));
     let j = journal(&[entry(&[], 7, 10)]);
     let (input, _) = args(&j, &[0], &[]);
@@ -236,13 +358,18 @@ fn wrong_anchors_and_truncated_proofs_refuse_and_inventory_only_mode_is_unchange
 
 #[test]
 fn help_and_human_reports_separate_original_bytes_from_unverified_provenance() {
-    for words in [vec!["evidence", "production", "--help"],
-        vec!["evidence", "production", "documents", "--help"]]
-    {
+    for words in [
+        vec!["evidence", "production", "--help"],
+        vec!["evidence", "production", "documents", "--help"],
+    ] {
         let output = run(&words.into_iter().map(OsString::from).collect::<Vec<_>>());
         assert_eq!(output.status.code(), Some(0));
         assert!(output.stderr.is_empty());
-        assert!(String::from_utf8(output.stdout).unwrap().contains("documents"));
+        assert!(
+            String::from_utf8(output.stdout)
+                .unwrap()
+                .contains("documents")
+        );
     }
     let doc = document(1, DOCUMENT_SECRET);
     let j = journal(&[entry(&citations(&[doc], 3), 7, 10), entry(&[], 11, 10)]);
@@ -252,7 +379,12 @@ fn help_and_human_reports_separate_original_bytes_from_unverified_provenance() {
     assert_eq!(output.status.code(), Some(0));
     assert!(output.stderr.is_empty());
     let text = String::from_utf8(output.stdout).unwrap();
-    for expected in ["bytes recomputed", "0 citations", "not full provenance", "signatures"] {
+    for expected in [
+        "bytes recomputed",
+        "0 citations",
+        "not full provenance",
+        "signatures",
+    ] {
         assert!(text.contains(expected));
     }
     for secret in [fixture::SECRET, DOCUMENT_SECRET] {
@@ -275,7 +407,12 @@ fn non_utf8_document_paths_are_supported_but_document_selectors_are_not_lossy() 
     let valid = input.clone();
     for offset in [1, 2] {
         let mut bad = valid.clone();
-        set(&mut bad, "--document", offset, OsString::from_vec(vec![255]));
+        set(
+            &mut bad,
+            "--document",
+            offset,
+            OsString::from_vec(vec![255]),
+        );
         result(run(&bad), 2);
     }
 }

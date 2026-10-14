@@ -104,9 +104,17 @@ impl CashFlowCertificate {
         if self.output.len() > MAX_GENERAL_LEDGER_BYTES
             || normalize(&self.definition)? != self.definition
             || self.definition.cash_accounts
-                != self.source.request().accounts.iter().map(|id| id.0).collect::<Vec<_>>()
+                != self
+                    .source
+                    .request()
+                    .accounts
+                    .iter()
+                    .map(|id| id.0)
+                    .collect::<Vec<_>>()
         {
-            return Err(invalid("noncanonical cash-flow definition, source scope or output size"));
+            return Err(invalid(
+                "noncanonical cash-flow definition, source scope or output size",
+            ));
         }
         check_output_header(&self.output, &self.source, &self.definition)
             .map_err(|error| invalid(error.to_string()))?;
@@ -135,7 +143,9 @@ impl CashFlowCertificate {
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, Refusal> {
         let mut body = self.body_bytes()?;
         if domain_digest(DIGEST_DOMAIN, &[&body]) != self.digest {
-            return Err(invalid("cash-flow certificate digest differs from its contents"));
+            return Err(invalid(
+                "cash-flow certificate digest differs from its contents",
+            ));
         }
         body.extend_from_slice(&self.digest);
         Ok(body)
@@ -146,11 +156,15 @@ impl CashFlowCertificate {
     /// the retained output, and only independent expected inputs fix its scope.
     pub fn decode(bytes: &[u8]) -> Result<Self, Refusal> {
         if bytes.len() > MAX_CASH_FLOW_CERTIFICATE_BYTES {
-            return Err(invalid("cash-flow certificate exceeds its 64 MiB total bound"));
+            return Err(invalid(
+                "cash-flow certificate exceeds its 64 MiB total bound",
+            ));
         }
-        let malformed = |error: DecodeError| invalid(format!("malformed cash-flow certificate: {error}"));
+        let malformed =
+            |error: DecodeError| invalid(format!("malformed cash-flow certificate: {error}"));
         let mut r = Reader::new(bytes);
-        if r.bytes(64, "cash-flow certificate format").map_err(malformed)?
+        if r.bytes(64, "cash-flow certificate format")
+            .map_err(malformed)?
             != CASH_FLOW_CERTIFICATE_FORMAT
         {
             return Err(invalid("unsupported cash-flow certificate format"));
@@ -160,11 +174,18 @@ impl CashFlowCertificate {
                 .map_err(malformed)?,
         )?;
         let definition = read_definition(&mut r).map_err(malformed)?;
-        let output = r.bytes(MAX_GENERAL_LEDGER_BYTES, "cash-flow output")
-            .map_err(malformed)?.to_vec();
+        let output = r
+            .bytes(MAX_GENERAL_LEDGER_BYTES, "cash-flow output")
+            .map_err(malformed)?
+            .to_vec();
         let digest = r.fixed("cash-flow certificate digest").map_err(malformed)?;
         r.finish().map_err(malformed)?;
-        let value = Self { source, definition, output, digest };
+        let value = Self {
+            source,
+            definition,
+            output,
+            digest,
+        };
         if value.canonical_bytes()?.as_slice() != bytes {
             return Err(invalid("noncanonical cash-flow certificate encoding"));
         }
@@ -184,42 +205,77 @@ fn invalid(message: impl Into<String>) -> Refusal {
 
 fn normalize(definition: &CashFlowDefinition) -> Result<CashFlowDefinition, Refusal> {
     // Reject excessive caller-controlled vectors BEFORE copying or sorting them.
-    if definition.name.trim().is_empty() || definition.name.len() > 256
-        || definition.cash_accounts.is_empty() || definition.cash_accounts.len() > MAX_CASH_ACCOUNTS
+    if definition.name.trim().is_empty()
+        || definition.name.len() > 256
+        || definition.cash_accounts.is_empty()
+        || definition.cash_accounts.len() > MAX_CASH_ACCOUNTS
         || definition.assignments.len() > MAX_GENERAL_LEDGER_LINES
     {
-        return Err(invalid("cash-flow definition exceeds its name, account or assignment bounds"));
+        return Err(invalid(
+            "cash-flow definition exceeds its name, account or assignment bounds",
+        ));
     }
     let mut value = definition.clone();
     value.cash_accounts.sort_unstable();
-    value.assignments.sort_unstable_by_key(|a| (a.entry_digest, a.leg_index));
-    if value.cash_accounts.windows(2).any(|pair| pair[0] == pair[1])
+    value
+        .assignments
+        .sort_unstable_by_key(|a| (a.entry_digest, a.leg_index));
+    if value
+        .cash_accounts
+        .windows(2)
+        .any(|pair| pair[0] == pair[1])
         || value.assignments.windows(2).any(|pair| {
             (pair[0].entry_digest, pair[0].leg_index) == (pair[1].entry_digest, pair[1].leg_index)
         })
     {
-        return Err(invalid("cash-flow definition repeats an account or journal leg"));
+        return Err(invalid(
+            "cash-flow definition repeats an account or journal leg",
+        ));
     }
     Ok(value)
 }
 
-fn envelope_size(source: usize, definition: &CashFlowDefinition, output: usize) -> Result<usize, Refusal> {
+fn envelope_size(
+    source: usize,
+    definition: &CashFlowDefinition,
+    output: usize,
+) -> Result<usize, Refusal> {
     let accounts = definition.cash_accounts.len().checked_mul(16);
     let assignments = definition.assignments.len().checked_mul(37);
-    let size = accounts.zip(assignments).and_then(|(accounts, assignments)| {
-        [4, CASH_FLOW_CERTIFICATE_FORMAT.len(), 4, source, 4, definition.name.len(),
-            4, accounts, 4, assignments, 4, output, 32]
-            .into_iter().try_fold(0usize, usize::checked_add)
-    });
+    let size = accounts
+        .zip(assignments)
+        .and_then(|(accounts, assignments)| {
+            [
+                4,
+                CASH_FLOW_CERTIFICATE_FORMAT.len(),
+                4,
+                source,
+                4,
+                definition.name.len(),
+                4,
+                accounts,
+                4,
+                assignments,
+                4,
+                output,
+                32,
+            ]
+            .into_iter()
+            .try_fold(0usize, usize::checked_add)
+        });
     size.filter(|n| *n <= MAX_CASH_FLOW_CERTIFICATE_BYTES)
         .ok_or_else(|| invalid("cash-flow certificate exceeds its 64 MiB total bound"))
 }
 
 fn write_definition(w: &mut Writer, definition: &CashFlowDefinition) {
     w.str(&definition.name)
-        .list(&definition.cash_accounts, |w, id| { w.u128(*id); })
+        .list(&definition.cash_accounts, |w, id| {
+            w.u128(*id);
+        })
         .list(&definition.assignments, |w, assignment| {
-            w.fixed(&assignment.entry_digest).u32(assignment.leg_index).u8(assignment.activity as u8);
+            w.fixed(&assignment.entry_digest)
+                .u32(assignment.leg_index)
+                .u8(assignment.activity as u8);
         });
 }
 
@@ -249,9 +305,17 @@ fn read_definition(r: &mut Reader<'_>) -> Result<CashFlowDefinition, DecodeError
             4 => CashFlowActivity::InternalTransfer,
             _ => return Err(r.invalid("unknown cash-flow activity")),
         };
-        assignments.push(CashFlowAssignment { entry_digest, leg_index, activity });
+        assignments.push(CashFlowAssignment {
+            entry_digest,
+            leg_index,
+            activity,
+        });
     }
-    let value = CashFlowDefinition { name, cash_accounts, assignments };
+    let value = CashFlowDefinition {
+        name,
+        cash_accounts,
+        assignments,
+    };
     if normalize(&value).map_err(|_| r.invalid("invalid cash-flow definition"))? != value {
         return Err(r.invalid("cash-flow definition is not strictly ordered"));
     }
@@ -262,7 +326,9 @@ fn read_definition(r: &mut Reader<'_>) -> Result<CashFlowDefinition, DecodeError
 /// Its remaining financial bytes are opaque until exact native replay compares
 /// them. Header validation alone is NOT a source or arithmetic verification.
 fn check_output_header(
-    bytes: &[u8], source: &RollForwardCertificate, definition: &CashFlowDefinition,
+    bytes: &[u8],
+    source: &RollForwardCertificate,
+    definition: &CashFlowDefinition,
 ) -> Result<(), DecodeError> {
     let mut r = Reader::new(bytes);
     if r.str(64, "cash-flow output format")? != CASH_FLOW_FORMAT {
@@ -290,24 +356,36 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// HEAD is resolved once by the native source and stored as a fixed prefix.
     /// All cash legs, including cancelling movements, remain in the closure.
     pub fn certify_cash_flow(
-        &self, cx: &PurposeContexts, principal: VId, capability: &Capability,
-        request: &RollForwardRequest, definition: &CashFlowDefinition,
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        request: &RollForwardRequest,
+        definition: &CashFlowDefinition,
     ) -> Outcome<CertifiedCashFlow> {
         let source = match self.certify_general_ledger(cx, principal, capability, request)? {
             Ok(source) => source,
             Err(refusal) => return Ok(Err(refusal)),
         };
         cx.query().checkpoint().map_err(BookError::Context)?;
-        let report = match source.report().clone().classify_cash_flow(&cx.query(), definition)? {
+        let report = match source
+            .report()
+            .clone()
+            .classify_cash_flow(&cx.query(), definition)?
+        {
             Ok(report) => report,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let certificate = match CashFlowCertificate::seal(source.into_source_certificate(), &report) {
+        let certificate = match CashFlowCertificate::seal(source.into_source_certificate(), &report)
+        {
             Ok(certificate) => certificate,
             Err(refusal) => return Ok(Err(refusal)),
         };
         cx.query().checkpoint().map_err(BookError::Context)?;
-        Ok(Ok(CertifiedCashFlow { report, certificate }))
+        Ok(Ok(CertifiedCashFlow {
+            report,
+            certificate,
+        }))
     }
 
     /// Verify native history under CURRENT read authority, check the independently
@@ -315,14 +393,22 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// `expected.known_at = None` is refused. Permuting equivalent scope/assignment
     /// lists is harmless; changing a class, label, zero leaf or unit is not.
     pub fn replay_cash_flow(
-        &self, cx: &PurposeContexts, principal: VId, capability: &Capability,
-        certificate: &CashFlowCertificate, expected: &RollForwardRequest,
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        certificate: &CashFlowCertificate,
+        expected: &RollForwardRequest,
         expected_definition: &CashFlowDefinition,
     ) -> Outcome<CashFlow> {
         // The native replay checks holder, scope, current expiry/revocation and
         // the fixed expected selector before observing any financial payload.
         let ledger = match self.replay_general_ledger(
-            cx, principal, capability, &certificate.source, expected,
+            cx,
+            principal,
+            capability,
+            &certificate.source,
+            expected,
         )? {
             Ok(ledger) => ledger,
             Err(refusal) => return Ok(Err(refusal)),
@@ -335,7 +421,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(refusal) => return Ok(Err(refusal)),
         };
         if definition != certificate.definition {
-            return Ok(Err(invalid("delivered cash classification differs from the independent expected definition")));
+            return Ok(Err(invalid(
+                "delivered cash classification differs from the independent expected definition",
+            )));
         }
         let report = match ledger.classify_cash_flow(&cx.query(), &definition)? {
             Ok(report) => report,
@@ -346,7 +434,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(refusal) => return Ok(Err(refusal)),
         };
         if output != certificate.output {
-            return Ok(Err(invalid("cash-flow amounts, classifications or journal-leg citations did not replay")));
+            return Ok(Err(invalid(
+                "cash-flow amounts, classifications or journal-leg citations did not replay",
+            )));
         }
         cx.query().checkpoint().map_err(BookError::Context)?;
         Ok(Ok(report))
@@ -359,13 +449,23 @@ mod tests {
 
     fn definition() -> CashFlowDefinition {
         CashFlowDefinition {
-            name: "Classification € v1".into(), cash_accounts: vec![1, u128::MAX],
-            assignments: [CashFlowActivity::Operating, CashFlowActivity::Investing,
-                CashFlowActivity::Financing, CashFlowActivity::ExchangeEffect,
-                CashFlowActivity::InternalTransfer].into_iter().enumerate()
-                .map(|(index, activity)| CashFlowAssignment {
-                    entry_digest: [index as u8; 32], leg_index: u32::MAX, activity,
-                }).collect(),
+            name: "Classification € v1".into(),
+            cash_accounts: vec![1, u128::MAX],
+            assignments: [
+                CashFlowActivity::Operating,
+                CashFlowActivity::Investing,
+                CashFlowActivity::Financing,
+                CashFlowActivity::ExchangeEffect,
+                CashFlowActivity::InternalTransfer,
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, activity)| CashFlowAssignment {
+                entry_digest: [index as u8; 32],
+                leg_index: u32::MAX,
+                activity,
+            })
+            .collect(),
         }
     }
 
@@ -402,7 +502,10 @@ mod tests {
         let value = definition();
         let bytes = encoded(&value);
         for end in 0..bytes.len() {
-            assert!(read_definition(&mut Reader::new(&bytes[..end])).is_err(), "prefix {end}");
+            assert!(
+                read_definition(&mut Reader::new(&bytes[..end])).is_err(),
+                "prefix {end}"
+            );
         }
         let mut invalid = bytes.clone();
         *invalid.last_mut().unwrap() = 5;
@@ -432,8 +535,10 @@ mod tests {
         assert!(normalize(&value).is_err());
         value = definition();
         let overhead = envelope_size(0, &value, 0).unwrap();
-        assert_eq!(envelope_size(MAX_CASH_FLOW_CERTIFICATE_BYTES - overhead, &value, 0).unwrap(),
-            MAX_CASH_FLOW_CERTIFICATE_BYTES);
+        assert_eq!(
+            envelope_size(MAX_CASH_FLOW_CERTIFICATE_BYTES - overhead, &value, 0).unwrap(),
+            MAX_CASH_FLOW_CERTIFICATE_BYTES
+        );
         assert!(envelope_size(MAX_CASH_FLOW_CERTIFICATE_BYTES - overhead, &value, 1).is_err());
         assert!(envelope_size(usize::MAX, &value, 1).is_err());
     }

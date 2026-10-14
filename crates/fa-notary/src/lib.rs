@@ -14,29 +14,54 @@
 //! the journal. Proofs are issued only against a state the journal
 //! reproduces, in the byte formats the dependency-free `fa-verify` checks:
 //! inclusion of an entry (optionally with its own payload), consistency
-//! between two states, and the complete prefix (`SeqRangeComplete`).
+//! between two states, the complete prefix (`SeqRangeComplete`), and one
+//! account's effective-day interval (`ScopeIndexComplete`, [`scope`]).
 //!
-//! Not here yet, by name: signed and witnessed `TransparencyCheckpoint`s
-//! (plan §13.5), the scope index and `ScopeIndexComplete` (plan §13.1), the
-//! substrate chain-commitment cross-anchor (R-MMR), and bundles.
+//! Beside each state stands a [`checkpoint::TransparencyCheckpoint`]
+//! signed by the book's key ([`sign`]): the state's statement, the prefix's
+//! scope-index root, and the substrate's chain commitment at the same
+//! sequence.
+//!
+//! A production is an evidence [`bundle`] (`.fab`): a deterministic body
+//! carrying the signed checkpoint, the completeness proof of its scope, the
+//! in-scope entries' payloads with their cited documents, and balance
+//! proofs under a named fold law — and a detached [`ProductionReceipt`]
+//! the book's key signs over the body's digest.
+//!
+//! Not here yet, by name: witness signatures and `WitnessPolicy`, the
+//! `TrustAnchorSet` and key rotation (the verifier is given the book's
+//! public key out of band), and the MMR cross-anchor (R-MMR) replacing the
+//! chain commitment.
 
 #![forbid(unsafe_code)]
 
+pub mod bundle;
+pub mod checkpoint;
 pub mod disclosure;
 pub mod journal;
 pub mod migration_balance;
+pub mod scope;
+pub mod sign;
 pub mod state;
 pub mod tree;
 
 use fa_model::{Id128, Writer};
 use fgdb_types::CommitSeq;
 
+pub use bundle::{
+    BalanceRequest, Bundle, BundleRequest, BundleScope, DocumentStub, ProductionReceipt,
+    ReceiptBody,
+};
+pub use checkpoint::TransparencyCheckpoint;
 pub use journal::{Journal, Leaf, LeafEnvelope};
 pub use migration_balance::prove_balance_with_migrations;
+pub use scope::{ScopeIndex, ScopeRequest};
+pub use sign::{CheckpointSigner, SigningKey};
 pub use state::{
-    AccumulatorState, AccumulatorVerification, Checkpointed, StateCheck, StoredState, chain,
-    checkpoint, latest, prove_balance, prove_consistency, prove_inclusion, prove_prefix, state_oid,
-    state_vid, verify_accumulator,
+    AccumulatorState, AccumulatorVerification, Checkpointed, StateCheck, StoredCheckpoint,
+    StoredState, bundle_basis, chain, checkpoint, latest, prove_balance, prove_consistency,
+    prove_inclusion, prove_prefix, prove_scope, state_oid, state_vid, stored_checkpoint,
+    verify_accumulator,
 };
 
 /// Refusal codes the notary issues (`FA-REF-12x`).
@@ -53,6 +78,14 @@ pub mod code {
     pub const NOT_EXTENDED: &str = "FA-REF-124";
     /// The selected known-at sequence is beyond the head.
     pub const BEYOND_HEAD: &str = "FA-REF-125";
+    /// The requested scope is not one run of the scope index.
+    pub const SCOPE_UNSUPPORTED: &str = "FA-REF-126";
+    /// A journaled checkpoint is not what the journal and the book's key
+    /// reproduce.
+    pub const CHECKPOINT_INVALID: &str = "FA-REF-127";
+    /// A bundle would inline a document its capability reads only as a
+    /// redacted view.
+    pub const INLINE_WITHHELD: &str = "FA-REF-128";
     /// A balance proof would count a migration chunk with unsupported
     /// visibility: its run has no Finalize in the prefix, or it predates
     /// the run's opening date. The latter may be summarized history or
@@ -149,7 +182,11 @@ pub mod document {
         // a chunk index and a chunk length can therefore be represented too.
         digest(
             b"fa:doc:leaf:v1",
-            &[&(index as u64).to_le_bytes(), &(bytes.len() as u64).to_le_bytes(), bytes],
+            &[
+                &(index as u64).to_le_bytes(),
+                &(bytes.len() as u64).to_le_bytes(),
+                bytes,
+            ],
         )
     }
 
@@ -162,19 +199,26 @@ pub mod document {
         /// disclosure-authorization limits. Pure construction does not perform
         /// storage reads or bypass the kernel's protected-document boundary.
         pub fn new(kind: u8, bytes: &'a [u8]) -> Result<Self, DocumentProofError> {
-            let document_length = u64::try_from(bytes.len()).map_err(|_| DocumentProofError::Length)?;
+            let document_length =
+                u64::try_from(bytes.len()).map_err(|_| DocumentProofError::Length)?;
             let mut level = if bytes.is_empty() {
                 vec![leaf(0, &[])]
             } else {
-                bytes.chunks(CHUNK_BYTES).enumerate()
-                    .map(|(i, chunk)| leaf(i, chunk)).collect::<Vec<_>>()
+                bytes
+                    .chunks(CHUNK_BYTES)
+                    .enumerate()
+                    .map(|(i, chunk)| leaf(i, chunk))
+                    .collect::<Vec<_>>()
             };
             let mut levels = Vec::new();
             while level.len() > 1 {
-                let next = level.chunks(2).map(|pair| match pair {
-                    [left, right] => node(left, right),
-                    _ => pair[0],
-                }).collect::<Vec<_>>();
+                let next = level
+                    .chunks(2)
+                    .map(|pair| match pair {
+                        [left, right] => node(left, right),
+                        _ => pair[0],
+                    })
+                    .collect::<Vec<_>>();
                 levels.push(level);
                 level = next;
             }
@@ -185,7 +229,13 @@ pub mod document {
                 b"fa:doc:v1",
                 &[&[kind], &document_length.to_le_bytes(), &root],
             );
-            Ok(Self { kind, bytes, document_length, commitment, levels })
+            Ok(Self {
+                kind,
+                bytes,
+                document_length,
+                commitment,
+                levels,
+            })
         }
 
         /// Recomputed from all input bytes, suitable for comparison with the
@@ -242,8 +292,12 @@ pub mod document {
 
         fn verify(proof: &ChunkProof<'_>, trusted: &[u8; 32]) -> Result<(), ChunkProofError> {
             let report = verify_chunk(
-                proof.kind, proof.document_length, proof.index,
-                proof.bytes, &proof.siblings, trusted,
+                proof.kind,
+                proof.document_length,
+                proof.index,
+                proof.bytes,
+                &proof.siblings,
+                trusted,
             )?;
             assert_eq!(report.scope, "membership_only");
             Ok(())
@@ -321,12 +375,24 @@ pub mod document {
             assert!(proof.siblings.is_empty());
             verify(&proof, &fa_journal::evidence::doc_commit(1, &[])).unwrap();
             for index in [1, u64::MAX] {
-                assert_eq!(tree.prove(index), Err(DocumentProofError::Index { index, chunk_count: 1 }));
+                assert_eq!(
+                    tree.prove(index),
+                    Err(DocumentProofError::Index {
+                        index,
+                        chunk_count: 1
+                    })
+                );
             }
             let bytes = bytes(CHUNK_BYTES * 5);
             let tree = DocumentProofTree::new(1, &bytes).unwrap();
             for index in [5, u64::MAX] {
-                assert_eq!(tree.prove(index), Err(DocumentProofError::Index { index, chunk_count: 5 }));
+                assert_eq!(
+                    tree.prove(index),
+                    Err(DocumentProofError::Index {
+                        index,
+                        chunk_count: 5
+                    })
+                );
             }
         }
     }

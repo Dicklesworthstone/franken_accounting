@@ -19,7 +19,9 @@ use fa_journal::rows::bytes;
 use fa_journal::{KernelError, Posted, Refusal, exit};
 use fa_model::limits::{MAX_LEGS_PER_ENTRY, MAX_SETTLES_PER_LEG};
 use fa_model::symbols::{label, property};
-use fa_model::{ApprovalRef, Entry, EntryClass, EntryOrigin, EntryPayload, EntryRef, Id128, Settlement};
+use fa_model::{
+    ApprovalRef, Entry, EntryClass, EntryOrigin, EntryPayload, EntryRef, Id128, Settlement,
+};
 use fa_money::{Amount, UnitId};
 use fa_policy::Capability;
 use fa_registers::RegisterError;
@@ -124,18 +126,26 @@ fn allocation_request(request: &SettlementPostRequest) -> Result<SettlementReque
     if !matches!(proposal.class, EntryClass::ORIGINAL | EntryClass::ADJUSTING)
         || !matches!(&proposal.origin, EntryOrigin::Intent { .. })
     {
-        return Err(invalid("settlement requires an Intent-origin Original or Adjusting proposal"));
+        return Err(invalid(
+            "settlement requires an Intent-origin Original or Adjusting proposal",
+        ));
     }
     if proposal.legs.len() > MAX_LEGS_PER_ENTRY
         || request.targets.is_empty()
         || request.targets.len() > MAX_SETTLES_PER_LEG
     {
-        return Err(invalid("settlement legs or selected targets exceed the model bounds, or no targets were selected"));
+        return Err(invalid(
+            "settlement legs or selected targets exceed the model bounds, or no targets were selected",
+        ));
     }
     if proposal.legs.iter().any(|leg| !leg.settles.is_empty()) {
-        return Err(invalid("settlement preparation never overwrites or combines existing applications"));
+        return Err(invalid(
+            "settlement preparation never overwrites or combines existing applications",
+        ));
     }
-    let leg = proposal.legs.get(usize::from(request.payment_leg))
+    let leg = proposal
+        .legs
+        .get(usize::from(request.payment_leg))
         .ok_or_else(|| invalid("the applying leg ordinal is outside the payment proposal"))?;
     if leg.amount.mantissa <= 0 {
         return Err(invalid("the applying leg must have a positive amount"));
@@ -178,24 +188,31 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         }
         let query = cx.query();
         query.checkpoint().map_err(BookError::Context)?;
-        if request.proposal.book_id != book.book_id
-            || request.proposal.branch_id != Id128::TRUNK
-        {
-            return Ok(Err(invalid("the payment must target this book's writable trunk")));
+        if request.proposal.book_id != book.book_id || request.proposal.branch_id != Id128::TRUNK {
+            return Ok(Err(invalid(
+                "the payment must target this book's writable trunk",
+            )));
         }
         let selection = match allocation_request(&request) {
             Ok(selection) => selection,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let explicit: Vec<_> = request.proposal.legs.iter()
-            .map(|leg| (leg.amount.unit, leg.amount.mantissa)).collect();
-        if let Err(denial) = fa_policy::admit(capability, &fa_policy::Intent {
-            principal,
-            trunk: true,
-            op: fa_policy::Op::Post,
-            book: book.book_id,
-            legs: &explicit,
-        }) {
+        let explicit: Vec<_> = request
+            .proposal
+            .legs
+            .iter()
+            .map(|leg| (leg.amount.unit, leg.amount.mantissa))
+            .collect();
+        if let Err(denial) = fa_policy::admit(
+            capability,
+            &fa_policy::Intent {
+                principal,
+                trunk: true,
+                op: fa_policy::Op::Post,
+                book: book.book_id,
+                legs: &explicit,
+            },
+        ) {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
         query.with_restriction(|| {
@@ -203,11 +220,16 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             if let Err(denial) = fa_policy::current(capability, at) {
                 return Ok(Err(fa_journal::policy::refusal(&denial)));
             }
-            if let Err(refusal) = fa_journal::policy::capability_admitted(&self.db, book, capability)? {
+            if let Err(refusal) =
+                fa_journal::policy::capability_admitted(&self.db, book, capability)?
+            {
                 return Ok(Err(refusal));
             }
             let report = match fa_registers::open_items::open_items_report(
-                &self.db, book, Some(selection.account), Some(at),
+                &self.db,
+                book,
+                Some(selection.account),
+                Some(at),
             ) {
                 Ok(report) => report,
                 Err(RegisterError::InvalidSelection(message)) => return Ok(Err(invalid(message))),
@@ -219,7 +241,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Err(error) => return Err(error.into()),
             };
             if allocation.allocations.is_empty() {
-                return Ok(Err(invalid("no selected item has an open amount; no payment was prepared")));
+                return Ok(Err(invalid(
+                    "no selected item has an open amount; no payment was prepared",
+                )));
             }
             // Read the immutable payload, not a caller-provided digest or the
             // derived SETTLES/APPLIED projection. Duplicate entry reads are
@@ -229,35 +253,61 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             for (vid, ordinal) in &allocation.request.targets {
                 query.checkpoint().map_err(BookError::Context)?;
                 if let std::collections::btree_map::Entry::Vacant(slot) = entries.entry(*vid) {
-                    let row = self.db.vertex_at(*vid, at).map_err(KernelError::from)?
+                    let row = self
+                        .db
+                        .vertex_at(*vid, at)
+                        .map_err(KernelError::from)?
                         .filter(|row| row.labels.contains(&label::ENTRY))
-                        .ok_or_else(|| KernelError::Corrupt("open-item target payload is missing".into()))?;
-                    let entry = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "settlement target")?)
-                        .map_err(KernelError::from)?;
-                    if entry.proposal.book_id != book.book_id || entry.proposal.branch_id != Id128::TRUNK {
-                        return Err(KernelError::Corrupt("open-item target belongs to another coordinate".into()).into());
+                        .ok_or_else(|| {
+                            KernelError::Corrupt("open-item target payload is missing".into())
+                        })?;
+                    let entry =
+                        Entry::decode(&bytes(&row, property::FA_PAYLOAD, "settlement target")?)
+                            .map_err(KernelError::from)?;
+                    if entry.proposal.book_id != book.book_id
+                        || entry.proposal.branch_id != Id128::TRUNK
+                    {
+                        return Err(KernelError::Corrupt(
+                            "open-item target belongs to another coordinate".into(),
+                        )
+                        .into());
                     }
                     slot.insert(entry);
                 }
-                let entry = entries.get(vid)
-                    .ok_or_else(|| KernelError::Corrupt("resolved settlement target is missing".into()))?;
-                let leg = entry.proposal.legs.get(usize::from(*ordinal))
-                    .ok_or_else(|| KernelError::Corrupt("open-item target ordinal is missing".into()))?;
+                let entry = entries.get(vid).ok_or_else(|| {
+                    KernelError::Corrupt("resolved settlement target is missing".into())
+                })?;
+                let leg = entry
+                    .proposal
+                    .legs
+                    .get(usize::from(*ordinal))
+                    .ok_or_else(|| {
+                        KernelError::Corrupt("open-item target ordinal is missing".into())
+                    })?;
                 if &leg.dimension_set != dimensions {
-                    return Ok(Err(invalid("settlement target dimensions differ from the applying leg")));
+                    return Ok(Err(invalid(
+                        "settlement target dimensions differ from the applying leg",
+                    )));
                 }
             }
-            let references: BTreeMap<VId, EntryRef> = entries.iter()
-                .map(|(vid, entry)| (*vid, entry.entry_ref(*vid))).collect();
-            let settles = allocation.allocations.iter().map(|part| {
-                let target = references.get(&part.entry).copied()
-                    .ok_or_else(|| KernelError::Corrupt("allocation has no resolved target digest".into()))?;
-                Ok(Settlement {
-                    target,
-                    ordinal: part.ordinal,
-                    amount: Amount::new(UnitId(selection.unit_id), part.amount),
+            let references: BTreeMap<VId, EntryRef> = entries
+                .iter()
+                .map(|(vid, entry)| (*vid, entry.entry_ref(*vid)))
+                .collect();
+            let settles = allocation
+                .allocations
+                .iter()
+                .map(|part| {
+                    let target = references.get(&part.entry).copied().ok_or_else(|| {
+                        KernelError::Corrupt("allocation has no resolved target digest".into())
+                    })?;
+                    Ok(Settlement {
+                        target,
+                        ordinal: part.ordinal,
+                        amount: Amount::new(UnitId(selection.unit_id), part.amount),
+                    })
                 })
-            }).collect::<Result<Vec<_>, KernelError>>()?;
+                .collect::<Result<Vec<_>, KernelError>>()?;
             let mut proposal = request.proposal;
             proposal.legs[usize::from(request.payment_leg)].settles = settles;
             // Model validation checks structure and redundant unit totals. It
@@ -266,7 +316,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 return Ok(Err(invalid(error.to_string())));
             }
             query.checkpoint().map_err(BookError::Context)?;
-            Ok(Ok(PreparedSettlement { allocation, proposal }))
+            Ok(Ok(PreparedSettlement {
+                allocation,
+                proposal,
+            }))
         })
     }
 
@@ -310,15 +363,16 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
     ) -> Outcome<SettlementPostPlan> {
         let book = self.context();
-        if let Err(denial) = fa_policy::admit_read(
-            capability, prepared.proposal.principal_ref, book.book_id,
-        ) {
+        if let Err(denial) =
+            fa_policy::admit_read(capability, prepared.proposal.principal_ref, book.book_id)
+        {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
-        if prepared.proposal.book_id != book.book_id
-            || prepared.proposal.branch_id != Id128::TRUNK
+        if prepared.proposal.book_id != book.book_id || prepared.proposal.branch_id != Id128::TRUNK
         {
-            return Ok(Err(invalid("the reviewed payment belongs to another book or branch")));
+            return Ok(Err(invalid(
+                "the reviewed payment belongs to another book or branch",
+            )));
         }
         // The real kernel performs current posting admission, revocation and
         // expiry checks before returning an authenticated rehearsal. A prior
@@ -332,15 +386,22 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(refusal) => return Ok(Err(refusal)),
         };
         if post.certificate().snapshot_seq != prepared.allocation.known_at {
-            return Ok(Err(invalidated("the allocation basis changed before kernel rehearsal")));
+            return Ok(Err(invalidated(
+                "the allocation basis changed before kernel rehearsal",
+            )));
         }
         // Balancing requests may legitimately resolve to different amounts in
         // the general posting API. That would invalidate our unapplied amount
         // and allocation explanation even if the resulting entry were lawful.
         if post.proposal().legs != post.intent().proposal().legs {
-            return Ok(Err(invalidated("kernel rehearsal changed the payment legs; supply explicit non-balancing amounts")));
+            return Ok(Err(invalidated(
+                "kernel rehearsal changed the payment legs; supply explicit non-balancing amounts",
+            )));
         }
-        Ok(Ok(SettlementPostPlan { allocation: prepared.allocation, post }))
+        Ok(Ok(SettlementPostPlan {
+            allocation: prepared.allocation,
+            post,
+        }))
     }
 
     /// Publish the unchanged kernel plan and its durable evidence atomically.

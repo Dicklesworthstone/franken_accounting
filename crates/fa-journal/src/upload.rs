@@ -19,8 +19,8 @@ use fa_model::{IntakeSource, Oid};
 use fa_policy::{Capability, Op, Profile};
 use fa_registry::evidence_policy::EvidencePolicy;
 use fgdb::{Database, WriteBatch, WriteTxn, WriteTxnError};
-use fgdb_types::context::PurposeContexts;
 use fgdb_types::CommitSeq;
+use fgdb_types::context::PurposeContexts;
 
 use crate::evidence::{
     Document, DocumentAdded, document_vid, drift, intake_check, stage_document, verify_row,
@@ -94,7 +94,11 @@ impl PreparedUpload {
     ) -> Outcome<DocumentAdded> {
         let commit = cx.commit();
         commit.checkpoint().map_err(WriteTxnError::Interrupted)?;
-        let Self { mut txn, capability, summary } = self;
+        let Self {
+            mut txn,
+            capability,
+            summary,
+        } = self;
         if let Err(denial) = fa_policy::current(&capability, db.frontier()?) {
             txn.abort();
             return Ok(Err(policy::refusal(&denial)));
@@ -110,15 +114,17 @@ impl PreparedUpload {
                 recorded_at,
                 already_recorded: false,
             })),
-            Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { .. }
+            Err(WriteTxnError::Write(
+                fgdb::WriteError::FirstCommitterWins { .. }
                 | fgdb::WriteError::AlreadyLive { .. }
-                | fgdb::WriteError::IdentitySpent { .. })) => Ok(Err(Refusal::new(
-                    code::CONFLICT,
-                    exit::CONFLICT,
-                    "document intake lost an admission or identity witness",
-                    "FA-INV-05; FA-INV-10; FG-LAW-FCW-01",
-                    "retry the upload under current session authority; an existing document retains its original provenance and receipt",
-                ))),
+                | fgdb::WriteError::IdentitySpent { .. },
+            )) => Ok(Err(Refusal::new(
+                code::CONFLICT,
+                exit::CONFLICT,
+                "document intake lost an admission or identity witness",
+                "FA-INV-05; FA-INV-10; FG-LAW-FCW-01",
+                "retry the upload under current session authority; an existing document retains its original provenance and receipt",
+            ))),
             Err(error) => Err(error.into()),
         }
     }
@@ -166,9 +172,9 @@ pub fn upload_grade(policy: &EvidencePolicy, profile: Profile) -> Result<u8, Ker
         Profile::Human => "HumanUpload",
         Profile::Agent | Profile::System => "AgentUpload",
     };
-    let grade = policy.grade_by_name(name).ok_or_else(|| {
-        KernelError::Corrupt(format!("evidence policy has no {name} grade"))
-    })?;
+    let grade = policy
+        .grade_by_name(name)
+        .ok_or_else(|| KernelError::Corrupt(format!("evidence policy has no {name} grade")))?;
     if !grade.intake {
         return Err(KernelError::Corrupt(format!(
             "evidence policy does not admit the derived {name} upload grade"
@@ -194,10 +200,13 @@ fn admit_upload<V: asupersync::fs::Vfs + Clone>(
     {
         return Ok(Err(policy::refusal(&denial)));
     }
-    let policy = EvidencePolicy::embedded()
-        .map_err(|error| KernelError::Corrupt(error.to_string()))?;
+    let policy =
+        EvidencePolicy::embedded().map_err(|error| KernelError::Corrupt(error.to_string()))?;
     let grade = upload_grade(&policy, capability.profile())?;
-    if request.asserted_grade.is_some_and(|asserted| asserted != grade) {
+    if request
+        .asserted_grade
+        .is_some_and(|asserted| asserted != grade)
+    {
         return Ok(Err(Refusal::new(
             code::GRADE_UNVERIFIED,
             exit::REFUSAL,
@@ -221,7 +230,9 @@ fn admit_upload<V: asupersync::fs::Vfs + Clone>(
         Ok(kind) => kind,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    let source = IntakeSource::Upload { principal: capability.holder() };
+    let source = IntakeSource::Upload {
+        principal: capability.holder(),
+    };
     if let Err(refusal) = crate::custody::admit_source(&source) {
         return Ok(Err(refusal));
     }
@@ -283,8 +294,9 @@ pub fn prepare_upload<V: asupersync::fs::Vfs + Clone>(
     capability: &Capability,
     request: UploadRequest,
 ) -> Outcome<UploadPreparation> {
-    let max_bytes = EvidencePolicy::embedded()
-        .map_err(|error| KernelError::Corrupt(error.to_string()))?.max_document_bytes;
+    let max_bytes = crate::evidence::inline_document_bound(
+        &EvidencePolicy::embedded().map_err(|error| KernelError::Corrupt(error.to_string()))?,
+    );
     let admitted = match admit_upload(db, cx, book, capability, request, max_bytes)? {
         Err(refusal) => return Ok(Err(refusal)),
         Ok(UploadAdmission::AlreadyRecorded(added)) => {
@@ -295,7 +307,12 @@ pub fn prepare_upload<V: asupersync::fs::Vfs + Clone>(
     let mut batch = WriteBatch::new(relation::CUSTODY_OF);
     stage_document(&mut batch, book, &admitted.document, &admitted.kind)?;
     crate::custody::stage_receipt(
-        &mut batch, book, &admitted.document, admitted.source.clone(), capability.holder(), None,
+        &mut batch,
+        book,
+        &admitted.document,
+        admitted.source.clone(),
+        capability.holder(),
+        None,
     )?;
     Ok(Ok(UploadPreparation::Ready(admitted.stage(db, batch)?)))
 }

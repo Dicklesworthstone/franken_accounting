@@ -1,6 +1,6 @@
 //! End to end over stdio (beads fa-xex/fa-23r): the real `fa-mcp` binary is started
 //! on a temp book and spoken to as an MCP host would — newline-delimited
-//! JSON-RPC on its stdin/stdout — through `initialize`, `tools/list`,
+//! JSON-RPC on its stdin/stdout — through `server/discover`, `tools/list`,
 //! `tools/call` and `resources/read`. Every tool result's first content
 //! block must equal, byte for byte, the `data` payload the CLI's own front
 //! door (`fa_cli::entry::fa`, the function the `fa` binary's `main` calls)
@@ -143,15 +143,15 @@ impl Mcp {
         }
     }
 
-    fn initialize(&mut self) -> JsonValue {
-        let init = self.result(
-            "initialize",
-            json!({"protocolVersion": PROTOCOL, "capabilities": {}, "clientInfo": {"name": "fa-mcp-e2e", "version": fa_mcp::VERSION}}),
+    fn discover(&mut self) -> JsonValue {
+        let discovery = self.result("server/discover", json!({}));
+        assert_eq!(discovery["supportedVersions"], json!([PROTOCOL]));
+        assert_eq!(
+            discovery["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+            json!("fa-mcp"),
+            "{discovery}"
         );
-        assert!(init["protocolVersion"].is_string(), "{init}");
-        assert_eq!(init["serverInfo"]["name"], json!("fa-mcp"), "{init}");
-        self.notify("notifications/initialized", json!({}));
-        init
+        discovery
     }
 
     fn send(&mut self, message: &JsonValue) {
@@ -163,13 +163,17 @@ impl Mcp {
         stdin.flush().expect("flush");
     }
 
-    fn notify(&mut self, method: &str, params: JsonValue) {
-        self.send(&json!({"jsonrpc": "2.0", "method": method, "params": params}));
-    }
-
     /// Send one request and wait for its response (notifications are logged
     /// and skipped). Returns the whole response object.
-    fn request(&mut self, method: &str, params: JsonValue) -> JsonValue {
+    fn request(&mut self, method: &str, mut params: JsonValue) -> JsonValue {
+        params["_meta"] = json!({
+            "io.modelcontextprotocol/protocolVersion": PROTOCOL,
+            "io.modelcontextprotocol/clientCapabilities": {},
+        });
+        self.request_raw(method, params)
+    }
+
+    fn request_raw(&mut self, method: &str, params: JsonValue) -> JsonValue {
         self.next_id += 1;
         let id = self.next_id;
         self.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
@@ -205,6 +209,11 @@ impl Mcp {
             response.get("error").is_none(),
             "{method} failed: {response}"
         );
+        assert_eq!(response["result"]["resultType"], "complete", "{response}");
+        if method == "resources/read" {
+            assert_eq!(response["result"]["ttlMs"], 0, "{response}");
+            assert_eq!(response["result"]["cacheScope"], "private", "{response}");
+        }
         response["result"].clone()
     }
 
@@ -332,7 +341,7 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
         "--json",
     ]);
     let mut mcp = Mcp::start(&book);
-    mcp.initialize();
+    mcp.discover();
     let (error, output, metadata) = call_tool(
         &mut mcp,
         "fa_read_statement",
@@ -460,7 +469,7 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     // This parity test deliberately uses the trusted Preparer template;
     // default Agent behavior is exercised separately below.
     let mut mcp = Mcp::start_with(&book, &["--profile", "preparer", "--principal", "operator"]);
-    mcp.initialize();
+    mcp.discover();
 
     // tools/list: exactly the registry's wire names, each with an object schema.
     let registry = fa_mcp::registry::McpRegistry::embedded().expect("[mcp]");
@@ -479,6 +488,15 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         for tool in page["tools"].as_array().expect("tools") {
             let name = tool["name"].as_str().expect("name").to_string();
             assert_eq!(tool["inputSchema"]["type"], json!("object"), "{name}");
+            if name == "fa_post_reverse" {
+                assert!(
+                    tool["inputSchema"]["required"]
+                        .as_array()
+                        .unwrap()
+                        .contains(&json!("reason")),
+                    "reversals require the registered reason: {tool}"
+                );
+            }
             for argument in fa_mcp::registry::FORBIDDEN_ARGUMENTS {
                 assert!(
                     tool["inputSchema"]["properties"].get(*argument).is_none(),
@@ -812,10 +830,21 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     // The typed reversal is the same law-enforced correction as the CLI:
     // missing and unknown reasons cannot post, and the persisted lineage
     // records the exact registered name/code the caller selected.
+    // The final protocol returns a tool error for schema validation. The
+    // advertised schema above requires reason; rejection must not post.
+    let before_missing = cli_data(&["book", "info", "--book", &b, "--json"]);
     let (is_error, text, _) = call_tool(&mut mcp, "fa_post_reverse", json!({"vid": vid}));
     assert!(
-        is_error && text.contains("reason"),
-        "missing reason: {text}"
+        is_error,
+        "missing reason must be refused before dispatch: {text}"
+    );
+    assert_eq!(
+        text,
+        "Tool arguments do not match the declared input schema."
+    );
+    assert_eq!(
+        cli_data(&["book", "info", "--book", &b, "--json"]),
+        before_missing
     );
     let (is_error, text, _) = call_tool(
         &mut mcp,
@@ -1088,7 +1117,7 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         ),
     ] {
         let mut other = Mcp::start_with(&book, &launch);
-        other.initialize();
+        other.discover();
         let (is_error, text, _) =
             call_tool(&mut other, "fa_post_commit_plan", json!({"plan": encoded}));
         assert!(is_error, "{launch:?}: {text}");
@@ -1194,16 +1223,17 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     std::fs::write(&plan_file, &encoded).unwrap();
     let mut reopened =
         Mcp::start_with(&book, &["--profile", "preparer", "--principal", "operator"]);
-    reopened.initialize();
+    reopened.discover();
     let before_retry = cli_data(&["book", "info", "--book", &b, "--json"]);
-    let (is_error, text, _) = call_tool(
-        &mut reopened,
-        "fa_post_commit_plan",
+    for arguments in [
         json!({"plan_file": plan_file.display().to_string()}),
-    );
-    assert!(is_error, "host plan_file must be refused: {text}");
-    assert_eq!(structured_error(&text)["type"], "forbidden_path");
-    assert_eq!(std::fs::read_to_string(&plan_file).unwrap(), encoded);
+        json!({"plan": encoded, "plan_file": plan_file.display().to_string()}),
+    ] {
+        let (is_error, text, _) = call_tool(&mut reopened, "fa_post_commit_plan", arguments);
+        assert!(is_error, "host plan_file must be refused: {text}");
+        assert_eq!(structured_error(&text)["type"], "forbidden_path");
+        assert_eq!(std::fs::read_to_string(&plan_file).unwrap(), encoded);
+    }
     let (is_error, text, _) = call_tool(
         &mut reopened,
         "fa_post_commit_plan",
@@ -1274,8 +1304,25 @@ fn default_agent_authority_survives_stdio_and_cannot_be_changed_by_a_call() {
         "posture": "mcp-launch-config", "principal": "mcp-agent", "profile": "agent",
         "ops": ["read", "post", "verify"],
     });
+    // A legacy initialize cannot silently select a different error contract.
+    // The operator gets a protocol refusal before the book is observed.
+    let before_legacy = cli_data(&["book", "info", "--book", &b, "--json"]);
+    let mut legacy = Mcp::start(&book);
+    let refused = legacy.request_raw(
+        "initialize",
+        json!({"protocolVersion": "2024-11-05", "capabilities": {},
+            "clientInfo": {"name": "fa-mcp-legacy-negative", "version": fa_mcp::VERSION}}),
+    );
+    assert!(refused.get("result").is_none(), "{refused}");
+    assert_eq!(refused["error"]["code"], -32601, "{refused}");
+    legacy.discover();
+    assert_eq!(legacy.finish(), 0);
+    assert_eq!(
+        cli_data(&["book", "info", "--book", &b, "--json"]),
+        before_legacy
+    );
     let mut mcp = Mcp::start(&book);
-    let init = mcp.initialize();
+    let init = mcp.discover();
     assert!(init["instructions"].as_str().unwrap().contains("mcp-agent"));
 
     // Real Agent reads and immutable report retention remain usable.
@@ -1319,18 +1366,52 @@ fn default_agent_authority_survives_stdio_and_cannot_be_changed_by_a_call() {
     // Presence is refused even for null/false and before float detection.
     for argument in fa_mcp::registry::FORBIDDEN_ARGUMENTS {
         for value in [JsonValue::Null, json!(false), json!("operator")] {
-            let mut arguments = json!({"intent": {"amount": 1.25}});
-            arguments[*argument] = value;
-            let (error, text, _) = call_tool(&mut mcp, "fa_post_post", arguments);
-            assert!(error, "forbidden {argument}: {text}");
-            let refused = structured_error(&text);
-            assert_eq!(refused["type"], "forbidden_argument");
-            assert_eq!(refused["data"]["argument"], *argument);
-            assert_eq!(refused["authority"], authority);
-            assert!(refused.get("detector").is_none());
-            assert_eq!(refused["suggested_tool_calls"], json!([]));
+            for wire in ["fa_post_post", "fa_post_commit_plan"] {
+                let mut arguments = json!({"intent": {"amount": 1.25}});
+                arguments[*argument] = value.clone();
+                if wire == "fa_post_commit_plan" {
+                    // Missing required inline plan forces framework schema
+                    // refusal. Authority still precedes a forbidden path.
+                    arguments["plan_file"] = JsonValue::Null;
+                }
+                let (error, text, _) = call_tool(&mut mcp, wire, arguments);
+                assert!(error, "forbidden {argument}: {text}");
+                let refused = structured_error(&text);
+                assert_eq!(refused["type"], "forbidden_argument");
+                assert_eq!(refused["data"]["argument"], *argument);
+                assert_eq!(refused["authority"], authority);
+                assert!(refused.get("detector").is_none());
+                assert_eq!(refused["suggested_tool_calls"], json!([]));
+            }
         }
     }
+    // An ordinary undeclared key reaches the server too (no schema closes
+    // itself, so fastmcp no longer answers it with a bare -32602) and is the
+    // normalizer's usage error with a spelling hint, before any dispatch
+    // (fa-23r).
+    let (error, text, _) = call_tool(
+        &mut mcp,
+        "fa_read_trial_balance",
+        json!({"perod": "FY2026-P03"}),
+    );
+    assert!(error, "a misspelled key is refused: {text}");
+    let refused = structured_error(&text);
+    assert_eq!(refused["type"], "usage", "{refused}");
+    assert_eq!(refused["exit"], 2, "{refused}");
+    assert_eq!(refused["detector"], "arguments", "{refused}");
+    assert!(
+        refused["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("unknown argument `perod`")),
+        "{refused}"
+    );
+    assert!(
+        refused["fix_hint"]
+            .as_str()
+            .is_some_and(|f| f.contains("`period`")),
+        "{refused}"
+    );
+    assert_eq!(refused["authority"], authority);
     let (error, text, _) = call_tool(
         &mut mcp,
         "fa_read_show_entry",
@@ -1397,7 +1478,7 @@ fn default_agent_authority_survives_stdio_and_cannot_be_changed_by_a_call() {
             "read",
         ],
     );
-    read_only.initialize();
+    read_only.discover();
     let (error, text, result) = call_tool(&mut read_only, "fa_book_info", json!({}));
     assert!(!error, "{text}");
     let envelope: JsonValue =
@@ -1456,7 +1537,7 @@ fn read_only_period_planning_is_inline_and_paths_cannot_touch_host_files() {
     let before = cli(&["book", "info", "--book", &b, "--json"]);
     assert_eq!(before.0, 0);
     let mut mcp = Mcp::start_with(&book, &["--principal", "reader", "--grant", "read"]);
-    mcp.initialize();
+    mcp.discover();
     for path in paths {
         for (wire, argument, mut input) in [
             (
@@ -1468,23 +1549,48 @@ fn read_only_period_planning_is_inline_and_paths_cannot_touch_host_files() {
             ("fa_post_commit_plan", "plan_file", json!({})),
             ("fa_read_replay", "file", json!({})),
             ("fa_read_certificate_status", "file", json!({})),
+            // Both schema-invalid and schema-valid inputs retain the same
+            // host-path refusal; neither route may inspect a host file.
+            ("fa_post_commit_plan", "plan_file", json!({"plan": "00"})),
+            ("fa_read_replay", "file", json!({"certificate": "00"})),
+            (
+                "fa_read_certificate_status",
+                "file",
+                json!({"certificate": "00"}),
+            ),
             ("fa_chart_import_chart", "file", json!({})),
             ("fa_evidence_import_document", "file", json!({})),
             ("fa_read_trial_balance", "certificate_out", json!({})),
         ] {
-            input[argument] = json!(path);
-            let (error, text, _) = call_tool(&mut mcp, wire, input);
-            assert!(error, "{wire} must refuse a host path: {text}");
-            let refused = structured_error(&text);
-            assert_eq!(refused["type"], "forbidden_path", "{refused}");
-            assert_eq!(refused["data"]["argument"], argument);
-            assert_eq!(refused["authority"]["ops"], json!(["read"]));
-            assert!(refused.get("detector").is_none());
-            assert_eq!(
-                std::fs::read_to_string(&victim).unwrap(),
-                "host file must remain unchanged"
-            );
+            for value in [json!(path), JsonValue::Null, json!(false)] {
+                input[argument] = value;
+                let (error, text, _) = call_tool(&mut mcp, wire, input.clone());
+                assert!(error, "{wire} must refuse a host path: {text}");
+                let refused = structured_error(&text);
+                assert_eq!(refused["type"], "forbidden_path", "{refused}");
+                assert_eq!(refused["data"]["argument"], argument);
+                assert_eq!(refused["authority"]["ops"], json!(["read"]));
+                assert!(refused.get("detector").is_none());
+                assert_eq!(
+                    std::fs::read_to_string(&victim).unwrap(),
+                    "host file must remain unchanged"
+                );
+            }
         }
+    }
+    // Ordinary missing required inputs retain the framework's schema error;
+    // response enrichment cannot admit them or dispatch a tool.
+    for wire in [
+        "fa_post_commit_plan",
+        "fa_read_replay",
+        "fa_read_certificate_status",
+    ] {
+        let (error, text, _) = call_tool(&mut mcp, wire, json!({}));
+        assert!(error, "{wire} must still require its inline content");
+        assert_eq!(
+            text,
+            "Tool arguments do not match the declared input schema."
+        );
     }
     let (error, text, result) = call_tool(
         &mut mcp,
@@ -1581,4 +1687,25 @@ fn launch_rejects_unbounded_grants_before_serving_stdio() {
         .expect("launch without book");
     assert_eq!(missing.status.code(), Some(2));
     assert!(missing.stdout.is_empty());
+}
+
+/// Never silent on a panic (fa-y9z): stdout is the JSON-RPC transport, so a
+/// panicking `fa-mcp` writes nothing there, reports FA-REF-153 on stderr and
+/// exits 5, never Rust's 101. The panic is the debug build's `FA_TEST_PANIC`
+/// trigger; a release build compiles it out.
+#[test]
+fn a_panicking_server_reports_fa_ref_153_on_stderr_with_exit_5() {
+    let panicked = Command::new(env!("CARGO_BIN_EXE_fa-mcp"))
+        .args(["--book", "/nonexistent/fa-mcp-panic-book"])
+        .env_remove("FA_BOOK")
+        .env("FA_TEST_PANIC", "1")
+        .stdin(Stdio::null())
+        .output()
+        .expect("launch with the panic trigger");
+    let stderr = String::from_utf8_lossy(&panicked.stderr);
+    assert_eq!(panicked.status.code(), Some(5), "{stderr}");
+    assert!(panicked.stdout.is_empty(), "the transport stays clean");
+    assert!(stderr.contains("fa-mcp: internal error"), "{stderr}");
+    assert!(stderr.contains("FA-REF-153"), "{stderr}");
+    assert!(stderr.contains("FA_TEST_PANIC"), "{stderr}");
 }

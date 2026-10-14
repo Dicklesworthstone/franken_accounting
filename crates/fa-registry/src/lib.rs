@@ -13,6 +13,7 @@ pub mod evidence_policy;
 pub mod foundations;
 pub mod intake_sources;
 pub mod invariants;
+pub mod procedures;
 pub mod reason_codes;
 pub mod redaction_contracts;
 pub mod refusal_catalog;
@@ -832,6 +833,23 @@ impl Admissibility {
         })
     }
 
+    /// Every class a period of `state` admits for one disposition family
+    /// (`release` as in [`Self::decide_disposition`]), in class order, with
+    /// its decision (`Admit`, or the op and approvals a `with:` cell
+    /// requires). A refusal's fix names only these, so it never suggests a
+    /// class the matrix refuses.
+    #[must_use]
+    pub fn admitting(&self, state: PeriodState, release: bool) -> Vec<(&str, Decision)> {
+        self.cells
+            .keys()
+            .filter(|(_, s)| *s == state)
+            .filter_map(|(class, _)| {
+                let decision = self.decide_disposition(class, state, release)?;
+                (decision != Decision::Refuse).then_some((class.as_str(), decision))
+            })
+            .collect()
+    }
+
     pub fn note(&self, class: &str, state: PeriodState) -> Option<&str> {
         self.cells
             .get(&(class.to_string(), state))
@@ -904,8 +922,8 @@ pub fn parse_units(text: &str) -> Result<Vec<UnitRow>, RegistryError> {
     let mut rows = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     for t in doc.arrays.get("unit").unwrap_or(&Vec::new()) {
-        let id = u32::try_from(req_int(R, t, "id")?)
-            .map_err(|_| invalid(R, "unit id out of range"))?;
+        let id =
+            u32::try_from(req_int(R, t, "id")?).map_err(|_| invalid(R, "unit id out of range"))?;
         if usize::try_from(id).ok() != Some(rows.len()) {
             return Err(invalid(
                 R,
@@ -937,9 +955,7 @@ pub fn parse_units(text: &str) -> Result<Vec<UnitRow>, RegistryError> {
         if !rounding_laws.iter().any(|law| law.id == rounding_default) {
             return Err(invalid(
                 R,
-                format!(
-                    "`{code}` names unregistered default rounding law {rounding_default}"
-                ),
+                format!("`{code}` names unregistered default rounding law {rounding_default}"),
             ));
         }
         if !seen.insert((code.clone(), version)) {

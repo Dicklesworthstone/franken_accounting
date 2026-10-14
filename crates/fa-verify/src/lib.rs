@@ -19,34 +19,56 @@
 //!   account, unit, cutoff and optional exact amounts ([`verify_balance_for`]);
 //! - a document's bytes and kind produce the public `doc_commit` an
 //!   entry's evidence cites ([`document::doc_commit`]);
+//! - a `TransparencyCheckpoint` was signed by keys the caller trusts
+//!   ([`verify_checkpoint`], Ed25519);
+//! - one account's entries with an effective day in an interval are all
+//!   listed, against that checkpoint's signed scope-index root
+//!   ([`verify_scope`], scope `scope_index_complete`), with the premise
+//!   labelled: the signers, or the index recomputed from the complete
+//!   prefix;
+//! - an evidence bundle (`.fab`) is what its manifest says — its entries
+//!   exactly the scope's leaves with their payloads, each entry's cited
+//!   documents present and, when included, matching their commitments,
+//!   its balances recomputed under the fold law they name — and its
+//!   detached production receipt was signed over it ([`verify_bundle`],
+//!   each predicate graded on its own);
 //! - requested redacted chunks belong to the document cited, with the
 //!   requested role, by an included entry ([`verify_evidence_view_for`]).
 //!
 //! What it does not prove (plan §13.1): that an entry reflects what
-//! actually happened, that a checkpoint was signed by anyone (signatures and
-//! witnesses are not in this crate yet), or anything about a known-at later
-//! than the checkpoint's `through_seq`.
+//! actually happened, that a signer's key belongs to anyone in particular
+//! (the caller names the keys it trusts; there is no trust-anchor set or
+//! witness policy yet), or anything about a known-at later than the
+//! checkpoint's `through_seq`.
 //!
-//! The crate carries its own BLAKE3 ([`blake3`]), its own canonical reader,
-//! and its own tree arithmetic, and links no FrankenAccounting or substrate
-//! crate: the producer and the verifier are independent implementations of
-//! one specification, checked against each other by fa-notary's
-//! differential tests and pinned to shared golden vectors. Independence
-//! makes a shared bug less likely and the differential makes a divergence
-//! visible; neither proves the specification itself sound.
+//! The crate carries its own BLAKE3 ([`blake3`]), SHA-512 ([`sha512`]),
+//! Ed25519 verification ([`ed25519`]), canonical reader, and tree
+//! arithmetic, and links no FrankenAccounting or substrate crate: the
+//! producer and the verifier are independent implementations of one
+//! specification, checked against each other by fa-notary's differential
+//! tests and pinned to shared golden vectors (RFC 8032 and RFC 6234 for the
+//! signature scheme). Independence makes a shared bug less likely and the
+//! differential makes a divergence visible; neither proves the
+//! specification itself sound.
 
 #![forbid(unsafe_code)]
 
 pub mod balance;
 pub mod balance_request;
 pub mod blake3;
+pub mod bundle;
+pub mod checkpoint;
+pub mod cli;
 pub mod codec;
 pub mod disclosure;
 pub mod document;
+pub mod ed25519;
 pub mod envelope;
 pub mod evidence;
 pub mod migration_balance;
 pub mod proof;
+pub mod scope;
+pub mod sha512;
 pub mod state;
 pub mod tree;
 
@@ -54,6 +76,11 @@ pub use balance::{Balance, BalanceClaim};
 pub use balance_request::{
     BalanceAmounts, BalanceExpectation, BalanceExpectationError, BalanceScope, verify_balance_for,
 };
+pub use bundle::{
+    BundleCheck, BundleError, BundleReport, BundleScope, Completeness, Grade, Manifest,
+    ReceiptFacts, Summary, verify_bundle,
+};
+pub use checkpoint::{CheckpointError, SignedCheckpoint, verify_checkpoint};
 pub use codec::DecodeError;
 pub use envelope::{LeafEnvelope, RecordError};
 pub use evidence::{
@@ -64,6 +91,7 @@ pub use proof::{
     Checkpoint, Consistency, Inclusion, Prefix, RecordCheck, VerifyError, verify_consistency,
     verify_inclusion, verify_prefix,
 };
+pub use scope::{IndexDerivation, ScopeClaim, ScopeReport, recompute_index, verify_scope};
 pub use state::{Signatures, State, verify_state};
 
 /// Verify either supported balance format against an independently trusted
@@ -162,14 +190,20 @@ pub mod redaction {
                 Self::Bound(field) => write!(f, "redacted-view {field} exceeds the decoder bound"),
                 Self::Request(why) => write!(f, "invalid disclosure request: {why}"),
                 Self::ChunkCount { expected, actual } => {
-                    write!(f, "document requires {expected} chunks; view carries {actual}")
+                    write!(
+                        f,
+                        "document requires {expected} chunks; view carries {actual}"
+                    )
                 }
                 Self::ChunkLength {
                     index,
                     expected,
                     actual,
                 } => {
-                    write!(f, "chunk {index} requires {expected} bytes; view carries {actual}")
+                    write!(
+                        f,
+                        "chunk {index} requires {expected} bytes; view carries {actual}"
+                    )
                 }
                 Self::Disclosure { expected, actual } => {
                     write!(
@@ -289,7 +323,11 @@ pub mod redaction {
                     });
                     hash_parts(
                         DOC_LEAF_DOMAIN,
-                        &[&index.to_le_bytes(), &(chunk.len() as u64).to_le_bytes(), chunk],
+                        &[
+                            &index.to_le_bytes(),
+                            &(chunk.len() as u64).to_le_bytes(),
+                            chunk,
+                        ],
                     )
                 }
                 1 => r.fixed("view.chunk.leaf")?,
@@ -353,22 +391,34 @@ pub mod redaction {
                 doc.chunks(DOC_CHUNK_BYTES).collect()
             };
             let mut w = Writer::default();
-            w.u16(1).fixed(&[17; 32]).u16(7).u8(kind)
-                .u64(doc.len() as u64).fixed(&doc_commit(kind, doc)).count(chunks.len());
+            w.u16(1)
+                .fixed(&[17; 32])
+                .u16(7)
+                .u8(kind)
+                .u64(doc.len() as u64)
+                .fixed(&doc_commit(kind, doc))
+                .count(chunks.len());
             for (i, chunk) in chunks.iter().enumerate() {
                 if shown.contains(&(i as u64)) {
                     w.u8(0).bytes(chunk);
                 } else {
-                    w.u8(1).fixed(&hash_parts(DOC_LEAF_DOMAIN, &[
-                        &(i as u64).to_le_bytes(), &(chunk.len() as u64).to_le_bytes(), chunk,
-                    ]));
+                    w.u8(1).fixed(&hash_parts(
+                        DOC_LEAF_DOMAIN,
+                        &[
+                            &(i as u64).to_le_bytes(),
+                            &(chunk.len() as u64).to_le_bytes(),
+                            chunk,
+                        ],
+                    ));
                 }
             }
             w.buf
         }
 
         fn document(len: usize) -> Vec<u8> {
-            (0..len).map(|i| ((i * 17 + i / DOC_CHUNK_BYTES) % 251) as u8).collect()
+            (0..len)
+                .map(|i| ((i * 17 + i / DOC_CHUNK_BYTES) % 251) as u8)
+                .collect()
         }
 
         #[test]
@@ -410,7 +460,10 @@ pub mod redaction {
             for len in [0, 1, 4095, 4096, 4097, 8192, 8193, 16385, 28673] {
                 let doc = document(len);
                 let count = len.div_ceil(DOC_CHUNK_BYTES).max(1);
-                let shown: Vec<u64> = (0..count).filter(|i| i % 2 == 0).map(|i| i as u64).collect();
+                let shown: Vec<u64> = (0..count)
+                    .filter(|i| i % 2 == 0)
+                    .map(|i| i as u64)
+                    .collect();
                 for kind in [1, 9] {
                     let bytes = encode(&doc, kind, &shown);
                     let report = verify_view_for(&bytes, &doc_commit(kind, &doc), &shown).unwrap();
@@ -434,7 +487,10 @@ pub mod redaction {
             for shown in [&[0u64][..], &[0, 1, 2], &[1, 2], &[0, 1]] {
                 let bytes = encode(&doc, 1, shown);
                 assert!(verify_view_for(&bytes, &anchor, shown).is_ok());
-                assert!(matches!(verify_view_for(&bytes, &anchor, &[0, 2]), Err(ViewError::Disclosure { .. })));
+                assert!(matches!(
+                    verify_view_for(&bytes, &anchor, &[0, 2]),
+                    Err(ViewError::Disclosure { .. })
+                ));
             }
             let bytes = encode(&doc, 1, &[0, 2]);
             assert!(verify_view_for(&bytes, &anchor, &[0, 2]).is_ok());
@@ -446,7 +502,10 @@ pub mod redaction {
             let bytes = encode(&doc, 1, &[0, 2]);
             let anchor = doc_commit(1, &doc);
             for requested in [&[][..], &[0, 0], &[2, 0], &[3], &[u64::MAX]] {
-                assert!(matches!(verify_view_for(&bytes, &anchor, requested), Err(ViewError::Request(_))));
+                assert!(matches!(
+                    verify_view_for(&bytes, &anchor, requested),
+                    Err(ViewError::Request(_))
+                ));
             }
             let wholly_withheld = encode(&doc, 1, &[]);
             assert!(verify_view_for(&wholly_withheld, &anchor, &[]).is_err());
@@ -463,13 +522,22 @@ pub mod redaction {
             for offset in [86, 81 + 4101 + 1, bytes.len() - 1, 36, 45] {
                 let mut corrupt = bytes.clone();
                 corrupt[offset] ^= 1;
-                assert!(verify_view_for(&corrupt, &anchor, &[0, 2]).is_err(), "offset {offset}");
+                assert!(
+                    verify_view_for(&corrupt, &anchor, &[0, 2]).is_err(),
+                    "offset {offset}"
+                );
             }
             let wrong_anchor = doc_commit(2, &doc);
-            assert_eq!(verify_view_for(&bytes, &wrong_anchor, &[0, 2]), Err(ViewError::Commitment));
+            assert_eq!(
+                verify_view_for(&bytes, &wrong_anchor, &[0, 2]),
+                Err(ViewError::Commitment)
+            );
             let mut replaced = bytes.clone();
             replaced[45..77].copy_from_slice(&wrong_anchor);
-            assert_eq!(verify_view_for(&replaced, &anchor, &[0, 2]), Err(ViewError::Commitment));
+            assert_eq!(
+                verify_view_for(&replaced, &anchor, &[0, 2]),
+                Err(ViewError::Commitment)
+            );
         }
 
         #[test]
@@ -495,7 +563,10 @@ pub mod redaction {
             let bytes = encode(&doc, 1, &[0]);
             let anchor = doc_commit(1, &doc);
             for end in 0..bytes.len() {
-                assert!(verify_view_for(&bytes[..end], &anchor, &[0]).is_err(), "prefix {end}");
+                assert!(
+                    verify_view_for(&bytes[..end], &anchor, &[0]).is_err(),
+                    "prefix {end}"
+                );
             }
             let mut trailing = bytes.clone();
             trailing.push(0);
@@ -510,12 +581,18 @@ pub mod redaction {
             ] {
                 let mut invalid = bytes.clone();
                 invalid[offset..offset + field.len()].copy_from_slice(&field);
-                assert!(verify_view_for(&invalid, &anchor, &[0]).is_err(), "field {offset}");
+                assert!(
+                    verify_view_for(&invalid, &anchor, &[0]).is_err(),
+                    "field {offset}"
+                );
             }
             let mut short = bytes.clone();
             short[82..86].copy_from_slice(&16u32.to_le_bytes());
             let _ = short.pop();
-            assert!(matches!(verify_view_for(&short, &anchor, &[0]), Err(ViewError::ChunkLength { .. })));
+            assert!(matches!(
+                verify_view_for(&short, &anchor, &[0]),
+                Err(ViewError::ChunkLength { .. })
+            ));
         }
     }
 }
@@ -533,7 +610,10 @@ mod balance_dispatch_tests {
             leaf_count: 0,
             root: tree::empty_root(),
         };
-        for format in [balance::BALANCE_FORMAT, migration_balance::BALANCE_FORMAT_V2] {
+        for format in [
+            balance::BALANCE_FORMAT,
+            migration_balance::BALANCE_FORMAT_V2,
+        ] {
             let mut w = codec::Writer::default();
             w.bytes(format)
                 .fixed(&checkpoint.encode())
@@ -552,7 +632,10 @@ mod balance_dispatch_tests {
             assert!(report.contributing.is_empty());
             assert_eq!((report.claim.debits, report.claim.credits), (0, 0));
             if format == balance::BALANCE_FORMAT {
-                assert_eq!(balance::verify_balance(&w.buf, &checkpoint).unwrap(), report);
+                assert_eq!(
+                    balance::verify_balance(&w.buf, &checkpoint).unwrap(),
+                    report
+                );
             }
         }
     }

@@ -191,7 +191,10 @@ fn digest_of(
     Ok(h.finalize().0)
 }
 
-pub(crate) fn resolve_known_at<V: asupersync::fs::Vfs + Clone>(
+/// The commit sequence a known-at selection pins: the head when `None`.
+/// Public for the analytics layer (fa-lantern), which reads the snapshot
+/// the folds read.
+pub fn resolve_known_at<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     known_at: Option<CommitSeq>,
 ) -> Result<CommitSeq, RegisterError> {
@@ -229,7 +232,10 @@ pub(crate) fn period_at<V: asupersync::fs::Vfs + Clone>(
 /// The FA-INV-07 migration predicate applies here, once, for every fold:
 /// a chunk of a migration run is selected only where its run is Finalized
 /// at `seq` (`fa_journal::migration::visible_at`, plan §8.6).
-pub(crate) fn entries_at<V: asupersync::fs::Vfs + Clone>(
+/// Public for the analytics layer (fa-lantern): one entry-stream reader for
+/// every fold and procedure, so the migration predicate is applied in one
+/// place.
+pub fn entries_at<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     seq: CommitSeq,
@@ -294,7 +300,9 @@ pub(crate) fn contribution_seq(
     Ok(finalized_at)
 }
 
-pub(crate) fn entry_period(book: &BookContext, entry: &Entry) -> Result<String, RegisterError> {
+/// The period an entry's effective date (and declared period, if any)
+/// resolves to. Public for the analytics layer (fa-lantern).
+pub fn entry_period(book: &BookContext, entry: &Entry) -> Result<String, RegisterError> {
     let date = entry.proposal.effective_date;
     let fy = book
         .calendar

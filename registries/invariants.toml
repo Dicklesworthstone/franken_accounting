@@ -263,11 +263,13 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-02"
 id = "unit-version"
-status = "dormant"
-statement = "Unit versions are journaled and immutable; historical mantissas are never reinterpreted."
+status = "live"
+statement = "Every Unit vertex's facts (code, kind, scale, ISO 4217 code, default rounding law) are journaled at genesis in a format-versioned payload and are immutable; the open book's unit table is rebuilt from the journal; a binary whose registry disagrees with a journaled fact, or that finds a pre-payload table, refuses to open the book naming the unit and field; registry rows are pinned and new ids are additive; an unknown unit id is a typed render refusal, never a guessed scale; historical mantissas are never reinterpreted."
 evidence_class = "invariant"
 first_gate = "G2"
-activating = ["fa-p7r"]
+owner = "fa-nnm"
+checkers = ["fa-journal::tests/genesis.rs::journaled_units_are_runtime_truth_and_binary_extensions_do_not_install_units", "fa-registry::lib::tests::original_unit_definitions_are_pinned_and_new_ids_are_additive", "fa-model::lib::unit::tests::unit_payload_matches_independent_golden_bytes_and_every_kind_round_trips"]
+negatives = ["fa-journal::tests/genesis.rs::unit_reconciliation_refuses_every_changed_historical_meaning", "fa-journal::tests/genesis.rs::unit_payload_and_table_commitment_damage_are_refused_without_repair", "fa-cli::tests/cli.rs::directory_reopen_refuses_changed_or_missing_unit_facts_through_facade_and_cli", "fa-model::lib::unit::tests::unit_payload_refuses_truncation_versions_tags_scales_and_trailing_bytes", "fa-registry::lib::tests::unit_registry_refuses_reordered_missing_duplicate_and_unknown_law_rows", "fa-cli::lib::cli::tests::unknown_units_refuse_reports_before_any_success_output"]
 waiver = "forbidden"
 
 [[clause]]
@@ -441,6 +443,18 @@ negatives = ["fa-journal::lib::evidence::tests::a_supplement_round_trips_and_its
 waiver = "forbidden"
 
 [[clause]]
+invariant = "FA-INV-05"
+id = "registered-origin"
+status = "live"
+statement = "A public post carries only what the kernel can verify: its origin is Intent, its base totals and plan certificate are computed by the kernel and never accepted from the caller, and an entry that claims a Rule, Sweep, Schedule or Control origin, supplied base totals or a supplied plan certificate is refused before publication without consuming its identity; sweep- and schedule-minted entries commit only through their own minting paths, whose provenance the independent oracle reproduces."
+evidence_class = "invariant"
+first_gate = "G2"
+owner = "fa-cw1"
+checkers = ["fa-registers::tests/differential.rs::public_post_provenance_and_envelope_claims_match_the_independent_oracle", "fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_ticks_timed_holds_and_the_expiry_sweep"]
+negatives = ["fa-journal::tests/genesis.rs::unchecked_base_totals_are_refused_before_publication", "fa-journal::tests/genesis.rs::unverified_plan_and_origin_claims_are_refused_without_consuming_identity"]
+waiver = "forbidden"
+
+[[clause]]
 invariant = "FA-INV-06"
 id = "core"
 status = "live"
@@ -449,7 +463,7 @@ evidence_class = "invariant"
 first_gate = "G1"
 owner = "fa-p7r"
 checkers = ["fa-money::lib::allocation::tests::conserves_total_on_a_grid", "fa-money::lib::rounding::tests::registry_requires_exact_correspondence_with_executable_laws", "fa-money::lib::rounding::tests::error_bound_is_half_ulp_for_half_laws"]
-negatives = ["fa-money::lib::amount::tests::checked_arithmetic_refuses_overflow_and_unit_mixing", "fa-money::lib::amount::tests::over_scale_is_refused_not_rounded", "fa-money::lib::wide::tests::overflow_is_detected", "fa-model::lib::entry::tests::overflowing_leg_sums_are_refused_not_wrapped", "fa-money::lib::valuation::tests::native_imbalance_is_never_absorbed_as_rounding"]
+negatives = ["fa-money::lib::amount::tests::checked_arithmetic_refuses_overflow_and_unit_mixing", "fa-money::lib::amount::tests::over_scale_is_refused_not_rounded", "fa-money::lib::wide::tests::overflow_is_detected", "fa-money::lib::amount::tests::try_render_refuses_unknown_units_without_panicking_or_guessing_a_scale", "fa-model::lib::entry::tests::overflowing_leg_sums_are_refused_not_wrapped", "fa-money::lib::valuation::tests::native_imbalance_is_never_absorbed_as_rounding"]
 waiver = "forbidden"
 
 [[clause]]
@@ -626,8 +640,8 @@ statement = "Capability caveats are enforced before any storage observation; a r
 evidence_class = "invariant"
 first_gate = "G1"
 owner = "fa-llx"
-checkers = ["fa-policy::lib::admit::tests::admission_order_is_holder_then_agent_then_op_then_ceilings"]
-negatives = ["fa-journal::tests/policy.rs::a_capability_authorizes_only_its_holder_and_refusals_precede_any_read", "fa-journal::tests/policy.rs::an_agent_profile_capability_never_writes_trunk_and_its_refusal_cites_fa_s7x", "fa-journal::tests/genesis.rs::a_foreign_book_or_branch_coordinate_is_refused_before_any_read"]
+checkers = ["fa-policy::lib::admit::tests::admission_order_is_holder_then_agent_then_op_then_ceilings", "fa::lib::book::tests::a_bank_statement_through_the_facade_reads_redacted_until_privileged"]
+negatives = ["fa-journal::tests/policy.rs::a_capability_authorizes_only_its_holder_and_refusals_precede_any_read", "fa-journal::tests/policy.rs::an_agent_profile_capability_never_writes_trunk_and_its_refusal_cites_fa_s7x", "fa-journal::tests/genesis.rs::a_foreign_book_or_branch_coordinate_is_refused_before_any_read", "fa-journal::lib::redaction::tests::an_agent_reads_public_documents_and_only_the_governed_redacted_view", "fa-journal::tests/genesis.rs::a_privileged_holder_derives_the_view_a_reader_gets_in_place_of_the_bytes"]
 waiver = "forbidden"
 
 [[clause]]
@@ -833,11 +847,27 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-14"
 id = "scope-index-complete"
-status = "dormant"
+status = "live"
 statement = "Every checkpoint binds a scope-index root the verifier recomputes, and ScopeIndexComplete proofs are sound for their labeled scope."
 evidence_class = "invariant"
 first_gate = "G2"
-activating = ["fa-l3c"]
+owner = "fa-l3c"
+checkers = ["fa-notary::tests/notary.rs::scope_proofs_list_exactly_the_brute_force_filter"]
+negatives = ["fa-notary::tests/notary.rs::planted_scope_defects_are_refused", "fa-notary::tests/notary.rs::a_tampered_stored_checkpoint_is_a_finding_and_refused"]
+depends = ["FA-INV-14.leaf-envelope", "FA-INV-14.seq-range-complete"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-14"
+id = "signed"
+status = "live"
+statement = "Every checkpoint is signed by the book's key over a transcript that excludes the signatures; a checkpoint the journal and the book's key do not reproduce is found and never handed out, and another key, a flipped bit, another body's signature, or an altered body is refused by the independent verifier."
+evidence_class = "invariant"
+first_gate = "G2"
+owner = "fa-l3c"
+checkers = ["fa-notary::tests/notary.rs::checkpoints_are_signed_by_the_book_key_and_forgeries_are_refused", "fa-notary::tests/differential.rs::the_signer_and_the_verifier_agree_on_generated_messages", "fa-notary::lib::sign::ed25519::tests::rfc8032_vectors_sign_exactly", "fa-verify::lib::ed25519::tests::rfc8032_vectors_verify"]
+negatives = ["fa-notary::tests/notary.rs::a_tampered_stored_checkpoint_is_a_finding_and_refused", "fa-verify::lib::ed25519::tests::single_bit_forgeries_are_refused", "fa-verify::lib::ed25519::tests::a_non_reduced_s_is_refused"]
+depends = ["FA-INV-14.consistency"]
 waiver = "forbidden"
 
 [[clause]]
@@ -941,8 +971,8 @@ statement = "Derived Leg vertices and edges equal the inline legs, are written i
 evidence_class = "invariant"
 first_gate = "G1"
 owner = "fa-op5"
-checkers = ["fa-journal::tests/genesis.rs::balanced_entry_commits_with_mirrors_and_edges_in_one_transaction", "fa-model::lib::mirrors::tests::leg_amount_mirrors_as_decimal_when_representable_else_bytes"]
-negatives = ["fa-registers::tests/registers.rs::missing_entry_period_projection_does_not_hide_journal_contributions", "fa-registers::tests/registers.rs::recovery_refuses_to_rewrite_an_account_forged_as_a_register"]
+checkers = ["fa-journal::tests/genesis.rs::balanced_entry_commits_with_mirrors_and_edges_in_one_transaction", "fa-model::lib::mirrors::tests::leg_amount_mirrors_as_decimal_when_representable_else_bytes", "fa-journal::tests/genesis.rs::projection_verification_covers_posted_pending_resolved_reversed_and_control_entries", "fa-journal::tests/genesis.rs::dimension_edges_are_published_with_legs_and_their_metadata_is_verified", "fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_a_generated_history"]
+negatives = ["fa-registers::tests/registers.rs::missing_entry_period_projection_does_not_hide_journal_contributions", "fa-registers::tests/registers.rs::recovery_refuses_to_rewrite_an_account_forged_as_a_register", "fa-journal::tests/genesis.rs::projection_verifier_detects_every_scalar_mirror_and_preserves_known_at", "fa-journal::tests/genesis.rs::projection_verifier_checks_the_exact_wide_amount_fallback", "fa-journal::tests/genesis.rs::projection_verifier_rejects_missing_extra_and_misdirected_topology", "fa-cli::tests/cli.rs::projection_verification_reports_drift_deterministically_without_writes", "fa-cli::tests/cli.rs::projection_verification_refuses_a_changed_amount_without_writes", "fa-cli::tests/cli.rs::projection_verification_refuses_a_missing_has_leg_without_writes"]
 waiver = "forbidden"
 
 [[clause]]

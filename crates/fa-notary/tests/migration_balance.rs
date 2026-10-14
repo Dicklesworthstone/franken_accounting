@@ -4,8 +4,8 @@
 
 use fa_journal::migration::{RunBody, RunMode, kind};
 use fa_model::{
-    ControlKind, ControlPayload, Entry, EntryClass, EntryOrigin, EntryPayload,
-    Erasable, Id128, LegPayload, Oid, SealKey,
+    ControlKind, ControlPayload, Entry, EntryClass, EntryOrigin, EntryPayload, Erasable, Id128,
+    LegPayload, Oid, SealKey,
 };
 use fa_money::{Amount, Side, UnitId};
 use fa_notary::{AccumulatorState, Journal, code};
@@ -47,7 +47,10 @@ fn payload(class: EntryClass, legs: Vec<LegPayload>, seq: u64, day: i32) -> Entr
         control: None,
         base_totals: None,
         idempotency_key: seq.to_le_bytes().to_vec(),
-        origin: EntryOrigin::Intent { intent_oid: Oid([4; 32]), intent_kind: 1 },
+        origin: EntryOrigin::Intent {
+            intent_oid: Oid([4; 32]),
+            intent_kind: 1,
+        },
         principal_ref: VId(7),
         session_ref: None,
         evidence: Vec::new(),
@@ -61,25 +64,47 @@ fn payload(class: EntryClass, legs: Vec<LegPayload>, seq: u64, day: i32) -> Entr
 
 fn control(body: &RunBody, transition: u8, seq: u64) -> (VId, Entry, CommitSeq) {
     let digest = body.digest().unwrap();
-    let mut p = payload(EntryClass::MIGRATION_CONTROL, Vec::new(), seq, body.opening_date.0);
+    let mut p = payload(
+        EntryClass::MIGRATION_CONTROL,
+        Vec::new(),
+        seq,
+        body.opening_date.0,
+    );
     p.control = Some(ControlPayload::MigrationControl {
         run_ref: body.vid(),
         kind: transition,
-        tie_out_digest: if transition == kind::OPEN { digest } else { [9; 32] },
+        tie_out_digest: if transition == kind::OPEN {
+            digest
+        } else {
+            [9; 32]
+        },
     });
     p.origin = EntryOrigin::Control {
         control_kind: ControlKind::MIGRATION_RUN,
         spec_body_digest: digest,
     };
-    (VId(u128::from(seq)), p.seal(Vec::new(), None).unwrap(), CommitSeq(seq))
+    (
+        VId(u128::from(seq)),
+        p.seal(Vec::new(), None).unwrap(),
+        CommitSeq(seq),
+    )
 }
 
 fn posting(body: Option<&RunBody>, seq: u64, day: i32, unit: u32) -> (VId, Entry, CommitSeq) {
-    let class = if body.is_some() { EntryClass::MIGRATION } else { EntryClass::ORIGINAL };
-    let mut p = payload(class, vec![
-        LegPayload::simple(Side::Debit, CASH, Amount::new(UnitId(unit), 5_000)),
-        LegPayload::simple(Side::Credit, OFFSET, Amount::new(UnitId(unit), 5_000)),
-    ], seq, day);
+    let class = if body.is_some() {
+        EntryClass::MIGRATION
+    } else {
+        EntryClass::ORIGINAL
+    };
+    let mut p = payload(
+        class,
+        vec![
+            LegPayload::simple(Side::Debit, CASH, Amount::new(UnitId(unit), 5_000)),
+            LegPayload::simple(Side::Credit, OFFSET, Amount::new(UnitId(unit), 5_000)),
+        ],
+        seq,
+        day,
+    );
     if let Some(body) = body {
         p.origin = EntryOrigin::Migration {
             run_ref: body.vid(),
@@ -91,7 +116,11 @@ fn posting(body: Option<&RunBody>, seq: u64, day: i32, unit: u32) -> (VId, Entry
             batch_oid: Oid([5; 32]),
         };
     }
-    (VId(u128::from(seq)), p.seal(Vec::new(), None).unwrap(), CommitSeq(seq))
+    (
+        VId(u128::from(seq)),
+        p.seal(Vec::new(), None).unwrap(),
+        CommitSeq(seq),
+    )
 }
 
 fn history(body: &RunBody, terminal: Option<u8>, day: i32) -> Journal {
@@ -106,27 +135,47 @@ fn anchor(journal: &Journal) -> fa_verify::Checkpoint {
     let state = AccumulatorState::of_journal(journal, None);
     // The test supplies this independently known checkpoint. Merely parsing
     // a state in an untrusted package would NOT establish checkpoint trust.
-    fa_verify::verify_state(&state.canonical_bytes().unwrap()).unwrap().checkpoint
+    fa_verify::verify_state(&state.canonical_bytes().unwrap())
+        .unwrap()
+        .checkpoint
 }
 
-fn checked(journal: &Journal, bodies: &[RunBody], account: VId, unit: u32, day: Option<i32>) -> fa_verify::Balance {
-    let proof = journal.balance_proof_with_migrations(account, unit, day, bodies)
-        .unwrap().unwrap();
-    assert!(proof.windows(b"fa:acc-balance-proof:v2".len())
-        .any(|bytes| bytes == b"fa:acc-balance-proof:v2"));
+fn checked(
+    journal: &Journal,
+    bodies: &[RunBody],
+    account: VId,
+    unit: u32,
+    day: Option<i32>,
+) -> fa_verify::Balance {
+    let proof = journal
+        .balance_proof_with_migrations(account, unit, day, bodies)
+        .unwrap()
+        .unwrap();
+    assert!(
+        proof
+            .windows(b"fa:acc-balance-proof:v2".len())
+            .any(|bytes| bytes == b"fa:acc-balance-proof:v2")
+    );
     fa_verify::verify_balance(&proof, &anchor(journal)).unwrap()
 }
 
 #[test]
 fn model_encoded_open_abandoned_and_finalized_runs_agree_with_the_independent_verifier() {
     let body = body(RunMode::OpeningOnly, false, "run");
-    for (terminal, expected) in [(None, 0), (Some(kind::ABANDON), 0), (Some(kind::FINALIZE), 5_000)] {
+    for (terminal, expected) in [
+        (None, 0),
+        (Some(kind::ABANDON), 0),
+        (Some(kind::FINALIZE), 5_000),
+    ] {
         let journal = history(&body, terminal, 100);
         let cash = checked(&journal, std::slice::from_ref(&body), CASH, 1, None);
         let offset = checked(&journal, std::slice::from_ref(&body), OFFSET, 1, None);
         assert_eq!((cash.claim.debits, cash.claim.credits), (expected, 0));
         assert_eq!((offset.claim.debits, offset.claim.credits), (0, expected));
-        assert_eq!(cash.contributing, if expected == 0 { vec![] } else { vec![1] });
+        assert_eq!(
+            cash.contributing,
+            if expected == 0 { vec![] } else { vec![1] }
+        );
     }
 }
 
@@ -162,12 +211,32 @@ fn recorded_prefix_before_finalization_stays_invisible_after_a_later_prefix_acti
     let early = Journal::from_records(BOOK, CommitSeq(2), records[..2].to_vec()).unwrap();
     let later = Journal::from_records(BOOK, CommitSeq(3), records).unwrap();
     let witnesses = std::slice::from_ref(&body);
-    let first = early.balance_proof_with_migrations(CASH, 1, None, witnesses).unwrap().unwrap();
-    assert_eq!(fa_verify::verify_balance(&first, &anchor(&early)).unwrap().claim.debits, 0);
-    assert_eq!(checked(&later, witnesses, CASH, 1, None).claim.debits, 5_000);
-    assert_eq!(early.balance_proof_with_migrations(CASH, 1, None, witnesses).unwrap().unwrap(), first);
-    assert!(matches!(fa_verify::verify_balance(&first, &anchor(&later)),
-        Err(fa_verify::VerifyError::NotTrusted { .. })));
+    let first = early
+        .balance_proof_with_migrations(CASH, 1, None, witnesses)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        fa_verify::verify_balance(&first, &anchor(&early))
+            .unwrap()
+            .claim
+            .debits,
+        0
+    );
+    assert_eq!(
+        checked(&later, witnesses, CASH, 1, None).claim.debits,
+        5_000
+    );
+    assert_eq!(
+        early
+            .balance_proof_with_migrations(CASH, 1, None, witnesses)
+            .unwrap()
+            .unwrap(),
+        first
+    );
+    assert!(matches!(
+        fa_verify::verify_balance(&first, &anchor(&later)),
+        Err(fa_verify::VerifyError::NotTrusted { .. })
+    ));
 }
 
 #[test]
@@ -175,25 +244,53 @@ fn multiple_run_witnesses_are_canonical_and_unrelated_unit_bodies_are_not_disclo
     let a = body(RunMode::OpeningOnly, false, "a");
     let b = body(RunMode::OpeningOnly, false, "b");
     let c = body(RunMode::OpeningOnly, false, "unrelated");
-    let journal = Journal::from_records(BOOK, CommitSeq(10), vec![
-        control(&a, kind::OPEN, 1), control(&b, kind::OPEN, 2), control(&c, kind::OPEN, 3),
-        posting(Some(&a), 4, 100, 1), posting(Some(&b), 5, 100, 1),
-        posting(Some(&c), 6, 100, 2),
-        control(&a, kind::FINALIZE, 7), control(&b, kind::ABANDON, 8),
-        control(&c, kind::FINALIZE, 9), posting(None, 10, 100, 1),
-    ]).unwrap();
-    let first = journal.balance_proof_with_migrations(CASH, 1, None, &[a.clone(), b.clone()])
-        .unwrap().unwrap();
-    let reversed = journal.balance_proof_with_migrations(CASH, 1, None, &[b.clone(), a.clone()])
-        .unwrap().unwrap();
+    let journal = Journal::from_records(
+        BOOK,
+        CommitSeq(10),
+        vec![
+            control(&a, kind::OPEN, 1),
+            control(&b, kind::OPEN, 2),
+            control(&c, kind::OPEN, 3),
+            posting(Some(&a), 4, 100, 1),
+            posting(Some(&b), 5, 100, 1),
+            posting(Some(&c), 6, 100, 2),
+            control(&a, kind::FINALIZE, 7),
+            control(&b, kind::ABANDON, 8),
+            control(&c, kind::FINALIZE, 9),
+            posting(None, 10, 100, 1),
+        ],
+    )
+    .unwrap();
+    let first = journal
+        .balance_proof_with_migrations(CASH, 1, None, &[a.clone(), b.clone()])
+        .unwrap()
+        .unwrap();
+    let reversed = journal
+        .balance_proof_with_migrations(CASH, 1, None, &[b.clone(), a.clone()])
+        .unwrap()
+        .unwrap();
     assert_eq!(first, reversed);
     let report = fa_verify::verify_balance(&first, &anchor(&journal)).unwrap();
     assert_eq!(report.claim.debits, 10_000);
     assert_eq!(report.contributing, vec![3, 9]);
     let private_body = c.canonical_bytes().unwrap();
-    assert!(!first.windows(private_body.len()).any(|window| window == private_body));
-    assert_eq!(checked(&journal, std::slice::from_ref(&c), CASH, 2, None).claim.debits, 5_000);
-    assert!(journal.balance_proof_with_migrations(CASH, 1, None, &[a, b, c]).unwrap().is_err());
+    assert!(
+        !first
+            .windows(private_body.len())
+            .any(|window| window == private_body)
+    );
+    assert_eq!(
+        checked(&journal, std::slice::from_ref(&c), CASH, 2, None)
+            .claim
+            .debits,
+        5_000
+    );
+    assert!(
+        journal
+            .balance_proof_with_migrations(CASH, 1, None, &[a, b, c])
+            .unwrap()
+            .is_err()
+    );
 }
 
 #[test]
@@ -204,9 +301,16 @@ fn body_substitution_missing_bodies_and_duplicate_bodies_are_refused() {
     changed.sole_opening_source = true;
     let mut foreign = body.clone();
     foreign.book_id = Id128([99; 16]);
-    for bodies in [vec![], vec![changed], vec![foreign], vec![body.clone(), body]] {
-        let refusal = journal.balance_proof_with_migrations(CASH, 1, None, &bodies)
-            .unwrap().unwrap_err();
+    for bodies in [
+        vec![],
+        vec![changed],
+        vec![foreign],
+        vec![body.clone(), body],
+    ] {
+        let refusal = journal
+            .balance_proof_with_migrations(CASH, 1, None, &bodies)
+            .unwrap()
+            .unwrap_err();
         assert_eq!(refusal.code, code::MIGRATION_STAGED);
     }
 }
@@ -217,14 +321,36 @@ fn inconsistent_lifecycles_are_rejected_instead_of_selectively_counted() {
     for records in [
         vec![control(&body, kind::FINALIZE, 1)],
         vec![control(&body, kind::OPEN, 1), control(&body, kind::OPEN, 2)],
-        vec![posting(Some(&body), 1, 100, 1), control(&body, kind::OPEN, 2)],
-        vec![control(&body, kind::OPEN, 1), control(&body, kind::FINALIZE, 2), posting(Some(&body), 3, 100, 1)],
-        vec![control(&body, kind::OPEN, 1), control(&body, kind::ABANDON, 2), control(&body, kind::FINALIZE, 3)],
+        vec![
+            posting(Some(&body), 1, 100, 1),
+            control(&body, kind::OPEN, 2),
+        ],
+        vec![
+            control(&body, kind::OPEN, 1),
+            control(&body, kind::FINALIZE, 2),
+            posting(Some(&body), 3, 100, 1),
+        ],
+        vec![
+            control(&body, kind::OPEN, 1),
+            control(&body, kind::ABANDON, 2),
+            control(&body, kind::FINALIZE, 3),
+        ],
     ] {
-        let has_chunk = records.iter().any(|(_, e, _)| e.proposal.class == EntryClass::MIGRATION);
+        let has_chunk = records
+            .iter()
+            .any(|(_, e, _)| e.proposal.class == EntryClass::MIGRATION);
         let journal = Journal::from_records(BOOK, CommitSeq(3), records).unwrap();
-        let bodies = if has_chunk { std::slice::from_ref(&body) } else { &[] };
-        assert!(journal.balance_proof_with_migrations(CASH, 1, None, bodies).unwrap().is_err());
+        let bodies = if has_chunk {
+            std::slice::from_ref(&body)
+        } else {
+            &[]
+        };
+        assert!(
+            journal
+                .balance_proof_with_migrations(CASH, 1, None, bodies)
+                .unwrap()
+                .is_err()
+        );
     }
 }
 
@@ -235,8 +361,17 @@ fn empty_and_nonmigration_v2_proofs_work_without_changing_v1_bytes() {
         let journal = Journal::from_records(BOOK, CommitSeq(1), records).unwrap();
         let before = journal.balance_proof(CASH, 1, None).unwrap().unwrap();
         assert_eq!(checked(&journal, &[], CASH, 1, None).claim.debits, expected);
-        assert_eq!(journal.balance_proof(CASH, 1, None).unwrap().unwrap(), before);
-        assert_eq!(fa_verify::verify_balance(&before, &anchor(&journal)).unwrap().claim.debits, expected);
+        assert_eq!(
+            journal.balance_proof(CASH, 1, None).unwrap().unwrap(),
+            before
+        );
+        assert_eq!(
+            fa_verify::verify_balance(&before, &anchor(&journal))
+                .unwrap()
+                .claim
+                .debits,
+            expected
+        );
     }
 }
 
@@ -262,17 +397,27 @@ fn terminal_body_substitution_is_refused_for_finalize_and_abandon() {
         // Terminal tie-out and run-body commitments are different things.
         // The fixture intentionally keeps the former at [9; 32].
         assert_ne!(body.digest().unwrap(), [9; 32]);
-        assert_eq!(checked(&valid, std::slice::from_ref(&body), CASH, 1, None)
-            .claim.debits, expected);
-        let invalid = Journal::from_records(BOOK, CommitSeq(3), vec![
-            control(&body, kind::OPEN, 1),
-            posting(Some(&body), 2, 100, 1),
-            rebound_terminal(&body, terminal, 3),
-        ]).unwrap();
+        assert_eq!(
+            checked(&valid, std::slice::from_ref(&body), CASH, 1, None)
+                .claim
+                .debits,
+            expected
+        );
+        let invalid = Journal::from_records(
+            BOOK,
+            CommitSeq(3),
+            vec![
+                control(&body, kind::OPEN, 1),
+                posting(Some(&body), 2, 100, 1),
+                rebound_terminal(&body, terminal, 3),
+            ],
+        )
+        .unwrap();
         for account in [CASH, OFFSET] {
-            let refusal = invalid.balance_proof_with_migrations(
-                account, 1, None, std::slice::from_ref(&body),
-            ).unwrap().unwrap_err();
+            let refusal = invalid
+                .balance_proof_with_migrations(account, 1, None, std::slice::from_ref(&body))
+                .unwrap()
+                .unwrap_err();
             assert_eq!(refusal.code, code::MIGRATION_STAGED);
             assert!(refusal.message.contains("different run body"));
         }
@@ -284,19 +429,24 @@ fn unrelated_or_cutoff_excluded_chunks_do_not_hide_a_bad_v2_terminal() {
     let body = body(RunMode::OpeningOnly, false, "unrelated-terminal");
     for terminal in [kind::FINALIZE, kind::ABANDON] {
         let valid = history(&body, Some(terminal), 100);
-        let invalid = Journal::from_records(BOOK, CommitSeq(3), vec![
-            control(&body, kind::OPEN, 1),
-            posting(Some(&body), 2, 100, 1),
-            rebound_terminal(&body, terminal, 3),
-        ]).unwrap();
-        for (account, unit, cutoff) in [
-            (VId(999), 1, None), (CASH, 2, None), (CASH, 1, Some(99)),
-        ] {
+        let invalid = Journal::from_records(
+            BOOK,
+            CommitSeq(3),
+            vec![
+                control(&body, kind::OPEN, 1),
+                posting(Some(&body), 2, 100, 1),
+                rebound_terminal(&body, terminal, 3),
+            ],
+        )
+        .unwrap();
+        for (account, unit, cutoff) in [(VId(999), 1, None), (CASH, 2, None), (CASH, 1, Some(99))] {
             // No run body is required or disclosed for these cells. All
             // controls still belong to v2's authenticated lifecycle scope.
             assert_eq!(checked(&valid, &[], account, unit, cutoff).claim.debits, 0);
-            let refusal = invalid.balance_proof_with_migrations(account, unit, cutoff, &[])
-                .unwrap().unwrap_err();
+            let refusal = invalid
+                .balance_proof_with_migrations(account, unit, cutoff, &[])
+                .unwrap()
+                .unwrap_err();
             assert_eq!(refusal.code, code::MIGRATION_STAGED);
             assert!(refusal.message.contains("different run body"));
         }
@@ -319,37 +469,67 @@ fn recipient_requests_bind_nonempty_v2_proofs_across_migration_visibility_states
         for terminal in [None, Some(kind::ABANDON), Some(kind::FINALIZE)] {
             let journal = history(&body, terminal, day);
             let checkpoint = anchor(&journal);
-            let proof = journal.balance_proof_with_migrations(
-                CASH, 1, Some(day), std::slice::from_ref(&body),
-            ).unwrap().unwrap();
+            let proof = journal
+                .balance_proof_with_migrations(CASH, 1, Some(day), std::slice::from_ref(&body))
+                .unwrap()
+                .unwrap();
             // These expectations come from fixture intent, never from the
             // untrusted proof's claim or its recomputed result.
             let expected = BalanceExpectation {
-                scope: BalanceScope { account: CASH.0, unit: 1, effective_through: Some(day) },
+                scope: BalanceScope {
+                    account: CASH.0,
+                    unit: 1,
+                    effective_through: Some(day),
+                },
                 amounts: Some(BalanceAmounts {
-                    debits: if terminal == Some(kind::FINALIZE) { visible } else { 0 },
+                    debits: if terminal == Some(kind::FINALIZE) {
+                        visible
+                    } else {
+                        0
+                    },
                     credits: 0,
                 }),
             };
             let verified = verify_balance_for(&proof, &checkpoint, &expected).unwrap();
-            assert_eq!(verified, fa_verify::verify_balance(&proof, &checkpoint).unwrap());
+            assert_eq!(
+                verified,
+                fa_verify::verify_balance(&proof, &checkpoint).unwrap()
+            );
             for scope in [
-                BalanceScope { account: OFFSET.0, ..expected.scope },
-                BalanceScope { unit: 2, ..expected.scope },
-                BalanceScope { effective_through: None, ..expected.scope },
+                BalanceScope {
+                    account: OFFSET.0,
+                    ..expected.scope
+                },
+                BalanceScope {
+                    unit: 2,
+                    ..expected.scope
+                },
+                BalanceScope {
+                    effective_through: None,
+                    ..expected.scope
+                },
             ] {
                 assert!(matches!(
-                    verify_balance_for(&proof, &checkpoint, &BalanceExpectation { scope, ..expected }),
+                    verify_balance_for(
+                        &proof,
+                        &checkpoint,
+                        &BalanceExpectation { scope, ..expected }
+                    ),
                     Err(BalanceExpectationError::Scope { .. }),
                 ));
             }
             let amounts = expected.amounts.unwrap();
             let wrong = BalanceExpectation {
-                amounts: Some(BalanceAmounts { debits: amounts.debits + 1, credits: 1 }),
+                amounts: Some(BalanceAmounts {
+                    debits: amounts.debits + 1,
+                    credits: 1,
+                }),
                 ..expected
             };
-            assert!(matches!(verify_balance_for(&proof, &checkpoint, &wrong),
-                Err(BalanceExpectationError::Amounts { .. })));
+            assert!(matches!(
+                verify_balance_for(&proof, &checkpoint, &wrong),
+                Err(BalanceExpectationError::Amounts { .. })
+            ));
         }
     }
 }

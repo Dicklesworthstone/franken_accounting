@@ -292,6 +292,221 @@ fn read_proposal_prefix(r: &mut Reader<'_>) -> Result<ProposalPrefix, DecodeErro
     })
 }
 
+/// Bound for the schema-change bytes and the other variable fields skipped
+/// on the way to the evidence list.
+const MAX_FIELD_BYTES: usize = MAX_RECORD_BYTES;
+
+fn oid(r: &mut Reader<'_>, what: &'static str) -> Result<(), DecodeError> {
+    r.fixed::<32>(what).map(|_| ())
+}
+
+fn opt_u128(r: &mut Reader<'_>, what: &'static str) -> Result<(), DecodeError> {
+    if r.present(what)? {
+        r.u128(what)?;
+    }
+    Ok(())
+}
+
+/// The control payload (Appendix A `ControlPayload`, tags 0–11 and 13; 12
+/// is unassigned), skipped exactly. An unknown tag is refused: this
+/// verifier cannot know where the evidence list starts after a payload it
+/// does not read.
+fn skip_control(r: &mut Reader<'_>) -> Result<(), DecodeError> {
+    match r.u8("control.tag")? {
+        0 => {
+            r.bytes(MAX_FIELD_BYTES, "control.period_ref.calendar")?;
+            r.bytes(MAX_FIELD_BYTES, "control.period_ref.code")?;
+            r.u8("control.from")?;
+            r.u8("control.to")?;
+            r.u16("control.reason_code")?;
+            opt_u128(r, "control.case_ref")?;
+        }
+        1 => {
+            r.u16("control.kind")?;
+            r.bytes(MAX_FIELD_BYTES, "control.canonical_bytes")?;
+        }
+        2 => {
+            oid(r, "control.policy_oid")?;
+            r.i32("control.effective_from")?;
+            r.i32("control.effective_to")?;
+        }
+        3 => {
+            r.u128("control.object_ref")?;
+            r.u8("control.from")?;
+            r.u8("control.to")?;
+            let n = r.count(MAX_ENVELOPE_LIST, 1 + 16, "control.proof_refs")?;
+            for _ in 0..n {
+                match r.u8("typed_ref.tag")? {
+                    0 => {
+                        r.u128("typed_ref.vid")?;
+                    }
+                    1 => oid(r, "typed_ref.oid")?,
+                    t => return Err(r.error("typed_ref.tag", Reason::BadTag(t))),
+                }
+            }
+            r.u16("control.reason_code")?;
+        }
+        4 => {
+            r.u64("control.observed_utc_ns")?;
+            r.u8("control.source")?;
+            r.present("control.monotonic_ok")?;
+        }
+        5 => {
+            r.u8("control.sweep_kind")?;
+            r.u128("control.last_pending_vid")?;
+            r.u128("control.tick_ref")?;
+        }
+        6 => {
+            r.u128("control.schedule_ref")?;
+            r.u128("control.cause_ref")?;
+        }
+        7 => {
+            r.fixed::<32>("control.commitment")?;
+            r.u8("control.kind")?;
+            r.fixed::<32>("control.caveats_digest")?;
+        }
+        8 => {
+            r.fixed::<32>("control.scope_digest")?;
+            oid(r, "control.authority_oid")?;
+            r.u8("control.kind")?;
+        }
+        9 => {
+            r.u128("control.subject_ref")?;
+            let n = r.count(MAX_ENVELOPE_LIST, 32, "control.field_digests")?;
+            for _ in 0..n {
+                r.fixed::<32>("control.field_digest")?;
+            }
+        }
+        10 => {
+            r.u128("control.run_ref")?;
+            r.u8("control.kind")?;
+            r.fixed::<32>("control.tie_out_digest")?;
+        }
+        11 => {}
+        13 => {
+            // An import run (fa-txf): its intake source, then its counts
+            // and roots.
+            match r.u8("control.intake.tag")? {
+                1 => {
+                    r.u128("control.intake.principal")?;
+                }
+                2 => {
+                    r.bytes(MAX_FIELD_BYTES, "control.intake.name")?;
+                    r.bytes(MAX_FIELD_BYTES, "control.intake.version")?;
+                }
+                3 => {
+                    r.bytes(MAX_FIELD_BYTES, "control.intake.message_id")?;
+                }
+                4 => {
+                    r.bytes(MAX_FIELD_BYTES, "control.intake.device")?;
+                }
+                t => return Err(r.error("control.intake.tag", Reason::BadTag(t))),
+            }
+            r.u32("control.document_count")?;
+            r.u64("control.byte_count")?;
+            r.fixed::<32>("control.oids_root")?;
+            r.fixed::<32>("control.receipt_hash")?;
+        }
+        t => return Err(r.error("control.tag", Reason::BadTag(t))),
+    }
+    Ok(())
+}
+
+/// The entry's origin (Appendix A `EntryOrigin`, tags 0–5), skipped exactly.
+fn skip_origin(r: &mut Reader<'_>) -> Result<(), DecodeError> {
+    match r.u8("origin.tag")? {
+        0 => {
+            oid(r, "origin.intent_oid")?;
+            r.u16("origin.intent_kind")?;
+        }
+        1 => {
+            oid(r, "origin.rule_version_oid")?;
+            r.u128("origin.event_ref")?;
+            r.fixed::<32>("origin.inputs_digest")?;
+        }
+        2 => {
+            r.u128("origin.run_ref")?;
+            r.bytes(MAX_FIELD_BYTES, "origin.source_system")?;
+            skip_erasable(r, "origin.source_id")?;
+            if r.present("origin.source_recorded_at")? {
+                r.i64("origin.source_recorded_at")?;
+            }
+            for what in ["origin.source_entered_by", "origin.source_approved_by"] {
+                if r.present(what)? {
+                    skip_erasable(r, what)?;
+                }
+            }
+            oid(r, "origin.batch_oid")?;
+        }
+        3 => {
+            r.u16("origin.control_kind")?;
+            r.fixed::<32>("origin.spec_body_digest")?;
+        }
+        4 => {
+            r.u8("origin.sweep_kind")?;
+            oid(r, "origin.tick_evidence_oid")?;
+        }
+        5 => {
+            r.u128("origin.schedule_ref")?;
+            match r.u8("origin.trigger")? {
+                0 | 1 => {
+                    r.u128("origin.trigger_ref")?;
+                }
+                t => return Err(r.error("origin.trigger", Reason::BadTag(t))),
+            }
+        }
+        t => return Err(r.error("origin.tag", Reason::BadTag(t))),
+    }
+    Ok(())
+}
+
+/// The `doc_commit`s an `fa:entry:v1` proposal's evidence list cites,
+/// ascending and distinct (one document cited in two roles is one
+/// commitment). The proposal is read field by field up to and including
+/// the evidence list; what follows it is covered by the digests and cited
+/// nothing.
+pub fn cited_documents(proposal: &[u8]) -> Result<Vec<[u8; 32]>, DecodeError> {
+    let mut r = Reader::new(proposal);
+    read_proposal_prefix(&mut r)?;
+    if r.present("entry.control")? {
+        skip_control(&mut r)?;
+    }
+    let n = r.count(MAX_ENVELOPE_LIST, 4 + 16 + 16, "entry.unit_totals")?;
+    for _ in 0..n {
+        r.u32("unit_total.unit_id")?;
+        r.i128("unit_total.debits")?;
+        r.i128("unit_total.credits")?;
+    }
+    if r.present("entry.base_totals")? {
+        r.u32("base_totals.unit_id")?;
+        r.i128("base_totals.debits")?;
+        r.i128("base_totals.credits")?;
+        oid(&mut r, "base_totals.fx_law_oid")?;
+        let n = r.count(MAX_ENVELOPE_LIST, 32, "base_totals.rate_doc_oids")?;
+        for _ in 0..n {
+            oid(&mut r, "base_totals.rate_doc_oid")?;
+        }
+        if r.present("base_totals.residual")? {
+            r.u16("residual.leg_ordinal")?;
+            amount(&mut r, "residual.amount")?;
+        }
+    }
+    r.bytes(MAX_FIELD_BYTES, "entry.idempotency_key")?;
+    skip_origin(&mut r)?;
+    r.u128("entry.principal_ref")?;
+    opt_u128(&mut r, "entry.session_ref")?;
+    let n = r.count(MAX_ENVELOPE_LIST, 32 + 32 + 1, "entry.evidence")?;
+    let mut commits = Vec::with_capacity(n);
+    for _ in 0..n {
+        oid(&mut r, "evidence.document_oid")?;
+        commits.push(r.fixed::<32>("evidence.doc_commit")?);
+        r.u8("evidence.role")?;
+    }
+    commits.sort_unstable();
+    commits.dedup();
+    Ok(commits)
+}
+
 /// Recompute the record digest of an `fa:entry:v1` payload whose proposal
 /// is its first `proposal_len` bytes, checking both stored digests.
 pub fn entry_record_digest(payload: &[u8], proposal_len: usize) -> Result<[u8; 32], RecordError> {

@@ -178,7 +178,12 @@ fn prepare(
     }
     let mut docs: Vec<(Document, String)> = Vec::with_capacity(req.documents.len());
     for (i, doc) in req.documents.iter().enumerate() {
-        match intake_check(policy, book, doc, policy.max_document_bytes) {
+        match intake_check(
+            policy,
+            book,
+            doc,
+            crate::evidence::inline_document_bound(policy),
+        ) {
             Ok(kind) => {
                 if doc.retrieved_by != capability.holder() {
                     let mut denied = refusal(&fa_policy::Denial::NotHolder {
@@ -497,7 +502,12 @@ pub async fn import_run<V: asupersync::fs::Vfs + Clone>(
     let derived_grade = crate::upload::upload_grade(&policy, capability.profile())?;
     let machine_grade = crate::upload::upload_grade(&policy, fa_policy::Profile::Agent)?;
     let (proposal, docs) = match prepare(
-        book, &policy, capability, derived_grade, machine_grade, &req,
+        book,
+        &policy,
+        capability,
+        derived_grade,
+        machine_grade,
+        &req,
     ) {
         Ok(prepared) => prepared,
         Err(refused) => return Ok(Err(refused)),

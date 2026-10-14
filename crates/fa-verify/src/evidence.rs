@@ -110,18 +110,30 @@ impl fmt::Display for EvidenceError {
             Self::Disclosure(error) => write!(f, "{error}"),
             Self::Request(why) => write!(f, "invalid evidence disclosure request: {why}"),
             Self::InputLimit => write!(f, "inclusion proof exceeds the 64 MiB input bound"),
-            Self::RecordRequired => write!(f,
-                "evidence verification requires the entry payload inside the inclusion proof"),
-            Self::EntryMismatch => write!(f,
-                "the included entry is not the recipient's requested entry digest"),
-            Self::CitationMissing => write!(f,
-                "the included entry does not cite the requested document with that role"),
-            Self::CitationAmbiguous => write!(f,
-                "the entry assigns multiple commitments to the requested document and role"),
-            Self::DocumentIdentity => write!(f,
-                "the citation's commitment does not derive its locator in the checkpoint's book"),
-            Self::ViewLocator => write!(f,
-                "the view names a different original locator than the authenticated citation"),
+            Self::RecordRequired => write!(
+                f,
+                "evidence verification requires the entry payload inside the inclusion proof"
+            ),
+            Self::EntryMismatch => write!(
+                f,
+                "the included entry is not the recipient's requested entry digest"
+            ),
+            Self::CitationMissing => write!(
+                f,
+                "the included entry does not cite the requested document with that role"
+            ),
+            Self::CitationAmbiguous => write!(
+                f,
+                "the entry assigns multiple commitments to the requested document and role"
+            ),
+            Self::DocumentIdentity => write!(
+                f,
+                "the citation's commitment does not derive its locator in the checkpoint's book"
+            ),
+            Self::ViewLocator => write!(
+                f,
+                "the view names a different original locator than the authenticated citation"
+            ),
         }
     }
 }
@@ -166,13 +178,20 @@ impl From<DisclosureProofError> for EvidenceError {
 /// It is not sorted, deduplicated, widened or derived from a view.
 pub fn validate_request(requested: &[u64]) -> Result<(), EvidenceError> {
     if requested.is_empty() || requested.len() > MAX_VIEW_CHUNKS {
-        return Err(EvidenceError::Request("require one to MAX_VIEW_CHUNKS indices"));
+        return Err(EvidenceError::Request(
+            "require one to MAX_VIEW_CHUNKS indices",
+        ));
     }
     if requested.windows(2).any(|pair| pair[0] >= pair[1]) {
         return Err(EvidenceError::Request("indices must be strictly ascending"));
     }
-    if requested.last().is_some_and(|index| *index >= MAX_VIEW_CHUNKS as u64) {
-        return Err(EvidenceError::Request("an index exceeds the document size bound"));
+    if requested
+        .last()
+        .is_some_and(|index| *index >= MAX_VIEW_CHUNKS as u64)
+    {
+        return Err(EvidenceError::Request(
+            "an index exceeds the document size bound",
+        ));
     }
     Ok(())
 }
@@ -234,11 +253,16 @@ pub fn verify_evidence_disclosure_for(
         return Err(DisclosureProofError::InputLimit {
             maximum: disclosure::MAX_PROOF_BYTES,
             actual: disclosure_bytes.len(),
-        }.into());
+        }
+        .into());
     }
     let (inclusion, citation) = authenticated_citation(proof, checkpoint, expected)?;
     let disclosure = disclosure::verify(disclosure_bytes, requested, &citation.doc_commit)?;
-    Ok(VerifiedEvidenceDisclosure { inclusion, citation, disclosure })
+    Ok(VerifiedEvidenceDisclosure {
+        inclusion,
+        citation,
+        disclosure,
+    })
 }
 
 fn authenticated_citation(
@@ -340,14 +364,20 @@ fn skip_control(r: &mut Reader<'_>) -> Result<(), DecodeError> {
             r.u16("control.kind")?;
             r.bytes(1024 * 1024, "control.canonical_bytes")?;
         }
-        2 => { r.fixed::<40>("control.policy_activation")?; }
+        2 => {
+            r.fixed::<40>("control.policy_activation")?;
+        }
         3 => {
             r.fixed::<18>("control.lifecycle")?; // object, from, to
             let count = r.count(256, 17, "control.proof_refs")?;
             for _ in 0..count {
                 match r.u8("control.proof_ref.tag")? {
-                    0 => { r.u128("control.proof_ref.vertex")?; }
-                    1 => { r.fixed::<32>("control.proof_ref.object")?; }
+                    0 => {
+                        r.u128("control.proof_ref.vertex")?;
+                    }
+                    1 => {
+                        r.fixed::<32>("control.proof_ref.object")?;
+                    }
                     tag => return Err(r.error("control.proof_ref.tag", Reason::BadTag(tag))),
                 }
             }
@@ -358,25 +388,41 @@ fn skip_control(r: &mut Reader<'_>) -> Result<(), DecodeError> {
             r.u8("control.source")?;
             r.present("control.monotonic_ok")?;
         }
-        5 => { r.fixed::<33>("control.sweep_cursor")?; }
-        6 => { r.fixed::<32>("control.schedule_cancelled")?; }
-        7 => { r.fixed::<65>("control.capability_event")?; }
-        8 => { r.fixed::<65>("control.hold_event")?; }
+        5 => {
+            r.fixed::<33>("control.sweep_cursor")?;
+        }
+        6 => {
+            r.fixed::<32>("control.schedule_cancelled")?;
+        }
+        7 => {
+            r.fixed::<65>("control.capability_event")?;
+        }
+        8 => {
+            r.fixed::<65>("control.hold_event")?;
+        }
         9 => {
             r.u128("control.subject_ref")?;
             let count = r.count(4096, 32, "control.field_digests")?;
-            for _ in 0..count { r.fixed::<32>("control.field_digest")?; }
+            for _ in 0..count {
+                r.fixed::<32>("control.field_digest")?;
+            }
         }
-        10 => { r.fixed::<49>("control.migration")?; }
+        10 => {
+            r.fixed::<49>("control.migration")?;
+        }
         11 => {}
         13 => {
             match r.u8("control.intake_source")? {
-                0 => { r.u128("control.upload_principal")?; }
+                0 => {
+                    r.u128("control.upload_principal")?;
+                }
                 1 => {
                     r.bytes(256, "control.connector_name")?;
                     r.bytes(256, "control.connector_version")?;
                 }
-                2 | 3 => { r.bytes(256, "control.intake_text")?; }
+                2 | 3 => {
+                    r.bytes(256, "control.intake_text")?;
+                }
                 tag => return Err(r.error("control.intake_source", Reason::BadTag(tag))),
             }
             r.fixed::<76>("control.import_run")?; // u32 count, u64 bytes, two hashes
@@ -388,8 +434,12 @@ fn skip_control(r: &mut Reader<'_>) -> Result<(), DecodeError> {
 
 fn skip_origin(r: &mut Reader<'_>) -> Result<(), DecodeError> {
     match r.u8("entry.origin")? {
-        0 => { r.fixed::<34>("origin.intent")?; }
-        1 => { r.fixed::<80>("origin.rule")?; }
+        0 => {
+            r.fixed::<34>("origin.intent")?;
+        }
+        1 => {
+            r.fixed::<80>("origin.rule")?;
+        }
         2 => {
             r.u128("origin.run_ref")?;
             r.bytes(64, "origin.source_system")?;
@@ -398,16 +448,24 @@ fn skip_origin(r: &mut Reader<'_>) -> Result<(), DecodeError> {
                 r.u64("origin.source_recorded_at")?;
             }
             for field in ["origin.source_entered_by", "origin.source_approved_by"] {
-                if r.present(field)? { skip_erasable(r, field)?; }
+                if r.present(field)? {
+                    skip_erasable(r, field)?;
+                }
             }
             r.fixed::<32>("origin.batch_oid")?;
         }
-        3 => { r.fixed::<34>("origin.control")?; }
-        4 => { r.fixed::<33>("origin.sweep")?; }
+        3 => {
+            r.fixed::<34>("origin.control")?;
+        }
+        4 => {
+            r.fixed::<33>("origin.sweep")?;
+        }
         5 => {
             r.u128("origin.schedule_ref")?;
             match r.u8("origin.trigger")? {
-                0 | 1 => { r.u128("origin.trigger_ref")?; }
+                0 | 1 => {
+                    r.u128("origin.trigger_ref")?;
+                }
                 tag => return Err(r.error("origin.trigger", Reason::BadTag(tag))),
             }
         }
@@ -445,11 +503,15 @@ fn visit_citations(
     let mut r = proposal_after_legs(proposal)?;
     skip_control(&mut r)?;
     let count = r.count(MAX_ENVELOPE_LIST, 36, "entry.unit_totals")?;
-    for _ in 0..count { r.fixed::<36>("entry.unit_total")?; }
+    for _ in 0..count {
+        r.fixed::<36>("entry.unit_total")?;
+    }
     if r.present("entry.base_totals")? {
         r.fixed::<68>("entry.base_totals.fields")?;
         let count = r.count(64, 32, "entry.base_totals.rate_doc_oids")?;
-        for _ in 0..count { r.fixed::<32>("entry.base_totals.rate_doc_oid")?; }
+        for _ in 0..count {
+            r.fixed::<32>("entry.base_totals.rate_doc_oid")?;
+        }
         if r.present("entry.base_totals.residual")? {
             r.fixed::<22>("entry.base_totals.residual")?;
         }
@@ -502,7 +564,9 @@ fn skip_proposal_tail(r: &mut Reader<'_>, minor: u16) -> Result<(), DecodeError>
         if r.present("pending.disposition")? {
             match r.u8("disposition.tag")? {
                 1 => {}
-                2 => { r.u64("disposition.at_tick")?; }
+                2 => {
+                    r.u64("disposition.at_tick")?;
+                }
                 3 => {
                     let count = r.count(MAX_ENVELOPE_LIST, 2, "disposition.ordinals")?;
                     let mut previous = None;
@@ -575,42 +639,75 @@ mod tests {
     // Complete wire fixture, not an assertion of kernel authorization.
     fn proposal(citations: &[EvidenceCitation], control: &[u8], origin: &[u8]) -> Vec<u8> {
         let mut w = Writer::default();
-        w.u16(1).u16(1).fixed(&BOOK).fixed(&[0; 16]).u16(1).i32(20_527).u8(0);
+        w.u16(1)
+            .u16(1)
+            .fixed(&BOOK)
+            .fixed(&[0; 16])
+            .u16(1)
+            .i32(20_527)
+            .u8(0);
         erasable(&mut w);
         w.u8(0).count(2);
         for (side, account) in [(0, 10), (1, 20)] {
-            w.u8(side).u128(account).u32(1).i128(123)
-                .u8(0).count(0).u8(0).count(0);
+            w.u8(side)
+                .u128(account)
+                .u32(1)
+                .i128(123)
+                .u8(0)
+                .count(0)
+                .u8(0)
+                .count(0);
         }
-        w.fixed(control).count(1).u32(1).i128(123).i128(123)
-            .u8(0).bytes(b"evidence-test").fixed(origin).u128(7).u8(0)
+        w.fixed(control)
+            .count(1)
+            .u32(1)
+            .i128(123)
+            .i128(123)
+            .u8(0)
+            .bytes(b"evidence-test")
+            .fixed(origin)
+            .u128(7)
+            .u8(0)
             .count(citations.len());
         for citation in citations {
-            w.fixed(&citation.document_oid).fixed(&citation.doc_commit).u8(citation.role);
+            w.fixed(&citation.document_oid)
+                .fixed(&citation.doc_commit)
+                .u8(citation.role);
         }
         w.count(0).u8(0).count(0).count(0).count(0);
         w.buf
     }
 
-    fn proof(proposal: &[u8], entry_envelope: &[u8], include_record: bool)
-        -> (Vec<u8>, Checkpoint, [u8; 32])
-    {
+    fn proof(
+        proposal: &[u8],
+        entry_envelope: &[u8],
+        include_record: bool,
+    ) -> (Vec<u8>, Checkpoint, [u8; 32]) {
         let proposal_digest = hash_parts(PROPOSAL_DIGEST_DOMAIN, &[proposal]);
         let digest = hash_parts(ENTRY_DIGEST_DOMAIN, &[&proposal_digest, entry_envelope]);
         let mut payload = proposal.to_vec();
         payload.extend_from_slice(entry_envelope);
         payload.extend_from_slice(&proposal_digest);
         payload.extend_from_slice(&digest);
-        let envelope = envelope_of_entry(&payload, proposal.len(), 7, 0).unwrap().encode();
+        let envelope = envelope_of_entry(&payload, proposal.len(), 7, 0)
+            .unwrap()
+            .encode();
         let checkpoint = Checkpoint {
-            book_id: BOOK, branch_id: [0; 16], through_seq: 9, leaf_count: 1,
+            book_id: BOOK,
+            branch_id: [0; 16],
+            through_seq: 9,
+            leaf_count: 1,
             root: root_of(&[leaf_hash(&envelope)]),
         };
         let mut w = Writer::default();
-        w.bytes(INCLUSION_FORMAT).fixed(&checkpoint.encode()).u64(0).bytes(&envelope)
+        w.bytes(INCLUSION_FORMAT)
+            .fixed(&checkpoint.encode())
+            .u64(0)
+            .bytes(&envelope)
             .u8(u8::from(include_record));
         if include_record {
-            w.u32(u32::try_from(proposal.len()).unwrap()).bytes(&payload);
+            w.u32(u32::try_from(proposal.len()).unwrap())
+                .bytes(&payload);
         }
         w.count(0);
         (w.buf, checkpoint, digest)
@@ -624,16 +721,26 @@ mod tests {
             doc.chunks(DOC_CHUNK_BYTES).collect()
         };
         let mut w = Writer::default();
-        w.u16(1).fixed(&citation.document_oid).u16(7).u8(1).u64(doc.len() as u64)
-            .fixed(&citation.doc_commit).count(chunks.len());
+        w.u16(1)
+            .fixed(&citation.document_oid)
+            .u16(7)
+            .u8(1)
+            .u64(doc.len() as u64)
+            .fixed(&citation.doc_commit)
+            .count(chunks.len());
         for (index, chunk) in chunks.into_iter().enumerate() {
             let index = index as u64;
             if shown.contains(&index) {
                 w.u8(0).bytes(chunk);
             } else {
-                w.u8(1).fixed(&hash_parts(DOC_LEAF_DOMAIN, &[
-                    &index.to_le_bytes(), &(chunk.len() as u64).to_le_bytes(), chunk,
-                ]));
+                w.u8(1).fixed(&hash_parts(
+                    DOC_LEAF_DOMAIN,
+                    &[
+                        &index.to_le_bytes(),
+                        &(chunk.len() as u64).to_le_bytes(),
+                        chunk,
+                    ],
+                ));
             }
         }
         w.buf
@@ -641,14 +748,21 @@ mod tests {
 
     fn request(digest: [u8; 32], citation: EvidenceCitation) -> EvidenceExpectation {
         EvidenceExpectation {
-            entry_digest: digest, document_oid: citation.document_oid, role: citation.role,
+            entry_digest: digest,
+            document_oid: citation.document_oid,
+            role: citation.role,
         }
     }
 
     fn compact(chunk: &[u8], size: u64, index: u64, siblings: &[[u8; 32]]) -> Vec<u8> {
         let mut w = Writer::default();
-        w.bytes(disclosure::FORMAT).u8(1).u64(size).count(1)
-            .u64(index).bytes(chunk).count(siblings.len());
+        w.bytes(disclosure::FORMAT)
+            .u8(1)
+            .u64(size)
+            .count(1)
+            .u64(index)
+            .bytes(chunk)
+            .count(siblings.len());
         for sibling in siblings {
             w.fixed(sibling);
         }
@@ -663,23 +777,25 @@ mod tests {
             let (proof, checkpoint, digest) = proof(&proposal, &[0; 5], true);
             let expected = request(digest, citation);
             let bytes = compact(&doc, doc.len() as u64, 0, &[]);
-            let verified = verify_evidence_disclosure_for(
-                &proof, &bytes, &checkpoint, &expected, &[0],
-            ).unwrap();
+            let verified =
+                verify_evidence_disclosure_for(&proof, &bytes, &checkpoint, &expected, &[0])
+                    .unwrap();
             assert_eq!(verified.inclusion.scope, "inclusion");
             assert_eq!(verified.inclusion.record, RecordCheck::Recomputed);
             assert_eq!(verified.citation, citation);
             assert_eq!(verified.disclosure.scope, "membership_only");
             assert_eq!(verified.disclosure.chunks[0].byte_length, doc.len());
             let unrelated = compact(b"other", 5, 0, &[]);
-            assert!(verify_evidence_disclosure_for(
-                &proof, &unrelated, &checkpoint, &expected, &[0],
-            ).is_err());
+            assert!(
+                verify_evidence_disclosure_for(&proof, &unrelated, &checkpoint, &expected, &[0],)
+                    .is_err()
+            );
             let mut wrong = expected;
             wrong.entry_digest[0] ^= 1;
-            assert_eq!(verify_evidence_disclosure_for(
-                &proof, &bytes, &checkpoint, &wrong, &[0],
-            ), Err(EvidenceError::EntryMismatch));
+            assert_eq!(
+                verify_evidence_disclosure_for(&proof, &bytes, &checkpoint, &wrong, &[0],),
+                Err(EvidenceError::EntryMismatch)
+            );
         }
     }
 
@@ -698,16 +814,19 @@ mod tests {
         }
         let mut trailing = bytes.clone();
         trailing.push(0);
-        assert!(verify_evidence_disclosure_for(
-            &proof, &trailing, &checkpoint, &expected, &[0],
-        ).is_err());
-        assert!(verify_evidence_disclosure_for(
-            &proof, &view(doc, &[0]), &checkpoint, &expected, &[0],
-        ).is_err());
+        assert!(
+            verify_evidence_disclosure_for(&proof, &trailing, &checkpoint, &expected, &[0],)
+                .is_err()
+        );
+        assert!(
+            verify_evidence_disclosure_for(&proof, &view(doc, &[0]), &checkpoint, &expected, &[0],)
+                .is_err()
+        );
         for requested in [vec![], vec![0, 0], vec![1, 0], vec![0, 1], vec![1]] {
-            assert!(verify_evidence_disclosure_for(
-                &proof, &bytes, &checkpoint, &expected, &requested,
-            ).is_err());
+            assert!(
+                verify_evidence_disclosure_for(&proof, &bytes, &checkpoint, &expected, &requested,)
+                    .is_err()
+            );
         }
     }
 
@@ -721,35 +840,47 @@ mod tests {
         let size = (index + 1) * DOC_CHUNK_BYTES as u64;
         let chunk = vec![42; DOC_CHUNK_BYTES];
         let sibling = [7; 32];
-        let leaf = hash_parts(DOC_LEAF_DOMAIN, &[
-            &index.to_le_bytes(), &(chunk.len() as u64).to_le_bytes(), &chunk,
-        ]);
+        let leaf = hash_parts(
+            DOC_LEAF_DOMAIN,
+            &[
+                &index.to_le_bytes(),
+                &(chunk.len() as u64).to_le_bytes(),
+                &chunk,
+            ],
+        );
         let root = hash_parts(DOC_NODE_DOMAIN, &[&sibling, &leaf]);
         let doc_commit = hash_parts(DOC_DOMAIN, &[&[1], &size.to_le_bytes(), &root]);
         let citation = EvidenceCitation {
-            document_oid: document_oid(&BOOK, &doc_commit), doc_commit, role: 3,
+            document_oid: document_oid(&BOOK, &doc_commit),
+            doc_commit,
+            role: 3,
         };
         // Independently calculated with the session's Python BLAKE3 model,
         // checked against 31 reference vectors; these are not producer output.
-        assert_eq!(crate::blake3::hex(&citation.doc_commit),
-            "5f120b0c4da0fc5463ba30e795aecae7c5c01905ad59a63369bc0fe15cbbb312");
-        assert_eq!(crate::blake3::hex(&citation.document_oid),
-            "00c6f3858a9acfe43935d6837690669088813736a290888ff540265bbf07c535");
+        assert_eq!(
+            crate::blake3::hex(&citation.doc_commit),
+            "5f120b0c4da0fc5463ba30e795aecae7c5c01905ad59a63369bc0fe15cbbb312"
+        );
+        assert_eq!(
+            crate::blake3::hex(&citation.document_oid),
+            "00c6f3858a9acfe43935d6837690669088813736a290888ff540265bbf07c535"
+        );
         let proposal = proposal(&[citation], &[0], &origin());
         let (proof, checkpoint, digest) = proof(&proposal, &[0; 5], true);
         let expected = request(digest, citation);
         let bytes = compact(&chunk, size, index, &[sibling]);
         assert!(validate_request(&[index]).is_err()); // Full kernel-view policy.
-        let verified = verify_evidence_disclosure_for(
-            &proof, &bytes, &checkpoint, &expected, &[index],
-        ).unwrap();
+        let verified =
+            verify_evidence_disclosure_for(&proof, &bytes, &checkpoint, &expected, &[index])
+                .unwrap();
         assert_eq!(verified.disclosure.document_length, size);
         assert_eq!(verified.disclosure.chunks[0].index, index);
         let mut corrupt = bytes;
         *corrupt.last_mut().unwrap() ^= 1;
-        assert!(verify_evidence_disclosure_for(
-            &proof, &corrupt, &checkpoint, &expected, &[index],
-        ).is_err());
+        assert!(
+            verify_evidence_disclosure_for(&proof, &corrupt, &checkpoint, &expected, &[index],)
+                .is_err()
+        );
     }
 
     #[test]
@@ -763,8 +894,8 @@ mod tests {
             let (proof, checkpoint, digest) = proof(&proposal, &[0; 5], true);
             let bytes = view(&doc, &shown);
             let expected = request(digest, citation);
-            let verified = verify_evidence_view_for(&proof, &bytes, &checkpoint, &expected, &shown)
-                .unwrap();
+            let verified =
+                verify_evidence_view_for(&proof, &bytes, &checkpoint, &expected, &shown).unwrap();
             assert_eq!(verified.inclusion.record, RecordCheck::Recomputed);
             assert_eq!(verified.inclusion.scope, "inclusion");
             assert_eq!(verified.disclosure_scope, "membership_only");
@@ -773,7 +904,10 @@ mod tests {
             assert_eq!(verified.unverified_contract, 7);
             for chunk in verified.disclosed {
                 let start = chunk.index as usize * DOC_CHUNK_BYTES;
-                assert_eq!(chunk.bytes, &doc[start..(start + DOC_CHUNK_BYTES).min(length)]);
+                assert_eq!(
+                    chunk.bytes,
+                    &doc[start..(start + DOC_CHUNK_BYTES).min(length)]
+                );
             }
         }
     }
@@ -787,22 +921,32 @@ mod tests {
         let expected = request(digest, citation);
         let bytes = view(doc, &[0]);
         let unrelated = view(b"different valid document", &[0]);
-        assert!(verify_evidence_view_for(&proof, &unrelated, &checkpoint, &expected, &[0]).is_err());
+        assert!(
+            verify_evidence_view_for(&proof, &unrelated, &checkpoint, &expected, &[0]).is_err()
+        );
         let mut wrong = expected;
         wrong.entry_digest[0] ^= 1;
-        assert_eq!(verify_evidence_view_for(&proof, &bytes, &checkpoint, &wrong, &[0]),
-            Err(EvidenceError::EntryMismatch));
+        assert_eq!(
+            verify_evidence_view_for(&proof, &bytes, &checkpoint, &wrong, &[0]),
+            Err(EvidenceError::EntryMismatch)
+        );
         wrong = expected;
         wrong.document_oid[0] ^= 1;
-        assert_eq!(verify_evidence_view_for(&proof, &bytes, &checkpoint, &wrong, &[0]),
-            Err(EvidenceError::CitationMissing));
+        assert_eq!(
+            verify_evidence_view_for(&proof, &bytes, &checkpoint, &wrong, &[0]),
+            Err(EvidenceError::CitationMissing)
+        );
         wrong = expected;
         wrong.role ^= 1;
-        assert_eq!(verify_evidence_view_for(&proof, &bytes, &checkpoint, &wrong, &[0]),
-            Err(EvidenceError::CitationMissing));
+        assert_eq!(
+            verify_evidence_view_for(&proof, &bytes, &checkpoint, &wrong, &[0]),
+            Err(EvidenceError::CitationMissing)
+        );
         let mut wrong_checkpoint = checkpoint;
         wrong_checkpoint.root[0] ^= 1;
-        assert!(verify_evidence_view_for(&proof, &bytes, &wrong_checkpoint, &expected, &[0]).is_err());
+        assert!(
+            verify_evidence_view_for(&proof, &bytes, &wrong_checkpoint, &expected, &[0]).is_err()
+        );
         assert!(verify_evidence_view_for(&proof, &bytes, &checkpoint, &expected, &[1]).is_err());
     }
 
@@ -811,10 +955,20 @@ mod tests {
         let citation = citation(b"doc");
         let proposal = proposal(&[citation], &[0], &origin());
         let (proof, checkpoint, digest) = proof(&proposal, &[0; 5], false);
-        assert_eq!(crate::verify_inclusion(&proof, &checkpoint).unwrap().record,
-            RecordCheck::NotSupplied);
-        assert_eq!(verify_evidence_view_for(&proof, &view(b"doc", &[0]), &checkpoint,
-            &request(digest, citation), &[0]), Err(EvidenceError::RecordRequired));
+        assert_eq!(
+            crate::verify_inclusion(&proof, &checkpoint).unwrap().record,
+            RecordCheck::NotSupplied
+        );
+        assert_eq!(
+            verify_evidence_view_for(
+                &proof,
+                &view(b"doc", &[0]),
+                &checkpoint,
+                &request(digest, citation),
+                &[0]
+            ),
+            Err(EvidenceError::RecordRequired)
+        );
     }
 
     #[test]
@@ -826,11 +980,14 @@ mod tests {
         let expected = request(digest, citation);
         let mut bytes = view(doc, &[0]);
         bytes[2] ^= 1;
-        assert_eq!(verify_evidence_view_for(&proof, &bytes, &checkpoint, &expected, &[0]),
-            Err(EvidenceError::ViewLocator));
+        assert_eq!(
+            verify_evidence_view_for(&proof, &bytes, &checkpoint, &expected, &[0]),
+            Err(EvidenceError::ViewLocator)
+        );
         bytes[2] ^= 1;
         bytes[34..36].copy_from_slice(&999u16.to_le_bytes());
-        let verified = verify_evidence_view_for(&proof, &bytes, &checkpoint, &expected, &[0]).unwrap();
+        let verified =
+            verify_evidence_view_for(&proof, &bytes, &checkpoint, &expected, &[0]).unwrap();
         assert_eq!(verified.unverified_contract, 999);
         assert_eq!(verified.disclosure_scope, "membership_only");
     }
@@ -842,8 +999,16 @@ mod tests {
         citation.document_oid = document_oid(&[0x43; 16], &citation.doc_commit);
         let proposal = proposal(&[citation], &[0], &origin());
         let (proof, checkpoint, digest) = proof(&proposal, &[0; 5], true);
-        assert_eq!(verify_evidence_view_for(&proof, &view(doc, &[0]), &checkpoint,
-            &request(digest, citation), &[0]), Err(EvidenceError::DocumentIdentity));
+        assert_eq!(
+            verify_evidence_view_for(
+                &proof,
+                &view(doc, &[0]),
+                &checkpoint,
+                &request(digest, citation),
+                &[0]
+            ),
+            Err(EvidenceError::DocumentIdentity)
+        );
     }
 
     #[test]
@@ -861,18 +1026,31 @@ mod tests {
         conflicting.doc_commit[0] ^= 1;
         let mut ambiguous = [citation, conflicting];
         ambiguous.sort_unstable();
-        assert_eq!(read_citation(&proposal(&ambiguous, &[0], &origin()), &expected),
-            Err(EvidenceError::CitationAmbiguous));
+        assert_eq!(
+            read_citation(&proposal(&ambiguous, &[0], &origin()), &expected),
+            Err(EvidenceError::CitationAmbiguous)
+        );
         for end in 0..valid.len() {
-            assert!(read_citation(&valid[..end], &expected).is_err(), "prefix {end}");
+            assert!(
+                read_citation(&valid[..end], &expected).is_err(),
+                "prefix {end}"
+            );
         }
         let mut trailing = valid.clone();
         trailing.push(0);
         // Re-hashing malformed bytes into a valid included record is not enough.
         let (proof, checkpoint, digest) = proof(&trailing, &[0; 5], true);
         assert!(crate::verify_inclusion(&proof, &checkpoint).is_ok());
-        assert!(verify_evidence_view_for(&proof, &view(b"doc", &[0]), &checkpoint,
-            &request(digest, citation), &[0]).is_err());
+        assert!(
+            verify_evidence_view_for(
+                &proof,
+                &view(b"doc", &[0]),
+                &checkpoint,
+                &request(digest, citation),
+                &[0]
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -884,23 +1062,49 @@ mod tests {
         for envelope in [&[][..], &[0], &[2, 0, 0, 0, 0], &[0, 0, 0, 0, 0, 0]] {
             let (proof, checkpoint, digest) = proof(&proposal, envelope, true);
             assert!(crate::verify_inclusion(&proof, &checkpoint).is_ok());
-            assert!(verify_evidence_view_for(&proof, &bytes, &checkpoint,
-                &request(digest, citation), &[0, 2]).is_err());
+            assert!(
+                verify_evidence_view_for(
+                    &proof,
+                    &bytes,
+                    &checkpoint,
+                    &request(digest, citation),
+                    &[0, 2]
+                )
+                .is_err()
+            );
         }
         let (proof, checkpoint, digest) = proof(&proposal, &[0; 5], true);
         let expected = request(digest, citation);
         for mut corrupt in [bytes[..bytes.len() - 1].to_vec(), bytes.clone()] {
-            if corrupt.len() == bytes.len() { *corrupt.last_mut().unwrap() ^= 1; }
-            assert!(verify_evidence_view_for(&proof, &corrupt, &checkpoint, &expected, &[0, 2]).is_err());
+            if corrupt.len() == bytes.len() {
+                *corrupt.last_mut().unwrap() ^= 1;
+            }
+            assert!(
+                verify_evidence_view_for(&proof, &corrupt, &checkpoint, &expected, &[0, 2])
+                    .is_err()
+            );
         }
     }
 
     #[test]
     fn requests_are_bounded_and_unknown_tags_fail_closed() {
         for requested in [vec![], vec![0, 0], vec![2, 1], vec![16384], vec![u64::MAX]] {
-            assert!(matches!(verify_evidence_view_for(&[], &[], &Checkpoint {
-                book_id: BOOK, branch_id: [0; 16], through_seq: 0, leaf_count: 0, root: [0; 32],
-            }, &request([0; 32], citation(b"doc")), &requested), Err(EvidenceError::Request(_))));
+            assert!(matches!(
+                verify_evidence_view_for(
+                    &[],
+                    &[],
+                    &Checkpoint {
+                        book_id: BOOK,
+                        branch_id: [0; 16],
+                        through_seq: 0,
+                        leaf_count: 0,
+                        root: [0; 32],
+                    },
+                    &request([0; 32], citation(b"doc")),
+                    &requested
+                ),
+                Err(EvidenceError::Request(_))
+            ));
         }
         let citation = citation(b"doc");
         let expected = request([0; 32], citation);
@@ -918,31 +1122,64 @@ mod tests {
             bytes
         };
         let mut controls = vec![
-            vec![0], fixed_control(2, 40), fixed_control(4, 10),
-            fixed_control(5, 33), fixed_control(6, 32), fixed_control(7, 65),
-            fixed_control(8, 65), fixed_control(10, 49), fixed_control(11, 0),
+            vec![0],
+            fixed_control(2, 40),
+            fixed_control(4, 10),
+            fixed_control(5, 33),
+            fixed_control(6, 32),
+            fixed_control(7, 65),
+            fixed_control(8, 65),
+            fixed_control(10, 49),
+            fixed_control(11, 0),
         ];
         let mut w = Writer::default();
-        w.u8(1).u8(0).bytes(b"cal").bytes(b"period").u8(0).u8(1).u16(2)
-            .u8(1).u128(3);
+        w.u8(1)
+            .u8(0)
+            .bytes(b"cal")
+            .bytes(b"period")
+            .u8(0)
+            .u8(1)
+            .u16(2)
+            .u8(1)
+            .u128(3);
         controls.push(w.buf);
         let mut w = Writer::default();
         w.u8(1).u8(1).u16(1).bytes(b"schema");
         controls.push(w.buf);
         let mut w = Writer::default();
-        w.u8(1).u8(3).u128(1).u8(0).u8(1).count(2)
-            .u8(0).u128(2).u8(1).fixed(&[3; 32]).u16(4);
+        w.u8(1)
+            .u8(3)
+            .u128(1)
+            .u8(0)
+            .u8(1)
+            .count(2)
+            .u8(0)
+            .u128(2)
+            .u8(1)
+            .fixed(&[3; 32])
+            .u16(4);
         controls.push(w.buf);
         let mut w = Writer::default();
-        w.u8(1).u8(9).u128(1).count(2).fixed(&[2; 32]).fixed(&[3; 32]);
+        w.u8(1)
+            .u8(9)
+            .u128(1)
+            .count(2)
+            .fixed(&[2; 32])
+            .fixed(&[3; 32]);
         controls.push(w.buf);
         for source in 0..=3 {
             let mut w = Writer::default();
             w.u8(1).u8(13).u8(source);
             match source {
-                0 => { w.u128(7); }
-                1 => { w.bytes(b"connector").bytes(b"v1"); }
-                _ => { w.bytes(b"source"); }
+                0 => {
+                    w.u128(7);
+                }
+                1 => {
+                    w.bytes(b"connector").bytes(b"v1");
+                }
+                _ => {
+                    w.bytes(b"source");
+                }
             }
             w.u32(1).u64(10).fixed(&[2; 32]).fixed(&[3; 32]);
             controls.push(w.buf);
@@ -972,8 +1209,10 @@ mod tests {
         let expected = request([0; 32], citation);
         for control in &controls {
             for origin in &origins {
-                assert_eq!(read_citation(&proposal(&[citation], control, origin), &expected)
-                    .unwrap(), citation);
+                assert_eq!(
+                    read_citation(&proposal(&[citation], control, origin), &expected).unwrap(),
+                    citation
+                );
             }
         }
     }

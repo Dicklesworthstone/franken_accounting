@@ -4,13 +4,15 @@
 
 use fa_journal::{Document, RedactedView, ViewChunk};
 use fa_model::{
-    ApprovalRef, Entry, EntryClass, EntryOrigin, EntryPayload, Erasable, EvidenceRef,
-    Id128, LegPayload, Oid, SealKey,
+    ApprovalRef, Entry, EntryClass, EntryOrigin, EntryPayload, Erasable, EvidenceRef, Id128,
+    LegPayload, Oid, SealKey,
 };
 use fa_money::{Amount, Side, UnitId};
 use fa_notary::Journal;
 use fa_time::DateDay;
-use fa_verify::{Checkpoint, EvidenceError, EvidenceExpectation, RecordCheck, verify_evidence_view_for};
+use fa_verify::{
+    Checkpoint, EvidenceError, EvidenceExpectation, RecordCheck, verify_evidence_view_for,
+};
 use fgdb_types::{CommitSeq, VId};
 
 const BOOK: Id128 = Id128([0x42; 16]);
@@ -66,9 +68,15 @@ fn entry(doc: &Document, key: &[u8], minor: u16) -> Entry {
     let digest = proposal.proposal_digest().unwrap();
     // Nonempty envelope fields ensure the verifier checks the actual framing,
     // not a test-only assumption that the proposal is followed by five zeros.
-    proposal.seal(vec![ApprovalRef {
-        approval_vid: VId(9), approved_digest: digest,
-    }], Some(Oid([5; 32]))).unwrap()
+    proposal
+        .seal(
+            vec![ApprovalRef {
+                approval_vid: VId(9),
+                approved_digest: digest,
+            }],
+            Some(Oid([5; 32])),
+        )
+        .unwrap()
 }
 
 fn checkpoint(journal: &Journal) -> Checkpoint {
@@ -92,20 +100,38 @@ fn producer_journal_entry_and_redacted_view_agree_with_independent_verification(
                 document_oid: doc.oid().0,
                 role: 3,
             };
-            let journal = Journal::from_records(BOOK, CommitSeq(20), vec![
-                (VId(100), entry(&document(19), b"unrelated", minor), CommitSeq(2)),
-                (VId(101), record, CommitSeq(7)),
-                (VId(102), entry(&document(23), b"another", minor), CommitSeq(11)),
-            ]).unwrap();
+            let journal = Journal::from_records(
+                BOOK,
+                CommitSeq(20),
+                vec![
+                    (
+                        VId(100),
+                        entry(&document(19), b"unrelated", minor),
+                        CommitSeq(2),
+                    ),
+                    (VId(101), record, CommitSeq(7)),
+                    (
+                        VId(102),
+                        entry(&document(23), b"another", minor),
+                        CommitSeq(11),
+                    ),
+                ],
+            )
+            .unwrap();
             let proof = journal.inclusion_proof(VId(101), true).unwrap().unwrap();
             let view = RedactedView::derive(&doc, 7, &[(4096, 4096)]);
-            let shown: Vec<_> = view.chunks.iter().enumerate().filter_map(|(index, chunk)| {
-                matches!(chunk, ViewChunk::Disclosed(_)).then_some(index as u64)
-            }).collect();
+            let shown: Vec<_> = view
+                .chunks
+                .iter()
+                .enumerate()
+                .filter_map(|(index, chunk)| {
+                    matches!(chunk, ViewChunk::Disclosed(_)).then_some(index as u64)
+                })
+                .collect();
             let bytes = view.canonical_bytes().unwrap();
-            let verified = verify_evidence_view_for(
-                &proof, &bytes, &checkpoint(&journal), &expected, &shown,
-            ).unwrap();
+            let verified =
+                verify_evidence_view_for(&proof, &bytes, &checkpoint(&journal), &expected, &shown)
+                    .unwrap();
             assert_eq!(verified.inclusion.record, RecordCheck::Recomputed);
             assert_eq!(verified.inclusion.leaf_index, 1);
             assert_eq!(verified.inclusion.envelope.commit_seq, 7);
@@ -130,26 +156,34 @@ fn genuine_producer_outputs_cannot_be_mixed_into_an_uncited_disclosure() {
         document_oid: doc.oid().0,
         role: 3,
     };
-    let journal = Journal::from_records(BOOK, CommitSeq(20), vec![
-        (VId(101), record, CommitSeq(7)),
-    ]).unwrap();
+    let journal =
+        Journal::from_records(BOOK, CommitSeq(20), vec![(VId(101), record, CommitSeq(7))]).unwrap();
     let checkpoint = checkpoint(&journal);
     let proof = journal.inclusion_proof(VId(101), true).unwrap().unwrap();
-    let good = RedactedView::derive(&doc, 7, &[(4096, 4096)]).canonical_bytes().unwrap();
+    let good = RedactedView::derive(&doc, 7, &[(4096, 4096)])
+        .canonical_bytes()
+        .unwrap();
     let unrelated = RedactedView::derive(&document(8194), 7, &[(4096, 4096)])
-        .canonical_bytes().unwrap();
+        .canonical_bytes()
+        .unwrap();
     assert!(verify_evidence_view_for(&proof, &unrelated, &checkpoint, &expected, &[0, 2]).is_err());
     let envelope_only = journal.inclusion_proof(VId(101), false).unwrap().unwrap();
-    assert_eq!(verify_evidence_view_for(&envelope_only, &good, &checkpoint, &expected, &[0, 2]),
-        Err(EvidenceError::RecordRequired));
+    assert_eq!(
+        verify_evidence_view_for(&envelope_only, &good, &checkpoint, &expected, &[0, 2]),
+        Err(EvidenceError::RecordRequired)
+    );
     let mut wrong_role = expected;
     wrong_role.role = 4;
-    assert_eq!(verify_evidence_view_for(&proof, &good, &checkpoint, &wrong_role, &[0, 2]),
-        Err(EvidenceError::CitationMissing));
+    assert_eq!(
+        verify_evidence_view_for(&proof, &good, &checkpoint, &wrong_role, &[0, 2]),
+        Err(EvidenceError::CitationMissing)
+    );
     let mut relabeled = good;
     relabeled[2] ^= 1;
-    assert_eq!(verify_evidence_view_for(&proof, &relabeled, &checkpoint, &expected, &[0, 2]),
-        Err(EvidenceError::ViewLocator));
+    assert_eq!(
+        verify_evidence_view_for(&proof, &relabeled, &checkpoint, &expected, &[0, 2]),
+        Err(EvidenceError::ViewLocator)
+    );
 }
 
 #[test]
@@ -164,9 +198,8 @@ fn compact_export_of_only_requested_readable_chunks_has_the_same_authenticated_c
         document_oid: doc.oid().0,
         role: 3,
     };
-    let journal = Journal::from_records(BOOK, CommitSeq(20), vec![
-        (VId(101), record, CommitSeq(7)),
-    ]).unwrap();
+    let journal =
+        Journal::from_records(BOOK, CommitSeq(20), vec![(VId(101), record, CommitSeq(7))]).unwrap();
     let checkpoint = checkpoint(&journal);
     let proof = journal.inclusion_proof(VId(101), true).unwrap().unwrap();
     let view = RedactedView::derive(&doc, 7, &[(4096, 4096)]);
@@ -174,26 +207,27 @@ fn compact_export_of_only_requested_readable_chunks_has_the_same_authenticated_c
     // Export the subset, not the other readable chunk or withheld chunk 1.
     let compact = disclosure_from_view(&view, &[2], &doc.doc_commit()).unwrap();
     assert!(compact.len() < view.canonical_bytes().unwrap().len());
-    let verified = verify_evidence_disclosure_for(
-        &proof, &compact, &checkpoint, &expected, &[2],
-    ).unwrap();
+    let verified =
+        verify_evidence_disclosure_for(&proof, &compact, &checkpoint, &expected, &[2]).unwrap();
     assert_eq!(verified.citation.doc_commit, doc.doc_commit());
     assert_eq!(verified.disclosure.scope, "membership_only");
     assert_eq!(verified.disclosure.chunks.len(), 1);
     assert_eq!(verified.disclosure.chunks[0].index, 2);
     assert_eq!(verified.disclosure.chunks[0].byte_length, 1);
-    assert!(verify_evidence_disclosure_for(
-        &proof, &compact, &checkpoint, &expected, &[0, 2],
-    ).is_err());
+    assert!(
+        verify_evidence_disclosure_for(&proof, &compact, &checkpoint, &expected, &[0, 2],).is_err()
+    );
     assert!(disclosure_from_view(&view, &[1], &doc.doc_commit()).is_err());
     let envelope_only = journal.inclusion_proof(VId(101), false).unwrap().unwrap();
-    assert_eq!(verify_evidence_disclosure_for(
-        &envelope_only, &compact, &checkpoint, &expected, &[2],
-    ), Err(EvidenceError::RecordRequired));
+    assert_eq!(
+        verify_evidence_disclosure_for(&envelope_only, &compact, &checkpoint, &expected, &[2],),
+        Err(EvidenceError::RecordRequired)
+    );
     let other = document(8194);
     let other_view = RedactedView::derive(&other, 7, &[(4096, 4096)]);
     let other_compact = disclosure_from_view(&other_view, &[2], &other.doc_commit()).unwrap();
-    assert!(verify_evidence_disclosure_for(
-        &proof, &other_compact, &checkpoint, &expected, &[2],
-    ).is_err());
+    assert!(
+        verify_evidence_disclosure_for(&proof, &other_compact, &checkpoint, &expected, &[2],)
+            .is_err()
+    );
 }

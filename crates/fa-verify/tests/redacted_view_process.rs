@@ -22,8 +22,12 @@ fn directory() -> PathBuf {
         ));
         match fs::create_dir(&path) {
             Ok(()) => return path,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => panic!("create {}: {error}", path.display()),
+            Err(error) => assert_eq!(
+                error.kind(),
+                std::io::ErrorKind::AlreadyExists,
+                "create {}: {error}",
+                path.display()
+            ),
         }
     }
 }
@@ -67,9 +71,12 @@ fn run(path: &Path, anchor: &[u8; 32], requested: &str, json: bool) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_fa-verify"));
     command
         .arg("redacted-view")
-        .arg("--view").arg(path)
-        .arg("--document-commit").arg(hex(anchor))
-        .arg("--expect-chunks").arg(requested);
+        .arg("--view")
+        .arg(path)
+        .arg("--document-commit")
+        .arg(hex(anchor))
+        .arg("--expect-chunks")
+        .arg(requested);
     if json {
         command.arg("--json");
     }
@@ -88,7 +95,10 @@ fn failure(output: &Output, exit: i32, class: &str) {
     assert!(text.contains("\"event\":\"error\""), "{text}");
     assert!(text.contains("\"verified\":false"), "{text}");
     assert!(text.contains(&format!("\"class\":\"{class}\"")), "{text}");
-    assert!(!text.contains("proof_verified"), "no partial success: {text}");
+    assert!(
+        !text.contains("proof_verified"),
+        "no partial success: {text}"
+    );
 }
 
 #[test]
@@ -181,11 +191,18 @@ fn invalid_invocations_are_usage_before_io_and_missing_files_are_io() {
         .args(["redacted-view", "--view"])
         .arg(&missing)
         .args(["--expect-chunks", "0", "--json"])
-        .output().unwrap();
+        .output()
+        .unwrap();
     failure(&output, 2, "usage");
     let output = Command::new(env!("CARGO_BIN_EXE_fa-verify"))
-        .args(["redacted-view", "--checkpoint", "not-a-document-anchor", "--json"])
-        .output().unwrap();
+        .args([
+            "redacted-view",
+            "--checkpoint",
+            "not-a-document-anchor",
+            "--json",
+        ])
+        .output()
+        .unwrap();
     failure(&output, 2, "usage");
 }
 

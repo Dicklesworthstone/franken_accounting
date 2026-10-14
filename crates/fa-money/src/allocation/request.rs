@@ -10,8 +10,8 @@ use super::{
     AllocationCatalog, AllocationLaw, ProRataAllocation, equal_split_residual_first,
     largest_remainder, pro_rata_residual_to_named, waterfall,
 };
-use crate::{Amount, AmountError, RoundingLaw};
 use crate::wide::U256;
+use crate::{Amount, AmountError, RoundingLaw};
 
 #[derive(Debug)]
 pub enum AllocationError {
@@ -19,10 +19,7 @@ pub enum AllocationError {
     Arithmetic(AmountError),
     Invalid(&'static str),
     Mismatch,
-    Decode {
-        field: &'static str,
-        offset: usize,
-    },
+    Decode { field: &'static str, offset: usize },
 }
 
 impl fmt::Display for AllocationError {
@@ -35,7 +32,10 @@ impl fmt::Display for AllocationError {
                 write!(f, "truncated allocation {field} at byte {offset}")
             }
             Self::Mismatch => {
-                write!(f, "allocation outcome differs from the requested law and basis")
+                write!(
+                    f,
+                    "allocation outcome differs from the requested law and basis"
+                )
             }
         }
     }
@@ -57,7 +57,10 @@ impl From<fa_registry::RegistryError> for AllocationError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AllocationMethod {
     LargestRemainder,
-    ProRataResidualToNamed { rounding: RoundingLaw, recipient: u128 },
+    ProRataResidualToNamed {
+        rounding: RoundingLaw,
+        recipient: u128,
+    },
     Waterfall,
     EqualSplitResidualFirst,
 }
@@ -102,17 +105,28 @@ impl AllocationRequest {
     ) -> Result<AllocationOutcome, AllocationError> {
         self.validate_shape(catalog)?;
         let mut basis = Vec::new();
-        basis.try_reserve_exact(self.targets.len()).map_err(|_| AmountError::Overflow)?;
+        basis
+            .try_reserve_exact(self.targets.len())
+            .map_err(|_| AmountError::Overflow)?;
         basis.extend(self.targets.iter().map(|target| target.basis));
         let (shares, pro_rata) = match self.method {
             AllocationMethod::LargestRemainder => (largest_remainder(self.total, &basis)?, None),
             AllocationMethod::Waterfall => (waterfall(self.total, &basis)?, None),
             AllocationMethod::EqualSplitResidualFirst => (
-                equal_split_residual_first(self.total, self.targets.len())?, None,
+                equal_split_residual_first(self.total, self.targets.len())?,
+                None,
             ),
-            AllocationMethod::ProRataResidualToNamed { rounding, recipient } => {
-                let index = self.targets.iter().position(|target| target.id == recipient)
-                    .ok_or(AllocationError::Invalid("residual recipient is not a target"))?;
+            AllocationMethod::ProRataResidualToNamed {
+                rounding,
+                recipient,
+            } => {
+                let index = self
+                    .targets
+                    .iter()
+                    .position(|target| target.id == recipient)
+                    .ok_or(AllocationError::Invalid(
+                        "residual recipient is not a target",
+                    ))?;
                 let result = pro_rata_residual_to_named(self.total, &basis, index, rounding)?;
                 (result.shares.clone(), Some(result))
             }
@@ -122,12 +136,18 @@ impl AllocationRequest {
         if shares.len() != self.targets.len() || !conserves(self.total, &shares)? {
             return Err(AllocationError::Mismatch);
         }
-        Ok(AllocationOutcome { request: self.clone(), shares, pro_rata })
+        Ok(AllocationOutcome {
+            request: self.clone(),
+            shares,
+            pro_rata,
+        })
     }
 
     pub fn validate_shape(&self, catalog: &AllocationCatalog) -> Result<(), AllocationError> {
         if self.targets.is_empty() || self.targets.len() > catalog.max_targets() {
-            return Err(AllocationError::Invalid("target count is outside the catalog bound"));
+            return Err(AllocationError::Invalid(
+                "target count is outside the catalog bound",
+            ));
         }
         let mut ids = BTreeSet::new();
         for target in &self.targets {
@@ -135,13 +155,17 @@ impl AllocationRequest {
                 return Err(AllocationError::Invalid("duplicate target identity"));
             }
             if self.method == AllocationMethod::EqualSplitResidualFirst && target.basis != 1 {
-                return Err(AllocationError::Invalid("equal split requires basis 1 for every target"));
+                return Err(AllocationError::Invalid(
+                    "equal split requires basis 1 for every target",
+                ));
             }
         }
         if let AllocationMethod::ProRataResidualToNamed { recipient, .. } = self.method
             && !ids.contains(&recipient)
         {
-            return Err(AllocationError::Invalid("residual recipient is not a target"));
+            return Err(AllocationError::Invalid(
+                "residual recipient is not a target",
+            ));
         }
         Ok(())
     }
@@ -185,8 +209,13 @@ fn conserves(total: Amount, shares: &[Amount]) -> Result<bool, AmountError> {
         if share.unit != total.unit {
             return Ok(false);
         }
-        let slot = if share.mantissa < 0 { &mut negative } else { &mut positive };
-        *slot = slot.checked_add(U256::from_u128(share.mantissa.unsigned_abs()))
+        let slot = if share.mantissa < 0 {
+            &mut negative
+        } else {
+            &mut positive
+        };
+        *slot = slot
+            .checked_add(U256::from_u128(share.mantissa.unsigned_abs()))
             .ok_or(AmountError::Overflow)?;
     }
     let magnitude = U256::from_u128(total.mantissa.unsigned_abs());

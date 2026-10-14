@@ -70,8 +70,7 @@ pub fn resolve_instant_at<V: asupersync::fs::Vfs + Clone>(
     requested_utc_ns: u64,
     frontier: Option<CommitSeq>,
 ) -> Outcome<InstantSelection> {
-    cx.checkpoint()
-        .map_err(fgdb::WriteTxnError::Interrupted)?;
+    cx.checkpoint().map_err(fgdb::WriteTxnError::Interrupted)?;
     let head = db.frontier()?;
     let at = frontier.unwrap_or(head);
     if at > head {
@@ -88,14 +87,16 @@ pub fn resolve_instant_at<V: asupersync::fs::Vfs + Clone>(
     }
     let mut ticks = Vec::new();
     for row in db.vertices_at(at)? {
-        cx.checkpoint()
-            .map_err(fgdb::WriteTxnError::Interrupted)?;
+        cx.checkpoint().map_err(fgdb::WriteTxnError::Interrupted)?;
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
         let payload = bytes(&row, property::FA_PAYLOAD, "TimeEvidence entry payload")?;
         let entry = Entry::decode(&payload)?;
-        let is_tick = matches!(&entry.proposal.control, Some(ControlPayload::TimeTick { .. }));
+        let is_tick = matches!(
+            &entry.proposal.control,
+            Some(ControlPayload::TimeTick { .. })
+        );
         if entry.proposal.class != EntryClass::TIME_CONTROL && !is_tick {
             continue;
         }
@@ -112,8 +113,7 @@ pub fn resolve_instant_at<V: asupersync::fs::Vfs + Clone>(
         if entry.proposal.class != EntryClass::TIME_CONTROL
             || entry.proposal.book_id != book.book_id
             || entry.proposal.branch_id != Id128::TRUNK
-            || bytes(&row, property::FA_DIGEST, "TimeEvidence entry digest")?
-                != entry.entry_digest
+            || bytes(&row, property::FA_DIGEST, "TimeEvidence entry digest")? != entry.entry_digest
         {
             return Err(KernelError::Corrupt(format!(
                 "TimeEvidence entry {:032x} has an invalid identity, coordinate or digest",
@@ -123,15 +123,15 @@ pub fn resolve_instant_at<V: asupersync::fs::Vfs + Clone>(
         // A historical resolution must not hide a later rewrite or retirement
         // of the tick it is using. Compare at one fixed current frontier.
         let current = db.vertex_at(row.vid, head)?.ok_or_else(|| {
-            KernelError::Corrupt(format!(
-                "TimeEvidence entry {:032x} was retired",
-                row.vid.0
-            ))
+            KernelError::Corrupt(format!("TimeEvidence entry {:032x} was retired", row.vid.0))
         })?;
         if !current.labels.contains(&label::ENTRY)
             || current.created_at != row.created_at
-            || bytes(&current, property::FA_PAYLOAD, "current TimeEvidence payload")?
-                != payload
+            || bytes(
+                &current,
+                property::FA_PAYLOAD,
+                "current TimeEvidence payload",
+            )? != payload
             || bytes(&current, property::FA_DIGEST, "current TimeEvidence digest")?
                 != entry.entry_digest
         {
@@ -154,8 +154,10 @@ pub fn resolve_instant_at<V: asupersync::fs::Vfs + Clone>(
     let observations: Vec<TimeObservation> = ticks.iter().map(|(tick, _)| *tick).collect();
     let resolution = match fa_time::resolve_instant(&observations, requested_utc_ns, at.0) {
         Ok(resolution) => resolution,
-        Err(error @ (InstantResolutionError::NoTicks { .. }
-        | InstantResolutionError::BeforeFirstTick { .. })) => {
+        Err(
+            error @ (InstantResolutionError::NoTicks { .. }
+            | InstantResolutionError::BeforeFirstTick { .. }),
+        ) => {
             return Ok(Err(unavailable(error)));
         }
         Err(error) => {

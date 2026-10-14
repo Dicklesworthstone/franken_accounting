@@ -3,40 +3,91 @@ use fa_statements::{Account, AccountBalance, ColumnInput, StatementInput};
 use fa_time::DateDay;
 
 fn account(id: u128, code: &str, account_type: u8) -> Account {
-    Account { id, code: code.into(), name: format!("{code} name"), account_type, is_leaf: true }
+    Account {
+        id,
+        code: code.into(),
+        name: format!("{code} name"),
+        account_type,
+        is_leaf: true,
+    }
 }
 
 fn input(seq: u64, revenue: i128, expense: i128) -> StatementInput {
-    let balances = |r: i128, e: i128, unit_id: u32| vec![
-        AccountBalance { account_id: 1, unit_id, debits: 100 + r - e, credits: 0 },
-        AccountBalance { account_id: 2, unit_id, debits: 0, credits: 100 },
-        AccountBalance { account_id: 3, unit_id, debits: 0, credits: r },
-        AccountBalance { account_id: 4, unit_id, debits: e, credits: 0 },
-    ];
+    let balances = |r: i128, e: i128, unit_id: u32| {
+        vec![
+            AccountBalance {
+                account_id: 1,
+                unit_id,
+                debits: 100 + r - e,
+                credits: 0,
+            },
+            AccountBalance {
+                account_id: 2,
+                unit_id,
+                debits: 0,
+                credits: 100,
+            },
+            AccountBalance {
+                account_id: 3,
+                unit_id,
+                debits: 0,
+                credits: r,
+            },
+            AccountBalance {
+                account_id: 4,
+                unit_id,
+                debits: e,
+                credits: 0,
+            },
+        ]
+    };
     let mut current = balances(revenue, expense, 1);
     current.extend(balances(0, 10, 2));
     let mut prior = balances(0, 0, 1);
     prior.extend(balances(0, 0, 2));
     StatementInput {
-        book_id: Id128([1; 16]), branch_id: Id128::TRUNK, known_at: seq,
-        accounts: vec![account(1, "cash", 1), account(2, "capital", 3),
-            account(3, "sales", 4), account(4, "expense", 5)],
+        book_id: Id128([1; 16]),
+        branch_id: Id128::TRUNK,
+        known_at: seq,
+        accounts: vec![
+            account(1, "cash", 1),
+            account(2, "capital", 3),
+            account(3, "sales", 4),
+            account(4, "expense", 5),
+        ],
         units: vec![1, 2],
         columns: vec![
-            ColumnInput { label: "current".into(), periods: vec!["FY2026-P03".into()],
-                effective_from: None, effective_through: DateDay(100), balances: current },
-            ColumnInput { label: "comparative".into(), periods: vec!["FY2025-P03".into()],
-                effective_from: None, effective_through: DateDay(-265), balances: prior },
+            ColumnInput {
+                label: "current".into(),
+                periods: vec!["FY2026-P03".into()],
+                effective_from: None,
+                effective_through: DateDay(100),
+                balances: current,
+            },
+            ColumnInput {
+                label: "comparative".into(),
+                periods: vec!["FY2025-P03".into()],
+                effective_from: None,
+                effective_through: DateDay(-265),
+                balances: prior,
+            },
         ],
     }
 }
 
 fn report(input: &StatementInput) -> Statement {
-    fa_statements::evaluate(&StatementDefinition::embedded("balance-sheet").unwrap(), input).unwrap()
+    fa_statements::evaluate(
+        &StatementDefinition::embedded("balance-sheet").unwrap(),
+        input,
+    )
+    .unwrap()
 }
 
 fn row<'a>(diff: &'a StatementDiff, code: &str, unit: u32) -> &'a StatementLineChange {
-    diff.lines().iter().find(|l| l.code == code && l.unit_id == unit).unwrap()
+    diff.lines()
+        .iter()
+        .find(|l| l.code == code && l.unit_id == unit)
+        .unwrap()
 }
 
 #[test]
@@ -58,7 +109,10 @@ fn exact_bridge_keeps_units_columns_and_subtotals_distinct() {
     assert!(!diff.is_unchanged());
     assert!(diff.mapping_changes().is_empty());
     assert_eq!(diff.lines().len(), before.lines.len());
-    assert_eq!(diff.canonical_bytes().unwrap(), diff.clone().canonical_bytes().unwrap());
+    assert_eq!(
+        diff.canonical_bytes().unwrap(),
+        diff.clone().canonical_bytes().unwrap()
+    );
 }
 
 #[test]
@@ -77,7 +131,10 @@ fn zero_balance_account_additions_and_metadata_changes_are_not_lost() {
     assert!(diff.mapping_changes()[0].after.is_some());
     assert_eq!(diff.mapping_changes()[1].account_id, 99);
     assert!(diff.mapping_changes()[1].before.is_none());
-    assert_eq!(diff.mapping_changes()[1].after.as_ref().unwrap().line_code, "unclosed_revenue");
+    assert_eq!(
+        diff.mapping_changes()[1].after.as_ref().unwrap().line_code,
+        "unclosed_revenue"
+    );
     let mut removal = original;
     removal.known_at = 30;
     let removed = StatementDiff::between(report(&changed), report(&removal)).unwrap();
@@ -93,23 +150,36 @@ fn unchanged_history_has_zero_deltas_but_binds_both_recorded_frontiers() {
     let moved = StatementDiff::between(before, later).unwrap();
     assert!(same.is_unchanged());
     assert!(moved.is_unchanged());
-    assert_ne!(same.canonical_bytes().unwrap(), moved.canonical_bytes().unwrap());
+    assert_ne!(
+        same.canonical_bytes().unwrap(),
+        moved.canonical_bytes().unwrap()
+    );
 }
 
 #[test]
 fn different_books_branches_period_identities_or_definitions_are_not_restatements() {
     let old = report(&input(10, 90, 30));
     let new = report(&input(20, 90, 30));
-    let mut foreign = new.clone(); foreign.book_id = Id128([2; 16]);
-    let mut branch = new.clone(); branch.branch_id = Id128([3; 16]);
-    let mut period = new.clone(); period.columns[0].periods = vec!["FY2026-ADJ".into()];
-    let mut cutoff = new.clone(); cutoff.columns[0].effective_through = DateDay(101);
-    let mut definition = new.clone(); definition.definition_version += 1;
-    let mut bytes = new.clone(); bytes.definition_bytes[0] ^= 1;
-    let mut reversed = new.clone(); reversed.known_at = 9;
-    let mut coincident = new.clone(); coincident.known_at = 10;
+    let mut foreign = new.clone();
+    foreign.book_id = Id128([2; 16]);
+    let mut branch = new.clone();
+    branch.branch_id = Id128([3; 16]);
+    let mut period = new.clone();
+    period.columns[0].periods = vec!["FY2026-ADJ".into()];
+    let mut cutoff = new.clone();
+    cutoff.columns[0].effective_through = DateDay(101);
+    let mut definition = new.clone();
+    definition.definition_version += 1;
+    let mut bytes = new.clone();
+    bytes.definition_bytes[0] ^= 1;
+    let mut reversed = new.clone();
+    reversed.known_at = 9;
+    let mut coincident = new.clone();
+    coincident.known_at = 10;
     coincident.lines[0].amounts[0] += 1;
-    for changed in [foreign, branch, period, cutoff, definition, bytes, reversed, coincident] {
+    for changed in [
+        foreign, branch, period, cutoff, definition, bytes, reversed, coincident,
+    ] {
         assert!(StatementDiff::between(old.clone(), changed).is_err());
     }
 }
@@ -118,15 +188,38 @@ fn different_books_branches_period_identities_or_definitions_are_not_restatement
 fn malformed_line_products_and_missing_zero_rows_are_refused() {
     let old = report(&input(10, 90, 30));
     let new = report(&input(20, 90, 30));
-    let mut missing = new.clone(); missing.lines.pop();
-    let mut duplicate = new.clone(); duplicate.lines[1] = duplicate.lines[0].clone();
-    let mut missing_column = new.clone(); missing_column.lines[0].amounts.pop();
-    let mut label = new.clone(); label.lines[0].label = "another meaning".into();
-    let mut order = new.clone(); order.lines.swap(0, 2);
-    let mut mapping = new.clone(); mapping.mappings[0].line_code = "assets".into();
-    let mut duplicate_mapping = new.clone(); duplicate_mapping.mappings.push(duplicate_mapping.mappings[0].clone());
-    let mut unit = new; for line in &mut unit.lines { if line.unit_id == 2 { line.unit_id = 3; } }
-    for changed in [missing, duplicate, missing_column, label, order, mapping, duplicate_mapping, unit] {
+    let mut missing = new.clone();
+    missing.lines.pop();
+    let mut duplicate = new.clone();
+    duplicate.lines[1] = duplicate.lines[0].clone();
+    let mut missing_column = new.clone();
+    missing_column.lines[0].amounts.pop();
+    let mut label = new.clone();
+    label.lines[0].label = "another meaning".into();
+    let mut order = new.clone();
+    order.lines.swap(0, 2);
+    let mut mapping = new.clone();
+    mapping.mappings[0].line_code = "assets".into();
+    let mut duplicate_mapping = new.clone();
+    duplicate_mapping
+        .mappings
+        .push(duplicate_mapping.mappings[0].clone());
+    let mut unit = new;
+    for line in &mut unit.lines {
+        if line.unit_id == 2 {
+            line.unit_id = 3;
+        }
+    }
+    for changed in [
+        missing,
+        duplicate,
+        missing_column,
+        label,
+        order,
+        mapping,
+        duplicate_mapping,
+        unit,
+    ] {
         assert!(StatementDiff::between(old.clone(), changed).is_err());
     }
 }
@@ -137,12 +230,18 @@ fn signed_stock(seq: u64, value: i128) -> Statement {
     input.units = vec![1];
     input.columns.truncate(1);
     input.columns[0].balances = vec![
-        AccountBalance { account_id: 1, unit_id: 1,
+        AccountBalance {
+            account_id: 1,
+            unit_id: 1,
             debits: if value >= 0 { magnitude } else { 0 },
-            credits: if value < 0 { magnitude } else { 0 } },
-        AccountBalance { account_id: 2, unit_id: 1,
+            credits: if value < 0 { magnitude } else { 0 },
+        },
+        AccountBalance {
+            account_id: 2,
+            unit_id: 1,
             debits: if value < 0 { magnitude } else { 0 },
-            credits: if value >= 0 { magnitude } else { 0 } },
+            credits: if value >= 0 { magnitude } else { 0 },
+        },
     ];
     report(&input)
 }
@@ -164,6 +263,11 @@ fn evaluation_order_of_source_accounts_does_not_change_the_bridge() {
     let expected = StatementDiff::between(report(&a), report(&b)).unwrap();
     let mut reordered = b;
     reordered.accounts.reverse();
-    for column in &mut reordered.columns { column.balances.reverse(); }
-    assert_eq!(StatementDiff::between(report(&a), report(&reordered)).unwrap(), expected);
+    for column in &mut reordered.columns {
+        column.balances.reverse();
+    }
+    assert_eq!(
+        StatementDiff::between(report(&a), report(&reordered)).unwrap(),
+        expected
+    );
 }

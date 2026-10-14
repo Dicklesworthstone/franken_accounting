@@ -334,6 +334,19 @@ fn one_daemon_per_book_and_fa_gets_byte_identical_answers_through_it() {
     assert_eq!(code, 4, "nothing left to stop: {out}");
 }
 
+/// What `fa doctor` and `fa triage` say about the host that answered:
+/// (run directly, through fad).
+fn host_report(verb: &str) -> Option<(&'static str, &'static str)> {
+    match verb {
+        "doctor" => Some((
+            "held by this command for its duration; no fad serves the book",
+            "held by the fad answering this command",
+        )),
+        "triage" => Some((r#""daemon":"absent""#, r#""daemon":"serving""#)),
+        _ => None,
+    }
+}
+
 #[test]
 fn every_registered_verb_and_subcommand_is_served_by_both_hosts() {
     let dir = tmp("parity");
@@ -369,9 +382,20 @@ fn every_registered_verb_and_subcommand_is_served_by_both_hosts() {
             "fad does not serve {ask:?}: {t:?}"
         );
         if ask[..2] == ["book".to_string(), "create".to_string()] {
-            // The one posture difference: a daemon serves an existing book.
+            // A posture difference: a daemon serves an existing book.
             assert_eq!(t.0, 2, "{t:?}");
             assert!(t.1.contains("a daemon serves an existing one"), "{t:?}");
+        } else if let Some((here, there)) = host_report(&ask[0]) {
+            // The other: doctor and triage report the host that answered
+            // (who holds the lease, whether a daemon serves). Each host
+            // says its own; with that one value swapped, the answers match.
+            assert!(d.1.contains(here), "direct {ask:?}: {d:?}");
+            assert!(t.1.contains(there), "through fad {ask:?}: {t:?}");
+            assert_eq!(
+                d,
+                &(t.0, t.1.replace(there, here), t.2.clone()),
+                "direct vs through fad differ for {ask:?}"
+            );
         } else {
             assert_eq!(d, t, "direct vs through fad differ for {ask:?}");
         }
@@ -679,4 +703,26 @@ fn explicit_key_bootstrap_records_ticks_and_clean_stop_releases_the_timed_book()
             ..
         })
     ));
+}
+
+/// Never silent on a panic (fa-y9z): a panicking `fad` exits 5 with exactly
+/// one FA-REF-153 error event, never Rust's 101. The panic is the debug
+/// build's `FA_TEST_PANIC` trigger; a release build compiles it out.
+#[test]
+fn a_panicking_daemon_command_is_one_error_event_with_exit_5() {
+    let dir = tmp("panic");
+    let book = dir.join("book").display().to_string();
+    let out = Command::new(env!("CARGO_BIN_EXE_fad"))
+        .args(["status", "--book", &book, "--json"])
+        .env_remove("FA_BOOK")
+        .env("FA_TEST_PANIC", "1")
+        .output()
+        .expect("run fad");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(out.status.code(), Some(5), "{stdout}\n{stderr}");
+    assert_eq!(checked(&stdout), vec!["error"], "{stdout}");
+    assert!(stdout.contains("\"refusal_id\":\"FA-REF-153\""), "{stdout}");
+    assert!(stdout.contains("FA_TEST_PANIC"), "{stdout}");
+    assert!(stderr.contains("fad: internal error"), "{stderr}");
 }

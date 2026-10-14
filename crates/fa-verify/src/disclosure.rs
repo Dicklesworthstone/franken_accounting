@@ -17,8 +17,8 @@
 
 use crate::codec::{DecodeError, Reader};
 use crate::document::{
-    ChunkDisclosure, DOC_CHUNK_BYTES, DisclosureError, SCOPE_CHUNK_MEMBERSHIP,
-    VerifiedChunk, verify_disclosure_for,
+    ChunkDisclosure, DOC_CHUNK_BYTES, DisclosureError, SCOPE_CHUNK_MEMBERSHIP, VerifiedChunk,
+    verify_disclosure_for,
 };
 
 pub const FORMAT: &[u8] = b"fa:document-disclosure:v1";
@@ -42,13 +42,25 @@ impl core::fmt::Display for DisclosureProofError {
         match self {
             Self::Format => write!(f, "unsupported document disclosure format"),
             Self::InputLimit { maximum, actual } => {
-                write!(f, "document disclosure has {actual} bytes; maximum is {maximum}")
+                write!(
+                    f,
+                    "document disclosure has {actual} bytes; maximum is {maximum}"
+                )
             }
             Self::RequestLimit { maximum, actual } => {
-                write!(f, "document request has {actual} chunks; maximum is {maximum}")
+                write!(
+                    f,
+                    "document request has {actual} chunks; maximum is {maximum}"
+                )
             }
-            Self::Count { requested, supplied } => {
-                write!(f, "document request needs {requested} chunks, proof supplies {supplied}")
+            Self::Count {
+                requested,
+                supplied,
+            } => {
+                write!(
+                    f,
+                    "document request needs {requested} chunks, proof supplies {supplied}"
+                )
             }
             Self::Decode(error) => write!(f, "{error}"),
             Self::Disclosure(error) => write!(f, "{error}"),
@@ -218,22 +230,45 @@ mod tests {
         }
         let mut trailing = proof.clone();
         trailing.push(0);
-        assert!(matches!(verify(&trailing, &[0], &trusted),
-            Err(DisclosureProofError::Decode(DecodeError { reason: Reason::Trailing, .. }))));
+        assert!(matches!(
+            verify(&trailing, &[0], &trusted),
+            Err(DisclosureProofError::Decode(DecodeError {
+                reason: Reason::Trailing,
+                ..
+            }))
+        ));
         let mut wrong_format = proof;
         wrong_format[4] ^= 1;
-        assert_eq!(verify(&wrong_format, &[0], &trusted), Err(DisclosureProofError::Format));
+        assert_eq!(
+            verify(&wrong_format, &[0], &trusted),
+            Err(DisclosureProofError::Format)
+        );
         let mut overlong = header(4097, 1);
         overlong.u64(0).bytes(&vec![0; 4097]).count(0);
-        assert!(matches!(verify(&overlong.buf, &[0], &trusted),
-            Err(DisclosureProofError::Decode(DecodeError { reason: Reason::TooLong { .. }, .. }))));
+        assert!(matches!(
+            verify(&overlong.buf, &[0], &trusted),
+            Err(DisclosureProofError::Decode(DecodeError {
+                reason: Reason::TooLong { .. },
+                ..
+            }))
+        ));
         let mut path = header(1, 1);
         path.u64(0).bytes(&[0]).count(MAX_SIBLINGS + 1);
-        assert!(matches!(verify(&path.buf, &[0], &trusted),
-            Err(DisclosureProofError::Decode(DecodeError { reason: Reason::TooLong { .. }, .. }))));
+        assert!(matches!(
+            verify(&path.buf, &[0], &trusted),
+            Err(DisclosureProofError::Decode(DecodeError {
+                reason: Reason::TooLong { .. },
+                ..
+            }))
+        ));
         let malicious_count = header(0, MAX_DISCLOSURE_CHUNKS + 1);
-        assert!(matches!(verify(&malicious_count.buf, &[0], &trusted),
-            Err(DisclosureProofError::Decode(DecodeError { reason: Reason::TooLong { .. }, .. }))));
+        assert!(matches!(
+            verify(&malicious_count.buf, &[0], &trusted),
+            Err(DisclosureProofError::Decode(DecodeError {
+                reason: Reason::TooLong { .. },
+                ..
+            }))
+        ));
     }
 
     #[test]
@@ -242,15 +277,35 @@ mod tests {
         // First chunk is intentionally not a valid membership proof. The
         // second index still determines the set mismatch before hashing.
         w.u64(0).bytes(&[]).count(0).u64(3).bytes(&[]).count(0);
-        assert!(matches!(verify(&w.buf, &[0, 1], &[0; 32]),
-            Err(DisclosureProofError::Disclosure(DisclosureError::Set { position: 1, .. }))));
-        assert!(matches!(verify(&w.buf, &[0], &[0; 32]),
-            Err(DisclosureProofError::Count { requested: 1, supplied: 2 })));
-        assert!(matches!(verify(&[], &[1, 0], &[0; 32]),
-            Err(DisclosureProofError::Disclosure(DisclosureError::RequestOrder))));
-        assert!(matches!(verify(&[], &[0, 0], &[0; 32]),
-            Err(DisclosureProofError::Disclosure(DisclosureError::RequestOrder))));
-        assert!(matches!(validate_request(&vec![0; MAX_DISCLOSURE_CHUNKS + 1]),
-            Err(DisclosureProofError::RequestLimit { .. })));
+        assert!(matches!(
+            verify(&w.buf, &[0, 1], &[0; 32]),
+            Err(DisclosureProofError::Disclosure(DisclosureError::Set {
+                position: 1,
+                ..
+            }))
+        ));
+        assert!(matches!(
+            verify(&w.buf, &[0], &[0; 32]),
+            Err(DisclosureProofError::Count {
+                requested: 1,
+                supplied: 2
+            })
+        ));
+        assert!(matches!(
+            verify(&[], &[1, 0], &[0; 32]),
+            Err(DisclosureProofError::Disclosure(
+                DisclosureError::RequestOrder
+            ))
+        ));
+        assert!(matches!(
+            verify(&[], &[0, 0], &[0; 32]),
+            Err(DisclosureProofError::Disclosure(
+                DisclosureError::RequestOrder
+            ))
+        ));
+        assert!(matches!(
+            validate_request(&vec![0; MAX_DISCLOSURE_CHUNKS + 1]),
+            Err(DisclosureProofError::RequestLimit { .. })
+        ));
     }
 }

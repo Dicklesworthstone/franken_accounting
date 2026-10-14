@@ -626,6 +626,85 @@ fn balanced_entry_commits_with_mirrors_and_edges_in_one_transaction() {
 }
 
 #[test]
+fn schema_valid_bulk_entry_exposes_native_row_capacity_without_partial_publication() {
+    // fa-fdt: reproduce the current storage gap, not a smaller accounting
+    // limit. When the representation is repaired, replace the refusal below
+    // with the bead's post/reopen/fold/certify/verify positive acceptance.
+    let mut h = harness();
+    let key = b"bulk-capacity";
+    let legs = (0..256).flat_map(|_| h.rent_legs(1)).collect::<Vec<_>>();
+    assert_eq!(legs.len(), 512);
+    assert!(legs.len() < fa_model::limits::MAX_LEGS_PER_ENTRY);
+    let proposal = h.proposal(legs, key, EntryClass::ORIGINAL);
+    let expected = proposal.clone().seal(Vec::new(), None).unwrap();
+    let bytes = expected.encode().unwrap();
+    assert!(bytes.len() > 16 * 1024);
+    assert!(bytes.len() < fa_model::limits::MAX_ENTRY_BYTES);
+    assert_eq!(fa_model::Entry::decode(&bytes).unwrap(), expected);
+
+    let vid = entry_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), key);
+    let before = h.db.frontier().unwrap();
+    // Call the kernel directly: Harness::post intentionally unwraps its
+    // foundation result, whereas this defect is native storage admission.
+    for _ in 0..2 {
+        let req = h.request(proposal.clone(), &["post"]);
+        let ctx = h.ctx();
+        let result = h.runtime.block_on(post(&mut h.db, &ctx, &h.book, req));
+        let error = result.expect_err("the pinned native row cannot store this entry");
+        let KernelError::Txn(fgdb::WriteTxnError::Write(
+            fgdb::WriteError::VertexStorageAdmission {
+                vid: rejected,
+                source,
+            },
+        )) = error
+        else {
+            panic!("expected the native entry-row capacity failure, got {error:?}");
+        };
+        assert_eq!(rejected, vid);
+        let diagnostic = source.to_string();
+        let (stored_bytes, limit) = diagnostic
+            .strip_prefix("vertex row needs ")
+            .and_then(|s| s.split_once(" stored bytes; admission limit is "))
+            .expect("RowExceedsStorageLimit diagnostic");
+        assert_eq!(limit, "16384");
+        assert!(stored_bytes.parse::<usize>().unwrap() > 16 * 1024);
+        eprintln!(
+            "fa-fdt: 512 schema-valid legs, {} payload bytes: {diagnostic}",
+            bytes.len()
+        );
+        assert_eq!(h.db.frontier().unwrap(), before);
+        assert!(read_entry(&h.db, vid).unwrap().is_none());
+        for ordinal in 0..512 {
+            let leg = leg_vid(vid, ordinal);
+            assert!(h.db.vertex(leg).unwrap().is_none());
+            assert!(
+                h.db.edge(edge_id(relation::HAS_LEG, vid, leg))
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+
+    // The failed attempt spends neither the journal identity nor its key.
+    // The same real evidence and capability admit a smaller balanced entry,
+    // whose exact retry returns that outcome without another commit.
+    let small = h.proposal(h.rent_legs(256), key, EntryClass::ORIGINAL);
+    let small_expected = small.clone().seal(Vec::new(), None).unwrap();
+    let posted = h.post(h.request(small.clone(), &["post"])).unwrap();
+    assert!(matches!(posted, Posted::Committed { .. }));
+    assert_eq!(posted.entry_ref().vid, vid);
+    let (back, recorded_at) = read_entry(&h.db, vid).unwrap().unwrap();
+    assert_eq!(back, small_expected);
+    assert_eq!(recorded_at, posted.recorded_at());
+    let after = h.db.frontier().unwrap();
+    let retried = h.post(h.request(small, &["post"])).unwrap();
+    assert!(matches!(retried, Posted::AlreadyRecorded { .. }));
+    assert_eq!(retried.entry_ref(), posted.entry_ref());
+    assert_eq!(retried.recorded_at(), posted.recorded_at());
+    assert_eq!(h.db.frontier().unwrap(), after);
+}
+
+#[test]
 fn unbalanced_entry_is_refused_with_exit_3_and_nothing_written() {
     let mut h = harness();
     let legs = vec![
@@ -678,6 +757,12 @@ fn closed_period_refuses_originals_and_admits_an_exact_reversal_under_post_close
         r.cite.contains("Original") && r.cite.contains("Closed"),
         "{}",
         r.cite
+    );
+    // The fix names exactly the posted classes the matrix admits here
+    // (fa-l93 D8), each with the op its cell requires.
+    assert_eq!(
+        r.fix,
+        "keep the entry's true effective date; never re-date it to escape the period law: a Closed period admits Adjusting (with `post_closed` and 1 approval), Reversal (with `post_closed`); a reopen of a Closed period is case-bound and refused in this build; `fa period list --json` shows each period's state"
     );
 
     // Reversal in a Closed period: needs post_closed.
@@ -896,7 +981,9 @@ fn corrections_require_registered_reasons_and_other_requires_particulars() {
         .entry_ref();
     let before = read_entry(&h.db, original.vid).unwrap().unwrap();
     let mut reversal = h.reversal_of(original, 80, b"reason-reversal");
-    for reason in [0, u16::MAX] {
+    // 12 is ScheduledAccrualReversal: reserved for the kernel's own scheduled
+    // reversal, never a manual reason (fa-cvg).
+    for reason in [0, 12, u16::MAX] {
         reversal.supersession[0].reason_code = reason;
         let head = h.db.frontier().unwrap();
         let refusal = h.post(h.request(reversal.clone(), &["post"])).unwrap_err();
@@ -1037,6 +1124,110 @@ fn summary_account_unknown_account_and_unit_policy_are_refused() {
         .unwrap_err();
     assert_eq!((r.code, r.exit), ("FA-REF-003", exit::REFUSAL));
     assert!(r.message.contains("EUR"), "{}", r.message);
+}
+
+/// fa-ih4: lawful requests ahead of the book's setup are typed refusals,
+/// never `KernelError::Corrupt` (exit 5): a date in a fiscal year nobody
+/// created, and a raw unit id no registered unit version carries on an
+/// account whose policy admits any unit. Nothing is written either way.
+#[test]
+fn uncreated_periods_and_unregistered_units_are_refused_not_corrupt() {
+    let mut h = harness();
+    let head = h.db.frontier().unwrap();
+
+    let mut ahead = h.proposal(h.rent_legs(100), b"ahead", EntryClass::ORIGINAL);
+    ahead.effective_date = DateDay::from_ymd(2028, 2, 10).unwrap();
+    let r = h.post(h.request(ahead, &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-021", exit::SAFETY), "{r}");
+    assert!(r.message.contains("FY2028-P02"), "{r}");
+    assert_eq!(
+        r.fix,
+        "fa period create --fiscal-year 2028, then open `FY2028-P02`"
+    );
+    assert_eq!(h.db.frontier().unwrap(), head);
+
+    let any_unit = |code: &str| AccountSpec {
+        code: code.into(),
+        name: format!("Clearing {code}"),
+        account_type: 1,
+        normal_balance: 0,
+        is_leaf: true,
+        unit_policy: UnitPolicy::AnyUnit,
+        parent_code: None,
+        limit: None,
+    };
+    let ctx = h.ctx();
+    let day = h.day();
+    h.runtime
+        .block_on(install_chart(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &[any_unit("9100"), any_unit("9200")],
+            PRINCIPAL,
+            day,
+            b"chart-any-unit",
+            Erasable::seal(
+                &"clearing".to_string(),
+                None,
+                &h.book.seal_key,
+                [7; 32],
+                [8; 24],
+            ),
+        ))
+        .expect("kernel")
+        .expect("the clearing accounts install");
+    let head = h.db.frontier().unwrap();
+    let unregistered = UnitId(4242);
+    assert!(h.book.units.get(unregistered).is_none());
+    let (debit, credit) = (
+        account_vid(h.book.book_id, "9100"),
+        account_vid(h.book.book_id, "9200"),
+    );
+    let legs = vec![
+        LegPayload::simple(Side::Debit, debit, Amount::new(unregistered, 100)),
+        LegPayload::simple(Side::Credit, credit, Amount::new(unregistered, 100)),
+    ];
+    let r = h
+        .post(h.request(
+            h.proposal(legs, b"raw-unit", EntryClass::ORIGINAL),
+            &["post"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-154", exit::REFUSAL), "{r}");
+    assert!(r.message.contains("unit id 4242"), "{r}");
+    assert_eq!(h.db.frontier().unwrap(), head);
+
+    // The same accounts accept a registered unit of any kind.
+    let legs = vec![
+        LegPayload::simple(Side::Debit, debit, Amount::new(h.usd, 100)),
+        LegPayload::simple(Side::Credit, credit, Amount::new(h.usd, 100)),
+    ];
+    assert!(matches!(
+        h.post(h.request(
+            h.proposal(legs, b"usd-clearing", EntryClass::ORIGINAL),
+            &["post"]
+        ))
+        .unwrap(),
+        Posted::Committed { .. }
+    ));
+
+    // fa-l93 D9: a leg naming a live vertex that is not an Account (here
+    // the book root) is the unknown-account refusal, not a corrupt row.
+    let head = h.db.frontier().unwrap();
+    let legs = vec![
+        LegPayload::simple(Side::Debit, book_root(), Amount::new(h.usd, 100)),
+        LegPayload::simple(Side::Credit, h.cash, Amount::new(h.usd, 100)),
+    ];
+    let r = h
+        .post(h.request(
+            h.proposal(legs, b"not-an-account", EntryClass::ORIGINAL),
+            &["post"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-004", exit::REFUSAL), "{r}");
+    assert!(r.message.contains("not an account"), "{r}");
+    assert_eq!(h.db.frontier().unwrap(), head);
 }
 
 #[test]
@@ -2243,6 +2434,43 @@ fn document_intake_refuses_empty_oversized_unregistered_and_unverifiable_input()
         h.add_document(&h.document(INVOICE, AGENT_UPLOAD, body))
             .is_ok()
     );
+}
+
+/// The inline bound is what one substrate row holds: a document at the
+/// bound with the longest admitted MIME is recorded inline and reads back,
+/// and one byte more is the typed intake refusal naming the blob store,
+/// never the substrate's RowExceedsStorageLimit (exit 5). Before the bound
+/// was derived from the row, a 16 KiB document failed in storage while the
+/// policy promised inline bytes up to 16 MiB.
+#[test]
+fn the_inline_document_bound_fits_one_substrate_row() {
+    use fa_journal::evidence::{MAX_INLINE_DOCUMENT_BYTES, inline_document_bound};
+    let mut h = harness();
+    let policy = fa_registry::evidence_policy::EvidencePolicy::embedded().unwrap();
+    let bound = inline_document_bound(&policy);
+    assert_eq!(
+        bound,
+        MAX_INLINE_DOCUMENT_BYTES.min(policy.max_document_bytes)
+    );
+    let size = usize::try_from(bound).unwrap();
+
+    let mut at_bound = h.document(INVOICE, HUMAN_UPLOAD, &vec![b'q'; size]);
+    at_bound.mime = "m".repeat(policy.max_mime_bytes);
+    let added = h.add_document(&at_bound).expect("the bound fits one row");
+    assert_eq!(added.size, bound);
+    let record = document_record(&h.db, &added.oid).unwrap().unwrap();
+    assert!(matches!(record.storage, Storage::Inline(_)));
+    assert_eq!(
+        read_document(&h.db, &added.oid).unwrap().unwrap(),
+        Some(at_bound)
+    );
+
+    let head = h.db.frontier().unwrap();
+    let past = h.document(INVOICE, HUMAN_UPLOAD, &vec![b'r'; size + 1]);
+    let r = h.add_document(&past).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-083", exit::USAGE), "{r}");
+    assert!(r.fix.contains("blob store"), "{r}");
+    assert_eq!(h.db.frontier().unwrap(), head);
 }
 
 // ---------------------------------------------------------------------------
@@ -5469,7 +5697,7 @@ fn unit_payload_and_table_commitment_damage_are_refused_without_repair() {
             .to_string();
         if damage.starts_with("missing") {
             assert!(error.contains("pre-payload"), "{damage}: {error}");
-            assert!(error.contains("backfill"), "{damage}: {error}");
+            assert!(error.contains("no backfill"), "{damage}: {error}");
         } else {
             assert!(error.contains("unit"), "{damage}: {error}");
         }
@@ -5504,6 +5732,69 @@ impl Harness {
             .block_on(async move { commit_plan(db, &ctx, book, capability, plan).await })
             .expect("plan commit kernel")
     }
+}
+
+/// fa-llx: `commit_plan` admits only whole-book tokens, so a token with a
+/// scope caveat is refused a plan up front, even for an entry its caveat
+/// admits, and nothing is written.
+#[test]
+fn a_scoped_token_is_refused_a_plan_it_could_never_commit() {
+    let mut h = harness();
+    let proposal = h.proposal(h.rent_legs(12_345), b"scoped-plan", EntryClass::ORIGINAL);
+    let mut request = h.request(proposal.clone(), &["post"]);
+    request.capability = Capability::embedded(PRINCIPAL, &["post"])
+        .unwrap()
+        .for_periods(&[h.march.as_str()])
+        .unwrap();
+    let basis = h.db.frontier().unwrap();
+    let before_vertices = h.db.vertices().unwrap();
+    let refusal = h.post_plan(request).unwrap_err();
+    assert_eq!(refusal.code, "FA-REF-011");
+    assert!(
+        refusal
+            .message
+            .starts_with("the capability's `periods` caveat"),
+        "{}",
+        refusal.message
+    );
+    assert_eq!(h.db.frontier().unwrap(), basis);
+    assert_eq!(h.db.vertices().unwrap(), before_vertices);
+    h.post_plan(h.request(proposal, &["post"]))
+        .expect("the same intent plans under a whole-book token");
+}
+
+/// fa-llx: a plan made under a whole-book token and presented with a scoped
+/// token is refused by `commit_plan`'s whole-book admission; nothing is
+/// recorded, and the planning token still commits it.
+#[test]
+fn a_scoped_token_cannot_commit_a_whole_book_plan() {
+    let mut h = harness();
+    let proposal = h.proposal(h.rent_legs(12_345), b"scoped-commit", EntryClass::ORIGINAL);
+    let plan = h
+        .post_plan(h.request(proposal, &["post"]))
+        .expect("whole-book plan");
+    let scoped = Capability::embedded(PRINCIPAL, &["post"])
+        .unwrap()
+        .for_periods(&[h.march.as_str()])
+        .unwrap();
+    let basis = h.db.frontier().unwrap();
+    let refusal = h.publish_plan(plan.clone(), &scoped).unwrap_err();
+    assert_eq!(refusal.code, "FA-REF-011");
+    assert!(
+        refusal
+            .message
+            .starts_with("the capability's `periods` caveat"),
+        "{}",
+        refusal.message
+    );
+    assert_eq!(h.db.frontier().unwrap(), basis, "nothing is recorded");
+    let cvid = plan_certificate_vid(h.book.book_id, &plan.certificate().digest().unwrap());
+    assert!(h.db.vertex(cvid).unwrap().is_none());
+    let whole = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let posted = h
+        .publish_plan(plan, &whole)
+        .expect("the planning token commits it");
+    assert_eq!(posted.recorded_at().0, basis.0 + 1);
 }
 
 #[test]

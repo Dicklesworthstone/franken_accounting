@@ -61,8 +61,7 @@ impl Fixture {
             .collect();
         let mut input = original.as_slice();
         assert_eq!(bytes(&mut input), INCLUSION_FORMAT);
-        let checkpoint =
-            Checkpoint::decode(take(&mut input, Checkpoint::ENCODED_LEN)).unwrap();
+        let checkpoint = Checkpoint::decode(take(&mut input, Checkpoint::ENCODED_LEN)).unwrap();
         assert_eq!(
             verify_inclusion(&original, &checkpoint).unwrap().record,
             RecordCheck::Recomputed,
@@ -78,8 +77,7 @@ impl Fixture {
         assert_eq!(&payload[36..38], &1u16.to_le_bytes());
         payload[36..38].copy_from_slice(&class.to_le_bytes());
         let end = payload.len();
-        let proposal_digest =
-            hash_parts(PROPOSAL_DIGEST_DOMAIN, &[&payload[..proposal_len]]);
+        let proposal_digest = hash_parts(PROPOSAL_DIGEST_DOMAIN, &[&payload[..proposal_len]]);
         let record_digest = hash_parts(
             ENTRY_DIGEST_DOMAIN,
             &[&proposal_digest, &payload[proposal_len..end - 64]],
@@ -174,8 +172,7 @@ fn cash_claim() -> BalanceClaim {
 #[test]
 fn ordinary_v1_amounts_still_verify_with_exact_record_recomputation() {
     let fixture = Fixture::new(1);
-    let report =
-        verify_balance(&fixture.balance(cash_claim(), true), &fixture.checkpoint).unwrap();
+    let report = verify_balance(&fixture.balance(cash_claim(), true), &fixture.checkpoint).unwrap();
     assert_eq!(report.claim, cash_claim());
     assert_eq!(report.contributing, vec![0]);
     let wrong = BalanceClaim {
@@ -209,8 +206,8 @@ fn authenticated_migration_inclusion_does_not_prove_posted_visibility() {
     );
     // All preexisting cryptographic and record-set checks pass. Removing
     // only the visibility guard admits this claim in the legacy verifier.
-    let error = verify_balance(&fixture.balance(cash_claim(), true), &fixture.checkpoint)
-        .unwrap_err();
+    let error =
+        verify_balance(&fixture.balance(cash_claim(), true), &fixture.checkpoint).unwrap_err();
     assert_eq!(error, VerifyError::MigrationVisibility { index: 0 });
     assert!(error.to_string().contains("authenticated lifecycle"));
 }
@@ -250,8 +247,7 @@ fn unrelated_accounts_units_and_earlier_cutoffs_remain_provable() {
             ..empty
         },
     ] {
-        let result =
-            verify_balance(&fixture.balance(claim, false), &fixture.checkpoint).unwrap();
+        let result = verify_balance(&fixture.balance(claim, false), &fixture.checkpoint).unwrap();
         assert_eq!(result.claim, claim);
         assert!(result.contributing.is_empty());
     }
@@ -279,14 +275,16 @@ fn retained_directory() -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     loop {
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "fa-verify-migration-{}-{id}",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("fa-verify-migration-{}-{id}", std::process::id()));
         match std::fs::create_dir(&path) {
             Ok(()) => return path,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => panic!("create {}: {error}", path.display()),
+            Err(error) => assert_eq!(
+                error.kind(),
+                std::io::ErrorKind::AlreadyExists,
+                "create {}: {error}",
+                path.display()
+            ),
         }
     }
 }

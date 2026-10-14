@@ -1016,10 +1016,38 @@ fn custody_and_import_receipts_on_the_real_kernel_agree_with_the_oracle() {
                 // An import run from a registered or unregistered source.
                 let source = rng.pick(&sources).clone();
                 let n = 1 + rng.below(3);
-                let batch: Vec<Document> =
-                    (0..n).map(|_| new_doc(&mut rng, book_id, step)).collect();
                 let principal = *rng.pick(&PRINCIPALS);
+                // An import run's documents are retrieved by the principal
+                // that runs it: the kernel binds retrieved_by to the acting
+                // capability's holder (FA-REF-011 otherwise; planted below).
+                let batch: Vec<Document> = (0..n)
+                    .map(|_| {
+                        let mut doc = new_doc(&mut rng, book_id, step);
+                        doc.retrieved_by = VId(u128::from(principal));
+                        doc
+                    })
+                    .collect();
                 let expected = intake_verdict(&law, &oracle_source(&source));
+                if expected.is_none() && step % 7 == 0 {
+                    let mut foreign = batch.clone();
+                    let other = PRINCIPALS
+                        .into_iter()
+                        .find(|p| *p != principal)
+                        .expect("three principals");
+                    foreign[0].retrieved_by = VId(u128::from(other));
+                    let refused = b.import(
+                        principal,
+                        source.clone(),
+                        format!("foreign-{seed:x}-{step}").as_bytes(),
+                        foreign,
+                    );
+                    assert_eq!(
+                        outcome(&refused),
+                        Some("FA-REF-011"),
+                        "seed {seed:x} step {step}: a document retrieved by another principal: {refused:?}"
+                    );
+                    *seen.entry("import-foreign-refused").or_default() += 1;
+                }
                 let key = format!("run-{seed:x}-{step}");
                 let got = b.import(principal, source.clone(), key.as_bytes(), batch.clone());
                 assert_eq!(

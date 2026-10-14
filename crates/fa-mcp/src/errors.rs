@@ -233,7 +233,10 @@ impl StructuredError {
         if let Some(authority) = &self.authority {
             v["authority"] = authority.clone();
         }
-        if self.kind == "forbidden_argument" {
+        // Both launch-binding refusals name the offending argument where a
+        // client reads structured error data, before any detector or book
+        // observation: the fixed launch argument and the host-path argument.
+        if self.kind == "forbidden_argument" || self.kind == "forbidden_path" {
             v["data"] = json!({
                 "fix_hint": self.fix_hint,
                 "argument": self.detail.get("argument"),
@@ -366,11 +369,16 @@ mod tests {
             ),
         );
         assert_eq!(e.never.as_deref(), Some(NEVER_REDATE));
-        assert!(
-            e.suggested_tool_calls.is_empty(),
-            "no `fa …` command in that fix: {:?}",
+        // The catalog template names one lawful read, the periods' states;
+        // never a re-dated post.
+        assert_eq!(
+            e.suggested_tool_calls.len(),
+            1,
+            "{:?}",
             e.suggested_tool_calls
         );
+        assert_eq!(e.suggested_tool_calls[0].tool, "fa_time_period_status");
+        assert_eq!(e.suggested_tool_calls[0].command, "fa period list --json");
         // FA-REF-021's catalog template names `fa period create --fiscal-year <FY>`.
         let e = StructuredError::from_error_event(
             &mcp,

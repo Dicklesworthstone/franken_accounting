@@ -15,8 +15,8 @@ use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CommitSeq, VId};
 
 use crate::{
-    AsyncBook, Book, BookError, DocumentDisclosureArtifact, Outcome, ProofArtifact,
-    ProofKind, ProofRequest,
+    AsyncBook, Book, BookError, DocumentDisclosureArtifact, Outcome, ProofArtifact, ProofKind,
+    ProofRequest,
 };
 
 /// Select a recorded entry and one of its exact evidence citations. A caller
@@ -107,23 +107,29 @@ fn select_citation(
     if entry.proposal.book_id != book || recorded_at > inclusion.checkpoint.state.through_seq {
         return Err(KernelError::Corrupt(
             "evidence entry is outside the selected book/checkpoint".into(),
-        ).into());
+        )
+        .into());
     }
     if entry.entry_digest != request.expected_entry_digest {
-        return Ok(Err(invalid_request("the selected entry does not match the expected entry digest")));
+        return Ok(Err(invalid_request(
+            "the selected entry does not match the expected entry digest",
+        )));
     }
     let mut matches = entry.proposal.evidence.iter().filter(|citation| {
         citation.document_oid == request.document && citation.role == request.role
     });
     let Some(citation) = matches.next() else {
-        return Ok(Err(invalid_request("the selected entry does not cite this document in the requested role")));
+        return Ok(Err(invalid_request(
+            "the selected entry does not cite this document in the requested role",
+        )));
     };
     if matches.next().is_some()
         || fa_journal::evidence::document_oid(book, &citation.doc_commit) != request.document
     {
         return Err(KernelError::Corrupt(
             "evidence citation is duplicated or bound to another book/document".into(),
-        ).into());
+        )
+        .into());
     }
     Ok(Ok(*citation))
 }
@@ -134,10 +140,12 @@ fn finish(
     inclusion: ProofArtifact,
     disclosure: DocumentDisclosureArtifact,
 ) -> Outcome<EvidenceDisclosureArtifact> {
-    if disclosure.document != citation.document_oid || disclosure.doc_commit != citation.doc_commit {
+    if disclosure.document != citation.document_oid || disclosure.doc_commit != citation.doc_commit
+    {
         return Err(KernelError::Corrupt(
             "protected disclosure does not match the entry's exact document commitment".into(),
-        ).into());
+        )
+        .into());
     }
     Ok(Ok(EvidenceDisclosureArtifact {
         entry_digest: request.expected_entry_digest,
@@ -164,15 +172,21 @@ impl Book {
         if let Err(refusal) = preflight(book, capability, requested_chunks) {
             return Ok(Err(refusal));
         }
-        let inclusion = match self.export_proof(capability.holder(), capability, request.proof_request())? {
-            Ok(proof) => proof,
-            Err(refusal) => return Ok(Err(refusal)),
-        };
-        let citation = match select_citation(book, request, self.read_entry(request.entry)?, &inclusion)? {
-            Ok(citation) => citation,
-            Err(refusal) => return Ok(Err(refusal)),
-        };
-        let disclosed = match self.export_document_disclosure(capability, &request.document, requested_chunks)? {
+        let inclusion =
+            match self.export_proof(capability.holder(), capability, request.proof_request())? {
+                Ok(proof) => proof,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+        let citation =
+            match select_citation(book, request, self.read_entry(request.entry)?, &inclusion)? {
+                Ok(citation) => citation,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+        let disclosed = match self.export_document_disclosure(
+            capability,
+            &request.document,
+            requested_chunks,
+        )? {
             Ok(disclosed) => disclosed,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -198,17 +212,30 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         }
         let query = cx.query();
         query.checkpoint().map_err(BookError::Context)?;
-        let inclusion = match self.export_proof(cx, capability.holder(), capability, request.proof_request())? {
+        let inclusion = match self.export_proof(
+            cx,
+            capability.holder(),
+            capability,
+            request.proof_request(),
+        )? {
             Ok(proof) => proof,
             Err(refusal) => return Ok(Err(refusal)),
         };
         query.checkpoint().map_err(BookError::Context)?;
-        let citation = match select_citation(book, request, self.read_entry(cx, request.entry)?, &inclusion)? {
+        let citation = match select_citation(
+            book,
+            request,
+            self.read_entry(cx, request.entry)?,
+            &inclusion,
+        )? {
             Ok(citation) => citation,
             Err(refusal) => return Ok(Err(refusal)),
         };
         query.checkpoint().map_err(BookError::Context)?;
-        let disclosed = match self.export_document_disclosure(cx, capability, &request.document, requested_chunks).await? {
+        let disclosed = match self
+            .export_document_disclosure(cx, capability, &request.document, requested_chunks)
+            .await?
+        {
             Ok(disclosed) => disclosed,
             Err(refusal) => return Ok(Err(refusal)),
         };

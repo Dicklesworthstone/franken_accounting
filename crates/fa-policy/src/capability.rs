@@ -1,8 +1,10 @@
 //! The typed capability (plan §14.2, §14.4, Appendix A `Capability`).
 //!
 //! A capability is a conjunction of caveats held by one principal: the ops
-//! it may exercise, per-unit amount ceilings, a declared expiry, and the
-//! profile template it was issued under. It is a value with canonical bytes
+//! it may exercise, per-unit amount ceilings, a declared expiry, the
+//! profile template it was issued under, and the scope caveats (`books`,
+//! `accounts`, `periods`, `effective ≤ date`, `known_at ≤ seq`, `branch`)
+//! that [`crate::admit::reach`] judges. It is a value with canonical bytes
 //! (`fa:capability:v1`) and a commitment digest an approval or a certificate
 //! binds; every constructor and the decoder enforce the profile law, so an
 //! Agent-profile capability that holds `approve` cannot exist.
@@ -26,6 +28,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fa_model::{DecodeError, EncodeError, Id128, Reader, Writer, domain_digest};
 use fa_money::UnitId;
+use fa_time::DateDay;
 use fgdb_types::{CommitSeq, VId};
 
 use crate::op::Op;
@@ -33,17 +36,34 @@ use crate::op::Op;
 pub const CAPABILITY_DOMAIN: &[u8] = b"fa:capability:v1";
 /// v1: no caveats beyond ops, ceilings and expiry. v2: v1's fields then a
 /// sorted, tagged caveat list (CobaltGull 3251), so each later caveat of
-/// plan §14.2 (`redaction`, `accounts`, `periods`, `known_at`, `branch`,
-/// `partial_view`) is an additive tag, not a new version. A capability
-/// without caveats still encodes as v1, so every commitment minted before
-/// caveats existed is unchanged.
+/// plan §14.2 is an additive tag, not a new version. A capability without
+/// caveats still encodes as v1, so every commitment minted before caveats
+/// existed is unchanged. (`partial_view` is an op, not a caveat.)
 const CAPABILITY_VERSION: u16 = 1;
 const CAPABILITY_VERSION_CAVEATS: u16 = 2;
 /// Caveat tags. A decoder refuses a tag it does not know: a restriction it
-/// cannot read is one it cannot enforce, so the token fails closed.
+/// cannot read is one it cannot enforce, so the token fails closed. Tag 2
+/// is `redaction` (fa-kuu), reserved and unknown to this build.
 pub const CAVEAT_BOOKS: u8 = 1;
+/// `accounts ⊆ subtree(code)`: `list(str code, ascending)`.
+pub const CAVEAT_ACCOUNTS: u8 = 3;
+/// `periods ⊆ {…}`: `list(str period code, ascending)`.
+pub const CAVEAT_PERIODS: u8 = 4;
+/// `effective ≤ date`: `i32 day`.
+pub const CAVEAT_EFFECTIVE: u8 = 5;
+/// `known_at ≤ seq`: `u64 seq`.
+pub const CAVEAT_KNOWN_AT: u8 = 6;
+/// `branch = <draft>`: `id128 branch`.
+pub const CAVEAT_BRANCH: u8 = 7;
 /// Books one capability may name, bounded so a decoder never allocates on a claim.
 pub const MAX_BOOKS: usize = 256;
+/// Subtree roots an `accounts` caveat may name, and bytes per account code
+/// (Appendix A `Account.code`).
+pub const MAX_ACCOUNT_ROOTS: usize = 64;
+pub const MAX_ACCOUNT_CODE_BYTES: usize = 64;
+/// Periods a `periods` caveat may name, and bytes per period code.
+pub const MAX_PERIODS: usize = 256;
+pub const MAX_PERIOD_CODE_BYTES: usize = 64;
 /// Caveats per capability and bytes per caveat payload, bounded likewise.
 pub const MAX_CAVEATS: usize = 16;
 pub const MAX_CAVEAT_BYTES: usize = 8 * 1024;
@@ -147,6 +167,14 @@ pub enum CapabilityError {
     TooManyCeilings,
     /// A books caveat names no book, or more than [`MAX_BOOKS`].
     BadBooks,
+    /// An accounts caveat names no root, more than [`MAX_ACCOUNT_ROOTS`],
+    /// or a code outside 1..=[`MAX_ACCOUNT_CODE_BYTES`] bytes.
+    BadAccounts,
+    /// A periods caveat names no period, more than [`MAX_PERIODS`], or a
+    /// code outside 1..=[`MAX_PERIOD_CODE_BYTES`] bytes.
+    BadPeriods,
+    /// A branch caveat would confine the token to a second branch.
+    BadBranch,
     /// A v2 capability carries a caveat tag this build does not know.
     UnknownCaveat {
         tag: u8,
@@ -178,6 +206,18 @@ impl fmt::Display for CapabilityError {
             ),
             Self::TooManyCeilings => write!(f, "more than {MAX_CEILINGS} ceilings"),
             Self::BadBooks => write!(f, "a books caveat names 1..={MAX_BOOKS} books"),
+            Self::BadAccounts => write!(
+                f,
+                "an accounts caveat names 1..={MAX_ACCOUNT_ROOTS} subtree roots of 1..={MAX_ACCOUNT_CODE_BYTES} bytes, and narrowing keeps at least one held root"
+            ),
+            Self::BadPeriods => write!(
+                f,
+                "a periods caveat names 1..={MAX_PERIODS} periods of 1..={MAX_PERIOD_CODE_BYTES} bytes, and narrowing keeps at least one held period"
+            ),
+            Self::BadBranch => write!(
+                f,
+                "a branch caveat confines the token to one branch; it cannot be moved to another"
+            ),
             Self::UnknownCaveat { tag } => write!(
                 f,
                 "caveat tag {tag} is not known to this build, so the capability cannot be enforced and is refused"
@@ -206,6 +246,18 @@ pub struct Capability {
     /// `books ⊆ {…}` (plan §14.2): `None` is no caveat (every book); a
     /// set admits only the books it names.
     books: Option<BTreeSet<Id128>>,
+    /// `accounts ⊆ subtree(code)`: the roots by account code, resolved per
+    /// book by the kernel (the root and its `CHILD_OF` descendants).
+    accounts: Option<BTreeSet<String>>,
+    /// `periods ⊆ {…}`, by period code.
+    periods: Option<BTreeSet<String>>,
+    /// `effective ≤ date`: the last effective day the token reaches.
+    effective_through: Option<DateDay>,
+    /// `known_at ≤ seq`: the last recorded frontier the token observes. A
+    /// pinned token never writes (a write observes the head).
+    known_at: Option<CommitSeq>,
+    /// `branch = <draft>`: the one branch the token acts on.
+    branch: Option<Id128>,
 }
 
 impl Capability {
@@ -228,6 +280,11 @@ impl Capability {
             expires_at: None,
             issuer,
             books: None,
+            accounts: None,
+            periods: None,
+            effective_through: None,
+            known_at: None,
+            branch: None,
         })
     }
 
@@ -301,6 +358,99 @@ impl Capability {
         self.books.as_ref().is_none_or(|b| b.contains(&book))
     }
 
+    /// Confine the capability to the subtrees rooted at `codes`. A second
+    /// call keeps only the roots both name: subtree containment needs the
+    /// chart, which this crate never reads, so narrowing to a descendant
+    /// root is a fresh issuance, not an attenuation. An empty result is
+    /// refused.
+    pub fn for_accounts(mut self, codes: &[&str]) -> Result<Self, CapabilityError> {
+        let named = bounded_codes(codes, MAX_ACCOUNT_ROOTS, MAX_ACCOUNT_CODE_BYTES)
+            .ok_or(CapabilityError::BadAccounts)?;
+        self.accounts =
+            Some(narrow(self.accounts.take(), named).ok_or(CapabilityError::BadAccounts)?);
+        Ok(self)
+    }
+
+    /// Confine the capability to the periods `codes` names; a second call
+    /// intersects, and an empty result is refused.
+    pub fn for_periods(mut self, codes: &[&str]) -> Result<Self, CapabilityError> {
+        let named = bounded_codes(codes, MAX_PERIODS, MAX_PERIOD_CODE_BYTES)
+            .ok_or(CapabilityError::BadPeriods)?;
+        self.periods = Some(narrow(self.periods.take(), named).ok_or(CapabilityError::BadPeriods)?);
+        Ok(self)
+    }
+
+    /// Confine the capability to effective dates `≤ day`; a second call can
+    /// only tighten it.
+    #[must_use]
+    pub fn effective_through(mut self, day: DateDay) -> Self {
+        self.effective_through = Some(self.effective_through.map_or(day, |d| d.min(day)));
+        self
+    }
+
+    /// Pin the capability to recorded frontiers `≤ seq`; a second call can
+    /// only tighten it.
+    #[must_use]
+    pub fn known_at_most(mut self, seq: CommitSeq) -> Self {
+        self.known_at = Some(self.known_at.map_or(seq, |k| k.min(seq)));
+        self
+    }
+
+    /// Confine the capability to `branch`. Repeating the same branch is a
+    /// no-op; naming another is refused (the conjunction would admit
+    /// nothing).
+    pub fn on_branch(mut self, branch: Id128) -> Result<Self, CapabilityError> {
+        match self.branch {
+            Some(held) if held != branch => Err(CapabilityError::BadBranch),
+            _ => {
+                self.branch = Some(branch);
+                Ok(self)
+            }
+        }
+    }
+
+    /// The `accounts` caveat's subtree roots, when the capability carries one.
+    #[must_use]
+    pub fn accounts(&self) -> Option<&BTreeSet<String>> {
+        self.accounts.as_ref()
+    }
+
+    /// The `periods` caveat, when the capability carries one.
+    #[must_use]
+    pub fn periods(&self) -> Option<&BTreeSet<String>> {
+        self.periods.as_ref()
+    }
+
+    /// The `effective ≤ date` caveat, when the capability carries one.
+    #[must_use]
+    pub fn effective_bound(&self) -> Option<DateDay> {
+        self.effective_through
+    }
+
+    /// The `known_at ≤ seq` pin, when the capability carries one.
+    #[must_use]
+    pub fn known_at_pin(&self) -> Option<CommitSeq> {
+        self.known_at
+    }
+
+    /// The `branch` caveat, when the capability carries one.
+    #[must_use]
+    pub fn branch(&self) -> Option<Id128> {
+        self.branch
+    }
+
+    /// Whether any scope caveat beyond `books` confines the capability: such
+    /// a token reaches only what [`crate::admit::reach`] admits, so an act
+    /// on the whole book refuses it.
+    #[must_use]
+    pub fn is_scoped(&self) -> bool {
+        self.accounts.is_some()
+            || self.periods.is_some()
+            || self.effective_through.is_some()
+            || self.known_at.is_some()
+            || self.branch.is_some()
+    }
+
     #[must_use]
     pub fn holder(&self) -> VId {
         self.holder
@@ -339,16 +489,19 @@ impl Capability {
     /// `u16 version ‖ u128 holder ‖ u8 profile ‖ list(u8 op tag, ascending)
     /// ‖ list(u32 unit ‖ i128 max, ascending by unit) ‖ opt(u64 expires_at)
     /// ‖ u128 issuer`, then, in v2 only, `‖ list(u8 tag ‖ bytes payload)`,
-    /// non-empty and strictly ascending by tag. `books` (tag 1) carries
-    /// `list(id128 book, ascending)`.
+    /// non-empty and strictly ascending by tag. Payloads: `books` (1)
+    /// `list(id128 book, ascending)`; `accounts` (3) and `periods` (4)
+    /// `list(str code, ascending)`; `effective` (5) `i32 day`; `known_at`
+    /// (6) `u64 seq`; `branch` (7) `id128 branch`.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, CapabilityError> {
         let ops: Vec<u8> = self.ops.iter().map(|op| op.tag()).collect();
         let ceilings: Vec<(UnitId, i128)> = self.ceilings.iter().map(|(u, m)| (*u, *m)).collect();
+        let caveats = self.caveats()?;
         let mut w = Writer::with_capacity(64 + ops.len() + ceilings.len() * 20);
-        let version = if self.books.is_some() {
-            CAPABILITY_VERSION_CAVEATS
-        } else {
+        let version = if caveats.is_empty() {
             CAPABILITY_VERSION
+        } else {
+            CAPABILITY_VERSION_CAVEATS
         };
         w.u16(version)
             .u128(self.holder.0)
@@ -363,19 +516,59 @@ impl Capability {
                 w.u64(s.0);
             })
             .u128(self.issuer.0);
+        if !caveats.is_empty() {
+            w.list(&caveats, |w, (tag, payload)| {
+                w.u8(*tag).bytes(payload);
+            });
+        }
+        w.finish().map_err(CapabilityError::Encode)
+    }
+
+    /// The v2 caveat list `(tag, payload)`, ascending by tag.
+    fn caveats(&self) -> Result<Vec<(u8, Vec<u8>)>, CapabilityError> {
+        let mut out = Vec::new();
         if let Some(books) = &self.books {
             let books: Vec<Id128> = books.iter().copied().collect();
             let mut payload = Writer::with_capacity(4 + books.len() * 16);
             payload.list(&books, |w, b| {
                 w.fixed(&b.0);
             });
-            let payload = payload.finish().map_err(CapabilityError::Encode)?;
-            let caveats = [(CAVEAT_BOOKS, payload)];
-            w.list(&caveats, |w, (tag, payload)| {
-                w.u8(*tag).bytes(payload);
-            });
+            out.push((
+                CAVEAT_BOOKS,
+                payload.finish().map_err(CapabilityError::Encode)?,
+            ));
         }
-        w.finish().map_err(CapabilityError::Encode)
+        if let Some(accounts) = &self.accounts {
+            out.push((CAVEAT_ACCOUNTS, encode_codes(accounts)?));
+        }
+        if let Some(periods) = &self.periods {
+            out.push((CAVEAT_PERIODS, encode_codes(periods)?));
+        }
+        if let Some(day) = self.effective_through {
+            let mut payload = Writer::with_capacity(4);
+            payload.i32(day.0);
+            out.push((
+                CAVEAT_EFFECTIVE,
+                payload.finish().map_err(CapabilityError::Encode)?,
+            ));
+        }
+        if let Some(seq) = self.known_at {
+            let mut payload = Writer::with_capacity(8);
+            payload.u64(seq.0);
+            out.push((
+                CAVEAT_KNOWN_AT,
+                payload.finish().map_err(CapabilityError::Encode)?,
+            ));
+        }
+        if let Some(branch) = self.branch {
+            let mut payload = Writer::with_capacity(16);
+            payload.fixed(&branch.0);
+            out.push((
+                CAVEAT_BRANCH,
+                payload.finish().map_err(CapabilityError::Encode)?,
+            ));
+        }
+        Ok(out)
     }
 
     /// The commitment an approval or a certificate binds:
@@ -435,6 +628,11 @@ impl Capability {
             .u128("capability.issuer")
             .map_err(CapabilityError::Decode)?);
         let mut books = None;
+        let mut accounts = None;
+        let mut periods = None;
+        let mut effective_through = None;
+        let mut known_at = None;
+        let mut branch = None;
         if version == CAPABILITY_VERSION_CAVEATS {
             let caveats = r
                 .list(MAX_CAVEATS, "capability.caveats", |r| {
@@ -454,6 +652,48 @@ impl Capability {
             for (tag, payload) in &caveats {
                 match *tag {
                     CAVEAT_BOOKS => books = Some(decode_books(payload)?),
+                    CAVEAT_ACCOUNTS => {
+                        accounts = Some(decode_codes(
+                            payload,
+                            MAX_ACCOUNT_ROOTS,
+                            MAX_ACCOUNT_CODE_BYTES,
+                            "capability.accounts",
+                            CapabilityError::BadAccounts,
+                        )?);
+                    }
+                    CAVEAT_PERIODS => {
+                        periods = Some(decode_codes(
+                            payload,
+                            MAX_PERIODS,
+                            MAX_PERIOD_CODE_BYTES,
+                            "capability.periods",
+                            CapabilityError::BadPeriods,
+                        )?);
+                    }
+                    CAVEAT_EFFECTIVE => {
+                        let mut p = Reader::new(payload);
+                        let day = p
+                            .i32("capability.effective")
+                            .map_err(CapabilityError::Decode)?;
+                        p.finish().map_err(CapabilityError::Decode)?;
+                        effective_through = Some(DateDay(day));
+                    }
+                    CAVEAT_KNOWN_AT => {
+                        let mut p = Reader::new(payload);
+                        let seq = p
+                            .u64("capability.known_at")
+                            .map_err(CapabilityError::Decode)?;
+                        p.finish().map_err(CapabilityError::Decode)?;
+                        known_at = Some(CommitSeq(seq));
+                    }
+                    CAVEAT_BRANCH => {
+                        let mut p = Reader::new(payload);
+                        let id = p
+                            .fixed("capability.branch")
+                            .map_err(CapabilityError::Decode)?;
+                        p.finish().map_err(CapabilityError::Decode)?;
+                        branch = Some(Id128(id));
+                    }
                     tag => return Err(CapabilityError::UnknownCaveat { tag }),
                 }
             }
@@ -467,8 +707,79 @@ impl Capability {
         if let Some(books) = books {
             cap = cap.for_books(&books)?;
         }
+        if let Some(codes) = accounts {
+            let codes: Vec<&str> = codes.iter().map(String::as_str).collect();
+            cap = cap.for_accounts(&codes)?;
+        }
+        if let Some(codes) = periods {
+            let codes: Vec<&str> = codes.iter().map(String::as_str).collect();
+            cap = cap.for_periods(&codes)?;
+        }
+        if let Some(day) = effective_through {
+            cap = cap.effective_through(day);
+        }
+        if let Some(seq) = known_at {
+            cap = cap.known_at_most(seq);
+        }
+        if let Some(branch) = branch {
+            cap = cap.on_branch(branch)?;
+        }
         Ok(cap)
     }
+}
+
+/// `codes` as a set when it names 1..=`max` codes of 1..=`max_bytes` bytes.
+fn bounded_codes(codes: &[&str], max: usize, max_bytes: usize) -> Option<BTreeSet<String>> {
+    if codes.is_empty()
+        || codes.len() > max
+        || codes.iter().any(|c| c.is_empty() || c.len() > max_bytes)
+    {
+        return None;
+    }
+    Some(codes.iter().map(|c| (*c).to_string()).collect())
+}
+
+/// A conjunctive narrowing: what is held intersected with what is named,
+/// or `None` when nothing remains.
+fn narrow<T: Ord + Clone>(held: Option<BTreeSet<T>>, named: BTreeSet<T>) -> Option<BTreeSet<T>> {
+    let next: BTreeSet<T> = match held {
+        Some(held) => held.intersection(&named).cloned().collect(),
+        None => named,
+    };
+    (!next.is_empty()).then_some(next)
+}
+
+/// The `accounts`/`periods` payload: `list(str code, ascending)`.
+fn encode_codes(codes: &BTreeSet<String>) -> Result<Vec<u8>, CapabilityError> {
+    let codes: Vec<&String> = codes.iter().collect();
+    let mut payload = Writer::with_capacity(4 + codes.iter().map(|c| 4 + c.len()).sum::<usize>());
+    payload.list(&codes, |w, c| {
+        w.str(c);
+    });
+    payload.finish().map_err(CapabilityError::Encode)
+}
+
+/// Decode `list(str code, ascending)`: non-empty, bounded, strictly
+/// ascending, no trailing bytes; `bad` names the caveat's shape error.
+fn decode_codes(
+    payload: &[u8],
+    max: usize,
+    max_bytes: usize,
+    what: &'static str,
+    bad: CapabilityError,
+) -> Result<Vec<String>, CapabilityError> {
+    let mut r = Reader::new(payload);
+    let codes = r
+        .list(max, what, |r| r.str(max_bytes, what).map(str::to_string))
+        .map_err(CapabilityError::Decode)?;
+    if codes.is_empty() || codes.iter().any(String::is_empty) {
+        return Err(bad);
+    }
+    if !codes.windows(2).all(|w| w[0] < w[1]) {
+        return Err(CapabilityError::Decode(r.unsorted(what)));
+    }
+    r.finish().map_err(CapabilityError::Decode)?;
+    Ok(codes)
 }
 
 /// The `books` caveat payload: `list(id128 book, ascending)`, non-empty.
@@ -702,6 +1013,207 @@ mod tests {
         assert!(matches!(
             agent().with_ceiling(UnitId(1), 0),
             Err(CapabilityError::BadCeiling { .. })
+        ));
+    }
+
+    fn hex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("hex"))
+            .collect()
+    }
+
+    fn scoped() -> Capability {
+        Capability::embedded(VId(1), &["close"])
+            .unwrap()
+            .for_accounts(&["6100"])
+            .unwrap()
+            .for_periods(&["FY2026-P03"])
+            .unwrap()
+            .effective_through(DateDay(20_000))
+            .known_at_most(CommitSeq(9))
+            .on_branch(Id128([3; 16]))
+            .unwrap()
+    }
+
+    /// Golden bytes for the scope caveats (tags 3–7), written from the
+    /// documented layout: each is an additive v2 tag after `books`' slot,
+    /// and tag 2 (`redaction`, fa-kuu) stays unknown.
+    #[test]
+    fn scope_caveat_bytes_are_golden() {
+        let golden = hex(concat!(
+            "0200",                             // version 2
+            "01000000000000000000000000000000", // holder VId(1)
+            "00",                               // profile Human
+            "01000000",                         // one op:
+            "06",                               //   close
+            "00000000",                         // no ceilings
+            "00",                               // no expiry
+            "01000000000000000000000000000000", // issuer VId(1)
+            "05000000",                         // five caveats:
+            "03",                               //   tag 3, accounts
+            "0c000000",                         //   12 payload bytes:
+            "01000000",                         //     one root,
+            "04000000",                         //     4 bytes
+            "36313030",                         //     "6100"
+            "04",                               //   tag 4, periods
+            "12000000",                         //   18 payload bytes:
+            "01000000",                         //     one period,
+            "0a000000",                         //     10 bytes
+            "4659323032362d503033",             //     "FY2026-P03"
+            "05",                               //   tag 5, effective
+            "04000000",                         //   4 payload bytes:
+            "204e0000",                         //     day 20000
+            "06",                               //   tag 6, known_at
+            "08000000",                         //   8 payload bytes:
+            "0900000000000000",                 //     seq 9
+            "07",                               //   tag 7, branch
+            "10000000",                         //   16 payload bytes:
+            "03030303030303030303030303030303", //     Id128([3; 16])
+        ));
+        let cap = scoped();
+        assert_eq!(cap.canonical_bytes().unwrap(), golden);
+        let decoded = Capability::decode(&golden).unwrap();
+        assert_eq!(decoded, cap);
+        assert!(decoded.is_scoped());
+        assert_eq!(decoded.effective_bound(), Some(DateDay(20_000)));
+        assert_eq!(decoded.known_at_pin(), Some(CommitSeq(9)));
+        assert_eq!(decoded.branch(), Some(Id128([3; 16])));
+        assert!(decoded.accounts().unwrap().contains("6100"));
+        assert!(decoded.periods().unwrap().contains("FY2026-P03"));
+        // Each scope caveat is bound by the commitment.
+        let c = cap.commitment().unwrap();
+        let plain = Capability::embedded(VId(1), &["close"]).unwrap();
+        assert!(!plain.is_scoped());
+        for other in [
+            plain.clone().for_accounts(&["6100"]).unwrap(),
+            plain.clone().for_periods(&["FY2026-P03"]).unwrap(),
+            plain.clone().effective_through(DateDay(20_000)),
+            plain.clone().known_at_most(CommitSeq(9)),
+            plain.clone().on_branch(Id128([3; 16])).unwrap(),
+            scoped().effective_through(DateDay(19_999)),
+            scoped().known_at_most(CommitSeq(8)),
+        ] {
+            assert!(other.is_scoped());
+            assert_ne!(other.commitment().unwrap(), c, "{other:?}");
+        }
+        // A trailing byte inside a payload, or an empty code list, is refused.
+        let mut long_effective = golden.clone();
+        let at = golden.len() - (1 + 4 + 16) - (1 + 4 + 8) - 4; // the day
+        long_effective[at - 4] = 5; // payload length 5 …
+        long_effective.insert(at + 4, 0); // … with one extra byte
+        assert!(matches!(
+            Capability::decode(&long_effective),
+            Err(CapabilityError::Decode(_))
+        ));
+    }
+
+    #[test]
+    fn scope_caveats_only_narrow_and_an_empty_scope_is_refused() {
+        let cap = Capability::embedded(VId(1), &["post"])
+            .unwrap()
+            .for_accounts(&["6100", "1000"])
+            .unwrap()
+            .for_periods(&["FY2026-P03", "FY2026-P04"])
+            .unwrap();
+        // Accounts and periods intersect; a root not held is not added.
+        let narrowed = cap
+            .clone()
+            .for_accounts(&["6100", "2000"])
+            .unwrap()
+            .for_periods(&["FY2026-P04"])
+            .unwrap();
+        assert_eq!(
+            narrowed.accounts().unwrap().iter().collect::<Vec<_>>(),
+            ["6100"]
+        );
+        assert_eq!(
+            narrowed.periods().unwrap().iter().collect::<Vec<_>>(),
+            ["FY2026-P04"]
+        );
+        assert_eq!(
+            cap.clone().for_accounts(&["6110"]),
+            Err(CapabilityError::BadAccounts),
+            "a descendant root is a fresh issuance, not an attenuation"
+        );
+        assert_eq!(
+            cap.clone().for_periods(&["FY2026-P05"]),
+            Err(CapabilityError::BadPeriods)
+        );
+        // Codes are bounded and non-empty.
+        let base = Capability::embedded(VId(1), &["post"]).unwrap();
+        assert_eq!(
+            base.clone().for_accounts(&[]),
+            Err(CapabilityError::BadAccounts)
+        );
+        assert_eq!(
+            base.clone().for_accounts(&[""]),
+            Err(CapabilityError::BadAccounts)
+        );
+        let long = "x".repeat(MAX_ACCOUNT_CODE_BYTES + 1);
+        assert_eq!(
+            base.clone().for_accounts(&[long.as_str()]),
+            Err(CapabilityError::BadAccounts)
+        );
+        assert_eq!(
+            base.clone().for_periods(&[]),
+            Err(CapabilityError::BadPeriods)
+        );
+        // Dates and pins only tighten; a branch never moves.
+        let bounded = base
+            .clone()
+            .effective_through(DateDay(10))
+            .effective_through(DateDay(20))
+            .known_at_most(CommitSeq(5))
+            .known_at_most(CommitSeq(7));
+        assert_eq!(bounded.effective_bound(), Some(DateDay(10)));
+        assert_eq!(bounded.known_at_pin(), Some(CommitSeq(5)));
+        let drafted = base.on_branch(Id128([4; 16])).unwrap();
+        assert_eq!(
+            drafted.clone().on_branch(Id128([4; 16])).unwrap().branch(),
+            Some(Id128([4; 16]))
+        );
+        assert_eq!(
+            drafted.on_branch(Id128::TRUNK),
+            Err(CapabilityError::BadBranch)
+        );
+    }
+
+    #[test]
+    fn a_code_caveat_that_names_nothing_or_is_unsorted_does_not_decode() {
+        let plain = Capability::embedded(VId(3), &["post"]).unwrap();
+        let caveat = |tag: u8, payload: &[u8]| {
+            let mut bytes = plain.canonical_bytes().unwrap();
+            bytes[..2].copy_from_slice(&2u16.to_le_bytes());
+            bytes.extend_from_slice(&1u32.to_le_bytes()); // one caveat
+            bytes.push(tag);
+            bytes.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_le_bytes());
+            bytes.extend_from_slice(payload);
+            bytes
+        };
+        // Zero codes.
+        assert_eq!(
+            Capability::decode(&caveat(CAVEAT_ACCOUNTS, &0u32.to_le_bytes())),
+            Err(CapabilityError::BadAccounts)
+        );
+        assert_eq!(
+            Capability::decode(&caveat(CAVEAT_PERIODS, &0u32.to_le_bytes())),
+            Err(CapabilityError::BadPeriods)
+        );
+        // Two codes out of order.
+        let unsorted = hex(concat!("02000000", "01000000", "62", "01000000", "61"));
+        assert!(matches!(
+            Capability::decode(&caveat(CAVEAT_PERIODS, &unsorted)),
+            Err(CapabilityError::Decode(_))
+        ));
+        // A sorted pair decodes.
+        let sorted = hex(concat!("02000000", "01000000", "61", "01000000", "62"));
+        let two = Capability::decode(&caveat(CAVEAT_ACCOUNTS, &sorted)).unwrap();
+        assert_eq!(two.accounts().unwrap().len(), 2);
+        // A truncated pin.
+        assert!(matches!(
+            Capability::decode(&caveat(CAVEAT_KNOWN_AT, &[1, 0, 0])),
+            Err(CapabilityError::Decode(_))
         ));
     }
 }

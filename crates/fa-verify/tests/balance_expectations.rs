@@ -10,8 +10,12 @@ use fa_verify::codec::Writer;
 use fa_verify::{Checkpoint, verify_state};
 
 const SCOPE: [&str; 6] = [
-    "--expect-account", "00000000000000000000000000000030",
-    "--expect-unit", "1", "--expect-through", "none",
+    "--expect-account",
+    "00000000000000000000000000000030",
+    "--expect-unit",
+    "1",
+    "--expect-through",
+    "none",
 ];
 const AMOUNTS: [&str; 4] = ["--expect-debits", "0", "--expect-credits", "120550"];
 
@@ -19,21 +23,31 @@ fn directory() -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     loop {
         let path = std::env::temp_dir().join(format!(
-            "fa-verify-expectations-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed),
+            "fa-verify-expectations-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
         ));
         match fs::create_dir(&path) {
             Ok(()) => return path,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => panic!("create {}: {error}", path.display()),
+            Err(error) => assert_eq!(
+                error.kind(),
+                std::io::ErrorKind::AlreadyExists,
+                "create {}: {error}",
+                path.display()
+            ),
         }
     }
 }
 
 fn vector(name: &str) -> Vec<u8> {
-    let text = include_str!("fixtures/accumulator_v1.txt").lines()
-        .find_map(|line| line.strip_prefix(name)?.strip_prefix(' ')).expect("frozen vector");
-    (0..text.len()).step_by(2)
-        .map(|index| u8::from_str_radix(&text[index..index + 2], 16).unwrap()).collect()
+    let text = include_str!("fixtures/accumulator_v1.txt")
+        .lines()
+        .find_map(|line| line.strip_prefix(name)?.strip_prefix(' '))
+        .expect("frozen vector");
+    (0..text.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&text[index..index + 2], 16).unwrap())
+        .collect()
 }
 
 fn inputs(dir: &Path, proof: &[u8], checkpoint: &Checkpoint) -> (PathBuf, PathBuf) {
@@ -46,8 +60,16 @@ fn inputs(dir: &Path, proof: &[u8], checkpoint: &Checkpoint) -> (PathBuf, PathBu
 
 fn run(kind: &str, proof: &Path, checkpoint: &Path, flags: &[&str], json: bool) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_fa-verify"));
-    command.arg(kind).arg("--proof").arg(proof).arg("--checkpoint").arg(checkpoint).args(flags);
-    if json { command.arg("--json"); }
+    command
+        .arg(kind)
+        .arg("--proof")
+        .arg(proof)
+        .arg("--checkpoint")
+        .arg(checkpoint)
+        .args(flags);
+    if json {
+        command.arg("--json");
+    }
     command.output().unwrap()
 }
 
@@ -86,11 +108,21 @@ fn frozen_producer_balance_requires_the_requested_scope_and_gross_amounts() {
     let legacy = result(run("balance", &proof, &anchor, &[], true), 0);
     assert!(!legacy.contains("requested_balance_"));
 
-    for (position, other) in [(1, "00000000000000000000000000000031"), (3, "2"), (5, "0"), (7, "1"), (9, "120551")] {
+    for (position, other) in [
+        (1, "00000000000000000000000000000031"),
+        (3, "2"),
+        (5, "0"),
+        (7, "1"),
+        (9, "120551"),
+    ] {
         let mut wrong = flags.clone();
         wrong[position] = other;
         let stdout = result(run("balance", &proof, &anchor, &wrong, true), 8);
-        assert!(stdout.contains(if position < 6 { "balance scope mismatch" } else { "balance amounts mismatch" }));
+        assert!(stdout.contains(if position < 6 {
+            "balance scope mismatch"
+        } else {
+            "balance amounts mismatch"
+        }));
     }
     // Same net credit as 0 / 120550, but neither gross column matches.
     flags[7] = "1";
@@ -102,16 +134,26 @@ fn frozen_producer_balance_requires_the_requested_scope_and_gross_amounts() {
 #[test]
 fn v2_dispatch_and_explicit_cutoffs_are_bound_in_the_standalone_process() {
     let checkpoint = Checkpoint {
-        book_id: [1; 16], branch_id: [0; 16], through_seq: 0,
-        leaf_count: 0, root: fa_verify::tree::empty_root(),
+        book_id: [1; 16],
+        branch_id: [0; 16],
+        through_seq: 0,
+        leaf_count: 0,
+        root: fa_verify::tree::empty_root(),
     };
     for through in [None, Some(i32::MIN), Some(0), Some(i32::MAX)] {
         let mut writer = Writer::default();
-        writer.bytes(fa_verify::migration_balance::BALANCE_FORMAT_V2)
-            .fixed(&checkpoint.encode()).u128(0x30).u32(1);
+        writer
+            .bytes(fa_verify::migration_balance::BALANCE_FORMAT_V2)
+            .fixed(&checkpoint.encode())
+            .u128(0x30)
+            .u32(1);
         match through {
-            Some(day) => { writer.u8(1).i32(day); }
-            None => { writer.u8(0); }
+            Some(day) => {
+                writer.u8(1).i32(day);
+            }
+            None => {
+                writer.u8(0);
+            }
         }
         writer.i128(0).i128(0).count(0).count(0).count(0);
         let dir = directory();
@@ -122,7 +164,10 @@ fn v2_dispatch_and_explicit_cutoffs_are_bound_in_the_standalone_process() {
         flags.extend(["--expect-debits", "0", "--expect-credits", "0"]);
         result(run("balance", &proof, &anchor, &flags, true), 0);
         flags[5] = if through.is_some() { "none" } else { "0" };
-        assert!(result(run("balance", &proof, &anchor, &flags, true), 8).contains("balance scope mismatch"));
+        assert!(
+            result(run("balance", &proof, &anchor, &flags, true), 8)
+                .contains("balance scope mismatch")
+        );
     }
 }
 
@@ -156,14 +201,19 @@ fn all_request_options_are_validated_before_any_input_is_opened() {
     ] {
         result(run("balance", &missing, &missing, &flags, true), 2);
     }
-    for extra in [vec!["--expect-debits", "0"], vec!["--expect-through", "none"]] {
+    for extra in [
+        vec!["--expect-debits", "0"],
+        vec!["--expect-through", "none"],
+    ] {
         let mut flags = SCOPE.to_vec();
         flags.extend(extra);
         result(run("balance", &missing, &missing, &flags, true), 2);
     }
     for kind in ["inclusion", "prefix", "consistency"] {
         let mut flags = SCOPE.to_vec();
-        if kind == "consistency" { flags.extend(["--next-checkpoint", "missing-next"]); }
+        if kind == "consistency" {
+            flags.extend(["--next-checkpoint", "missing-next"]);
+        }
         let stdout = result(run(kind, &missing, &missing, &flags, true), 2);
         assert!(stdout.contains("admitted only for balance"));
     }
@@ -175,16 +225,28 @@ fn human_mode_distinguishes_requested_verification_from_claim_inspection() {
     let (proof, anchor) = inputs(&directory(), &vector("balance"), &checkpoint);
     let output = run("balance", &proof, &anchor, &SCOPE, false);
     assert!(output.status.success());
-    assert!(String::from_utf8(output.stdout).unwrap().contains("recipient scope matched"));
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("recipient scope matched")
+    );
     let output = run("balance", &proof, &anchor, &[], false);
     assert!(output.status.success());
-    assert!(String::from_utf8(output.stdout).unwrap().contains("no independently specified balance request was checked"));
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("no independently specified balance request was checked")
+    );
     let mut flags = SCOPE.to_vec();
     flags[3] = "2";
     let output = run("balance", &proof, &anchor, &flags, false);
     assert_eq!(output.status.code(), Some(8));
     assert!(output.stdout.is_empty());
-    assert!(String::from_utf8(output.stderr).unwrap().contains("balance scope mismatch"));
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("balance scope mismatch")
+    );
 }
 
 #[cfg(unix)]

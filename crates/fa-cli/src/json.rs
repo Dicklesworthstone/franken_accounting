@@ -105,14 +105,16 @@ fn write_str(out: &mut String, s: &str) {
     out.push('"');
 }
 
-/// A tiny builder so call sites read like literals.
+/// A tiny builder so call sites read like literals. Fields are kept sorted
+/// by key, the order `render` writes and `parse` reads back, so a
+/// constructed object equals its own rendered-and-parsed form.
 pub fn obj(fields: Vec<(&str, Json)>) -> Json {
-    Json::Obj(
-        fields
-            .into_iter()
-            .map(|(k, v)| (k.to_string(), v))
-            .collect(),
-    )
+    let mut fields: Vec<(String, Json)> = fields
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+    fields.sort_by(|a, b| a.0.cmp(&b.0));
+    Json::Obj(fields)
 }
 
 pub fn s(v: impl Into<String>) -> Json {
@@ -308,7 +310,9 @@ impl Parser<'_> {
         let code = match first {
             0xD800..=0xDBFF => {
                 if !self.eat(b'\\') || !self.eat(b'u') {
-                    return Err(self.err("high surrogate must be followed by a low surrogate escape"));
+                    return Err(
+                        self.err("high surrogate must be followed by a low surrogate escape")
+                    );
                 }
                 let low = self.hex_quad()?;
                 if !(0xDC00..=0xDFFF).contains(&low) {
@@ -412,12 +416,24 @@ mod tests {
         }
         assert_eq!(parse("-0").unwrap(), Json::Int(0));
         for text in [
-            "00", "01", "-00", "-01", "-", "- 1", "+1", "1.0", "1e0", "1E+3",
+            "00",
+            "01",
+            "-00",
+            "-01",
+            "-",
+            "- 1",
+            "+1",
+            "1.0",
+            "1e0",
+            "1E+3",
             "170141183460469231731687303715884105728",
             "-170141183460469231731687303715884105729",
         ] {
             assert!(parse(text).is_err(), "accepted {text:?}");
-            assert!(parse(&format!("[{text}]")).is_err(), "accepted array {text:?}");
+            assert!(
+                parse(&format!("[{text}]")).is_err(),
+                "accepted array {text:?}"
+            );
         }
     }
 

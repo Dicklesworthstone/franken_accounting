@@ -7,6 +7,7 @@
 //! caller can keep both stores on the same lab-controlled I/O plane.
 
 use core::fmt;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use asupersync::fs::{Vfs, VfsFile};
@@ -26,9 +27,32 @@ use fgdb::Database;
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CommitSeq, VId};
 
-use crate::book::{BookError, BookKeys, Entropy, Outcome};
+use crate::book::{BookError, BookKeys, Entropy, Outcome, ProducedBundle};
 
 pub(crate) const BOOK_BLOB_STORE: u16 = 1;
+
+/// The journal prefix and the checkpoint a bundle is assembled over.
+type BundleBasis = (fa_notary::Journal, fa_notary::StoredCheckpoint);
+
+/// What a bundle against `state` (default: the latest journaled state) is
+/// assembled over, or `None` when there is no such state.
+fn bundle_basis_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    signer: &fa_notary::SigningKey,
+    state: Option<fa_model::Oid>,
+) -> Result<Option<Result<BundleBasis, fa_journal::Refusal>>, KernelError> {
+    let chain = fa_notary::chain(db)?;
+    let stored = match state {
+        None => chain.first(),
+        Some(oid) => chain.iter().find(|s| s.oid == oid),
+    };
+    match stored {
+        None => Ok(None),
+        Some(stored) => fa_notary::bundle_basis(db, cx, book, stored, signer).map(Some),
+    }
+}
 
 fn seal(
     cx: &PurposeContexts,
@@ -66,6 +90,8 @@ pub struct AsyncBook<V: Vfs + Clone, B: Vfs + Clone = V> {
     blobs: fa_journal::BlobStore<B>,
     context: BookContext,
     entropy: Entropy,
+    /// Signs this book's transparency checkpoints (derived from its keys).
+    signer: fa_notary::SigningKey,
 }
 
 impl<V: Vfs + Clone> AsyncBook<V> {
@@ -112,6 +138,7 @@ impl<V: Vfs + Clone> AsyncBook<V> {
                 symbols,
             },
             entropy,
+            signer: keys.checkpoint_signing_key(),
         })
     }
 
@@ -165,6 +192,7 @@ impl<V: Vfs + Clone> AsyncBook<V> {
                 symbols: SymbolTable::compiled(),
             },
             entropy,
+            signer: keys.checkpoint_signing_key(),
         })
     }
 }
@@ -175,7 +203,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         &self.context
     }
 
-    fn query<T>(
+    /// Run `read` under the caller's query context and its restriction:
+    /// every facade read, the blocking [`crate::ReadScope`] included, goes
+    /// through here.
+    pub(crate) fn query<T>(
         &self,
         cx: &PurposeContexts,
         read: impl FnOnce(&Database<V>, &BookContext) -> Result<T, BookError>,
@@ -188,6 +219,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// The current committed frontier under the caller's read context.
     pub fn head(&self, cx: &PurposeContexts) -> Result<CommitSeq, BookError> {
         self.query(cx, |db, _| Ok(db.frontier().map_err(KernelError::from)?))
+    }
+
+    /// The genesis spec journaled on the book root (base unit, calendar,
+    /// opening date, entities): what `fa book info` reports.
+    pub fn spec(&self, cx: &PurposeContexts) -> Result<BookSpec, BookError> {
+        self.query(cx, |db, _| {
+            fa_journal::genesis::read_book_spec(db)?.ok_or(BookError::NoBook)
+        })
     }
 
     /// Seal text using this book's explicitly supplied entropy capability.
@@ -548,11 +587,16 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// book shares the source's immutable blob store, so its external
     /// documents remain readable while that store is available. Its sealed
     /// fields retain the source book's key; target database keys encrypt
-    /// only the new substrate storage.
+    /// only the new substrate storage. `keys` are the keys `target` was
+    /// opened with: the scratch book signs its own checkpoints with their
+    /// checkpoint key, never with the source's unless the caller passes the
+    /// source's keys, since a checkpoint over a scenario prefix is not the
+    /// book's.
     pub async fn replay_into<W: Vfs + Clone>(
         &mut self,
         cx: &PurposeContexts,
         mut target: Database<W>,
+        keys: &BookKeys,
         prefix: Option<CommitSeq>,
         entropy: Entropy,
     ) -> Outcome<(AsyncBook<W, B>, fa_journal::SeqMap)> {
@@ -575,6 +619,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 blobs: self.blobs.clone(),
                 context: self.context.clone(),
                 entropy,
+                signer: keys.checkpoint_signing_key(),
             },
             map,
         )))
@@ -624,8 +669,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         doc: &fa_journal::Document,
     ) -> Outcome<fa_journal::DocumentAdded> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
-        let inline_bound =
-            fa_registry::evidence_policy::EvidencePolicy::embedded()?.max_document_bytes;
+        let inline_bound = fa_journal::evidence::inline_document_bound(
+            &fa_registry::evidence_policy::EvidencePolicy::embedded()?,
+        );
         Ok(
             if u64::try_from(doc.bytes.len()).unwrap_or(u64::MAX) > inline_bound {
                 fa_journal::add_document_external(&mut self.db, cx, &self.context, &self.blobs, doc)
@@ -1019,8 +1065,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         if let Err(denial) = fa_policy::current(capability, self.head(cx)?) {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
-        // The exclusive book handle holds the single-writer admission
-        // frontier while checking revocation and publishing the checkpoint.
+        // Not revoked at that frontier, before the journal is read. The
+        // exclusive book handle is the single writer, so no revocation can
+        // commit between this read and the checkpoint's transaction; with
+        // concurrent writers the read moves inside that transaction as a
+        // witness, as post's does.
         if let Err(refusal) = self.query(cx, |db, book| {
             Ok(fa_journal::policy::capability_admitted(
                 db, book, capability,
@@ -1028,14 +1077,132 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })? {
             return Ok(Err(refusal));
         }
-        Ok(fa_notary::checkpoint(&mut self.db, cx, &self.context).await?)
+        Ok(fa_notary::checkpoint(&mut self.db, cx, &self.context, &self.signer).await?)
     }
 
+    /// Recompute every accumulator state from its journal prefix, and every
+    /// checkpoint from the same prefix and this book's key.
     pub fn verify_accumulator(
         &self,
         cx: &PurposeContexts,
     ) -> Result<fa_notary::AccumulatorVerification, BookError> {
-        self.query(cx, |db, book| Ok(fa_notary::verify_accumulator(db, book)?))
+        self.query(cx, |db, book| {
+            Ok(fa_notary::verify_accumulator(db, cx, book, &self.signer)?)
+        })
+    }
+
+    /// The public key this book's transparency checkpoints are signed with
+    /// (Ed25519, plan §13.2), for an outsider to verify them with.
+    #[must_use]
+    pub fn checkpoint_public_key(&self) -> [u8; 32] {
+        self.signer.public_key()
+    }
+
+    /// Produce an evidence bundle against the journaled state `state`
+    /// (default: the latest) and its detached production receipt
+    /// ([`crate::Book::produce_bundle`] states the contract). `produce`
+    /// admission, currency and revocation are checked before the journal is
+    /// read; each cited document is read as `capability` may see it,
+    /// decided before any read of its bytes.
+    pub async fn produce_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        request: &fa_notary::BundleRequest,
+    ) -> Outcome<Option<ProducedBundle>> {
+        cx.query().checkpoint().map_err(BookError::Context)?;
+        // A production writes nothing, so it is admitted as a read: an
+        // Agent-profile capability holding `produce` may produce.
+        if let Err(denial) = fa_policy::admit(
+            capability,
+            &fa_policy::Intent {
+                principal,
+                trunk: false,
+                op: fa_policy::Op::Produce,
+                book: self.context.book_id,
+                legs: &[],
+            },
+        ) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        // A bundle discloses its scope's entries (every leaf of a Prefix
+        // scope), so producing one also needs whole-book read authority, as
+        // a proof export does: `produce` alone never discloses the journal.
+        if let Err(denial) = fa_policy::admit_read(capability, principal, self.context.book_id) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        let at = self.head(cx)?;
+        if let Err(denial) = fa_policy::current(capability, at) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        // Not revoked (fa-bcd), before the journal is read.
+        if let Err(refusal) = self.query(cx, |db, book| {
+            Ok(fa_journal::policy::capability_admitted(
+                db, book, capability,
+            )?)
+        })? {
+            return Ok(Err(refusal));
+        }
+        let commitment = capability
+            .commitment()
+            .map_err(|e| KernelError::Corrupt(format!("capability commitment: {e}")))?;
+        let basis = self.query(cx, |db, book| {
+            Ok(bundle_basis_at(db, cx, book, &self.signer, state)?)
+        })?;
+        let (journal, checkpoint) = match basis {
+            None => return Ok(Ok(None)),
+            Some(Err(refusal)) => return Ok(Err(refusal)),
+            Some(Ok(basis)) => basis,
+        };
+        let cited = match fa_notary::bundle::cited_documents(&journal, request)? {
+            Ok(cited) => cited,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let mut documents = BTreeMap::new();
+        for oid in cited {
+            match self.read_document_for(cx, capability, &oid).await? {
+                Ok(read) => {
+                    documents.insert(oid, read);
+                }
+                Err(refusal) => return Ok(Err(refusal)),
+            }
+        }
+        // A balance over migration-run entries is proved in v2, which needs
+        // each run's immutable body (fa-e00).
+        let run_bodies = match self.query(cx, |db, _book| {
+            Ok(fa_notary::migration_balance::bundle_run_bodies(
+                db, &journal, request,
+            )?)
+        })? {
+            Ok(bodies) => bodies,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let bundle = match fa_notary::bundle::assemble_with_runs(
+            &journal,
+            &checkpoint,
+            request,
+            &documents,
+            &run_bodies,
+        )? {
+            Ok(bundle) => bundle,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let receipt = fa_notary::ProductionReceipt::sign(
+            fa_notary::ReceiptBody {
+                bundle_digest: bundle.digest,
+                producer_principal: principal,
+                produced_at_seq: at,
+                capability_commitment: commitment,
+                time_evidence_oid: None,
+            },
+            &self.signer,
+        )
+        .map_err(|e| KernelError::Corrupt(e.to_string()))?
+        .canonical_bytes()
+        .map_err(|e| KernelError::Model(e.into()))?;
+        Ok(Ok(Some(ProducedBundle { bundle, receipt })))
     }
 
     /// Export a portable proof from a supported recorded checkpoint, under
@@ -1048,7 +1215,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         request: crate::ProofRequest,
     ) -> Outcome<crate::ProofArtifact> {
         self.query(cx, |db, book| {
-            crate::proof::export(db, book, principal, capability, request)
+            crate::proof::export(db, cx, book, &self.signer, principal, capability, request)
         })
     }
 
@@ -1116,6 +1283,27 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.query(cx, |db, book| {
             Ok(fa_registers::explain_balance(
                 db, book, account, period, known_at,
+            )?)
+        })
+    }
+
+    /// A registered Lantern procedure over the trunk under the query
+    /// context: the snapshot is read once, then the procedure folds it with
+    /// no clock, entropy, network or filesystem capability.
+    pub fn run_procedure(
+        &self,
+        cx: &PurposeContexts,
+        procedure: &dyn fa_lantern::Procedure,
+        known_at: Option<CommitSeq>,
+        effective_through: Option<fa_time::DateDay>,
+    ) -> Result<fa_lantern::ProcedureRun, BookError> {
+        self.query(cx, |db, book| {
+            Ok(fa_lantern::run(
+                db,
+                book,
+                known_at,
+                effective_through,
+                procedure,
             )?)
         })
     }
@@ -1281,20 +1469,30 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         cx: &PurposeContexts,
         certificate: &crate::ReportCertificate,
     ) -> Outcome<crate::RetainedCertificate> {
-        crate::certificate_store::retain(&mut self.db, cx, &self.context, certificate).await
+        crate::certificate_store::retain(&mut self.db, cx, &self.context, &self.blobs, certificate)
+            .await
     }
 
     /// Load a retained certificate by its full public content digest.
-    /// Loading checks its immutable storage record; report replay separately
-    /// verifies the historical input closure.
-    pub fn read_certificate(
+    /// Loading checks its immutable storage record (and fetches and verifies
+    /// externally retained bytes); report replay separately verifies the
+    /// historical input closure.
+    pub async fn read_certificate(
         &self,
         cx: &PurposeContexts,
         digest: &[u8; 32],
     ) -> Outcome<crate::ReportCertificate> {
-        self.query(cx, |db, book| {
-            crate::certificate_store::read(db, &cx.query(), book, digest)
-        })
+        let query = cx.query();
+        query.checkpoint().map_err(BookError::Context)?;
+        query
+            .with_restriction_async(crate::certificate_store::read(
+                &self.db,
+                &query,
+                &self.context,
+                &self.blobs,
+                digest,
+            ))
+            .await
     }
 
     pub fn trial_balance_at(

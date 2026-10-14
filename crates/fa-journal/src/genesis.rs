@@ -605,9 +605,11 @@ pub fn read_units<V: asupersync::fs::Vfs + Clone>(
 ) -> Result<UnitRegistry, KernelError> {
     use crate::rows::{int, prop, text};
 
-    let pre_payload = |what: &str| KernelError::Corrupt(format!(
-        "pre-payload unit table: {what}; this binary cannot infer missing unit facts. Keep the book unchanged and use its creating binary; upgrade requires an authorized journaled unit-payload backfill (fa-k1u), which is not available yet"
-    ));
+    let pre_payload = |what: &str| {
+        KernelError::Corrupt(format!(
+            "pre-payload unit table: {what}; this binary cannot infer missing unit facts, and no backfill exists before 1.0: keep the book unchanged and open it with its creating binary"
+        ))
+    };
     let root = db
         .vertex(book_root())?
         .ok_or_else(|| KernelError::Corrupt("unit table has no Book root".into()))?;
@@ -631,7 +633,11 @@ pub fn read_units<V: asupersync::fs::Vfs + Clone>(
             continue;
         }
         let payload = match prop(&row, property::FA_PAYLOAD) {
-            None => return Err(pre_payload(&format!("unit {vid:?} has no canonical payload"))),
+            None => {
+                return Err(pre_payload(&format!(
+                    "unit {vid:?} has no canonical payload"
+                )));
+            }
             Some(CanonicalScalar::Bytes(bytes)) => bytes.as_slice(),
             _ => {
                 return Err(KernelError::Corrupt(format!(
@@ -643,10 +649,12 @@ pub fn read_units<V: asupersync::fs::Vfs + Clone>(
             .map_err(|e| KernelError::Corrupt(format!("unit {vid:?}: {e}")))?;
         let id = definition.id;
         let unit = &definition.unit;
-        let mismatch = |field: &str| KernelError::Corrupt(format!(
-            "unit {} ({}@v{}) {field} differs from its journaled definition; refuse reinterpretation of historical amounts",
-            id.0, unit.code, unit.version
-        ));
+        let mismatch = |field: &str| {
+            KernelError::Corrupt(format!(
+                "unit {} ({}@v{}) {field} differs from its journaled definition; refuse reinterpretation of historical amounts",
+                id.0, unit.code, unit.version
+            ))
+        };
         if bytes(&row, property::BOOK_ID, "unit.book_id")? != book_id.0 {
             return Err(mismatch("book_id mirror"));
         }
@@ -915,6 +923,47 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
             }
         }
     }
+    // The chart is a forest of unique codes (plan §4.3): a code names one
+    // account, and no account is its own ancestor. Both are refused here,
+    // before any write, rather than surfacing as an identity collision or a
+    // cycle a later fold would walk forever.
+    let mut codes = std::collections::BTreeSet::new();
+    for a in accounts {
+        if !codes.insert(a.code.as_str()) {
+            return Ok(Err(Refusal::new(
+                code::STRUCTURE,
+                exit::USAGE,
+                format!(
+                    "account code `{}` appears more than once in the chart",
+                    a.code
+                ),
+                "plan §4.3 (an account's code is its identity)",
+                "keep one row per account code",
+            )));
+        }
+    }
+    for a in accounts {
+        let mut at = a;
+        for _ in 0..accounts.len() {
+            let Some(parent) = &at.parent_code else { break };
+            if *parent == a.code {
+                return Ok(Err(Refusal::new(
+                    code::STRUCTURE,
+                    exit::USAGE,
+                    format!(
+                        "account `{}` is its own ancestor: its parent chain cycles",
+                        a.code
+                    ),
+                    "plan §4.3 (the chart is a forest)",
+                    "break the cycle: give one account in it another parent, or none",
+                )));
+            }
+            match accounts.iter().find(|x| x.code == *parent) {
+                Some(next) => at = next,
+                None => break,
+            }
+        }
+    }
     let mut w = Writer::new();
     w.list(accounts, |w, a| a.canonical(w));
     // Limits are an additive trailing list, written only when the chart
@@ -1073,9 +1122,26 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
     }
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
+    // An existing identity is the same lawful refusal whether the substrate
+    // reports it while staging (a re-imported chart: its vertices are live)
+    // or at commit; it is never a foundation failure.
+    let existing = || {
+        Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            "an account or control entry with this identity already exists",
+            "plan §4.9 (identities are derived; a duplicate is a point conflict)",
+            "use a fresh idempotency key and omit accounts already installed",
+        )
+    };
     if let Err(e) = txn.write_ordered(db, vec![batch, in_book]) {
         txn.abort();
-        return Err(e.into());
+        return match e {
+            fgdb::WriteTxnError::Write(
+                fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
+            ) => Ok(Err(existing())),
+            e => Err(e.into()),
+        };
     }
     match txn.commit(db, &ctx.commit()).await {
         Ok(seq) => Ok(Ok(ChartInstalled {
@@ -1085,13 +1151,7 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
         })),
         Err(fgdb::WriteTxnError::Write(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
-        )) => Ok(Err(Refusal::new(
-            code::STRUCTURE,
-            exit::USAGE,
-            "an account or control entry with this identity already exists",
-            "plan §4.9 (identities are derived; a duplicate is a point conflict)",
-            "use a fresh idempotency key and omit accounts already installed",
-        ))),
+        )) => Ok(Err(existing())),
         Err(e) => Err(e.into()),
     }
 }

@@ -18,6 +18,7 @@ asupersync = { workspace = true }
 fgdb = { workspace = true }
 fgdb-types = { workspace = true }
 fgdb-crypto = { workspace = true }
+fgdb-gql = { workspace = true }
 
 [dev-dependencies]
 # The independent verifier is the producer's differential oracle (plan

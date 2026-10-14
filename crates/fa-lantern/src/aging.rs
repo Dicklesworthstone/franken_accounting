@@ -1,0 +1,167 @@
+//! Aging (plan §11.7): fa-registers' historical open-item fold at the
+//! coordinate's effective date, bucketed by civil days from each item's
+//! effective date, per account, unit and side. The fold and its cutoff
+//! refusals belong to fa-registers (`open_items_as_of`, `age_snapshot`);
+//! this procedure owns only the registered bucket edges and the score.
+//! Debits and credits are never netted. The date is a coordinate the
+//! caller declares; a procedure never reads a clock.
+
+use std::collections::BTreeMap;
+
+use fa_journal::genesis::BookContext;
+use fa_money::Side;
+use fa_registers::open_items::aging::{AgingBuckets, age_snapshot};
+use fgdb_types::VId;
+
+use crate::jet::finding;
+use crate::{
+    Cite, Finding, LanternError, MAX_CITES, Params, Procedure, Severity, Snapshot, Statistic, Work,
+};
+
+/// `aging.open_items`.
+pub struct OpenItemsAging {
+    params: Params,
+}
+
+impl OpenItemsAging {
+    pub const ID: &'static str = "aging.open_items";
+
+    /// With the registry's pinned bucket edges.
+    pub fn new() -> Result<Self, LanternError> {
+        Ok(Self {
+            params: Params::defaults(Self::ID)?,
+        })
+    }
+
+    #[must_use]
+    pub fn with(params: Params) -> Self {
+        Self { params }
+    }
+}
+
+/// One side of one account and unit: the open amount per bucket, never
+/// netted against the other side.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Column {
+    totals: [i128; 4],
+    oldest: Vec<(VId, u16)>,
+    items: u64,
+}
+
+fn side_name(side: Side) -> &'static str {
+    match side {
+        Side::Debit => "debit",
+        Side::Credit => "credit",
+    }
+}
+
+impl Procedure for OpenItemsAging {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+    fn version(&self) -> u16 {
+        1
+    }
+    fn params(&self) -> &Params {
+        &self.params
+    }
+    fn run(
+        &self,
+        snapshot: &Snapshot,
+        book: &BookContext,
+        work: &mut Work,
+    ) -> Result<Vec<Finding>, LanternError> {
+        let edges = [
+            self.params.get_u32("bucket_1")?,
+            self.params.get_u32("bucket_2")?,
+            self.params.get_u32("bucket_3")?,
+        ];
+        if edges[0] >= edges[1] || edges[1] >= edges[2] {
+            return Err(LanternError::Parameter {
+                procedure: Self::ID.into(),
+                name: "bucket_3".into(),
+                message: "bucket edges must be strictly ascending".into(),
+            });
+        }
+        let Some(fold) = &snapshot.open_items_as_of else {
+            return Err(LanternError::Parameter {
+                procedure: Self::ID.into(),
+                name: "effective_through".into(),
+                message: "aging is a historical fold: read the snapshot with an effective date \
+                          (the coordinate's effective_through)"
+                    .into(),
+            });
+        };
+        let buckets = AgingBuckets::new(edges.to_vec())?;
+        let aged = age_snapshot(fold.clone(), &buckets)?;
+        let population = aged.items.len() as u64;
+        // Keyed by (account, unit, side tag) so the two sides never meet.
+        let mut columns: BTreeMap<(u128, u32, u8), Column> = BTreeMap::new();
+        for row in &aged.items {
+            work.leg();
+            let tag = match row.item.side {
+                Side::Debit => 0u8,
+                Side::Credit => 1u8,
+            };
+            let c = columns
+                .entry((row.item.account.0, row.item.unit_id, tag))
+                .or_default();
+            c.totals[row.bucket] = c.totals[row.bucket]
+                .checked_add(row.item.open)
+                .ok_or(LanternError::Overflow("aging bucket"))?;
+            c.items += 1;
+            if row.bucket == 3 && c.oldest.len() < MAX_CITES - 1 {
+                c.oldest.push((row.item.entry, row.item.ordinal));
+            }
+        }
+        let mut out = Vec::new();
+        for ((account, unit_id, tag), c) in columns {
+            let side = if tag == 0 { Side::Debit } else { Side::Credit };
+            let total: i128 = c
+                .totals
+                .iter()
+                .try_fold(0i128, |acc, t| acc.checked_add(*t))
+                .ok_or(LanternError::Overflow("aging total"))?;
+            let past = c.totals[3];
+            let severity = if past == 0 {
+                Severity::Info
+            } else if past.unsigned_abs().saturating_mul(2) >= total.unsigned_abs() {
+                Severity::High
+            } else {
+                Severity::Medium
+            };
+            let mut cites = vec![Cite::Account(VId(account))];
+            let mut oldest = c.oldest;
+            oldest.sort_unstable();
+            cites.extend(
+                oldest
+                    .into_iter()
+                    .map(|(entry, ordinal)| Cite::Leg { entry, ordinal }),
+            );
+            out.push(finding(
+                Self::ID,
+                severity,
+                Statistic {
+                    name: format!("open_past_{}_days", edges[2]),
+                    value: past,
+                    scale: crate::unit_scale(book, unit_id)?,
+                    population,
+                },
+                cites,
+                format!(
+                    "unit {unit_id} {}: {} open item(s); buckets 0..={}: {}, ..={}: {}, ..={}: {}, older: {} (mantissas, never netted)",
+                    side_name(side),
+                    c.items,
+                    edges[0],
+                    c.totals[0],
+                    edges[1],
+                    c.totals[1],
+                    edges[2],
+                    c.totals[2],
+                    past
+                ),
+            ));
+        }
+        Ok(out)
+    }
+}

@@ -88,14 +88,14 @@ example = "fa book create --book ./books/myco --name \"My Co\" --json"
 
 [[verb]]
 name = "chart"
-summary = "Install a chart of accounts as one journaled schema effect, or list it."
+summary = "Install a chart of accounts as one journaled schema effect (from a file or an embedded template), list it, or list the templates."
 writes = true
-subcommands = ["import", "list"]
-flags = ["--date", "--key"]
+subcommands = ["import", "list", "templates"]
+flags = ["--date", "--key", "--template"]
 switches = []
-events = ["chart_installed", "accounts"]
+events = ["chart_installed", "accounts", "chart_templates"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["chart import <chart.json> [--date YYYY-MM-DD] [--key K]   (an account may carry lower_bound/upper_bound: \"0.00\" in its unit and normal-balance sign)", "chart list"]
+usage = ["chart import (<chart.json> | --template <name>) [--date YYYY-MM-DD] [--key K]   (an account may carry lower_bound/upper_bound: \"0.00\" in its unit and normal-balance sign; \"unit\": \"base\" is the book's base unit)", "chart list", "chart templates   (us-gaap-smb, ifrs-sme, us-bank-call-report: starting points, not GAAP, IFRS or regulatory advice)"]
 example = "fa chart import chart.json --book ./books/myco --json"
 
 [[verb]]
@@ -267,28 +267,52 @@ usage = ["explain balance <account code> --period <code> [--as-known-at HEAD|<se
 example = "fa explain balance 1000 --period FY2026-P03 --book ./books/myco --json"
 
 [[verb]]
+name = "procedure"
+summary = "Lantern (plan §11): list the registered forensic and audit procedures, or run one over the book's trunk at a recorded sequence and, for the historical folds, through an effective date. A finding is a statistic with typed citations, never an accusation."
+writes = false
+subcommands = ["list", "run"]
+flags = ["--known-at", "--effective-through", "--param", "--account", "--source"]
+switches = []
+events = ["procedure_list", "procedure_run"]
+exits = [0, 2, 3, 4, 5]
+usage = ["procedure list", "procedure run <procedure id> [--known-at HEAD|<seq>] [--effective-through YYYY-MM-DD] [--param <name>=<integer>]... [--account <code>] [--source <entry vid>]", "Parameters default to procedures.toml's pinned values; --param overrides one registered parameter. aging.* and trace.* need --effective-through; trace.* also need --account (the commingled account) and --source (the deposit entry)."]
+example = "fa procedure run jet.round_amounts --book ./books/myco --json"
+
+[[verb]]
 name = "checkpoint"
-summary = "Publish an unsigned, recomputable accumulator state over the book's entry prefix."
+summary = "Publish a recomputable accumulator state over the book's entry prefix and its TransparencyCheckpoint signed by the book's key."
 writes = true
 subcommands = ["create"]
 flags = ["--grant"]
 switches = []
 events = ["checkpoint_created"]
 exits = [0, 2, 4, 5, 6, 7, 8]
-usage = ["checkpoint create --grant witness [--as <principal>]", "The state is unsigned and covers entries; it is not a signed TransparencyCheckpoint or an evidence bundle."]
+usage = ["checkpoint create --grant witness [--as <principal>]", "The state covers entries; its TransparencyCheckpoint is signed by the book's Ed25519 key (public_key) and is exported with `fa proof signed-checkpoint`. It is not an evidence bundle and covers no document receipts."]
 example = "fa checkpoint create --grant witness --book ./books/myco --json"
 
 [[verb]]
 name = "proof"
-summary = "Export a recorded unsigned checkpoint or a portable accounting proof for independent fa-verify verification."
+summary = "Export a recorded checkpoint (signed TransparencyCheckpoint or raw 80-byte statement) or a portable accounting proof for independent fa-verify verification."
 writes = false
-subcommands = ["checkpoint", "inclusion", "consistency", "prefix", "balance"]
+subcommands = ["signed-checkpoint", "checkpoint", "inclusion", "consistency", "prefix", "balance"]
 flags = ["--state", "--next-state", "--entry", "--account", "--unit", "--as-of", "--out", "--grant"]
 switches = ["--with-record"]
 events = ["proof_exported"]
 exits = [0, 2, 3, 4, 5, 7, 8]
-usage = ["proof checkpoint [--state <64-hex-oid|latest>] [--out <new-file>]", "proof inclusion --entry <vid|E:vid> [--with-record] [--state <oid|latest>] [--out <new-file>]", "proof consistency --state <old-oid> --next-state <new-oid> [--out <new-file>]", "proof prefix [--state <oid|latest>] [--out <new-file>]", "proof balance --account <code> --unit <CODE> [--as-of YYYY-MM-DD] [--state <oid|latest>] [--out <new-file>]", "Export never creates a checkpoint or changes the book. Missing --state selects the latest recorded state. --out writes a new raw binary file; otherwise bytes is complete hex. Checkpoints are exact 80-byte statements. Binary proofs are limited to 64 MiB; inline output has the smaller daemon frame bound.", "fa-verify <kind> --proof <file> --checkpoint <independently-trusted-checkpoint> --json; consistency also takes --next-checkpoint <claimed-file>. Unsigned checkpoints require trust established outside the proof. Prefix verifies all envelopes, inclusion optionally recomputes a payload, and balance recomputes exact posted debits/credits for one account/unit through an inclusive effective cutoff. No signatures, document receipts, FX or general statement replay are claimed."]
+usage = ["proof signed-checkpoint [--state <64-hex-oid|latest>] [--out <new-file>]   (the TransparencyCheckpoint signed by the book's key; checkpoint_public_key names the key)", "proof checkpoint [--state <64-hex-oid|latest>] [--out <new-file>]", "proof inclusion --entry <vid|E:vid> [--with-record] [--state <oid|latest>] [--out <new-file>]", "proof consistency --state <old-oid> --next-state <new-oid> [--out <new-file>]", "proof prefix [--state <oid|latest>] [--out <new-file>]", "proof balance --account <code> --unit <CODE> [--as-of YYYY-MM-DD] [--state <oid|latest>] [--out <new-file>]", "Export never creates a checkpoint or changes the book. Missing --state selects the latest recorded state. --out writes a new raw binary file; otherwise bytes is complete hex. Checkpoints are exact 80-byte statements. Binary proofs are limited to 64 MiB; inline output has the smaller daemon frame bound.", "fa-verify <kind> --proof <file> --checkpoint <signed-checkpoint-file> --key <checkpoint_public_key> --json, or --checkpoint <raw-80-byte-file> --unsigned-checkpoint once that statement is trusted outside the proof; consistency also takes --next-checkpoint <claimed-file>. Prefix verifies all envelopes, inclusion optionally recomputes a payload, and balance recomputes exact posted debits/credits for one account/unit through an inclusive effective cutoff. No signatures, document receipts, FX or general statement replay are claimed."]
 example = "fa proof balance --account 1000 --unit USD --state latest --book ./books/myco --json"
+
+[[verb]]
+name = "bundle"
+summary = "Produce an evidence bundle (.fab) over a recorded checkpoint's prefix, one account's effective-day interval, or named entries, with recomputed balances and a production receipt signed by the book's key, for offline fa-verify bundle verification."
+writes = false
+subcommands = ["produce"]
+flags = ["--state", "--account", "--from", "--to", "--entry", "--balance", "--out", "--receipt-out", "--grant"]
+switches = ["--inline-documents"]
+events = ["bundle_produced"]
+exits = [0, 2, 3, 4, 5, 7, 8]
+usage = ["bundle produce [--state <64-hex-oid|latest>] [--out <new.fab> --receipt-out <new-file>]   (the complete prefix)", "bundle produce --account <code> --from YYYY-MM-DD --to YYYY-MM-DD ...   (one account's effective-day interval, proved complete by the signed scope index)", "bundle produce --entry <vid|E:vid>...   (named entries: membership only)", "--balance <code>:<UNIT>[:YYYY-MM-DD] (repeatable) adds a posted balance recomputed from the bundle's entries; --inline-documents includes each cited document's bytes (a capability that reads a document only as a redacted view is refused FA-REF-128).", "Production writes nothing to the book; read and produce are required. Missing --state selects the latest recorded state. --out and --receipt-out write new private files; otherwise bytes and receipt are complete hex, within the daemon frame bound.", "fa-verify bundle <file.fab> --key <checkpoint_public_key> --receipt <receipt-file> grades every predicate: format, signed checkpoint, entries exactly the scope's leaves, cited documents present and matching their commitments, balances refolded, receipt signature."]
+example = "fa bundle produce --account 1000 --from 2026-03-01 --to 2026-03-31 --balance 1000:USD:2026-03-31 --out cash.fab --receipt-out cash.receipt --book ./books/myco --json"
 
 [[verb]]
 name = "verify"
@@ -325,6 +349,43 @@ events = ["entry"]
 exits = [0, 2, 4, 5]
 usage = ["entry show <vid-hex>"]
 example = "fa entry show 3f2a… --book ./books/myco --json"
+
+[[verb]]
+name = "doctor"
+summary = "Diagnose what a book needs: the embedded registries, the book directory, key file and writer lease, that the book opens, and that its registers, limit availability and accumulator equal the journal's refold. Every check names its fix."
+writes = false
+subcommands = []
+flags = []
+switches = []
+events = ["doctor"]
+exits = [0, 2, 4, 5, 8]
+usage = ["doctor   (each check is ok, warn, fail or skipped, with the fix; exit 0 only when none failed, else the first failing check's class: 4 environment, 5 foundation, 8 verification)"]
+example = "fa doctor --book ./books/myco --json"
+
+[[verb]]
+name = "triage"
+summary = "The book's state in one call (periods by state, open periods, pending cells, derived-state health, the daemon), with the commands to run next in next_actions."
+writes = false
+subcommands = []
+flags = []
+switches = []
+events = ["book_triage"]
+exits = [0, 2, 4, 5]
+usage = ["triage   (next_actions: what to run next, computed from the book's state)"]
+example = "fa triage --book ./books/myco --json"
+
+[[verb]]
+name = "next"
+summary = "The single most urgent next step for the book, as data (the rest of fa triage's steps follow in next_actions)."
+writes = false
+subcommands = []
+flags = []
+switches = []
+events = ["next_step"]
+exits = [0, 2, 4, 5]
+usage = ["next   (command and why; null when there is nothing to do)"]
+example = "fa next --book ./books/myco --json"
+
 
 [[verb]]
 name = "capabilities"
@@ -566,14 +627,20 @@ fields = ["book_id:hex", "dir:string", "keys:string", "name:string", "base_unit:
 [[event]]
 name = "book"
 book = true
-doc = "A book's identity and size."
-fields = ["book_id:hex", "calendar:string", "periods:int", "periods_by_state:object", "accounts:int", "units_registered:int"]
+doc = "A book's identity and size. `base_unit` is the base unit journaled at genesis."
+fields = ["book_id:hex", "base_unit:string", "calendar:string", "periods:int", "periods_by_state:object", "accounts:int", "units_registered:int"]
 
 [[event]]
 name = "chart_installed"
 book = true
-doc = "A chart installed by one journaled control entry."
-fields = ["accounts:int", "control_entry:hex", "recorded_at:seq"]
+doc = "A chart installed by one journaled control entry. `template` names the embedded template it came from, or is null for a chart file; either way the control entry's idempotency key is the chart text's content digest."
+fields = ["accounts:int", "control_entry:hex", "recorded_at:seq", "template:string?"]
+
+[[event]]
+name = "chart_templates"
+book = false
+doc = "The chart templates this build embeds (plan §4.3): each one's name, version, description, account and leaf counts, and `key`, the idempotency key `fa chart import --template <name>` journals (the template text's content digest)."
+fields = ["templates:[chart_template]"]
 
 [[event]]
 name = "accounts"
@@ -680,19 +747,43 @@ fields = ["account:string?", "count:int", "items:[open_item]"]
 [[event]]
 name = "checkpoint_created"
 book = true
-doc = "An unsigned AccumulatorState over every entry in the named book/branch prefix through through_seq, recorded in a later commit. prev_state_oid links its predecessor. The scope excludes document receipts, attestations, signatures, and bundles."
-fields = ["book:hex", "branch:hex", "oid:hex", "recorded_at:seq", "through_seq:seq", "leaf_count:int", "root:hex", "prev_state_oid:hex?", "signatures:string", "scope:string"]
+doc = "An AccumulatorState over every entry in the named book/branch prefix through through_seq, recorded in a later commit, with its TransparencyCheckpoint (checkpoint_oid) signed by the book's Ed25519 key public_key; signatures is ed25519. prev_state_oid links its predecessor. The scope excludes document receipts, attestations and bundles; `fa proof signed-checkpoint` exports the signed checkpoint for fa-verify --key."
+fields = ["book:hex", "branch:hex", "oid:hex", "recorded_at:seq", "through_seq:seq", "leaf_count:int", "root:hex", "prev_state_oid:hex?", "signatures:string", "checkpoint_oid:hex", "public_key:hex", "scope:string"]
 
 [[event]]
 name = "proof_exported"
 book = true
-doc = "A raw portable proof from an existing recomputed checkpoint, or the exact 80-byte checkpoint itself. checkpoint_bytes and next_checkpoint_bytes are hex statements; the latter is a consistency claim, not a trust anchor. bytes is full proof hex for inline output, otherwise null with a new binary file. No book write occurs. The unsigned anchor needs external trust; scope and claim name the exact inclusion, prefix-completeness or balance predicate."
-fields = ["kind:string", "scope:string", "state_oid:hex", "recorded_at:seq", "through_seq:seq", "leaf_count:int", "root:hex", "checkpoint_bytes:hex", "next_state_oid:hex?", "next_checkpoint_bytes:hex?", "signatures:string", "trust:string", "claim:object", "byte_len:int", "bytes:hex?", "file:string?"]
+doc = "A raw portable proof from an existing recomputed checkpoint, the exact 80-byte checkpoint statement itself (kind checkpoint), or the state's TransparencyCheckpoint signed by the book's key (kind signed-checkpoint; signatures ed25519, trust checkpoint_public_key). checkpoint_bytes and next_checkpoint_bytes are hex statements; the latter is a consistency claim, not a trust anchor. checkpoint_public_key is the book's Ed25519 checkpoint key, the --key fa-verify judges a signed checkpoint with. bytes is full proof hex for inline output, otherwise null with a new binary file. No book write occurs. A raw statement needs external trust (signatures unsigned, trust external_checkpoint_required); scope and claim name the exact inclusion, prefix-completeness or balance predicate."
+fields = ["kind:string", "scope:string", "state_oid:hex", "recorded_at:seq", "through_seq:seq", "leaf_count:int", "root:hex", "checkpoint_bytes:hex", "next_state_oid:hex?", "next_checkpoint_bytes:hex?", "signatures:string", "trust:string", "checkpoint_public_key:hex", "claim:object", "byte_len:int", "bytes:hex?", "file:string?"]
+
+[[event]]
+name = "bundle_produced"
+book = true
+doc = "An evidence bundle produced against a recorded checkpoint, with its detached production receipt signed by the book's key; nothing was written to the book. scope is prefix, account (one account's effective-day interval, proved complete by the signed scope index) or entries (named entries, membership only). digest is the bundle's BLAKE3 digest (fa:bundle:v1). bytes and receipt are complete hex for inline output, otherwise null with the new files file and receipt_file. checkpoint_public_key is the --key and verify the exact fa-verify command that checks both offline."
+fields = ["scope:string", "digest:hex", "byte_len:int", "receipt_len:int", "balances:int", "inline_documents:bool", "checkpoint_public_key:hex", "bytes:hex?", "receipt:hex?", "file:string?", "receipt_file:string?", "verify:string"]
+
+[[event]]
+name = "doctor"
+doc = "`fa doctor`: every check in order (registries, book_dir, keys, writer_lease, book, registers, availability, accumulator), each ok, warn, fail or skipped (what it needs is missing), with what it found and the fix when it is not ok. `healthy` is false when any check failed; the exit is then the first failing check's class and an `error` line follows."
+fields = ["healthy:bool", "checks:[doctor_check]"]
+
+[[event]]
+name = "book_triage"
+book = true
+doc = "`fa triage`: the book's state. `health` is ok, or failing when derived state differs from the journal's refold (`derived` has the checks); `daemon` is serving (this answer came through the fad), absent, or held (with the holder). `pending_cells` counts register cells of open periods carrying reserved amounts. `due_holds` counts timed holds the latest tick has made due that no sweep has expired yet (plan §5.4, FA-CFG-02: still pending in every register); `due_reversals` counts scheduled reversals the latest tick has reached that the next reversal sweep mints, and `blocked_reversals` those whose period refuses the scheduler (reverse them by hand). The envelope's next_actions are computed from this state, most urgent first."
+fields = ["health:string", "daemon:string", "periods:int", "periods_by_state:object", "open_periods:[string]", "accounts:int", "pending_cells:int", "due_holds:int", "due_reversals:int", "blocked_reversals:int", "derived:[doctor_check]"]
+
+[[event]]
+name = "next_step"
+book = true
+doc = "`fa next`: the most urgent step `fa triage` would list for the book now, as `command` (run it with the same --book) and `why`; both null when there is nothing to do. The envelope's next_actions carry the steps after it."
+fields = ["command:string?", "why:string?"]
+
 
 [[event]]
 name = "accumulator_verified"
 book = true
-doc = "Every existing accumulator state was recomputed from its entry prefix and every stored state belongs to the chain. status is verified or no_checkpoints; no_checkpoints makes no verification claim and verified_through is null. Otherwise verified_through names the newest checked prefix, never an implicit current-head claim. signatures is unsigned and scope is entry_prefix. States are newest first."
+doc = "Every existing accumulator state was recomputed from its entry prefix and every stored state belongs to the chain. status is verified or no_checkpoints; no_checkpoints makes no verification claim and verified_through is null. Otherwise verified_through names the newest checked prefix, never an implicit current-head claim. signatures is ed25519: each state's signed TransparencyCheckpoint was reproduced from the journal prefix and the book's key. scope is entry_prefix. States are newest first."
 fields = ["status:string", "signatures:string", "scope:string", "states_checked:int", "broken:string?", "verified_through:seq?", "states:[accumulator_state_check]", "unchained:[hex]"]
 
 [[event]]
@@ -748,9 +839,72 @@ fields = ["account:string", "account_vid:hex", "name:string", "type:string", "pe
 # ---------------------------------------------------------------------------
 
 [[shape]]
+name = "doctor_check"
+doc = "One check of `fa doctor` (or of `fa triage`'s derived state): its name, its status (ok, warn, fail, skipped), what it found, and the exact fix when it is not ok."
+fields = ["name:string", "status:string", "detail:string", "fix:string?"]
+
+
+[[shape]]
 name = "accumulator_state_check"
 doc = "One state's recomputation result. finding is null on success; verification failure reports the same shape in its detail."
 fields = ["oid:hex", "through_seq:seq", "recorded_at:seq", "leaf_count:int", "finding:string?"]
+
+[[event]]
+name = "procedure_list"
+book = false
+doc = "Every registered Lantern procedure (procedures.toml): id, version, claim class, evidence row, tie-break policy, complexity bound, calibration status, declared inputs and parameters with their pinned defaults."
+fields = ["procedures:[procedure_row]", "count:int"]
+
+[[event]]
+name = "procedure_run"
+book = true
+doc = "One Lantern procedure run over the trunk as known at `known_at` (and, for the historical folds, through `effective_through`): the parameters and inputs it ran with, the digests an opposing expert reproduces, the population and work counted, and the findings sorted by severity then statistic then citations. A finding is a statistic with typed citations, never a conclusion."
+fields = ["procedure:string", "version:int", "claim:string", "evidence:string", "known_at:seq", "effective_through:date?", "parameters:[procedure_parameter]", "inputs:[procedure_input]", "parameters_digest:hex", "inputs_digest:hex", "population:int", "work:lantern_work", "findings:[finding]", "finding_count:int", "findings_digest:hex"]
+
+[[shape]]
+name = "procedure_row"
+doc = "One procedures.toml row."
+fields = ["id:string", "version:int", "claim:string", "evidence:string", "tie_break:string", "complexity:string", "calibration:string", "summary:string", "inputs:[procedure_input_decl]", "parameters:[procedure_parameter_decl]"]
+
+[[shape]]
+name = "procedure_input_decl"
+doc = "A declared input: its name, kind (date, period, account, entry) and meaning."
+fields = ["name:string", "kind:string", "meaning:string"]
+
+[[shape]]
+name = "procedure_parameter_decl"
+doc = "A registered parameter with its pinned default (the decision card's deterministic fallback)."
+fields = ["name:string", "default:int", "meaning:string"]
+
+[[shape]]
+name = "procedure_parameter"
+doc = "A parameter value the run used."
+fields = ["name:string", "value:int"]
+
+[[shape]]
+name = "procedure_input"
+doc = "An input the run used, as its canonical string (handles are 32-hex vids)."
+fields = ["name:string", "value:string"]
+
+[[shape]]
+name = "lantern_work"
+doc = "Work counted while the procedure ran: the complexity witness against the registry's declared bound."
+fields = ["entries:int", "legs:int", "comparisons:int"]
+
+[[shape]]
+name = "finding"
+doc = "One finding: its severity band, the statistic it rests on, its typed citations (every one resolves in the book) and a narrative built only from resolved handles and numbers."
+fields = ["severity:string", "statistic:statistic", "cites:[cite]", "narrative:string"]
+
+[[shape]]
+name = "statistic"
+doc = "The test statistic in fixed point (`value` at `scale` decimal places) with the size of the population it was computed over."
+fields = ["name:string", "value:int", "scale:int", "population:int"]
+
+[[shape]]
+name = "cite"
+doc = "A typed citation: `kind` is entry, leg, account, period, document, principal or approval, and exactly the fields that kind carries are non-null."
+fields = ["kind:string", "entry:hex?", "ordinal:int?", "account:hex?", "period:string?", "document:hex?", "principal:hex?", "approval:hex?"]
 
 [[shape]]
 name = "evidence_ref"
@@ -851,6 +1005,11 @@ fields = ["unit:string", "debits:amount", "credits:amount"]
 name = "pending_unit_total"
 doc = "Pending totals of one unit."
 fields = ["unit:string", "debits_pending:amount", "credits_pending:amount"]
+
+[[shape]]
+name = "chart_template"
+doc = "One embedded chart template."
+fields = ["name:string", "version:int", "description:string", "accounts:int", "leaves:int", "key:string"]
 
 [[shape]]
 name = "open_item"
@@ -1002,7 +1161,7 @@ max_tools_per_cluster = 7
 # The server fixes authority and book selection once; it never forwards caller grants.
 hidden_flags = ["--json", "--via", "--no-color", "--help", "--version", "--as", "--grant", "--yes", "--keys", "--book"]
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
-repeat_flags = ["--evidence", "--approval", "--period"]
+repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
 integer_flags = ["--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns"]
 
@@ -1036,7 +1195,7 @@ doc = "Evidence: record a source document, content-addressed, so an entry can ci
 
 [[mcp.cluster]]
 name = "fa.proof"
-doc = "Portable accounting proofs from recorded unsigned checkpoints, checked independently without book keys."
+doc = "Portable accounting proofs from recorded checkpoints (signed by the book's key, or raw statements), checked independently without book keys."
 
 [[mcp.excluded]]
 verb = "fad"
@@ -1054,6 +1213,10 @@ subcommand = "stop"
 reason = "host-only: stops the daemon process that will host fa-mcp (plan §15.4 registered exclusion)"
 
 # ---- fa.orient --------------------------------------------------------------
+
+[[mcp.cluster]]
+name = "fa.forensics"
+doc = "Lantern: the registered forensic and audit procedures (journal-entry tests, duplicates, sequence gaps, cutoff, aging, digit tests, round trips, structuring, tracing laws) run as pure reads; findings are statistics with typed citations."
 
 [[mcp.tool]]
 cluster = "fa.orient"
@@ -1086,6 +1249,37 @@ required = []
 dont = ["Don't call this for the tool contract — the tool descriptions and input schemas are the contract; this is the CLI's own usage text."]
 mistakes = ["Passing a tool's wire name as `verb` (it takes the CLI verb, e.g. `tb`, or an alias such as `trial-balance`)."]
 
+[[mcp.tool]]
+cluster = "fa.orient"
+name = "triage"
+verb = "triage"
+subcommands = []
+positionals = []
+required = []
+dont = ["Don't guess what to do next: next_actions lists the commands this book's state calls for, most urgent first."]
+mistakes = ["Reading health ok as a clean audit: it says derived state equals the journal's refold, nothing about whether the entries are right."]
+
+[[mcp.tool]]
+cluster = "fa.orient"
+name = "next"
+verb = "next"
+subcommands = []
+positionals = []
+required = []
+dont = ["Don't run the command blindly when it names a grant the launch does not hold (`--grant approve`, `--grant witness`): ask the operator."]
+mistakes = ["Treating a null command as an error: it means there is nothing to do."]
+
+[[mcp.tool]]
+cluster = "fa.orient"
+name = "doctor"
+verb = "doctor"
+subcommands = []
+positionals = []
+required = []
+dont = ["Don't repair what a failing check names yourself: each check carries its exact fix, and key-file or lease problems are the operator's."]
+mistakes = ["Reading the writer_lease check as another process's lock: under fa-mcp the launch-bound session itself holds the book's lease once a command has opened it."]
+
+
 # ---- fa.book ----------------------------------------------------------------
 
 [[mcp.tool]]
@@ -1115,7 +1309,7 @@ verb = "checkpoint"
 subcommands = ["create"]
 positionals = []
 required = []
-dont = ["Don't present the state as a signed checkpoint or an evidence bundle: it is unsigned and covers entries only."]
+dont = ["Don't present the checkpoint as an evidence bundle or a document-receipt proof: it covers entries only, signed by the book's key (public_key)."]
 mistakes = ["Trying to self-issue witness permission: caller grants are forbidden, and Agent/Preparer launch profiles do not include witness."]
 
 [[mcp.tool]]
@@ -1162,7 +1356,17 @@ stdin_kind = "object"
 stdin_via = "file"
 required = []
 dont = ["Don't post to a summary account afterwards: only leaves (`leaf: true`) accept legs.", "Don't edit an installed chart in place; a chart change is a new journaled schema effect."]
-mistakes = ["Passing a host path as `file`: supply the chart object inline as `chart`; this does not grant chart-installation authority.", "Giving `lower_bound`/`upper_bound` as numbers: bounds are amounts, strings in the account's unit (\"0.00\")."]
+mistakes = ["Passing a host path as `file`: supply the chart object inline as `chart`; this does not grant chart-installation authority.", "Passing `template` with `chart`: a template is the whole chart.", "Giving `lower_bound`/`upper_bound` as numbers: bounds are amounts, strings in the account's unit (\"0.00\")."]
+
+[[mcp.tool]]
+cluster = "fa.chart"
+name = "chart_templates"
+verb = "chart"
+subcommands = ["templates"]
+positionals = []
+required = []
+dont = ["Don't treat a template as advice: it is a starting chart to adapt, not GAAP, IFRS or a regulatory mapping."]
+mistakes = ["Importing a template into a book that already has those accounts: the codes are identities, so the second import is refused."]
 
 [[mcp.tool]]
 cluster = "fa.chart"
@@ -1248,14 +1452,26 @@ mistakes = ["Passing plan_file: host paths are refused; supply the plan event's 
 cluster = "fa.proof"
 name = "export"
 verb = "proof"
-subcommands = ["checkpoint", "inclusion", "consistency", "prefix", "balance"]
+subcommands = ["signed-checkpoint", "checkpoint", "inclusion", "consistency", "prefix", "balance"]
 selector = "kind"
 positionals = []
 flags = ["--state", "--next-state", "--entry", "--account", "--unit", "--as-of"]
 switches = ["--with-record"]
 required = []
-dont = ["The launch capability must include read and produce. Per-call grants, book selection and output paths are forbidden. Proofs and checkpoint bytes are returned as complete hex.", "Establish trust in the unsigned checkpoint independently before using fa-verify; the proof does not authenticate its own anchor. Complete-prefix and balance formats disclose every journal envelope and require whole-book read authority.", "A balance proof checks posted debits and credits for one account/unit from inception through an optional inclusive as_of date. It is not a financial-statement, FX, signatures or document-receipt proof."]
+dont = ["The launch capability must include read and produce. Per-call grants, book selection and output paths are forbidden. Proofs and checkpoint bytes are returned as complete hex.", "Judge proofs against the signed checkpoint (kind signed-checkpoint) with fa-verify --key <checkpoint_public_key>, or establish trust in the raw checkpoint independently and pass --unsigned-checkpoint; the proof never authenticates its own anchor. Complete-prefix and balance formats disclose every journal envelope and require whole-book read authority.", "A balance proof checks posted debits and credits for one account/unit from inception through an optional inclusive as_of date. It is not a financial-statement, FX, signatures or document-receipt proof."]
 mistakes = ["Using entry or with_record outside inclusion; omitting entry for inclusion.", "Omitting next_state for consistency or account and unit for balance.", "Passing out to write a host file: MCP has inline output only.", "Using a state oid from another book, or expecting export to create a new checkpoint."]
+
+[[mcp.tool]]
+cluster = "fa.proof"
+name = "bundle"
+verb = "bundle"
+subcommands = ["produce"]
+positionals = []
+flags = ["--state", "--account", "--from", "--to", "--entry", "--balance"]
+switches = ["--inline-documents"]
+required = []
+dont = ["The launch capability must include read and produce. Output paths are forbidden: the bundle and its receipt are returned as complete hex; narrow the scope when a bundle exceeds the frame bound.", "Don't present a bundle as proof that the ledger is true: it proves its manifest (entries, documents, balances, scope completeness) against a checkpoint the outsider trusts through checkpoint_public_key."]
+mistakes = ["Combining account with entry: a bundle has one scope.", "Passing from/to without account.", "Writing balance as an amount: it is <account-code>:<UNIT>[:YYYY-MM-DD], and the amount is recomputed."]
 
 [[mcp.tool]]
 cluster = "fa.read"
@@ -1400,3 +1616,23 @@ stdin_via = "file"
 required = []
 dont = ["Don't grade your own upload `HumanUpload`: an agent's document is `AgentUpload` and needs a human `Reviewed` attestation before promotion.", "Don't write a plausible document to stand in for a missing one; record an explicit manual assertion instead."]
 mistakes = ["Passing a host path as `file`: supply the document inline as `text`; this does not grant document-import authority.", "Citing `doc_commit` where an intent's `evidence` wants the document `oid`."]
+
+[[mcp.tool]]
+cluster = "fa.forensics"
+name = "list_procedures"
+verb = "procedure"
+subcommands = ["list"]
+positionals = []
+required = []
+dont = ["Don't invent a procedure id or a parameter name: every registered one, with its pinned default and meaning, is listed here."]
+mistakes = ["Passing a parameter in display units (10000.00) instead of the unit's mantissa (1000000 at scale 2); the listing's `meaning` says which."]
+
+[[mcp.tool]]
+cluster = "fa.forensics"
+name = "run_procedure"
+verb = "procedure"
+subcommands = ["run"]
+positionals = ["id"]
+required = ["id"]
+dont = ["Don't treat a finding as a conclusion: it is a statistic with citations; every cited handle resolves and should be read before anything is asserted.", "Don't pass an instant to known_at: procedures run at HEAD or a recorded sequence."]
+mistakes = ["Running aging.* or trace.* without effective_through (they are historical folds and are refused naming it).", "Running trace.* without account and source (the commingled account and the deposit entry).", "Overriding a parameter with a float; parameters are integers in the registered unit."]

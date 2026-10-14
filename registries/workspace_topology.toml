@@ -128,7 +128,7 @@ planned = true
 name = "fa-lantern"
 layer = "analytics"
 path = "crates/fa-lantern"
-planned = true
+planned = false
 
 [[crate]]
 name = "fa-query"
@@ -220,7 +220,7 @@ planned = true
 name = "fa-conformance"
 layer = "verification"
 path = "crates/fa-conformance"
-planned = true
+planned = false
 
 [[crate]]
 name = "fa-fuzz"

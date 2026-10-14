@@ -532,7 +532,9 @@ fn class_filtered_activity_uses_payload_lineage_and_ignores_damaged_registers() 
         b"undo-adjustment".as_slice(),
         b"restore-adjustment".as_slice(),
     ] {
-        let (original, _) = fa_journal::post::read_entry(&h.db, target.vid).unwrap().unwrap();
+        let (original, _) = fa_journal::post::read_entry(&h.db, target.vid)
+            .unwrap()
+            .unwrap();
         let legs = original
             .proposal
             .legs

@@ -2,7 +2,10 @@ use super::*;
 use crate::roll_forward::RollForwardCertificate;
 
 fn certify(h: &Harness, request: &RollForwardRequest) -> CertifiedGeneralLedger {
-    h.book.certify_general_ledger(&h.cx(), PRINCIPAL, &cap(&["read", "produce"]), request).unwrap().unwrap()
+    h.book
+        .certify_general_ledger(&h.cx(), PRINCIPAL, &cap(&["read", "produce"]), request)
+        .unwrap()
+        .unwrap()
 }
 
 #[test]
@@ -18,8 +21,15 @@ fn source_roundtrip_replays_the_same_general_ledger_without_writing() {
     assert_eq!(certified.report(), &h.read(&expected));
     let bytes = certified.source_certificate().canonical_bytes().unwrap();
     let source = RollForwardCertificate::decode(&bytes).unwrap();
-    let replay = h.book.replay_general_ledger(&h.cx(), PRINCIPAL, &cap(&["read"]), &source, &expected).unwrap().unwrap();
-    assert_eq!(replay.canonical_bytes().unwrap(), certified.report().canonical_bytes().unwrap());
+    let replay = h
+        .book
+        .replay_general_ledger(&h.cx(), PRINCIPAL, &cap(&["read"]), &source, &expected)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        replay.canonical_bytes().unwrap(),
+        certified.report().canonical_bytes().unwrap()
+    );
     assert_eq!(source.canonical_bytes().unwrap(), bytes);
     assert_eq!(h.head(), before);
 }
@@ -32,16 +42,53 @@ fn delivered_sources_cannot_substitute_scope_zero_leaves_dates_labels_units_or_h
     let certified = certify(&h, &expected);
     let source = certified.source_certificate();
     for changed in [
-        RollForwardRequest { accounts: vec![h.id("1000"), h.id("3000")], ..expected.clone() },
-        RollForwardRequest { units: vec![h.jpy.0], ..expected.clone() },
-        RollForwardRequest { effective_from: day(11), ..expected.clone() },
-        RollForwardRequest { effective_through: day(19), ..expected.clone() },
-        RollForwardRequest { label: "Substituted scope".into(), ..expected.clone() },
-        RollForwardRequest { known_at: None, ..expected.clone() },
-        RollForwardRequest { known_at: Some(CommitSeq(h.head().0 + 1)), ..expected.clone() },
+        RollForwardRequest {
+            accounts: vec![h.id("1000"), h.id("3000")],
+            ..expected.clone()
+        },
+        RollForwardRequest {
+            units: vec![h.jpy.0],
+            ..expected.clone()
+        },
+        RollForwardRequest {
+            effective_from: day(11),
+            ..expected.clone()
+        },
+        RollForwardRequest {
+            effective_through: day(19),
+            ..expected.clone()
+        },
+        RollForwardRequest {
+            label: "Substituted scope".into(),
+            ..expected.clone()
+        },
+        RollForwardRequest {
+            known_at: None,
+            ..expected.clone()
+        },
+        RollForwardRequest {
+            known_at: Some(CommitSeq(h.head().0 + 1)),
+            ..expected.clone()
+        },
     ] {
-        assert!(h.book.replay_general_ledger(&h.cx(), PRINCIPAL, &cap(&["read"]), source, &changed).unwrap().is_err());
-        assert!(h.book.general_ledger_jsonl(&h.cx(), PRINCIPAL, &cap(&["read", "produce"]), source, &changed).unwrap().is_err());
+        assert!(
+            h.book
+                .replay_general_ledger(&h.cx(), PRINCIPAL, &cap(&["read"]), source, &changed)
+                .unwrap()
+                .is_err()
+        );
+        assert!(
+            h.book
+                .general_ledger_jsonl(
+                    &h.cx(),
+                    PRINCIPAL,
+                    &cap(&["read", "produce"]),
+                    source,
+                    &changed
+                )
+                .unwrap()
+                .is_err()
+        );
     }
 }
 
@@ -53,14 +100,42 @@ fn later_offsetting_entries_leave_old_workpaper_stable_but_are_not_netted_from_c
     expected.known_at = Some(h.head());
     let certified = certify(&h, &expected);
     let source = certified.source_certificate();
-    let original = h.book.general_ledger_jsonl(&h.cx(), PRINCIPAL, &cap(&["read", "produce"]), source, &expected).unwrap().unwrap();
+    let original = h
+        .book
+        .general_ledger_jsonl(
+            &h.cx(),
+            PRINCIPAL,
+            &cap(&["read", "produce"]),
+            source,
+            &expected,
+        )
+        .unwrap()
+        .unwrap();
     h.post(11, b"later-plus", h.usd, 7);
     h.post(11, b"later-minus", h.usd, -7);
     let current = h.read(&h.request());
-    assert_eq!(current.cell(h.id("1000"), h.usd.0).unwrap().closing,
-        certified.report().cell(h.id("1000"), h.usd.0).unwrap().closing);
+    assert_eq!(
+        current.cell(h.id("1000"), h.usd.0).unwrap().closing,
+        certified
+            .report()
+            .cell(h.id("1000"), h.usd.0)
+            .unwrap()
+            .closing
+    );
     assert_eq!(current.lines().len(), certified.report().lines().len() + 4);
-    assert_eq!(h.book.general_ledger_jsonl(&h.cx(), PRINCIPAL, &cap(&["read", "produce"]), source, &expected).unwrap().unwrap(), original);
+    assert_eq!(
+        h.book
+            .general_ledger_jsonl(
+                &h.cx(),
+                PRINCIPAL,
+                &cap(&["read", "produce"]),
+                source,
+                &expected
+            )
+            .unwrap()
+            .unwrap(),
+        original
+    );
 }
 
 #[test]
@@ -75,9 +150,29 @@ fn identical_closing_stock_and_coordinate_do_not_authenticate_another_journal_hi
     let mut expected = a.request();
     expected.known_at = Some(a.head());
     let certified = certify(&a, &expected);
-    assert_eq!(certified.report().cell(a.id("1000"), a.usd.0).unwrap().closing,
-        b.read(&expected).cell(b.id("1000"), b.usd.0).unwrap().closing);
-    assert!(b.book.replay_general_ledger(&b.cx(), PRINCIPAL, &cap(&["read"]), certified.source_certificate(), &expected).unwrap().is_err());
+    assert_eq!(
+        certified
+            .report()
+            .cell(a.id("1000"), a.usd.0)
+            .unwrap()
+            .closing,
+        b.read(&expected)
+            .cell(b.id("1000"), b.usd.0)
+            .unwrap()
+            .closing
+    );
+    assert!(
+        b.book
+            .replay_general_ledger(
+                &b.cx(),
+                PRINCIPAL,
+                &cap(&["read"]),
+                certified.source_certificate(),
+                &expected
+            )
+            .unwrap()
+            .is_err()
+    );
 }
 
 #[test]
@@ -92,9 +187,29 @@ fn workpaper_retains_exact_selected_units_cells_citations_and_large_mantissas_on
     expected.label = "Ledger € \"quoted\"\n\\".into();
     expected.known_at = Some(h.head());
     let certified = certify(&h, &expected);
-    let text = h.book.general_ledger_jsonl(&h.cx(), PRINCIPAL, &cap(&["read", "produce"]), certified.source_certificate(), &expected).unwrap().unwrap();
-    assert_eq!(text.lines().filter(|line| line.contains("\"event\":\"general_ledger_line\"")).count(), 2);
-    assert_eq!(text.lines().filter(|line| line.contains("\"event\":\"general_ledger_cell\"")).count(), 4);
+    let text = h
+        .book
+        .general_ledger_jsonl(
+            &h.cx(),
+            PRINCIPAL,
+            &cap(&["read", "produce"]),
+            certified.source_certificate(),
+            &expected,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        text.lines()
+            .filter(|line| line.contains("\"event\":\"general_ledger_line\""))
+            .count(),
+        2
+    );
+    assert_eq!(
+        text.lines()
+            .filter(|line| line.contains("\"event\":\"general_ledger_cell\""))
+            .count(),
+        4
+    );
     assert!(text.contains(&format!("\"running_balance\":\"{large}\"")));
     assert!(text.contains("\"running_balance\":\"-7\""));
     assert!(text.contains("\"code\":\"USD\""));
@@ -117,11 +232,40 @@ fn export_and_certification_need_produce_authority_but_replay_only_needs_read() 
     let mut expected = h.request();
     expected.known_at = Some(h.head());
     let certified = certify(&h, &expected);
-    assert!(h.book.certify_general_ledger(&h.cx(), PRINCIPAL, &cap(&["read"]), &expected).unwrap().is_err());
-    assert!(h.book.replay_general_ledger(&h.cx(), PRINCIPAL, &cap(&["read"]), certified.source_certificate(), &expected).unwrap().is_ok());
-    for (principal, capability) in [(PRINCIPAL, cap(&["read"])), (PRINCIPAL, cap(&["produce"])),
-        (VId(99), cap(&["read", "produce"]))]
-    {
-        assert!(h.book.general_ledger_jsonl(&h.cx(), principal, &capability, certified.source_certificate(), &expected).unwrap().is_err());
+    assert!(
+        h.book
+            .certify_general_ledger(&h.cx(), PRINCIPAL, &cap(&["read"]), &expected)
+            .unwrap()
+            .is_err()
+    );
+    assert!(
+        h.book
+            .replay_general_ledger(
+                &h.cx(),
+                PRINCIPAL,
+                &cap(&["read"]),
+                certified.source_certificate(),
+                &expected
+            )
+            .unwrap()
+            .is_ok()
+    );
+    for (principal, capability) in [
+        (PRINCIPAL, cap(&["read"])),
+        (PRINCIPAL, cap(&["produce"])),
+        (VId(99), cap(&["read", "produce"])),
+    ] {
+        assert!(
+            h.book
+                .general_ledger_jsonl(
+                    &h.cx(),
+                    principal,
+                    &capability,
+                    certified.source_certificate(),
+                    &expected
+                )
+                .unwrap()
+                .is_err()
+        );
     }
 }

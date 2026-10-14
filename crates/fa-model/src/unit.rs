@@ -83,8 +83,8 @@ impl UnitDefinition {
             (tag, _) => return Err(r.bad_tag("unit.kind", tag)),
         };
         let law_id = r.u16("unit.rounding_default")?;
-        let rounding_default = RoundingLaw::from_id(law_id)
-            .ok_or_else(|| r.invalid("unit.rounding_default"))?;
+        let rounding_default =
+            RoundingLaw::from_id(law_id).ok_or_else(|| r.invalid("unit.rounding_default"))?;
         r.finish()?;
         Ok(Self {
             id,
@@ -121,8 +121,7 @@ mod tests {
 
     // Independent bytes: USD@v0, id 0, scale 2, Currency/840, HalfEven.
     const USD: &[u8] = &[
-        70, 65, 85, 0, 1, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 85, 83, 68, 0, 0, 2,
-        1, 1, 72, 3, 3, 0,
+        70, 65, 85, 0, 1, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 85, 83, 68, 0, 0, 2, 1, 1, 72, 3, 3, 0,
     ];
 
     #[test]
@@ -194,10 +193,9 @@ mod tests {
     #[test]
     fn unit_schema_registry_matches_the_live_codec() {
         use fa_registry::toml::Value;
-        let schema = fa_registry::toml::parse(include_str!(
-            "../../../registries/object_schemas/unit.toml"
-        ))
-        .unwrap();
+        let schema =
+            fa_registry::toml::parse(include_str!("../../../registries/object_schemas/unit.toml"))
+                .unwrap();
         assert_eq!(schema.root["magic_hex"].as_str(), Some("46415500"));
         assert_eq!(
             schema.root["major"].as_int(),

@@ -18,8 +18,8 @@ use fa_model::{AccountType, EntryClass, Id128, Writer};
 use fa_time::DateDay;
 
 use crate::{
-    Account, AccountBalance, MAX_ACCOUNTS, MAX_BALANCES, MAX_UNITS, StatementError,
-    StatementKind, Sum, input, overflow,
+    Account, AccountBalance, MAX_ACCOUNTS, MAX_BALANCES, MAX_UNITS, StatementError, StatementKind,
+    Sum, input, overflow,
 };
 
 pub const OUTPUT_FORMAT: &str = "fa:roll-forward:v1";
@@ -195,7 +195,9 @@ pub fn evaluate(source: &RollForwardInput) -> Result<RollForward, StatementError
             || accounts.insert(account.id, account).is_some()
             || !codes.insert(account.code.as_str())
         {
-            return Err(input("roll-forward scope needs distinct, valid monetary leaf accounts"));
+            return Err(input(
+                "roll-forward scope needs distinct, valid monetary leaf accounts",
+            ));
         }
     }
     let units: BTreeSet<_> = source.units.iter().copied().collect();
@@ -209,7 +211,9 @@ pub fn evaluate(source: &RollForwardInput) -> Result<RollForward, StatementError
         check_cell(movement.account_id, movement.unit_id, &accounts, &units)?;
         let class = movement.bucket.class;
         if !class.is_registered() || class.is_control() || class == EntryClass::PENDING {
-            return Err(input("roll-forward activity must contain only registered posted classes"));
+            return Err(input(
+                "roll-forward activity must contain only registered posted classes",
+            ));
         }
         if movement.bucket.reason_code.len() > MAX_REASON_BYTES {
             return Err(input("roll-forward reason code exceeds 256 bytes"));
@@ -219,24 +223,31 @@ pub fn evaluate(source: &RollForwardInput) -> Result<RollForward, StatementError
             || movement.effective_day < source.effective_from
             || movement.effective_day > source.effective_through
         {
-            return Err(input("roll-forward movement lies outside its selected coordinate"));
+            return Err(input(
+                "roll-forward movement lies outside its selected coordinate",
+            ));
         }
         if movement.debits < 0
             || movement.credits < 0
             || (movement.debits > 0) == (movement.credits > 0)
         {
-            return Err(input("a roll-forward movement must be one positive debit or credit leg"));
+            return Err(input(
+                "a roll-forward movement must be one positive debit or credit leg",
+            ));
         }
         if !legs.insert((movement.entry_digest, movement.leg_index)) {
-            return Err(input("roll-forward repeats a journal leg, possibly in another bucket"));
+            return Err(input(
+                "roll-forward repeats a journal leg, possibly in another bucket",
+            ));
         }
-        if let Some(previous) = headers.insert(movement.entry_digest, movement) {
-            if previous.recorded_seq != movement.recorded_seq
+        if let Some(previous) = headers.insert(movement.entry_digest, movement)
+            && (previous.recorded_seq != movement.recorded_seq
                 || previous.effective_day != movement.effective_day
-                || previous.bucket != movement.bucket
-            {
-                return Err(input("roll-forward legs disagree about their entry's metadata"));
-            }
+                || previous.bucket != movement.bucket)
+        {
+            return Err(input(
+                "roll-forward legs disagree about their entry's metadata",
+            ));
         }
         buckets.insert(movement.bucket.clone());
         if buckets.len() > MAX_BUCKETS {
@@ -250,7 +261,9 @@ pub fn evaluate(source: &RollForwardInput) -> Result<RollForward, StatementError
         .and_then(|cells| cells.checked_mul(width))
         .ok_or_else(|| input("roll-forward output dimensions overflow"))?;
     if values > MAX_OUTPUT_VALUES {
-        return Err(input("roll-forward expanded output exceeds two million amounts; narrow the scope"));
+        return Err(input(
+            "roll-forward expanded output exceeds two million amounts; narrow the scope",
+        ));
     }
     let opening = read_balances(&source.opening, &accounts, &units)?;
     let closing = read_balances(&source.closing, &accounts, &units)?;
@@ -313,7 +326,11 @@ pub fn evaluate(source: &RollForwardInput) -> Result<RollForward, StatementError
     }
     let mut movements = source.movements.clone();
     movements.sort_by_key(|movement| {
-        (movement.recorded_seq, movement.entry_digest, movement.leg_index)
+        (
+            movement.recorded_seq,
+            movement.entry_digest,
+            movement.leg_index,
+        )
     });
     Ok(RollForward {
         book_id: source.book_id,
@@ -353,11 +370,16 @@ fn read_balances(
     for balance in balances {
         check_cell(balance.account_id, balance.unit_id, accounts, units)?;
         if balance.debits < 0 || balance.credits < 0 {
-            return Err(input("roll-forward stock has a negative debit or credit magnitude"));
+            return Err(input(
+                "roll-forward stock has a negative debit or credit magnitude",
+            ));
         }
         // Both magnitudes are nonnegative i128: their difference fits i128.
         let net = balance.debits - balance.credits;
-        if result.insert((balance.account_id, balance.unit_id), net).is_some() {
+        if result
+            .insert((balance.account_id, balance.unit_id), net)
+            .is_some()
+        {
             return Err(input("roll-forward stock repeats an account/unit cell"));
         }
     }
@@ -435,9 +457,11 @@ mod tests {
         assert_eq!((row.opening, row.net_change, row.closing), (100, 25, 125));
         assert_eq!(row.activity, [50, -20, -5]);
         assert_eq!(result.buckets[1].rule_digest, Some([8; 32]));
-        assert!(result.rows[1..].iter().all(|row| {
-            row.opening == 0 && row.closing == 0 && row.activity == [0, 0, 0]
-        }));
+        assert!(
+            result.rows[1..]
+                .iter()
+                .all(|row| { row.opening == 0 && row.closing == 0 && row.activity == [0, 0, 0] })
+        );
         assert_eq!(result.movements, source.movements);
     }
 
@@ -459,7 +483,11 @@ mod tests {
         source.movements.pop();
         assert!(matches!(
             evaluate(&source),
-            Err(StatementError::Identity { residual: 5, unit_id: 1, .. })
+            Err(StatementError::Identity {
+                residual: 5,
+                unit_id: 1,
+                ..
+            })
         ));
     }
 
@@ -468,7 +496,10 @@ mod tests {
         for (account, unit) in [(2, 1), (1, 9)] {
             let mut source = source();
             source.closing = vec![stock(1, 1, 126), stock(account, unit, -1)];
-            assert!(matches!(evaluate(&source), Err(StatementError::Identity { .. })));
+            assert!(matches!(
+                evaluate(&source),
+                Err(StatementError::Identity { .. })
+            ));
         }
     }
 
@@ -491,7 +522,11 @@ mod tests {
     #[test]
     fn wrong_coordinates_pending_controls_unknown_classes_and_bad_legs_refuse() {
         let base = source();
-        for class in [EntryClass::PENDING, EntryClass::PERIOD_CONTROL, EntryClass(65535)] {
+        for class in [
+            EntryClass::PENDING,
+            EntryClass::PERIOD_CONTROL,
+            EntryClass(65535),
+        ] {
             let mut source = base.clone();
             source.movements[0].bucket.class = class;
             assert!(matches!(evaluate(&source), Err(StatementError::Input(_))));
@@ -542,7 +577,10 @@ mod tests {
         ];
         assert_eq!(evaluate(&source).unwrap().rows[0].net_change, i128::MAX);
         source.movements.pop();
-        assert!(matches!(evaluate(&source), Err(StatementError::Overflow { .. })));
+        assert!(matches!(
+            evaluate(&source),
+            Err(StatementError::Overflow { .. })
+        ));
     }
 
     #[test]

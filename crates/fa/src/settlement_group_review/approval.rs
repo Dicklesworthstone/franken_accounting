@@ -11,12 +11,13 @@ use fa_policy::{Capability, Op};
 use fa_registers::RegisterError;
 use fgdb_types::context::PurposeContexts;
 
-use crate::{AsyncBook, BookError, Outcome};
 use super::SettlementGroupReview;
+use crate::{AsyncBook, BookError, Outcome};
 
 fn changed() -> Refusal {
     Refusal::new(
-        fa_journal::refusal::code::PLAN_INVALIDATED, exit::CONFLICT,
+        fa_journal::refusal::code::PLAN_INVALIDATED,
+        exit::CONFLICT,
         "the complete group review or its current allocation observations differ",
         "plan §5.7 / §14.3 (exact reviewed proposal and independent approval)",
         "review a fresh complete group and retain its digest independently; after an attempted commit retry its saved PostPlan instead",
@@ -52,34 +53,52 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
         cx.query().checkpoint().map_err(BookError::Context)?;
-        let explicit: Vec<_> = review.proposal().legs.iter()
-            .map(|leg| (leg.amount.unit, leg.amount.mantissa)).collect();
-        if let Err(denial) = fa_policy::admit(capability, &fa_policy::Intent {
-            principal: capability.holder(), trunk: true, op: Op::Approve,
-            book: book.book_id, legs: &explicit,
-        }) {
+        let explicit: Vec<_> = review
+            .proposal()
+            .legs
+            .iter()
+            .map(|leg| (leg.amount.unit, leg.amount.mantissa))
+            .collect();
+        if let Err(denial) = fa_policy::admit(
+            capability,
+            &fa_policy::Intent {
+                principal: capability.holder(),
+                trunk: true,
+                op: Op::Approve,
+                book: book.book_id,
+                legs: &explicit,
+            },
+        ) {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
         if capability.holder() == review.proposal().principal_ref {
             return Ok(Err(Refusal::new(
-                fa_journal::refusal::code::APPROVALS, exit::REFUSAL,
+                fa_journal::refusal::code::APPROVALS,
+                exit::REFUSAL,
                 "the group preparer may not approve their own proposal",
                 "plan §14.3 (separation of preparer and approver)",
                 "have another principal with read and approve authority review the complete saved group",
             )));
         }
-        if review.proposal().book_id != book.book_id || review.proposal().branch_id != Id128::TRUNK {
+        if review.proposal().book_id != book.book_id || review.proposal().branch_id != Id128::TRUNK
+        {
             return Ok(Err(changed()));
         }
         let digest = match review.digest() {
             Ok(digest) => digest,
-            Err(error) => return Ok(Err(Refusal::new(
-                fa_journal::refusal::code::STRUCTURE, exit::USAGE, error.to_string(),
-                "fa:settlement-group-review:v1 (bounded canonical request)",
-                "supply the unchanged group review and its independently retained digest",
-            ))),
+            Err(error) => {
+                return Ok(Err(Refusal::new(
+                    fa_journal::refusal::code::STRUCTURE,
+                    exit::USAGE,
+                    error.to_string(),
+                    "fa:settlement-group-review:v1 (bounded canonical request)",
+                    "supply the unchanged group review and its independently retained digest",
+                )));
+            }
         };
-        if digest != expected_review_digest { return Ok(Err(changed())); }
+        if digest != expected_review_digest {
+            return Ok(Err(changed()));
+        }
         let query = cx.query();
         query.checkpoint().map_err(BookError::Context)?;
         // Retain the exclusive mutable book handle through publication. Native
@@ -89,18 +108,27 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             if let Err(denial) = fa_policy::current(capability, at) {
                 return Ok(Err(fa_journal::policy::refusal(&denial)));
             }
-            if let Err(refusal) = fa_journal::policy::capability_admitted(&self.db, book, capability)? {
+            if let Err(refusal) =
+                fa_journal::policy::capability_admitted(&self.db, book, capability)?
+            {
                 return Ok(Err(refusal));
             }
-            if at < review.known_at() { return Ok(Err(changed())); }
+            if at < review.known_at() {
+                return Ok(Err(changed()));
+            }
             let mut reports = BTreeMap::new();
             let mut entries = BTreeMap::new();
             for part in review.allocations() {
                 query.checkpoint().map_err(BookError::Context)?;
                 let request = &part.allocation.request;
-                if let std::collections::btree_map::Entry::Vacant(slot) = reports.entry(request.account) {
+                if let std::collections::btree_map::Entry::Vacant(slot) =
+                    reports.entry(request.account)
+                {
                     let report = match fa_registers::open_items::open_items_report(
-                        &self.db, book, Some(request.account), Some(at),
+                        &self.db,
+                        book,
+                        Some(request.account),
+                        Some(at),
                     ) {
                         Ok(report) => report,
                         Err(RegisterError::InvalidSelection(_)) => return Ok(Err(changed())),
@@ -108,43 +136,75 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     };
                     slot.insert(report);
                 }
-                let report = reports.get(&request.account)
+                let report = reports
+                    .get(&request.account)
                     .ok_or_else(|| KernelError::Corrupt("group review report is missing".into()))?;
                 let allocation = match report.plan_settlement(request) {
                     Ok(allocation) => allocation,
                     Err(RegisterError::InvalidSelection(_)) => return Ok(Err(changed())),
                     Err(error) => return Err(error.into()),
                 };
-                let mut expected = part.allocation.clone(); expected.known_at = at;
-                if allocation != expected { return Ok(Err(changed())); }
+                let mut expected = part.allocation.clone();
+                expected.known_at = at;
+                if allocation != expected {
+                    return Ok(Err(changed()));
+                }
                 let applying = &review.proposal().legs[usize::from(part.payment_leg)];
                 for (vid, ordinal) in &request.targets {
                     query.checkpoint().map_err(BookError::Context)?;
                     if let std::collections::btree_map::Entry::Vacant(slot) = entries.entry(*vid) {
-                        let row = self.db.vertex_at(*vid, at).map_err(KernelError::from)?
+                        let row = self
+                            .db
+                            .vertex_at(*vid, at)
+                            .map_err(KernelError::from)?
                             .filter(|row| row.labels.contains(&label::ENTRY))
-                            .ok_or_else(|| KernelError::Corrupt("group review target is missing".into()))?;
-                        let entry = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "group review target")?)
-                            .map_err(KernelError::from)?;
-                        if entry.proposal.book_id != book.book_id || entry.proposal.branch_id != Id128::TRUNK {
-                            return Err(KernelError::Corrupt("group review target has a foreign coordinate".into()).into());
+                            .ok_or_else(|| {
+                                KernelError::Corrupt("group review target is missing".into())
+                            })?;
+                        let entry = Entry::decode(&bytes(
+                            &row,
+                            property::FA_PAYLOAD,
+                            "group review target",
+                        )?)
+                        .map_err(KernelError::from)?;
+                        if entry.proposal.book_id != book.book_id
+                            || entry.proposal.branch_id != Id128::TRUNK
+                        {
+                            return Err(KernelError::Corrupt(
+                                "group review target has a foreign coordinate".into(),
+                            )
+                            .into());
                         }
                         slot.insert(entry);
                     }
-                    let entry = entries.get(vid)
-                        .ok_or_else(|| KernelError::Corrupt("resolved group review target is missing".into()))?;
-                    let leg = entry.proposal.legs.get(usize::from(*ordinal))
-                        .ok_or_else(|| KernelError::Corrupt("group review target ordinal is missing".into()))?;
-                    if leg.dimension_set != applying.dimension_set { return Ok(Err(changed())); }
+                    let entry = entries.get(vid).ok_or_else(|| {
+                        KernelError::Corrupt("resolved group review target is missing".into())
+                    })?;
+                    let leg = entry
+                        .proposal
+                        .legs
+                        .get(usize::from(*ordinal))
+                        .ok_or_else(|| {
+                            KernelError::Corrupt("group review target ordinal is missing".into())
+                        })?;
+                    if leg.dimension_set != applying.dimension_set {
+                        return Ok(Err(changed()));
+                    }
                 }
                 for link in &applying.settles {
-                    let entry = entries.get(&link.target.vid)
-                        .ok_or_else(|| KernelError::Corrupt("group application target is missing".into()))?;
-                    if entry.entry_ref(link.target.vid) != link.target { return Ok(Err(changed())); }
+                    let entry = entries.get(&link.target.vid).ok_or_else(|| {
+                        KernelError::Corrupt("group application target is missing".into())
+                    })?;
+                    if entry.entry_ref(link.target.vid) != link.target {
+                        return Ok(Err(changed()));
+                    }
                 }
             }
             query.checkpoint().map_err(BookError::Context)?;
-            Ok(Ok(review.proposal().proposal_digest().map_err(KernelError::from)?))
+            Ok(Ok(review
+                .proposal()
+                .proposal_digest()
+                .map_err(KernelError::from)?))
         })?;
         let proposal_digest = match checked {
             Ok(digest) => digest,

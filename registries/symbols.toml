@@ -129,6 +129,11 @@ name = "RedactedView"
 id = 39
 name = "LegalHoldCell"
 
+# fa-l3c: the book key's signed checkpoint beside an AccumulatorState.
+[[label]]
+id = 40
+name = "TransparencyCheckpoint"
+
 [[label]]
 id = 41
 name = "RegisterState"
@@ -428,3 +433,8 @@ name = "REDACTS"
 [[relation]]
 id = 34
 name = "HOLDS"
+
+# fa-l3c: a TransparencyCheckpoint -> the AccumulatorState it signs.
+[[relation]]
+id = 35
+name = "CHECKPOINTS"

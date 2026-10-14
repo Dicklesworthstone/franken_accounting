@@ -13,9 +13,55 @@
 
 </div>
 
-> **Status (2026-10-12): implementation in progress.** The Rust workspace includes the embedded library, persistent CLI, book writer-lease daemon and registered MCP tools, exact money and calendar primitives, chart installation, period transitions, posting and reasoned reversal, register folds and verification, and an independent arithmetic oracle. Trial balances support stock balances, period activity, civil-date cutoffs, and historical commit-sequence snapshots. Trial balances, leaf-account balance explanations, and open-items reports support retained certificates that replay their exact historical results through native certified reads. Recorded checkpoints and portable inclusion, consistency, prefix and balance proofs can be exported for the standalone, std-only `fa-verify`. An explicitly configured daemon records clock evidence and processes timed holds and scheduled reversals. Gate G0 and the full Genesis acceptance criteria remain open. Signed outsider evidence bundles and the broader workflows below remain design targets.
+> **Status (2026-10-13): implementation in progress.** The Rust workspace includes the embedded library, persistent CLI, book writer-lease daemon and registered MCP tools, exact money and calendar primitives, chart installation (with embedded chart templates), period transitions, posting and reasoned reversal, register folds and verification, and an independent arithmetic oracle. Trial balances support stock balances, period activity, civil-date cutoffs, and historical commit-sequence snapshots. Trial balances, leaf-account balance explanations, statements and open-items reports support retained certificates that replay their exact historical results through native certified reads. Every published checkpoint is signed by the book's key; `fa proof` exports the signed checkpoint and portable inclusion, consistency, prefix and (migration-aware) balance proofs, and `fa bundle produce` writes evidence bundles with signed production receipts, all checked offline by the standalone, std-only `fa-verify`. The first Lantern forensic procedures (journal-entry tests, duplicates, Benford, sequence gaps, cutoff, aging, round trips, structuring and four tracing laws) run as `fa procedure`. `fa doctor`, `fa triage` and `fa next` diagnose a book and name the next command. An explicitly configured daemon records clock evidence and processes timed holds and scheduled reversals. Gate G0 and the full Genesis acceptance criteria remain open; agent authority on the CLI and daemon is still self-asserted (only the MCP server is launch-bound), and drafts, scenarios, the close engine and the broader workflows below remain design targets.
 
 > **A note on tense.** The rest of this README is written in the **present tense, as if the entire design in [`COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md`](./COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md) is fully realized**: the 1.0 target state. This is deliberate — it describes the *finished* system so it gets trued-up in place as milestones land (§19's gates G1→G4) rather than rewritten later. Where the plan stages something as future work, this README says so plainly.
+
+### Try it today
+
+<!-- try-it-today: crates/fa-cli/tests/readme.rs runs this section against the real `fa` binary.
+It writes each `file:` block below verbatim, runs every `fa` line of the commands block in order
+in a fresh directory, fills `<document-oid>` from the `oid` the line before printed, and requires
+exit 0 from every line; the replay must reproduce the trial balance's data. Edit a line and the
+test fails. The same test checks every `fa` line above `## TL;DR` against the verb registry. -->
+
+Write an invoice and the entry it supports next to the book:
+
+<!-- file: invoice.txt -->
+```text
+Invoice 10442 to ACME-CUST-17: 10 widgets at 125.00 USD, total 1,250.00 USD.
+```
+
+<!-- file: sale.json -->
+```json
+{"effective_date":"2026-03-14","idempotency_key":"inv-10442","legs":[{"side":"debit","account":"1200","amount":"1250.00 USD"},{"side":"credit","account":"4000","amount":"1250.00 USD"}]}
+```
+
+Then create a book with a template chart, open March, and record the invoice. Rehearse the entry it supports as a sealed plan (replace `<document-oid>` with the `oid` that `fa document add` printed), commit exactly that plan, and get a certified trial balance that `fa replay` reproduces:
+
+<!-- commands -->
+```bash
+fa book create --book acme --name "Acme Co" --base-unit USD
+fa chart import --template us-gaap-smb --book acme
+fa period create --fiscal-year 2026 --book acme
+fa period open FY2026-P03 --book acme
+fa document add invoice.txt --kind Invoice --grade HumanUpload --book acme --json
+fa post --intent sale.json --evidence <document-oid> --dry-run --plan-out sale.plan --book acme --json
+fa commit --plan sale.plan --book acme --json
+fa tb --period FY2026-P03 --certificate-out march.cert --book acme --json
+fa replay march.cert --book acme --json
+fa certificate status march.cert --book acme --json
+fa statement income-statement --for FY2026-P03 --book acme --json
+fa statement balance-sheet --for FY2026-P03 --book acme --json
+fa explain balance 1200 --period FY2026-P03 --book acme --json
+fa registers materialize --period FY2026-P03 --book acme --json
+fa verify registers --period FY2026-P03 --book acme --json
+fa verify projections --book acme --json
+fa checkpoint create --grant witness --book acme --json
+fa verify accumulator --book acme --json
+```
+
+`fa chart templates` lists the charts (`us-gaap-smb`, `ifrs-sme`, `us-bank-call-report`); they are starting points, not GAAP, IFRS or regulatory advice. `--grade HumanUpload` declares that a human supplied the document; an agent's own upload is `AgentUpload`. Bare `fa`, `fa --help` and `fa robot-docs guide` orient an agent.
 
 ### Reporting available now
 
@@ -262,6 +308,14 @@ under `fa-we7` and its dependent beads.
 
 ### MCP launch authority
 
+The stdio server uses MCP `2026-07-28`. Clients discover it with
+`server/discover` and send `io.modelcontextprotocol/protocolVersion` and
+`io.modelcontextprotocol/clientCapabilities` in each request's `params._meta`.
+Legacy `initialize` negotiation is refused. Resource refusals retain their
+structured `error.data`, including the launch authority.
+Resource reads have private, zero-lifetime cache hints because their URIs
+resolve the current book state.
+
 Start the stdio server against a book the operator has already prepared:
 
 ```bash
@@ -385,8 +439,13 @@ checkpoints it returns `status: "no_checkpoints"` and a null
 finding; checkpoint creation refuses a corrupt predecessor. Verification
 and proof generation also reject later rewrites or retirements of checkpointed
 entries, even when the original historical snapshot is still readable.
-These states cover entries, including control entries. Signed transparency checkpoints,
-document-receipt coverage and evidence bundles remain unfinished. The
+These states cover entries, including control entries. The library also signs
+each published checkpoint with the book's Ed25519 key
+(`Book::checkpoint_public_key`) as a `TransparencyCheckpoint` and produces
+evidence bundles with detached production receipts (`Book::produce_bundle`);
+`fa-verify checkpoint|scope|bundle` check them. The CLI exports both (see
+below); document-receipt coverage, witnesses and key rotation remain
+unfinished. The
 [CLI tests](./crates/fa-cli/tests/notary.rs) exercise persistence, later
 postings, authorization and real storage corruption.
 
@@ -418,14 +477,29 @@ After independently establishing trust in the checkpoint, an outsider can
 check the raw files with no book, keys, accounting dependencies or network:
 
 ```bash
-fa-verify prefix --proof acme.prefix --checkpoint acme.checkpoint --json
-fa-verify balance --proof cash.balance --checkpoint acme.checkpoint --json
+fa-verify prefix --proof acme.prefix --checkpoint acme.checkpoint --unsigned-checkpoint --json
+fa-verify balance --proof cash.balance --checkpoint acme.checkpoint --unsigned-checkpoint --json
 # A consistency check additionally names the producer's claimed new statement.
 fa-verify consistency --proof extension.proof --checkpoint old.checkpoint \
-  --next-checkpoint next.checkpoint --json
+  --next-checkpoint next.checkpoint --unsigned-checkpoint --json
 ```
 
-The checkpoint is unsigned. Receiving a proof and its checkpoint together
+These checkpoints are unsigned, and `--unsigned-checkpoint` says so: you trust
+the 80-byte statement through some other channel. The signed alternative needs
+no side channel beyond the book's public key, which every export names as
+`checkpoint_public_key`:
+
+```bash
+fa proof signed-checkpoint --state latest --out acme.ckpt --book ./books/acme --json
+fa-verify prefix --proof acme.prefix --checkpoint acme.ckpt --key <checkpoint_public_key> --json
+# An evidence bundle: one account's month, a recomputed balance, a signed receipt.
+fa bundle produce --account 1000 --from 2026-03-01 --to 2026-03-31 \
+  --balance 1000:USD:2026-03-31 --out cash.fab --receipt-out cash.receipt --book ./books/acme --json
+fa-verify bundle cash.fab --key <checkpoint_public_key> --receipt cash.receipt --json
+```
+
+`--key` (repeatable) is required for `scope` and `bundle`; run
+`fa-verify --help` for the grammar. Receiving a proof and its checkpoint together
 does not authenticate their origin. The verifier requires the trust anchor
 as a separate input and reports the exact predicate it checked: inclusion,
 tree extension, complete prefix envelopes, or posted debit/credit arithmetic

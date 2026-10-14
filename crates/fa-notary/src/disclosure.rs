@@ -19,8 +19,13 @@ const CHUNK_BYTES: usize = fa_journal::evidence::CHUNK_BYTES;
 pub enum DisclosureExportError {
     EmptyRequest,
     RequestOrder,
-    CountLimit { maximum: usize, actual: usize },
-    ByteLimit { maximum: usize },
+    CountLimit {
+        maximum: usize,
+        actual: usize,
+    },
+    ByteLimit {
+        maximum: usize,
+    },
     Proof(DocumentProofError),
     Encode(EncodeError),
     /// The supplied view has an invalid document/chunk shape.
@@ -28,16 +33,24 @@ pub enum DisclosureExportError {
     /// The view does not rebuild the separately supplied document commitment.
     Commitment,
     /// Requested bytes are not present in the already-authorized view.
-    Withheld { index: u64 },
+    Withheld {
+        index: u64,
+    },
 }
 
 impl core::fmt::Display for DisclosureExportError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::EmptyRequest => write!(f, "a disclosure must name at least one chunk"),
-            Self::RequestOrder => write!(f, "disclosure indexes must be strictly ascending and unique"),
+            Self::RequestOrder => write!(
+                f,
+                "disclosure indexes must be strictly ascending and unique"
+            ),
             Self::CountLimit { maximum, actual } => {
-                write!(f, "disclosure requests {actual} chunks; maximum is {maximum}")
+                write!(
+                    f,
+                    "disclosure requests {actual} chunks; maximum is {maximum}"
+                )
             }
             Self::ByteLimit { maximum } => {
                 write!(f, "disclosure exceeds the {maximum}-byte transport limit")
@@ -46,7 +59,9 @@ impl core::fmt::Display for DisclosureExportError {
             Self::Encode(error) => write!(f, "{error}"),
             Self::View(why) => write!(f, "invalid disclosure view: {why}"),
             Self::Commitment => write!(f, "disclosure view does not match the document commitment"),
-            Self::Withheld { index } => write!(f, "document chunk {index} is withheld by the supplied view"),
+            Self::Withheld { index } => {
+                write!(f, "document chunk {index} is withheld by the supplied view")
+            }
         }
     }
 }
@@ -84,7 +99,9 @@ fn encode_proofs<'a>(
     mut prove: impl FnMut(u64) -> Result<ChunkProof<'a>, DisclosureExportError>,
 ) -> Result<Vec<u8>, DisclosureExportError> {
     validate_request(requested_indexes)?;
-    let limit = || DisclosureExportError::ByteLimit { maximum: MAX_PROOF_BYTES };
+    let limit = || DisclosureExportError::ByteLimit {
+        maximum: MAX_PROOF_BYTES,
+    };
     // Bound the entire encoding before allocating the output. Chunk bytes
     // borrow the source; only bounded paths are copied before serialization.
     let mut size = 4 + FORMAT.len() + 1 + 8 + 4;
@@ -92,7 +109,8 @@ fn encode_proofs<'a>(
     for index in requested_indexes {
         let proof = prove(*index)?;
         let hashes = proof.siblings.len().checked_mul(32).ok_or_else(limit)?;
-        size = size.checked_add(16)
+        size = size
+            .checked_add(16)
             .and_then(|n| n.checked_add(proof.bytes.len()))
             .and_then(|n| n.checked_add(hashes))
             .filter(|n| *n <= MAX_PROOF_BYTES)
@@ -103,8 +121,11 @@ fn encode_proofs<'a>(
     let mut w = Writer::with_capacity(size);
     w.bytes(FORMAT).u8(first.kind).u64(first.document_length);
     w.list(&proofs, |w, proof| {
-        w.u64(proof.index).bytes(proof.bytes)
-            .list(&proof.siblings, |w, sibling| { w.fixed(sibling); });
+        w.u64(proof.index)
+            .bytes(proof.bytes)
+            .list(&proof.siblings, |w, sibling| {
+                w.fixed(sibling);
+            });
     });
     w.finish().map_err(DisclosureExportError::Encode)
 }
@@ -160,16 +181,21 @@ pub fn disclosure_from_view(
         return Err(DisclosureExportError::Commitment);
     }
     if view.size > (MAX_DISCLOSURE_CHUNKS * CHUNK_BYTES) as u64 {
-        return Err(DisclosureExportError::View("document exceeds the kernel view bound".into()));
+        return Err(DisclosureExportError::View(
+            "document exceeds the kernel view bound".into(),
+        ));
     }
     let count = view.size.div_ceil(CHUNK_BYTES as u64).max(1);
     if view.chunks.len() as u64 != count {
-        return Err(DisclosureExportError::View("chunk count disagrees with document size".into()));
+        return Err(DisclosureExportError::View(
+            "chunk count disagrees with document size".into(),
+        ));
     }
     for index in requested_indexes {
         if *index >= count {
             return Err(DisclosureExportError::Proof(DocumentProofError::Index {
-                index: *index, chunk_count: count,
+                index: *index,
+                chunk_count: count,
             }));
         }
         if matches!(&view.chunks[*index as usize], ViewChunk::Withheld(_)) {
@@ -183,29 +209,45 @@ pub fn disclosure_from_view(
         level.push(match chunk {
             ViewChunk::Withheld(digest) => *digest,
             ViewChunk::Disclosed(bytes) => {
-                let expected = view.size.saturating_sub(index as u64 * CHUNK_BYTES as u64)
+                let expected = view
+                    .size
+                    .saturating_sub(index as u64 * CHUNK_BYTES as u64)
                     .min(CHUNK_BYTES as u64);
                 if bytes.len() as u64 != expected {
-                    return Err(DisclosureExportError::View(format!("chunk {index} has an invalid length")));
+                    return Err(DisclosureExportError::View(format!(
+                        "chunk {index} has an invalid length"
+                    )));
                 }
-                hash(b"fa:doc:leaf:v1", &[
-                    &(index as u64).to_le_bytes(), &(bytes.len() as u64).to_le_bytes(), bytes,
-                ])
+                hash(
+                    b"fa:doc:leaf:v1",
+                    &[
+                        &(index as u64).to_le_bytes(),
+                        &(bytes.len() as u64).to_le_bytes(),
+                        bytes,
+                    ],
+                )
             }
         });
     }
     let mut levels = Vec::new();
     while level.len() > 1 {
-        let next = level.chunks(2).map(|pair| match pair {
-            [left, right] => hash(b"fa:doc:node:v1", &[left, right]),
-            _ => pair[0],
-        }).collect();
+        let next = level
+            .chunks(2)
+            .map(|pair| match pair {
+                [left, right] => hash(b"fa:doc:node:v1", &[left, right]),
+                _ => pair[0],
+            })
+            .collect();
         levels.push(level);
         level = next;
     }
     let root = level[0]; // The authenticated shape always has at least one leaf.
     levels.push(level);
-    if hash(b"fa:doc:v1", &[&[view.kind], &view.size.to_le_bytes(), &root]) != *document_commitment {
+    if hash(
+        b"fa:doc:v1",
+        &[&[view.kind], &view.size.to_le_bytes(), &root],
+    ) != *document_commitment
+    {
         return Err(DisclosureExportError::Commitment);
     }
     encode_proofs(requested_indexes, |index| {
@@ -220,6 +262,12 @@ pub fn disclosure_from_view(
             }
             position /= 2;
         }
-        Ok(ChunkProof { kind: view.kind, document_length: view.size, index, bytes, siblings })
+        Ok(ChunkProof {
+            kind: view.kind,
+            document_length: view.size,
+            index,
+            bytes,
+            siblings,
+        })
     })
 }

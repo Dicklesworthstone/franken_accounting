@@ -45,35 +45,51 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         if let Err(denial) = fa_policy::admit_read(capability, capability.holder(), book.book_id) {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
-        let explicit: Vec<_> = review.proposal().legs.iter()
-            .map(|leg| (leg.amount.unit, leg.amount.mantissa)).collect();
+        let explicit: Vec<_> = review
+            .proposal()
+            .legs
+            .iter()
+            .map(|leg| (leg.amount.unit, leg.amount.mantissa))
+            .collect();
         // Approval authority can have amount ceilings too. Judge the actual
         // payment legs, not an empty approval-control payload, and use the
         // approver as actor without manufacturing a Post grant.
-        if let Err(denial) = fa_policy::admit(capability, &fa_policy::Intent {
-            principal: capability.holder(), trunk: true, op: Op::Approve,
-            book: book.book_id, legs: &explicit,
-        }) {
+        if let Err(denial) = fa_policy::admit(
+            capability,
+            &fa_policy::Intent {
+                principal: capability.holder(),
+                trunk: true,
+                op: Op::Approve,
+                book: book.book_id,
+                legs: &explicit,
+            },
+        ) {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
         if capability.holder() == review.proposal().principal_ref {
             return Ok(Err(Refusal::new(
-                fa_journal::refusal::code::APPROVALS, exit::REFUSAL,
+                fa_journal::refusal::code::APPROVALS,
+                exit::SAFETY,
                 "the settlement preparer may not approve their own proposal",
                 "plan §14.3 (separation of preparer and approver)",
                 "have a different principal with read and approve authority review the saved payment",
             )));
         }
-        if review.proposal().book_id != book.book_id || review.proposal().branch_id != Id128::TRUNK {
+        if review.proposal().book_id != book.book_id || review.proposal().branch_id != Id128::TRUNK
+        {
             return Ok(Err(changed()));
         }
         let digest = match review.digest() {
             Ok(digest) => digest,
-            Err(error) => return Ok(Err(Refusal::new(
-                fa_journal::refusal::code::STRUCTURE, exit::USAGE, error.to_string(),
-                "fa:settlement-review:v1 (bounded canonical request)",
-                "supply the unchanged review and its independently retained digest",
-            ))),
+            Err(error) => {
+                return Ok(Err(Refusal::new(
+                    fa_journal::refusal::code::STRUCTURE,
+                    exit::USAGE,
+                    error.to_string(),
+                    "fa:settlement-review:v1 (bounded canonical request)",
+                    "supply the unchanged review and its independently retained digest",
+                )));
+            }
         };
         if digest != expected_review_digest {
             return Ok(Err(changed()));
@@ -88,7 +104,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             if let Err(denial) = fa_policy::current(capability, at) {
                 return Ok(Err(fa_journal::policy::refusal(&denial)));
             }
-            if let Err(refusal) = fa_journal::policy::capability_admitted(&self.db, book, capability)? {
+            if let Err(refusal) =
+                fa_journal::policy::capability_admitted(&self.db, book, capability)?
+            {
                 return Ok(Err(refusal));
             }
             if at < review.allocation().known_at {
@@ -96,7 +114,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             }
             let request = &review.allocation().request;
             let report = match fa_registers::open_items::open_items_report(
-                &self.db, book, Some(request.account), Some(at),
+                &self.db,
+                book,
+                Some(request.account),
+                Some(at),
             ) {
                 Ok(report) => report,
                 Err(RegisterError::InvalidSelection(_)) => return Ok(Err(changed())),
@@ -120,33 +141,53 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             for (vid, ordinal) in &request.targets {
                 query.checkpoint().map_err(BookError::Context)?;
                 if let std::collections::btree_map::Entry::Vacant(slot) = entries.entry(*vid) {
-                    let row = self.db.vertex_at(*vid, at).map_err(KernelError::from)?
+                    let row = self
+                        .db
+                        .vertex_at(*vid, at)
+                        .map_err(KernelError::from)?
                         .filter(|row| row.labels.contains(&label::ENTRY))
-                        .ok_or_else(|| KernelError::Corrupt("review target payload is missing".into()))?;
+                        .ok_or_else(|| {
+                            KernelError::Corrupt("review target payload is missing".into())
+                        })?;
                     let entry = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "review target")?)
                         .map_err(KernelError::from)?;
-                    if entry.proposal.book_id != book.book_id || entry.proposal.branch_id != Id128::TRUNK {
-                        return Err(KernelError::Corrupt("review target has a foreign coordinate".into()).into());
+                    if entry.proposal.book_id != book.book_id
+                        || entry.proposal.branch_id != Id128::TRUNK
+                    {
+                        return Err(KernelError::Corrupt(
+                            "review target has a foreign coordinate".into(),
+                        )
+                        .into());
                     }
                     slot.insert(entry);
                 }
-                let entry = entries.get(vid)
-                    .ok_or_else(|| KernelError::Corrupt("resolved review target is missing".into()))?;
-                let leg = entry.proposal.legs.get(usize::from(*ordinal))
-                    .ok_or_else(|| KernelError::Corrupt("review target ordinal is missing".into()))?;
+                let entry = entries.get(vid).ok_or_else(|| {
+                    KernelError::Corrupt("resolved review target is missing".into())
+                })?;
+                let leg = entry
+                    .proposal
+                    .legs
+                    .get(usize::from(*ordinal))
+                    .ok_or_else(|| {
+                        KernelError::Corrupt("review target ordinal is missing".into())
+                    })?;
                 if leg.dimension_set != applying.dimension_set {
                     return Ok(Err(changed()));
                 }
             }
             for link in &applying.settles {
-                let entry = entries.get(&link.target.vid)
-                    .ok_or_else(|| KernelError::Corrupt("review application target is missing".into()))?;
+                let entry = entries.get(&link.target.vid).ok_or_else(|| {
+                    KernelError::Corrupt("review application target is missing".into())
+                })?;
                 if entry.entry_ref(link.target.vid) != link.target {
                     return Ok(Err(changed()));
                 }
             }
             query.checkpoint().map_err(BookError::Context)?;
-            Ok(Ok(review.proposal().proposal_digest().map_err(KernelError::from)?))
+            Ok(Ok(review
+                .proposal()
+                .proposal_digest()
+                .map_err(KernelError::from)?))
         })?;
         let proposal_digest = match checked {
             Ok(digest) => digest,

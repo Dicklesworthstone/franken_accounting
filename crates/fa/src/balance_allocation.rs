@@ -69,7 +69,9 @@ impl BalanceAllocationRequest {
         if self.targets.len() > fa_journal::allocation::MAX_POSTING_TARGETS
             || self.dimensions.len() > MAX_DIMENSIONS_PER_LEG
         {
-            return Err(structure("source instruction exceeds target or dimension bounds"));
+            return Err(structure(
+                "source instruction exceeds target or dimension bounds",
+            ));
         }
         // Reuse the registered instruction's shape checks, including target
         // identities, source exclusion, law, dimensions and transport bounds.
@@ -102,24 +104,42 @@ impl core::fmt::Debug for PreparedBalanceAllocation {
 }
 
 impl PreparedBalanceAllocation {
-    pub fn request(&self) -> &BalanceAllocationRequest { &self.request }
-    pub fn known_at(&self) -> CommitSeq { self.known_at }
-    pub fn source_digest(&self) -> [u8; 32] { self.source_digest }
-    pub fn debits(&self) -> i128 { self.debits }
-    pub fn credits(&self) -> i128 { self.credits }
-    pub fn contributions(&self) -> usize { self.contributions }
-    pub fn posting(&self) -> &AllocationPosting { &self.posting }
+    pub fn request(&self) -> &BalanceAllocationRequest {
+        &self.request
+    }
+    pub fn known_at(&self) -> CommitSeq {
+        self.known_at
+    }
+    pub fn source_digest(&self) -> [u8; 32] {
+        self.source_digest
+    }
+    pub fn debits(&self) -> i128 {
+        self.debits
+    }
+    pub fn credits(&self) -> i128 {
+        self.credits
+    }
+    pub fn contributions(&self) -> usize {
+        self.contributions
+    }
+    pub fn posting(&self) -> &AllocationPosting {
+        &self.posting
+    }
 
     /// The template must cite the exact driver, imported separately with its
     /// real grade/uploader. No source attestation or approval is manufactured.
-    pub fn review(&self, template: EntryPayload) -> Result<AllocationReview, AllocationReviewError> {
+    pub fn review(
+        &self,
+        template: EntryPayload,
+    ) -> Result<AllocationReview, AllocationReviewError> {
         AllocationReview::new(self.posting.clone(), template)
     }
 }
 
 fn structure(message: impl core::fmt::Display) -> Refusal {
     Refusal::new(
-        fa_journal::refusal::code::STRUCTURE, exit::USAGE,
+        fa_journal::refusal::code::STRUCTURE,
+        exit::USAGE,
         format!("balance allocation: {message}"),
         "plan §5.3 / §6.3 (explicit native-unit journal-derived allocation)",
         "select a nonzero posted leaf balance in one unit, period and exact dimension set",
@@ -128,7 +148,8 @@ fn structure(message: impl core::fmt::Display) -> Refusal {
 
 fn changed() -> Refusal {
     Refusal::new(
-        fa_journal::refusal::code::PLAN_INVALIDATED, exit::CONFLICT,
+        fa_journal::refusal::code::PLAN_INVALIDATED,
+        exit::CONFLICT,
         "the allocation source or reviewed instruction has changed",
         "plan §5.3 / §6.3 / §10.4 (exact source observations and reviewed proposal)",
         "prepare and review the changed allocation again; after an attempted commit retry its original PostPlan instead",
@@ -139,12 +160,26 @@ fn corrupt(message: &str) -> BookError {
     KernelError::Corrupt(message.into()).into()
 }
 
-fn admit(capability: &Capability, book: Id128, principal: VId, op: Op, legs: &[(UnitId, i128)]) -> Result<(), Refusal> {
+fn admit(
+    capability: &Capability,
+    book: Id128,
+    principal: VId,
+    op: Op,
+    legs: &[(UnitId, i128)],
+) -> Result<(), Refusal> {
     fa_policy::admit_read(capability, capability.holder(), book)
         .map_err(|denial| fa_journal::policy::refusal(&denial))?;
-    fa_policy::admit(capability, &fa_policy::Intent {
-        principal, trunk: true, op, book, legs,
-    }).map_err(|denial| fa_journal::policy::refusal(&denial))
+    fa_policy::admit(
+        capability,
+        &fa_policy::Intent {
+            principal,
+            trunk: true,
+            op,
+            book,
+            legs,
+        },
+    )
+    .map_err(|denial| fa_journal::policy::refusal(&denial))
 }
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
@@ -159,7 +194,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         request: &BalanceAllocationRequest,
         capability: &Capability,
     ) -> Outcome<PreparedBalanceAllocation> {
-        if let Err(refusal) = admit(capability, self.context().book_id, capability.holder(), Op::Post, &[]) {
+        if let Err(refusal) = admit(
+            capability,
+            self.context().book_id,
+            capability.holder(),
+            Op::Post,
+            &[],
+        ) {
             return Ok(Err(refusal));
         }
         let prepared = match self.observe_balance_allocation(cx, request, capability, false)? {
@@ -179,7 +220,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 legs.push((share.unit, magnitude));
             }
         }
-        if let Err(refusal) = admit(capability, self.context().book_id, capability.holder(), Op::Post, &legs) {
+        if let Err(refusal) = admit(
+            capability,
+            self.context().book_id,
+            capability.holder(),
+            Op::Post,
+            &legs,
+        ) {
             return Ok(Err(refusal));
         }
         Ok(Ok(prepared))
@@ -205,9 +252,19 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         approvals: Vec<ApprovalRef>,
         capability: &Capability,
     ) -> Outcome<PostPlan> {
-        let explicit: Vec<_> = review.proposal().legs.iter()
-            .map(|leg| (leg.amount.unit, leg.amount.mantissa)).collect();
-        if let Err(refusal) = admit(capability, self.context().book_id, review.proposal().principal_ref, Op::Post, &explicit) {
+        let explicit: Vec<_> = review
+            .proposal()
+            .legs
+            .iter()
+            .map(|leg| (leg.amount.unit, leg.amount.mantissa))
+            .collect();
+        if let Err(refusal) = admit(
+            capability,
+            self.context().book_id,
+            review.proposal().principal_ref,
+            Op::Post,
+            &explicit,
+        ) {
             return Ok(Err(refusal));
         }
         if review.proposal().book_id != self.context().book_id
@@ -220,7 +277,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(prepared) => prepared,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        if prepared.source_digest != expected_source_digest || prepared.posting != *review.posting() {
+        if prepared.source_digest != expected_source_digest || prepared.posting != *review.posting()
+        {
             return Ok(Err(changed()));
         }
         self.plan_allocation_review(cx, review, expected_review_digest, approvals, capability)
@@ -239,7 +297,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         if let Err(denial) = fa_policy::admit_read(capability, capability.holder(), book.book_id) {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
-        if let Err(refusal) = request.validate() { return Ok(Err(refusal)); }
+        if let Err(refusal) = request.validate() {
+            return Ok(Err(refusal));
+        }
         if book.units.get(request.unit).is_none() {
             return Ok(Err(structure("unknown native unit")));
         }
@@ -250,16 +310,25 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             if let Err(denial) = fa_policy::current(capability, at) {
                 return Ok(Err(fa_journal::policy::refusal(&denial)));
             }
-            if let Err(refusal) = fa_journal::policy::capability_admitted(&self.db, book, capability)? {
+            if let Err(refusal) =
+                fa_journal::policy::capability_admitted(&self.db, book, capability)?
+            {
                 return Ok(Err(refusal));
             }
             let report = fa_registers::explain_balance(
-                &self.db, book, request.source, &request.period, Some(at),
+                &self.db,
+                book,
+                request.source,
+                &request.period,
+                Some(at),
             )?;
             let mut entries = BTreeMap::new();
             let mut witnesses = Writer::new();
-            witnesses.fixed(&book.book_id.0).u128(request.source.0)
-                .str(&request.period).u32(request.unit.0)
+            witnesses
+                .fixed(&book.book_id.0)
+                .u128(request.source.0)
+                .str(&request.period)
+                .u32(request.unit.0)
                 .list(&request.dimensions, |w, (dimension, value)| {
                     w.u32(*dimension).u128(value.0);
                 });
@@ -273,54 +342,100 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     continue;
                 }
                 if candidates == MAX_BALANCE_ALLOCATION_CONTRIBUTIONS {
-                    return Ok(Err(structure("source exceeds the contribution bound; select a smaller source period")));
+                    return Ok(Err(structure(
+                        "source exceeds the contribution bound; select a smaller source period",
+                    )));
                 }
                 candidates += 1;
-                if let std::collections::btree_map::Entry::Vacant(slot) = entries.entry(contribution.entry) {
-                    let row = self.db.vertex_at(contribution.entry, at).map_err(KernelError::from)?
+                if let std::collections::btree_map::Entry::Vacant(slot) =
+                    entries.entry(contribution.entry)
+                {
+                    let row = self
+                        .db
+                        .vertex_at(contribution.entry, at)
+                        .map_err(KernelError::from)?
                         .filter(|row| row.labels.contains(&label::ENTRY))
                         .ok_or_else(|| corrupt("allocation source entry is missing"))?;
-                    let entry = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "allocation source")?)
-                        .map_err(KernelError::from)?;
+                    let entry =
+                        Entry::decode(&bytes(&row, property::FA_PAYLOAD, "allocation source")?)
+                            .map_err(KernelError::from)?;
                     slot.insert(entry);
                 }
-                let entry = entries.get(&contribution.entry)
+                let entry = entries
+                    .get(&contribution.entry)
                     .ok_or_else(|| corrupt("resolved allocation source is missing"))?;
-                let leg = entry.proposal.legs.get(usize::from(contribution.ordinal))
+                let leg = entry
+                    .proposal
+                    .legs
+                    .get(usize::from(contribution.ordinal))
                     .ok_or_else(|| corrupt("allocation source ordinal is missing"))?;
                 if entry.entry_digest != contribution.entry_digest
-                    || entry.proposal.book_id != book.book_id || entry.proposal.branch_id != Id128::TRUNK
-                    || leg.account_ref != request.source || leg.amount.unit != request.unit
-                    || leg.side != contribution.side || leg.amount.mantissa != contribution.mantissa
+                    || entry.proposal.book_id != book.book_id
+                    || entry.proposal.branch_id != Id128::TRUNK
+                    || leg.account_ref != request.source
+                    || leg.amount.unit != request.unit
+                    || leg.side != contribution.side
+                    || leg.amount.mantissa != contribution.mantissa
                     || contribution.mantissa <= 0
                 {
-                    return Err(corrupt("allocation source contribution disagrees with its payload"));
+                    return Err(corrupt(
+                        "allocation source contribution disagrees with its payload",
+                    ));
                 }
-                if leg.dimension_set != request.dimensions { continue; }
+                if leg.dimension_set != request.dimensions {
+                    continue;
+                }
                 count += 1;
-                let sum = match leg.side { Side::Debit => &mut debits, Side::Credit => &mut credits };
-                *sum = sum.checked_add(leg.amount.mantissa).ok_or(fa_registers::RegisterError::Overflow)?;
-                witnesses.u128(contribution.entry.0).fixed(&contribution.entry_digest)
-                    .u16(contribution.ordinal).u64(contribution.recorded_at.0).u64(contribution.visible_at.0)
-                    .u8(match leg.side { Side::Debit => 0, Side::Credit => 1 }).i128(leg.amount.mantissa);
+                let sum = match leg.side {
+                    Side::Debit => &mut debits,
+                    Side::Credit => &mut credits,
+                };
+                *sum = sum
+                    .checked_add(leg.amount.mantissa)
+                    .ok_or(fa_registers::RegisterError::Overflow)?;
+                witnesses
+                    .u128(contribution.entry.0)
+                    .fixed(&contribution.entry_digest)
+                    .u16(contribution.ordinal)
+                    .u64(contribution.recorded_at.0)
+                    .u64(contribution.visible_at.0)
+                    .u8(match leg.side {
+                        Side::Debit => 0,
+                        Side::Credit => 1,
+                    })
+                    .i128(leg.amount.mantissa);
             }
-            let net = debits.checked_sub(credits).ok_or(fa_registers::RegisterError::Overflow)?;
+            let net = debits
+                .checked_sub(credits)
+                .ok_or(fa_registers::RegisterError::Overflow)?;
             if net == 0 {
-                return Ok(Err(if revalidating { changed() } else {
+                return Ok(Err(if revalidating {
+                    changed()
+                } else {
                     structure("selected posted source balance is zero")
                 }));
             }
-            let total = net.checked_abs().ok_or(fa_registers::RegisterError::Overflow)?;
+            let total = net
+                .checked_abs()
+                .ok_or(fa_registers::RegisterError::Overflow)?;
             let source_side = if net > 0 { Side::Credit } else { Side::Debit };
             witnesses.u64(count as u64).i128(debits).i128(credits);
             let witness_bytes = witnesses.finish().map_err(KernelError::from)?;
-            let source_digest = domain_digest(b"fa:balance-allocation-source:v1", &[&witness_bytes]);
+            let source_digest =
+                domain_digest(b"fa:balance-allocation-source:v1", &[&witness_bytes]);
             let posting = request.posting(total, source_side);
-            if let Err(refusal) = posting.basis_bytes() { return Ok(Err(refusal)); }
+            if let Err(refusal) = posting.basis_bytes() {
+                return Ok(Err(refusal));
+            }
             query.checkpoint().map_err(BookError::Context)?;
             Ok(Ok(PreparedBalanceAllocation {
-                request: request.clone(), known_at: at, source_digest,
-                debits, credits, contributions: count, posting,
+                request: request.clone(),
+                known_at: at,
+                source_digest,
+                debits,
+                credits,
+                contributions: count,
+                posting,
             }))
         })
     }
@@ -352,14 +467,25 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
     ) -> Outcome<fa_journal::Approved> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
-        let explicit: Vec<_> = review.proposal().legs.iter()
-            .map(|leg| (leg.amount.unit, leg.amount.mantissa)).collect();
-        if let Err(refusal) = admit(capability, self.context().book_id, capability.holder(), Op::Approve, &explicit) {
+        let explicit: Vec<_> = review
+            .proposal()
+            .legs
+            .iter()
+            .map(|leg| (leg.amount.unit, leg.amount.mantissa))
+            .collect();
+        if let Err(refusal) = admit(
+            capability,
+            self.context().book_id,
+            capability.holder(),
+            Op::Approve,
+            &explicit,
+        ) {
             return Ok(Err(refusal));
         }
         if capability.holder() == review.proposal().principal_ref {
             return Ok(Err(Refusal::new(
-                fa_journal::refusal::code::APPROVALS, exit::REFUSAL,
+                fa_journal::refusal::code::APPROVALS,
+                exit::REFUSAL,
                 "the balance allocation preparer cannot approve their own proposal",
                 "plan §14.3 (separation of preparer and approver)",
                 "have a distinct principal inspect the source and review using their own read and approve authority",
@@ -375,12 +501,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(prepared) => prepared,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        if prepared.source_digest != expected_source_digest || prepared.posting != *review.posting() {
+        if prepared.source_digest != expected_source_digest || prepared.posting != *review.posting()
+        {
             return Ok(Err(changed()));
         }
         // The exclusive book handle is retained through native publication.
         // Native approval checks expiry/revocation and policy again; the exact
         // same capability is supplied, with no synthesized Read or Post grant.
-        self.approve_allocation_review(cx, review, expected_review_digest, capability).await
+        self.approve_allocation_review(cx, review, expected_review_digest, capability)
+            .await
     }
 }

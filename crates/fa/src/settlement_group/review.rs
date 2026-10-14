@@ -21,7 +21,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
     ) -> Outcome<PreparedSettlementGroup> {
         if let Err(denial) = fa_policy::admit_read(
-            capability, reviewed.proposal.principal_ref, self.context().book_id,
+            capability,
+            reviewed.proposal.principal_ref,
+            self.context().book_id,
         ) {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
@@ -36,14 +38,20 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             || fresh.request != reviewed.request
             || fresh.proposal != reviewed.proposal
             || fresh.allocations.len() != reviewed.allocations.len()
-            || fresh.allocations.iter().zip(&reviewed.allocations).any(|(new, old)| {
-                new.payment_leg != old.payment_leg
-                    || new.allocation.request != old.allocation.request
-                    || new.allocation.allocations != old.allocation.allocations
-                    || new.allocation.unapplied != old.allocation.unapplied
-            })
+            || fresh
+                .allocations
+                .iter()
+                .zip(&reviewed.allocations)
+                .any(|(new, old)| {
+                    new.payment_leg != old.payment_leg
+                        || new.allocation.request != old.allocation.request
+                        || new.allocation.allocations != old.allocation.allocations
+                        || new.allocation.unapplied != old.allocation.unapplied
+                })
         {
-            return Ok(Err(invalidated("the complete group or its reviewed allocation observations changed")));
+            return Ok(Err(invalidated(
+                "the complete group or its reviewed allocation observations changed",
+            )));
         }
         Ok(Ok(fresh))
     }

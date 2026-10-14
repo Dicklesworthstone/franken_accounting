@@ -28,7 +28,9 @@ pub fn equal_split_residual_first(
     let remainder = magnitude % count;
     let negative = total.mantissa < 0;
     let ordinary = Amount::new(total.unit, signed_magnitude(quotient, negative)?);
-    let first = quotient.checked_add(remainder).ok_or(AmountError::Overflow)?;
+    let first = quotient
+        .checked_add(remainder)
+        .ok_or(AmountError::Overflow)?;
     let mut shares = Vec::new();
     shares
         .try_reserve_exact(target_count)
@@ -116,7 +118,10 @@ mod tests {
                 let shares =
                     equal_split_residual_first(Amount::new(UnitId(7), total), count).unwrap();
                 assert_eq!(shares.len(), count);
-                assert_eq!(shares.iter().map(|share| share.mantissa).sum::<i128>(), total);
+                assert_eq!(
+                    shares.iter().map(|share| share.mantissa).sum::<i128>(),
+                    total
+                );
                 let quotient = total / i128::try_from(count).unwrap();
                 assert!(shares[1..].iter().all(|share| share.mantissa == quotient));
                 assert_eq!(
@@ -139,11 +144,18 @@ mod tests {
             assert_eq!(waterfall(amount, &[u128::MAX]), Ok(vec![amount]));
             for count in [2usize, 3, 17] {
                 let shares = equal_split_residual_first(amount, count).unwrap();
-                assert_eq!(shares.iter().map(|share| share.mantissa).sum::<i128>(), total);
+                assert_eq!(
+                    shares.iter().map(|share| share.mantissa).sum::<i128>(),
+                    total
+                );
             }
             assert_eq!(
                 waterfall(amount, &[0, u128::MAX, u128::MAX]),
-                Ok(vec![Amount::zero(UnitId(7)), amount, Amount::zero(UnitId(7))])
+                Ok(vec![
+                    Amount::zero(UnitId(7)),
+                    amount,
+                    Amount::zero(UnitId(7))
+                ])
             );
         }
     }
@@ -193,7 +205,10 @@ mod tests {
                             );
                             band_start = band_end;
                         }
-                        assert_eq!(shares.iter().map(|share| share.mantissa).sum::<i128>(), total);
+                        assert_eq!(
+                            shares.iter().map(|share| share.mantissa).sum::<i128>(),
+                            total
+                        );
                     }
                 }
             }

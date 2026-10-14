@@ -203,8 +203,14 @@ mod tests {
             let report = verify_balance_for(&bytes, &anchor, &wanted).unwrap();
             assert_eq!(report, crate::verify_balance(&bytes, &anchor).unwrap());
             assert_eq!(bytes, original);
-            let learn_amounts = BalanceExpectation { amounts: None, ..wanted };
-            assert_eq!(verify_balance_for(&bytes, &anchor, &learn_amounts).unwrap(), report);
+            let learn_amounts = BalanceExpectation {
+                amounts: None,
+                ..wanted
+            };
+            assert_eq!(
+                verify_balance_for(&bytes, &anchor, &learn_amounts).unwrap(),
+                report
+            );
         }
     }
 
@@ -213,18 +219,31 @@ mod tests {
         for format in formats() {
             let wanted = expectation(scope());
             for actual in [
-                BalanceScope { account: 11, ..scope() },
+                BalanceScope {
+                    account: 11,
+                    ..scope()
+                },
                 BalanceScope { unit: 2, ..scope() },
-                BalanceScope { account: u128::MAX, unit: u32::MAX, ..scope() },
+                BalanceScope {
+                    account: u128::MAX,
+                    unit: u32::MAX,
+                    ..scope()
+                },
             ] {
                 let (bytes, anchor) = proof(format, actual);
                 assert!(crate::verify_balance(&bytes, &anchor).is_ok());
                 match verify_balance_for(&bytes, &anchor, &wanted).unwrap_err() {
-                    BalanceExpectationError::Scope { expected, actual: got } => {
+                    BalanceExpectationError::Scope {
+                        expected,
+                        actual: got,
+                    } => {
                         assert_eq!(expected, wanted.scope);
                         assert_eq!(got, actual);
                     }
-                    error => panic!("unexpected error: {error}"),
+                    error => assert!(
+                        matches!(error, BalanceExpectationError::Scope { .. }),
+                        "unexpected error: {error}"
+                    ),
                 }
             }
         }
@@ -232,10 +251,20 @@ mod tests {
 
     #[test]
     fn cutoff_is_exact_and_unbounded_is_never_a_wildcard() {
-        let cutoffs = [None, Some(i32::MIN), Some(-1), Some(0), Some(100), Some(i32::MAX)];
+        let cutoffs = [
+            None,
+            Some(i32::MIN),
+            Some(-1),
+            Some(0),
+            Some(100),
+            Some(i32::MAX),
+        ];
         for format in formats() {
             for supplied in cutoffs {
-                let actual = BalanceScope { effective_through: supplied, ..scope() };
+                let actual = BalanceScope {
+                    effective_through: supplied,
+                    ..scope()
+                };
                 let (bytes, anchor) = proof(format, actual);
                 for requested in cutoffs {
                     let wanted = expectation(BalanceScope {
@@ -258,20 +287,47 @@ mod tests {
         for format in formats() {
             let (bytes, anchor) = proof(format, scope());
             for amounts in [
-                BalanceAmounts { debits: 1, credits: 0 },
-                BalanceAmounts { debits: 0, credits: 1 },
+                BalanceAmounts {
+                    debits: 1,
+                    credits: 0,
+                },
+                BalanceAmounts {
+                    debits: 0,
+                    credits: 1,
+                },
                 // Same zero net as the actual claim: net-only checking is wrong.
-                BalanceAmounts { debits: 7, credits: 7 },
-                BalanceAmounts { debits: i128::MAX, credits: i128::MAX },
-                BalanceAmounts { debits: -1, credits: -1 },
+                BalanceAmounts {
+                    debits: 7,
+                    credits: 7,
+                },
+                BalanceAmounts {
+                    debits: i128::MAX,
+                    credits: i128::MAX,
+                },
+                BalanceAmounts {
+                    debits: -1,
+                    credits: -1,
+                },
             ] {
-                let wanted = BalanceExpectation { amounts: Some(amounts), ..expectation(scope()) };
+                let wanted = BalanceExpectation {
+                    amounts: Some(amounts),
+                    ..expectation(scope())
+                };
                 match verify_balance_for(&bytes, &anchor, &wanted).unwrap_err() {
                     BalanceExpectationError::Amounts { expected, actual } => {
                         assert_eq!(expected, amounts);
-                        assert_eq!(actual, BalanceAmounts { debits: 0, credits: 0 });
+                        assert_eq!(
+                            actual,
+                            BalanceAmounts {
+                                debits: 0,
+                                credits: 0
+                            }
+                        );
                     }
-                    error => panic!("unexpected error: {error}"),
+                    error => assert!(
+                        matches!(error, BalanceExpectationError::Amounts { .. }),
+                        "unexpected error: {error}"
+                    ),
                 }
             }
         }

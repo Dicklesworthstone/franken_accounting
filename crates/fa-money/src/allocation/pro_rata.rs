@@ -74,9 +74,12 @@ pub fn pro_rata_residual_to_named(
             .ok_or(AmountError::Overflow)?
             .checked_div_rem(denominator)
             .ok_or(AmountError::InvariantViolation("zero allocation divisor"))?;
-        let complement = denominator.checked_sub(remainder).ok_or(
-            AmountError::InvariantViolation("allocation remainder exceeds its denominator"),
-        )?;
+        let complement =
+            denominator
+                .checked_sub(remainder)
+                .ok_or(AmountError::InvariantViolation(
+                    "allocation remainder exceeds its denominator",
+                ))?;
         let rounded = rounding_law
             .apply_fraction(
                 quotient.to_u128().ok_or(AmountError::Overflow)?,
@@ -88,7 +91,10 @@ pub fn pro_rata_residual_to_named(
         rounded_sum = rounded_sum
             .checked_add(U256::from_u128(rounded))
             .ok_or(AmountError::Overflow)?;
-        rounded_shares.push(Amount::new(total.unit, signed_magnitude(rounded, negative)?));
+        rounded_shares.push(Amount::new(
+            total.unit,
+            signed_magnitude(rounded, negative)?,
+        ));
     }
     let (difference, residual_negative) = if magnitude >= rounded_sum {
         (magnitude.checked_sub(rounded_sum), negative)
@@ -96,7 +102,9 @@ pub fn pro_rata_residual_to_named(
         (rounded_sum.checked_sub(magnitude), !negative)
     };
     let difference = difference
-        .ok_or(AmountError::InvariantViolation("invalid allocation difference"))?
+        .ok_or(AmountError::InvariantViolation(
+            "invalid allocation difference",
+        ))?
         .to_u128()
         .ok_or(AmountError::Overflow)?;
     let residual = Amount::new(total.unit, signed_magnitude(difference, residual_negative)?);
@@ -128,7 +136,12 @@ mod tests {
         shares.iter().map(|share| share.mantissa).collect()
     }
 
-    fn allocate(total: i128, weights: &[u128], target: usize, law: RoundingLaw) -> ProRataAllocation {
+    fn allocate(
+        total: i128,
+        weights: &[u128],
+        target: usize,
+        law: RoundingLaw,
+    ) -> ProRataAllocation {
         pro_rata_residual_to_named(Amount::new(UnitId(7), total), weights, target, law).unwrap()
     }
 

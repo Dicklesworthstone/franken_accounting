@@ -14,13 +14,16 @@ fn directory() -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     loop {
         let path = std::env::temp_dir().join(format!(
-            "fa-evidence-inventory-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed),
+            "fa-evidence-inventory-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
         ));
-        match std::fs::create_dir(&path) {
-            Ok(()) => return path,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => panic!("create retained fixture {}: {error}", path.display()),
+        let result = std::fs::create_dir(&path);
+        if matches!(&result, Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists) {
+            continue;
         }
+        result.expect("create retained fixture");
+        return path;
     }
 }
 
@@ -28,17 +31,36 @@ fn args(f: &fixture::Fixture) -> (Vec<OsString>, PathBuf) {
     let dir = directory();
     std::fs::write(dir.join("proof"), &f.proof).unwrap();
     std::fs::write(dir.join("checkpoint"), f.checkpoint.encode()).unwrap();
-    (vec!["evidence".into(), "--proof".into(), dir.join("proof").into_os_string(),
-        "--checkpoint".into(), dir.join("checkpoint").into_os_string(),
-        "--expect-entry".into(), hex(&f.entry_digest).into(), "--json".into()], dir)
+    (
+        vec![
+            "evidence".into(),
+            "--proof".into(),
+            dir.join("proof").into_os_string(),
+            "--checkpoint".into(),
+            dir.join("checkpoint").into_os_string(),
+            "--expect-entry".into(),
+            hex(&f.entry_digest).into(),
+            "--json".into(),
+        ],
+        dir,
+    )
 }
 
 fn encoded(citation: &EvidenceCitation) -> OsString {
-    format!("{}:{}:{}", hex(&citation.document_oid), hex(&citation.doc_commit), citation.role).into()
+    format!(
+        "{}:{}:{}",
+        hex(&citation.document_oid),
+        hex(&citation.doc_commit),
+        citation.role
+    )
+    .into()
 }
 
 fn run(args: &[OsString]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_fa-verify")).args(args).output().expect("execute offline verifier")
+    Command::new(env!("CARGO_BIN_EXE_fa-verify"))
+        .args(args)
+        .output()
+        .expect("execute offline verifier")
 }
 
 fn result(output: Output, exit: i32) -> String {
@@ -61,7 +83,10 @@ fn result(output: Output, exit: i32) -> String {
         assert!(out.contains("\"event\":\"error\""));
         assert!(out.contains("\"verified\":false"));
         assert!(!out.contains("proof_verified"));
-        assert!(!out.contains("\"citations\":["), "partial inventory emitted");
+        assert!(
+            !out.contains("\"citations\":["),
+            "partial inventory emitted"
+        );
     }
     out
 }
@@ -84,7 +109,10 @@ fn binary_inventory_and_exact_matching_retain_all_rows_and_exact_u64_coordinates
     assert!(exact.contains("exact_requested_citation_set"));
     assert!(exact.contains("entry_and_exact_citations"));
     assert_eq!(std::fs::read(dir.join("proof")).unwrap(), f.proof);
-    assert_eq!(std::fs::read(dir.join("checkpoint")).unwrap(), f.checkpoint.encode());
+    assert_eq!(
+        std::fs::read(dir.join("checkpoint")).unwrap(),
+        f.checkpoint.encode()
+    );
     args.truncate(args.len() - 2);
     result(run(&args), 8); // a genuine subset cannot be passed off as exact
 }
@@ -109,17 +137,35 @@ fn binary_syntax_errors_precede_missing_files_and_never_normalize_requests() {
     base[4] = dir.join("missing-checkpoint").into_os_string();
     let row = encoded(&citations[0]);
     let mut cases = vec![
-        vec!["--expect-empty".into(), "--expect-citation".into(), row.clone()],
-        vec!["--expect-citation".into(), row.clone(), "--expect-citation".into(), row],
-        vec!["--expect-citation".into(), encoded(&citations[1]), "--expect-citation".into(), encoded(&citations[0])],
+        vec![
+            "--expect-empty".into(),
+            "--expect-citation".into(),
+            row.clone(),
+        ],
+        vec![
+            "--expect-citation".into(),
+            row.clone(),
+            "--expect-citation".into(),
+            row,
+        ],
+        vec![
+            "--expect-citation".into(),
+            encoded(&citations[1]),
+            "--expect-citation".into(),
+            encoded(&citations[0]),
+        ],
         vec!["--expect-empty".into(), "--expect-empty".into()],
-        vec!["--json".into()], vec!["--view".into(), "missing".into()],
+        vec!["--json".into()],
+        vec!["--view".into(), "missing".into()],
         vec!["--expect-citation".into()],
     ];
-    for value in ["", "aa:bb:3", &format!("{}:{}:256", "aa".repeat(32), "bb".repeat(32)),
+    for value in [
+        "",
+        "aa:bb:3",
+        &format!("{}:{}:256", "aa".repeat(32), "bb".repeat(32)),
         &format!("{}:{}:+1", "aa".repeat(32), "bb".repeat(32)),
-        &format!("{}:{}:１", "aa".repeat(32), "bb".repeat(32))]
-    {
+        &format!("{}:{}:１", "aa".repeat(32), "bb".repeat(32)),
+    ] {
         cases.push(vec!["--expect-citation".into(), value.into()]);
     }
     for extra in cases {
@@ -159,7 +205,10 @@ fn binary_refuses_wrong_entry_tampered_truncated_and_oversized_inputs_atomically
     trailing.push(0);
     std::fs::write(dir.join("proof"), trailing).unwrap();
     result(run(&args), 8);
-    let file = std::fs::OpenOptions::new().write(true).open(dir.join("proof")).unwrap();
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(dir.join("proof"))
+        .unwrap();
     file.set_len(MAX_PROOF_BYTES as u64 + 1).unwrap();
     result(run(&args), 8);
     std::fs::write(dir.join("proof"), &f.proof).unwrap();
@@ -171,11 +220,19 @@ fn binary_refuses_wrong_entry_tampered_truncated_and_oversized_inputs_atomically
 
 #[test]
 fn binary_human_reports_and_help_state_the_single_entry_boundary() {
-    for flags in [vec!["--help"], vec!["evidence", "--help"], vec!["evidence", "-h"]] {
+    for flags in [
+        vec!["--help"],
+        vec!["evidence", "--help"],
+        vec!["evidence", "-h"],
+    ] {
         let output = run(&flags.into_iter().map(OsString::from).collect::<Vec<_>>());
         assert_eq!(output.status.code(), Some(0));
         assert!(output.stderr.is_empty());
-        assert!(String::from_utf8(output.stdout).unwrap().contains("evidence"));
+        assert!(
+            String::from_utf8(output.stdout)
+                .unwrap()
+                .contains("evidence")
+        );
     }
     let f = fixture::proof(&fixture::proposal(&fixture::citations()).bytes, true, 7);
     let (mut args, _) = args(&f);
@@ -197,7 +254,9 @@ fn binary_paths_can_be_non_utf8_but_expected_citations_cannot() {
     let f = fixture::proof(&fixture::proposal(&fixture::citations()).bytes, true, 7);
     let (mut args, dir) = args(&f);
     for (index, name) in [(2, "proof"), (4, "checkpoint")] {
-        let path = dir.join(OsString::from_vec(format!("{name}-").bytes().chain([255]).collect()));
+        let path = dir.join(OsString::from_vec(
+            format!("{name}-").bytes().chain([255]).collect(),
+        ));
         std::fs::copy(dir.join(name), &path).unwrap();
         args[index] = path.into_os_string();
     }

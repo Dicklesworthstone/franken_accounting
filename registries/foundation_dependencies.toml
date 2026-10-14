@@ -192,6 +192,17 @@ fa_status = "interim"
 tracking = "fa-l3c"
 
 [[capability]]
+row = "R-SIGN"
+capability = "Ed25519 (RFC 8032) key derivation and signing in `fgdb-crypto`"
+status = "Absent"
+posture = "in-house signer in `fa-notary` (`sign`): constant-time by construction (fixed-base table, mask-select, no secret-dependent branch or index), not measured; `fa-verify` keeps its own independent verifier"
+switch_over = "when `fgdb-crypto` ships Ed25519 at a pinned revision, sign through it and remove the in-house signer (requested: frankengraphdb#3)"
+foundation = "frankengraphdb"
+upstream = "absent"
+fa_status = "interim"
+tracking = "fa-l3c"
+
+[[capability]]
 row = "R-VM"
 capability = "`fgdb-udf-vm` deterministic bytecode"
 status = "Planned"

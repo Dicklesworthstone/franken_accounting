@@ -73,16 +73,26 @@ impl fmt::Display for DocumentProductionError {
         match self {
             Self::Evidence(error) => write!(f, "{error}"),
             Self::Limit(what) => write!(f, "document production exceeds the {what} bound"),
-            Self::Order { position } => write!(f,
-                "document {position} is not strictly after its predecessor by locator"),
-            Self::ConflictingCitation => write!(f,
-                "authenticated entries assign different commitments to one document locator"),
-            Self::DocumentCount { expected, actual } => write!(f,
-                "original citations require {expected} distinct documents; supplied {actual}"),
-            Self::DocumentIdentity { position } => write!(f,
-                "document {position} is not the next locator required by the original citations"),
-            Self::Commitment { position } => write!(f,
-                "document {position} kind, length or bytes do not match its authenticated commitment"),
+            Self::Order { position } => write!(
+                f,
+                "document {position} is not strictly after its predecessor by locator"
+            ),
+            Self::ConflictingCitation => write!(
+                f,
+                "authenticated entries assign different commitments to one document locator"
+            ),
+            Self::DocumentCount { expected, actual } => write!(
+                f,
+                "original citations require {expected} distinct documents; supplied {actual}"
+            ),
+            Self::DocumentIdentity { position } => write!(
+                f,
+                "document {position} is not the next locator required by the original citations"
+            ),
+            Self::Commitment { position } => write!(
+                f,
+                "document {position} kind, length or bytes do not match its authenticated commitment"
+            ),
         }
     }
 }
@@ -128,7 +138,8 @@ pub fn verify_document_production_for(
     if expected.known_at > checkpoint.through_seq {
         return Err(EvidenceProductionError::from(ProductionError::Request(
             "known_at is later than the trusted checkpoint",
-        )).into());
+        ))
+        .into());
     }
     if records.len() > MAX_PRODUCTION_RECORDS {
         return Err(DocumentProductionError::Limit("record count"));
@@ -137,10 +148,13 @@ pub fn verify_document_production_for(
         return Err(DocumentProductionError::Limit("document count"));
     }
     let mut total = prefix.len();
-    for length in records.iter().map(|record| record.len())
+    for length in records
+        .iter()
+        .map(|record| record.len())
         .chain(documents.iter().map(|document| document.bytes.len()))
     {
-        total = total.checked_add(length)
+        total = total
+            .checked_add(length)
             .ok_or(DocumentProductionError::Limit("aggregate input bytes"))?;
     }
     if total > MAX_PRODUCTION_BYTES {
@@ -148,19 +162,25 @@ pub fn verify_document_production_for(
     }
     for (position, pair) in documents.windows(2).enumerate() {
         if pair[0].document_oid >= pair[1].document_oid {
-            return Err(DocumentProductionError::Order { position: position + 1 });
+            return Err(DocumentProductionError::Order {
+                position: position + 1,
+            });
         }
     }
     let inventory = verify_evidence_production_for(prefix, records, checkpoint, expected)?;
     // Sort only authenticated metadata. Neither entries nor supplied documents
     // are reordered or silently deduplicated to repair a malformed production.
     let mut required = Vec::new();
-    required.try_reserve_exact(inventory.citation_count)
+    required
+        .try_reserve_exact(inventory.citation_count)
         .map_err(|_| DocumentProductionError::Limit("citation allocation"))?;
     for entry in &inventory.entries {
-        required.extend(entry.citations.iter().map(|citation| {
-            (citation.document_oid, citation.doc_commit)
-        }));
+        required.extend(
+            entry
+                .citations
+                .iter()
+                .map(|citation| (citation.document_oid, citation.doc_commit)),
+        );
     }
     required.sort_unstable();
     let mut distinct = usize::from(!required.is_empty());
@@ -173,11 +193,13 @@ pub fn verify_document_production_for(
     }
     if distinct != documents.len() {
         return Err(DocumentProductionError::DocumentCount {
-            expected: distinct, actual: documents.len(),
+            expected: distinct,
+            actual: documents.len(),
         });
     }
     let mut verified = Vec::new();
-    verified.try_reserve_exact(distinct)
+    verified
+        .try_reserve_exact(distinct)
         .map_err(|_| DocumentProductionError::Limit("document allocation"))?;
     let mut cursor = 0;
     let mut document_byte_count = 0u64;
@@ -187,7 +209,9 @@ pub fn verify_document_production_for(
             return Err(DocumentProductionError::DocumentIdentity { position });
         }
         let mut end = cursor + 1;
-        while end < required.len() && required[end].0 == oid { end += 1; }
+        while end < required.len() && required[end].0 == oid {
+            end += 1;
+        }
         if doc_commit(document.kind, document.bytes) != commitment {
             return Err(DocumentProductionError::Commitment { position });
         }
@@ -195,12 +219,18 @@ pub fn verify_document_production_for(
         let byte_length = document.bytes.len() as u64;
         document_byte_count += byte_length;
         verified.push(VerifiedDocumentContent {
-            document_oid: oid, doc_commit: commitment, kind: document.kind,
-            byte_length, citation_count: end - cursor,
+            document_oid: oid,
+            doc_commit: commitment,
+            kind: document.kind,
+            byte_length,
+            citation_count: end - cursor,
         });
         cursor = end;
     }
     Ok(VerifiedDocumentProduction {
-        inventory, document_scope: "recomputation", documents: verified, document_byte_count,
+        inventory,
+        document_scope: "recomputation",
+        documents: verified,
+        document_byte_count,
     })
 }

@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 fa-intents = { path = "../fa-intents", version = "=0.0.1" }
 fa-journal = { path = "../fa-journal", version = "=0.0.1" }
+fa-lantern = { path = "../fa-lantern", version = "=0.0.1" }
 fa-model = { path = "../fa-model", version = "=0.0.1" }
 fa-money = { path = "../fa-money", version = "=0.0.1" }
 fa-notary = { path = "../fa-notary", version = "=0.0.1" }
@@ -29,6 +30,9 @@ fgdb-types = { workspace = true }
 
 [dev-dependencies]
 fgdb-sim = { workspace = true }
+# The independent verifier judges what the facade produces (plan §13.3):
+# bundles and their receipts are checked as an outsider would check them.
+fa-verify = { path = "../fa-verify", version = "=0.0.1" }
 
 [[example]]
 name = "open_book"

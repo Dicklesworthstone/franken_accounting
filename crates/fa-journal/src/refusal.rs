@@ -76,6 +76,8 @@ pub mod code {
     pub const UNIT_POLICY: &str = "FA-REF-003";
     /// A leg names an account the book does not have.
     pub const UNKNOWN_ACCOUNT: &str = "FA-REF-004";
+    /// A leg's unit id is not a unit version this book registers.
+    pub const UNIT_UNREGISTERED: &str = "FA-REF-154";
     /// The class × period-state cell is `refuse`.
     pub const PERIOD_LAW: &str = "FA-REF-010";
     /// The cell requires a capability op the principal lacks.

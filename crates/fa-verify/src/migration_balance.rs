@@ -218,14 +218,18 @@ pub fn verify_balance(proof: &[u8], anchor: &Checkpoint) -> Result<Balance, Veri
             Metadata::Chunk(run) => {
                 let state = runs.get(run).ok_or_else(|| scope_error(*index))?;
                 if *index <= state.open_index
-                    || state.terminal.is_some_and(|(terminal, _)| *index >= terminal)
+                    || state
+                        .terminal
+                        .is_some_and(|(terminal, _)| *index >= terminal)
                 {
                     return Err(scope_error(*index));
                 }
                 let policy = state.policy.ok_or_else(|| scope_error(state.open_index))?;
                 state.terminal.is_some_and(|(_, kind)| kind == 1)
                     && policy.counts_from.is_none_or(|day| {
-                        envelope.effective_day.is_some_and(|effective| effective >= day)
+                        envelope
+                            .effective_day
+                            .is_some_and(|effective| effective >= day)
                     })
             }
         };
@@ -376,10 +380,9 @@ fn policy(bytes: &[u8], book: &[u8; 16]) -> Result<Policy, VerifyError> {
     let mut r = Reader::new(bytes);
     let version = r.u16("run.version")?;
     if version != 1 {
-        return Err(VerifyError::Decode(r.error(
-            "run.version",
-            Reason::BadTag(version.to_le_bytes()[0]),
-        )));
+        return Err(VerifyError::Decode(
+            r.error("run.version", Reason::BadTag(version.to_le_bytes()[0])),
+        ));
     }
     if r.fixed::<16>("run.book")? != *book {
         return Err(VerifyError::Coordinate);
@@ -503,13 +506,7 @@ mod tests {
                 w.u8(0).u8(0).u8(0).fixed(&[0; 32]);
             }
         }
-        w.u128(1)
-            .u8(0)
-            .count(0)
-            .count(0)
-            .u8(0)
-            .count(0)
-            .count(0);
+        w.u128(1).u8(0).count(0).count(0).u8(0).count(0).count(0);
         let len = w.buf.len();
         let proposal_digest = hash_parts(PROPOSAL_DIGEST_DOMAIN, &[&w.buf]);
         let envelope = [0u8; 5]; // no plan certificate and no approvals
@@ -753,7 +750,12 @@ mod tests {
     #[test]
     fn migration_hash_transcripts_are_length_framed_and_run_identity_is_pinned() {
         assert_eq!(run_identity(&[1; 16], b"go-live"), RUN);
-        for body in [body(0, false), body(1, false), body(2, false), body(2, true)] {
+        for body in [
+            body(0, false),
+            body(1, false),
+            body(2, false),
+            body(2, true),
+        ] {
             let mut transcript = BODY_DOMAIN.to_vec();
             transcript.extend_from_slice(&u32::try_from(body.len()).unwrap().to_le_bytes());
             transcript.extend_from_slice(&body);

@@ -19,8 +19,8 @@ const REQUEST_MAGIC: &[u8; 17] = b"FA-ALLOC-REQUEST\0";
 const RECEIPT_MAGIC: &[u8; 17] = b"FA-ALLOC-RECEIPT\0";
 const VERSION: [u8; 4] = [1, 0, 0, 0]; // u16 major 1, u16 minor 0
 pub const MAX_ALLOCATION_REQUEST_BYTES: usize = 128 + 32 * MAX_ALLOCATION_TARGETS;
-pub const MAX_ALLOCATION_RECEIPT_BYTES: usize = MAX_ALLOCATION_REQUEST_BYTES
-    + 32 * MAX_ALLOCATION_TARGETS + 128;
+pub const MAX_ALLOCATION_RECEIPT_BYTES: usize =
+    MAX_ALLOCATION_REQUEST_BYTES + 32 * MAX_ALLOCATION_TARGETS + 128;
 
 impl AllocationRequest {
     /// Structural encoding. A structurally valid request can still fail
@@ -34,7 +34,11 @@ impl AllocationRequest {
         bytes.extend_from_slice(&self.method.law().version().to_le_bytes());
         bytes.extend_from_slice(&self.total.unit.0.to_le_bytes());
         bytes.extend_from_slice(&self.total.mantissa.to_le_bytes());
-        if let AllocationMethod::ProRataResidualToNamed { rounding, recipient } = self.method {
+        if let AllocationMethod::ProRataResidualToNamed {
+            rounding,
+            recipient,
+        } = self.method
+        {
             bytes.extend_from_slice(&rounding.id().to_le_bytes());
             bytes.extend_from_slice(&recipient.to_le_bytes());
         }
@@ -57,12 +61,16 @@ impl AllocationRequest {
         if r.take::<17>("request magic")? != *REQUEST_MAGIC
             || r.take::<4>("request version")? != VERSION
         {
-            return Err(AllocationError::Invalid("unsupported allocation request format"));
+            return Err(AllocationError::Invalid(
+                "unsupported allocation request format",
+            ));
         }
         let law = AllocationLaw::from_id(u16::from_le_bytes(r.take("law id")?))
             .ok_or(AllocationError::Invalid("unsupported allocation law"))?;
         if u16::from_le_bytes(r.take("law version")?) != law.version() {
-            return Err(AllocationError::Invalid("unsupported allocation law version"));
+            return Err(AllocationError::Invalid(
+                "unsupported allocation law version",
+            ));
         }
         let unit = UnitId(u32::from_le_bytes(r.take("unit id")?));
         let mantissa = i128::from_le_bytes(r.take("total mantissa")?);
@@ -78,20 +86,29 @@ impl AllocationRequest {
         };
         let count = usize::try_from(u32::from_le_bytes(r.take("target count")?))
             .map_err(|_| AllocationError::Invalid("target count is unrepresentable"))?;
-        if count == 0 || count > catalog.max_targets()
+        if count == 0
+            || count > catalog.max_targets()
             || count.checked_mul(32) != Some(r.bytes.len() - r.offset)
         {
-            return Err(AllocationError::Invalid("target count or request length is invalid"));
+            return Err(AllocationError::Invalid(
+                "target count or request length is invalid",
+            ));
         }
         let mut targets = Vec::new();
-        targets.try_reserve_exact(count).map_err(|_| AmountError::Overflow)?;
+        targets
+            .try_reserve_exact(count)
+            .map_err(|_| AmountError::Overflow)?;
         for _ in 0..count {
             targets.push(AllocationTarget {
                 id: u128::from_le_bytes(r.take("target id")?),
                 basis: u128::from_le_bytes(r.take("target basis")?),
             });
         }
-        let request = Self { total: Amount::new(unit, mantissa), method, targets };
+        let request = Self {
+            total: Amount::new(unit, mantissa),
+            method,
+            targets,
+        };
         request.validate_shape(&catalog)?;
         Ok(request)
     }
@@ -131,10 +148,20 @@ fn encode_receipt(outcome: &AllocationOutcome) -> Result<Vec<u8>, AllocationErro
     let request = outcome.request().canonical_bytes()?;
     // All vectors originate from an execution bounded to 4096 targets. The
     // checked length also bounds the output buffer before any write occurs.
-    let capacity = request.len().checked_add(128)
-        .and_then(|size| outcome.shares().len().checked_mul(32).and_then(|n| size.checked_add(n)))
+    let capacity = request
+        .len()
+        .checked_add(128)
+        .and_then(|size| {
+            outcome
+                .shares()
+                .len()
+                .checked_mul(32)
+                .and_then(|n| size.checked_add(n))
+        })
         .filter(|size| *size <= MAX_ALLOCATION_RECEIPT_BYTES)
-        .ok_or(AllocationError::Invalid("allocation receipt exceeds its byte bound"))?;
+        .ok_or(AllocationError::Invalid(
+            "allocation receipt exceeds its byte bound",
+        ))?;
     let mut bytes = reserved(capacity)?;
     bytes.extend_from_slice(RECEIPT_MAGIC);
     bytes.extend_from_slice(&VERSION);
@@ -161,7 +188,9 @@ fn encode_receipt(outcome: &AllocationOutcome) -> Result<Vec<u8>, AllocationErro
 
 fn reserved(capacity: usize) -> Result<Vec<u8>, AllocationError> {
     let mut bytes = Vec::new();
-    bytes.try_reserve_exact(capacity).map_err(|_| AmountError::Overflow)?;
+    bytes
+        .try_reserve_exact(capacity)
+        .map_err(|_| AmountError::Overflow)?;
     Ok(bytes)
 }
 
@@ -173,19 +202,31 @@ fn write_count(bytes: &mut Vec<u8>, count: usize) -> Result<(), AllocationError>
 
 fn bounded(bytes: &[u8], max: usize) -> Result<(), AllocationError> {
     if bytes.len() > max {
-        return Err(AllocationError::Invalid("allocation artifact exceeds its byte bound"));
+        return Err(AllocationError::Invalid(
+            "allocation artifact exceeds its byte bound",
+        ));
     }
     Ok(())
 }
 
-struct Reader<'a> { bytes: &'a [u8], offset: usize }
+struct Reader<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
 impl Reader<'_> {
     fn take<const N: usize>(&mut self, field: &'static str) -> Result<[u8; N], AllocationError> {
-        let end = self.offset.checked_add(N)
-            .ok_or(AllocationError::Decode { field, offset: self.offset })?;
-        let value = self.bytes.get(self.offset..end)
+        let end = self.offset.checked_add(N).ok_or(AllocationError::Decode {
+            field,
+            offset: self.offset,
+        })?;
+        let value = self
+            .bytes
+            .get(self.offset..end)
             .and_then(|slice| <[u8; N]>::try_from(slice).ok())
-            .ok_or(AllocationError::Decode { field, offset: self.offset })?;
+            .ok_or(AllocationError::Decode {
+                field,
+                offset: self.offset,
+            })?;
         self.offset = end;
         Ok(value)
     }

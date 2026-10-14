@@ -14,14 +14,26 @@ struct Jsonl {
     limit: usize,
 }
 impl Jsonl {
-    fn new(limit: usize) -> Self { Self { bytes: String::new(), limit } }
+    fn new(limit: usize) -> Self {
+        Self {
+            bytes: String::new(),
+            limit,
+        }
+    }
     fn push(&mut self, text: &str) -> Result<(), Refusal> {
-        let next = self.bytes.len().checked_add(text.len())
+        let next = self
+            .bytes
+            .len()
+            .checked_add(text.len())
             .ok_or_else(|| invalid("aging workpaper length overflow"))?;
         if next > self.limit {
-            return Err(invalid("complete aging workpaper exceeds its output bound; no partial report returned"));
+            return Err(invalid(
+                "complete aging workpaper exceeds its output bound; no partial report returned",
+            ));
         }
-        self.bytes.try_reserve(text.len()).map_err(|_| invalid("cannot reserve aging workpaper output"))?;
+        self.bytes
+            .try_reserve(text.len())
+            .map_err(|_| invalid("cannot reserve aging workpaper output"))?;
         self.bytes.push_str(text);
         Ok(())
     }
@@ -35,19 +47,26 @@ impl Jsonl {
                 '\r' => self.push("\\r")?,
                 '\t' => self.push("\\t")?,
                 c if c < '\u{20}' => self.push(&format!("\\u{:04x}", u32::from(c)))?,
-                c => { let mut encoded = [0; 4]; self.push(c.encode_utf8(&mut encoded))?; }
+                c => {
+                    let mut encoded = [0; 4];
+                    self.push(c.encode_utf8(&mut encoded))?;
+                }
             }
         }
         self.push("\"")
     }
     fn begin(&mut self, event: &str) -> Result<(), Refusal> {
-        self.push("{\"event\":")?; self.string(event)
+        self.push("{\"event\":")?;
+        self.string(event)
     }
     fn key(&mut self, name: &str) -> Result<(), Refusal> {
-        self.push(",")?; self.string(name)?; self.push(":")
+        self.push(",")?;
+        self.string(name)?;
+        self.push(":")
     }
     fn text(&mut self, name: &str, text: &str) -> Result<(), Refusal> {
-        self.key(name)?; self.string(text)
+        self.key(name)?;
+        self.string(text)
     }
     // All integer values use strings, even currently-small counters. Consumers
     // never need to guess which sequence or money field can exceed 2^53.
@@ -55,22 +74,47 @@ impl Jsonl {
         self.text(name, &number.to_string())
     }
     fn boolean(&mut self, name: &str, value: bool) -> Result<(), Refusal> {
-        self.key(name)?; self.push(if value { "true" } else { "false" })
+        self.key(name)?;
+        self.push(if value { "true" } else { "false" })
     }
-    fn null(&mut self, name: &str) -> Result<(), Refusal> { self.key(name)?; self.push("null") }
-    fn end(&mut self) -> Result<(), Refusal> { self.push("}\n") }
+    fn null(&mut self, name: &str) -> Result<(), Refusal> {
+        self.key(name)?;
+        self.push("null")
+    }
+    fn end(&mut self) -> Result<(), Refusal> {
+        self.push("}\n")
+    }
 }
 
-fn hex(bytes: &[u8]) -> String { bytes.iter().map(|b| format!("{b:02x}")).collect() }
-fn vid(id: VId) -> String { format!("{:032x}", id.0) }
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+fn vid(id: VId) -> String {
+    format!("{:032x}", id.0)
+}
 
-enum ExportError { Refusal(Refusal), Book(BookError) }
-impl From<Refusal> for ExportError { fn from(r: Refusal) -> Self { Self::Refusal(r) } }
-impl From<BookError> for ExportError { fn from(e: BookError) -> Self { Self::Book(e) } }
+enum ExportError {
+    Refusal(Refusal),
+    Book(BookError),
+}
+impl From<Refusal> for ExportError {
+    fn from(r: Refusal) -> Self {
+        Self::Refusal(r)
+    }
+}
+impl From<BookError> for ExportError {
+    fn from(e: BookError) -> Self {
+        Self::Book(e)
+    }
+}
 
-fn render(report: &EffectiveDateAging, certificate: &AgingCertificate, accounts: &[AccountRow],
-    units: &UnitRegistry, mut checkpoint: impl FnMut() -> Result<(), BookError>) -> Result<String, ExportError>
-{
+fn render(
+    report: &EffectiveDateAging,
+    certificate: &AgingCertificate,
+    accounts: &[AccountRow],
+    units: &UnitRegistry,
+    mut checkpoint: impl FnMut() -> Result<(), BookError>,
+) -> Result<String, ExportError> {
     let mut out = Jsonl::new(MAX_AGING_CERTIFICATE_BYTES);
     out.begin("aging_workpaper")?;
     out.text("format", "fa:aging-workpaper:v1")?;
@@ -78,8 +122,11 @@ fn render(report: &EffectiveDateAging, certificate: &AgingCertificate, accounts:
     out.text("book_id", &hex(&report.book_id.0))?;
     out.number("known_at", report.known_at.0)?;
     out.text("effective_through", &report.effective_through.to_string())?;
-    if let Some(account) = report.account { out.text("account_filter", &vid(account))?; }
-    else { out.null("account_filter")?; }
+    if let Some(account) = report.account {
+        out.text("account_filter", &vid(account))?;
+    } else {
+        out.null("account_filter")?;
+    }
     out.text("age_basis", "effective_date")?;
     out.boolean("due_date_claim", false)?;
     out.text("signatures", "unsigned")?;
@@ -103,7 +150,9 @@ fn render(report: &EffectiveDateAging, certificate: &AgingCertificate, accounts:
     let unit_ids: BTreeSet<_> = report.items.iter().map(|item| item.item.unit_id).collect();
     for id in unit_ids {
         checkpoint()?;
-        let unit = units.get(UnitId(id)).ok_or_else(|| invalid("aging workpaper names an unregistered unit"))?;
+        let unit = units
+            .get(UnitId(id))
+            .ok_or_else(|| invalid("aging workpaper names an unregistered unit"))?;
         out.begin("aging_unit")?;
         out.number("unit_id", id)?;
         out.text("code", &unit.code)?;
@@ -116,8 +165,11 @@ fn render(report: &EffectiveDateAging, certificate: &AgingCertificate, accounts:
         out.begin("aging_band")?;
         out.number("bucket", index)?;
         out.number("lower_inclusive", band.lower_inclusive)?;
-        if let Some(upper) = band.upper_inclusive { out.number("upper_inclusive", upper)?; }
-        else { out.null("upper_inclusive")?; }
+        if let Some(upper) = band.upper_inclusive {
+            out.number("upper_inclusive", upper)?;
+        } else {
+            out.null("upper_inclusive")?;
+        }
         out.end()?;
     }
     for aged in &report.items {
@@ -128,7 +180,13 @@ fn render(report: &EffectiveDateAging, certificate: &AgingCertificate, accounts:
         out.number("ordinal", item.ordinal)?;
         out.text("account", &vid(item.account))?;
         out.number("unit_id", item.unit_id)?;
-        out.text("side", match item.side { Side::Debit => "debit", Side::Credit => "credit" })?;
+        out.text(
+            "side",
+            match item.side {
+                Side::Debit => "debit",
+                Side::Credit => "credit",
+            },
+        )?;
         out.text("effective_date", &item.effective_date.to_string())?;
         out.number("recorded_at", item.recorded_at.0)?;
         out.number("age_days", aged.age_days)?;
@@ -181,18 +239,33 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// Replay only the exact recipient-selected account, cutoff, recorded
     /// sequence and buckets. An unresolved HEAD expectation is refused rather
     /// than letting an untrusted certificate choose the recipient's question.
-    pub fn replay_effective_date_aging_for(&self, cx: &PurposeContexts, principal: VId,
-        capability: &Capability, certificate: &AgingCertificate, expected: &AgingRequest)
-        -> Outcome<EffectiveDateAging>
-    {
-        if let Err(r) = authorize(self, cx, principal, capability, false)? { return Ok(Err(r)); }
-        if expected.known_at.is_none() {
-            return Ok(Err(invalid_request("recipient aging expectations require a fixed known-at, not HEAD")));
+    pub fn replay_effective_date_aging_for(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        certificate: &AgingCertificate,
+        expected: &AgingRequest,
+    ) -> Outcome<EffectiveDateAging> {
+        if let Err(r) = authorize(self, cx, principal, capability, false)? {
+            return Ok(Err(r));
         }
-        if let Err(r) = bounded_buckets(&expected.buckets) { return Ok(Err(r)); }
-        let actual = match certificate.request() { Ok(request) => request, Err(r) => return Ok(Err(r)) };
+        if expected.known_at.is_none() {
+            return Ok(Err(invalid_request(
+                "recipient aging expectations require a fixed known-at, not HEAD",
+            )));
+        }
+        if let Err(r) = bounded_buckets(&expected.buckets) {
+            return Ok(Err(r));
+        }
+        let actual = match certificate.request() {
+            Ok(request) => request,
+            Err(r) => return Ok(Err(r)),
+        };
         if actual != *expected {
-            return Ok(Err(invalid("aging certificate answers a different recipient-selected question")));
+            return Ok(Err(invalid(
+                "aging certificate answers a different recipient-selected question",
+            )));
         }
         self.replay_effective_date_aging(cx, principal, capability, certificate)
     }
@@ -203,31 +276,57 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// table that can omit an account whose last item was later reversed.
     /// Numbers are decimal strings; no cross-unit or debit/credit netting occurs.
     /// This returns no partial text on cancellation, refusal or output failure.
-    pub fn effective_date_aging_jsonl(&self, cx: &PurposeContexts, principal: VId,
-        capability: &Capability, certificate: &AgingCertificate, expected: &AgingRequest)
-        -> Outcome<String>
-    {
-        if let Err(r) = authorize(self, cx, principal, capability, true)? { return Ok(Err(r)); }
-        let report = match self.replay_effective_date_aging_for(cx, principal, capability, certificate, expected)? {
-            Ok(report) => report, Err(r) => return Ok(Err(r)),
+    pub fn effective_date_aging_jsonl(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        certificate: &AgingCertificate,
+        expected: &AgingRequest,
+    ) -> Outcome<String> {
+        if let Err(r) = authorize(self, cx, principal, capability, true)? {
+            return Ok(Err(r));
+        }
+        let report = match self.replay_effective_date_aging_for(
+            cx,
+            principal,
+            capability,
+            certificate,
+            expected,
+        )? {
+            Ok(report) => report,
+            Err(r) => return Ok(Err(r)),
         };
         let mut ids: BTreeSet<_> = report.items.iter().map(|item| item.item.account).collect();
-        if let Some(account) = report.account { ids.insert(account); }
+        if let Some(account) = report.account {
+            ids.insert(account);
+        }
         let query = cx.query();
         let accounts = query.with_restriction(|| -> Result<Vec<AccountRow>, BookError> {
             let mut accounts = Vec::new();
             for id in ids {
                 query.checkpoint().map_err(BookError::Context)?;
-                let row = self.db.vertex_at(id, report.known_at).map_err(KernelError::from)?
+                let row = self
+                    .db
+                    .vertex_at(id, report.known_at)
+                    .map_err(KernelError::from)?
                     .filter(|row| row.labels.contains(&label::ACCOUNT))
-                    .ok_or_else(|| KernelError::Corrupt("certified aging account is absent at its prefix".into()))?;
+                    .ok_or_else(|| {
+                        KernelError::Corrupt(
+                            "certified aging account is absent at its prefix".into(),
+                        )
+                    })?;
                 accounts.push(AccountRow::decode(&row)?);
             }
             Ok(accounts)
         })?;
-        match render(&report, certificate, &accounts, &self.context().units,
-            || query.checkpoint().map_err(BookError::Context))
-        {
+        match render(
+            &report,
+            certificate,
+            &accounts,
+            &self.context().units,
+            || query.checkpoint().map_err(BookError::Context),
+        ) {
             Ok(text) => Ok(Ok(text)),
             Err(ExportError::Refusal(r)) => Ok(Err(r)),
             Err(ExportError::Book(e)) => Err(e),
@@ -248,8 +347,14 @@ mod tests {
         out.number("sequence", u64::MAX).unwrap();
         out.end().unwrap();
         assert!(out.bytes.contains("€\\\"\\\\\\n\\r\\t\\u0000\\u001f"));
-        assert!(out.bytes.contains(&format!("\"mantissa\":\"{}\"", i128::MAX)));
-        assert!(out.bytes.contains(&format!("\"sequence\":\"{}\"", u64::MAX)));
+        assert!(
+            out.bytes
+                .contains(&format!("\"mantissa\":\"{}\"", i128::MAX))
+        );
+        assert!(
+            out.bytes
+                .contains(&format!("\"sequence\":\"{}\"", u64::MAX))
+        );
         assert_eq!(out.bytes.lines().count(), 1);
     }
 

@@ -53,10 +53,18 @@ pub fn chunk_root(bytes: &[u8]) -> [u8; 32] {
 /// `BLAKE3("fa:doc:v1" ‖ kind ‖ length ‖ chunk_root)`.
 #[must_use]
 pub fn doc_commit(kind: u8, bytes: &[u8]) -> [u8; 32] {
-    hash_parts(
-        DOC_DOMAIN,
-        &[&[kind], &le64(bytes.len()), &chunk_root(bytes)],
+    commit_of(
+        kind,
+        u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+        &chunk_root(bytes),
     )
+}
+
+/// The commitment of a document known by its kind, length and chunk root —
+/// how a stub binds all three without the bytes.
+#[must_use]
+pub fn commit_of(kind: u8, length: u64, chunk_root: &[u8; 32]) -> [u8; 32] {
+    hash_parts(DOC_DOMAIN, &[&[kind], &length.to_le_bytes(), chunk_root])
 }
 
 /// A chunk proof authenticates disclosed bytes, not the undisclosed document,
@@ -81,7 +89,10 @@ impl core::fmt::Display for ChunkProofError {
                 write!(f, "document chunk requires {expected} bytes, got {actual}")
             }
             Self::PathLength { expected, actual } => {
-                write!(f, "document chunk path requires {expected} siblings, got {actual}")
+                write!(
+                    f,
+                    "document chunk path requires {expected} siblings, got {actual}"
+                )
             }
             Self::Commitment => write!(f, "document chunk does not match the trusted doc_commit"),
         }
@@ -227,8 +238,15 @@ impl core::fmt::Display for DisclosureError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::EmptyRequest => write!(f, "a document disclosure request must name a chunk"),
-            Self::RequestOrder => write!(f, "requested document chunks must be strictly ascending and unique"),
-            Self::Set { position, expected, actual } => write!(
+            Self::RequestOrder => write!(
+                f,
+                "requested document chunks must be strictly ascending and unique"
+            ),
+            Self::Set {
+                position,
+                expected,
+                actual,
+            } => write!(
                 f,
                 "document disclosure set mismatch at {position}: requested {expected:?}, got {actual:?}",
             ),
@@ -278,19 +296,30 @@ pub fn verify_disclosure_for(
         let expected = requested_indexes.get(position).copied();
         let actual = disclosures.get(position).map(|chunk| chunk.index);
         if actual != expected {
-            return Err(DisclosureError::Set { position, expected, actual });
+            return Err(DisclosureError::Set {
+                position,
+                expected,
+                actual,
+            });
         }
     }
-    disclosures.iter().map(|chunk| {
-        verify_chunk(
-            kind,
-            document_length,
-            chunk.index,
-            chunk.bytes,
-            chunk.siblings,
-            trusted_doc_commit,
-        ).map_err(|error| DisclosureError::Chunk { index: chunk.index, error })
-    }).collect()
+    disclosures
+        .iter()
+        .map(|chunk| {
+            verify_chunk(
+                kind,
+                document_length,
+                chunk.index,
+                chunk.bytes,
+                chunk.siblings,
+                trusted_doc_commit,
+            )
+            .map_err(|error| DisclosureError::Chunk {
+                index: chunk.index,
+                error,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -360,21 +389,27 @@ mod chunk_proof_tests {
         let mut level = if bytes.is_empty() {
             vec![leaf(0, &[])]
         } else {
-            bytes.chunks(DOC_CHUNK_BYTES).enumerate()
-                .map(|(i, bytes)| leaf(i, bytes)).collect::<Vec<_>>()
+            bytes
+                .chunks(DOC_CHUNK_BYTES)
+                .enumerate()
+                .map(|(i, bytes)| leaf(i, bytes))
+                .collect::<Vec<_>>()
         };
         let mut path = Vec::new();
         while level.len() > 1 {
             if let Some(sibling) = level.get(index ^ 1) {
                 path.push(*sibling);
             }
-            level = level.chunks(2).map(|pair| {
-                if pair.len() == 2 {
-                    hash_parts(DOC_NODE_DOMAIN, &[&pair[0], &pair[1]])
-                } else {
-                    pair[0]
-                }
-            }).collect();
+            level = level
+                .chunks(2)
+                .map(|pair| {
+                    if pair.len() == 2 {
+                        hash_parts(DOC_NODE_DOMAIN, &[&pair[0], &pair[1]])
+                    } else {
+                        pair[0]
+                    }
+                })
+                .collect();
             index /= 2;
         }
         path
@@ -399,8 +434,14 @@ mod chunk_proof_tests {
                 let end = (start + DOC_CHUNK_BYTES).min(size);
                 let chunk = &bytes[start..end];
                 let result = verify_chunk(
-                    3, size as u64, index as u64, chunk, &path(&bytes, index), &trusted,
-                ).unwrap();
+                    3,
+                    size as u64,
+                    index as u64,
+                    chunk,
+                    &path(&bytes, index),
+                    &trusted,
+                )
+                .unwrap();
                 assert_eq!(result.scope, "membership_only");
                 assert_eq!(result.index, index as u64);
                 assert_eq!(result.byte_length, end - start);
@@ -414,19 +455,40 @@ mod chunk_proof_tests {
     fn literal_five_chunk_paths_promote_the_last_leaf_without_synthetic_siblings() {
         let bytes = data(DOC_CHUNK_BYTES * 4 + 7);
         let chunks = bytes.chunks(DOC_CHUNK_BYTES).collect::<Vec<_>>();
-        let hashes = chunks.iter().enumerate().map(|(i, c)| leaf(i, c)).collect::<Vec<_>>();
-        let left = hash_parts(DOC_NODE_DOMAIN, &[
-            &hash_parts(DOC_NODE_DOMAIN, &[&hashes[0], &hashes[1]]),
-            &hash_parts(DOC_NODE_DOMAIN, &[&hashes[2], &hashes[3]]),
-        ]);
+        let hashes = chunks
+            .iter()
+            .enumerate()
+            .map(|(i, c)| leaf(i, c))
+            .collect::<Vec<_>>();
+        let left = hash_parts(
+            DOC_NODE_DOMAIN,
+            &[
+                &hash_parts(DOC_NODE_DOMAIN, &[&hashes[0], &hashes[1]]),
+                &hash_parts(DOC_NODE_DOMAIN, &[&hashes[2], &hashes[3]]),
+            ],
+        );
         let trusted = doc_commit(1, &bytes);
         // Leaf 4 is promoted twice; its entire canonical path is one hash.
         verify_chunk(1, bytes.len() as u64, 4, chunks[4], &[left], &trusted).unwrap();
         assert_eq!(
-            verify_chunk(1, bytes.len() as u64, 4, chunks[4], &[[0; 32], left], &trusted),
-            Err(ChunkProofError::PathLength { expected: 1, actual: 2 }),
+            verify_chunk(
+                1,
+                bytes.len() as u64,
+                4,
+                chunks[4],
+                &[[0; 32], left],
+                &trusted
+            ),
+            Err(ChunkProofError::PathLength {
+                expected: 1,
+                actual: 2
+            }),
         );
-        let first_path = [hashes[1], hash_parts(DOC_NODE_DOMAIN, &[&hashes[2], &hashes[3]]), hashes[4]];
+        let first_path = [
+            hashes[1],
+            hash_parts(DOC_NODE_DOMAIN, &[&hashes[2], &hashes[3]]),
+            hashes[4],
+        ];
         verify_chunk(1, bytes.len() as u64, 0, chunks[0], &first_path, &trusted).unwrap();
         let mut reordered = first_path;
         reordered.swap(0, 1);
@@ -454,50 +516,120 @@ mod chunk_proof_tests {
         }
         let mut changed = chunk.to_vec();
         changed[123] ^= 1;
-        assert_eq!(verify_chunk(1, bytes.len() as u64, 0, &changed, &siblings, &trusted), Err(ChunkProofError::Commitment));
+        assert_eq!(
+            verify_chunk(1, bytes.len() as u64, 0, &changed, &siblings, &trusted),
+            Err(ChunkProofError::Commitment)
+        );
         let mut wrong_anchor = trusted;
         wrong_anchor[0] ^= 1;
-        assert_eq!(verify_chunk(1, bytes.len() as u64, 0, chunk, &siblings, &wrong_anchor), Err(ChunkProofError::Commitment));
+        assert_eq!(
+            verify_chunk(1, bytes.len() as u64, 0, chunk, &siblings, &wrong_anchor),
+            Err(ChunkProofError::Commitment)
+        );
         for i in 0..siblings.len() {
             let mut changed = siblings.clone();
             changed[i][0] ^= 1;
-            assert_eq!(verify_chunk(1, bytes.len() as u64, 0, chunk, &changed, &trusted), Err(ChunkProofError::Commitment));
+            assert_eq!(
+                verify_chunk(1, bytes.len() as u64, 0, chunk, &changed, &trusted),
+                Err(ChunkProofError::Commitment)
+            );
         }
-        assert!(matches!(verify_chunk(1, bytes.len() as u64, 0, chunk, &siblings[1..], &trusted), Err(ChunkProofError::PathLength { .. })));
+        assert!(matches!(
+            verify_chunk(1, bytes.len() as u64, 0, chunk, &siblings[1..], &trusted),
+            Err(ChunkProofError::PathLength { .. })
+        ));
         let mut extra = siblings.clone();
         extra.push([0; 32]);
-        assert!(matches!(verify_chunk(1, bytes.len() as u64, 0, chunk, &extra, &trusted), Err(ChunkProofError::PathLength { .. })));
+        assert!(matches!(
+            verify_chunk(1, bytes.len() as u64, 0, chunk, &extra, &trusted),
+            Err(ChunkProofError::PathLength { .. })
+        ));
     }
 
     #[test]
     fn empty_documents_and_final_chunks_have_one_exact_shape() {
         let trusted = doc_commit(1, &[]);
         verify_chunk(1, 0, 0, &[], &[], &trusted).unwrap();
-        assert_eq!(verify_chunk(1, 0, 1, &[], &[], &trusted), Err(ChunkProofError::Index { index: 1, chunk_count: 1 }));
-        assert_eq!(verify_chunk(1, 0, 0, &[0], &[], &trusted), Err(ChunkProofError::ChunkLength { expected: 0, actual: 1 }));
-        assert_eq!(verify_chunk(1, 0, 0, &[], &[[0; 32]], &trusted), Err(ChunkProofError::PathLength { expected: 0, actual: 1 }));
+        assert_eq!(
+            verify_chunk(1, 0, 1, &[], &[], &trusted),
+            Err(ChunkProofError::Index {
+                index: 1,
+                chunk_count: 1
+            })
+        );
+        assert_eq!(
+            verify_chunk(1, 0, 0, &[0], &[], &trusted),
+            Err(ChunkProofError::ChunkLength {
+                expected: 0,
+                actual: 1
+            })
+        );
+        assert_eq!(
+            verify_chunk(1, 0, 0, &[], &[[0; 32]], &trusted),
+            Err(ChunkProofError::PathLength {
+                expected: 0,
+                actual: 1
+            })
+        );
         let bytes = data(DOC_CHUNK_BYTES + 5);
         let trusted = doc_commit(1, &bytes);
         for supplied in [0, 4, 6, DOC_CHUNK_BYTES] {
             let chunk = vec![0; supplied];
             assert_eq!(
                 verify_chunk(1, bytes.len() as u64, 1, &chunk, &path(&bytes, 1), &trusted),
-                Err(ChunkProofError::ChunkLength { expected: 5, actual: supplied }),
+                Err(ChunkProofError::ChunkLength {
+                    expected: 5,
+                    actual: supplied
+                }),
             );
         }
         // A partial redaction inside a non-final chunk cannot claim proof.
-        assert_eq!(verify_chunk(1, bytes.len() as u64, 0, &bytes[..100], &path(&bytes, 0), &trusted), Err(ChunkProofError::ChunkLength { expected: DOC_CHUNK_BYTES, actual: 100 }));
+        assert_eq!(
+            verify_chunk(
+                1,
+                bytes.len() as u64,
+                0,
+                &bytes[..100],
+                &path(&bytes, 0),
+                &trusted
+            ),
+            Err(ChunkProofError::ChunkLength {
+                expected: DOC_CHUNK_BYTES,
+                actual: 100
+            })
+        );
     }
 
     #[test]
     fn hostile_u64_lengths_are_bounded_without_overflow_or_allocation() {
         let count = 1u64 << 52;
-        assert_eq!(verify_chunk(1, u64::MAX, count, &[], &[], &[0; 32]), Err(ChunkProofError::Index { index: count, chunk_count: count }));
-        assert_eq!(verify_chunk(1, u64::MAX, u64::MAX, &[], &[], &[0; 32]), Err(ChunkProofError::Index { index: u64::MAX, chunk_count: count }));
+        assert_eq!(
+            verify_chunk(1, u64::MAX, count, &[], &[], &[0; 32]),
+            Err(ChunkProofError::Index {
+                index: count,
+                chunk_count: count
+            })
+        );
+        assert_eq!(
+            verify_chunk(1, u64::MAX, u64::MAX, &[], &[], &[0; 32]),
+            Err(ChunkProofError::Index {
+                index: u64::MAX,
+                chunk_count: count
+            })
+        );
         let first = [0; DOC_CHUNK_BYTES];
-        assert_eq!(verify_chunk(1, u64::MAX, 0, &first, &[], &[0; 32]), Err(ChunkProofError::PathLength { expected: 52, actual: 0 }));
+        assert_eq!(
+            verify_chunk(1, u64::MAX, 0, &first, &[], &[0; 32]),
+            Err(ChunkProofError::PathLength {
+                expected: 52,
+                actual: 0
+            })
+        );
         let last = [0; DOC_CHUNK_BYTES - 1];
-        assert_eq!(verify_chunk(1, u64::MAX, count - 1, &last, &[[0; 32]; 52], &[0; 32]), Err(ChunkProofError::Commitment));
+        assert_eq!(
+            verify_chunk(1, u64::MAX, count - 1, &last, &[[0; 32]; 52], &[0; 32]),
+            Err(ChunkProofError::Commitment)
+        );
     }
 }
 
@@ -520,18 +652,24 @@ mod disclosure_tests {
         if corrupt_last {
             last[0] ^= 1;
         }
-        let disclosures = supplied.iter().map(|&index| ChunkDisclosure {
-            index,
-            bytes: if index == 0 { &first } else { &last },
-            siblings: &paths[index as usize],
-        }).collect::<Vec<_>>();
+        let disclosures = supplied
+            .iter()
+            .map(|&index| ChunkDisclosure {
+                index,
+                bytes: if index == 0 { &first } else { &last },
+                siblings: &paths[index as usize],
+            })
+            .collect::<Vec<_>>();
         verify_disclosure_for(2, document.len() as u64, &disclosures, requested, &trusted)
     }
 
     #[test]
     fn an_exact_request_accepts_all_or_only_the_explicitly_requested_chunks() {
         let all = check(&[0, 1], &[0, 1], false).unwrap();
-        assert_eq!(all.iter().map(|chunk| chunk.index).collect::<Vec<_>>(), vec![0, 1]);
+        assert_eq!(
+            all.iter().map(|chunk| chunk.index).collect::<Vec<_>>(),
+            vec![0, 1]
+        );
         assert_eq!(all[0].byte_length, DOC_CHUNK_BYTES);
         assert_eq!(all[1].byte_length, 13);
         assert!(all.iter().all(|chunk| chunk.scope == "membership_only"));
@@ -554,11 +692,18 @@ mod disclosure_tests {
             (&[0][..], &[1][..]),
             (&[1][..], &[][..]),
         ] {
-            assert!(matches!(check(requested, supplied, false), Err(DisclosureError::Set { .. })));
+            assert!(matches!(
+                check(requested, supplied, false),
+                Err(DisclosureError::Set { .. })
+            ));
         }
         assert_eq!(
             check(&[0, 1], &[0], false),
-            Err(DisclosureError::Set { position: 1, expected: Some(1), actual: None }),
+            Err(DisclosureError::Set {
+                position: 1,
+                expected: Some(1),
+                actual: None
+            }),
         );
     }
 
@@ -566,15 +711,24 @@ mod disclosure_tests {
     fn empty_noncanonical_and_duplicate_requests_do_not_gain_a_success_grade() {
         assert_eq!(check(&[], &[], false), Err(DisclosureError::EmptyRequest));
         assert_eq!(check(&[], &[0], false), Err(DisclosureError::EmptyRequest));
-        assert_eq!(check(&[0, 0], &[0, 0], false), Err(DisclosureError::RequestOrder));
-        assert_eq!(check(&[1, 0], &[1, 0], false), Err(DisclosureError::RequestOrder));
+        assert_eq!(
+            check(&[0, 0], &[0, 0], false),
+            Err(DisclosureError::RequestOrder)
+        );
+        assert_eq!(
+            check(&[1, 0], &[1, 0], false),
+            Err(DisclosureError::RequestOrder)
+        );
     }
 
     #[test]
     fn a_bad_later_chunk_fails_the_entire_disclosure_after_a_valid_first_chunk() {
         assert_eq!(
             check(&[0, 1], &[0, 1], true),
-            Err(DisclosureError::Chunk { index: 1, error: ChunkProofError::Commitment }),
+            Err(DisclosureError::Chunk {
+                index: 1,
+                error: ChunkProofError::Commitment
+            }),
         );
     }
 }

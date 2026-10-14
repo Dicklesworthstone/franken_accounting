@@ -2,10 +2,10 @@
 //!
 //! [`Book`] creates and opens memory or persisted books on FrankenGraphDB,
 //! installs charts, transitions periods, admits postings, folds historical
-//! reports, and verifies derived registers. It also publishes unsigned entry
-//! accumulator checkpoints under witness authority and recomputes their
-//! journal prefixes. These checkpoints do not certify later postings or
-//! document receipts.
+//! reports, and verifies derived registers. It also publishes signed entry
+//! accumulator checkpoints under witness authority, recomputes their journal
+//! prefixes, and produces evidence bundles with detached production receipts.
+//! Checkpoints cover their recorded prefixes, not later postings.
 //!
 //! [`AsyncBook`] takes the caller's purpose contexts and filesystem; [`Book`]
 //! supplies a production runtime and delegates to the same implementation.
@@ -45,8 +45,7 @@
 //! [`CashFlowCertificate`] binds explicit cash classifications and exact output
 //! to a retained native ledger closure. Replay checks current authority and the
 //! recipient's independently selected fixed scope and classification inputs.
-//! Sessions, drafts, signed transparency
-//! checkpoints and bundles remain later slices of the embedded API described
+//! Sessions and drafts remain later slices of the embedded API described
 //! in `COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md` (§15.2).
 
 #![forbid(unsafe_code)]
@@ -87,10 +86,8 @@ pub use async_book::AsyncBook;
 pub use balance_allocation::{
     BalanceAllocationRequest, MAX_BALANCE_ALLOCATION_CONTRIBUTIONS, PreparedBalanceAllocation,
 };
-pub use balance_allocation_review::{
-    BalanceAllocationReview, MAX_BALANCE_ALLOCATION_REVIEW_BYTES,
-};
-pub use book::{Book, BookError, BookKeys, Entropy, Outcome};
+pub use balance_allocation_review::{BalanceAllocationReview, MAX_BALANCE_ALLOCATION_REVIEW_BYTES};
+pub use book::{Book, BookError, BookKeys, Entropy, Outcome, ProducedBundle, ReadScope};
 pub use cash_flow_certificate::{
     CASH_FLOW_CERTIFICATE_FORMAT, CashFlowCertificate, CertifiedCashFlow,
     MAX_CASH_FLOW_CERTIFICATE_BYTES,
@@ -104,7 +101,9 @@ pub use document_disclosure::{DisclosureAccess, DocumentDisclosureArtifact};
 pub use evidence_disclosure::{EvidenceDisclosureArtifact, EvidenceDisclosureRequest};
 pub use fa_intents::{IntentError, MAX_PLAN_BYTES, PlanCertificate, PostIntent, PostPlan};
 pub use fa_journal::{AllocationPosting, InstantSelection, UploadRequest};
-pub use fa_notary::{AccumulatorVerification, Checkpointed};
+pub use fa_notary::{
+    AccumulatorVerification, BalanceRequest, BundleRequest, BundleScope, Checkpointed, ScopeRequest,
+};
 pub use fa_policy::{Capability, Op, Profile};
 pub use fa_registers::Advance;
 pub use fa_registers::open_items::OpenItemsReport;
@@ -117,23 +116,22 @@ pub use general_ledger::{
     MAX_GENERAL_LEDGER_BYTES, MAX_GENERAL_LEDGER_CELLS, MAX_GENERAL_LEDGER_LINES,
 };
 pub use indirect_cash_flow::{
-    AdjustmentCategory, AdjustmentSign, CertifiedIndirectCashFlow, INDIRECT_CASH_FLOW_FORMAT,
-    INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT, IndirectCashFlow, IndirectCashFlowCertificate,
-    IndirectCashFlowAdjustment, IndirectCashFlowContribution, IndirectCashFlowDefinition,
-    IndirectCashFlowRequest, IndirectCashFlowUnit, MAX_INDIRECT_CASH_FLOW_BYTES,
-    MAX_INDIRECT_CASH_FLOW_CERTIFICATE_BYTES,
+    AdjustmentCategory, AdjustmentSign, CertifiedIndirectCashFlow,
+    INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT, INDIRECT_CASH_FLOW_FORMAT, IndirectCashFlow,
+    IndirectCashFlowAdjustment, IndirectCashFlowCertificate, IndirectCashFlowContribution,
+    IndirectCashFlowDefinition, IndirectCashFlowRequest, IndirectCashFlowUnit,
+    MAX_INDIRECT_CASH_FLOW_BYTES, MAX_INDIRECT_CASH_FLOW_CERTIFICATE_BYTES,
 };
 pub use proof::{MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest};
 pub use roll_forward::{RollForward, RollForwardRequest};
 pub use settlement::{PreparedSettlement, SettlementPostPlan, SettlementPostRequest};
 pub use settlement_group::{
     MAX_SETTLEMENT_GROUP_LEGS, MAX_SETTLEMENT_GROUP_TARGETS, PreparedSettlementGroup,
-    SettlementGroupPostPlan, SettlementGroupRequest, SettlementLegAllocation, SettlementLegSelection,
+    SettlementGroupPostPlan, SettlementGroupRequest, SettlementLegAllocation,
+    SettlementLegSelection,
 };
 pub use settlement_group_review::{MAX_SETTLEMENT_GROUP_REVIEW_BYTES, SettlementGroupReview};
-pub use settlement_review::{
-    MAX_SETTLEMENT_REVIEW_BYTES, SettlementReview, SettlementReviewError,
-};
+pub use settlement_review::{MAX_SETTLEMENT_REVIEW_BYTES, SettlementReview, SettlementReviewError};
 pub use statement_diff::{
     CertifiedStatementDiff, MAX_STATEMENT_DIFF_CERTIFICATE_BYTES, StatementDiff,
     StatementDiffCertificate, StatementDiffRequest, StatementLineChange, StatementMappingChange,
@@ -141,8 +139,8 @@ pub use statement_diff::{
 pub use statement_diff_workpaper::{MAX_STATEMENT_DIFF_WORKPAPER_BYTES, StatementDiffWorkpaper};
 pub use statement_trace::{
     CertifiedStatementTrace, MAX_STATEMENT_TRACE_BYTES, MAX_STATEMENT_TRACE_CERTIFICATE_BYTES,
-    MAX_STATEMENT_TRACE_PUBLICATIONS, StatementEntryEvent,
-    StatementEntryLink, StatementPublication, StatementTrace, StatementTraceCertificate, StatementTraceRequest,
+    MAX_STATEMENT_TRACE_PUBLICATIONS, StatementEntryEvent, StatementEntryLink,
+    StatementPublication, StatementTrace, StatementTraceCertificate, StatementTraceRequest,
 };
 pub use statements::{CertifiedStatement, StatementSelection};
 pub use summary::{SummaryGroup, SummaryRequest, SummaryScope, SummaryTrialBalance};

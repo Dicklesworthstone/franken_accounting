@@ -151,29 +151,46 @@ impl SummaryCertificate {
             || self.source.time_selection.is_some()
             || !matches!(&self.source.selection, ReportSelection::TrialBalance(_))
         {
-            return Err(invalid("a v1 summary needs a sequence-selected trunk trial-balance source"));
+            return Err(invalid(
+                "a v1 summary needs a sequence-selected trunk trial-balance source",
+            ));
         }
         if canonical_scope(&self.scope)? != self.scope {
             return Err(invalid("noncanonical summary root order"));
         }
-        let source = self.source.canonical_bytes().map_err(|e| invalid(e.to_string()))?;
+        let source = self
+            .source
+            .canonical_bytes()
+            .map_err(|e| invalid(e.to_string()))?;
         // A ReportCertificate's public fields can be changed by an embedding.
         // Its encoder is not validation. Use the existing bounded decoder to
         // check its own complete closure, selector and both stored digests.
         ReportCertificate::decode(&source)?;
         let scope_bytes = match &self.scope {
             SummaryScope::AllRoots => 1,
-            SummaryScope::Selected(roots) => roots.len().checked_mul(16)
+            SummaryScope::Selected(roots) => roots
+                .len()
+                .checked_mul(16)
                 .and_then(|length| length.checked_add(5))
                 .ok_or_else(|| invalid("summary selector length overflow"))?,
         };
-        let size = [4, CERTIFICATE_FORMAT.len(), 4, source.len(), scope_bytes,
-            4, self.output.len(), 32]
-            .into_iter()
-            .try_fold(0usize, |total, part| total.checked_add(part))
-            .ok_or_else(|| invalid("summary certificate length overflow"))?;
+        let size = [
+            4,
+            CERTIFICATE_FORMAT.len(),
+            4,
+            source.len(),
+            scope_bytes,
+            4,
+            self.output.len(),
+            32,
+        ]
+        .into_iter()
+        .try_fold(0usize, |total, part| total.checked_add(part))
+        .ok_or_else(|| invalid("summary certificate length overflow"))?;
         if size > MAX_SUMMARY_CERTIFICATE_BYTES {
-            return Err(invalid("summary certificate exceeds the 64 MiB total format limit"));
+            return Err(invalid(
+                "summary certificate exceeds the 64 MiB total format limit",
+            ));
         }
         let mut w = Writer::with_capacity(size);
         w.bytes(CERTIFICATE_FORMAT).bytes(&source);
@@ -182,7 +199,11 @@ impl SummaryCertificate {
         w.finish().map_err(|e| invalid(e.to_string()))
     }
 
-    fn seal(source: ReportCertificate, scope: SummaryScope, output: Vec<u8>) -> Result<Self, Refusal> {
+    fn seal(
+        source: ReportCertificate,
+        scope: SummaryScope,
+        output: Vec<u8>,
+    ) -> Result<Self, Refusal> {
         let mut value = Self {
             source,
             scope: canonical_scope(&scope)?,
@@ -206,23 +227,37 @@ impl SummaryCertificate {
 
     pub fn decode(bytes: &[u8]) -> Result<Self, Refusal> {
         if bytes.len() > MAX_SUMMARY_CERTIFICATE_BYTES {
-            return Err(invalid("summary certificate exceeds the 64 MiB total format limit"));
+            return Err(invalid(
+                "summary certificate exceeds the 64 MiB total format limit",
+            ));
         }
         let read = || -> Result<Self, Refusal> {
-            let malformed = |error: DecodeError| invalid(format!("malformed summary certificate: {error}"));
+            let malformed =
+                |error: DecodeError| invalid(format!("malformed summary certificate: {error}"));
             let mut r = Reader::new(bytes);
-            if r.bytes(64, "summary certificate format").map_err(malformed)? != CERTIFICATE_FORMAT {
+            if r.bytes(64, "summary certificate format")
+                .map_err(malformed)?
+                != CERTIFICATE_FORMAT
+            {
                 return Err(invalid("unsupported summary certificate format"));
             }
-            let source_bytes = r.bytes(MAX_SUMMARY_CERTIFICATE_BYTES, "source certificate")
+            let source_bytes = r
+                .bytes(MAX_SUMMARY_CERTIFICATE_BYTES, "source certificate")
                 .map_err(malformed)?;
             let source = ReportCertificate::decode(source_bytes)?;
             let scope = read_scope(&mut r).map_err(malformed)?;
-            let output = r.bytes(MAX_SUMMARY_CERTIFICATE_BYTES, "summary output")
-                .map_err(malformed)?.to_vec();
+            let output = r
+                .bytes(MAX_SUMMARY_CERTIFICATE_BYTES, "summary output")
+                .map_err(malformed)?
+                .to_vec();
             let digest = r.fixed("summary certificate digest").map_err(malformed)?;
             r.finish().map_err(malformed)?;
-            Ok(Self { source, scope, output, digest })
+            Ok(Self {
+                source,
+                scope,
+                output,
+                digest,
+            })
         };
         let value = read()?;
         // In addition to checking the digest, reject any alternate encoding.
@@ -252,14 +287,13 @@ fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
     produce: bool,
 ) -> Outcome<()> {
     let context = book.context();
-    let admitted = fa_policy::admit_read(capability, principal, context.book_id)
-        .and_then(|()| {
-            if produce {
-                fa_policy::require(capability, Op::Produce, "certifying summary reports")
-            } else {
-                Ok(())
-            }
-        });
+    let admitted = fa_policy::admit_read(capability, principal, context.book_id).and_then(|()| {
+        if produce {
+            fa_policy::require(capability, Op::Produce, "certifying summary reports")
+        } else {
+            Ok(())
+        }
+    });
     if let Err(denial) = admitted {
         return Ok(Err(fa_journal::policy::refusal(&denial)));
     }
@@ -270,7 +304,9 @@ fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
         if let Err(denial) = fa_policy::current(capability, head) {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
-        Ok(fa_journal::policy::capability_admitted(&book.db, context, capability)?)
+        Ok(fa_journal::policy::capability_admitted(
+            &book.db, context, capability,
+        )?)
     })
 }
 
@@ -298,16 +334,23 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(refusal) => return Ok(Err(refusal)),
         };
         let selection = match &request.selection {
-            TrialBalanceSelection::Periods(_) => TrialBalanceSelection::Periods(report.source.periods.clone()),
-            TrialBalanceSelection::Activity(_) => TrialBalanceSelection::Activity(report.source.periods.clone()),
+            TrialBalanceSelection::Periods(_) => {
+                TrialBalanceSelection::Periods(report.source.periods.clone())
+            }
+            TrialBalanceSelection::Activity(_) => {
+                TrialBalanceSelection::Activity(report.source.periods.clone())
+            }
             TrialBalanceSelection::AsOf(day) => TrialBalanceSelection::AsOf(*day),
         };
-        let certified = match self.certify_trial_balance(cx, selection, Some(report.source.known_at))? {
-            Ok(source) => source,
-            Err(refusal) => return Ok(Err(refusal)),
-        };
+        let certified =
+            match self.certify_trial_balance(cx, selection, Some(report.source.known_at))? {
+                Ok(source) => source,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
         if certified.report != report.source {
-            return Ok(Err(invalid("summary and certified source do not reproduce the same leaf fold")));
+            return Ok(Err(invalid(
+                "summary and certified source do not reproduce the same leaf fold",
+            )));
         }
         let output = report.canonical_bytes().map_err(encoding)?;
         let certificate = match SummaryCertificate::seal(certified.certificate, scope, output) {
@@ -315,7 +358,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(refusal) => return Ok(Err(refusal)),
         };
         cx.query().checkpoint().map_err(BookError::Context)?;
-        Ok(Ok(CertifiedSummaryTrialBalance { report, certificate }))
+        Ok(Ok(CertifiedSummaryTrialBalance {
+            report,
+            certificate,
+        }))
     }
 
     /// Check the source's retained historical reads and exact leaf fold,
@@ -350,8 +396,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(report) => report,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        if report.source != source || report.canonical_bytes().map_err(encoding)? != certificate.output {
-            return Ok(Err(invalid("summary membership or exact output differs from the certificate")));
+        if report.source != source
+            || report.canonical_bytes().map_err(encoding)? != certificate.output
+        {
+            return Ok(Err(invalid(
+                "summary membership or exact output differs from the certificate",
+            )));
         }
         cx.query().checkpoint().map_err(BookError::Context)?;
         Ok(Ok(report))
@@ -431,10 +481,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         certificate: &SummaryCertificate,
     ) -> Outcome<SummaryCertificateStatus> {
-        let original = match self.replay_summary_trial_balance(cx, principal, capability, certificate)? {
-            Ok(report) => report,
-            Err(refusal) => return Ok(Err(refusal)),
-        };
+        let original =
+            match self.replay_summary_trial_balance(cx, principal, capability, certificate)? {
+                Ok(report) => report,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
         let mut request = match certificate.request() {
             Ok(request) => request,
             Err(refusal) => return Ok(Err(refusal)),

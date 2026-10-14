@@ -36,8 +36,7 @@ const MINOR: u16 = 0;
 // 18 bytes and each allocation 66; the remaining allowance covers framing.
 /// Binary transport bound derived from the existing Entry and settlement limits.
 /// Hex or other transport encodings must enforce their own expansion bound.
-pub const MAX_SETTLEMENT_REVIEW_BYTES: usize =
-    MAX_ENTRY_BYTES + 128 * MAX_SETTLES_PER_LEG + 4096;
+pub const MAX_SETTLEMENT_REVIEW_BYTES: usize = MAX_ENTRY_BYTES + 128 * MAX_SETTLES_PER_LEG + 4096;
 
 #[derive(Debug)]
 pub enum SettlementReviewError {
@@ -63,13 +62,19 @@ impl fmt::Display for SettlementReviewError {
 }
 impl core::error::Error for SettlementReviewError {}
 impl From<DecodeError> for SettlementReviewError {
-    fn from(e: DecodeError) -> Self { Self::Decode(e) }
+    fn from(e: DecodeError) -> Self {
+        Self::Decode(e)
+    }
 }
 impl From<EncodeError> for SettlementReviewError {
-    fn from(e: EncodeError) -> Self { Self::Encode(e) }
+    fn from(e: EncodeError) -> Self {
+        Self::Encode(e)
+    }
 }
 impl From<IntentError> for SettlementReviewError {
-    fn from(e: IntentError) -> Self { Self::Intent(e) }
+    fn from(e: IntentError) -> Self {
+        Self::Intent(e)
+    }
 }
 
 fn invalid(what: &'static str) -> SettlementReviewError {
@@ -78,7 +83,8 @@ fn invalid(what: &'static str) -> SettlementReviewError {
 fn bounded(bytes: &[u8]) -> Result<(), SettlementReviewError> {
     if bytes.len() > MAX_SETTLEMENT_REVIEW_BYTES {
         return Err(SettlementReviewError::TooLarge {
-            max: MAX_SETTLEMENT_REVIEW_BYTES, actual: bytes.len(),
+            max: MAX_SETTLEMENT_REVIEW_BYTES,
+            actual: bytes.len(),
         });
     }
     Ok(())
@@ -99,7 +105,11 @@ impl PreparedSettlement {
     /// Export this preparation for review and approval in another process.
     /// This does not rehearse the kernel or publish a journal object.
     pub fn export_review(&self) -> Result<SettlementReview, SettlementReviewError> {
-        let mut applying = self.proposal().legs.iter().enumerate()
+        let mut applying = self
+            .proposal()
+            .legs
+            .iter()
+            .enumerate()
             .filter(|(_, leg)| !leg.settles.is_empty());
         let (ordinal, _) = applying.next().ok_or_else(|| invalid("no applying leg"))?;
         if applying.next().is_some() {
@@ -108,7 +118,8 @@ impl PreparedSettlement {
         let review = SettlementReview {
             intent: PostIntent::new(self.proposal().clone(), Vec::new())?,
             allocation: self.allocation().clone(),
-            payment_leg: u16::try_from(ordinal).map_err(|_| invalid("applying ordinal overflow"))?,
+            payment_leg: u16::try_from(ordinal)
+                .map_err(|_| invalid("applying ordinal overflow"))?,
         };
         // Includes Entry's own encoded-size bound, not just the vector counts.
         review.canonical_bytes()?;
@@ -119,59 +130,85 @@ impl PreparedSettlement {
 impl SettlementReview {
     /// The exact sealed proposal an approval must bind, NOT a posting permit.
     #[must_use]
-    pub fn proposal(&self) -> &EntryPayload { self.intent.proposal() }
+    pub fn proposal(&self) -> &EntryPayload {
+        self.intent.proposal()
+    }
 
     /// Claimed review-time observations; decoding does not authenticate them.
     #[must_use]
-    pub fn allocation(&self) -> &SettlementPlan { &self.allocation }
+    pub fn allocation(&self) -> &SettlementPlan {
+        &self.allocation
+    }
 
     #[must_use]
-    pub fn payment_leg(&self) -> u16 { self.payment_leg }
+    pub fn payment_leg(&self) -> u16 {
+        self.payment_leg
+    }
 
     fn validate(&self) -> Result<(), SettlementReviewError> {
         let proposal = self.proposal();
         if !self.intent.approvals().is_empty()
             || !matches!(proposal.class, EntryClass::ORIGINAL | EntryClass::ADJUSTING)
         {
-            return Err(invalid("a review is an unapproved Original or Adjusting intent"));
+            return Err(invalid(
+                "a review is an unapproved Original or Adjusting intent",
+            ));
         }
-        let leg = proposal.legs.get(usize::from(self.payment_leg))
+        let leg = proposal
+            .legs
+            .get(usize::from(self.payment_leg))
             .ok_or_else(|| invalid("applying leg is missing"))?;
-        if proposal.legs.iter().enumerate().any(|(i, l)| {
-            i != usize::from(self.payment_leg) && !l.settles.is_empty()
-        }) {
+        if proposal
+            .legs
+            .iter()
+            .enumerate()
+            .any(|(i, l)| i != usize::from(self.payment_leg) && !l.settles.is_empty())
+        {
             return Err(invalid("applications on a different leg"));
         }
         let request = &self.allocation.request;
-        if leg.amount.mantissa <= 0 || request.account != leg.account_ref
-            || request.unit_id != leg.amount.unit.0 || request.side != leg.side
+        if leg.amount.mantissa <= 0
+            || request.account != leg.account_ref
+            || request.unit_id != leg.amount.unit.0
+            || request.side != leg.side
             || request.amount != leg.amount.mantissa
             || request.effective_date != proposal.effective_date
         {
             return Err(invalid("allocation request differs from the applying leg"));
         }
-        if request.targets.is_empty() || request.targets.len() > MAX_SETTLES_PER_LEG
+        if request.targets.is_empty()
+            || request.targets.len() > MAX_SETTLES_PER_LEG
             || !request.targets.windows(2).all(|pair| pair[0] < pair[1])
         {
-            return Err(invalid("targets must be bounded, nonempty and strictly ascending"));
+            return Err(invalid(
+                "targets must be bounded, nonempty and strictly ascending",
+            ));
         }
         let parts = &self.allocation.allocations;
-        if parts.is_empty() || parts.len() > MAX_SETTLES_PER_LEG || parts.len() != leg.settles.len() {
+        if parts.is_empty() || parts.len() > MAX_SETTLES_PER_LEG || parts.len() != leg.settles.len()
+        {
             return Err(invalid("allocations must match the nonempty applying list"));
         }
         let mut seen = BTreeSet::new();
         let mut total = 0_i128;
         for (part, link) in parts.iter().zip(&leg.settles) {
             let target = (part.entry, part.ordinal);
-            if !seen.insert(target) || request.targets.binary_search(&target).is_err()
+            if !seen.insert(target)
+                || request.targets.binary_search(&target).is_err()
                 || target != (link.target.vid, link.ordinal)
-                || link.amount.unit != leg.amount.unit || part.amount != link.amount.mantissa
-                || part.amount <= 0 || part.open_before < part.amount
+                || link.amount.unit != leg.amount.unit
+                || part.amount != link.amount.mantissa
+                || part.amount <= 0
+                || part.open_before < part.amount
                 || part.open_before.checked_sub(part.amount) != Some(part.open_after)
             {
-                return Err(invalid("allocation/link identity, unit or open-amount mismatch"));
+                return Err(invalid(
+                    "allocation/link identity, unit or open-amount mismatch",
+                ));
             }
-            total = total.checked_add(part.amount).ok_or_else(|| invalid("allocation sum overflow"))?;
+            total = total
+                .checked_add(part.amount)
+                .ok_or_else(|| invalid("allocation sum overflow"))?;
         }
         if total > request.amount
             || request.amount.checked_sub(total) != Some(self.allocation.unapplied)
@@ -187,14 +224,21 @@ impl SettlementReview {
         self.validate()?;
         let intent = self.intent.canonical_bytes()?;
         let mut w = Writer::new();
-        w.fixed(MAGIC).u16(MAJOR).u16(MINOR)
-            .u64(self.allocation.known_at.0).u16(self.payment_leg).bytes(&intent)
+        w.fixed(MAGIC)
+            .u16(MAJOR)
+            .u16(MINOR)
+            .u64(self.allocation.known_at.0)
+            .u16(self.payment_leg)
+            .bytes(&intent)
             .list(&self.allocation.request.targets, |w, (entry, ordinal)| {
                 w.u128(entry.0).u16(*ordinal);
             })
             .list(&self.allocation.allocations, |w, part| {
-                w.u128(part.entry.0).u16(part.ordinal).i128(part.amount)
-                    .i128(part.open_before).i128(part.open_after);
+                w.u128(part.entry.0)
+                    .u16(part.ordinal)
+                    .i128(part.amount)
+                    .i128(part.open_before)
+                    .i128(part.open_after);
             })
             .i128(self.allocation.unapplied);
         let bytes = w.finish()?;
@@ -232,15 +276,27 @@ impl SettlementReview {
         let unapplied = r.i128("review.unapplied")?;
         r.finish()?;
         let proposal = intent.proposal();
-        let leg = proposal.legs.get(usize::from(payment_leg))
+        let leg = proposal
+            .legs
+            .get(usize::from(payment_leg))
             .ok_or_else(|| invalid("applying leg is missing"))?;
         let request = SettlementRequest {
-            account: leg.account_ref, unit_id: leg.amount.unit.0, side: leg.side,
-            amount: leg.amount.mantissa, effective_date: proposal.effective_date, targets,
+            account: leg.account_ref,
+            unit_id: leg.amount.unit.0,
+            side: leg.side,
+            amount: leg.amount.mantissa,
+            effective_date: proposal.effective_date,
+            targets,
         };
         let review = Self {
-            intent, payment_leg,
-            allocation: SettlementPlan { known_at, request, allocations, unapplied },
+            intent,
+            payment_leg,
+            allocation: SettlementPlan {
+                known_at,
+                request,
+                allocations,
+                unapplied,
+            },
         };
         review.validate()?;
         Ok(review)
@@ -249,7 +305,10 @@ impl SettlementReview {
     /// Content identity for an independently saved review, not a signature,
     /// native ObjectId or ApprovalRef. Compare with a separately trusted digest.
     pub fn digest(&self) -> Result<[u8; 32], SettlementReviewError> {
-        Ok(fa_model::domain_digest(b"fa:settlement-review:v1", &[&self.canonical_bytes()?]))
+        Ok(fa_model::domain_digest(
+            b"fa:settlement-review:v1",
+            &[&self.canonical_bytes()?],
+        ))
     }
 
     fn request(&self) -> Result<SettlementPostRequest, SettlementReviewError> {
@@ -257,7 +316,8 @@ impl SettlementReview {
         let mut proposal = self.proposal().clone();
         proposal.legs[usize::from(self.payment_leg)].settles.clear();
         Ok(SettlementPostRequest {
-            proposal, payment_leg: self.payment_leg,
+            proposal,
+            payment_leg: self.payment_leg,
             targets: self.allocation.request.targets.clone(),
         })
     }
@@ -265,7 +325,8 @@ impl SettlementReview {
 
 fn changed() -> Refusal {
     Refusal::new(
-        fa_journal::refusal::code::PLAN_INVALIDATED, exit::CONFLICT,
+        fa_journal::refusal::code::PLAN_INVALIDATED,
+        exit::CONFLICT,
         "the current settlement no longer matches the saved review",
         "plan §5.7 / §10.4 / §14.3 (exact reviewed proposal and current approval applicability)",
         "review a fresh settlement and obtain any newly required approvals; after an attempted commit retry its original PostPlan instead",
@@ -290,11 +351,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     ) -> Outcome<PreparedSettlement> {
         let request = match review.request() {
             Ok(request) => request,
-            Err(error) => return Ok(Err(Refusal::new(
-                fa_journal::refusal::code::STRUCTURE, exit::USAGE, error.to_string(),
-                "fa:settlement-review:v1 (bounded canonical request)",
-                "load an unchanged review exported from settlement preparation",
-            ))),
+            Err(error) => {
+                return Ok(Err(Refusal::new(
+                    fa_journal::refusal::code::STRUCTURE,
+                    exit::USAGE,
+                    error.to_string(),
+                    "fa:settlement-review:v1 (bounded canonical request)",
+                    "load an unchanged review exported from settlement preparation",
+                )));
+            }
         };
         let prepared = match self.prepare_settlement(cx, request, capability)? {
             Ok(prepared) => prepared,

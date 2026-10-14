@@ -22,6 +22,7 @@
 #![forbid(unsafe_code)]
 
 pub mod evidence;
+pub mod lantern;
 pub mod sod;
 pub mod statements;
 mod temporal;
@@ -348,6 +349,7 @@ pub mod code {
     pub const NOT_A_LEAF: &str = "FA-REF-002";
     pub const UNIT_POLICY: &str = "FA-REF-003";
     pub const UNKNOWN_ACCOUNT: &str = "FA-REF-004";
+    pub const UNIT_UNREGISTERED: &str = "FA-REF-154";
     pub const PERIOD_LAW: &str = "FA-REF-010";
     pub const SOD: &str = "FA-REF-008";
     pub const CAPABILITY: &str = "FA-REF-011";
@@ -714,6 +716,9 @@ pub struct Oracle {
     schedules: BTreeMap<usize, ScheduleState>,
     /// The book's declared legal entities (plan §4.1 `Book.entities`).
     entities: Vec<String>,
+    /// Registered unit ids: units.toml, which genesis journals as the
+    /// book's unit table (plan §4.4).
+    units: BTreeSet<u32>,
     /// The reversal sweep's position: (tick index, last target examined).
     schedule_cursor: Option<(usize, usize)>,
     /// Migration runs, by opening order (plan §8.6).
@@ -735,6 +740,9 @@ pub struct Oracle {
     revoked: BTreeSet<u64>,
     /// The security policy epoch: the number of activations so far.
     epoch: u64,
+    /// True only while the model mints its own scheduled reversal: the one
+    /// path that may cite ScheduledAccrualReversal (fa-cvg).
+    minting_scheduled: bool,
 }
 
 impl Oracle {
@@ -758,6 +766,11 @@ impl Oracle {
             tz_declared: false,
             schedules: BTreeMap::new(),
             entities: Vec::new(),
+            units: fa_registry::units_embedded()
+                .expect("units.toml")
+                .into_iter()
+                .map(|u| u.id)
+                .collect(),
             schedule_cursor: None,
             runs: Vec::new(),
             run_keys: BTreeMap::new(),
@@ -770,6 +783,7 @@ impl Oracle {
             sod,
             revoked: BTreeSet::new(),
             epoch: 0,
+            minting_scheduled: false,
         }
     }
 
@@ -1158,7 +1172,10 @@ impl Oracle {
             resolves: None,
             settles: Vec::new(),
         };
-        match self.post_inner(&intent, None, None, None, None, &PostClaims::default()) {
+        self.minting_scheduled = true;
+        let minted = self.post_inner(&intent, None, None, None, None, &PostClaims::default());
+        self.minting_scheduled = false;
+        match minted {
             Verdict::Posted { index, .. } => {
                 if let Some((_, content)) = self.reversed.get_mut(&target) {
                     content.by_sweep = true;
@@ -1445,7 +1462,8 @@ impl Oracle {
         if !shape_ok
             || intent.key.is_empty()
             || intent.key.len() > 64
-            || intent.legs.iter().any(|l| l.mantissa < 0)
+            // A leg moves a positive amount (plan §4.4): never negative, never zero.
+            || intent.legs.iter().any(|l| l.mantissa <= 0)
         {
             return Verdict::Refused {
                 code: code::STRUCTURE,
@@ -1685,10 +1703,13 @@ impl Oracle {
         if is_reversal {
             let reasons =
                 fa_registry::reason_codes::ReasonCodes::embedded().expect("reason registry");
-            if !reasons
-                .rows
-                .iter()
-                .any(|row| row.scope == "supersession" && row.code == intent.supersession_reason)
+            let reserved = intent.supersession_reason
+                == fa_registry::reason_codes::SCHEDULED_ACCRUAL_REVERSAL
+                && !self.minting_scheduled;
+            if reserved
+                || !reasons.rows.iter().any(|row| {
+                    row.scope == "supersession" && row.code == intent.supersession_reason
+                })
             {
                 return Verdict::Refused {
                     code: code::SUPERSESSION_REASON,
@@ -1736,9 +1757,14 @@ impl Oracle {
                 };
             }
         }
-        // 5. Period law against the period's current state (Future when
-        //    never created) and its born kind: a Historical period admits
-        //    only Migration.
+        // 5. Period law against the period's current state and its born
+        //    kind: a Historical period admits only Migration. A period the
+        //    calendar defines but nobody created admits nothing.
+        if !self.periods.contains_key(&period) {
+            return Verdict::Refused {
+                code: code::PERIOD_UNKNOWN,
+            };
+        }
         let born = self.periods.get(&period).map(|(d, _)| d.kind);
         if let Some(rule) = born.and_then(|k| self.matrix.kind_rule(k))
             && !rule.admits(&intent.class)
@@ -1796,6 +1822,11 @@ impl Oracle {
             if !a.is_leaf {
                 return Verdict::Refused {
                     code: code::NOT_A_LEAF,
+                };
+            }
+            if !self.units.contains(&l.unit) {
+                return Verdict::Refused {
+                    code: code::UNIT_UNREGISTERED,
                 };
             }
             if a.unit.is_some_and(|u| u != l.unit) {
@@ -2961,6 +2992,26 @@ mod tests {
             o.post(&intent("Original", legs(5, 4), b"b", None)),
             Verdict::Refused {
                 code: code::UNBALANCED
+            }
+        );
+        // fa-ih4: a fiscal year nobody created, and a unit id units.toml
+        // does not register, are refusals of their own.
+        let mut ahead = intent("Original", legs(5, 5), b"ahead", None);
+        ahead.date = DateDay::from_ymd(2028, 2, 10).unwrap();
+        assert_eq!(
+            o.post(&ahead),
+            Verdict::Refused {
+                code: code::PERIOD_UNKNOWN
+            }
+        );
+        let mut raw = intent("Original", legs(5, 5), b"raw-unit", None);
+        for leg in &mut raw.legs {
+            leg.unit = 4242;
+        }
+        assert_eq!(
+            o.post(&raw),
+            Verdict::Refused {
+                code: code::UNIT_UNREGISTERED
             }
         );
         assert_eq!(

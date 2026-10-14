@@ -211,12 +211,14 @@ fn selected_roots(chart: &ChartSnapshot, scope: &SummaryScope) -> Result<Vec<VId
         let account = chart.accounts().get(root).ok_or_else(|| {
             selection_refusal(format!(
                 "account {:032x} is absent at sequence {}",
-                root.0, chart.known_at().0
+                root.0,
+                chart.known_at().0
             ))
         })?;
         if !selected.insert(*root) {
             return Err(selection_refusal(format!(
-                "account `{}` was selected more than once", account.code
+                "account `{}` was selected more than once",
+                account.code
             )));
         }
     }
@@ -226,7 +228,8 @@ fn selected_roots(chart: &ChartSnapshot, scope: &SummaryScope) -> Result<Vec<VId
             if selected.contains(&parent) {
                 return Err(selection_refusal(format!(
                     "selected accounts `{}` and `{}` overlap: one is an ancestor of the other",
-                    chart.accounts()[&parent].code, chart.accounts()[root].code
+                    chart.accounts()[&parent].code,
+                    chart.accounts()[root].code
                 )));
             }
             ancestor = chart.parents().get(&parent).copied();
@@ -234,7 +237,10 @@ fn selected_roots(chart: &ChartSnapshot, scope: &SummaryScope) -> Result<Vec<VId
     }
     let mut roots = roots;
     roots.sort_by(|a, b| {
-        chart.accounts()[a].code.cmp(&chart.accounts()[b].code).then(a.cmp(b))
+        chart.accounts()[a]
+            .code
+            .cmp(&chart.accounts()[b].code)
+            .then(a.cmp(b))
     });
     Ok(roots)
 }
@@ -245,7 +251,10 @@ fn corruption(message: impl Into<String>) -> RegisterError {
 
 fn add(values: &mut [i128; 4], row: &TbRow) -> Result<(), RegisterError> {
     for (slot, amount) in values.iter_mut().zip([
-        row.debits, row.credits, row.debits_pending, row.credits_pending,
+        row.debits,
+        row.credits,
+        row.debits_pending,
+        row.credits_pending,
     ]) {
         if amount < 0 {
             return Err(corruption("negative gross debit or credit in source fold"));
@@ -269,13 +278,18 @@ fn aggregate(
     roots: &[VId],
 ) -> Result<SummaryTrialBalance, RegisterError> {
     if chart.known_at() != source.known_at {
-        return Err(corruption("chart and source use different historical frontiers"));
+        return Err(corruption(
+            "chart and source use different historical frontiers",
+        ));
     }
     let mut groups = Vec::with_capacity(roots.len());
     let mut owners = BTreeMap::new();
     for (index, root) in roots.iter().enumerate() {
-        let account = chart.accounts().get(root)
-            .ok_or_else(|| corruption("selected root disappeared"))?.clone();
+        let account = chart
+            .accounts()
+            .get(root)
+            .ok_or_else(|| corruption("selected root disappeared"))?
+            .clone();
         let leaf_ids = chart.leaves_under(*root)?;
         let mut leaves = Vec::with_capacity(leaf_ids.len());
         for vid in leaf_ids {
@@ -285,7 +299,11 @@ fn aggregate(
             leaves.push(chart.accounts()[&vid].clone());
         }
         leaves.sort_by(|a, b| a.code.cmp(&b.code));
-        groups.push(SummaryGroup { account, leaves, rows: Vec::new() });
+        groups.push(SummaryGroup {
+            account,
+            leaves,
+            rows: Vec::new(),
+        });
     }
     let mut all_sums: BTreeMap<u32, [i128; 4]> = BTreeMap::new();
     let mut selected_sums: BTreeMap<u32, [i128; 4]> = BTreeMap::new();
@@ -293,14 +311,20 @@ fn aggregate(
     let mut seen = BTreeSet::new();
     for row in &source.rows {
         let account = chart.accounts().get(&row.account).ok_or_else(|| {
-            corruption(format!("source leaf `{}` is absent from the chart", row.code))
+            corruption(format!(
+                "source leaf `{}` is absent from the chart",
+                row.code
+            ))
         })?;
-        if !account.is_leaf || account.code != row.code || account.name != row.name
+        if !account.is_leaf
+            || account.code != row.code
+            || account.name != row.name
             || account.account_type != row.account_type.0
             || !seen.insert((row.account, row.unit_id))
         {
             return Err(corruption(format!(
-                "duplicate, nonleaf or mismatched source row `{}`", row.code
+                "duplicate, nonleaf or mismatched source row `{}`",
+                row.code
             )));
         }
         add(all_sums.entry(row.unit_id).or_insert([0; 4]), row)?;
@@ -311,50 +335,87 @@ fn aggregate(
     }
     let (posted, pending) = totals(&all_sums);
     if posted != source.unit_totals || pending != source.pending_unit_totals {
-        return Err(corruption("source rows do not reconcile to whole-book totals"));
+        return Err(corruption(
+            "source rows do not reconcile to whole-book totals",
+        ));
     }
     for (group, sums) in groups.iter_mut().zip(group_sums) {
-        group.rows = sums.into_iter().map(|(unit_id, v)| TbRow {
-            account: group.account.vid,
-            code: group.account.code.clone(),
-            name: group.account.name.clone(),
-            account_type: AccountType(group.account.account_type),
-            unit_id,
-            debits: v[0],
-            credits: v[1],
-            debits_pending: v[2],
-            credits_pending: v[3],
-        }).collect();
+        group.rows = sums
+            .into_iter()
+            .map(|(unit_id, v)| TbRow {
+                account: group.account.vid,
+                code: group.account.code.clone(),
+                name: group.account.name.clone(),
+                account_type: AccountType(group.account.account_type),
+                unit_id,
+                debits: v[0],
+                credits: v[1],
+                debits_pending: v[2],
+                credits_pending: v[3],
+            })
+            .collect();
     }
-    let mut uncovered_leaves: Vec<_> = chart.accounts().values()
+    let mut uncovered_leaves: Vec<_> = chart
+        .accounts()
+        .values()
         .filter(|account| account.is_leaf && !owners.contains_key(&account.vid))
-        .cloned().collect();
+        .cloned()
+        .collect();
     uncovered_leaves.sort_by(|a, b| a.code.cmp(&b.code));
     let (unit_totals, pending_unit_totals) = totals(&selected_sums);
     Ok(SummaryTrialBalance {
-        book_id, source, groups, uncovered_leaves, unit_totals, pending_unit_totals,
+        book_id,
+        source,
+        groups,
+        uncovered_leaves,
+        unit_totals,
+        pending_unit_totals,
     })
 }
 
 fn write_row(w: &mut Writer, row: &TbRow) {
-    w.u128(row.account.0).str(&row.code).str(&row.name).u8(row.account_type.0)
-        .u32(row.unit_id).i128(row.debits).i128(row.credits)
-        .i128(row.debits_pending).i128(row.credits_pending);
+    w.u128(row.account.0)
+        .str(&row.code)
+        .str(&row.name)
+        .u8(row.account_type.0)
+        .u32(row.unit_id)
+        .i128(row.debits)
+        .i128(row.credits)
+        .i128(row.debits_pending)
+        .i128(row.credits_pending);
 }
 
 fn write_account(w: &mut Writer, account: &AccountRow) {
-    w.u128(account.vid.0).str(&account.code).str(&account.name)
-        .u8(account.account_type).u8(account.normal_balance).bool(account.is_leaf);
+    w.u128(account.vid.0)
+        .str(&account.code)
+        .str(&account.name)
+        .u8(account.account_type)
+        .u8(account.normal_balance)
+        .bool(account.is_leaf);
     match account.unit_policy {
-        UnitPolicy::Single(unit) => { w.u8(0).u32(unit.0); }
-        UnitPolicy::AnyCurrency => { w.u8(1); }
-        UnitPolicy::AnyUnit => { w.u8(2); }
+        UnitPolicy::Single(unit) => {
+            w.u8(0).u32(unit.0);
+        }
+        UnitPolicy::AnyCurrency => {
+            w.u8(1);
+        }
+        UnitPolicy::AnyUnit => {
+            w.u8(2);
+        }
     }
     w.opt(account.limit.as_ref(), |w, limit| {
-        w.opt(limit.lower.as_ref(), |w, value| { w.i128(*value); })
-            .opt(limit.upper.as_ref(), |w, value| { w.i128(*value); })
-            .u8(match limit.scope { LimitScope::Lifetime => 0, LimitScope::Period => 1 });
-    }).u64(account.created_at.0);
+        w.opt(limit.lower.as_ref(), |w, value| {
+            w.i128(*value);
+        })
+        .opt(limit.upper.as_ref(), |w, value| {
+            w.i128(*value);
+        })
+        .u8(match limit.scope {
+            LimitScope::Lifetime => 0,
+            LimitScope::Period => 1,
+        });
+    })
+    .u64(account.created_at.0);
 }
 
 #[cfg(test)]

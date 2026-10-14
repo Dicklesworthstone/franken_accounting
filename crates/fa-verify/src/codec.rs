@@ -50,7 +50,7 @@ impl<'a> Reader<'a> {
         Self { buf, at: 0 }
     }
 
-    fn remaining(&self) -> usize {
+    pub(crate) fn remaining(&self) -> usize {
         self.buf.len() - self.at
     }
 
@@ -108,6 +108,10 @@ impl<'a> Reader<'a> {
         Ok(i128::from_le_bytes(self.fixed(what)?))
     }
 
+    pub(crate) fn i64(&mut self, what: &'static str) -> Result<i64, DecodeError> {
+        Ok(i64::from_le_bytes(self.fixed(what)?))
+    }
+
     fn length(&mut self, max: usize, what: &'static str) -> Result<usize, DecodeError> {
         let n = usize::try_from(self.u32(what)?).unwrap_or(usize::MAX);
         if n > max {
@@ -160,7 +164,9 @@ impl<'a> Reader<'a> {
 }
 
 /// Little-endian canonical bytes, the writer half the verifier needs to
-/// recompute an envelope from a payload.
+/// recompute an envelope from a payload. Public so tests and embedders
+/// build proof vectors with exactly the framing the reader checks instead
+/// of re-implementing it.
 #[derive(Default)]
 pub struct Writer {
     pub buf: Vec<u8>,

@@ -70,21 +70,31 @@ impl PreparedSettlementGroup {
     /// The complete proposal whose digest the approvers must approve, never
     /// the intermediate single-leg proposals used internally for preparation.
     #[must_use]
-    pub fn proposal(&self) -> &EntryPayload { &self.proposal }
+    pub fn proposal(&self) -> &EntryPayload {
+        &self.proposal
+    }
 
     /// All applying legs in ascending ordinal order, at the same known-at.
     #[must_use]
-    pub fn allocations(&self) -> &[SettlementLegAllocation] { &self.allocations }
+    pub fn allocations(&self) -> &[SettlementLegAllocation] {
+        &self.allocations
+    }
 
     #[must_use]
-    pub fn known_at(&self) -> CommitSeq { self.known_at }
+    pub fn known_at(&self) -> CommitSeq {
+        self.known_at
+    }
 
     /// Canonically ordered original inputs, including every unused target.
     #[must_use]
-    pub fn request(&self) -> &SettlementGroupRequest { &self.request }
+    pub fn request(&self) -> &SettlementGroupRequest {
+        &self.request
+    }
 
     #[must_use]
-    pub fn into_proposal(self) -> EntryPayload { self.proposal }
+    pub fn into_proposal(self) -> EntryPayload {
+        self.proposal
+    }
 }
 
 /// One real kernel plan with all of its per-leg allocation explanations.
@@ -97,20 +107,28 @@ pub struct SettlementGroupPostPlan {
 
 impl SettlementGroupPostPlan {
     #[must_use]
-    pub fn allocations(&self) -> &[SettlementLegAllocation] { &self.allocations }
+    pub fn allocations(&self) -> &[SettlementLegAllocation] {
+        &self.allocations
+    }
 
     #[must_use]
-    pub fn post_plan(&self) -> &PostPlan { &self.post }
+    pub fn post_plan(&self) -> &PostPlan {
+        &self.post
+    }
 
     /// Persist these ordinary PostPlan bytes BEFORE publication. A different
     /// process can decode them and retry AsyncBook::commit_plan unchanged.
     #[must_use]
-    pub fn into_post_plan(self) -> PostPlan { self.post }
+    pub fn into_post_plan(self) -> PostPlan {
+        self.post
+    }
 }
 
 fn invalid(message: impl Into<String>) -> Refusal {
     Refusal::new(
-        fa_journal::refusal::code::STRUCTURE, exit::USAGE, message,
+        fa_journal::refusal::code::STRUCTURE,
+        exit::USAGE,
+        message,
         "plan §5.7 (explicit applications in one atomic entry)",
         "supply an Original or Adjusting Intent with empty settles lists, positive applying legs, and disjoint explicit target sets; never split one target across selections",
     )
@@ -118,7 +136,9 @@ fn invalid(message: impl Into<String>) -> Refusal {
 
 fn invalidated(message: impl Into<String>) -> Refusal {
     Refusal::new(
-        fa_journal::refusal::code::PLAN_INVALIDATED, exit::CONFLICT, message,
+        fa_journal::refusal::code::PLAN_INVALIDATED,
+        exit::CONFLICT,
+        message,
         "plan §5.1 / §10.4 (the complete reviewed payment and basis are exact)",
         "review a fresh group; after an uncertain acknowledgement retry the original authenticated PostPlan without preparing or reallocating again",
     )
@@ -127,26 +147,36 @@ fn invalidated(message: impl Into<String>) -> Refusal {
 /// Bound all caller-controlled counts before copying the proposal or targets.
 fn normalize(mut request: SettlementGroupRequest) -> Result<SettlementGroupRequest, Refusal> {
     let proposal = &request.proposal;
-    if request.payments.is_empty() || request.payments.len() > MAX_SETTLEMENT_GROUP_LEGS
+    if request.payments.is_empty()
+        || request.payments.len() > MAX_SETTLEMENT_GROUP_LEGS
         || proposal.legs.len() > MAX_LEGS_PER_ENTRY
     {
-        return Err(invalid("settlement group has no selections or exceeds the leg work bound"));
+        return Err(invalid(
+            "settlement group has no selections or exceeds the leg work bound",
+        ));
     }
     if !matches!(proposal.class, EntryClass::ORIGINAL | EntryClass::ADJUSTING)
         || !matches!(&proposal.origin, EntryOrigin::Intent { .. })
         || proposal.legs.iter().any(|leg| !leg.settles.is_empty())
     {
-        return Err(invalid("group preparation never overwrites applications or invents rule provenance"));
+        return Err(invalid(
+            "group preparation never overwrites applications or invents rule provenance",
+        ));
     }
     let mut count = 0_usize;
     for selection in &request.payments {
         if selection.targets.is_empty() || selection.targets.len() > MAX_SETTLES_PER_LEG {
-            return Err(invalid("every selection needs a nonempty, model-bounded target set"));
+            return Err(invalid(
+                "every selection needs a nonempty, model-bounded target set",
+            ));
         }
-        count = count.checked_add(selection.targets.len())
+        count = count
+            .checked_add(selection.targets.len())
             .filter(|n| *n <= MAX_SETTLEMENT_GROUP_TARGETS)
             .ok_or_else(|| invalid("settlement group exceeds its aggregate target work bound"))?;
-        let leg = proposal.legs.get(usize::from(selection.payment_leg))
+        let leg = proposal
+            .legs
+            .get(usize::from(selection.payment_leg))
             .ok_or_else(|| invalid("an applying ordinal is outside the complete proposal"))?;
         if leg.amount.mantissa <= 0 {
             return Err(invalid("every applying leg must have a positive amount"));
@@ -154,7 +184,9 @@ fn normalize(mut request: SettlementGroupRequest) -> Result<SettlementGroupReque
     }
     // Model validation checks shape and field bounds, not economic balance,
     // evidence sufficiency, period state or authority. The kernel judges those.
-    proposal.validate().map_err(|error| invalid(error.to_string()))?;
+    proposal
+        .validate()
+        .map_err(|error| invalid(error.to_string()))?;
     let mut ordinals = BTreeSet::new();
     let mut targets = BTreeSet::new();
     for selection in &mut request.payments {
@@ -163,12 +195,16 @@ fn normalize(mut request: SettlementGroupRequest) -> Result<SettlementGroupReque
         }
         for target in &selection.targets {
             if !targets.insert(*target) {
-                return Err(invalid("eligible target sets overlap or contain a duplicate, even if unused"));
+                return Err(invalid(
+                    "eligible target sets overlap or contain a duplicate, even if unused",
+                ));
             }
         }
         selection.targets.sort_unstable();
     }
-    request.payments.sort_by_key(|selection| selection.payment_leg);
+    request
+        .payments
+        .sort_by_key(|selection| selection.payment_leg);
     Ok(request)
 }
 
@@ -184,15 +220,17 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
     ) -> Outcome<PreparedSettlementGroup> {
         let book = self.context();
-        if let Err(denial) = fa_policy::admit_read(
-            capability, request.proposal.principal_ref, book.book_id,
-        ) {
+        if let Err(denial) =
+            fa_policy::admit_read(capability, request.proposal.principal_ref, book.book_id)
+        {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
         let query = cx.query();
         query.checkpoint().map_err(BookError::Context)?;
         if request.proposal.book_id != book.book_id || request.proposal.branch_id != Id128::TRUNK {
-            return Ok(Err(invalid("the group must name this book's writable trunk")));
+            return Ok(Err(invalid(
+                "the group must name this book's writable trunk",
+            )));
         }
         let request = match normalize(request) {
             Ok(request) => request,
@@ -228,13 +266,16 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
     ) -> Outcome<SettlementGroupPostPlan> {
         let book = self.context();
-        if let Err(denial) = fa_policy::admit_read(
-            capability, prepared.proposal.principal_ref, book.book_id,
-        ) {
+        if let Err(denial) =
+            fa_policy::admit_read(capability, prepared.proposal.principal_ref, book.book_id)
+        {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
-        if prepared.proposal.book_id != book.book_id || prepared.proposal.branch_id != Id128::TRUNK {
-            return Ok(Err(invalid("the reviewed group belongs to another book or branch")));
+        if prepared.proposal.book_id != book.book_id || prepared.proposal.branch_id != Id128::TRUNK
+        {
+            return Ok(Err(invalid(
+                "the reviewed group belongs to another book or branch",
+            )));
         }
         let intent = match PostIntent::new(prepared.proposal, approvals) {
             Ok(intent) => intent,
@@ -245,12 +286,19 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(refusal) => return Ok(Err(refusal)),
         };
         if post.certificate().snapshot_seq != prepared.known_at {
-            return Ok(Err(invalidated("the reviewed group basis changed before kernel rehearsal")));
+            return Ok(Err(invalidated(
+                "the reviewed group basis changed before kernel rehearsal",
+            )));
         }
         if post.proposal().legs != post.intent().proposal().legs {
-            return Ok(Err(invalidated("kernel rehearsal changed the reviewed group legs")));
+            return Ok(Err(invalidated(
+                "kernel rehearsal changed the reviewed group legs",
+            )));
         }
-        Ok(Ok(SettlementGroupPostPlan { allocations: prepared.allocations, post }))
+        Ok(Ok(SettlementGroupPostPlan {
+            allocations: prepared.allocations,
+            post,
+        }))
     }
 
     /// Publish every application as ONE entry or none. Exact retries use the

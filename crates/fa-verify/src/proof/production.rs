@@ -50,7 +50,10 @@ impl ProductionScope {
         if self.first_seq > self.known_at {
             return Err(ProductionError::Request("first_seq exceeds known_at"));
         }
-        if self.effective_days.is_some_and(|(first, last)| first > last) {
+        if self
+            .effective_days
+            .is_some_and(|(first, last)| first > last)
+        {
             return Err(ProductionError::Request("effective-day range is reversed"));
         }
         Ok(())
@@ -59,9 +62,13 @@ impl ProductionScope {
     fn selects(&self, entry: &LeafEnvelope) -> bool {
         self.first_seq <= entry.commit_seq
             && entry.commit_seq <= self.known_at
-            && self.account.is_none_or(|account| entry.account_vids.binary_search(&account).is_ok())
+            && self
+                .account
+                .is_none_or(|account| entry.account_vids.binary_search(&account).is_ok())
             && self.effective_days.is_none_or(|(first, last)| {
-                entry.effective_day.is_some_and(|day| first <= day && day <= last)
+                entry
+                    .effective_day
+                    .is_some_and(|day| first <= day && day <= last)
             })
     }
 }
@@ -102,14 +109,19 @@ impl fmt::Display for ProductionError {
             Self::Prefix(error) => write!(f, "production prefix: {error}"),
             Self::Record { position, error } => write!(f, "production record {position}: {error}"),
             Self::RecordCount { expected, actual } => write!(
-                f, "scope requires {expected} journal records; production supplies {actual}"
+                f,
+                "scope requires {expected} journal records; production supplies {actual}"
             ),
             Self::Position { expected, actual } => write!(
-                f, "production requires next leaf {expected}, not leaf {actual}"
+                f,
+                "production requires next leaf {expected}, not leaf {actual}"
             ),
-            Self::Envelope { index } => write!(f, "production leaf {index} differs from the prefix"),
+            Self::Envelope { index } => {
+                write!(f, "production leaf {index} differs from the prefix")
+            }
             Self::PayloadRequired { index } => write!(
-                f, "production leaf {index} requires its record payload, not just its envelope"
+                f,
+                "production leaf {index} requires its record payload, not just its envelope"
             ),
         }
     }
@@ -143,14 +155,18 @@ pub fn verify_production_for(
 ) -> Result<VerifiedProduction, ProductionError> {
     expected.validate()?;
     if expected.known_at > checkpoint.through_seq {
-        return Err(ProductionError::Request("known_at is later than the trusted checkpoint"));
+        return Err(ProductionError::Request(
+            "known_at is later than the trusted checkpoint",
+        ));
     }
     if records.len() > MAX_PRODUCTION_RECORDS {
         return Err(ProductionError::Limit("record count"));
     }
-    let total = records.iter().try_fold(prefix_bytes.len(), |total, record| {
-        total.checked_add(record.len())
-    });
+    let total = records
+        .iter()
+        .try_fold(prefix_bytes.len(), |total, record| {
+            total.checked_add(record.len())
+        });
     if total.is_none_or(|bytes| bytes > MAX_PRODUCTION_BYTES) {
         return Err(ProductionError::Limit("aggregate encoded bytes"));
     }
@@ -164,14 +180,24 @@ pub fn verify_production_for(
     };
     preflight().map_err(ProductionError::Prefix)?;
     let prefix = verify_prefix(prefix_bytes, checkpoint).map_err(ProductionError::Prefix)?;
-    let count = prefix.envelopes.iter().filter(|entry| expected.selects(entry)).count();
+    let count = prefix
+        .envelopes
+        .iter()
+        .filter(|entry| expected.selects(entry))
+        .count();
     if count > MAX_PRODUCTION_RECORDS {
         return Err(ProductionError::Limit("selected record count"));
     }
     if count != records.len() {
-        return Err(ProductionError::RecordCount { expected: count, actual: records.len() });
+        return Err(ProductionError::RecordCount {
+            expected: count,
+            actual: records.len(),
+        });
     }
-    let selected = prefix.envelopes.into_iter().enumerate()
+    let selected = prefix
+        .envelopes
+        .into_iter()
+        .enumerate()
         .filter(|(_, entry)| expected.selects(entry));
     let mut entries = Vec::with_capacity(count);
     for (position, ((index, envelope), bytes)) in selected.zip(records).enumerate() {
@@ -180,7 +206,10 @@ pub fn verify_production_for(
         let inclusion = verify_inclusion(bytes, checkpoint)
             .map_err(|error| ProductionError::Record { position, error })?;
         if inclusion.leaf_index != index {
-            return Err(ProductionError::Position { expected: index, actual: inclusion.leaf_index });
+            return Err(ProductionError::Position {
+                expected: index,
+                actual: inclusion.leaf_index,
+            });
         }
         if inclusion.envelope != envelope {
             return Err(ProductionError::Envelope { index });
@@ -188,7 +217,10 @@ pub fn verify_production_for(
         if inclusion.record != RecordCheck::Recomputed {
             return Err(ProductionError::PayloadRequired { index });
         }
-        entries.push(ProducedEntry { leaf_index: index, envelope });
+        entries.push(ProducedEntry {
+            leaf_index: index,
+            envelope,
+        });
     }
     Ok(VerifiedProduction {
         scope: SCOPE_SEQ_RANGE_COMPLETE,

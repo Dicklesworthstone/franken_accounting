@@ -52,7 +52,10 @@ pub struct VerifiedEvidenceProduction {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EvidenceProductionError {
     Production(ProductionError),
-    Evidence { leaf_index: u64, error: EvidenceError },
+    Evidence {
+        leaf_index: u64,
+        error: EvidenceError,
+    },
     Limit(&'static str),
 }
 
@@ -106,7 +109,8 @@ pub fn verify_evidence_production_for(
 ) -> Result<VerifiedEvidenceProduction, EvidenceProductionError> {
     let production = verify_production_for(prefix_bytes, records, checkpoint, expected)?;
     let mut entries = Vec::new();
-    entries.try_reserve_exact(production.entries.len())
+    entries
+        .try_reserve_exact(production.entries.len())
         .map_err(|_| EvidenceProductionError::Limit("entry allocation"))?;
     let mut citation_count = 0usize;
     for (entry, record) in production.entries.into_iter().zip(records) {
@@ -117,9 +121,9 @@ pub fn verify_evidence_production_for(
         // verify_production_for has already authenticated this exact record
         // and its position. Do not call the single-entry verifier again.
         let proposal = included_proposal(record).map_err(at_leaf)?;
-        let citations = citations_from_proposal(proposal, &checkpoint.book_id)
-            .map_err(at_leaf)?;
-        citation_count = citation_count.checked_add(citations.len())
+        let citations = citations_from_proposal(proposal, &checkpoint.book_id).map_err(at_leaf)?;
+        citation_count = citation_count
+            .checked_add(citations.len())
             .filter(|count| *count <= MAX_PRODUCTION_CITATIONS)
             .ok_or(EvidenceProductionError::Limit("aggregate citation count"))?;
         entries.push(ProducedEvidence { entry, citations });

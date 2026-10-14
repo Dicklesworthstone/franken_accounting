@@ -197,23 +197,18 @@ impl RedactedView {
                 self.chunks.len()
             ));
         }
-        let mut leaves = Vec::with_capacity(self.chunks.len());
         for (i, c) in self.chunks.iter().enumerate() {
-            leaves.push(match c {
-                ViewChunk::Disclosed(bytes) => {
-                    let want = chunk_len(self.size, i as u64);
-                    if bytes.len() as u64 != want {
-                        return Err(format!(
-                            "disclosed chunk {i} is {} bytes; the document's is {want}",
-                            bytes.len()
-                        ));
-                    }
-                    leaf(i, bytes)
+            if let ViewChunk::Disclosed(bytes) = c {
+                let want = chunk_len(self.size, i as u64);
+                if bytes.len() as u64 != want {
+                    return Err(format!(
+                        "disclosed chunk {i} is {} bytes; the document's is {want}",
+                        bytes.len()
+                    ));
                 }
-                ViewChunk::Withheld(hash) => *hash,
-            });
+            }
         }
-        let rebuilt = commitment(self.kind, self.size, &tree_root(leaves));
+        let rebuilt = commitment(self.kind, self.size, &self.chunk_root());
         if rebuilt != self.doc_commit {
             return Err(format!(
                 "the view rebuilds commitment {}, not the original's {}",
@@ -222,6 +217,25 @@ impl RedactedView {
             ));
         }
         Ok(())
+    }
+
+    /// The original's chunk root, rebuilt from the disclosed chunks and the
+    /// withheld leaves: with the kind and size, what the commitment commits,
+    /// so a bundle stub can carry it without the bytes. Meaningful only once
+    /// [`Self::verify`] passes; a view of the wrong shape rebuilds some other
+    /// root.
+    #[must_use]
+    pub fn chunk_root(&self) -> [u8; 32] {
+        tree_root(
+            self.chunks
+                .iter()
+                .enumerate()
+                .map(|(i, c)| match c {
+                    ViewChunk::Disclosed(bytes) => leaf(i, bytes),
+                    ViewChunk::Withheld(hash) => *hash,
+                })
+                .collect(),
+        )
     }
 
     /// The disclosed bytes with their offsets in the original.
@@ -521,7 +535,9 @@ fn recorded(
 
 /// Read document `oid` as `capability` may see it (plan §9.6; R-RED interim,
 /// decided before any read of its bytes, never as a result filter). The
-/// capability is its holder's, holds `read`, admits this book, is current
+/// capability is its holder's, holds `read`, admits this book, carries no
+/// scope caveat (plan §14.2: which documents a scoped reader may see is
+/// whole-entry visibility, not yet enforced, so it is refused), is current
 /// and is not revoked. One that also holds `privileged` reads the verified
 /// bytes. For
 /// any other, the document's kind (public metadata, one point read of its
@@ -542,6 +558,12 @@ where
     B: asupersync::fs::Vfs + Clone,
 {
     if let Err(d) = fa_policy::admit_read(capability, capability.holder(), book.book_id) {
+        return Ok(Err(refusal(&d)));
+    }
+    // A document read reaches the whole book at its head: a token with any
+    // scope caveat is refused here, before its currency or revocation is
+    // read.
+    if let Err(d) = fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None) {
         return Ok(Err(refusal(&d)));
     }
     if let Err(d) = fa_policy::current(capability, db.frontier()?) {
@@ -770,9 +792,11 @@ mod tests {
             .unwrap()
             .unwrap();
         let head = f.db.frontier().unwrap();
-        let DocumentRead::Redacted(view) = f.read(&reader, statement.oid()).unwrap() else {
-            panic!("an Agent without privileged must not receive the full statement");
-        };
+        let view = match f.read(&reader, statement.oid()).unwrap() {
+            DocumentRead::Redacted(view) => Some(view),
+            DocumentRead::Full(_) => None,
+        }
+        .expect("an Agent without privileged must not receive the full statement");
         assert_eq!(view.verify(), Ok(()));
         assert_eq!(view.doc_commit, statement.doc_commit());
         assert_eq!(view.chunks.len(), 2);
@@ -821,6 +845,63 @@ mod tests {
             f.read(&reader, invoice.oid()).unwrap_err().code,
             code::DOCUMENT_DRIFT,
             "the malformed payload is observable only after admission"
+        );
+    }
+
+    /// fa-llx: a token carrying `read` and any scope caveat (tags 3-7) is
+    /// refused before its currency, its revocation or any document is read,
+    /// and never receives bytes or a view.
+    #[test]
+    fn a_scoped_reader_is_refused_before_currency_revocation_or_any_read() {
+        let mut f = ReadFixture::new();
+        let invoice = Document { kind: 1, ..doc(29) };
+        f.add(&invoice);
+        let mut poison = WriteBatch::new(relation::CUSTODY_OF);
+        poison.set_vertex_property(
+            document_vid(&invoice.oid()),
+            property::FA_PAYLOAD,
+            Some(scalar_bytes("_fa_payload", vec![0xff]).unwrap()),
+        );
+        f.runtime
+            .block_on(f.db.write(&f.contexts.commit(), poison))
+            .unwrap();
+        let head = f.db.frontier().unwrap();
+        let reader = f.reader();
+        let day = DateDay::from_ymd(2026, 3, 31).unwrap();
+        for (capability, caveat) in [
+            (reader.clone().for_accounts(&["1000"]).unwrap(), "accounts"),
+            (
+                reader.clone().for_periods(&["FY2026-P03"]).unwrap(),
+                "periods",
+            ),
+            (reader.clone().effective_through(day), "effective"),
+            (reader.clone().known_at_most(head), "known_at"),
+            (reader.clone().on_branch(Id128([9; 16])).unwrap(), "branch"),
+            // Expired too: the scope refusal comes first.
+            (
+                reader
+                    .clone()
+                    .expiring_at(head)
+                    .for_periods(&["FY2026-P03"])
+                    .unwrap(),
+                "periods",
+            ),
+        ] {
+            let refused = f.read(&capability, invoice.oid()).unwrap_err();
+            assert_eq!(refused.code, "FA-REF-011", "{caveat}");
+            assert!(
+                refused
+                    .message
+                    .starts_with(&format!("the capability's `{caveat}` caveat")),
+                "{caveat}: {}",
+                refused.message
+            );
+            assert_eq!(f.db.frontier().unwrap(), head);
+        }
+        assert_eq!(
+            f.read(&reader, invoice.oid()).unwrap_err().code,
+            code::DOCUMENT_DRIFT,
+            "the same token without a scope caveat reaches the payload"
         );
     }
 
@@ -885,6 +966,11 @@ mod tests {
                 let v = RedactedView::derive(&d, 2, privileged);
                 assert_eq!(v.verify(), Ok(()), "size {size}, ranges {privileged:?}");
                 assert_eq!(v.doc_commit, doc_commit(d.kind, &d.bytes));
+                assert_eq!(
+                    v.chunk_root(),
+                    crate::evidence::chunk_root(&d.bytes),
+                    "size {size}, ranges {privileged:?}"
+                );
                 assert_eq!(v.chunks.len() as u64, chunk_count(size as u64));
                 for (offset, bytes) in v.disclosed() {
                     let o = usize::try_from(offset).unwrap();
@@ -899,7 +985,8 @@ mod tests {
             }
         }
         // A range straddling a chunk boundary withholds both chunks.
-        let v = RedactedView::derive(&doc(3 * CHUNK_BYTES), 2, &[(C - 1, 2)]);
+        let d = doc(3 * CHUNK_BYTES);
+        let v = RedactedView::derive(&d, 2, &[(C - 1, 2)]);
         let withheld: Vec<usize> = v
             .chunks
             .iter()
@@ -908,6 +995,12 @@ mod tests {
             .map(|(i, _)| i)
             .collect();
         assert_eq!(withheld, [0, 1]);
+        // Its withheld leaves and its disclosed chunk 2 rebuild the
+        // commitment through chunk_root alone (what a bundle stub carries).
+        assert_eq!(
+            commitment(d.kind, d.bytes.len() as u64, &v.chunk_root()),
+            doc_commit(d.kind, &d.bytes)
+        );
     }
 
     #[test]

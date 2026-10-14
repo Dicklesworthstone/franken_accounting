@@ -178,6 +178,56 @@ fn assert_cash_credits(out: &str, expected: &str) {
     assert_eq!(field(out, "balanced"), Some("true"), "{out}");
 }
 
+/// fa-ih4: posting ahead of the book's fiscal years is a safety refusal
+/// (FA-REF-021, exit 7) naming the command that creates the year, never a
+/// "corrupt row" foundation failure; following the fix admits the post.
+#[test]
+fn posting_into_an_uncreated_fiscal_year_names_the_period_create_command() -> std::io::Result<()> {
+    let dir = tmp("uncreated-year")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Ahead Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let ahead = write(
+        &dir,
+        "ahead.json",
+        r#"{"effective_date":"2028-02-10","idempotency_key":"ahead","legs":[{"side":"debit","account":"6000","amount":"5.00 USD"},{"side":"credit","account":"1000","amount":"5.00 USD"}]}"#,
+    );
+    let post = [
+        "post",
+        "--intent",
+        &ahead,
+        "--evidence",
+        &evidence,
+        "--json",
+    ];
+    let (code, out, err) = fa(Some(&book), &post);
+    assert_eq!(code, 7, "{out}\n{err}");
+    assert!(
+        out.contains("\"event\":\"error\"")
+            && out.contains("\"refusal_id\":\"FA-REF-021\"")
+            && out.contains("fa period create --fiscal-year 2028, then open `FY2028-P02`"),
+        "{out}"
+    );
+    assert!(!out.contains("corrupt"), "{out}");
+    ok(&["period", "create", "--fiscal-year", "2028", "--json"]);
+    ok(&["period", "open", "FY2028-P02", "--json"]);
+    let posted = ok(&post);
+    assert_eq!(field(&posted, "event"), Some("posted"), "{posted}");
+    Ok(())
+}
+
 #[test]
 fn retained_trial_balances_replay_exactly_and_report_later_relevant_entries() -> std::io::Result<()>
 {
@@ -1946,7 +1996,7 @@ fn reversals_by_target_and_idempotency_conflicts_follow_the_contract() -> std::i
     let before = report(&book, &["tb", "--period", "FY2026-P03", "--json"]);
     for (reason, expected) in [
         (None, "registered reason"),
-        (Some("WrongAcount"), "did you mean `WrongAccount`"),
+        (Some("WrongAccout"), "did you mean `WrongAccount`"),
         (Some("0"), "not registered"),
         (Some("65535"), "not registered"),
         (Some("Other"), "requires a description"),
@@ -2478,8 +2528,8 @@ fn timed_cli_intents_preserve_their_requests_and_execute_under_recorded_ticks()
     use asupersync::runtime::RuntimeBuilder;
     use fa::{Book, BookKeys, Entropy};
     use fa_journal::{Capability, ReversalStatus};
-    use fa_model::entry::Side;
     use fa_model::{Disposition, EntryClass};
+    use fa_money::Side;
     use fa_policy::{Op, Profile};
     use fa_time::DateDay;
     use fgdb_types::VId;
@@ -2543,7 +2593,15 @@ fn timed_cli_intents_preserve_their_requests_and_execute_under_recorded_ticks()
     // Typos, inapplicable fields, duplicate sources, and wrong types never
     // become permanent or unscheduled entries. Valid but inadmissible data
     // still reaches the kernel's registered refusal unchanged.
-    let bad_intents: &[(&str, &str, &[&str], i32, Option<&str>)] = &[
+    /// `(class, extra intent fields, extra argv, exit, refusal id)`.
+    type BadIntent = (
+        &'static str,
+        &'static str,
+        &'static [&'static str],
+        i32,
+        Option<&'static str>,
+    );
+    let bad_intents: &[BadIntent] = &[
         ("Pending", r#","timeout_ns":-1"#, &[], 2, None),
         (
             "Pending",
@@ -3444,7 +3502,7 @@ fn robot_docs_schema_prints_the_envelope_and_every_event_from_the_registry() {
     let (code, human, _) = fa(None, &["robot-docs", "schema"]);
     assert_eq!(code, 0);
     assert!(
-        human.contains("event balance_explained (explain)")
+        human.contains("event balance_explained (replay, explain)")
             && human.contains("  contributions: [contribution]")
             && human.contains("shape contribution"),
         "{human}"
@@ -3844,15 +3902,21 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(false, &["capabilities"]).0, 0);
     assert_eq!(run(false, &["robot-docs", "guide"]).0, 0);
     assert_eq!(run(false, &["robot-docs", "schema"]).0, 0);
+    assert_eq!(run(false, &["chart", "templates"]).0, 0);
     assert_eq!(run(false, &["nosuchverb"]).0, 2);
     assert_eq!(run(true, &["book", "info"]).0, 4);
     assert_eq!(run(true, &["book", "create", "--name", "Events Co"]).0, 0);
     assert_eq!(run(true, &["book", "info"]).0, 0);
+    assert_eq!(run(true, &["doctor"]).0, 0);
+    assert_eq!(run(true, &["triage"]).0, 0);
+    assert_eq!(run(true, &["next"]).0, 0);
     assert_eq!(
         run(true, &["checkpoint", "create", "--grant", "witness"]).0,
         0
     );
     assert_eq!(run(true, &["verify", "accumulator"]).0, 0);
+    assert_eq!(run(true, &["proof", "signed-checkpoint"]).0, 0);
+    assert_eq!(run(true, &["bundle", "produce"]).0, 0);
     let chart = write(
         &dir,
         "chart.json",
@@ -3908,6 +3972,8 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     assert_eq!(run(true, &["tb", "--period", "FY2026-P03"]).0, 0);
     assert_eq!(run(true, &["open-items"]).0, 0);
+    assert_eq!(run(true, &["procedure", "list"]).0, 0);
+    assert_eq!(run(true, &["procedure", "run", "jet.round_amounts"]).0, 0);
     assert_eq!(run(true, &["entry", "show", &vid]).0, 0);
     assert_eq!(run(true, &["entry", "show", "00"]).0, 0);
     assert_eq!(
@@ -4006,6 +4072,12 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(true, &["certificate", "status", &certificate]).0, 0);
     assert_eq!(
         run(true, &["statement", "balance-sheet", "--for", "FY2026-P03"]).0,
+        0
+    );
+    let (code, out) = run(true, &["registers", "advance", "--period", "FY2026-P03"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        run(true, &["verify", "registers", "--period", "FY2026-P03"]).0,
         0
     );
     // A planned, approved lock (R4): `period_planned`, then `approved`.
@@ -4909,6 +4981,7 @@ const DANGEROUS: &[(&str, Option<&str>, &str)] = &[
     ("period", Some("lock"), "always"),
     ("period", Some("reopen"), "always"),
     ("post", None, "grant:post_closed"),
+    ("reverse", None, "grant:post_closed"),
     ("resolve", None, "disposition:voids"),
     ("registers", Some("materialize"), "existing-cells"),
 ];
@@ -5721,6 +5794,20 @@ fn instant_selected_cli_reports_retain_tick_evidence_and_replay() -> std::io::Re
 
 #[test]
 fn projection_verification_reports_drift_deterministically_without_writes() -> std::io::Result<()> {
+    projection_verification_case("side")
+}
+
+#[test]
+fn projection_verification_refuses_a_changed_amount_without_writes() -> std::io::Result<()> {
+    projection_verification_case("amount")
+}
+
+#[test]
+fn projection_verification_refuses_a_missing_has_leg_without_writes() -> std::io::Result<()> {
+    projection_verification_case("missing-has-leg")
+}
+
+fn projection_verification_case(plant: &str) -> std::io::Result<()> {
     use asupersync::runtime::RuntimeBuilder;
     use asupersync::types::Budget;
     use fa::{Book, BookKeys, Entropy};
@@ -5732,7 +5819,7 @@ fn projection_verification_reports_drift_deterministically_without_writes() -> s
     use fgdb_types::context::PurposeContexts;
     use fgdb_types::ids::DatabaseSecurityNamespaceId;
 
-    let dir = tmp("verify-projections")?;
+    let dir = tmp(&format!("verify-projections-{plant}"))?;
     let book = dir.join("book");
     let keys = BookKeys::for_development(91);
     let handle = Book::create_dir(
@@ -5810,8 +5897,8 @@ fn projection_verification_reports_drift_deterministically_without_writes() -> s
     );
     drop(handle);
 
-    // Plant a bad scalar mirror through the real substrate while leaving
-    // the canonical payload and journal balances unchanged.
+    // Each case starts from a fresh, verified book. Change exactly one
+    // projection through the real substrate; the immutable entry stays intact.
     let runtime = RuntimeBuilder::new().build().unwrap();
     let root = runtime.request_cx_with_budget(Budget::INFINITE);
     let cx = PurposeContexts::narrow_runtime_root(&root);
@@ -5829,9 +5916,51 @@ fn projection_verification_reports_drift_deterministically_without_writes() -> s
         .find(|row| row.labels.contains(&label::LEG))
         .expect("posted leg")
         .vid;
+    let edge = db
+        .edges()
+        .unwrap()
+        .into_iter()
+        .find(|edge| edge.entry.relation == relation::HAS_LEG && edge.entry.dst == leg)
+        .expect("the posted leg belongs to an entry");
+    let entry = edge.entry.src;
+    let payload = fa_journal::rows::bytes(
+        &db.vertex(entry).unwrap().unwrap(),
+        property::FA_PAYLOAD,
+        "authoritative entry",
+    )
+    .unwrap();
     let mut batch = WriteBatch::new(relation::HAS_LEG);
-    batch.set_vertex_property(leg, property::SIDE, Some(CanonicalScalar::Int(99)));
+    let (identity, expected_drift) = match plant {
+        "side" => {
+            batch.set_vertex_property(leg, property::SIDE, Some(CanonicalScalar::Int(99)));
+            (leg.0, "side mirror")
+        }
+        "amount" => {
+            let changed = fgdb_types::CanonicalDecimal::from_scaled_half_even(1_100, 2).unwrap();
+            batch.set_vertex_property(
+                leg,
+                property::AMOUNT,
+                Some(CanonicalScalar::Decimal(changed)),
+            );
+            (leg.0, "amount mirror")
+        }
+        "missing-has-leg" => {
+            batch.delete_edge(edge.entry.eid);
+            (edge.entry.eid.0, "missing HAS_LEG edge")
+        }
+        _ => unreachable!("unknown projection plant {plant}"),
+    };
     let damaged_at = runtime.block_on(db.write(&cx.commit(), batch)).unwrap();
+    assert_eq!(
+        fa_journal::rows::bytes(
+            &db.vertex(entry).unwrap().unwrap(),
+            property::FA_PAYLOAD,
+            "authoritative entry",
+        )
+        .unwrap(),
+        payload,
+        "{plant}: projection damage leaves the complete journal payload intact"
+    );
     drop(db);
 
     let (code, red, err) = fa(Some(&book), &verify);
@@ -5846,13 +5975,14 @@ fn projection_verification_reports_drift_deterministically_without_writes() -> s
         int(robot_line(&red).get("coordinate").unwrap(), "known_at"),
         Some(i128::from(damaged_at.0))
     );
-    let leg_hex = format!("{:032x}", leg.0);
+    let identity_hex = format!("{identity:032x}");
+    assert_eq!(arr(detail, "drift").len(), 1, "{plant}: {red}");
     assert!(
         arr(detail, "drift")
             .iter()
             .filter_map(Json::as_str)
-            .any(|finding| finding.contains(&leg_hex) && finding.contains("side mirror")),
-        "{red}"
+            .any(|finding| finding.contains(&identity_hex) && finding.contains(expected_drift)),
+        "{plant}: {red}"
     );
     let repeated = fa(Some(&book), &verify);
     assert_eq!(repeated.0, 8, "{}\n{}", repeated.1, repeated.2);
@@ -5983,8 +6113,10 @@ fn directory_reopen_refuses_changed_or_missing_unit_facts_through_facade_and_cli
                         damaged.pop();
                     }
                     "major" => damaged[4] = 2,
-                    "minor" => damaged[6] = 1,
-                    _ => unreachable!(),
+                    other => {
+                        assert_eq!(other, "minor");
+                        damaged[6] = 1;
+                    }
                 }
                 batch.set_vertex_property(
                     vid,
@@ -6008,8 +6140,7 @@ fn directory_reopen_refuses_changed_or_missing_unit_facts_through_facade_and_cli
         drop(db);
 
         let error = Book::open_dir(&book, keys.clone(), Entropy::deterministic(57))
-            .err()
-            .expect("reopen must refuse changed historical unit facts");
+            .expect_err("reopen must refuse changed historical unit facts");
         assert_eq!(error.exit(), 5, "{damage}: {error}");
         let expected = match damage {
             "kind" | "ISO" => "kind/ISO",
@@ -6027,8 +6158,8 @@ fn directory_reopen_refuses_changed_or_missing_unit_facts_through_facade_and_cli
         assert_eq!(code, 5, "{damage}: {out}\n{err}");
         assert!(out.contains(expected), "{damage}: {out}\n{err}");
         if damage.starts_with("missing") {
-            assert!(out.contains("backfill"), "{out}");
-            assert!(out.contains("not available yet"), "{out}");
+            assert!(out.contains("no backfill"), "{out}");
+            assert!(out.contains("creating binary"), "{out}");
         }
 
         let db = runtime
@@ -6044,5 +6175,423 @@ fn directory_reopen_refuses_changed_or_missing_unit_facts_through_facade_and_cli
             "{damage}: facade and CLI refusals must preserve the journal"
         );
     }
+    Ok(())
+}
+
+/// `fa procedure list|run`: Lantern over a persisted book through the CLI
+/// (plan §11, Appendix D). The planted round amount is found and cited by
+/// its posted vid; a parameter override changes the result; the registry
+/// refuses what it does not know, naming the fix; historical folds refuse
+/// to run without an effective date; a tracing law runs once its inputs
+/// are passed by handle and refuses a source that never deposited.
+#[test]
+fn procedures_run_over_a_persisted_book_and_cite_resolving_handles() -> std::io::Result<()> {
+    let dir = tmp("procedures")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&book), &argv);
+        assert_eq!(code, 0, "{argv:?}\n{out}\n{err}");
+        out
+    };
+    let refused = |args: &[&str]| -> (i32, String) {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, _) = fa(Some(&book), &argv);
+        (code, out)
+    };
+    ok(&["book", "create", "--name", "Procedures Co"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"1010","name":"Bank B","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart]);
+    ok(&["period", "create", "--fiscal-year", "2026"]);
+    ok(&["period", "open", "FY2026-P03"]);
+    let source = write(&dir, "source.txt", "INVOICE (procedure fixture)");
+    let added = ok(&[
+        "document",
+        "add",
+        &source,
+        "--kind",
+        "Invoice",
+        "--grade",
+        "HumanUpload",
+    ]);
+    let ev = field(&added, "oid").unwrap_or_default().to_string();
+    let round = write(
+        &dir,
+        "round.json",
+        r#"{"effective_date":"2026-03-10","idempotency_key":"round-rent","legs":[{"side":"debit","account":"6000","amount":"5000.00 USD"},{"side":"credit","account":"1000","amount":"5000.00 USD"}],"description":"March rent, round"}"#,
+    );
+    let posted = ok(&["post", "--intent", &round, "--evidence", &ev]);
+    let round_vid = field(&posted, "vid").unwrap_or_default().to_string();
+    let plain = write(
+        &dir,
+        "plain.json",
+        r#"{"effective_date":"2026-03-11","idempotency_key":"plain-rent","legs":[{"side":"debit","account":"6000","amount":"1234.56 USD"},{"side":"credit","account":"1000","amount":"1234.56 USD"}],"description":"March rent, not round"}"#,
+    );
+    ok(&["post", "--intent", &plain, "--evidence", &ev]);
+
+    // The registry is listed in full, with its pinned defaults.
+    let listed = ok(&["procedure", "list"]);
+    let listed_doc = doc(&listed);
+    let rows = arr(&listed_doc, "procedures");
+    assert_eq!(rows.len(), 18, "{listed}");
+    assert!(
+        rows.iter()
+            .any(|r| r.get("id").and_then(Json::as_str) == Some("jet.round_amounts")),
+        "{listed}"
+    );
+
+    // The planted round amount is found, cited by the posted entry's vid.
+    let out = ok(&["procedure", "run", "jet.round_amounts"]);
+    let data = doc(&out);
+    assert_eq!(text(&data, "procedure"), "jet.round_amounts");
+    assert_eq!(text(&data, "claim"), "statistical");
+    let findings = arr(&data, "findings");
+    assert_eq!(findings.len(), 1, "{out}");
+    let cites = findings[0]
+        .get("cites")
+        .and_then(Json::as_arr)
+        .expect("cites");
+    assert!(
+        cites.iter().any(|c| {
+            c.get("kind").and_then(Json::as_str) == Some("entry")
+                && c.get("entry").and_then(Json::as_str) == Some(round_vid.as_str())
+        }),
+        "the finding cites the round entry by vid: {out}"
+    );
+    assert_eq!(int(&data, "finding_count"), Some(1));
+    assert!(int(&data, "population").is_some_and(|n| n >= 2), "{out}");
+    assert!(
+        data.get("effective_through") == Some(&Json::Null),
+        "no effective date was declared: {out}"
+    );
+    // A parameter override is honoured: at round_power 6 nothing is round.
+    let none = ok(&[
+        "procedure",
+        "run",
+        "jet.round_amounts",
+        "--param",
+        "round_power=6",
+    ]);
+    assert_eq!(int(&doc(&none), "finding_count"), Some(0), "{none}");
+    assert_eq!(
+        arr(&doc(&none), "parameters")
+            .iter()
+            .find(|p| p.get("name").and_then(Json::as_str) == Some("round_power"))
+            .and_then(|p| int(p, "value")),
+        Some(6)
+    );
+    // An effective date selects the historical folds; aging runs with it.
+    let aged = ok(&[
+        "procedure",
+        "run",
+        "aging.open_items",
+        "--effective-through",
+        "2026-04-30",
+    ]);
+    assert_eq!(text(&doc(&aged), "effective_through"), "2026-04-30");
+    // A tracing law runs once its inputs are passed by handle: the round
+    // rent is the deposit into 6000; the later rent is a clean inflow, so
+    // the lowest intermediate balance never dips below the deposit.
+    let traced = ok(&[
+        "procedure",
+        "run",
+        "trace.libr",
+        "--effective-through",
+        "2026-04-30",
+        "--account",
+        "6000",
+        "--source",
+        &round_vid,
+    ]);
+    let traced_doc = doc(&traced);
+    let traced_findings = arr(&traced_doc, "findings");
+    assert_eq!(traced_findings.len(), 1, "{traced}");
+    assert_eq!(
+        traced_findings[0]
+            .get("statistic")
+            .and_then(|st| int(st, "value")),
+        Some(500_000),
+        "{traced}"
+    );
+    // Planted negatives, each naming the fix.
+    let (code, out) = refused(&["procedure", "run", "aging.open_items"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("effective_through"), "{out}");
+    let (code, out) = refused(&["procedure", "run", "graph.kiting"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("fa procedure list"), "{out}");
+    let (code, out) = refused(&[
+        "procedure",
+        "run",
+        "jet.round_amounts",
+        "--param",
+        "round_power=two",
+    ]);
+    assert_eq!(code, 2, "{out}");
+    let (code, out) = refused(&[
+        "procedure",
+        "run",
+        "jet.round_amounts",
+        "--param",
+        "no_such=1",
+    ]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("not a registered parameter"), "{out}");
+    let (code, out) = refused(&[
+        "procedure",
+        "run",
+        "trace.libr",
+        "--effective-through",
+        "2026-04-30",
+    ]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("account"), "{out}");
+    let (code, out) = refused(&[
+        "procedure",
+        "run",
+        "trace.libr",
+        "--effective-through",
+        "2026-04-30",
+        "--account",
+        "1000",
+        "--source",
+        &round_vid,
+    ]);
+    assert_eq!(code, 2, "a credit to cash is not a deposit into it: {out}");
+    assert!(out.contains("source"), "{out}");
+    Ok(())
+}
+
+/// The `fa doctor` checks in one report: (name, status).
+fn doctor_checks(out: &str) -> Vec<(String, String)> {
+    let line = out
+        .lines()
+        .find(|l| l.contains(r#""event":"doctor""#))
+        .unwrap_or_default();
+    let parsed = json::parse(line).unwrap_or(Json::Null);
+    let data = parsed.get("data").cloned().unwrap_or(Json::Null);
+    arr(&data, "checks")
+        .iter()
+        .map(|c| (text(c, "name").to_string(), text(c, "status").to_string()))
+        .collect()
+}
+
+/// `fa doctor` (plan §15.3, bead fa-12x slice 2): every check with its
+/// status and fix; exit 0 only when none failed, else the first failure's
+/// class after the report. A missing book is environment (4) naming `fa
+/// book create`; a key file others can read is a warning naming `chmod
+/// 600`; registers behind the journal are a warning naming `fa registers
+/// advance` (a verified basis is lag, never drift), and triage puts that
+/// remedy first in next_actions.
+#[test]
+fn doctor_reports_every_check_and_its_fix_and_exits_with_the_first_failure() -> std::io::Result<()>
+{
+    // No book directory at all.
+    let (code, out, _) = fa(None, &["doctor", "--json"]);
+    assert_eq!(code, 4, "{out}");
+    assert!(
+        doctor_checks(&out).contains(&("book_dir".into(), "fail".into())),
+        "{out}"
+    );
+    assert_eq!(
+        field(out.lines().last().unwrap_or_default(), "class"),
+        Some("environment")
+    );
+    let dir = tmp("doctor")?;
+    let missing = dir.join("nowhere");
+    let (code, out, _) = fa(Some(&missing), &["doctor", "--json"]);
+    assert_eq!(code, 4, "{out}");
+    assert!(out.contains("fa book create --name <name> --book"), "{out}");
+
+    // A healthy book: every check ok, in order.
+    let (book, ev, dir2) = envelope_book("doctor-book")?;
+    let (code, out, err) = fa(Some(&book), &["doctor", "--json"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert_eq!(field(&out, "healthy"), Some("true"), "{out}");
+    let checks = doctor_checks(&out);
+    assert_eq!(
+        checks.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+        vec![
+            "registries",
+            "book_dir",
+            "keys",
+            "writer_lease",
+            "book",
+            "registers",
+            "availability",
+            "accumulator"
+        ],
+        "{out}"
+    );
+    assert!(checks.iter().all(|(_, st)| st == "ok"), "{out}");
+    // Human mode: one line per check, the verdict last.
+    let (code, human, _) = fa(Some(&book), &["doctor"]);
+    assert_eq!(code, 0);
+    assert!(human.trim_end().ends_with("healthy"), "{human}");
+
+    // A key file others can read: a warning with the exact fix; still healthy.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let keys = book.join("book.keys");
+        std::fs::set_permissions(&keys, std::fs::Permissions::from_mode(0o644))?;
+        let (code, out, _) = fa(Some(&book), &["doctor", "--json"]);
+        assert_eq!(code, 0, "{out}");
+        assert!(
+            doctor_checks(&out).contains(&("keys".into(), "warn".into())),
+            "{out}"
+        );
+        assert!(
+            out.contains(&format!("chmod 600 {}", keys.display())),
+            "{out}"
+        );
+        std::fs::set_permissions(&keys, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    // Registers behind the journal: materialize March, then post into it.
+    let entry = write(
+        &dir2,
+        "rent.json",
+        r#"{"effective_date":"2026-03-05","description":"rent","idempotency_key":"rent-d1","legs":[{"side":"debit","account":"6000","amount":"5.00 USD"},{"side":"credit","account":"1000","amount":"5.00 USD"}]}"#,
+    );
+    let ok = |args: &[&str]| {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+    };
+    ok(&["post", "--intent", &entry, "--evidence", &ev, "--json"]);
+    ok(&[
+        "registers",
+        "materialize",
+        "--period",
+        "FY2026-P03",
+        "--yes",
+        "--json",
+    ]);
+    let more = write(
+        &dir2,
+        "more.json",
+        r#"{"effective_date":"2026-03-06","description":"more rent","idempotency_key":"rent-d2","legs":[{"side":"debit","account":"6000","amount":"7.00 USD"},{"side":"credit","account":"1000","amount":"7.00 USD"}]}"#,
+    );
+    ok(&["post", "--intent", &more, "--evidence", &ev, "--json"]);
+    let (code, out, _) = fa(Some(&book), &["doctor", "--json"]);
+    assert_eq!(code, 0, "lag is a warning, not a failure: {out}");
+    assert!(
+        doctor_checks(&out).contains(&("registers".into(), "warn".into())),
+        "{out}"
+    );
+    assert!(
+        out.contains("fa registers advance --period FY2026-P03"),
+        "{out}"
+    );
+    // triage names the same remedy in next_actions, ahead of the routine read.
+    let (code, out, _) = fa(Some(&book), &["triage", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let line = json::parse(out.lines().last().unwrap_or_default()).unwrap_or(Json::Null);
+    let data = line.get("data").cloned().unwrap_or(Json::Null);
+    assert_eq!(text(&data, "health"), "ok", "{out}");
+    assert_eq!(text(&data, "daemon"), "absent", "{out}");
+    let commands: Vec<&str> = arr(&line, "next_actions")
+        .iter()
+        .map(|n| text(n, "command"))
+        .collect();
+    assert_eq!(
+        commands.first().copied(),
+        Some("fa registers advance --period FY2026-P03 --json"),
+        "{out}"
+    );
+    assert_eq!(
+        commands.last().copied(),
+        Some("fa tb --period FY2026-P03 --json"),
+        "{out}"
+    );
+    // The remedy clears the warning.
+    ok(&["registers", "advance", "--period", "FY2026-P03", "--json"]);
+    let (code, out, _) = fa(Some(&book), &["doctor", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        doctor_checks(&out).iter().all(|(_, st)| st == "ok"),
+        "{out}"
+    );
+    Ok(())
+}
+
+/// `fa triage` and `fa next` (plan §15.3): the book's state and the next
+/// command, from a new book through to one ready to post.
+#[test]
+fn triage_names_the_next_step_from_the_books_state() -> std::io::Result<()> {
+    let dir = tmp("triage")?;
+    let book = dir.join("book");
+    let next_of = |out: &str| -> (String, Vec<String>) {
+        let line = json::parse(out.lines().last().unwrap_or_default()).unwrap_or(Json::Null);
+        let data = line.get("data").cloned().unwrap_or(Json::Null);
+        (
+            text(&data, "health").to_string(),
+            arr(&line, "next_actions")
+                .iter()
+                .map(|n| text(n, "command").to_string())
+                .collect(),
+        )
+    };
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Triage Co", "--json"]);
+    let (health, next) = next_of(&ok(&["triage", "--json"]));
+    assert_eq!(health, "ok");
+    assert_eq!(
+        next.first().map(String::as_str),
+        Some("fa chart import <chart.json> --json")
+    );
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    let (_, next) = next_of(&ok(&["triage", "--json"]));
+    assert_eq!(
+        next.first().map(String::as_str),
+        Some("fa period create --fiscal-year <N> --json")
+    );
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    let (_, next) = next_of(&ok(&["triage", "--json"]));
+    let open_first = next.first().map(String::as_str).unwrap_or_default();
+    assert!(
+        open_first.starts_with("fa period open FY2026-") && open_first.ends_with(" --json"),
+        "the first Future period is the one to open: {next:?}"
+    );
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let out = ok(&["triage", "--json"]);
+    let (_, next) = next_of(&out);
+    assert_eq!(
+        next,
+        vec!["fa tb --period FY2026-P03 --json".to_string()],
+        "{out}"
+    );
+    assert!(out.contains(r#""open_periods":["FY2026-P03"]"#), "{out}");
+    // No tick yet: nothing is due (FA-CFG-02).
+    for key in ["due_holds", "due_reversals", "blocked_reversals"] {
+        assert!(out.contains(&format!(r#""{key}":0"#)), "{key}: {out}");
+    }
+    // `fa next`: the same first step, as data.
+    let out = ok(&["next", "--json"]);
+    let d = doc(&out);
+    assert_eq!(
+        text(&d, "command"),
+        "fa tb --period FY2026-P03 --json",
+        "{out}"
+    );
+    assert!(!text(&d, "why").is_empty(), "{out}");
+    // Human mode: one summary line.
+    let human = ok(&["triage"]);
+    assert!(human.contains("FY2026-P03"), "{human}");
     Ok(())
 }

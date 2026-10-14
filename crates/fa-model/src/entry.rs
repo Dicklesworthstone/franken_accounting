@@ -498,10 +498,12 @@ impl LegPayload {
     }
 
     fn validate(&self) -> Result<(), EntryError> {
-        if self.amount.mantissa < 0 {
+        // Plan §4.4: a leg moves a positive amount. A negative one is the
+        // other side; a zero one moves nothing and is never a journaled fact.
+        if self.amount.mantissa <= 0 {
             return Err(invalid(
                 "leg.amount",
-                "a leg mantissa is non-negative; swap the side instead",
+                "a leg mantissa is positive: swap the side instead of a negative amount, and drop a zero leg",
             ));
         }
         if self.base_amount.is_some_and(|b| b.mantissa < 0) {
@@ -2363,6 +2365,19 @@ mod tests {
         neg.unit_totals = vec![];
         assert!(matches!(
             neg.validate().unwrap_err(),
+            EntryError::Invalid {
+                what: "leg.amount",
+                ..
+            }
+        ));
+
+        // fa-cvg: `Dr 0 / Cr 0` balances but moves nothing; it is refused.
+        let mut zero = proposal(two_legs());
+        zero.legs[0].amount.mantissa = 0;
+        zero.legs[1].amount.mantissa = 0;
+        zero.unit_totals = vec![];
+        assert!(matches!(
+            zero.validate().unwrap_err(),
             EntryError::Invalid {
                 what: "leg.amount",
                 ..
