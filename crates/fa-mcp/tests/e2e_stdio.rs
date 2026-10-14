@@ -477,6 +477,11 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         .tools
         .iter()
         .map(fa_mcp::registry::ToolSpec::wire_name)
+        .chain(
+            fa_mcp::registry::MACROS
+                .iter()
+                .map(fa_mcp::registry::MacroSpec::wire_name),
+        )
         .collect();
     let mut listed = std::collections::BTreeSet::new();
     let mut cursor: Option<String> = None;
@@ -1045,7 +1050,110 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     .unwrap();
     assert_eq!(resource_envelope["authority"]["profile"], "preparer");
     assert_eq!(resource_envelope["authority"]["principal"], "operator");
-    log("resources exit-codes, periods/{book}, book == the CLI's data");
+    let read = mcp.result(
+        "resources/read",
+        json!({"uri": "resource://fa/open-items/default/all"}),
+    );
+    let text = read["contents"][0]["text"].as_str().expect("open-items all");
+    assert_eq!(text, cli_data(&["open-items", "--book", &b, "--json"]));
+    let read = mcp.result(
+        "resources/read",
+        json!({"uri": "resource://fa/open-items/default/1000"}),
+    );
+    let text = read["contents"][0]["text"].as_str().expect("open-items 1000");
+    assert_eq!(
+        text,
+        cli_data(&["open-items", "--account", "1000", "--book", &b, "--json"])
+    );
+    let read = mcp.result(
+        "resources/read",
+        json!({"uri": "resource://fa/findings/default"}),
+    );
+    let findings_res: JsonValue =
+        fastmcp_rust::serde_json::from_str(read["contents"][0]["text"].as_str().unwrap()).unwrap();
+    assert!(findings_res["procedures"]["procedures"].is_array());
+    assert_eq!(findings_res["findings"]["evidence"], json!("FA-EVID-L01"));
+    assert_eq!(findings_res["findings"]["claim"], json!("statistical"));
+    let read = mcp.result(
+        "resources/read",
+        json!({"uri": "resource://fa/cases/default"}),
+    );
+    let cases_res: JsonValue =
+        fastmcp_rust::serde_json::from_str(read["contents"][0]["text"].as_str().unwrap()).unwrap();
+    assert!(cases_res["periods"]["periods"].is_array());
+    assert_eq!(cases_res["cases"], json!([]));
+    let read = mcp.result(
+        "resources/read",
+        json!({"uri": "resource://fa/drafts/default"}),
+    );
+    let drafts_res: JsonValue =
+        fastmcp_rust::serde_json::from_str(read["contents"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        drafts_res["portable_planning"]["commit_tool"],
+        json!("fa_post_commit_plan")
+    );
+    let read = mcp.result(
+        "resources/read",
+        json!({"uri": format!("resource://fa/certificates/{certificate_oid}")}),
+    );
+    let cert_res: JsonValue =
+        fastmcp_rust::serde_json::from_str(read["contents"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(cert_res["oid"], json!(certificate_oid));
+    assert_eq!(cert_res["status"], json!("SupersededBy"));
+    let read = mcp.result(
+        "resources/read",
+        json!({"uri": "resource://fa/bundles/bundle-1"}),
+    );
+    let bundle_res: JsonValue =
+        fastmcp_rust::serde_json::from_str(read["contents"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(bundle_res["bundle_id"], json!("bundle-1"));
+    assert_eq!(bundle_res["accumulator"]["status"], json!("no_checkpoints"));
+
+    // Workflow macros (§15.4): deterministic step-by-step execution and provenance.
+    let (is_error, text, _) = call_tool(
+        &mut mcp,
+        "fa_macro_prepare_close",
+        json!({"period": "FY2026-P03"}),
+    );
+    assert!(!is_error, "fa_macro_prepare_close: {text}");
+    let prep_close: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(prep_close["macro"], json!("fa.macro.prepare_close"));
+    assert_eq!(prep_close["step_count"], json!(4));
+    assert_eq!(prep_close["steps"][3]["step"], json!("close_plan"));
+    assert_eq!(
+        prep_close["steps"][3]["data"]["scope"],
+        json!("period-transition-proposal")
+    );
+    let (is_error, text, _) = call_tool(
+        &mut mcp,
+        "fa_macro_record_and_match_cash",
+        json!({"account": "1000", "period": "FY2026-P03"}),
+    );
+    assert!(!is_error, "fa_macro_record_and_match_cash: {text}");
+    let cash_macro: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(cash_macro["macro"], json!("fa.macro.record_and_match_cash"));
+    assert_eq!(cash_macro["step_count"], json!(3));
+    let (is_error, text, _) = call_tool(
+        &mut mcp,
+        "fa_macro_investigate_account",
+        json!({"account": "1000", "period": "FY2026-P03"}),
+    );
+    assert!(!is_error, "fa_macro_investigate_account: {text}");
+    let inv_macro: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(inv_macro["macro"], json!("fa.macro.investigate_account"));
+    assert_eq!(inv_macro["step_count"], json!(3));
+    assert_eq!(inv_macro["certificates"].as_array().unwrap().len(), 1);
+    let (is_error, text, _) = call_tool(
+        &mut mcp,
+        "fa_macro_produce_audit_package",
+        json!({"period": "FY2026-P03"}),
+    );
+    assert!(!is_error, "fa_macro_produce_audit_package: {text}");
+    let pkg_macro: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(pkg_macro["macro"], json!("fa.macro.produce_audit_package"));
+    assert_eq!(pkg_macro["step_count"], json!(4));
+    assert_eq!(pkg_macro["certificates"].as_array().unwrap().len(), 3);
+    log("all 12 resources and 4 workflow macros verified over stdio");
 
     // A portable plan runs under the actual launch capability. Rejected
     // overrides and other launch authorities cannot publish its effects.

@@ -30,7 +30,9 @@ use fastmcp_rust::{
 use crate::detect::{self, Memory};
 use crate::dispatch::{self, Reply, to_wire};
 use crate::errors::StructuredError;
-use crate::registry::{Invocation, McpRegistry, RESOURCES, ToolSpec};
+use crate::registry::{
+    Invocation, MACROS, MacroSpec, McpRegistry, RESOURCES, ToolSpec, macro_by_wire,
+};
 
 /// The law registries `resource://fa/laws` serves verbatim (the TOML the
 /// kernel embeds; the same bytes).
@@ -313,6 +315,320 @@ impl Adapter {
         Ok(CallOutput { data, envelope })
     }
 
+    /// One workflow macro call: argument validation, deterministic step-by-step
+    /// dispatch under the session's LaunchAuthority, and provenance aggregation.
+    pub fn call_macro(
+        &self,
+        spec: &MacroSpec,
+        arguments: &JsonValue,
+    ) -> Result<CallOutput, StructuredError> {
+        self.call_macro_inner(spec, arguments)
+            .map_err(|e| e.with_authority(self.authority_json()))
+    }
+
+    fn call_macro_inner(
+        &self,
+        spec: &MacroSpec,
+        arguments: &JsonValue,
+    ) -> Result<CallOutput, StructuredError> {
+        if let Some(error) = forbidden_macro_argument(spec, arguments) {
+            return Err(error);
+        }
+        if let Some(e) = detect::floats(arguments) {
+            return Err(e);
+        }
+        let Some(object) = arguments.as_object() else {
+            return Err(StructuredError::arguments(
+                format!("`{}` arguments must be a JSON object", spec.wire_name()),
+                format!("example: {}", spec.example),
+            ));
+        };
+        let declared: Vec<&str> = spec.properties.iter().map(|(k, _)| *k).collect();
+        for key in object.keys() {
+            if !declared.contains(&key.as_str()) {
+                let fix = match fa_cli::args::nearest(key, &declared) {
+                    Some(near) => format!("did you mean `{near}`?"),
+                    None => format!("declared arguments: {}", declared.join(", ")),
+                };
+                return Err(StructuredError::arguments(
+                    format!("unknown argument `{key}` for `{}`", spec.wire_name()),
+                    fix,
+                ));
+            }
+        }
+        let get_str = |name: &str, required: bool| -> Result<Option<String>, StructuredError> {
+            match object.get(name) {
+                None => {
+                    if required {
+                        Err(StructuredError::arguments(
+                            format!("`{name}` is required for `{}`", spec.wire_name()),
+                            format!("supply `{name}` as a string (example: {})", spec.example),
+                        ))
+                    } else {
+                        Ok(None)
+                    }
+                }
+                Some(JsonValue::String(s)) => {
+                    let trimmed = s.trim();
+                    if trimmed.is_empty()
+                        || trimmed.starts_with('-')
+                        || (trimmed.starts_with('<') && trimmed.ends_with('>'))
+                    {
+                        return Err(StructuredError::arguments(
+                            format!(
+                                "`{name}` must be a non-empty value, not an option or placeholder"
+                            ),
+                            format!("supply a real `{name}` value (example: {})", spec.example),
+                        ));
+                    }
+                    Ok(Some(s.clone()))
+                }
+                Some(_) => Err(StructuredError::arguments(
+                    format!("`{name}` must be a string"),
+                    format!("supply `{name}` as a string (example: {})", spec.example),
+                )),
+            }
+        };
+        let raw_steps: Vec<(&'static str, &'static str, Vec<String>)> = match spec.id {
+            "fa.macro.prepare_close" => {
+                let period = get_str("period", true)?.unwrap_or_default();
+                vec![
+                    (
+                        "period_list",
+                        "fa_time_period_status",
+                        vec!["period".into(), "list".into()],
+                    ),
+                    (
+                        "trial_balance",
+                        "fa_read_trial_balance",
+                        vec!["tb".into(), "--period".into(), period.clone()],
+                    ),
+                    (
+                        "verify_registers",
+                        "fa_book_verify",
+                        vec![
+                            "verify".into(),
+                            "registers".into(),
+                            "--period".into(),
+                            period.clone(),
+                        ],
+                    ),
+                    (
+                        "close_plan",
+                        "fa_time_period_transition",
+                        vec![
+                            "period".into(),
+                            "close".into(),
+                            period,
+                            "--dry-run".into(),
+                        ],
+                    ),
+                ]
+            }
+            "fa.macro.record_and_match_cash" => {
+                let account = get_str("account", true)?.unwrap_or_default();
+                let period = get_str("period", false)?;
+                let mut steps = vec![
+                    (
+                        "open_items",
+                        "fa_read_open_items",
+                        vec!["open-items".into(), "--account".into(), account],
+                    ),
+                    (
+                        "verify_open_items",
+                        "fa_book_verify",
+                        vec!["verify".into(), "open-items".into()],
+                    ),
+                ];
+                if let Some(period) = period {
+                    steps.push((
+                        "trial_balance",
+                        "fa_read_trial_balance",
+                        vec!["tb".into(), "--period".into(), period],
+                    ));
+                }
+                steps
+            }
+            "fa.macro.investigate_account" => {
+                let account = get_str("account", true)?.unwrap_or_default();
+                let period = get_str("period", true)?.unwrap_or_default();
+                vec![
+                    (
+                        "explain_balance",
+                        "fa_read_explain_balance",
+                        vec![
+                            "explain".into(),
+                            "balance".into(),
+                            account.clone(),
+                            "--period".into(),
+                            period,
+                            "--certify".into(),
+                        ],
+                    ),
+                    (
+                        "open_items",
+                        "fa_read_open_items",
+                        vec!["open-items".into(), "--account".into(), account.clone()],
+                    ),
+                    (
+                        "procedure_round_amounts",
+                        "fa_forensics_procedure",
+                        vec![
+                            "procedure".into(),
+                            "run".into(),
+                            "jet.round_amounts".into(),
+                            "--account".into(),
+                            account,
+                        ],
+                    ),
+                ]
+            }
+            "fa.macro.produce_audit_package" => {
+                let period = get_str("period", true)?.unwrap_or_default();
+                vec![
+                    (
+                        "certified_trial_balance",
+                        "fa_read_trial_balance",
+                        vec![
+                            "tb".into(),
+                            "--period".into(),
+                            period.clone(),
+                            "--certify".into(),
+                        ],
+                    ),
+                    (
+                        "certified_balance_sheet",
+                        "fa_read_statement",
+                        vec![
+                            "statement".into(),
+                            "balance-sheet".into(),
+                            "--for".into(),
+                            period.clone(),
+                            "--certify".into(),
+                        ],
+                    ),
+                    (
+                        "certified_income_statement",
+                        "fa_read_statement",
+                        vec![
+                            "statement".into(),
+                            "income-statement".into(),
+                            "--for".into(),
+                            period,
+                            "--certify".into(),
+                        ],
+                    ),
+                    (
+                        "verify_accumulator",
+                        "fa_book_verify",
+                        vec!["verify".into(), "accumulator".into()],
+                    ),
+                ]
+            }
+            other => {
+                return Err(StructuredError::foundation(format!(
+                    "unimplemented macro `{other}`"
+                )));
+            }
+        };
+
+        let mut step_records = Vec::with_capacity(raw_steps.len());
+        let mut all_events = Vec::new();
+        let mut certificates = Vec::new();
+        let mut warnings = Vec::new();
+        let mut last_book = JsonValue::Null;
+        let mut last_coordinate = JsonValue::Null;
+        let mut last_certificate = JsonValue::Null;
+
+        for (step_name, tool_wire, raw_argv) in raw_steps {
+            let mut argv = raw_argv.clone();
+            argv.push("--json".into());
+            let inv = Invocation { argv, stdin: None };
+            let reply = self.dispatch(&inv)?;
+            if step_name == "close_plan"
+                && let Some(tool) = self.mcp.tool_by_wire(tool_wire)
+                && let Ok(mut memory) = self.memory.lock()
+            {
+                detect::remember(
+                    &mut memory,
+                    tool,
+                    &json!({"transition": "close", "dry_run": true}),
+                    &reply,
+                    self.authority.principal(),
+                );
+            }
+            if reply.exit != 0 {
+                return Err(self.error_of(&reply));
+            }
+            let Some(last) = reply.lines.last() else {
+                return Err(StructuredError::foundation(
+                    "the dispatcher exited 0 without a robot line",
+                ));
+            };
+            for line in &reply.lines {
+                all_events.push(line.event.clone());
+            }
+            if let Some(b) = last.line.get("book").filter(|v| !matches!(v, Json::Null)) {
+                last_book = to_wire(b);
+            }
+            if let Some(c) = last
+                .line
+                .get("coordinate")
+                .filter(|v| !matches!(v, Json::Null))
+            {
+                last_coordinate = to_wire(c);
+            }
+            let step_cert = last
+                .line
+                .get("certificate")
+                .map_or(JsonValue::Null, to_wire);
+            if !step_cert.is_null() {
+                last_certificate = step_cert.clone();
+                certificates.push(step_cert.clone());
+            }
+            if let Some(w) = last.line.get("warnings").and_then(Json::as_arr) {
+                for item in w {
+                    warnings.push(to_wire(item));
+                }
+            }
+            let step_data = match reply.lines.as_slice() {
+                [one] => to_wire(&one.data),
+                many => JsonValue::Array(many.iter().map(|l| to_wire(&l.data)).collect()),
+            };
+            step_records.push(json!({
+                "step": step_name,
+                "tool": tool_wire,
+                "command": format!("fa {}", raw_argv.join(" ")),
+                "events": reply.lines.iter().map(|l| l.event.clone()).collect::<Vec<_>>(),
+                "certificate": step_cert,
+                "data": step_data,
+            }));
+        }
+
+        let payload = json!({
+            "macro": spec.id,
+            "wire_name": spec.wire_name(),
+            "step_count": step_records.len(),
+            "certificates": certificates,
+            "steps": step_records,
+        });
+        let envelope = json!({
+            "macro": spec.id,
+            "events": all_events,
+            "book": last_book,
+            "coordinate": last_coordinate,
+            "certificate": last_certificate,
+            "warnings": warnings,
+            "next_actions": [],
+            "stderr": "",
+            "authority": self.authority_json(),
+        });
+        Ok(CallOutput {
+            data: payload.to_string(),
+            envelope,
+        })
+    }
+
     /// One resource read: the MIME type and the text.
     pub fn read_resource(
         &self,
@@ -388,6 +704,119 @@ impl Adapter {
                 });
                 Ok((json_mime, v.to_string()))
             }
+            "resource://fa/open-items/{book}/{party}" => {
+                let party = params
+                    .get("party")
+                    .map(String::as_str)
+                    .map(percent_decode)
+                    .unwrap_or_default();
+                if party.is_empty() || party.starts_with('-') {
+                    return Err(StructuredError::arguments(
+                        "open-items `{party}` must be `all` or an account code",
+                        "use resource://fa/open-items/default/all or resource://fa/open-items/default/1200",
+                    ));
+                }
+                let data = if party == "all" || party == "*" {
+                    self.read(&["open-items"])?
+                } else {
+                    self.read(&["open-items", "--account", &party])?
+                };
+                Ok((json_mime, data.render()))
+            }
+            "resource://fa/findings/{book}" => {
+                let book = self.read(&["book", "info"])?;
+                let procedures = self.read(&["procedure", "list"])?;
+                let findings = self.read(&["procedure", "run", "jet.round_amounts"])?;
+                let v = json!({
+                    "book": to_wire(&book),
+                    "procedures": to_wire(&procedures),
+                    "findings": to_wire(&findings),
+                });
+                Ok((json_mime, v.to_string()))
+            }
+            "resource://fa/cases/{book}" => {
+                let periods = self.read(&["period", "list"])?;
+                let v = json!({
+                    "periods": to_wire(&periods),
+                    "cases": [],
+                    "note": "period state and reopen/restatement case status for the launch-bound book",
+                });
+                Ok((json_mime, v.to_string()))
+            }
+            "resource://fa/drafts/{book}" => {
+                let book = self.read(&["book", "info"])?;
+                let v = json!({
+                    "book": to_wire(&book),
+                    "authority": self.authority_json(),
+                    "drafts": [],
+                    "portable_planning": {
+                        "dry_run": true,
+                        "commit_tool": "fa_post_commit_plan",
+                        "scope": "same-snapshot-post",
+                    },
+                });
+                Ok((json_mime, v.to_string()))
+            }
+            "resource://fa/certificates/{id}" => {
+                let id = params
+                    .get("id")
+                    .map(String::as_str)
+                    .map(percent_decode)
+                    .unwrap_or_default();
+                if id.is_empty() || id.starts_with('-') {
+                    return Err(StructuredError::arguments(
+                        "certificate `{id}` must be a retained C:<oid>, 64-hex digest, or canonical hex string",
+                        "pass C:<oid> or 64-hex digest in resource://fa/certificates/{id}",
+                    ));
+                }
+                let inv = Invocation {
+                    argv: vec![
+                        "certificate".into(),
+                        "status".into(),
+                        "-".into(),
+                        "--json".into(),
+                    ],
+                    stdin: Some(id.into_bytes()),
+                };
+                let reply = self.dispatch(&inv)?;
+                if reply.exit != 0 {
+                    return Err(self.error_of(&reply));
+                }
+                let data = reply
+                    .lines
+                    .into_iter()
+                    .next()
+                    .map(|l| l.data)
+                    .ok_or_else(|| {
+                        StructuredError::foundation("the dispatcher exited 0 without a robot line")
+                    })?;
+                Ok((json_mime, data.render()))
+            }
+            "resource://fa/bundles/{id}" => {
+                let id = params
+                    .get("id")
+                    .map(String::as_str)
+                    .map(percent_decode)
+                    .unwrap_or_default();
+                if id.is_empty() || id.starts_with('-') {
+                    return Err(StructuredError::arguments(
+                        "bundle `{id}` must be a non-empty identifier",
+                        "pass a bundle identifier in resource://fa/bundles/{id}",
+                    ));
+                }
+                let book = self.read(&["book", "info"])?;
+                let accumulator = self
+                    .read(&["verify", "accumulator"])
+                    .ok()
+                    .map(|v| to_wire(&v));
+                let v = json!({
+                    "bundle_id": id,
+                    "book": to_wire(&book),
+                    "accumulator": accumulator.unwrap_or(JsonValue::Null),
+                    "verify_command": "fa-verify bundle <bundle.fab> --key <checkpoint_public_key> --receipt <receipt>",
+                });
+                Ok((json_mime, v.to_string()))
+            }
             other => Err(StructuredError::arguments(
                 format!("no resource `{other}`"),
                 format!(
@@ -439,6 +868,15 @@ fn forbidden_tool_argument(tool: &ToolSpec, arguments: &JsonValue) -> Option<Str
         })
 }
 
+fn forbidden_macro_argument(spec: &MacroSpec, arguments: &JsonValue) -> Option<StructuredError> {
+    crate::registry::forbidden_argument(arguments)
+        .map(StructuredError::forbidden_argument)
+        .or_else(|| {
+            spec.forbidden_path_argument(arguments)
+                .map(|(argument, fix)| StructuredError::forbidden_path(&argument, fix))
+        })
+}
+
 /// Preserve the structured refusal when required inline content is absent.
 /// The framework rejects that schema before entering the tool handler. Only
 /// its exact error content is enriched; schemas, requests, successful results
@@ -469,16 +907,21 @@ impl Middleware for ToolArgumentErrors {
         let Some(params) = request.params.as_ref() else {
             return Ok(response);
         };
-        let Some(tool) = params["name"]
-            .as_str()
-            .and_then(|name| self.adapter.mcp.tool_by_wire(name))
-        else {
+        let Some(name) = params["name"].as_str() else {
             return Ok(response);
         };
         let Some(arguments) = params.get("arguments").filter(|args| args.is_object()) else {
             return Ok(response);
         };
-        if let Some(error) = forbidden_tool_argument(tool, arguments) {
+        let error = self
+            .adapter
+            .mcp
+            .tool_by_wire(name)
+            .and_then(|tool| forbidden_tool_argument(tool, arguments))
+            .or_else(|| {
+                macro_by_wire(name).and_then(|mac| forbidden_macro_argument(mac, arguments))
+            });
+        if let Some(error) = error {
             response["content"] = json!([{
                 "type": "text",
                 "text": error.with_authority(self.adapter.authority_json()).render(),
@@ -554,6 +997,69 @@ impl ToolHandler for VerbTool {
     }
 }
 
+/// One deterministic workflow macro as a fastmcp tool.
+pub struct MacroTool {
+    adapter: Arc<Adapter>,
+    spec: &'static MacroSpec,
+    definition: Tool,
+}
+
+impl MacroTool {
+    #[must_use]
+    pub fn new(adapter: Arc<Adapter>, spec: &'static MacroSpec) -> Self {
+        let definition = Tool {
+            name: spec.wire_name(),
+            description: Some(spec.description()),
+            input_schema: spec.input_schema(),
+            output_schema: None,
+            icon: None,
+            version: Some(crate::VERSION.to_string()),
+            tags: vec!["fa.macro".to_string()],
+            annotations: Some(ToolAnnotations {
+                destructive: Some(false),
+                idempotent: Some(true),
+                read_only: Some(true),
+                open_world_hint: Some(false),
+            }),
+        };
+        Self {
+            adapter,
+            spec,
+            definition,
+        }
+    }
+
+    #[must_use]
+    pub const fn spec(&self) -> &'static MacroSpec {
+        self.spec
+    }
+}
+
+impl ToolHandler for MacroTool {
+    fn definition(&self) -> Tool {
+        self.definition.clone()
+    }
+
+    fn annotations(&self) -> Option<&ToolAnnotations> {
+        self.definition.annotations.as_ref()
+    }
+
+    fn tags(&self) -> &[String] {
+        &self.definition.tags
+    }
+
+    fn call(&self, ctx: &McpContext, arguments: JsonValue) -> McpResult<Vec<Content>> {
+        ctx.checkpoint()?;
+        match self.adapter.call_macro(self.spec, &arguments) {
+            Ok(out) => Ok(vec![
+                Content::text(out.data),
+                Content::text(out.envelope.to_string()),
+            ]),
+            Err(e) => Err(McpError::tool_error(e.render())),
+        }
+    }
+}
+
 /// One registry resource as a fastmcp resource.
 pub struct FaResource {
     adapter: Arc<Adapter>,
@@ -575,6 +1081,8 @@ impl FaResource {
         self.uri
             .trim_start_matches("resource://fa/")
             .replace("/{book}", "")
+            .replace("/{party}", "")
+            .replace("/{id}", "")
             .replace('/', "_")
     }
 }
@@ -688,7 +1196,7 @@ impl ResourceHandler for FaResource {
     }
 }
 
-/// Build the MCP 2026-07-28 server: every registry tool and resource.
+/// Build the MCP 2026-07-28 server: every registry tool, workflow macro, and resource.
 /// The explicit facade prevents a legacy initialize request from selecting
 /// the pinned framework's code/message-only resource error adapter.
 pub fn build_server(config: ServerConfig) -> Result<Server, ServerError> {
@@ -705,6 +1213,9 @@ pub fn build_server(config: ServerConfig) -> Result<Server, ServerError> {
         });
     for spec in adapter.mcp.tools.clone() {
         builder = builder.tool(VerbTool::new(Arc::clone(&adapter), spec));
+    }
+    for spec in MACROS {
+        builder = builder.tool(MacroTool::new(Arc::clone(&adapter), spec));
     }
     for (uri, doc) in RESOURCES {
         builder = builder.resource(FaResource::new(Arc::clone(&adapter), uri, doc));
@@ -735,6 +1246,13 @@ mod tests {
                 Arc::new(Adapter::new(config()).expect("adapter")),
                 spec.clone(),
             );
+            let d = tool.definition();
+            assert_eq!(d.name, spec.wire_name());
+            assert!(d.description.as_deref().is_some_and(|s| s.contains("Do:")));
+            assert_eq!(d.input_schema["type"], json!("object"));
+        }
+        for spec in MACROS {
+            let tool = MacroTool::new(Arc::new(Adapter::new(config()).expect("adapter")), spec);
             let d = tool.definition();
             assert_eq!(d.name, spec.wire_name());
             assert!(d.description.as_deref().is_some_and(|s| s.contains("Do:")));
@@ -947,6 +1465,155 @@ mod tests {
                 .expect("grant exceeds launch ceiling");
                 assert_eq!(error.exit(), 7, "{error}");
             }
+        }
+    }
+
+    #[test]
+    fn macros_and_book_resources_enforce_forbidden_arguments_paths_and_read_capability_before_opening_the_book()
+     {
+        let adapter = Adapter::new(config()).expect("adapter");
+        assert_eq!(RESOURCES.len(), 12);
+        assert_eq!(MACROS.len(), 4);
+        for mac in MACROS {
+            for argument in crate::registry::FORBIDDEN_ARGUMENTS {
+                let mut input = json!({"period": "FY2026-P03", "account": "1000"});
+                input[*argument] = JsonValue::Null;
+                let error = adapter
+                    .call_macro(mac, &input)
+                    .expect_err("forbidden argument on macro");
+                assert_eq!(error.kind, "forbidden_argument");
+                assert_eq!(error.detail["argument"], *argument);
+                assert_eq!(error.authority, Some(adapter.authority_json()));
+            }
+            for path_arg in [
+                "file",
+                "intent_file",
+                "plan_file",
+                "plan_out",
+                "review_out",
+                "certificate_out",
+                "out",
+            ] {
+                let mut input = json!({"period": "FY2026-P03", "account": "1000"});
+                input[path_arg] = json!("/host/secret");
+                let error = adapter
+                    .call_macro(mac, &input)
+                    .expect_err("forbidden path on macro");
+                assert_eq!(error.kind, "forbidden_path");
+                assert_eq!(error.detail["argument"], path_arg);
+                assert_eq!(error.authority, Some(adapter.authority_json()));
+            }
+            let bad = adapter
+                .call_macro(mac, &json!({"unknown_key": "x"}))
+                .expect_err("unknown macro key");
+            assert_eq!(bad.detector.as_deref(), Some("arguments"));
+            assert_eq!(bad.exit, 2);
+        }
+
+        // Foreign {book} on all book-parameterized resources is refused before opening any book.
+        for uri in [
+            "resource://fa/chart/{book}",
+            "resource://fa/periods/{book}",
+            "resource://fa/open-items/{book}/{party}",
+            "resource://fa/findings/{book}",
+            "resource://fa/cases/{book}",
+            "resource://fa/drafts/{book}",
+        ] {
+            let params = HashMap::from([
+                ("book".into(), "%2Fanother%2Fbook".into()),
+                ("party".into(), "all".into()),
+            ]);
+            let error = adapter
+                .read_resource(uri, &params)
+                .expect_err("foreign book must be refused");
+            assert_eq!(error.kind, "forbidden_argument", "{uri}: {error:?}");
+            assert_eq!(error.detail["argument"], "book");
+        }
+
+        // A session launched without `read` (e.g. `grants: ["post"]`) must refuse
+        // with FA-REF-011 (exit 7, safety) BEFORE attempting to open `/nonexistent/book`
+        // (which would otherwise fail with exit 4, environment).
+        let no_read = Adapter::new(ServerConfig {
+            grants: vec!["post".into()],
+            ..config()
+        })
+        .expect("post-only adapter");
+        for (uri, params) in [
+            ("resource://fa/book", HashMap::new()),
+            (
+                "resource://fa/chart/{book}",
+                HashMap::from([("book".into(), "default".into())]),
+            ),
+            (
+                "resource://fa/periods/{book}",
+                HashMap::from([("book".into(), "default".into())]),
+            ),
+            (
+                "resource://fa/open-items/{book}/{party}",
+                HashMap::from([
+                    ("book".into(), "default".into()),
+                    ("party".into(), "all".into()),
+                ]),
+            ),
+            (
+                "resource://fa/findings/{book}",
+                HashMap::from([("book".into(), "default".into())]),
+            ),
+            (
+                "resource://fa/cases/{book}",
+                HashMap::from([("book".into(), "default".into())]),
+            ),
+            (
+                "resource://fa/drafts/{book}",
+                HashMap::from([("book".into(), "default".into())]),
+            ),
+            (
+                "resource://fa/certificates/{id}",
+                HashMap::from([("id".into(), "a".repeat(64))]),
+            ),
+            (
+                "resource://fa/bundles/{id}",
+                HashMap::from([("id".into(), "bundle-1".into())]),
+            ),
+        ] {
+            let error = no_read
+                .read_resource(uri, &params)
+                .expect_err("missing read capability must refuse before opening the book");
+            assert_eq!(error.exit, 7, "{uri}: {error:?}");
+            assert_eq!(
+                error.refusal_id.as_deref(),
+                Some("FA-REF-011"),
+                "{uri}: {error:?}"
+            );
+        }
+        for (mac, args) in [
+            (
+                macro_by_wire("fa_macro_prepare_close").unwrap(),
+                json!({"period": "FY2026-P03"}),
+            ),
+            (
+                macro_by_wire("fa_macro_record_and_match_cash").unwrap(),
+                json!({"account": "1000", "period": "FY2026-P03"}),
+            ),
+            (
+                macro_by_wire("fa_macro_investigate_account").unwrap(),
+                json!({"account": "1000", "period": "FY2026-P03"}),
+            ),
+            (
+                macro_by_wire("fa_macro_produce_audit_package").unwrap(),
+                json!({"period": "FY2026-P03"}),
+            ),
+        ] {
+            let error = no_read
+                .call_macro(mac, &args)
+                .expect_err("missing read capability must refuse macro before opening the book");
+            assert_eq!(error.exit, 7, "{}: {error:?}", mac.wire_name());
+            assert_eq!(
+                error.refusal_id.as_deref(),
+                Some("FA-REF-011"),
+                "{}: {error:?}",
+                mac.wire_name()
+            );
         }
     }
 }

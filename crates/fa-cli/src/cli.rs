@@ -4439,7 +4439,7 @@ const MAX_REVIEW_BYTES: usize = {
 fn decode_hex_bytes(text: &str, what: &str) -> Result<Vec<u8>, Fail> {
     let trimmed = text.trim();
     if trimmed.is_empty()
-        || trimmed.len() % 2 != 0
+        || !trimmed.len().is_multiple_of(2)
         || !trimmed.bytes().all(|b| b.is_ascii_hexdigit())
     {
         return Err(usage(
@@ -4478,7 +4478,7 @@ fn decode_hex_bytes(text: &str, what: &str) -> Result<Vec<u8>, Fail> {
 fn read_review_bytes(files: &Files, path: &str, bound: bool) -> Result<Vec<u8>, Fail> {
     let is_inline_hex = path != "-"
         && path.len() >= 28
-        && path.len() % 2 == 0
+        && path.len().is_multiple_of(2)
         && path.bytes().all(|b| b.is_ascii_hexdigit());
     if is_inline_hex {
         return decode_hex_bytes(path, "review");
@@ -7592,7 +7592,7 @@ fn parse_digest32(text: &str, what: &str) -> Result<[u8; 32], Fail> {
         ));
     }
     let mut out = [0u8; 32];
-    for (idx, chunk) in text.as_bytes().chunks_exact(2).enumerate() {
+    for (idx, chunk) in text.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let s = core::str::from_utf8(chunk).unwrap_or("");
         out[idx] = u8::from_str_radix(s, 16).map_err(|_| {
             usage(
@@ -8451,7 +8451,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         ("effective_through", s(source.effective_through().render())),
                         (
                             "income_periods",
-                            Json::Arr(income_periods.iter().map(|p| s(p)).collect()),
+                            Json::Arr(income_periods.iter().map(s).collect()),
                         ),
                         ("cash_accounts", Json::Arr(cash_accounts)),
                         ("units", Json::Arr(unit_rows)),
@@ -9503,10 +9503,11 @@ const MIGRATE_PLAN_VERSION: u16 = 1;
 
 fn resolve_migration_run_vid(book_id: Id128, text: &str) -> VId {
     let trimmed = text.strip_prefix("MR:").unwrap_or(text);
-    if trimmed.len() == 32 && trimmed.bytes().all(|b| b.is_ascii_hexdigit()) {
-        if let Ok(v) = u128::from_str_radix(trimmed, 16) {
-            return VId(v);
-        }
+    if trimmed.len() == 32
+        && trimmed.bytes().all(|b| b.is_ascii_hexdigit())
+        && let Ok(v) = u128::from_str_radix(trimmed, 16)
+    {
+        return VId(v);
     }
     fa_model::migration_run_vid(book_id, trimmed)
 }
@@ -10001,10 +10002,10 @@ fn migrate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             if !has_class {
                 filtered.push(("class".to_string(), s("Migration")));
             }
-            if !has_period {
-                if let Some(p_flag) = args.flag("--period") {
-                    filtered.push(("effective_period".to_string(), s(p_flag)));
-                }
+            if !has_period
+                && let Some(p_flag) = args.flag("--period")
+            {
+                filtered.push(("effective_period".to_string(), s(p_flag)));
             }
             let post_doc = Json::Obj(filtered);
             let mut proposal = build_proposal_from_intent(

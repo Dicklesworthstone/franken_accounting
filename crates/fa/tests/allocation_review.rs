@@ -240,7 +240,7 @@ fn approval_publications_do_not_change_the_reviewed_proposal_or_create_a_stale_r
                 .find(|cell| cell.key.account == account(name))
                 .unwrap()
                 .net(),
-            net
+            Some(net)
         );
     }
     let at = h.head();

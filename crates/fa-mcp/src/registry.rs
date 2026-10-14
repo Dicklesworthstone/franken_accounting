@@ -43,7 +43,7 @@ pub fn forbidden_argument(arguments: &JsonValue) -> Option<&'static str> {
         .find(|argument| arguments.get(*argument).is_some())
 }
 
-/// The resources the server exposes (plan §15.4; only what exists today).
+/// The resources the server exposes (plan §15.4).
 pub const RESOURCES: &[(&str, &str)] = &[
     (
         "resource://fa/book",
@@ -69,7 +69,179 @@ pub const RESOURCES: &[(&str, &str)] = &[
         "resource://fa/intents",
         "the intent documents this build accepts: entry classes, worked examples and portable PostEntry planning under the launch authority; a machine-readable JSON intent schema is not registered yet",
     ),
+    (
+        "resource://fa/open-items/{book}/{party}",
+        "the launch-bound book's open items (`fa open-items`); `{book}` as above; `{party}` is `all` or an account code",
+    ),
+    (
+        "resource://fa/findings/{book}",
+        "the launch-bound book's registered forensic procedures and findings (`fa procedure list` and `fa procedure run`); `{book}` as above",
+    ),
+    (
+        "resource://fa/cases/{book}",
+        "the launch-bound book's period state and reopen/restatement case status (`fa period list`); `{book}` as above",
+    ),
+    (
+        "resource://fa/drafts/{book}",
+        "the launch-bound book's draft and portable-plan posture; `{book}` as above",
+    ),
+    (
+        "resource://fa/certificates/{id}",
+        "the status of retained report certificate `{id}` (`fa certificate status`); `{id}` is `C:<oid>`, a 64-hex digest, or complete canonical hex bytes",
+    ),
+    (
+        "resource://fa/bundles/{id}",
+        "the launch-bound book's accumulator verification status and bundle verification guidance for `{id}` (`fa verify accumulator`)",
+    ),
 ];
+
+/// A deterministic multi-step workflow macro (plan §15.4) composed from
+/// existing dispatcher invocations with step-by-step provenance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MacroSpec {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub summary: &'static str,
+    pub properties: &'static [(&'static str, &'static str)],
+    pub required: &'static [&'static str],
+    pub example: &'static str,
+}
+
+/// The workflow macros the server exposes (plan §15.4).
+pub const MACROS: &[MacroSpec] = &[
+    MacroSpec {
+        id: "fa.macro.prepare_close",
+        name: "prepare_close",
+        summary: "Inspect period state, compute the period's trial balance, verify derived registers against the fold, and rehearse a sealed close proposal (`fa period close <code> --dry-run`) with step-by-step provenance.",
+        properties: &[(
+            "period",
+            "fiscal period code to prepare for close (for example `FY2026-P03`)",
+        )],
+        required: &["period"],
+        example: r#"{"period":"FY2026-P03"}"#,
+    },
+    MacroSpec {
+        id: "fa.macro.record_and_match_cash",
+        name: "record_and_match_cash",
+        summary: "Inspect open items for an account, verify the open-item mirror against the fold, and optionally compute the period's trial balance with step-by-step provenance.",
+        properties: &[
+            (
+                "account",
+                "account code to inspect for open items and cash matching (for example `1000` or `1200`)",
+            ),
+            (
+                "period",
+                "optional fiscal period code for a trial-balance check (for example `FY2026-P03`)",
+            ),
+        ],
+        required: &["account"],
+        example: r#"{"account":"1200","period":"FY2026-P03"}"#,
+    },
+    MacroSpec {
+        id: "fa.macro.investigate_account",
+        name: "investigate_account",
+        summary: "Retain a certified balance explanation for an account and period, inspect its open items, and run the round-amount forensic procedure (`jet.round_amounts`) over the account with step-by-step provenance.",
+        properties: &[
+            (
+                "account",
+                "leaf account code to investigate (for example `1000`)",
+            ),
+            (
+                "period",
+                "fiscal period code to explain (for example `FY2026-P03`)",
+            ),
+        ],
+        required: &["account", "period"],
+        example: r#"{"account":"1000","period":"FY2026-P03"}"#,
+    },
+    MacroSpec {
+        id: "fa.macro.produce_audit_package",
+        name: "produce_audit_package",
+        summary: "Retain certified trial-balance, balance-sheet, and income-statement reports for a period and verify the book's entry accumulator with step-by-step provenance.",
+        properties: &[(
+            "period",
+            "fiscal period code for the certified audit package (for example `FY2026-P03`)",
+        )],
+        required: &["period"],
+        example: r#"{"period":"FY2026-P03"}"#,
+    },
+];
+
+#[must_use]
+pub fn macro_by_wire(wire: &str) -> Option<&'static MacroSpec> {
+    MACROS.iter().find(|m| m.wire_name() == wire)
+}
+
+impl MacroSpec {
+    #[must_use]
+    pub fn wire_name(&self) -> String {
+        format!("fa_macro_{}", self.name)
+    }
+
+    #[must_use]
+    pub fn is_host_path_property(&self, property: &str) -> bool {
+        matches!(
+            property,
+            "file"
+                | "intent_file"
+                | "plan_file"
+                | "plan_out"
+                | "review_out"
+                | "certificate_out"
+                | "out"
+        )
+    }
+
+    #[must_use]
+    pub fn forbidden_path_argument(&self, arguments: &JsonValue) -> Option<(String, String)> {
+        let object = arguments.as_object()?;
+        object
+            .keys()
+            .find(|key| self.is_host_path_property(key))
+            .map(|argument| {
+                (
+                    argument.clone(),
+                    format!(
+                        "omit {argument}; workflow macros return plans, certificates, and findings inline and accept no caller filesystem paths or --files root (fa-yha)"
+                    ),
+                )
+            })
+    }
+
+    #[must_use]
+    pub fn input_schema(&self) -> JsonValue {
+        let mut props = JsonMap::new();
+        for (name, desc) in self.properties {
+            props.insert(
+                (*name).to_string(),
+                json!({
+                    "type": "string",
+                    "description": *desc,
+                }),
+            );
+        }
+        let required: Vec<String> = self.required.iter().map(|s| (*s).to_string()).collect();
+        json!({
+            "type": "object",
+            "properties": props,
+            "required": required,
+        })
+    }
+
+    #[must_use]
+    pub fn description(&self) -> String {
+        let wire = self.wire_name();
+        format!(
+            "Do: {} (`{}`). Authority and book are fixed at server launch.\n\
+             Don't: Don't pass as, grant, yes, keys, book, principal, profile or via; per-call authority overrides and host filesystem paths (file, plan_out, certificate_out) are refused before dispatch. An argument the input schema does not declare: the server refuses it.\n\
+             Discovery: `fa_orient_capabilities` lists the session's bound operations; each step in the macro output records the underlying `fa` command and MCP tool.\n\
+             Examples: `{wire}` with `{}`\n\
+             Common mistakes: Supplying a placeholder or option-shaped string (`--...`) for `period` or `account`.\n\
+             Exits: 0 ok · 2 usage · 3 refusal · 4 environment · 5 foundation · 6 conflict · 7 safety · 8 verification.",
+            self.summary, self.id, self.example,
+        )
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cluster {
@@ -791,7 +963,16 @@ impl McpRegistry {
             .map(|r| format!("{} ({})", r.name, r.code))
             .collect();
         text.push_str(&classes.join(" · "));
-        text.push_str(".\n\nResources:\n");
+        text.push_str(".\n\nWorkflow macros:\n");
+        for m in MACROS {
+            text.push_str(&format!(
+                "- {} (`{}`) — {}\n",
+                m.wire_name(),
+                m.id,
+                m.summary
+            ));
+        }
+        text.push_str("\nResources:\n");
         for (uri, doc) in RESOURCES {
             text.push_str(&format!("- {uri} — {doc}\n"));
         }

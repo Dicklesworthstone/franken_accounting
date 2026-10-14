@@ -8354,7 +8354,7 @@ fn allocate_and_settle_review_approve_plan_and_commit_workflows() -> std::io::Re
     let open_doc = doc(&open_ar);
     assert_eq!(int(&open_doc, "count"), Some(4));
     for item in arr(&open_doc, "items") {
-        assert_eq!(text(&item, "open"), "0.00 USD");
+        assert_eq!(text(item, "open"), "0.00 USD");
     }
     Ok(())
 }

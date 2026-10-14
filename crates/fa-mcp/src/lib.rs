@@ -23,9 +23,14 @@
 //!   civil date is required, a posting leg on a summary account, an intent
 //!   re-dated after a period-law refusal (never a suggestion to re-date), a
 //!   self-approval, and placeholder text;
-//! - [`server`] wires the tools and the resources (`resource://fa/book`,
+//! - [`server`] wires the tools, the 4 workflow macros (`fa.macro.prepare_close`,
+//!   `fa.macro.record_and_match_cash`, `fa.macro.investigate_account`,
+//!   `fa.macro.produce_audit_package`), and the 12 resources (`resource://fa/book`,
 //!   `resource://fa/chart/{book}`, `resource://fa/periods/{book}`,
-//!   `resource://fa/laws`, `resource://fa/exit-codes`, `resource://fa/intents`)
+//!   `resource://fa/laws`, `resource://fa/exit-codes`, `resource://fa/intents`,
+//!   `resource://fa/open-items/{book}/{party}`, `resource://fa/findings/{book}`,
+//!   `resource://fa/cases/{book}`, `resource://fa/drafts/{book}`,
+//!   `resource://fa/certificates/{id}`, `resource://fa/bundles/{id}`)
 //!   into a fastmcp server; the `fa-mcp` binary serves it over stdio.
 //!
 //! A successful call returns the robot envelope's `data` as the first text

@@ -521,7 +521,7 @@ fn synchronous_book_completes_the_same_review_approval_and_native_plan_workflow(
             .find(|cell| cell.key.account == account("a"))
             .unwrap()
             .net(),
-        4
+        Some(4)
     );
     assert_eq!(
         fold.cells
@@ -529,6 +529,6 @@ fn synchronous_book_completes_the_same_review_approval_and_native_plan_workflow(
             .find(|cell| cell.key.account == account("b"))
             .unwrap()
             .net(),
-        3
+        Some(3)
     );
 }

@@ -88,10 +88,11 @@ fn parse_subject_vid(text: &str, what: &str) -> Result<VId, Fail> {
 }
 
 fn parse_principal_or_vid(text: &str) -> VId {
-    if text.len() == 32 && text.bytes().all(|b| b.is_ascii_hexdigit()) {
-        if let Ok(raw) = u128::from_str_radix(text, 16) {
-            return VId(raw);
-        }
+    if text.len() == 32
+        && text.bytes().all(|b| b.is_ascii_hexdigit())
+        && let Ok(raw) = u128::from_str_radix(text, 16)
+    {
+        return VId(raw);
     }
     principal_vid(text)
 }
