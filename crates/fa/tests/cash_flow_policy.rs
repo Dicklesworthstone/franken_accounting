@@ -225,3 +225,6 @@ fn current_read_authority_is_required_and_mixed_cash_movements_are_not_netted_to
     assert_eq!((usd.operating.inflows, usd.operating.outflows, usd.operating.net), (100, 80, 20));
     assert_eq!(h.head(), before);
 }
+
+#[path = "cash_flow_policy/certificates.rs"]
+mod certificates;

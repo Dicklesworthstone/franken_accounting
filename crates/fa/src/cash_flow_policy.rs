@@ -14,7 +14,13 @@
 //! the selected cash movement set are refused, not silently ignored. No policy
 //! is activated, approved or journaled by these APIs.
 
+mod certificate;
 mod native;
+
+pub use certificate::{
+    CASH_FLOW_POLICY_CERTIFICATE_FORMAT, CashFlowPolicyCertificate, CertifiedPolicyCashFlow,
+    MAX_CASH_FLOW_POLICY_CERTIFICATE_BYTES,
+};
 
 use std::collections::{BTreeMap, BTreeSet};
 
