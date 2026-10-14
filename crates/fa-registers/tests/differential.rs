@@ -8087,3 +8087,185 @@ fn a_reversal_chain_cannot_strand_payments_on_a_revived_invoice() {
     );
     assert!(oracle.open_items().is_empty());
 }
+
+/// Four-way exhaustive Appendix C admissibility cross-check (`fa-nfq`):
+/// 1. `PlanAdmissibility::parse(PLAN_MARKDOWN)` (plan Appendix C Markdown table + prose)
+/// 2. `Admissibility::load()` (`registries/admissibility.toml`)
+/// 3. `fa_reference::admissibility::decide_cell` (hand-transcribed independent oracle)
+/// 4. `fa_journal::decide_admissibility_cell` (kernel four-stage period-law gate)
+///
+/// Sweeps all `15 posting classes × 5 period states × 3 disposition families × 5 period kinds × 2 pre_opening = 1,125`
+/// cells plus all `(class, state)` cell qualifiers, and proves that a single-cell mutation in either
+/// `admissibility.toml` or the plan Appendix C Markdown is caught with a cell-naming discrepancy.
+#[test]
+fn admissibility_four_way_plan_toml_oracle_and_kernel_agree_on_every_cell_and_catch_flips() {
+    use fa_journal::decide_admissibility_cell;
+    use fa_registry::{
+        ALL_KINDS, ALL_STATES, Admissibility, DispositionFamily, EntryClasses, PlanAdmissibility,
+    };
+
+    const PLAN_MD: &str =
+        include_str!("../../../COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md");
+    const ADMISSIBILITY_RAW: &str = include_str!("../../../registries/admissibility.toml");
+
+    let classes = EntryClasses::embedded().expect("entry_classes.toml");
+    let toml_matrix = Admissibility::embedded(&classes).expect("admissibility.toml");
+    let plan_matrix = PlanAdmissibility::parse(PLAN_MD).expect("plan Appendix C markdown");
+
+    let posting_classes: Vec<&str> = classes.posting().map(|c| c.name.as_str()).collect();
+    assert_eq!(posting_classes.len(), 15, "15 posting classes");
+
+    let mut checked_cells = 0usize;
+    for &class in &posting_classes {
+        for state in ALL_STATES {
+            // Check qualifiers across plan, toml, and oracle
+            let plan_qual = plan_matrix
+                .qualifiers
+                .get(&(class.to_string(), state))
+                .map(String::as_str);
+            let toml_qual = toml_matrix.qualifier_tag(class, state);
+            let oracle_qual = fa_reference::admissibility::qualifier_tag(class, state);
+            assert_eq!(
+                plan_qual, toml_qual,
+                "qualifier mismatch between plan and toml at ({class}, {state:?})"
+            );
+            assert_eq!(
+                toml_qual, oracle_qual,
+                "qualifier mismatch between toml and oracle at ({class}, {state:?})"
+            );
+
+            for family in DispositionFamily::ALL {
+                for kind in ALL_KINDS {
+                    for pre_opening in [false, true] {
+                        let d_plan = plan_matrix
+                            .decide_cell(class, state, family, kind, pre_opening)
+                            .expect("plan decision");
+                        let d_toml = toml_matrix
+                            .decide_cell(class, state, family, kind, pre_opening)
+                            .expect("toml decision");
+                        let d_oracle = fa_reference::admissibility::decide_cell(
+                            class,
+                            state,
+                            family,
+                            kind,
+                            pre_opening,
+                        )
+                        .expect("oracle decision");
+                        let d_kernel = decide_admissibility_cell(
+                            &toml_matrix,
+                            class,
+                            state,
+                            family,
+                            kind,
+                            pre_opening,
+                        )
+                        .expect("kernel decision");
+
+                        assert_eq!(
+                            d_plan, d_toml,
+                            "plan vs toml mismatch at ({class}, {state:?}, {family:?}, {kind:?}, pre_opening={pre_opening})"
+                        );
+                        assert_eq!(
+                            d_toml, d_oracle,
+                            "toml vs oracle mismatch at ({class}, {state:?}, {family:?}, {kind:?}, pre_opening={pre_opening})"
+                        );
+                        assert_eq!(
+                            d_oracle, d_kernel,
+                            "oracle vs kernel mismatch at ({class}, {state:?}, {family:?}, {kind:?}, pre_opening={pre_opening})"
+                        );
+                        checked_cells += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(checked_cells, 15 * 5 * 3 * 5 * 2);
+
+    // Planted negative 1: flip a single cell in admissibility.toml (`Reversal` in `Closed` from `with:post_closed` to `admit`)
+    // and verify the four-way comparison catches the exact `(Reversal, Closed)` cell discrepancy against both plan and oracle.
+    let mutated_toml_str = ADMISSIBILITY_RAW.replacen(
+        "class = \"Reversal\"\nstate = \"Closed\"\ndecision = \"with:post_closed\"",
+        "class = \"Reversal\"\nstate = \"Closed\"\ndecision = \"admit\"",
+        1,
+    );
+    assert_ne!(
+        mutated_toml_str, ADMISSIBILITY_RAW,
+        "planted toml flip applied"
+    );
+    let mutated_toml = Admissibility::parse(&classes, &mutated_toml_str)
+        .expect("mutated admissibility.toml still satisfies structural rules");
+    let mut caught_toml_vs_oracle = Vec::new();
+    for &class in &posting_classes {
+        for state in ALL_STATES {
+            let d_mut = decide_admissibility_cell(
+                &mutated_toml,
+                class,
+                state,
+                DispositionFamily::Standard,
+                fa_time::PeriodKind::Normal,
+                false,
+            )
+            .unwrap();
+            let d_ora = fa_reference::admissibility::decide_cell(
+                class,
+                state,
+                DispositionFamily::Standard,
+                fa_time::PeriodKind::Normal,
+                false,
+            )
+            .unwrap();
+            if d_mut != d_ora {
+                caught_toml_vs_oracle.push((class, state));
+            }
+        }
+    }
+    assert_eq!(
+        caught_toml_vs_oracle,
+        vec![("Reversal", fa_time::PeriodState::Closed)],
+        "oracle catches single-cell flip in admissibility.toml because oracle does not read admissibility.toml"
+    );
+
+    // Planted negative 2: flip a single cell in the plan Appendix C Markdown table and verify
+    // the four-way check catches the exact cell discrepancy.
+    let mutated_plan_str = PLAN_MD.replacen(
+        "| `Reversal` | Refuse | Admit | Admit | W(`post_closed`) |",
+        "| `Reversal` | Refuse | Admit | Admit | Refuse |",
+        1,
+    );
+    assert_ne!(
+        mutated_plan_str, PLAN_MD,
+        "planted plan markdown flip applied"
+    );
+    let mutated_plan = PlanAdmissibility::parse(&mutated_plan_str).expect("mutated plan parses");
+    let mut caught_plan_vs_toml = Vec::new();
+    for &class in &posting_classes {
+        for state in ALL_STATES {
+            let d_p = mutated_plan
+                .decide_cell(
+                    class,
+                    state,
+                    DispositionFamily::Standard,
+                    fa_time::PeriodKind::Normal,
+                    false,
+                )
+                .unwrap();
+            let d_t = toml_matrix
+                .decide_cell(
+                    class,
+                    state,
+                    DispositionFamily::Standard,
+                    fa_time::PeriodKind::Normal,
+                    false,
+                )
+                .unwrap();
+            if d_p != d_t {
+                caught_plan_vs_toml.push((class, state));
+            }
+        }
+    }
+    assert_eq!(
+        caught_plan_vs_toml,
+        vec![("Reversal", fa_time::PeriodState::Closed)],
+        "plan parser catches single-cell flip in Appendix C markdown"
+    );
+}

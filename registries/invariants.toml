@@ -280,7 +280,7 @@ statement = "A period-scoped entry's effective date and discriminator resolve to
 evidence_class = "invariant"
 first_gate = "G1"
 owner = "fa-op5"
-checkers = ["fa-registry::lib::tests::admissibility_matrix_is_exhaustive_and_obeys_the_universal_rules", "fa-time::lib::period::tests::state_machine_matches_the_matrix", "fa-time::lib::period::tests::december_31_resolves_by_discriminator", "fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_a_generated_history"]
+checkers = ["fa-registry::lib::tests::admissibility_matrix_is_exhaustive_and_obeys_the_universal_rules", "fa-registry::lib::tests::appendix_c_markdown_matches_admissibility_toml_exhaustively_and_catches_planted_flips", "fa-time::lib::period::tests::state_machine_matches_the_matrix", "fa-time::lib::period::tests::december_31_resolves_by_discriminator", "fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_a_generated_history", "fa-registers::tests/differential.rs::admissibility_four_way_plan_toml_oracle_and_kernel_agree_on_every_cell_and_catch_flips"]
 negatives = ["fa-journal::tests/genesis.rs::closed_period_refuses_originals_and_admits_an_exact_reversal_under_post_closed", "fa-journal::tests/genesis.rs::a_period_never_opened_refuses_with_the_open_fix", "fa-journal::tests/genesis.rs::releases_stay_admissible_after_close_and_lock_while_posts_follow_the_matrix"]
 waiver = "forbidden"
 

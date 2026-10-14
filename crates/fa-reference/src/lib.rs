@@ -21,6 +21,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod admissibility;
 pub mod evidence;
 pub mod lantern;
 pub mod sod;
@@ -733,8 +734,6 @@ pub struct Oracle {
     /// (run, key) → (journal index, content) for Migration chunks.
     migration_keys: BTreeMap<(usize, Vec<u8>), (usize, Content)>,
     classes: EntryClasses,
-    matrix: Admissibility,
-    special_periods: temporal::SpecialPeriods,
     sod: SodPolicy,
     /// Tokens of revoked capabilities.
     revoked: BTreeSet<u64>,
@@ -778,8 +777,6 @@ impl Oracle {
             control_keys: BTreeMap::new(),
             migration_keys: BTreeMap::new(),
             classes,
-            matrix,
-            special_periods: temporal::SpecialPeriods::embedded(),
             sod,
             revoked: BTreeSet::new(),
             epoch: 0,
@@ -863,14 +860,15 @@ impl Oracle {
     /// ends on or before the book's opening date, which is born Historical
     /// and Locked.
     pub fn create_periods(&mut self, fy: i32) {
-        let pre_opening = self.matrix.pre_opening().expect("pre_opening rule").clone();
         for mut p in self.calendar.periods_for_year(fy).expect("periods") {
             let state = match self.opening_date {
                 Some(day) if p.kind == PeriodKind::Normal && p.end <= day => {
                     p.kind = PeriodKind::Historical;
                     PeriodState::Locked
                 }
-                _ if pre_opening.governs(p.kind, p.end, self.opening_date) => pre_opening.born,
+                _ if admissibility::pre_opening_governs(p.kind, p.end, self.opening_date) => {
+                    admissibility::PRE_OPENING_BORN
+                }
                 _ => PeriodState::Future,
             };
             self.periods.insert(p.code.clone(), (p, state));
@@ -1018,18 +1016,11 @@ impl Oracle {
         let Some((def, state)) = self.periods.get(code) else {
             return Err(code::PERIOD_UNKNOWN);
         };
-        // A registered kind row (a Historical period: born Locked) refuses
-        // every transition.
-        if let Some(rule) = self.matrix.kind_rule(def.kind) {
-            assert_eq!(rule.transition_refusal, code::TRANSITION, "registry drift");
+        // A Historical period or pre-opening special period refuses every transition.
+        if admissibility::kind_has_restriction(def.kind) {
             return Err(code::TRANSITION);
         }
-        if let Some(rule) = self
-            .matrix
-            .pre_opening()
-            .filter(|r| r.governs(def.kind, def.end, self.opening_date))
-        {
-            assert_eq!(rule.transition_refusal, code::TRANSITION, "registry drift");
+        if admissibility::pre_opening_governs(def.kind, def.end, self.opening_date) {
             return Err(code::TRANSITION);
         }
         let from = *state;
@@ -1199,11 +1190,13 @@ impl Oracle {
             .map(|(target, s)| {
                 let status = match self.period_state(&s.period) {
                     None | Some(PeriodState::Future) => Reached::Waiting,
-                    Some(state) => match self.matrix.decide("Reversal", state) {
-                        Some(Decision::Admit) => Reached::Due,
-                        Some(Decision::With { op, .. }) if op == "post" => Reached::Due,
-                        _ => Reached::Blocked,
-                    },
+                    Some(state) => {
+                        match admissibility::decide_disposition("Reversal", state, false) {
+                            Some(Decision::Admit) => Reached::Due,
+                            Some(Decision::With { op, .. }) if op == "post" => Reached::Due,
+                            _ => Reached::Blocked,
+                        }
+                    }
                 };
                 let live_applications =
                     (0..self.journal[*target].legs.len()).any(|i| self.applied_to(*target, i) != 0);
@@ -1347,9 +1340,9 @@ impl Oracle {
             let state = self
                 .period_state(&hold.period)
                 .unwrap_or(PeriodState::Future);
-            // The registered Resolution(Expires) row of the hold's period
+            // The hand-transcribed Resolution(Expires) row of the hold's period
             // state decides (the sweep holds `post` only).
-            if !matches!(self.matrix.decide_expires(state), Some(Decision::Admit)) {
+            if admissibility::decide_expires(state) != Decision::Admit {
                 return Err(code::PERIOD_LAW);
             }
             let index = self.journal.len();
@@ -1766,33 +1759,26 @@ impl Oracle {
             };
         }
         let born = self.periods.get(&period).map(|(d, _)| d.kind);
-        if let Some(rule) = born.and_then(|k| self.matrix.kind_rule(k))
-            && !rule.admits(&intent.class)
-        {
-            assert_eq!(rule.refusal, code::PERIOD_LAW, "registry drift");
+        if born.is_some_and(|k| !admissibility::kind_admits(k, &intent.class)) {
             return Verdict::Refused {
                 code: code::PERIOD_LAW,
             };
         }
-        if let (Some(kind), Some(rule)) = (born, self.matrix.pre_opening())
-            && rule.governs(kind, period_end, self.opening_date)
-            && !rule.admits(&intent.class)
-        {
-            assert_eq!(rule.refusal, code::PERIOD_LAW, "registry drift");
+        if born.is_some_and(|kind| {
+            admissibility::pre_opening_governs(kind, period_end, self.opening_date)
+                && !admissibility::pre_opening_admits(&intent.class)
+        }) {
             return Verdict::Refused {
                 code: code::PERIOD_LAW,
             };
         }
-        if born.is_some_and(|kind| !self.special_periods.admits(kind, &intent.class)) {
+        if born.is_some_and(|kind| !admissibility::special_period_admits(kind, &intent.class)) {
             return Verdict::Refused {
                 code: code::PERIOD_LAW,
             };
         }
         let state = self.period_state(&period).unwrap_or(PeriodState::Future);
-        match self
-            .matrix
-            .decide_disposition(&intent.class, state, is_release)
-        {
+        match admissibility::decide_disposition(&intent.class, state, is_release) {
             Some(Decision::Admit) => {}
             Some(Decision::With { op, approvals }) => {
                 if !intent.ops.contains(&op) {

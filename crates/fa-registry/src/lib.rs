@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod admissibility_plan;
 pub mod document_stores;
 pub mod evidence_policy;
 pub mod foundations;
@@ -20,6 +21,8 @@ pub mod refusal_catalog;
 pub mod sod_policy;
 pub mod toml;
 pub mod topology;
+
+pub use admissibility_plan::{ALL_KINDS, DispositionFamily, PlanAdmissibility};
 
 use core::fmt;
 use std::collections::BTreeMap;
@@ -363,7 +366,7 @@ enum Qualifier {
     PostsRefused,
 }
 
-const ALL_STATES: [PeriodState; 5] = [
+pub const ALL_STATES: [PeriodState; 5] = [
     PeriodState::Future,
     PeriodState::Open,
     PeriodState::SoftClosed,
@@ -854,6 +857,55 @@ impl Admissibility {
         self.cells
             .get(&(class.to_string(), state))
             .and_then(|(_, n, _)| n.as_deref())
+    }
+
+    /// Leading qualifier tag (`case`, `run`, `posts_only_with`, `voids_expires`) on `(class, state)`, if any.
+    #[must_use]
+    pub fn qualifier_tag(&self, class: &str, state: PeriodState) -> Option<&str> {
+        let note = self.note(class, state)?;
+        let head = note.split(':').next()?.trim();
+        match head {
+            "case" | "run" | "posts_only_with" | "voids_expires" => Some(head),
+            _ => None,
+        }
+    }
+
+    /// Evaluate the complete admissibility cell `(class, state, family, kind, pre_opening)`.
+    #[must_use]
+    pub fn decide_cell(
+        &self,
+        class: &str,
+        state: PeriodState,
+        family: DispositionFamily,
+        kind: PeriodKind,
+        pre_opening: bool,
+    ) -> Option<Decision> {
+        if let Some(rule) = self.kind_rule(kind)
+            && !rule.admits(class)
+        {
+            return Some(Decision::Refuse);
+        }
+        if pre_opening
+            && let Some(rule) = self.pre_opening()
+            && rule.kinds.contains(&kind)
+            && !rule.admits(class)
+        {
+            return Some(Decision::Refuse);
+        }
+        if let Some(rule) = self.special_period_rule(kind)
+            && !rule.admits(class)
+        {
+            return Some(Decision::Refuse);
+        }
+        match family {
+            DispositionFamily::Expires if class == "Resolution" => {
+                self.decide_expires(state).cloned()
+            }
+            DispositionFamily::Expires | DispositionFamily::Voids => {
+                self.decide_disposition(class, state, true)
+            }
+            DispositionFamily::Standard => self.decide_disposition(class, state, false),
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -1602,6 +1654,84 @@ mod tests {
             r.admissibility
                 .decide("PeriodControl", PeriodState::Open)
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn appendix_c_markdown_matches_admissibility_toml_exhaustively_and_catches_planted_flips() {
+        const PLAN: &str =
+            include_str!("../../../COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md");
+        let r = Registries::embedded().unwrap();
+        let plan = PlanAdmissibility::parse(PLAN).expect("Appendix C markdown parses");
+
+        let diff_plan_vs_toml = |plan_mat: &PlanAdmissibility,
+                                 toml_mat: &Admissibility|
+         -> Option<String> {
+            for c in r.entry_classes.posting() {
+                let class = c.name.as_str();
+                for state in ALL_STATES {
+                    let p_qual = plan_mat
+                        .qualifiers
+                        .get(&(c.name.clone(), state))
+                        .map(String::as_str);
+                    let t_qual = toml_mat.qualifier_tag(class, state);
+                    if p_qual != t_qual {
+                        return Some(format!(
+                            "qualifier mismatch on ({class}, {state:?}): plan={p_qual:?} toml={t_qual:?}"
+                        ));
+                    }
+                    for family in DispositionFamily::ALL {
+                        for kind in ALL_KINDS {
+                            for pre_opening in [false, true] {
+                                let p_dec =
+                                    plan_mat.decide_cell(class, state, family, kind, pre_opening);
+                                let t_dec =
+                                    toml_mat.decide_cell(class, state, family, kind, pre_opening);
+                                if p_dec != t_dec {
+                                    return Some(format!(
+                                        "cell mismatch on ({class}, {state:?}, {family:?}, {kind:?}, pre_opening={pre_opening}): plan={p_dec:?} toml={t_dec:?}"
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        };
+
+        if let Some(mismatch) = diff_plan_vs_toml(&plan, &r.admissibility) {
+            panic!("{mismatch}");
+        }
+
+        // Planted negative 1: flip one TOML cell (`Original` in `Open` from `admit` to `refuse`)
+        let flipped_toml_text = ADMISSIBILITY.replacen(
+            "class = \"Original\"\nstate = \"Open\"\ndecision = \"admit\"",
+            "class = \"Original\"\nstate = \"Open\"\ndecision = \"refuse\"",
+            1,
+        );
+        let flipped_toml = Admissibility::parse(&r.entry_classes, &flipped_toml_text)
+            .expect("flipped TOML parses");
+        let mismatch1 =
+            diff_plan_vs_toml(&plan, &flipped_toml).expect("planted TOML flip must be caught");
+        assert!(
+            mismatch1.contains("(Original, Open, Standard, Normal, pre_opening=false)"),
+            "{mismatch1}"
+        );
+
+        // Planted negative 2: flip one plan markdown cell (`Reversal` in `Closed` from `W(\`post_closed\`)` to `Refuse`)
+        let flipped_plan_md = PLAN.replacen(
+            "| `Reversal` | Refuse | Admit | Admit | W(`post_closed`) |",
+            "| `Reversal` | Refuse | Admit | Admit | Refuse |",
+            1,
+        );
+        let flipped_plan =
+            PlanAdmissibility::parse(&flipped_plan_md).expect("flipped plan markdown parses");
+        let mismatch2 = diff_plan_vs_toml(&flipped_plan, &r.admissibility)
+            .expect("planted plan markdown flip must be caught");
+        assert!(
+            mismatch2.contains("(Reversal, Closed, Standard, Normal, pre_opening=false)"),
+            "{mismatch2}"
         );
     }
 

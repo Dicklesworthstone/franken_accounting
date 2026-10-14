@@ -139,6 +139,46 @@ impl Posted {
     }
 }
 
+/// Pure kernel decision entry point for Appendix C admissibility (`fa-nfq`):
+/// evaluates the exact four-stage period-law gate used by `prepare_post_in`
+/// and `sweep` over `(class, state, family, kind, pre_opening)`.
+#[must_use]
+pub fn decide_admissibility_cell(
+    matrix: &Admissibility,
+    class: &str,
+    state: fa_time::PeriodState,
+    family: fa_registry::DispositionFamily,
+    kind: fa_time::PeriodKind,
+    pre_opening: bool,
+) -> Option<Decision> {
+    if let Some(rule) = matrix.kind_rule(kind)
+        && !rule.admits(class)
+    {
+        return Some(Decision::Refuse);
+    }
+    if pre_opening
+        && let Some(rule) = matrix.pre_opening()
+        && rule.kinds.contains(&kind)
+        && !rule.admits(class)
+    {
+        return Some(Decision::Refuse);
+    }
+    if let Some(rule) = matrix.special_period_rule(kind)
+        && !rule.admits(class)
+    {
+        return Some(Decision::Refuse);
+    }
+    match family {
+        fa_registry::DispositionFamily::Expires if class == "Resolution" => {
+            matrix.decide_expires(state).cloned()
+        }
+        fa_registry::DispositionFamily::Expires | fa_registry::DispositionFamily::Voids => {
+            matrix.decide_disposition(class, state, true)
+        }
+        fa_registry::DispositionFamily::Standard => matrix.decide_disposition(class, state, false),
+    }
+}
+
 /// An admitted retry is already complete; a fresh post retains the actual
 /// substrate transaction until its caller chooses to commit or abort it.
 #[derive(Debug)]

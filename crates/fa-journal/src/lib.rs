@@ -84,7 +84,8 @@ pub use policy::{
     security_policy_epoch,
 };
 pub use post::{
-    Capability, PostPreparation, PostRequest, Posted, PreparedPost, post, prepare_post,
+    Capability, PostPreparation, PostRequest, Posted, PreparedPost, decide_admissibility_cell,
+    post, prepare_post,
 };
 pub use redaction::{
     DocumentRead, RedactedView, ViewChunk, ViewDerived, derive_redacted_view, read_document_for,

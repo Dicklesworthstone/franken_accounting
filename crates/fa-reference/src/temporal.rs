@@ -2,14 +2,18 @@
 //! text and civil/calendar data are shared with production: this reader does
 //! not call Admissibility's class decisions or fa-time's period resolver.
 
+#[cfg(test)]
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(test)]
 use fa_registry::toml::{self, Value};
 use fa_time::{DateDay, PeriodDef, PeriodKind};
 
+#[cfg(test)]
 #[derive(Clone, Debug)]
 pub(super) struct SpecialPeriods(BTreeMap<String, BTreeSet<String>>);
 
+#[cfg(test)]
 impl SpecialPeriods {
     pub(super) fn embedded() -> Self {
         Self::parse(include_str!("../../../registries/admissibility.toml"))
