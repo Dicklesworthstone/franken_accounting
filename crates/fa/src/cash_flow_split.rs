@@ -13,6 +13,12 @@
 //! remain professional inputs, NOT economic truth inferred by this module.
 
 mod codec;
+mod certificate;
+
+pub use certificate::{
+    CASH_FLOW_SPLIT_CERTIFICATE_FORMAT, MAX_CASH_FLOW_SPLIT_CERTIFICATE_BYTES,
+    CashFlowSplitCertificate, CertifiedSplitCashFlow,
+};
 
 use std::collections::{BTreeMap, BTreeSet};
 
