@@ -2408,5 +2408,7 @@ impl fmt::Debug for Book {
     }
 }
 
+mod source_intake;
+
 #[cfg(test)]
 mod tests;
