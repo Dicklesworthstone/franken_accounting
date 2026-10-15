@@ -37,9 +37,11 @@ use std::collections::BTreeSet;
 use fa_model::symbols::{label, property};
 use fa_model::{Id128, Writer, domain_digest};
 use fgdb::{Database, WriteBatch, WriteMismatchPolicy, WriteTxnError};
-use fgdb_delta_types::{DeltaRow, ElementId, LabelId, LogicalDeltaBatch, PropertyKeyId};
+use fgdb_delta_types::{
+    DeltaRow, ElementId, LabelId, LogicalDeltaBatch, PropertyKeyId, RelationId,
+};
 use fgdb_types::context::PurposeContexts;
-use fgdb_types::{CommitSeq, EId, VId};
+use fgdb_types::{CanonicalScalar, CommitSeq, EId, VId};
 
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 
@@ -148,6 +150,46 @@ impl Maintenance {
             ElementId::Edge(e) => self.edges.contains(e),
         }
     }
+
+    // Coordinates are canonical, not causal. An incident edge or its
+    // property can precede the coordinate that identifies its endpoint as
+    // maintenance. Classify the complete commit before translating any row.
+    fn observe_batch(&mut self, batch: &LogicalDeltaBatch) {
+        for entry in batch.coordinate_entries() {
+            for row in &entry.rows {
+                match row {
+                    DeltaRow::CreateVertex { vid, labels, .. }
+                        if labels.iter().any(|label| MAINTENANCE.contains(label)) =>
+                    {
+                        self.vertices.insert(*vid);
+                    }
+                    DeltaRow::LabelMembership { vid, label, .. }
+                        if MAINTENANCE.contains(label) =>
+                    {
+                        self.vertices.insert(*vid);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for entry in batch.coordinate_entries() {
+            for row in &entry.rows {
+                match row {
+                    DeltaRow::CreateEdge { eid, src, dst, .. }
+                        if self.vertices.contains(src) || self.vertices.contains(dst) =>
+                    {
+                        self.edges.insert(*eid);
+                    }
+                    DeltaRow::DeleteVertex { vid, sorted_retired_incident_edges, .. }
+                        if self.vertices.contains(vid) =>
+                    {
+                        self.edges.extend(sorted_retired_incident_edges.iter().copied());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
 }
 
 fn unsupported(seq: CommitSeq, what: &str) -> Refusal {
@@ -163,14 +205,28 @@ fn unsupported(seq: CommitSeq, what: &str) -> Refusal {
     )
 }
 
-/// The replayable part of one source commit: its rows minus maintenance,
-/// as per-relation batches in the source's order (empty when the commit was
-/// only maintenance).
+/// One replayed create, with its coordinate's relation retained separately.
+enum Create {
+    Vertex(VId, Vec<LabelId>, Vec<(PropertyKeyId, CanonicalScalar)>),
+    Edge(EId, VId, VId, Vec<(PropertyKeyId, CanonicalScalar)>),
+}
+
+/// The accounting part of one commit, excluding maintenance regardless of
+/// coordinate order. Creates are staged in source birth order: vertices and
+/// edges share a counter, so endpoints precede their edges. Canonical delta
+/// coordinate order is not allocation order. Other rows follow in their
+/// original coordinate order with all compare-and-set checks intact.
+///
+/// Skipped maintenance can leave gaps in source ordinals: the scratch
+/// database allocates its own ordinals and sequences, never forged source
+/// metadata. The relative creation order of retained objects is preserved.
 pub fn replayable(
     batch: &LogicalDeltaBatch,
     maintenance: &mut Maintenance,
 ) -> Result<Vec<WriteBatch>, Refusal> {
     let seq = batch.commit_seq();
+    maintenance.observe_batch(batch);
+    let mut creates: Vec<(u64, RelationId, Create)> = Vec::new();
     let mut out = Vec::new();
     for entry in batch.coordinate_entries() {
         let mut w = WriteBatch::new(entry.relation);
@@ -178,22 +234,26 @@ pub fn replayable(
             match row {
                 DeltaRow::CreateVertex {
                     vid,
+                    birth_ordinal,
                     labels,
                     props,
                     valid_time,
-                    ..
                 } => {
                     if valid_time.is_some() {
                         return Err(unsupported(seq, "a valid-time vertex"));
                     }
-                    if labels.iter().any(|l| MAINTENANCE.contains(l)) {
-                        maintenance.vertices.insert(*vid);
+                    if maintenance.vertices.contains(vid) {
                         continue;
                     }
-                    w.create_vertex(*vid, labels.clone(), props.clone());
+                    creates.push((
+                        *birth_ordinal,
+                        entry.relation,
+                        Create::Vertex(*vid, labels.clone(), props.clone()),
+                    ));
                 }
                 DeltaRow::CreateEdge {
                     eid,
+                    birth_ordinal,
                     src,
                     dst,
                     canonical_key,
@@ -204,11 +264,14 @@ pub fn replayable(
                     if valid_time.is_some() || canonical_key.is_some() {
                         return Err(unsupported(seq, "a keyed or valid-time edge"));
                     }
-                    if maintenance.vertices.contains(src) || maintenance.vertices.contains(dst) {
-                        maintenance.edges.insert(*eid);
+                    if maintenance.edges.contains(eid) {
                         continue;
                     }
-                    w.add_edge(*eid, *src, *dst, props.clone());
+                    creates.push((
+                        *birth_ordinal,
+                        entry.relation,
+                        Create::Edge(*eid, *src, *dst, props.clone()),
+                    ));
                 }
                 DeltaRow::Property {
                     elem,
@@ -285,7 +348,36 @@ pub fn replayable(
             out.push(w);
         }
     }
-    Ok(out)
+    creates.sort_by_key(|(ordinal, ..)| *ordinal);
+    if creates.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+        return Err(unsupported(seq, "duplicate creation birth ordinals"));
+    }
+    let mut staged = Vec::new();
+    let mut pending: Option<(RelationId, WriteBatch)> = None;
+    for (_, relation, create) in creates {
+        let mut w = match pending.take() {
+            Some((previous, w)) if previous == relation => w,
+            Some((_, done)) => {
+                staged.push(done);
+                WriteBatch::new(relation)
+            }
+            None => WriteBatch::new(relation),
+        };
+        match create {
+            Create::Vertex(vid, labels, props) => {
+                w.create_vertex(vid, labels, props);
+            }
+            Create::Edge(eid, src, dst, props) => {
+                w.add_edge(eid, src, dst, props);
+            }
+        }
+        pending = Some((relation, w));
+    }
+    if let Some((_, done)) = pending {
+        staged.push(done);
+    }
+    staged.extend(out);
+    Ok(staged)
 }
 
 /// Make the source's whole committed history readable (a checkpoint-opened
