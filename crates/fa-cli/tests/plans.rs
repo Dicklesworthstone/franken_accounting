@@ -650,3 +650,153 @@ fn certification_does_not_invalidate_plans_while_accounting_writes_do_and_read_o
     assert_eq!(code, 6, "{}", refused.render());
     assert_eq!(text(&refused, "refusal_id"), "FA-REF-034");
 }
+
+#[test]
+fn period_plan_out_never_overwrites_existing_files_or_book_keys() {
+    let f = Fixture::new();
+    let before = head(&f.book);
+    let book_keys = f.book.join("book.keys");
+    let keys_before = std::fs::read(&book_keys).expect("read book.keys before");
+    let keys_digest_before = fa_model::domain_digest(b"fa:test:file", &[&keys_before]);
+
+    let existing_path = write(&f.dir, "existing-period.plan", "DO NOT TRUNCATE ME");
+    let existing_before = std::fs::read(&existing_path).expect("read existing file");
+    let existing_digest_before = fa_model::domain_digest(b"fa:test:file", &[&existing_before]);
+
+    for target in [
+        book_keys.display().to_string(),
+        existing_path.clone(),
+        "-".to_string(),
+    ] {
+        let (code, error) = run(
+            &f.book,
+            &["period", "close", "FY2026-P03", "--plan-out", &target],
+            None,
+        );
+        assert_eq!(code, 2, "target={target}: {}", error.render());
+        assert_eq!(get(&error, "refusal_id"), &Json::Null);
+        assert_eq!(text(&error, "class"), "usage");
+        if target != "-" {
+            assert!(
+                text(&error, "message").contains(&target),
+                "message must name {target}: {}",
+                error.render()
+            );
+        }
+        assert_eq!(head(&f.book), before);
+    }
+
+    let keys_after = std::fs::read(&book_keys).expect("read book.keys after");
+    assert_eq!(
+        fa_model::domain_digest(b"fa:test:file", &[&keys_after]),
+        keys_digest_before,
+        "book.keys must remain byte-identical"
+    );
+    let existing_after = std::fs::read(&existing_path).expect("read existing after");
+    assert_eq!(
+        fa_model::domain_digest(b"fa:test:file", &[&existing_after]),
+        existing_digest_before,
+        "existing artifact must remain byte-identical"
+    );
+
+    // Writing to a genuinely new path succeeds with mode 0600, and a second call refuses.
+    let fresh = f.dir.join("fresh-period.plan");
+    let fresh_str = fresh.display().to_string();
+    let planned = ok(
+        &f.book,
+        &["period", "close", "FY2026-P03", "--plan-out", &fresh_str],
+    );
+    assert_eq!(text(&planned, "event"), "period_planned");
+    let fresh_bytes = std::fs::read(&fresh).expect("read fresh period plan");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&fresh).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    let (code, error) = run(
+        &f.book,
+        &["period", "close", "FY2026-P03", "--plan-out", &fresh_str],
+        None,
+    );
+    assert_eq!(code, 2, "{}", error.render());
+    assert_eq!(
+        std::fs::read(&fresh).expect("fresh plan preserved"),
+        fresh_bytes
+    );
+}
+
+fn scan_truncating_writes(source: &str) -> Vec<(usize, String)> {
+    let non_test = source.split("#[cfg(test)]").next().unwrap_or(source);
+    let mut hits = Vec::new();
+    for (idx, line) in non_test.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("//") {
+            continue;
+        }
+        if trimmed.contains("fs::write(")
+            || trimmed.contains("File::create(")
+            || trimmed.contains(".truncate(true)")
+        {
+            hits.push((idx + 1, trimmed.to_string()));
+        }
+    }
+    hits
+}
+
+fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let entries = std::fs::read_dir(dir).expect("read src dir");
+    for entry in entries {
+        let path = entry.expect("dir entry").path();
+        if path.is_dir() {
+            collect_rs_files(&path, out);
+        } else if path.extension().and_then(|s| s.to_str()) == Some("rs")
+            && path.file_name().and_then(|s| s.to_str()) != Some("tests.rs")
+        {
+            out.push(path);
+        }
+    }
+}
+
+#[test]
+fn no_truncating_output_writes_in_surface_or_facade_crates() {
+    // Prove the scanner catches the historical bug from fa-n8wm.
+    let planted = "let target = ctx.files.resolve(path);\nstd::fs::write(&target, bytes).map_err(|e| BookError::Io(target.clone(), e))?;";
+    assert_eq!(
+        scan_truncating_writes(planted).len(),
+        1,
+        "tripwire must detect std::fs::write"
+    );
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("crates/")
+        .parent()
+        .expect("workspace root");
+    let mut files = Vec::new();
+    for rel in [
+        "crates/fa-cli/src",
+        "crates/fad/src",
+        "crates/fa-mcp/src",
+        "crates/fa/src",
+    ] {
+        collect_rs_files(&root.join(rel), &mut files);
+    }
+    files.sort();
+    assert!(!files.is_empty());
+    let mut violations = Vec::new();
+    for file in files {
+        let content = std::fs::read_to_string(&file).expect("read source file");
+        for (line, text) in scan_truncating_writes(&content) {
+            violations.push(format!("{}:{line}: {text}", file.display()));
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "truncating file writes found in surface/facade crates:\n{}",
+        violations.join("\n")
+    );
+}
+

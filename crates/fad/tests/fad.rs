@@ -872,6 +872,39 @@ fn concurrent_slow_client_does_not_starve_other_clients_and_unauthorized_stop_is
     );
     drop(slow_client);
 
+    // Through `fad`, `period ... --plan-out` on an existing file (including `book.keys`)
+    // refuses with exit 2 and leaves the file byte-identical (fa-n8wm).
+    let book_keys = book.join("book.keys");
+    let keys_before = std::fs::read(&book_keys).expect("read book.keys before");
+    let keys_path = book_keys.display().to_string();
+    let (code, plan_err, _) = fa(&[
+        "period",
+        "close",
+        "FY2026-P03",
+        "--plan-out",
+        &keys_path,
+        "--via",
+        "fad",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert_eq!(code, 2, "{plan_err}");
+    assert_eq!(
+        field(&plan_err, "class"),
+        Some("usage"),
+        "{plan_err}"
+    );
+    assert!(
+        plan_err.contains(&keys_path),
+        "error must name {keys_path}: {plan_err}"
+    );
+    assert_eq!(
+        std::fs::read(&book_keys).expect("read book.keys after"),
+        keys_before,
+        "book.keys must remain byte-identical through fad"
+    );
+
     // Authorized owner `fad stop` succeeds and releases the lease.
     let (code, stopped, err) = fad(&["stop", "--book", &b, "--json"]);
     assert_eq!(code, 0, "{stopped}\n{err}");

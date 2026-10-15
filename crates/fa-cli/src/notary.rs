@@ -4,7 +4,7 @@
 //! Report certificates bind native historical reads and exact folds. Neither
 //! surface issues a signed TransparencyCheckpoint or an outsider evidence bundle.
 
-use std::io::{Read, Write};
+use std::io::Read;
 
 use crate::json::{Json, obj, s};
 use fa::certificate::{AUTHORITY, MAX_CERTIFICATE_BYTES, REPLAY_SCOPE};
@@ -164,30 +164,13 @@ pub(crate) fn retain_report_certificate(
         ));
     }
     if let Some(path) = args.flag("--certificate-out") {
-        if path == "-" {
+        if path.is_empty() || path == "-" {
             return Err(usage(
                 "--certificate-out names a new file; - is not an output file",
                 "use --certify to receive the complete certificate as hex on stdout",
             ));
         }
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(files.resolve(path)).map_err(|e| {
-            usage(
-                format!("cannot create certificate file {path}: {e}"),
-                "choose a new --certificate-out path; an existing file is never overwritten",
-            )
-        })?;
-        file.write_all(&bytes).and_then(|()| file.sync_all()).map_err(|e| {
-            Fail::Environment(format!(
-                "could not finish certificate file {path}: {e}; preserve the partial file and retry with a new output path"
-            ))
-        })?;
+        crate::cli::write_new_output_file(files, path, &bytes, "certificate", "--certificate-out")?;
     }
     let retained = book.retain_certificate_authorized(certificate, capability)??;
     Ok((bytes, retained))

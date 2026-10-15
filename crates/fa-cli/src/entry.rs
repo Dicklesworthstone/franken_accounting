@@ -88,10 +88,21 @@ pub fn fa_with(argv: &[String], files: Files, capture: bool) -> (u8, Captured) {
             drop(lease);
             result
         }
-        // Help/discovery does not open a book. Every other operation must
-        // fail closed, including NotFound, permission, lock and note errors.
+        // Help/discovery does not open a book. When the book directory does
+        // not exist yet, defer lease acquisition to Books::LeasedOnOpen so
+        // pure flag/usage checks and `fa doctor` run before open fails closed.
         Err(LeaseError::Io { .. }) if discovery(&parsed, reg) => {
             cli::run(argv, Books::Dir, files, capture)
+        }
+        Err(LeaseError::Io { ref error, .. })
+            if error.kind() == std::io::ErrorKind::NotFound && !dir.exists() =>
+        {
+            let books = Books::LeasedOnOpen {
+                lease: reg.daemon.lease.clone(),
+                note,
+                held: None,
+            };
+            cli::run(argv, books, files, capture)
         }
         Err(error @ LeaseError::Io { .. }) => cli::environment_error(
             argv,

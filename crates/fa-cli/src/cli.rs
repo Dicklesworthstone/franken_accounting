@@ -3147,13 +3147,18 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         ),
                     ));
                 }
+                if path.is_empty() || path == "-" {
+                    return Err(usage(
+                        "--plan-out names a new file; - is not an output file",
+                        "use --dry-run to receive the complete plan bytes as hex on stdout",
+                    ));
+                }
                 let plan = book.plan_transition(code, transition, who, reason, date, &key)??;
                 let digest = book.plan_digest(&plan)?;
                 let bytes = plan
                     .encode()
                     .map_err(|e| Fail::Internal(format!("plan encoding: {e}")))?;
-                let target = ctx.files.resolve(path);
-                std::fs::write(&target, bytes).map_err(|e| BookError::Io(target.clone(), e))?;
+                write_post_plan(&ctx.files, path, &bytes)?;
                 out.event(
                     "period_planned",
                     vec![
@@ -4294,7 +4299,13 @@ pub(crate) fn read_plan_bytes(
     Ok(decoded)
 }
 
-pub(crate) fn write_post_plan(files: &Files, path: &str, bytes: &[u8]) -> Result<(), Fail> {
+pub(crate) fn write_new_output_file(
+    files: &Files,
+    path: &str,
+    bytes: &[u8],
+    what: &str,
+    flag: &str,
+) -> Result<(), Fail> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -4304,15 +4315,25 @@ pub(crate) fn write_post_plan(files: &Files, path: &str, bytes: &[u8]) -> Result
     }
     let mut file = options.open(files.resolve(path)).map_err(|e| {
         usage(
-            format!("cannot create plan file {path}: {e}"),
-            "choose a new --plan-out path; an existing file is never overwritten",
+            format!("cannot create {what} file {path}: {e}"),
+            format!("choose a new {flag} path; an existing file is never overwritten"),
         )
     })?;
     file.write_all(bytes).and_then(|()| file.sync_all()).map_err(|e| {
         Fail::Environment(format!(
-            "could not finish plan file {path}: {e}; nothing was posted; preserve the partial file and retry with a new output path"
+            "could not finish {what} file {path}: {e}; preserve the partial file and retry with a new output path"
         ))
     })
+}
+
+pub(crate) fn write_post_plan(files: &Files, path: &str, bytes: &[u8]) -> Result<(), Fail> {
+    if path.is_empty() || path == "-" {
+        return Err(usage(
+            "--plan-out names a new file; - is not an output file",
+            "omit --plan-out or use --dry-run to receive the complete plan bytes as hex on stdout",
+        ));
+    }
+    write_new_output_file(files, path, bytes, "plan", "--plan-out")
 }
 
 fn emit_post_plan(
@@ -4838,30 +4859,13 @@ fn read_review_bytes(files: &Files, path: &str, bound: bool) -> Result<Vec<u8>, 
 }
 
 fn write_review_file(files: &Files, path: &str, bytes: &[u8]) -> Result<(), Fail> {
-    if path == "-" {
+    if path.is_empty() || path == "-" {
         return Err(usage(
             "--review-out names a new file; - is not an output file",
             "use --review-only to receive the complete review bytes as hex on stdout without writing a file",
         ));
     }
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(files.resolve(path)).map_err(|e| {
-        usage(
-            format!("cannot create review file {path}: {e}"),
-            "choose a new --review-out path; an existing file is never overwritten",
-        )
-    })?;
-    file.write_all(bytes).and_then(|()| file.sync_all()).map_err(|e| {
-        Fail::Environment(format!(
-            "could not finish review file {path}: {e}; preserve the partial file and retry with a new output path"
-        ))
-    })
+    write_new_output_file(files, path, bytes, "review", "--review-out")
 }
 
 fn approve_any_review_bytes(
