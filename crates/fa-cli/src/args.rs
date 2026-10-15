@@ -1,6 +1,6 @@
 //! A small argument parser with the agent-ergonomics rules baked in: every
 //! unknown verb or flag is answered with the nearest known one (edit
-//! distance ≤ 2), `--flag=value` and `--flag value` both work, and `--json`
+//! distance ≤ 1, per `correction_distance` in `verbs.toml`), `--flag=value` and `--flag value` both work, and `--json`
 //! may appear anywhere. The known flags come from the verb registry
 //! (`registries/verbs.toml`): `value_flags` take a value, `switches` do not.
 

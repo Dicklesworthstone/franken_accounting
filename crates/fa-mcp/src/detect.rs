@@ -7,7 +7,7 @@
 //! - [`floats`]: a JSON number where an amount string is required — any
 //!   non-integer number anywhere, and any number under an `amount` key;
 //! - [`instants`]: an instant (`2026-03-15T00:00:00Z`, an epoch) where a civil
-//!   `YYYY-MM-DD` date is required; never silently converted (FA-REF-015);
+//!   `YYYY-MM-DD` date is required; never silently converted (FA-REF-100);
 //! - [`placeholders`]: `<document oid>`, `TODO`, `…`, `YOUR_BOOK` and the like
 //!   in an argument, naming the tool that returns the real value;
 //! - [`summary_account`]: a posting leg on an account the chart marks
@@ -221,7 +221,7 @@ pub fn instants(tool: &ToolSpec, arguments: &JsonValue) -> Option<StructuredErro
         Some(StructuredError::detected(
             "instant_for_date",
             format!(
-                "{} is the instant \"{s}\" where a civil YYYY-MM-DD date is required; an instant is never silently converted (FA-REF-015)",
+                "{} is the instant \"{s}\" where a civil YYYY-MM-DD date is required; an instant is never silently converted (FA-REF-100)",
                 spell(path)
             ),
             hint,
