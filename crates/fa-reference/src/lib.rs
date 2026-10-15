@@ -2941,7 +2941,7 @@ impl Oracle {
     /// Whether `e` carries open items at `known`.
     #[must_use]
     pub fn carries_open_items_at(&self, e: &Entry, known: Known) -> bool {
-        matches!(e.class.as_str(), "Original" | "Adjusting")
+        matches!(e.class.as_str(), "Original" | "Adjusting" | "Allocation")
             || (e.class == "Resolution" && !e.legs.is_empty())
             || (e.class == "Migration" && self.visible(e, known))
     }

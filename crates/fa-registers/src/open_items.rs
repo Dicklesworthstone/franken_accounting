@@ -145,10 +145,7 @@ impl OpenItemVerification {
 /// exactly then (ruling 3733 C1).
 #[must_use]
 pub fn carries_open_items(entry: &Entry) -> bool {
-    matches!(
-        entry.proposal.class,
-        EntryClass::ORIGINAL | EntryClass::ADJUSTING | EntryClass::MIGRATION
-    ) || (entry.proposal.class == EntryClass::RESOLUTION && !entry.proposal.legs.is_empty())
+    entry.proposal.class.carries_open_items() && !entry.proposal.legs.is_empty()
 }
 
 /// The lineage predicate: `reversed_by[e]` is the reversal targeting `e`,

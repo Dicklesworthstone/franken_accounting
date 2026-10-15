@@ -1689,11 +1689,8 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
                     "re-read the entry and cite its current entry_digest",
                 )));
             }
-            let open_item_class = matches!(
-                target.proposal.class,
-                EntryClass::ORIGINAL | EntryClass::ADJUSTING | EntryClass::MIGRATION
-            ) || (target.proposal.class == EntryClass::RESOLUTION
-                && !target.proposal.legs.is_empty());
+            let open_item_class =
+                target.proposal.class.carries_open_items() && !target.proposal.legs.is_empty();
             if !open_item_class {
                 txn.abort();
                 return Ok(Err(Refusal::new(

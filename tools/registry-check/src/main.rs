@@ -617,6 +617,8 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
         let p = reg_dir.join(name);
         fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))
     };
+    let classes =
+        EntryClasses::parse(&read("entry_classes.toml")?).map_err(|e| e.to_string())?;
     let matrix =
         Admissibility::parse(&classes, &read("admissibility.toml")?).map_err(|e| e.to_string())?;
     let _sod = SodPolicy::parse(&read("sod_policy.toml")?, &classes, &matrix)

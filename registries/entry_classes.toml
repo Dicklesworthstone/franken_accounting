@@ -16,90 +16,105 @@ tag = 1
 name = "Original"
 kind = "posting"
 supersession = "none"
+carries_open_items = true
 
 [[class]]
 tag = 2
 name = "Pending"
 kind = "posting"
 supersession = "none"
+carries_open_items = false
 
 [[class]]
 tag = 3
 name = "Resolution"
 kind = "posting"
 supersession = "resolves"
+carries_open_items = true
 
 [[class]]
 tag = 4
 name = "Reversal"
 kind = "posting"
 supersession = "reverses"
+carries_open_items = false
 
 [[class]]
 tag = 5
 name = "Replacement"
 kind = "posting"
 supersession = "replaces"
+carries_open_items = true
 
 [[class]]
 tag = 6
 name = "Reclassification"
 kind = "posting"
 supersession = "reclassifies"
+carries_open_items = true
 
 [[class]]
 tag = 7
 name = "Adjusting"
 kind = "posting"
 supersession = "optional"
+carries_open_items = true
 
 [[class]]
 tag = 8
 name = "Closing"
 kind = "posting"
 supersession = "none"
+carries_open_items = true
 
 [[class]]
 tag = 9
 name = "Allocation"
 kind = "posting"
 supersession = "none"
+carries_open_items = true
 
 [[class]]
 tag = 10
 name = "Revaluation"
 kind = "posting"
 supersession = "none"
+carries_open_items = true
 
 [[class]]
 tag = 11
 name = "Elimination"
 kind = "posting"
 supersession = "none"
+carries_open_items = true
 
 [[class]]
 tag = 12
 name = "Migration"
 kind = "posting"
 supersession = "none"
+carries_open_items = true
 
 [[class]]
 tag = 13
 name = "Revision"
 kind = "posting"
 supersession = "revises"
+carries_open_items = true
 
 [[class]]
 tag = 14
 name = "Restatement"
 kind = "posting"
 supersession = "restates"
+carries_open_items = true
 
 [[class]]
 tag = 15
 name = "PriorPeriodAdjustment"
 kind = "posting"
 supersession = "none"
+carries_open_items = true
 
 [[class]]
 tag = 16

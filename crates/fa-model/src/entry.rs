@@ -165,6 +165,21 @@ impl EntryClass {
         Self::ALL.iter().any(|(t, _, c)| *t == self.0 && *c)
     }
 
+    /// Whether posted legs of this class carry open-item balances (plan §5.7;
+    /// cross-checked against `registries/entry_classes.toml` by
+    /// `code_classes_match_registry`).
+    ///
+    /// Control classes, `Pending` holds (which reserve without posting), and
+    /// `Reversal` entries (which negate their target rather than opening a
+    /// new item) do not carry open items; all other registered posting
+    /// classes do when they carry legs.
+    #[must_use]
+    pub fn carries_open_items(self) -> bool {
+        self.is_registered()
+            && !self.is_control()
+            && !matches!(self, Self::PENDING | Self::REVERSAL)
+    }
+
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         Self::ALL
@@ -2201,6 +2216,12 @@ mod tests {
             assert_eq!(
                 c.is_control(),
                 row.kind == fa_registry::ClassKind::Control,
+                "{}",
+                row.name
+            );
+            assert_eq!(
+                c.carries_open_items(),
+                row.carries_open_items,
                 "{}",
                 row.name
             );

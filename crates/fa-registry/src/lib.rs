@@ -164,6 +164,7 @@ pub struct EntryClass {
     pub name: String,
     pub kind: ClassKind,
     pub supersession: String,
+    pub carries_open_items: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -173,22 +174,50 @@ pub struct EntryClasses {
 
 impl EntryClasses {
     pub fn embedded() -> Result<Self, RegistryError> {
+        Self::parse(ENTRY_CLASSES)
+    }
+
+    pub fn parse(text: &str) -> Result<Self, RegistryError> {
         const R: &str = "entry_classes.toml";
-        let doc = load(R, ENTRY_CLASSES)?;
+        let doc = load(R, text)?;
         let mut rows = Vec::new();
         for t in doc.arrays.get("class").unwrap_or(&Vec::new()) {
             let tag = req_int(R, t, "tag")?;
+            let name = req_str(R, t, "name")?.to_string();
             let kind = match req_str(R, t, "kind")? {
                 "posting" => ClassKind::Posting,
                 "control" => ClassKind::Control,
                 other => return Err(invalid(R, format!("unknown class kind `{other}`"))),
             };
+            let carries_open_items = match kind {
+                ClassKind::Posting => t
+                    .get("carries_open_items")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| {
+                        invalid(
+                            R,
+                            format!(
+                                "posting class `{name}` must declare boolean `carries_open_items`"
+                            ),
+                        )
+                    })?,
+                ClassKind::Control => {
+                    if t.get("carries_open_items").and_then(Value::as_bool) == Some(true) {
+                        return Err(invalid(
+                            R,
+                            format!("control class `{name}` cannot carry open items"),
+                        ));
+                    }
+                    false
+                }
+            };
             rows.push(EntryClass {
                 tag: u16::try_from(tag)
                     .map_err(|_| invalid(R, format!("tag {tag} out of range")))?,
-                name: req_str(R, t, "name")?.to_string(),
+                name,
                 kind,
                 supersession: req_str(R, t, "supersession")?.to_string(),
+                carries_open_items,
             });
         }
         let mut tags = std::collections::BTreeSet::new();
@@ -1748,6 +1777,51 @@ mod tests {
             String::from_utf8(a)
                 .unwrap()
                 .starts_with("label:Account=3\n")
+        );
+    }
+
+    #[test]
+    fn posting_classes_require_explicit_carries_open_items_and_reject_planted_omission() {
+        let classes = EntryClasses::embedded().unwrap();
+        assert_eq!(
+            classes.by_name("Allocation").map(|c| c.carries_open_items),
+            Some(true)
+        );
+        assert_eq!(
+            classes.by_name("Pending").map(|c| c.carries_open_items),
+            Some(false)
+        );
+        assert_eq!(
+            classes.by_name("Reversal").map(|c| c.carries_open_items),
+            Some(false)
+        );
+        assert_eq!(
+            classes
+                .by_name("PeriodControl")
+                .map(|c| c.carries_open_items),
+            Some(false)
+        );
+
+        let missing_open_items = format!(
+            "{ENTRY_CLASSES}\n[[class]]\ntag = 99\nname = \"PlantedPosting\"\nkind = \"posting\"\nsupersession = \"none\"\n"
+        );
+        let err = EntryClasses::parse(&missing_open_items)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("posting class `PlantedPosting` must declare boolean `carries_open_items`"),
+            "{err}"
+        );
+
+        let control_open_items = format!(
+            "{ENTRY_CLASSES}\n[[class]]\ntag = 99\nname = \"PlantedControl\"\nkind = \"control\"\nsupersession = \"none\"\ncarries_open_items = true\n"
+        );
+        let err = EntryClasses::parse(&control_open_items)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("control class `PlantedControl` cannot carry open items"),
+            "{err}"
         );
     }
 }
