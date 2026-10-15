@@ -86,7 +86,11 @@ fn result(output: Output, exit: i32) -> String {
         assert!(!stderr.is_empty());
         assert!(stdout.contains("\"verified\":false"));
         assert!(!stdout.contains("proof_verified"));
-        let class = if exit == 2 { "usage" } else { "verification" };
+        let class = match exit {
+            2 => "usage",
+            5 => "foundation",
+            _ => "verification",
+        };
         assert!(stdout.contains(&format!("\"class\":\"{class}\"")));
     }
     stdout
@@ -258,7 +262,14 @@ fn request_flags_preserve_non_utf8_input_paths() {
     let proof = dir.join(OsString::from_vec(b"proof-\xff".to_vec()));
     let anchor = dir.join(OsString::from_vec(b"anchor-\xfe".to_vec()));
     let checkpoint = verify_state(&vector("state")).unwrap().checkpoint;
-    fs::write(&proof, vector("balance")).unwrap();
-    fs::write(&anchor, checkpoint.encode()).unwrap();
-    result(run("balance", &proof, &anchor, &SCOPE, true), 0);
+    match fs::write(&proof, vector("balance")) {
+        Ok(()) => {
+            fs::write(&anchor, checkpoint.encode()).unwrap();
+            result(run("balance", &proof, &anchor, &SCOPE, true), 0);
+        }
+        Err(e) if e.raw_os_error() == Some(92) => {
+            result(run("balance", &proof, &anchor, &SCOPE, true), 5);
+        }
+        Err(e) => panic!("unexpected write error: {e:?}"),
+    }
 }

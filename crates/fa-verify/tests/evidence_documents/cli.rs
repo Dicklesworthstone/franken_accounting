@@ -401,9 +401,13 @@ fn non_utf8_document_paths_are_supported_but_document_selectors_are_not_lossy() 
     let j = journal(&[entry(&citations(&[doc], 3), 7, 10)]);
     let (mut input, dir) = args(&j, &[0], &[doc]);
     let path = dir.join(OsString::from_vec(b"document-\xff".to_vec()));
-    std::fs::copy(dir.join("document-0"), &path).unwrap();
+    let expected_code = match std::fs::copy(dir.join("document-0"), &path) {
+        Ok(_) => 0,
+        Err(e) if e.raw_os_error() == Some(92) => 5,
+        Err(e) => panic!("unexpected copy error: {e:?}"),
+    };
     set(&mut input, "--document", 3, path.into_os_string());
-    result(run(&input), 0);
+    result(run(&input), expected_code);
     let valid = input.clone();
     for offset in [1, 2] {
         let mut bad = valid.clone();

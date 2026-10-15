@@ -225,8 +225,15 @@ fn non_utf8_view_paths_remain_usable() {
     let dir = directory();
     let path = dir.join(OsString::from_vec(b"view-\xff.bin".to_vec()));
     let (bytes, anchor) = view(b"legitimate filename", &[0]);
-    fs::write(&path, bytes).unwrap();
-    let output = run(&path, &anchor, "0", true);
-    assert_eq!(output.status.code(), Some(0), "{}", stdout(&output));
-    assert!(output.stderr.is_empty());
+    match fs::write(&path, bytes) {
+        Ok(()) => {
+            let output = run(&path, &anchor, "0", true);
+            assert_eq!(output.status.code(), Some(0), "{}", stdout(&output));
+            assert!(output.stderr.is_empty());
+        }
+        Err(e) if e.raw_os_error() == Some(92) => {
+            failure(&run(&path, &anchor, "0", true), 5, "foundation");
+        }
+        Err(e) => panic!("unexpected write error: {e:?}"),
+    }
 }

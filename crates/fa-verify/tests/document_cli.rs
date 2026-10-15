@@ -205,9 +205,16 @@ fn non_utf8_proof_and_commitment_paths_remain_usable() {
     let dir = directory();
     let proof = dir.join(std::ffi::OsString::from_vec(b"proof-\xff".to_vec()));
     let commitment = dir.join(std::ffi::OsString::from_vec(b"commitment-\xfe".to_vec()));
-    std::fs::write(&proof, wire(1, 0, &[(0, &[], vec![])])).unwrap();
-    std::fs::write(&commitment, doc_commit(1, &[])).unwrap();
-    check(&run(&proof, &commitment, "0"), 0);
+    match std::fs::write(&proof, wire(1, 0, &[(0, &[], vec![])])) {
+        Ok(()) => {
+            std::fs::write(&commitment, doc_commit(1, &[])).unwrap();
+            check(&run(&proof, &commitment, "0"), 0);
+        }
+        Err(e) if e.raw_os_error() == Some(92) => {
+            check(&run(&proof, &commitment, "0"), 5);
+        }
+        Err(e) => panic!("unexpected write error: {e:?}"),
+    }
 }
 
 // Entry/citation framing is independent of the producer. Actual model and
@@ -618,10 +625,17 @@ fn sparse_authenticated_chunk_indexes_and_lengths_are_not_truncated_in_json() {
 fn journal_authenticated_mode_accepts_non_utf8_paths_without_lossy_conversion() {
     use std::os::unix::ffi::OsStringExt;
     let dir = directory().join(std::ffi::OsString::from_vec(b"evidence-\xff".to_vec()));
-    std::fs::create_dir(&dir).unwrap();
     let citation = cited_document(doc_commit(1, &[]), 1, true);
-    install_citation(&dir, &citation, &compact_document(&[], &[0]));
-    check_evidence(&dir, &citation.expected, "0", 0);
+    match std::fs::create_dir(&dir) {
+        Ok(()) => {
+            install_citation(&dir, &citation, &compact_document(&[], &[0]));
+            check_evidence(&dir, &citation.expected, "0", 0);
+        }
+        Err(e) if e.raw_os_error() == Some(92) => {
+            check_evidence(&dir, &citation.expected, "0", 5);
+        }
+        Err(e) => panic!("unexpected create_dir error: {e:?}"),
+    }
 }
 
 #[test]

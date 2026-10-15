@@ -557,12 +557,19 @@ fn a_file_name_that_is_not_utf8_stays_usable() {
     let (_, current) = checkpoints(&dir);
     let name = OsStr::from_bytes(b"prefix-\xff.proof");
     let proof = dir.join(name);
-    fs::write(&proof, vector("prefix")).expect("write non-UTF-8 named proof");
-    let stdout = success(&run_proof("prefix", &proof, &current, None));
-    assert!(
-        stdout.contains("\"scope\":\"seq_range_complete\""),
-        "{stdout}"
-    );
+    match fs::write(&proof, vector("prefix")) {
+        Ok(()) => {
+            let stdout = success(&run_proof("prefix", &proof, &current, None));
+            assert!(
+                stdout.contains("\"scope\":\"seq_range_complete\""),
+                "{stdout}"
+            );
+        }
+        Err(e) if e.raw_os_error() == Some(92) => {
+            failure(&run_proof("prefix", &proof, &current, None), 5, "io_error");
+        }
+        Err(e) => panic!("write non-UTF-8 named proof: {e:?}"),
+    }
 }
 
 #[test]

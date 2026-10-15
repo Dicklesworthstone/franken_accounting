@@ -505,6 +505,7 @@ fn binary_paths_remain_os_strings_but_recipient_scalars_must_be_ascii() {
     use std::os::unix::ffi::OsStringExt;
     let f = Fixture::new(1);
     let mut args = f.args(false, &[0]);
+    let mut apfs_eilseq = false;
     for (flag, name) in [
         ("--view", "artifact"),
         ("--entry-proof", "entry"),
@@ -513,10 +514,16 @@ fn binary_paths_remain_os_strings_but_recipient_scalars_must_be_ascii() {
         let path = f.dir.join(OsString::from_vec(
             format!("{name}-").bytes().chain([255]).collect(),
         ));
-        std::fs::copy(f.dir.join(name), &path).unwrap();
+        match std::fs::copy(f.dir.join(name), &path) {
+            Ok(_) => {}
+            Err(e) if e.raw_os_error() == Some(92) => {
+                apfs_eilseq = true;
+            }
+            Err(e) => panic!("unexpected copy error: {e:?}"),
+        }
         replace(&mut args, flag, path.into_os_string());
     }
-    result(run(&args), 0);
+    result(run(&args), if apfs_eilseq { 5 } else { 0 });
     replace(&mut args, "--expect-role", OsString::from_vec(vec![255]));
     result(run(&args), 2);
 }

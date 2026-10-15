@@ -253,14 +253,21 @@ fn binary_paths_can_be_non_utf8_but_expected_citations_cannot() {
     use std::os::unix::ffi::OsStringExt;
     let f = fixture::proof(&fixture::proposal(&fixture::citations()).bytes, true, 7);
     let (mut args, dir) = args(&f);
+    let mut apfs_eilseq = false;
     for (index, name) in [(2, "proof"), (4, "checkpoint")] {
         let path = dir.join(OsString::from_vec(
             format!("{name}-").bytes().chain([255]).collect(),
         ));
-        std::fs::copy(dir.join(name), &path).unwrap();
+        match std::fs::copy(dir.join(name), &path) {
+            Ok(_) => {}
+            Err(e) if e.raw_os_error() == Some(92) => {
+                apfs_eilseq = true;
+            }
+            Err(e) => panic!("unexpected copy error: {e:?}"),
+        }
         args[index] = path.into_os_string();
     }
-    result(run(&args), 0);
+    result(run(&args), if apfs_eilseq { 5 } else { 0 });
     args.extend(["--expect-citation".into(), OsString::from_vec(vec![255])]);
     result(run(&args), 2);
 }

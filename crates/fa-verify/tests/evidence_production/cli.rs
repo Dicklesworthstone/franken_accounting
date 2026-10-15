@@ -316,6 +316,7 @@ fn non_utf8_paths_work_without_admitting_non_utf8_selector_values() {
     use std::os::unix::ffi::OsStringExt;
     let j = journal(&[entry(&fixture::citations(), 7, 10)]);
     let (mut args, dir) = args(&j, &[0]);
+    let mut apfs_eilseq = false;
     for (flag, name) in [
         ("--prefix", "prefix"),
         ("--checkpoint", "checkpoint"),
@@ -324,10 +325,16 @@ fn non_utf8_paths_work_without_admitting_non_utf8_selector_values() {
         let path = dir.join(OsString::from_vec(
             format!("{name}-").bytes().chain([255]).collect(),
         ));
-        std::fs::copy(dir.join(name), &path).unwrap();
+        match std::fs::copy(dir.join(name), &path) {
+            Ok(_) => {}
+            Err(e) if e.raw_os_error() == Some(92) => {
+                apfs_eilseq = true;
+            }
+            Err(e) => panic!("unexpected copy error: {e:?}"),
+        }
         set(&mut args, flag, path.into_os_string());
     }
-    result(run(&args), 0);
+    result(run(&args), if apfs_eilseq { 5 } else { 0 });
     set(&mut args, "--expect-days", OsString::from_vec(vec![255]));
     result(run(&args), 2);
 }

@@ -422,9 +422,20 @@ fn non_utf8_driver_and_proof_filenames_are_not_mistaken_for_invalid_selectors() 
     let mut files = Files::new(&f);
     let proof = files.dir.join(OsString::from_vec(b"proof-\xff".to_vec()));
     let basis = files.dir.join(OsString::from_vec(b"basis-\xfe".to_vec()));
-    fs::write(&proof, &f.proof).unwrap();
-    fs::write(&basis, &f.basis).unwrap();
-    files.args[3] = proof.into();
-    files.args[9] = basis.into();
-    code(&files.run(), 0);
+    match fs::write(&proof, &f.proof) {
+        Ok(()) => {
+            fs::write(&basis, &f.basis).unwrap();
+            files.args[3] = proof.into();
+            files.args[9] = basis.into();
+            code(&files.run(), 0);
+        }
+        Err(e) if e.raw_os_error() == Some(92) => {
+            // Host filesystem (e.g. macOS APFS) rejects non-UTF-8 filenames at VFS layer;
+            // verify the CLI parser still preserves non-UTF-8 paths and reaches I/O (exit 5), never exit 2.
+            files.args[3] = proof.into();
+            files.args[9] = basis.into();
+            code(&files.run(), 5);
+        }
+        Err(e) => panic!("unexpected write error: {e:?}"),
+    }
 }
