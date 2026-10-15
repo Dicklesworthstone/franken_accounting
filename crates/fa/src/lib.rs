@@ -102,7 +102,7 @@ pub use certificate::{
     CertificateStatus, CertifiedReport, CertifiedTrialBalance, ReportCertificate, ReportOutput,
     ReportSelection, TrialBalanceSelection,
 };
-pub use certificate_store::RetainedCertificate;
+pub use certificate_store::{MAX_INLINE_CERTIFICATE_BYTES, RetainedCertificate};
 pub use document_disclosure::{DisclosureAccess, DocumentDisclosureArtifact};
 pub use evidence_disclosure::{EvidenceDisclosureArtifact, EvidenceDisclosureRequest};
 pub use fa_intents::{IntentError, MAX_PLAN_BYTES, PlanCertificate, PostIntent, PostPlan};

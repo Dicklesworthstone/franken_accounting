@@ -26,7 +26,7 @@ use fa_journal::genesis::BookContext;
 use fa_journal::refusal::{KernelError, Refusal, exit};
 use fa_journal::rows::{prop, scalar_bytes};
 use fa_model::symbols::{label, property, relation};
-use fa_model::{Id128, Reader, Writer, domain_digest};
+use fa_model::{Id128, Reader, domain_digest};
 use fgdb::{Database, VertexRow, WriteBatch, WriteError, WriteTxnError};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, QueryCx, VId};
@@ -108,8 +108,9 @@ fn locator(digest: &[u8; 32]) -> String {
 }
 
 /// Encode the external record for a certificate of `size` bytes in `store`.
+#[cfg(test)]
 pub(crate) fn external_record(store: u16, size: u64) -> Result<Vec<u8>, Refusal> {
-    let mut w = Writer::new();
+    let mut w = fa_model::Writer::new();
     w.fixed(EXTERNAL_FORMAT).u16(store).u64(size);
     w.finish().map_err(|error| invalid(format!("cannot encode the external certificate record: {error}")))
 }

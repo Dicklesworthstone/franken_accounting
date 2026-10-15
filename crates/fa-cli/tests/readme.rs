@@ -418,3 +418,64 @@ fn the_registry_check_names_an_invented_verb_subcommand_or_flag() {
         );
     }
 }
+
+#[test]
+fn target_state_commands_below_tldr_are_registered_or_name_a_target_bead() {
+    let reg = registry().expect("verbs.toml");
+    let (_, after_tldr) = README
+        .split_once("\n## TL;DR\n")
+        .expect("README has a `## TL;DR` heading");
+    let mut shell = None;
+    let mut pending = String::new();
+    let mut last_comment = String::new();
+    let mut checked = 0usize;
+    for raw in after_tldr.lines() {
+        if let Some(lang) = raw.strip_prefix("```") {
+            shell = match shell {
+                None => Some(matches!(
+                    lang.trim(),
+                    "" | "bash" | "sh" | "shell" | "console"
+                )),
+                Some(_) => None,
+            };
+            pending.clear();
+            last_comment.clear();
+            continue;
+        }
+        if shell != Some(true) {
+            continue;
+        }
+        let part = raw.trim();
+        if part.is_empty() {
+            last_comment.clear();
+            continue;
+        }
+        if part.starts_with('#') && pending.is_empty() {
+            last_comment.push_str(part);
+            last_comment.push(' ');
+            continue;
+        }
+        let joined = if pending.is_empty() {
+            part.to_string()
+        } else {
+            format!("{pending} {part}")
+        };
+        if let Some(head) = joined.strip_suffix('\\') {
+            pending = head.trim_end().to_string();
+            continue;
+        }
+        pending.clear();
+        let cmd = joined.split('#').next().unwrap_or(&joined).trim();
+        if cmd.starts_with("fa ") {
+            checked += 1;
+            if let Some(err) = unregistered(reg, cmd) {
+                assert!(
+                    last_comment.contains("fa-") || joined.contains("fa-"),
+                    "unregistered target-state command `{cmd}` below `## TL;DR` must carry a target bead id (`fa-…`): {err}"
+                );
+            }
+        }
+        last_comment.clear();
+    }
+    assert!(checked >= 10, "expected >= 10 `fa` lines below ## TL;DR, found {checked}");
+}
