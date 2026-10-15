@@ -12,7 +12,7 @@ use crate::codec::{DecodeError, Reader, Reason};
 use crate::envelope::{LeafEnvelope, MAX_RECORD_BYTES, check_record};
 use crate::migration_balance::BALANCE_FORMAT_V3;
 use crate::proof::{
-    Checkpoint, PREFIX_FORMAT, Prefix, SCOPE_SEQ_RANGE_COMPLETE, VerifyError,
+    Checkpoint, PREFIX_FORMAT, Prefix, RecordCheck, SCOPE_SEQ_RANGE_COMPLETE, VerifyError,
     complete_prefix, open, read_envelopes, trusted,
 };
 
@@ -47,18 +47,51 @@ pub(super) fn read_header<'a>(
     Ok((r, kind))
 }
 
-/// Verify every payload-to-selector derivation against an independent anchor.
-/// Accepts v2 prefixes or existing native v3 balance exports; legacy prefixes
-/// alone cannot prove exclusions. This grants no disclosure authority.
-pub fn verify_prefix_with_records(
-    proof: &[u8], anchor: &Checkpoint,
-) -> Result<Prefix, VerifyError> {
+fn check_size(proof: &[u8]) -> Result<(), VerifyError> {
     if proof.len() > MAX_PREFIX_PROOF_BYTES {
         return Err(VerifyError::Decode(DecodeError {
             offset: 0, what: "complete prefix bytes",
             reason: Reason::TooLong { max: MAX_PREFIX_PROOF_BYTES, actual: proof.len() },
         }));
     }
+    Ok(())
+}
+
+/// Prefix membership and the explicitly verified payload assurance. A v1
+/// root does not attest correct derivation of its producer-authored selectors.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrefixVerification {
+    pub prefix: Prefix,
+    pub record_check: RecordCheck,
+}
+
+/// Verify a native v1/v2 prefix and distinguish envelopes from checked payloads.
+/// V1 wire behavior and the original `crate::verify_prefix` API are retained.
+/// V2 requires EVERY record, even for an empty filtered extract. Balance v3 is
+/// intentionally not accepted as a native prefix command: productions may
+/// reuse it through `verify_prefix_with_records`, which also verifies its sum.
+pub fn verify_prefix_with_status(
+    proof: &[u8], anchor: &Checkpoint,
+) -> Result<PrefixVerification, VerifyError> {
+    check_size(proof)?;
+    let tag = Reader::new(proof).bytes(64, "proof.format")?;
+    let (prefix, record_check) = if tag == PREFIX_FORMAT {
+        (crate::verify_prefix(proof, anchor)?, RecordCheck::NotSupplied)
+    } else if tag == PREFIX_FORMAT_V2 {
+        (verify_prefix_with_records(proof, anchor)?, RecordCheck::Recomputed)
+    } else {
+        return Err(VerifyError::Format { expected: PREFIX_FORMAT_V2 });
+    };
+    Ok(PrefixVerification { prefix, record_check })
+}
+
+/// Verify every payload-to-selector derivation against an independent anchor.
+/// Accepts v2 prefixes or existing native v3 balance exports; legacy prefixes
+/// alone cannot prove exclusions. This grants no disclosure authority.
+pub fn verify_prefix_with_records(
+    proof: &[u8], anchor: &Checkpoint,
+) -> Result<Prefix, VerifyError> {
+    check_size(proof)?;
     let (mut preflight, kind) = read_header(proof, anchor)?;
     if kind == PrefixKind::Legacy {
         return Err(VerifyError::Format { expected: PREFIX_FORMAT_V2 });

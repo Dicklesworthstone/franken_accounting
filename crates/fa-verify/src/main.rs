@@ -10,6 +10,7 @@
 mod balance_args;
 mod document_args;
 mod evidence_args;
+mod prefix_report;
 
 use std::ffi::OsString;
 use std::fs::File;
@@ -20,7 +21,7 @@ use std::process::ExitCode;
 use fa_verify::blake3::hex;
 use fa_verify::{
     BalanceExpectation, Checkpoint, RecordCheck, VerifyError, verify_balance, verify_balance_for,
-    verify_consistency, verify_inclusion, verify_prefix,
+    verify_consistency, verify_inclusion,
 };
 
 /// A process-level allocation/input bound, independent of each format's
@@ -47,7 +48,10 @@ is exactly 80 bytes. Obtain and trust --checkpoint independently of the
 proof. It is unsigned here: signatures and origin authenticity are not
 checked. --next-checkpoint is the claimed extension, not a trusted anchor.
 Inclusion proofs may already contain their record; output says whether
-its payload was recomputed. Prefix proofs check envelopes, not payloads.
+its payload was recomputed. Prefix v1 checks envelope membership only.
+Prefix v2 (fa proof prefix --with-record) checks every entry payload and
+rebuilds its selectors. Output distinguishes record_check and scope_derivation.
+Prefixes do not assert posted balances, accounting validity or document bytes.
 Balance v3 checks every prefix entry payload before selecting posted amounts
 in one account/unit, with an optional inclusive civil-day cutoff. It discloses
 all prefix entry payloads, not just entries for the requested account.
@@ -345,21 +349,7 @@ fn verify(request: &Request) -> Result<Report, Failure> {
                 verified.extended.leaf_count, checkpoint.leaf_count
             );
         }
-        Kind::Prefix => {
-            let verified = verify_prefix(&proof, &checkpoint)?;
-            report.scope = verified.scope;
-            report
-                .checks
-                .extend(["complete_prefix", "journal_order", "recorded_coordinates"]);
-            report.data = object([
-                ("envelopes", verified.envelopes.len().to_string()),
-                ("record_check", quote("not_supplied")),
-            ]);
-            report.detail = format!(
-                "all {} leaf envelopes in journal order; payloads were not recomputed",
-                verified.envelopes.len()
-            );
-        }
+        Kind::Prefix => prefix_report::verify(&proof, &checkpoint, &mut report)?,
         Kind::Balance => {
             let verified = match &request.expectation {
                 Some(expected) => verify_balance_for(&proof, &checkpoint, expected)
