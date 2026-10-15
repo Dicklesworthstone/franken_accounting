@@ -182,14 +182,147 @@ fn retention_props(
     ])
 }
 
-/// Exact same-plan outcome recognition precedes the strict basis check.
+/// Labels whose commits are pure derived/certified metadata and never change
+/// any accounting, period, policy, capability, approval, evidence, or chart
+/// witness a `PostPlan` binds (fa-1nx).
+const METADATA_LABELS: [fgdb_delta_types::LabelId; 5] = [
+    label::REGISTER,
+    label::ACCUMULATOR_STATE,
+    label::TRANSPARENCY_CHECKPOINT,
+    label::REGISTER_STATE,
+    label::CERTIFICATE,
+];
+
+fn is_metadata_vertex_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    vid: VId,
+    seq: fgdb_types::CommitSeq,
+    planned_cvid: VId,
+) -> Result<bool, KernelError> {
+    if vid == planned_cvid {
+        return Ok(false);
+    }
+    let Some(row) = db.vertex_at(vid, seq)? else {
+        return Ok(false);
+    };
+    Ok(!row.labels.is_empty() && row.labels.iter().all(|l| METADATA_LABELS.contains(l)))
+}
+
+fn is_metadata_only_batch<V: Vfs + Clone>(
+    db: &Database<V>,
+    batch: &fgdb_delta_types::LogicalDeltaBatch,
+    planned_cvid: VId,
+) -> Result<bool, KernelError> {
+    use fgdb_delta_types::{DeltaRow, ElementId};
+    let seq = batch.commit_seq();
+    let before_seq = fgdb_types::CommitSeq(seq.0.saturating_sub(1));
+    for entry in batch.coordinate_entries() {
+        for row in &entry.rows {
+            let is_meta = match row {
+                DeltaRow::CreateVertex {
+                    vid,
+                    labels,
+                    valid_time,
+                    ..
+                } => {
+                    valid_time.is_none()
+                        && *vid != planned_cvid
+                        && !labels.is_empty()
+                        && labels.iter().all(|l| METADATA_LABELS.contains(l))
+                }
+                DeltaRow::CreateEdge {
+                    src,
+                    dst,
+                    canonical_key,
+                    valid_time,
+                    ..
+                } => {
+                    valid_time.is_none()
+                        && canonical_key.is_none()
+                        && is_metadata_vertex_at(db, *src, seq, planned_cvid)?
+                        && is_metadata_vertex_at(db, *dst, seq, planned_cvid)?
+                }
+                DeltaRow::Property { elem, property, .. } => match elem {
+                    ElementId::Vertex(vid) => {
+                        (*property == property::ACCUMULATOR_HEAD
+                            && *vid == crate::rows::book_root())
+                            || is_metadata_vertex_at(db, *vid, seq, planned_cvid)?
+                    }
+                    ElementId::Edge(_) => false,
+                },
+                DeltaRow::LabelMembership { vid, label, .. } => {
+                    METADATA_LABELS.contains(label)
+                        && is_metadata_vertex_at(db, *vid, seq, planned_cvid)?
+                }
+                DeltaRow::DeleteVertex { vid, .. } => {
+                    is_metadata_vertex_at(db, *vid, before_seq, planned_cvid)?
+                }
+                DeltaRow::DeleteEdge { eid, .. } => {
+                    if let Some(edge) = db.edge_at(*eid, before_seq)? {
+                        is_metadata_vertex_at(db, edge.entry.src, before_seq, planned_cvid)?
+                            && is_metadata_vertex_at(db, edge.entry.dst, before_seq, planned_cvid)?
+                    } else {
+                        false
+                    }
+                }
+                DeltaRow::ValidTime { .. }
+                | DeltaRow::Counter { .. }
+                | DeltaRow::Escrow { .. }
+                | DeltaRow::Sketch { .. }
+                | DeltaRow::Schema { .. }
+                | DeltaRow::Constraint { .. } => false,
+            };
+            if !is_meta {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// True iff `to >= from` and every commit in `(from, to]` is pure non-accounting
+/// metadata (retained report certificates, register checkpoints, notary
+/// accumulator checkpoints) that does not touch `planned_cvid` (fa-1nx).
+async fn accounting_unchanged_between<V: Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    from: fgdb_types::CommitSeq,
+    to: fgdb_types::CommitSeq,
+    planned_cvid: VId,
+) -> Result<bool, KernelError> {
+    if to < from {
+        return Ok(false);
+    }
+    if to == from {
+        return Ok(true);
+    }
+    if db.ensure_delta_window(&ctx.commit(), from).await.is_err() {
+        return Ok(false);
+    }
+    for batch in db.delta_since(from)? {
+        let seq = batch.commit_seq();
+        if seq > to {
+            break;
+        }
+        if !is_metadata_only_batch(db, batch, planned_cvid)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Exact same-plan outcome recognition precedes the accounting-frontier check.
 /// This is narrower than ordinary semantic post retry: it requires the
 /// unchanged Entry, certificate, and retaining edge from the same original
-/// commit. A direct post or another certificate cannot claim this outcome.
-fn recorded_plan<V: Vfs + Clone>(
-    db: &Database<V>,
+/// commit, with only non-accounting metadata commits allowed between the
+/// plan's snapshot_seq and the entry's creation. A direct post or another
+/// certificate cannot claim this outcome.
+async fn recorded_plan<V: Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
     book: &BookContext,
     plan: &PostPlan,
+    cvid: VId,
 ) -> Outcome<Option<Posted>> {
     let evid = match planned_entry_vid(plan) {
         Ok(vid) => vid,
@@ -198,26 +331,33 @@ fn recorded_plan<V: Vfs + Clone>(
     let Some(entry) = db.vertex(evid)? else {
         return Ok(Ok(None));
     };
-    // The native marker's next_commit_seq is checked_successor(frontier).
-    // The same-basis contract therefore anchors this outcome to exactly
-    // basis+1. VertexRow.created_at is a *version* start, so comparing only
-    // a row with vertex_at(row.created_at) would let a later coordinated
-    // rewrite/backfill masquerade as the original atomic publication.
-    let Some(expected_sequence) = plan.certificate().snapshot_seq.0.checked_add(1) else {
+    let Some(min_sequence) = plan.certificate().snapshot_seq.0.checked_add(1) else {
         return Ok(Err(invalidated("the plan basis has no successor sequence")));
+    };
+    let Some(before_entry) = entry.created_at.0.checked_sub(1) else {
+        return Ok(Err(invalidated(
+            "the planned identity cannot have creating sequence zero",
+        )));
     };
     if entry.labels.as_slice() != [label::ENTRY]
         || entry.retired_at.is_some()
         || entry.props != entry_mirrors(plan.prepared_entry())?
-        || entry.created_at.0 != expected_sequence
+        || entry.created_at.0 < min_sequence
+        || db.vertex_at(evid, fgdb_types::CommitSeq(before_entry))?.is_some()
         || db.vertex_at(evid, entry.created_at)?.as_ref() != Some(&entry)
+        || !accounting_unchanged_between(
+            db,
+            ctx,
+            plan.certificate().snapshot_seq,
+            fgdb_types::CommitSeq(before_entry),
+            cvid,
+        )
+        .await?
     {
         return Ok(Err(invalidated(
             "the planned identity is occupied by a different or changed Entry",
         )));
     }
-    let digest = plan.certificate().digest().map_err(codec)?;
-    let cvid = plan_certificate_vid(book.book_id, &digest);
     let Some(certificate) = db.vertex(cvid)? else {
         return Ok(Err(invalidated(
             "the recorded Entry has no retained evidence for this exact plan",
@@ -227,6 +367,7 @@ fn recorded_plan<V: Vfs + Clone>(
         || certificate.retired_at.is_some()
         || certificate.props != retention_props(book, plan)?
         || certificate.created_at != entry.created_at
+        || db.vertex_at(cvid, fgdb_types::CommitSeq(before_entry))?.is_some()
         || db.vertex_at(cvid, certificate.created_at)?.as_ref() != Some(&certificate)
     {
         return Ok(Err(invalidated(
@@ -259,8 +400,8 @@ fn recorded_plan<V: Vfs + Clone>(
 
 /// Commit an authenticated portable plan under a *current*, externally
 /// supplied capability. No field in the artifact grants authority. A stale
-/// basis, changed policy, changed preparation, or forged plan returns
-/// PlanInvalidated (exit 6), with no publication.
+/// accounting frontier, changed policy, changed preparation, or forged plan
+/// returns PlanInvalidated (exit 6), with no publication.
 pub async fn commit_plan<V: Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
@@ -328,12 +469,15 @@ pub async fn commit_plan<V: Vfs + Clone>(
             "the plan was not issued by this book or its authenticated fields changed",
         )));
     }
-    match recorded_plan(db, book, &plan)? {
+    let digest = certificate.digest().map_err(codec)?;
+    let cvid = plan_certificate_vid(book.book_id, &digest);
+    match recorded_plan(db, ctx, book, &plan, cvid).await? {
         Err(refusal) => return Ok(Err(refusal)),
         Ok(Some(posted)) => return Ok(Ok(posted)),
         Ok(None) => {}
     }
-    if db.frontier()? != certificate.snapshot_seq {
+    let head = db.frontier()?;
+    if !accounting_unchanged_between(db, ctx, certificate.snapshot_seq, head, cvid).await? {
         return Ok(Err(invalidated(format!(
             "the plan's basis {} is no longer the current committed prefix",
             certificate.snapshot_seq.0,
@@ -353,7 +497,7 @@ pub async fn commit_plan<V: Vfs + Clone>(
         }
         Ok(PostPreparation::Ready(prepared)) => prepared,
     };
-    if prepared.basis() != certificate.snapshot_seq
+    if prepared.basis() != head
         || prepared.security_policy_epoch() != certificate.security_policy_epoch
         || prepared.period() != certificate.period
         || prepared.entry() != plan.prepared_entry()
@@ -371,8 +515,6 @@ pub async fn commit_plan<V: Vfs + Clone>(
             return Ok(Err(refusal));
         }
     };
-    let digest = certificate.digest().map_err(codec)?;
-    let cvid = plan_certificate_vid(book.book_id, &digest);
     if db.vertex(cvid)?.is_some() {
         prepared.abort();
         return Ok(Err(invalidated(
@@ -391,7 +533,7 @@ pub async fn commit_plan<V: Vfs + Clone>(
     // publication; &mut Database holds the single-writer handle throughout.
     match prepared.commit(db, ctx).await? {
         Err(refusal) if refusal.exit == exit::CONFLICT => Ok(Err(invalidated(refusal.message))),
-        Ok(Posted::AlreadyRecorded { .. }) => match recorded_plan(db, book, &plan)? {
+        Ok(Posted::AlreadyRecorded { .. }) => match recorded_plan(db, ctx, book, &plan, cvid).await? {
             Err(refusal) => Ok(Err(refusal)),
             Ok(Some(posted)) => Ok(Ok(posted)),
             Ok(None) => Ok(Err(invalidated(

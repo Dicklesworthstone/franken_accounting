@@ -200,6 +200,7 @@ pub struct PreparedPost {
     entry_ref: EntryRef,
     period: String,
     security_policy_epoch: u64,
+    effects_digest: [u8; 32],
     identity: Identity,
     seal_key: SealKey,
 }
@@ -224,7 +225,7 @@ impl PreparedPost {
     }
 
     pub(crate) fn effects_digest(&self) -> Result<[u8; 32], KernelError> {
-        Ok(self.txn.staged_effect_digest()?.0)
+        Ok(self.effects_digest)
     }
 
     /// Only the verified planning path appends its immutable graph evidence
@@ -261,6 +262,7 @@ impl PreparedPost {
             entry_ref,
             period,
             security_policy_epoch: _,
+            effects_digest: _,
             identity,
             seal_key,
         } = self;
@@ -2290,8 +2292,9 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
             reverse_period,
         )?;
     }
-    if let Some(target) = reversal_target
-        && let Err(r) = schedule::cancellation(
+    let mut cancelled_schedule = None;
+    if let Some(target) = reversal_target {
+        match schedule::cancellation(
             &txn,
             db,
             book,
@@ -2301,10 +2304,13 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
             evid,
             preparer,
             epoch,
-        )?
-    {
-        txn.abort();
-        return Ok(Err(r));
+        )? {
+            Ok(c) => cancelled_schedule = c,
+            Err(r) => {
+                txn.abort();
+                return Ok(Err(r));
+            }
+        }
     }
     let mut batches = vec![has_leg, in_period];
     batches.extend(leg_edges);
@@ -2380,6 +2386,106 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
     batches.retain(|b| !b.is_empty());
     txn.write_ordered(db, batches)?;
 
+    let mut effect_hasher = fgdb_crypto::Hasher::new();
+    effect_hasher.update(b"fa:post-effects:v1");
+    effect_hasher.update(&book.book_id.0);
+    effect_hasher.update(&evid.0.to_le_bytes());
+    effect_hasher.update(&pvid.0.to_le_bytes());
+    let entry_bytes = entry.encode()?;
+    effect_hasher.update(&(entry_bytes.len() as u64).to_le_bytes());
+    effect_hasher.update(&entry_bytes);
+    effect_hasher.update(&(judged.moves.len() as u64).to_le_bytes());
+    for m in &judged.moves {
+        effect_hasher.update(&m.cell.0.to_le_bytes());
+        effect_hasher.update(&m.before.debits_posted.to_le_bytes());
+        effect_hasher.update(&m.before.credits_posted.to_le_bytes());
+        effect_hasher.update(&m.before.debits_pending.to_le_bytes());
+        effect_hasher.update(&m.before.credits_pending.to_le_bytes());
+        effect_hasher.update(&m.before.generation.to_le_bytes());
+        effect_hasher.update(&m.after.debits_posted.to_le_bytes());
+        effect_hasher.update(&m.after.credits_posted.to_le_bytes());
+        effect_hasher.update(&m.after.debits_pending.to_le_bytes());
+        effect_hasher.update(&m.after.credits_pending.to_le_bytes());
+        effect_hasher.update(&m.after.generation.to_le_bytes());
+    }
+    match &scheduled {
+        Some((reverse_on, reverse_period)) => {
+            effect_hasher.update(&[1]);
+            effect_hasher.update(&reverse_on.0.to_le_bytes());
+            effect_hasher.update(&(reverse_period.len() as u64).to_le_bytes());
+            effect_hasher.update(reverse_period.as_bytes());
+        }
+        None => {
+            effect_hasher.update(&[0]);
+        }
+    }
+    match cancelled_schedule {
+        Some(cvid) => {
+            effect_hasher.update(&[1]);
+            effect_hasher.update(&cvid.0.to_le_bytes());
+        }
+        None => {
+            effect_hasher.update(&[0]);
+        }
+    }
+    match reversal_target {
+        Some(target) => {
+            effect_hasher.update(&[1]);
+            effect_hasher.update(&target.vid.0.to_le_bytes());
+            effect_hasher.update(&target.entry_digest);
+        }
+        None => {
+            effect_hasher.update(&[0]);
+        }
+    }
+    match &resolution {
+        Some((target, disposition)) => {
+            let tag = match disposition {
+                Disposition::Posts { .. } => 0_u8,
+                Disposition::Voids => 1_u8,
+                Disposition::Expires { .. } => 2_u8,
+            };
+            effect_hasher.update(&[1, tag]);
+            effect_hasher.update(&target.vid.0.to_le_bytes());
+            effect_hasher.update(&target.entry_digest);
+        }
+        None => {
+            effect_hasher.update(&[0]);
+        }
+    }
+    effect_hasher.update(&(applications.len() as u64).to_le_bytes());
+    for (ordinal, target_leg, amount) in &applications {
+        effect_hasher.update(&ordinal.to_le_bytes());
+        effect_hasher.update(&target_leg.0.to_le_bytes());
+        effect_hasher.update(&amount.to_le_bytes());
+    }
+    effect_hasher.update(&(undo.len() as u64).to_le_bytes());
+    for (ordinal, target_leg, amount) in &undo {
+        effect_hasher.update(&ordinal.to_le_bytes());
+        effect_hasher.update(&target_leg.0.to_le_bytes());
+        effect_hasher.update(&amount.to_le_bytes());
+    }
+    effect_hasher.update(&(applied_delta.len() as u64).to_le_bytes());
+    for (target_leg, (witnessed, delta)) in &applied_delta {
+        effect_hasher.update(&target_leg.0.to_le_bytes());
+        effect_hasher.update(&witnessed.to_le_bytes());
+        effect_hasher.update(&delta.to_le_bytes());
+    }
+    effect_hasher.update(&(evidence.documents.len() as u64).to_le_bytes());
+    for doc_vid in &evidence.documents {
+        effect_hasher.update(&doc_vid.0.to_le_bytes());
+    }
+    match evidence.manual_assertion {
+        Some(avid) => {
+            effect_hasher.update(&[1]);
+            effect_hasher.update(&avid.0.to_le_bytes());
+        }
+        None => {
+            effect_hasher.update(&[0]);
+        }
+    }
+    let effects_digest = effect_hasher.finalize().0;
+
     Ok(Ok(PostPreparation::Ready(Box::new(PreparedPost {
         txn,
         request: req,
@@ -2387,6 +2493,7 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
         entry,
         period: period.code,
         security_policy_epoch: epoch,
+        effects_digest,
         identity,
         seal_key: book.seal_key.clone(),
     }))))

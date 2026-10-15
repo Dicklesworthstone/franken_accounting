@@ -1355,6 +1355,17 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.retain_certificate(&purposes, certificate)))
     }
 
+    /// Persist a certificate lazily after verifying current `read` authority
+    /// for this book (fa-1nx).
+    pub fn retain_certificate_authorized(
+        &mut self,
+        certificate: &crate::ReportCertificate,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::RetainedCertificate> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.retain_certificate_authorized(&purposes, certificate, capability)))
+    }
+
     /// Load a retained artifact by its full public certificate digest.
     pub fn read_certificate(&self, digest: &[u8; 32]) -> Outcome<crate::ReportCertificate> {
         let purposes = self.purposes();

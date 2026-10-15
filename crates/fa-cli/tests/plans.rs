@@ -562,3 +562,92 @@ fn inline_period_plan_survives_independent_approval_and_exact_stdin_commit() {
         text(&planned, "proposal_digest")
     );
 }
+
+#[test]
+fn certification_does_not_invalidate_plans_while_accounting_writes_do_and_read_op_is_required() {
+    let f = Fixture::new();
+    let intent_a = f.intent("plan-across-certify", "15.00");
+    let before = head(&f.book);
+    let planned_a = f.plan(&intent_a);
+    assert_eq!(integer(&planned_a, "snapshot_seq"), before);
+
+    // Certifying a trial balance retains a ReportCertificate and advances raw
+    // known_at, but leaves the accounting frontier unchanged (fa-1nx).
+    let (code, certified_tb) = Command::new(env!("CARGO_BIN_EXE_fa"))
+        .arg("--book")
+        .arg(&f.book)
+        .args(["tb", "--period", "FY2026-P03", "--certify", "--json"])
+        .env_remove("FA_BOOK")
+        .output()
+        .map(|o| {
+            (
+                o.status.code().unwrap_or(-1),
+                String::from_utf8(o.stdout).unwrap(),
+            )
+        })
+        .unwrap();
+    assert_eq!(code, 0, "{certified_tb}");
+    assert_eq!(certified_tb.lines().count(), 2, "{certified_tb}");
+    let after_cert = head(&f.book);
+    assert_eq!(after_cert, before + 1);
+
+    // Retaining a certificate without `read` is refused (FA-REF-011, exit 7).
+    let no_read_authority = LaunchAuthority::new(
+        f.book.clone(),
+        None,
+        "operator",
+        LaunchProfile::Preparer,
+        &["post"],
+    )
+    .expect("post-only launch authority");
+    let certify_argv = ["tb", "--period", "FY2026-P03", "--certify", "--json"].map(str::to_string);
+    let (code, certify_out) = fa_with_authority(
+        &certify_argv,
+        Files {
+            cwd: None,
+            stdin: Stdin::Process,
+        },
+        &no_read_authority,
+        true,
+    );
+    assert_eq!(code, 7, "{certify_out:?}");
+    let refused_cert = json::parse(certify_out.stdout.trim()).expect("refusal json");
+    assert_eq!(text(&refused_cert, "refusal_id"), "FA-REF-011");
+    assert_eq!(head(&f.book), after_cert);
+
+    // The outstanding plan still commits and its exact retry succeeds.
+    let (code, committed) = run(
+        &f.book,
+        &["commit", "--plan", "-"],
+        Some(text(&planned_a, "bytes").as_bytes()),
+    );
+    assert_eq!(code, 0, "{}", committed.render());
+    assert_eq!(get(&committed, "already_recorded"), &Json::Bool(false));
+    assert_eq!(integer(&committed, "recorded_at"), after_cert + 1);
+
+    let (code, retried) = run(
+        &f.book,
+        &["commit", "--plan", "-"],
+        Some(text(&planned_a, "bytes").as_bytes()),
+    );
+    assert_eq!(code, 0, "{}", retried.render());
+    assert_eq!(get(&retried, "already_recorded"), &Json::Bool(true));
+    assert_eq!(integer(&retried, "recorded_at"), after_cert + 1);
+
+    // An actual accounting posting between plan and commit still invalidates (FA-REF-034).
+    let intent_b = f.intent("plan-stale-after-post", "20.00");
+    let planned_b = f.plan(&intent_b);
+    let intent_other = f.intent("intervening-post", "3.00");
+    ok(
+        &f.book,
+        &["post", "--intent", &intent_other, "--evidence", &f.evidence],
+    );
+    let (code, refused) = run(
+        &f.book,
+        &["commit", "--plan", "-"],
+        Some(text(&planned_b, "bytes").as_bytes()),
+    );
+    assert_eq!(code, 6, "{}", refused.render());
+    assert_eq!(text(&refused, "refusal_id"), "FA-REF-034");
+}
+

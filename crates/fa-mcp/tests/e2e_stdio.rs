@@ -1253,6 +1253,25 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         before_plan
     );
 
+    // fa-1nx: an Agent session certifying a trial balance between a Preparer's
+    // dry-run plan and commit advances raw known_at without moving the
+    // accounting frontier, so the Preparer's plan still commits cleanly.
+    let mut agent_certifier = Mcp::start(&book);
+    agent_certifier.discover();
+    let (is_error, cert_text, _) = call_tool(
+        &mut agent_certifier,
+        "fa_read_trial_balance",
+        json!({"period": "FY2026-P03", "activity": true, "certify": true}),
+    );
+    assert!(!is_error, "Agent TB certification: {cert_text}");
+    assert_eq!(agent_certifier.finish(), 0);
+    let cert_events: JsonValue = fastmcp_rust::serde_json::from_str(&cert_text).unwrap();
+    assert_eq!(cert_events[1]["known_at"], planned["snapshot_seq"]);
+    assert_eq!(
+        cert_events[1]["recorded_at"],
+        json!(planned["snapshot_seq"].as_u64().unwrap() + 1)
+    );
+
     let (is_error, text, result) =
         call_tool(&mut mcp, "fa_post_commit_plan", json!({"plan": encoded}));
     assert!(!is_error, "{text}");
@@ -1277,6 +1296,45 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     assert_eq!(retried["already_recorded"], json!(true));
     assert_eq!(retried["vid"], committed["vid"]);
     assert_eq!(retried["recorded_at"], committed["recorded_at"]);
+
+    // Conversely, a real accounting posting between plan and commit invalidates
+    // the plan with FA-REF-034 (exit 6).
+    let stale_intent = json!({
+        "effective_date": "2026-03-15", "idempotency_key": "mcp-plan-stale",
+        "legs": [
+            {"side": "debit", "account": "6000", "amount": "11.00 USD"},
+            {"side": "credit", "account": "1000", "amount": "11.00 USD"},
+        ],
+    });
+    let (is_error, stale_plan_text, _) = call_tool(
+        &mut mcp,
+        "fa_post_post",
+        json!({"intent": stale_intent, "evidence": [oid], "dry_run": true}),
+    );
+    assert!(!is_error, "{stale_plan_text}");
+    let stale_planned: JsonValue = fastmcp_rust::serde_json::from_str(&stale_plan_text).unwrap();
+    let intervening_intent = json!({
+        "effective_date": "2026-03-15", "idempotency_key": "mcp-plan-intervening",
+        "legs": [
+            {"side": "debit", "account": "6000", "amount": "1.00 USD"},
+            {"side": "credit", "account": "1000", "amount": "1.00 USD"},
+        ],
+    });
+    let (is_error, intervening_text, _) = call_tool(
+        &mut mcp,
+        "fa_post_post",
+        json!({"intent": intervening_intent, "evidence": [oid]}),
+    );
+    assert!(!is_error, "{intervening_text}");
+    let (is_error, stale_commit_text, _) = call_tool(
+        &mut mcp,
+        "fa_post_commit_plan",
+        json!({"plan": stale_planned["bytes"]}),
+    );
+    assert!(is_error, "accounting write must invalidate plan: {stale_commit_text}");
+    let stale_refused = structured_error(&stale_commit_text);
+    assert_eq!(stale_refused["refusal_id"], "FA-REF-034", "{stale_refused}");
+    assert_eq!(stale_refused["exit"], 6, "{stale_refused}");
 
     // A reviewable void plan grants no dangerous confirmation to this
     // bounded Preparer. Its hold remains pending after the commit refusal.

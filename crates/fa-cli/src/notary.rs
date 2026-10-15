@@ -153,6 +153,7 @@ pub(crate) fn retain_report_certificate(
     files: &Files,
     args: &Args,
     certificate: &ReportCertificate,
+    capability: &fa_journal::Capability,
 ) -> Result<(Vec<u8>, RetainedCertificate), Fail> {
     let bytes = certificate
         .canonical_bytes()
@@ -188,7 +189,7 @@ pub(crate) fn retain_report_certificate(
             ))
         })?;
     }
-    let retained = book.retain_certificate(certificate)??;
+    let retained = book.retain_certificate_authorized(certificate, capability)??;
     Ok((bytes, retained))
 }
 

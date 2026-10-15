@@ -1609,6 +1609,33 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             .await
     }
 
+    /// Retain verified canonical certificate bytes after verifying current
+    /// `read` authority for this book (fa-1nx).
+    pub async fn retain_certificate_authorized(
+        &mut self,
+        cx: &PurposeContexts,
+        certificate: &crate::ReportCertificate,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::RetainedCertificate> {
+        if let Err(denial) =
+            fa_policy::admit_read(capability, capability.holder(), self.context.book_id)
+        {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        let at = self.head(cx)?;
+        if let Err(denial) = fa_policy::current(capability, at) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        if let Err(refusal) = self.query(cx, |db, book| {
+            Ok(fa_journal::policy::capability_admitted(
+                db, book, capability,
+            )?)
+        })? {
+            return Ok(Err(refusal));
+        }
+        self.retain_certificate(cx, certificate).await
+    }
+
     /// Load a retained certificate by its full public content digest.
     /// Loading checks its immutable storage record (and fetches and verifies
     /// externally retained bytes); report replay separately verifies the

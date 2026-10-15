@@ -6096,6 +6096,13 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     } else {
         None
     };
+    let certify_cap = if !args.switch("--summary")
+        && (args.switch("--certify") || args.flag("--certificate-out").is_some())
+    {
+        Some(ctx.capability(args, &["read"])?)
+    } else {
+        None
+    };
     let out = &ctx.out;
     let mut book = ctx.books.open(args)?;
     if args.positional.len() != 1 {
@@ -6194,8 +6201,9 @@ fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     validate_trial_balance_units(&tb, &book.context().units)?;
     let retained = certificate
         .as_ref()
-        .map(|certificate| {
-            notary::retain_report_certificate(&mut book, &ctx.files, args, certificate)
+        .zip(certify_cap.as_ref())
+        .map(|(certificate, cap)| {
+            notary::retain_report_certificate(&mut book, &ctx.files, args, certificate, cap)
         })
         .transpose()?;
     let digest = certificate
@@ -6446,6 +6454,11 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             .map(String::from)
             .collect(),
     };
+    let certify_cap = if args.switch("--certify") || args.flag("--certificate-out").is_some() {
+        Some(ctx.capability(args, &["read"])?)
+    } else {
+        None
+    };
     let mut book = ctx.books.open(args)?;
     let (known_at, requested_utc_ns) = known_at_flag(args, &book, &ctx.out)?;
     let (statement, certificate) =
@@ -6465,8 +6478,9 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let rendered = statement_presentation(&statement, &book.context().units)?;
     let retained = certificate
         .as_ref()
-        .map(|certificate| {
-            notary::retain_report_certificate(&mut book, &ctx.files, args, certificate)
+        .zip(certify_cap.as_ref())
+        .map(|(certificate, cap)| {
+            notary::retain_report_certificate(&mut book, &ctx.files, args, certificate, cap)
         })
         .transpose()?;
     let digest = certificate
@@ -7403,6 +7417,13 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 }
 
 fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let certify_cap = if args.flag("--as-of").is_none()
+        && (args.switch("--certify") || args.flag("--certificate-out").is_some())
+    {
+        Some(ctx.capability(args, &["read"])?)
+    } else {
+        None
+    };
     let out = &ctx.out;
     let mut book = ctx.books.open(args)?;
     if args.positional.len() != 1 {
@@ -7494,8 +7515,9 @@ fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     validate_open_items_report(&report, &book.context().units)?;
     let retained = certificate
         .as_ref()
-        .map(|certificate| {
-            notary::retain_report_certificate(&mut book, &ctx.files, args, certificate)
+        .zip(certify_cap.as_ref())
+        .map(|(certificate, cap)| {
+            notary::retain_report_certificate(&mut book, &ctx.files, args, certificate, cap)
         })
         .transpose()?;
     let digest = certificate
@@ -9486,6 +9508,11 @@ fn explain_balance_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
     let period = args.require("--period", "FY2026-P03")?;
+    let certify_cap = if args.switch("--certify") || args.flag("--certificate-out").is_some() {
+        Some(ctx.capability(args, &["read"])?)
+    } else {
+        None
+    };
     let mut book = ctx.books.open(args)?;
     let (known_at, requested_utc_ns) = known_at_flag(args, &book, out)?;
     let account = account_vid(book.context().book_id, code);
@@ -9518,8 +9545,9 @@ fn explain_balance_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     validate_balance_explanation_units(&ex, &book.context().units)?;
     let retained = certificate
         .as_ref()
-        .map(|certificate| {
-            notary::retain_report_certificate(&mut book, &ctx.files, args, certificate)
+        .zip(certify_cap.as_ref())
+        .map(|(certificate, cap)| {
+            notary::retain_report_certificate(&mut book, &ctx.files, args, certificate, cap)
         })
         .transpose()?;
     let digest = certificate

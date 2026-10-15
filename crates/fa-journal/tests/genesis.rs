@@ -6064,7 +6064,26 @@ fn portable_post_plan_invalidation_and_exact_retry_have_distinct_basis_rules() {
     let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
     let proposal = h.proposal(h.rent_legs(500), b"recorded-plan", EntryClass::ORIGINAL);
     let plan = h.post_plan(h.request(proposal, &["post"])).unwrap();
+    // fa-1nx: pure metadata commits (e.g. a retained report Certificate) advance
+    // the raw commit sequence without moving the accounting frontier, so they
+    // must not invalidate an outstanding PostPlan.
+    let mut cert_batch = fgdb::WriteBatch::new(relation::IN_BOOK);
+    cert_batch.create_vertex(
+        VId(0xDEAD_BEEF_CAFE_0001),
+        vec![fa_model::symbols::label::CERTIFICATE],
+        vec![(
+            property::FA_DIGEST,
+            CanonicalScalar::bytes(vec![0xAB; 32]).unwrap(),
+        )],
+    );
+    h.write_raw(cert_batch);
+    assert!(h.db.frontier().unwrap() > plan.certificate().snapshot_seq);
     let posted = h.publish_plan(plan.clone(), &capability).unwrap();
+    assert!(matches!(posted, Posted::Committed { .. }));
+    assert_eq!(
+        posted.recorded_at().0,
+        plan.certificate().snapshot_seq.0 + 2
+    );
     h.post(h.request(h.invoice(100, b"after-plan"), &["post"]))
         .unwrap();
     let before = h.db.frontier().unwrap();
