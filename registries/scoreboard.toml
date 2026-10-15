@@ -1,0 +1,605 @@
+# =============================================================================
+# registries/scoreboard.toml — Vision Workflows (§15.6 + README Quick Example)
+# and Convergence Gate Criteria (§19 G0, Genesis, G1–G4) (beads fa-e9z, fa-7s6d)
+#
+# Consumed by:
+#   - crates/fa-registry/src/scoreboard.rs (schema & foreign-key validation)
+#   - tools/registry-check/src/main.rs
+#   - crates/fa-cli/tests/scoreboard.rs (executable E2E measurement against
+#     the real `fa` binary; fails if any step's actual status/exit/event drifts
+#     from its declared expectation in EITHER direction)
+#   - tools/xtask (`cargo run -p xtask -- scoreboard`)
+# =============================================================================
+
+schema_version = 1
+
+# -----------------------------------------------------------------------------
+# Part 1 — Vision Workflows (README Quick Example + plan §15.6 five readers)
+# -----------------------------------------------------------------------------
+
+[[workflow]]
+id = "readme-quick"
+name = "README Quick Example"
+plan_ref = "README.md §Quick example"
+reader = "Agent / Operator"
+
+[[workflow]]
+id = "agent-closes-month"
+name = "The agent closes a month"
+plan_ref = "§15.6.1"
+reader = "AI Agent + Controller"
+
+[[workflow]]
+id = "cpa-audits-fy2025"
+name = "The CPA audits FY2025"
+plan_ref = "§15.6.2"
+reader = "External CPA / Auditor"
+
+[[workflow]]
+id = "fdic-examiner-positions"
+name = "The FDIC examiner needs close-of-business positions"
+plan_ref = "§15.6.3"
+reader = "FDIC Examiner / Receiver"
+
+[[workflow]]
+id = "trustee-receiver-takeover"
+name = "The trustee or receiver takes over"
+plan_ref = "§15.6.4"
+reader = "Bankruptcy Trustee / Receiver"
+
+[[workflow]]
+id = "litigation-consultant-damages"
+name = "The litigation consultant computes but-for damages"
+plan_ref = "§15.6.5"
+reader = "Litigation Consultant / Expert Witness"
+
+[[workflow]]
+id = "investigator-traces-funds"
+name = "The investigator traces funds"
+plan_ref = "§15.6.6"
+reader = "Forensic Investigator"
+
+# ---- Workflow 1: readme-quick -----------------------------------------------
+
+[[workflow_step]]
+id = "WF-RQ-01"
+workflow = "readme-quick"
+ordinal = 1
+vision_row = "VC-01"
+description = "Triage the book in robot mode (`fa triage --json`)"
+argv = ["triage", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "book_triage"
+
+[[workflow_step]]
+id = "WF-RQ-02"
+workflow = "readme-quick"
+ordinal = 2
+vision_row = "VC-02"
+description = "Dry-run a typed Canon invoice intent (`fa invoice ... --dry-run`)"
+argv = ["invoice", "--party", "ACME-CUST-17", "--date", "2026-03-14", "--book", "{book}", "--json"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-8q2"
+
+[[workflow_step]]
+id = "WF-RQ-03"
+workflow = "readme-quick"
+ordinal = 3
+vision_row = "VC-03"
+description = "Dry-run a balanced posting proposal and seal its plan (`fa post --dry-run --plan-out`)"
+argv = ["post", "--intent", "{sale_intent_2}", "--evidence", "{doc_oid}", "--dry-run", "--plan-out", "{plan_file_2}", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "plan"
+
+[[workflow_step]]
+id = "WF-RQ-04"
+workflow = "readme-quick"
+ordinal = 4
+vision_row = "VC-04"
+description = "Commit the sealed posting plan (`fa commit --plan`)"
+argv = ["commit", "--plan", "{plan_file_2}", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "plan_committed"
+
+[[workflow_step]]
+id = "WF-RQ-05"
+workflow = "readme-quick"
+ordinal = 5
+vision_row = "VC-05"
+description = "Explain a leaf account balance with fold proof (`fa explain balance`)"
+argv = ["explain", "balance", "1200", "--period", "FY2026-P03", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "balance_explained"
+
+[[workflow_step]]
+id = "WF-RQ-06"
+workflow = "readme-quick"
+ordinal = 6
+vision_row = "VC-06"
+description = "Trial balance at a historical known-at sequence (`fa tb --period --as-known-at`)"
+argv = ["tb", "--period", "FY2026-P03", "--as-known-at", "{post_seq}", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "trial_balance"
+
+[[workflow_step]]
+id = "WF-RQ-07"
+workflow = "readme-quick"
+ordinal = 7
+vision_row = "VC-07"
+description = "Trial balance as originally reported (`fa tb --as-originally-reported`)"
+argv = ["tb", "--period", "FY2026-P03", "--as-originally-reported", "--book", "{book}", "--json"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-5bm"
+
+[[workflow_step]]
+id = "WF-RQ-08"
+workflow = "readme-quick"
+ordinal = 8
+vision_row = "VC-08"
+description = "Reverse a committed entry with SupersessionKind::Reverses lineage (`fa reverse`)"
+argv = ["reverse", "{rev_target_vid}", "--reason", "WrongAccount", "--effective", "2026-03-20", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "reversed"
+
+[[workflow_step]]
+id = "WF-RQ-09"
+workflow = "readme-quick"
+ordinal = 9
+vision_row = "VC-09"
+description = "Open a restatement case from the CLI (`fa case open`)"
+argv = ["case", "open", "--kind", "Restatement", "--periods", "FY2025-P12", "--book", "{book}", "--json"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-5bm"
+
+[[workflow_step]]
+id = "WF-RQ-10"
+workflow = "readme-quick"
+ordinal = 10
+vision_row = "VC-10"
+description = "Run Lantern journal-entry test (`fa procedure run jet.round_amounts`)"
+argv = ["procedure", "run", "jet.round_amounts", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "procedure_run"
+
+[[workflow_step]]
+id = "WF-RQ-11"
+workflow = "readme-quick"
+ordinal = 11
+vision_row = "VC-11"
+description = "Run LIBR fund tracing (`fa procedure run trace.libr`)"
+argv = ["procedure", "run", "trace.libr", "--account", "1200", "--source", "{entry_vid}", "--effective-through", "2026-03-31", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "procedure_run"
+
+[[workflow_step]]
+id = "WF-RQ-12"
+workflow = "readme-quick"
+ordinal = 12
+vision_row = "VC-12"
+description = "Produce a signed offline evidence bundle (`fa bundle produce`)"
+argv = ["bundle", "produce", "--account", "1200", "--from", "2026-03-01", "--to", "2026-03-31", "--grant", "produce", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "bundle_produced"
+
+# ---- Workflow 2: agent-closes-month (§15.6.1) -------------------------------
+
+[[workflow_step]]
+id = "WF-ACM-01"
+workflow = "agent-closes-month"
+ordinal = 1
+vision_row = "VC-13"
+description = "Inspect book triage and next recommended step (`fa next --json`)"
+argv = ["next", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "next_step"
+
+[[workflow_step]]
+id = "WF-ACM-02"
+workflow = "agent-closes-month"
+ordinal = 2
+vision_row = "VC-14"
+description = "Create a close draft branch (`fa draft new close-03`)"
+argv = ["draft", "new", "close-03", "--book", "{book}", "--json"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-3gf"
+
+[[workflow_step]]
+id = "WF-ACM-03"
+workflow = "agent-closes-month"
+ordinal = 3
+vision_row = "VC-15"
+description = "Import and match a CAMT.053 bank statement (`fa bank import`)"
+argv = ["bank", "import", "stmt.camt053.xml", "--book", "{book}", "--json"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-9x4"
+
+[[workflow_step]]
+id = "WF-ACM-04"
+workflow = "agent-closes-month"
+ordinal = 4
+vision_row = "VC-16"
+description = "Soft-close an open period (`fa period soft-close FY2026-P04`)"
+argv = ["period", "soft-close", "FY2026-P04", "--as", "controller", "--yes", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "period_transitioned"
+
+# ---- Workflow 3: cpa-audits-fy2025 (§15.6.2) --------------------------------
+
+[[workflow_step]]
+id = "WF-CPA-01"
+workflow = "cpa-audits-fy2025"
+ordinal = 1
+vision_row = "VC-17"
+description = "Export AICPA Audit Data Standard GL package (`fa export ads`)"
+argv = ["export", "ads", "--period", "FY2025-P12", "--book", "{book}", "--json"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-4p7"
+
+[[workflow_step]]
+id = "WF-CPA-02"
+workflow = "cpa-audits-fy2025"
+ordinal = 2
+vision_row = "VC-18"
+description = "Run Benford first-digit procedure (`fa procedure run benford.first_digit`)"
+argv = ["procedure", "run", "benford.first_digit", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "procedure_run"
+
+[[workflow_step]]
+id = "WF-CPA-03"
+workflow = "cpa-audits-fy2025"
+ordinal = 3
+vision_row = "VC-19"
+description = "Walk full provenance closure of an entry (`fa explain evidence`)"
+argv = ["explain", "evidence", "{entry_vid}", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "evidence_explained"
+
+[[workflow_step]]
+id = "WF-CPA-04"
+workflow = "cpa-audits-fy2025"
+ordinal = 4
+vision_row = "VC-20"
+description = "Export signed transparency checkpoint (`fa proof signed-checkpoint`)"
+argv = ["proof", "signed-checkpoint", "--state", "latest", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "proof_exported"
+
+# ---- Workflow 4: fdic-examiner-positions (§15.6.3) --------------------------
+
+[[workflow_step]]
+id = "WF-FDIC-01"
+workflow = "fdic-examiner-positions"
+ordinal = 1
+vision_row = "VC-21"
+description = "Trial balance as of an effective date and known-at sequence (`fa tb --as-of --as-known-at`)"
+argv = ["tb", "--as-of", "2026-03-31", "--as-known-at", "{post_seq}", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "trial_balance"
+
+[[workflow_step]]
+id = "WF-FDIC-02"
+workflow = "fdic-examiner-positions"
+ordinal = 2
+vision_row = "VC-22"
+description = "Replay a certified trial balance byte-for-byte (`fa replay`)"
+argv = ["replay", "{cert_file}", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "trial_balance"
+
+[[workflow_step]]
+id = "WF-FDIC-03"
+workflow = "fdic-examiner-positions"
+ordinal = 3
+vision_row = "VC-23"
+description = "Export FDIC Part 370 deposit insurance determination files (`fa export part370`)"
+argv = ["export", "part370", "--as-of", "2026-03-31", "--book", "{book}", "--json"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-4p7"
+
+# ---- Workflow 5: trustee-receiver-takeover (§15.6.4) ------------------------
+
+[[workflow_step]]
+id = "WF-TRT-01"
+workflow = "trustee-receiver-takeover"
+ordinal = 1
+vision_row = "VC-24"
+description = "Place a legal hold on a document (`fa document hold place`)"
+argv = ["document", "hold", "place", "--authority", "{doc_oid}", "--subject", "{doc_oid}", "--description", "Receivership freeze order", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "legal_hold_placed"
+
+[[workflow_step]]
+id = "WF-TRT-02"
+workflow = "trustee-receiver-takeover"
+ordinal = 2
+vision_row = "VC-25"
+description = "Fork a receivership branch (`fa book fork receivership`)"
+argv = ["book", "fork", "receivership", "--book", "{book}", "--json"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-3gf"
+
+# ---- Workflow 6: litigation-consultant-damages (§15.6.5) --------------------
+
+[[workflow_step]]
+id = "WF-LCD-01"
+workflow = "litigation-consultant-damages"
+ordinal = 1
+vision_row = "VC-26"
+description = "Fork a counterfactual scenario branch (`fa scenario fork`)"
+argv = ["scenario", "fork", "but-for-breach", "--from", "2026-03-01", "--book", "{book}", "--json"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-3gf"
+
+[[workflow_step]]
+id = "WF-LCD-02"
+workflow = "litigation-consultant-damages"
+ordinal = 2
+vision_row = "VC-27"
+description = "Certified income statement for a period (`fa statement income-statement --certify`)"
+argv = ["statement", "income-statement", "--for", "FY2026-P03", "--certify", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "statement"
+
+# ---- Workflow 7: investigator-traces-funds (§15.6.6) ------------------------
+
+[[workflow_step]]
+id = "WF-ITF-01"
+workflow = "investigator-traces-funds"
+ordinal = 1
+vision_row = "VC-28"
+description = "Run structuring detection procedure (`fa procedure run graph.structuring`)"
+argv = ["procedure", "run", "graph.structuring", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "procedure_run"
+
+[[workflow_step]]
+id = "WF-ITF-02"
+workflow = "investigator-traces-funds"
+ordinal = 2
+vision_row = "VC-29"
+description = "Run FIFO fund tracing (`fa procedure run trace.fifo`)"
+argv = ["procedure", "run", "trace.fifo", "--account", "1200", "--source", "{entry_vid}", "--effective-through", "2026-03-31", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "procedure_run"
+
+[[workflow_step]]
+id = "WF-ITF-03"
+workflow = "investigator-traces-funds"
+ordinal = 3
+vision_row = "VC-30"
+description = "Run related-party exposure graph procedure (`fa procedure run graph.related_party_exposure`)"
+argv = ["procedure", "run", "graph.related_party_exposure", "--book", "{book}", "--json"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-6r2"
+
+# -----------------------------------------------------------------------------
+# Part 2 — Convergence Gate Criteria (plan §19: G0, Genesis, G1, G2, G3, G4)
+# -----------------------------------------------------------------------------
+
+[[gate_criterion]]
+id = "G0-01"
+gate = "G0"
+criterion = "FA-INV spine with 16 invariants, checker strengths, disjoint negative checkers, and waiver=forbidden"
+probe_kind = "registry"
+argv = ["invariants_spine"]
+expected = "works"
+expected_exit = 0
+expected_event = "registry_ok"
+
+[[gate_criterion]]
+id = "G0-02"
+gate = "G0"
+criterion = "Threat and trust model (`registries/threat_model.toml`) with 8 threats, 5 boundaries, and 10 tamper vectors"
+probe_kind = "registry"
+argv = ["threat_model"]
+expected = "works"
+expected_exit = 0
+expected_event = "registry_ok"
+
+[[gate_criterion]]
+id = "G0-03"
+gate = "G0"
+criterion = "Admissibility matrix (`registries/admissibility.toml`) four-way equality with Appendix C, oracle, and kernel"
+probe_kind = "registry"
+argv = ["admissibility_four_way"]
+expected = "works"
+expected_exit = 0
+expected_event = "registry_ok"
+
+[[gate_criterion]]
+id = "G0-04"
+gate = "G0"
+criterion = "Robot-mode envelope and pinned schema (`fa robot-docs schema --json`)"
+probe_kind = "cli"
+argv = ["robot-docs", "schema", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "robot_schema"
+
+[[gate_criterion]]
+id = "GEN-01"
+gate = "Genesis"
+criterion = "Post balanced entry through admit/resolve/laws/plan/commit and explain committed entry (`fa entry show`)"
+probe_kind = "cli"
+argv = ["entry", "show", "{entry_vid}", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "entry"
+
+[[gate_criterion]]
+id = "GEN-02"
+gate = "Genesis"
+criterion = "Certified trial balance (`fa tb --period FY2026-P03 --json`)"
+probe_kind = "cli"
+argv = ["tb", "--period", "FY2026-P03", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "trial_balance"
+
+[[gate_criterion]]
+id = "GEN-03"
+gate = "Genesis"
+criterion = "Registers verified by journal refold (`fa verify registers`)"
+probe_kind = "cli"
+argv = ["verify", "registers", "--period", "FY2026-P03", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "registers_verified"
+
+[[gate_criterion]]
+id = "GEN-04"
+gate = "Genesis"
+criterion = "Unbalanced proposal refused with exit 3 and per-unit imbalance (`FA-REF-001`)"
+probe_kind = "cli"
+argv = ["post", "--intent", "{unbalanced_intent}", "--evidence", "{doc_oid}", "--book", "{book}", "--json"]
+expected = "refused"
+expected_exit = 3
+expected_event = "error"
+refusal_id = "FA-REF-001"
+bead = "fa-lm7"
+
+[[gate_criterion]]
+id = "GEN-05"
+gate = "Genesis"
+criterion = "Posting into a Closed period refused with exit 7 and admissibility cell (`FA-REF-010`)"
+probe_kind = "cli"
+argv = ["post", "--intent", "{closed_period_intent}", "--evidence", "{doc_oid}", "--book", "{book}", "--json"]
+expected = "refused"
+expected_exit = 7
+expected_event = "error"
+refusal_id = "FA-REF-010"
+bead = "fa-lm7"
+
+[[gate_criterion]]
+id = "GEN-06"
+gate = "Genesis"
+criterion = "Replay reproduces certified trial balance bytes (`fa replay`)"
+probe_kind = "cli"
+argv = ["replay", "{cert_file}", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "trial_balance"
+
+[[gate_criterion]]
+id = "G1-01"
+gate = "G1"
+criterion = "All 13 Genesis invariant clauses live with positive and disjoint negative checkers"
+probe_kind = "registry"
+argv = ["g1_genesis_clauses_live"]
+expected = "works"
+expected_exit = 0
+expected_event = "registry_ok"
+
+[[gate_criterion]]
+id = "G1-02"
+gate = "G1"
+criterion = "Polish Bar diagnostics and orientation (`fa doctor --json`)"
+probe_kind = "cli"
+argv = ["doctor", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "doctor"
+
+[[gate_criterion]]
+id = "G1-03"
+gate = "G1"
+criterion = "Projection and accumulator verification (`fa verify projections` & `fa verify accumulator`)"
+probe_kind = "cli"
+argv = ["verify", "accumulator", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "accumulator_verified"
+
+[[gate_criterion]]
+id = "G2-01"
+gate = "G2"
+criterion = "Period explanation with admissibility row and lineage (`fa explain period`)"
+probe_kind = "cli"
+argv = ["explain", "period", "FY2026-P03", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "period_explained"
+
+[[gate_criterion]]
+id = "G2-02"
+gate = "G2"
+criterion = "Selector `AS ORIGINALLY REPORTED` on CLI trial balance (`fa tb --as-originally-reported`)"
+probe_kind = "cli"
+argv = ["tb", "--period", "FY2026-P03", "--as-originally-reported", "--book", "{book}", "--json"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-5bm"
+
+[[gate_criterion]]
+id = "G3-01"
+gate = "G3"
+criterion = "Certified balance sheet and income statement (`fa statement balance-sheet --certify`)"
+probe_kind = "cli"
+argv = ["statement", "balance-sheet", "--for", "FY2026-P03", "--certify", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "statement"
+
+[[gate_criterion]]
+id = "G3-02"
+gate = "G3"
+criterion = "Interactive sandbox generator (`fa demo init --scenario retail`)"
+probe_kind = "cli"
+argv = ["demo", "init", "--scenario", "retail", "--book", "{book}", "--json"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-v6j"
+
+[[gate_criterion]]
+id = "G4-01"
+gate = "G4"
+criterion = "Every FA-INV clause in `registries/invariants.toml` is live (zero dormant clauses remaining for 1.0)"
+probe_kind = "registry"
+argv = ["g4_all_clauses_live"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-kby"

@@ -18,6 +18,7 @@ use fa_registry::procedures::Procedures;
 use fa_registry::reason_codes::ReasonCodes;
 use fa_registry::redaction_contracts::RedactionContracts;
 use fa_registry::refusal_catalog::RefusalCatalog;
+use fa_registry::scoreboard::Scoreboard;
 use fa_registry::sod_policy::SodPolicy;
 use fa_registry::threat_model::ThreatModel;
 use fa_registry::toml::{self, Table, Value};
@@ -70,6 +71,7 @@ const EXPECTED_REGISTRIES: &[&str] = &[
     "redaction_contracts.toml",
     "refusal_catalog.toml",
     "rounding_laws.toml",
+    "scoreboard.toml",
     "sod_policy.toml",
     "symbols.toml",
     "threat_model.toml",
@@ -378,6 +380,8 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
             "threat_model.toml: {owner_id} references nonexistent test `{test_ref}`"
         ));
     }
+    let _scoreboard =
+        Scoreboard::parse(&read("scoreboard.toml")?, &exits, &refusals).map_err(|e| e.to_string())?;
     let (verbs_checked, mcp_tools_checked) = check_verbs(&read("verbs.toml")?, &exits)?;
 
     // Also parse nested TOML schemas under object_schemas/ and statements/.

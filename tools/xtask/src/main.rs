@@ -10,6 +10,7 @@ use fa_registry::foundations::Ledger;
 use fa_registry::invariants::Invariants;
 use fa_registry::procedures::Procedures;
 use fa_registry::refusal_catalog::RefusalCatalog;
+use fa_registry::scoreboard::Scoreboard;
 use fa_registry::topology::Topology;
 use fa_registry::{EntryClasses, ExitCodes, rounding_laws_embedded, units_embedded};
 
@@ -23,6 +24,7 @@ pub fn render_summary(json: bool) -> Result<String, String> {
     let rounding = rounding_laws_embedded().map_err(|e| e.to_string())?;
     let procedures = Procedures::embedded().map_err(|e| e.to_string())?;
     let foundations = Ledger::embedded().map_err(|e| e.to_string())?;
+    let scoreboard = Scoreboard::embedded().map_err(|e| e.to_string())?;
 
     let live_crates = topo.crates.iter().filter(|c| !c.planned).count();
     let planned_crates = topo.crates.iter().filter(|c| c.planned).count();
@@ -35,7 +37,7 @@ pub fn render_summary(json: bool) -> Result<String, String> {
 
     if json {
         Ok(format!(
-            "{{\"crates_total\":{},\"crates_live\":{},\"crates_planned\":{},\"invariants\":{},\"clauses_total\":{},\"clauses_live\":{},\"gate_g1_live\":{},\"gate_g1_total\":{},\"refusals\":{},\"entry_classes\":{},\"exit_codes\":{},\"units\":{},\"rounding_laws\":{},\"procedures\":{},\"foundations\":{}}}",
+            "{{\"crates_total\":{},\"crates_live\":{},\"crates_planned\":{},\"invariants\":{},\"clauses_total\":{},\"clauses_live\":{},\"gate_g1_live\":{},\"gate_g1_total\":{},\"refusals\":{},\"entry_classes\":{},\"exit_codes\":{},\"units\":{},\"rounding_laws\":{},\"procedures\":{},\"foundations\":{},\"workflow_steps\":{},\"gate_criteria\":{}}}",
             topo.crates.len(),
             live_crates,
             planned_crates,
@@ -51,10 +53,12 @@ pub fn render_summary(json: bool) -> Result<String, String> {
             rounding.len(),
             procedures.rows.len(),
             foundations.capabilities.len(),
+            scoreboard.steps.len(),
+            scoreboard.gate_criteria.len(),
         ))
     } else {
         Ok(format!(
-            "FrankenAccounting Workspace Registry Summary\n  crates:       {} total ({} live, {} planned across {} layers)\n  invariants:   {} invariants, {}/{} clauses live (Gate G1: {}/{})\n  refusals:     {} active ({} reserved)\n  entry_classes: {}\n  exit_codes:   {}\n  units:        {}\n  rounding_laws: {}\n  procedures:   {}\n  foundations:  {}",
+            "FrankenAccounting Workspace Registry Summary\n  crates:       {} total ({} live, {} planned across {} layers)\n  invariants:   {} invariants, {}/{} clauses live (Gate G1: {}/{})\n  refusals:     {} active ({} reserved)\n  entry_classes: {}\n  exit_codes:   {}\n  units:        {}\n  rounding_laws: {}\n  procedures:   {}\n  foundations:  {}\n  scoreboard:   {} workflow steps, {} gate criteria",
             topo.crates.len(),
             live_crates,
             planned_crates,
@@ -72,22 +76,31 @@ pub fn render_summary(json: bool) -> Result<String, String> {
             rounding.len(),
             procedures.rows.len(),
             foundations.capabilities.len(),
+            scoreboard.steps.len(),
+            scoreboard.gate_criteria.len(),
         ))
     }
 }
 
 fn run() -> Result<(), String> {
     let mut json = false;
+    let mut mode = "summary";
     for arg in env::args().skip(1) {
         match arg.as_str() {
-            "summary" | "status" => {}
+            "summary" | "status" => mode = "summary",
+            "scoreboard" => mode = "scoreboard",
             "--json" => json = true,
             "-h" | "--help" => {
-                println!("Usage: xtask [summary] [--json]");
+                println!("Usage: xtask [summary|scoreboard] [--json]");
                 return Ok(());
             }
             other => return Err(format!("xtask: unknown argument `{other}`")),
         }
+    }
+    if mode == "scoreboard" {
+        let sb = Scoreboard::embedded().map_err(|e| e.to_string())?;
+        print!("{}", sb.render_markdown());
+        return Ok(());
     }
     let out = render_summary(json)?;
     println!("{out}");

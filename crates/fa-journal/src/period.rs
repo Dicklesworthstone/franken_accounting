@@ -688,6 +688,12 @@ pub fn period_transitions<V: asupersync::fs::Vfs + Clone>(
     let pvid = period_vid(&book.calendar.id, period_code);
     let mut out = Vec::new();
     for evid in db.in_neighbours(pvid, relation::IN_PERIOD)? {
+        let Some(row) = db.vertex(evid)? else {
+            continue;
+        };
+        if !row.labels.contains(&label::ENTRY) {
+            continue;
+        }
         let Some((entry, recorded_at)) = crate::post::read_entry(db, evid)? else {
             continue;
         };
