@@ -421,6 +421,11 @@ pub fn status_fields(work: Option<&TimedWork>) -> Vec<(&'static str, Json)> {
             "timed_work_error",
             work.and_then(|w| w.error.as_deref()).map_or(Json::Null, s),
         ),
+        (
+            "register_maintenance",
+            work.and_then(|w| w.registers.as_ref())
+                .map_or(Json::Null, registers::RegisterWork::status),
+        ),
     ]
 }
 
@@ -432,7 +437,7 @@ pub fn status_text(work: Option<&TimedWork>) -> String {
     };
     let grade = match work.last_tick_monotonic_ok {
         None => "awaiting first observation",
-        Some(false) => "last tick uncorroborated; no automatic effects",
+        Some(false) => "last tick uncorroborated; no automatic expiry or reversal effects",
         Some(true) => "last tick corroborated by the local monotonic clock",
     };
     let mut text = format!(
@@ -441,6 +446,11 @@ pub fn status_text(work: Option<&TimedWork>) -> String {
     );
     if let Some(error) = &work.error {
         text.push_str(&format!("; last cycle refused: {error}"));
+    }
+    if let Some(registers) = &work.registers {
+        text.push_str(&format!("; {}", registers.status_text()));
+    } else {
+        text.push_str("; register maintenance disabled");
     }
     text
 }

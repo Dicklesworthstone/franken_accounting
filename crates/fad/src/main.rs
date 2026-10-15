@@ -84,6 +84,25 @@ fn run(argv: &[String]) -> u8 {
         )
         .0;
     }
+    let register_periods: Vec<String> = parsed.flag_all("--register-period")
+        .into_iter().map(str::to_owned).collect();
+    if !register_periods.is_empty() {
+        if verb != Some("serve") || !parsed.switch("--bootstrap-system") {
+            return cli::usage_error(
+                argv,
+                "--register-period requires an explicit local System bootstrap for serve",
+                "fad serve --book <dir> --bootstrap-system --register-period <code>",
+                false,
+            ).0;
+        }
+        if let Err(error) = fad::timed::registers::validate_periods(&register_periods) {
+            return cli::usage_error(
+                argv, error.to_string(),
+                "supply 1..=64 distinct --register-period <exact-code> options",
+                false,
+            ).0;
+        }
+    }
     match verb {
         Some("serve") => serve(argv, &parsed, d, &dir),
         Some("status") => status(argv, &parsed, d, &dir),
@@ -158,7 +177,18 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
             Err(error) => return cli::foundation_error(argv, error.to_string(), false).0,
         };
         match fad::timed::TimedWork::bootstrap(&cx, &book, policy) {
-            Ok(work) => Some(work),
+            Ok(work) => {
+                let periods: Vec<String> = parsed.flag_all("--register-period")
+                    .into_iter().map(str::to_owned).collect();
+                if periods.is_empty() {
+                    Some(work)
+                } else {
+                    match work.with_register_maintenance(periods) {
+                        Ok(work) => Some(work),
+                        Err(error) => return cli::foundation_error(argv, error.to_string(), false).0,
+                    }
+                }
+            },
             // An explicit request for timed work never silently falls back
             // to an unconfigured server if authority or time is absent.
             Err(error) => return cli::foundation_error(argv, error.to_string(), false).0,
