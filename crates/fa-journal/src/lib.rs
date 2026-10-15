@@ -23,6 +23,7 @@ pub mod blob;
 pub mod chart;
 pub mod custody;
 pub mod entity;
+pub mod entry_history;
 pub mod evidence;
 pub mod genesis;
 pub mod import;
@@ -49,6 +50,7 @@ pub use attestation::{
 };
 pub use blob::BlobStore;
 pub use custody::{CustodyBody, CustodyEvent, CustodyMoved, custody_chain, transfer_custody};
+pub use entry_history::{EntryHistoryVerification, verify_entry_history};
 pub use evidence::{
     Document, DocumentAdded, DocumentRecord, Storage, add_document, add_document_external,
     document_record, fetch_document, read_document,
