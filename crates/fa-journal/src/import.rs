@@ -178,7 +178,7 @@ fn prepare(
     }
     let mut docs: Vec<(Document, String)> = Vec::with_capacity(req.documents.len());
     for (i, doc) in req.documents.iter().enumerate() {
-        match intake_check(policy, book, doc, policy.max_document_bytes) {
+        match intake_check(policy, book, doc, crate::evidence::inline_document_bound(policy)) {
             Ok(kind) => {
                 if doc.retrieved_by != capability.holder() {
                     let mut denied = refusal(&fa_policy::Denial::NotHolder {

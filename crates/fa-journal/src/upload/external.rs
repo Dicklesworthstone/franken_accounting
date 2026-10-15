@@ -109,7 +109,7 @@ pub async fn upload_document_in_store<V: Vfs + Clone, B: Vfs + Clone>(
         .map_err(|error| KernelError::Corrupt(error.to_string()))?;
     let size = u64::try_from(request.bytes.len())
         .map_err(|_| KernelError::Corrupt("document size exceeds u64".into()))?;
-    if size <= policy.max_document_bytes {
+    if size <= crate::evidence::inline_document_bound(&policy) {
         super::upload_document(db, cx, book, capability, request).await
     } else {
         upload_external_document(db, cx, book, capability, store, request).await
