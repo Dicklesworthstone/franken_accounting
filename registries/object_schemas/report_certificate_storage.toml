@@ -1,0 +1,43 @@
+# Physical retention of report certificates (plan §13.6; fa-9ae/fa-cqk).
+# This does not change any fa:report-certificate:v1..v4 export format.
+# The existing Certificate maintenance label covers roots and fragments;
+# only the root-identity domain is a public report lookup. Scratch replay
+# excludes both, because source-native certificate identities cannot certify
+# a scratch database. No new labels, properties or authoritative ledger data.
+
+schema_version = 1
+max_certificate_bytes = 67108864
+max_inline_bytes = 12288
+fragment_bytes = 12288
+max_fragments = 5462
+root_identity_domain = "fa:vid:report-certificate:v1"
+fragment_identity_domain = "fa:vid:report-certificate-fragment:v1"
+manifest_format = "fa:certificate-chunks:v1"
+fragment_format = "fa:certificate-fragment:v1"
+
+# A root remains raw canonical certificate bytes at/below the inline bound.
+# Above it: fixed(manifest_format) || u64 byte_length || u32 fragment_bytes
+# || u32 fragment_count, all integers little-endian. Count MUST equal the
+# ceiling of length/fragment_bytes, length MUST exceed the inline threshold,
+# and trailing bytes are refused. No length/count drives an allocation or
+# database lookup before validation against these bounds.
+# A part: fixed(fragment_format) || u32 ordinal || bytes(body), where bytes
+# is u32 length followed by exactly that many bytes. All but the last part
+# have fragment_bytes body bytes. The last has the exact remaining length.
+# Root and parts have exactly FA_PAYLOAD, FA_DIGEST (full report digest),
+# BOOK_ID properties and the existing Certificate label. Part identities:
+# low128(H(fragment_identity_domain || book[16] || report_digest[32] || u32 ordinal)).
+# Every part must be its original native row version at the root's creating
+# sequence. A read uses one pinned snapshot; a missing/retired/rewritten,
+# differently scoped, reordered or substituted part refuses the whole read.
+# The reconstructed bytes still undergo full ReportCertificate decoding,
+# content-digest, canonical-encoding, book and report-known-at validation.
+# No individual part is an inclusion proof or a report certificate.
+
+# Publication: one native transaction, one commit sequence, root + parts.
+# Price: 1 vertex if inline, otherwise 1 + ceil(bytes/12288) vertices, with
+# no new journal Entry or edge. No partial commits or read-time repair.
+# Native transaction/resource limits still apply and may refuse the whole
+# operation; this registry is a format bound, not a measured 64 MiB SLO.
+# Exact retry verifies the full original storage record and returns its
+# original sequence without replaying, rewriting or repairing any record.
