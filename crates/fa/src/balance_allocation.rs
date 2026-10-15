@@ -139,6 +139,10 @@ fn corrupt(message: &str) -> BookError {
     KernelError::Corrupt(message.into()).into()
 }
 
+fn source_witness_error(error: fa_model::EncodeError) -> BookError {
+    corrupt(&format!("allocation source witness encoding failed: {error}"))
+}
+
 fn admit(capability: &Capability, book: Id128, principal: VId, op: Op, legs: &[(UnitId, i128)]) -> Result<(), Refusal> {
     fa_policy::admit_read(capability, capability.holder(), book)
         .map_err(|denial| fa_journal::policy::refusal(&denial))?;
@@ -313,7 +317,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             let total = net.checked_abs().ok_or(fa_registers::RegisterError::Overflow)?;
             let source_side = if net > 0 { Side::Credit } else { Side::Debit };
             witnesses.u64(count as u64).i128(debits).i128(credits);
-            let witness_bytes = witnesses.finish().map_err(|error| {\n                corrupt(&format!("allocation source witness encoding failed: {error}"))\n            })?;
+            let witness_bytes = witnesses.finish().map_err(source_witness_error)?;
             let source_digest = domain_digest(b"fa:balance-allocation-source:v1", &[&witness_bytes]);
             let posting = request.posting(total, source_side);
             if let Err(refusal) = posting.basis_bytes() { return Ok(Err(refusal)); }
@@ -382,5 +386,22 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         // Native approval checks expiry/revocation and policy again; the exact
         // same capability is supplied, with no synthesized Read or Post grant.
         self.approve_allocation_review(cx, review, expected_review_digest, capability).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_witness_encoding_failure_is_corruption_not_a_refusal() {
+        let error = source_witness_error(fa_model::EncodeError::LengthOverflow);
+        match error {
+            BookError::Kernel(KernelError::Corrupt(message)) => assert_eq!(
+                message,
+                "allocation source witness encoding failed: a length does not fit the u32 prefix"
+            ),
+            other => panic!("unexpected source witness error: {other:?}"),
+        }
     }
 }
