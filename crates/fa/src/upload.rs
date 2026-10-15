@@ -12,6 +12,9 @@ use fgdb_types::context::PurposeContexts;
 
 use crate::{AsyncBook, Outcome};
 
+pub mod source;
+pub use source::SourceUploadRequest;
+
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// Supply evidence as the session holder, never as a caller-named uploader.
     /// Agent/System bytes remain self-sourced even after a Human re-uploads
