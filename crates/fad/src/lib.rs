@@ -26,18 +26,95 @@ pub mod timed;
 
 use core::future::{Future, poll_fn};
 use core::pin::{Pin, pin};
-use core::task::Poll;
+use core::task::{Context, Poll};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use asupersync::Cx;
-use asupersync::io::{AsyncRead, AsyncWrite};
+use asupersync::cx::{ChildRegion, ChildRegionError, ChildRegionSpec};
+use asupersync::io::{AsyncRead, AsyncWrite, ReadBuf};
 use asupersync::types::Time;
 use fa::book::Book;
 use fa_cli::cli::{self, Books, Files, Stdin};
 use fa_cli::json::{Json, obj, s};
 use fa_cli::verbs::Daemon;
-use fa_cli::wire::{FrameError, Op, Request, Response, canonical, read_frame, write_frame};
+use fa_cli::wire::{
+    FrameError, Op, PREFIX_BYTES, Request, Response, announced, canonical, encode, read_frame,
+    write_frame,
+};
+use fa_model::limits::MAX_DAEMON_CONNECTIONS;
+
+/// Kernel-certified peer credentials (`SO_PEERCRED` / `LOCAL_PEERCRED` on Unix
+/// sockets, or simulated peer credentials under the lab runtime; bead fa-een).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PeerCred {
+    pub uid: u32,
+    pub gid: u32,
+    pub pid: Option<i32>,
+}
+
+/// Listener abstraction shared by [`asupersync::net::unix::UnixListener`] and
+/// [`asupersync::net::tcp::VirtualTcpListener`] (for deterministic lab tests).
+pub trait Listener {
+    type Stream: AsyncRead + AsyncWrite + Unpin;
+
+    fn poll_accept(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Poll<std::io::Result<(Self::Stream, Option<PeerCred>)>>;
+}
+
+impl Listener for asupersync::net::unix::UnixListener {
+    type Stream = asupersync::net::unix::UnixStream;
+
+    fn poll_accept(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Poll<std::io::Result<(Self::Stream, Option<PeerCred>)>> {
+        match asupersync::net::unix::UnixListener::poll_accept(self, cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Ready(Ok((stream, _addr))) => {
+                let cred = stream.peer_cred().map(|c| PeerCred {
+                    uid: c.uid,
+                    gid: c.gid,
+                    pid: c.pid,
+                })?;
+                Poll::Ready(Ok((stream, Some(cred))))
+            }
+        }
+    }
+}
+
+impl Listener for asupersync::net::tcp::VirtualTcpListener {
+    type Stream = asupersync::net::tcp::VirtualTcpStream;
+
+    fn poll_accept(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Poll<std::io::Result<(Self::Stream, Option<PeerCred>)>> {
+        use asupersync::net::tcp::TcpListenerApi;
+        match TcpListenerApi::poll_accept(self, cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Ready(Ok((stream, addr))) => {
+                let cred = Some(PeerCred {
+                    uid: u32::from(addr.port()),
+                    gid: u32::from(addr.port()),
+                    pid: Some(i32::from(addr.port())),
+                });
+                Poll::Ready(Ok((stream, cred)))
+            }
+        }
+    }
+}
+
+/// Kernel-certified effective UID of the current process via a self-connected
+/// Unix socket pair (`SO_PEERCRED` / `LOCAL_PEERCRED`), with zero `unsafe`.
+pub fn current_uid() -> std::io::Result<u32> {
+    let (a, _b) = asupersync::net::unix::UnixStream::pair()?;
+    Ok(a.peer_cred()?.uid)
+}
 
 /// What the connection loop does after a request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,6 +135,19 @@ pub enum Ended {
     Idle,
     /// A frame fault: answered (when it could be) and closed.
     Fault(FrameError),
+    /// The peer's kernel UID did not match the daemon's UID and no owner token was presented.
+    UnauthorizedPeer { peer_uid: u32, daemon_uid: u32 },
+}
+
+/// Per-connection timing and outcome record (fa-een).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConnectionTiming {
+    pub conn_id: u64,
+    pub peer_uid: Option<u32>,
+    pub peer_pid: Option<i32>,
+    pub requests: u64,
+    pub elapsed_ns: u64,
+    pub ended: Ended,
 }
 
 /// The protocol limits a connection is held to.
@@ -99,6 +189,67 @@ pub fn protocol_fault(fault: &FrameError) -> Response {
     }
 }
 
+/// Structured refusal when `Op::Stop` is requested without owner authority (fa-een).
+#[must_use]
+pub fn stop_refusal(argv: &[String], dir: &Path) -> Response {
+    let refusal = fa_journal::Refusal::new(
+        fa_journal::refusal::code::CAPABILITY,
+        fa_journal::refusal::exit::SAFETY,
+        format!(
+            "fad refused stop for {}: stopping the daemon requires owner authority (possession of the book's key file)",
+            dir.display()
+        ),
+        "plan §14.1, §15.3 (daemon owner authority)",
+        format!(
+            "fad stop --book {} --keys {}/book.keys",
+            dir.display(),
+            dir.display()
+        ),
+    );
+    let (exit, out) = cli::refuse(argv, refusal, true);
+    Response {
+        op: Op::Stop,
+        exit,
+        stdout: out.stdout,
+        stderr: out.stderr,
+    }
+}
+
+/// Structured refusal when a socket peer's kernel UID does not match the daemon's UID (fa-een).
+#[must_use]
+pub fn peer_uid_refusal(
+    request: &Request,
+    peer_uid: u32,
+    daemon_uid: u32,
+    dir: &Path,
+) -> Response {
+    let refusal = fa_journal::Refusal::new(
+        fa_journal::refusal::code::CAPABILITY,
+        fa_journal::refusal::exit::SAFETY,
+        format!(
+            "fad refused connection from peer uid {peer_uid} (daemon runs as uid {daemon_uid})"
+        ),
+        "plan §14.1, §15.3 (daemon socket peer credential check)",
+        format!(
+            "connect as uid {daemon_uid} or supply the book owner token via `fad stop --book {} --keys {}/book.keys`",
+            dir.display(),
+            dir.display()
+        ),
+    );
+    let argv: Vec<String> = if request.argv.iter().any(|a| a == "--json") {
+        vec!["--json".to_string()]
+    } else {
+        Vec::new()
+    };
+    let (exit, out) = cli::refuse(&argv, refusal, true);
+    Response {
+        op: request.op,
+        exit,
+        stdout: out.stdout,
+        stderr: out.stderr,
+    }
+}
+
 /// Serve one connection for the book at `dir`: read requests, answer each
 /// with `handle`, until the peer closes, a `stop` is answered, the peer idles
 /// out, or a frame fault.
@@ -113,22 +264,62 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
     H: FnMut(Request) -> (Response, Next),
 {
-    serve_connection_with(cx, stream, limits, dir, &mut Untimed(handle)).await
+    serve_connection_with(cx, stream, limits, dir, &mut Untimed::new(handle)).await
 }
 
 /// The same framing loop serves a real book with scheduled work and the
 /// protocol-only lab handlers. Timing never owns a second book writer.
 trait Service {
+    fn daemon_uid(&self) -> Option<u32> {
+        None
+    }
+    fn admits_foreign_peer(&self, _request: &Request) -> bool {
+        false
+    }
     fn handle(&mut self, request: Request) -> (Response, Next);
     fn deadline(&self) -> Option<Time>;
     async fn tick(&mut self, cx: &Cx);
+    fn on_connection_closed(&mut self, _timing: ConnectionTiming) {}
 }
 
-struct Untimed<'a, H>(&'a mut H);
+struct Untimed<'a, H> {
+    handle: &'a mut H,
+    daemon_uid: Option<u32>,
+    owner_token: Option<[u8; 32]>,
+    dir: PathBuf,
+    timings: Vec<ConnectionTiming>,
+}
+
+impl<'a, H> Untimed<'a, H> {
+    fn new(handle: &'a mut H) -> Self {
+        Self {
+            handle,
+            daemon_uid: None,
+            owner_token: None,
+            dir: PathBuf::new(),
+            timings: Vec::new(),
+        }
+    }
+}
 
 impl<H: FnMut(Request) -> (Response, Next)> Service for Untimed<'_, H> {
+    fn daemon_uid(&self) -> Option<u32> {
+        self.daemon_uid
+    }
+
+    fn admits_foreign_peer(&self, request: &Request) -> bool {
+        self.owner_token
+            .is_some_and(|token| request.stdin.as_deref() == Some(&token[..]))
+    }
+
     fn handle(&mut self, request: Request) -> (Response, Next) {
-        self.0(request)
+        if request.op == Op::Stop
+            && let Some(token) = &self.owner_token
+            && request.stdin.as_deref() != Some(&token[..])
+        {
+            return (stop_refusal(&request.argv, &self.dir), Next::Continue);
+        }
+        (self.handle)(request)
     }
 
     fn deadline(&self) -> Option<Time> {
@@ -136,6 +327,12 @@ impl<H: FnMut(Request) -> (Response, Next)> Service for Untimed<'_, H> {
     }
 
     async fn tick(&mut self, _cx: &Cx) {}
+
+    fn on_connection_closed(&mut self, timing: ConnectionTiming) {
+        if self.timings.len() < MAX_DAEMON_CONNECTIONS {
+            self.timings.push(timing);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -371,9 +568,22 @@ pub struct Server<'a> {
     /// Present only after the local launcher explicitly authorizes a
     /// book-key System bootstrap. Wire requests never construct this.
     pub timed: Option<timed::TimedWork>,
+    /// Kernel-certified effective UID of this daemon process (`SO_PEERCRED` / `LOCAL_PEERCRED`).
+    pub daemon_uid: Option<u32>,
+    /// Bounded ring of per-connection timings and outcomes (`fa-een`).
+    pub timings: Vec<ConnectionTiming>,
 }
 
 impl Service for Server<'_> {
+    fn daemon_uid(&self) -> Option<u32> {
+        self.daemon_uid
+    }
+
+    fn admits_foreign_peer(&self, request: &Request) -> bool {
+        let token = self.book.owner_token();
+        request.stdin.as_deref() == Some(&token[..])
+    }
+
     fn handle(&mut self, request: Request) -> (Response, Next) {
         Server::handle(self, request)
     }
@@ -386,6 +596,17 @@ impl Service for Server<'_> {
         if let Some(work) = self.timed.as_mut() {
             work.run_due(cx, self.book).await;
         }
+    }
+
+    fn on_connection_closed(&mut self, timing: ConnectionTiming) {
+        eprintln!(
+            "fad connection #{} (uid={:?}, pid={:?}): {} requests in {} ns ({:?})",
+            timing.conn_id, timing.peer_uid, timing.peer_pid, timing.requests, timing.elapsed_ns, timing.ended
+        );
+        if self.timings.len() >= MAX_DAEMON_CONNECTIONS {
+            self.timings.remove(0);
+        }
+        self.timings.push(timing);
     }
 }
 
@@ -430,21 +651,27 @@ impl Server<'_> {
                 },
                 Next::Continue,
             ),
-            Op::Stop => (
-                Response {
-                    op: Op::Stop,
-                    exit: 0,
-                    stdout: line(
-                        json,
-                        "fad_stopped",
-                        self.stopped_data(),
-                        None,
-                        &self.stopped_text(),
-                    ),
-                    stderr: String::new(),
-                },
-                Next::Stop,
-            ),
+            Op::Stop => {
+                let expected = self.book.owner_token();
+                if request.stdin.as_deref() != Some(&expected[..]) {
+                    return (stop_refusal(&request.argv, &self.dir), Next::Continue);
+                }
+                (
+                    Response {
+                        op: Op::Stop,
+                        exit: 0,
+                        stdout: line(
+                            json,
+                            "fad_stopped",
+                            self.stopped_data(),
+                            None,
+                            &self.stopped_text(),
+                        ),
+                        stderr: String::new(),
+                    },
+                    Next::Stop,
+                )
+            }
         }
     }
 
@@ -517,9 +744,255 @@ pub fn line(json: bool, event: &str, data: Json, at: Option<&cli::At>, text: &st
     }
 }
 
-/// Accept connections on `listener` for the book at `dir` and serve them one
-/// at a time until a `stop` is answered. Returns how the last connection
-/// ended.
+enum ConnRegion {
+    Owned(ChildRegion),
+    Inherited,
+}
+
+impl ConnRegion {
+    async fn open(parent: &Cx) -> std::io::Result<Self> {
+        match parent.open_child_region(ChildRegionSpec::inherit()).await {
+            Ok(region) => Ok(Self::Owned(region)),
+            Err(ChildRegionError::NoRuntimeGateway) => Ok(Self::Inherited),
+            Err(e) => Err(std::io::Error::other(format!("connection region: {e:?}"))),
+        }
+    }
+
+    async fn close(self) {
+        if let Self::Owned(region) = self {
+            let _ = region.close().await;
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+enum AfterWrite {
+    Continue,
+    OversizedContinue(FrameError),
+    Close(Ended),
+}
+
+enum Phase {
+    Reading {
+        prefix: [u8; PREFIX_BYTES],
+        got_prefix: usize,
+        payload: Vec<u8>,
+        filled: usize,
+        deadline: Option<Time>,
+    },
+    Writing {
+        frame: Vec<u8>,
+        written: usize,
+        flushed: bool,
+        after: AfterWrite,
+    },
+}
+
+impl Phase {
+    fn new_reading(cx: &Cx, idle: Option<Duration>) -> Result<Self, clock::ClockError> {
+        let deadline = match idle {
+            Some(duration) => Some(clock::deadline_after(
+                clock::timer(cx)?.now(),
+                u64::try_from(duration.as_nanos()).map_err(|_| clock::ClockError::DeadlineOverflow)?,
+            )?),
+            None => None,
+        };
+        Ok(Self::Reading {
+            prefix: [0u8; PREFIX_BYTES],
+            got_prefix: 0,
+            payload: Vec::new(),
+            filled: 0,
+            deadline,
+        })
+    }
+}
+
+enum ConnStep {
+    FrameRead(Vec<u8>),
+    ReadFault(FrameError),
+    WriteDone,
+    Ended(Ended),
+}
+
+struct ConnSlot<S> {
+    id: u64,
+    region: ConnRegion,
+    stream: S,
+    peer: Option<PeerCred>,
+    started_ns: u64,
+    requests: u64,
+    phase: Phase,
+}
+
+impl<S: AsyncRead + AsyncWrite + Unpin> ConnSlot<S> {
+    fn deadline(&self) -> Option<Time> {
+        match &self.phase {
+            Phase::Reading { deadline, .. } => *deadline,
+            Phase::Writing { .. } => None,
+        }
+    }
+
+    fn queue_write(&mut self, payload: &[u8], max_frame_bytes: usize, after: AfterWrite) -> Result<(), Ended> {
+        match encode(payload, max_frame_bytes) {
+            Ok(frame) => {
+                self.phase = Phase::Writing {
+                    frame,
+                    written: 0,
+                    flushed: false,
+                    after,
+                };
+                Ok(())
+            }
+            Err(fault) => Err(match after {
+                AfterWrite::OversizedContinue(orig) | AfterWrite::Close(Ended::Fault(orig)) => {
+                    Ended::Fault(orig)
+                }
+                _ => Ended::Fault(fault),
+            }),
+        }
+    }
+
+    fn poll_step(&mut self, task: &mut Context<'_>, max_frame_bytes: usize) -> Poll<ConnStep> {
+        match &mut self.phase {
+            Phase::Reading {
+                prefix,
+                got_prefix,
+                payload,
+                filled,
+                ..
+            } => {
+                while *got_prefix < PREFIX_BYTES {
+                    let mut buf = ReadBuf::new(&mut prefix[*got_prefix..]);
+                    match Pin::new(&mut self.stream).poll_read(task, &mut buf) {
+                        Poll::Pending => return Poll::Pending,
+                        Poll::Ready(Err(e)) => {
+                            return Poll::Ready(ConnStep::Ended(Ended::Fault(FrameError::Io(
+                                e.kind(),
+                                e.to_string(),
+                            ))));
+                        }
+                        Poll::Ready(Ok(())) => {
+                            let n = buf.filled().len();
+                            if n == 0 {
+                                return if *got_prefix == 0 {
+                                    Poll::Ready(ConnStep::Ended(Ended::Closed))
+                                } else {
+                                    Poll::Ready(ConnStep::Ended(Ended::Fault(
+                                        FrameError::Truncated {
+                                            got: *got_prefix,
+                                            expected: PREFIX_BYTES,
+                                        },
+                                    )))
+                                };
+                            }
+                            *got_prefix += n;
+                            if *got_prefix == PREFIX_BYTES {
+                                match announced(*prefix, max_frame_bytes) {
+                                    Ok(len) => {
+                                        *payload = vec![0u8; len];
+                                        *filled = 0;
+                                    }
+                                    Err(fault) => return Poll::Ready(ConnStep::ReadFault(fault)),
+                                }
+                            }
+                        }
+                    }
+                }
+                while *filled < payload.len() {
+                    let mut buf = ReadBuf::new(&mut payload[*filled..]);
+                    match Pin::new(&mut self.stream).poll_read(task, &mut buf) {
+                        Poll::Pending => return Poll::Pending,
+                        Poll::Ready(Err(e)) => {
+                            return Poll::Ready(ConnStep::Ended(Ended::Fault(FrameError::Io(
+                                e.kind(),
+                                e.to_string(),
+                            ))));
+                        }
+                        Poll::Ready(Ok(())) => {
+                            let n = buf.filled().len();
+                            if n == 0 {
+                                return Poll::Ready(ConnStep::Ended(Ended::Fault(
+                                    FrameError::Truncated {
+                                        got: PREFIX_BYTES + *filled,
+                                        expected: PREFIX_BYTES + payload.len(),
+                                    },
+                                )));
+                            }
+                            *filled += n;
+                        }
+                    }
+                }
+                let bytes = core::mem::take(payload);
+                Poll::Ready(ConnStep::FrameRead(bytes))
+            }
+            Phase::Writing {
+                frame,
+                written,
+                flushed,
+                after,
+            } => {
+                while *written < frame.len() {
+                    match Pin::new(&mut self.stream).poll_write(task, &frame[*written..]) {
+                        Poll::Pending => return Poll::Pending,
+                        Poll::Ready(Err(e)) => {
+                            let ended = match after {
+                                AfterWrite::OversizedContinue(fault)
+                                | AfterWrite::Close(Ended::Fault(fault)) => {
+                                    Ended::Fault(fault.clone())
+                                }
+                                _ => Ended::Fault(FrameError::Io(e.kind(), e.to_string())),
+                            };
+                            return Poll::Ready(ConnStep::Ended(ended));
+                        }
+                        Poll::Ready(Ok(0)) => {
+                            let ended = match after {
+                                AfterWrite::OversizedContinue(fault)
+                                | AfterWrite::Close(Ended::Fault(fault)) => {
+                                    Ended::Fault(fault.clone())
+                                }
+                                _ => Ended::Fault(FrameError::Io(
+                                    std::io::ErrorKind::WriteZero,
+                                    "write zero".into(),
+                                )),
+                            };
+                            return Poll::Ready(ConnStep::Ended(ended));
+                        }
+                        Poll::Ready(Ok(n)) => {
+                            *written += n;
+                        }
+                    }
+                }
+                if !*flushed {
+                    match Pin::new(&mut self.stream).poll_flush(task) {
+                        Poll::Pending => return Poll::Pending,
+                        Poll::Ready(Err(e)) => {
+                            let ended = match after {
+                                AfterWrite::OversizedContinue(fault)
+                                | AfterWrite::Close(Ended::Fault(fault)) => {
+                                    Ended::Fault(fault.clone())
+                                }
+                                _ => Ended::Fault(FrameError::Io(e.kind(), e.to_string())),
+                            };
+                            return Poll::Ready(ConnStep::Ended(ended));
+                        }
+                        Poll::Ready(Ok(())) => {
+                            *flushed = true;
+                        }
+                    }
+                }
+                match after {
+                    AfterWrite::Continue | AfterWrite::OversizedContinue(_) => {
+                        Poll::Ready(ConnStep::WriteDone)
+                    }
+                    AfterWrite::Close(ended) => Poll::Ready(ConnStep::Ended(ended.clone())),
+                }
+            }
+        }
+    }
+}
+
+/// Accept connections on `listener` for the book at `dir` and serve them
+/// concurrently until an authorized `stop` is answered.
 pub async fn serve<H>(
     cx: &Cx,
     listener: &asupersync::net::unix::UnixListener,
@@ -530,7 +1003,36 @@ pub async fn serve<H>(
 where
     H: FnMut(Request) -> (Response, Next),
 {
-    serve_with(cx, listener, limits, dir, &mut Untimed(handle)).await
+    let mut service = Untimed::new(handle);
+    service.dir = dir.to_path_buf();
+    serve_with(cx, listener, limits, dir, &mut service).await
+}
+
+/// Accept connections on any [`Listener`] (Unix socket or virtual lab listener),
+/// enforcing optional peer-UID and owner-token checks, and return per-connection
+/// timings once an authorized `stop` is answered.
+pub async fn serve_listener<L, H>(
+    cx: &Cx,
+    listener: &L,
+    limits: Limits,
+    dir: &Path,
+    daemon_uid: Option<u32>,
+    owner_token: Option<[u8; 32]>,
+    handle: &mut H,
+) -> std::io::Result<Vec<ConnectionTiming>>
+where
+    L: Listener,
+    H: FnMut(Request) -> (Response, Next),
+{
+    let mut service = Untimed {
+        handle,
+        daemon_uid,
+        owner_token,
+        dir: dir.to_path_buf(),
+        timings: Vec::new(),
+    };
+    serve_with(cx, listener, limits, dir, &mut service).await?;
+    Ok(service.timings)
 }
 
 /// Serve the held book with its optional launch-configured timed work in
@@ -545,21 +1047,298 @@ pub async fn serve_book(
     serve_with(cx, listener, limits, &dir, server).await
 }
 
-async fn serve_with<H: Service>(
+async fn finish_connection<S, H: Service>(
     cx: &Cx,
-    listener: &asupersync::net::unix::UnixListener,
+    conn: ConnSlot<S>,
+    ended: Ended,
+    service: &mut H,
+) {
+    let now_ns = clock::timer(cx).map_or(conn.started_ns, |t| t.now().as_nanos());
+    service.on_connection_closed(ConnectionTiming {
+        conn_id: conn.id,
+        peer_uid: conn.peer.map(|p| p.uid),
+        peer_pid: conn.peer.and_then(|p| p.pid),
+        requests: conn.requests,
+        elapsed_ns: now_ns.saturating_sub(conn.started_ns),
+        ended,
+    });
+    conn.region.close().await;
+}
+
+async fn serve_with<L: Listener, H: Service>(
+    cx: &Cx,
+    listener: &L,
     limits: Limits,
     dir: &Path,
     service: &mut H,
 ) -> std::io::Result<()> {
+    let mut connections: Vec<ConnSlot<L::Stream>> = Vec::new();
+    let mut next_conn_id: u64 = 0;
+    let mut rr_cursor: usize = 0;
+    let mut accept_first = true;
+
     loop {
-        cx.checkpoint()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Interrupted, format!("{e:?}")))?;
-        let (mut stream, _) = wait_io(cx, listener.accept(), None, service)
-            .await
-            .map_err(|error| std::io::Error::other(format!("{}", error.frame())))??;
-        if serve_connection_with(cx, &mut stream, limits, dir, service).await == Ended::Stop {
-            return Ok(());
+        if let Err(e) = cx.checkpoint() {
+            for conn in connections.drain(..) {
+                conn.region.close().await;
+            }
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                format!("{e:?}"),
+            ));
+        }
+
+        let mut next_deadline = service.deadline();
+        for conn in &connections {
+            if let Some(d) = conn.deadline() {
+                next_deadline = Some(match next_deadline {
+                    Some(cur) => cur.min(d),
+                    None => d,
+                });
+            }
+        }
+        let mut deadline = next_deadline
+            .map(|at| clock::Deadline::new(cx, at))
+            .transpose()
+            .map_err(|e| std::io::Error::other(format!("{}", WaitError::Clock(e).frame())))?;
+
+        enum Ready<S> {
+            Timer,
+            Accepted(S, Option<PeerCred>),
+            Conn(usize, ConnStep),
+        }
+
+        let can_accept = connections.len() < MAX_DAEMON_CONNECTIONS;
+        let cursor = if connections.is_empty() {
+            0
+        } else {
+            rr_cursor % connections.len()
+        };
+        let try_accept_first = accept_first && can_accept;
+
+        let ready = poll_fn(|task| {
+            if cx.checkpoint().is_err() {
+                return Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "cancelled",
+                )));
+            }
+            if let Some(timer) = deadline.as_mut()
+                && let Poll::Ready(result) = Pin::new(timer).poll(task)
+            {
+                return Poll::Ready(
+                    result
+                        .map(|()| Ready::Timer)
+                        .map_err(|e| std::io::Error::other(format!("{}", WaitError::Clock(e).frame()))),
+                );
+            }
+            if try_accept_first {
+                match listener.poll_accept(task) {
+                    Poll::Ready(Ok((stream, peer))) => {
+                        return Poll::Ready(Ok(Ready::Accepted(stream, peer)));
+                    }
+                    Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                    Poll::Pending => {}
+                }
+            }
+            let len = connections.len();
+            for offset in 0..len {
+                let idx = (cursor + offset) % len;
+                if let Poll::Ready(step) = connections[idx].poll_step(task, limits.max_frame_bytes)
+                {
+                    return Poll::Ready(Ok(Ready::Conn(idx, step)));
+                }
+            }
+            if !try_accept_first && can_accept {
+                match listener.poll_accept(task) {
+                    Poll::Ready(Ok((stream, peer))) => {
+                        return Poll::Ready(Ok(Ready::Accepted(stream, peer)));
+                    }
+                    Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                    Poll::Pending => {}
+                }
+            }
+            Poll::Pending
+        })
+        .await;
+
+        accept_first = !accept_first;
+
+        let ready = match ready {
+            Ok(r) => r,
+            Err(e) => {
+                for conn in connections.drain(..) {
+                    conn.region.close().await;
+                }
+                return Err(e);
+            }
+        };
+
+        match ready {
+            Ready::Timer => {
+                let now = clock::timer(cx)
+                    .map_err(|e| std::io::Error::other(format!("{}", WaitError::Clock(e).frame())))?
+                    .now();
+                let mut i = 0;
+                while i < connections.len() {
+                    if connections[i].deadline().is_some_and(|at| now >= at) {
+                        let expired = connections.remove(i);
+                        finish_connection(cx, expired, Ended::Idle, service).await;
+                    } else {
+                        i += 1;
+                    }
+                }
+                if service.deadline().is_some_and(|at| now >= at) {
+                    service.tick(cx).await;
+                }
+            }
+            Ready::Accepted(stream, peer) => {
+                next_conn_id = next_conn_id.saturating_add(1);
+                let region = ConnRegion::open(cx).await?;
+                let started_ns = clock::timer(cx).map_or(0, |t| t.now().as_nanos());
+                let phase = Phase::new_reading(cx, limits.idle).map_err(|e| {
+                    std::io::Error::other(format!("{}", WaitError::Clock(e).frame()))
+                })?;
+                connections.push(ConnSlot {
+                    id: next_conn_id,
+                    region,
+                    stream,
+                    peer,
+                    started_ns,
+                    requests: 0,
+                    phase,
+                });
+            }
+            Ready::Conn(idx, step) => {
+                rr_cursor = idx.wrapping_add(1);
+                match step {
+                    ConnStep::ReadFault(fault) => {
+                        let reply = protocol_fault(&fault).to_json(limits.protocol).render();
+                        let after = AfterWrite::Close(Ended::Fault(fault));
+                        if let Err(ended) = connections[idx].queue_write(
+                            reply.as_bytes(),
+                            limits.max_frame_bytes,
+                            after,
+                        ) {
+                            let conn = connections.remove(idx);
+                            finish_connection(cx, conn, ended, service).await;
+                        }
+                    }
+                    ConnStep::FrameRead(payload) => {
+                        let parsed = canonical(&payload)
+                            .and_then(|v| Request::from_json(&v, limits.protocol));
+                        let request = match parsed {
+                            Ok(r) => r,
+                            Err(fault) => {
+                                let reply =
+                                    protocol_fault(&fault).to_json(limits.protocol).render();
+                                let after = AfterWrite::Close(Ended::Fault(fault));
+                                if let Err(ended) = connections[idx].queue_write(
+                                    reply.as_bytes(),
+                                    limits.max_frame_bytes,
+                                    after,
+                                ) {
+                                    let conn = connections.remove(idx);
+                                    finish_connection(cx, conn, ended, service).await;
+                                }
+                                continue;
+                            }
+                        };
+                        if let (Some(peer), Some(daemon_uid)) =
+                            (connections[idx].peer, service.daemon_uid())
+                            && peer.uid != daemon_uid
+                            && !service.admits_foreign_peer(&request)
+                        {
+                            let response =
+                                peer_uid_refusal(&request, peer.uid, daemon_uid, dir);
+                            let reply = response.to_json(limits.protocol).render();
+                            let after = AfterWrite::Close(Ended::UnauthorizedPeer {
+                                peer_uid: peer.uid,
+                                daemon_uid,
+                            });
+                            if let Err(ended) = connections[idx].queue_write(
+                                reply.as_bytes(),
+                                limits.max_frame_bytes,
+                                after,
+                            ) {
+                                let conn = connections.remove(idx);
+                                finish_connection(cx, conn, ended, service).await;
+                            }
+                            continue;
+                        }
+                        connections[idx].requests = connections[idx].requests.saturating_add(1);
+                        let (response, next) = service.handle(request);
+                        let mut reply = response.to_json(limits.protocol).render();
+                        let after = if reply.len() > limits.max_frame_bytes {
+                            let fault = FrameError::TooLarge {
+                                announced: reply.len(),
+                                max: limits.max_frame_bytes,
+                            };
+                            let (exit, out) = cli::foundation_error(
+                                &["--json".to_string()],
+                                format!(
+                                    "the answer ({} bytes) exceeds the daemon frame limit ({} bytes); narrow the command, or stop the daemon with `fad stop --book {}` and run it directly",
+                                    reply.len(),
+                                    limits.max_frame_bytes,
+                                    dir.display()
+                                ),
+                                true,
+                            );
+                            reply = Response {
+                                op: response.op,
+                                exit,
+                                stdout: out.stdout,
+                                stderr: out.stderr,
+                            }
+                            .to_json(limits.protocol)
+                            .render();
+                            if next == Next::Stop {
+                                AfterWrite::Close(Ended::Stop)
+                            } else {
+                                AfterWrite::OversizedContinue(fault)
+                            }
+                        } else if next == Next::Stop {
+                            AfterWrite::Close(Ended::Stop)
+                        } else {
+                            AfterWrite::Continue
+                        };
+                        if let Err(ended) = connections[idx].queue_write(
+                            reply.as_bytes(),
+                            limits.max_frame_bytes,
+                            after,
+                        ) {
+                            let conn = connections.remove(idx);
+                            finish_connection(cx, conn, ended, service).await;
+                        }
+                    }
+                    ConnStep::WriteDone => {
+                        match Phase::new_reading(cx, limits.idle) {
+                            Ok(phase) => connections[idx].phase = phase,
+                            Err(e) => {
+                                let conn = connections.remove(idx);
+                                finish_connection(
+                                    cx,
+                                    conn,
+                                    Ended::Fault(WaitError::Clock(e).frame()),
+                                    service,
+                                )
+                                .await;
+                            }
+                        }
+                    }
+                    ConnStep::Ended(ended) => {
+                        let is_stop = ended == Ended::Stop;
+                        let conn = connections.remove(idx);
+                        finish_connection(cx, conn, ended, service).await;
+                        if is_stop {
+                            for remaining in connections.drain(..) {
+                                finish_connection(cx, remaining, Ended::Closed, service).await;
+                            }
+                            return Ok(());
+                        }
+                    }
+                }
+            }
         }
     }
 }

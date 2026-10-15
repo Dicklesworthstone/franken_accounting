@@ -192,9 +192,21 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
             .open_child_region(ChildRegionSpec::inherit())
             .await
             .map_err(|e| format!("region: {e:?}"))?;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+                .map_err(|e| format!("chmod 0700 {}: {e}", dir.display()))?;
+        }
         let listener = UnixListener::bind(&socket)
             .await
             .map_err(|e| format!("bind {}: {e}", socket.display()))?;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| format!("chmod 0600 {}: {e}", socket.display()))?;
+        }
+        let daemon_uid = fad::current_uid()
+            .map_err(|e| format!("daemon peer credential uid: {e}"))?;
         let mut serving = vec![
             ("book_id", s(&book_id)),
             ("dir", s(dir.display().to_string())),
@@ -230,6 +242,8 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
             socket: socket.clone(),
             requests: 0,
             timed,
+            daemon_uid: Some(daemon_uid),
+            timings: Vec::new(),
         };
         let served = fad::serve_book(region.cx(), &listener, limits, &mut server).await;
         // Dropping the listener removes the socket path it created.
@@ -325,10 +339,21 @@ fn status(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
 fn stop(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
     let json = parsed.switch("--json");
     let socket = dir.join(&d.socket);
-    match client::call(&socket, &request(Op::Stop, json), d) {
+    let keys_file = parsed
+        .flag("--keys")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| dir.join("book.keys"));
+    let mut req = request(Op::Stop, json);
+    req.stdin = BookKeys::load(&keys_file)
+        .ok()
+        .map(|keys| keys.owner_token().to_vec());
+    match client::call(&socket, &req, d) {
         Ok(response) => {
             print!("{}", response.stdout);
             eprint!("{}", response.stderr);
+            if response.exit != 0 {
+                return response.exit;
+            }
             // Return only once the daemon has let go of the book, so the
             // next `fa` command finds the lease free.
             for _ in 0..400 {

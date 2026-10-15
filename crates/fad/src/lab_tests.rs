@@ -265,3 +265,252 @@ fn under_chaos_only_whole_frames_reach_the_handler() {
         }
     }
 }
+
+#[test]
+fn slow_client_sending_a_frame_every_29s_does_not_starve_other_clients_and_unauthorized_stop_is_refused()
+ {
+    use std::sync::Arc;
+    use asupersync::Budget;
+    use asupersync::lab::{AutoAdvanceTermination, LabRuntime};
+    use asupersync::net::tcp::VirtualTcpListener;
+
+    const DAEMON_UID: u32 = 1000;
+    const FOREIGN_UID: u32 = 2000;
+    const OWNER_TOKEN: [u8; 32] = [0xAB; 32];
+    const SEC: u64 = 1_000_000_000;
+
+    async fn sleep_ns(cx: &Cx, nanos: u64) {
+        let at = clock::deadline_after(clock::timer(cx).unwrap().now(), nanos).unwrap();
+        clock::Deadline::new(cx, at).unwrap().await.unwrap();
+    }
+
+    let mut lab = LabRuntime::new(LabConfig::new(42).with_auto_advance());
+    let root = lab.state.create_root_region(Budget::INFINITE);
+    let listener = Arc::new(VirtualTcpListener::new(addr(9000)));
+    let listener_for_client = Arc::clone(&listener);
+
+    let (server_task, mut server_handle) = lab
+        .state
+        .create_task(root, Budget::INFINITE, async move {
+            let cx = Cx::current().expect("lab server cx");
+            let limits = Limits {
+                protocol: 1,
+                max_frame_bytes: MAX,
+                idle: Some(Duration::from_secs(30)),
+            };
+            let mut seen: Vec<Vec<String>> = Vec::new();
+            let mut handle = |r: Request| {
+                seen.push(r.argv.clone());
+                let next = if r.op == Op::Stop {
+                    Next::Stop
+                } else {
+                    Next::Continue
+                };
+                (
+                    Response {
+                        op: r.op,
+                        exit: 0,
+                        stdout: r.argv.join(" "),
+                        stderr: String::new(),
+                    },
+                    next,
+                )
+            };
+            let timings = serve_listener(
+                &cx,
+                &*listener,
+                limits,
+                Path::new(BOOK),
+                Some(DAEMON_UID),
+                Some(OWNER_TOKEN),
+                &mut handle,
+            )
+            .await
+            .expect("serve_listener");
+            (seen, timings)
+        })
+        .unwrap();
+
+    let (client_task, mut client_handle) = lab
+        .state
+        .create_task(root, Budget::INFINITE, async move {
+            let cx = Cx::current().expect("lab client cx");
+            let now_ns = || clock::timer(&cx).unwrap().now().as_nanos();
+
+            // Client A connects at t = 0 s and sends only half of its first frame,
+            // then dribbles/sends one frame every 29 s (under the 30 s idle timeout).
+            let (server_a, mut client_a) = VirtualTcpStream::pair(addr(9000), addr(DAEMON_UID as u16));
+            listener_for_client.inject_connection(server_a, addr(DAEMON_UID as u16));
+            let frame_a1 = frame(&request(Op::Run, 10));
+            let half = frame_a1.len() / 2;
+            client_a.write_all(&frame_a1[..half]).await.unwrap();
+
+            // At t = 1 s, Client B connects and sends a full request while Client A is mid-frame.
+            sleep_ns(&cx, SEC).await;
+            let b_start = now_ns();
+            let (server_b, mut client_b) = VirtualTcpStream::pair(addr(9000), addr(DAEMON_UID as u16));
+            listener_for_client.inject_connection(server_b, addr(DAEMON_UID as u16));
+            client_b.write_all(&frame(&request(Op::Run, 20))).await.unwrap();
+            let _ = AsyncWriteExt::shutdown(&mut client_b).await;
+            let reply_b = read_frame(&cx, &mut client_b, MAX)
+                .await
+                .unwrap()
+                .expect("client B reply");
+            let resp_b = Response::from_json(&canonical(&reply_b).unwrap(), 1).unwrap();
+            assert_eq!(resp_b.exit, 0);
+            assert_eq!(resp_b.stdout, "tb --n=20 --json");
+            let b_elapsed = now_ns() - b_start;
+            assert!(
+                b_elapsed < 5 * SEC,
+                "Client B must complete within its 5 s deadline, not wait 29 s for Client A (elapsed={b_elapsed} ns)"
+            );
+
+            // At t = 2 s, a foreign-UID peer (uid 2000 != 1000) attempts to stop the daemon.
+            sleep_ns(&cx, SEC).await;
+            let (server_foreign, mut client_foreign) =
+                VirtualTcpStream::pair(addr(9000), addr(FOREIGN_UID as u16));
+            listener_for_client.inject_connection(server_foreign, addr(FOREIGN_UID as u16));
+            client_foreign
+                .write_all(&frame(&request(Op::Stop, 99)))
+                .await
+                .unwrap();
+            let reply_foreign = read_frame(&cx, &mut client_foreign, MAX)
+                .await
+                .unwrap()
+                .expect("foreign peer refusal");
+            let resp_foreign =
+                Response::from_json(&canonical(&reply_foreign).unwrap(), 1).unwrap();
+            assert_eq!(resp_foreign.exit, 7, "{resp_foreign:?}");
+            assert!(
+                resp_foreign.stdout.contains("\"refusal_id\":\"FA-REF-011\""),
+                "{}",
+                resp_foreign.stdout
+            );
+            assert!(
+                resp_foreign.stdout.contains("peer uid 2000"),
+                "{}",
+                resp_foreign.stdout
+            );
+
+            // At t = 3 s, a same-UID peer without the owner token attempts Op::Stop.
+            sleep_ns(&cx, SEC).await;
+            let (server_unauth, mut client_unauth) =
+                VirtualTcpStream::pair(addr(9000), addr(DAEMON_UID as u16));
+            listener_for_client.inject_connection(server_unauth, addr(DAEMON_UID as u16));
+            client_unauth
+                .write_all(&frame(&request(Op::Stop, 98)))
+                .await
+                .unwrap();
+            let _ = AsyncWriteExt::shutdown(&mut client_unauth).await;
+            let reply_unauth = read_frame(&cx, &mut client_unauth, MAX)
+                .await
+                .unwrap()
+                .expect("unauthorized stop refusal");
+            let resp_unauth =
+                Response::from_json(&canonical(&reply_unauth).unwrap(), 1).unwrap();
+            assert_eq!(resp_unauth.exit, 7, "{resp_unauth:?}");
+            assert!(
+                resp_unauth.stdout.contains("\"refusal_id\":\"FA-REF-011\""),
+                "{}",
+                resp_unauth.stdout
+            );
+            assert!(
+                resp_unauth
+                    .stdout
+                    .contains("stopping the daemon requires owner authority"),
+                "{}",
+                resp_unauth.stdout
+            );
+
+            // At t = 29 s (26 s later), Client A finishes its first frame and gets its answer.
+            sleep_ns(&cx, 26 * SEC).await;
+            assert_eq!(now_ns(), 29 * SEC);
+            client_a.write_all(&frame_a1[half..]).await.unwrap();
+            let reply_a1 = read_frame(&cx, &mut client_a, MAX)
+                .await
+                .unwrap()
+                .expect("client A first reply");
+            let resp_a1 = Response::from_json(&canonical(&reply_a1).unwrap(), 1).unwrap();
+            assert_eq!(resp_a1.stdout, "tb --n=10 --json");
+
+            // Client A stays open for another 29 s (until t = 58 s). Meanwhile at t = 40 s,
+            // Client C connects and is served immediately while Client A sits idle.
+            sleep_ns(&cx, 11 * SEC).await;
+            let c_start = now_ns();
+            let (server_c, mut client_c) = VirtualTcpStream::pair(addr(9000), addr(DAEMON_UID as u16));
+            listener_for_client.inject_connection(server_c, addr(DAEMON_UID as u16));
+            client_c.write_all(&frame(&request(Op::Run, 30))).await.unwrap();
+            let _ = AsyncWriteExt::shutdown(&mut client_c).await;
+            let reply_c = read_frame(&cx, &mut client_c, MAX)
+                .await
+                .unwrap()
+                .expect("client C reply");
+            let resp_c = Response::from_json(&canonical(&reply_c).unwrap(), 1).unwrap();
+            assert_eq!(resp_c.stdout, "tb --n=30 --json");
+            assert_eq!(now_ns() - c_start, 0);
+
+            // At t = 58 s (18 s later, 29 s after Client A's first frame), Client A sends a second frame.
+            sleep_ns(&cx, 18 * SEC).await;
+            assert_eq!(now_ns(), 58 * SEC);
+            client_a.write_all(&frame(&request(Op::Run, 11))).await.unwrap();
+            let _ = AsyncWriteExt::shutdown(&mut client_a).await;
+            let reply_a2 = read_frame(&cx, &mut client_a, MAX)
+                .await
+                .unwrap()
+                .expect("client A second reply");
+            let resp_a2 = Response::from_json(&canonical(&reply_a2).unwrap(), 1).unwrap();
+            assert_eq!(resp_a2.stdout, "tb --n=11 --json");
+
+            // At t = 59 s, an authorized owner sends Op::Stop with the owner token.
+            sleep_ns(&cx, SEC).await;
+            let (server_stop, mut client_stop) =
+                VirtualTcpStream::pair(addr(9000), addr(DAEMON_UID as u16));
+            listener_for_client.inject_connection(server_stop, addr(DAEMON_UID as u16));
+            let auth_stop = Request {
+                op: Op::Stop,
+                argv: vec!["--json".into()],
+                cwd: None,
+                stdin: Some(OWNER_TOKEN.to_vec()),
+            };
+            client_stop.write_all(&frame(&auth_stop)).await.unwrap();
+            let reply_stop = read_frame(&cx, &mut client_stop, MAX)
+                .await
+                .unwrap()
+                .expect("authorized stop reply");
+            let resp_stop = Response::from_json(&canonical(&reply_stop).unwrap(), 1).unwrap();
+            assert_eq!(resp_stop.exit, 0);
+        })
+        .unwrap();
+
+    {
+        let mut sched = lab.scheduler.lock();
+        sched.schedule(server_task, Budget::INFINITE.priority);
+        sched.schedule(client_task, Budget::INFINITE.priority);
+    }
+    let advanced = lab.run_with_auto_advance();
+    assert!(
+        matches!(advanced.termination, AutoAdvanceTermination::Quiescent),
+        "{advanced:?}"
+    );
+    assert!(lab.report().lab_test_passed(), "{:?}", lab.report());
+    client_handle.try_join().unwrap().expect("client task");
+    let (seen, timings) = server_handle.try_join().unwrap().expect("server task");
+    assert_eq!(seen.len(), 5, "B, A1, C, A2, and authorized Stop reached handler: {seen:?}");
+    assert_eq!(timings.len(), 6, "6 connections recorded in timings: {timings:?}");
+    assert!(
+        timings.iter().any(|t| matches!(
+            t.ended,
+            Ended::UnauthorizedPeer {
+                peer_uid: FOREIGN_UID,
+                daemon_uid: DAEMON_UID
+            }
+        )),
+        "foreign peer refusal recorded in timings: {timings:?}"
+    );
+    assert!(
+        timings
+            .iter()
+            .any(|t| t.conn_id == 1 && t.requests == 2 && t.elapsed_ns == 58 * SEC),
+        "slow client A timing recorded: {timings:?}"
+    );
+}

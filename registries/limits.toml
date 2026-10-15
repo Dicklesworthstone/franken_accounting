@@ -110,4 +110,7 @@ value = 9223372036854775807
 [[limit]]
 name = "max_clock_skew_ns"
 value = 31622400000000000
-
+# Maximum concurrent fad client connections served at once (fa-een).
+[[limit]]
+name = "max_daemon_connections"
+value = 64

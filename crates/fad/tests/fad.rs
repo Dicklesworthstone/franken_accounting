@@ -726,3 +726,143 @@ fn a_panicking_daemon_command_is_one_error_event_with_exit_5() {
     assert!(stdout.contains("FA_TEST_PANIC"), "{stdout}");
     assert!(stderr.contains("fad: internal error"), "{stderr}");
 }
+
+#[test]
+fn concurrent_slow_client_does_not_starve_other_clients_and_unauthorized_stop_is_refused() {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixStream as StdUnixStream;
+    use std::time::Instant;
+    use fa_cli::wire::encode;
+
+    let dir = tmp("concurrent");
+    let (book, _) = book(&dir);
+    let b = book.display().to_string();
+    let reg = registry().expect("verbs.toml");
+    let daemon = start(&book);
+    let socket = book.join(&reg.daemon.socket);
+
+    // Directory is 0700 and socket is 0600 (fa-een).
+    let dir_mode = std::fs::metadata(&book).expect("book meta").permissions().mode() & 0o777;
+    assert_eq!(dir_mode, 0o700, "book directory must be 0700 (got {dir_mode:o})");
+    let sock_mode = std::fs::metadata(&socket).expect("socket meta").permissions().mode() & 0o777;
+    assert_eq!(sock_mode, 0o600, "daemon socket must be 0600 (got {sock_mode:o})");
+
+    // Client A connects and dribbles only 2 bytes of its 4-byte prefix, keeping its
+    // connection open without completing a frame.
+    let mut slow_client = StdUnixStream::connect(&socket).expect("connect slow client A");
+    let req_a = Request {
+        op: Op::Status,
+        argv: vec!["--json".into()],
+        cwd: None,
+        stdin: None,
+    };
+    let frame_a = encode(
+        req_a.to_json(reg.daemon.protocol).render().as_bytes(),
+        reg.daemon.max_frame_bytes,
+    )
+    .expect("encode frame A");
+    slow_client
+        .write_all(&frame_a[..2])
+        .expect("write partial prefix");
+    slow_client.flush().expect("flush partial prefix");
+
+    // While Client A is stalled mid-frame, Client B runs `fa tb` through fad and
+    // completes within its deadline (never waiting for Client A's 30 s idle timeout).
+    let start_b = Instant::now();
+    let tb_out = ok(&[
+        "tb",
+        "--period",
+        "FY2026-P03",
+        "--via",
+        "fad",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let elapsed_b = start_b.elapsed();
+    assert!(
+        tb_out.contains("\"credits\":\"10.00 USD\""),
+        "Client B got trial balance through fad: {tb_out}"
+    );
+    assert!(
+        elapsed_b < std::time::Duration::from_secs(5),
+        "Client B completed in {elapsed_b:?} while Client A was mid-frame"
+    );
+
+    // An unauthorized `fad stop` (missing/wrong keys or raw unauthenticated wire stop) is refused.
+    let wrong_keys = write(
+        &dir,
+        "wrong.keys",
+        "0101010101010101010101010101010101010101010101010101010101010101\n0202020202020202020202020202020202020202020202020202020202020202\n0303030303030303030303030303030303030303030303030303030303030303\n",
+    );
+    let (code, refused_out, _) = fad(&["stop", "--book", &b, "--keys", &wrong_keys, "--json"]);
+    assert_eq!(code, 7, "unauthorized fad stop must exit 7: {refused_out}");
+    assert_eq!(
+        field(&refused_out, "refusal_id"),
+        Some("FA-REF-011"),
+        "{refused_out}"
+    );
+    assert!(
+        refused_out.contains("stopping the daemon requires owner authority"),
+        "{refused_out}"
+    );
+
+    let unauth_wire = client::call(
+        &socket,
+        &Request {
+            op: Op::Stop,
+            argv: vec!["--json".into()],
+            cwd: None,
+            stdin: None,
+        },
+        &reg.daemon,
+    )
+    .expect("fad answers unauthenticated wire stop with refusal");
+    assert_eq!(unauth_wire.exit, 7, "{unauth_wire:?}");
+    assert_eq!(
+        field(&unauth_wire.stdout, "refusal_id"),
+        Some("FA-REF-011"),
+        "{}",
+        unauth_wire.stdout
+    );
+
+    // The daemon is still serving after both refused stops.
+    let (code, status, _) = fad(&["status", "--book", &b, "--json"]);
+    assert_eq!(code, 0, "{status}");
+    assert_eq!(field(&status, "serving"), Some("true"), "{status}");
+
+    // Client A finishes its frame and receives its response.
+    slow_client
+        .write_all(&frame_a[2..])
+        .expect("finish slow client A frame");
+    slow_client.flush().expect("flush slow client A");
+    let mut prefix = [0u8; 4];
+    slow_client
+        .read_exact(&mut prefix)
+        .expect("read slow client A reply prefix");
+    let len = u32::from_be_bytes(prefix) as usize;
+    let mut payload = vec![0u8; len];
+    slow_client
+        .read_exact(&mut payload)
+        .expect("read slow client A reply payload");
+    let reply_str = String::from_utf8_lossy(&payload);
+    let reply_json = fa_cli::json::parse(&reply_str).expect("parse slow client A reply json");
+    let reply = fa_cli::wire::Response::from_json(&reply_json, reg.daemon.protocol)
+        .expect("decode slow client A reply");
+    assert_eq!(reply.exit, 0, "{reply:?}");
+    assert!(
+        reply.stdout.contains("\"serving\":true"),
+        "{}",
+        reply.stdout
+    );
+    drop(slow_client);
+
+    // Authorized owner `fad stop` succeeds and releases the lease.
+    let (code, stopped, err) = fad(&["stop", "--book", &b, "--json"]);
+    assert_eq!(code, 0, "{stopped}\n{err}");
+    assert_eq!(field(&stopped, "event"), Some("fad_stopped"), "{stopped}");
+    let (exit, rest) = daemon.finish();
+    assert_eq!(exit, 0, "{rest}");
+}
+

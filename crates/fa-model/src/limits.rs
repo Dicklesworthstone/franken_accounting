@@ -49,6 +49,8 @@ pub const MAX_TICK_UTC_NS: u64 = 9_223_372_036_854_775_807;
 /// before a tick without an in-process monotonic bracket is recorded
 /// `monotonic_ok = false` (fa-psz).
 pub const MAX_CLOCK_SKEW_NS: u64 = 31_622_400_000_000_000;
+/// Concurrent `fad` client connections served at once (fa-een).
+pub const MAX_DAEMON_CONNECTIONS: usize = 64;
 
 /// Every limit as `(name, value)`, in registry order.
 pub const ALL: &[(&str, u64)] = &[
@@ -90,6 +92,7 @@ pub const ALL: &[(&str, u64)] = &[
     ("max_active_legal_holds", MAX_ACTIVE_LEGAL_HOLDS as u64),
     ("max_tick_utc_ns", MAX_TICK_UTC_NS),
     ("max_clock_skew_ns", MAX_CLOCK_SKEW_NS),
+    ("max_daemon_connections", MAX_DAEMON_CONNECTIONS as u64),
 ];
 
 #[cfg(test)]

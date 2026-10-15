@@ -241,6 +241,21 @@ impl BookKeys {
         fgdb_crypto::zeroize::scrub_slice(&mut seed);
         key
     }
+
+    /// Deterministic 32-byte owner-authority token derived from the book's keys
+    /// (`KDF(k_oid ‖ namespace ‖ dek, "fa:fad-owner-token:v1")`), domain-separated
+    /// from every other use of the book's secrets. Proves possession of the key
+    /// file to a local `fad` without transmitting raw encryption keys (fa-een).
+    #[must_use]
+    pub fn owner_token(&self) -> [u8; 32] {
+        let mut material = [0u8; 96];
+        material[..32].copy_from_slice(self.inner.k_oid());
+        material[32..64].copy_from_slice(&self.namespace);
+        material[64..].copy_from_slice(self.inner.dek());
+        let token = derive_key("fa:fad-owner-token:v1", &material);
+        fgdb_crypto::zeroize::scrub_slice(&mut material);
+        token
+    }
 }
 
 impl fmt::Debug for BookKeys {
@@ -442,6 +457,7 @@ pub struct Book {
     runtime: Runtime,
     root: Cx,
     store: Store,
+    owner_token: [u8; 32],
 }
 
 impl Book {
@@ -460,6 +476,7 @@ impl Book {
         spec: BookSpec,
         entropy: Entropy,
     ) -> Result<Self, BookError> {
+        let owner_token = keys.owner_token();
         let (runtime, root) = Self::runtime_and_root()?;
         let purposes = PurposeContexts::narrow_runtime_root(&root);
         let vfs = purposes
@@ -478,6 +495,7 @@ impl Book {
             runtime,
             root,
             store: Store::Memory(core),
+            owner_token,
         })
     }
 
@@ -488,6 +506,7 @@ impl Book {
         spec: BookSpec,
         entropy: Entropy,
     ) -> Result<Self, BookError> {
+        let owner_token = keys.owner_token();
         let (runtime, root) = Self::runtime_and_root()?;
         let purposes = PurposeContexts::narrow_runtime_root(&root);
         let core = runtime.block_on(AsyncBook::create_with_vfs(
@@ -498,16 +517,23 @@ impl Book {
             spec,
             entropy,
         ))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        }
         Ok(Self {
             runtime,
             root,
             store: Store::Dir(core),
+            owner_token,
         })
     }
 
     /// Open the directory book at `<dir>/store`, rebuilding the context from
     /// the spec journaled at genesis.
     pub fn open_dir(dir: &Path, keys: BookKeys, entropy: Entropy) -> Result<Self, BookError> {
+        let owner_token = keys.owner_token();
         let (runtime, root) = Self::runtime_and_root()?;
         let purposes = PurposeContexts::narrow_runtime_root(&root);
         let core = runtime.block_on(AsyncBook::open_with_vfs(
@@ -521,7 +547,15 @@ impl Book {
             runtime,
             root,
             store: Store::Dir(core),
+            owner_token,
         })
+    }
+
+    /// The domain-separated 32-byte owner-authority token derived from the
+    /// book's keys (`fa-een`).
+    #[must_use]
+    pub fn owner_token(&self) -> [u8; 32] {
+        self.owner_token
     }
 
     #[must_use]
@@ -780,6 +814,7 @@ impl Book {
         keys: BookKeys,
         entropy: Entropy,
     ) -> Outcome<(Book, fa_journal::SeqMap)> {
+        let owner_token = keys.owner_token();
         let (scratch_runtime, scratch_root) = Self::runtime_and_root()?;
         let scratch_purposes = PurposeContexts::narrow_runtime_root(&scratch_root);
         let db = scratch_runtime.block_on(async {
@@ -805,6 +840,7 @@ impl Book {
                 runtime: scratch_runtime,
                 root: scratch_root,
                 store,
+                owner_token,
             },
             map,
         )))
