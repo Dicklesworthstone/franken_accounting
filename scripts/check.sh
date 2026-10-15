@@ -99,14 +99,63 @@ run_step() {
 # rch (suite rule: builds are offloaded; a bare `cargo` in a non-login shell
 # resolves to rustup's binary and would build on this box). No local lane:
 # without rch the step is UNRUN, never a local build. CHECK_JOBS bounds -j.
+#
+# Since fa-czx: an exit-0 compiling step is PASS only when its log ALSO
+# contains `Remote command finished: exit=0` and a step-specific completion
+# marker (`Finished` for check/clippy; `: test$` for test-list; `>= 1`
+# `test result: ok.` line with a positive passed count for test steps).
+# Missing markers classify as UNRUN (retryable), never PASS.
 CHECK_JOBS="${CHECK_JOBS:-2}"
 cargo_build() {
   local label="$1" sub="$2"; shift 2
-  if command -v rch >/dev/null 2>&1; then
-    RCH_REQUIRE_REMOTE=1 RCH_QUEUE_WHEN_BUSY=1 \
-      run_step "$label" rch exec -- cargo "$sub" -j "$CHECK_JOBS" "$@"
+  local log="$LOG_DIR/${label//[^A-Za-z0-9_.-]/_}.log"
+  if ! command -v rch >/dev/null 2>&1; then
+    gate_unrun "$label — rch is not installed; compiling steps go through rch (AGENTS.md); log: $log"
+    return
+  fi
+  RCH_REQUIRE_REMOTE=1 RCH_QUEUE_WHEN_BUSY=1 \
+    rch exec -- cargo "$sub" -j "$CHECK_JOBS" "$@" >"$log" 2>&1
+  local rc=$?
+  if [ "$rc" -eq 0 ]; then
+    if ! grep -Fq 'Remote command finished: exit=0' "$log"; then
+      gate_unrun "$label — exit 0 without 'Remote command finished: exit=0' completion marker; log: $log"
+      return
+    fi
+    case "$sub" in
+      check|clippy)
+        if ! grep -Eq '^[[:space:]]*Finished ' "$log"; then
+          gate_unrun "$label — exit 0 without cargo 'Finished' completion marker; log: $log"
+          return
+        fi
+        ;;
+      test)
+        if [ "$label" = "test-list" ]; then
+          if ! grep -Eq ': test$' "$log"; then
+            gate_unrun "$label — exit 0 with zero listed tests; log: $log"
+            return
+          fi
+        else
+          local passed_total
+          passed_total="$(awk '/^test result: ok\./ { for (i = 1; i <= NF; i++) if ($i == "passed;") sum += $(i - 1) } END { print sum + 0 }' "$log")"
+          if ! grep -Eq '^test result: ok\. ' "$log" || [ "${passed_total:-0}" -le 0 ]; then
+            gate_unrun "$label — exit 0 without a positive 'test result: ok. N passed' completion marker (passed=${passed_total:-0}); log: $log"
+            return
+          fi
+        fi
+        ;;
+    esac
+    gate_pass "$label"
+    return
+  fi
+  local executed=0
+  grep -q 'Remote command finished' "$log" && executed=1
+  if [ "$rc" -eq 103 ] \
+    || { [ "$executed" -eq 0 ] && { [ "$rc" -eq 100 ] || grep -Eq '^\[RCH\] .*(refusing local fallback|completion unconfirmed)' "$log"; }; }; then
+    gate_unrun "$label — the rch offloader did not run the command (exit $rc: refused, no admissible worker, or lost the worker before execution; retryable, not a product verdict); log: $log"
   else
-    gate_unrun "$label — rch is not installed; compiling steps go through rch (AGENTS.md)"
+    gate_fail "$label (exit $rc); log: $log"
+    gate_diag "---- $label: last 40 lines of $log"
+    tail -n 40 "$log" >&2
   fi
 }
 
@@ -137,7 +186,14 @@ run_step "fmt" cargo fmt --all --check
 cargo_build "check" check --workspace --all-targets
 cargo_build "clippy" clippy --workspace --all-targets -- -D warnings
 if [ "$QUICK" -eq 0 ]; then
+  cargo_build "test-list" test --workspace -- --list
   cargo_build "test" test --workspace
+  # Gate evidence witness & per-crate ratchet (bead fa-czx): listed tests match
+  # executed tests, no source test disappears without `Retired-tests:`, and
+  # per-crate negative test / assert counts do not decrease without
+  # `Weakened-tests:`.
+  run_gate "gate-evidence" "$ROOT/scripts/gate_evidence_check.sh" \
+    "$ROOT" "$LOG_DIR/test-list.log" "$LOG_DIR/test.log" "$LOG_DIR/gate-evidence"
   # Invariant cross-check (bead fa-37f): every live clause's checker and
   # negative tests ran and passed in THIS run's test transcript; then the
   # same gate is shown able to fail on a planted rename.
@@ -193,6 +249,8 @@ mapfile -t SHELL_FILES < <(git ls-files --cached --others --exclude-standard -- 
 if [ "${#SHELL_FILES[@]}" -gt 0 ]; then
   run_step "shellcheck" shellcheck -S warning "${SHELL_FILES[@]}"
 fi
+run_gate "gate-evidence-negative" "$ROOT/scripts/tests/gate_evidence_negative.sh" \
+  "$ROOT" "$LOG_DIR/gate-evidence-negative"
 
 # Registries: every TOML under registries/ is consumed by compiled code and
 # validated by the fa-registry / fa-model tests, which `test` above ran. This
