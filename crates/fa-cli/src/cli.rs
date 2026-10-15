@@ -771,6 +771,10 @@ impl Ctx<'_> {
             .map_or_else(|| principal(args), LaunchAuthority::principal_vid)
     }
 
+    pub(crate) fn authority(&self) -> Option<&LaunchAuthority> {
+        self.authority.as_ref()
+    }
+
     /// A bound host reuses the launch capability verbatim. The handler's
     /// implied ops exist only on the explicit embedded-owner route.
     pub(crate) fn capability(&self, args: &Args, implied: &[&str]) -> Result<Capability, Fail> {
@@ -811,7 +815,7 @@ pub fn run_with_authority(
 fn run_scoped(
     argv: &[String],
     books: Books<'_>,
-    files: Files,
+    mut files: Files,
     authority: Option<&LaunchAuthority>,
     capture: bool,
 ) -> (u8, Captured) {
@@ -872,6 +876,9 @@ fn run_scoped(
         said: Rc::clone(&out.said),
         cwd: files.cwd.clone(),
     };
+    if let Some(root) = authority.and_then(LaunchAuthority::files) {
+        files.cwd = Some(root.to_path_buf());
+    }
     let mut ctx = Ctx {
         out,
         books,
@@ -1219,6 +1226,145 @@ fn post_plan_only(verb: &str, args: &Args) -> bool {
         || args.flag("--review-out").is_some())
 }
 
+/// Required capability operations for a command on the launch-bound surface, or
+/// `None` when the command/subcommand is owner-only and never admitted on a
+/// bound session.
+#[must_use]
+pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy::Op]> {
+    use fa_policy::Op;
+    let sub = args.positional.get(1).map(String::as_str);
+    if period_plan_only(verb, args) {
+        return Some(&[Op::Read]);
+    }
+    let ops: &'static [Op] = match (verb, sub) {
+        // The chart templates are data embedded in this build; listing
+        // them reads nothing from the book.
+        ("capabilities" | "robot-docs" | "help", _) | ("chart", Some("templates")) => &[],
+        ("book", Some("info"))
+        | ("chart" | "period", Some("list"))
+        | (
+            "tb" | "statement" | "open-items" | "gl" | "explain" | "replay" | "certificate"
+            | "entry" | "procedure" | "triage" | "next" | "doctor",
+            _,
+        ) => &[Op::Read],
+        ("verify" | "registers", _) => &[Op::Read, Op::Verify],
+        ("post" | "commit" | "reverse" | "reserve" | "resolve", _) => &[Op::Post],
+        ("allocate" | "settle", _) => {
+            if sub == Some("approve") || args.switch("--approve") {
+                &[Op::Read, Op::Approve]
+            } else {
+                &[Op::Read, Op::Post]
+            }
+        }
+        ("approve", _) => {
+            if args.flag("--review").is_some() {
+                &[Op::Read, Op::Approve]
+            } else {
+                &[Op::Approve]
+            }
+        }
+        ("checkpoint", _) => &[Op::Witness],
+        ("proof" | "bundle", _) => &[Op::Read, Op::Produce],
+        ("document", Some("add")) if args.flag("--grade").is_none() => &[Op::Post],
+        ("document", Some("read")) => &[Op::Read],
+        ("document", Some("redact")) => &[Op::Privileged],
+        ("document", Some("disclose")) => &[Op::Read, Op::Produce],
+        ("document", Some("custody")) => {
+            if args.flag("--to").is_some() {
+                &[Op::Post]
+            } else {
+                &[Op::Read]
+            }
+        }
+        ("document", Some("erase")) => &[Op::Erase],
+        ("document", Some("hold")) => {
+            if args.positional.get(2).map(String::as_str) == Some("show") {
+                &[Op::Read]
+            } else {
+                &[Op::Hold]
+            }
+        }
+        ("document", Some("attest")) => match args.positional.get(2).map(String::as_str) {
+            Some("review") => &[Op::Approve],
+            Some("manual") => &[Op::Post],
+            Some("register-equals") => {
+                if args.flag("--account").is_some() {
+                    &[Op::Reconcile]
+                } else {
+                    &[Op::Read]
+                }
+            }
+            _ => &[Op::Read],
+        },
+        ("document", Some("import")) => match args.positional.get(2).map(String::as_str) {
+            Some("run") => &[Op::Post],
+            _ => &[Op::Read],
+        },
+        ("migrate", Some("show")) => &[Op::Read],
+        ("migrate", Some("open" | "stage" | "finalize" | "abandon")) => &[Op::Post, Op::Migrate],
+        _ => return None,
+    };
+    Some(ops)
+}
+
+/// Whether a concrete command is admissible under `authority` on the
+/// launch-bound surface (including dangerous-operation confirmation gating and
+/// Agent trunk-monetary restrictions).
+pub fn bound_command_admissible(
+    reg: &Registry,
+    verb: &str,
+    args: &Args,
+    authority: &LaunchAuthority,
+) -> Result<&'static [fa_policy::Op], String> {
+    let sub = reg
+        .verb(verb)
+        .filter(|v| !v.subcommands.is_empty())
+        .and_then(|_| args.positional.get(1).map(String::as_str));
+    if !period_plan_only(verb, args) && !post_plan_only(verb, args) {
+        for d in reg.dangerous_for(verb, sub) {
+            let applies = match &d.condition {
+                Condition::Always => true,
+                Condition::Grant(op) => {
+                    fa_policy::Op::from_name(op).is_some_and(|op| authority.capability().holds(op))
+                }
+                Condition::Voids | Condition::ExistingCells => false,
+            };
+            if applies {
+                return Err(format!(
+                    "`{}` requires independent confirmation unavailable over MCP (FA-REF-007)",
+                    command_name(verb, sub)
+                ));
+            }
+        }
+    }
+    let Some(required) = bound_command_ops(verb, args) else {
+        return Err(format!(
+            "`{}` is not admitted by the launch-bound MCP command surface",
+            command_name(verb, sub)
+        ));
+    };
+    for op in required {
+        if !authority.capability().holds(*op) {
+            return Err(format!(
+                "`{}` requires `{op}`, which the launch capability does not hold",
+                command_name(verb, sub)
+            ));
+        }
+    }
+    let is_monetary_trunk_post =
+        matches!(verb, "post" | "commit" | "reverse" | "reserve" | "resolve")
+            || (matches!(verb, "allocate" | "settle")
+                && sub != Some("approve")
+                && !args.switch("--approve"));
+    if authority.profile() == crate::authority::LaunchProfile::Agent && is_monetary_trunk_post {
+        return Err(format!(
+            "`{}` writes or plans monetary entries on trunk, which the Agent profile cannot perform (FA-REF-013)",
+            command_name(verb, sub)
+        ));
+    }
+    Ok(required)
+}
+
 /// Admit the concrete operation before handlers read input files or the
 /// book. Legacy facade mutations without a caller capability remain owner
 /// operations. Report certificates and derived register caches are metadata,
@@ -1227,88 +1373,19 @@ fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fa
     let Some(authority) = &ctx.authority else {
         return Ok(());
     };
-    use fa_policy::Op;
     let sub = args.positional.get(1).map(String::as_str);
-    let required: &[Op] = if period_plan_only(&verb.name, args) {
-        &[Op::Read]
-    } else {
-        match (verb.name.as_str(), sub) {
-            // The chart templates are data embedded in this build; listing
-            // them reads nothing from the book.
-            ("capabilities" | "robot-docs" | "help", _) | ("chart", Some("templates")) => &[],
-            ("book", Some("info"))
-            | ("chart" | "period", Some("list"))
-            | (
-                "tb" | "statement" | "open-items" | "gl" | "explain" | "replay" | "certificate"
-                | "entry" | "procedure" | "triage" | "next" | "doctor",
-                _,
-            ) => &[Op::Read],
-            ("verify" | "registers", _) => &[Op::Read, Op::Verify],
-            ("post" | "commit" | "reverse" | "reserve" | "resolve", _) => &[Op::Post],
-            ("allocate" | "settle", _) => {
-                if sub == Some("approve") || args.switch("--approve") {
-                    &[Op::Read, Op::Approve]
-                } else {
-                    &[Op::Read, Op::Post]
-                }
-            }
-            ("approve", _) => {
-                if args.flag("--review").is_some() {
-                    &[Op::Read, Op::Approve]
-                } else {
-                    &[Op::Approve]
-                }
-            }
-            ("checkpoint", _) => &[Op::Witness],
-            ("proof" | "bundle", _) => &[Op::Read, Op::Produce],
-            ("document", Some("read")) => &[Op::Read],
-            ("document", Some("redact")) => &[Op::Privileged],
-            ("document", Some("disclose")) => &[Op::Read, Op::Produce],
-            ("document", Some("custody")) => {
-                if args.flag("--to").is_some() {
-                    &[Op::Post]
-                } else {
-                    &[Op::Read]
-                }
-            }
-            ("document", Some("erase")) => &[Op::Erase],
-            ("document", Some("hold")) => {
-                if args.positional.get(2).map(String::as_str) == Some("show") {
-                    &[Op::Read]
-                } else {
-                    &[Op::Hold]
-                }
-            }
-            ("document", Some("attest")) => match args.positional.get(2).map(String::as_str) {
-                Some("review") => &[Op::Approve],
-                Some("manual") => &[Op::Post],
-                Some("register-equals") => {
-                    if args.flag("--account").is_some() {
-                        &[Op::Reconcile]
-                    } else {
-                        &[Op::Read]
-                    }
-                }
-                _ => &[Op::Read],
-            },
-            ("document", Some("import")) => match args.positional.get(2).map(String::as_str) {
-                Some("run") => &[Op::Post],
-                _ => &[Op::Read],
-            },
-            ("migrate", Some("show")) => &[Op::Read],
-            ("migrate", Some("open" | "stage" | "finalize" | "abandon")) => {
-                &[Op::Post, Op::Migrate]
-            }
-            _ => {
-                return Err(Refusal::new(
-                    fa_journal::refusal::code::CAPABILITY,
-                    exit::SAFETY,
-                    format!("`{}` is not admitted by the launch-bound MCP command surface", command_name(&verb.name, sub)),
-                    "plan §14.2–§14.4; fa-23r (authority before observation)",
-                    "ask the operator to perform this owner operation; document intake needs its provenance-authorized surface (fa-vwf), and period lock/reopen can be prepared with --plan-out",
-                ).into());
-            }
-        }
+    let Some(required) = bound_command_ops(&verb.name, args) else {
+        return Err(Refusal::new(
+            fa_journal::refusal::code::CAPABILITY,
+            exit::SAFETY,
+            format!(
+                "`{}` is not admitted by the launch-bound MCP command surface",
+                command_name(&verb.name, sub)
+            ),
+            "plan §14.2–§14.4; fa-23r (authority before observation)",
+            "ask the operator to perform this owner operation; document intake derives provenance grade from the launch capability (fa-vwf), and period lock/reopen can be prepared with --plan-out",
+        )
+        .into());
     };
     for op in required {
         fa_policy::require(authority.capability(), *op, &command_name(&verb.name, sub))
@@ -1321,33 +1398,51 @@ fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fa
     Ok(())
 }
 
-/// Bound hosts receive content through forwarded stdin. Caller paths never
-/// become host reads or writes; the configured book and keys are separate,
-/// trusted launch inputs. No filesystem root is supported in this slice.
+/// Bound hosts receive content through forwarded stdin unless launched with an
+/// explicit `--files <dir>` containment root. Caller paths outside `--files`
+/// never become host reads or writes; the configured book and keys are
+/// separate, trusted launch inputs.
 fn admit_bound_files(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fail> {
-    if ctx.authority.is_none() {
+    let Some(authority) = &ctx.authority else {
         return Ok(());
-    }
-    let blocked = |argument: &str, fix: &str| {
-        usage(
-            format!("{argument} cannot name a host filesystem path in a launch-bound request"),
-            fix,
-        )
+    };
+    let check_path = |argument: &str, value: &str, allow_missing_leaf: bool, fix: &str| {
+        if authority.files().is_none() {
+            return Err(usage(
+                format!("{argument} cannot name a host filesystem path in a launch-bound request"),
+                fix,
+            ));
+        }
+        authority
+            .resolve_in_files_root(value, allow_missing_leaf)
+            .map(|_| ())
+            .map_err(|reason| {
+                usage(
+                    format!("{argument} path `{value}` is outside the launch --files root: {reason}"),
+                    "paths must stay within the launch --files root without `..`, symlinks, or absolute paths (fa-yha)",
+                )
+            })
     };
     for flag in ["--plan-out", "--certificate-out", "--out", "--review-out"] {
-        if args.flag(flag).is_some() {
-            return Err(blocked(
+        if let Some(value) = args.flag(flag) {
+            check_path(
                 flag,
+                value,
+                true,
                 "use --dry-run for inline plan bytes, --review-only for inline review bytes, or --certify for a retained certificate; MCP accepts no output paths (fa-yha)",
-            ));
+            )?;
         }
     }
     for flag in ["--intent", "--plan", "--policy", "--file"] {
-        if args.flag_all(flag).iter().any(|value| *value != "-") {
-            return Err(blocked(
-                flag,
-                "forward the complete content on stdin with -; MCP takes the inline intent, plan, or policy property, never a file path (fa-yha)",
-            ));
+        for value in args.flag_all(flag) {
+            if value != "-" {
+                check_path(
+                    flag,
+                    value,
+                    false,
+                    "forward the complete content on stdin with -; MCP takes the inline intent, plan, or policy property, never a file path (fa-yha)",
+                )?;
+            }
         }
     }
     for value in args.flag_all("--review") {
@@ -1355,22 +1450,29 @@ fn admit_bound_files(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fail
             && value.len() % 2 == 0
             && value.bytes().all(|b| b.is_ascii_hexdigit());
         if value != "-" && !is_hex {
-            return Err(blocked(
+            check_path(
                 "--review",
+                value,
+                false,
                 "pass the review event's complete bytes hex string in review, or forward it on stdin with -; MCP accepts no host file paths (fa-yha)",
-            ));
+            )?;
         }
     }
     let sub = args.positional.get(1).map(String::as_str);
     if verb.name == "document"
         && sub == Some("import")
         && args.positional.get(2).map(String::as_str) == Some("run")
-        && args.positional.iter().skip(3).any(|p| p != "-")
     {
-        return Err(blocked(
-            "file",
-            "forward the complete input on stdin with -; MCP accepts no host file paths (fa-yha)",
-        ));
+        for p in args.positional.iter().skip(3) {
+            if p != "-" {
+                check_path(
+                    "file",
+                    p,
+                    false,
+                    "forward the complete input on stdin with -; MCP accepts no host file paths (fa-yha)",
+                )?;
+            }
+        }
     }
     let input = match (verb.name.as_str(), sub) {
         ("chart", Some("import")) | ("document", Some("add")) => args.positional.get(2),
@@ -1384,10 +1486,12 @@ fn admit_bound_files(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fail
             && digits.len() == 64
             && digits.bytes().all(|byte| byte.is_ascii_hexdigit());
         if input != "-" && !retained {
-            return Err(blocked(
+            check_path(
                 "file",
+                input,
+                false,
                 "forward the complete input on stdin with -; report replay also accepts a retained C:<oid>. MCP uses inline chart, text, or certificate properties (fa-yha)",
-            ));
+            )?;
         }
     }
     Ok(())

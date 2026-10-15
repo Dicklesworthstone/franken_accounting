@@ -4428,6 +4428,31 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         ),
     );
     run2(&["settle", "--intent", &settle_ev, "--review-only"]);
+    run2(&["explain", "entry", &fee_vid]);
+    run2(&["explain", "evidence", &fee_vid]);
+    run2(&["explain", "period", "FY2026-P03"]);
+    run2(&["explain", "refusal", "FA-REF-001"]);
+    run2(&[
+        "explain",
+        "register",
+        "1000",
+        "--period",
+        "FY2026-P03",
+        "--unit",
+        "USD",
+    ]);
+    let (_, imp_ev) = run2(&[
+        "document",
+        "import",
+        "run",
+        &tb_doc_path,
+        "--source",
+        "Connector",
+        "--key",
+        "imp-ev",
+    ]);
+    let imp_vid = field(&imp_ev, "run_vid").unwrap_or_default().to_string();
+    run2(&["document", "import", "receipt", &imp_vid]);
 
     // The daemon's frames and its own output are fad's to emit (crates/fad tests).
     let declared: BTreeSet<String> = reg

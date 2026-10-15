@@ -154,26 +154,47 @@ fn add(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let names: Vec<&str> = policy.kinds.iter().map(|k| k.name.as_str()).collect();
         named("document kind", kind_name, &names)
     })?;
-    // An agent is the primary operator: absent a declaration, the honest
-    // default is the self-sourced grade, never a human's.
-    let grade_name = args.flag("--grade").unwrap_or("AgentUpload");
-    let grade = policy.grade_by_name(grade_name).ok_or_else(|| {
-        let names: Vec<&str> = policy.grades.iter().map(|g| g.name.as_str()).collect();
-        named("provenance grade", grade_name, &names)
-    })?;
+    let explicit_grade = match args.flag("--grade") {
+        Some(grade_name) => Some(policy.grade_by_name(grade_name).ok_or_else(|| {
+            let names: Vec<&str> = policy.grades.iter().map(|g| g.name.as_str()).collect();
+            named("provenance grade", grade_name, &names)
+        })?),
+        None => None,
+    };
     let mime = args.flag("--mime").unwrap_or("application/octet-stream");
     let retrieved_by = ctx.principal(args);
+    let authority = ctx.authority().cloned();
     let bytes = ctx.files.read_bytes(path)?;
     let mut book = ctx.books.open(args)?;
-    let doc = Document {
-        book_id: book.context().book_id,
-        kind: kind.tag,
-        mime: mime.to_string(),
-        grade: grade.tag,
-        retrieved_by,
-        bytes,
+    let added = if let Some(authority) = &authority {
+        book.upload_document(
+            authority.capability(),
+            fa_journal::UploadRequest {
+                kind: kind.tag,
+                mime: mime.to_string(),
+                bytes,
+                asserted_grade: explicit_grade.map(|g| g.tag),
+            },
+        )??
+    } else {
+        // An agent is the primary operator: absent a declaration, the honest
+        // default is the self-sourced grade, never a human's.
+        let grade = match explicit_grade {
+            Some(g) => g,
+            None => policy
+                .grade_by_name("AgentUpload")
+                .ok_or_else(|| Fail::Internal("missing AgentUpload grade".into()))?,
+        };
+        let doc = Document {
+            book_id: book.context().book_id,
+            kind: kind.tag,
+            mime: mime.to_string(),
+            grade: grade.tag,
+            retrieved_by,
+            bytes,
+        };
+        book.add_document(&doc)??
     };
-    let added = book.add_document(&doc)??;
     out.at_book(&book)?;
     // On a repeat intake the book's record stands: report its kind and grade.
     let kind_out = policy

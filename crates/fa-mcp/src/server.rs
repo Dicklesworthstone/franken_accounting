@@ -83,6 +83,9 @@ pub struct ServerConfig {
     pub book: Option<PathBuf>,
     /// The fixed key file; never supplied by a tool call.
     pub keys: Option<PathBuf>,
+    /// Optional explicit directory root (`--files <dir>`) confining host-path
+    /// tool arguments; when `None`, all host-path arguments are refused.
+    pub files: Option<PathBuf>,
     /// The operator-selected principal, fixed for the session.
     pub principal: String,
     pub profile: LaunchProfile,
@@ -95,6 +98,7 @@ impl Default for ServerConfig {
         Self {
             book: None,
             keys: None,
+            files: None,
             principal: "mcp-agent".into(),
             profile: LaunchProfile::Agent,
             grants: Vec::new(),
@@ -163,6 +167,7 @@ impl Adapter {
         let grants: Vec<&str> = config.grants.iter().map(String::as_str).collect();
         let authority =
             LaunchAuthority::new(book, config.keys, config.principal, config.profile, &grants)
+                .and_then(|auth| auth.with_files(config.files))
                 .map_err(ServerError::Launch)?;
         let reg = fa_cli::verbs::registry()
             .map_err(|e| ServerError::Foundation(format!("the embedded verb registry: {e}")))?;
@@ -208,7 +213,14 @@ impl Adapter {
 
     fn error_of(&self, reply: &Reply) -> StructuredError {
         match reply.error() {
-            Some(line) => StructuredError::from_error_event(&self.mcp, self.reg, &line.data),
+            Some(line) => {
+                let mut err = StructuredError::from_error_event(&self.mcp, self.reg, &line.data);
+                err.suggested_tool_calls.retain(|call| {
+                    self.mcp
+                        .is_call_admissible(self.reg, call, &self.authority)
+                });
+                err
+            }
             None => StructuredError::foundation(format!(
                 "the dispatcher exited {} without an error event; stderr: {}",
                 reply.exit,
@@ -232,7 +244,7 @@ impl Adapter {
         tool: &ToolSpec,
         arguments: &JsonValue,
     ) -> Result<CallOutput, StructuredError> {
-        if let Some(error) = forbidden_tool_argument(tool, arguments) {
+        if let Some(error) = forbidden_tool_argument(tool, arguments, &self.authority) {
             return Err(error);
         }
         if let Some(e) = detect::floats(arguments)
@@ -242,7 +254,12 @@ impl Adapter {
             return Err(e);
         }
         let inv = tool
-            .invocation(&self.mcp, self.reg, arguments)
+            .invocation_with_files(
+                &self.mcp,
+                self.reg,
+                arguments,
+                self.authority.files().is_some(),
+            )
             .map_err(|e| StructuredError::arguments(e.message, e.fix))?;
         if detect::intent_of(tool, arguments).is_some() {
             // The chart is read through the same front door; when the book
@@ -314,7 +331,14 @@ impl Adapter {
                     .map(|n| {
                         let command = n.get("command").and_then(Json::as_str).unwrap_or("");
                         let mut v = to_wire(n);
-                        if let Some(call) = self.mcp.command_to_call(self.reg, command) {
+                        if let Some(call) = self
+                            .mcp
+                            .command_to_call(self.reg, command)
+                            .filter(|call| {
+                                self.mcp
+                                    .is_call_admissible(self.reg, call, &self.authority)
+                            })
+                        {
                             v["call"] = json!({ "tool": call.tool, "arguments": call.arguments });
                         }
                         v
@@ -898,13 +922,46 @@ fn percent_decode(s: &str) -> String {
 
 /// The same authority-first refusal applies before dispatch and when the
 /// framework has already rejected a call's ordinary input schema.
-fn forbidden_tool_argument(tool: &ToolSpec, arguments: &JsonValue) -> Option<StructuredError> {
-    crate::registry::forbidden_argument(arguments)
-        .map(StructuredError::forbidden_argument)
-        .or_else(|| {
-            tool.forbidden_path_argument(arguments)
-                .map(|(argument, fix)| StructuredError::forbidden_path(&argument, fix))
-        })
+fn forbidden_tool_argument(
+    tool: &ToolSpec,
+    arguments: &JsonValue,
+    authority: &LaunchAuthority,
+) -> Option<StructuredError> {
+    if let Some(argument) = crate::registry::forbidden_argument(arguments) {
+        return Some(StructuredError::forbidden_argument(argument));
+    }
+    if authority.files().is_none() {
+        return tool
+            .forbidden_path_argument(arguments)
+            .map(|(argument, fix)| StructuredError::forbidden_path(&argument, fix));
+    }
+    let object = arguments.as_object()?;
+    for (argument, value) in object {
+        if !tool.is_host_path_property(argument) {
+            continue;
+        }
+        let Some(raw) = value.as_str() else {
+            return Some(StructuredError::forbidden_path(
+                argument,
+                format!(
+                    "{argument} must be a relative path string inside the launch --files root (fa-yha)"
+                ),
+            ));
+        };
+        let allow_missing_leaf = matches!(
+            argument.as_str(),
+            "plan_out" | "review_out" | "certificate_out" | "out"
+        );
+        if let Err(reason) = authority.resolve_in_files_root(raw, allow_missing_leaf) {
+            return Some(StructuredError::forbidden_path(
+                argument,
+                format!(
+                    "{reason}; paths must stay within the launch --files root without `..`, symlinks, or absolute paths (fa-yha)"
+                ),
+            ));
+        }
+    }
+    None
 }
 
 fn forbidden_macro_argument(spec: &MacroSpec, arguments: &JsonValue) -> Option<StructuredError> {
@@ -956,7 +1013,7 @@ impl Middleware for ToolArgumentErrors {
             .adapter
             .mcp
             .tool_by_wire(name)
-            .and_then(|tool| forbidden_tool_argument(tool, arguments))
+            .and_then(|tool| forbidden_tool_argument(tool, arguments, &self.adapter.authority))
             .or_else(|| {
                 macro_by_wire(name).and_then(|mac| forbidden_macro_argument(mac, arguments))
             });
@@ -982,10 +1039,16 @@ impl VerbTool {
     pub fn new(adapter: Arc<Adapter>, spec: ToolSpec) -> Self {
         let reg = adapter.reg;
         let writes = reg.verb(&spec.verb).is_some_and(|v| v.writes);
+        let mut description = spec.description(&adapter.mcp, reg);
+        description.push_str(&spec.launch_admission_note(reg, &adapter.authority));
         let definition = Tool {
             name: spec.wire_name(),
-            description: Some(spec.description(&adapter.mcp, reg)),
-            input_schema: spec.input_schema(&adapter.mcp, reg),
+            description: Some(description),
+            input_schema: spec.input_schema_with_files(
+                &adapter.mcp,
+                reg,
+                adapter.authority.files().is_some(),
+            ),
             output_schema: None,
             icon: None,
             version: Some(crate::VERSION.to_string()),
@@ -1781,6 +1844,7 @@ mod tests {
         let adapter = Adapter::new(ServerConfig {
             book: Some(dir.clone()),
             keys: None,
+            files: None,
             principal: "agent-reader".into(),
             profile: LaunchProfile::Agent,
             grants: Vec::new(),
@@ -1845,5 +1909,174 @@ mod tests {
             "error and fix_hint must never interpolate untrusted text"
         );
         assert!(err.suggested_tool_calls.is_empty());
+    }
+
+    #[test]
+    fn files_root_confines_document_import_and_plan_out_and_refuses_escapes() {
+        let base = std::env::temp_dir().join(format!(
+            "fa-mcp-files-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let book_dir = base.join("book");
+        let files_dir = base.join("files");
+        std::fs::create_dir_all(files_dir.join("nested")).expect("files dir");
+        std::fs::write(files_dir.join("invoice.txt"), b"Invoice #9001 for 50.00 USD")
+            .expect("write invoice");
+        std::fs::write(base.join("outside.txt"), b"outside secret").expect("write outside");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(base.join("outside.txt"), files_dir.join("escape_link.txt"))
+            .expect("symlink");
+
+        let run_cli = |argv: &[&str], stdin: Option<&str>| {
+            let mut full: Vec<String> = argv.iter().map(|s| (*s).to_string()).collect();
+            full.push("--book".into());
+            full.push(book_dir.display().to_string());
+            full.push("--json".into());
+            let files = match stdin {
+                Some(text) => fa_cli::cli::Files {
+                    cwd: None,
+                    stdin: fa_cli::cli::Stdin::Forwarded(text.as_bytes().to_vec()),
+                },
+                None => fa_cli::cli::Files::default(),
+            };
+            let (exit, captured) = fa_cli::entry::fa_with(&full, files, true);
+            assert_eq!(exit, 0, "argv={argv:?} stderr={}", captured.stderr);
+        };
+        run_cli(&["book", "create", "--name", "Files Root Test Co"], None);
+        run_cli(
+            &["chart", "import", "-"],
+            Some(
+                r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Expense","type":"Expense","unit":"USD"}]}"#,
+            ),
+        );
+        run_cli(&["period", "create", "--fiscal-year", "2026"], None);
+        run_cli(&["period", "open", "FY2026-P03"], None);
+
+        let adapter = Adapter::new(ServerConfig {
+            book: Some(book_dir),
+            keys: None,
+            files: Some(files_dir.clone()),
+            principal: "agent-files".into(),
+            profile: LaunchProfile::Agent,
+            grants: Vec::new(),
+        })
+        .expect("adapter with --files");
+
+        // 1. Positive: import a document from a relative path inside `--files`.
+        let import_doc = adapter
+            .mcp
+            .tool_by_wire("fa_evidence_import_document")
+            .expect("import_document")
+            .clone();
+        let imported = adapter
+            .call(
+                &import_doc,
+                &json!({"file": "invoice.txt", "kind": "Invoice", "mime": "text/plain"}),
+            )
+            .expect("import inside --files root");
+        let imported_json = fa_cli::json::parse(&imported.data).expect("imported data");
+        assert_eq!(
+            imported_json.get("grade").and_then(Json::as_str),
+            Some("AgentUpload")
+        );
+
+        // 2. Positive: write a dry-run period plan to a relative path inside `--files`.
+        let transition = adapter
+            .mcp
+            .tool_by_wire("fa_time_period_transition")
+            .expect("period_transition")
+            .clone();
+        let planned = adapter
+            .call(
+                &transition,
+                &json!({"transition": "close", "code": "FY2026-P03", "plan_out": "nested/close.plan"}),
+            )
+            .expect("plan_out inside --files root");
+        assert!(planned.data.contains("proposal_digest"));
+        assert!(files_dir.join("nested/close.plan").is_file());
+
+        // 3. Negatives: `..` traversal, absolute path, missing parent, and symlink escape.
+        for bad_path in [
+            "../outside.txt",
+            files_dir.join("invoice.txt").to_str().unwrap(),
+            "escape_link.txt",
+        ] {
+            let err = adapter
+                .call(&import_doc, &json!({"file": bad_path, "kind": "Invoice"}))
+                .expect_err("escape must be refused before reading");
+            assert_eq!(err.kind, "forbidden_path", "{bad_path}: {err:?}");
+            assert_eq!(err.exit, 2);
+            assert_eq!(err.detail["argument"], "file");
+        }
+    }
+
+    #[test]
+    fn launch_authority_admission_notes_and_suggested_call_filtering() {
+        let agent = Adapter::new(ServerConfig {
+            profile: LaunchProfile::Agent,
+            ..config()
+        })
+        .expect("agent adapter");
+        let preparer = Adapter::new(ServerConfig {
+            profile: LaunchProfile::Preparer,
+            ..config()
+        })
+        .expect("preparer adapter");
+        let read_only = Adapter::new(ServerConfig {
+            profile: LaunchProfile::Agent,
+            grants: vec!["read".into()],
+            ..config()
+        })
+        .expect("read-only adapter");
+
+        let post_spec = agent.mcp.tool_by_wire("fa_post_post").unwrap().clone();
+        let agent_post_tool = VerbTool::new(Arc::new(agent), post_spec.clone());
+        let prep_post_tool = VerbTool::new(Arc::new(preparer), post_spec);
+        let agent_desc = agent_post_tool.definition().description.unwrap();
+        let prep_desc = prep_post_tool.definition().description.unwrap();
+        assert!(
+            agent_desc.contains("Launch admission (profile `agent`")
+                && agent_desc.contains("not admitted in this session"),
+            "{agent_desc}"
+        );
+        assert!(
+            prep_desc.contains("Launch admission (profile `preparer`")
+                && prep_desc.contains("admitted for post (ops: post)"),
+            "{prep_desc}"
+        );
+
+        // Verify call admissibility filtering: `fa verify registers` requires `verify`,
+        // so `read_only` filters it out while a default Agent (read, post, verify) keeps it.
+        let verify_call = read_only
+            .mcp
+            .command_to_call(read_only.reg, "fa verify registers")
+            .expect("verify call");
+        assert!(
+            !read_only
+                .mcp
+                .is_call_admissible(read_only.reg, &verify_call, &read_only.authority)
+        );
+        let post_call = read_only
+            .mcp
+            .command_to_call(read_only.reg, "fa post")
+            .expect("post call");
+        assert!(
+            !read_only
+                .mcp
+                .is_call_admissible(read_only.reg, &post_call, &read_only.authority)
+        );
+        let tb_call = read_only
+            .mcp
+            .command_to_call(read_only.reg, "fa tb --period FY2026-P03")
+            .expect("tb call");
+        assert!(
+            read_only
+                .mcp
+                .is_call_admissible(read_only.reg, &tb_call, &read_only.authority)
+        );
     }
 }

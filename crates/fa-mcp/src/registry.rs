@@ -937,12 +937,50 @@ impl McpRegistry {
         out
     }
 
+    /// Whether `call` is admissible on the launch-bound MCP surface under
+    /// `authority` (fa-na8). Used to filter `suggested_tool_calls` and
+    /// `next_actions` so read-only or Agent sessions are never told to invoke
+    /// tools that their launch authority will refuse.
+    #[must_use]
+    pub fn is_call_admissible(
+        &self,
+        reg: &Registry,
+        call: &ToolCall,
+        authority: &fa_cli::authority::LaunchAuthority,
+    ) -> bool {
+        if self.tool_by_wire(&call.tool).is_none() {
+            return false;
+        }
+        let tokens = shell_split(&call.command);
+        let Some((first, rest)) = tokens.split_first() else {
+            return false;
+        };
+        if first != "fa" {
+            return false;
+        }
+        let Ok(mut parsed) = args::parse(rest, &reg.value_flags(), &reg.switches()) else {
+            return false;
+        };
+        let Some(word) = parsed.positional.first().cloned() else {
+            return false;
+        };
+        if let Some(alias) = reg.alias(&word) {
+            let mut expanded = alias.expands.clone();
+            expanded.extend(parsed.positional.into_iter().skip(1));
+            parsed.positional = expanded;
+        }
+        let Some(verb) = parsed.positional.first().cloned() else {
+            return false;
+        };
+        fa_cli::cli::bound_command_admissible(reg, &verb, &parsed, authority).is_ok()
+    }
+
     /// The server's instructions text: the clusters, the rules every call
     /// obeys, and the resources.
     #[must_use]
     pub fn instructions(&self) -> String {
         let mut text = String::from(
-            "FrankenAccounting over MCP: each call runs the accounting dispatcher under one trusted launch-bound principal, profile, capability and book. Start with `fa_orient_capabilities`. Tool arguments cannot contain as, grant, yes, keys, book, principal, profile or via; even null or false is refused as forbidden_argument. Input content travels inline: file, intent_file, plan_file, plan_out, review_out and certificate_out are refused as forbidden_path before dispatch. No --files root is supported; the process itself is not sandboxed. Use dry_run: true on a period transition to receive its sealed proposal bytes without writing a file or changing the book. The Agent default reads but cannot publish accounting entries to trunk (FA-REF-013); an operator may explicitly launch the bounded Preparer profile. Dangerous commits remain unavailable through MCP until a separate confirmation exchange exists; planning does not authorize a commit. This is launch-time trust, not authenticated capability issuance. A book held by fad is refused until its transport can preserve this authority. Rules: amounts are strings with their unit (\"1500.00 USD\"), never JSON numbers; effective dates are civil YYYY-MM-DD; historical report instant selectors remain available; recorded time is assigned by the journal; corrections are new entries — nothing is edited in place; never invent balancing legs, re-date entries to dodge period law, approve your own proposal, or cite a placeholder. A tool's first content block is the robot envelope's data; the second adds book, coordinate, certificate, warnings, next_actions and authority. Resources retain their data first and return launch authority in a second JSON block. Tool errors carry {type, message, recoverable, fix_hint, suggested_tool_calls, exit, refusal_id, cite, detail, authority}. A different identity or stronger authority requires an operator to launch a separate appropriately bound session.\n\nClusters:\n",
+            "FrankenAccounting over MCP: each call runs the accounting dispatcher under one trusted launch-bound principal, profile, capability and book. Start with `fa_orient_capabilities`. Tool arguments cannot contain as, grant, yes, keys, book, principal, profile or via; even null or false is refused as forbidden_argument. Input content travels inline: file, intent_file, plan_file, plan_out, review_out and certificate_out are refused as forbidden_path before dispatch unless the operator launched the server with an explicit --files <dir> containment root (fa-yha). Use dry_run: true on a period transition to receive its sealed proposal bytes without writing a file or changing the book. The Agent default reads but cannot publish accounting entries to trunk (FA-REF-013); an operator may explicitly launch the bounded Preparer profile. Dangerous commits remain unavailable through MCP until a separate confirmation exchange exists; planning does not authorize a commit. This is launch-time trust, not authenticated capability issuance. A book held by fad is refused until its transport can preserve this authority. Rules: amounts are strings with their unit (\"1500.00 USD\"), never JSON numbers; effective dates are civil YYYY-MM-DD; historical report instant selectors remain available; recorded time is assigned by the journal; corrections are new entries — nothing is edited in place; never invent balancing legs, re-date entries to dodge period law, approve your own proposal, or cite a placeholder. A tool's first content block is the robot envelope's data; the second adds book, coordinate, certificate, warnings, next_actions and authority. Resources retain their data first and return launch authority in a second JSON block. Tool errors carry {type, message, recoverable, fix_hint, suggested_tool_calls, exit, refusal_id, cite, detail, authority}. A different identity or stronger authority requires an operator to launch a separate appropriately bound session.\n\nClusters:\n",
         );
         for c in &self.clusters {
             let names: Vec<String> = self.tools_of(&c.name).map(ToolSpec::wire_name).collect();
@@ -1045,7 +1083,14 @@ impl ToolSpec {
 
     /// Every property the input schema declares, in schema order.
     #[must_use]
-    pub fn property_names(&self, _reg: &Registry) -> Vec<String> {
+    pub fn property_names(&self, reg: &Registry) -> Vec<String> {
+        self.property_names_with_files(reg, false)
+    }
+
+    /// Every property the tool accepts, optionally including host-path
+    /// properties when the server was launched with `--files <dir>` (fa-yha).
+    #[must_use]
+    pub fn property_names_with_files(&self, _reg: &Registry, allow_files: bool) -> Vec<String> {
         let mut names = Vec::new();
         if let Some(sel) = &self.selector {
             names.push(sel.clone());
@@ -1053,7 +1098,7 @@ impl ToolSpec {
         names.extend(
             self.positionals
                 .iter()
-                .filter(|p| !self.is_host_path_property(&p.name))
+                .filter(|p| allow_files || !self.is_host_path_property(&p.name))
                 .map(|p| p.name.clone()),
         );
         if let Some(s) = &self.stdin {
@@ -1063,7 +1108,7 @@ impl ToolSpec {
             self.flags
                 .iter()
                 .map(|f| self.flag_property(f))
-                .filter(|p| !self.is_host_path_property(p)),
+                .filter(|p| allow_files || !self.is_host_path_property(p)),
         );
         names.extend(self.switches.iter().map(|f| property(f)));
         names
@@ -1072,6 +1117,19 @@ impl ToolSpec {
     /// The JSON Schema of the tool's arguments, derived from the registry.
     #[must_use]
     pub fn input_schema(&self, mcp: &McpRegistry, reg: &Registry) -> JsonValue {
+        self.input_schema_with_files(mcp, reg, false)
+    }
+
+    /// The JSON Schema of the tool's arguments, optionally relaxing inline-only
+    /// `required` constraints when `--files <dir>` is active so path
+    /// alternatives (`file`, `plan_file`, `intent_file`) reach the handler.
+    #[must_use]
+    pub fn input_schema_with_files(
+        &self,
+        mcp: &McpRegistry,
+        reg: &Registry,
+        allow_files: bool,
+    ) -> JsonValue {
         let verb = reg.verb(&self.verb);
         let mut props = JsonMap::new();
         let mut required: Vec<String> = Vec::new();
@@ -1151,7 +1209,7 @@ impl ToolSpec {
         }
         for r in &self.required {
             if let Some(stdin) = self.stdin.as_ref().filter(|s| &s.via == r) {
-                if !required.contains(&stdin.property) {
+                if !allow_files && !required.contains(&stdin.property) {
                     required.push(stdin.property.clone());
                 }
                 continue;
@@ -1201,6 +1259,92 @@ impl ToolSpec {
         reg.verb(&self.verb)
             .map(|v| v.events.iter().map(String::as_str).collect())
             .unwrap_or_default()
+    }
+
+    /// Launch-authority admission summary for this tool under `authority` (fa-na8).
+    #[must_use]
+    pub fn launch_admission_note(
+        &self,
+        reg: &Registry,
+        authority: &fa_cli::authority::LaunchAuthority,
+    ) -> String {
+        let profile = authority.profile().name();
+        let held: Vec<&str> = authority
+            .capability()
+            .ops()
+            .iter()
+            .map(|op| op.name())
+            .collect();
+        let units: Vec<Option<&str>> = if self.subcommands.is_empty() {
+            vec![None]
+        } else {
+            self.subcommands.iter().map(|s| Some(s.as_str())).collect()
+        };
+        let mut admitted = Vec::new();
+        let mut refused = Vec::new();
+        for sub in units {
+            let mut argv = vec![self.verb.clone()];
+            if let Some(sub) = sub {
+                argv.push(sub.to_string());
+            }
+            if let Ok(args) = args::parse(&argv, &reg.value_flags(), &reg.switches()) {
+                match fa_cli::cli::bound_command_admissible(reg, &self.verb, &args, authority) {
+                    Ok(ops) => {
+                        let req = if ops.is_empty() {
+                            "none".to_string()
+                        } else {
+                            ops.iter()
+                                .map(|op| op.name())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        };
+                        let label = sub.unwrap_or(self.verb.as_str());
+                        admitted.push(format!("{label} (ops: {req})"));
+                    }
+                    Err(reason) => {
+                        if self.verb == "period"
+                            && matches!(
+                                sub,
+                                Some("open" | "soft-close" | "close" | "lock" | "reopen")
+                            )
+                        {
+                            let mut dry = argv.clone();
+                            dry.push("--dry-run".into());
+                            if let Ok(dry_args) =
+                                args::parse(&dry, &reg.value_flags(), &reg.switches())
+                                && fa_cli::cli::bound_command_admissible(
+                                    reg,
+                                    &self.verb,
+                                    &dry_args,
+                                    authority,
+                                )
+                                .is_ok()
+                            {
+                                admitted.push(format!(
+                                    "{} with dry_run=true (ops: read; live commit refused: {reason})",
+                                    sub.unwrap_or("transition")
+                                ));
+                                continue;
+                            }
+                        }
+                        refused.push(reason);
+                    }
+                }
+            }
+        }
+        let status = match (admitted.is_empty(), refused.is_empty()) {
+            (false, true) => format!("admitted for {}", admitted.join("; ")),
+            (false, false) => format!(
+                "partially admitted ({}) — refused modes: {}",
+                admitted.join("; "),
+                refused.join("; ")
+            ),
+            (true, _) => format!("not admitted in this session ({})", refused.join("; ")),
+        };
+        format!(
+            "\nLaunch admission (profile `{profile}`, ops [{}]): {status}.",
+            held.join(", ")
+        )
     }
 
     /// The tool's documentation in the Do / Don't / Discovery / Examples /
@@ -1360,6 +1504,19 @@ impl ToolSpec {
         reg: &Registry,
         arguments: &JsonValue,
     ) -> Result<Invocation, ArgError> {
+        self.invocation_with_files(mcp, reg, arguments, false)
+    }
+
+    /// Map a call's arguments to the argv and stdin the front door runs,
+    /// optionally admitting confined `--files` path properties when
+    /// `allow_files` is `true` (fa-yha).
+    pub fn invocation_with_files(
+        &self,
+        mcp: &McpRegistry,
+        reg: &Registry,
+        arguments: &JsonValue,
+        allow_files: bool,
+    ) -> Result<Invocation, ArgError> {
         let wire = self.wire_name();
         if let Some(argument) = forbidden_argument(arguments) {
             return Err(ArgError {
@@ -1368,7 +1525,9 @@ impl ToolSpec {
                     .into(),
             });
         }
-        if let Some((argument, fix)) = self.forbidden_path_argument(arguments) {
+        if !allow_files
+            && let Some((argument, fix)) = self.forbidden_path_argument(arguments)
+        {
             return Err(ArgError {
                 message: format!("{wire}: host filesystem argument `{argument}` is forbidden"),
                 fix,
@@ -1388,7 +1547,7 @@ impl ToolSpec {
                 });
             }
         };
-        let known = self.property_names(reg);
+        let known = self.property_names_with_files(reg, allow_files);
         for key in obj.keys() {
             if !known.iter().any(|k| k == key) {
                 let candidates: Vec<&str> = known.iter().map(String::as_str).collect();
@@ -1622,7 +1781,9 @@ impl ToolSpec {
                 .as_ref()
                 .filter(|spec| &spec.via == r || &spec.property == r)
             {
-                if stdin.is_none() {
+                let via_prop = self.via_property(spec);
+                let has_path = allow_files && obj.get(&via_prop).is_some_and(|v| !v.is_null());
+                if stdin.is_none() && !has_path {
                     return Err(ArgError {
                         message: format!("{wire}: inline `{}` is required", spec.property),
                         fix: format!(
