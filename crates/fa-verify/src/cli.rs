@@ -1531,7 +1531,7 @@ mod tests {
             ],
             &fs,
         );
-        assert!(balance.stdout.contains("\"scope\":\"recomputation\""));
+        assert!(balance.stdout.contains("\"scope\":\"membership_only\""));
     }
 
     /// A tampered artifact, an untrusted key, or a question the proof does
