@@ -637,6 +637,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         )
     }
 
+    /// Import a mixed-size evidence batch through this book's configured
+    /// private blob store. All document records, custody receipts and the run
+    /// entry publish together, after external bytes are durable. Callers do
+    /// not select a store or gain authority by choosing larger documents.
+    /// An exact retry returns the original receipt; failed or cancelled
+    /// imports can leave unreferenced blobs, never a partial recorded run.
     #[allow(clippy::too_many_arguments)]
     pub async fn import_run(
         &mut self,
@@ -656,7 +662,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             description: self.seal_text(cx, description)?,
             documents,
         };
-        Ok(fa_journal::import_run(&mut self.db, cx, &self.context, capability, req).await?)
+        Ok(fa_journal::import::import_run_in_store(
+            &mut self.db, cx, &self.context, capability, &self.blobs, req,
+        ).await?)
     }
 
     pub fn read_run(
