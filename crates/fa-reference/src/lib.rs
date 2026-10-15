@@ -392,7 +392,13 @@ pub mod code {
     pub const RUN_NOT_OPEN: &str = "FA-REF-130";
     pub const TIE_OUT_MISMATCH: &str = "FA-REF-131";
     pub const MIGRATION_OUTSIDE_RUN: &str = "FA-REF-132";
+    pub const TICK_UNCORROBORATED: &str = "FA-REF-144";
 }
+
+/// Independent copy of `registries/limits.toml` `max_tick_utc_ns` (`i64::MAX`).
+pub const MAX_TICK_UTC_NS: u64 = 9_223_372_036_854_775_807;
+/// Independent copy of `registries/limits.toml` `max_clock_skew_ns` (`366` days).
+pub const MAX_CLOCK_SKEW_NS: u64 = 31_622_400_000_000_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Verdict {
@@ -703,8 +709,10 @@ pub struct Oracle {
     resolved: BTreeMap<usize, (usize, Content)>,
     /// Limited account code → its limit.
     limits: BTreeMap<String, Limit>,
-    /// Committed TimeEvidence ticks, strictly increasing (plan §7.1a).
+    /// Committed TimeEvidence ticks (plan §7.1a).
     ticks: Vec<u64>,
+    /// Corroboration (`monotonic_ok`) parallel to `ticks` (fa-psz).
+    tick_corroborated: Vec<bool>,
     /// Timed hold index → its deadline (the latest tick when it posted, plus
     /// its timeout).
     deadlines: BTreeMap<usize, u64>,
@@ -760,6 +768,7 @@ impl Oracle {
             resolved: BTreeMap::new(),
             limits: BTreeMap::new(),
             ticks: Vec::new(),
+            tick_corroborated: Vec::new(),
             deadlines: BTreeMap::new(),
             cursor: None,
             tz_declared: false,
@@ -1038,6 +1047,7 @@ impl Oracle {
         }
         let (mut minted, mut blocked) = (Vec::new(), Vec::new());
         if t == PeriodTransition::Open
+            && self.tick_corroborated.last() == Some(&true)
             && let Some(today) = self.today()
         {
             let due: Vec<usize> = self
@@ -1224,6 +1234,9 @@ impl Oracle {
         let Some(tick_index) = self.ticks.len().checked_sub(1) else {
             return Ok(None);
         };
+        if !self.tick_corroborated[tick_index] {
+            return Err(code::TICK_UNCORROBORATED);
+        }
         let after = match self.schedule_cursor {
             Some((t, last)) if t == tick_index => Some(last),
             _ => None,
@@ -1255,13 +1268,41 @@ impl Oracle {
         }))
     }
 
-    /// Journal a TimeEvidence tick (plan §7.1a): strictly after the latest.
+    /// Journal a TimeEvidence tick (plan §7.1a): strictly after the latest
+    /// corroborated tick (or latest tick when no corroborated tick exists yet).
     /// `Ok(tick index)`.
     pub fn record_tick(&mut self, observed_utc_ns: u64) -> Result<usize, &'static str> {
-        if self.ticks.last().is_some_and(|t| observed_utc_ns <= *t) {
+        self.record_tick_with(observed_utc_ns, true)
+    }
+
+    /// Journal a TimeEvidence tick with an explicit monotonic-corroboration flag.
+    pub fn record_tick_with(
+        &mut self,
+        observed_utc_ns: u64,
+        monotonic_ok: bool,
+    ) -> Result<usize, &'static str> {
+        if observed_utc_ns > MAX_TICK_UTC_NS {
+            return Err(code::STRUCTURE);
+        }
+        let prev_corroborated = self.latest_corroborated_tick();
+        let prev_anchor = prev_corroborated.or_else(|| self.latest_tick());
+        let effective_ok = monotonic_ok
+            && prev_anchor.is_none_or(|prev| {
+                observed_utc_ns >= prev
+                    && observed_utc_ns.saturating_sub(prev) <= MAX_CLOCK_SKEW_NS
+            });
+        let order_anchor = prev_corroborated.or_else(|| {
+            if effective_ok {
+                None
+            } else {
+                self.latest_tick()
+            }
+        });
+        if order_anchor.is_some_and(|t| observed_utc_ns <= t) {
             return Err(code::TICK_ORDER);
         }
         self.ticks.push(observed_utc_ns);
+        self.tick_corroborated.push(effective_ok);
         Ok(self.ticks.len() - 1)
     }
 
@@ -1269,6 +1310,17 @@ impl Oracle {
     #[must_use]
     pub fn latest_tick(&self) -> Option<u64> {
         self.ticks.last().copied()
+    }
+
+    /// The latest corroborated tick's instant (`monotonic_ok = true` within skew bound).
+    #[must_use]
+    pub fn latest_corroborated_tick(&self) -> Option<u64> {
+        self.ticks
+            .iter()
+            .zip(&self.tick_corroborated)
+            .rev()
+            .find(|(_, ok)| **ok)
+            .map(|(t, _)| *t)
     }
 
     /// A timed hold (plan §5.4): a `Pending` whose deadline is the latest
@@ -1321,6 +1373,9 @@ impl Oracle {
         let Some(tick_index) = self.ticks.len().checked_sub(1) else {
             return Ok(None);
         };
+        if !self.tick_corroborated[tick_index] {
+            return Err(code::TICK_UNCORROBORATED);
+        }
         let after = match self.cursor {
             Some((t, last)) if t == tick_index => Some(last),
             _ => None,
@@ -1993,10 +2048,13 @@ impl Oracle {
         }
         // 7e. Timing (plan §5.4): a timed hold needs a tick to anchor on and
         //     a representable deadline; a Posts on a hold whose deadline the
-        //     latest tick has reached is refused (Voids is not).
+        //     latest corroborated tick has reached is refused (Voids is not).
         let mut deadline = None;
         if let Some(t) = timeout {
-            let Some(anchor) = self.latest_tick() else {
+            let Some(anchor) = self
+                .latest_corroborated_tick()
+                .or_else(|| self.latest_tick())
+            else {
                 return Verdict::Refused {
                     code: code::TICK_MISSING,
                 };
@@ -2012,7 +2070,8 @@ impl Oracle {
             target,
             posts: Some(_),
         }) = &intent.resolves
-            && let (Some(d), Some(now)) = (self.deadlines.get(target), self.latest_tick())
+            && let (Some(d), Some(now)) =
+                (self.deadlines.get(target), self.latest_corroborated_tick())
             && now >= *d
         {
             return Verdict::Refused {
@@ -3464,5 +3523,85 @@ mod tests {
         assert_eq!(b2.remaining_due, 0);
         assert!(o.due().is_empty());
         assert_eq!(o.availability("1000").credits_pending.to_i128(), Some(10));
+    }
+
+    #[test]
+    fn time_tick_rejects_out_of_range_and_recovers_from_uncorroborated_forward_jump() {
+        let cal = FiscalCalendar::monthly("cal", 1, 1).unwrap();
+        let mut o = Oracle::new(cal);
+        for code in ["1000", "3000", "6000"] {
+            o.add_account(Account {
+                code: code.into(),
+                is_leaf: true,
+                unit: Some(1),
+            });
+        }
+        o.create_periods(2026);
+        o.transition("FY2026-P03", PeriodTransition::Open).unwrap();
+        let day = DateDay::from_ymd(2026, 3, 15).unwrap();
+        let leg = |side, account: &str, mantissa| Leg {
+            side,
+            account: account.into(),
+            unit: 1,
+            entity: None,
+            mantissa,
+        };
+        let intent = |class: &str, legs: Vec<Leg>, key: &[u8], resolves| Intent {
+            class: class.into(),
+            date: day,
+            discriminator: None,
+            legs,
+            key: key.to_vec(),
+            ops: vec!["post".into()],
+            approvals: 0,
+            reverses: None,
+            supersession_reason: 1,
+            resolves,
+            settles: Vec::new(),
+        };
+        assert!(matches!(
+            o.post(&intent(
+                "Original",
+                vec![leg(Side::Debit, "1000", 100), leg(Side::Credit, "3000", 100)],
+                b"fund",
+                None,
+            )),
+            Verdict::Posted { .. }
+        ));
+        assert_eq!(o.record_tick(u64::MAX), Err(code::STRUCTURE));
+        assert_eq!(o.record_tick(MAX_TICK_UTC_NS + 1), Err(code::STRUCTURE));
+        assert_eq!(o.record_tick(1_000), Ok(0));
+        assert_eq!(o.latest_corroborated_tick(), Some(1_000));
+
+        let hold_legs = vec![leg(Side::Debit, "6000", 10), leg(Side::Credit, "1000", 10)];
+        assert!(matches!(
+            o.post_timed(&intent("Pending", hold_legs.clone(), b"h0", None), 20),
+            Verdict::Posted { index: 1, .. }
+        ));
+        assert_eq!(o.deadline(1), Some(1_020));
+
+        // A jump beyond MAX_CLOCK_SKEW_NS is downgraded to uncorroborated even if
+        // the caller requests monotonic_ok = true.
+        let jumped = 1_000 + MAX_CLOCK_SKEW_NS + 500;
+        assert_eq!(o.record_tick(jumped), Ok(1));
+        assert_eq!(o.latest_tick(), Some(jumped));
+        assert_eq!(o.latest_corroborated_tick(), Some(1_000));
+        assert_eq!(o.sweep_batch(1), Err(code::TICK_UNCORROBORATED));
+        assert_eq!(o.sweep_reversals_batch(1), Err(code::TICK_UNCORROBORATED));
+
+        // A timed hold posted after the uncorroborated jump still anchors on the
+        // latest corroborated tick (1_000), and subsequent honest ticks (> 1_000)
+        // are admitted and restore sweep eligibility.
+        assert!(matches!(
+            o.post_timed(&intent("Pending", hold_legs, b"h1", None), 30),
+            Verdict::Posted { index: 2, .. }
+        ));
+        assert_eq!(o.deadline(2), Some(1_030));
+        assert_eq!(o.record_tick(1_000), Err(code::TICK_ORDER));
+        assert_eq!(o.record_tick(1_020), Ok(2));
+        assert_eq!(o.latest_corroborated_tick(), Some(1_020));
+        let swept = o.sweep_batch(2).unwrap().unwrap();
+        assert_eq!(swept.tick, 1_020);
+        assert_eq!(swept.expired, vec![(1, 3)]);
     }
 }

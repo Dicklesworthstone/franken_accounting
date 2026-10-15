@@ -367,7 +367,7 @@ fn read_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let text = match std::str::from_utf8(&doc.bytes) {
                 Ok(utf8) => Json::Obj(vec![
                     ("untrusted_content".into(), s(utf8)),
-                    ("source".into(), s(&format!("D:{oid_hex}"))),
+                    ("source".into(), s(format!("D:{oid_hex}"))),
                 ]),
                 Err(_) => Json::Null,
             };

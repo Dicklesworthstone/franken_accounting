@@ -2174,8 +2174,9 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
     };
     if timeout.is_some() || posts_timed.is_some() {
         let (_, latest) = sweep::tick_witness(&txn, db)?;
+        let corroborated = sweep::latest_corroborated_tick(db, None)?;
         if let Some(t) = timeout {
-            let Some(anchor) = latest else {
+            let Some(anchor) = corroborated.or(latest) else {
                 txn.abort();
                 return Ok(Err(Refusal::new(
                     code::TICK_MISSING,
@@ -2204,7 +2205,7 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
         }
         if let Some((seq, t)) = posts_timed {
             let deadline = sweep::deadline(db, seq, t)?;
-            if let Some(now) = latest
+            if let Some(now) = corroborated
                 && now.observed_utc_ns >= deadline
             {
                 txn.abort();

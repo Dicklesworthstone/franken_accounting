@@ -1873,6 +1873,7 @@ fn key_save_fences_a_symlinked_directorys_canonical_ancestors() {
     let root_dir =
         std::env::temp_dir().join(format!("fa-key-symlink-{}-{suffix}", std::process::id()));
     std::fs::create_dir_all(&root_dir).unwrap();
+    let root_dir = std::fs::canonicalize(&root_dir).unwrap();
     let target = root_dir.join("real/deep");
     let alias = root_dir.join("alias");
     let path = alias.join("book.keys");

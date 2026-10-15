@@ -42,6 +42,13 @@ pub const MAX_IMPORT_DOCUMENTS: usize = 1024;
 pub const MAX_LEGAL_HOLD_SUBJECTS: usize = 1024;
 /// Legal holds active on one subject at once.
 pub const MAX_ACTIVE_LEGAL_HOLDS: usize = 1024;
+/// Upper bound on `TimeTick.observed_utc_ns` (`i64::MAX`, ~2262-04-11 UTC,
+/// leaving headroom below `u64::MAX` for timeout and skew arithmetic).
+pub const MAX_TICK_UTC_NS: u64 = 9_223_372_036_854_775_807;
+/// Maximum forward step from the last corroborated tick (`366` days in ns)
+/// before a tick without an in-process monotonic bracket is recorded
+/// `monotonic_ok = false` (fa-psz).
+pub const MAX_CLOCK_SKEW_NS: u64 = 31_622_400_000_000_000;
 
 /// Every limit as `(name, value)`, in registry order.
 pub const ALL: &[(&str, u64)] = &[
@@ -81,6 +88,8 @@ pub const ALL: &[(&str, u64)] = &[
     ("max_import_documents", MAX_IMPORT_DOCUMENTS as u64),
     ("max_legal_hold_subjects", MAX_LEGAL_HOLD_SUBJECTS as u64),
     ("max_active_legal_holds", MAX_ACTIVE_LEGAL_HOLDS as u64),
+    ("max_tick_utc_ns", MAX_TICK_UTC_NS),
+    ("max_clock_skew_ns", MAX_CLOCK_SKEW_NS),
 ];
 
 #[cfg(test)]

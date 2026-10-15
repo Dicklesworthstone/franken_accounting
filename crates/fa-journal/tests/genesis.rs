@@ -4073,6 +4073,7 @@ fn a_symlinked_store_anchor_fences_the_canonical_target_ancestors() {
             "lexical-only"
         });
         std::fs::create_dir_all(&root).unwrap();
+        let root = std::fs::canonicalize(&root).unwrap();
         let target = root.join("real/deep");
         let alias = root.join("alias");
         let path = alias.join("store");

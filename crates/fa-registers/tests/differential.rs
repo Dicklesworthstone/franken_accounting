@@ -8269,3 +8269,149 @@ fn admissibility_four_way_plan_toml_oracle_and_kernel_agree_on_every_cell_and_ca
         "plan parser catches single-cell flip in Appendix C markdown"
     );
 }
+
+#[test]
+fn planted_u64_max_and_far_future_skew_ticks_do_not_brick_time_axis() {
+    let (mut k, mut oracle, periods) = setup_with(BUDGETED);
+    let usd = k.book.units.lookup("USD").unwrap();
+    open_period(&mut k, &mut oracle, &periods[2], 1);
+    let march = DateDay::from_ymd(2026, 3, 15).unwrap();
+    let leg = |side: fa_reference::Side, account: &str, mantissa: i128| Leg {
+        side,
+        account: account.into(),
+        unit: usd.0,
+        entity: None,
+        mantissa,
+    };
+    let dr = fa_reference::Side::Debit;
+    let cr = fa_reference::Side::Credit;
+    let intent = |class: &str, legs: Vec<Leg>, key: &str, resolves: Option<Resolve>| Intent {
+        class: class.into(),
+        date: march,
+        discriminator: None,
+        legs,
+        key: key.as_bytes().to_vec(),
+        ops: vec!["post".into()],
+        approvals: 0,
+        reverses: None,
+        supersession_reason: 1,
+        resolves,
+        settles: Vec::new(),
+    };
+    let mut refs: Vec<EntryRef> = Vec::new();
+    let fund = intent(
+        "Original",
+        vec![leg(dr, "1000", 1_000), leg(cr, "3000", 1_000)],
+        "fund",
+        None,
+    );
+    refs.push(
+        kernel_post(&mut k, &fund, usd, &refs)
+            .expect("funds")
+            .entry_ref(),
+    );
+    assert!(matches!(oracle.post(&fund), Verdict::Posted { .. }));
+
+    // 1. Out-of-range ticks (u64::MAX, MAX_TICK_UTC_NS + 1) are refused with FA-REF-100.
+    for (idx, bad) in [u64::MAX, fa_model::limits::MAX_TICK_UTC_NS + 1]
+        .into_iter()
+        .enumerate()
+    {
+        let r = kernel_tick(&mut k, bad, &format!("bad-tick-{idx}")).expect_err("out of range");
+        assert_eq!((r.code, r.exit), ("FA-REF-100", exit::USAGE), "{r}");
+        assert_eq!(oracle.record_tick(bad), Err("FA-REF-100"));
+    }
+    assert_eq!(latest_tick(&k.db).unwrap(), None);
+
+    // 2. Honest baseline tick at 1_000 and timed hold A (timeout 20 -> deadline 1_020).
+    let t0 = kernel_tick(&mut k, 1_000, "t0").expect("t0");
+    assert_eq!(oracle.record_tick(1_000), Ok(0));
+    let hold_legs = vec![leg(dr, "6100", 100), leg(cr, "1000", 100)];
+    let ha = intent("Pending", hold_legs.clone(), "hold-A", None);
+    let posted_a = kernel_post_timed(&mut k, &ha, usd, &refs, 20).expect("hold A");
+    assert!(matches!(oracle.post_timed(&ha, 20), Verdict::Posted { .. }));
+    refs.push(posted_a.entry_ref());
+    let a = refs.len() - 1;
+
+    // 3. Planted far-future tick exceeding MAX_CLOCK_SKEW_NS is downgraded to
+    //    monotonic_ok = false even when the caller supplies monotonic_ok = true.
+    let jumped_ns = 1_000 + fa_model::limits::MAX_CLOCK_SKEW_NS + 500;
+    let jumped = kernel_tick(&mut k, jumped_ns, "t-jump").expect("jump recorded");
+    assert_eq!(oracle.record_tick(jumped_ns), Ok(1));
+    let (jump_entry, _) = fa_journal::post::read_entry(&k.db, jumped.entry_ref.vid)
+        .unwrap()
+        .expect("jump entry");
+    assert_eq!(
+        jump_entry.proposal.control,
+        Some(fa_model::ControlPayload::TimeTick {
+            observed_utc_ns: jumped_ns,
+            source: 0,
+            monotonic_ok: false,
+        })
+    );
+    assert_eq!(
+        fa_journal::sweep::latest_corroborated_tick(&k.db, None).unwrap(),
+        Some(t0.tick)
+    );
+
+    // Sweeps refuse under the uncorroborated tick.
+    let r = kernel_sweep(&mut k, 2).expect_err("uncorroborated sweep refused");
+    assert_eq!(r.code, "FA-REF-144");
+    assert_eq!(oracle.sweep_batch(2), Err("FA-REF-144"));
+
+    // A timed hold posted after the uncorroborated jump still anchors on the
+    // latest corroborated tick (1_000), and Posts on hold A (deadline 1_020)
+    // is NOT falsely refused as HOLD_DUE.
+    let hb = intent("Pending", hold_legs.clone(), "hold-B", None);
+    let posted_b = kernel_post_timed(&mut k, &hb, usd, &refs, 20).expect("hold B");
+    assert!(matches!(oracle.post_timed(&hb, 20), Verdict::Posted { .. }));
+    refs.push(posted_b.entry_ref());
+    let b = refs.len() - 1;
+    let b_row = k.db.vertex(refs[b].vid).unwrap().unwrap();
+    assert_eq!(
+        fa_journal::sweep::deadline(&k.db, b_row.created_at, 20).unwrap(),
+        1_020
+    );
+    assert_eq!(oracle.deadline(b), Some(1_020));
+
+    let pa = intent(
+        "Resolution",
+        vec![leg(dr, "6100", 25), leg(cr, "1000", 25)],
+        "posts-A-during-jump",
+        Some(Resolve {
+            target: a,
+            posts: Some(vec![0, 1]),
+        }),
+    );
+    refs.push(
+        kernel_post(&mut k, &pa, usd, &refs)
+            .expect("Posts on A still admissible before corroborated deadline")
+            .entry_ref(),
+    );
+    assert!(matches!(oracle.post(&pa), Verdict::Posted { .. }));
+
+    // 4. Subsequent honest tick at 1_020 (> 1_000, < jumped_ns) is admitted,
+    //    restores corroboration, and sweeps hold B (deadline 1_020).
+    let t_honest = kernel_tick(&mut k, 1_020, "t-honest").expect("honest recovery tick");
+    assert_eq!(oracle.record_tick(1_020), Ok(2));
+    assert_eq!(latest_tick(&k.db).unwrap(), Some(t_honest.tick));
+    assert_eq!(
+        fa_journal::sweep::latest_corroborated_tick(&k.db, None).unwrap(),
+        Some(t_honest.tick)
+    );
+
+    let swept = sweep_both(&mut k, &mut oracle, &mut refs, 2, 1).expect("sweep after recovery");
+    assert_eq!(swept.tick, 1_020);
+    assert_eq!(swept.expired.len(), 1);
+    assert_eq!(swept.expired[0].0, b);
+
+    // 5. Instant-based temporal query at 1_015 (between t0=1_000 and t_honest=1_020)
+    //    is not poisoned by the superseded uncorroborated jump.
+    let ctx = k.ctx();
+    let sel = fa_journal::resolve_instant_at(&k.db, &ctx.query(), &k.book, 1_015, None)
+        .unwrap()
+        .expect("instant selector succeeds after honest recovery");
+    assert_eq!(sel.lower_entry, t0.entry_ref.vid);
+    assert_eq!(sel.upper_entry, Some(t_honest.entry_ref.vid));
+}
+

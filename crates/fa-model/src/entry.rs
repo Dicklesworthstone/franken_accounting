@@ -1117,6 +1117,14 @@ impl ControlPayload {
             Self::LifecycleTransition { proof_refs, .. } if proof_refs.len() > MAX_PROOF_REFS => {
                 Err(invalid("control.proof_refs", "exceeds max_proof_refs"))
             }
+            Self::TimeTick {
+                observed_utc_ns,
+                source,
+                ..
+            } if *source > 2 || *observed_utc_ns > MAX_TICK_UTC_NS => Err(invalid(
+                "control.time_tick",
+                "source must be 0..=2 and observed_utc_ns within max_tick_utc_ns",
+            )),
             Self::ImportRun {
                 source,
                 document_count,

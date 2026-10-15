@@ -40,7 +40,7 @@
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry as MapEntry;
 
-use fa_model::limits::MAX_BATCH_ENTRIES;
+use fa_model::limits::{MAX_BATCH_ENTRIES, MAX_CLOCK_SKEW_NS};
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
     ControlPayload, Disposition, Entry, EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable,
@@ -182,8 +182,64 @@ pub fn latest_tick<V: asupersync::fs::Vfs + Clone>(
     }
 }
 
-/// The latest tick in the committed prefix strictly before `seq` (the
-/// anchor of a timed hold committed at `seq`, plan §5.4).
+/// The latest committed tick at head (or at `at`) whose `TimeControl` entry
+/// carries `monotonic_ok = true` (fa-psz).
+pub fn latest_corroborated_tick<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    at: Option<CommitSeq>,
+) -> Result<Option<Tick>, KernelError> {
+    let latest = match root_row(db, at)? {
+        Some(row) => Tick::from_scalar(prop(&row, property::LATEST_TICK))?,
+        None => return Ok(None),
+    };
+    let Some(latest) = latest else {
+        return Ok(None);
+    };
+    let latest_row = match at {
+        None => db.vertex(latest.entry)?,
+        Some(seq) => db.vertex_at(latest.entry, seq)?,
+    }
+    .ok_or_else(|| KernelError::Corrupt("the latest tick's entry is missing".into()))?;
+    if tick_corroborated(&latest_row)? {
+        return Ok(Some(latest));
+    }
+    let rows = match at {
+        None => db.vertices()?,
+        Some(seq) => db.vertices_at(seq)?,
+    };
+    let mut best: Option<(CommitSeq, Tick)> = None;
+    for row in rows {
+        if !row.labels.contains(&label::ENTRY)
+            || prop(&row, property::CLASS)
+                != Some(&CanonicalScalar::Int(i64::from(EntryClass::TIME_CONTROL.0)))
+        {
+            continue;
+        }
+        let entry = decode_entry(&row)?;
+        if let Some(ControlPayload::TimeTick {
+            observed_utc_ns,
+            monotonic_ok: true,
+            ..
+        }) = entry.proposal.control
+        {
+            let candidate = (
+                row.created_at,
+                Tick {
+                    observed_utc_ns,
+                    entry: row.vid,
+                },
+            );
+            if best.is_none_or(|(seq, t)| (candidate.0, candidate.1.entry) > (seq, t.entry)) {
+                best = Some(candidate);
+            }
+        }
+    }
+    Ok(best.map(|(_, t)| t))
+}
+
+/// The latest corroborated tick in the committed prefix strictly before `seq`
+/// (falling back to the latest tick only when no corroborated tick exists yet
+/// in that prefix): the anchor of a timed hold committed at `seq` (plan §5.4).
 pub fn tick_before<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     seq: CommitSeq,
@@ -191,7 +247,11 @@ pub fn tick_before<V: asupersync::fs::Vfs + Clone>(
     let Some(prev) = seq.0.checked_sub(1) else {
         return Ok(None);
     };
-    match root_row(db, Some(CommitSeq(prev)))? {
+    let at = Some(CommitSeq(prev));
+    if let Some(corroborated) = latest_corroborated_tick(db, at)? {
+        return Ok(Some(corroborated));
+    }
+    match root_row(db, at)? {
         Some(row) => Tick::from_scalar(prop(&row, property::LATEST_TICK)),
         None => Ok(None),
     }
@@ -219,6 +279,22 @@ pub(crate) fn tick_corroborated(row: &VertexRow) -> Result<bool, KernelError> {
             "tick entry {:032x} carries {other:?}, not a TimeTick",
             row.vid.0
         ))),
+    }
+}
+
+fn effective_monotonic_ok(
+    observed_utc_ns: u64,
+    requested_monotonic_ok: bool,
+    prev_anchor: Option<Tick>,
+) -> bool {
+    if !requested_monotonic_ok {
+        return false;
+    }
+    match prev_anchor {
+        Some(prev) if observed_utc_ns > prev.observed_utc_ns => {
+            observed_utc_ns.saturating_sub(prev.observed_utc_ns) <= MAX_CLOCK_SKEW_NS
+        }
+        _ => true,
     }
 }
 
@@ -442,12 +518,16 @@ pub(crate) fn conflict(what: &str, detail: impl core::fmt::Display) -> Refusal {
 /// proposal, a capability that is not the preparer's, lacks the `time-tick`
 /// row's op (`witness`), or has expired. Then the identity (the same request
 /// again is its recorded outcome), then the order: `observed_utc_ns` must
-/// strictly exceed the latest tick's (FA-REF-094).
+/// strictly exceed the book's latest corroborated tick (or the latest
+/// uncorroborated tick when recording another uncorroborated tick with no
+/// corroborated tick yet, FA-REF-094). An observation jumping beyond the
+/// previous anchor by more than `max_clock_skew_ns` is recorded with
+/// `monotonic_ok = false` (fa-psz).
 pub async fn record_tick<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
-    req: TickRequest,
+    mut req: TickRequest,
 ) -> Outcome<Ticked> {
     if req.source != SOURCE_DAEMON_CLOCK {
         return Ok(Err(Refusal::new(
@@ -461,8 +541,8 @@ pub async fn record_tick<V: asupersync::fs::Vfs + Clone>(
             "journal the daemon clock's observation; AuthorityDocument and SubstrateMarker ticks land with their evidence rules",
         )));
     }
-    let proposal = tick_proposal(book, &req);
-    if let Err(e) = proposal.validate() {
+    let initial_proposal = tick_proposal(book, &req);
+    if let Err(e) = initial_proposal.validate() {
         return Ok(Err(Refusal::new(
             code::STRUCTURE,
             exit::USAGE,
@@ -493,7 +573,7 @@ pub async fn record_tick<V: asupersync::fs::Vfs + Clone>(
     if let Err(d) = fa_policy::current(&req.capability, db.frontier()?) {
         return Ok(Err(policy::refusal(&d)));
     }
-    let proposal_digest = proposal.proposal_digest()?;
+    let prev_corroborated = latest_corroborated_tick(db, None)?;
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
     // Not revoked (plan §14.2): the first read, before the identity.
@@ -508,10 +588,21 @@ pub async fn record_tick<V: asupersync::fs::Vfs + Clone>(
     );
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        return recorded_tick(&row, &proposal, book);
+        return recorded_tick(db, &row, &req, book);
     }
     let (witnessed, latest) = tick_witness(&txn, db)?;
-    if let Some(prev) = latest
+    if let Some(corr) = prev_corroborated
+        && Some(corr) != latest
+    {
+        let _ = txn.vertex(db, corr.entry)?;
+    }
+    req.monotonic_ok = effective_monotonic_ok(
+        req.observed_utc_ns,
+        req.monotonic_ok,
+        prev_corroborated.or(latest),
+    );
+    let baseline = prev_corroborated.or(if req.monotonic_ok { None } else { latest });
+    if let Some(prev) = baseline
         && req.observed_utc_ns <= prev.observed_utc_ns
     {
         txn.abort();
@@ -529,6 +620,8 @@ pub async fn record_tick<V: asupersync::fs::Vfs + Clone>(
             ),
         )));
     }
+    let proposal = tick_proposal(book, &req);
+    let proposal_digest = proposal.proposal_digest()?;
     let epoch = policy::epoch_witness(&txn, db)?;
     let preparer = Party {
         principal: req.principal_ref,
@@ -579,7 +672,7 @@ pub async fn record_tick<V: asupersync::fs::Vfs + Clone>(
         Err(WriteTxnError::Write(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
         )) => match db.vertex(evid)? {
-            Some(row) => recorded_tick(&row, &proposal, book),
+            Some(row) => recorded_tick(db, &row, &req, book),
             None => Err(KernelError::Corrupt(
                 "identity spent but no live row".into(),
             )),
@@ -589,8 +682,18 @@ pub async fn record_tick<V: asupersync::fs::Vfs + Clone>(
 }
 
 /// The recorded outcome of the tick at `row`, or a conflict.
-fn recorded_tick(row: &VertexRow, proposal: &EntryPayload, book: &BookContext) -> Outcome<Ticked> {
-    match recorded_or_conflict(row, proposal, &book.seal_key, Identity::Key)? {
+fn recorded_tick<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    row: &VertexRow,
+    req: &TickRequest,
+    book: &BookContext,
+) -> Outcome<Ticked> {
+    let mut adjusted = req.clone();
+    let prev_anchor = tick_before(db, row.created_at)?;
+    adjusted.monotonic_ok =
+        effective_monotonic_ok(req.observed_utc_ns, req.monotonic_ok, prev_anchor);
+    let proposal = tick_proposal(book, &adjusted);
+    match recorded_or_conflict(row, &proposal, &book.seal_key, Identity::Key)? {
         Err(r) => Ok(Err(r)),
         Ok(posted) => {
             let stored = decode_entry(row)?;

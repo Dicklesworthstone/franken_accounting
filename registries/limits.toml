@@ -101,3 +101,13 @@ value = 1024
 [[limit]]
 name = "max_active_legal_holds"
 value = 1024
+# Upper bound on a TimeEvidence observed_utc_ns (i64::MAX, ~2262-04-11 UTC)
+# and the maximum forward jump from the last corroborated tick before an
+# uncorroborated observation is forced to monotonic_ok = false (366 days).
+[[limit]]
+name = "max_tick_utc_ns"
+value = 9223372036854775807
+[[limit]]
+name = "max_clock_skew_ns"
+value = 31622400000000000
+

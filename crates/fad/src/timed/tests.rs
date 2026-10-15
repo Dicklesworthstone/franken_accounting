@@ -349,6 +349,72 @@ fn forward_jump_rollback_and_old_true_tick_retry_do_not_sweep() {
 }
 
 #[test]
+fn far_future_wall_jump_does_not_brick_subsequent_honest_ticks_or_sweeps() {
+    lab(77, |root| async move {
+        let mut fixture = fixture(&root, 77).await;
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        let mut work =
+            TimedWork::bootstrap_for_book(&root, fixture.book.context().book_id, POLICY).unwrap();
+        let april = DateDay::from_ymd(2026, 4, 1).unwrap();
+        let midnight = u64::try_from(april.0).unwrap() * 86_400_000_000_000;
+        let start = midnight - 100;
+        let first = work
+            .run_observation(&root, &mut fixture.book, Ok(observation(&root, start)))
+            .await
+            .unwrap();
+        assert!(!first.corroborated);
+
+        advance(&root, 10).await;
+        let baseline = work
+            .run_observation(&root, &mut fixture.book, Ok(observation(&root, start + 10)))
+            .await
+            .unwrap();
+        assert!(baseline.corroborated);
+
+        hold(&mut fixture, &cx, b"hold-survives-jump", 50).await;
+        let mut rev = fixture.request.clone();
+        rev.proposal.class = EntryClass::ADJUSTING;
+        rev.proposal.idempotency_key = b"rev-survives-jump".to_vec();
+        rev.proposal = fa_journal::with_auto_reverse(rev.proposal, april);
+        fixture.book.post(&cx, rev).await.unwrap().unwrap();
+
+        // u64::MAX is out of representable InstantUtc range and refused with FA-REF-100.
+        advance(&root, 10).await;
+        let overflow = work
+            .run_observation(&root, &mut fixture.book, Ok(observation(&root, u64::MAX)))
+            .await
+            .unwrap_err();
+        assert!(matches!(overflow, TimedError::Refused(ref r) if r.code == "FA-REF-100"));
+
+        // A representable far-future jump (~year 2262) is journaled as uncorroborated
+        // without firing expiry or scheduled-reversal sweeps.
+        let far_future = fa_model::limits::MAX_TICK_UTC_NS;
+        let jumped = work
+            .run_observation(&root, &mut fixture.book, Ok(observation(&root, far_future)))
+            .await
+            .unwrap();
+        assert!(!jumped.corroborated);
+        assert_eq!((jumped.expired, jumped.reversed), (0, 0));
+
+        // When the wall clock returns to its honest trajectory at midnight (start + 100),
+        // the daemon records a corroborated tick and sweeps the due hold and reversal.
+        advance(&root, 80).await;
+        let recovered = work
+            .run_observation(&root, &mut fixture.book, Ok(observation(&root, midnight)))
+            .await
+            .unwrap();
+        assert_eq!(
+            (recovered.corroborated, recovered.expired, recovered.reversed),
+            (true, 1, 1)
+        );
+        assert!(fixture.book.due_holds(&cx).unwrap().is_empty());
+        assert!(fixture.book.due_reversals(&cx).unwrap().is_empty());
+    })
+    .unwrap()
+    .expect("lab completed");
+}
+
+#[test]
 fn missing_clock_and_human_system_substitution_are_refused() {
     lab(79, |root| async move {
         let stripped = {

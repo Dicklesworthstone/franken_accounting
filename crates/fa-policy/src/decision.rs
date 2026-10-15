@@ -880,9 +880,9 @@ mod tests {
         let steward = crate::Steward::embedded().unwrap();
         let epoch = steward.policy_oid;
         let committed_before = vec![
-            Amount::new(UnitId(1), 125_00),
-            Amount::new(UnitId(1), -125_00),
-            Amount::new(UnitId(2), 999_999_00),
+            Amount::new(UnitId(1), 12_500),
+            Amount::new(UnitId(1), -12_500),
+            Amount::new(UnitId(2), 99_999_900),
         ];
 
         for seed in 0_u64..64 {

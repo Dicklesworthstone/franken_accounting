@@ -25,7 +25,7 @@ fn tmp(name: &str) -> PathBuf {
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
         let d = std::env::temp_dir().join(format!("fad-{}-{name}-{n}", std::process::id()));
         if std::fs::create_dir(&d).is_ok() {
-            return d;
+            return d.canonicalize().unwrap_or(d);
         }
         assert!(n < 1_000, "cannot create a scratch directory");
     }

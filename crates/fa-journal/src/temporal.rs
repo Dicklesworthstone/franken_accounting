@@ -151,6 +151,18 @@ pub fn resolve_instant_at<V: asupersync::fs::Vfs + Clone>(
         ));
     }
     ticks.sort_by_key(|(tick, vid)| (tick.recorded_at, *vid));
+    let mut active_ticks: Vec<(TimeObservation, VId)> = Vec::with_capacity(ticks.len());
+    for (i, &(tick, vid)) in ticks.iter().enumerate() {
+        if !tick.monotonic_ok
+            && ticks[i + 1..]
+                .iter()
+                .any(|(later, _)| later.monotonic_ok && later.observed_utc_ns <= tick.observed_utc_ns)
+        {
+            continue;
+        }
+        active_ticks.push((tick, vid));
+    }
+    let ticks = active_ticks;
     let observations: Vec<TimeObservation> = ticks.iter().map(|(tick, _)| *tick).collect();
     let resolution = match fa_time::resolve_instant(&observations, requested_utc_ns, at.0) {
         Ok(resolution) => resolution,

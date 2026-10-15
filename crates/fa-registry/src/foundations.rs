@@ -173,7 +173,7 @@ impl Ledger {
                 )));
             }
             if c.fa_status == FaStatus::Unconsumed {
-                if c.tracking.as_deref().map_or(true, |s| s.trim().is_empty()) {
+                if c.tracking.as_deref().is_none_or(|s| s.trim().is_empty()) {
                     return Err(bad(format!(
                         "{}: an unconsumed row must name a `tracking` bead",
                         c.row
@@ -217,13 +217,13 @@ fn collect_rust_sources(dir: &Path, out: &mut Vec<String>) {
     for path in paths {
         if path.is_dir() {
             collect_rust_sources(&path, out);
-        } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                for line in content.lines() {
-                    let trimmed = line.trim();
-                    if !trimmed.starts_with("//") {
-                        out.push(trimmed.to_string());
-                    }
+        } else if path.extension().and_then(|s| s.to_str()) == Some("rs")
+            && let Ok(content) = std::fs::read_to_string(&path)
+        {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if !trimmed.starts_with("//") {
+                    out.push(trimmed.to_string());
                 }
             }
         }
