@@ -225,7 +225,9 @@ fn the_pinned_odd_sized_consistency_proof_verifies() {
 fn the_pinned_balance_proof_refolds_cash() {
     let state = verify_state(&vector("state")).unwrap();
     let report = verify_balance(&vector("balance"), &state.checkpoint).expect("refolds");
-    assert_eq!(report.scope, "recomputation");
+    // The original v1 wire bytes remain pinned. Two control payloads are
+    // absent, so independent derivation of the full balance scope is unproven.
+    assert_eq!(report.scope, "membership_only");
     assert_eq!(report.claim.account, 0x30);
     assert_eq!(report.claim.unit, 1);
     assert_eq!(report.claim.effective_through, None);

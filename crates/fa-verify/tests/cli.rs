@@ -120,7 +120,9 @@ fn every_supported_proof_verifies_in_a_separate_process() {
         ("inclusion", "inclusion"),
         ("consistency", "consistency"),
         ("prefix", "seq_range_complete"),
-        ("balance", "recomputation"),
+        // The frozen v1 balance omits the two control payloads. Its selected
+        // arithmetic still verifies, but not the omitted records' selectors.
+        ("balance", "membership_only"),
     ] {
         let proof = write(&dir, &format!("{kind}.proof"), &vector(kind));
         let (anchor, next) = if kind == "consistency" {
@@ -157,6 +159,8 @@ fn every_supported_proof_verifies_in_a_separate_process() {
                 assert!(stdout.contains("\"credits_mantissa\":\"120550\""));
                 assert!(stdout.contains("\"effective_through_day\":null"));
                 assert!(stdout.contains("\"contributing_leaves\":2"));
+                assert!(stdout.contains("\"balance_complete\":false"));
+                assert!(!stdout.contains("posted_balance_recomputation"));
             }
             _ => unreachable!(),
         }
@@ -420,7 +424,8 @@ fn help_and_human_output_explain_the_trust_boundary_and_json_is_deterministic() 
     assert_eq!(plain.status.code(), Some(0));
     assert!(plain.stderr.is_empty());
     let text = String::from_utf8(plain.stdout).unwrap();
-    assert!(text.contains("scope: recomputation"));
+    assert!(text.contains("scope: membership_only"));
+    assert!(text.contains("completeness NOT proven"));
     assert!(text.contains("credits 120550 (exact mantissas)"));
     assert!(text.contains("operator-trusted unsigned checkpoint"));
 

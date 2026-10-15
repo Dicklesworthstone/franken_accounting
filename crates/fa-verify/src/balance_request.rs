@@ -1,15 +1,18 @@
-//! Bind a balance proof to the recipient's independently chosen question.
+//! Bind a complete balance proof to the recipient's independently chosen question.
 //!
 //! A trusted checkpoint authenticates a journal prefix, not the account,
 //! unit, cutoff, or amounts an operator intended to check. An otherwise valid
-//! proof for another cell must not satisfy that question. This layer checks
-//! the ordinary v1/v2 proof first, then compares its authenticated claim with
-//! an expectation supplied separately by the recipient. Expectations must
-//! not be copied from the untrusted proof or its packaging.
+//! proof for another cell must not satisfy that question. This layer verifies
+//! v1/v2/v3, requires independent scope derivation, then compares the claim
+//! with an expectation supplied separately by the recipient. Expectations
+//! must not be copied from the untrusted proof or its packaging.
+//! Partial legacy proofs may be inspected with `crate::verify_balance`, but
+//! membership in an unverified scope index cannot answer a complete balance request.
 
 use std::error::Error;
 use std::fmt;
 
+use crate::balance::SCOPE_RECOMPUTATION;
 use crate::{Balance, BalanceClaim, Checkpoint, VerifyError};
 
 /// An exact posted-balance scope, from inception through an inclusive day.
@@ -59,7 +62,11 @@ pub struct BalanceExpectation {
 pub enum BalanceExpectationError {
     /// The proof itself did not verify against the separate trusted anchor.
     Verification(VerifyError),
-    /// A valid proof answered a different question.
+    /// A partial proof cannot establish the completeness of the requested balance.
+    Assurance {
+        actual: &'static str,
+    },
+    /// A complete proof answered a different question.
     Scope {
         expected: BalanceScope,
         actual: BalanceScope,
@@ -75,6 +82,10 @@ impl fmt::Display for BalanceExpectationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Verification(error) => write!(f, "{error}"),
+            Self::Assurance { actual } => write!(
+                f,
+                "balance completeness is not independently verified (scope {actual}); supply a payload-complete v3 proof",
+            ),
             Self::Scope { expected, actual } => write!(
                 f,
                 "balance scope mismatch: expected account {:032x}, unit {}, through {:?}; got account {:032x}, unit {}, through {:?}",
@@ -98,18 +109,18 @@ impl Error for BalanceExpectationError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Verification(error) => Some(error),
-            Self::Scope { .. } | Self::Amounts { .. } => None,
+            Self::Assurance { .. } | Self::Scope { .. } | Self::Amounts { .. } => None,
         }
     }
 }
 
-/// Verify a supported balance proof and require it to answer exactly the
+/// Verify a complete balance proof and require it to answer exactly the
 /// recipient's request. No expectation is inferred from the proof itself.
 ///
 /// Cryptographic, completeness, lifecycle and arithmetic checks run before
-/// comparisons. A matching claim in an invalid proof is never sufficient.
-/// Gross debit/credit columns are compared separately, not just their net.
-/// The returned report and all v1/v2 wire formats remain unchanged.
+/// comparisons. Matching scope and amounts in a partial legacy proof are not
+/// sufficient. Gross columns are compared separately, not just their net.
+/// Legacy v1/v2 remain accepted when every prefix payload has been checked.
 pub fn verify_balance_for(
     proof: &[u8],
     trusted_checkpoint: &Checkpoint,
@@ -117,6 +128,9 @@ pub fn verify_balance_for(
 ) -> Result<Balance, BalanceExpectationError> {
     let balance = crate::verify_balance(proof, trusted_checkpoint)
         .map_err(BalanceExpectationError::Verification)?;
+    if balance.scope != SCOPE_RECOMPUTATION {
+        return Err(BalanceExpectationError::Assurance { actual: balance.scope });
+    }
     let actual = BalanceScope::from(&balance.claim);
     if actual != expected.scope {
         return Err(BalanceExpectationError::Scope {
@@ -163,7 +177,7 @@ mod tests {
             }
         }
         w.i128(0).i128(0).count(0).count(0);
-        if format == crate::migration_balance::BALANCE_FORMAT_V2 {
+        if format != crate::balance::BALANCE_FORMAT {
             w.count(0);
         }
         (w.buf, checkpoint)
@@ -187,15 +201,16 @@ mod tests {
         }
     }
 
-    fn formats() -> [&'static [u8]; 2] {
+    fn formats() -> [&'static [u8]; 3] {
         [
             crate::balance::BALANCE_FORMAT,
             crate::migration_balance::BALANCE_FORMAT_V2,
+            crate::migration_balance::BALANCE_FORMAT_V3,
         ]
     }
 
     #[test]
-    fn both_versions_preserve_the_verified_report_and_wire_bytes() {
+    fn all_supported_versions_preserve_complete_reports_and_wire_bytes() {
         for format in formats() {
             let (bytes, anchor) = proof(format, scope());
             let original = bytes.clone();
@@ -299,6 +314,34 @@ mod tests {
                 verify_balance_for(&extra, &anchor, &wanted),
                 Err(BalanceExpectationError::Verification(_)),
             ));
+        }
+    }
+
+    #[test]
+    fn matching_legacy_membership_cannot_answer_a_complete_balance_request() {
+        let envelope = crate::LeafEnvelope {
+            kind: crate::envelope::KIND_ENTRY,
+            book_id: [1; 16], branch_id: [0; 16], commit_seq: 1,
+            within_commit_ordinal: 0, record_digest: [7; 32],
+            class: crate::balance::CLASS_PENDING, effective_day: Some(100),
+            account_vids: vec![10], unit_ids: vec![1],
+        }.encode();
+        let anchor = Checkpoint {
+            book_id: [1; 16], branch_id: [0; 16], through_seq: 1,
+            leaf_count: 1, root: crate::tree::leaf_hash(&envelope),
+        };
+        for format in [crate::balance::BALANCE_FORMAT, crate::migration_balance::BALANCE_FORMAT_V2] {
+            let mut w = Writer::default();
+            w.bytes(format).fixed(&anchor.encode()).u128(10).u32(1).u8(1).i32(100)
+                .i128(0).i128(0).count(1).bytes(&envelope).count(0);
+            if format == crate::migration_balance::BALANCE_FORMAT_V2 {
+                w.count(0);
+            }
+            assert_eq!(crate::verify_balance(&w.buf, &anchor).unwrap().scope, "membership_only");
+            let error = verify_balance_for(&w.buf, &anchor, &expectation(scope())).unwrap_err();
+            assert!(matches!(error, BalanceExpectationError::Assurance { actual: "membership_only" }));
+            assert!(error.to_string().contains("completeness is not independently verified"));
+            assert!(error.source().is_none());
         }
     }
 }
