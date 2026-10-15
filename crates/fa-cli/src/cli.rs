@@ -75,12 +75,12 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("period", period_cmd),
     ("approve", approve_cmd),
     ("post", post_cmd),
-    ("allocate", allocate_cmd),
-    ("settle", settle_cmd),
     ("commit", commit_cmd),
     ("reverse", reverse_cmd),
     ("reserve", reserve_cmd),
     ("resolve", resolve_cmd),
+    ("allocate", allocate_cmd),
+    ("settle", settle_cmd),
     ("document", document::document_cmd),
     ("migrate", migrate_cmd),
     ("tb", tb_cmd),
@@ -3222,7 +3222,19 @@ fn parse_legs(
                 }
             },
         };
+        let memo = match l.get("memo") {
+            None | Some(Json::Null) => None,
+            Some(Json::Str(m)) if m.is_empty() => None,
+            Some(Json::Str(m)) => Some(book.seal_text(m)?),
+            Some(_) => {
+                return Err(usage(
+                    format!("{what}: memo must be a string"),
+                    "memo: \"optional leg memo\"",
+                ));
+            }
+        };
         let mut leg = LegPayload::simple(side, account_vid(ctx.book_id, account), amount);
+        leg.memo = memo;
         leg.settles = parse_settles(l, &what, ctx, book)?;
         legs.push((leg, ordinal));
     }
@@ -8645,14 +8657,30 @@ fn explain_entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let accounts: std::collections::BTreeMap<VId, fa_journal::AccountRow> =
         book.accounts()?.into_iter().map(|a| (a.vid, a)).collect();
     let units = &book.context().units;
+    let seal_key = &book.context().seal_key;
     let reasons =
         ReasonCodes::embedded().map_err(|e| Fail::Internal(format!("reason_codes.toml: {e}")))?;
+    let vid_hex = format!("{:032x}", vid.0);
+    let description = untrusted_text_json(
+        entry
+            .proposal
+            .description
+            .open(seal_key, fa_model::limits::MAX_DESCRIPTION_BYTES)
+            .ok(),
+        format!("E:{vid_hex}"),
+    );
     let mut legs = Vec::with_capacity(entry.proposal.legs.len());
     for (idx, leg) in entry.proposal.legs.iter().enumerate() {
         let (acc_code, acc_name) = match accounts.get(&leg.account_ref) {
             Some(row) => (row.code.as_str(), row.name.as_str()),
             None => ("?", "?"),
         };
+        let memo = untrusted_text_json(
+            leg.memo
+                .as_ref()
+                .and_then(|m| m.open(seal_key, fa_model::limits::MAX_MEMO_BYTES).ok()),
+            format!("E:{vid_hex}:L{idx}"),
+        );
         legs.push(obj(vec![
             ("ordinal", Json::Int(idx as i128)),
             ("side", s(side_name(leg.side))),
@@ -8660,6 +8688,7 @@ fn explain_entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("account_vid", s(format!("{:032x}", leg.account_ref.0))),
             ("account_name", s(acc_name)),
             ("amount", s(render_amount(leg.amount, units)?)),
+            ("memo", memo),
         ]));
     }
     let resolves = entry
@@ -8714,7 +8743,7 @@ fn explain_entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     out.event(
         "entry_explained",
         vec![
-            ("vid", s(format!("{:032x}", vid.0))),
+            ("vid", s(vid_hex)),
             ("entry_digest", s(hex(&entry.entry_digest))),
             ("proposal_digest", s(hex(&entry.proposal_digest))),
             ("class", s(class_name)),
@@ -8725,6 +8754,7 @@ fn explain_entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 "principal",
                 s(format!("{:032x}", entry.proposal.principal_ref.0)),
             ),
+            ("description", description),
             ("approvals", Json::Int(entry.approvals.len() as i128)),
             ("resolves", resolves.as_deref().map_or(Json::Null, s)),
             ("disposition", disposition.map_or(Json::Null, s)),
@@ -8736,6 +8766,16 @@ fn explain_entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         &human,
     );
     Ok(())
+}
+
+fn untrusted_text_json(content: Option<String>, source: String) -> Json {
+    match content.filter(|t| !t.is_empty()) {
+        Some(text) => obj(vec![
+            ("untrusted_content", s(text)),
+            ("source", s(source)),
+        ]),
+        None => Json::Null,
+    }
 }
 
 fn explain_evidence_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
@@ -9848,6 +9888,7 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             })?;
             let book = ctx.books.open(args)?;
             let units = &book.context().units;
+            let seal_key = &book.context().seal_key;
             match book.read_entry(VId(vid))? {
                 None => {
                     // Every field is always present; absence is spelled null.
@@ -9858,6 +9899,7 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         "recorded_at",
                         "entry_digest",
                         "proposal_digest",
+                        "description",
                         "approvals",
                         "legs",
                         "supersedes",
@@ -9870,11 +9912,28 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 Some((entry, seq)) => {
                     let reasons = ReasonCodes::embedded()
                         .map_err(|e| Fail::Internal(format!("reason_codes.toml: {e}")))?;
+                    let description = untrusted_text_json(
+                        entry
+                            .proposal
+                            .description
+                            .open(seal_key, fa_model::limits::MAX_DESCRIPTION_BYTES)
+                            .ok(),
+                        format!("E:{vid_s}"),
+                    );
                     let legs: Vec<Json> = entry
                         .proposal
                         .legs
                         .iter()
-                        .map(|l| {
+                        .enumerate()
+                        .map(|(idx, l)| {
+                            let memo = untrusted_text_json(
+                                l.memo
+                                    .as_ref()
+                                    .and_then(|m| {
+                                        m.open(seal_key, fa_model::limits::MAX_MEMO_BYTES).ok()
+                                    }),
+                                format!("E:{vid_s}:L{idx}"),
+                            );
                             Ok(obj(vec![
                                 (
                                     "side",
@@ -9886,6 +9945,7 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                                 ),
                                 ("account", s(format!("{:032x}", l.account_ref.0))),
                                 ("amount", s(render_amount(l.amount, units)?)),
+                                ("memo", memo),
                             ]))
                         })
                         .collect::<Result<_, Fail>>()?;
@@ -9897,6 +9957,7 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         ("recorded_at", Json::Int(i128::from(seq.0))),
                         ("entry_digest", s(hex(&entry.entry_digest))),
                         ("proposal_digest", s(hex(&entry.proposal_digest))),
+                        ("description", description),
                         ("approvals", Json::Int(entry.approvals.len() as i128)),
                         ("legs", Json::Arr(legs)),
                         (

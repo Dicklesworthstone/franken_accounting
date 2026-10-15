@@ -364,6 +364,13 @@ fn read_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let oid_hex = hex(&oid.0);
             let commit_hex = hex(&doc.doc_commit());
             let bytes_hex = hex(&doc.bytes);
+            let text = match std::str::from_utf8(&doc.bytes) {
+                Ok(utf8) => Json::Obj(vec![
+                    ("untrusted_content".into(), s(utf8)),
+                    ("source".into(), s(&format!("D:{oid_hex}"))),
+                ]),
+                Err(_) => Json::Null,
+            };
             ctx.out.event(
                 "document_read",
                 vec![
@@ -375,6 +382,7 @@ fn read_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     ("grade", s(&grade_out)),
                     ("size", Json::Int(doc.bytes.len() as i128)),
                     ("bytes_hex", s(&bytes_hex)),
+                    ("text", text),
                     ("disclosed_chunks", Json::Null),
                     ("withheld_chunks", Json::Null),
                     ("view_commit", Json::Null),
@@ -415,6 +423,7 @@ fn read_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     ("grade", Json::Null),
                     ("size", Json::Int(i128::from(view.size))),
                     ("bytes_hex", Json::Null),
+                    ("text", Json::Null),
                     ("disclosed_chunks", Json::Int(disclosed as i128)),
                     ("withheld_chunks", Json::Int(withheld as i128)),
                     ("view_commit", s(hex(&view_commit))),

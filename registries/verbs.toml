@@ -960,7 +960,7 @@ fields = ["period:string", "from:seq", "through:seq", "recorded_at:seq?", "entri
 name = "entry"
 book = true
 doc = "One committed entry; when `found` is false every other field but `vid` is null."
-fields = ["found:bool", "vid:string", "class:string?", "effective_date:date?", "recorded_at:seq?", "entry_digest:hex?", "proposal_digest:hex?", "approvals:int?", "legs:[entry_leg]?", "supersedes:[lineage]?"]
+fields = ["found:bool", "vid:string", "class:string?", "effective_date:date?", "recorded_at:seq?", "entry_digest:hex?", "proposal_digest:hex?", "description:untrusted_text?", "approvals:int?", "legs:[entry_leg]?", "supersedes:[lineage]?"]
 
 [[event]]
 name = "balance_explained"
@@ -972,7 +972,7 @@ fields = ["account:string", "account_vid:hex", "name:string", "type:string", "pe
 name = "entry_explained"
 book = true
 doc = "An explained committed entry (`fa explain entry <vid>`): its payload, posting period, resolved legs with account codes and names, supersession lineage (both what it supersedes and any later entries that supersede it), cited evidence, and approval count."
-fields = ["vid:hex", "entry_digest:hex", "proposal_digest:hex", "class:string", "effective_date:date", "period:string?", "recorded_at:seq", "principal:hex", "approvals:int", "resolves:hex?", "disposition:string?", "legs:[explained_entry_leg]", "supersedes:[lineage]", "superseded_by:[lineage]", "evidence:[evidence_head]"]
+fields = ["vid:hex", "entry_digest:hex", "proposal_digest:hex", "class:string", "effective_date:date", "period:string?", "recorded_at:seq", "principal:hex", "description:untrusted_text?", "approvals:int", "resolves:hex?", "disposition:string?", "legs:[explained_entry_leg]", "supersedes:[lineage]", "superseded_by:[lineage]", "evidence:[evidence_head]"]
 
 [[event]]
 name = "evidence_explained"
@@ -995,14 +995,14 @@ fields = ["code:string", "kind:string", "state:string", "start:date", "end:date"
 [[event]]
 name = "register_explained"
 book = true
-doc = "A register cell's fold vs stored materialized state (`fa explain register <account-code> --period <code> [--unit <UNIT>] [--as-known-at HEAD|<seq>]`): the refolded cell, stored materialized cell, verification status (`green`, `cache_status`, `stale`, `lag_entries`), replayable checkpoint-cadence decision card (`decision_card_digest`, `decision_card_bytes`), and contributing legs."
+doc = "A register cell's fold vs stored materialized state (`fa explain register <account-code> --period <code> [--unit <UNIT>] [--as-known-at HEAD|<seq>]`): the refolded cell, stored materialized cell, verification status (`green`, `cache_status`, `stale`, `lag_entries`), replayable checkpoint-cadence decision-card (`decision_card_digest`, `decision_card_bytes`), and contributing legs."
 fields = ["account:string", "account_vid:hex", "name:string", "type:string", "period:string", "unit:string?", "known_at:seq", "watermark:seq?", "fold_digest:hex", "green:bool", "cache_status:string", "verified_through:seq?", "stale:bool", "lag_entries:int", "decision_card_digest:hex", "decision_card_bytes:hex", "cells:[explained_cell]", "contributions:[contribution]"]
 
 [[event]]
 name = "document_read"
 book = true
-doc = "A document read under the caller's capability (plan §9.7): `view` is `full` or `redacted`, `bytes_hex` carries the full content when unredacted, and `disclosed_chunks`/`withheld_chunks`/`view_commit` describe a redacted view."
-fields = ["oid:hex", "doc_commit:hex", "view:string", "kind:string", "mime:string?", "grade:string?", "size:int", "bytes_hex:hex?", "disclosed_chunks:int?", "withheld_chunks:int?", "view_commit:hex?", "out:string?"]
+doc = "A document read under the caller's capability (plan §9.7): `view` is `full` or `redacted`, `bytes_hex` carries the full content when unredacted, `text` wraps any UTF-8 content as `untrusted_text` with source `D:<oid>` (plan §9.3 prompt-injection boundary), and `disclosed_chunks`/`withheld_chunks`/`view_commit` describe a redacted view."
+fields = ["oid:hex", "doc_commit:hex", "view:string", "kind:string", "mime:string?", "grade:string?", "size:int", "bytes_hex:hex?", "text:untrusted_text?", "disclosed_chunks:int?", "withheld_chunks:int?", "view_commit:hex?", "out:string?"]
 
 [[event]]
 name = "redacted_view_derived"
@@ -1439,9 +1439,14 @@ doc = "A LimitCell's raw mantissas and its generation."
 fields = ["debits_posted:int", "credits_posted:int", "debits_pending:int", "credits_pending:int", "generation:int"]
 
 [[shape]]
+name = "untrusted_text"
+doc = "Third-party-authored text from an imported document, entry description, or leg memo (plan §9.3 prompt-injection boundary): `untrusted_content` carries the UTF-8 text and `source` names its handle (`D:<oid>`, `E:<vid>`, or `E:<vid>:L<ordinal>`). Untrusted text is never interpolated into `fix`, `next_actions`, or `suggested_tool_calls`."
+fields = ["untrusted_content:text", "source:string"]
+
+[[shape]]
 name = "entry_leg"
 doc = "One leg of a committed entry."
-fields = ["side:string", "account:hex", "amount:amount"]
+fields = ["side:string", "account:hex", "amount:amount", "memo:untrusted_text?"]
 
 [[shape]]
 name = "plan_leg"
@@ -1476,7 +1481,7 @@ fields = ["recorded_at:seq", "unit:string", "debits:amount", "credits:amount", "
 [[shape]]
 name = "explained_entry_leg"
 doc = "One leg of an explained entry, with its resolved account code and name."
-fields = ["ordinal:int", "side:string", "account:string", "account_vid:hex", "account_name:string", "amount:amount"]
+fields = ["ordinal:int", "side:string", "account:string", "account_vid:hex", "account_name:string", "amount:amount", "memo:untrusted_text?"]
 
 [[shape]]
 name = "explained_document"
