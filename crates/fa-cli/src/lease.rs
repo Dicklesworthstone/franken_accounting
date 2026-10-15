@@ -111,21 +111,10 @@ fn apply_no_follow(opts: &mut OpenOptions) -> &mut OpenOptions {
 /// Query `symlink_metadata` through `asupersync`'s filesystem (`UnixVfs`).
 fn vfs_symlink_metadata(path: &Path) -> std::io::Result<asupersync::fs::Metadata> {
     use asupersync::fs::{UnixVfs, Vfs};
-    use core::future::Future;
-    use core::pin::pin;
-    use core::task::{Context, Poll, Waker};
-
-    let fut = UnixVfs.symlink_metadata(path);
-    let mut fut = pin!(fut);
-    let mut cx = Context::from_waker(Waker::noop());
-    match fut.as_mut().poll(&mut cx) {
-        Poll::Ready(res) => res,
-        Poll::Pending => std::fs::symlink_metadata(path).and_then(|_| {
-            Err(std::io::Error::other(
-                "unexpected pending UnixVfs::symlink_metadata",
-            ))
-        }),
-    }
+    let runtime = asupersync::runtime::RuntimeBuilder::new()
+        .build()
+        .map_err(|e| std::io::Error::other(format!("runtime: {e:?}")))?;
+    runtime.block_on(UnixVfs.symlink_metadata(path))
 }
 
 fn validate_lease_file_name(path: &Path, lease_file: &str) -> Result<(), LeaseError> {
