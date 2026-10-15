@@ -10,6 +10,11 @@
 //! never-created projections can be filled; retired identities or a live edge
 //! whose immutable endpoints are wrong refuse rather than minting replacement
 //! IDs. Repairing payload corruption is outside this API.
+//!
+//! Preparation first verifies every Entry against its native creation history.
+//! Consistent replacement hashes, hidden labels, retired Entries and exact
+//! restoration do not make a rewritten source eligible for recovery. Complete
+//! history is mandatory even when the projections already appear correct.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -62,6 +67,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// Recompute a repair without writing. Require current whole-book Read,
     /// Verify and SchemaChange authority, including the no-Agent-on-trunk law.
     /// An empty or already-correct book still requires the same authority.
+    /// This synchronous preview needs native history resident from sequence
+    /// zero. Use `prepare_projection_rebuild_with_history` after reopening a
+    /// checkpoint-backed book; missing history is never an integrity pass.
     pub fn prepare_projection_rebuild(
         &self,
         cx: &PurposeContexts,
@@ -74,6 +82,26 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let query = cx.query();
         query.checkpoint().map_err(BookError::Context)?;
         query.with_restriction(|| prepare(&self.db, cx, self.context()).map(Ok))
+    }
+
+    /// Load the complete retained native history before producing a preview.
+    /// Admission precedes history I/O and is rechecked afterward. This does not
+    /// repair an Entry or publish a journal record; an unavailable history
+    /// returns the existing native-history refusal instead of a partial plan.
+    pub async fn prepare_projection_rebuild_with_history(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+    ) -> Outcome<PreparedProjectionRebuild> {
+        if let Err(refusal) = authorize(&self.db, cx, self.context(), principal, capability)? {
+            return Ok(Err(refusal));
+        }
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        if let Err(refusal) = fa_journal::scratch::ensure_history(&mut self.db, cx).await? {
+            return Ok(Err(refusal));
+        }
+        self.prepare_projection_rebuild(cx, principal, capability)
     }
 
     /// Recheck authority and the complete preparation basis, then publish all
@@ -127,15 +155,17 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     }
 
     /// Explicit recovery from the current journal, with no caller-provided
-    /// balances or replacement payloads. Call prepare/publish separately for a
-    /// preview; publication always requires current authority again.
+    /// balances or replacement payloads. Load native history only after
+    /// admission, then verify source immutability before deriving any changes.
+    /// Call `prepare_projection_rebuild_with_history` and publish separately
+    /// for a preview; publication always requires current authority again.
     pub async fn rebuild_projections(
         &mut self,
         cx: &PurposeContexts,
         principal: VId,
         capability: &Capability,
     ) -> Outcome<ProjectionRebuild> {
-        let prepared = match self.prepare_projection_rebuild(cx, principal, capability)? {
+        let prepared = match self.prepare_projection_rebuild_with_history(cx, principal, capability).await? {
             Ok(prepared) => prepared,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -191,6 +221,10 @@ fn prepare<V: Vfs + Clone>(
 ) -> Result<PreparedProjectionRebuild, BookError> {
     let basis = db.frontier().map_err(KernelError::from)?;
     let basis_root = db.partition_root().map_err(KernelError::from)?.0;
+    // Never make projections agree with a self-consistently rewritten Entry.
+    // Discover the source set from native births, not a possibly damaged live
+    // label scan. This gate precedes both the fold and every staged repair.
+    fa_journal::verify_entry_history(db, cx, book, Some(basis))?;
     let rows = db.vertices_at(basis).map_err(KernelError::from)?;
     let edges = db.edges_at(basis).map_err(KernelError::from)?;
     let vertices: BTreeMap<_, _> = rows.iter().map(|row| (row.vid, row)).collect();
@@ -373,3 +407,6 @@ fn prepare<V: Vfs + Clone>(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod history_tests;
