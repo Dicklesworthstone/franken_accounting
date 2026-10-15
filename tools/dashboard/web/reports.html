@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark"><meta name="referrer" content="no-referrer">
+  <title>FrankenAccounting · Ledger & aging</title>
+  <link rel="icon" href="data:,"><link rel="stylesheet" href="/reports.css">
+  <script type="module" src="/reporting.mjs"></script>
+</head>
+<body class="reports-page">
+<a class="skip" href="#report-main">Skip to report</a>
+<aside class="rail" aria-label="Workspace navigation">
+  <a class="brand" href="/"><span class="brand-icon">f∴</span><span>franken<small>ACCOUNTING</small></span></a>
+  <div class="rail-label">LOCAL WORKSPACE</div>
+  <div class="book-info"><span class="book-icon">B</span><div><strong id="book-name">Connecting…</strong><small id="book-mode">Read-only reporting</small></div></div>
+  <nav><a href="/" class="rail-link"><span aria-hidden="true">▦</span>Overview & evidence</a>
+    <a href="#ledger" class="rail-link" data-report="ledger"><span aria-hidden="true">≋</span>General ledger</a>
+    <a href="#aging" class="rail-link" data-report="aging"><span aria-hidden="true">◷</span>Open-item aging</a></nav>
+  <div class="rail-note"><span aria-hidden="true">✳</span><strong>From a balance to its story.</strong><p>Explore posted movements, then see what remains open. Every report keeps its exact recorded snapshot.</p></div>
+  <div class="local"><span></span><div>Only on your machine<small>No cloud · no posting endpoints</small></div></div>
+</aside>
+<div class="report-workspace">
+  <header class="topbar"><div>Workspace <span>/</span> Reporting <span>/</span> <strong id="breadcrumb">General ledger</strong></div><div class="topbar-actions"><a href="/">Back to overview ↗</a><button id="theme" type="button" aria-label="Switch theme">◐</button></div></header>
+  <main id="report-main" tabindex="-1">
+    <div id="demo-warning" class="demo-warning" hidden><strong>SYNTHETIC DEMO</strong><span>Sample transactions only. No native accounting checks have run.</span></div>
+    <section class="heading"><div><p class="eyebrow">LOOK BEYOND THE TOTAL</p><h1 id="title">Every movement, accounted for.</h1><p id="subtitle">Opening stock, posted movements, and closing stock at one exact snapshot.</p></div><span class="pill">◉ &nbsp; Read-only</span></section>
+    <div id="connection-error" role="alert" hidden></div>
+    <form id="selection" class="selection" autocomplete="off">
+      <div class="selection-top"><strong>Define your report</strong><span id="selection-state">Connecting to the native reader…</span></div>
+      <div class="fields">
+        <label class="account-field" for="account">Account<input id="account" list="account-options" placeholder="Account code" required maxlength="128"><datalist id="account-options"></datalist></label>
+        <label for="unit">Native unit<input id="unit" list="unit-options" placeholder="USD" required maxlength="128"><datalist id="unit-options"></datalist></label>
+        <label for="date-from" id="from-field">From, inclusive<input id="date-from" type="date" required></label>
+        <label for="date-to"><span id="to-label">To, inclusive</span><input id="date-to" type="date" required></label>
+        <label for="buckets" id="buckets-field" hidden>Age bounds, days<input id="buckets" value="30,60,90" aria-describedby="aging-note" maxlength="100"></label>
+        <label for="snapshot">As known at<input id="snapshot" value="HEAD" placeholder="HEAD or commit sequence" spellcheck="false" required maxlength="20"></label>
+      </div>
+      <div class="selection-actions"><p id="aging-note">All amounts stay in their native unit. No currency conversion.</p><button type="button" id="latest" class="quiet">Use latest snapshot</button><button id="run" class="primary" type="submit">Run report <span aria-hidden="true">↗</span></button></div>
+    </form>
+    <div id="result" aria-live="polite"><div class="empty">Choose an account and explicit dates to start.</div></div>
+    <footer><span>FRANKENACCOUNTING / LOCAL REPORTING</span><span>Native folds · exact amounts · no implied certification</span></footer>
+  </main>
+</div>
+<dialog id="entry-dialog" aria-labelledby="entry-title"><header><strong id="entry-title">Entry evidence</strong><button type="button" id="close-entry" aria-label="Close entry details">×</button></header><div id="entry-body"></div></dialog>
+<div id="toast" role="status" hidden></div>
+<noscript>JavaScript is required for graphical reports. The native fa CLI remains available.</noscript>
+</body>
+</html>

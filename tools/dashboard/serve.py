@@ -32,6 +32,10 @@ STATIC = {
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/amounts.mjs": ("amounts.mjs", "text/javascript; charset=utf-8"),
     "/styles.css": ("styles.css", "text/css; charset=utf-8"),
+    "/reports.html": ("reports.html", "text/html; charset=utf-8"),
+    "/reporting.mjs": ("reporting.mjs", "text/javascript; charset=utf-8"),
+    "/report-model.mjs": ("report-model.mjs", "text/javascript; charset=utf-8"),
+    "/reports.css": ("reports.css", "text/css; charset=utf-8"),
 }
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; "
        "connect-src 'self'; img-src 'self' data:; font-src 'self'; "

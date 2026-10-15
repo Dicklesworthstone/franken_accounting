@@ -8,6 +8,7 @@
   <title>FrankenAccounting · Local workspace</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/reports.css">
   <script type="module" src="/app.js"></script>
 </head>
 <body>
@@ -23,6 +24,8 @@
     <button class="nav-item" data-view="periods"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v16H4zM8 2v6M16 2v6M4 11h16"/></svg>Fiscal periods</button>
     <button class="nav-item" data-view="evidence"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="3"/><circle cx="18" cy="5" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8 11 7-5M8 13l7 5"/></svg>Evidence explorer</button>
     <button class="nav-item" data-view="health"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 2 8 3v6c0 5-8 11-8 11S4 16 4 11V5zM8 11l3 3 5-6"/></svg>Integrity checks</button>
+    <a class="nav-item" href="/reports.html#ledger"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16M4 12h16M4 19h16"/></svg>General ledger</a>
+    <a class="nav-item" href="/reports.html#aging"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/></svg>Open-item aging</a>
   </nav>
   <div class="sidebar-note"><span class="mini-spark">✳</span><strong>Every number has a trail.</strong><p>Open an account to follow its entries, then explore the evidence behind them.</p><button class="text-button" id="tour-button">Explore an account <span>↗</span></button></div>
   <div class="sidebar-bottom"><span class="local-dot"></span><div><strong>Stays on your machine</strong><span>No cloud. No telemetry.</span></div><span class="lock-icon">⌑</span></div>
