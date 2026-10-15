@@ -12,7 +12,9 @@ use fgdb_types::context::PurposeContexts;
 
 use crate::{AsyncBook, Outcome};
 
+pub mod batch_source;
 pub mod source;
+pub use batch_source::{SourceDocument, SourceImportRequest};
 pub use source::SourceUploadRequest;
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
