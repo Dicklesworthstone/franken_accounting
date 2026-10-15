@@ -31,6 +31,25 @@ schema_version = 1
 [gate_g1]
 clauses = ["FA-INV-01.per-unit", "FA-INV-01.leaf-only", "FA-INV-01.unit-policy", "FA-INV-02.payload-immutable", "FA-INV-02.control-record", "FA-INV-03.core", "FA-INV-03.transition-journaled", "FA-INV-04.core", "FA-INV-05.evidence-minimum", "FA-INV-06.core", "FA-INV-07.core", "FA-INV-09.core", "FA-INV-10.core", "FA-INV-11.core", "FA-INV-14.leaf-envelope", "FA-INV-14.consistency", "FA-INV-15.core", "FA-INV-16.core"]
 
+# Every shipped capability in verbs.toml and the invariant clauses it depends on
+# (bead fa-j6ue). A shipped capability whose clause is dormant fails the gate.
+[shipped_capabilities]
+post = ["FA-INV-01.per-unit", "FA-INV-01.leaf-only", "FA-INV-01.unit-policy", "FA-INV-03.core", "FA-INV-05.evidence-minimum", "FA-INV-06.core", "FA-INV-09.core", "FA-INV-10.core", "FA-INV-16.core"]
+reserve = ["FA-INV-15.core", "FA-INV-15.availability"]
+resolve = ["FA-INV-15.core", "FA-INV-15.availability"]
+reverse = ["FA-INV-08.reversal", "FA-INV-08.reversed-once", "FA-INV-08.unsettle"]
+period = ["FA-INV-02.control-record", "FA-INV-03.transition-journaled", "FA-INV-03.transition-approvals"]
+approve = ["FA-INV-10.approval-binds-proposal", "FA-INV-10.sod"]
+registers = ["FA-INV-04.core"]
+tb = ["FA-INV-04.core", "FA-INV-07.core"]
+statement = ["FA-INV-04.core", "FA-INV-07.core"]
+open_items = ["FA-INV-04.open-amount"]
+checkpoint = ["FA-INV-14.leaf-envelope", "FA-INV-14.consistency", "FA-INV-14.signed"]
+proof = ["FA-INV-04.outsider-recomputation", "FA-INV-14.inclusion", "FA-INV-14.seq-range-complete", "FA-INV-14.scope-index-complete"]
+bundle = ["FA-INV-14.scope-index-complete", "FA-INV-14.public-commitment"]
+replay = ["FA-INV-11.core"]
+certificate = ["FA-INV-11.core"]
+
 [[invariant]]
 id = "FA-INV-01"
 name = "Balance law"
@@ -207,7 +226,7 @@ status = "dormant"
 statement = "When base totals are present, base debits equal base credits under the named FX law, per legal entity in multi-entity books."
 evidence_class = "invariant"
 first_gate = "G2"
-activating = ["fa-p7r"]
+activating = ["fa-s3c"]
 waiver = "forbidden"
 
 [[clause]]
@@ -217,7 +236,7 @@ status = "dormant"
 statement = "Each representable valuation adjustment is recorded and absorbed within its entity, within the law's exact bound."
 evidence_class = "invariant"
 first_gate = "G2"
-activating = ["fa-p7r"]
+activating = ["fa-s3c"]
 waiver = "forbidden"
 
 [[clause]]
@@ -227,7 +246,7 @@ status = "dormant"
 statement = "Realized FX uses the paired postings of plan §5.2."
 evidence_class = "invariant"
 first_gate = "G2"
-activating = ["fa-p7r"]
+activating = ["fa-s3c"]
 waiver = "forbidden"
 
 [[clause]]
@@ -237,7 +256,7 @@ status = "dormant"
 statement = "Memo and statistical units balance separately."
 evidence_class = "invariant"
 first_gate = "G2"
-activating = ["fa-p7r"]
+activating = ["fa-s3c"]
 waiver = "forbidden"
 
 [[clause]]
@@ -346,7 +365,7 @@ status = "dormant"
 statement = "After the latest Closing entry of a fiscal year the nominal accounts fold to zero at that known-at."
 evidence_class = "invariant"
 first_gate = "G2"
-activating = ["fa-xwv"]
+activating = ["fa-4o0"]
 waiver = "forbidden"
 
 [[clause]]
@@ -416,7 +435,7 @@ status = "dormant"
 statement = "Functional-value registers fold base amounts under a registered functional fold."
 evidence_class = "invariant"
 first_gate = "G2"
-activating = ["fa-p7r"]
+activating = ["fa-s3c"]
 waiver = "forbidden"
 
 [[clause]]
@@ -680,7 +699,7 @@ status = "dormant"
 statement = "The key-derived immutable IntentOutcome object records committed outcomes and durable refusals."
 evidence_class = "invariant"
 first_gate = "G2"
-activating = ["fa-we7"]
+activating = ["fa-nl7"]
 waiver = "forbidden"
 
 [[clause]]
