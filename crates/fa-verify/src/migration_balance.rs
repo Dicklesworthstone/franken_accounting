@@ -1,13 +1,20 @@
-//! V2 balance proofs: authenticate migration visibility from journal controls.
+//! Migration-aware balance proofs with payload-complete scope derivation.
 //!
 //! The v1 fields are followed by `list(open_leaf_index u64 || bytes(run_body))`.
-//! The record set is exactly the union of the selected candidate leaves and
-//! EVERY MigrationControl leaf in the complete prefix. Supplying all controls
-//! proves absence as well as presence of Finalize; an absence flag supplied by
-//! the producer would not. Each selected migration run needs its Open body,
-//! in leaf order, whose length-framed domain digest equals the Open's committed
-//! tie_out_digest and whose book/key derive the named run identity.
-//! Unrelated run bodies are neither required nor accepted.
+//! In legacy v2 the record set is the union of selected candidate leaves and
+//! EVERY MigrationControl leaf in the complete prefix. Each selected run
+//! needs its Open body, in leaf order, whose length-framed domain digest
+//! equals the Open's committed tie_out_digest and whose book/key derive
+//! the named run identity. Unrelated run bodies are neither required nor accepted.
+//!
+//! V3 has the same field layout, but requires the payload of EVERY prefix
+//! leaf, indexed exactly 0..leaf_count. Each envelope is rebuilt before it
+//! can exclude that record from the fold or hide a lifecycle control. This
+//! addresses fa-n6fh's balance attack: a root binds bytes, not correct indexing.
+//! Legacy v2 is reported as `membership_only` when any prefix payload is
+//! absent. V3 always establishes derivation as well as prefix membership.
+//! Full-prefix disclosure and linear payload cost are explicit obligations;
+//! callers lacking whole-book read authority must not produce this format.
 //!
 //! This proves the register visibility predicate, not the migration's economic
 //! correctness, authorization, or trial-balance tie-out. Nothing reads current
@@ -15,13 +22,19 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::balance::{Balance, BalanceClaim, CLASS_MIGRATION, SCOPE_RECOMPUTATION, in_scope};
+use crate::balance::{
+    Balance, BalanceClaim, CLASS_MIGRATION, SCOPE_MEMBERSHIP_ONLY, SCOPE_RECOMPUTATION,
+    in_scope,
+};
 use crate::blake3::hash_parts;
 use crate::codec::{DecodeError, Reader, Reason};
 use crate::envelope::{LeafEnvelope, MAX_ENVELOPE_LIST, MAX_RECORD_BYTES, check_record};
 use crate::proof::{Checkpoint, VerifyError, complete_prefix, open, read_envelopes, trusted};
 
 pub const BALANCE_FORMAT_V2: &[u8] = b"fa:acc-balance-proof:v2";
+pub const BALANCE_FORMAT_V3: &[u8] = b"fa:acc-balance-proof:v3";
+/// Includes framing, all record payloads, and migration-body witnesses.
+pub const MAX_BALANCE_PROOF_BYTES: usize = 64 * 1024 * 1024;
 
 const CLASS_MIGRATION_CONTROL: u16 = 22;
 const BODY_DOMAIN: &[u8] = b"fa:migration-run-body:v1";
@@ -77,10 +90,30 @@ fn scope_error(index: u64) -> VerifyError {
     VerifyError::RecordSet { index }
 }
 
-/// Verify a v2 proof against an independently trusted checkpoint.
-/// All lifecycle controls and required run bodies are authenticated before folding.
+/// Verify v2 or v3 against an independently trusted checkpoint.
+/// V3 authenticates EVERY envelope's derivation, including excluded leaves.
+/// Both versions authenticate the supplied lifecycle controls and run bodies;
+/// a partial-payload v2 result explicitly retains the weaker membership scope.
 pub fn verify_balance(proof: &[u8], anchor: &Checkpoint) -> Result<Balance, VerifyError> {
-    let mut r = open(proof, BALANCE_FORMAT_V2)?;
+    if proof.len() > MAX_BALANCE_PROOF_BYTES {
+        return Err(VerifyError::Decode(DecodeError {
+            offset: 0,
+            what: "balance proof bytes",
+            reason: Reason::TooLong {
+                max: MAX_BALANCE_PROOF_BYTES,
+                actual: proof.len(),
+            },
+        }));
+    }
+    let complete = Reader::new(proof).bytes(128, "proof.format")? == BALANCE_FORMAT_V3;
+    let mut r = open(
+        proof,
+        if complete {
+            BALANCE_FORMAT_V3
+        } else {
+            BALANCE_FORMAT_V2
+        },
+    )?;
     let checkpoint = trusted(Checkpoint::read(&mut r)?, anchor)?;
     let account = r.u128("balance.account")?;
     let unit = r.u32("balance.unit")?;
@@ -119,7 +152,8 @@ pub fn verify_balance(proof: &[u8], anchor: &Checkpoint) -> Result<Balance, Veri
         .iter()
         .enumerate()
         .filter(|(_, e)| {
-            e.class == CLASS_MIGRATION_CONTROL
+            complete
+                || e.class == CLASS_MIGRATION_CONTROL
                 || in_scope(e, claim.account, claim.unit, claim.effective_through)
         })
         .map(|(i, e)| (u64::try_from(i).unwrap_or(u64::MAX), e))
@@ -141,6 +175,15 @@ pub fn verify_balance(proof: &[u8], anchor: &Checkpoint) -> Result<Balance, Veri
     let mut verified = Vec::with_capacity(records.len());
     for ((index, len, payload), (_, envelope)) in records.iter().zip(&expected) {
         let legs = check_record(envelope, payload, *len).map_err(VerifyError::Record)?;
+        // In v3, even a Pending/undated/unrelated/future leaf reaches the
+        // derivation check above. Only authenticated selectors may exclude it.
+        // Do not interpret unrelated control payloads as migration metadata,
+        // or disclose unrelated run bodies just because their chunks exist.
+        if envelope.class != CLASS_MIGRATION_CONTROL
+            && !in_scope(envelope, claim.account, claim.unit, claim.effective_through)
+        {
+            continue;
+        }
         let metadata = metadata(envelope, &payload[..*len], *index)?;
         if let Metadata::Chunk(run) = metadata {
             needed_runs.insert(run);
@@ -179,7 +222,7 @@ pub fn verify_balance(proof: &[u8], anchor: &Checkpoint) -> Result<Balance, Veri
                 state.terminal = Some((*index, kind));
             }
         }
-        verified.push((*index, metadata, legs));
+        verified.push((*index, *envelope, metadata, legs));
     }
 
     // Do not disclose an unrelated run's legacy trial balances. Controls
@@ -211,7 +254,7 @@ pub fn verify_balance(proof: &[u8], anchor: &Checkpoint) -> Result<Balance, Veri
 
     let (mut debits, mut credits) = (0i128, 0i128);
     let mut contributing = Vec::new();
-    for ((index, metadata, legs), (_, envelope)) in verified.iter().zip(&expected) {
+    for (index, envelope, metadata, legs) in &verified {
         let visible = match metadata {
             Metadata::Control { .. } => false,
             Metadata::Ordinary => true,
@@ -250,7 +293,11 @@ pub fn verify_balance(proof: &[u8], anchor: &Checkpoint) -> Result<Balance, Veri
         return Err(VerifyError::Claim { debits, credits });
     }
     Ok(Balance {
-        scope: SCOPE_RECOMPUTATION,
+        scope: if records.len() == envelopes.len() {
+            SCOPE_RECOMPUTATION
+        } else {
+            SCOPE_MEMBERSHIP_ONLY
+        },
         checkpoint,
         claim,
         contributing,
@@ -420,6 +467,8 @@ fn policy(bytes: &[u8], book: &[u8; 16]) -> Result<Policy, VerifyError> {
 
 #[cfg(test)]
 mod tests {
+    mod complete_tests;
+
     use super::*;
     use crate::codec::Writer;
     use crate::envelope::{ENTRY_DIGEST_DOMAIN, PROPOSAL_DIGEST_DOMAIN, envelope_of_entry};
@@ -561,6 +610,17 @@ mod tests {
         through: Option<i32>,
         omit: Option<usize>,
     ) -> (Vec<u8>, Checkpoint) {
+        proof_format(records, bodies, debits, through, omit, BALANCE_FORMAT_V2)
+    }
+
+    fn proof_format(
+        records: &[Record],
+        bodies: &[(u64, Vec<u8>)],
+        debits: i128,
+        through: Option<i32>,
+        omit: Option<usize>,
+        format: &[u8],
+    ) -> (Vec<u8>, Checkpoint) {
         let hashes: Vec<_> = records
             .iter()
             .map(|r| leaf_hash(&r.envelope.encode()))
@@ -577,12 +637,13 @@ mod tests {
             .enumerate()
             .filter(|(i, r)| {
                 Some(*i) != omit
-                    && (r.envelope.class == CLASS_MIGRATION_CONTROL
+                    && (format == BALANCE_FORMAT_V3
+                        || r.envelope.class == CLASS_MIGRATION_CONTROL
                         || in_scope(&r.envelope, 10, 1, through))
             })
             .collect();
         let mut w = Writer::default();
-        w.bytes(BALANCE_FORMAT_V2)
+        w.bytes(format)
             .fixed(&checkpoint.encode())
             .u128(10)
             .u32(1);
