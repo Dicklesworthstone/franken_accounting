@@ -1104,9 +1104,30 @@ impl Book {
         with_store!(&self.store, core => core.read_entry(&self.purposes(), vid))
     }
 
+    /// Every committed entry in this book that supersedes `vid`, in recorded order.
+    pub fn superseded_by(&self, vid: VId) -> Result<Vec<fa_model::Supersession>, BookError> {
+        with_store!(&self.store, core => core.superseded_by(&self.purposes(), vid))
+    }
+
+    /// Explain the evidence closure for an entry without reading document payload bytes.
+    pub fn explain_entry_evidence(
+        &self,
+        entry_vid: VId,
+    ) -> Result<Option<fa_journal::EvidenceExplanation>, BookError> {
+        with_store!(&self.store, core => core.explain_entry_evidence(&self.purposes(), entry_vid))
+    }
+
     /// Every period of the book in calendar order, with its current state.
     pub fn periods(&self) -> Result<Vec<PeriodRow>, BookError> {
         with_store!(&self.store, core => core.periods(&self.purposes()))
+    }
+
+    /// Recorded period-state transitions for `period_code` in commit order.
+    pub fn period_transitions(
+        &self,
+        period_code: &str,
+    ) -> Result<Vec<fa_journal::PeriodTransitionRecord>, BookError> {
+        with_store!(&self.store, core => core.period_transitions(&self.purposes(), period_code))
     }
 
     /// Timed holds reached by the latest committed tick and still pending.

@@ -8580,3 +8580,134 @@ fn recorded_time_is_never_user_supplied_across_model_cli_and_mcp() -> std::io::R
     assert!(seq1 > 0);
     Ok(())
 }
+
+#[test]
+fn explain_entry_evidence_refusal_period_and_register_round_trip() -> std::io::Result<()> {
+    // 1. `fa explain refusal <code> --json` works without a book and covers every
+    //    registered row in `registries/refusal_catalog.toml`.
+    let catalog =
+        fa_registry::refusal_catalog::RefusalCatalog::embedded().expect("refusal_catalog.toml");
+    assert!(!catalog.rows.is_empty());
+    for row in &catalog.rows {
+        let (code, out, err) = fa(None, &["explain", "refusal", &row.code, "--json"]);
+        assert_eq!(code, 0, "explain refusal {}: {out}\n{err}", row.code);
+        assert_eq!(field(&out, "event"), Some("refusal_explained"));
+        let d = doc(&out);
+        assert_eq!(text(&d, "id"), row.code.as_str());
+        assert_eq!(text(&d, "class"), row.exit_name.as_str());
+        assert_eq!(d.get("exit"), Some(&Json::Int(i128::from(row.exit))));
+        assert_eq!(text(&d, "cite"), row.cite.as_str());
+        assert_eq!(text(&d, "fix"), row.fix.as_str());
+        if row.code == "FA-REF-003" {
+            assert!(!arr(&d, "admissibility_cells").is_empty());
+        }
+        if row.code == "FA-REF-016" {
+            assert!(!arr(&d, "sod_rules").is_empty());
+        }
+    }
+    // Lookup by constant name also works, and unknown code is exit 2 usage.
+    let (code_name, out_name, _) = fa(None, &["explain", "refusal", "UNBALANCED", "--json"]);
+    assert_eq!(code_name, 0);
+    assert_eq!(field(&out_name, "id"), Some("FA-REF-001"));
+    let (bad_code, bad_out, _) = fa(None, &["explain", "refusal", "FA-REF-999", "--json"]);
+    assert_eq!(bad_code, 2, "{bad_out}");
+
+    // 2. Set up a book, chart, periods, and post an entry with evidence.
+    let dir = tmp("explain-verbs")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "fa {args:?} exited {code}:\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Acme Corp", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Expense","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+
+    // 3. `fa explain period FY2026-P03 --json`
+    let period_ex = ok(&["explain", "period", "FY2026-P03", "--json"]);
+    assert_eq!(field(&period_ex, "event"), Some("period_explained"));
+    assert_eq!(field(&period_ex, "code"), Some("FY2026-P03"));
+    assert_eq!(field(&period_ex, "state"), Some("Open"));
+    assert_eq!(field(&period_ex, "kind"), Some("Normal"));
+    let period_doc = doc(&period_ex);
+    assert_eq!(arr(&period_doc, "transitions").len(), 1);
+    assert!(!arr(&period_doc, "admissible_classes").is_empty());
+
+    // 4. Add a document, post an entry, attach a supplement, and reverse the entry.
+    let inv_oid = source_doc(&dir, &book);
+
+    let intent_path = write(
+        &dir,
+        "intent.json",
+        r#"{
+          "effective_date": "2026-03-15",
+          "idempotency_key": "ex-entry-1",
+          "description": "Office supplies",
+          "legs": [
+            {"side": "debit", "account": "6000", "amount": "125.00 USD"},
+            {"side": "credit", "account": "1000", "amount": "125.00 USD"}
+          ]
+        }"#,
+    );
+    let posted = ok(&[
+        "post",
+        "--intent",
+        &intent_path,
+        "--evidence",
+        &inv_oid,
+        "--json",
+    ]);
+    let entry_vid = field(&posted, "vid").unwrap_or_default().to_string();
+
+    // 5. `fa explain evidence <entry-vid> --json`
+    let ev_ex = ok(&["explain", "evidence", &format!("E:{entry_vid}"), "--json"]);
+    assert_eq!(field(&ev_ex, "event"), Some("evidence_explained"));
+    assert_eq!(field(&ev_ex, "entry"), Some(entry_vid.as_str()));
+    assert_eq!(field(&ev_ex, "class"), Some("Original"));
+    let ev_doc = doc(&ev_ex);
+    assert_eq!(ev_doc.get("satisfied"), Some(&Json::Bool(true)));
+    assert_eq!(arr(&ev_doc, "documents").len(), 1);
+
+    // 6. Reverse the entry and check `fa explain entry <vid> --json` (both `supersedes` and `superseded_by`).
+    let rev_out = ok(&["reverse", &entry_vid, "--reason", "WrongAmount", "--json"]);
+    let rev_vid = field(&rev_out, "vid").unwrap_or_default().to_string();
+
+    let entry_ex = ok(&["explain", "entry", &format!("E:{entry_vid}"), "--json"]);
+    assert_eq!(field(&entry_ex, "event"), Some("entry_explained"));
+    assert_eq!(field(&entry_ex, "vid"), Some(entry_vid.as_str()));
+    assert_eq!(field(&entry_ex, "period"), Some("FY2026-P03"));
+    let entry_doc = doc(&entry_ex);
+    assert_eq!(arr(&entry_doc, "superseded_by").len(), 1);
+
+    let rev_ex = ok(&["explain", "entry", &rev_vid, "--json"]);
+    let rev_doc = doc(&rev_ex);
+    assert_eq!(arr(&rev_doc, "supersedes").len(), 1);
+
+    // 7. `fa explain register 1000 --period FY2026-P03 --unit USD --json`
+    ok(&["registers", "advance", "--period", "FY2026-P03", "--json"]);
+    let reg_ex = ok(&[
+        "explain",
+        "register",
+        "1000",
+        "--period",
+        "FY2026-P03",
+        "--unit",
+        "USD",
+        "--json",
+    ]);
+    assert_eq!(field(&reg_ex, "event"), Some("register_explained"));
+    assert_eq!(field(&reg_ex, "account"), Some("1000"));
+    assert_eq!(field(&reg_ex, "period"), Some("FY2026-P03"));
+    assert_eq!(field(&reg_ex, "unit"), Some("USD"));
+    assert_eq!(doc(&reg_ex).get("green"), Some(&Json::Bool(true)));
+    assert_eq!(field(&reg_ex, "cache_status"), Some("verified"));
+    assert_eq!(doc(&reg_ex).get("stale"), Some(&Json::Bool(false)));
+    Ok(())
+}

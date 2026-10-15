@@ -278,10 +278,16 @@ fn producer(key: &str, path: &[String]) -> Vec<ToolCall> {
             json!({"transition": "lock", "dry_run": true}),
         ),
         "code" | "period" => ("fa_time_period_status", "fa period list --json", json!({})),
-        "account" => ("fa_chart_list_accounts", "fa chart list --json", json!({})),
-        _ if joined.contains("legs") => {
-            ("fa_chart_list_accounts", "fa chart list --json", json!({}))
-        }
+        "account" => (
+            "fa_chart_list_accounts",
+            "fa chart list --json",
+            json!({"action": "list"}),
+        ),
+        _ if joined.contains("legs") => (
+            "fa_chart_list_accounts",
+            "fa chart list --json",
+            json!({"action": "list"}),
+        ),
         _ => return Vec::new(),
     };
     vec![ToolCall {
@@ -396,7 +402,7 @@ pub fn summary_account(
             ),
             vec![ToolCall {
                 tool: "fa_chart_list_accounts".into(),
-                arguments: json!({}),
+                arguments: json!({"action": "list"}),
                 command: "fa chart list --json".into(),
             }],
         ));

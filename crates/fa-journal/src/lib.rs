@@ -87,7 +87,7 @@ pub use policy::{
 };
 pub use post::{
     Capability, PostPreparation, PostRequest, Posted, PreparedPost, decide_admissibility_cell,
-    post, prepare_post,
+    post, prepare_post, superseded_by,
 };
 pub use redaction::{
     DocumentRead, RedactedView, ViewChunk, ViewDerived, derive_redacted_view, read_document_for,

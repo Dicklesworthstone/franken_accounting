@@ -1074,8 +1074,36 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.query(cx, |db, _| Ok(fa_journal::post::read_entry(db, vid)?))
     }
 
+    pub fn superseded_by(
+        &self,
+        cx: &PurposeContexts,
+        vid: VId,
+    ) -> Result<Vec<fa_model::Supersession>, BookError> {
+        self.query(cx, |db, book| Ok(fa_journal::superseded_by(db, book, vid)?))
+    }
+
+    pub fn explain_entry_evidence(
+        &self,
+        cx: &PurposeContexts,
+        entry_vid: VId,
+    ) -> Result<Option<fa_journal::EvidenceExplanation>, BookError> {
+        self.query(cx, |db, book| {
+            Ok(fa_journal::explain_entry_evidence(db, book, entry_vid)?)
+        })
+    }
+
     pub fn periods(&self, cx: &PurposeContexts) -> Result<Vec<PeriodRow>, BookError> {
         self.query(cx, |db, _| Ok(fa_journal::genesis::list_periods(db)?))
+    }
+
+    pub fn period_transitions(
+        &self,
+        cx: &PurposeContexts,
+        period_code: &str,
+    ) -> Result<Vec<fa_journal::PeriodTransitionRecord>, BookError> {
+        self.query(cx, |db, book| {
+            Ok(fa_journal::period_transitions(db, book, period_code)?)
+        })
     }
 
     pub fn accounts(&self, cx: &PurposeContexts) -> Result<Vec<AccountRow>, BookError> {

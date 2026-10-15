@@ -2399,6 +2399,40 @@ pub fn read_entry<V: asupersync::fs::Vfs + Clone>(
     db.vertex(vid)?.map(|row| entry_of(&row)).transpose()
 }
 
+/// Every committed entry in `book` that supersedes `vid`, in recorded order,
+/// returned as [`fa_model::Supersession`] rows whose `target` names the
+/// superseding entry (`evid`).
+pub fn superseded_by<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    vid: VId,
+) -> Result<Vec<fa_model::Supersession>, KernelError> {
+    let mut rows = Vec::new();
+    for evid in db.in_neighbours(vid, relation::SUPERSEDES)? {
+        let Some((entry, seq)) = read_entry(db, evid)? else {
+            continue;
+        };
+        if entry.proposal.book_id != book.book_id {
+            continue;
+        }
+        for link in &entry.proposal.supersession {
+            if link.target.vid == vid {
+                rows.push((
+                    seq,
+                    evid,
+                    fa_model::Supersession {
+                        kind: link.kind,
+                        target: entry.entry_ref(evid),
+                        reason_code: link.reason_code,
+                    },
+                ));
+            }
+        }
+    }
+    rows.sort_by_key(|(seq, evid, link)| (*seq, *evid, link.kind as u8, link.reason_code));
+    Ok(rows.into_iter().map(|(_, _, link)| link).collect())
+}
+
 /// [`read_entry`] through the snapshot at `seq`: an entry recorded after
 /// `seq` does not exist there, so its payload is never loaded or decoded
 /// (a `known_at`-pinned read observes nothing past its pin).

@@ -708,10 +708,16 @@ pub fn period_transitions<V: asupersync::fs::Vfs + Clone>(
             continue;
         }
         let from_state = PeriodState::from_tag(*from).ok_or_else(|| {
-            KernelError::Corrupt(format!("period transition entry {:032x} bad from tag", evid.0))
+            KernelError::Corrupt(format!(
+                "period transition entry {:032x} bad from tag",
+                evid.0
+            ))
         })?;
         let to_state = PeriodState::from_tag(*to).ok_or_else(|| {
-            KernelError::Corrupt(format!("period transition entry {:032x} bad to tag", evid.0))
+            KernelError::Corrupt(format!(
+                "period transition entry {:032x} bad to tag",
+                evid.0
+            ))
         })?;
         out.push(PeriodTransitionRecord {
             entry_vid: evid,
@@ -728,4 +734,3 @@ pub fn period_transitions<V: asupersync::fs::Vfs + Clone>(
     out.sort_by_key(|r| (r.recorded_at, r.entry_vid));
     Ok(out)
 }
-

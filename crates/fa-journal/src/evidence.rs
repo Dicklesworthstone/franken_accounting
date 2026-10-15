@@ -1760,7 +1760,7 @@ pub struct EvidenceExplanation {
     pub class: String,
     pub recorded_at: CommitSeq,
     pub requirement: String,
-    pub min_documents: u8,
+    pub min_documents: u16,
     pub manual_assertion_allowed: bool,
     pub minimum_satisfied: bool,
     pub documents: Vec<DocumentEvidenceSummary>,
@@ -1789,7 +1789,7 @@ pub fn explain_entry_evidence<V: asupersync::fs::Vfs + Clone>(
         Some(m) => (
             match m.requirement {
                 Requirement::Documents => "documents".to_string(),
-                Requirement::Control => "control".to_string(),
+                Requirement::ControlRecord => "control_record".to_string(),
                 Requirement::Target => "target".to_string(),
             },
             m.min_documents,
@@ -1835,18 +1835,7 @@ pub fn explain_entry_evidence<V: asupersync::fs::Vfs + Clone>(
             },
             None => None,
         };
-        let custody_events = match crate::custody::custody_chain(db, book.book_id, &ev.document_oid)?
-        {
-            Ok(Some(chain)) => chain.len(),
-            Ok(None) => 0,
-            Err(r) => {
-                return Err(KernelError::Corrupt(format!(
-                    "document {} custody drift: {}",
-                    hex(&ev.document_oid.0),
-                    r.message
-                )));
-            }
-        };
+        let custody_events = crate::custody::custody_chain(db, &ev.document_oid)?.len();
         if seen_oids.insert(ev.document_oid) {
             cited.push(CitedDocument {
                 vid: dvid,

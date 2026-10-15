@@ -8558,13 +8558,750 @@ fn side_name(side: Side) -> &'static str {
     }
 }
 
-/// `fa explain balance <account> --period <code> [--as-known-at HEAD|<seq>]`.
+/// `fa explain balance|entry|evidence|refusal|period|register ...`.
 fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    let out = &ctx.out;
     let sub = args.positional.get(1).map(String::as_str);
-    if sub != Some("balance") {
-        return Err(unhandled("explain", sub));
+    match sub {
+        Some("balance") => explain_balance_cmd(ctx, args),
+        Some("entry") => explain_entry_cmd(ctx, args),
+        Some("evidence") => explain_evidence_cmd(ctx, args),
+        Some("refusal") => explain_refusal_cmd(ctx, args),
+        Some("period") => explain_period_cmd(ctx, args),
+        Some("register") => explain_register_cmd(ctx, args),
+        other => Err(unhandled("explain", other)),
     }
+}
+
+fn parse_entry_target(raw: &str, example: &str) -> Result<VId, Fail> {
+    let clean = raw.strip_prefix("E:").unwrap_or(raw);
+    if clean.len() != 32 || !clean.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(usage(
+            format!("`{raw}` is not a 32-hex entry vid (or E:<32-hex>)"),
+            example,
+        ));
+    }
+    let id = u128::from_str_radix(clean, 16)
+        .map_err(|_| usage(format!("`{raw}` is not a 32-hex entry vid"), example))?;
+    Ok(VId(id))
+}
+
+fn explain_admissibility_cell_json(
+    class_name: &str,
+    state: PeriodState,
+    decision: &fa_registry::Decision,
+) -> Json {
+    let (admitted, required_capability, min_approvers) = match decision {
+        fa_registry::Decision::Admit => (true, Some("post"), 0i128),
+        fa_registry::Decision::With { op, approvals } => {
+            (true, Some(op.as_str()), i128::from(*approvals))
+        }
+        fa_registry::Decision::Refuse => (false, None, 0i128),
+    };
+    let requires_case_id = class_name == "PriorPeriodRestatement";
+    let requires_reason_code = matches!(
+        class_name,
+        "Adjusting" | "Reversal" | "Reclass" | "PriorPeriodRestatement"
+    ) || matches!(
+        state,
+        PeriodState::SoftClosed | PeriodState::Closed | PeriodState::Locked
+    );
+    obj(vec![
+        ("entry_class", s(class_name)),
+        ("period_state", s(state.name())),
+        ("admitted", Json::Bool(admitted)),
+        (
+            "required_capability",
+            required_capability.map_or(Json::Null, s),
+        ),
+        ("requires_case_id", Json::Bool(requires_case_id)),
+        ("requires_reason_code", Json::Bool(requires_reason_code)),
+        ("min_approvers", Json::Int(min_approvers)),
+    ])
+}
+
+fn explain_entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let out = &ctx.out;
+    let example = "fa explain entry <vid|E:vid> --book <dir>";
+    let raw = args
+        .positional
+        .get(2)
+        .ok_or_else(|| usage("explain entry needs an entry vid (32 hex)", example))?;
+    if let Some(extra) = args.positional.get(3) {
+        return Err(usage(format!("unexpected argument `{extra}`"), example));
+    }
+    let vid = parse_entry_target(raw, example)?;
+    let book = ctx.books.open(args)?;
+    let (entry, recorded_at) = book.read_entry(vid)?.ok_or_else(|| {
+        usage(
+            format!("no entry {:032x} in this book", vid.0),
+            "pass a committed entry vid from `fa post` or `fa explain balance`",
+        )
+    })?;
+    out.known_at(recorded_at);
+    let period = fa_registers::entry_period(book.context(), &entry).ok();
+    if let Some(p) = &period {
+        out.effective(format!("period:{p}"));
+    }
+    let accounts: std::collections::BTreeMap<VId, fa_journal::AccountRow> =
+        book.accounts()?.into_iter().map(|a| (a.vid, a)).collect();
+    let units = &book.context().units;
+    let reasons =
+        ReasonCodes::embedded().map_err(|e| Fail::Internal(format!("reason_codes.toml: {e}")))?;
+    let mut legs = Vec::with_capacity(entry.proposal.legs.len());
+    for (idx, leg) in entry.proposal.legs.iter().enumerate() {
+        let (acc_code, acc_name) = match accounts.get(&leg.account_ref) {
+            Some(row) => (row.code.as_str(), row.name.as_str()),
+            None => ("?", "?"),
+        };
+        legs.push(obj(vec![
+            ("ordinal", Json::Int(idx as i128)),
+            ("side", s(side_name(leg.side))),
+            ("account", s(acc_code)),
+            ("account_vid", s(format!("{:032x}", leg.account_ref.0))),
+            ("account_name", s(acc_name)),
+            ("amount", s(render_amount(leg.amount, units)?)),
+        ]));
+    }
+    let resolves = entry
+        .proposal
+        .pending
+        .as_ref()
+        .and_then(|pending| pending.resolution_of.as_ref())
+        .map(|target| format!("{:032x}", target.vid.0));
+    let disposition = entry
+        .proposal
+        .pending
+        .as_ref()
+        .and_then(|pending| pending.disposition.as_ref())
+        .map(|d| match d {
+            Disposition::Posts { .. } => "posts",
+            Disposition::Voids => "voids",
+            Disposition::Expires { .. } => "expires",
+        });
+    let supersedes: Vec<Json> = entry
+        .proposal
+        .supersession
+        .iter()
+        .map(|l| lineage_json(l, &reasons))
+        .collect();
+    let superseded_by: Vec<Json> = book
+        .superseded_by(vid)?
+        .iter()
+        .map(|l| lineage_json(l, &reasons))
+        .collect();
+    let evidence: Vec<Json> = entry
+        .proposal
+        .evidence
+        .iter()
+        .map(|e| {
+            obj(vec![
+                ("document_oid", s(hex(&e.document_oid.0))),
+                ("doc_commit", s(hex(&e.doc_commit))),
+                ("role", Json::Int(i128::from(e.role))),
+            ])
+        })
+        .collect();
+    let class_name = entry.proposal.class.name().unwrap_or("?");
+    let human = format!(
+        "entry {:032x} · {class_name} effective {} ({}) · recorded at {} · {} leg(s) · {} approval(s)",
+        vid.0,
+        entry.proposal.effective_date.render(),
+        period.as_deref().unwrap_or("book-scoped"),
+        recorded_at.0,
+        entry.proposal.legs.len(),
+        entry.approvals.len()
+    );
+    out.event(
+        "entry_explained",
+        vec![
+            ("vid", s(format!("{:032x}", vid.0))),
+            ("entry_digest", s(hex(&entry.entry_digest))),
+            ("proposal_digest", s(hex(&entry.proposal_digest))),
+            ("class", s(class_name)),
+            ("effective_date", s(entry.proposal.effective_date.render())),
+            ("period", period.as_deref().map_or(Json::Null, s)),
+            ("recorded_at", Json::Int(i128::from(recorded_at.0))),
+            (
+                "principal",
+                s(format!("{:032x}", entry.proposal.principal_ref.0)),
+            ),
+            ("approvals", Json::Int(entry.approvals.len() as i128)),
+            ("resolves", resolves.as_deref().map_or(Json::Null, s)),
+            ("disposition", disposition.map_or(Json::Null, s)),
+            ("legs", Json::Arr(legs)),
+            ("supersedes", Json::Arr(supersedes)),
+            ("superseded_by", Json::Arr(superseded_by)),
+            ("evidence", Json::Arr(evidence)),
+        ],
+        &human,
+    );
+    Ok(())
+}
+
+fn explain_evidence_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let out = &ctx.out;
+    let example = "fa explain evidence <entry-vid> --book <dir>";
+    let raw = args
+        .positional
+        .get(2)
+        .ok_or_else(|| usage("explain evidence needs an entry vid (32 hex)", example))?;
+    if let Some(extra) = args.positional.get(3) {
+        return Err(usage(format!("unexpected argument `{extra}`"), example));
+    }
+    let vid = parse_entry_target(raw, example)?;
+    let book = ctx.books.open(args)?;
+    let ex = book.explain_entry_evidence(vid)?.ok_or_else(|| {
+        usage(
+            format!("no entry {:032x} in this book", vid.0),
+            "pass a committed entry vid from `fa post` or `fa explain balance`",
+        )
+    })?;
+    out.known_at(ex.recorded_at);
+    let policy = fa_registry::evidence_policy::EvidencePolicy::embedded()
+        .map_err(|e| Fail::Internal(format!("evidence_policy.toml: {e}")))?;
+    let reasons =
+        ReasonCodes::embedded().map_err(|e| Fail::Internal(format!("reason_codes.toml: {e}")))?;
+    let min_row = policy.minimum(&ex.class);
+    let accepted_kinds: Vec<Json> = match min_row.map(|m| &m.kinds) {
+        Some(fa_registry::evidence_policy::KindSet::Any) => {
+            policy.kinds.iter().map(|k| s(&k.name)).collect()
+        }
+        Some(fa_registry::evidence_policy::KindSet::Only(tags)) => tags
+            .iter()
+            .filter_map(|tag| policy.kinds.iter().find(|k| k.tag == *tag))
+            .map(|k| s(&k.name))
+            .collect(),
+        None => Vec::new(),
+    };
+    let mut docs_json = Vec::with_capacity(ex.documents.len());
+    for doc in &ex.documents {
+        let role_name = policy
+            .roles
+            .iter()
+            .find(|r| r.tag == doc.role)
+            .map(|r| r.name.as_str());
+        let kind_name = policy
+            .kinds
+            .iter()
+            .find(|k| k.tag == doc.kind)
+            .map_or("?", |k| k.name.as_str());
+        let grade_row = policy.grades.iter().find(|g| g.tag == doc.grade);
+        let grade_name = grade_row.map_or("?", |g| g.name.as_str());
+        let is_self_sourced = grade_row.is_some_and(|g| g.self_sourced);
+        let counts = min_row.is_some_and(|m| m.kinds.admits(doc.kind))
+            && (!is_self_sourced
+                || doc
+                    .review
+                    .as_ref()
+                    .is_some_and(|r| r.reviewer != doc.retrieved_by));
+        let reviews: Vec<Json> = doc
+            .review
+            .iter()
+            .map(|r| {
+                obj(vec![
+                    (
+                        "attestation_vid",
+                        s(format!("{:032x}", r.attestation_vid.0)),
+                    ),
+                    ("reviewer", s(format!("{:032x}", r.reviewer.0))),
+                    (
+                        "against",
+                        Json::Arr(r.against.iter().map(|o| s(hex(&o.0))).collect()),
+                    ),
+                    ("recorded_at", Json::Int(i128::from(r.recorded_at.0))),
+                ])
+            })
+            .collect();
+        let mut supplements = Vec::new();
+        for sup in &ex.supplements {
+            for sref in &sup.documents {
+                if sref.document_oid == doc.document_oid {
+                    let srole = policy
+                        .roles
+                        .iter()
+                        .find(|r| r.tag == sref.role)
+                        .map(|r| r.name.as_str());
+                    supplements.push(obj(vec![
+                        ("supplement_vid", s(format!("{:032x}", sup.vid.0))),
+                        ("document_oid", s(hex(&sref.document_oid.0))),
+                        ("role", Json::Int(i128::from(sref.role))),
+                        ("role_name", srole.map_or(Json::Null, s)),
+                        ("recorded_at", Json::Int(i128::from(sup.recorded_at.0))),
+                    ]));
+                }
+            }
+        }
+        docs_json.push(obj(vec![
+            ("document_oid", s(hex(&doc.document_oid.0))),
+            ("doc_commit", s(hex(&doc.doc_commit))),
+            ("role", Json::Int(i128::from(doc.role))),
+            ("role_name", role_name.map_or(Json::Null, s)),
+            ("kind", s(kind_name)),
+            ("grade", s(grade_name)),
+            ("self_sourced", Json::Bool(is_self_sourced)),
+            ("size", Json::Int(i128::from(doc.size))),
+            ("recorded_at", Json::Int(i128::from(doc.recorded_at.0))),
+            ("reviews", Json::Arr(reviews)),
+            ("supplements", Json::Arr(supplements)),
+            ("counts_toward_minimum", Json::Bool(counts)),
+        ]));
+    }
+    let manual_assertions: Vec<Json> = ex
+        .manual_assertion
+        .iter()
+        .map(|ma| {
+            let reason_name = reasons
+                .get("manual_assertion", ma.reason_code)
+                .map(|r| r.name.as_str());
+            obj(vec![
+                (
+                    "attestation_vid",
+                    s(format!("{:032x}", ma.attestation_vid.0)),
+                ),
+                ("asserter", s(format!("{:032x}", ma.principal.0))),
+                ("reason_code", Json::Int(i128::from(ma.reason_code))),
+                ("reason", reason_name.map_or(Json::Null, s)),
+                ("recorded_at", Json::Int(i128::from(ma.recorded_at.0))),
+            ])
+        })
+        .collect();
+    let human = format!(
+        "evidence of entry {:032x} ({}) · minimum {} document(s) · satisfied={} · {} cited document(s)",
+        ex.entry_vid.0,
+        ex.class,
+        ex.min_documents,
+        ex.minimum_satisfied,
+        ex.documents.len()
+    );
+    out.event(
+        "evidence_explained",
+        vec![
+            ("entry", s(format!("{:032x}", ex.entry_vid.0))),
+            ("entry_digest", s(hex(&ex.entry_digest))),
+            ("proposal_digest", s(hex(&ex.proposal_digest))),
+            ("class", s(&ex.class)),
+            ("recorded_at", Json::Int(i128::from(ex.recorded_at.0))),
+            ("min_documents", Json::Int(i128::from(ex.min_documents))),
+            ("accepted_kinds", Json::Arr(accepted_kinds)),
+            ("accepts_self_sourced", Json::Bool(true)),
+            (
+                "accepts_manual_assertion",
+                Json::Bool(ex.manual_assertion_allowed),
+            ),
+            ("satisfied", Json::Bool(ex.minimum_satisfied)),
+            ("documents", Json::Arr(docs_json)),
+            ("manual_assertions", Json::Arr(manual_assertions)),
+        ],
+        &human,
+    );
+    Ok(())
+}
+
+fn explain_refusal_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let out = &ctx.out;
+    let example = "fa explain refusal FA-REF-001 [--json]";
+    let target = args
+        .positional
+        .get(2)
+        .ok_or_else(|| usage("explain refusal needs a refusal code (FA-REF-nnn)", example))?;
+    if let Some(extra) = args.positional.get(3) {
+        return Err(usage(format!("unexpected argument `{extra}`"), example));
+    }
+    let catalog = fa_registry::refusal_catalog::RefusalCatalog::embedded()
+        .map_err(|e| Fail::Internal(format!("refusal_catalog.toml: {e}")))?;
+    let row = catalog
+        .by_code(target)
+        .or_else(|| catalog.by_name(target))
+        .ok_or_else(|| {
+            usage(
+                format!("unknown refusal code `{target}`"),
+                "pass a registered FA-REF-nnn code from registries/refusal_catalog.toml",
+            )
+        })?;
+    let classes = fa_registry::EntryClasses::embedded()
+        .map_err(|e| Fail::Internal(format!("entry_classes.toml: {e}")))?;
+    let matrix = fa_registry::Admissibility::embedded(&classes)
+        .map_err(|e| Fail::Internal(format!("admissibility.toml: {e}")))?;
+    let sod = fa_registry::sod_policy::SodPolicy::embedded(&classes, &matrix)
+        .map_err(|e| Fail::Internal(format!("sod_policy.toml: {e}")))?;
+
+    let mut admissibility_cells = Vec::new();
+    if row.code == "FA-REF-003"
+        || row.code == "FA-REF-013"
+        || row.code == "FA-REF-051"
+        || row.code == "FA-REF-062"
+        || row.code == "FA-REF-070"
+        || row.cite.contains("Appendix C")
+        || row.cite.contains("admissibility.toml")
+    {
+        for c in classes.posting() {
+            for state in fa_registry::ALL_STATES {
+                if let Some(decision) = matrix.decide(&c.name, state) {
+                    let include = match row.code.as_str() {
+                        "FA-REF-003" => matches!(decision, fa_registry::Decision::Refuse),
+                        "FA-REF-013" | "FA-REF-016" => {
+                            matches!(decision, fa_registry::Decision::With { .. })
+                        }
+                        _ => true,
+                    };
+                    if include {
+                        admissibility_cells
+                            .push(explain_admissibility_cell_json(&c.name, state, decision));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut sod_rules = Vec::new();
+    if matches!(
+        row.code.as_str(),
+        "FA-REF-016" | "FA-REF-017" | "FA-REF-018" | "FA-REF-019" | "FA-REF-020"
+    ) || row.cite.contains("sod_policy.toml")
+        || row.cite.contains("§14.3")
+    {
+        for rule in &sod.rules {
+            sod_rules.push(obj(vec![
+                ("action", s(&rule.name)),
+                ("conflict_with", s(rule.requirement.exclusions.join(","))),
+                (
+                    "min_distinct_principals",
+                    Json::Int(i128::from(rule.requirement.approvers.saturating_add(1))),
+                ),
+                (
+                    "agent_eligible",
+                    Json::Bool(
+                        rule.requirement
+                            .approver_profiles
+                            .iter()
+                            .any(|p| p == "Agent"),
+                    ),
+                ),
+                ("refusal_code", s(&row.code)),
+            ]));
+        }
+    }
+
+    let message = format!(
+        "{} ({}): {} [owners: {}]",
+        row.code,
+        row.name,
+        row.cite,
+        row.owners.join(", ")
+    );
+    let human = format!(
+        "{} ({}) · exit {} ({})\ncite: {}\nfix:  {}",
+        row.code, row.name, row.exit, row.exit_name, row.cite, row.fix
+    );
+    out.event(
+        "refusal_explained",
+        vec![
+            ("id", s(&row.code)),
+            ("exit", Json::Int(i128::from(row.exit))),
+            ("class", s(&row.exit_name)),
+            ("cite", s(&row.cite)),
+            ("message", s(&message)),
+            ("fix", s(&row.fix)),
+            ("admissibility_cells", Json::Arr(admissibility_cells)),
+            ("sod_rules", Json::Arr(sod_rules)),
+        ],
+        &human,
+    );
+    Ok(())
+}
+
+fn explain_period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let out = &ctx.out;
+    let example = "fa explain period FY2026-P01 --book <dir>";
+    let code = args
+        .positional
+        .get(2)
+        .ok_or_else(|| usage("explain period needs a period code", example))?;
+    if let Some(extra) = args.positional.get(3) {
+        return Err(usage(format!("unexpected argument `{extra}`"), example));
+    }
+    let book = ctx.books.open(args)?;
+    let periods = book.periods()?;
+    let Some(period) = periods.iter().find(|p| p.code == *code) else {
+        let codes: Vec<&str> = periods.iter().map(|p| p.code.as_str()).collect();
+        return Err(usage(
+            format!("no period `{code}` in this book"),
+            match nearest(code, &codes) {
+                Some(near) => format!("did you mean `{near}`? (fa period list)"),
+                None => "fa period list --book <dir>".to_string(),
+            },
+        ));
+    };
+    out.effective(format!("period:{code}"));
+    let reasons =
+        ReasonCodes::embedded().map_err(|e| Fail::Internal(format!("reason_codes.toml: {e}")))?;
+    let transitions_raw = book.period_transitions(code)?;
+    let transitions: Vec<Json> = transitions_raw
+        .iter()
+        .map(|t| {
+            let reason_name = reasons
+                .get("period_control", t.reason_code)
+                .map(|r| r.name.as_str());
+            obj(vec![
+                ("control_entry", s(format!("{:032x}", t.entry_vid.0))),
+                ("from", s(t.from.name())),
+                ("to", s(t.to.name())),
+                ("reason_code", Json::Int(i128::from(t.reason_code))),
+                ("reason", reason_name.map_or(Json::Null, s)),
+                ("principal", s(format!("{:032x}", t.principal_ref.0))),
+                ("approvals", Json::Int(t.approvals.len() as i128)),
+                ("effective_date", s(t.effective_date.render())),
+                ("recorded_at", Json::Int(i128::from(t.recorded_at.0))),
+            ])
+        })
+        .collect();
+
+    let classes = fa_registry::EntryClasses::embedded()
+        .map_err(|e| Fail::Internal(format!("entry_classes.toml: {e}")))?;
+    let matrix = fa_registry::Admissibility::embedded(&classes)
+        .map_err(|e| Fail::Internal(format!("admissibility.toml: {e}")))?;
+    let opening_date = book.spec()?.opening_date;
+    let pre_opening = matrix
+        .pre_opening()
+        .is_some_and(|r| r.governs(period.kind, period.end, opening_date));
+    let mut admissible_classes = Vec::new();
+    for c in classes.posting() {
+        let decision = fa_journal::decide_admissibility_cell(
+            &matrix,
+            &c.name,
+            period.state,
+            fa_registry::DispositionFamily::Standard,
+            period.kind,
+            pre_opening,
+        )
+        .unwrap_or(fa_registry::Decision::Refuse);
+        admissible_classes.push(explain_admissibility_cell_json(
+            &c.name,
+            period.state,
+            &decision,
+        ));
+    }
+
+    let human = format!(
+        "period {} ({}, {}) · {}..={} · FY{} · {} transition(s)",
+        period.code,
+        kind_name(period.kind),
+        period.state.name(),
+        period.start.render(),
+        period.end.render(),
+        period.fiscal_year,
+        transitions_raw.len()
+    );
+    out.event(
+        "period_explained",
+        vec![
+            ("code", s(&period.code)),
+            ("kind", s(kind_name(period.kind))),
+            ("state", s(period.state.name())),
+            ("start", s(period.start.render())),
+            ("end", s(period.end.render())),
+            ("fiscal_year", Json::Int(i128::from(period.fiscal_year))),
+            ("transitions", Json::Arr(transitions)),
+            ("admissible_classes", Json::Arr(admissible_classes)),
+        ],
+        &human,
+    );
+    Ok(())
+}
+
+fn explain_register_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let out = &ctx.out;
+    let example = "fa explain register 1000 --period FY2026-P01 [--unit USD] [--as-known-at HEAD|<seq>] --book <dir>";
+    let code = args
+        .positional
+        .get(2)
+        .ok_or_else(|| usage("explain register needs an account code", example))?;
+    if let Some(extra) = args.positional.get(3) {
+        return Err(usage(format!("unexpected argument `{extra}`"), example));
+    }
+    if args.flag_all("--period").len() > 1 {
+        return Err(usage(
+            "explain register explains one period at a time",
+            example,
+        ));
+    }
+    let period = args.require("--period", "FY2026-P01")?;
+    let book = ctx.books.open(args)?;
+    let (known_at, _) = known_at_flag(args, &book, out)?;
+    let unit_filter: Option<(u32, String)> = match args.flag("--unit") {
+        None => None,
+        Some(ucode) => {
+            let uid = book.context().units.lookup(ucode).ok_or_else(|| {
+                usage(
+                    format!("unknown unit `{ucode}`"),
+                    "pass a registered unit code such as USD",
+                )
+            })?;
+            Some((uid.0, ucode.to_string()))
+        }
+    };
+    let account = account_vid(book.context().book_id, code);
+    let explain_error = |error| explanation_selection_error(&book, code, period, known_at, error);
+    let ex = book
+        .explain_balance(account, period, known_at)
+        .map_err(explain_error)?;
+    validate_balance_explanation_units(&ex, &book.context().units)?;
+    let v = book.verify_registers(period)?;
+    out.known_at(ex.known_at);
+    out.effective(format!("period:{}", ex.period));
+
+    let units = &book.context().units;
+    let render = |unit: u32, m: i128| render_amount(Amount::new(fa_money::UnitId(unit), m), units);
+    let unit_code = |unit: u32| registered_unit_code(fa_money::UnitId(unit), units);
+    let account_row = &ex.account_row;
+    let type_name = AccountType(account_row.account_type).name().unwrap_or("?");
+    let reasons =
+        ReasonCodes::embedded().map_err(|e| Fail::Internal(format!("reason_codes.toml: {e}")))?;
+
+    let mut by_unit: std::collections::BTreeMap<u32, [i128; 6]> = std::collections::BTreeMap::new();
+    for c in &ex.cells {
+        if unit_filter
+            .as_ref()
+            .is_none_or(|(u, _)| *u == c.key.unit_id)
+        {
+            let row = by_unit.entry(c.key.unit_id).or_insert([0; 6]);
+            row[0] = c.debits;
+            row[1] = c.credits;
+            row[2] = i128::from(c.entry_count);
+        }
+    }
+    for c in &ex.pending {
+        if unit_filter
+            .as_ref()
+            .is_none_or(|(u, _)| *u == c.key.unit_id)
+        {
+            let row = by_unit.entry(c.key.unit_id).or_insert([0; 6]);
+            row[3] = c.debits;
+            row[4] = c.credits;
+            row[5] = i128::from(c.entry_count);
+        }
+    }
+    let cells: Vec<Json> = by_unit
+        .iter()
+        .map(|(u, [d, c, n, pd, pc, pn])| {
+            Ok(obj(vec![
+                ("unit", s(unit_code(*u)?)),
+                ("debits", s(render(*u, *d)?)),
+                ("credits", s(render(*u, *c)?)),
+                ("net", s(render(*u, d - c)?)),
+                ("entry_count", Json::Int(*n)),
+                ("debits_pending", s(render(*u, *pd)?)),
+                ("credits_pending", s(render(*u, *pc)?)),
+                ("pending_count", Json::Int(*pn)),
+            ]))
+        })
+        .collect::<Result<_, Fail>>()?;
+    let contributions: Vec<Json> = ex
+        .contributions
+        .iter()
+        .filter(|c| unit_filter.as_ref().is_none_or(|(u, _)| *u == c.unit_id))
+        .map(|c| {
+            Ok(obj(vec![
+                ("entry", s(format!("{:032x}", c.entry.0))),
+                ("entry_digest", s(hex(&c.entry_digest))),
+                ("class", s(c.class.name().unwrap_or("?"))),
+                ("effective_date", s(c.effective_date.render())),
+                ("recorded_at", Json::Int(i128::from(c.recorded_at.0))),
+                ("ordinal", Json::Int(i128::from(c.ordinal))),
+                ("side", s(side_name(c.side))),
+                ("amount", s(render(c.unit_id, c.mantissa)?)),
+                ("column", s(c.column.name())),
+                (
+                    "released_at",
+                    c.released_at
+                        .map_or(Json::Null, |r| Json::Int(i128::from(r.0))),
+                ),
+                (
+                    "resolves",
+                    c.resolves
+                        .map_or(Json::Null, |v| s(format!("{:032x}", v.0))),
+                ),
+                (
+                    "supersedes",
+                    Json::Arr(
+                        c.supersedes
+                            .iter()
+                            .map(|l| lineage_json(l, &reasons))
+                            .collect(),
+                    ),
+                ),
+                (
+                    "evidence",
+                    Json::Arr(
+                        c.evidence
+                            .iter()
+                            .map(|e| {
+                                obj(vec![
+                                    ("document_oid", s(hex(&e.document_oid.0))),
+                                    ("doc_commit", s(hex(&e.doc_commit))),
+                                    ("role", Json::Int(i128::from(e.role))),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                ),
+            ]))
+        })
+        .collect::<Result<_, Fail>>()?;
+
+    let cache_status = match v.cache_status {
+        fa_registers::CacheStatus::Uninitialized => "uninitialized",
+        fa_registers::CacheStatus::Verified => "verified",
+        fa_registers::CacheStatus::Corrupt => "corrupt",
+    };
+    let human = format!(
+        "register {} {} ({type_name}) in {} · cache_status={cache_status} · green={} · stale={} · lag={}",
+        account_row.code,
+        account_row.name,
+        ex.period,
+        v.is_green(),
+        v.stale,
+        v.lag_entries
+    );
+    out.event(
+        "register_explained",
+        vec![
+            ("account", s(&account_row.code)),
+            ("account_vid", s(format!("{:032x}", account_row.vid.0))),
+            ("name", s(&account_row.name)),
+            ("type", s(type_name)),
+            ("period", s(&ex.period)),
+            (
+                "unit",
+                unit_filter.as_ref().map_or(Json::Null, |(_, code)| s(code)),
+            ),
+            ("known_at", Json::Int(i128::from(ex.known_at.0))),
+            (
+                "watermark",
+                ex.watermark
+                    .map_or(Json::Null, |w| Json::Int(i128::from(w.0))),
+            ),
+            ("fold_digest", s(hex(&ex.fold_digest))),
+            ("green", Json::Bool(v.is_green())),
+            ("cache_status", s(cache_status)),
+            (
+                "verified_through",
+                v.verified_through
+                    .map_or(Json::Null, |s| Json::Int(i128::from(s.0))),
+            ),
+            ("stale", Json::Bool(v.stale)),
+            ("lag_entries", Json::Int(v.lag_entries as i128)),
+            ("cells", Json::Arr(cells)),
+            ("contributions", Json::Arr(contributions)),
+        ],
+        &human,
+    );
+    Ok(())
+}
+
+/// `fa explain balance <account> --period <code> [--as-known-at HEAD|<seq>]`.
+fn explain_balance_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let out = &ctx.out;
     let example = "fa explain balance 1000 --period FY2026-P03 --book <dir>";
     let code = args
         .positional

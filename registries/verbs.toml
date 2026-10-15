@@ -304,14 +304,14 @@ example = "fa gl detail --account 1000 --from 2026-03-01 --to 2026-03-31 --book 
 
 [[verb]]
 name = "explain"
-summary = "Explain a leaf account's balance: its register cells in a period, the fold they belong to, every contributing leg with its recorded sequence, and the cell's known-at history."
+summary = "Explain a leaf account's balance, a committed entry and its lineage, an entry's evidence closure, a refusal code from the embedded catalog, a fiscal period's state and transitions, or a register cell's fold vs materialized state."
 writes = true
-subcommands = ["balance"]
-flags = ["--period", "--as-known-at", "--certificate-out"]
+subcommands = ["balance", "entry", "evidence", "refusal", "period", "register"]
+flags = ["--period", "--unit", "--as-known-at", "--certificate-out"]
 switches = ["--certify"]
-events = ["balance_explained", "report_certificate"]
+events = ["balance_explained", "entry_explained", "evidence_explained", "refusal_explained", "period_explained", "register_explained", "report_certificate"]
 exits = [0, 2, 3, 4, 5, 8]
-usage = ["explain balance <account code> --period <code> [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]", "Without certification this is a pure read. --certify retains the exact explanation and native read closure in the book; --certificate-out also creates a new external copy. The certificate binds historical account metadata, contributing entries, evidence references, lineage, cell history, and the whole-period fold."]
+usage = ["explain balance <account code> --period <code> [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]", "explain entry <vid|E:vid>", "explain evidence <entry-vid|E:vid>", "explain refusal <FA-REF-nnn>", "explain period <period-code>", "explain register <account-code> --period <code> [--unit <CODE>] [--as-known-at HEAD|<seq>]", "Without certification this is a pure read; `explain refusal` requires no book. --certify (on `explain balance`) retains the exact explanation and native read closure in the book; --certificate-out also creates a new external copy. The certificate binds historical account metadata, contributing entries, evidence references, lineage, cell history, and the whole-period fold."]
 example = "fa explain balance 1000 --period FY2026-P03 --book ./books/myco --json"
 
 [[verb]]
@@ -969,6 +969,36 @@ doc = "A leaf account's register cells in one period at the `known_at` snapshot:
 fields = ["account:string", "account_vid:hex", "name:string", "type:string", "period:string", "known_at:seq", "watermark:seq?", "fold_digest:hex", "certificate:hex?", "cells:[explained_cell]", "contributions:[contribution]", "history:[cell_change]", "last_changed_at:seq?"]
 
 [[event]]
+name = "entry_explained"
+book = true
+doc = "An explained committed entry (`fa explain entry <vid>`): its payload, posting period, resolved legs with account codes and names, supersession lineage (both what it supersedes and any later entries that supersede it), cited evidence, and approval count."
+fields = ["vid:hex", "entry_digest:hex", "proposal_digest:hex", "class:string", "effective_date:date", "period:string?", "recorded_at:seq", "principal:hex", "approvals:int", "resolves:hex?", "disposition:string?", "legs:[explained_entry_leg]", "supersedes:[lineage]", "superseded_by:[lineage]", "evidence:[evidence_head]"]
+
+[[event]]
+name = "evidence_explained"
+book = true
+doc = "An entry's complete evidence closure (`fa explain evidence <entry-vid>`): the class's registered evidence policy minimum (`evidence_policy.toml`), every cited document with its commitment, intake grade, self-sourced status, Reviewed attestations, and SupplementalEvidence links, plus any ManualAssertion attestations over the entry's proposal digest, and whether the closure satisfies the class minimum."
+fields = ["entry:hex", "entry_digest:hex", "proposal_digest:hex", "class:string", "recorded_at:seq", "min_documents:int", "accepted_kinds:[string]", "accepts_self_sourced:bool", "accepts_manual_assertion:bool", "satisfied:bool", "documents:[explained_document]", "manual_assertions:[explained_manual_assertion]"]
+
+[[event]]
+name = "refusal_explained"
+book = false
+doc = "A refusal code from the embedded catalog (`refusal_catalog.toml`, `fa explain refusal <FA-REF-nnn>`): its exit code and class, law citation, message, remediation fix, and any cross-referenced admissibility matrix cells or SoD policy rows."
+fields = ["id:string", "exit:int", "class:string", "cite:string", "message:string", "fix:string", "admissibility_cells:[explained_admissibility_cell]", "sod_rules:[explained_sod_rule]"]
+
+[[event]]
+name = "period_explained"
+book = true
+doc = "A fiscal period's state, boundaries, and recorded state-machine transition history (`fa explain period <code>`), plus the admissibility rules for posting into its current state."
+fields = ["code:string", "kind:string", "state:string", "start:date", "end:date", "fiscal_year:int", "transitions:[period_transition_row]", "admissible_classes:[explained_admissibility_cell]"]
+
+[[event]]
+name = "register_explained"
+book = true
+doc = "A register cell's fold vs stored materialized state (`fa explain register <account-code> --period <code> [--unit <UNIT>] [--as-known-at HEAD|<seq>]`): the refolded cell, stored materialized cell, verification status (`green`, `cache_status`, `stale`, `lag_entries`), and contributing legs."
+fields = ["account:string", "account_vid:hex", "name:string", "type:string", "period:string", "unit:string?", "known_at:seq", "watermark:seq?", "fold_digest:hex", "green:bool", "cache_status:string", "verified_through:seq?", "stale:bool", "lag_entries:int", "cells:[explained_cell]", "contributions:[contribution]"]
+
+[[event]]
 name = "document_read"
 book = true
 doc = "A document read under the caller's capability (plan §9.7): `view` is `full` or `redacted`, `bytes_hex` carries the full content when unredacted, and `disclosed_chunks`/`withheld_chunks`/`view_commit` describe a redacted view."
@@ -1444,6 +1474,46 @@ doc = "The cell in one unit as known after `recorded_at`, at every sequence that
 fields = ["recorded_at:seq", "unit:string", "debits:amount", "credits:amount", "debits_pending:amount", "credits_pending:amount"]
 
 [[shape]]
+name = "explained_entry_leg"
+doc = "One leg of an explained entry, with its resolved account code and name."
+fields = ["ordinal:int", "side:string", "account:string", "account_vid:hex", "account_name:string", "amount:amount"]
+
+[[shape]]
+name = "explained_document"
+doc = "One cited document in an entry's evidence closure, with its metadata, reviews, supplements, and whether it counts toward the class minimum."
+fields = ["document_oid:hex", "doc_commit:hex", "role:int", "role_name:string?", "kind:string", "grade:string", "self_sourced:bool", "size:int", "recorded_at:seq", "reviews:[explained_review]", "supplements:[explained_supplement]", "counts_toward_minimum:bool"]
+
+[[shape]]
+name = "explained_review"
+doc = "A Reviewed attestation over a cited document."
+fields = ["attestation_vid:hex", "reviewer:hex", "against:[hex]", "recorded_at:seq"]
+
+[[shape]]
+name = "explained_supplement"
+doc = "A SupplementalEvidence link recorded against an entry."
+fields = ["supplement_vid:hex", "document_oid:hex", "role:int", "role_name:string?", "recorded_at:seq"]
+
+[[shape]]
+name = "explained_manual_assertion"
+doc = "A ManualAssertion attestation bound to an entry's proposal digest."
+fields = ["attestation_vid:hex", "asserter:hex", "reason_code:int", "reason:string?", "recorded_at:seq"]
+
+[[shape]]
+name = "explained_admissibility_cell"
+doc = "One cell of the Appendix C admissibility matrix (`admissibility.toml`)."
+fields = ["entry_class:string", "period_state:string", "admitted:bool", "required_capability:string?", "requires_case_id:bool", "requires_reason_code:bool", "min_approvers:int"]
+
+[[shape]]
+name = "explained_sod_rule"
+doc = "One segregation-of-duties rule from `sod_policy.toml`."
+fields = ["action:string", "conflict_with:string", "min_distinct_principals:int", "agent_eligible:bool", "refusal_code:string"]
+
+[[shape]]
+name = "period_transition_row"
+doc = "One journaled period-state transition control entry."
+fields = ["control_entry:hex", "from:string", "to:string", "reason_code:int?", "reason:string?", "principal:hex", "approvals:int", "effective_date:date", "recorded_at:seq"]
+
+[[shape]]
 name = "coordinate"
 doc = "What a line describes (plan §4.8), beside the envelope's `book` (the book id): the branch (`trunk`; drafts and scenarios land later), `known_at` (the recorded sequence: the head when read, or the one --as-known-at selected; after a write, the head that write produced), and `effective` (`all`, `period:<code>`, `periods:<code>,<code>…`, or `as-of:<YYYY-MM-DD>`). `time_evidence` is null for sequence/HEAD reads; instant reads and their replays retain the original observed frontier, resolved sequence and tick brackets."
 fields = ["branch:string", "known_at:seq", "effective:string", "time_evidence:time_evidence?"]
@@ -1631,6 +1701,19 @@ required = []
 dont = ["Don't repair what a failing check names yourself: each check carries its exact fix, and key-file or lease problems are the operator's."]
 mistakes = ["Reading the writer_lease check as another process's lock: under fa-mcp the launch-bound session itself holds the book's lease once a command has opened it."]
 
+[[mcp.tool]]
+cluster = "fa.orient"
+name = "explain"
+verb = "explain"
+subcommands = ["entry", "evidence", "refusal", "period", "register"]
+selector = "subject"
+positionals = ["target"]
+flags = ["--period", "--unit", "--as-known-at"]
+switches = []
+required = ["target"]
+dont = ["Don't guess what a refusal code means or how to remediate it: `subject: \"refusal\"` with `target: \"FA-REF-nnn\"` prints its law citation, admissibility cells, SoD rules, and exact fix without needing an open book.", "Don't trust a materialized register without checking its fold: `subject: \"register\"` compares the refolded cell against the stored cache."]
+mistakes = ["Calling `subject: \"register\"` without `period`.", "Passing an `entry_digest` instead of the 32-hex `vid` to `subject: \"entry\"` or `subject: \"evidence\"`."]
+
 
 # ---- fa.book ----------------------------------------------------------------
 
@@ -1728,23 +1811,15 @@ mistakes = ["Passing a host path as `file`: supply the chart object inline as `c
 
 [[mcp.tool]]
 cluster = "fa.chart"
-name = "chart_templates"
-verb = "chart"
-subcommands = ["templates"]
-positionals = []
-required = []
-dont = ["Don't treat a template as advice: it is a starting chart to adapt, not GAAP, IFRS or a regulatory mapping."]
-mistakes = ["Importing a template into a book that already has those accounts: the codes are identities, so the second import is refused."]
-
-[[mcp.tool]]
-cluster = "fa.chart"
 name = "list_accounts"
 verb = "chart"
-subcommands = ["list"]
+subcommands = ["list", "templates"]
+selector = "action"
 positionals = []
+flags = []
 required = []
-dont = ["Don't pick an account by name alone; post by `code`, and only to a `leaf`."]
-mistakes = []
+dont = ["Don't pick an account by name alone; post by `code`, and only to a `leaf`.", "Don't treat a template as advice: it is a starting chart to adapt, not GAAP, IFRS or a regulatory mapping."]
+mistakes = ["Importing a template into a book that already has those accounts: the codes are identities, so the second import is refused."]
 
 # ---- fa.post ----------------------------------------------------------------
 
