@@ -253,6 +253,8 @@ pub struct Invariants {
     pub clauses: Vec<Clause>,
     /// The clauses gate G1 requires live (those whose `first_gate` is G1).
     pub gate_g1: Vec<String>,
+    /// Shipped capabilities and the clauses they depend on (bead `fa-j6ue`).
+    pub shipped_capabilities: BTreeMap<String, Vec<String>>,
 }
 
 fn bad(message: impl Into<String>) -> RegistryError {
@@ -419,10 +421,42 @@ impl Invariants {
                 missing.full_id()
             )));
         }
+
+        let shipped_table = doc
+            .tables
+            .get("shipped_capabilities")
+            .ok_or_else(|| bad("missing [shipped_capabilities]"))?;
+        if shipped_table.is_empty() {
+            return Err(bad("[shipped_capabilities] must not be empty"));
+        }
+        let mut shipped_capabilities = BTreeMap::new();
+        for cap in shipped_table.keys() {
+            let cap_clauses = strings(shipped_table, cap, "shipped_capabilities")?;
+            if cap_clauses.is_empty() {
+                return Err(bad(format!(
+                    "shipped_capabilities `{cap}` must name at least one clause"
+                )));
+            }
+            for clause_id in &cap_clauses {
+                let Some(clause) = by_id.get(clause_id) else {
+                    return Err(bad(format!(
+                        "shipped_capabilities `{cap}` names unknown clause `{clause_id}`"
+                    )));
+                };
+                if !clause.is_live() {
+                    return Err(bad(format!(
+                        "clause={clause_id} shipped_by={cap}: shipped capability depends on dormant clause"
+                    )));
+                }
+            }
+            shipped_capabilities.insert(cap.clone(), cap_clauses);
+        }
+
         Ok(Self {
             invariants,
             clauses,
             gate_g1,
+            shipped_capabilities,
         })
     }
 
@@ -968,6 +1002,14 @@ mod tests {
                 good.replacen(
                     "negatives = [\"fa-journal::tests/genesis.rs::summary_account_unknown_account_and_unit_policy_are_refused\"]",
                     "negatives = [\"fa-journal::tests/genesis.rs::balanced_entry_commits_with_mirrors_and_edges_in_one_transaction\"]",
+                    1,
+                ),
+            ),
+            (
+                "shipped capability depends on dormant clause",
+                good.replacen(
+                    "replay = [\"FA-INV-11.core\"]",
+                    "replay = [\"FA-INV-11.report-replay\"]",
                     1,
                 ),
             ),

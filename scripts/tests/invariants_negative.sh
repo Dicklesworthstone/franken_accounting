@@ -75,4 +75,34 @@ else
   gate_fail "invariants-negative — a missing transcript gave exit $RC; see $OUT"
 fi
 
+# 3. Planted dormant clause under a shipped capability (fa-j6ue).
+sed 's/^replay = \["FA-INV-11.core"\]$/replay = ["FA-INV-11.report-replay"]/' "$REGISTRY" >"$WORK/shipped-dormant.toml"
+run_case shipped-dormant "$WORK/shipped-dormant.toml" "$TRANSCRIPT"
+shipped_line="$(grep '^FAIL clause=FA-INV-11\.report-replay shipped_by=replay' "$OUT" | head -n 1)"
+if [ "$RC" -eq 1 ] && [ -n "$shipped_line" ]; then
+  gate_pass "invariants-negative — planted dormant shipped capability is caught: ${shipped_line#FAIL }"
+else
+  gate_fail "invariants-negative — planted dormant shipped capability was not caught (exit $RC); see $OUT"
+fi
+
+# 4. --gate g2 mode fails when G2 clauses are still dormant, while --gate g1 passes when G1 is all live (fa-j6ue).
+OUT="$WORK/gate-g1.transcript"
+bash "$CHECK" --gate g1 "$REGISTRY" "$TRANSCRIPT" >"$OUT" 2>"$WORK/gate-g1.stderr"
+RC=$?
+if [ "$RC" -eq 0 ]; then
+  gate_pass "invariants-negative — --gate g1 passes when all G1 clauses are live"
+else
+  gate_fail "invariants-negative — --gate g1 failed unexpectedly (exit $RC); see $OUT"
+fi
+
+OUT="$WORK/gate-g2.transcript"
+bash "$CHECK" --gate g2 "$REGISTRY" "$TRANSCRIPT" >"$OUT" 2>"$WORK/gate-g2.stderr"
+RC=$?
+g2_line="$(grep '^FAIL gate G2 blocked by ' "$OUT" | head -n 1)"
+if [ "$RC" -eq 1 ] && [ -n "$g2_line" ]; then
+  gate_pass "invariants-negative — --gate g2 catches dormant G2 blockers: ${g2_line#FAIL }"
+else
+  gate_fail "invariants-negative — --gate g2 did not fail on dormant G2 clauses (exit $RC); see $OUT"
+fi
+
 gate_verdict

@@ -33,8 +33,23 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/gate_verdict.sh
 . "$ROOT/scripts/lib/gate_verdict.sh"
 
+TARGET_GATE=""
+if [ "$#" -ge 2 ] && [ "$1" = "--gate" ]; then
+  case "$2" in
+    g1|G1) TARGET_GATE="G1" ;;
+    g2|G2) TARGET_GATE="G2" ;;
+    g3|G3) TARGET_GATE="G3" ;;
+    g4|G4) TARGET_GATE="G4" ;;
+    *)
+      printf 'FAIL invariants_check.sh: unknown gate `%s` (expected g1|g2|g3|g4)\n' "$2"
+      exit 1
+      ;;
+  esac
+  shift 2
+fi
+
 if [ "$#" -ne 2 ]; then
-  printf 'FAIL invariants_check.sh: usage: invariants_check.sh <invariants.toml> <test-transcript>\n'
+  printf 'FAIL invariants_check.sh: usage: invariants_check.sh [--gate g1|g2|g3|g4] <invariants.toml> <test-transcript>\n'
   exit 1
 fi
 REGISTRY="$1"
@@ -136,25 +151,79 @@ while read -r clause; do
   fi
 done <<<"$CLAUSES"
 
-# Gate G1 needs every clause whose first_gate is G1 live; a dormant one is not
-# this gate's failure (each commit is not a G1 claim) but it is never hidden.
-# Indented: column 0 of stdout belongs to the verdict vocabulary.
-awk '
-  function str(line) { sub(/^[a-z_]+ = "/, "", line); sub(/"$/, "", line); return line }
-  function flush() {
-    if (in_clause && status == "dormant" && gate == "G1") {
-      sub(/^activating = \[/, "", activating); sub(/\]$/, "", activating); gsub(/"/, "", activating)
-      printf "  note: gate G1 is blocked by %s.%s (dormant; activating %s)\n", inv, id, activating
+# Shipped capabilities (bead fa-j6ue): every clause under [shipped_capabilities]
+# must be live. A dormant or unknown clause under a shipped capability fails.
+SHIPPED_PAIRS="$(awk '
+  /^\[shipped_capabilities\]/ { in_sc = 1; next }
+  /^\[/ { in_sc = 0; next }
+  in_sc && /^[a-z0-9_-]+ = \[/ {
+    cap = $0
+    sub(/ = \[.*/, "", cap)
+    arr = $0
+    sub(/^[a-z0-9_-]+ = \[/, "", arr)
+    sub(/\]$/, "", arr)
+    n = split(arr, parts, /", "/)
+    for (i = 1; i <= n; i++) {
+      c = parts[i]
+      gsub(/"/, "", c)
+      if (c != "") print cap " " c
     }
   }
-  /^\[\[clause\]\]/ { flush(); in_clause = 1; inv = ""; id = ""; status = ""; gate = ""; activating = ""; next }
-  /^\[/ { flush(); in_clause = 0; next }
-  in_clause && /^invariant = / { inv = str($0) }
-  in_clause && /^id = / { id = str($0) }
-  in_clause && /^status = / { status = str($0) }
-  in_clause && /^first_gate = / { gate = str($0) }
-  in_clause && /^activating = / { activating = $0 }
-  END { flush() }
-' "$REGISTRY"
+' "$REGISTRY")"
+
+if [ -z "$SHIPPED_PAIRS" ]; then
+  gate_fail "invariants — $REGISTRY has no [shipped_capabilities] entries"
+else
+  while read -r cap req_clause; do
+    [ -n "$cap" ] || continue
+    if ! grep -Fxq "$req_clause" <<<"$CLAUSES"; then
+      gate_fail "clause=$req_clause shipped_by=$cap — shipped capability depends on dormant or unknown clause"
+    fi
+  done <<<"$SHIPPED_PAIRS"
+fi
+
+# Gate mode (`--gate g1|g2|g3|g4`) fails when any clause required by the gate
+# is dormant. Default mode keeps the G1 blocker note.
+if [ -n "$TARGET_GATE" ]; then
+  BLOCKERS="$(awk -v target="$TARGET_GATE" '
+    function str(line) { sub(/^[a-z_]+ = "/, "", line); sub(/"$/, "", line); return line }
+    function flush() {
+      if (in_clause && status == "dormant" && gate != "" && gate <= target) {
+        sub(/^activating = \[/, "", activating); sub(/\]$/, "", activating); gsub(/"/, "", activating)
+        printf "%s.%s %s (%s)\n", inv, id, gate, activating
+      }
+    }
+    /^\[\[clause\]\]/ { flush(); in_clause = 1; inv = ""; id = ""; status = ""; gate = ""; activating = ""; next }
+    /^\[/ { flush(); in_clause = 0; next }
+    in_clause && /^invariant = / { inv = str($0) }
+    in_clause && /^id = / { id = str($0) }
+    in_clause && /^status = / { status = str($0) }
+    in_clause && /^first_gate = / { gate = str($0) }
+    in_clause && /^activating = / { activating = $0 }
+    END { flush() }
+  ' "$REGISTRY")"
+  while read -r blk_line; do
+    [ -n "$blk_line" ] || continue
+    gate_fail "gate $TARGET_GATE blocked by $blk_line"
+  done <<<"$BLOCKERS"
+else
+  awk '
+    function str(line) { sub(/^[a-z_]+ = "/, "", line); sub(/"$/, "", line); return line }
+    function flush() {
+      if (in_clause && status == "dormant" && gate == "G1") {
+        sub(/^activating = \[/, "", activating); sub(/\]$/, "", activating); gsub(/"/, "", activating)
+        printf "  note: gate G1 is blocked by %s.%s (dormant; activating %s)\n", inv, id, activating
+      }
+    }
+    /^\[\[clause\]\]/ { flush(); in_clause = 1; inv = ""; id = ""; status = ""; gate = ""; activating = ""; next }
+    /^\[/ { flush(); in_clause = 0; next }
+    in_clause && /^invariant = / { inv = str($0) }
+    in_clause && /^id = / { id = str($0) }
+    in_clause && /^status = / { status = str($0) }
+    in_clause && /^first_gate = / { gate = str($0) }
+    in_clause && /^activating = / { activating = $0 }
+    END { flush() }
+  ' "$REGISTRY"
+fi
 
 gate_verdict
