@@ -1,0 +1,202 @@
+# =============================================================================
+# registries/constitution.toml — Claim-Class Lattice, Constitutional Constraints
+# FA-CON-01..14, and the Six Core Bets A1..A6 (plan §0.2, §1, §18.2, bead fa-szi)
+# =============================================================================
+
+schema_version = 1
+
+# ---- Claim-class lattice (invariant > proof > bounded_model > statistical > slo > benchmark) ----
+
+[[claim_class]]
+rank = 1
+name = "invariant"
+registry = "invariants.toml"
+marker_prefix = "FA-INV"
+statement = "Exact safety or liveness obligation enforced on every execution and checked by a live checker; waiver is forbidden."
+
+[[claim_class]]
+rank = 2
+name = "proof"
+registry = "proof_lanes.toml"
+marker_prefix = "FA-PROOF"
+statement = "Machine-checked formal theorem (Lean 4) over a stated mathematical model with concrete vector cross-checks."
+
+[[claim_class]]
+rank = 3
+name = "bounded_model"
+registry = "proof_lanes.toml"
+marker_prefix = "FA-MODEL"
+statement = "Exhaustive state-space check (TLA+/TLC or DPOR schedule exploration) within explicitly declared bounds."
+
+[[claim_class]]
+rank = 4
+name = "statistical"
+registry = "evidence.toml"
+marker_prefix = "FA-EVID"
+statement = "Calibrated empirical or statistical detector evaluation (precision, recall, conformity, or threshold tuning FA-CAL)."
+
+[[claim_class]]
+rank = 5
+name = "slo"
+registry = "slo.toml"
+marker_prefix = "FA-CFG"
+statement = "Capacity model or operational service-level objective derivable from substrate barrier floors."
+
+[[claim_class]]
+rank = 6
+name = "benchmark"
+registry = "slo.toml"
+marker_prefix = "FA-BENCH"
+statement = "Reproducible performance measurement on a pinned hardware/workload manifest against an incumbent baseline."
+
+# ---- The Six Core Bets (plan §0.2) ------------------------------------------
+
+[[bet]]
+id = "A1"
+name = "One Posting Universe"
+plan_ref = "§0.2 A1, §5"
+summary = "There are no mutable balance rows; every balance, register, trial balance, and statement is a deterministic fold over the immutable entry stream."
+
+[[bet]]
+id = "A2"
+name = "Bitemporal by Construction, Period Law Mechanized"
+plan_ref = "§0.2 A2, §7"
+summary = "Period-scoped entries carry an effective date and a CommitSeq assigned by the commit stream; close, reopen, and restate are journaled controls enforced at commit."
+
+[[bet]]
+id = "A3"
+name = "Evidence-Native and Outsider-Verifiable"
+plan_ref = "§0.2 A3, §9, §13"
+summary = "Every entry binds its provenance closure (documents, event, rule version, principal, approvals) and is offline-verifiable via fa-verify."
+
+[[bet]]
+id = "A4"
+name = "The Ledger Is a Graph (REA)"
+plan_ref = "§0.2 A4, §4, §11"
+summary = "Accounts, entities, parties, instruments, documents, periods, and findings are vertices; legs, approvals, ownership, settlement, and supersession are edges."
+
+[[bet]]
+id = "A5"
+name = "Exact and Deterministic"
+plan_ref = "§0.2 A5, §6, §13.6"
+summary = "Amounts are exact fixed-scale i128 integers in registered units; every rounding, allocation, and FX conversion names a registered law and replays byte-for-byte."
+
+[[bet]]
+id = "A6"
+name = "Agent-Native with Counterfactual Branches"
+plan_ref = "§0.2 A6, §15"
+summary = "Typed intents with dry-run plans, structured refusals with fix hints, draft isolation, and one verb registry driving CLI, daemon, and MCP."
+
+# ---- Constitutional Constraints FA-CON-01..14 (plan §1) ---------------------
+
+[[constraint]]
+id = "FA-CON-01"
+number = 1
+name = "closed-dependency-universe"
+plan_ref = "§1.1, §18.4"
+statement = "The dependency universe is closed to unrelated third-party crates; only std and pinned suite foundations are admitted."
+gate = "scripts/check-forbidden-deps.sh"
+
+[[constraint]]
+id = "FA-CON-02"
+number = 2
+name = "structural-memory-safety"
+plan_ref = "§1.2"
+statement = "Every crate root carries #![forbid(unsafe_code)] and the workspace sets unsafe_code = forbid with zero unsafe islands."
+gate = "scripts/doctrine_check.sh"
+
+[[constraint]]
+id = "FA-CON-03"
+number = 3
+name = "cx-everywhere"
+plan_ref = "§1.3"
+statement = "Every effectful operation accepts &Cx or a purpose-typed wrapper; Canon rules and Lantern procedures run under a stripped Cx with no clock, entropy, or I/O."
+gate = "scripts/doctrine_check.sh"
+
+[[constraint]]
+id = "FA-CON-04"
+number = 4
+name = "constitutional-exactness"
+plan_ref = "§1.4, §6"
+statement = "Amounts are exact fixed-scale i128 integers; intermediate products/quotients use checked wide arithmetic; no float enters any amount path."
+gate = "scripts/doctrine_check.sh"
+
+[[constraint]]
+id = "FA-CON-05"
+number = 5
+name = "append-only-journal"
+plan_ref = "§1.5, §4.2"
+statement = "Committed journal objects are immutable; corrections use SUPERSEDES/RESOLVES lineage; registers and statements are derived folds."
+gate = "scripts/invariants_check.sh"
+
+[[constraint]]
+id = "FA-CON-06"
+number = 6
+name = "recorded-time-never-user-supplied"
+plan_ref = "§1.6, §7.1a"
+statement = "recorded_at is assigned solely by the commit stream (CommitSeq); wall-clock instants enter only as journaled TimeEvidence ticks."
+gate = "scripts/invariants_check.sh"
+
+[[constraint]]
+id = "FA-CON-07"
+number = 7
+name = "period-law-at-commit"
+plan_ref = "§1.7, §7.3, Appendix C"
+statement = "Period resolution and Appendix C admissibility are checked inside the serializable posting transaction over a retained period-state witness."
+gate = "scripts/invariants_check.sh"
+
+[[constraint]]
+id = "FA-CON-08"
+number = 8
+name = "authorization-precedes-observation"
+plan_ref = "§1.8, §14"
+statement = "Capability caveats precede storage observation and segregation-of-duties policies are enforced at commit."
+gate = "scripts/invariants_check.sh"
+
+[[constraint]]
+id = "FA-CON-09"
+number = 9
+name = "single-artifact-three-postures"
+plan_ref = "§1.9, §15"
+statement = "One codebase ships the embedded library (fa), the CLI with robot mode (fa), and the fad-hosted MCP server (fa-mcp) from one verb registry."
+gate = "tools/registry-check"
+
+[[constraint]]
+id = "FA-CON-10"
+number = 10
+name = "deterministic-by-default"
+plan_ref = "§1.10, §13.6"
+statement = "Identical evidence closures produce byte-identical canonical outputs and replayable certificates."
+gate = "scripts/invariants_check.sh"
+
+[[constraint]]
+id = "FA-CON-11"
+number = 11
+name = "typed-claims"
+plan_ref = "§1.11, Appendix F"
+statement = "Every load-bearing statement is typed in the claim-class lattice; statistical and SLO claims never masquerade as invariants."
+gate = "tools/registry-check"
+
+[[constraint]]
+id = "FA-CON-12"
+number = 12
+name = "registered-operation-costs"
+plan_ref = "§1.12, Appendix G"
+statement = "Every posting and reporting operation class registers its substrate transaction and barrier cost in operation_costs.toml."
+gate = "tools/registry-check"
+
+[[constraint]]
+id = "FA-CON-13"
+number = 13
+name = "no-prohibited-shortcuts"
+plan_ref = "§1.13"
+statement = "No mutable balance columns, soft deletes, in-place edits, period flag flips, silent auto-balancing, wall-clock rules, or serde durable formats."
+gate = "scripts/doctrine_check.sh"
+
+[[constraint]]
+id = "FA-CON-14"
+number = 14
+name = "substrate-consumed-never-forked"
+plan_ref = "§1.14, Appendix H"
+statement = "FrankenGraphDB is consumed at an exact pinned revision with registered interim postures in foundation_dependencies.toml, never forked or copied."
+gate = "scripts/check-forbidden-deps.sh"

@@ -12,6 +12,7 @@ pub mod admissibility_plan;
 pub mod document_stores;
 pub mod evidence_policy;
 pub mod foundations;
+pub mod g0;
 pub mod intake_sources;
 pub mod invariants;
 pub mod procedures;

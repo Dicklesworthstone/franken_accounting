@@ -404,7 +404,11 @@ fn far_future_wall_jump_does_not_brick_subsequent_honest_ticks_or_sweeps() {
             .await
             .unwrap();
         assert_eq!(
-            (recovered.corroborated, recovered.expired, recovered.reversed),
+            (
+                recovered.corroborated,
+                recovered.expired,
+                recovered.reversed
+            ),
             (true, 1, 1)
         );
         assert!(fixture.book.due_holds(&cx).unwrap().is_empty());

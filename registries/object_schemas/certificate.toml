@@ -1,0 +1,14 @@
+# =============================================================================
+# registries/object_schemas/certificate.toml — Replayable Report & Plan
+# Certificates Schema (plan §13.6, Appendix A `Certificate`, bead fa-szi)
+# =============================================================================
+
+schema_version = 1
+name = "Certificate"
+owner = "fa::certificate::ReportCertificate"
+major = 1
+minor = 3
+format_domains = ["fa:report-certificate:v1", "fa:report-certificate:v2", "fa:report-certificate:v3", "fa:report-certificate:v4", "fa:post-plan:v1"]
+externally_verifiable = true
+
+fields = ["format_domain:bytes", "book_id:bytes16", "branch_id:bytes16", "known_at:system_selector", "resolved_sequence:u64", "effective_selection:tagged_selection", "native_inputs:list<native_result_certificate>", "journal_prefix:list<entry_digest_pair>", "registry_digests:registry_closure", "output_digest:bytes32", "output_bytes:bytes"]

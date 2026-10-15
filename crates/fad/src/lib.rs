@@ -217,12 +217,7 @@ pub fn stop_refusal(argv: &[String], dir: &Path) -> Response {
 
 /// Structured refusal when a socket peer's kernel UID does not match the daemon's UID (fa-een).
 #[must_use]
-pub fn peer_uid_refusal(
-    request: &Request,
-    peer_uid: u32,
-    daemon_uid: u32,
-    dir: &Path,
-) -> Response {
+pub fn peer_uid_refusal(request: &Request, peer_uid: u32, daemon_uid: u32, dir: &Path) -> Response {
     let refusal = fa_journal::Refusal::new(
         fa_journal::refusal::code::CAPABILITY,
         fa_journal::refusal::exit::SAFETY,
@@ -601,7 +596,12 @@ impl Service for Server<'_> {
     fn on_connection_closed(&mut self, timing: ConnectionTiming) {
         eprintln!(
             "fad connection #{} (uid={:?}, pid={:?}): {} requests in {} ns ({:?})",
-            timing.conn_id, timing.peer_uid, timing.peer_pid, timing.requests, timing.elapsed_ns, timing.ended
+            timing.conn_id,
+            timing.peer_uid,
+            timing.peer_pid,
+            timing.requests,
+            timing.elapsed_ns,
+            timing.ended
         );
         if self.timings.len() >= MAX_DAEMON_CONNECTIONS {
             self.timings.remove(0);
@@ -793,7 +793,8 @@ impl Phase {
         let deadline = match idle {
             Some(duration) => Some(clock::deadline_after(
                 clock::timer(cx)?.now(),
-                u64::try_from(duration.as_nanos()).map_err(|_| clock::ClockError::DeadlineOverflow)?,
+                u64::try_from(duration.as_nanos())
+                    .map_err(|_| clock::ClockError::DeadlineOverflow)?,
             )?),
             None => None,
         };
@@ -832,7 +833,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> ConnSlot<S> {
         }
     }
 
-    fn queue_write(&mut self, payload: &[u8], max_frame_bytes: usize, after: AfterWrite) -> Result<(), Ended> {
+    fn queue_write(
+        &mut self,
+        payload: &[u8],
+        max_frame_bytes: usize,
+        after: AfterWrite,
+    ) -> Result<(), Ended> {
         match encode(payload, max_frame_bytes) {
             Ok(frame) => {
                 self.phase = Phase::Writing {
@@ -1126,11 +1132,9 @@ async fn serve_with<L: Listener, H: Service>(
             if let Some(timer) = deadline.as_mut()
                 && let Poll::Ready(result) = Pin::new(timer).poll(task)
             {
-                return Poll::Ready(
-                    result
-                        .map(|()| Ready::Timer)
-                        .map_err(|e| std::io::Error::other(format!("{}", WaitError::Clock(e).frame()))),
-                );
+                return Poll::Ready(result.map(|()| Ready::Timer).map_err(|e| {
+                    std::io::Error::other(format!("{}", WaitError::Clock(e).frame()))
+                }));
             }
             if try_accept_first {
                 match listener.poll_accept(task) {
@@ -1249,8 +1253,7 @@ async fn serve_with<L: Listener, H: Service>(
                             && peer.uid != daemon_uid
                             && !service.admits_foreign_peer(&request)
                         {
-                            let response =
-                                peer_uid_refusal(&request, peer.uid, daemon_uid, dir);
+                            let response = peer_uid_refusal(&request, peer.uid, daemon_uid, dir);
                             let reply = response.to_json(limits.protocol).render();
                             let after = AfterWrite::Close(Ended::UnauthorizedPeer {
                                 peer_uid: peer.uid,
@@ -1311,21 +1314,19 @@ async fn serve_with<L: Listener, H: Service>(
                             finish_connection(cx, conn, ended, service).await;
                         }
                     }
-                    ConnStep::WriteDone => {
-                        match Phase::new_reading(cx, limits.idle) {
-                            Ok(phase) => connections[idx].phase = phase,
-                            Err(e) => {
-                                let conn = connections.remove(idx);
-                                finish_connection(
-                                    cx,
-                                    conn,
-                                    Ended::Fault(WaitError::Clock(e).frame()),
-                                    service,
-                                )
-                                .await;
-                            }
+                    ConnStep::WriteDone => match Phase::new_reading(cx, limits.idle) {
+                        Ok(phase) => connections[idx].phase = phase,
+                        Err(e) => {
+                            let conn = connections.remove(idx);
+                            finish_connection(
+                                cx,
+                                conn,
+                                Ended::Fault(WaitError::Clock(e).frame()),
+                                service,
+                            )
+                            .await;
                         }
-                    }
+                    },
                     ConnStep::Ended(ended) => {
                         let is_stop = ended == Ended::Stop;
                         let conn = connections.remove(idx);

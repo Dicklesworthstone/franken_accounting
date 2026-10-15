@@ -729,11 +729,11 @@ fn a_panicking_daemon_command_is_one_error_event_with_exit_5() {
 
 #[test]
 fn concurrent_slow_client_does_not_starve_other_clients_and_unauthorized_stop_is_refused() {
+    use fa_cli::wire::encode;
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixStream as StdUnixStream;
     use std::time::Instant;
-    use fa_cli::wire::encode;
 
     let dir = tmp("concurrent");
     let (book, _) = book(&dir);
@@ -743,10 +743,24 @@ fn concurrent_slow_client_does_not_starve_other_clients_and_unauthorized_stop_is
     let socket = book.join(&reg.daemon.socket);
 
     // Directory is 0700 and socket is 0600 (fa-een).
-    let dir_mode = std::fs::metadata(&book).expect("book meta").permissions().mode() & 0o777;
-    assert_eq!(dir_mode, 0o700, "book directory must be 0700 (got {dir_mode:o})");
-    let sock_mode = std::fs::metadata(&socket).expect("socket meta").permissions().mode() & 0o777;
-    assert_eq!(sock_mode, 0o600, "daemon socket must be 0600 (got {sock_mode:o})");
+    let dir_mode = std::fs::metadata(&book)
+        .expect("book meta")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        dir_mode, 0o700,
+        "book directory must be 0700 (got {dir_mode:o})"
+    );
+    let sock_mode = std::fs::metadata(&socket)
+        .expect("socket meta")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        sock_mode, 0o600,
+        "daemon socket must be 0600 (got {sock_mode:o})"
+    );
 
     // Client A connects and dribbles only 2 bytes of its 4-byte prefix, keeping its
     // connection open without completing a frame.
@@ -865,4 +879,3 @@ fn concurrent_slow_client_does_not_starve_other_clients_and_unauthorized_stop_is
     let (exit, rest) = daemon.finish();
     assert_eq!(exit, 0, "{rest}");
 }
-

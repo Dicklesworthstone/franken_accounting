@@ -269,10 +269,10 @@ fn under_chaos_only_whole_frames_reach_the_handler() {
 #[test]
 fn slow_client_sending_a_frame_every_29s_does_not_starve_other_clients_and_unauthorized_stop_is_refused()
  {
-    use std::sync::Arc;
     use asupersync::Budget;
     use asupersync::lab::{AutoAdvanceTermination, LabRuntime};
     use asupersync::net::tcp::VirtualTcpListener;
+    use std::sync::Arc;
 
     const DAEMON_UID: u32 = 1000;
     const FOREIGN_UID: u32 = 2000;
@@ -495,8 +495,16 @@ fn slow_client_sending_a_frame_every_29s_does_not_starve_other_clients_and_unaut
     assert!(lab.report().lab_test_passed(), "{:?}", lab.report());
     client_handle.try_join().unwrap().expect("client task");
     let (seen, timings) = server_handle.try_join().unwrap().expect("server task");
-    assert_eq!(seen.len(), 5, "B, A1, C, A2, and authorized Stop reached handler: {seen:?}");
-    assert_eq!(timings.len(), 6, "6 connections recorded in timings: {timings:?}");
+    assert_eq!(
+        seen.len(),
+        5,
+        "B, A1, C, A2, and authorized Stop reached handler: {seen:?}"
+    );
+    assert_eq!(
+        timings.len(),
+        6,
+        "6 connections recorded in timings: {timings:?}"
+    );
     assert!(
         timings.iter().any(|t| matches!(
             t.ended,

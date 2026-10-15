@@ -1,0 +1,20 @@
+# =============================================================================
+# registries/object_schemas/control_payload.toml — Closed Union ControlPayload
+# Discriminants (plan Appendix A `ControlPayload`, bead fa-szi)
+# =============================================================================
+
+schema_version = 1
+name = "ControlPayload"
+owner = "fa-model::entry::ControlPayload"
+major = 1
+minor = 1
+externally_verifiable = true
+
+variant_tags = ["0:PeriodTransition", "1:SchemaChange", "2:PolicyActivation", "3:LifecycleTransition", "4:TimeTick", "5:SweepCursor", "6:ScheduleCancelled", "7:CapabilityEvent", "8:HoldEvent", "9:ErasureCut", "10:MigrationControl", "11:ReservationRelease", "13:ImportRun"]
+
+[[decision]]
+field = "ImportRun"
+appendix_a = "ImportReceipt vertex (Appendix A)"
+code_type = "ControlPayload::ImportRun (tag 13, crates/fa-model/src/entry.rs:890)"
+rationale = "Tag 12 is reserved unused; ImportRun journals book-scoped intake receipts at tag 13 under EntryClass::IMPORT_CONTROL (class 23)."
+tracking_bead = "fa-txf"

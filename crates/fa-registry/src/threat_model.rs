@@ -121,8 +121,8 @@ fn bad(message: impl Into<String>) -> RegistryError {
 }
 
 fn req_nonempty_str<'a>(t: &'a Table, key: &str, ctx: &str) -> Result<&'a str, RegistryError> {
-    let val = req_str(REGISTRY, t, key)
-        .map_err(|_| bad(format!("{ctx}: missing string `{key}`")))?;
+    let val =
+        req_str(REGISTRY, t, key).map_err(|_| bad(format!("{ctx}: missing string `{key}`")))?;
     if val.trim().is_empty() {
         return Err(bad(format!("{ctx}: `{key}` must not be empty")));
     }
@@ -234,7 +234,9 @@ impl ThreatModel {
             });
         }
         if trust_boundaries.len() < 5 {
-            return Err(bad("at least 5 trust boundaries (TB-01..TB-05) are required"));
+            return Err(bad(
+                "at least 5 trust boundaries (TB-01..TB-05) are required",
+            ));
         }
 
         // 2. Threats (FA-THR-01 .. FA-THR-08).
@@ -361,18 +363,10 @@ impl ThreatModel {
             surviving_public_values.push(SurvivingPublicValue {
                 source_fields: req_nonempty_list(t, "source_fields", &id)?,
                 derivation: req_nonempty_str(t, "derivation", &id)?.to_string(),
-                post_erasure_survivability: req_nonempty_str(
-                    t,
-                    "post_erasure_survivability",
-                    &id,
-                )?
-                .to_string(),
-                guessing_oracle_mitigation: req_nonempty_str(
-                    t,
-                    "guessing_oracle_mitigation",
-                    &id,
-                )?
-                .to_string(),
+                post_erasure_survivability: req_nonempty_str(t, "post_erasure_survivability", &id)?
+                    .to_string(),
+                guessing_oracle_mitigation: req_nonempty_str(t, "guessing_oracle_mitigation", &id)?
+                    .to_string(),
                 test_refs: parse_test_refs(t, &id)?,
                 id,
                 name,
@@ -476,9 +470,8 @@ mod tests {
         assert_eq!(model.tamper_vectors.len(), 10);
 
         let workspace = root();
-        let unresolved = model.unresolved_test_refs(|rel| {
-            std::fs::read_to_string(workspace.join(rel)).ok()
-        });
+        let unresolved =
+            model.unresolved_test_refs(|rel| std::fs::read_to_string(workspace.join(rel)).ok());
         assert!(
             unresolved.is_empty(),
             "unresolved test_refs in threat_model.toml: {unresolved:#?}"
@@ -499,9 +492,8 @@ mod tests {
         );
         let parsed = ThreatModel::parse(&mutated_test, &invariants, &refusals)
             .expect("syntactically valid checker path");
-        let unresolved = parsed.unresolved_test_refs(|rel| {
-            std::fs::read_to_string(workspace.join(rel)).ok()
-        });
+        let unresolved =
+            parsed.unresolved_test_refs(|rel| std::fs::read_to_string(workspace.join(rel)).ok());
         assert!(
             unresolved
                 .iter()

@@ -1,0 +1,23 @@
+# =============================================================================
+# registries/bundle_schema/fab.toml — Evidence Bundle (.fab) & Detached
+# ProductionReceipt Schema (plan §13.2, §19 G0, Appendix A, bead fa-szi)
+# =============================================================================
+
+schema_version = 1
+name = "Bundle"
+format_domain = "fa:bundle:v1"
+receipt_domain = "fa:production-receipt:v1"
+receipt_signature_domain = "fa:production-receipt-signature:v1"
+major = 1
+minor = 0
+externally_verifiable = true
+verifier_crate = "fa-verify"
+producer_crate = "fa-notary"
+max_inline_document_bytes = 16777216
+max_bundle_balances = 4096
+
+manifest_fields = ["book_id:bytes16", "branch_id:bytes16", "through_seq:u64", "leaf_count:u64", "checkpoint_oid:bytes32", "scope:tagged_scope", "completeness:tagged_completeness"]
+scope_tags = ["1:Prefix", "2:Account", "3:Entries"]
+completeness_tags = ["1:SeqRangeComplete", "2:ScopeIndexComplete", "3:FilterAttested"]
+body_fields = ["domain:bytes", "major:u16", "minor:u16", "manifest:manifest", "checkpoint:bytes", "completeness_proof:bytes", "entries:list<entry>", "balances:list<balance>", "manifest_md:bytes"]
+receipt_fields = ["domain:bytes", "bundle_digest:bytes32", "producer_principal:u128", "produced_at_seq:u64", "capability_commitment:bytes32", "time_evidence_oid:option<bytes32>", "signer_key_id:bytes32", "scheme:u16", "signature:bytes"]

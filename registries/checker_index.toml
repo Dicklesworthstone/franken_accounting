@@ -1,0 +1,54 @@
+# =============================================================================
+# registries/checker_index.toml — Index of Executable Invariant, Registry, and
+# Doctrine Checkers (plan §18.2, Appendix F, bead fa-szi)
+# =============================================================================
+
+schema_version = 1
+
+[[checker]]
+id = "CHK-INV-SPINE"
+kind = "invariant_gate"
+driver = "scripts/invariants_check.sh"
+negative_driver = "scripts/tests/invariants_negative.sh"
+source_registry = "invariants.toml"
+description = "Verifies that every live FA-INV clause's positive checker and disjoint negative_test ran and passed in the workspace test transcript."
+
+[[checker]]
+id = "CHK-DOCTRINE"
+kind = "constitutional_gate"
+driver = "scripts/doctrine_check.sh"
+negative_driver = "scripts/tests/doctrine_negative.sh"
+source_registry = "constitution.toml"
+description = "Enforces zero unsafe blocks, no wall-clock/ambient randomness in law/kernel crates, no floating-point amount paths, and no forbidden dependencies."
+
+[[checker]]
+id = "CHK-FOUNDATIONS"
+kind = "dependency_gate"
+driver = "scripts/check-forbidden-deps.sh"
+negative_driver = "scripts/tests/foundation_negative.py"
+source_registry = "foundation_dependencies.toml"
+description = "Enforces singleton foundation package IDs per posture closure, git revision pins against franken-stack.lock, and serde/ring posture confinement."
+
+[[checker]]
+id = "CHK-TOPOLOGY"
+kind = "layer_gate"
+driver = "scripts/topology_check.sh"
+negative_driver = "scripts/tests/topology_negative.sh"
+source_registry = "workspace_topology.toml"
+description = "Enforces acyclic crate layer order (foundation -> model -> laws -> kernel -> evidence -> analytics -> governance -> interop -> surface -> verification)."
+
+[[checker]]
+id = "CHK-GATE-EVIDENCE"
+kind = "ratchet_gate"
+driver = "scripts/gate_evidence_check.sh"
+negative_driver = "scripts/tests/gate_evidence_negative.sh"
+source_registry = "invariants.toml"
+description = "Verifies listed vs executed test equality and ratchets per-crate negative test and assertion counts against silent weakening."
+
+[[checker]]
+id = "CHK-REGISTRY"
+kind = "schema_and_fk_gate"
+driver = "tools/registry-check"
+negative_driver = "tools/registry-check::tests::planted_refusal_mutation_and_broken_foreign_keys_fail"
+source_registry = "claims_lint.toml"
+description = "Validates all registries/*.toml schemas, cross-registry foreign keys, refusal immutability, claims_lint resolution, and the G0 completeness report."

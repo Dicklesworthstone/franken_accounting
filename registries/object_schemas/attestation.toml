@@ -1,0 +1,22 @@
+# =============================================================================
+# registries/object_schemas/attestation.toml — Signed / Capability-Bound
+# Attestation Schema (plan §9.2–§9.4, Appendix A `Attestation`, bead fa-szi)
+# =============================================================================
+
+schema_version = 1
+name = "Attestation"
+owner = "fa-journal::attestation"
+major = 1
+minor = 0
+signed_digest_domain = "fa:attestation:v1"
+externally_verifiable = false
+
+fields = ["version:u16", "claim:tagged_claim", "subject_refs:list<subject_ref>", "principal_ref:u128", "evidence_refs:list<bytes32>", "signed_digest:bytes32", "auth_trailer:capability_or_signature"]
+claim_tags = ["1:Prepared", "2:Reviewed", "3:Reconciled", "4:RegisterEquals", "5:Confirmed", "6:Examined", "7:Custom", "8:ManualAssertion"]
+
+[[decision]]
+field = "signature"
+appendix_a = "signature: { scheme: u16 (Ed25519), key_id, bytes }"
+code_type = "SCHEME_CAPABILITY = 0 trailer (crates/fa-journal/src/attestation.rs:78)"
+rationale = "Interim capability-bound authentication trailer until principal Ed25519 keys land in fa-kae."
+tracking_bead = "fa-kae"

@@ -160,13 +160,19 @@ fn req_str_array(t: &Table, key: &str, what: &str) -> Result<Vec<String>, Regist
         .and_then(Value::as_array)
         .ok_or_else(|| invalid(REGISTRY, format!("{what}: missing array `{key}`")))?;
     if arr.is_empty() {
-        return Err(invalid(REGISTRY, format!("{what}: `{key}` cannot be empty")));
+        return Err(invalid(
+            REGISTRY,
+            format!("{what}: `{key}` cannot be empty"),
+        ));
     }
     let mut out = Vec::with_capacity(arr.len());
     for v in arr {
-        let s = v
-            .as_str()
-            .ok_or_else(|| invalid(REGISTRY, format!("{what}: `{key}` elements must be strings")))?;
+        let s = v.as_str().ok_or_else(|| {
+            invalid(
+                REGISTRY,
+                format!("{what}: `{key}` elements must be strings"),
+            )
+        })?;
         check_non_empty(what, key, s)?;
         out.push(s.to_string());
     }
@@ -222,7 +228,9 @@ fn parse_expectation(
             if expected_event != "error" {
                 return Err(invalid(
                     REGISTRY,
-                    format!("{what}: `expected = \"refused\"` requires `expected_event = \"error\"`"),
+                    format!(
+                        "{what}: `expected = \"refused\"` requires `expected_event = \"error\"`"
+                    ),
                 ));
             }
             let r_id = refusal_id.ok_or_else(|| {
@@ -268,7 +276,9 @@ fn parse_expectation(
             if expected_event != "error" {
                 return Err(invalid(
                     REGISTRY,
-                    format!("{what}: `expected = \"absent\"` requires `expected_event = \"error\"`"),
+                    format!(
+                        "{what}: `expected = \"absent\"` requires `expected_event = \"error\"`"
+                    ),
                 ));
             }
             if refusal_id.is_some() {
@@ -290,7 +300,9 @@ fn parse_expectation(
         }
         other => Err(invalid(
             REGISTRY,
-            format!("{what}: unknown `expected = \"{other}\"` (expected `works`, `refused`, or `absent`)"),
+            format!(
+                "{what}: unknown `expected = \"{other}\"` (expected `works`, `refused`, or `absent`)"
+            ),
         )),
     }
 }
@@ -338,13 +350,20 @@ impl Scoreboard {
             if id != expected_id {
                 return Err(invalid(
                     REGISTRY,
-                    format!("workflow #{}: expected id `{expected_id}`, got `{id}`", idx + 1),
+                    format!(
+                        "workflow #{}: expected id `{expected_id}`, got `{id}`",
+                        idx + 1
+                    ),
                 ));
             }
             let name = req_str(REGISTRY, t, "name")?.to_string();
             let plan_ref = req_str(REGISTRY, t, "plan_ref")?.to_string();
             let reader = req_str(REGISTRY, t, "reader")?.to_string();
-            for (k, val) in [("name", &name), ("plan_ref", &plan_ref), ("reader", &reader)] {
+            for (k, val) in [
+                ("name", &name),
+                ("plan_ref", &plan_ref),
+                ("reader", &reader),
+            ] {
                 check_non_empty(&format!("workflow {id}"), k, val)?;
             }
             wf_ids.insert(id.clone());
@@ -381,9 +400,8 @@ impl Scoreboard {
                 ));
             }
             let ord_raw = req_int(REGISTRY, t, "ordinal")?;
-            let ordinal = u32::try_from(ord_raw).map_err(|_| {
-                invalid(REGISTRY, format!("{what}: invalid ordinal {ord_raw}"))
-            })?;
+            let ordinal = u32::try_from(ord_raw)
+                .map_err(|_| invalid(REGISTRY, format!("{what}: invalid ordinal {ord_raw}")))?;
             per_wf_ordinals
                 .entry(workflow.clone())
                 .or_default()
@@ -401,7 +419,10 @@ impl Scoreboard {
             let argv = req_str_array(t, "argv", &what)?;
             let exit_raw = req_int(REGISTRY, t, "expected_exit")?;
             let expected_exit = u8::try_from(exit_raw).map_err(|_| {
-                invalid(REGISTRY, format!("{what}: invalid expected_exit {exit_raw}"))
+                invalid(
+                    REGISTRY,
+                    format!("{what}: invalid expected_exit {exit_raw}"),
+                )
             })?;
             let expected_event = req_str(REGISTRY, t, "expected_event")?.to_string();
             check_non_empty(&what, "expected_event", &expected_event)?;
@@ -483,7 +504,10 @@ impl Scoreboard {
             let argv = req_str_array(t, "argv", &what)?;
             let exit_raw = req_int(REGISTRY, t, "expected_exit")?;
             let expected_exit = u8::try_from(exit_raw).map_err(|_| {
-                invalid(REGISTRY, format!("{what}: invalid expected_exit {exit_raw}"))
+                invalid(
+                    REGISTRY,
+                    format!("{what}: invalid expected_exit {exit_raw}"),
+                )
             })?;
             let expected_event = req_str(REGISTRY, t, "expected_event")?.to_string();
             check_non_empty(&what, "expected_event", &expected_event)?;
@@ -552,7 +576,9 @@ impl Scoreboard {
         out.push_str(&format!(
             "- **Total workflow steps:** {wf_total} (`works`: **{wf_works}** [{wf_pct}%], `refused`: **{wf_refused}**, `absent`: **{wf_absent}**)\n\n"
         ));
-        out.push_str("| Workflow | Plan Ref | Reader | Works | Refused | Absent | Total | Delivery % |\n");
+        out.push_str(
+            "| Workflow | Plan Ref | Reader | Works | Refused | Absent | Total | Delivery % |\n",
+        );
         out.push_str("|---|---|---|---:|---:|---:|---:|---:|\n");
         for wf in &self.workflows {
             let wf_steps: Vec<&WorkflowStep> =
@@ -648,7 +674,9 @@ impl Scoreboard {
         }
 
         out.push_str("\n### Gate Criteria Detail\n\n");
-        out.push_str("| ID | Gate | Probe | Status | Exit | Event / Refusal | Bead | Criterion |\n");
+        out.push_str(
+            "| ID | Gate | Probe | Status | Exit | Event / Refusal | Bead | Criterion |\n",
+        );
         out.push_str("|---|---|---|---|---:|---|---|---|\n");
         for c in &self.gate_criteria {
             let ev_or_ref = match &c.expected {
@@ -697,10 +725,8 @@ mod tests {
         let exits = ExitCodes::embedded().expect("exit_codes.toml");
         let refusals = RefusalCatalog::embedded().expect("refusal_catalog.toml");
 
-        let bad_refusal = SCOREBOARD.replace(
-            "refusal_id = \"FA-REF-001\"",
-            "refusal_id = \"FA-REF-999\"",
-        );
+        let bad_refusal =
+            SCOREBOARD.replace("refusal_id = \"FA-REF-001\"", "refusal_id = \"FA-REF-999\"");
         let err = Scoreboard::parse(&bad_refusal, &exits, &refusals)
             .expect_err("unknown refusal_id must fail")
             .to_string();

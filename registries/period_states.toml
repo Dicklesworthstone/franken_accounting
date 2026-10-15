@@ -1,0 +1,152 @@
+# =============================================================================
+# registries/period_states.toml — Period States, Period Kinds, and Legal
+# PeriodControl Transitions (plan §7.2–§7.3, Appendix C, bead fa-szi)
+# =============================================================================
+
+schema_version = 1
+
+# ---- Period States (fa_time::PeriodState) -----------------------------------
+
+[[state]]
+tag = 0
+name = "Future"
+admits_original = false
+description = "Period has been defined on the fiscal calendar but not yet opened for posting."
+
+[[state]]
+tag = 1
+name = "Open"
+admits_original = true
+description = "Active posting period; admits Original, Pending, Resolution, Reversal, Replacement, Reclassification, Adjusting, Allocation, Revaluation, Elimination."
+
+[[state]]
+tag = 2
+name = "SoftClosed"
+admits_original = false
+description = "Operational subledgers cut off; Original/Pending require post_softclosed capability; Adjusting/Reversal/Resolution remain admissible."
+
+[[state]]
+tag = 3
+name = "Closed"
+admits_original = false
+description = "Accounting close complete; Original refused; adjustments require post_closed capability and approval per Appendix C."
+
+[[state]]
+tag = 4
+name = "Locked"
+admits_original = false
+description = "Hard lock after financial statement issuance or audit completion; admits only case-bound Restatement/Revision/Closing, Migration (in Opening/Historical), and reservation Voids/Expires."
+
+# ---- Period Kinds (fa_time::PeriodKind) -------------------------------------
+
+[[kind]]
+tag = 0
+name = "Normal"
+requires_discriminator = false
+description = "Standard operating period on the fiscal calendar."
+
+[[kind]]
+tag = 1
+name = "Adjustment"
+requires_discriminator = true
+description = "Special adjustment period (e.g., Period 13) sharing civil dates with year-end; requires explicit effective_period discriminator."
+
+[[kind]]
+tag = 2
+name = "Opening"
+requires_discriminator = true
+description = "Zero-length or boundary opening period at book inception; born Locked and admits Migration only."
+
+[[kind]]
+tag = 3
+name = "Closing"
+requires_discriminator = true
+description = "Special fiscal year-end closing period; requires explicit effective_period discriminator."
+
+[[kind]]
+tag = 4
+name = "Historical"
+requires_discriminator = false
+description = "Pre-opening historical period; born Locked, admits Migration only, and refuses every state transition (FA-REF-040)."
+
+# ---- Legal PeriodControl Transitions (fa_time::transition) ------------------
+
+[[transition]]
+action = "Open"
+from = "Future"
+to = "Open"
+capability = "close"
+approvals = 0
+requires_case = false
+
+[[transition]]
+action = "SoftClose"
+from = "Open"
+to = "SoftClosed"
+capability = "close"
+approvals = 0
+requires_case = false
+
+[[transition]]
+action = "Close"
+from = "Open"
+to = "Closed"
+capability = "close"
+approvals = 0
+requires_case = false
+
+[[transition]]
+action = "Close"
+from = "SoftClosed"
+to = "Closed"
+capability = "close"
+approvals = 0
+requires_case = false
+
+[[transition]]
+action = "Lock"
+from = "Closed"
+to = "Locked"
+capability = "close"
+approvals = 1
+requires_case = false
+
+[[transition]]
+action = "Reopen"
+from = "SoftClosed"
+to = "Open"
+capability = "reopen"
+approvals = 1
+requires_case = false
+
+[[transition]]
+action = "Reopen"
+from = "Closed"
+to = "Open"
+capability = "reopen"
+approvals = 2
+requires_case = true
+
+[[transition]]
+action = "Reopen"
+from = "Closed"
+to = "SoftClosed"
+capability = "reopen"
+approvals = 2
+requires_case = true
+
+[[transition]]
+action = "Reopen"
+from = "Locked"
+to = "Open"
+capability = "reopen"
+approvals = 2
+requires_case = true
+
+[[transition]]
+action = "Reopen"
+from = "Locked"
+to = "SoftClosed"
+capability = "reopen"
+approvals = 2
+requires_case = true

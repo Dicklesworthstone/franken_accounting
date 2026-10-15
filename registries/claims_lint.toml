@@ -1,0 +1,265 @@
+# =============================================================================
+# registries/claims_lint.toml — Cross-Document Claim Marker Resolution Rules
+# and §18.2 G0 Registry Ownership Map (plan §16.1, §18.2, §19 G0, bead fa-szi)
+# =============================================================================
+
+schema_version = 1
+
+scanned_docs = ["COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md", "README.md", "AGENTS.md"]
+
+# ---- Marker family resolution rules -----------------------------------------
+
+[[marker_family]]
+prefix = "FA-CON-"
+registry = "constitution.toml"
+table = "constraint"
+key = "id"
+
+[[marker_family]]
+prefix = "FA-INV-"
+registry = "invariants.toml"
+table = "invariant"
+key = "id"
+
+[[marker_family]]
+prefix = "FA-EVID-"
+registry = "evidence.toml"
+table = "gate"
+key = "id"
+
+[[marker_family]]
+prefix = "FA-CAL-"
+registry = "evidence.toml"
+table = "gate"
+key = "id"
+
+[[marker_family]]
+prefix = "FA-CFG-"
+registry = "evidence.toml"
+table = "gate"
+key = "id"
+
+[[marker_family]]
+prefix = "FA-REF-"
+registry = "refusal_catalog.toml"
+table = "refusal"
+key = "code"
+
+[[marker_family]]
+prefix = "FA-THR-"
+registry = "threat_model.toml"
+table = "threat"
+key = "id"
+
+[[marker_family]]
+prefix = "FA-BND-"
+registry = "threat_model.toml"
+table = "trust_boundary"
+key = "id"
+
+[[marker_family]]
+prefix = "FA-TV-"
+registry = "threat_model.toml"
+table = "tamper_vector"
+key = "id"
+
+[[marker_family]]
+prefix = "FA-PROOF-"
+registry = "proof_lanes.toml"
+table = "lane"
+key = "id"
+
+[[marker_family]]
+prefix = "FA-MODEL-"
+registry = "proof_lanes.toml"
+table = "lane"
+key = "id"
+
+# ---- Plan §18.2 G0 Registry Inventory (37 registries) -----------------------
+# Every registry listed in plan §18.2 is either present on disk or explicitly
+# assigned to the open bead that materializes its subsystem.
+
+[[g0_registry]]
+path = "constitution.toml"
+kind = "file"
+owner_bead = "fa-szi"
+
+[[g0_registry]]
+path = "invariants.toml"
+kind = "file"
+owner_bead = "fa-37f"
+
+[[g0_registry]]
+path = "evidence.toml"
+kind = "file"
+owner_bead = "fa-szi"
+
+[[g0_registry]]
+path = "slo.toml"
+kind = "file"
+owner_bead = "fa-i5s"
+
+[[g0_registry]]
+path = "checker_index.toml"
+kind = "file"
+owner_bead = "fa-szi"
+
+[[g0_registry]]
+path = "proof_lanes.toml"
+kind = "file"
+owner_bead = "fa-szi"
+
+[[g0_registry]]
+path = "threat_model.toml"
+kind = "file"
+owner_bead = "fa-oaz"
+
+[[g0_registry]]
+path = "workspace_topology.toml"
+kind = "file"
+owner_bead = "fa-37f"
+
+[[g0_registry]]
+path = "foundation_dependencies.toml"
+kind = "file"
+owner_bead = "fa-37f"
+
+[[g0_registry]]
+path = "symbols.toml"
+kind = "file"
+owner_bead = "fa-g23"
+
+[[g0_registry]]
+path = "object_schemas"
+kind = "dir"
+owner_bead = "fa-szi"
+
+[[g0_registry]]
+path = "units.toml"
+kind = "file"
+owner_bead = "fa-nnm"
+
+[[g0_registry]]
+path = "rounding_laws.toml"
+kind = "file"
+owner_bead = "fa-k1u"
+
+[[g0_registry]]
+path = "allocation_laws.toml"
+kind = "file"
+owner_bead = "fa-joq"
+
+[[g0_registry]]
+path = "fx_laws.toml"
+kind = "file"
+owner_bead = "fa-s3c"
+
+[[g0_registry]]
+path = "lot_laws.toml"
+kind = "file"
+owner_bead = "fa-2ly"
+
+[[g0_registry]]
+path = "conversion_laws.toml"
+kind = "file"
+owner_bead = "fa-2ly"
+
+[[g0_registry]]
+path = "tracing_laws.toml"
+kind = "file"
+owner_bead = "fa-j5ng"
+
+[[g0_registry]]
+path = "entry_classes.toml"
+kind = "file"
+owner_bead = "fa-g23"
+
+[[g0_registry]]
+path = "supersession_kinds.toml"
+kind = "file"
+owner_bead = "fa-oz3"
+
+[[g0_registry]]
+path = "period_states.toml"
+kind = "file"
+owner_bead = "fa-szi"
+
+[[g0_registry]]
+path = "admissibility.toml"
+kind = "file"
+owner_bead = "fa-nfq"
+
+[[g0_registry]]
+path = "reason_codes.toml"
+kind = "file"
+owner_bead = "fa-lp6"
+
+[[g0_registry]]
+path = "relationship_bases.toml"
+kind = "file"
+owner_bead = "fa-szi"
+
+[[g0_registry]]
+path = "evidence_policy.toml"
+kind = "file"
+owner_bead = "fa-lp6"
+
+[[g0_registry]]
+path = "intents.toml"
+kind = "file"
+owner_bead = "fa-we7"
+
+[[g0_registry]]
+path = "procedures.toml"
+kind = "file"
+owner_bead = "fa-nlu"
+
+[[g0_registry]]
+path = "capability_caveats.toml"
+kind = "file"
+owner_bead = "fa-v62"
+
+[[g0_registry]]
+path = "sod_policy.toml"
+kind = "file"
+owner_bead = "fa-llx"
+
+[[g0_registry]]
+path = "verbs.toml"
+kind = "file"
+owner_bead = "fa-9xt"
+
+[[g0_registry]]
+path = "exit_codes.toml"
+kind = "file"
+owner_bead = "fa-9xt"
+
+[[g0_registry]]
+path = "refusal_catalog.toml"
+kind = "file"
+owner_bead = "fa-lp6"
+
+[[g0_registry]]
+path = "formats.toml"
+kind = "file"
+owner_bead = "fa-npi"
+
+[[g0_registry]]
+path = "robot_schema"
+kind = "dir"
+owner_bead = "fa-12x"
+
+[[g0_registry]]
+path = "bundle_schema"
+kind = "dir"
+owner_bead = "fa-szi"
+
+[[g0_registry]]
+path = "operation_costs.toml"
+kind = "file"
+owner_bead = "fa-i5s"
+
+[[g0_registry]]
+path = "claims_lint.toml"
+kind = "file"
+owner_bead = "fa-szi"

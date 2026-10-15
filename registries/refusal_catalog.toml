@@ -73,7 +73,11 @@ exit = "refusal"
 cite = "plan §4.4 (amounts are mantissas at a registered unit version's scale)"
 fix = "post in a unit registered in registries/units.toml (fa book info --json reports units_registered)"
 
-# ---- Teller: dangerous operations (007) ----------------------------------
+# ---- Teller: dangerous operations and mistake detection (006–007, 009) ---
+[[reserved]]
+code = "FA-REF-006"
+holder = "fa-cli / fa-mcp reversal mistake detector (plan Appendix D)"
+
 [[refusal]]
 code = "FA-REF-007"
 name = "CONFIRMATION_REQUIRED"
@@ -81,6 +85,10 @@ owners = ["fa-cli"]
 exit = "safety"
 cite = "plan §15.3 (dangerous operations are gated and name a safe alternative); Appendix D FA-REF-007; verbs.toml [[dangerous]]"
 fix = "{safe}; or, when the operation is intended, rerun the same command with --yes"
+
+[[reserved]]
+code = "FA-REF-009"
+holder = "plan Appendix D excerpt alias (canonical idempotency conflict is FA-REF-032)"
 
 # ---- Steward: authority, SoD, approvals (008–019) ------------------------
 [[refusal]]

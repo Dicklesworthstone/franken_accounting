@@ -1,0 +1,87 @@
+# =============================================================================
+# registries/evidence.toml — Statistical, Calibration, and Configuration Gates
+# (plan Appendix F "Statistical, evidence, and configuration gates", bead fa-szi)
+# =============================================================================
+
+schema_version = 1
+
+[[gate]]
+id = "FA-EVID-01"
+kind = "statistical"
+claim = "Journal-entry-test procedure calibration"
+required_disclosure = "population and lookback; per-test parameters; expected flag rate on the clean fa-gen scenario; observed rate"
+owner = "fa-lantern"
+activating_workstream = "W8"
+status = "dormant"
+
+[[gate]]
+id = "FA-EVID-02"
+kind = "statistical"
+claim = "Benford conformity"
+required_disclosure = "population eligibility rule; digit test; MAD and chi-square with the conformity ranges named; sample size floor"
+owner = "fa-lantern"
+activating_workstream = "W8"
+status = "dormant"
+
+[[gate]]
+id = "FA-EVID-03"
+kind = "statistical"
+claim = "Duplicate and near-duplicate detection"
+required_disclosure = "tolerance and similarity thresholds; precision/recall on the labeled corpus"
+owner = "fa-lantern"
+activating_workstream = "W8"
+status = "dormant"
+
+[[gate]]
+id = "FA-EVID-04"
+kind = "statistical"
+claim = "Graph detector performance (layering, kiting, Ponzi motif, shell signature, related-party)"
+required_disclosure = "labeled-scenario precision/recall per seed; CGSE policy; complexity witness"
+owner = "fa-lantern"
+activating_workstream = "W8"
+status = "dormant"
+
+[[gate]]
+id = "FA-EVID-05"
+kind = "statistical"
+claim = "Bank-match heuristic confidence"
+required_disclosure = "method, features, confidence calibration on confirmed matches; the exact-match rule is not evidence (it is deterministic)"
+owner = "fa-concordat"
+activating_workstream = "W9"
+status = "dormant"
+
+[[gate]]
+id = "FA-CAL-01"
+kind = "calibration"
+claim = "Decision-card threshold tuning"
+required_disclosure = "pinned default; tuning principal and engagement; before/after flag rates; fallback"
+owner = "fa-lantern"
+activating_workstream = "W8"
+status = "dormant"
+
+[[gate]]
+id = "FA-CFG-01"
+kind = "configuration"
+claim = "Register watermark-lag capacity model"
+required_disclosure = "maintainer throughput model; post rate; predicted versus observed lag; backpressure policy"
+owner = "fa-registers"
+activating_workstream = "W10"
+status = "dormant"
+
+[[gate]]
+id = "FA-CFG-02"
+kind = "configuration"
+claim = "Expiry-sweep tick capacity"
+required_disclosure = "pending population; tick cadence; sweep batch bounds"
+owner = "fa-journal"
+activating_workstream = "W10"
+status = "dormant"
+
+[[gate]]
+id = "FA-CFG-03"
+kind = "configuration"
+claim = "Retention and durability model"
+required_disclosure = "inherits FG-CFG-01 for the book directory; evidence-byte growth model"
+owner = "fa-notary"
+activating_workstream = "W10"
+status = "dormant"

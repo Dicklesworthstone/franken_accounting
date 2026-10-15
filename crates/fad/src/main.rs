@@ -205,8 +205,8 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
             std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))
                 .map_err(|e| format!("chmod 0600 {}: {e}", socket.display()))?;
         }
-        let daemon_uid = fad::current_uid()
-            .map_err(|e| format!("daemon peer credential uid: {e}"))?;
+        let daemon_uid =
+            fad::current_uid().map_err(|e| format!("daemon peer credential uid: {e}"))?;
         let mut serving = vec![
             ("book_id", s(&book_id)),
             ("dir", s(dir.display().to_string())),

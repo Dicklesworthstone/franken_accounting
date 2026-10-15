@@ -1,0 +1,20 @@
+# =============================================================================
+# registries/object_schemas/document.toml — Content-Addressed Document & Chunk
+# Tree Schema (plan §9.1, Appendix A `Document`, bead fa-szi)
+# =============================================================================
+
+schema_version = 1
+name = "Document"
+owner = "fa-journal::evidence::Document"
+major = 1
+minor = 0
+commitment_domain = "fa:doc:v1"
+leaf_domain = "fa:doc:leaf:v1"
+node_domain = "fa:doc:node:v1"
+oid_domain = "fa:oid:document:v1"
+chunk_bytes = 4096
+max_inline_bytes = 12288
+externally_verifiable = true
+
+fields = ["oid:bytes32", "doc_commit:bytes32", "kind:u8", "mime:string", "size:u64", "chunk_root:bytes32", "storage:tagged_storage", "provenance_grade:u8", "uploaded_by:u128"]
+storage_tags = ["0:Inline", "1:External"]

@@ -1,0 +1,116 @@
+# =============================================================================
+# registries/proof_lanes.toml — Formal Verification Anchors (Lean 4 & TLA+/TLC)
+# (plan §16.7, §18.2, beads fa-szi, fa-8x9)
+# =============================================================================
+
+schema_version = 1
+
+[[lane]]
+id = "FA-PROOF-01"
+engine = "lean4"
+claim_class = "proof"
+subject = "Amount additive group laws and checked overflow"
+invariant_clauses = ["FA-INV-06.core", "FA-INV-06.proofs"]
+artifact_path = "formal/lean/FaProofs/Amount.lean"
+owning_bead = "fa-8x9"
+status = "dormant"
+
+[[lane]]
+id = "FA-PROOF-02"
+engine = "lean4"
+claim_class = "proof"
+subject = "Rounding error bounds per registered law in rounding_laws.toml"
+invariant_clauses = ["FA-INV-06.core", "FA-INV-06.proofs"]
+artifact_path = "formal/lean/FaProofs/Rounding.lean"
+owning_bead = "fa-8x9"
+status = "dormant"
+
+[[lane]]
+id = "FA-PROOF-03"
+engine = "lean4"
+claim_class = "proof"
+subject = "Largest-remainder and sequential allocation total conservation"
+invariant_clauses = ["FA-INV-06.core", "FA-INV-06.proofs"]
+artifact_path = "formal/lean/FaProofs/Allocation.lean"
+owning_bead = "fa-8x9"
+status = "dormant"
+
+[[lane]]
+id = "FA-PROOF-04"
+engine = "lean4"
+claim_class = "proof"
+subject = "Balance-law preservation under Reversal side-swap, Replacement, and Reclassification"
+invariant_clauses = ["FA-INV-01.per-unit", "FA-INV-08.reversed-once"]
+artifact_path = "formal/lean/FaProofs/BalancePreservation.lean"
+owning_bead = "fa-8x9"
+status = "dormant"
+
+[[lane]]
+id = "FA-PROOF-05"
+engine = "lean4"
+claim_class = "proof"
+subject = "Supersession DAG netting laws (negation, paired replacement, partial reclass, delta)"
+invariant_clauses = ["FA-INV-08.net-law"]
+artifact_path = "formal/lean/FaProofs/SupersessionNet.lean"
+owning_bead = "fa-8x9"
+status = "dormant"
+
+[[lane]]
+id = "FA-PROOF-06"
+engine = "lean4"
+claim_class = "proof"
+subject = "Period state machine reachability (no path from Locked to Open without case-bound Reopen)"
+invariant_clauses = ["FA-INV-03.core"]
+artifact_path = "formal/lean/FaProofs/PeriodStateMachine.lean"
+owning_bead = "fa-8x9"
+status = "dormant"
+
+[[lane]]
+id = "FA-PROOF-07"
+engine = "lean4"
+claim_class = "proof"
+subject = "Bitemporal visibility and known-at prefix monotonicity"
+invariant_clauses = ["FA-INV-07.core"]
+artifact_path = "formal/lean/FaProofs/Bitemporal.lean"
+owning_bead = "fa-8x9"
+status = "dormant"
+
+[[lane]]
+id = "FA-MODEL-01"
+engine = "tlaplus"
+claim_class = "bounded_model"
+subject = "CloseRun DAG execution and crash recovery"
+invariant_clauses = ["FA-INV-03.nominal-zero"]
+artifact_path = "formal/tla/CloseRunDag.tla"
+owning_bead = "fa-8x9"
+status = "dormant"
+
+[[lane]]
+id = "FA-MODEL-02"
+engine = "tlaplus"
+claim_class = "bounded_model"
+subject = "Two-phase hold resolution racing expiry sweep under single-resolution identity guard"
+invariant_clauses = ["FA-INV-15.core", "FA-INV-15.availability"]
+artifact_path = "formal/tla/TwoPhaseHold.tla"
+owning_bead = "fa-8x9"
+status = "dormant"
+
+[[lane]]
+id = "FA-MODEL-03"
+engine = "tlaplus"
+claim_class = "bounded_model"
+subject = "Draft promotion revalidation against a moving trunk"
+invariant_clauses = ["FA-INV-09.core", "FA-INV-10.approval-binds-proposal"]
+artifact_path = "formal/tla/DraftPromotion.tla"
+owning_bead = "fa-8x9"
+status = "dormant"
+
+[[lane]]
+id = "FA-MODEL-04"
+engine = "tlaplus"
+claim_class = "bounded_model"
+subject = "RestatementCase lifecycle with dual-control approvals and atomic case post"
+invariant_clauses = ["FA-INV-02.lifecycle-by-transition", "FA-INV-10.core"]
+artifact_path = "formal/tla/RestatementCase.tla"
+owning_bead = "fa-8x9"
+status = "dormant"

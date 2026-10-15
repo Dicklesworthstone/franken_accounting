@@ -1,0 +1,25 @@
+# =============================================================================
+# registries/object_schemas/entry.toml — Canonical Entry & EntryProposal Schema
+# (plan §4.2, §4.6, Appendix A `fa:entry:v1`, bead fa-szi)
+# =============================================================================
+
+schema_version = 1
+name = "Entry"
+owner = "fa-model::entry::Entry"
+major = 1
+minor = 1
+proposal_digest_domain = "fa:entry-proposal:v1"
+entry_digest_domain = "fa:entry:v1"
+semantic_digest_domain = "fa:entry-semantic:v1"
+externally_verifiable = true
+
+proposal_fields = ["schema_major:u16", "schema_minor:u16", "book_id:bytes16", "branch_id:bytes16", "class:u16", "effective_date:i32", "document_date:option<i32>", "description:erasable<string>", "effective_period:option<period_ref>", "legs:list<leg_payload>", "control:option<control_payload>", "unit_totals:list<unit_total>", "base_totals:option<base_totals>", "idempotency_key:bytes", "origin:entry_origin", "principal_ref:u128", "session_ref:option<u128>", "evidence:list<evidence_ref>", "supersession:list<supersession>", "pending:option<pending>", "external_ids:list<external_id>", "tags:list<tag>", "extensions:list<extension>"]
+envelope_fields = ["proposal_digest:bytes32", "plan_certificate_oid:option<bytes32>", "approvals:list<approval_ref>", "entry_digest:bytes32"]
+extension_tags = ["1:fa:balancing:v1", "2:fa:auto-reverse:v1", "3:fa:effective-date-basis:v1", "4:fa:legal-hold-scope:v1", "5:fa:allocation-posting:v1"]
+
+[[decision]]
+field = "effective_date"
+appendix_a = "Option<DateDay>"
+code_type = "DateDay (crates/fa-model/src/entry.rs:1280)"
+rationale = "EntryPayload carries a mandatory DateDay in v1 positional layout; book-scoped undated control classes project effective_day = None in LeafEnvelope::from_entry via fa_notary::journal::is_undated."
+tracking_bead = "fa-coa"

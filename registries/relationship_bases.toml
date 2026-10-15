@@ -1,0 +1,76 @@
+# =============================================================================
+# registries/relationship_bases.toml — REA Party/Entity Relationship Basis
+# Vocabulary for OWNS, CONTROLS, and RELATED_TO Edges (plan §4.5, §18.2, beads fa-szi, fa-l2h)
+# =============================================================================
+
+schema_version = 1
+
+[[basis]]
+id = 1
+code = "equity_voting"
+edge_kind = "OWNS"
+standard_ref = "ASC 810 / IFRS 10"
+description = "Direct or indirect voting equity ownership percentage (exact rational pct in (0, 1])."
+
+[[basis]]
+id = 2
+code = "beneficial_ownership"
+edge_kind = "OWNS"
+standard_ref = "31 CFR 1010.230 / FinCEN CDD"
+description = "Beneficial ownership interest in a legal entity by a natural person or parent entity."
+
+[[basis]]
+id = 3
+code = "majority_voting_control"
+edge_kind = "CONTROLS"
+standard_ref = "ASC 810-10-15 / IFRS 10.7"
+description = "Control through majority voting rights or power to appoint the majority of the governing board."
+
+[[basis]]
+id = 4
+code = "variable_interest_primary_beneficiary"
+edge_kind = "CONTROLS"
+standard_ref = "ASC 810-10-25 (VIE)"
+description = "Control as primary beneficiary of a Variable Interest Entity with power to direct significant activities."
+
+[[basis]]
+id = 5
+code = "contractual_management"
+edge_kind = "CONTROLS"
+standard_ref = "ASC 850 / IAS 24.9"
+description = "Control via management contract, general partnership authority, or sole managing member power."
+
+[[basis]]
+id = 6
+code = "common_control"
+edge_kind = "RELATED_TO"
+standard_ref = "ASC 850-10-20 / IAS 24.9(b)"
+description = "Entities under common ownership or common control within the same corporate group."
+
+[[basis]]
+id = 7
+code = "executive_officer_or_director"
+edge_kind = "RELATED_TO"
+standard_ref = "ASC 850-10-20 / IAS 24.9(a)(iii)"
+description = "Key management personnel, executive officer, director, or trustee of the reporting entity."
+
+[[basis]]
+id = 8
+code = "immediate_family_member"
+edge_kind = "RELATED_TO"
+standard_ref = "ASC 850-10-20 / IAS 24.9(a)"
+description = "Immediate family member of a principal owner, executive officer, or director."
+
+[[basis]]
+id = 9
+code = "significant_influence_associate"
+edge_kind = "RELATED_TO"
+standard_ref = "ASC 323 / IAS 28"
+description = "Equity-method investee or associate over which the entity exercises significant influence."
+
+[[basis]]
+id = 10
+code = "joint_venture"
+edge_kind = "RELATED_TO"
+standard_ref = "ASC 323-30 / IFRS 11"
+description = "Joint venture or jointly controlled arrangement."
