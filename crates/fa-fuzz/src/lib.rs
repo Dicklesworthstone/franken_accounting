@@ -1042,7 +1042,7 @@ mod tests {
     #[test]
     fn planted_unwrap_on_entry_length_field_is_caught_within_smoke_budget() {
         let seeds = seeds_for_target("entry_codec");
-        let mut rng = DetRng::new(0xfa_77e_0001);
+        let mut rng = DetRng::new(0x000f_a77e_0001);
         let mut caught = false;
         'outer: for seed in &seeds {
             if std::panic::catch_unwind(|| buggy_entry_decoder_with_planted_unwrap(seed)).is_err() {
@@ -1068,7 +1068,7 @@ mod tests {
     #[test]
     fn planted_panic_on_empty_book_flag_in_cli_parser_is_caught_within_smoke_budget() {
         let seeds = seeds_for_target("cli_args");
-        let mut rng = DetRng::new(0xfa_77e_0002);
+        let mut rng = DetRng::new(0x000f_a77e_0002);
         let mut caught = false;
         'outer: for seed in &seeds {
             if std::panic::catch_unwind(|| buggy_cli_parser_with_planted_empty_book_panic(seed))

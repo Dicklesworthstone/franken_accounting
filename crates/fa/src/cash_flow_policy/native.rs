@@ -2,7 +2,10 @@
 
 use asupersync::fs::Vfs;
 use fa_journal::{KernelError, rows::bytes};
-use fa_model::{Entry, EntryClass, Id128, symbols::{label, property}};
+use fa_model::{
+    Entry, EntryClass, Id128,
+    symbols::{label, property},
+};
 use fa_money::Side;
 use fa_policy::Capability;
 use fgdb_types::{VId, context::PurposeContexts};
@@ -25,13 +28,26 @@ pub(super) struct Resolved {
 /// Internal-only: ledger must be a current-authorized native read or replay.
 /// Its fixed native closure authenticates the historical counterpart payloads.
 pub(super) fn resolve<V: Vfs + Clone, B: Vfs + Clone>(
-    book: &AsyncBook<V, B>, cx: &PurposeContexts, ledger: &GeneralLedger,
+    book: &AsyncBook<V, B>,
+    cx: &PurposeContexts,
+    ledger: &GeneralLedger,
     policy: &CashFlowPolicy,
 ) -> Outcome<Resolved> {
-    let policy = match normalize(policy) { Ok(p) => p, Err(e) => return Ok(Err(e)) };
+    let policy = match normalize(policy) {
+        Ok(p) => p,
+        Err(e) => return Ok(Err(e)),
+    };
     let cash: BTreeSet<_> = policy.cash_accounts.iter().copied().collect();
-    if ledger.accounts().iter().map(|a| a.id).collect::<BTreeSet<_>>() != cash {
-        return Ok(Err(invalid("policy cash designations differ from the native cash selection")));
+    if ledger
+        .accounts()
+        .iter()
+        .map(|a| a.id)
+        .collect::<BTreeSet<_>>()
+        != cash
+    {
+        return Ok(Err(invalid(
+            "policy cash designations differ from the native cash selection",
+        )));
     }
     let query = cx.query();
     query.checkpoint().map_err(BookError::Context)?;
@@ -140,19 +156,30 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// the cash reader's ONE prefix, under CURRENT whole-book Read authority.
     /// Then invoke the existing cash engine; no second amount fold is introduced.
     pub fn cash_flow_with_policy(
-        &self, cx: &PurposeContexts, principal: VId, capability: &Capability,
-        request: &RollForwardRequest, policy: &CashFlowPolicy,
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        request: &RollForwardRequest,
+        policy: &CashFlowPolicy,
     ) -> Outcome<PolicyCashFlow> {
         let ledger = match self.general_ledger(cx, principal, capability, request)? {
-            Ok(v) => v, Err(r) => return Ok(Err(r)),
+            Ok(v) => v,
+            Err(r) => return Ok(Err(r)),
         };
         let resolved = match resolve(self, cx, &ledger, policy)? {
-            Ok(v) => v, Err(r) => return Ok(Err(r)),
+            Ok(v) => v,
+            Err(r) => return Ok(Err(r)),
         };
         let report = match ledger.classify_cash_flow(&cx.query(), &resolved.definition)? {
-            Ok(v) => v, Err(r) => return Ok(Err(r)),
+            Ok(v) => v,
+            Err(r) => return Ok(Err(r)),
         };
         cx.query().checkpoint().map_err(BookError::Context)?;
-        Ok(Ok(PolicyCashFlow { policy: resolved.policy, report, decisions: resolved.decisions }))
+        Ok(Ok(PolicyCashFlow {
+            policy: resolved.policy,
+            report,
+            decisions: resolved.decisions,
+        }))
     }
 }

@@ -26,15 +26,24 @@ impl Harness {
         let runtime = RuntimeBuilder::new().build().unwrap();
         let root = runtime.request_cx_with_budget(Budget::INFINITE);
         let cx = PurposeContexts::narrow_runtime_root(&root);
-        let source = runtime.block_on(Database::open_memory(
-            &cx.commit(),
-            DatabaseKeys::new([91; 32], DatabaseSecurityNamespaceId([92; 32]), [93; 32]),
-        )).unwrap();
-        let target = runtime.block_on(Database::open_memory(
-            &cx.commit(),
-            DatabaseKeys::new([94; 32], DatabaseSecurityNamespaceId([95; 32]), [96; 32]),
-        )).unwrap();
-        Self { runtime, root, source, target }
+        let source = runtime
+            .block_on(Database::open_memory(
+                &cx.commit(),
+                DatabaseKeys::new([91; 32], DatabaseSecurityNamespaceId([92; 32]), [93; 32]),
+            ))
+            .unwrap();
+        let target = runtime
+            .block_on(Database::open_memory(
+                &cx.commit(),
+                DatabaseKeys::new([94; 32], DatabaseSecurityNamespaceId([95; 32]), [96; 32]),
+            ))
+            .unwrap();
+        Self {
+            runtime,
+            root,
+            source,
+            target,
+        }
     }
 
     fn cx(&self) -> PurposeContexts {
@@ -46,16 +55,29 @@ impl Harness {
         let txn_cx = cx.txn();
         let mut txn = self.source.begin(&txn_cx).unwrap();
         txn.write_ordered(&mut self.source, writes).unwrap();
-        self.runtime.block_on(txn.commit(&mut self.source, &cx.commit())).unwrap()
+        self.runtime
+            .block_on(txn.commit(&mut self.source, &cx.commit()))
+            .unwrap()
     }
 
     fn replay(&mut self) -> Result<SeqMap, fa_journal::Refusal> {
         let cx = self.cx();
         let prefix = self.source.frontier().unwrap();
-        let batches: Vec<_> = self.source.delta_since(CommitSeq(0)).unwrap().cloned().collect();
-        self.runtime.block_on(replay_batches(
-            &mut self.target, &cx, Id128([97; 16]), prefix, &batches,
-        )).unwrap()
+        let batches: Vec<_> = self
+            .source
+            .delta_since(CommitSeq(0))
+            .unwrap()
+            .cloned()
+            .collect();
+        self.runtime
+            .block_on(replay_batches(
+                &mut self.target,
+                &cx,
+                Id128([97; 16]),
+                prefix,
+                &batches,
+            ))
+            .unwrap()
     }
 }
 
@@ -73,10 +95,14 @@ fn births(db: &Database<MemVfs>) -> Vec<(u64, u8, u128)> {
         for coordinate in batch.coordinate_entries() {
             for row in &coordinate.rows {
                 match row {
-                    DeltaRow::CreateVertex { vid, birth_ordinal, .. } => {
+                    DeltaRow::CreateVertex {
+                        vid, birth_ordinal, ..
+                    } => {
                         result.push((*birth_ordinal, 0, vid.0));
                     }
-                    DeltaRow::CreateEdge { eid, birth_ordinal, .. } => {
+                    DeltaRow::CreateEdge {
+                        eid, birth_ordinal, ..
+                    } => {
                         result.push((*birth_ordinal, 1, eid.0));
                     }
                     _ => {}
@@ -103,7 +129,10 @@ fn replay_preserves_birth_order_across_coordinates_and_endpoint_dependencies() {
     let source_seq = h.write(vec![first, second]);
     let source_births = births(&h.source);
     assert_eq!(
-        source_births.iter().map(|row| (row.1, row.2)).collect::<Vec<_>>(),
+        source_births
+            .iter()
+            .map(|row| (row.1, row.2))
+            .collect::<Vec<_>>(),
         vec![(0, a.0), (0, b.0), (1, edge.0)],
     );
 
@@ -112,7 +141,10 @@ fn replay_preserves_birth_order_across_coordinates_and_endpoint_dependencies() {
     assert_eq!(births(&h.target), source_births);
     assert_eq!(map.pairs.len(), 1);
     assert_eq!(map.pairs[0].source_seq, source_seq);
-    assert_eq!(map.translate(source_seq), Some(h.target.frontier().unwrap()));
+    assert_eq!(
+        map.translate(source_seq),
+        Some(h.target.frontier().unwrap())
+    );
 }
 
 #[test]
@@ -133,7 +165,10 @@ fn later_coordinate_maintenance_and_its_earlier_edges_never_enter_the_scratch() 
     // source is valid; replay must skip it, not operate on a missing edge.
     let mut update = WriteBatch::new(early);
     update.compare_and_set_edge_property(
-        edge, property::CUSTODY_LEN, None, CanonicalScalar::Int(7),
+        edge,
+        property::CUSTODY_LEN,
+        None,
+        CanonicalScalar::Int(7),
         WriteMismatchPolicy::AbortWrite,
     );
     let maintenance_seq = h.write(vec![update]);
@@ -141,13 +176,19 @@ fn later_coordinate_maintenance_and_its_earlier_edges_never_enter_the_scratch() 
     assert!(h.source.vertex(maintenance).unwrap().is_some());
     assert!(h.target.vertex(maintenance).unwrap().is_none());
     assert_eq!(
-        births(&h.target).iter().map(|row| (row.1, row.2)).collect::<Vec<_>>(),
+        births(&h.target)
+            .iter()
+            .map(|row| (row.1, row.2))
+            .collect::<Vec<_>>(),
         vec![(0, account.0)],
     );
     assert_eq!(map.pairs.len(), 1);
     assert_eq!(map.pairs[0].source_seq, accounting_seq);
     assert_eq!(map.source_prefix, maintenance_seq);
-    assert_eq!(map.translate(maintenance_seq), Some(map.pairs[0].scratch_seq));
+    assert_eq!(
+        map.translate(maintenance_seq),
+        Some(map.pairs[0].scratch_seq)
+    );
     assert_eq!(h.target.frontier().unwrap(), map.pairs[0].scratch_seq);
     assert!(map.is_monotone());
 }
@@ -158,21 +199,32 @@ fn accounting_property_updates_keep_their_exact_values_and_sequence_mapping() {
     let (early, late) = relations();
     let account = VId(9201);
     let mut create = WriteBatch::new(late);
-    create.create_vertex(account, vec![label::ACCOUNT], vec![
-        (property::CUSTODY_LEN, CanonicalScalar::Int(1)),
-    ]);
+    create.create_vertex(
+        account,
+        vec![label::ACCOUNT],
+        vec![(property::CUSTODY_LEN, CanonicalScalar::Int(1))],
+    );
     let first = h.write(vec![create]);
     let mut update = WriteBatch::new(early);
     update.compare_and_set_vertex_property(
-        account, property::CUSTODY_LEN, Some(CanonicalScalar::Int(1)),
-        CanonicalScalar::Int(2), WriteMismatchPolicy::AbortWrite,
+        account,
+        property::CUSTODY_LEN,
+        Some(CanonicalScalar::Int(1)),
+        CanonicalScalar::Int(2),
+        WriteMismatchPolicy::AbortWrite,
     );
     let second = h.write(vec![update]);
     let map = h.replay().unwrap();
     let source = h.source.vertex(account).unwrap().unwrap();
     let target = h.target.vertex(account).unwrap().unwrap();
-    assert_eq!(prop(&target, property::CUSTODY_LEN), Some(&CanonicalScalar::Int(2)));
-    assert_eq!(prop(&target, property::CUSTODY_LEN), prop(&source, property::CUSTODY_LEN));
+    assert_eq!(
+        prop(&target, property::CUSTODY_LEN),
+        Some(&CanonicalScalar::Int(2))
+    );
+    assert_eq!(
+        prop(&target, property::CUSTODY_LEN),
+        prop(&source, property::CUSTODY_LEN)
+    );
     assert_eq!(map.pairs.len(), 2);
     assert_eq!(map.pairs[0].source_seq, first);
     assert_eq!(map.pairs[1].source_seq, second);
@@ -185,9 +237,11 @@ fn unsupported_accounting_removals_still_refuse_without_a_partial_commit() {
     let (early, late) = relations();
     let account = VId(9301);
     let mut create = WriteBatch::new(late);
-    create.create_vertex(account, vec![label::ACCOUNT], vec![
-        (property::CUSTODY_LEN, CanonicalScalar::Int(1)),
-    ]);
+    create.create_vertex(
+        account,
+        vec![label::ACCOUNT],
+        vec![(property::CUSTODY_LEN, CanonicalScalar::Int(1))],
+    );
     h.write(vec![create]);
     let mut removal = WriteBatch::new(early);
     removal.set_vertex_property(account, property::CUSTODY_LEN, None);
@@ -197,6 +251,9 @@ fn unsupported_accounting_removals_still_refuse_without_a_partial_commit() {
     assert!(refusal.message.contains("property removal"));
     // Earlier complete commits remain; none of the refused commit is applied.
     let target = h.target.vertex(account).unwrap().unwrap();
-    assert_eq!(prop(&target, property::CUSTODY_LEN), Some(&CanonicalScalar::Int(1)));
+    assert_eq!(
+        prop(&target, property::CUSTODY_LEN),
+        Some(&CanonicalScalar::Int(1))
+    );
     assert_eq!(h.target.delta_since(CommitSeq(0)).unwrap().count(), 1);
 }

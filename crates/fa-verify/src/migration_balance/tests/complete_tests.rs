@@ -69,9 +69,8 @@ fn committed_selector_forgery_is_rejected_even_when_the_root_is_trusted() {
                 Err(VerifyError::Record(RecordError::Envelope)),
                 "{context}"
             );
-            let (omitted, anchor) = proof_format(
-                &forged, &[], 0, Some(day), Some(0), BALANCE_FORMAT_V3,
-            );
+            let (omitted, anchor) =
+                proof_format(&forged, &[], 0, Some(day), Some(0), BALANCE_FORMAT_V3);
             assert_eq!(
                 crate::verify_balance(&omitted, &anchor),
                 Err(VerifyError::RecordSet { index: 0 }),
@@ -87,7 +86,12 @@ fn a_finalize_control_cannot_be_hidden_by_a_committed_noncontrol_tag() {
     let witnesses = [(0, body.clone())];
     let mut records = history(&body, 100, Some(1));
     let (honest, anchor) = complete(&records, &witnesses, 5000, None);
-    assert_eq!(crate::verify_balance(&honest, &anchor).unwrap().contributing, vec![1]);
+    assert_eq!(
+        crate::verify_balance(&honest, &anchor)
+            .unwrap()
+            .contributing,
+        vec![1]
+    );
 
     records[2].envelope.class = CLASS_PENDING;
     let (legacy, anchor) = proof(&records, &witnesses, 0, None, None);
@@ -100,9 +104,7 @@ fn a_finalize_control_cannot_be_hidden_by_a_committed_noncontrol_tag() {
         crate::verify_balance(&forged, &anchor),
         Err(VerifyError::Record(RecordError::Envelope))
     );
-    let (omitted, anchor) = proof_format(
-        &records, &witnesses, 0, None, Some(2), BALANCE_FORMAT_V3,
-    );
+    let (omitted, anchor) = proof_format(&records, &witnesses, 0, None, Some(2), BALANCE_FORMAT_V3);
     assert_eq!(
         crate::verify_balance(&omitted, &anchor),
         Err(VerifyError::RecordSet { index: 2 })
@@ -134,11 +136,18 @@ fn authentic_pending_future_and_unrelated_control_payloads_are_checked_not_count
     // Even excluded payloads must be present, correctly framed and bound.
     for omitted in 0..records.len() {
         let (proof, anchor) = proof_format(
-            &records, &[], 5000, Some(100), Some(omitted), BALANCE_FORMAT_V3,
+            &records,
+            &[],
+            5000,
+            Some(100),
+            Some(omitted),
+            BALANCE_FORMAT_V3,
         );
         assert_eq!(
             crate::verify_balance(&proof, &anchor),
-            Err(VerifyError::RecordSet { index: omitted as u64 })
+            Err(VerifyError::RecordSet {
+                index: omitted as u64
+            })
         );
     }
     records[2].payload[42] ^= 1;
@@ -178,12 +187,27 @@ fn full_payloads_preserve_all_migration_modes_and_only_require_selected_run_bodi
 
 #[test]
 fn complete_record_indices_are_exact_unique_and_ascending() {
-    let records = [record(Kind::Ordinary, 1, 100), record(Kind::Ordinary, 2, 101)];
+    let records = [
+        record(Kind::Ordinary, 1, 100),
+        record(Kind::Ordinary, 2, 101),
+    ];
     let (honest, anchor) = complete(&records, &[], 5000, Some(100));
     // Canonical framing: format, checkpoint, claim, envelope list, record count.
-    let first = 4 + BALANCE_FORMAT_V3.len() + Checkpoint::ENCODED_LEN
-        + 16 + 4 + 1 + 4 + 16 + 16 + 4
-        + records.iter().map(|r| 4 + r.envelope.encode().len()).sum::<usize>() + 4;
+    let first = 4
+        + BALANCE_FORMAT_V3.len()
+        + Checkpoint::ENCODED_LEN
+        + 16
+        + 4
+        + 1
+        + 4
+        + 16
+        + 16
+        + 4
+        + records
+            .iter()
+            .map(|r| 4 + r.envelope.encode().len())
+            .sum::<usize>()
+        + 4;
     let second = first + 16 + records[0].payload.len();
     for (offset, wrong_index) in [(first, 1u64), (second, 0u64), (second, u64::MAX)] {
         let mut forged = honest.clone();
@@ -195,10 +219,16 @@ fn complete_record_indices_are_exact_unique_and_ascending() {
     }
     let mut extra = honest.clone();
     extra[first - 4..first].copy_from_slice(&3u32.to_le_bytes());
-    assert!(matches!(crate::verify_balance(&extra, &anchor), Err(VerifyError::Decode(_))));
+    assert!(matches!(
+        crate::verify_balance(&extra, &anchor),
+        Err(VerifyError::Decode(_))
+    ));
     let mut trailing = honest.clone();
     trailing.push(0);
-    assert!(matches!(crate::verify_balance(&trailing, &anchor), Err(VerifyError::Decode(_))));
+    assert!(matches!(
+        crate::verify_balance(&trailing, &anchor),
+        Err(VerifyError::Decode(_))
+    ));
     for end in [0, 4, first, second, honest.len() - 1] {
         assert!(crate::verify_balance(&honest[..end], &anchor).is_err());
     }
@@ -220,7 +250,10 @@ fn empty_prefixes_are_complete_and_bad_claims_still_fail() {
     let (wrong, anchor) = complete(&records, &[], 0, None);
     assert_eq!(
         crate::verify_balance(&wrong, &anchor),
-        Err(VerifyError::Claim { debits: 5000, credits: 0 })
+        Err(VerifyError::Claim {
+            debits: 5000,
+            credits: 0
+        })
     );
 }
 

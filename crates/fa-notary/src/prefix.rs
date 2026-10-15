@@ -45,7 +45,8 @@ fn drift(what: impl Into<String>) -> Refusal {
 }
 
 fn add_bytes(total: &mut usize, length: usize) -> Result<(), Refusal> {
-    *total = total.checked_add(length)
+    *total = total
+        .checked_add(length)
         .filter(|size| *size <= MAX_PREFIX_PROOF_BYTES)
         .ok_or_else(|| limit("64 MiB encoded-byte"))?;
     Ok(())
@@ -87,48 +88,70 @@ impl Journal {
         let mut tree = Tree::new();
         let mut previous = None;
         for (index, leaf) in self.leaves.iter().enumerate() {
-            let position = (leaf.envelope.commit_seq, leaf.envelope.within_commit_ordinal);
+            let position = (
+                leaf.envelope.commit_seq,
+                leaf.envelope.within_commit_ordinal,
+            );
             if leaf.envelope.book_id != self.book_id
                 || leaf.envelope.branch_id != self.branch_id
                 || leaf.envelope.commit_seq > self.through_seq
                 || previous.is_some_and(|before| before >= position)
             {
-                return Ok(Err(drift(format!("prefix leaf {index} has an invalid journal coordinate"))));
+                return Ok(Err(drift(format!(
+                    "prefix leaf {index} has an invalid journal coordinate"
+                ))));
             }
             previous = Some(position);
             let entry = Entry::decode(&leaf.payload)?;
             let envelope = LeafEnvelope::of_entry(
-                &entry, leaf.envelope.commit_seq, leaf.envelope.within_commit_ordinal,
+                &entry,
+                leaf.envelope.commit_seq,
+                leaf.envelope.within_commit_ordinal,
             );
             if envelope != leaf.envelope
-                || envelope.canonical_bytes().map_err(fa_model::EntryError::Encode)? != leaf.envelope_bytes
+                || envelope
+                    .canonical_bytes()
+                    .map_err(fa_model::EntryError::Encode)?
+                    != leaf.envelope_bytes
                 || entry.proposal.canonical_bytes()?.len() != leaf.proposal_len
                 || entry.encode()? != leaf.payload
             {
-                return Ok(Err(drift(format!("prefix leaf {index} disagrees with its canonical entry payload"))));
+                return Ok(Err(drift(format!(
+                    "prefix leaf {index} disagrees with its canonical entry payload"
+                ))));
             }
             let hash = leaf_hash(&leaf.envelope_bytes);
             if hash != leaf.hash {
-                return Ok(Err(drift(format!("prefix leaf {index} has an inconsistent cached hash"))));
+                return Ok(Err(drift(format!(
+                    "prefix leaf {index} has an inconsistent cached hash"
+                ))));
             }
             tree.push(hash);
         }
         if tree.root() != self.root() {
-            return Ok(Err(drift("the complete payload prefix does not reproduce its accumulator root")));
+            return Ok(Err(drift(
+                "the complete payload prefix does not reproduce its accumulator root",
+            )));
         }
         let mut w = Writer::with_capacity(size);
         w.bytes(PREFIX_FORMAT_V2);
         self.statement().encode(&mut w);
-        w.list(&self.leaves, |w, leaf| { w.bytes(&leaf.envelope_bytes); });
+        w.list(&self.leaves, |w, leaf| {
+            w.bytes(&leaf.envelope_bytes);
+        });
         // Count and split conversions are bounded by the preflight above and
         // the canonical proposal-length equality, not by unchecked wire hints.
         w.u32(self.leaves.len() as u32);
         for (index, leaf) in self.leaves.iter().enumerate() {
-            w.u64(index as u64).u32(leaf.proposal_len as u32).bytes(&leaf.payload);
+            w.u64(index as u64)
+                .u32(leaf.proposal_len as u32)
+                .bytes(&leaf.payload);
         }
         let bytes = w.finish().map_err(fa_model::EntryError::Encode)?;
         if bytes.len() != size {
-            return Ok(Err(drift("complete-prefix serialization disagrees with its framed size")));
+            return Ok(Err(drift(
+                "complete-prefix serialization disagrees with its framed size",
+            )));
         }
         Ok(Ok(bytes))
     }
@@ -148,7 +171,9 @@ pub fn prove_prefix_with_records<V: asupersync::fs::Vfs + Clone>(
         Err(refusal) => return Ok(Err(refusal)),
     };
     if AccumulatorState::of_journal(&journal, state.prev_state_oid) != *state {
-        return Ok(Err(drift("the journal does not reproduce the selected accumulator state")));
+        return Ok(Err(drift(
+            "the journal does not reproduce the selected accumulator state",
+        )));
     }
     if let Err(refusal) = journal.verify_unchanged_at(db, observed_at)? {
         return Ok(Err(refusal));

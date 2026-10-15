@@ -2941,9 +2941,24 @@ impl Oracle {
     /// Whether `e` carries open items at `known`.
     #[must_use]
     pub fn carries_open_items_at(&self, e: &Entry, known: Known) -> bool {
-        matches!(e.class.as_str(), "Original" | "Adjusting" | "Allocation")
-            || (e.class == "Resolution" && !e.legs.is_empty())
-            || (e.class == "Migration" && self.visible(e, known))
+        !e.legs.is_empty()
+            && self.visible(e, known)
+            && matches!(
+                e.class.as_str(),
+                "Original"
+                    | "Resolution"
+                    | "Replacement"
+                    | "Reclassification"
+                    | "Adjusting"
+                    | "Closing"
+                    | "Allocation"
+                    | "Revaluation"
+                    | "Elimination"
+                    | "Migration"
+                    | "Revision"
+                    | "Restatement"
+                    | "PriorPeriodAdjustment"
+            )
     }
 
     /// Live unless a live reversal targets it (a reversed reversal revives).

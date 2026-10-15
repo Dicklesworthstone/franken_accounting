@@ -132,8 +132,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 transaction.abort();
                 return Err(KernelError::from(error).into());
             }
-            report.published_at = transaction.commit(&mut self.db, &cx.commit())
-                .await.map_err(KernelError::from)?;
+            report.published_at = transaction
+                .commit(&mut self.db, &cx.commit())
+                .await
+                .map_err(KernelError::from)?;
             report.wrote = true;
         }
         // These are the existing independent checkers, not the repair's own
@@ -165,11 +167,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         principal: VId,
         capability: &Capability,
     ) -> Outcome<ProjectionRebuild> {
-        let prepared = match self.prepare_projection_rebuild_with_history(cx, principal, capability).await? {
+        let prepared = match self
+            .prepare_projection_rebuild_with_history(cx, principal, capability)
+            .await?
+        {
             Ok(prepared) => prepared,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        self.publish_projection_rebuild(cx, principal, capability, prepared).await
+        self.publish_projection_rebuild(cx, principal, capability, prepared)
+            .await
     }
 }
 
@@ -187,9 +193,18 @@ fn authorize<V: Vfs + Clone>(
     // All request-only checks precede even frontier observation.
     let admission = fa_policy::admit_read(capability, principal, book.book_id)
         .and_then(|()| fa_policy::require(capability, Op::Verify, "rebuilding leg projections"))
-        .and_then(|()| fa_policy::admit(capability, &Intent {
-            principal, trunk: true, op: Op::SchemaChange, book: book.book_id, legs: &[],
-        }));
+        .and_then(|()| {
+            fa_policy::admit(
+                capability,
+                &Intent {
+                    principal,
+                    trunk: true,
+                    op: Op::SchemaChange,
+                    book: book.book_id,
+                    legs: &[],
+                },
+            )
+        });
     if let Err(denial) = admission {
         return Ok(Err(fa_journal::policy::refusal(&denial)));
     }
@@ -200,7 +215,9 @@ fn authorize<V: Vfs + Clone>(
         if let Err(denial) = fa_policy::current(capability, head) {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
-        Ok(fa_journal::policy::capability_admitted(db, book, capability)?)
+        Ok(fa_journal::policy::capability_admitted(
+            db, book, capability,
+        )?)
     })
 }
 
@@ -228,19 +245,38 @@ fn prepare<V: Vfs + Clone>(
     let rows = db.vertices_at(basis).map_err(KernelError::from)?;
     let edges = db.edges_at(basis).map_err(KernelError::from)?;
     let vertices: BTreeMap<_, _> = rows.iter().map(|row| (row.vid, row)).collect();
-    let relations = [relation::HAS_LEG, relation::POSTS_TO, relation::IN_UNIT, relation::FOR];
-    let keys = [property::FA_EFFECTIVE_DAY, property::SIDE, property::ACCOUNT_REF,
-        property::UNIT_ID, property::AMOUNT, property::AMOUNT_BYTES, property::ORDINAL,
-        property::APPLIED];
+    let relations = [
+        relation::HAS_LEG,
+        relation::POSTS_TO,
+        relation::IN_UNIT,
+        relation::FOR,
+    ];
+    let keys = [
+        property::FA_EFFECTIVE_DAY,
+        property::SIDE,
+        property::ACCOUNT_REF,
+        property::UNIT_ID,
+        property::AMOUNT,
+        property::AMOUNT_BYTES,
+        property::ORDINAL,
+        property::APPLIED,
+    ];
     let mut vertex_changes = WriteBatch::new(relation::HAS_LEG);
     let mut edge_changes: Vec<_> = relations.iter().map(|r| WriteBatch::new(*r)).collect();
     let mut owned_entries = BTreeSet::new();
     let mut expected_legs = BTreeSet::new();
     let mut expected_edges: BTreeMap<EId, ExpectedEdge> = BTreeMap::new();
     let mut report = ProjectionRebuild {
-        basis, published_at: basis, entries_checked: 0, legs_checked: 0,
-        legs_created: 0, legs_repaired: 0,
-        edges_created: 0, edges_repaired: 0, edges_retired: 0, wrote: false,
+        basis,
+        published_at: basis,
+        entries_checked: 0,
+        legs_checked: 0,
+        legs_created: 0,
+        legs_repaired: 0,
+        edges_created: 0,
+        edges_repaired: 0,
+        edges_retired: 0,
+        wrote: false,
     };
     // A lost Entry label must not turn its real legs into apparently orphaned
     // projections. Never guess an authoritative label, and never reinterpret
@@ -249,7 +285,9 @@ fn prepare<V: Vfs + Clone>(
         if let Some(CanonicalScalar::Bytes(payload)) = prop(row, property::FA_PAYLOAD)
             && Entry::decode(payload.as_slice()).is_ok()
         {
-            return Err(corrupt("an entry payload has lost its Entry label; restore journal integrity before projection recovery"));
+            return Err(corrupt(
+                "an entry payload has lost its Entry label; restore journal integrity before projection recovery",
+            ));
         }
     }
     // This fold reads journal payloads, NOT damaged leg rows or HAS_LEG edges.
@@ -257,9 +295,14 @@ fn prepare<V: Vfs + Clone>(
     let mut applied = BTreeMap::new();
     for item in fa_registers::open_items(db, book, None, Some(basis))? {
         if item.applied < 0 || item.applied_out < 0 || item.open < 0 {
-            return Err(corrupt("cannot rebuild projections from an invalid open-item fold"));
+            return Err(corrupt(
+                "cannot rebuild projections from an invalid open-item fold",
+            ));
         }
-        if applied.insert((item.entry, item.ordinal), item.applied).is_some() {
+        if applied
+            .insert((item.entry, item.ordinal), item.applied)
+            .is_some()
+        {
             return Err(corrupt("duplicate open-item identity in the journal fold"));
         }
     }
@@ -268,7 +311,9 @@ fn prepare<V: Vfs + Clone>(
         let payload = bytes(row, property::FA_PAYLOAD, "entry._fa_payload")?;
         let entry = Entry::decode(&payload).map_err(KernelError::from)?;
         if entry.proposal.book_id != book.book_id || entry.proposal.branch_id != Id128::TRUNK {
-            return Err(corrupt("cannot rebuild projections of a foreign journal entry"));
+            return Err(corrupt(
+                "cannot rebuild projections of a foreign journal entry",
+            ));
         }
         owned_entries.insert(row.vid);
         report.entries_checked += 1;
@@ -276,15 +321,25 @@ fn prepare<V: Vfs + Clone>(
             let ordinal = u16::try_from(index).map_err(|_| corrupt("more than u16 legs"))?;
             let lvid = leg_vid(row.vid, ordinal);
             if !expected_legs.insert(lvid) {
-                return Err(corrupt("duplicate leg identity derived from journal payloads"));
+                return Err(corrupt(
+                    "duplicate leg identity derived from journal payloads",
+                ));
             }
-            let unit = book.units.get(leg.amount.unit)
+            let unit = book
+                .units
+                .get(leg.amount.unit)
                 .ok_or_else(|| corrupt("a projected leg names an unregistered unit"))?;
             let unit = unit_vid(book.book_id, &format!("{}@v{}", unit.code, unit.version));
-            if !vertices.get(&leg.account_ref).is_some_and(|row| row.labels.contains(&label::ACCOUNT))
-                || !vertices.get(&unit).is_some_and(|row| row.labels.contains(&label::UNIT))
+            if !vertices
+                .get(&leg.account_ref)
+                .is_some_and(|row| row.labels.contains(&label::ACCOUNT))
+                || !vertices
+                    .get(&unit)
+                    .is_some_and(|row| row.labels.contains(&label::UNIT))
             {
-                return Err(corrupt("a projected leg's authoritative account or unit is missing"));
+                return Err(corrupt(
+                    "a projected leg's authoritative account or unit is missing",
+                ));
             }
             let mut mirrors = leg_mirrors(leg, ordinal, entry.proposal.effective_date, &book.units)
                 .map_err(KernelError::from)?;
@@ -300,7 +355,9 @@ fn prepare<V: Vfs + Clone>(
                     if stored.labels.iter().any(|id| *id != label::LEG)
                         || prop(stored, property::FA_PAYLOAD).is_some()
                     {
-                        return Err(corrupt("a required leg identity is occupied by a non-projection object"));
+                        return Err(corrupt(
+                            "a required leg identity is occupied by a non-projection object",
+                        ));
                     }
                     let mut changed = false;
                     if stored.labels != vec![label::LEG] {
@@ -308,7 +365,10 @@ fn prepare<V: Vfs + Clone>(
                         changed = true;
                     }
                     for key in keys {
-                        let expected = mirrors.iter().find(|(id, _)| *id == key).map(|(_, value)| value);
+                        let expected = mirrors
+                            .iter()
+                            .find(|(id, _)| *id == key)
+                            .map(|(_, value)| value);
                         if prop(stored, key) != expected {
                             vertex_changes.set_vertex_property(lvid, key, expected.cloned());
                             changed = true;
@@ -318,47 +378,86 @@ fn prepare<V: Vfs + Clone>(
                 }
             }
             let mut topology = vec![
-                ExpectedEdge { kind: 0, src: row.vid, dst: lvid, value: Some(i64::from(ordinal)) },
-                ExpectedEdge { kind: 1, src: lvid, dst: leg.account_ref, value: None },
-                ExpectedEdge { kind: 2, src: lvid, dst: unit, value: None },
+                ExpectedEdge {
+                    kind: 0,
+                    src: row.vid,
+                    dst: lvid,
+                    value: Some(i64::from(ordinal)),
+                },
+                ExpectedEdge {
+                    kind: 1,
+                    src: lvid,
+                    dst: leg.account_ref,
+                    value: None,
+                },
+                ExpectedEdge {
+                    kind: 2,
+                    src: lvid,
+                    dst: unit,
+                    value: None,
+                },
             ];
             for (dimension, value) in &leg.dimension_set {
-                if !vertices.get(value).is_some_and(|row| row.labels.contains(&label::DIMENSION_VALUE)) {
-                    return Err(corrupt("a projected leg's authoritative dimension value is missing"));
+                if !vertices
+                    .get(value)
+                    .is_some_and(|row| row.labels.contains(&label::DIMENSION_VALUE))
+                {
+                    return Err(corrupt(
+                        "a projected leg's authoritative dimension value is missing",
+                    ));
                 }
                 topology.push(ExpectedEdge {
-                    kind: 3, src: lvid, dst: *value, value: Some(i64::from(*dimension)),
+                    kind: 3,
+                    src: lvid,
+                    dst: *value,
+                    value: Some(i64::from(*dimension)),
                 });
             }
             for edge in topology {
                 let eid = edge_id(relations[edge.kind], edge.src, edge.dst);
                 if expected_edges.insert(eid, edge).is_some() {
-                    return Err(corrupt("journal payloads require a duplicate projection edge"));
+                    return Err(corrupt(
+                        "journal payloads require a duplicate projection edge",
+                    ));
                 }
             }
         }
     }
     if !applied.is_empty() {
-        return Err(corrupt("an open-item fold names a leg absent from the journal"));
+        return Err(corrupt(
+            "an open-item fold names a leg absent from the journal",
+        ));
     }
     // An orphan may be evidence of a lost authoritative Entry, not merely an
     // extra cache row. Do not erase that diagnostic or cascade relationships.
-    if rows.iter().any(|row| row.labels.contains(&label::LEG)
-        && !expected_legs.contains(&row.vid))
+    if rows
+        .iter()
+        .any(|row| row.labels.contains(&label::LEG) && !expected_legs.contains(&row.vid))
     {
-        return Err(corrupt("an orphan leg has no decoded journal owner; no projection repair published"));
+        return Err(corrupt(
+            "an orphan leg has no decoded journal owner; no projection repair published",
+        ));
     }
     for stored in &edges {
         let eid = stored.entry.eid;
         if let Some(expected) = expected_edges.remove(&eid) {
             if stored.entry.relation != relations[expected.kind]
-                || stored.entry.src != expected.src || stored.entry.dst != expected.dst
+                || stored.entry.src != expected.src
+                || stored.entry.dst != expected.dst
             {
-                return Err(corrupt("a projection edge identity has incompatible immutable endpoints; replacement identities are forbidden"));
+                return Err(corrupt(
+                    "a projection edge identity has incompatible immutable endpoints; replacement identities are forbidden",
+                ));
             }
             let props = match expected.value {
-                Some(value) => vec![(if expected.kind == 0 { property::ORDINAL }
-                    else { property::DIMENSION_ID }, CanonicalScalar::Int(value))],
+                Some(value) => vec![(
+                    if expected.kind == 0 {
+                        property::ORDINAL
+                    } else {
+                        property::DIMENSION_ID
+                    },
+                    CanonicalScalar::Int(value),
+                )],
                 None => Vec::new(),
             };
             if stored.props != props {
@@ -369,7 +468,9 @@ fn prepare<V: Vfs + Clone>(
                     }
                 }
                 for (key, value) in props {
-                    if !stored.props.iter().any(|(stored_key, stored_value)| *stored_key == key && *stored_value == value) {
+                    if !stored.props.iter().any(|(stored_key, stored_value)| {
+                        *stored_key == key && *stored_value == value
+                    }) {
                         batch.set_edge_property(eid, key, Some(value));
                     }
                 }
@@ -383,7 +484,9 @@ fn prepare<V: Vfs + Clone>(
                 expected_legs.contains(&stored.entry.src)
             };
             if !owned {
-                return Err(corrupt("an unexpected projection edge has no journal-derived owner; no repair published"));
+                return Err(corrupt(
+                    "an unexpected projection edge has no journal-derived owner; no repair published",
+                ));
             }
             edge_changes[kind].delete_edge(eid);
             report.edges_retired += 1;
@@ -391,8 +494,14 @@ fn prepare<V: Vfs + Clone>(
     }
     for (eid, expected) in expected_edges {
         let props = match expected.value {
-            Some(value) => vec![(if expected.kind == 0 { property::ORDINAL }
-                else { property::DIMENSION_ID }, CanonicalScalar::Int(value))],
+            Some(value) => vec![(
+                if expected.kind == 0 {
+                    property::ORDINAL
+                } else {
+                    property::DIMENSION_ID
+                },
+                CanonicalScalar::Int(value),
+            )],
             None => Vec::new(),
         };
         edge_changes[expected.kind].add_edge(eid, expected.src, expected.dst, props);
@@ -402,7 +511,12 @@ fn prepare<V: Vfs + Clone>(
     batches.extend(edge_changes);
     batches.retain(|batch| !batch.is_empty());
     cx.query().checkpoint().map_err(BookError::Context)?;
-    Ok(PreparedProjectionRebuild { book: book.book_id, basis_root, report, batches })
+    Ok(PreparedProjectionRebuild {
+        book: book.book_id,
+        basis_root,
+        report,
+        batches,
+    })
 }
 
 #[cfg(test)]

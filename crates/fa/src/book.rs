@@ -663,6 +663,9 @@ impl Book {
     /// Open the directory book at `<dir>/store`, rebuilding the context from
     /// the spec journaled at genesis.
     pub fn open_dir(dir: &Path, keys: BookKeys, entropy: Entropy) -> Result<Self, BookError> {
+        if dir.is_dir() && !dir.join("store").is_dir() {
+            return Err(BookError::NoBook);
+        }
         let owner_token = keys.owner_token();
         let (runtime, root) = Self::runtime_and_root()?;
         let purposes = PurposeContexts::narrow_runtime_root(&root);

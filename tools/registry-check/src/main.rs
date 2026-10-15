@@ -617,8 +617,7 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
         let p = reg_dir.join(name);
         fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))
     };
-    let classes =
-        EntryClasses::parse(&read("entry_classes.toml")?).map_err(|e| e.to_string())?;
+    let classes = EntryClasses::parse(&read("entry_classes.toml")?).map_err(|e| e.to_string())?;
     let matrix =
         Admissibility::parse(&classes, &read("admissibility.toml")?).map_err(|e| e.to_string())?;
     let _sod = SodPolicy::parse(&read("sod_policy.toml")?, &classes, &matrix)
@@ -674,8 +673,8 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
     }
     let _scoreboard = Scoreboard::parse(&read("scoreboard.toml")?, &exits, &refusals)
         .map_err(|e| e.to_string())?;
-    let mutants =
-        MutantLedger::parse(&read("mutants.toml")?, &invariants, &refusals).map_err(|e| e.to_string())?;
+    let mutants = MutantLedger::parse(&read("mutants.toml")?, &invariants, &refusals)
+        .map_err(|e| e.to_string())?;
     if root.join("crates").is_dir() {
         mutants.verify_against_workspace(|rel| fs::read_to_string(root.join(rel)).ok())?;
     }

@@ -60,7 +60,11 @@ fn genesis_creates_and_releases_the_same_lease_used_by_later_writers() {
     let reg = verbs::registry().unwrap();
     let path = dir.join(&reg.daemon.lease);
     assert!(path.is_file(), "genesis must not bypass the writer lease");
-    assert!(std::fs::read_to_string(path).unwrap().starts_with("fa pid="));
+    assert!(
+        std::fs::read_to_string(path)
+            .unwrap()
+            .starts_with("fa pid=")
+    );
     assert!(dir.join("book.keys").is_file());
     assert!(dir.join("store").is_dir());
     assert_eq!(Lease::holder(&dir, &reg.daemon.lease), None);
@@ -79,11 +83,25 @@ fn lease_io_failure_refuses_both_reads_and_writes_without_publication() {
             vec!["period", "create", "--fiscal-year", "2026"],
         ] {
             let (status, output) = call(&dir, &command, direct);
-            assert_eq!(status, exit::ENVIRONMENT, "{}{}", output.stdout, output.stderr);
-            assert!(output.stdout.contains("cannot acquire the book's writer lease"));
+            assert_eq!(
+                status,
+                exit::ENVIRONMENT,
+                "{}{}",
+                output.stdout,
+                output.stderr
+            );
+            assert!(
+                output
+                    .stdout
+                    .contains("cannot acquire the book's writer lease")
+            );
             assert!(!output.stdout.contains("\"event\":\"book\""));
             assert!(!output.stdout.contains("\"event\":\"periods_created\""));
-            assert_eq!(head(&dir), before, "refused admission must not advance the book");
+            assert_eq!(
+                head(&dir),
+                before,
+                "refused admission must not advance the book"
+            );
         }
     }
 }
@@ -94,7 +112,13 @@ fn a_broken_lease_cannot_be_used_to_initialize_an_empty_directory() {
     std::fs::create_dir(&dir).unwrap();
     block_lease(&dir);
     let (status, output) = call(&dir, &["book", "create", "--name", "blocked"], true);
-    assert_eq!(status, exit::ENVIRONMENT, "{}{}", output.stdout, output.stderr);
+    assert_eq!(
+        status,
+        exit::ENVIRONMENT,
+        "{}{}",
+        output.stdout,
+        output.stderr
+    );
     assert!(!dir.join("book.keys").exists());
     assert!(!dir.join("store").exists());
 }
@@ -110,7 +134,10 @@ fn a_competing_writer_prevents_genesis_before_keys_or_store_are_created() {
     assert!(output.stdout.contains("FA-REF-018"));
     assert!(!dir.join("book.keys").exists());
     assert!(!dir.join("store").exists());
-    assert_eq!(Lease::holder(&dir, &reg.daemon.lease).as_deref(), Some("first creator"));
+    assert_eq!(
+        Lease::holder(&dir, &reg.daemon.lease).as_deref(),
+        Some("first creator")
+    );
     drop(held);
     let (status, output) = call(&dir, &["book", "create", "--name", "after release"], true);
     assert_eq!(status, exit::SUCCESS, "{}{}", output.stdout, output.stderr);
@@ -120,7 +147,13 @@ fn a_competing_writer_prevents_genesis_before_keys_or_store_are_created() {
 fn an_existing_book_command_never_creates_a_missing_directory() {
     let dir = fresh("missing");
     let (status, output) = call(&dir, &["book", "info"], true);
-    assert_eq!(status, exit::ENVIRONMENT, "{}{}", output.stdout, output.stderr);
+    assert_eq!(
+        status,
+        exit::ENVIRONMENT,
+        "{}{}",
+        output.stdout,
+        output.stderr
+    );
     assert!(!dir.exists());
 }
 
@@ -134,7 +167,10 @@ fn discovery_needs_no_book_and_does_not_create_one() {
     ] {
         let (status, output) = call(&dir, &command, true);
         assert_eq!(status, exit::SUCCESS, "{}{}", output.stdout, output.stderr);
-        assert!(!dir.exists(), "discovery must not create a directory or keys");
+        assert!(
+            !dir.exists(),
+            "discovery must not create a directory or keys"
+        );
     }
 }
 
@@ -152,7 +188,13 @@ fn directory_preparation_errors_do_not_overwrite_a_file_or_open_the_book() {
     let dir = fresh("not-directory");
     std::fs::write(&dir, b"preserve this file").unwrap();
     let (status, output) = call(&dir, &["book", "create", "--name", "blocked"], true);
-    assert_eq!(status, exit::ENVIRONMENT, "{}{}", output.stdout, output.stderr);
+    assert_eq!(
+        status,
+        exit::ENVIRONMENT,
+        "{}{}",
+        output.stdout,
+        output.stderr
+    );
     assert_eq!(std::fs::read(&dir).unwrap(), b"preserve this file");
 }
 
@@ -230,7 +272,9 @@ fn key_file_at_0644_refuses_with_fa_ref_155_and_leaves_filesystem_unchanged() {
 
     // Embedded BookKeys::load refuses 0644 with FA-REF-155.
     let err = BookKeys::load(&keys_path).unwrap_err();
-    let refusal = err.refusal().expect("KeyFilePermissions maps to FA-REF-155");
+    let refusal = err
+        .refusal()
+        .expect("KeyFilePermissions maps to FA-REF-155");
     eprintln!(
         "path={} observed_mode={:04o} decision=refuse refusal_id={}",
         keys_path.display(),
@@ -256,16 +300,25 @@ fn key_file_at_0644_refuses_with_fa_ref_155_and_leaves_filesystem_unchanged() {
             observed_mode,
             status
         );
-        assert_eq!(status, exit::ENVIRONMENT, "{}{}", output.stdout, output.stderr);
+        assert_eq!(
+            status,
+            exit::ENVIRONMENT,
+            "{}{}",
+            output.stdout,
+            output.stderr
+        );
         assert!(output.stdout.contains("FA-REF-155"), "{}", output.stdout);
         assert!(
-            output.stdout.contains(&format!("chmod 600 {}", keys_path.display())),
+            output
+                .stdout
+                .contains(&format!("chmod 600 {}", keys_path.display())),
             "{}",
             output.stdout
         );
         let after = snapshot_dir(&dir);
         assert_eq!(
-            before, after,
+            before,
+            after,
             "failed invocation with 0644 key file must not modify hashes or mtimes in {}",
             dir.display()
         );
@@ -299,10 +352,19 @@ fn non_book_directory_and_discovery_never_create_lease_files() {
             dir.display(),
             status
         );
-        if matches!(command.first().copied(), Some("--help" | "help" | "capabilities")) {
+        if matches!(
+            command.first().copied(),
+            Some("--help" | "help" | "capabilities")
+        ) {
             assert_eq!(status, exit::SUCCESS, "{}{}", output.stdout, output.stderr);
         } else {
-            assert_eq!(status, exit::ENVIRONMENT, "{}{}", output.stdout, output.stderr);
+            assert_eq!(
+                status,
+                exit::ENVIRONMENT,
+                "{}{}",
+                output.stdout,
+                output.stderr
+            );
         }
         assert!(
             !lease_path.exists(),
@@ -323,7 +385,13 @@ fn non_book_directory_and_discovery_never_create_lease_files() {
     std::fs::create_dir_all(&empty_dir).unwrap();
     let empty_before = snapshot_dir(&empty_dir);
     let (status, output) = call(&empty_dir, &["book", "info"], true);
-    assert_eq!(status, exit::ENVIRONMENT, "{}{}", output.stdout, output.stderr);
+    assert_eq!(
+        status,
+        exit::ENVIRONMENT,
+        "{}{}",
+        output.stdout,
+        output.stderr
+    );
     assert!(!empty_dir.join(&reg.daemon.lease).exists());
     assert_eq!(empty_before, snapshot_dir(&empty_dir));
 }
@@ -351,7 +419,13 @@ fn symlinked_and_non_lease_files_are_refused_without_truncation() {
         observed_mode,
         status
     );
-    assert_eq!(status, exit::ENVIRONMENT, "{}{}", output.stdout, output.stderr);
+    assert_eq!(
+        status,
+        exit::ENVIRONMENT,
+        "{}{}",
+        output.stdout,
+        output.stderr
+    );
     assert_eq!(
         std::fs::read(&lease_path).unwrap(),
         b"precious user file - not a lease\n"
@@ -375,15 +449,23 @@ fn symlinked_and_non_lease_files_are_refused_without_truncation() {
         sym_lease.display(),
         status
     );
-    assert_eq!(status, exit::ENVIRONMENT, "{}{}", output.stdout, output.stderr);
+    assert_eq!(
+        status,
+        exit::ENVIRONMENT,
+        "{}{}",
+        output.stdout,
+        output.stderr
+    );
     assert_eq!(
         std::fs::read(&target).unwrap(),
         b"target file must not be truncated"
     );
     assert_eq!(
-        std::fs::symlink_metadata(&target).unwrap().modified().unwrap(),
+        std::fs::symlink_metadata(&target)
+            .unwrap()
+            .modified()
+            .unwrap(),
         target_before_mtime
     );
     assert_eq!(sym_before, snapshot_dir(&sym_dir));
 }
-

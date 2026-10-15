@@ -20,7 +20,9 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 
 fn socket_peer() -> (PathBuf, thread::JoinHandle<Request>) {
     let dir = std::env::temp_dir().join(format!(
-        "fa-route-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed),
+        "fa-route-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed),
     ));
     std::fs::create_dir(&dir).unwrap();
     let daemon = verbs::registry().unwrap().daemon.clone();
@@ -38,14 +40,19 @@ fn socket_peer() -> (PathBuf, thread::JoinHandle<Request>) {
                 Err(error) => panic!("accept: {error}"),
             }
         };
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        stream.set_write_timeout(Some(Duration::from_secs(10))).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
         let mut prefix = [0_u8; wire::PREFIX_BYTES];
         stream.read_exact(&mut prefix).unwrap();
         let size = wire::announced(prefix, daemon.max_frame_bytes).unwrap();
         let mut payload = vec![0; size];
         stream.read_exact(&mut payload).unwrap();
-        let request = Request::from_json(&wire::canonical(&payload).unwrap(), daemon.protocol).unwrap();
+        let request =
+            Request::from_json(&wire::canonical(&payload).unwrap(), daemon.protocol).unwrap();
         let response = Response {
             op: Op::Run,
             exit: exit::CONFLICT,
@@ -53,7 +60,9 @@ fn socket_peer() -> (PathBuf, thread::JoinHandle<Request>) {
             stderr: "unchanged diagnostic\n".into(),
         };
         let json = response.to_json(daemon.protocol).render();
-        stream.write_all(&wire::encode(json.as_bytes(), daemon.max_frame_bytes).unwrap()).unwrap();
+        stream
+            .write_all(&wire::encode(json.as_bytes(), daemon.max_frame_bytes).unwrap())
+            .unwrap();
         stream.flush().unwrap();
         request
     });
@@ -83,12 +92,18 @@ fn inline_and_separate_plan_stdin_cross_the_actual_client_socket_unchanged() {
     // Opaque binary transport fixture, not a claim of a valid PostPlan.
     let bytes = vec![0, 255, b'F', b'A', 13, 10, 0, 128];
     for words in [vec!["commit", "--plan=-"], vec!["commit", "--plan", "-"]] {
-        let (_, request) = roundtrip(&words, Files {
-            cwd: None,
-            stdin: Stdin::Forwarded(bytes.clone()),
-        });
+        let (_, request) = roundtrip(
+            &words,
+            Files {
+                cwd: None,
+                stdin: Stdin::Forwarded(bytes.clone()),
+            },
+        );
         assert_eq!(request.stdin, Some(bytes.clone()));
-        assert_eq!(Path::new(request.cwd.as_deref().unwrap()), std::env::current_dir().unwrap());
+        assert_eq!(
+            Path::new(request.cwd.as_deref().unwrap()),
+            std::env::current_dir().unwrap()
+        );
         let reg = verbs::registry().unwrap();
         let parsed = args::parse(&request.argv, &reg.value_flags(), &reg.switches()).unwrap();
         assert_eq!(parsed.positional, vec!["commit"]);
@@ -99,25 +114,48 @@ fn inline_and_separate_plan_stdin_cross_the_actual_client_socket_unchanged() {
 #[test]
 fn daemon_request_preserves_flag_looking_values_and_literal_positionals() {
     let (_, request) = roundtrip(
-        &["reverse", "entry", "--description", "--book", "--key=--via=fad",
-          "--grant=read", "--grant=post_closed", "--", "--book", "other", "--via=fad"],
-        Files { cwd: Some("relative-client".into()), stdin: Stdin::Missing },
+        &[
+            "reverse",
+            "entry",
+            "--description",
+            "--book",
+            "--key=--via=fad",
+            "--grant=read",
+            "--grant=post_closed",
+            "--",
+            "--book",
+            "other",
+            "--via=fad",
+        ],
+        Files {
+            cwd: Some("relative-client".into()),
+            stdin: Stdin::Missing,
+        },
     );
     let reg = verbs::registry().unwrap();
     let parsed = args::parse(&request.argv, &reg.value_flags(), &reg.switches()).unwrap();
     assert_eq!(parsed.flag("--description"), Some("--book"));
     assert_eq!(parsed.flag("--key"), Some("--via=fad"));
     assert_eq!(parsed.flag_all("--grant"), vec!["read", "post_closed"]);
-    assert_eq!(parsed.positional, vec!["reverse", "entry", "--book", "other", "--via=fad"]);
-    assert_eq!(PathBuf::from(request.cwd.unwrap()), std::env::current_dir().unwrap().join("relative-client"));
+    assert_eq!(
+        parsed.positional,
+        vec!["reverse", "entry", "--book", "other", "--via=fad"]
+    );
+    assert_eq!(
+        PathBuf::from(request.cwd.unwrap()),
+        std::env::current_dir().unwrap().join("relative-client")
+    );
     assert_eq!(request.stdin, None);
 }
 
 #[test]
 fn a_read_without_stdin_does_not_send_unrelated_forwarded_bytes() {
-    let (_, request) = roundtrip(&["book", "info"], Files {
-        cwd: None,
-        stdin: Stdin::Forwarded(b"private unused input".to_vec()),
-    });
+    let (_, request) = roundtrip(
+        &["book", "info"],
+        Files {
+            cwd: None,
+            stdin: Stdin::Forwarded(b"private unused input".to_vec()),
+        },
+    );
     assert_eq!(request.stdin, None);
 }

@@ -24,7 +24,9 @@ fn directory() -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     loop {
         let path = std::env::temp_dir().join(format!(
-            "fa-evidence-prefix-cli-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed),
+            "fa-evidence-prefix-cli-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
         ));
         match fs::create_dir(&path) {
             Ok(()) => return path,
@@ -43,24 +45,41 @@ fn files(j: &Journal) -> PathBuf {
 
 fn args(dir: &Path, documents: bool, known: u64) -> Vec<OsString> {
     let mut args: Vec<OsString> = ["evidence", "production"].map(OsString::from).into();
-    if documents { args.push("documents".into()); }
+    if documents {
+        args.push("documents".into());
+    }
     args.extend([
-        "--prefix".into(), dir.join("prefix.bin").into_os_string(),
-        "--checkpoint".into(), dir.join("trusted.bin").into_os_string(),
-        "--expect-first-seq".into(), "0".into(),
-        "--expect-known-at".into(), known.to_string().into(),
-        "--expect-account".into(), "all".into(),
-        "--expect-days".into(), "all".into(), "--json".into(),
+        "--prefix".into(),
+        dir.join("prefix.bin").into_os_string(),
+        "--checkpoint".into(),
+        dir.join("trusted.bin").into_os_string(),
+        "--expect-first-seq".into(),
+        "0".into(),
+        "--expect-known-at".into(),
+        known.to_string().into(),
+        "--expect-account".into(),
+        "all".into(),
+        "--expect-days".into(),
+        "all".into(),
+        "--json".into(),
     ]);
     args
 }
 
 fn document_args(args: &mut Vec<OsString>, oid: &[u8; 32], kind: u8, path: &Path) {
-    args.extend(["--document".into(), hex(oid).into(), kind.to_string().into(), path.as_os_str().to_owned()]);
+    args.extend([
+        "--document".into(),
+        hex(oid).into(),
+        kind.to_string().into(),
+        path.as_os_str().to_owned(),
+    ]);
 }
 
 fn change(args: &mut [OsString], option: &str, value: impl Into<OsString>) {
-    let index = args.iter().position(|arg| arg == option).expect("existing option");
+    let index = args
+        .iter()
+        .position(|arg| arg == option)
+        .expect("existing option");
     args[index + 1] = value.into();
 }
 
@@ -72,8 +91,14 @@ fn no_payload(text: &str) {
 }
 
 fn invoke(args: &[OsString], exit: i32) -> String {
-    let Output { status, stdout, stderr } = Command::new(env!("CARGO_BIN_EXE_fa-verify"))
-        .args(args).output().expect("run fa-verify");
+    let Output {
+        status,
+        stdout,
+        stderr,
+    } = Command::new(env!("CARGO_BIN_EXE_fa-verify"))
+        .args(args)
+        .output()
+        .expect("run fa-verify");
     let out = String::from_utf8(stdout).unwrap();
     let err = String::from_utf8(stderr).unwrap();
     assert_eq!(status.code(), Some(exit), "args={args:?}\n{out}\n{err}");
@@ -91,14 +116,19 @@ fn invoke(args: &[OsString], exit: i32) -> String {
             assert!(!out.contains("proof_verified"));
         }
     }
-    if exit == 0 { assert!(err.is_empty(), "{err}"); }
+    if exit == 0 {
+        assert!(err.is_empty(), "{err}");
+    }
     out
 }
 
 #[test]
 fn single_prefix_inventory_and_historical_empty_selection_need_no_inclusion_files() {
     let citations = fixture::citations();
-    let j = journal(&[entry(&citations[..1], 7, 10), entry(&citations[1..], 11, 20)]);
+    let j = journal(&[
+        entry(&citations[..1], 7, 10),
+        entry(&citations[1..], 11, 20),
+    ]);
     let dir = files(&j);
     let mut direct = args(&dir, false, 11);
     direct.push("--from-prefix".into());
@@ -109,7 +139,11 @@ fn single_prefix_inventory_and_historical_empty_selection_need_no_inclusion_file
     assert!(out.contains("\"separate_record_set_checked\":false"));
     assert!(out.contains("complete_prefix_record_selection"));
     assert!(!out.contains("\"name\":\"exact_record_set\""));
-    let human: Vec<_> = direct.iter().filter(|arg| *arg != "--json").cloned().collect();
+    let human: Vec<_> = direct
+        .iter()
+        .filter(|arg| *arg != "--json")
+        .cloned()
+        .collect();
     assert!(invoke(&human, 0).contains("no separate record set was supplied or checked"));
 
     change(&mut direct, "--expect-known-at", "7");
@@ -131,10 +165,16 @@ fn from_prefix_and_document_declarations_are_independent_tokens_in_any_valid_ord
     fs::write(&document, DOCUMENT).unwrap();
     for placement in 0..3 {
         let mut argv = args(&dir, true, 7);
-        if placement == 0 { argv.insert(3, "--from-prefix".into()); }
-        if placement == 1 { argv.push("--from-prefix".into()); }
+        if placement == 0 {
+            argv.insert(3, "--from-prefix".into());
+        }
+        if placement == 1 {
+            argv.push("--from-prefix".into());
+        }
         document_args(&mut argv, &citation.document_oid, 1, &document);
-        if placement == 2 { argv.push("--from-prefix".into()); }
+        if placement == 2 {
+            argv.push("--from-prefix".into());
+        }
         let out = invoke(&argv, 0);
         assert!(out.contains("\"proof_kind\":\"evidence_document_production\""));
         assert!(out.contains("\"document_count\":1"));
@@ -172,12 +212,22 @@ fn ambiguous_duplicate_and_incomplete_modes_are_usage_errors_before_file_access(
     for documents in [false, true] {
         let mut valid = args(&missing, documents, 7);
         valid.push("--from-prefix".into());
-        for extra in [vec!["--from-prefix"], vec!["--record", "not-opened"], vec!["--from-prefix=true"], vec!["--json"]] {
+        for extra in [
+            vec!["--from-prefix"],
+            vec!["--record", "not-opened"],
+            vec!["--from-prefix=true"],
+            vec!["--json"],
+        ] {
             let mut bad = valid.clone();
             bad.extend(extra.into_iter().map(OsString::from));
             invoke(&bad, 2);
         }
-        for required in ["--expect-first-seq", "--expect-known-at", "--expect-account", "--expect-days"] {
+        for required in [
+            "--expect-first-seq",
+            "--expect-known-at",
+            "--expect-account",
+            "--expect-days",
+        ] {
             let mut bad = valid.clone();
             let index = bad.iter().position(|arg| arg == required).unwrap();
             bad.drain(index..index + 2);
@@ -203,7 +253,9 @@ fn default_multi_proof_mode_still_checks_separately_supplied_records() {
     fs::write(&document, DOCUMENT).unwrap();
     for documents in [false, true] {
         let mut argv = args(&dir, documents, 7);
-        if documents { document_args(&mut argv, &citation.document_oid, 1, &document); }
+        if documents {
+            document_args(&mut argv, &citation.document_oid, 1, &document);
+        }
         invoke(&argv, 8);
         argv.extend(["--record".into(), record.as_os_str().to_owned()]);
         let out = invoke(&argv, 0);
@@ -217,7 +269,10 @@ fn native_mode_refuses_legacy_and_corrupt_prefixes_even_for_empty_citation_sets(
     let j = journal(&[]);
     let dir = files(&j);
     let mut legacy = fixture::Wire::default();
-    legacy.bytes(PREFIX_FORMAT).fixed(&j.checkpoint.encode()).u32(0);
+    legacy
+        .bytes(PREFIX_FORMAT)
+        .fixed(&j.checkpoint.encode())
+        .u32(0);
     let mut trailing = j.prefix.clone();
     trailing.push(0);
     for bytes in [&legacy.0[..], &j.prefix[..j.prefix.len() - 1], &trailing] {
@@ -236,12 +291,18 @@ fn full_document_file_reads_share_the_prefix_transport_budget() {
     let j = journal(&[entry(&[citation], 7, 10)]);
     let dir = files(&j);
     let oversized = dir.join("oversized.sparse");
-    fs::File::create(&oversized).unwrap().set_len(MAX_PRODUCTION_BYTES as u64).unwrap();
+    fs::File::create(&oversized)
+        .unwrap()
+        .set_len(MAX_PRODUCTION_BYTES as u64)
+        .unwrap();
     let mut argv = args(&dir, true, 7);
     argv.push("--from-prefix".into());
     document_args(&mut argv, &citation.document_oid, 1, &oversized);
     let out = invoke(&argv, 8);
-    assert!(out.contains("input exceeds"), "remaining budget must refuse before content hashing: {out}");
+    assert!(
+        out.contains("input exceeds"),
+        "remaining budget must refuse before content hashing: {out}"
+    );
 }
 
 #[cfg(unix)]

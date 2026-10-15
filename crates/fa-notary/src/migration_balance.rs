@@ -76,10 +76,8 @@ fn select(
     through: Option<i32>,
     complete: bool,
 ) -> Outcome<(Selected<'_>, BTreeSet<VId>)> {
-    if complete {
-        if let Err(r) = transport::preflight(journal, through) {
-            return Ok(Err(r));
-        }
+    if complete && let Err(r) = transport::preflight(journal, through) {
+        return Ok(Err(r));
     }
     let mut records = Vec::new();
     let mut needed = BTreeSet::new();
@@ -142,6 +140,7 @@ fn select(
     Ok(Ok((records, needed)))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn encode(
     journal: &Journal,
     records: &Selected<'_>,
@@ -335,9 +334,19 @@ fn encode(
                 .ok_or_else(|| KernelError::Corrupt("a posted balance overflowed i128".into()))?;
         }
     }
-    transport::encode(journal, records, witnesses, complete, transport::Claim {
-        account, unit, through, debits, credits,
-    })
+    transport::encode(
+        journal,
+        records,
+        witnesses,
+        complete,
+        transport::Claim {
+            account,
+            unit,
+            through,
+            debits,
+            credits,
+        },
+    )
 }
 
 impl Journal {
@@ -357,7 +366,9 @@ impl Journal {
             Ok(selection) => selection,
             Err(r) => return Ok(Err(r)),
         };
-        encode(self, &records, &needed, account, unit, through, bodies, false)
+        encode(
+            self, &records, &needed, account, unit, through, bodies, false,
+        )
     }
 
     /// Produce v3, including and checking every prefix entry payload.
@@ -376,7 +387,9 @@ impl Journal {
             Ok(selection) => selection,
             Err(r) => return Ok(Err(r)),
         };
-        encode(self, &records, &needed, account, unit, through, bodies, true)
+        encode(
+            self, &records, &needed, account, unit, through, bodies, true,
+        )
     }
 }
 
@@ -393,7 +406,15 @@ pub fn prove_balance<V: asupersync::fs::Vfs + Clone>(
     unit: u32,
     through: Option<i32>,
 ) -> Outcome<Vec<u8>> {
-    prove(db, book, state, account, unit, through, ProofMode::Automatic)
+    prove(
+        db,
+        book,
+        state,
+        account,
+        unit,
+        through,
+        ProofMode::Automatic,
+    )
 }
 
 /// Explicitly produce v2 at a fixed accumulator state, even for a scope
@@ -407,7 +428,15 @@ pub fn prove_balance_with_migrations<V: asupersync::fs::Vfs + Clone>(
     unit: u32,
     through: Option<i32>,
 ) -> Outcome<Vec<u8>> {
-    prove(db, book, state, account, unit, through, ProofMode::Migration)
+    prove(
+        db,
+        book,
+        state,
+        account,
+        unit,
+        through,
+        ProofMode::Migration,
+    )
 }
 
 /// Produce a payload-complete v3 balance proof at the selected checkpoint.
@@ -451,7 +480,13 @@ fn prove<V: asupersync::fs::Vfs + Clone>(
     if let Err(r) = journal.verify_unchanged_at(db, observed_at)? {
         return Ok(Err(r));
     }
-    let (records, needed) = match select(&journal, account, unit, through, mode == ProofMode::Complete)? {
+    let (records, needed) = match select(
+        &journal,
+        account,
+        unit,
+        through,
+        mode == ProofMode::Complete,
+    )? {
         Ok(selection) => selection,
         Err(r) => return Ok(Err(r)),
     };
@@ -462,7 +497,16 @@ fn prove<V: asupersync::fs::Vfs + Clone>(
         Ok(bodies) => bodies,
         Err(r) => return Ok(Err(r)),
     };
-    encode(&journal, &records, &needed, account, unit, through, &bodies, mode == ProofMode::Complete)
+    encode(
+        &journal,
+        &records,
+        &needed,
+        account,
+        unit,
+        through,
+        &bodies,
+        mode == ProofMode::Complete,
+    )
 }
 
 /// The migration runs whose candidates a balance cell and cutoff select:
@@ -568,6 +612,8 @@ impl Journal {
             };
             chosen.push(body.clone());
         }
-        encode(self, &records, &needed, account, unit, through, &chosen, false)
+        encode(
+            self, &records, &needed, account, unit, through, &chosen, false,
+        )
     }
 }

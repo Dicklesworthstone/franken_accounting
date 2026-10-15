@@ -26,7 +26,9 @@ pub(super) struct Manifest {
 impl Manifest {
     pub(super) fn new(size: usize) -> Result<Self, Refusal> {
         if !(CHUNK_BYTES + 1..=MAX_CERTIFICATE_BYTES).contains(&size) {
-            return Err(invalid("chunked certificate length is outside its registered bounds"));
+            return Err(invalid(
+                "chunked certificate length is outside its registered bounds",
+            ));
         }
         let count = u32::try_from(size.div_ceil(CHUNK_BYTES))
             .map_err(|_| invalid("certificate fragment count exceeds u32"))?;
@@ -39,7 +41,8 @@ impl Manifest {
             .u64(self.size as u64)
             .u32(CHUNK_BYTES as u32)
             .u32(self.count);
-        w.finish().map_err(|error| invalid(format!("certificate manifest: {error}")))
+        w.finish()
+            .map_err(|error| invalid(format!("certificate manifest: {error}")))
     }
 
     /// Only a complete matching tag selects the new representation. Other
@@ -51,7 +54,8 @@ impl Manifest {
         }
         let mut r = Reader::new(payload);
         let bad = |error| invalid(format!("malformed certificate manifest: {error}"));
-        r.fixed::<{ MANIFEST_FORMAT.len() }>("certificate storage format").map_err(bad)?;
+        r.fixed::<{ MANIFEST_FORMAT.len() }>("certificate storage format")
+            .map_err(bad)?;
         let size = r.u64("certificate byte length").map_err(bad)?;
         let chunk_bytes = r.u32("certificate fragment capacity").map_err(bad)?;
         let count = r.u32("certificate fragment count").map_err(bad)?;
@@ -60,7 +64,9 @@ impl Manifest {
             .map_err(|_| invalid("certificate byte length is not addressable"))?;
         let manifest = Self::new(size)?;
         if chunk_bytes != CHUNK_BYTES as u32 || count != manifest.count {
-            return Err(invalid("certificate manifest has a noncanonical fragment size or count"));
+            return Err(invalid(
+                "certificate manifest has a noncanonical fragment size or count",
+            ));
         }
         Ok(Some(manifest))
     }
@@ -69,9 +75,11 @@ impl Manifest {
         if index >= self.count {
             return Err(invalid("certificate fragment ordinal is out of bounds"));
         }
-        let offset = (index as usize).checked_mul(CHUNK_BYTES)
+        let offset = (index as usize)
+            .checked_mul(CHUNK_BYTES)
             .ok_or_else(|| invalid("certificate fragment offset overflow"))?;
-        self.size.checked_sub(offset)
+        self.size
+            .checked_sub(offset)
             .map(|remaining| remaining.min(CHUNK_BYTES))
             .filter(|len| *len > 0)
             .ok_or_else(|| invalid("certificate fragment has no declared bytes"))
@@ -87,24 +95,37 @@ pub(super) fn fragment_vid(book: Id128, digest: &[u8; 32], index: u32) -> VId {
 
 fn fragment(index: u32, bytes: &[u8]) -> Result<Vec<u8>, Refusal> {
     if bytes.is_empty() || bytes.len() > CHUNK_BYTES {
-        return Err(invalid("certificate fragment length is outside its registered bounds"));
+        return Err(invalid(
+            "certificate fragment length is outside its registered bounds",
+        ));
     }
     let mut w = Writer::new();
     w.fixed(FRAGMENT_FORMAT).u32(index).bytes(bytes);
-    w.finish().map_err(|error| invalid(format!("certificate fragment: {error}")))
+    w.finish()
+        .map_err(|error| invalid(format!("certificate fragment: {error}")))
 }
 
 fn fragment_bytes(payload: &[u8], index: u32, size: usize) -> Result<&[u8], Refusal> {
     let mut r = Reader::new(payload);
     let bad = |error| invalid(format!("malformed certificate fragment {index}: {error}"));
-    let tag = r.fixed::<{ FRAGMENT_FORMAT.len() }>("certificate fragment format").map_err(bad)?;
-    if tag.as_slice() != FRAGMENT_FORMAT || r.u32("certificate fragment ordinal").map_err(bad)? != index {
-        return Err(invalid(format!("certificate fragment {index} has a different format or ordinal")));
+    let tag = r
+        .fixed::<{ FRAGMENT_FORMAT.len() }>("certificate fragment format")
+        .map_err(bad)?;
+    if tag.as_slice() != FRAGMENT_FORMAT
+        || r.u32("certificate fragment ordinal").map_err(bad)? != index
+    {
+        return Err(invalid(format!(
+            "certificate fragment {index} has a different format or ordinal"
+        )));
     }
-    let bytes = r.bytes(CHUNK_BYTES, "certificate fragment bytes").map_err(bad)?;
+    let bytes = r
+        .bytes(CHUNK_BYTES, "certificate fragment bytes")
+        .map_err(bad)?;
     r.finish().map_err(bad)?;
     if bytes.len() != size {
-        return Err(invalid(format!("certificate fragment {index} length disagrees with its manifest")));
+        return Err(invalid(format!(
+            "certificate fragment {index} length disagrees with its manifest"
+        )));
     }
     Ok(bytes)
 }
@@ -141,7 +162,13 @@ pub(super) fn stage(
             Ok(payload) => payload,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        stage_record(&mut batch, book, digest, fragment_vid(book.book_id, digest, index), payload)?;
+        stage_record(
+            &mut batch,
+            book,
+            digest,
+            fragment_vid(book.book_id, digest, index),
+            payload,
+        )?;
     }
     Ok(Ok(batch))
 }
@@ -165,10 +192,14 @@ pub(super) fn read<V: Vfs + Clone>(
         cx.checkpoint().map_err(BookError::Context)?;
         let vid = fragment_vid(book.book_id, digest, index);
         let Some(row) = db.vertex_at(vid, at).map_err(KernelError::from)? else {
-            return Ok(Err(invalid(format!("retained certificate fragment {index} is missing or retired"))));
+            return Ok(Err(invalid(format!(
+                "retained certificate fragment {index} is missing or retired"
+            ))));
         };
         if row.created_at != root.created_at {
-            return Ok(Err(invalid(format!("certificate fragment {index} was not published with its immutable root"))));
+            return Ok(Err(invalid(format!(
+                "certificate fragment {index} was not published with its immutable root"
+            ))));
         }
         let payload = match record_payload(&row, book, digest, vid) {
             Ok(payload) => payload,
@@ -199,8 +230,8 @@ mod tests {
         let mut expected = b"fa:certificate-chunks:v1".to_vec();
         expected.extend_from_slice(&[
             0x01, 0x30, 0, 0, 0, 0, 0, 0, // 12_289 bytes, u64 LE
-            0x00, 0x30, 0, 0,             // 12_288 bytes per fragment
-            0x02, 0, 0, 0,                // two fragments
+            0x00, 0x30, 0, 0, // 12_288 bytes per fragment
+            0x02, 0, 0, 0, // two fragments
         ]);
         let manifest = Manifest::new(12_289).unwrap();
         assert_eq!(manifest.encode().unwrap(), expected);
@@ -215,13 +246,32 @@ mod tests {
     fn storage_registry_matches_the_live_limits_and_identity_domains() {
         let schema = fa_registry::toml::parse(include_str!(
             "../../../../registries/object_schemas/report_certificate_storage.toml"
-        )).unwrap();
-        let integer = |key| schema.root.get(key).and_then(fa_registry::toml::Value::as_int).unwrap();
-        let text = |key| schema.root.get(key).and_then(fa_registry::toml::Value::as_str).unwrap();
-        assert_eq!(integer("max_certificate_bytes"), MAX_CERTIFICATE_BYTES as i128);
+        ))
+        .unwrap();
+        let integer = |key| {
+            schema
+                .root
+                .get(key)
+                .and_then(fa_registry::toml::Value::as_int)
+                .unwrap()
+        };
+        let text = |key| {
+            schema
+                .root
+                .get(key)
+                .and_then(fa_registry::toml::Value::as_str)
+                .unwrap()
+        };
+        assert_eq!(
+            integer("max_certificate_bytes"),
+            MAX_CERTIFICATE_BYTES as i128
+        );
         assert_eq!(integer("max_inline_bytes"), CHUNK_BYTES as i128);
         assert_eq!(integer("fragment_bytes"), CHUNK_BYTES as i128);
-        assert_eq!(integer("max_fragments"), MAX_CERTIFICATE_BYTES.div_ceil(CHUNK_BYTES) as i128);
+        assert_eq!(
+            integer("max_fragments"),
+            MAX_CERTIFICATE_BYTES.div_ceil(CHUNK_BYTES) as i128
+        );
         assert_eq!(text("manifest_format").as_bytes(), MANIFEST_FORMAT);
         assert_eq!(text("fragment_format").as_bytes(), FRAGMENT_FORMAT);
         assert_eq!(text("fragment_identity_domain").as_bytes(), FRAGMENT_DOMAIN);
@@ -229,10 +279,23 @@ mod tests {
 
     #[test]
     fn manifest_bounds_and_exact_counts_are_checked_without_allocating_the_body() {
-        for size in [CHUNK_BYTES + 1, 2 * CHUNK_BYTES, 2 * CHUNK_BYTES + 1, MAX_CERTIFICATE_BYTES] {
+        for size in [
+            CHUNK_BYTES + 1,
+            2 * CHUNK_BYTES,
+            2 * CHUNK_BYTES + 1,
+            MAX_CERTIFICATE_BYTES,
+        ] {
             let manifest = Manifest::new(size).unwrap();
-            assert_eq!(Manifest::decode(&manifest.encode().unwrap()).unwrap(), Some(manifest));
-            assert_eq!((0..manifest.count).map(|i| manifest.part_len(i).unwrap()).sum::<usize>(), size);
+            assert_eq!(
+                Manifest::decode(&manifest.encode().unwrap()).unwrap(),
+                Some(manifest)
+            );
+            assert_eq!(
+                (0..manifest.count)
+                    .map(|i| manifest.part_len(i).unwrap())
+                    .sum::<usize>(),
+                size
+            );
             assert!(manifest.part_len(manifest.count).is_err());
         }
         for size in [0, CHUNK_BYTES, MAX_CERTIFICATE_BYTES + 1, usize::MAX] {
@@ -242,7 +305,11 @@ mod tests {
         for cut in MANIFEST_FORMAT.len()..valid.len() {
             assert!(Manifest::decode(&valid[..cut]).is_err());
         }
-        for offset in [MANIFEST_FORMAT.len(), MANIFEST_FORMAT.len() + 8, MANIFEST_FORMAT.len() + 12] {
+        for offset in [
+            MANIFEST_FORMAT.len(),
+            MANIFEST_FORMAT.len() + 8,
+            MANIFEST_FORMAT.len() + 12,
+        ] {
             let mut bad = valid.clone();
             bad[offset..offset + 4].fill(0xff);
             assert!(Manifest::decode(&bad).is_err());

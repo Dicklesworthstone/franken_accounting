@@ -5,7 +5,9 @@ use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
 use fa_journal::entry_history::{EntryHistoryVerification, verify_entry_history};
 use fa_journal::rows::{bytes, scalar_bytes};
-use fa_journal::{AccountSpec, BookContext, BookSpec, KernelError, UnitPolicy, create_book, install_chart};
+use fa_journal::{
+    AccountSpec, BookContext, BookSpec, KernelError, UnitPolicy, create_book, install_chart,
+};
 use fa_model::symbols::{label, property, relation};
 use fa_model::{Entry, Erasable, Id128, SealKey, SymbolTable, entry_mirrors};
 use fa_money::UnitRegistry;
@@ -29,45 +31,96 @@ impl Harness {
         let runtime = RuntimeBuilder::new().build().unwrap();
         let root = runtime.request_cx_with_budget(Budget::INFINITE);
         let cx = PurposeContexts::narrow_runtime_root(&root);
-        let mut db = runtime.block_on(Database::open_memory(
-            &cx.commit(), DatabaseKeys::new([31; 32], DatabaseSecurityNamespaceId([32; 32]), [33; 32]),
-        )).unwrap();
+        let mut db = runtime
+            .block_on(Database::open_memory(
+                &cx.commit(),
+                DatabaseKeys::new([31; 32], DatabaseSecurityNamespaceId([32; 32]), [33; 32]),
+            ))
+            .unwrap();
         let units = UnitRegistry::embedded().unwrap();
         let calendar = FiscalCalendar::monthly("entry-history", 1, 1).unwrap();
         let symbols = SymbolTable::compiled();
         let book = BookContext {
-            book_id: Id128([34; 16]), calendar: calendar.clone(), units: units.clone(),
-            seal_key: SealKey([35; 32]), symbols: symbols.clone(),
+            book_id: Id128([34; 16]),
+            calendar: calendar.clone(),
+            units: units.clone(),
+            seal_key: SealKey([35; 32]),
+            symbols: symbols.clone(),
         };
         let spec = BookSpec {
-            book_id: book.book_id, name: "Immutable entry history".into(),
-            base_unit: units.lookup("USD").unwrap(), calendar,
-            time_zone_policy: None, entities: Vec::new(), opening_date: None,
+            book_id: book.book_id,
+            name: "Immutable entry history".into(),
+            base_unit: units.lookup("USD").unwrap(),
+            calendar,
+            time_zone_policy: None,
+            entities: Vec::new(),
+            opening_date: None,
         };
-        runtime.block_on(create_book(&mut db, &cx, &spec, &units, &symbols)).unwrap();
+        runtime
+            .block_on(create_book(&mut db, &cx, &spec, &units, &symbols))
+            .unwrap();
         let accounts = [AccountSpec {
-            code: "1000".into(), name: "Cash".into(), account_type: 1, normal_balance: 0,
-            is_leaf: true, unit_policy: UnitPolicy::AnyCurrency, parent_code: None, limit: None,
+            code: "1000".into(),
+            name: "Cash".into(),
+            account_type: 1,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::AnyCurrency,
+            parent_code: None,
+            limit: None,
         }];
-        let description = Erasable::seal(&"original chart".to_string(), None, &book.seal_key, [36; 32], [37; 24]);
-        runtime.block_on(install_chart(
-            &mut db, &cx, &book, &accounts, VId(1), DateDay::from_ymd(2026, 3, 1).unwrap(),
-            b"integrity-chart", description,
-        )).unwrap().unwrap();
-        let row = db.vertices_at(db.frontier().unwrap()).unwrap().into_iter()
-            .find(|row| row.labels.contains(&label::ENTRY)).unwrap();
-        let original = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "fixture entry").unwrap()).unwrap();
-        Self { runtime, root, db, book, source: row.vid, original }
+        let description = Erasable::seal(
+            &"original chart".to_string(),
+            None,
+            &book.seal_key,
+            [36; 32],
+            [37; 24],
+        );
+        runtime
+            .block_on(install_chart(
+                &mut db,
+                &cx,
+                &book,
+                &accounts,
+                VId(1),
+                DateDay::from_ymd(2026, 3, 1).unwrap(),
+                b"integrity-chart",
+                description,
+            ))
+            .unwrap()
+            .unwrap();
+        let row = db
+            .vertices_at(db.frontier().unwrap())
+            .unwrap()
+            .into_iter()
+            .find(|row| row.labels.contains(&label::ENTRY))
+            .unwrap();
+        let original =
+            Entry::decode(&bytes(&row, property::FA_PAYLOAD, "fixture entry").unwrap()).unwrap();
+        Self {
+            runtime,
+            root,
+            db,
+            book,
+            source: row.vid,
+            original,
+        }
     }
 
-    fn cx(&self) -> PurposeContexts { PurposeContexts::narrow_runtime_root(&self.root) }
-    fn head(&self) -> CommitSeq { self.db.frontier().unwrap() }
+    fn cx(&self) -> PurposeContexts {
+        PurposeContexts::narrow_runtime_root(&self.root)
+    }
+    fn head(&self) -> CommitSeq {
+        self.db.frontier().unwrap()
+    }
     fn check(&self, known_at: Option<CommitSeq>) -> Result<EntryHistoryVerification, KernelError> {
         verify_entry_history(&self.db, &self.cx(), &self.book, known_at)
     }
     fn write(&mut self, batch: WriteBatch) -> CommitSeq {
         let cx = self.cx();
-        self.runtime.block_on(self.db.write(&cx.commit(), batch)).unwrap()
+        self.runtime
+            .block_on(self.db.write(&cx.commit(), batch))
+            .unwrap()
     }
     fn replace(&mut self, entry: &Entry) {
         let mut batch = WriteBatch::new(relation::HAS_LEG);
@@ -88,10 +141,23 @@ fn intact_history_counts_all_commits_and_ignores_non_entry_typed_payloads() {
     assert_eq!(expected.entries_checked, 1);
     let mut maintenance = WriteBatch::new(relation::DERIVED_FROM);
     // A typed object may store Entry bytes as data; its label is not Entry.
-    maintenance.create_vertex(VId(500), vec![label::CERTIFICATE], vec![
-        (property::FA_PAYLOAD, scalar_bytes("opaque stored bytes",
-            bytes(&h.db.vertex(h.source).unwrap().unwrap(), property::FA_PAYLOAD, "entry").unwrap()).unwrap()),
-    ]);
+    maintenance.create_vertex(
+        VId(500),
+        vec![label::CERTIFICATE],
+        vec![(
+            property::FA_PAYLOAD,
+            scalar_bytes(
+                "opaque stored bytes",
+                bytes(
+                    &h.db.vertex(h.source).unwrap().unwrap(),
+                    property::FA_PAYLOAD,
+                    "entry",
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+        )],
+    );
     h.write(maintenance);
     let before = h.head();
     let checked = h.check(None).unwrap();
@@ -106,8 +172,13 @@ fn a_self_consistent_entry_rewrite_is_not_an_immutable_journal() {
     let mut h = Harness::new();
     let intact = h.head();
     let mut proposal = h.original.proposal.clone();
-    proposal.description = Erasable::seal(&"rewritten chart narrative".to_string(), None,
-        &h.book.seal_key, [41; 32], [42; 24]);
+    proposal.description = Erasable::seal(
+        &"rewritten chart narrative".to_string(),
+        None,
+        &h.book.seal_key,
+        [41; 32],
+        [42; 24],
+    );
     let replaced = proposal.seal(Vec::new(), None).unwrap();
     h.replace(&replaced);
     let before = h.head();
@@ -124,13 +195,19 @@ fn a_self_consistent_entry_rewrite_is_not_an_immutable_journal() {
 fn exact_byte_restoration_does_not_erase_the_rewrite() {
     let mut h = Harness::new();
     let mut damaged = WriteBatch::new(relation::HAS_LEG);
-    damaged.set_vertex_property(h.source, property::FA_DIGEST,
-        Some(scalar_bytes("bad digest", vec![0; 32]).unwrap()));
+    damaged.set_vertex_property(
+        h.source,
+        property::FA_DIGEST,
+        Some(scalar_bytes("bad digest", vec![0; 32]).unwrap()),
+    );
     h.write(damaged);
     let original = h.original.clone();
     h.replace(&original);
     let row = h.db.vertex(h.source).unwrap().unwrap();
-    assert_eq!(Entry::decode(&bytes(&row, property::FA_PAYLOAD, "restored").unwrap()).unwrap(), original);
+    assert_eq!(
+        Entry::decode(&bytes(&row, property::FA_PAYLOAD, "restored").unwrap()).unwrap(),
+        original
+    );
     let before = h.head();
     assert!(matches!(h.check(None), Err(KernelError::Corrupt(_))));
     assert_eq!(h.head(), before);
@@ -143,7 +220,14 @@ fn removing_and_restoring_the_entry_label_cannot_hide_its_history() {
     relabel.set_vertex_label(h.source, label::ENTRY, false);
     relabel.set_vertex_label(h.source, label::DOCUMENT, true);
     h.write(relabel);
-    assert!(!h.db.vertex(h.source).unwrap().unwrap().labels.contains(&label::ENTRY));
+    assert!(
+        !h.db
+            .vertex(h.source)
+            .unwrap()
+            .unwrap()
+            .labels
+            .contains(&label::ENTRY)
+    );
     assert!(h.check(None).is_err());
     let mut restore = WriteBatch::new(relation::HAS_LEG);
     restore.set_vertex_label(h.source, label::DOCUMENT, false);
@@ -161,8 +245,11 @@ fn a_new_entry_with_dishonest_mirrors_is_rejected_even_without_a_rewrite() {
     proposal.idempotency_key = b"bad-born-mirror".to_vec();
     let entry = proposal.seal(Vec::new(), None).unwrap();
     let mut mirrors = entry_mirrors(&entry).unwrap();
-    mirrors.iter_mut().find(|(key, _)| *key == property::FA_DIGEST).unwrap().1 =
-        scalar_bytes("incorrect mirror", vec![0; 32]).unwrap();
+    mirrors
+        .iter_mut()
+        .find(|(key, _)| *key == property::FA_DIGEST)
+        .unwrap()
+        .1 = scalar_bytes("incorrect mirror", vec![0; 32]).unwrap();
     let mut insertion = WriteBatch::new(relation::HAS_LEG);
     insertion.create_vertex(VId(600), vec![label::ENTRY], mirrors);
     h.write(insertion);
@@ -175,7 +262,11 @@ fn a_new_entry_with_dishonest_mirrors_is_rejected_even_without_a_rewrite() {
 fn promoting_a_non_entry_vertex_does_not_manufacture_an_entry_birth() {
     let mut h = Harness::new();
     let mut insertion = WriteBatch::new(relation::HAS_LEG);
-    insertion.create_vertex(VId(700), vec![label::REGISTER], entry_mirrors(&h.original).unwrap());
+    insertion.create_vertex(
+        VId(700),
+        vec![label::REGISTER],
+        entry_mirrors(&h.original).unwrap(),
+    );
     h.write(insertion);
     assert_eq!(h.check(None).unwrap().entries_checked, 1);
     let mut promotion = WriteBatch::new(relation::HAS_LEG);

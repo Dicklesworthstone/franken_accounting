@@ -120,9 +120,7 @@ fn run() -> Result<(), String> {
             }
             "--json" => json = true,
             "-h" | "--help" => {
-                println!(
-                    "Usage: xtask [summary|scoreboard|mutants] [--manifest <path>] [--json]"
-                );
+                println!("Usage: xtask [summary|scoreboard|mutants] [--manifest <path>] [--json]");
                 return Ok(());
             }
             other => return Err(format!("xtask: unknown argument `{other}`")),

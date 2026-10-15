@@ -195,10 +195,9 @@ fn key_file(path: &Path) -> Check {
         );
     }
     if let Err(error) = fa::book::BookKeys::check_permissions(path) {
-        let fix = error.refusal().map_or_else(
-            || format!("chmod 600 {}", path.display()),
-            |r| r.fix,
-        );
+        let fix = error
+            .refusal()
+            .map_or_else(|| format!("chmod 600 {}", path.display()), |r| r.fix);
         return Check::not_ok(
             "keys",
             Class::Environment,

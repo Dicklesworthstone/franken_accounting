@@ -36,11 +36,7 @@ pub struct OracleProRata {
 }
 
 fn signed_from_mag(mag: &Int, negative: bool) -> Result<i128, &'static str> {
-    let raw = if negative {
-        mag.negated()
-    } else {
-        mag.clone()
-    };
+    let raw = if negative { mag.negated() } else { mag.clone() };
     raw.to_i128().ok_or("amount overflow")
 }
 
@@ -316,7 +312,9 @@ pub fn roll_forward(
                         closing = closing.add(&delta);
                     }
                     if entry.date >= effective_from && entry.date <= effective_through {
-                        let slot = by_class.entry(entry.class.clone()).or_insert_with(Int::zero);
+                        let slot = by_class
+                            .entry(entry.class.clone())
+                            .or_insert_with(Int::zero);
                         *slot = slot.add(&delta);
                     }
                 }
@@ -781,6 +779,7 @@ pub struct OracleIndirectCashFlowUnit {
 }
 
 /// Literal indirect operating-cash reconciliation against `direct_cash_flow`.
+#[allow(clippy::too_many_arguments)]
 pub fn indirect_cash_flow(
     oracle: &Oracle,
     known: Known,
@@ -843,10 +842,7 @@ pub fn indirect_cash_flow(
             .cloned()
             .unwrap_or_else(Int::zero);
         let working_capital = wc_by_unit.get(&unit).cloned().unwrap_or_else(Int::zero);
-        let non_operating = non_op_by_unit
-            .get(&unit)
-            .cloned()
-            .unwrap_or_else(Int::zero);
+        let non_operating = non_op_by_unit.get(&unit).cloned().unwrap_or_else(Int::zero);
         let operating = net_income
             .add(&non_cash)
             .add(&working_capital)

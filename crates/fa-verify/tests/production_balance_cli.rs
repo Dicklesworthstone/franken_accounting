@@ -15,8 +15,11 @@ use fa_verify::proof::{Checkpoint, INCLUSION_FORMAT, PREFIX_FORMAT};
 fn directory() -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     loop {
-        let path = std::env::temp_dir().join(format!("fa-production-balance-{}-{}",
-            std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let path = std::env::temp_dir().join(format!(
+            "fa-production-balance-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         match fs::create_dir(&path) {
             Ok(()) => return path,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -49,26 +52,47 @@ fn parts(bytes: &[u8], anchor: &Checkpoint) -> (Vec<u8>, Vec<u8>) {
     at += 4;
     let payload = &bytes[at..at + len];
     let mut inclusion = Writer::default();
-    inclusion.bytes(INCLUSION_FORMAT).fixed(&anchor.encode()).u64(0)
-        .bytes(envelope).u8(1).u32(u32::try_from(split).unwrap()).bytes(payload).count(0);
+    inclusion
+        .bytes(INCLUSION_FORMAT)
+        .fixed(&anchor.encode())
+        .u64(0)
+        .bytes(envelope)
+        .u8(1)
+        .u32(u32::try_from(split).unwrap())
+        .bytes(payload)
+        .count(0);
     let mut legacy = Writer::default();
-    legacy.bytes(PREFIX_FORMAT).fixed(&anchor.encode()).count(1).bytes(envelope);
+    legacy
+        .bytes(PREFIX_FORMAT)
+        .fixed(&anchor.encode())
+        .count(1)
+        .bytes(envelope);
     (inclusion.buf, legacy.buf)
 }
 
-fn run(prefix: &[u8], anchor: &Checkpoint, record: Option<&[u8]>, account: u128,
-    documents: bool) -> Output
-{
+fn run(
+    prefix: &[u8],
+    anchor: &Checkpoint,
+    record: Option<&[u8]>,
+    account: u128,
+    documents: bool,
+) -> Output {
     let dir = directory();
     fs::write(dir.join("prefix"), prefix).unwrap();
     fs::write(dir.join("anchor"), anchor.encode()).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_fa-verify"));
     command.args(["evidence", "production"]);
-    if documents { command.arg("documents"); }
-    command.arg("--prefix").arg(dir.join("prefix"))
-        .arg("--checkpoint").arg(dir.join("anchor"))
+    if documents {
+        command.arg("documents");
+    }
+    command
+        .arg("--prefix")
+        .arg(dir.join("prefix"))
+        .arg("--checkpoint")
+        .arg(dir.join("anchor"))
         .args(["--expect-first-seq", "0", "--expect-known-at", "1"])
-        .arg("--expect-account").arg(format!("{account:032x}"))
+        .arg("--expect-account")
+        .arg(format!("{account:032x}"))
         .args(["--expect-days", "20527:20527", "--json"]);
     if let Some(record) = record {
         fs::write(dir.join("record"), record).unwrap();
@@ -122,7 +146,10 @@ fn incomplete_legacy_and_invalid_balance_witnesses_fail_even_for_empty_requests(
         let out = result(run(&legacy, &anchor, None, 99, documents), 8);
         assert!(out.contains("unverified scope selectors"));
         result(run(&wrong, &anchor, None, 99, documents), 8);
-        result(run(&bytes[..bytes.len() - 1], &anchor, None, 99, documents), 8);
+        result(
+            run(&bytes[..bytes.len() - 1], &anchor, None, 99, documents),
+            8,
+        );
         let mut other = anchor;
         other.root[0] ^= 1;
         result(run(&bytes, &other, None, 99, documents), 8);

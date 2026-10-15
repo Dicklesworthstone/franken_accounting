@@ -1809,7 +1809,9 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(
-            err.contains("posting class `PlantedPosting` must declare boolean `carries_open_items`"),
+            err.contains(
+                "posting class `PlantedPosting` must declare boolean `carries_open_items`"
+            ),
             "{err}"
         );
 

@@ -300,15 +300,30 @@ mod tests {
     fn the_forwarded_command_line_drops_via_and_names_the_book_absolutely() {
         let reg = verbs::registry().unwrap();
         let argv: Vec<String> = [
-            "tb", "--via", "fad", "--book", "rel", "--period", "P", "--via=fad", "--json",
-        ].iter().map(|s| (*s).to_string()).collect();
+            "tb",
+            "--via",
+            "fad",
+            "--book",
+            "rel",
+            "--period",
+            "P",
+            "--via=fad",
+            "--json",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
         let parsed = args::parse(&argv, &reg.value_flags(), &reg.switches()).unwrap();
         let request = routing::request(
             &parsed,
             std::path::Path::new("/abs/book"),
-            &Files { cwd: Some("/client".into()), stdin: crate::cli::Stdin::Missing },
+            &Files {
+                cwd: Some("/client".into()),
+                stdin: crate::cli::Stdin::Missing,
+            },
             &reg.daemon,
-        ).unwrap();
+        )
+        .unwrap();
         let out = args::parse(&request.argv, &reg.value_flags(), &reg.switches()).unwrap();
         assert_eq!(out.positional, vec!["tb"]);
         assert_eq!(out.flag_all("--via"), Vec::<&str>::new());

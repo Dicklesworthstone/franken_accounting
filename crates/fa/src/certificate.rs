@@ -1943,7 +1943,11 @@ mod tests {
             session_ref: None,
             evidence: Vec::new(),
             supersession: Vec::new(),
-            pending: None,
+            pending: (class == EntryClass::PENDING).then_some(fa_model::Pending {
+                resolution_of: None,
+                disposition: None,
+                timeout_ns: None,
+            }),
             external_ids: Vec::new(),
             extensions: Vec::new(),
             tags: Vec::new(),
@@ -2217,7 +2221,8 @@ mod tests {
         for (class, contributes) in [
             (EntryClass::ORIGINAL, true),
             (EntryClass::ADJUSTING, true),
-            (EntryClass::CLOSING, false),
+            (EntryClass::CLOSING, true),
+            (EntryClass::PENDING, false),
         ] {
             let original = posting(class, 1);
             let first = reversal(&original, VId(10), 2);

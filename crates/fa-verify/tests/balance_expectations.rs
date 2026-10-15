@@ -164,7 +164,11 @@ fn frozen_legacy_membership_never_satisfies_a_complete_balance_request() {
     }
     let human = run("balance", &proof, &anchor, &[], false);
     assert!(human.status.success());
-    assert!(String::from_utf8(human.stdout).unwrap().contains("completeness NOT proven"));
+    assert!(
+        String::from_utf8(human.stdout)
+            .unwrap()
+            .contains("completeness NOT proven")
+    );
     assert_eq!(fs::read(&proof).unwrap(), bytes);
 }
 
@@ -183,10 +187,18 @@ fn migration_and_complete_dispatch_bind_explicit_cutoffs_in_the_standalone_proce
     ] {
         for through in [None, Some(i32::MIN), Some(0), Some(i32::MAX)] {
             let mut writer = Writer::default();
-            writer.bytes(format).fixed(&checkpoint.encode()).u128(0x30).u32(1);
+            writer
+                .bytes(format)
+                .fixed(&checkpoint.encode())
+                .u128(0x30)
+                .u32(1);
             match through {
-                Some(day) => { writer.u8(1).i32(day); }
-                None => { writer.u8(0); }
+                Some(day) => {
+                    writer.u8(1).i32(day);
+                }
+                None => {
+                    writer.u8(0);
+                }
             }
             writer.i128(0).i128(0).count(0).count(0).count(0);
             let dir = directory();
@@ -197,7 +209,10 @@ fn migration_and_complete_dispatch_bind_explicit_cutoffs_in_the_standalone_proce
             flags.extend(["--expect-debits", "0", "--expect-credits", "0"]);
             result(run("balance", &proof, &anchor, &flags, true), 0);
             flags[5] = if through.is_some() { "none" } else { "0" };
-            assert!(result(run("balance", &proof, &anchor, &flags, true), 8).contains("balance scope mismatch"));
+            assert!(
+                result(run("balance", &proof, &anchor, &flags, true), 8)
+                    .contains("balance scope mismatch")
+            );
         }
     }
 }

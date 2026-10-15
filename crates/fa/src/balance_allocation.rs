@@ -161,10 +161,18 @@ fn corrupt(message: &str) -> BookError {
 }
 
 fn source_witness_error(error: fa_model::EncodeError) -> BookError {
-    corrupt(&format!("allocation source witness encoding failed: {error}"))
+    corrupt(&format!(
+        "allocation source witness encoding failed: {error}"
+    ))
 }
 
-fn admit(capability: &Capability, book: Id128, principal: VId, op: Op, legs: &[(UnitId, i128)]) -> Result<(), Refusal> {
+fn admit(
+    capability: &Capability,
+    book: Id128,
+    principal: VId,
+    op: Op,
+    legs: &[(UnitId, i128)],
+) -> Result<(), Refusal> {
     fa_policy::admit_read(capability, capability.holder(), book)
         .map_err(|denial| fa_journal::policy::refusal(&denial))?;
     fa_policy::admit(
@@ -419,7 +427,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             let source_side = if net > 0 { Side::Credit } else { Side::Debit };
             witnesses.u64(count as u64).i128(debits).i128(credits);
             let witness_bytes = witnesses.finish().map_err(source_witness_error)?;
-            let source_digest = domain_digest(b"fa:balance-allocation-source:v1", &[&witness_bytes]);
+            let source_digest =
+                domain_digest(b"fa:balance-allocation-source:v1", &[&witness_bytes]);
             let posting = request.posting(total, source_side);
             if let Err(refusal) = posting.basis_bytes() {
                 return Ok(Err(refusal));

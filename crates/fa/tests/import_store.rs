@@ -35,33 +35,45 @@ fn importer() -> Capability {
 }
 
 fn reader() -> Capability {
-    Capability::new(VId(211), Profile::Human, &[Op::Read, Op::Privileged], VId(1)).unwrap()
+    Capability::new(
+        VId(211),
+        Profile::Human,
+        &[Op::Read, Op::Privileged],
+        VId(1),
+    )
+    .unwrap()
 }
 
 fn documents() -> Vec<Document> {
     let policy = EvidencePolicy::embedded().unwrap();
     let inline = usize::try_from(fa_journal::evidence::inline_document_bound(&policy)).unwrap();
-    [inline, inline + 1, 128 * 1024].into_iter().enumerate().map(|(index, size)| {
-        Document {
+    [inline, inline + 1, 128 * 1024]
+        .into_iter()
+        .enumerate()
+        .map(|(index, size)| Document {
             book_id: BOOK_ID,
             kind: policy.kind_by_name("Invoice").unwrap().tag,
             mime: "application/octet-stream".into(),
             grade: policy.grade_by_name("HumanUpload").unwrap().tag,
             retrieved_by: VId(IMPORTER),
             bytes: vec![u8::try_from(index + 1).unwrap(); size],
-        }
-    }).collect()
+        })
+        .collect()
 }
 
 fn import(book: &mut Book, docs: Vec<Document>, key: &[u8]) -> ImportRecorded {
     book.import_run(
         &importer(),
-        IntakeSource::Upload { principal: VId(IMPORTER) },
+        IntakeSource::Upload {
+            principal: VId(IMPORTER),
+        },
         key,
         DateDay::from_ymd(2026, 3, 1).unwrap(),
         "retained import evidence",
         docs,
-    ).unwrap().unwrap()
+    )
+    .unwrap()
+    .unwrap()
 }
 
 fn expected_oids(docs: &[Document]) -> Vec<Oid> {
@@ -71,15 +83,28 @@ fn expected_oids(docs: &[Document]) -> Vec<Oid> {
 }
 
 fn read_back(book: &mut Book, docs: &[Document], result: &ImportRecorded) {
-    assert_eq!(book.read_run(result.receipt.run).unwrap(), Some(result.receipt.clone()));
+    assert_eq!(
+        book.read_run(result.receipt.run).unwrap(),
+        Some(result.receipt.clone())
+    );
     fa_journal::import::verify_receipt(&result.receipt, BOOK_ID, &expected_oids(docs)).unwrap();
-    assert_eq!(result.receipt.byte_count, docs.iter().map(|doc| doc.bytes.len() as u64).sum::<u64>());
+    assert_eq!(
+        result.receipt.byte_count,
+        docs.iter().map(|doc| doc.bytes.len() as u64).sum::<u64>()
+    );
     for doc in docs {
-        let DocumentRead::Full(actual) = book.read_document_for(&reader(), &doc.oid()).unwrap().unwrap() else {
+        let DocumentRead::Full(actual) = book
+            .read_document_for(&reader(), &doc.oid())
+            .unwrap()
+            .unwrap()
+        else {
             panic!("the privileged reader must receive full verified evidence");
         };
         assert_eq!(actual, *doc);
-        assert_eq!(book.document_commitment(&doc.oid()).unwrap(), Some(doc.doc_commit()));
+        assert_eq!(
+            book.document_commitment(&doc.oid()).unwrap(),
+            Some(doc.doc_commit())
+        );
         let custody = book.custody_chain(&doc.oid()).unwrap();
         assert_eq!(custody.len(), 1);
         assert_eq!(custody[0].1, result.receipt.recorded_at);
@@ -90,8 +115,7 @@ fn temporary_directory() -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     loop {
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir()
-            .join(format!("fa-import-store-{}-{n}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("fa-import-store-{}-{n}", std::process::id()));
         match std::fs::create_dir(&path) {
             Ok(()) => return path,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -103,8 +127,11 @@ fn temporary_directory() -> PathBuf {
 #[test]
 fn memory_book_imports_inline_and_large_evidence_in_one_publication() {
     let mut book = Book::create_memory(
-        BookKeys::for_development(0x63), spec(), Entropy::deterministic(630),
-    ).unwrap();
+        BookKeys::for_development(0x63),
+        spec(),
+        Entropy::deterministic(630),
+    )
+    .unwrap();
     let docs = documents();
     let before = book.head().unwrap();
     let result = import(&mut book, docs.clone(), b"memory-batch");
@@ -121,9 +148,8 @@ fn directory_imports_reopen_with_their_original_receipt_and_retry_without_writes
     let dir = temporary_directory().join("book");
     let keys = BookKeys::for_development(0x64);
     let docs = documents();
-    let mut book = Book::create_dir(
-        &dir, keys.clone(), spec(), Entropy::deterministic(640),
-    ).unwrap();
+    let mut book =
+        Book::create_dir(&dir, keys.clone(), spec(), Entropy::deterministic(640)).unwrap();
     let before = book.head().unwrap();
     let result = import(&mut book, docs.clone(), b"directory-batch");
     assert_eq!(result.receipt.recorded_at.0, before.0 + 1);
@@ -151,12 +177,21 @@ fn directory_imports_reopen_with_their_original_receipt_and_retry_without_writes
 fn scratch_imports_share_blob_storage_but_never_publish_into_the_source_journal() {
     let dir = temporary_directory().join("book");
     let mut source = Book::create_dir(
-        &dir, BookKeys::for_development(0x65), spec(), Entropy::deterministic(650),
-    ).unwrap();
+        &dir,
+        BookKeys::for_development(0x65),
+        spec(),
+        Entropy::deterministic(650),
+    )
+    .unwrap();
     let before = source.head().unwrap();
-    let (mut scratch, map) = source.replay_into_scratch(
-        None, BookKeys::for_development(0x66), Entropy::deterministic(660),
-    ).unwrap().unwrap();
+    let (mut scratch, map) = source
+        .replay_into_scratch(
+            None,
+            BookKeys::for_development(0x66),
+            Entropy::deterministic(660),
+        )
+        .unwrap()
+        .unwrap();
     source.verify_replay(&scratch, &map).unwrap().unwrap();
     let docs = documents();
     let result = import(&mut scratch, docs.clone(), b"scratch-batch");

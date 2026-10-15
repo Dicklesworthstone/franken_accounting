@@ -1777,12 +1777,11 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
                     "apply the leg on the open item's account with the opposite side",
                 )));
             }
-            let target_entity = entity::leg_entity(&spec, target_leg).or_else(|| {
-                match spec.entities.as_slice() {
+            let target_entity =
+                entity::leg_entity(&spec, target_leg).or_else(|| match spec.entities.as_slice() {
                     [only] => Some(only.code.clone()),
                     _ => None,
-                }
-            });
+                });
             let leg_entity = leg_entities.get(i).and_then(Option::as_deref);
             let other_dims_match = target_leg
                 .dimension_set

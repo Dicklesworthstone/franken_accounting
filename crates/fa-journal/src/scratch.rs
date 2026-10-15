@@ -139,9 +139,7 @@ impl Maintenance {
                     {
                         self.vertices.insert(*vid);
                     }
-                    DeltaRow::LabelMembership { vid, label, .. }
-                        if MAINTENANCE.contains(label) =>
-                    {
+                    DeltaRow::LabelMembership { vid, label, .. } if MAINTENANCE.contains(label) => {
                         self.vertices.insert(*vid);
                     }
                     _ => {}
@@ -156,10 +154,13 @@ impl Maintenance {
                     {
                         self.edges.insert(*eid);
                     }
-                    DeltaRow::DeleteVertex { vid, sorted_retired_incident_edges, .. }
-                        if self.vertices.contains(vid) =>
-                    {
-                        self.edges.extend(sorted_retired_incident_edges.iter().copied());
+                    DeltaRow::DeleteVertex {
+                        vid,
+                        sorted_retired_incident_edges,
+                        ..
+                    } if self.vertices.contains(vid) => {
+                        self.edges
+                            .extend(sorted_retired_incident_edges.iter().copied());
                     }
                     _ => {}
                 }

@@ -799,4 +799,3 @@ fn no_truncating_output_writes_in_surface_or_facade_crates() {
         violations.join("\n")
     );
 }
-

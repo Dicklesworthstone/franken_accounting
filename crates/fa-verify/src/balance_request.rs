@@ -63,9 +63,7 @@ pub enum BalanceExpectationError {
     /// The proof itself did not verify against the separate trusted anchor.
     Verification(VerifyError),
     /// A partial proof cannot establish the completeness of the requested balance.
-    Assurance {
-        actual: &'static str,
-    },
+    Assurance { actual: &'static str },
     /// A complete proof answered a different question.
     Scope {
         expected: BalanceScope,
@@ -129,7 +127,9 @@ pub fn verify_balance_for(
     let balance = crate::verify_balance(proof, trusted_checkpoint)
         .map_err(BalanceExpectationError::Verification)?;
     if balance.scope != SCOPE_RECOMPUTATION {
-        return Err(BalanceExpectationError::Assurance { actual: balance.scope });
+        return Err(BalanceExpectationError::Assurance {
+            actual: balance.scope,
+        });
     }
     let actual = BalanceScope::from(&balance.claim);
     if actual != expected.scope {
@@ -377,26 +377,59 @@ mod tests {
     fn matching_legacy_membership_cannot_answer_a_complete_balance_request() {
         let envelope = crate::LeafEnvelope {
             kind: crate::envelope::KIND_ENTRY,
-            book_id: [1; 16], branch_id: [0; 16], commit_seq: 1,
-            within_commit_ordinal: 0, record_digest: [7; 32],
-            class: crate::balance::CLASS_PENDING, effective_day: Some(100),
-            account_vids: vec![10], unit_ids: vec![1],
-        }.encode();
+            book_id: [1; 16],
+            branch_id: [0; 16],
+            commit_seq: 1,
+            within_commit_ordinal: 0,
+            record_digest: [7; 32],
+            class: crate::balance::CLASS_PENDING,
+            effective_day: Some(100),
+            account_vids: vec![10],
+            unit_ids: vec![1],
+        }
+        .encode();
         let anchor = Checkpoint {
-            book_id: [1; 16], branch_id: [0; 16], through_seq: 1,
-            leaf_count: 1, root: crate::tree::leaf_hash(&envelope),
+            book_id: [1; 16],
+            branch_id: [0; 16],
+            through_seq: 1,
+            leaf_count: 1,
+            root: crate::tree::leaf_hash(&envelope),
         };
-        for format in [crate::balance::BALANCE_FORMAT, crate::migration_balance::BALANCE_FORMAT_V2] {
+        for format in [
+            crate::balance::BALANCE_FORMAT,
+            crate::migration_balance::BALANCE_FORMAT_V2,
+        ] {
             let mut w = Writer::default();
-            w.bytes(format).fixed(&anchor.encode()).u128(10).u32(1).u8(1).i32(100)
-                .i128(0).i128(0).count(1).bytes(&envelope).count(0);
+            w.bytes(format)
+                .fixed(&anchor.encode())
+                .u128(10)
+                .u32(1)
+                .u8(1)
+                .i32(100)
+                .i128(0)
+                .i128(0)
+                .count(1)
+                .bytes(&envelope)
+                .count(0);
             if format == crate::migration_balance::BALANCE_FORMAT_V2 {
                 w.count(0);
             }
-            assert_eq!(crate::verify_balance(&w.buf, &anchor).unwrap().scope, "membership_only");
+            assert_eq!(
+                crate::verify_balance(&w.buf, &anchor).unwrap().scope,
+                "membership_only"
+            );
             let error = verify_balance_for(&w.buf, &anchor, &expectation(scope())).unwrap_err();
-            assert!(matches!(error, BalanceExpectationError::Assurance { actual: "membership_only" }));
-            assert!(error.to_string().contains("completeness is not independently verified"));
+            assert!(matches!(
+                error,
+                BalanceExpectationError::Assurance {
+                    actual: "membership_only"
+                }
+            ));
+            assert!(
+                error
+                    .to_string()
+                    .contains("completeness is not independently verified")
+            );
             assert!(error.source().is_none());
         }
     }

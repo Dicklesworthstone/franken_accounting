@@ -94,9 +94,10 @@ impl RegisterBook for Book {
 
 impl<V: Vfs + Clone, B: Vfs + Clone> RegisterBook for AsyncBook<V, B> {
     async fn advance(&mut self, cx: &Cx, period: &str) -> Result<Publication, String> {
-        let result = AsyncBook::advance_registers(
-            self, &PurposeContexts::narrow_runtime_root(cx), period,
-        ).await.map_err(|e| e.to_string())?;
+        let result =
+            AsyncBook::advance_registers(self, &PurposeContexts::narrow_runtime_root(cx), period)
+                .await
+                .map_err(|e| e.to_string())?;
         Ok(Publication {
             through: result.through.0,
             published_at: result.published_at.0,
@@ -121,9 +122,15 @@ impl RegisterWork {
     pub fn new(periods: Vec<String>) -> Result<Self, ConfigurationError> {
         validate_periods(&periods)?;
         Ok(Self {
-            periods: periods.into_iter().map(|period| PeriodStatus {
-                period, attempts: 0, last_success: None, error: None,
-            }).collect(),
+            periods: periods
+                .into_iter()
+                .map(|period| PeriodStatus {
+                    period,
+                    attempts: 0,
+                    last_success: None,
+                    error: None,
+                })
+                .collect(),
             next: 0,
             attempts: 0,
         })
@@ -161,10 +168,14 @@ impl RegisterWork {
                 // Truncate only at a UTF-8 boundary; preserve earlier success
                 // as historical status, never relabel it as current success.
                 let mut end = error.len().min(MAX_ERROR_BYTES);
-                while !error.is_char_boundary(end) { end -= 1; }
+                while !error.is_char_boundary(end) {
+                    end -= 1;
+                }
                 let truncated = end < error.len();
                 let mut error = error[..end].to_owned();
-                if truncated { error.push_str(" [truncated]"); }
+                if truncated {
+                    error.push_str(" [truncated]");
+                }
                 status.error = Some(error);
             }
         }
@@ -180,28 +191,54 @@ impl RegisterWork {
             ("attempts", Json::Int(i128::from(self.attempts))),
             ("next_period", s(&self.periods[self.next].period)),
             ("certified", Json::Bool(false)),
-            ("periods", Json::Arr(self.periods.iter().map(|status| {
-                let last = status.last_success.as_ref();
-                obj(vec![
-                    ("period", s(&status.period)),
-                    ("attempts", Json::Int(i128::from(status.attempts))),
-                    ("through", seq(last.map(|p| p.through))),
-                    ("published_at", seq(last.filter(|p| p.wrote).map(|p| p.published_at))),
-                    ("entries_decoded", last.map_or(Json::Null, |p| Json::Int(p.entries_decoded as i128))),
-                    ("rebuilt", last.map_or(Json::Null, |p| Json::Bool(p.rebuilt))),
-                    ("wrote", last.map_or(Json::Null, |p| Json::Bool(p.wrote))),
-                    ("error", status.error.as_ref().map_or(Json::Null, s)),
-                ])
-            }).collect())),
+            (
+                "periods",
+                Json::Arr(
+                    self.periods
+                        .iter()
+                        .map(|status| {
+                            let last = status.last_success.as_ref();
+                            obj(vec![
+                                ("period", s(&status.period)),
+                                ("attempts", Json::Int(i128::from(status.attempts))),
+                                ("through", seq(last.map(|p| p.through))),
+                                (
+                                    "published_at",
+                                    seq(last.filter(|p| p.wrote).map(|p| p.published_at)),
+                                ),
+                                (
+                                    "entries_decoded",
+                                    last.map_or(Json::Null, |p| {
+                                        Json::Int(p.entries_decoded as i128)
+                                    }),
+                                ),
+                                (
+                                    "rebuilt",
+                                    last.map_or(Json::Null, |p| Json::Bool(p.rebuilt)),
+                                ),
+                                ("wrote", last.map_or(Json::Null, |p| Json::Bool(p.wrote))),
+                                ("error", status.error.as_ref().map_or(Json::Null, s)),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
         ])
     }
 
     #[must_use]
     pub fn status_text(&self) -> String {
-        let failures = self.periods.iter().filter(|period| period.error.is_some()).count();
+        let failures = self
+            .periods
+            .iter()
+            .filter(|period| period.error.is_some())
+            .count();
         format!(
             "register maintenance: {} configured periods, one attempt per cycle, {} attempts, {} period errors; next {}; derived caches only, not certified checkpoints",
-            self.periods.len(), self.attempts, failures, self.periods[self.next].period,
+            self.periods.len(),
+            self.attempts,
+            failures,
+            self.periods[self.next].period,
         )
     }
 }

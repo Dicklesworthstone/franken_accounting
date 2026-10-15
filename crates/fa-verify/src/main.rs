@@ -397,11 +397,19 @@ fn verify(request: &Request) -> Result<Report, Failure> {
                 ),
                 (
                     "scope_derivation",
-                    quote(if complete { "all_prefix_payloads_checked" } else { "not_verified" }),
+                    quote(if complete {
+                        "all_prefix_payloads_checked"
+                    } else {
+                        "not_verified"
+                    }),
                 ),
                 ("unit", claim.unit.to_string()),
             ]);
-            let amount_kind = if complete { "posted" } else { "selected-payload" };
+            let amount_kind = if complete {
+                "posted"
+            } else {
+                "selected-payload"
+            };
             report.detail = format!(
                 "account {:032x}, unit {}: {amount_kind} debits {}, credits {} (exact mantissas); {} contributing leaves; inclusive cutoff day {:?}",
                 claim.account,

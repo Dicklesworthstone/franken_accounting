@@ -890,11 +890,7 @@ fn concurrent_slow_client_does_not_starve_other_clients_and_unauthorized_stop_is
         "--json",
     ]);
     assert_eq!(code, 2, "{plan_err}");
-    assert_eq!(
-        field(&plan_err, "class"),
-        Some("usage"),
-        "{plan_err}"
-    );
+    assert_eq!(field(&plan_err, "class"), Some("usage"), "{plan_err}");
     assert!(
         plan_err.contains(&keys_path),
         "error must name {keys_path}: {plan_err}"

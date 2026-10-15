@@ -6,8 +6,8 @@
 //! orphan bytes for recovery; they never authorize a partial graph publication.
 
 use asupersync::fs::Vfs;
-use fa_model::symbols::{label, property, relation};
 use fa_model::Oid;
+use fa_model::symbols::{label, property, relation};
 use fa_policy::Capability;
 use fa_registry::evidence_policy::EvidencePolicy;
 use fgdb::{Database, WriteBatch, WriteTxnError};
@@ -38,8 +38,14 @@ pub(crate) fn stage_external_document(
     let payload = document.canonical_bytes_external(store, locator)?;
     let mut props = vec![
         (property::FA_PAYLOAD, scalar_bytes("_fa_payload", payload)?),
-        (property::FA_DIGEST, scalar_bytes("_fa_digest", digest.to_vec())?),
-        (property::BOOK_ID, scalar_bytes("book_id", document.book_id.0.to_vec())?),
+        (
+            property::FA_DIGEST,
+            scalar_bytes("_fa_digest", digest.to_vec())?,
+        ),
+        (
+            property::BOOK_ID,
+            scalar_bytes("book_id", document.book_id.0.to_vec())?,
+        ),
         (property::CODE, scalar_text("code", kind)?),
         (property::CUSTODY_LEN, CanonicalScalar::Int(1)),
     ];

@@ -8497,9 +8497,7 @@ fn settlement_requires_matching_legal_entity_dimension() {
         .expect_err("cross-entity settlement must be refused");
     assert_eq!(
         oracle.post(&cross_settle),
-        Verdict::Refused {
-            code: "FA-REF-071"
-        }
+        Verdict::Refused { code: "FA-REF-071" }
     );
     assert_eq!((r.code, r.exit), ("FA-REF-071", exit::REFUSAL), "{r}");
     assert!(
@@ -8566,4 +8564,3 @@ fn settlement_requires_matching_legal_entity_dimension() {
         oracle_entity_fold(&oracle, &march)
     );
 }
-

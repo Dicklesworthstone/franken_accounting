@@ -77,7 +77,8 @@ fn verify<V: Vfs + Clone>(
             break;
         }
         checkpoint(cx)?;
-        let expected = through.checked_add(1)
+        let expected = through
+            .checked_add(1)
             .ok_or_else(|| corrupt("entry history sequence overflow"))?;
         if sequence.0 != expected {
             return Err(corrupt(format!(
@@ -90,19 +91,32 @@ fn verify<V: Vfs + Clone>(
         for coordinate in batch.coordinate_entries() {
             for row in &coordinate.rows {
                 checkpoint(cx)?;
-                if let DeltaRow::CreateVertex { vid, labels, birth_ordinal, .. } = row
+                if let DeltaRow::CreateVertex {
+                    vid,
+                    labels,
+                    birth_ordinal,
+                    ..
+                } = row
                     && labels.contains(&label::ENTRY)
                     && births.insert(*vid, (sequence, *birth_ordinal)).is_some()
                 {
-                    return Err(corrupt("a journal Entry identity was created more than once"));
+                    return Err(corrupt(
+                        "a journal Entry identity was created more than once",
+                    ));
                 }
             }
         }
         for coordinate in batch.coordinate_entries() {
             for row in &coordinate.rows {
                 checkpoint(cx)?;
-                if let DeltaRow::LabelMembership { vid, label: changed, after: true, .. } = row
-                    && *changed == label::ENTRY && !births.contains_key(vid)
+                if let DeltaRow::LabelMembership {
+                    vid,
+                    label: changed,
+                    after: true,
+                    ..
+                } = row
+                    && *changed == label::ENTRY
+                    && !births.contains_key(vid)
                 {
                     return Err(corrupt(format!(
                         "Entry label on {:032x} has no native Entry creation; labels cannot manufacture journal history",
@@ -110,7 +124,10 @@ fn verify<V: Vfs + Clone>(
                     )));
                 }
                 let touched = match row {
-                    DeltaRow::Property { elem: ElementId::Vertex(vid), .. }
+                    DeltaRow::Property {
+                        elem: ElementId::Vertex(vid),
+                        ..
+                    }
                     | DeltaRow::LabelMembership { vid, .. }
                     | DeltaRow::DeleteVertex { vid, .. } => Some(vid),
                     _ => None,
@@ -137,7 +154,9 @@ fn verify<V: Vfs + Clone>(
     for row in &rows {
         checkpoint(cx)?;
         if row.labels.contains(&label::ENTRY) && !births.contains_key(&row.vid) {
-            return Err(corrupt("a visible Entry has no creation in the complete native prefix"));
+            return Err(corrupt(
+                "a visible Entry has no creation in the complete native prefix",
+            ));
         }
     }
     for (vid, (created_at, birth_ordinal)) in &births {
@@ -147,7 +166,10 @@ fn verify<V: Vfs + Clone>(
             vid.0, created_at.0, known_at.0,
         )))?;
         if row.labels.as_slice() != [label::ENTRY] || row.retired_at.is_some() {
-            return Err(corrupt(format!("journal Entry {:032x} was relabeled or retired", vid.0)));
+            return Err(corrupt(format!(
+                "journal Entry {:032x} was relabeled or retired",
+                vid.0
+            )));
         }
         if row.created_at != *created_at || row.birth_ordinal != *birth_ordinal {
             return Err(corrupt(format!(
@@ -155,17 +177,27 @@ fn verify<V: Vfs + Clone>(
                 vid.0, created_at.0,
             )));
         }
-        let original = db.vertex_at(*vid, *created_at)?.ok_or_else(|| corrupt(
-            "an Entry's native creating snapshot is unavailable",
-        ))?;
-        if original.created_at != *created_at || original.birth_ordinal != *birth_ordinal
-            || original.labels != row.labels || original.props != row.props
+        let original = db
+            .vertex_at(*vid, *created_at)?
+            .ok_or_else(|| corrupt("an Entry's native creating snapshot is unavailable"))?;
+        if original.created_at != *created_at
+            || original.birth_ordinal != *birth_ordinal
+            || original.labels != row.labels
+            || original.props != row.props
         {
-            return Err(corrupt("a journal Entry differs from its native creating row"));
+            return Err(corrupt(
+                "a journal Entry differs from its native creating row",
+            ));
         }
-        let entry = Entry::decode(&bytes(row, property::FA_PAYLOAD, "entry integrity payload")?)?;
+        let entry = Entry::decode(&bytes(
+            row,
+            property::FA_PAYLOAD,
+            "entry integrity payload",
+        )?)?;
         if entry.proposal.book_id != book.book_id || entry.proposal.branch_id != Id128::TRUNK {
-            return Err(corrupt("a journal Entry's canonical coordinate differs from this trunk book"));
+            return Err(corrupt(
+                "a journal Entry's canonical coordinate differs from this trunk book",
+            ));
         }
         // This includes the payload, full digest and every declared index
         // mirror. A valid payload with dishonest selection mirrors is not green.
@@ -179,5 +211,9 @@ fn verify<V: Vfs + Clone>(
         }
     }
     checkpoint(cx)?;
-    Ok(EntryHistoryVerification { known_at, commits_checked: through, entries_checked: births.len() })
+    Ok(EntryHistoryVerification {
+        known_at,
+        commits_checked: through,
+        entries_checked: births.len(),
+    })
 }

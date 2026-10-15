@@ -1,5 +1,7 @@
 //! Independent v1 wire fixtures; no producer crate or secret book keys.
 
+#![allow(dead_code)]
+
 use fa_verify::Checkpoint;
 use fa_verify::blake3::hash_parts;
 use fa_verify::envelope::{ENTRY_DIGEST_DOMAIN, PROPOSAL_DIGEST_DOMAIN, envelope_of_entry};

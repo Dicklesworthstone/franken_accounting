@@ -576,7 +576,8 @@ mod tests {
 
     #[test]
     fn plan_appendix_d_and_errata_match_refusal_catalog_and_topology() {
-        let plan = include_str!("../../../COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md");
+        let plan =
+            include_str!("../../../COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md");
         let catalog = RefusalCatalog::embedded().unwrap();
 
         // 1. Appendix D refusal table matches refusal_catalog.toml.
@@ -601,7 +602,11 @@ mod tests {
                     .rows
                     .iter()
                     .find(|r| r.code == code)
-                    .unwrap_or_else(|| panic!("Appendix D lists {code} (`{name}`), missing from refusal_catalog.toml"));
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "Appendix D lists {code} (`{name}`), missing from refusal_catalog.toml"
+                        )
+                    });
                 assert_eq!(
                     row.name, name,
                     "Appendix D name `{name}` for {code} disagrees with refusal_catalog.toml `{}`",
@@ -610,7 +615,10 @@ mod tests {
             }
             appendix_d_rows += 1;
         }
-        assert!(appendix_d_rows >= 20, "expected Appendix D refusal rows, found {appendix_d_rows}");
+        assert!(
+            appendix_d_rows >= 20,
+            "expected Appendix D refusal rows, found {appendix_d_rows}"
+        );
 
         // 2. §16.2 fa-reference dependency allowlist never includes fa-money.
         let sec_16_2 = plan
@@ -669,7 +677,10 @@ mod tests {
             let cells: Vec<&str> = trimmed.split('|').map(str::trim).collect();
             let cluster = cells[1].trim_matches('`');
             let count = cells[2].split(',').count();
-            assert!(count <= 7, "MCP cluster {cluster} exceeds 7 tools ({count})");
+            assert!(
+                count <= 7,
+                "MCP cluster {cluster} exceeds 7 tools ({count})"
+            );
             if !on_demand.contains(&cluster) {
                 default_tools += count;
             }

@@ -3,8 +3,8 @@
 
 use fa_journal::migration::{RunBody, RunMode, kind};
 use fa_model::{
-    ControlKind, ControlPayload, Entry, EntryClass, EntryOrigin, EntryPayload,
-    Erasable, Id128, LegPayload, Oid, SealKey,
+    ControlKind, ControlPayload, Entry, EntryClass, EntryOrigin, EntryPayload, Erasable, Id128,
+    LegPayload, Oid, SealKey,
 };
 use fa_money::{Amount, Side, UnitId};
 use fa_notary::{AccumulatorState, Journal};
@@ -46,7 +46,10 @@ fn payload(class: EntryClass, legs: Vec<LegPayload>, seq: u64, day: i32) -> Entr
         control: None,
         base_totals: None,
         idempotency_key: seq.to_le_bytes().to_vec(),
-        origin: EntryOrigin::Intent { intent_oid: Oid([4; 32]), intent_kind: 1 },
+        origin: EntryOrigin::Intent {
+            intent_oid: Oid([4; 32]),
+            intent_kind: 1,
+        },
         principal_ref: VId(7),
         session_ref: None,
         evidence: Vec::new(),
@@ -64,21 +67,38 @@ fn control(body: &RunBody, transition: u8, seq: u64) -> (VId, Entry, CommitSeq) 
     p.control = Some(ControlPayload::MigrationControl {
         run_ref: body.vid(),
         kind: transition,
-        tie_out_digest: if transition == kind::OPEN { digest } else { [9; 32] },
+        tie_out_digest: if transition == kind::OPEN {
+            digest
+        } else {
+            [9; 32]
+        },
     });
     p.origin = EntryOrigin::Control {
         control_kind: ControlKind::MIGRATION_RUN,
         spec_body_digest: digest,
     };
-    (VId(u128::from(seq)), p.seal(vec![], None).unwrap(), CommitSeq(seq))
+    (
+        VId(u128::from(seq)),
+        p.seal(vec![], None).unwrap(),
+        CommitSeq(seq),
+    )
 }
 
 fn posting(body: Option<&RunBody>, seq: u64, day: i32, unit: u32) -> (VId, Entry, CommitSeq) {
-    let class = if body.is_some() { EntryClass::MIGRATION } else { EntryClass::ORIGINAL };
-    let mut p = payload(class, vec![
-        LegPayload::simple(Side::Debit, CASH, Amount::new(UnitId(unit), 5_000)),
-        LegPayload::simple(Side::Credit, OFFSET, Amount::new(UnitId(unit), 5_000)),
-    ], seq, day);
+    let class = if body.is_some() {
+        EntryClass::MIGRATION
+    } else {
+        EntryClass::ORIGINAL
+    };
+    let mut p = payload(
+        class,
+        vec![
+            LegPayload::simple(Side::Debit, CASH, Amount::new(UnitId(unit), 5_000)),
+            LegPayload::simple(Side::Credit, OFFSET, Amount::new(UnitId(unit), 5_000)),
+        ],
+        seq,
+        day,
+    );
     if let Some(body) = body {
         p.origin = EntryOrigin::Migration {
             run_ref: body.vid(),
@@ -90,18 +110,36 @@ fn posting(body: Option<&RunBody>, seq: u64, day: i32, unit: u32) -> (VId, Entry
             batch_oid: Oid([5; 32]),
         };
     }
-    (VId(u128::from(seq)), p.seal(vec![], None).unwrap(), CommitSeq(seq))
+    (
+        VId(u128::from(seq)),
+        p.seal(vec![], None).unwrap(),
+        CommitSeq(seq),
+    )
 }
 
 fn anchor(journal: &Journal) -> fa_verify::Checkpoint {
     let state = AccumulatorState::of_journal(journal, None);
-    fa_verify::verify_state(&state.canonical_bytes().unwrap()).unwrap().checkpoint
+    fa_verify::verify_state(&state.canonical_bytes().unwrap())
+        .unwrap()
+        .checkpoint
 }
 
-fn checked(journal: &Journal, bodies: &[RunBody], account: VId, unit: u32, day: Option<i32>) -> fa_verify::Balance {
-    let bytes = journal.balance_proof_complete(account, unit, day, bodies).unwrap().unwrap();
-    let mut reader = fa_verify::codec::Reader::new(&bytes);
-    assert_eq!(reader.bytes(128, "format").unwrap(), fa_verify::migration_balance::BALANCE_FORMAT_V3);
+fn checked(
+    journal: &Journal,
+    bodies: &[RunBody],
+    account: VId,
+    unit: u32,
+    day: Option<i32>,
+) -> fa_verify::Balance {
+    let bytes = journal
+        .balance_proof_complete(account, unit, day, bodies)
+        .unwrap()
+        .unwrap();
+    let mut reader = fa_model::Reader::new(&bytes);
+    assert_eq!(
+        reader.bytes(128, "format").unwrap(),
+        fa_verify::migration_balance::BALANCE_FORMAT_V3
+    );
     let result = fa_verify::verify_balance(&bytes, &anchor(journal)).unwrap();
     assert_eq!(result.scope, "recomputation");
     result
@@ -111,12 +149,22 @@ fn ordinary_prefix() -> Journal {
     let (vid, entry, seq) = posting(None, 2, 100, 1);
     let mut pending = entry.proposal;
     pending.class = EntryClass::PENDING;
-    Journal::from_records(BOOK, CommitSeq(4), vec![
-        posting(None, 1, 100, 1),
-        (vid, pending.seal(vec![], None).unwrap(), seq),
-        posting(None, 3, 101, 1),
-        posting(None, 4, 100, 2),
-    ]).unwrap()
+    pending.pending = Some(fa_model::Pending {
+        timeout_ns: None,
+        resolution_of: None,
+        disposition: None,
+    });
+    Journal::from_records(
+        BOOK,
+        CommitSeq(4),
+        vec![
+            posting(None, 1, 100, 1),
+            (vid, pending.seal(vec![], None).unwrap(), seq),
+            posting(None, 3, 101, 1),
+            posting(None, 4, 100, 2),
+        ],
+    )
+    .unwrap()
 }
 
 #[test]
@@ -131,9 +179,16 @@ fn complete_proofs_bind_excluded_pending_future_and_other_unit_payloads() {
     assert_eq!(checked(&journal, &[], CASH, 2, None).claim.debits, 5_000);
     assert_eq!(checked(&journal, &[], CASH, 1, Some(99)).claim.debits, 0);
     assert_eq!(checked(&journal, &[], VId(999), 1, None).claim.debits, 0);
-    let bytes = journal.balance_proof_complete(CASH, 1, Some(100), &[]).unwrap().unwrap();
+    let bytes = journal
+        .balance_proof_complete(CASH, 1, Some(100), &[])
+        .unwrap()
+        .unwrap();
     for leaf in &journal.leaves {
-        assert!(bytes.windows(leaf.payload.len()).any(|part| part == leaf.payload));
+        assert!(
+            bytes
+                .windows(leaf.payload.len())
+                .any(|part| part == leaf.payload)
+        );
     }
 }
 
@@ -149,10 +204,8 @@ fn all_model_migration_modes_preserve_visibility_and_minimal_body_disclosure() {
             for day in [90, 100] {
                 let run = body(mode, sole, "selected");
                 let unrelated = body(RunMode::OpeningOnly, false, "private-other-unit");
-                let mut records = vec![
-                    control(&run, kind::OPEN, 1),
-                    posting(Some(&run), 2, day, 1),
-                ];
+                let mut records =
+                    vec![control(&run, kind::OPEN, 1), posting(Some(&run), 2, day, 1)];
                 if let Some(transition) = terminal {
                     records.push(control(&run, transition, 3));
                 }
@@ -168,8 +221,14 @@ fn all_model_migration_modes_preserve_visibility_and_minimal_body_disclosure() {
                 let report = checked(&journal, witnesses, CASH, 1, Some(day));
                 assert_eq!(report.claim.debits, if visible { 5_000 } else { 0 });
                 assert_eq!(report.contributing, if visible { vec![1] } else { vec![] });
-                assert_eq!(checked(&journal, &[], CASH, 1, Some(day - 1)).claim.debits, 0);
-                let bytes = journal.balance_proof_complete(CASH, 1, Some(day), witnesses).unwrap().unwrap();
+                assert_eq!(
+                    checked(&journal, &[], CASH, 1, Some(day - 1)).claim.debits,
+                    0
+                );
+                let bytes = journal
+                    .balance_proof_complete(CASH, 1, Some(day), witnesses)
+                    .unwrap()
+                    .unwrap();
                 let secret = unrelated.canonical_bytes().unwrap();
                 assert!(!bytes.windows(secret.len()).any(|part| part == secret));
             }
@@ -181,20 +240,33 @@ fn all_model_migration_modes_preserve_visibility_and_minimal_body_disclosure() {
 fn legacy_wire_bytes_are_stable_but_do_not_overstate_their_assurance() {
     let journal = ordinary_prefix();
     let v1 = journal.balance_proof(CASH, 1, Some(100)).unwrap().unwrap();
-    let v2 = journal.balance_proof_with_migrations(CASH, 1, Some(100), &[]).unwrap().unwrap();
+    let v2 = journal
+        .balance_proof_with_migrations(CASH, 1, Some(100), &[])
+        .unwrap()
+        .unwrap();
     let full = checked(&journal, &[], CASH, 1, Some(100));
     for bytes in [&v1, &v2] {
         let legacy = fa_verify::verify_balance(bytes, &anchor(&journal)).unwrap();
         assert_eq!(legacy.scope, "membership_only");
         assert_eq!(legacy.claim, full.claim);
     }
-    assert_eq!(journal.balance_proof(CASH, 1, Some(100)).unwrap().unwrap(), v1);
-    assert_eq!(journal.balance_proof_with_migrations(CASH, 1, Some(100), &[]).unwrap().unwrap(), v2);
+    assert_eq!(
+        journal.balance_proof(CASH, 1, Some(100)).unwrap().unwrap(),
+        v1
+    );
+    assert_eq!(
+        journal
+            .balance_proof_with_migrations(CASH, 1, Some(100), &[])
+            .unwrap()
+            .unwrap(),
+        v2
+    );
 }
 
 #[test]
 fn producer_checks_excluded_selector_caches_instead_of_trusting_them() {
-    let original = Journal::from_records(BOOK, CommitSeq(1), vec![posting(None, 1, 100, 1)]).unwrap();
+    let original =
+        Journal::from_records(BOOK, CommitSeq(1), vec![posting(None, 1, 100, 1)]).unwrap();
     for field in 0..5 {
         let mut journal = original.clone();
         let leaf = &mut journal.leaves[0];
@@ -207,25 +279,36 @@ fn producer_checks_excluded_selector_caches_instead_of_trusting_them() {
         }
         leaf.envelope_bytes = leaf.envelope.canonical_bytes().unwrap();
         leaf.hash = fa_notary::tree::leaf_hash(&leaf.envelope_bytes);
-        let refusal = journal.balance_proof_complete(CASH, 1, Some(100), &[]).unwrap().unwrap_err();
+        let refusal = journal
+            .balance_proof_complete(CASH, 1, Some(100), &[])
+            .unwrap()
+            .unwrap_err();
         assert_eq!(refusal.code, fa_notary::code::MIGRATION_STAGED);
     }
 }
 
 #[test]
 fn complete_proof_size_limits_cover_excluded_records_before_decoding() {
-    assert_eq!(fa_notary::migration_balance::MAX_BALANCE_PROOF_BYTES,
-        fa_verify::migration_balance::MAX_BALANCE_PROOF_BYTES);
+    assert_eq!(
+        fa_notary::migration_balance::MAX_BALANCE_PROOF_BYTES,
+        fa_verify::migration_balance::MAX_BALANCE_PROOF_BYTES
+    );
     let mut journal = ordinary_prefix();
     // This record is outside the requested unit, but cannot evade the bound.
     journal.leaves[3].payload = vec![0; 8 * 1024 * 1024 + 1];
-    let refusal = journal.balance_proof_complete(CASH, 1, Some(100), &[]).unwrap().unwrap_err();
+    let refusal = journal
+        .balance_proof_complete(CASH, 1, Some(100), &[])
+        .unwrap()
+        .unwrap_err();
     assert_eq!(refusal.code, "FA-REF-127");
     let mut leaf = journal.leaves[0].clone();
     leaf.payload = vec![0; 8 * 1024 * 1024];
     journal.leaves = vec![leaf; 8];
     // Payload bytes alone fit 64 MiB; framing and envelopes make it too large.
-    let refusal = journal.balance_proof_complete(CASH, 1, None, &[]).unwrap().unwrap_err();
+    let refusal = journal
+        .balance_proof_complete(CASH, 1, None, &[])
+        .unwrap()
+        .unwrap_err();
     assert_eq!(refusal.code, "FA-REF-127");
 }
 
@@ -233,34 +316,57 @@ fn complete_proof_size_limits_cover_excluded_records_before_decoding() {
 fn earlier_checkpoint_visibility_is_stable_and_cannot_borrow_later_finalization() {
     let run = body(RunMode::OpeningOnly, false, "historical");
     let records = vec![
-        control(&run, kind::OPEN, 1), posting(Some(&run), 2, 100, 1),
+        control(&run, kind::OPEN, 1),
+        posting(Some(&run), 2, 100, 1),
         control(&run, kind::FINALIZE, 3),
     ];
     let early = Journal::from_records(BOOK, CommitSeq(2), records[..2].to_vec()).unwrap();
     let later = Journal::from_records(BOOK, CommitSeq(3), records).unwrap();
     let bodies = std::slice::from_ref(&run);
-    let first = early.balance_proof_complete(CASH, 1, None, bodies).unwrap().unwrap();
+    let first = early
+        .balance_proof_complete(CASH, 1, None, bodies)
+        .unwrap()
+        .unwrap();
     assert_eq!(checked(&early, bodies, CASH, 1, None).claim.debits, 0);
     assert_eq!(checked(&later, bodies, CASH, 1, None).claim.debits, 5_000);
-    assert_eq!(early.balance_proof_complete(CASH, 1, None, bodies).unwrap().unwrap(), first);
-    assert!(matches!(fa_verify::verify_balance(&first, &anchor(&later)),
-        Err(fa_verify::VerifyError::NotTrusted { .. })));
+    assert_eq!(
+        early
+            .balance_proof_complete(CASH, 1, None, bodies)
+            .unwrap()
+            .unwrap(),
+        first
+    );
+    assert!(matches!(
+        fa_verify::verify_balance(&first, &anchor(&later)),
+        Err(fa_verify::VerifyError::NotTrusted { .. })
+    ));
 }
 
 #[test]
 fn missing_rebound_duplicate_and_unrelated_run_bodies_still_fail_closed() {
     let run = body(RunMode::FullDetail, false, "policy");
-    let journal = Journal::from_records(BOOK, CommitSeq(3), vec![
-        control(&run, kind::OPEN, 1), posting(Some(&run), 2, 90, 1),
-        control(&run, kind::FINALIZE, 3),
-    ]).unwrap();
+    let journal = Journal::from_records(
+        BOOK,
+        CommitSeq(3),
+        vec![
+            control(&run, kind::OPEN, 1),
+            posting(Some(&run), 2, 90, 1),
+            control(&run, kind::FINALIZE, 3),
+        ],
+    )
+    .unwrap();
     let mut rebound = run.clone();
     rebound.sole_opening_source = true;
     for bodies in [
-        vec![], vec![rebound], vec![run.clone(), run.clone()],
+        vec![],
+        vec![rebound],
+        vec![run.clone(), run.clone()],
         vec![run.clone(), body(RunMode::OpeningOnly, false, "unrelated")],
     ] {
-        let refusal = journal.balance_proof_complete(CASH, 1, None, &bodies).unwrap().unwrap_err();
+        let refusal = journal
+            .balance_proof_complete(CASH, 1, None, &bodies)
+            .unwrap()
+            .unwrap_err();
         assert_eq!(refusal.code, fa_notary::code::MIGRATION_STAGED);
     }
 }

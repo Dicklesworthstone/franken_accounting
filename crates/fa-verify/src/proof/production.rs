@@ -9,12 +9,11 @@
 
 pub mod derivation;
 
-use core::fmt;
 use crate::envelope::LeafEnvelope;
 use crate::proof::{
-    Checkpoint, RecordCheck, SCOPE_SEQ_RANGE_COMPLETE, VerifyError,
-    verify_inclusion, verify_prefix,
+    Checkpoint, RecordCheck, SCOPE_SEQ_RANGE_COMPLETE, VerifyError, verify_inclusion, verify_prefix,
 };
+use core::fmt;
 use derivation::{PrefixKind, read_header, verify_prefix_with_records};
 
 pub const MAX_PRODUCTION_BYTES: usize = 64 * 1024 * 1024;
@@ -93,15 +92,25 @@ impl fmt::Display for ProductionError {
             Self::Limit(what) => write!(f, "entry production exceeds the {what} bound"),
             Self::Prefix(error) => write!(f, "production prefix: {error}"),
             Self::Record { position, error } => write!(f, "production record {position}: {error}"),
-            Self::RecordCount { expected, actual } => write!(f,
-                "scope requires {expected} journal records; production supplies {actual}"),
-            Self::Position { expected, actual } => write!(f,
-                "production requires next leaf {expected}, not leaf {actual}"),
-            Self::Envelope { index } => write!(f, "production leaf {index} differs from the prefix"),
-            Self::PayloadRequired { index } => write!(f,
-                "production leaf {index} requires its record payload, not just its envelope"),
-            Self::ScopeDerivationRequired { index } => write!(f,
-                "excluded leaf {index} has unverified scope selectors; supply a payload-complete v2 prefix or the existing fa proof balance v3 export as --prefix; membership alone does not prove a complete extract"),
+            Self::RecordCount { expected, actual } => write!(
+                f,
+                "scope requires {expected} journal records; production supplies {actual}"
+            ),
+            Self::Position { expected, actual } => write!(
+                f,
+                "production requires next leaf {expected}, not leaf {actual}"
+            ),
+            Self::Envelope { index } => {
+                write!(f, "production leaf {index} differs from the prefix")
+            }
+            Self::PayloadRequired { index } => write!(
+                f,
+                "production leaf {index} requires its record payload, not just its envelope"
+            ),
+            Self::ScopeDerivationRequired { index } => write!(
+                f,
+                "excluded leaf {index} has unverified scope selectors; supply a payload-complete v2 prefix or the existing fa proof balance v3 export as --prefix; membership alone does not prove a complete extract"
+            ),
         }
     }
 }
@@ -153,8 +162,13 @@ pub fn verify_production_for(
         verify_prefix_with_records(prefix_bytes, checkpoint)
     } else {
         verify_prefix(prefix_bytes, checkpoint)
-    }.map_err(ProductionError::Prefix)?;
-    let count = prefix.envelopes.iter().filter(|entry| expected.selects(entry)).count();
+    }
+    .map_err(ProductionError::Prefix)?;
+    let count = prefix
+        .envelopes
+        .iter()
+        .filter(|entry| expected.selects(entry))
+        .count();
     if count > MAX_PRODUCTION_RECORDS {
         return Err(ProductionError::Limit("selected record count"));
     }
@@ -165,11 +179,19 @@ pub fn verify_production_for(
         });
     }
     if !complete
-        && let Some(index) = prefix.envelopes.iter().position(|entry| !expected.selects(entry))
+        && let Some(index) = prefix
+            .envelopes
+            .iter()
+            .position(|entry| !expected.selects(entry))
     {
-        return Err(ProductionError::ScopeDerivationRequired { index: index as u64 });
+        return Err(ProductionError::ScopeDerivationRequired {
+            index: index as u64,
+        });
     }
-    let selected = prefix.envelopes.into_iter().enumerate()
+    let selected = prefix
+        .envelopes
+        .into_iter()
+        .enumerate()
         .filter(|(_, entry)| expected.selects(entry));
     let mut entries = Vec::with_capacity(count);
     for (position, ((index, envelope), bytes)) in selected.zip(records).enumerate() {

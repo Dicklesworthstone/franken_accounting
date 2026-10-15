@@ -94,7 +94,10 @@ pub(super) fn encode(
     let leaves: Vec<_> = if complete {
         journal.leaves.iter().enumerate().collect()
     } else {
-        selected.iter().map(|(index, leaf, _)| (*index, *leaf)).collect()
+        selected
+            .iter()
+            .map(|(index, leaf, _)| (*index, *leaf))
+            .collect()
     };
     let size = match measure(
         journal,
@@ -122,7 +125,11 @@ pub(super) fn encode(
         })
         .collect::<Result<Vec<_>, _>>()?;
     let mut w = Writer::with_capacity(size);
-    w.bytes(if complete { BALANCE_FORMAT_V3 } else { BALANCE_FORMAT_V2 });
+    w.bytes(if complete {
+        BALANCE_FORMAT_V3
+    } else {
+        BALANCE_FORMAT_V2
+    });
     journal.statement().encode(&mut w);
     w.u128(claim.account.0)
         .u32(claim.unit)
@@ -142,7 +149,9 @@ pub(super) fn encode(
         });
     let bytes = w.finish().map_err(fa_model::EntryError::Encode)?;
     if bytes.len() != size {
-        return Err(KernelError::Corrupt("balance proof size accounting drifted".into()));
+        return Err(KernelError::Corrupt(
+            "balance proof size accounting drifted".into(),
+        ));
     }
     Ok(Ok(bytes))
 }
@@ -159,9 +168,21 @@ mod tests {
         for complete in [false, true] {
             for through in [None, Some(i32::MIN), Some(i32::MAX)] {
                 let expected = measure(&journal, journal.leaves.iter(), &[], through).unwrap();
-                let bytes = encode(&journal, &vec![], vec![], complete, Claim {
-                    account: VId(10), unit: 1, through, debits: 0, credits: 0,
-                }).unwrap().unwrap();
+                let bytes = encode(
+                    &journal,
+                    &vec![],
+                    vec![],
+                    complete,
+                    Claim {
+                        account: VId(10),
+                        unit: 1,
+                        through,
+                        debits: 0,
+                        credits: 0,
+                    },
+                )
+                .unwrap()
+                .unwrap();
                 assert_eq!(bytes.len(), expected);
             }
         }

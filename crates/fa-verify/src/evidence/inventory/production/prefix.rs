@@ -11,15 +11,14 @@ use crate::envelope::{MAX_RECORD_BYTES, RecordError};
 use crate::evidence::EvidenceError;
 use crate::proof::production::derivation::{PREFIX_FORMAT_V2, verify_prefix_with_records};
 use crate::proof::production::{
-    MAX_PRODUCTION_BYTES, MAX_PRODUCTION_LEAVES, MAX_PRODUCTION_RECORDS,
-    ProducedEntry, ProductionError, ProductionScope,
+    MAX_PRODUCTION_BYTES, MAX_PRODUCTION_LEAVES, MAX_PRODUCTION_RECORDS, ProducedEntry,
+    ProductionError, ProductionScope,
 };
 use crate::proof::{Checkpoint, VerifyError, open};
 
 use super::super::citations_from_proposal;
 use super::{
-    EvidenceProductionError, MAX_PRODUCTION_CITATIONS, ProducedEvidence,
-    VerifiedEvidenceProduction,
+    EvidenceProductionError, MAX_PRODUCTION_CITATIONS, ProducedEvidence, VerifiedEvidenceProduction,
 };
 
 /// Borrow the record list only after the entire native v2 witness has passed
@@ -33,7 +32,9 @@ fn records_reader(bytes: &[u8], expected: usize) -> Result<Reader<'_>, VerifyErr
     }
     let count = reader.count(MAX_PRODUCTION_LEAVES, 16, "prefix.records")?;
     if count != expected {
-        return Err(VerifyError::RecordSet { index: count as u64 });
+        return Err(VerifyError::RecordSet {
+            index: count as u64,
+        });
     }
     Ok(reader)
 }
@@ -45,7 +46,10 @@ fn record<'a>(reader: &mut Reader<'a>, position: usize) -> Result<(&'a [u8], usi
     }
     let split = usize::try_from(reader.u32("prefix.record.proposal_len")?)
         .map_err(|_| VerifyError::Record(RecordError::Split))?;
-    Ok((reader.bytes(MAX_RECORD_BYTES, "prefix.record.payload")?, split))
+    Ok((
+        reader.bytes(MAX_RECORD_BYTES, "prefix.record.payload")?,
+        split,
+    ))
 }
 
 /// The entry's digests and split were already checked. As in the existing
@@ -85,7 +89,9 @@ pub fn verify_evidence_prefix_for(
 ) -> Result<VerifiedEvidenceProduction, EvidenceProductionError> {
     expected.validate()?;
     if expected.known_at > checkpoint.through_seq {
-        return Err(ProductionError::Request("known_at is later than the trusted checkpoint").into());
+        return Err(
+            ProductionError::Request("known_at is later than the trusted checkpoint").into(),
+        );
     }
     if bytes.len() > MAX_PRODUCTION_BYTES {
         return Err(ProductionError::Limit("aggregate encoded bytes").into());
@@ -94,13 +100,19 @@ pub fn verify_evidence_prefix_for(
     // prefix verifier also accepts v3 balances; this borrowing decoder does not.
     open(bytes, PREFIX_FORMAT_V2).map_err(ProductionError::Prefix)?;
     let prefix = verify_prefix_with_records(bytes, checkpoint).map_err(ProductionError::Prefix)?;
-    let count = prefix.envelopes.iter().filter(|entry| expected.selects(entry)).count();
+    let count = prefix
+        .envelopes
+        .iter()
+        .filter(|entry| expected.selects(entry))
+        .count();
     if count > MAX_PRODUCTION_RECORDS {
         return Err(ProductionError::Limit("selected record count").into());
     }
-    let mut reader = records_reader(bytes, prefix.envelopes.len()).map_err(ProductionError::Prefix)?;
+    let mut reader =
+        records_reader(bytes, prefix.envelopes.len()).map_err(ProductionError::Prefix)?;
     let mut entries = Vec::new();
-    entries.try_reserve_exact(count)
+    entries
+        .try_reserve_exact(count)
         .map_err(|_| EvidenceProductionError::Limit("entry allocation"))?;
     let mut citation_count = 0usize;
     for (position, envelope) in prefix.envelopes.into_iter().enumerate() {
@@ -112,16 +124,22 @@ pub fn verify_evidence_prefix_for(
         let at_leaf = |error| EvidenceProductionError::Evidence { leaf_index, error };
         let proposal = framed_proposal(payload, split).map_err(at_leaf)?;
         let citations = citations_from_proposal(proposal, &checkpoint.book_id).map_err(at_leaf)?;
-        citation_count = citation_count.checked_add(citations.len())
+        citation_count = citation_count
+            .checked_add(citations.len())
             .filter(|count| *count <= MAX_PRODUCTION_CITATIONS)
             .ok_or(EvidenceProductionError::Limit("aggregate citation count"))?;
         entries.push(ProducedEvidence {
-            entry: ProducedEntry { leaf_index, envelope },
+            entry: ProducedEntry {
+                leaf_index,
+                envelope,
+            },
             citations,
         });
     }
-    reader.finish("complete prefix proof")
-        .map_err(VerifyError::from).map_err(ProductionError::Prefix)?;
+    reader
+        .finish("complete prefix proof")
+        .map_err(VerifyError::from)
+        .map_err(ProductionError::Prefix)?;
     Ok(VerifiedEvidenceProduction {
         scope: prefix.scope,
         checkpoint: prefix.checkpoint,

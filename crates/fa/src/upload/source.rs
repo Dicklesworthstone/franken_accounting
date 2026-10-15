@@ -43,20 +43,19 @@ pub(super) fn input_refusal(message: impl Into<String>) -> Refusal {
 }
 
 pub(super) fn document_limit() -> Result<u64, BookError> {
-    let stores = DocumentStores::embedded()
-        .map_err(|error| KernelError::Corrupt(error.to_string()))?;
+    let stores =
+        DocumentStores::embedded().map_err(|error| KernelError::Corrupt(error.to_string()))?;
     stores
         .get(crate::async_book::BOOK_BLOB_STORE)
         .map(|store| store.max_document_bytes)
-        .ok_or_else(|| KernelError::Corrupt("the book's document store is not registered".into()).into())
+        .ok_or_else(|| {
+            KernelError::Corrupt("the book's document store is not registered".into()).into()
+        })
 }
 
 /// Validate public metadata before touching a source. Publication repeats the
 /// complete evidence law; this check grants no authority or provenance upgrade.
-pub(super) fn check_request(
-    capability: &Capability,
-    request: &SourceUploadRequest,
-) -> Outcome<()> {
+pub(super) fn check_request(capability: &Capability, request: &SourceUploadRequest) -> Outcome<()> {
     let maximum = document_limit()?;
     if request.max_bytes == 0 || request.max_bytes > maximum {
         return Ok(Err(input_refusal(format!(
@@ -64,16 +63,21 @@ pub(super) fn check_request(
             request.max_bytes,
         ))));
     }
-    let policy = EvidencePolicy::embedded()
-        .map_err(|error| KernelError::Corrupt(error.to_string()))?;
+    let policy =
+        EvidencePolicy::embedded().map_err(|error| KernelError::Corrupt(error.to_string()))?;
     if policy.kind_by_tag(request.kind).is_none()
         || request.mime.is_empty()
         || request.mime.len() > policy.max_mime_bytes
     {
-        return Ok(Err(input_refusal("source metadata needs a registered kind and a bounded, nonempty MIME type")));
+        return Ok(Err(input_refusal(
+            "source metadata needs a registered kind and a bounded, nonempty MIME type",
+        )));
     }
     let grade = fa_journal::upload::upload_grade(&policy, capability.profile())?;
-    if request.asserted_grade.is_some_and(|asserted| asserted != grade) {
+    if request
+        .asserted_grade
+        .is_some_and(|asserted| asserted != grade)
+    {
         return Ok(Err(Refusal::new(
             code::GRADE_UNVERIFIED,
             exit::REFUSAL,
@@ -86,14 +90,20 @@ pub(super) fn check_request(
 }
 
 fn append(bytes: &mut Vec<u8>, chunk: &[u8], limit: usize) -> io::Result<()> {
-    let needed = bytes.len().checked_add(chunk.len())
+    let needed = bytes
+        .len()
+        .checked_add(chunk.len())
         .ok_or_else(|| io::Error::other("source byte count overflow"))?;
     if needed > limit {
-        return Err(io::Error::other("source append exceeds its admitted budget"));
+        return Err(io::Error::other(
+            "source append exceeds its admitted budget",
+        ));
     }
     if needed > bytes.capacity() {
         let capacity = bytes.capacity().saturating_mul(2).max(needed).min(limit);
-        bytes.try_reserve_exact(capacity - bytes.len()).map_err(io::Error::other)?;
+        bytes
+            .try_reserve_exact(capacity - bytes.len())
+            .map_err(io::Error::other)?;
     }
     bytes.extend_from_slice(chunk);
     Ok(())
@@ -108,8 +118,11 @@ pub(super) async fn read_bounded<R: AsyncRead + Unpin>(
     limit: u64,
     source: &Path,
 ) -> Outcome<Vec<u8>> {
-    let limit = usize::try_from(limit)
-        .map_err(|_| BookError::Kernel(KernelError::Corrupt("source input budget is not addressable on this host".into())))?;
+    let limit = usize::try_from(limit).map_err(|_| {
+        BookError::Kernel(KernelError::Corrupt(
+            "source input budget is not addressable on this host".into(),
+        ))
+    })?;
     let mut bytes = Vec::new();
     let mut buffer = [0_u8; BUFFER_BYTES];
     loop {
@@ -158,18 +171,29 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(refused));
         }
         let query = cx.query();
-        let bytes = match query.with_restriction_async(read_bounded(
-            &query, reader, request.max_bytes, Path::new("<evidence stream>"),
-        )).await? {
+        let bytes = match query
+            .with_restriction_async(read_bounded(
+                &query,
+                reader,
+                request.max_bytes,
+                Path::new("<evidence stream>"),
+            ))
+            .await?
+        {
             Ok(bytes) => bytes,
             Err(refused) => return Ok(Err(refused)),
         };
-        self.upload_document(cx, capability, UploadRequest {
-            kind: request.kind,
-            mime: request.mime,
-            asserted_grade: request.asserted_grade,
-            bytes,
-        }).await
+        self.upload_document(
+            cx,
+            capability,
+            UploadRequest {
+                kind: request.kind,
+                mime: request.mime,
+                asserted_grade: request.asserted_grade,
+                bytes,
+            },
+        )
+        .await
     }
 
     /// Open a source through the host-supplied VFS only after admission.
@@ -193,21 +217,31 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(refused));
         }
         let query = cx.query();
-        let bytes = match query.with_restriction_async(async {
-            query.checkpoint().map_err(BookError::Context)?;
-            let mut reader = source.open(path, &OpenOptions::new().read(true))
-                .await.map_err(|error| BookError::Io(path.to_path_buf(), error))?;
-            read_bounded(&query, &mut reader, request.max_bytes, path).await
-        }).await? {
+        let bytes = match query
+            .with_restriction_async(async {
+                query.checkpoint().map_err(BookError::Context)?;
+                let mut reader = source
+                    .open(path, &OpenOptions::new().read(true))
+                    .await
+                    .map_err(|error| BookError::Io(path.to_path_buf(), error))?;
+                read_bounded(&query, &mut reader, request.max_bytes, path).await
+            })
+            .await?
+        {
             Ok(bytes) => bytes,
             Err(refused) => return Ok(Err(refused)),
         };
-        self.upload_document(cx, capability, UploadRequest {
-            kind: request.kind,
-            mime: request.mime,
-            asserted_grade: request.asserted_grade,
-            bytes,
-        }).await
+        self.upload_document(
+            cx,
+            capability,
+            UploadRequest {
+                kind: request.kind,
+                mime: request.mime,
+                asserted_grade: request.asserted_grade,
+                bytes,
+            },
+        )
+        .await
     }
 }
 

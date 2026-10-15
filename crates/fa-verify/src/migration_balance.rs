@@ -23,8 +23,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::balance::{
-    Balance, BalanceClaim, CLASS_MIGRATION, SCOPE_MEMBERSHIP_ONLY, SCOPE_RECOMPUTATION,
-    in_scope,
+    Balance, BalanceClaim, CLASS_MIGRATION, SCOPE_MEMBERSHIP_ONLY, SCOPE_RECOMPUTATION, in_scope,
 };
 use crate::blake3::hash_parts;
 use crate::codec::{DecodeError, Reader, Reason};
@@ -640,10 +639,7 @@ mod tests {
             })
             .collect();
         let mut w = Writer::default();
-        w.bytes(format)
-            .fixed(&checkpoint.encode())
-            .u128(10)
-            .u32(1);
+        w.bytes(format).fixed(&checkpoint.encode()).u128(10).u32(1);
         match through {
             Some(day) => {
                 w.u8(1).i32(day);

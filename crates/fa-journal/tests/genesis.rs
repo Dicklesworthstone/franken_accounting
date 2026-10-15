@@ -6577,7 +6577,12 @@ fn period_state_mirror_refolds_from_journaled_period_control_transitions() {
 
 #[test]
 fn period_verification_detects_planted_state_and_topology_drift_without_mutation() {
-    for plant in ["wrong-state", "missing-state", "missing-in-period", "missing-in-book"] {
+    for plant in [
+        "wrong-state",
+        "missing-state",
+        "missing-in-period",
+        "missing-in-book",
+    ] {
         let mut h = harness();
         let clean_seq = h.db.frontier().unwrap();
         let pvid = period_vid(&h.book.calendar.id, &h.march);
@@ -6628,9 +6633,9 @@ fn period_verification_detects_planted_state_and_topology_drift_without_mutation
                 assert_eq!(row.refolded_state, PeriodState::Open);
                 assert!(!row.green);
                 assert!(
-                    v.drift
-                        .iter()
-                        .any(|d| d.contains(&h.march) && d.contains("Locked") && d.contains("Open")),
+                    v.drift.iter().any(|d| d.contains(&h.march)
+                        && d.contains("Locked")
+                        && d.contains("Open")),
                     "{:?}",
                     v.drift
                 );

@@ -38,10 +38,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         query.checkpoint().map_err(BookError::Context)?;
         let book = self.context();
         let admission = match action {
-            IntakeAction::Upload => {
-                fa_policy::require(capability, Op::Post, "uploading evidence")
-                    .and_then(|()| fa_policy::scope(capability, book.book_id))
-            }
+            IntakeAction::Upload => fa_policy::require(capability, Op::Post, "uploading evidence")
+                .and_then(|()| fa_policy::scope(capability, book.book_id)),
             IntakeAction::ImportRun => {
                 let key = fa_policy::sod::control_key("ImportControl", None, "Import");
                 let op = policy::steward()?.preparer_op(&key).ok_or_else(|| {
@@ -182,7 +180,11 @@ mod tests {
                     .unwrap()
                     .unwrap_err();
                 assert_eq!(denied.code, "FA-REF-011");
-                assert!(book.preflight_intake(&cx, &excluded, action).unwrap().is_err());
+                assert!(
+                    book.preflight_intake(&cx, &excluded, action)
+                        .unwrap()
+                        .is_err()
+                );
                 let denied = book
                     .preflight_intake(&cx, &expired, action)
                     .unwrap()
@@ -212,9 +214,18 @@ mod tests {
                 .unwrap();
             let before = book.head(&cx).unwrap();
             assert_eq!(before, next);
-            assert!(book.preflight_intake(&cx, &cap, IntakeAction::Upload).unwrap().is_err());
+            assert!(
+                book.preflight_intake(&cx, &cap, IntakeAction::Upload)
+                    .unwrap()
+                    .is_err()
+            );
             // Even a duplicate cannot disclose its recorded outcome on old authority.
-            assert!(book.upload_document(&cx, &cap, request()).await.unwrap().is_err());
+            assert!(
+                book.upload_document(&cx, &cap, request())
+                    .await
+                    .unwrap()
+                    .is_err()
+            );
             assert_eq!(book.head(&cx).unwrap(), before);
         });
     }
@@ -250,7 +261,12 @@ mod tests {
                     .unwrap_err();
                 assert!(refusal.message.contains("revok"));
             }
-            assert!(book.upload_document(&cx, &cap, request()).await.unwrap().is_err());
+            assert!(
+                book.upload_document(&cx, &cap, request())
+                    .await
+                    .unwrap()
+                    .is_err()
+            );
             assert_eq!(book.head(&cx).unwrap(), before);
         });
     }

@@ -7,14 +7,14 @@ use fa_journal::post::read_entry;
 use fa_journal::rows::{applied, edge_id, leg_vid, resolution_vid};
 use fa_journal::{
     AccountSpec, BookContext, BookSpec, Document, PostPreparation, PostRequest, Posted,
-    PreparedPost, Refusal, UnitPolicy, add_document, create_book, create_periods,
-    install_chart, post, prepare_post, transition_period,
+    PreparedPost, Refusal, UnitPolicy, add_document, create_book, create_periods, install_chart,
+    post, prepare_post, transition_period,
 };
 use fa_model::symbols::relation;
 use fa_model::{
-    Disposition, EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable, EvidenceRef,
-    Id128, LegPayload, Oid, Pending, SealKey, Settlement, Supersession, SupersessionKind,
-    SymbolTable, account_vid,
+    Disposition, EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable, EvidenceRef, Id128,
+    LegPayload, Oid, Pending, SealKey, Settlement, Supersession, SupersessionKind, SymbolTable,
+    account_vid,
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_policy::Capability;
@@ -63,7 +63,9 @@ impl Fixture {
             entities: Vec::new(),
             opening_date: None,
         };
-        runtime.block_on(create_book(&mut db, &cx, &spec, &units, &symbols)).unwrap();
+        runtime
+            .block_on(create_book(&mut db, &cx, &spec, &units, &symbols))
+            .unwrap();
         let book = BookContext {
             book_id,
             calendar,
@@ -75,37 +77,81 @@ impl Fixture {
         let chart: Vec<_> = [("1000", 1, 0), ("1200", 1, 0), ("4000", 4, 1)]
             .into_iter()
             .map(|(code, account_type, normal_balance)| AccountSpec {
-                code: code.into(), name: code.into(), account_type, normal_balance,
-                is_leaf: true, unit_policy: UnitPolicy::Single(unit),
-                parent_code: None, limit: None,
+                code: code.into(),
+                name: code.into(),
+                account_type,
+                normal_balance,
+                is_leaf: true,
+                unit_policy: UnitPolicy::Single(unit),
+                parent_code: None,
+                limit: None,
             })
             .collect();
         let seal = |text: &str| {
             Erasable::seal(&text.to_string(), None, &book.seal_key, [66; 32], [67; 24])
         };
-        runtime.block_on(install_chart(
-            &mut db, &cx, &book, &chart, ACTOR, day, b"fixture-chart", seal("chart"),
-        )).unwrap().unwrap();
-        runtime.block_on(create_periods(&mut db, &cx, &book, 2026)).unwrap();
+        runtime
+            .block_on(install_chart(
+                &mut db,
+                &cx,
+                &book,
+                &chart,
+                ACTOR,
+                day,
+                b"fixture-chart",
+                seal("chart"),
+            ))
+            .unwrap()
+            .unwrap();
+        runtime
+            .block_on(create_periods(&mut db, &cx, &book, 2026))
+            .unwrap();
         let closer = Capability::embedded(ACTOR, &["close"]).unwrap();
         for (period, key) in [("FY2026-P03", b"march" as &[u8]), ("FY2026-P04", b"april")] {
-            runtime.block_on(transition_period(
-                &mut db, &cx, &book, period, PeriodTransition::Open, ACTOR, 1,
-                day, key, seal("open"), &closer, &[],
-            )).unwrap().unwrap();
+            runtime
+                .block_on(transition_period(
+                    &mut db,
+                    &cx,
+                    &book,
+                    period,
+                    PeriodTransition::Open,
+                    ACTOR,
+                    1,
+                    day,
+                    key,
+                    seal("open"),
+                    &closer,
+                    &[],
+                ))
+                .unwrap()
+                .unwrap();
         }
         let document = Document {
-            book_id, kind: 1, mime: "text/plain".into(), grade: 3,
-            retrieved_by: ACTOR, bytes: b"Synthetic invoice for settlement tests".to_vec(),
+            book_id,
+            kind: 1,
+            mime: "text/plain".into(),
+            grade: 3,
+            retrieved_by: ACTOR,
+            bytes: b"Synthetic invoice for settlement tests".to_vec(),
         };
-        let added = runtime.block_on(add_document(&mut db, &cx, &book, &document))
-            .unwrap().unwrap();
+        let added = runtime
+            .block_on(add_document(&mut db, &cx, &book, &document))
+            .unwrap()
+            .unwrap();
         Self {
-            runtime, root, db, book, unit,
+            runtime,
+            root,
+            db,
+            book,
+            unit,
             cash: account_vid(book_id, "1000"),
             receivable: account_vid(book_id, "1200"),
             revenue: account_vid(book_id, "4000"),
-            evidence: EvidenceRef { document_oid: added.oid, doc_commit: added.doc_commit, role: 1 },
+            evidence: EvidenceRef {
+                document_oid: added.oid,
+                doc_commit: added.doc_commit,
+                role: 1,
+            },
         }
     }
 
@@ -116,34 +162,64 @@ impl Fixture {
     fn proposal(&self, class: EntryClass, key: &[u8], legs: Vec<LegPayload>) -> EntryPayload {
         let unit_totals = EntryPayload::fold_unit_totals(&legs).unwrap();
         EntryPayload {
-            schema_minor: 0, book_id: self.book.book_id, branch_id: Id128::TRUNK, class,
-            effective_date: DateDay::from_ymd(2026, 3, 15).unwrap(), document_date: None,
-            description: Erasable::seal(&"Synthetic receipt".to_string(), None,
-                &self.book.seal_key, [68; 32], [69; 24]),
-            effective_period: None, legs, control: None, unit_totals, base_totals: None,
+            schema_minor: 0,
+            book_id: self.book.book_id,
+            branch_id: Id128::TRUNK,
+            class,
+            effective_date: DateDay::from_ymd(2026, 3, 15).unwrap(),
+            document_date: None,
+            description: Erasable::seal(
+                &"Synthetic receipt".to_string(),
+                None,
+                &self.book.seal_key,
+                [68; 32],
+                [69; 24],
+            ),
+            effective_period: None,
+            legs,
+            control: None,
+            unit_totals,
+            base_totals: None,
             idempotency_key: key.to_vec(),
-            origin: EntryOrigin::Intent { intent_oid: Oid([70; 32]), intent_kind: 1 },
-            principal_ref: ACTOR, session_ref: None, evidence: vec![self.evidence],
-            supersession: Vec::new(), pending: None, external_ids: Vec::new(),
-            tags: Vec::new(), extensions: Vec::new(),
+            origin: EntryOrigin::Intent {
+                intent_oid: Oid([70; 32]),
+                intent_kind: 1,
+            },
+            principal_ref: ACTOR,
+            session_ref: None,
+            evidence: vec![self.evidence],
+            supersession: Vec::new(),
+            pending: None,
+            external_ids: Vec::new(),
+            tags: Vec::new(),
+            extensions: Vec::new(),
         }
     }
 
     fn request(&self, proposal: EntryPayload) -> PostRequest {
-        PostRequest { proposal, approvals: Vec::new(), plan_certificate: None,
-            capability: Capability::embedded(ACTOR, &["post"]).unwrap() }
+        PostRequest {
+            proposal,
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: Capability::embedded(ACTOR, &["post"]).unwrap(),
+        }
     }
 
     fn post(&mut self, proposal: EntryPayload) -> Result<Posted, Refusal> {
         let cx = self.cx();
         let request = self.request(proposal);
-        self.runtime.block_on(post(&mut self.db, &cx, &self.book, request)).unwrap()
+        self.runtime
+            .block_on(post(&mut self.db, &cx, &self.book, request))
+            .unwrap()
     }
 
     fn prepare(&mut self, proposal: EntryPayload) -> Box<PreparedPost> {
         let cx = self.cx();
         let request = self.request(proposal);
-        match prepare_post(&mut self.db, &cx, &self.book, request).unwrap().unwrap() {
+        match prepare_post(&mut self.db, &cx, &self.book, request)
+            .unwrap()
+            .unwrap()
+        {
             PostPreparation::Ready(prepared) => prepared,
             other => panic!("expected new preparation, got {other:?}"),
         }
@@ -151,55 +227,95 @@ impl Fixture {
 
     fn commit(&mut self, prepared: Box<PreparedPost>) -> Result<Posted, Refusal> {
         let cx = self.cx();
-        self.runtime.block_on(prepared.commit(&mut self.db, &cx)).unwrap()
+        self.runtime
+            .block_on(prepared.commit(&mut self.db, &cx))
+            .unwrap()
     }
 
     fn invoice(&mut self, amount: i128, key: &[u8]) -> EntryRef {
-        let proposal = self.proposal(EntryClass::ORIGINAL, key, vec![
-            LegPayload::simple(Side::Debit, self.receivable, Amount::new(self.unit, amount)),
-            LegPayload::simple(Side::Credit, self.revenue, Amount::new(self.unit, amount)),
-        ]);
+        let proposal = self.proposal(
+            EntryClass::ORIGINAL,
+            key,
+            vec![
+                LegPayload::simple(Side::Debit, self.receivable, Amount::new(self.unit, amount)),
+                LegPayload::simple(Side::Credit, self.revenue, Amount::new(self.unit, amount)),
+            ],
+        );
         self.post(proposal).unwrap().entry_ref()
     }
 
     fn hold(&mut self, amount: i128, key: &[u8]) -> EntryRef {
         let mut proposal = self.receipt(amount, key);
         proposal.class = EntryClass::PENDING;
-        proposal.pending = Some(Pending { timeout_ns: None, resolution_of: None, disposition: None });
+        proposal.pending = Some(Pending {
+            timeout_ns: None,
+            resolution_of: None,
+            disposition: None,
+        });
         self.post(proposal).unwrap().entry_ref()
     }
 
     fn receipt(&self, amount: i128, key: &[u8]) -> EntryPayload {
-        self.proposal(EntryClass::ORIGINAL, key, vec![
-            LegPayload::simple(Side::Debit, self.cash, Amount::new(self.unit, amount)),
-            LegPayload::simple(Side::Credit, self.receivable, Amount::new(self.unit, amount)),
-        ])
+        self.proposal(
+            EntryClass::ORIGINAL,
+            key,
+            vec![
+                LegPayload::simple(Side::Debit, self.cash, Amount::new(self.unit, amount)),
+                LegPayload::simple(
+                    Side::Credit,
+                    self.receivable,
+                    Amount::new(self.unit, amount),
+                ),
+            ],
+        )
     }
 
-    fn resolution(&self, hold: EntryRef, invoice: EntryRef, amount: i128, key: &[u8]) -> EntryPayload {
+    fn resolution(
+        &self,
+        hold: EntryRef,
+        invoice: EntryRef,
+        amount: i128,
+        key: &[u8],
+    ) -> EntryPayload {
         let mut proposal = self.receipt(amount, key);
         proposal.class = EntryClass::RESOLUTION;
         proposal.pending = Some(Pending {
-            timeout_ns: None, resolution_of: Some(hold),
-            disposition: Some(Disposition::Posts { source_ordinals: vec![0, 1] }),
+            timeout_ns: None,
+            resolution_of: Some(hold),
+            disposition: Some(Disposition::Posts {
+                source_ordinals: vec![0, 1],
+            }),
         });
         proposal.legs[1].settles.push(Settlement {
-            target: invoice, ordinal: 0, amount: Amount::new(self.unit, amount),
+            target: invoice,
+            ordinal: 0,
+            amount: Amount::new(self.unit, amount),
         });
         proposal
     }
 
     fn reversal(&self, target: EntryRef, key: &[u8]) -> EntryPayload {
         let (entry, _) = read_entry(&self.db, target.vid).unwrap().unwrap();
-        let legs = entry.proposal.legs.iter().map(|leg| {
-            let mut swapped = leg.clone();
-            swapped.side = if leg.side == Side::Debit { Side::Credit } else { Side::Debit };
-            swapped.settles.clear();
-            swapped
-        }).collect();
+        let legs = entry
+            .proposal
+            .legs
+            .iter()
+            .map(|leg| {
+                let mut swapped = leg.clone();
+                swapped.side = if leg.side == Side::Debit {
+                    Side::Credit
+                } else {
+                    Side::Debit
+                };
+                swapped.settles.clear();
+                swapped
+            })
+            .collect();
         let mut proposal = self.proposal(EntryClass::REVERSAL, key, legs);
         proposal.supersession = vec![Supersession {
-            target, kind: SupersessionKind::Reverses, reason_code: 1,
+            target,
+            kind: SupersessionKind::Reverses,
+            reason_code: 1,
         }];
         proposal
     }
@@ -215,7 +331,12 @@ fn partial_resolution_settles_at_publication_and_retry_does_not_apply_twice() {
     let mut f = Fixture::new();
     let invoice = f.invoice(100, b"invoice");
     let hold = f.hold(100, b"hold");
-    let hold_before = read_entry(&f.db, hold.vid).unwrap().unwrap().0.encode().unwrap();
+    let hold_before = read_entry(&f.db, hold.vid)
+        .unwrap()
+        .unwrap()
+        .0
+        .encode()
+        .unwrap();
     let proposal = f.resolution(hold, invoice, 60, b"resolve");
     let head = f.db.frontier().unwrap();
     let prepared = f.prepare(proposal.clone());
@@ -225,9 +346,16 @@ fn partial_resolution_settles_at_publication_and_retry_does_not_apply_twice() {
     assert_eq!(posted.entry_ref().vid, resolution_vid(hold.vid));
     assert_eq!(posted.recorded_at().0, head.0 + 1);
     assert_eq!(f.applied(invoice), 60);
-    let edge = edge_id(relation::SETTLES, leg_vid(posted.entry_ref().vid, 1), leg_vid(invoice.vid, 0));
+    let edge = edge_id(
+        relation::SETTLES,
+        leg_vid(posted.entry_ref().vid, 1),
+        leg_vid(invoice.vid, 0),
+    );
     assert!(f.db.edge(edge).unwrap().is_some());
-    let resolved = read_entry(&f.db, posted.entry_ref().vid).unwrap().unwrap().0;
+    let resolved = read_entry(&f.db, posted.entry_ref().vid)
+        .unwrap()
+        .unwrap()
+        .0;
     assert_eq!(resolved.proposal.legs[1].settles, proposal.legs[1].settles);
     assert_eq!(resolved.proposal.legs[0].amount.mantissa, 60);
     let head = f.db.frontier().unwrap();
@@ -236,7 +364,15 @@ fn partial_resolution_settles_at_publication_and_retry_does_not_apply_twice() {
     assert_eq!(retry.entry_ref(), posted.entry_ref());
     assert_eq!(f.applied(invoice), 60);
     assert_eq!(f.db.frontier().unwrap(), head);
-    assert_eq!(read_entry(&f.db, hold.vid).unwrap().unwrap().0.encode().unwrap(), hold_before);
+    assert_eq!(
+        read_entry(&f.db, hold.vid)
+            .unwrap()
+            .unwrap()
+            .0
+            .encode()
+            .unwrap(),
+        hold_before
+    );
 }
 
 #[test]
@@ -287,8 +423,13 @@ fn competing_resolutions_cannot_overapply_a_shared_invoice() {
     assert_eq!(f.post(second_proposal).unwrap_err().code, "FA-REF-072");
     assert_eq!(f.applied(invoice), 70);
     assert_eq!(f.db.frontier().unwrap(), head);
-    assert!(f.db.vertex(resolution_vid(second_hold.vid)).unwrap().is_none());
-    f.post(f.resolution(second_hold, invoice, 30, b"replanned")).unwrap();
+    assert!(
+        f.db.vertex(resolution_vid(second_hold.vid))
+            .unwrap()
+            .is_none()
+    );
+    f.post(f.resolution(second_hold, invoice, 30, b"replanned"))
+        .unwrap();
     assert_eq!(f.applied(invoice), 100);
 }
 
@@ -299,15 +440,28 @@ fn reversing_a_posted_resolution_undoes_its_applications_without_reviving_the_ho
     let hold = f.hold(100, b"hold");
     let proposal = f.resolution(hold, invoice, 60, b"resolve");
     let resolution = f.post(proposal.clone()).unwrap();
-    let reversal = f.post(f.reversal(resolution.entry_ref(), b"reverse")).unwrap();
+    let reversal = f
+        .post(f.reversal(resolution.entry_ref(), b"reverse"))
+        .unwrap();
     assert_eq!(f.applied(invoice), 0);
-    let edge = edge_id(relation::UNSETTLES,
-        leg_vid(reversal.entry_ref().vid, 1), leg_vid(invoice.vid, 0));
+    let edge = edge_id(
+        relation::UNSETTLES,
+        leg_vid(reversal.entry_ref().vid, 1),
+        leg_vid(invoice.vid, 0),
+    );
     assert!(f.db.edge(edge).unwrap().is_some());
     let head = f.db.frontier().unwrap();
-    assert!(matches!(f.post(proposal).unwrap(), Posted::AlreadyRecorded { .. }));
-    assert_eq!(f.post(f.resolution(hold, invoice, 40, b"second-resolution")).unwrap_err().code,
-        "FA-REF-062", "the reservation is resolved exactly once, even after correction");
+    assert!(matches!(
+        f.post(proposal).unwrap(),
+        Posted::AlreadyRecorded { .. }
+    ));
+    assert_eq!(
+        f.post(f.resolution(hold, invoice, 40, b"second-resolution"))
+            .unwrap_err()
+            .code,
+        "FA-REF-062",
+        "the reservation is resolved exactly once, even after correction"
+    );
     assert_eq!(f.applied(invoice), 0);
     assert_eq!(f.db.frontier().unwrap(), head);
 }
@@ -318,9 +472,15 @@ fn pending_legs_still_cannot_apply_and_cross_period_resolutions_apply_only_when_
     let invoice = f.invoice(100, b"invoice");
     let mut pending = f.receipt(80, b"invalid-hold");
     pending.class = EntryClass::PENDING;
-    pending.pending = Some(Pending { timeout_ns: None, resolution_of: None, disposition: None });
+    pending.pending = Some(Pending {
+        timeout_ns: None,
+        resolution_of: None,
+        disposition: None,
+    });
     pending.legs[1].settles = vec![Settlement {
-        target: invoice, ordinal: 0, amount: Amount::new(f.unit, 80),
+        target: invoice,
+        ordinal: 0,
+        amount: Amount::new(f.unit, 80),
     }];
     let head = f.db.frontier().unwrap();
     assert_eq!(f.post(pending).unwrap_err().code, "FA-REF-102");
@@ -332,7 +492,13 @@ fn pending_legs_still_cannot_apply_and_cross_period_resolutions_apply_only_when_
     assert_eq!(posted.period(), Some("FY2026-P04"));
     assert_eq!(f.applied(invoice), 80);
     let restored = read_entry(&f.db, hold.vid).unwrap().unwrap().0;
-    assert!(restored.proposal.legs.iter().all(|leg| leg.settles.is_empty()));
+    assert!(
+        restored
+            .proposal
+            .legs
+            .iter()
+            .all(|leg| leg.settles.is_empty())
+    );
 }
 
 #[test]

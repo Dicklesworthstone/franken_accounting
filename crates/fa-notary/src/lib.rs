@@ -40,9 +40,9 @@ pub mod checkpoint;
 pub mod disclosure;
 pub mod journal;
 pub mod migration_balance;
+pub mod prefix;
 pub mod scope;
 pub mod sign;
-pub mod prefix;
 pub mod state;
 pub mod tree;
 

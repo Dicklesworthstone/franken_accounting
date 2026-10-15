@@ -257,7 +257,12 @@ fn prepare(
         &req.idempotency_key,
     );
     let hash = receipt_hash(
-        book.book_id, run, &req.source, document_count, byte_count, &root,
+        book.book_id,
+        run,
+        &req.source,
+        document_count,
+        byte_count,
+        &root,
     )
     .map_err(|e| structure(e.to_string(), "report this"))?;
     let proposal = EntryPayload {

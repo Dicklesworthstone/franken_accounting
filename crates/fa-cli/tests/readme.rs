@@ -477,5 +477,8 @@ fn target_state_commands_below_tldr_are_registered_or_name_a_target_bead() {
         }
         last_comment.clear();
     }
-    assert!(checked >= 10, "expected >= 10 `fa` lines below ## TL;DR, found {checked}");
+    assert!(
+        checked >= 10,
+        "expected >= 10 `fa` lines below ## TL;DR, found {checked}"
+    );
 }

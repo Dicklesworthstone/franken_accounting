@@ -16,7 +16,9 @@ use fa_registry::evidence_policy::EvidencePolicy;
 use fa_time::DateDay;
 use fgdb_types::context::PurposeContexts;
 
-use super::source::{SourceUploadRequest, check_request, document_limit, input_refusal, read_bounded};
+use super::source::{
+    SourceUploadRequest, check_request, document_limit, input_refusal, read_bounded,
+};
 use crate::{AsyncBook, BookError, IntakeAction, Outcome};
 
 /// A path in the caller-supplied source VFS, not a destination blob locator.
@@ -60,7 +62,9 @@ fn check_batch(capability: &Capability, request: &SourceImportRequest) -> Outcom
         if document.path.as_os_str().is_empty()
             || !paths.insert((&document.path, document.upload.kind))
         {
-            return Ok(Err(input_refusal("source import contains an empty path or repeats a path with the same document kind")));
+            return Ok(Err(input_refusal(
+                "source import contains an empty path or repeats a path with the same document kind",
+            )));
         }
         if let Err(refused) = check_request(capability, &document.upload)? {
             return Ok(Err(refused));
@@ -95,12 +99,16 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         if let Err(refused) = check_batch(capability, &request)? {
             return Ok(Err(refused));
         }
-        let policy = EvidencePolicy::embedded()
-            .map_err(|error| KernelError::Corrupt(error.to_string()))?;
+        let policy =
+            EvidencePolicy::embedded().map_err(|error| KernelError::Corrupt(error.to_string()))?;
         let grade = fa_journal::upload::upload_grade(&policy, capability.profile())?;
         let book_id = self.context().book_id;
         let SourceImportRequest {
-            idempotency_key, effective_date, description, documents: sources, max_total_bytes,
+            idempotency_key,
+            effective_date,
+            description,
+            documents: sources,
+            max_total_bytes,
         } = request;
         let query = cx.query();
         let documents = match query.with_restriction_async(async {
@@ -146,9 +154,17 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(refused) => return Ok(Err(refused)),
         };
         self.import_run(
-            cx, capability, IntakeSource::Upload { principal: capability.holder() },
-            &idempotency_key, effective_date, &description, documents,
-        ).await
+            cx,
+            capability,
+            IntakeSource::Upload {
+                principal: capability.holder(),
+            },
+            &idempotency_key,
+            effective_date,
+            &description,
+            documents,
+        )
+        .await
     }
 }
 

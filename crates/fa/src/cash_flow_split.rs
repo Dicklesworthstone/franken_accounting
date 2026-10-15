@@ -12,12 +12,12 @@
 //! reconcile in every native unit. Cash-equivalent scope and classification
 //! remain professional inputs, NOT economic truth inferred by this module.
 
-mod codec;
 mod certificate;
+mod codec;
 
 pub use certificate::{
-    CASH_FLOW_SPLIT_CERTIFICATE_FORMAT, MAX_CASH_FLOW_SPLIT_CERTIFICATE_BYTES,
-    CashFlowSplitCertificate, CertifiedSplitCashFlow,
+    CASH_FLOW_SPLIT_CERTIFICATE_FORMAT, CashFlowSplitCertificate, CertifiedSplitCashFlow,
+    MAX_CASH_FLOW_SPLIT_CERTIFICATE_BYTES,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -30,8 +30,7 @@ use fa_policy::Capability;
 use fgdb_types::{QueryCx, VId, context::PurposeContexts};
 
 use crate::general_ledger::{
-    CashFlowActivity, CashFlowSection, CashFlowUnit, GeneralLedger,
-    MAX_GENERAL_LEDGER_LINES,
+    CashFlowActivity, CashFlowSection, CashFlowUnit, GeneralLedger, MAX_GENERAL_LEDGER_LINES,
 };
 use crate::{AsyncBook, BookError, Outcome, RollForwardRequest};
 
@@ -78,11 +77,17 @@ pub struct SplitCashFlow {
 
 impl SplitCashFlow {
     #[must_use]
-    pub fn source(&self) -> &GeneralLedger { &self.source }
+    pub fn source(&self) -> &GeneralLedger {
+        &self.source
+    }
     #[must_use]
-    pub fn definition(&self) -> &CashFlowSplitDefinition { &self.definition }
+    pub fn definition(&self) -> &CashFlowSplitDefinition {
+        &self.definition
+    }
     #[must_use]
-    pub fn units(&self) -> &[CashFlowUnit] { &self.units }
+    pub fn units(&self) -> &[CashFlowUnit] {
+        &self.units
+    }
 
     /// Deterministic bounded output, not a self-authenticating certificate.
     /// The source keeps every original leg once; portions never impersonate legs.
@@ -97,7 +102,12 @@ impl SplitCashFlow {
         for unit in &self.units {
             w.fixed(&unit.unit_id.to_le_bytes())?;
             w.fixed(&unit.opening.to_le_bytes())?;
-            for section in [unit.operating, unit.investing, unit.financing, unit.exchange_effects] {
+            for section in [
+                unit.operating,
+                unit.investing,
+                unit.financing,
+                unit.exchange_effects,
+            ] {
                 for amount in [section.inflows, section.outflows, section.net] {
                     w.fixed(&amount.to_le_bytes())?;
                 }
@@ -111,16 +121,29 @@ impl SplitCashFlow {
 
 fn invalid(message: impl Into<String>) -> Refusal {
     Refusal::new(
-        fa_journal::refusal::code::STRUCTURE, exit::USAGE, message,
+        fa_journal::refusal::code::STRUCTURE,
+        exit::USAGE,
+        message,
         "plan §12.1 (cash portions partition original legs and reconcile to native stock)",
         "select the exact cash scope; split every original leg once into positive same-unit portions totaling that leg; transfers must cancel within one entry/unit; never insert a balancing plug",
     )
 }
 
 #[derive(Debug)]
-enum Error { Refusal(Refusal), Book(BookError) }
-impl From<Refusal> for Error { fn from(e: Refusal) -> Self { Self::Refusal(e) } }
-impl From<BookError> for Error { fn from(e: BookError) -> Self { Self::Book(e) } }
+enum Error {
+    Refusal(Refusal),
+    Book(BookError),
+}
+impl From<Refusal> for Error {
+    fn from(e: Refusal) -> Self {
+        Self::Refusal(e)
+    }
+}
+impl From<BookError> for Error {
+    fn from(e: BookError) -> Self {
+        Self::Book(e)
+    }
+}
 fn outcome<T>(result: Result<T, Error>) -> Outcome<T> {
     match result {
         Ok(value) => Ok(Ok(value)),
@@ -132,58 +155,119 @@ fn outcome<T>(result: Result<T, Error>) -> Outcome<T> {
 /// Bounded magnitudes are accumulated separately. Even 250,000 five-part
 /// splits fit well below 256 bits; narrowing occurs only for public amounts.
 #[derive(Clone, Copy)]
-struct Wide { positive: U256, negative: U256 }
+struct Wide {
+    positive: U256,
+    negative: U256,
+}
 impl Wide {
-    const ZERO: Self = Self { positive: U256::ZERO, negative: U256::ZERO };
+    const ZERO: Self = Self {
+        positive: U256::ZERO,
+        negative: U256::ZERO,
+    };
     fn add(&mut self, value: i128, subtract: bool) -> Result<(), Refusal> {
-        let part = if (value < 0) != subtract { &mut self.negative } else { &mut self.positive };
-        *part = part.checked_add(U256::from_u128(value.unsigned_abs()))
+        let part = if (value < 0) != subtract {
+            &mut self.negative
+        } else {
+            &mut self.positive
+        };
+        *part = part
+            .checked_add(U256::from_u128(value.unsigned_abs()))
             .ok_or_else(|| invalid("cash split exceeds its wide arithmetic bound"))?;
         Ok(())
     }
     fn combine(&mut self, other: Self, subtract: bool) -> Result<(), Refusal> {
-        let (p, n) = if subtract { (other.negative, other.positive) } else { (other.positive, other.negative) };
-        self.positive = self.positive.checked_add(p).ok_or_else(|| invalid("cash split wide overflow"))?;
-        self.negative = self.negative.checked_add(n).ok_or_else(|| invalid("cash split wide overflow"))?;
+        let (p, n) = if subtract {
+            (other.negative, other.positive)
+        } else {
+            (other.positive, other.negative)
+        };
+        self.positive = self
+            .positive
+            .checked_add(p)
+            .ok_or_else(|| invalid("cash split wide overflow"))?;
+        self.negative = self
+            .negative
+            .checked_add(n)
+            .ok_or_else(|| invalid("cash split wide overflow"))?;
         Ok(())
     }
     fn net_into(self, section: &mut Self) -> Result<(), Refusal> {
         if self.positive >= self.negative {
-            let net_inflow = self.positive.checked_sub(self.negative).ok_or_else(|| invalid("cash split wide underflow"))?;
-            section.positive = section.positive.checked_add(net_inflow).ok_or_else(|| invalid("cash split wide overflow"))?;
+            let net_inflow = self
+                .positive
+                .checked_sub(self.negative)
+                .ok_or_else(|| invalid("cash split wide underflow"))?;
+            section.positive = section
+                .positive
+                .checked_add(net_inflow)
+                .ok_or_else(|| invalid("cash split wide overflow"))?;
         } else {
-            let net_outflow = self.negative.checked_sub(self.positive).ok_or_else(|| invalid("cash split wide underflow"))?;
-            section.negative = section.negative.checked_add(net_outflow).ok_or_else(|| invalid("cash split wide overflow"))?;
+            let net_outflow = self
+                .negative
+                .checked_sub(self.positive)
+                .ok_or_else(|| invalid("cash split wide underflow"))?;
+            section.negative = section
+                .negative
+                .checked_add(net_outflow)
+                .ok_or_else(|| invalid("cash split wide overflow"))?;
         }
         Ok(())
     }
-    fn is_zero(self) -> bool { self.positive == self.negative }
+    fn is_zero(self) -> bool {
+        self.positive == self.negative
+    }
     fn value(self) -> Result<i128, Refusal> {
         let n = if self.positive >= self.negative {
-            self.positive.checked_sub(self.negative).and_then(U256::to_u128)
+            self.positive
+                .checked_sub(self.negative)
+                .and_then(U256::to_u128)
                 .and_then(|n| i128::try_from(n).ok())
         } else {
-            self.negative.checked_sub(self.positive).and_then(U256::to_u128).and_then(|n| {
-                if n == i128::MIN.unsigned_abs() { Some(i128::MIN) }
-                else { i128::try_from(n).ok().and_then(i128::checked_neg) }
-            })
+            self.negative
+                .checked_sub(self.positive)
+                .and_then(U256::to_u128)
+                .and_then(|n| {
+                    if n == i128::MIN.unsigned_abs() {
+                        Some(i128::MIN)
+                    } else {
+                        i128::try_from(n).ok().and_then(i128::checked_neg)
+                    }
+                })
         };
         n.ok_or_else(|| invalid("cash split amount exceeds the exact i128 output range"))
     }
     fn section(self) -> Result<CashFlowSection, Refusal> {
-        let magnitude = |n: U256| n.to_u128().and_then(|n| i128::try_from(n).ok())
-            .ok_or_else(|| invalid("cash split gross turnover exceeds i128"));
-        Ok(CashFlowSection { inflows: magnitude(self.positive)?, outflows: magnitude(self.negative)?, net: self.value()? })
+        let magnitude = |n: U256| {
+            n.to_u128()
+                .and_then(|n| i128::try_from(n).ok())
+                .ok_or_else(|| invalid("cash split gross turnover exceeds i128"))
+        };
+        Ok(CashFlowSection {
+            inflows: magnitude(self.positive)?,
+            outflows: magnitude(self.negative)?,
+            net: self.value()?,
+        })
     }
 }
 
-struct Totals { opening: Wide, closing: Wide, sections: [Wide; 4] }
+struct Totals {
+    opening: Wide,
+    closing: Wide,
+    sections: [Wide; 4],
+}
 impl Totals {
-    fn new() -> Self { Self { opening: Wide::ZERO, closing: Wide::ZERO, sections: [Wide::ZERO; 4] } }
+    fn new() -> Self {
+        Self {
+            opening: Wide::ZERO,
+            closing: Wide::ZERO,
+            sections: [Wide::ZERO; 4],
+        }
+    }
 }
 
 fn build(
-    source: GeneralLedger, definition: &CashFlowSplitDefinition,
+    source: GeneralLedger,
+    definition: &CashFlowSplitDefinition,
     mut checkpoint: impl FnMut() -> Result<(), BookError>,
 ) -> Result<SplitCashFlow, Error> {
     checkpoint()?;
@@ -191,43 +275,76 @@ fn build(
     checkpoint()?;
     if definition.splits.len() != source.lines().len()
         || definition.cash_accounts.len() != source.accounts().len()
-    { return Err(invalid("cash split definition must cover exactly the selected accounts and every cash leg").into()); }
+    {
+        return Err(invalid(
+            "cash split definition must cover exactly the selected accounts and every cash leg",
+        )
+        .into());
+    }
     let cash: BTreeSet<_> = definition.cash_accounts.iter().copied().collect();
     for account in source.accounts() {
         checkpoint()?;
-        if !cash.contains(&account.id) || !account.is_leaf
+        if !cash.contains(&account.id)
+            || !account.is_leaf
             || ![AccountType::ASSET.0, AccountType::LIABILITY.0].contains(&account.account_type)
-        { return Err(invalid("cash splits require exactly the selected asset or overdraft leaves").into()); }
+        {
+            return Err(invalid(
+                "cash splits require exactly the selected asset or overdraft leaves",
+            )
+            .into());
+        }
     }
-    let mut splits: BTreeMap<_, _> = definition.splits.iter()
-        .map(|s| ((s.entry_digest, s.leg_index), s)).collect();
+    let mut splits: BTreeMap<_, _> = definition
+        .splits
+        .iter()
+        .map(|s| ((s.entry_digest, s.leg_index), s))
+        .collect();
     let mut totals: BTreeMap<_, _> = source.units().iter().map(|u| (*u, Totals::new())).collect();
     for (i, cell) in source.cells().iter().enumerate() {
-        if i % 256 == 0 { checkpoint()?; }
-        let total = totals.get_mut(&cell.unit_id).ok_or_else(|| invalid("cash stock has an undeclared unit"))?;
+        if i % 256 == 0 {
+            checkpoint()?;
+        }
+        let total = totals
+            .get_mut(&cell.unit_id)
+            .ok_or_else(|| invalid("cash stock has an undeclared unit"))?;
         total.opening.add(cell.opening, false)?;
         total.closing.add(cell.closing, false)?;
     }
     let mut transfers: BTreeMap<([u8; 32], u32), (Wide, BTreeSet<u128>)> = BTreeMap::new();
     let mut entry_sections: BTreeMap<([u8; 32], u32, usize), Wide> = BTreeMap::new();
     for (i, line) in source.lines().iter().enumerate() {
-        if i % 256 == 0 { checkpoint()?; }
-        let cell = source.cells().get(line.cell_index as usize).ok_or_else(|| invalid("cash leg has no source cell"))?;
+        if i % 256 == 0 {
+            checkpoint()?;
+        }
+        let cell = source
+            .cells()
+            .get(line.cell_index as usize)
+            .ok_or_else(|| invalid("cash leg has no source cell"))?;
         if line.debits < 0 || line.credits < 0 || (line.debits > 0) == (line.credits > 0) {
             return Err(invalid("cash split source must be one positive debit or credit").into());
         }
-        let split = splits.remove(&(line.entry_digest, line.leg_index))
-            .ok_or_else(|| invalid("cash split is missing an original leg or repeats a citation"))?;
+        let split = splits
+            .remove(&(line.entry_digest, line.leg_index))
+            .ok_or_else(|| {
+                invalid("cash split is missing an original leg or repeats a citation")
+            })?;
         let mut partition = Wide::ZERO;
-        for part in &split.portions { partition.add(part.amount, false)?; }
+        for part in &split.portions {
+            partition.add(part.amount, false)?;
+        }
         partition.add(line.debits.max(line.credits), true)?;
         if !partition.is_zero() {
-            return Err(invalid(format!("cash split for leg {} does not total its original native amount", line.leg_index)).into());
+            return Err(invalid(format!(
+                "cash split for leg {} does not total its original native amount",
+                line.leg_index
+            ))
+            .into());
         }
         for part in &split.portions {
             let credit = line.credits > 0;
             if part.activity == CashFlowActivity::InternalTransfer {
-                let (amount, accounts) = transfers.entry((line.entry_digest, cell.unit_id))
+                let (amount, accounts) = transfers
+                    .entry((line.entry_digest, cell.unit_id))
                     .or_insert_with(|| (Wide::ZERO, BTreeSet::new()));
                 amount.add(part.amount, credit)?;
                 accounts.insert(cell.account_id);
@@ -243,11 +360,17 @@ fn build(
         }
     }
     for (i, ((_, unit_id, section_idx), entry_net)) in entry_sections.into_iter().enumerate() {
-        if i % 256 == 0 { checkpoint()?; }
-        let total = totals.get_mut(&unit_id).ok_or_else(|| invalid("cash leg has an undeclared unit"))?;
+        if i % 256 == 0 {
+            checkpoint()?;
+        }
+        let total = totals
+            .get_mut(&unit_id)
+            .ok_or_else(|| invalid("cash leg has an undeclared unit"))?;
         entry_net.net_into(&mut total.sections[section_idx])?;
     }
-    if !splits.is_empty() { return Err(invalid("cash splits cite legs outside the native selection").into()); }
+    if !splits.is_empty() {
+        return Err(invalid("cash splits cite legs outside the native selection").into());
+    }
     for (amount, accounts) in transfers.values() {
         checkpoint()?;
         if !amount.is_zero() || accounts.len() < 2 {
@@ -259,7 +382,9 @@ fn build(
     for (unit_id, total) in totals {
         checkpoint()?;
         let mut change = Wide::ZERO;
-        for section in total.sections { change.combine(section, false)?; }
+        for section in total.sections {
+            change.combine(section, false)?;
+        }
         let mut residual = total.opening;
         residual.combine(change, false)?;
         residual.combine(total.closing, true)?;
@@ -267,22 +392,36 @@ fn build(
             return Err(invalid("split cash movements do not reconcile to independently folded opening and closing stocks").into());
         }
         units.push(CashFlowUnit {
-            unit_id, opening: total.opening.value()?,
-            operating: total.sections[0].section()?, investing: total.sections[1].section()?,
-            financing: total.sections[2].section()?, exchange_effects: total.sections[3].section()?,
-            net_change: change.value()?, closing: total.closing.value()?,
+            unit_id,
+            opening: total.opening.value()?,
+            operating: total.sections[0].section()?,
+            investing: total.sections[1].section()?,
+            financing: total.sections[2].section()?,
+            exchange_effects: total.sections[3].section()?,
+            net_change: change.value()?,
+            closing: total.closing.value()?,
         });
     }
     checkpoint()?;
-    Ok(SplitCashFlow { source, definition, units })
+    Ok(SplitCashFlow {
+        source,
+        definition,
+        units,
+    })
 }
 
 impl GeneralLedger {
     /// Consume an already admitted immutable snapshot, without another read or
     /// invented journal leg. The query context meters/cancels the computation;
     /// it grants no authority over additional book data.
-    pub fn split_cash_flow(self, query: &QueryCx, definition: &CashFlowSplitDefinition) -> Outcome<SplitCashFlow> {
-        let result = build(self, definition, || query.checkpoint().map_err(BookError::Context));
+    pub fn split_cash_flow(
+        self,
+        query: &QueryCx,
+        definition: &CashFlowSplitDefinition,
+    ) -> Outcome<SplitCashFlow> {
+        let result = build(self, definition, || {
+            query.checkpoint().map_err(BookError::Context)
+        });
         query.checkpoint().map_err(BookError::Context)?;
         outcome(result)
     }
@@ -292,11 +431,16 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// Current whole-book Read admission, historical chart and migration rules
     /// come from the native ledger reader. HEAD resolves once there. Read-only.
     pub fn split_cash_flow(
-        &self, cx: &PurposeContexts, principal: VId, capability: &Capability,
-        request: &RollForwardRequest, definition: &CashFlowSplitDefinition,
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        request: &RollForwardRequest,
+        definition: &CashFlowSplitDefinition,
     ) -> Outcome<SplitCashFlow> {
         let ledger = match self.general_ledger(cx, principal, capability, request)? {
-            Ok(value) => value, Err(refusal) => return Ok(Err(refusal)),
+            Ok(value) => value,
+            Err(refusal) => return Ok(Err(refusal)),
         };
         ledger.split_cash_flow(&cx.query(), definition)
     }

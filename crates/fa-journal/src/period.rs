@@ -1050,7 +1050,8 @@ pub fn verify_periods<V: asupersync::fs::Vfs + Clone>(
         let stored_ordinal = crate::rows::int(row, property::ORDINAL, "period.ordinal")
             .ok()
             .and_then(|v| u16::try_from(v).ok());
-        let stored_kind = crate::rows::kind_from_scalar(crate::rows::prop(row, property::PERIOD_KIND));
+        let stored_kind =
+            crate::rows::kind_from_scalar(crate::rows::prop(row, property::PERIOD_KIND));
         let stored_start = crate::rows::int(row, property::PERIOD_START, "period.period_start")
             .ok()
             .and_then(|v| i32::try_from(v).ok())
@@ -1064,24 +1065,30 @@ pub fn verify_periods<V: asupersync::fs::Vfs + Clone>(
             _ => None,
         };
 
-        let (expected_fy, expected_ordinal, expected_kind, born_state, expected_start, expected_end) =
-            if let Some(def) = expected_defs.get(code) {
-                let (kind, born) = spec.birth(def, pre_opening);
-                (def.fiscal_year, def.ordinal, kind, born, def.start, def.end)
-            } else {
-                note_drift(format!(
-                    "period `{code}` does not belong to any created fiscal year of calendar `{}`",
-                    book.calendar.id
-                ));
-                (
-                    stored_fy.unwrap_or(0),
-                    stored_ordinal.unwrap_or(0),
-                    stored_kind.unwrap_or(PeriodKind::Normal),
-                    PeriodState::Future,
-                    stored_start.unwrap_or(DateDay(0)),
-                    stored_end.unwrap_or(DateDay(0)),
-                )
-            };
+        let (
+            expected_fy,
+            expected_ordinal,
+            expected_kind,
+            born_state,
+            expected_start,
+            expected_end,
+        ) = if let Some(def) = expected_defs.get(code) {
+            let (kind, born) = spec.birth(def, pre_opening);
+            (def.fiscal_year, def.ordinal, kind, born, def.start, def.end)
+        } else {
+            note_drift(format!(
+                "period `{code}` does not belong to any created fiscal year of calendar `{}`",
+                book.calendar.id
+            ));
+            (
+                stored_fy.unwrap_or(0),
+                stored_ordinal.unwrap_or(0),
+                stored_kind.unwrap_or(PeriodKind::Normal),
+                PeriodState::Future,
+                stored_start.unwrap_or(DateDay(0)),
+                stored_end.unwrap_or(DateDay(0)),
+            )
+        };
 
         if stored_fy != Some(expected_fy) {
             note_drift(format!(
@@ -1109,10 +1116,7 @@ pub fn verify_periods<V: asupersync::fs::Vfs + Clone>(
             ));
         }
 
-        let mut transitions = transitions_by_period
-            .get(code)
-            .cloned()
-            .unwrap_or_default();
+        let mut transitions = transitions_by_period.get(code).cloned().unwrap_or_default();
         transitions.sort_by_key(|(seq, evid, _, _)| (*seq, *evid));
 
         let immobile = matrix.kind_rule(expected_kind).is_some()
@@ -1185,7 +1189,11 @@ pub fn verify_periods<V: asupersync::fs::Vfs + Clone>(
     }
 
     checks.sort_by(|a, b| {
-        (a.fiscal_year, a.ordinal, a.code.as_str()).cmp(&(b.fiscal_year, b.ordinal, b.code.as_str()))
+        (a.fiscal_year, a.ordinal, a.code.as_str()).cmp(&(
+            b.fiscal_year,
+            b.ordinal,
+            b.code.as_str(),
+        ))
     });
 
     Ok(PeriodVerification {

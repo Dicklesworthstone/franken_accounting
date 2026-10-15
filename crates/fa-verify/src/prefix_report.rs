@@ -14,20 +14,31 @@ pub(super) fn verify(
     let complete = verified.record_check == RecordCheck::Recomputed;
     let prefix = verified.prefix;
     report.scope = prefix.scope;
-    report.checks.extend([
-        "complete_prefix",
-        "journal_order",
-        "recorded_coordinates",
-    ]);
+    report
+        .checks
+        .extend(["complete_prefix", "journal_order", "recorded_coordinates"]);
     if complete {
-        report.checks.extend(["record_recomputation", "scope_derivation"]);
+        report
+            .checks
+            .extend(["record_recomputation", "scope_derivation"]);
     }
     report.data = object([
         ("envelopes", prefix.envelopes.len().to_string()),
-        ("record_check", quote(if complete { "recomputed" } else { "not_supplied" })),
+        (
+            "record_check",
+            quote(if complete {
+                "recomputed"
+            } else {
+                "not_supplied"
+            }),
+        ),
         (
             "scope_derivation",
-            quote(if complete { "all_prefix_payloads_checked" } else { "not_verified" }),
+            quote(if complete {
+                "all_prefix_payloads_checked"
+            } else {
+                "not_verified"
+            }),
         ),
     ]);
     report.detail = if complete {

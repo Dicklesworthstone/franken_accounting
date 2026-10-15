@@ -31,10 +31,15 @@ pub async fn prepare_import_in_store<V: Vfs + Clone, B: Vfs + Clone>(
     store: &BlobStore<B>,
     req: ImportRequest,
 ) -> Outcome<ImportPreparation> {
-    let policy = EvidencePolicy::embedded().map_err(|error| KernelError::Corrupt(error.to_string()))?;
+    let policy =
+        EvidencePolicy::embedded().map_err(|error| KernelError::Corrupt(error.to_string()))?;
     let inline_bound = inline_document_bound(&policy);
     let admitted = match admit(
-        db, cx, book, capability, req,
+        db,
+        cx,
+        book,
+        capability,
+        req,
         Some(store.max_document_bytes().max(inline_bound)),
     )? {
         Err(refused) => return Ok(Err(refused)),
@@ -50,8 +55,13 @@ pub async fn prepare_import_in_store<V: Vfs + Clone, B: Vfs + Clone>(
             stage_document(batch, &admitted.book, &doc.document, &doc.kind)
         } else {
             stage_external_document(
-                batch, &doc.document, &doc.kind, store.id(),
-                &locator_of(&doc.doc_commit), doc.oid, &doc.doc_commit,
+                batch,
+                &doc.document,
+                &doc.kind,
+                store.id(),
+                &locator_of(&doc.doc_commit),
+                doc.oid,
+                &doc.doc_commit,
             )
         }
     }) {

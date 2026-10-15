@@ -19,6 +19,7 @@ fn with(op: &str, approvals: u8) -> Decision {
 /// Hand-transcribed plan §7.3 / Appendix C `PeriodControl` state machine (`fa-vfu`).
 ///
 /// Does NOT call `fa_time::period::transition`.
+#[allow(clippy::result_unit_err)]
 pub fn oracle_transition(from: PeriodState, t: PeriodTransition) -> Result<PeriodState, ()> {
     use PeriodState::{Closed, Future, Locked, Open, SoftClosed};
     match (from, t) {

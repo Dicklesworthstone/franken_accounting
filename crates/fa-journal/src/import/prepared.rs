@@ -19,11 +19,14 @@ use crate::policy::{authorize_approvals, capability_witness, epoch_witness, refu
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::edge_id;
 
-use super::{ImportDocument, ImportRecorded, ImportRequest, prepare, receipt_of, recorded_or_conflict};
+use super::{
+    ImportDocument, ImportRecorded, ImportRequest, prepare, receipt_of, recorded_or_conflict,
+};
 
 /// An exact retry needs no publication; a new run retains all original witnesses.
 #[derive(Debug)]
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum ImportPreparation {
     AlreadyRecorded(ImportRecorded),
     Ready(Box<PreparedImport>),
@@ -85,7 +88,15 @@ impl PreparedImport {
         db: &mut Database<V>,
         cx: &PurposeContexts,
     ) -> Outcome<ImportRecorded> {
-        let Self { mut txn, book, capability, entry, run, recorded, already_held } = self;
+        let Self {
+            mut txn,
+            book,
+            capability,
+            entry,
+            run,
+            recorded,
+            already_held,
+        } = self;
         let commit = cx.commit();
         if let Err(error) = commit.checkpoint() {
             txn.abort();
@@ -97,8 +108,9 @@ impl PreparedImport {
         }
         match txn.commit(db, &commit).await {
             Ok(seq) => {
-                let receipt = receipt_of(&entry, run, seq)
-                    .ok_or_else(|| KernelError::Corrupt("an import run without its receipt".into()))?;
+                let receipt = receipt_of(&entry, run, seq).ok_or_else(|| {
+                    KernelError::Corrupt("an import run without its receipt".into())
+                })?;
                 Ok(Ok(ImportRecorded {
                     receipt,
                     recorded,
@@ -107,21 +119,26 @@ impl PreparedImport {
                 }))
             }
             Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
-                Ok(Err(conflict(format!("a concurrent commit invalidated an import witness: {detail}"))))
+                Ok(Err(conflict(format!(
+                    "a concurrent commit invalidated an import witness: {detail}"
+                ))))
             }
             Err(WriteTxnError::Write(
                 fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
             )) => match db.vertex(run)? {
-                Some(row) => recorded_or_conflict(
-                    &book, &row, &entry.proposal, &entry.proposal_digest,
-                ),
-                None => Ok(Err(conflict("a document in this import was recorded concurrently"))),
+                Some(row) => {
+                    recorded_or_conflict(&book, &row, &entry.proposal, &entry.proposal_digest)
+                }
+                None => Ok(Err(conflict(
+                    "a document in this import was recorded concurrently",
+                ))),
             },
             Err(error) => Err(error.into()),
         }
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 pub(super) enum Admission {
     AlreadyRecorded(ImportRecorded),
     New(Box<AdmittedImport>),
@@ -146,7 +163,9 @@ impl AdmittedImport {
         mut stage: impl FnMut(&mut WriteBatch, &ImportDocument) -> Result<(), KernelError>,
     ) -> Result<Vec<WriteBatch>, KernelError> {
         let Some(ControlPayload::ImportRun { source, .. }) = &self.entry.proposal.control else {
-            return Err(KernelError::Corrupt("prepared import has no source receipt".into()));
+            return Err(KernelError::Corrupt(
+                "prepared import has no source receipt".into(),
+            ));
         };
         let mut custody = WriteBatch::new(relation::CUSTODY_OF);
         custody.create_vertex(self.run, vec![label::ENTRY], entry_mirrors(&self.entry)?);
@@ -210,7 +229,9 @@ pub(super) fn admit<V: Vfs + Clone>(
     let steward = steward()?;
     let key = fa_policy::sod::control_key("ImportControl", None, "Import");
     let Some(op) = steward.preparer_op(&key) else {
-        return Err(KernelError::Corrupt("sod_policy.toml has no import-run rule".into()));
+        return Err(KernelError::Corrupt(
+            "sod_policy.toml has no import-run rule".into(),
+        ));
     };
     if let Err(denial) = fa_policy::admit(
         capability,
@@ -227,7 +248,8 @@ pub(super) fn admit<V: Vfs + Clone>(
     if let Err(denial) = fa_policy::current(capability, db.frontier()?) {
         return Ok(Err(refusal(&denial)));
     }
-    let policy = EvidencePolicy::embedded().map_err(|error| KernelError::Corrupt(error.to_string()))?;
+    let policy =
+        EvidencePolicy::embedded().map_err(|error| KernelError::Corrupt(error.to_string()))?;
     let derived_grade = crate::upload::upload_grade(&policy, capability.profile())?;
     let machine_grade = crate::upload::upload_grade(&policy, fa_policy::Profile::Agent)?;
     let txn_cx = cx.txn();
@@ -239,7 +261,13 @@ pub(super) fn admit<V: Vfs + Clone>(
     let epoch = epoch_witness(&txn, db)?;
     let limit = store_bound.unwrap_or_else(|| inline_document_bound(&policy));
     let (proposal, docs) = match prepare(
-        book, &policy, capability, derived_grade, machine_grade, req, limit,
+        book,
+        &policy,
+        capability,
+        derived_grade,
+        machine_grade,
+        req,
+        limit,
     ) {
         Ok(prepared) => prepared,
         Err(refused) => {
@@ -249,20 +277,23 @@ pub(super) fn admit<V: Vfs + Clone>(
     };
     let digest = proposal.proposal_digest()?;
     let run = entry_vid(
-        book.book_id, &proposal.principal_ref.0.to_le_bytes(), &proposal.idempotency_key,
+        book.book_id,
+        &proposal.principal_ref.0.to_le_bytes(),
+        &proposal.idempotency_key,
     );
     if let Some(row) = txn.vertex(db, run)? {
         txn.abort();
-        return Ok(recorded_or_conflict(book, &row, &proposal, &digest)?
-            .map(Admission::AlreadyRecorded));
+        return Ok(
+            recorded_or_conflict(book, &row, &proposal, &digest)?.map(Admission::AlreadyRecorded)
+        );
     }
     let preparer = Party {
         principal: proposal.principal_ref,
         profile: capability.profile(),
     };
-    if let Err(refused) = authorize_approvals(
-        &txn, db, book, &[], &digest, epoch, &key, 0, preparer,
-    )? {
+    if let Err(refused) =
+        authorize_approvals(&txn, db, book, &[], &digest, epoch, &key, 0, preparer)?
+    {
         txn.abort();
         return Ok(Err(refused));
     }
@@ -282,7 +313,10 @@ pub(super) fn admit<V: Vfs + Clone>(
                 };
                 if stored.oid() != doc.oid || stored.doc_commit != doc.doc_commit {
                     txn.abort();
-                    return Ok(Err(drift(&doc.oid, "the full document identity differs from the requested import")));
+                    return Ok(Err(drift(
+                        &doc.oid,
+                        "the full document identity differs from the requested import",
+                    )));
                 }
                 already_held.push(doc.oid);
             }

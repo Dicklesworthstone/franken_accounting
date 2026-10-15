@@ -214,14 +214,22 @@ impl MutantLedger {
             .and_then(Value::as_int)
             .ok_or_else(|| invalid(REGISTRY, "missing schema_version"))?;
         if sv != 1 {
-            return Err(invalid(REGISTRY, format!("schema_version must be 1, got {sv}")));
+            return Err(invalid(
+                REGISTRY,
+                format!("schema_version must be 1, got {sv}"),
+            ));
         }
 
         let valid_laws: BTreeSet<String> = invariants
             .invariants
             .iter()
             .map(|i| i.id.clone())
-            .chain(invariants.clauses.iter().map(crate::invariants::Clause::full_id))
+            .chain(
+                invariants
+                    .clauses
+                    .iter()
+                    .map(crate::invariants::Clause::full_id),
+            )
             .chain(refusals.rows.iter().map(|r| r.code.clone()))
             .collect();
 
@@ -246,7 +254,10 @@ impl MutantLedger {
             if id != expected_id {
                 return Err(invalid(
                     REGISTRY,
-                    format!("mutant #{}: expected dense id `{expected_id}`, got `{id}`", idx + 1),
+                    format!(
+                        "mutant #{}: expected dense id `{expected_id}`, got `{id}`",
+                        idx + 1
+                    ),
                 ));
             }
             let file = req_str(row, "file", &id)?.to_string();
@@ -268,7 +279,9 @@ impl MutantLedger {
             if !valid_laws.contains(&law) {
                 return Err(invalid(
                     REGISTRY,
-                    format!("{id}: unknown law `{law}` (not in invariants.toml or refusal_catalog.toml)"),
+                    format!(
+                        "{id}: unknown law `{law}` (not in invariants.toml or refusal_catalog.toml)"
+                    ),
                 ));
             }
             let description = req_str(row, "description", &id)?.to_string();
@@ -498,7 +511,11 @@ mod tests {
         // Broken law foreign key fails parse.
         let invariants = Invariants::embedded().expect("invariants");
         let refusals = RefusalCatalog::embedded().expect("refusals");
-        let bad_law = MUTANTS.replacen("law = \"FA-INV-06.core\"", "law = \"FA-INV-99.nonexistent\"", 1);
+        let bad_law = MUTANTS.replacen(
+            "law = \"FA-INV-06.core\"",
+            "law = \"FA-INV-99.nonexistent\"",
+            1,
+        );
         let err = MutantLedger::parse(&bad_law, &invariants, &refusals)
             .expect_err("unknown law must fail")
             .to_string();

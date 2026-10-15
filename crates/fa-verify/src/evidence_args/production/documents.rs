@@ -144,11 +144,12 @@ fn parse(args: &[OsString]) -> Result<(super::Request, Vec<DocumentFile>), Failu
             index += 1;
             // Consume a base option's value as a unit; never mistake a path
             // or missing-value token for a new document declaration.
-            if argument != "--json" && argument != "--from-prefix" {
-                if let Some(value) = args.get(index) {
-                    base.push(value.clone());
-                    index += 1;
-                }
+            if argument != "--json"
+                && argument != "--from-prefix"
+                && let Some(value) = args.get(index)
+            {
+                base.push(value.clone());
+                index += 1;
             }
         }
     }
@@ -188,16 +189,28 @@ pub(super) fn run(args: &[OsString], json: bool) -> Result<String, Failure> {
     record_slices.extend(records.iter().map(Vec::as_slice));
     let mut documents = Vec::new();
     reserve(&mut documents, files.len())?;
-    documents.extend(files.iter().zip(&content).map(|(file, bytes)| DocumentContent {
-        document_oid: file.oid, kind: file.kind, bytes,
-    }));
+    documents.extend(
+        files
+            .iter()
+            .zip(&content)
+            .map(|(file, bytes)| DocumentContent {
+                document_oid: file.oid,
+                kind: file.kind,
+                bytes,
+            }),
+    );
     let report = if request.from_prefix {
         verify_document_prefix_for(&prefix, &documents, &checkpoint, &request.scope)
     } else {
         verify_document_production_for(
-            &prefix, &record_slices, &documents, &checkpoint, &request.scope,
+            &prefix,
+            &record_slices,
+            &documents,
+            &checkpoint,
+            &request.scope,
         )
-    }.map_err(|error| Failure::verification(error.to_string()))?;
+    }
+    .map_err(|error| Failure::verification(error.to_string()))?;
     let rendered = render(&report, request.from_prefix, json);
     // Fixed-size hex/numeric metadata plus bounded counts; no caller strings
     // or payloads are rendered. Keep an explicit publication bound as well.

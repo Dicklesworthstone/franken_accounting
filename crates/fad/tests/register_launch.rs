@@ -13,11 +13,20 @@ fn run(args: &[&str]) -> std::process::Output {
 fn maintenance_is_launch_only_and_requires_explicit_bootstrap() {
     for args in [
         vec!["serve", "--register-period", "FY2026-P03"],
-        vec!["status", "--bootstrap-system", "--register-period", "FY2026-P03"],
+        vec![
+            "status",
+            "--bootstrap-system",
+            "--register-period",
+            "FY2026-P03",
+        ],
         vec!["stop", "--register-period", "FY2026-P03"],
     ] {
         let mut args = args;
-        args.extend(["--book", "/this-book-must-not-be-opened/register-launch", "--json"]);
+        args.extend([
+            "--book",
+            "/this-book-must-not-be-opened/register-launch",
+            "--json",
+        ]);
         let result = run(&args);
         assert_eq!(result.status.code(), Some(2));
     }
@@ -25,11 +34,20 @@ fn maintenance_is_launch_only_and_requires_explicit_bootstrap() {
 
 #[test]
 fn malformed_duplicate_missing_and_excess_period_arguments_are_usage_errors() {
-    let prefix = ["serve", "--bootstrap-system", "--book",
-        "/this-book-must-not-be-opened/register-launch", "--json"];
+    let prefix = [
+        "serve",
+        "--bootstrap-system",
+        "--book",
+        "/this-book-must-not-be-opened/register-launch",
+        "--json",
+    ];
     for tail in [
         vec!["--register-period="],
-        vec!["--register-period", "FY2026-P03", "--register-period=FY2026-P03"],
+        vec![
+            "--register-period",
+            "FY2026-P03",
+            "--register-period=FY2026-P03",
+        ],
         vec!["--register-period", "FY2026-P03 "],
         vec!["--register-period"],
         vec!["--register-period", "--json"],
@@ -38,8 +56,15 @@ fn malformed_duplicate_missing_and_excess_period_arguments_are_usage_errors() {
         assert_eq!(run(&args).status.code(), Some(2));
     }
     let mut args: Vec<String> = prefix.iter().map(|s| (*s).to_owned()).collect();
-    for i in 0..65 { args.push(format!("--register-period=P{i}")); }
-    assert_eq!(run(&args.iter().map(String::as_str).collect::<Vec<_>>()).status.code(), Some(2));
+    for i in 0..65 {
+        args.push(format!("--register-period=P{i}"));
+    }
+    assert_eq!(
+        run(&args.iter().map(String::as_str).collect::<Vec<_>>())
+            .status
+            .code(),
+        Some(2)
+    );
 }
 
 #[test]

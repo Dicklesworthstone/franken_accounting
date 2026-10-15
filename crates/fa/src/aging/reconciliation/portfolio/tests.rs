@@ -360,7 +360,10 @@ fn allocation_entries_into_ar_and_ap_reconcile_in_single_account_and_portfolio_a
             )
             .unwrap()
             .unwrap();
-        assert!(single.is_reconciled(), "{code} did not reconcile: {single:?}");
+        assert!(
+            single.is_reconciled(),
+            "{code} did not reconcile: {single:?}"
+        );
         assert!(
             single.rows().iter().all(|r| r.difference == 0),
             "{code} had nonzero difference: {:?}",
@@ -388,4 +391,3 @@ fn allocation_entries_into_ar_and_ap_reconcile_in_single_account_and_portfolio_a
     assert_eq!(ap_recon.rows()[0].open_net, -120);
     assert_eq!(ap_recon.rows()[0].difference, 0);
 }
-

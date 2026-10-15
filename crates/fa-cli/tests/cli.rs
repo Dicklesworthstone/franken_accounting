@@ -8774,18 +8774,12 @@ fn teller_truthfulness_gate_next_actions_and_refusal_fixes() -> std::io::Result<
         "chart.json",
         r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Expense","type":"Expense","unit":"USD"}]}"#,
     );
-    assert_eq!(
-        run_cmd(&["chart", "import", &chart_file, "--json"]).0,
-        0
-    );
+    assert_eq!(run_cmd(&["chart", "import", &chart_file, "--json"]).0, 0);
     assert_eq!(
         run_cmd(&["period", "create", "--fiscal-year", "2026", "--json"]).0,
         0
     );
-    assert_eq!(
-        run_cmd(&["period", "open", "FY2026-P03", "--json"]).0,
-        0
-    );
+    assert_eq!(run_cmd(&["period", "open", "FY2026-P03", "--json"]).0, 0);
     let doc_oid = source_doc(&dir, &book_dir);
 
     let intent_file = write(
@@ -8804,7 +8798,14 @@ fn teller_truthfulness_gate_next_actions_and_refusal_fixes() -> std::io::Result<
     assert_eq!(code, 0);
     let entry_vid = field(&post_out, "vid").unwrap().to_string();
     assert_eq!(
-        run_cmd(&["registers", "materialize", "--period", "FY2026-P03", "--json"]).0,
+        run_cmd(&[
+            "registers",
+            "materialize",
+            "--period",
+            "FY2026-P03",
+            "--json"
+        ])
+        .0,
         0
     );
 
@@ -8853,14 +8854,12 @@ fn teller_truthfulness_gate_next_actions_and_refusal_fixes() -> std::io::Result<
             return Err("empty command template".into());
         };
         if first != "fa" {
-            return Err(format!("expected command to start with `fa`, got `{first}`"));
+            return Err(format!(
+                "expected command to start with `fa`, got `{first}`"
+            ));
         }
-        let parsed = fa_cli::args::parse(
-            rest,
-            &reg.value_flags(),
-            &reg.switches(),
-        )
-        .map_err(|e| format!("parse error in `{cmd}`: {}", e.message))?;
+        let parsed = fa_cli::args::parse(rest, &reg.value_flags(), &reg.switches())
+            .map_err(|e| format!("parse error in `{cmd}`: {}", e.message))?;
         let Some(verb_word) = parsed.positional.first() else {
             return Ok(rest.to_vec());
         };
@@ -9142,4 +9141,3 @@ fn verify_periods_exits_eight_on_planted_period_state_mirror_drift() -> std::io:
     );
     Ok(())
 }
-

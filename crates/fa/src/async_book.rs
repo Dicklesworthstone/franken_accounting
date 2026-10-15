@@ -159,13 +159,6 @@ impl<V: Vfs + Clone> AsyncBook<V> {
             .await
             .map_err(|e| BookError::Io(dir.clone(), e))?;
         let database_dir = directory.path().join("store");
-        match DurableDirectory::open_existing(&commit, vfs.clone(), &database_dir).await {
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(BookError::NoBook);
-            }
-            Err(e) => return Err(BookError::Io(database_dir, e)),
-        }
         let db =
             Database::open_with_vfs(&commit, vfs.clone(), database_dir, keys.inner.clone()).await?;
         let query = cx.query();
@@ -746,8 +739,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             documents,
         };
         Ok(fa_journal::import::import_run_in_store(
-            &mut self.db, cx, &self.context, capability, &self.blobs, req,
-        ).await?)
+            &mut self.db,
+            cx,
+            &self.context,
+            capability,
+            &self.blobs,
+            req,
+        )
+        .await?)
     }
 
     pub fn read_run(

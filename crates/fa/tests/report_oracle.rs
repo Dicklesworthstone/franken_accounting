@@ -389,13 +389,13 @@ fn report_families_match_reference_oracle_across_multiseed_campaign_and_kill_pla
         ];
         if account_count > 5 {
             account_defs.extend([
-                ("1010", AccountType::ASSET),     // Secondary Cash (for internal transfers)
-                ("1200", AccountType::ASSET),     // Inventory / Equipment
+                ("1010", AccountType::ASSET), // Secondary Cash (for internal transfers)
+                ("1200", AccountType::ASSET), // Inventory / Equipment
                 ("2000", AccountType::LIABILITY), // Accounts Payable / Working Capital
                 ("2100", AccountType::LIABILITY), // Debt / Financing
-                ("3100", AccountType::EQUITY),    // Additional Equity
-                ("4100", AccountType::REVENUE),   // Service Revenue
-                ("6100", AccountType::EXPENSE),   // Depreciation / Non-Cash Expense
+                ("3100", AccountType::EQUITY), // Additional Equity
+                ("4100", AccountType::REVENUE), // Service Revenue
+                ("6100", AccountType::EXPENSE), // Depreciation / Non-Cash Expense
             ]);
         }
 
@@ -1275,10 +1275,7 @@ fn report_families_match_reference_oracle_across_multiseed_campaign_and_kill_pla
         // -------------------------------------------------------------------
         // E. Direct Cash Flow Differential Check
         // -------------------------------------------------------------------
-        let cash_vids: Vec<VId> = cash_codes
-            .iter()
-            .map(|c| account_vid(book_id, c))
-            .collect();
+        let cash_vids: Vec<VId> = cash_codes.iter().map(|c| account_vid(book_id, c)).collect();
         let cash_rf_request = RollForwardRequest {
             accounts: cash_vids.clone(),
             units: unit_ids.clone(),
