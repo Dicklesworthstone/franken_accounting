@@ -200,3 +200,44 @@ and final integration gate still require execution.
   and ordinary missing required inputs keep the generic error. The landing
   gate on that tree (538af18, run 3 on hz4) passed every step with 772
   tests green and reached origin/staging at 16:39:42Z on 2026-10-12.
+
+## 2026-10-11 — Reality-check security and threat-model findings (`fa-oaz`)
+
+The 2026-10-11 codebase reality audit identified five security, provenance, and
+verification gaps between the plan's threat model (§14.1, §8.5) and the surface
+posture at the time, each tracked by an explicit repair bead and cross-referenced
+in `registries/threat_model.toml` and `docs/THREAT_AND_TRUST_MODEL.md`:
+
+- **Unbound MCP session authority vs. launch-bound session config (`fa-23r`, closed).**
+  Early MCP tool handlers accepted caller-selected capability grants per tool call
+  rather than binding the session principal, profile (`Profile::Agent`), and
+  permitted operations at `fa-mcp` server launch. Repaired in `fa-23r`:
+  `ServerConfig` binds the session authority at startup and rejects per-request
+  privilege escalation (`FA-THR-03`, `TB-04`).
+- **Local CLI embedded capabilities (`--as` / `--grant`) without cryptographic token
+  verification (`fa-v62`, `fa-r3q` — EP-AUTH, open residual risk on `FA-THR-04`).**
+  Outside launch-bound `fa-mcp` / `fad` sessions, the local CLI constructs
+  `Capability::embedded` from command-line flags. `threat_model.toml` records this
+  explicitly under `FA-THR-04.residual_risk` until journaled cryptographic capability
+  issuance, attenuation, and verification (`fa-v62`, `fa-r3q`) replace embedded CLI
+  grants.
+- **Unverified caller-supplied `base_totals`, `plan_certificate`, and non-`Intent`
+  `EntryOrigin` on public `post` (`fa-cw1`, closed; `FA-INV-05.registered-origin`).**
+  Public `post` previously accepted caller-supplied `EntryOrigin::Rule|Sweep|Schedule|Control`
+  and unverified `base_totals`. Repaired in `fa-cw1`: public `post` admits only
+  `EntryOrigin::Intent`, refuses caller-supplied `base_totals` or unverified plan
+  certificates before publication without consuming identity (`FA-REF-100`,
+  `FA-REF-101`), and requires sweep/schedule/control entries to enter through their
+  dedicated kernel minting paths.
+- **Invariant checker-strength inflation (`fa-rez`).**
+  Several live clauses in `registries/invariants.toml` reused a positive differential
+  test in `negatives` (e.g., `FA-INV-04.open-amount` and `FA-INV-08.unsettle` both
+  citing `kernel_and_oracle_agree_on_a_generated_history` as their negative) or did
+  not distinguish unit assertions from differential/exhaustive/negative-fixture
+  checkers. Tracked and repaired under `fa-rez`.
+- **Untrusted document/memo content in agent-facing JSON/MCP responses (`fa-9rw`).**
+  Imported document bytes, external descriptions, and party fields returned to AI
+  agents over `--json` and `fa-mcp` lacked explicit untrusted-data boundary markers
+  to defend against indirect prompt injection (`FA-THR-03`). Tracked and repaired
+  under `fa-9rw`.
+

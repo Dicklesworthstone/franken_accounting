@@ -19,6 +19,7 @@ pub mod reason_codes;
 pub mod redaction_contracts;
 pub mod refusal_catalog;
 pub mod sod_policy;
+pub mod threat_model;
 pub mod toml;
 pub mod topology;
 

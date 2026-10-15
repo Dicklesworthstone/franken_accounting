@@ -57,16 +57,17 @@ fi
 # Every libtest outcome line: "<path> <status>".
 OUTCOMES="$(sed -nE 's/^test ([^ ]+) \.\.\. (ok|FAILED|ignored)$/\1 \2/p' <<<"$CLEAN")"
 
-# The registry's live clauses as "<clause-id> <role> <checker>" lines. The
-# format is the TOML subset fa-registry validates: one key per line, flat
+# The registry's live clauses as "<clause-id> <strength> <role> <checker>" lines.
+# The format is the TOML subset fa-registry validates: one key per line, flat
 # single-line arrays of strings.
 LIVE="$(awk '
   function str(line) { sub(/^[a-z_]+ = "/, "", line); sub(/"$/, "", line); return line }
-  function emit(role, line,   n, parts, i, s) {
+  function emit(role, line,   n, parts, i, s, st) {
+    st = (strength == "" ? "-" : strength)
     sub(/^[a-z_]+ = \[/, "", line); sub(/\]$/, "", line)
-    if (line == "") { print inv "." id " " role " -"; return }
+    if (line == "") { print inv "." id " " st " " role " -"; return }
     n = split(line, parts, /", "/)
-    for (i = 1; i <= n; i++) { s = parts[i]; gsub(/"/, "", s); print inv "." id " " role " " s }
+    for (i = 1; i <= n; i++) { s = parts[i]; gsub(/"/, "", s); print inv "." id " " st " " role " " s }
   }
   function flush() {
     if (in_clause && status == "live") {
@@ -75,11 +76,12 @@ LIVE="$(awk '
       emit("checker", checkers); emit("negative", negatives)
     }
   }
-  /^\[\[clause\]\]/ { flush(); in_clause = 1; inv = ""; id = ""; status = ""; checkers = ""; negatives = ""; next }
+  /^\[\[clause\]\]/ { flush(); in_clause = 1; inv = ""; id = ""; status = ""; strength = ""; checkers = ""; negatives = ""; next }
   /^\[/ { flush(); in_clause = 0; next }
   in_clause && /^invariant = / { inv = str($0) }
   in_clause && /^id = / { id = str($0) }
   in_clause && /^status = / { status = str($0) }
+  in_clause && /^checker_strength = / { strength = str($0) }
   in_clause && /^checkers = / { checkers = $0 }
   in_clause && /^negatives = / { negatives = $0 }
   END { flush() }
@@ -96,7 +98,9 @@ while read -r clause; do
   [ -n "$clause" ] || continue
   bad=0
   count=0
-  while read -r _ role checker; do
+  clause_strength="-"
+  while read -r _ strength role checker; do
+    clause_strength="$strength"
     count=$((count + 1))
     if [ "$checker" = "-" ]; then
       gate_fail "$clause — a live clause names no $role"
@@ -123,8 +127,12 @@ while read -r clause; do
       bad=1
     fi
   done < <(awk -v c="$clause" '$1 == c' <<<"$LIVE")
+  if [ "$clause_strength" = "-" ] || [ "$clause_strength" = "smoke" ]; then
+    gate_fail "$clause — live clause checker_strength must be > smoke (found: $clause_strength)"
+    bad=1
+  fi
   if [ "$bad" -eq 0 ]; then
-    gate_pass "$clause — $count checker and negative tests ran and passed"
+    gate_pass "$clause (strength: $clause_strength) — $count checker and negative tests ran and passed"
   fi
 done <<<"$CLAUSES"
 

@@ -19,6 +19,7 @@ use fa_registry::reason_codes::ReasonCodes;
 use fa_registry::redaction_contracts::RedactionContracts;
 use fa_registry::refusal_catalog::RefusalCatalog;
 use fa_registry::sod_policy::SodPolicy;
+use fa_registry::threat_model::ThreatModel;
 use fa_registry::toml::{self, Table, Value};
 use fa_registry::topology::Topology;
 use fa_registry::{
@@ -71,6 +72,7 @@ const EXPECTED_REGISTRIES: &[&str] = &[
     "rounding_laws.toml",
     "sod_policy.toml",
     "symbols.toml",
+    "threat_model.toml",
     "units.toml",
     "verbs.toml",
     "workspace_topology.toml",
@@ -364,7 +366,18 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
     check_account_types(&read("account_types.toml")?)?;
     check_allocation_laws(&read("allocation_laws.toml")?)?;
     check_limits(&read("limits.toml")?)?;
-    let refusals_checked = check_refusal_immutability(&read("refusal_catalog.toml")?, &exits)?;
+    let refusals_text = read("refusal_catalog.toml")?;
+    let refusals_checked = check_refusal_immutability(&refusals_text, &exits)?;
+    let refusals = RefusalCatalog::from_text(&refusals_text, &exits).map_err(|e| e.to_string())?;
+    let threat_model = ThreatModel::parse(&read("threat_model.toml")?, &invariants, &refusals)
+        .map_err(|e| e.to_string())?;
+    let unresolved =
+        threat_model.unresolved_test_refs(|rel| fs::read_to_string(root.join(rel)).ok());
+    if let Some((owner_id, test_ref)) = unresolved.first() {
+        return Err(format!(
+            "threat_model.toml: {owner_id} references nonexistent test `{test_ref}`"
+        ));
+    }
     let (verbs_checked, mcp_tools_checked) = check_verbs(&read("verbs.toml")?, &exits)?;
 
     // Also parse nested TOML schemas under object_schemas/ and statements/.
@@ -509,5 +522,21 @@ mod tests {
             err.contains("verbs.toml") && err.contains("no_such_event"),
             "{err}"
         );
+
+        let invariants = Invariants::embedded().expect("invariants.toml");
+        let catalog = RefusalCatalog::from_text(&refusals, &exits).expect("refusal catalog");
+        let threat_text =
+            fs::read_to_string(root.join("registries/threat_model.toml")).expect("threat_model");
+        let bad_test_ref = threat_text.replacen(
+            "fa-model::lib::entry::tests::tampered_bytes_are_refused",
+            "fa-model::lib::entry::tests::nonexistent_test_function",
+            1,
+        );
+        let parsed_tm =
+            ThreatModel::parse(&bad_test_ref, &invariants, &catalog).expect("valid syntax");
+        let unresolved =
+            parsed_tm.unresolved_test_refs(|rel| fs::read_to_string(root.join(rel)).ok());
+        assert_eq!(unresolved.len(), 1);
+        assert_eq!(unresolved[0].0, "FA-THR-01");
     }
 }

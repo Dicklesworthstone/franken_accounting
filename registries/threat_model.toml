@@ -1,0 +1,320 @@
+# threat_model.toml — FrankenAccounting Threat & Trust Model Registry
+# (plan §8.5, §14.1, §14.2, INT-10; bead fa-oaz).
+#
+# Machine-validated by `fa_registry::threat_model::ThreatModel` and
+# `tools/registry-check`:
+#   1. `[[trust_boundary]]` enumerates every process, RPC, agent, and offline
+#      bundle boundary (`TB-01`..`TB-05`).
+#   2. `[[threat]]` enumerates all eight plan §14.1 threats (`FA-THR-01`..`FA-THR-08`),
+#      cross-checking `boundary`, `mitigation_clauses` (against `invariants.toml`),
+#      `mitigation_refusals` (against `refusal_catalog.toml`), `status`
+#      (`live` requires all cited clauses to be `live`; `dormant` requires
+#      `activating_beads` and at least one dormant clause), and `test_refs`
+#      (each resolved to a real `#[test]` function in the workspace).
+#   3. `[[surviving_public_value]]` inventories every public digest, identity,
+#      envelope, and commitment derived from private or erasable inputs (plan §8.5).
+#   4. `[[tamper_vector]]` records the INT-10 tamper matrix (`TV-01`..`TV-10`)
+#      mapping each tampered artifact class to its detector, refusal/grade,
+#      and executable negative test.
+
+schema_version = 1
+
+# ---------------------------------------------------------------------------
+# Trust Boundaries
+# ---------------------------------------------------------------------------
+
+[[trust_boundary]]
+id = "TB-01"
+name = "embedded_fa"
+posture = "fa"
+trusted_actors = ["host_process", "book_key_holder"]
+untrusted_inputs = ["intent_payload", "document_bytes", "gql_query", "capability_token", "approval_record"]
+enforcement_surface = "fa::Book::session / fa_journal::post / fa_policy::admit"
+summary = "In-process Rust library boundary where every write enters through typed intents or proposals under a capability-checked session and commits atomically via FrankenGraphDB first-committer-wins witnesses."
+
+[[trust_boundary]]
+id = "TB-02"
+name = "cli_fa"
+posture = "fa-cli"
+trusted_actors = ["local_os_user_with_book_access"]
+untrusted_inputs = ["cli_argv", "intent_json_file", "plan_artifact_stdin", "imported_files"]
+enforcement_surface = "fa-cli::dispatch / fa-intents::PlanCertificate / fa::Book"
+summary = "Local command-line boundary enforcing deterministic robot envelopes, dangerous-operation confirmation gates (FA-REF-007), and authenticated dry-run plan certificates (FA-REF-034)."
+
+[[trust_boundary]]
+id = "TB-03"
+name = "daemon_fad"
+posture = "fad"
+trusted_actors = ["fad_supervisor"]
+untrusted_inputs = ["rpc_request_frame", "caller_principal_claim", "capability_token"]
+enforcement_surface = "fad::serve / fa-policy::admit / writer_lease"
+summary = "Local single-writer daemon holding the book's writer lease and mediating concurrent CLI and MCP sessions over a local socket."
+
+[[trust_boundary]]
+id = "TB-04"
+name = "mcp_fa_mcp"
+posture = "fa-mcp"
+trusted_actors = ["launch_bound_mcp_host"]
+untrusted_inputs = ["mcp_tool_arguments", "agent_uploaded_documents", "document_extracted_text", "external_descriptions"]
+enforcement_surface = "fa-mcp::ServerConfig::session / Profile::Agent / fa-policy::admit"
+summary = "Agent MCP server boundary where session authority is launch-bound, Agent-profile capabilities are refused on trunk writes (FA-REF-013), and untrusted document/memo strings are marked as data rather than instructions."
+
+[[trust_boundary]]
+id = "TB-05"
+name = "offline_bundle_fa_verify"
+posture = "fa-verify"
+trusted_actors = ["trusted_public_key_set", "external_witness"]
+untrusted_inputs = ["fab_bundle_bytes", "checkpoint_bytes", "production_receipt_bytes", "inline_document_bytes"]
+enforcement_surface = "fa-verify::verify_bundle"
+summary = "Zero-trust, dependency-free offline verification boundary where an outsider verifies Ed25519 checkpoint signatures, Merkle inclusion/completeness proofs, 4 KiB document chunk commitments, and balance refolds without opening the book."
+
+# ---------------------------------------------------------------------------
+# Threats (plan §14.1 FA-THR-01 .. FA-THR-08)
+# ---------------------------------------------------------------------------
+
+[[threat]]
+id = "FA-THR-01"
+name = "insider_history_alteration"
+actor = "Insider with administrative or filesystem access to the book directory"
+boundary = "TB-01"
+asset = "Committed journal entries, register cells, projection mirrors, and accumulator checkpoints"
+vector = "Direct mutation, deletion, or replacement of committed entry payloads, projection vertices, or stored accumulator states on disk or in storage"
+mitigation_clauses = ["FA-INV-02.payload-immutable", "FA-INV-14.consistency", "FA-INV-14.signed"]
+mitigation_refusals = ["FA-REF-121", "FA-REF-127"]
+status = "live"
+residual_risk = "An insider who controls both the book directory and the local signing key before any checkpoint is externally witnessed can rewrite an unwitnessed tail; external witness co-signing is tracked by FA-THR-05 / fa-l3c."
+test_refs = ["fa-model::lib::entry::tests::tampered_bytes_are_refused", "fa-notary::tests/notary.rs::recomputation_finds_a_forged_state_and_blocks_checkpoints_over_it", "fa-cli::tests/notary.rs::a_checkpointed_entry_rewritten_or_retired_in_place_fails_verification"]
+
+[[threat]]
+id = "FA-THR-02"
+name = "preparer_approver_collusion"
+actor = "Preparer attempting self-approval or colluding with an ineligible approver"
+boundary = "TB-01"
+asset = "Dangerous entry classes, period transitions (Lock/Reopen), and self-sourced evidence promotion"
+vector = "Submitting a self-signed approval, reusing an approval across mutated proposal legs, or approving with a stale policy epoch"
+mitigation_clauses = ["FA-INV-10.sod", "FA-INV-10.approval-binds-proposal", "FA-INV-03.transition-approvals"]
+mitigation_refusals = ["FA-REF-008", "FA-REF-012", "FA-REF-016", "FA-REF-111"]
+status = "live"
+residual_risk = "Two distinct human principals who collude out-of-band with valid, disjoint roles can satisfy commit-time SoD; forensic detection relies on Lantern JET timing and concentration procedures (fa-lantern)."
+test_refs = ["fa-journal::tests/policy.rs::self_approval_is_refused_and_a_distinct_human_approval_admits", "fa-policy::tests/sod_oracle.rs::engine_and_oracle_agree_on_every_transcript", "fa-policy::lib::approval::tests::recording_requires_the_op_and_binding_is_exact"]
+
+[[threat]]
+id = "FA-THR-03"
+name = "compromised_or_confused_agent"
+actor = "AI agent operator (compromised by prompt injection or hallucinating destructive/unbalanced actions)"
+boundary = "TB-04"
+asset = "Trunk journal integrity, chart of accounts, period states, and evidence provenance"
+vector = "Attempting direct trunk writes from an Agent profile, bypassing dry-run plans, exceeding capability ceilings, citing unreviewed AgentUpload documents, or following prompt-injected instructions inside imported documents"
+mitigation_clauses = ["FA-INV-10.core", "FA-INV-11.core", "FA-INV-05.evidence-minimum"]
+mitigation_refusals = ["FA-REF-007", "FA-REF-013", "FA-REF-015", "FA-REF-086"]
+status = "live"
+residual_risk = "Draft branch isolation (fa-s7x) is not yet live so Agent-profile trunk writes fail closed with FA-REF-013; untrusted document/memo content boundary marking is tracked by fa-9rw."
+test_refs = ["fa-journal::tests/policy.rs::an_agent_profile_capability_never_writes_trunk_and_its_refusal_cites_fa_s7x", "fa-cli::tests/plans.rs::tampered_wrong_caller_and_stale_plans_cannot_publish_or_consume_the_key"]
+
+[[threat]]
+id = "FA-THR-04"
+name = "stolen_capability_token"
+actor = "Unauthorized caller replaying a leaked or stolen capability token"
+boundary = "TB-03"
+asset = "Authorized read/write operations and scoped account/entity data"
+vector = "Presenting a capability issued to another holder, an expired capability, a revoked capability, or an approval from a superseded policy epoch"
+mitigation_clauses = ["FA-INV-10.core", "FA-INV-10.current-policy"]
+mitigation_refusals = ["FA-REF-011", "FA-REF-014", "FA-REF-022", "FA-REF-023"]
+status = "live"
+residual_risk = "On the local CLI outside launch-bound fa-mcp sessions, `--as` / `--grant` constructs embedded capabilities until cryptographic token minting and verification (EP-AUTH: fa-v62, fa-r3q) replace caller-supplied CLI flags."
+test_refs = ["fa-journal::tests/policy.rs::a_capability_authorizes_only_its_holder_and_refusals_precede_any_read", "fa-journal::tests/policy.rs::a_post_reads_the_current_epoch_so_an_earlier_approval_is_stale"]
+
+[[threat]]
+id = "FA-THR-05"
+name = "rollback_attack"
+actor = "Administrator or storage operator restoring an older snapshot of the book directory"
+boundary = "TB-05"
+asset = "Completeness of committed entries and monotonicity of the transparency log"
+vector = "Replacing the book directory with an earlier backup or presenting a checkpoint that does not extend the previously witnessed accumulator state"
+mitigation_clauses = ["FA-INV-14.consistency", "FA-INV-14.witnessed"]
+mitigation_refusals = ["FA-REF-094", "FA-REF-124"]
+status = "dormant"
+activating_beads = ["fa-l3c"]
+residual_risk = "Consistency proofs between two states in hand are live (FA-INV-14.consistency), but external witness co-signing and rollback detection against an external witness log (FA-INV-14.witnessed) are dormant until fa-l3c witness co-signing lands."
+test_refs = ["fa-notary::tests/notary.rs::a_later_state_extends_the_earlier_and_consistency_verifies", "fa-notary::tests/notary.rs::checkpoint_refuses_a_predecessor_with_a_falsely_advanced_sequence"]
+
+[[threat]]
+id = "FA-THR-06"
+name = "privileged_material_disclosure"
+actor = "External auditor, regulator, litigant, or unprivileged agent reading evidence or producing bundles"
+boundary = "TB-05"
+asset = "Privileged or confidential document bytes and sealed Erasable<T> party/memo fields"
+vector = "Reading restricted document kinds without the `privileged` capability or exporting inline document bytes in a `.fab` bundle under a redacted profile"
+mitigation_clauses = ["FA-INV-10.core", "FA-INV-14.public-commitment"]
+mitigation_refusals = ["FA-REF-128"]
+status = "live"
+residual_risk = "Sub-chunk redaction is disclosure-only; proven selective chunk disclosure requires 4 KiB chunk-aligned redaction contracts."
+test_refs = ["fa::lib::book::tests::a_bank_statement_through_the_facade_reads_redacted_until_privileged", "fa-journal::lib::redaction::tests::an_agent_reads_public_documents_and_only_the_governed_redacted_view"]
+
+[[threat]]
+id = "FA-THR-07"
+name = "subpoenaed_administrator_non_alteration"
+actor = "Subpoenaed book administrator or hostile counterparty challenging an exported `.fab` bundle"
+boundary = "TB-05"
+asset = "Evidentiary integrity of produced entries, document commitments, scope completeness, and refolded balances"
+vector = "Omitting an in-scope entry, padding an out-of-scope entry, swapping payloads under a leaf envelope, forging a checkpoint signature, or altering a document byte in a bundle"
+mitigation_clauses = ["FA-INV-14.signed", "FA-INV-14.seq-range-complete", "FA-INV-04.outsider-recomputation"]
+mitigation_refusals = ["FA-REF-127"]
+status = "live"
+residual_risk = "For staged or pre-opening migration runs, balance proofs refuse with FA-REF-133 until authenticated migration visibility witnesses (fa-e00) are included in `.fab` bundles."
+test_refs = ["fa-notary::tests/notary.rs::checkpoints_are_signed_by_the_book_key_and_forgeries_are_refused", "fa-notary::tests/notary.rs::planted_bundle_defects_fail_the_predicate_they_break", "fa-verify::tests/golden.rs::the_pinned_balance_proof_refolds_cash"]
+
+[[threat]]
+id = "FA-THR-08"
+name = "erasure_retention_tension"
+actor = "Subject requesting privacy erasure vs. regulator/litigant enforcing retention and legal holds"
+boundary = "TB-01"
+asset = "Accounting amounts, dates, accounts, lineage, and legally held evidence vs. erasable personal data"
+vector = "Attempting to erase amounts/lineage, executing erasure against objects under an active LegalHold, or leaking low-entropy private inputs through unkeyed surviving digests after key destruction"
+mitigation_clauses = ["FA-INV-05.closure", "FA-INV-14.public-commitment"]
+mitigation_refusals = ["FA-REF-088", "FA-REF-117"]
+status = "live"
+residual_risk = "Substrate erasure tombstones (Appendix H R-ERASE) and per-Party subject keys (fa-v74 / FA-INV-14.erasure) are not yet live; ErasureCut fails closed with FA-REF-088 while LegalHold enforcement (FA-REF-117) is live."
+test_refs = ["fa-registers::tests/evidence_oracle.rs::legal_holds_on_the_real_kernel_agree_with_a_literal_model", "fa-notary::tests/differential.rs::verifier_doc_commit_equals_the_kernel_at_every_chunk_boundary"]
+
+# ---------------------------------------------------------------------------
+# Surviving Public Values Derived from Private or Erasable Inputs (plan §8.5)
+# ---------------------------------------------------------------------------
+
+[[surviving_public_value]]
+id = "SPV-01"
+name = "entry_and_supersession_vid"
+source_fields = ["book_id", "principal_ref", "idempotency_key", "target_vid"]
+derivation = "Domain-separated BLAKE3 truncated to VId (`fa:vid:entry:v1`, `fa:vid:reversal:v1`, `fa:vid:resolution:v1`)"
+post_erasure_survivability = "Permanent graph vertex identifier; never erased so lineage and double-reversal/double-resolution uniqueness remain verifiable."
+guessing_oracle_mitigation = "Callers must never place raw PII (SSN, account numbers, names) in `idempotency_key`; keys are opaque caller-generated tokens or UUIDs."
+test_refs = ["fa-journal::tests/genesis.rs::identical_retry_is_recorded_and_a_changed_retry_is_a_conflict"]
+
+[[surviving_public_value]]
+id = "SPV-02"
+name = "proposal_and_entry_digest"
+source_fields = ["EntryPayload (including sealed Erasable<T> nonce + ciphertext wire)", "approvals", "plan_certificate"]
+derivation = "Domain-separated BLAKE3 over canonical binary encoding (`EntryPayload::proposal_digest`, `Entry::entry_digest`)"
+post_erasure_survivability = "Survives in `LeafEnvelope`, `Approval`, and `PlanCertificate` to bind immutable history and non-repudiation."
+guessing_oracle_mitigation = "Every `Erasable<T>` field is sealed under randomized AEAD (`SealKey` + 24-byte nonce + 32-byte salt) before hashing, so `proposal_digest` hashes high-entropy ciphertext and never leaks a plaintext guessing oracle."
+test_refs = ["fa-model::lib::entry::tests::changing_one_leg_changes_the_proposal_digest", "fa-model::lib::entry::tests::tampered_bytes_are_refused"]
+
+[[surviving_public_value]]
+id = "SPV-03"
+name = "idempotency_semantic_digest"
+source_fields = ["EntryPayload logical plaintext fields (opening sealed Erasable<T> under Book.seal_key)"]
+derivation = "Keyed BLAKE3 under `Book.seal_key` over canonical logical plaintext (`EntryPayload::semantic_digest`)"
+post_erasure_survivability = "Stored on the entry mirror for idempotent retry comparison while `Book.seal_key` is available; refuses comparison with FA-REF-033 (`EQUIVALENCE_UNVERIFIABLE`) if secrets are unavailable."
+guessing_oracle_mitigation = "Keyed under `Book.seal_key` and compared only inside the authorized kernel boundary after holder/principal verification; never exposed to unauthenticated observers."
+test_refs = ["fa-model::lib::entry::tests::semantic_digest_sees_through_fresh_salts_and_refuses_foreign_keys", "fa-journal::tests/genesis.rs::equivalence_is_plaintext_level_and_never_crosses_principals"]
+
+[[surviving_public_value]]
+id = "SPV-04"
+name = "document_public_commitment"
+source_fields = ["Document.kind", "Document.bytes.len()", "4 KiB chunk Merkle tree over Document.bytes"]
+derivation = "`BLAKE3(\"fa:doc:v1\" || kind || length || chunk_root)` (`doc_commit`)"
+post_erasure_survivability = "Survives in `EvidenceRef`, `ImportReceipt`, and `.fab` bundle stubs so offline verifiers can authenticate disclosed chunks."
+guessing_oracle_mitigation = "Unkeyed by design for outsider verification (plan §9.1); documents with low-entropy private content must include high-entropy headers/identifiers or withhold chunk roots under redaction contracts."
+test_refs = ["fa-journal::lib::evidence::tests::commitment_binds_kind_length_and_every_chunk", "fa-verify::lib::document::tests::kind_length_and_every_chunk_are_bound"]
+
+[[surviving_public_value]]
+id = "SPV-05"
+name = "accumulator_leaf_envelope"
+source_fields = ["book_id", "branch_id", "recorded_seq", "ordinal", "EntryClass", "effective_day", "vid", "entry_digest"]
+derivation = "`BLAKE3(\"fa:leaf:v1\" || canonical_envelope_bytes)` in the Notary MMR/Merkle tree"
+post_erasure_survivability = "Permanent public transparency leaf; contains zero `Erasable<T>` fields and binds only structural coordinates and `entry_digest`."
+guessing_oracle_mitigation = "Contains no private text or party identifiers; `entry_digest` is randomized via AEAD nonces on all `Erasable<T>` fields."
+test_refs = ["fa-notary::tests/notary.rs::the_producer_and_the_independent_verifier_agree_on_every_leaf_and_the_root"]
+
+[[surviving_public_value]]
+id = "SPV-06"
+name = "plan_and_report_certificate"
+source_fields = ["book_id", "basis_seq", "proposal_digest", "fold_digest", "witness_set", "policy_epoch"]
+derivation = "Canonical versioned binary certificate and BLAKE3 digest (`fa-intents::PlanCertificate`, `fa_registers::fold_digest`)"
+post_erasure_survivability = "Survives in committed entries and exported reports; amounts, accounts, and dates are never in erasure scope (plan §8.5)."
+guessing_oracle_mitigation = "Binds only structural accounting coordinates, exact integer mantissas, and randomized `proposal_digest`."
+test_refs = ["fa-intents::lib::tests::certificate_wire_fields_have_a_fixed_order_and_explicit_version", "fa-cli::tests/plans.rs::binary_plan_survives_reopen_preserves_seals_and_exact_retries"]
+
+# ---------------------------------------------------------------------------
+# Tamper Matrix (INT-10: TV-01 .. TV-10)
+# ---------------------------------------------------------------------------
+
+[[tamper_vector]]
+id = "TV-01"
+artifact = "entry_payload"
+tamper_action = "Flip a byte in a committed EntryPayload or alter a leg amount without recomputing digests"
+detected_by = "fa_model::Entry::decode / fa_verify::envelope"
+refusal_or_grade = "EntryError::DigestMismatch / Grade::Fail(record)"
+test_refs = ["fa-model::lib::entry::tests::tampered_bytes_are_refused", "fa-verify::tests/golden.rs::every_pinned_vector_refuses_every_flipped_bit"]
+
+[[tamper_vector]]
+id = "TV-02"
+artifact = "register_cell"
+tamper_action = "Mutate a materialized register cell balance, insert a phantom zero cell, or corrupt the register watermark"
+detected_by = "fa_registers::verify_registers"
+refusal_or_grade = "RegisterDrift (FA-INV-04.core)"
+test_refs = ["fa-registers::tests/registers.rs::materialize_then_verify_is_green_and_a_tampered_register_is_drift", "fa-registers::tests/registers.rs::register_metadata_and_watermark_corruption_cannot_verify"]
+
+[[tamper_vector]]
+id = "TV-03"
+artifact = "projection_mirror"
+tamper_action = "Alter a derived Leg vertex scalar mirror or drop a HAS_LEG / POSTS_TO edge in the graph"
+detected_by = "fa_journal::verify_projections"
+refusal_or_grade = "ProjectionDrift (FA-INV-16.core)"
+test_refs = ["fa-journal::tests/genesis.rs::projection_verifier_detects_every_scalar_mirror_and_preserves_known_at", "fa-cli::tests/cli.rs::projection_verification_refuses_a_changed_amount_without_writes"]
+
+[[tamper_vector]]
+id = "TV-04"
+artifact = "document_blob"
+tamper_action = "Modify or delete an external or inline document blob after import so its bytes disagree with doc_commit"
+detected_by = "fa_journal::read_document / fa_verify::verify_bundle"
+refusal_or_grade = "FA-REF-085 (DOCUMENT_DRIFT) / FA-REF-116 (BLOB_MISSING) / Grade::Fail(public_commitment)"
+test_refs = ["fa-journal::tests/genesis.rs::an_external_document_reads_back_verified_and_a_missing_or_changed_blob_is_refused", "fa-notary::tests/notary.rs::planted_bundle_defects_fail_the_predicate_they_break"]
+
+[[tamper_vector]]
+id = "TV-05"
+artifact = "accumulator_state"
+tamper_action = "Forge a stored AccumulatorState root or claim a non-extending leaf count / sequence"
+detected_by = "fa_notary::verify_accumulator / fa_notary::checkpoint"
+refusal_or_grade = "FA-REF-121 (ACCUMULATOR_DRIFT) / FA-REF-124 (NOT_EXTENDED)"
+test_refs = ["fa-notary::tests/notary.rs::recomputation_finds_a_forged_state_and_blocks_checkpoints_over_it", "fa-notary::tests/notary.rs::checkpoint_refuses_a_predecessor_with_a_falsely_advanced_sequence"]
+
+[[tamper_vector]]
+id = "TV-06"
+artifact = "transparency_checkpoint"
+tamper_action = "Flip a bit in a stored TransparencyCheckpoint signature or body, or sign with an untrusted Ed25519 key"
+detected_by = "fa_notary::verify_accumulator / fa_verify::verify_bundle"
+refusal_or_grade = "FA-REF-127 (CHECKPOINT_INVALID) / Grade::Fail(checkpoint)"
+test_refs = ["fa-notary::tests/notary.rs::a_tampered_stored_checkpoint_is_a_finding_and_refused", "fa-verify::lib::ed25519::tests::single_bit_forgeries_are_refused"]
+
+[[tamper_vector]]
+id = "TV-07"
+artifact = "bundle_omitted_or_padded_entry"
+tamper_action = "Omit an in-scope entry from a .fab bundle or pad an out-of-scope entry into an account scope bundle"
+detected_by = "fa_verify::verify_bundle"
+refusal_or_grade = "Grade::Fail(entries)"
+test_refs = ["fa-notary::tests/notary.rs::the_complete_prefix_verifies_and_an_omitted_leaf_is_detected", "fa-notary::tests/notary.rs::planted_bundle_defects_fail_the_predicate_they_break"]
+
+[[tamper_vector]]
+id = "TV-08"
+artifact = "bundle_swapped_payload"
+tamper_action = "Swap two entry payloads under their authenticated LeafEnvelopes or drop a cited document stub"
+detected_by = "fa_verify::verify_bundle"
+refusal_or_grade = "Grade::Fail(record) / Grade::Fail(closure)"
+test_refs = ["fa-notary::tests/notary.rs::planted_bundle_defects_fail_the_predicate_they_break"]
+
+[[tamper_vector]]
+id = "TV-09"
+artifact = "bundle_production_receipt"
+tamper_action = "Attach a ProductionReceipt signed over another bundle digest, by an untrusted key, or with a flipped signature bit"
+detected_by = "fa_verify::verify_bundle"
+refusal_or_grade = "Grade::Fail(production_receipt)"
+test_refs = ["fa-notary::tests/notary.rs::planted_bundle_defects_fail_the_predicate_they_break"]
+
+[[tamper_vector]]
+id = "TV-10"
+artifact = "plan_certificate"
+tamper_action = "Tamper with a dry-run PlanCertificate, submit it under a different caller principal, or commit after basis/policy drift"
+detected_by = "fa_cli::dispatch / fa_journal::post"
+refusal_or_grade = "FA-REF-034 (PLAN_INVALIDATED)"
+test_refs = ["fa-intents::lib::tests::certificates_refuse_unknown_versions_truncation_trailing_bytes_and_bad_tags", "fa-cli::tests/plans.rs::tampered_wrong_caller_and_stale_plans_cannot_publish_or_consume_the_key"]

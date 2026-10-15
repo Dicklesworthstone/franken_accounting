@@ -59,6 +59,19 @@ pub const INVARIANT_IDS: [&str; 16] = [
 
 const EVIDENCE_CLASSES: [&str; 3] = ["invariant", "proof", "bounded_model"];
 const GATES: [&str; 5] = ["G0", "G1", "G2", "G3", "G4"];
+/// Registered checker-strength levels for `invariants.toml` (bead `fa-rez`).
+/// `"smoke"` is in the vocabulary so the parser can refuse it with an explicit
+/// diagnostic when someone attempts to mark a live clause with a smoke test.
+pub const CHECKER_STRENGTHS: [&str; 8] = [
+    "smoke",
+    "unit",
+    "negative_fixture",
+    "property",
+    "differential",
+    "exhaustive",
+    "model",
+    "proof",
+];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Invariant {
@@ -159,6 +172,20 @@ impl Checker {
             }
         }
     }
+
+    /// Whether `source_text` defines this checker's function as a `#[test]` fn.
+    #[must_use]
+    pub fn is_defined_in(&self, source_text: &str) -> bool {
+        let needle = format!("fn {}(", self.fn_name());
+        source_text.match_indices(&needle).any(|(at, _)| {
+            let before = &source_text[..at];
+            // The attribute block directly above the fn must contain #[test].
+            before
+                .rsplit_once("\n\n")
+                .map_or(before, |(_, tail)| tail)
+                .contains("#[test]")
+        })
+    }
 }
 
 impl core::fmt::Display for Checker {
@@ -185,6 +212,7 @@ fn is_bead(s: &str) -> bool {
 pub enum Status {
     Live {
         owner: String,
+        checker_strength: String,
         checkers: Vec<Checker>,
         negatives: Vec<Checker>,
     },
@@ -326,6 +354,42 @@ impl Invariants {
         }
         Self::acyclic(&clauses)?;
 
+        // Checker-strength honesty (fa-rez):
+        // 1. No negative test may also appear as a positive checker on any live clause.
+        // 2. Each live clause must have its own disjoint negative test(s); two live
+        //    clauses cannot share a negative test.
+        let mut positive_by_checker: BTreeMap<String, String> = BTreeMap::new();
+        for c in &clauses {
+            if let Status::Live { checkers, .. } = &c.status {
+                for ch in checkers {
+                    positive_by_checker
+                        .entry(ch.to_string())
+                        .or_insert_with(|| c.full_id());
+                }
+            }
+        }
+        let mut negative_by_checker: BTreeMap<String, String> = BTreeMap::new();
+        for c in &clauses {
+            if let Status::Live { negatives, .. } = &c.status {
+                for neg in negatives {
+                    let key = neg.to_string();
+                    if let Some(pos_clause) = positive_by_checker.get(&key) {
+                        return Err(bad(format!(
+                            "live clause `{}` lists `{key}` in negatives, which is already a positive checker for `{pos_clause}`",
+                            c.full_id()
+                        )));
+                    }
+                    if let Some(other_clause) = negative_by_checker.insert(key.clone(), c.full_id())
+                    {
+                        return Err(bad(format!(
+                            "live clause `{}` shares negative test `{key}` with `{other_clause}` (each live clause must have a distinct negative test for its own predicate)",
+                            c.full_id()
+                        )));
+                    }
+                }
+            }
+        }
+
         let gate_g1 = match doc.tables.get("gate_g1") {
             Some(t) => strings(t, "clauses", "gate_g1")?,
             None => return Err(bad("missing [gate_g1]")),
@@ -402,6 +466,17 @@ impl Invariants {
                 if !is_bead(&owner) {
                     return Err(bad(format!("{what}: owner `{owner}` is not a bead id")));
                 }
+                let checker_strength = s(t, "checker_strength", &what)?.to_string();
+                if !CHECKER_STRENGTHS.contains(&checker_strength.as_str()) {
+                    return Err(bad(format!(
+                        "{what}: checker_strength `{checker_strength}` is not registered"
+                    )));
+                }
+                if checker_strength == "smoke" {
+                    return Err(bad(format!(
+                        "{what}: a live clause cannot have checker_strength \"smoke\" (smoke tests prove only existence)"
+                    )));
+                }
                 if checkers.is_empty() || negatives.is_empty() {
                     return Err(bad(format!(
                         "{what}: a live clause names at least one checker and one negative"
@@ -412,6 +487,7 @@ impl Invariants {
                 }
                 Status::Live {
                     owner,
+                    checker_strength,
                     checkers,
                     negatives,
                 }
@@ -430,9 +506,13 @@ impl Invariants {
                         )));
                     }
                 }
-                if !checkers.is_empty() || !negatives.is_empty() || t.contains_key("owner") {
+                if !checkers.is_empty()
+                    || !negatives.is_empty()
+                    || t.contains_key("owner")
+                    || t.contains_key("checker_strength")
+                {
                     return Err(bad(format!(
-                        "{what}: a dormant clause names no checkers, negatives or owner"
+                        "{what}: a dormant clause names no checkers, negatives, checker_strength or owner"
                     )));
                 }
                 Status::Dormant { activating }
@@ -850,6 +930,46 @@ mod tests {
             (
                 "bad status",
                 good.replacen(first_live, "status = \"maybe\"", 1),
+            ),
+            (
+                "smoke checker_strength on live clause",
+                good.replacen(
+                    "checker_strength = \"unit\"",
+                    "checker_strength = \"smoke\"",
+                    1,
+                ),
+            ),
+            (
+                "unknown checker_strength",
+                good.replacen(
+                    "checker_strength = \"unit\"",
+                    "checker_strength = \"magic\"",
+                    1,
+                ),
+            ),
+            (
+                "dormant with checker_strength",
+                good.replacen(
+                    "status = \"dormant\"\n",
+                    "status = \"dormant\"\nchecker_strength = \"unit\"\n",
+                    1,
+                ),
+            ),
+            (
+                "shared negative across live clauses",
+                good.replacen(
+                    "negatives = [\"fa-journal::tests/genesis.rs::summary_account_unknown_account_and_unit_policy_are_refused\"]",
+                    "negatives = [\"fa-journal::tests/genesis.rs::unbalanced_entry_is_refused_with_exit_3_and_nothing_written\"]",
+                    1,
+                ),
+            ),
+            (
+                "negative also listed as positive checker",
+                good.replacen(
+                    "negatives = [\"fa-journal::tests/genesis.rs::summary_account_unknown_account_and_unit_policy_are_refused\"]",
+                    "negatives = [\"fa-journal::tests/genesis.rs::balanced_entry_commits_with_mirrors_and_edges_in_one_transaction\"]",
+                    1,
+                ),
             ),
         ];
         for (law, text) in cases {
