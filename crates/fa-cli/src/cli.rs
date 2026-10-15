@@ -1027,15 +1027,20 @@ fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
             fix: Some(e.fix),
             detail: Json::Null,
         },
-        Err(Fail::Refusal(r)) => Failure {
-            exit: r.exit,
-            refusal_id: Some(r.code),
-            diag: format!("refused {r}"),
-            message: r.message,
-            cite: Some(r.cite),
-            fix: Some(r.fix),
-            detail: Json::Null,
-        },
+        Err(Fail::Refusal(mut r)) => {
+            if out.is_bound() && r.fix.contains("--grant") {
+                r.fix = "identity and authority are fixed when the server starts; ask the operator to start a server with the profile and operations you need".to_string();
+            }
+            Failure {
+                exit: r.exit,
+                refusal_id: Some(r.code),
+                diag: format!("refused {r}"),
+                message: r.message,
+                cite: Some(r.cite),
+                fix: Some(r.fix),
+                detail: Json::Null,
+            }
+        }
         Err(Fail::Book(e)) => {
             let code = e.exit();
             Failure {
@@ -2157,7 +2162,7 @@ const GUIDE: &str = "fa robot-docs guide\n\
 2. Read the exit code before the output: 0 success (empty results are 0), 2 usage, 3 accounting-law refusal, 4 environment, 5 foundation/I-O, 6 conflict (retry with a fresh read), 7 safety block (period law, capability, an unconfirmed dangerous operation), 8 verification failure. 1 is never emitted.\n\
 3. Every non-zero exit is exactly one `error` line: data {class, exit, refusal_id, message, cite, fix, detail}. `refusal_id` (FA-REF-nnn) is the refusal catalog code when one applies. Do the `fix`; do not invent a leg, a date, or an approval. FA-REF-007 means the operation cannot be undone in practice: its fix names the safe alternative; add --yes only when the operation is intended (`fa capabilities --json` lists them under `dangerous`).\n\
 4. Amounts are strings with the unit: \"1500.00 USD\". Never floats. Dates are civil YYYY-MM-DD; recorded time is assigned by the journal, never supplied.\n\
-5. Corrections are new entries (Reversal, Replacement, Reclassification) that cite the original; nothing is edited in place.\n\
+5. Corrections are new entries (Reversal is live; Replacement and Reclassification remain refused with FA-REF-102 until Palimpsest lands) that cite the original; nothing is edited in place.\n\
 6. Idempotency: every intent carries idempotency_key; resubmitting returns the recorded outcome (event \"recorded\"), never a duplicate.\n\
 7. Posting into a non-Open period is decided by the admissibility matrix; the refusal cites the (class, state) cell and names the admissible class or capability.\n\
 8. Two-phase: `fa reserve` posts a Pending (amounts in the pending columns, never posted); `fa resolve` names it with `resolves` and either posts a sub-vector (`legs`, each drawn from one hold leg — same account and side, at most the reserved amount; add `source_ordinal` when the hold has several such legs) or voids it (`disposition: \"voids\"`). The rest of the hold is released either way. One resolution per hold: a second is exit 6 (FA-REF-062); resolving a non-hold is FA-REF-060.\n\
@@ -2511,7 +2516,9 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         }
         Some("info") => {
             let book = ctx.books.open(args)?;
-            let base_unit = book.spec()?.base_unit;
+            let spec = book.spec()?;
+            let base_unit = spec.base_unit;
+            let entities: Vec<Json> = spec.entities.iter().map(|e| s(&e.code)).collect();
             let ctx = book.context();
             let periods = book.periods()?;
             let mut by_state: Vec<(String, i128)> = Vec::new();
@@ -2548,6 +2555,7 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         "units_registered",
                         Json::Int(ctx.units.iter().count() as i128),
                     ),
+                    ("entities", Json::Arr(entities)),
                 ],
                 &format!(
                     "book {} · calendar {} · {} periods · {} accounts · base unit {}",
@@ -3728,7 +3736,7 @@ fn build_post_request(
         if doc.get("legs").is_some() {
             return Err(usage(
                 "a Reversal's legs are derived from the target; do not supply `legs`",
-                "remove `legs`; a different correction is a Replacement",
+                "remove `legs`; a Reversal derives its exact opposite legs from the target (Replacement remains refused with FA-REF-102)",
             ));
         }
         target
@@ -7412,6 +7420,52 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 })
             }
         }
+        Some("schedules") => {
+            if args.positional.len() > 2 {
+                return Err(usage(
+                    "verify schedules takes no extra positional arguments",
+                    "fa verify schedules --book <dir> [--json]",
+                ));
+            }
+            if args.flag("--period").is_some() || args.flag("--fiscal-year").is_some() {
+                return Err(usage(
+                    "verify schedules checks every Schedule vertex at the current head and takes no period filter",
+                    "fa verify schedules --book <dir> [--json]",
+                ));
+            }
+            let book = ctx.books.open(args)?;
+            let v = book.verify_schedules()?;
+            let fields = vec![
+                ("schedules_checked", Json::Int(v.schedules_checked as i128)),
+                ("executed", Json::Int(v.executed as i128)),
+                ("cancelled", Json::Int(v.cancelled as i128)),
+                ("drift", Json::Arr(v.drift.iter().map(s).collect())),
+            ];
+            if v.is_green() {
+                out.event(
+                    "schedules_verified",
+                    fields,
+                    &format!(
+                        "schedules verified by refold: {} schedules ({} executed, {} cancelled), mirrors agree",
+                        v.schedules_checked, v.executed, v.cancelled
+                    ),
+                );
+                Ok(())
+            } else {
+                Err(Fail::Verification {
+                    message: format!(
+                        "{} schedule mirrors differ from the journal fold: {}",
+                        v.drift.len(),
+                        v.drift.join("; ")
+                    ),
+                    detail: obj(fields),
+                    cite: Some("FA-INV-04 (schedules and SCHEDULED_BY mirrors are derived from the journal)".into()),
+                    fix: Some(
+                        "retain this finding with fa verify schedules --json and the same --book".into(),
+                    ),
+                })
+            }
+        }
         other => Err(unhandled("verify", other)),
     }
 }
@@ -8896,10 +8950,7 @@ fn explain_entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 
 fn untrusted_text_json(content: Option<String>, source: String) -> Json {
     match content.filter(|t| !t.is_empty()) {
-        Some(text) => obj(vec![
-            ("untrusted_content", s(text)),
-            ("source", s(source)),
-        ]),
+        Some(text) => obj(vec![("untrusted_content", s(text)), ("source", s(source))]),
         None => Json::Null,
     }
 }
@@ -10059,11 +10110,9 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         .enumerate()
                         .map(|(idx, l)| {
                             let memo = untrusted_text_json(
-                                l.memo
-                                    .as_ref()
-                                    .and_then(|m| {
-                                        m.open(seal_key, fa_model::limits::MAX_MEMO_BYTES).ok()
-                                    }),
+                                l.memo.as_ref().and_then(|m| {
+                                    m.open(seal_key, fa_model::limits::MAX_MEMO_BYTES).ok()
+                                }),
                                 format!("E:{vid_s}:L{idx}"),
                             );
                             Ok(obj(vec![

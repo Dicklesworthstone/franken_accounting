@@ -1417,6 +1417,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    pub fn verify_schedules(
+        &self,
+        cx: &PurposeContexts,
+    ) -> Result<fa_journal::ScheduleVerification, BookError> {
+        self.query(cx, |db, book| Ok(fa_journal::verify_schedules(db, book)?))
+    }
+
     pub fn explain_balance(
         &self,
         cx: &PurposeContexts,

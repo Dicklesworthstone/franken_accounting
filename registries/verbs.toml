@@ -3,7 +3,7 @@
 # One source for the `fa` CLI's verbs, subcommands, aliases, per-verb flags,
 # help text, exit codes, and the robot-mode event schemas that
 # `fa robot-docs schema` prints. The daemon (fa-i8j) and fa-mcp (fa-xex) are
-# generated from and checked against this file when they land.
+# driven by and checked against this file.
 #
 # Consumer: fa-cli (dispatch, flag parsing and correction, `--help`,
 # `fa capabilities`, `fa robot-docs schema`). Gate: the fa-cli parity tests
@@ -364,14 +364,14 @@ example = "fa bundle produce --account 1000 --from 2026-03-01 --to 2026-03-31 --
 
 [[verb]]
 name = "verify"
-summary = "Verify derived state against the journal: leg projections, refolded registers, open-item applied mirrors, limited accounts' availability cells, or accumulator states (exit 8 on drift)."
+summary = "Verify derived state against the journal: leg projections, refolded registers, open-item applied mirrors, limited accounts' availability cells, scheduled reversals, or accumulator states (exit 8 on drift)."
 writes = false
-subcommands = ["registers", "open-items", "availability", "accumulator", "projections"]
+subcommands = ["registers", "open-items", "availability", "accumulator", "projections", "schedules"]
 flags = ["--period", "--fiscal-year"]
 switches = []
-events = ["registers_verified", "open_items_verified", "availability_verified", "accumulator_verified", "projections_verified"]
+events = ["registers_verified", "open_items_verified", "availability_verified", "accumulator_verified", "projections_verified", "schedules_verified"]
 exits = [0, 2, 4, 5, 8]
-usage = ["verify registers ((--period <code>)... | --fiscal-year N)", "verify open-items", "verify availability", "verify accumulator (every recorded checkpoint; no period filter)", "verify projections (all entry payloads and leg topology at current head; no period filter)"]
+usage = ["verify registers ((--period <code>)... | --fiscal-year N)", "verify open-items", "verify availability", "verify accumulator (every recorded checkpoint; no period filter)", "verify projections (all entry payloads and leg topology at current head; no period filter)", "verify schedules (every Schedule vertex and SCHEDULED_BY mirror; no period filter)"]
 example = "fa verify registers --period FY2026-P03 --book ./books/myco"
 
 [[verb]]
@@ -707,8 +707,8 @@ fields = ["book_id:hex", "dir:string", "keys:string", "name:string", "base_unit:
 [[event]]
 name = "book"
 book = true
-doc = "A book's identity and size. `base_unit` is the base unit journaled at genesis."
-fields = ["book_id:hex", "base_unit:string", "calendar:string", "periods:int", "periods_by_state:object", "accounts:int", "units_registered:int"]
+doc = "A book's identity and size. `base_unit` is the base unit journaled at genesis; `entities` lists the registered legal entity codes (empty when single-entity)."
+fields = ["book_id:hex", "base_unit:string", "calendar:string", "periods:int", "periods_by_state:object", "accounts:int", "units_registered:int", "entities:[string]"]
 
 [[event]]
 name = "chart_installed"
@@ -943,6 +943,12 @@ name = "availability_verified"
 book = true
 doc = "Every limited account's expected LimitCell (the vertex at its derived identity) equals the refold from the journal — sums, generation, and its account_ref binding (plan §5.4–5.5); each account's availability in its normal-balance sign. Scope: only those expected cells are examined; LimitCell vertices that no limited account's identity references are not checked and not reported."
 fields = ["known_at:seq", "accounts_checked:int", "cells_checked:int", "accounts:[account_availability]", "drift:[availability_drift]"]
+
+[[event]]
+name = "schedules_verified"
+book = true
+doc = "Every Schedule vertex and SCHEDULED_BY mirror agrees with the journal fold (plan §7.6): schedules_checked counts Schedule vertices examined; executed and cancelled count their derived statuses; drift lists any corrupt or mismatched mirrors."
+fields = ["schedules_checked:int", "executed:int", "cancelled:int", "drift:[string]"]
 
 [[event]]
 name = "registers_materialized"
@@ -1756,7 +1762,7 @@ mistakes = ["Trying to self-issue witness permission: caller grants are forbidde
 cluster = "fa.book"
 name = "verify"
 verb = "verify"
-subcommands = ["registers", "open-items", "availability", "accumulator", "projections"]
+subcommands = ["registers", "open-items", "availability", "accumulator", "projections", "schedules"]
 selector = "target"
 positionals = []
 required = []
@@ -1839,7 +1845,7 @@ stdin_property = "intent"
 stdin_kind = "object"
 stdin_via = "--intent"
 required = []
-dont = ["Don't balance an entry by inventing a leg: report the imbalance; a residual leg exists only where a law names the rounding account.", "Don't pick an effective date to dodge a closed period: the matrix decides; the refusal names the admissible class and capability.", "Don't \"fix\" a posted entry: post a Reversal (`reverses`), Replacement or Reclassification with a reason; the original stays.", "Don't fabricate evidence: cite a document recorded with `fa_evidence_import_document`, or make an explicit manual assertion."]
+dont = ["Don't balance an entry by inventing a leg: report the imbalance; a residual leg exists only where a law names the rounding account.", "Don't pick an effective date to dodge a closed period: the matrix decides; the refusal names the admissible class and capability.", "Don't \"fix\" a posted entry: post a Reversal (`reverses`) with a registered reason; the original stays (Replacement and Reclassification remain refused with FA-REF-102).", "Don't fabricate evidence: cite a document recorded with `fa_evidence_import_document`, or make an explicit manual assertion."]
 mistakes = ["A JSON number in `amount` (write \"1500.00 USD\").", "An instant (\"2026-03-15T00:00:00Z\") in `effective_date` (write the civil date \"2026-03-15\").", "A placeholder such as \"<document oid>\" in `evidence`.", "Posting to a summary account (`leaf: false` in `fa_chart_list_accounts`).", "Re-submitting the same intent with a different `effective_date` after a period-law refusal.", "Expecting a second post with the same `idempotency_key` to post again: it returns the recorded outcome (`recorded`)."]
 
 [[mcp.tool]]

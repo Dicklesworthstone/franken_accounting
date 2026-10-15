@@ -3999,6 +3999,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(true, &["verify", "open-items"]).0, 0);
     assert_eq!(run(true, &["verify", "projections"]).0, 0);
     assert_eq!(run(true, &["verify", "availability"]).0, 0);
+    assert_eq!(run(true, &["verify", "schedules"]).0, 0);
     let more = write(
         &dir,
         "more.json",
@@ -8753,3 +8754,258 @@ fn explain_entry_evidence_refusal_period_and_register_round_trip() -> std::io::R
     assert_eq!(expected_hex, digest_hex);
     Ok(())
 }
+
+#[test]
+fn teller_truthfulness_gate_next_actions_and_refusal_fixes() -> std::io::Result<()> {
+    let dir = tmp("teller-truthfulness")?;
+    let book_dir = dir.join("book");
+    let book_str = book_dir.display().to_string();
+
+    let run_cmd = |words: &[&str]| -> (i32, String, String) { fa(Some(&book_dir), words) };
+
+    // Seed a book with chart, FY2026 periods, an open period FY2026-P03, a document, and an entry.
+    assert_eq!(
+        run_cmd(&["book", "create", "--name", "Acme", "--json"]).0,
+        0
+    );
+    let chart_file = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Expense","type":"Expense","unit":"USD"}]}"#,
+    );
+    assert_eq!(
+        run_cmd(&["chart", "import", &chart_file, "--json"]).0,
+        0
+    );
+    assert_eq!(
+        run_cmd(&["period", "create", "--fiscal-year", "2026", "--json"]).0,
+        0
+    );
+    assert_eq!(
+        run_cmd(&["period", "open", "FY2026-P03", "--json"]).0,
+        0
+    );
+    let doc_oid = source_doc(&dir, &book_dir);
+
+    let intent_file = write(
+        &dir,
+        "intent.json",
+        r#"{"effective_date":"2026-03-15","idempotency_key":"truth-1","legs":[{"side":"debit","account":"6000","amount":"50.00 USD"},{"side":"credit","account":"1000","amount":"50.00 USD"}]}"#,
+    );
+    let (code, post_out, _) = run_cmd(&[
+        "post",
+        "--intent",
+        &intent_file,
+        "--evidence",
+        &doc_oid,
+        "--json",
+    ]);
+    assert_eq!(code, 0);
+    let entry_vid = field(&post_out, "vid").unwrap().to_string();
+    assert_eq!(
+        run_cmd(&["registers", "materialize", "--period", "FY2026-P03", "--json"]).0,
+        0
+    );
+
+    // 1. Verify `fa book info --json` includes `entities` (promised by FA-REF-104)
+    // and `fa verify schedules --json` succeeds (promised by fa_journal::schedule).
+    let (code, info_out, _) = run_cmd(&["book", "info", "--json"]);
+    assert_eq!(code, 0);
+    let info_doc = doc(&info_out);
+    assert_eq!(info_doc.get("entities"), Some(&Json::Arr(vec![])));
+
+    let (code, sched_out, _) = run_cmd(&["verify", "schedules", "--json"]);
+    assert_eq!(code, 0);
+    assert_eq!(field(&sched_out, "event"), Some("schedules_verified"));
+
+    // 2. Validate a command template against the registry (and optionally execute it).
+    let next_chart_file = write(
+        &dir,
+        "next_chart.json",
+        r#"{"accounts":[{"code":"2000","name":"Payable","type":"Liability","unit":"USD"}]}"#,
+    );
+    let reg = registry().expect("embedded verb registry");
+    let validate_template = |cmd: &str| -> Result<Vec<String>, String> {
+        let period_code = if cmd.starts_with("fa period open ") {
+            "FY2026-P04"
+        } else {
+            "FY2026-P03"
+        };
+        let substituted = cmd
+            .replace("<chart.json>", &next_chart_file)
+            .replace("<entry.json>", &intent_file)
+            .replace("<intent.json>", &intent_file)
+            .replace("<resolution.json>", &intent_file)
+            .replace("<oid>", &doc_oid)
+            .replace("<vid>", &entry_vid)
+            .replace("<dir>", &book_str)
+            .replace("<code>", period_code)
+            .replace("<account>", "1000")
+            .replace("<N>", "2027")
+            .replace("<FY>", "2027")
+            .replace("<seq>", "1");
+        let tokens: Vec<String> = substituted
+            .split_whitespace()
+            .map(ToString::to_string)
+            .collect();
+        let Some((first, rest)) = tokens.split_first() else {
+            return Err("empty command template".into());
+        };
+        if first != "fa" {
+            return Err(format!("expected command to start with `fa`, got `{first}`"));
+        }
+        let parsed = fa_cli::args::parse(
+            rest,
+            &reg.value_flags(),
+            &reg.switches(),
+        )
+        .map_err(|e| format!("parse error in `{cmd}`: {}", e.message))?;
+        let Some(verb_word) = parsed.positional.first() else {
+            return Ok(rest.to_vec());
+        };
+        let verb = reg
+            .verb(verb_word)
+            .or_else(|| {
+                reg.alias(verb_word)
+                    .and_then(|a| a.expands.first())
+                    .and_then(|v| reg.verb(v))
+            })
+            .ok_or_else(|| format!("unknown verb `{verb_word}` in `{cmd}`"))?;
+        if !verb.subcommands.is_empty() {
+            let sub = parsed
+                .positional
+                .get(1)
+                .ok_or_else(|| format!("missing subcommand for `{}` in `{cmd}`", verb.name))?;
+            if !verb.subcommands.contains(sub) {
+                return Err(format!(
+                    "unknown subcommand `{sub}` for `{}` in `{cmd}`",
+                    verb.name
+                ));
+            }
+        }
+        for flag in parsed.flags.keys() {
+            if !reg.global.flags.contains(flag) && !verb.flags.contains(flag) {
+                return Err(format!(
+                    "flag `{flag}` not registered on `{}` in `{cmd}`",
+                    verb.name
+                ));
+            }
+        }
+        for sw in &parsed.switches {
+            if !reg.global.switches.contains(sw) && !verb.switches.contains(sw) {
+                return Err(format!(
+                    "switch `{sw}` not registered on `{}` in `{cmd}`",
+                    verb.name
+                ));
+            }
+        }
+        // `fa tb` requires a period selector (`--period`, `--fiscal-year`, or `--as-of`).
+        if verb.name == "tb"
+            && !parsed.flags.contains_key("--period")
+            && !parsed.flags.contains_key("--fiscal-year")
+            && !parsed.flags.contains_key("--as-of")
+        {
+            return Err(format!(
+                "`fa tb` in `{cmd}` omits required `--period`, `--fiscal-year`, or `--as-of`"
+            ));
+        }
+        Ok(rest.to_vec())
+    };
+
+    // Planted negative tests: prove the gate catches bad flags, bad subcommands, and bare `fa tb`.
+    assert!(
+        validate_template("fa tb --period <code> --nonexistent-flag 1 --json").is_err(),
+        "planted unregistered flag must fail the gate"
+    );
+    assert!(
+        validate_template("fa verify imaginary --json").is_err(),
+        "planted unknown subcommand must fail the gate"
+    );
+    assert!(
+        validate_template("fa tb --json").is_err(),
+        "planted selector-less `fa tb` must fail the gate"
+    );
+
+    // Every `[[next_action]]` in `verbs.toml` must pass structural validation AND execute cleanly
+    // (or, for `resolve` on a non-hold intent, reach the kernel rather than failing on CLI usage).
+    for event in &reg.events {
+        for action in reg.next_actions_for(&event.name) {
+            let argv = validate_template(&action.command).unwrap_or_else(|e| {
+                panic!(
+                    "next_action `{}` on event `{}` failed gate: {e}",
+                    action.command, event.name
+                )
+            });
+            let words: Vec<&str> = argv.iter().map(String::as_str).collect();
+            let (code, stdout, stderr) = run_cmd(&words);
+            if action.command.starts_with("fa resolve ") {
+                // `intent.json` is an Original intent without `resolves`, so `fa resolve`
+                // reaches the handler's intent validation rather than failing on unknown verb/flag.
+                assert!(
+                    !stderr.contains("unknown command") && !stderr.contains("unknown flag"),
+                    "next_action `{}` failed CLI dispatch: {stderr}",
+                    action.command
+                );
+            } else {
+                assert_eq!(
+                    code, 0,
+                    "next_action `{}` on event `{}` exited with {code}: stdout={stdout} stderr={stderr}",
+                    action.command, event.name
+                );
+            }
+        }
+    }
+
+    // 3. Check `fa robot-docs guide` does not advertise unimplemented correction classes
+    // (`Replacement`, `Reclassification`, `Revision`, `Restatement`, `PriorPeriodAdjustment`)
+    // as live without noting `FA-REF-102`.
+    let (_, guide_out, _) = run_cmd(&["robot-docs", "guide", "--json"]);
+    let guide_doc = doc(&guide_out);
+    let guide_text = text(&guide_doc, "text");
+    for unimplemented in [
+        "Replacement",
+        "Reclassification",
+        "Revision",
+        "Restatement",
+        "PriorPeriodAdjustment",
+    ] {
+        if guide_text.contains(unimplemented) {
+            assert!(
+                guide_text.contains("FA-REF-102"),
+                "robot-docs guide mentions unimplemented class `{unimplemented}` without noting FA-REF-102"
+            );
+        }
+    }
+
+    // 4. On a launch-bound surface, a kernel refusal whose catalog fix mentions `--grant`
+    // (`FA-REF-011`) rewrites its fix so that it never instructs the caller to pass `--grant`.
+    let auth = fa_cli::authority::LaunchAuthority::new(
+        book_dir.clone(),
+        None,
+        "agent-1",
+        fa_cli::authority::LaunchProfile::Agent,
+        &["read"],
+    )
+    .unwrap();
+    let refusal = fa_journal::Refusal::new(
+        "FA-REF-011",
+        7,
+        "missing Post capability",
+        "plan §14.2",
+        "issue a capability token with --grant <profile> or request elevation",
+    );
+    let (code, cap) = fa_cli::cli::refuse_with_authority(
+        &["fa".into(), "post".into(), "--json".into()],
+        refusal,
+        &auth,
+        true,
+    );
+    assert_eq!(code, 7);
+    let err_fix = field(&cap.stdout, "fix").unwrap_or_default();
+    assert!(
+        !err_fix.contains("--grant"),
+        "bound refusal fix must not suggest `--grant`: {err_fix}"
+    );
+    Ok(())
+}
+

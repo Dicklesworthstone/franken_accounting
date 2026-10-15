@@ -1825,6 +1825,13 @@ impl Book {
         with_store!(&self.store, core => core.verify_availability(&self.purposes()))
     }
 
+    /// Compare every `Schedule` vertex and `SCHEDULED_BY` mirror with the
+    /// journal fold (`fa verify schedules`, plan §7.6). Drift is a finding,
+    /// never a repair.
+    pub fn verify_schedules(&self) -> Result<fa_journal::ScheduleVerification, BookError> {
+        with_store!(&self.store, core => core.verify_schedules(&self.purposes()))
+    }
+
     /// Explain an account's register cells in one period (`fa explain
     /// balance`): the cells, the fold they belong to, every contributing leg
     /// with its recorded sequence, and the cells' known-at history. `None`
