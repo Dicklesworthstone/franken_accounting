@@ -1,21 +1,21 @@
 //! Recipient-scoped journal production with independent selector derivation.
 //!
-//! V2 prefixes carry every payload, including exclusions. Legacy v1 is
-//! sufficient only when every prefix leaf is checked by a selected inclusion.
-//! All classes are journal records here, not a posted-balance view. Exact
-//! accounts are not subtrees. No document, provenance, signature, permission
-//! or accounting-law claim is made. V2 requires whole-prefix disclosure.
+//! V2 prefixes and native v3 balance exports carry every payload, including
+//! exclusions. Legacy v1 is sufficient only when every prefix leaf is checked
+//! by a selected inclusion. All classes are journal records here, not a
+//! posted-balance view. Exact accounts are not subtrees. No document,
+//! provenance, signature, permission or accounting-law claim is made.
+//! Complete witnesses require whole-prefix disclosure authority.
 
 pub mod derivation;
 
 use core::fmt;
-use crate::codec::Reader;
 use crate::envelope::LeafEnvelope;
 use crate::proof::{
-    Checkpoint, PREFIX_FORMAT, RecordCheck, SCOPE_SEQ_RANGE_COMPLETE, VerifyError,
-    open, trusted, verify_inclusion, verify_prefix,
+    Checkpoint, RecordCheck, SCOPE_SEQ_RANGE_COMPLETE, VerifyError,
+    verify_inclusion, verify_prefix,
 };
-use derivation::{PREFIX_FORMAT_V2, verify_prefix_with_records};
+use derivation::{PrefixKind, read_header, verify_prefix_with_records};
 
 pub const MAX_PRODUCTION_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_PRODUCTION_RECORDS: usize = 4096;
@@ -94,7 +94,7 @@ impl fmt::Display for ProductionError {
             Self::PayloadRequired { index } => write!(f,
                 "production leaf {index} requires its record payload, not just its envelope"),
             Self::ScopeDerivationRequired { index } => write!(f,
-                "excluded leaf {index} has unverified scope selectors; supply a payload-complete v2 prefix; membership alone does not prove a complete extract"),
+                "excluded leaf {index} has unverified scope selectors; supply a payload-complete v2 prefix or the existing fa proof balance v3 export as --prefix; membership alone does not prove a complete extract"),
         }
     }
 }
@@ -109,10 +109,10 @@ impl core::error::Error for ProductionError {
 }
 
 /// `records` are exactly the matching raw record-bearing inclusions in leaf
-/// order. V2 supplies derivation evidence for excluded entries. V1 is accepted
-/// only when all prefix leaves are selected (including an empty prefix).
-/// Empty scoped results never excuse missing exclusion evidence. No partial
-/// report escapes a failure, including the last selected record.
+/// order. A v2 prefix or native v3 balance export supplies exclusion evidence.
+/// V1 is accepted only when all prefix leaves are selected, including an
+/// empty prefix. Empty scoped results never excuse missing witnesses. No
+/// partial report escapes a failure, including the last selected record.
 pub fn verify_production_for(
     prefix_bytes: &[u8],
     records: &[&[u8]],
@@ -133,11 +133,9 @@ pub fn verify_production_for(
         return Err(ProductionError::Limit("aggregate encoded bytes"));
     }
     let preflight = || -> Result<bool, VerifyError> {
-        let complete = Reader::new(prefix_bytes).bytes(64, "proof.format")? == PREFIX_FORMAT_V2;
-        let mut r = open(prefix_bytes, if complete { PREFIX_FORMAT_V2 } else { PREFIX_FORMAT })?;
-        trusted(Checkpoint::read(&mut r)?, checkpoint)?;
+        let (mut r, kind) = read_header(prefix_bytes, checkpoint)?;
         r.count(MAX_PRODUCTION_LEAVES, 4, "production.prefix.envelopes")?;
-        Ok(complete)
+        Ok(kind != PrefixKind::Legacy)
     };
     let complete = preflight().map_err(ProductionError::Prefix)?;
     let prefix = if complete {
@@ -152,10 +150,10 @@ pub fn verify_production_for(
     if count != records.len() {
         return Err(ProductionError::RecordCount { expected: count, actual: records.len() });
     }
-    if !complete {
-        if let Some(index) = prefix.envelopes.iter().position(|entry| !expected.selects(entry)) {
-            return Err(ProductionError::ScopeDerivationRequired { index: index as u64 });
-        }
+    if !complete
+        && let Some(index) = prefix.envelopes.iter().position(|entry| !expected.selects(entry))
+    {
+        return Err(ProductionError::ScopeDerivationRequired { index: index as u64 });
     }
     let selected = prefix.envelopes.into_iter().enumerate()
         .filter(|(_, entry)| expected.selects(entry));
