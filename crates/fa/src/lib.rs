@@ -104,8 +104,10 @@ pub use document_disclosure::{DisclosureAccess, DocumentDisclosureArtifact};
 pub use evidence_disclosure::{EvidenceDisclosureArtifact, EvidenceDisclosureRequest};
 pub use fa_intents::{IntentError, MAX_PLAN_BYTES, PlanCertificate, PostIntent, PostPlan};
 pub use fa_journal::{
-    AllocationPosting, InstantSelection, PeriodBalance, Run, RunBody, RunChunk, RunControlRequest,
-    RunControlled, RunMode, RunState, TieOut, TieOutLine, TrialBalanceLine, UploadRequest,
+    AllocationPosting, DocumentEvidenceSummary, EvidenceExplanation, InstantSelection,
+    ManualAssertionSummary, PeriodBalance, PeriodTransitionRecord, ReviewedSummary, Run, RunBody,
+    RunChunk, RunControlRequest, RunControlled, RunMode, RunState, SupplementSummary, TieOut,
+    TieOutLine, TrialBalanceLine, UploadRequest,
 };
 pub use fa_money::allocation::{
     AllocationMethod, AllocationOutcome, AllocationRequest, AllocationTarget,
