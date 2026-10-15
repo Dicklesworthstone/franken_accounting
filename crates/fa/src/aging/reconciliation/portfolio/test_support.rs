@@ -275,7 +275,7 @@ impl Harness {
             },
             principal_ref: PRINCIPAL,
             session_ref: None,
-            evidence: vec![self.evidence, allocation.driver_evidence(BOOK).unwrap()],
+            evidence: vec![allocation.driver_evidence(BOOK).unwrap()],
             supersession: Vec::new(),
             pending: None,
             external_ids: Vec::new(),
