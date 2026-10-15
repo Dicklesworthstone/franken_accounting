@@ -180,10 +180,11 @@ fn snapshot_dir(root: &Path) -> Vec<EntrySnapshot> {
             .into_owned();
         let digest = if ft.is_file() {
             let bytes = std::fs::read(cur).unwrap();
-            fa_model::Oid::hash_bytes("test-snapshot", &bytes).0
+            fa_model::domain_digest(b"test-snapshot", &[&bytes])
         } else if ft.is_symlink() {
             let target = std::fs::read_link(cur).unwrap();
-            fa_model::Oid::hash_bytes("test-symlink", target.to_string_lossy().as_bytes()).0
+            let target_str = target.to_string_lossy();
+            fa_model::domain_digest(b"test-symlink", &[target_str.as_bytes()])
         } else {
             [0u8; 32]
         };
