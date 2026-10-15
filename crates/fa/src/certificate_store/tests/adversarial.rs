@@ -74,7 +74,11 @@ fn scratch_replay_excludes_the_complete_physical_certificate_representation() {
         [0xe1; 32], DatabaseSecurityNamespaceId([0xe2; 32]), [0xe3; 32],
     ))).unwrap();
     let (scratch, map) = h.runtime.block_on(h.book.replay_into(
-        &cx, target, Some(before), Entropy::deterministic(225),
+        &cx,
+        target,
+        &BookKeys::for_development(0xc1),
+        Some(before),
+        Entropy::deterministic(225),
     )).unwrap().unwrap();
     assert!(!scratch.db.vertices_at(scratch.head(&cx).unwrap()).unwrap()
         .iter().any(|row| row.labels.contains(&label::CERTIFICATE)));
