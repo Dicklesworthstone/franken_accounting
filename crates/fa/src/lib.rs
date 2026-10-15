@@ -65,6 +65,7 @@ pub mod document_disclosure;
 pub mod evidence_disclosure;
 pub mod general_ledger;
 pub mod indirect_cash_flow;
+pub mod intake;
 pub mod projections;
 pub mod proof;
 pub mod roll_forward;
@@ -145,6 +146,7 @@ pub use indirect_cash_flow::{
     IndirectCashFlowDefinition, IndirectCashFlowRequest, IndirectCashFlowUnit,
     MAX_INDIRECT_CASH_FLOW_BYTES, MAX_INDIRECT_CASH_FLOW_CERTIFICATE_BYTES,
 };
+pub use intake::IntakeAction;
 pub use projections::{PreparedProjectionRebuild, ProjectionRebuild};
 pub use proof::{MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest};
 pub use roll_forward::{

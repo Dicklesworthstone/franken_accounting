@@ -24,7 +24,9 @@
 //! amount, creating SETTLES edges and moving the target leg's `applied`
 //! mirror by compare-and-set; reversing an applying entry emits the exact
 //! derived UNSETTLES effects, and an entry with live applications against
-//! it is not reversed. Reserved availability (plan §5.4, §5.5 interim
+//! it is not reversed. A Resolution(Posts) can settle open items with its
+//! actual posted sub-vector while releasing the entire reservation in the
+//! same transaction; Pending legs never apply. Reserved availability (plan §5.4, §5.5 interim
 //! R-ESC): every limited account the entry moves is judged on its
 //! `LimitCell`, read as a point witness and moved by compare-and-set on its
 //! generation — pending outflows reserve, pending inflows never finance, a
@@ -867,6 +869,11 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
         }
         match proposal.class {
             EntryClass::ORIGINAL | EntryClass::ADJUSTING => {}
+            // The reservation carries no applications. A Posts resolution
+            // declares applications on its actual posted sub-vector; steps
+            // 7a/7b judge both capacities before either effect is staged.
+            EntryClass::RESOLUTION
+                if matches!(&resolution, Some((_, Disposition::Posts { .. }))) => {}
             EntryClass::REVERSAL => {
                 return Ok(Err(Refusal::new(
                     code::SETTLE_SHAPE,

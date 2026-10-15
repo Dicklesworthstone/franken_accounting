@@ -215,9 +215,9 @@ function renderAccountTable(){
 }
 function exportAccounts(){
   const rows=filteredRows();const fields=['code','name','type','debits','credits','net','debits_pending','credits_pending'];
-  const lines=[['Book','Period','Known at','Unit',...fields],...rows.map(r=>[state.meta.title,state.period,state.overview.known_at,state.unit,...fields.map(f=>r[f])])];
+  const lines=[['Mode','Book ID','Display name','Period','Known at','Unit',...fields],...rows.map(r=>[state.meta.mode,data(state.meta.book).book_id,state.meta.title,state.period,state.overview.known_at,state.unit,...fields.map(f=>r[f])])];
   const blob=new Blob(['\ufeff'+lines.map(row=>row.map(csvCell).join(',')).join('\r\n')+'\r\n'],{type:'text/csv;charset=utf-8'});
-  const url=URL.createObjectURL(blob),link=h('a',{href:url,download:`franken-accounting-${state.period.replace(/[^a-zA-Z0-9_-]/g,'_')}.csv`});
+  const url=URL.createObjectURL(blob),link=h('a',{href:url,download:`franken-accounting-${state.meta.mode}-${state.period.replace(/[^a-zA-Z0-9_-]/g,'_')}.csv`});
   document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);toast('Exported the filtered view with exact amount strings.');
 }
 function renderPeriods(){
@@ -268,13 +268,22 @@ async function showEntry(vid){
 }
 function evidenceGraph(entry,evidence){
   const legs=entry.legs.slice(0,6),docs=evidence.documents.slice(0,4),height=Math.max(260,Math.max(legs.length,docs.length)*76+20),center=height/2;
-  const graph=s('svg',{viewBox:`0 0 650 ${height}`,class:'evidence-graph',role:'img','aria-label':`Entry linked to ${entry.legs.length} resolved legs and ${evidence.documents.length} cited documents. Full metadata follows.`});
+  const graph=s('svg',{viewBox:`0 0 650 ${height}`,class:'evidence-graph',role:'group','aria-label':`Entry linked to ${entry.legs.length} resolved legs and ${evidence.documents.length} cited documents. Select a node for its full details.`});
+  const node=(label,target,...children)=>{
+    const group=s('g',{tabindex:'0',role:'button','aria-label':label},s('title',{},label),...children);
+    const reveal=()=>{const detail=document.getElementById(target);if(detail){detail.scrollIntoView({block:'center'});detail.focus({preventScroll:true});}};
+    group.addEventListener('click',reveal);
+    group.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();reveal();}});
+    return group;
+  };
   legs.forEach((leg,i)=>{const y=12+i*76;graph.append(s('path',{d:`M 205 ${y+30} C 235 ${y+30},225 ${center},255 ${center}`,class:'graph-edge'}),
+    node(`Leg ${leg.ordinal}, ${leg.account_name}, ${format(parseAmount(leg.amount),true)}. Show exact details.`,`entry-leg-${i}`,
     s('rect',{x:0,y,width:205,height:61,rx:8,class:'graph-box'}),s('text',{x:12,y:y+17,class:'graph-sub'},`LEG ${leg.ordinal} · ${leg.side.toUpperCase()}`),
-    s('text',{x:12,y:y+34,class:'graph-main'},short(leg.account+' · '+leg.account_name,26)),s('text',{x:12,y:y+49,class:'graph-sub'},format(parseAmount(leg.amount),true)));});
+    s('text',{x:12,y:y+34,class:'graph-main'},short(leg.account+' · '+leg.account_name,26)),s('text',{x:12,y:y+49,class:'graph-sub'},format(parseAmount(leg.amount),true))));});
   docs.forEach((doc,i)=>{const y=12+i*76;graph.append(s('path',{d:`M 400 ${center} C 430 ${center},422 ${y+30},445 ${y+30}`,class:'graph-edge'}),
+    node(`${doc.kind}, ${doc.grade}. Show full document commitment and review metadata.`,`entry-document-${i}`,
     s('rect',{x:445,y,width:205,height:61,rx:8,class:'graph-box'}),s('text',{x:457,y:y+17,class:'graph-sub'},'CITED DOCUMENT'),
-    s('text',{x:457,y:y+34,class:'graph-main'},short(doc.kind+' · '+doc.grade,26)),s('text',{x:457,y:y+49,class:'graph-sub'},short(doc.document_oid,24)));});
+    s('text',{x:457,y:y+34,class:'graph-main'},short(doc.kind+' · '+doc.grade,26)),s('text',{x:457,y:y+49,class:'graph-sub'},short(doc.document_oid,24))));});
   graph.append(s('rect',{x:255,y:center-45,width:145,height:90,rx:10,class:'graph-core'}),s('text',{x:327,y:center-16,'text-anchor':'middle',class:'graph-core-text'},entry.class),
     s('text',{x:327,y:center+6,'text-anchor':'middle',class:'graph-core-text'},entry.effective_date),s('text',{x:327,y:center+26,'text-anchor':'middle',class:'graph-core-text'},`Commit #${entry.recorded_at}`));
   return graph;
@@ -282,8 +291,8 @@ function evidenceGraph(entry,evidence){
 function renderEntry(result){
   const entry=data(result.entry),evidence=data(result.evidence);
   const desc=entry.description?.untrusted_content;
-  const legs=h('table',{},h('thead',{},h('tr',{},...['Leg / account','Side','Amount'].map(t=>h('th',{scope:'col'},t)))),h('tbody',{},...entry.legs.map(leg=>h('tr',{},h('td',{},`${leg.ordinal} · ${leg.account} · ${leg.account_name}`),h('td',{},leg.side),h('td',{class:'amount'},format(parseAmount(leg.amount),true))))));
-  const documents=evidence.documents.map(doc=>h('article',{class:'document-card'},h('h3',{},doc.kind,badge(doc.counts_toward_minimum?'Counts toward minimum':'Does not count',doc.counts_toward_minimum?'good':'warn')),
+  const legs=h('table',{},h('thead',{},h('tr',{},...['Leg / account','Side','Amount'].map(t=>h('th',{scope:'col'},t)))),h('tbody',{},...entry.legs.map((leg,index)=>h('tr',{id:`entry-leg-${index}`,tabindex:'-1'},h('td',{},`${leg.ordinal} · ${leg.account} · ${leg.account_name}`),h('td',{},leg.side),h('td',{class:'amount'},format(parseAmount(leg.amount),true))))));
+  const documents=evidence.documents.map((doc,index)=>h('article',{class:'document-card',id:`entry-document-${index}`,tabindex:'-1'},h('h3',{},doc.kind,badge(doc.counts_toward_minimum?'Counts toward minimum':'Does not count',doc.counts_toward_minimum?'good':'warn')),
     h('div',{class:'detail-meta'},badge(doc.role_name || `Role ${doc.role}`),badge(doc.grade),badge(doc.self_sourced?'Self-sourced':'Not self-sourced',doc.self_sourced?'warn':'neutral')),
     h('div',{class:'hash'},'Document '+doc.document_oid),h('div',{class:'hash'},'Commitment '+doc.doc_commit),h('p',{},`Recorded #${doc.recorded_at} · ${doc.size} bytes · ${doc.reviews.length} review(s) · ${doc.supplements.length} supplement(s)`),
     ...doc.reviews.map(review=>h('p',{class:'hash'},`Reviewed at #${review.recorded_at} by ${review.reviewer} · ${review.attestation_vid}`))));
@@ -293,7 +302,7 @@ function renderEntry(result){
     h('div',{class:'detail-meta'},badge(entry.class),badge(entry.period || 'Book scope'),badge(`Recorded #${entry.recorded_at}`)),
     h('p',{class:'scope-note'},`Current lineage observed at #${at(result.entry)}; evidence observed at #${at(result.evidence)}. These reads are not pinned to the earlier report snapshot.`),
     desc!==undefined?h('div',{class:'description'},h('small',{},'ENTRY-AUTHORED TEXT · '+entry.description.source),desc):null,
-    evidenceGraph(entry,evidence),h('p',{class:'scope-note'},`Showing ${Math.min(6,entry.legs.length)} of ${entry.legs.length} legs and ${Math.min(4,evidence.documents.length)} of ${evidence.documents.length} documents above. Full lists follow. Relationships, not cash-flow attribution.`),
+    evidenceGraph(entry,evidence),h('p',{class:'scope-note'},`Showing ${Math.min(6,entry.legs.length)} of ${entry.legs.length} legs and ${Math.min(4,evidence.documents.length)} of ${evidence.documents.length} documents above. Select a node for full details below. Relationships, not cash-flow attribution.`),
     panel('Resolved legs','Exact native amounts · no currency conversion',h('div',{class:'table-wrap'},legs)),
     panel('Evidence closure',`Native minimum: ${evidence.min_documents} document(s) · ${entry.approvals} approval(s)`,
       h('div',{class:'panel-body'},badge(evidence.satisfied?'Native evidence minimum satisfied':'Native evidence minimum not satisfied',evidence.satisfied?'good':'bad'),...documents,

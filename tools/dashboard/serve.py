@@ -22,6 +22,8 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 import webbrowser
 
+import reports
+
 ROOT = Path(__file__).resolve().parent
 MAX_OUTPUT = 16 * 1024 * 1024
 MAX_STDERR = 64 * 1024
@@ -324,7 +326,7 @@ class Handler(BaseHTTPRequestHandler):
             params = {key: val[0] for key, val in values.items()}
             allowed = {"/api/bootstrap": set(), "/api/overview": {"period", "known_at"},
                        "/api/account": {"account", "period", "known_at"}, "/api/entry": {"vid"},
-                       "/api/health": set(), "/api/projections": set()}
+                       "/api/health": set(), "/api/projections": set(), **reports.ROUTES}
             if target.path not in allowed:
                 raise DashboardError("Not found.", 404)
             if set(params) - allowed[target.path]:
@@ -333,7 +335,9 @@ class Handler(BaseHTTPRequestHandler):
                 raise DashboardError("Another native read is running. Try again after it completes.", 429)
             try:
                 source = self.server.source
-                if target.path == "/api/bootstrap":
+                if target.path in reports.ROUTES:
+                    result = reports.dispatch(source, target.path, params, DashboardError)
+                elif target.path == "/api/bootstrap":
                     result = source.bootstrap()
                 elif target.path == "/api/overview":
                     result = source.overview(text(params.get("period"), "period"),
