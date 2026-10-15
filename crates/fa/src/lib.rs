@@ -115,7 +115,12 @@ pub use fa_money::allocation::{
 pub use fa_notary::{
     AccumulatorVerification, BalanceRequest, BundleRequest, BundleScope, Checkpointed, ScopeRequest,
 };
-pub use fa_policy::{Capability, Op, Profile};
+pub use fa_policy::{
+    BenefitInterval, Capability, DECISION_CARD_DOMAIN, DecisionCandidate, DecisionCard,
+    DecisionFeature, DecisionKind, DecisionPolicyRow, DecisionReason, DecisionReplayError, Op,
+    Profile, amounts_preserved, decide_lantern_threshold, decide_register_checkpoint_cadence,
+    evaluate_decision,
+};
 pub use fa_registers::open_items::OpenItemsReport;
 pub use fa_registers::{
     Advance, EntityCell, EntityCellKey, EntityFold, EntityVerification, RegisterEquals,

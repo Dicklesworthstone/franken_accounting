@@ -540,6 +540,8 @@ pub struct ProcedureRun {
     /// Sorted: severity descending, statistic descending, citations ascending.
     pub findings: Vec<Finding>,
     pub findings_digest: [u8; 32],
+    pub decision_card: fa_policy::DecisionCard,
+    pub decision_card_digest: [u8; 32],
 }
 
 /// The registry row of `id`, or `Unregistered`.
@@ -649,6 +651,17 @@ pub fn run_over(
         w.list(&findings, |w, f| f.encode(w));
         digest(FINDINGS_DIGEST_DOMAIN, &w.finish()?)
     };
+    let population = snapshot.entries.len() as u64;
+    let policy_oid = fa_policy::Steward::embedded()?.policy_oid;
+    let decision_card = fa_policy::decide_lantern_threshold(
+        Some(policy_oid),
+        policy_oid,
+        &row.id,
+        row.version,
+        &parameters,
+        population,
+    );
+    let decision_card_digest = decision_card.digest()?;
     Ok(ProcedureRun {
         procedure: row.id,
         version: row.version,
@@ -659,10 +672,12 @@ pub fn run_over(
         inputs,
         parameters_digest,
         inputs_digest: snapshot.inputs_digest,
-        population: snapshot.entries.len() as u64,
+        population,
         work,
         findings,
         findings_digest,
+        decision_card,
+        decision_card_digest,
     })
 }
 

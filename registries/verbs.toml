@@ -995,8 +995,8 @@ fields = ["code:string", "kind:string", "state:string", "start:date", "end:date"
 [[event]]
 name = "register_explained"
 book = true
-doc = "A register cell's fold vs stored materialized state (`fa explain register <account-code> --period <code> [--unit <UNIT>] [--as-known-at HEAD|<seq>]`): the refolded cell, stored materialized cell, verification status (`green`, `cache_status`, `stale`, `lag_entries`), and contributing legs."
-fields = ["account:string", "account_vid:hex", "name:string", "type:string", "period:string", "unit:string?", "known_at:seq", "watermark:seq?", "fold_digest:hex", "green:bool", "cache_status:string", "verified_through:seq?", "stale:bool", "lag_entries:int", "cells:[explained_cell]", "contributions:[contribution]"]
+doc = "A register cell's fold vs stored materialized state (`fa explain register <account-code> --period <code> [--unit <UNIT>] [--as-known-at HEAD|<seq>]`): the refolded cell, stored materialized cell, verification status (`green`, `cache_status`, `stale`, `lag_entries`), replayable checkpoint-cadence decision card (`decision_card_digest`, `decision_card_bytes`), and contributing legs."
+fields = ["account:string", "account_vid:hex", "name:string", "type:string", "period:string", "unit:string?", "known_at:seq", "watermark:seq?", "fold_digest:hex", "green:bool", "cache_status:string", "verified_through:seq?", "stale:bool", "lag_entries:int", "decision_card_digest:hex", "decision_card_bytes:hex", "cells:[explained_cell]", "contributions:[contribution]"]
 
 [[event]]
 name = "document_read"

@@ -8706,8 +8706,25 @@ fn explain_entry_evidence_refusal_period_and_register_round_trip() -> std::io::R
     assert_eq!(field(&reg_ex, "account"), Some("1000"));
     assert_eq!(field(&reg_ex, "period"), Some("FY2026-P03"));
     assert_eq!(field(&reg_ex, "unit"), Some("USD"));
-    assert_eq!(doc(&reg_ex).get("green"), Some(&Json::Bool(true)));
+    let reg_doc = doc(&reg_ex);
+    assert_eq!(reg_doc.get("green"), Some(&Json::Bool(true)));
     assert_eq!(field(&reg_ex, "cache_status"), Some("verified"));
-    assert_eq!(doc(&reg_ex).get("stale"), Some(&Json::Bool(false)));
+    assert_eq!(reg_doc.get("stale"), Some(&Json::Bool(false)));
+
+    // 8. Replay the recorded `DecisionCard` from `register_explained` bit-for-bit.
+    let card_hex = text(&reg_doc, "decision_card_bytes");
+    let digest_hex = text(&reg_doc, "decision_card_digest");
+    let card_bytes: Vec<u8> = (0..card_hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&card_hex[i..i + 2], 16).unwrap())
+        .collect();
+    let card = fa::DecisionCard::decode(&card_bytes).expect("decode DecisionCard");
+    assert_eq!(card.canonical_bytes().unwrap(), card_bytes);
+    let steward = fa_policy::Steward::embedded().unwrap();
+    let replayed_digest = card
+        .verify_replay(steward.policy_oid)
+        .expect("replay DecisionCard");
+    let expected_hex: String = replayed_digest.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(expected_hex, digest_hex);
     Ok(())
 }

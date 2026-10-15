@@ -38,6 +38,8 @@ pub struct Advance {
     pub rebuilt: bool,
     pub wrote: bool,
     pub fold: Fold,
+    pub decision_card: fa_policy::DecisionCard,
+    pub decision_card_digest: [u8; 32],
 }
 
 /// A computed advance with a private basis and immutable result. Computing
@@ -381,6 +383,20 @@ pub async fn prepare_advance<V: asupersync::fs::Vfs + Clone>(
     // Repeated calls after our own maintenance write must not manufacture
     // an endless stream of empty maintenance commits.
     let wrote = expected_state.is_none() || entries_decoded != 0;
+    let through = if wrote { basis } else { from };
+    let policy_oid = fa_policy::Steward::embedded()
+        .map_err(|e| KernelError::Corrupt(e.to_string()))?
+        .policy_oid;
+    let decision_card = fa_policy::decide_register_checkpoint_cadence(
+        Some(policy_oid),
+        policy_oid,
+        period,
+        from.0,
+        through.0,
+        entries_decoded as u64,
+        fold.entries,
+    );
+    let decision_card_digest = decision_card.digest().map_err(RegisterError::Encoding)?;
     Ok(PreparedAdvance {
         book_id: book.book_id,
         basis,
@@ -389,12 +405,14 @@ pub async fn prepare_advance<V: asupersync::fs::Vfs + Clone>(
         result: Advance {
             period: period.into(),
             from,
-            through: if wrote { basis } else { from },
+            through,
             published_at: basis,
             entries_decoded,
             rebuilt: false,
             wrote,
             fold,
+            decision_card,
+            decision_card_digest,
         },
     })
 }
@@ -514,6 +532,19 @@ pub(crate) fn prepare_fold<V: asupersync::fs::Vfs + Clone>(
     let expected_state = state
         .as_ref()
         .and_then(|row| prop(row, property::FA_PAYLOAD).cloned());
+    let policy_oid = fa_policy::Steward::embedded()
+        .map_err(|e| KernelError::Corrupt(e.to_string()))?
+        .policy_oid;
+    let decision_card = fa_policy::decide_register_checkpoint_cadence(
+        Some(policy_oid),
+        policy_oid,
+        &fold.period,
+        CommitSeq::ORIGIN.0,
+        basis.0,
+        0,
+        fold.entries,
+    );
+    let decision_card_digest = decision_card.digest().map_err(RegisterError::Encoding)?;
     Ok(PreparedAdvance {
         book_id: book.book_id,
         basis,
@@ -528,6 +559,8 @@ pub(crate) fn prepare_fold<V: asupersync::fs::Vfs + Clone>(
             rebuilt: true,
             wrote: true,
             fold,
+            decision_card,
+            decision_card_digest,
         },
     })
 }

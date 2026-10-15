@@ -15,9 +15,12 @@ pub use fa_journal::{
 };
 use fa_model::Id128;
 pub use fa_policy::{
-    AccountScope, Approval, Approver, Capability, CapabilityError, Denial, Intent, Observes, Op,
-    Party, Profile, Reach, Steward, admit, admit_base, admit_read, admit_within, current, reach,
-    require, scope,
+    AccountScope, Approval, Approver, BenefitInterval, Capability, CapabilityError,
+    DECISION_CARD_DOMAIN, DecisionCandidate, DecisionCard, DecisionFeature, DecisionKind,
+    DecisionPolicyRow, DecisionReason, DecisionReplayError, Denial, Intent, Observes, Op, Party,
+    Profile, Reach, Steward, admit, admit_base, admit_read, admit_within, amounts_preserved,
+    current, decide_lantern_threshold, decide_register_checkpoint_cadence, evaluate_decision,
+    reach, require, scope,
 };
 use fgdb_types::VId;
 

@@ -23,6 +23,7 @@
 pub mod admit;
 pub mod approval;
 pub mod capability;
+pub mod decision;
 pub mod denial;
 pub mod op;
 pub mod sod;
@@ -33,6 +34,11 @@ pub use admit::{
 };
 pub use approval::Approval;
 pub use capability::{Capability, CapabilityError, Profile};
+pub use decision::{
+    BenefitInterval, DECISION_CARD_DOMAIN, DecisionCandidate, DecisionCard, DecisionFeature,
+    DecisionKind, DecisionPolicyRow, DecisionReason, DecisionReplayError, amounts_preserved,
+    decide_lantern_threshold, decide_register_checkpoint_cadence, evaluate_decision,
+};
 pub use denial::Denial;
 pub use op::Op;
 pub use sod::{Approver, Party};

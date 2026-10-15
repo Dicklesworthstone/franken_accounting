@@ -9254,14 +9254,31 @@ fn explain_register_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         fa_registers::CacheStatus::Verified => "verified",
         fa_registers::CacheStatus::Corrupt => "corrupt",
     };
+    let steward = fa_policy::Steward::embedded().map_err(|e| Fail::Internal(e.to_string()))?;
+    let decision_card = fa_policy::decide_register_checkpoint_cadence(
+        Some(steward.policy_oid),
+        steward.policy_oid,
+        &ex.period,
+        v.verified_through.map_or(0, |s| s.0),
+        ex.known_at.0,
+        v.lag_entries as u64,
+        ex.contributions.len() as u64,
+    );
+    let decision_card_bytes = decision_card
+        .canonical_bytes()
+        .map_err(|e| Fail::Internal(e.to_string()))?;
+    let decision_card_digest = decision_card
+        .digest()
+        .map_err(|e| Fail::Internal(e.to_string()))?;
     let human = format!(
-        "register {} {} ({type_name}) in {} · cache_status={cache_status} · green={} · stale={} · lag={}",
+        "register {} {} ({type_name}) in {} · cache_status={cache_status} · green={} · stale={} · lag={} · decision_card={}",
         account_row.code,
         account_row.name,
         ex.period,
         v.is_green(),
         v.stale,
-        v.lag_entries
+        v.lag_entries,
+        hex(&decision_card_digest)
     );
     out.event(
         "register_explained",
@@ -9291,6 +9308,8 @@ fn explain_register_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ),
             ("stale", Json::Bool(v.stale)),
             ("lag_entries", Json::Int(v.lag_entries as i128)),
+            ("decision_card_digest", s(hex(&decision_card_digest))),
+            ("decision_card_bytes", s(hex(&decision_card_bytes))),
             ("cells", Json::Arr(cells)),
             ("contributions", Json::Arr(contributions)),
         ],
