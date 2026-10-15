@@ -41,7 +41,7 @@ impl ProductionScope {
         Ok(())
     }
 
-    fn selects(&self, entry: &LeafEnvelope) -> bool {
+    pub(crate) fn selects(&self, entry: &LeafEnvelope) -> bool {
         self.first_seq <= entry.commit_seq
             && entry.commit_seq <= self.known_at
             && self.account.is_none_or(|account| entry.account_vids.binary_search(&account).is_ok())

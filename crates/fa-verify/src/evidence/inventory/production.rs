@@ -13,6 +13,7 @@
 //! or sufficient. The full prefix exposes out-of-scope envelope metadata.
 
 pub mod documents;
+pub mod prefix;
 
 use core::fmt;
 
