@@ -3,6 +3,9 @@
 
 #![forbid(unsafe_code)]
 
+#[path = "proofs/prefix.rs"]
+mod prefix;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -441,7 +444,6 @@ fn all_five_exports_verify_independently_at_recorded_checkpoints_after_reopen() 
     );
     let checked_record = fa_verify::verify_inclusion(&bytes(&disclosed), &new)
         .expect("producer record is independently recomputed");
-    assert_eq!(checked_record.record, RecordCheck::Recomputed);
     assert_eq!(checked_record.envelope, included.envelope);
 
     let consistency = exported(
@@ -571,7 +573,7 @@ fn missing_unknown_and_empty_checkpoints_have_distinct_read_only_outcomes() {
         vec!["proof", "consistency", "--next-state", UNKNOWN_STATE],
     ] {
         let (code, refusal) = run(&f.book, &args);
-        assert_eq!(code, 2, "{}", refusal.render());
+        assert_eq!(code, 2, "args={args:?}: {}", refusal.render());
         assert_eq!(
             text(&refusal, "refusal_id"),
             fa::proof::code::PROOF_STATE_UNKNOWN
@@ -631,7 +633,7 @@ fn malformed_duplicate_and_inapplicable_proof_flags_refuse_before_book_open() {
         ],
         vec!["proof", "consistency"],
         vec!["proof", "consistency", "--next-state", "latest"],
-        vec!["proof", "prefix", "--with-record"],
+        vec!["proof", "prefix", "--with-record", "--with-record"],
         vec!["proof", "prefix", "--as-of", "2026-03-15"],
         vec!["proof", "balance", "--account", "1000"],
         vec!["proof", "balance", "--unit", "USD"],

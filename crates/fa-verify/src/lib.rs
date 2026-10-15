@@ -10,11 +10,12 @@
 //!   with [`verify_state`] — extends the trusted one without rewriting
 //!   history ([`verify_consistency`], scope `consistency`);
 //! - a list of leaf envelopes is the *complete* prefix the checkpoint
-//!   commits, so a scope predicate over it is complete for that prefix
+//!   commits, without attesting correct derivation of its selector fields
 //!   ([`verify_prefix`], scope `seq_range_complete`);
 //! - an account's posted debits and credits in one unit, through a cutoff,
-//!   are the fold of exactly the authenticated in-scope entries
-//!   ([`verify_balance`], scope `recomputation`);
+//!   are the fold of exactly the authenticated in-scope entries when every
+//!   prefix payload is checked ([`verify_balance`], scope `recomputation`);
+//!   legacy proofs with excluded payloads are only `membership_only`;
 //! - a verified balance answers the recipient's independently specified
 //!   account, unit, cutoff and optional exact amounts ([`verify_balance_for`]);
 //! - a document's bytes and kind produce the public `doc_commit` an
@@ -94,16 +95,20 @@ pub use proof::{
 pub use scope::{IndexDerivation, ScopeClaim, ScopeReport, recompute_index, verify_scope};
 pub use state::{Signatures, State, verify_state};
 
-/// Verify either supported balance format against an independently trusted
-/// checkpoint. V1 remains byte-compatible for non-migration scopes; v2
-/// authenticates the migration lifecycle and required run-body policies.
-/// Neither format accepts a checkpoint merely because the proof supplies it.
+/// Verify a supported balance format against an independently trusted checkpoint.
+/// V3 requires every prefix payload, independently derives the scope, and
+/// authenticates migration visibility. V1/v2 remain byte-compatible, but
+/// return `membership_only` when excluded payloads leave indexing unverified.
+/// No version accepts a checkpoint merely because the proof supplies it.
 pub fn verify_balance(
     proof: &[u8],
     trusted_checkpoint: &Checkpoint,
 ) -> Result<Balance, VerifyError> {
     let mut reader = codec::Reader::new(proof);
-    if reader.bytes(128, "proof.format")? == migration_balance::BALANCE_FORMAT_V2 {
+    let format = reader.bytes(128, "proof.format")?;
+    if format == migration_balance::BALANCE_FORMAT_V2
+        || format == migration_balance::BALANCE_FORMAT_V3
+    {
         migration_balance::verify_balance(proof, trusted_checkpoint)
     } else {
         balance::verify_balance(proof, trusted_checkpoint)
@@ -602,7 +607,7 @@ mod balance_dispatch_tests {
     use super::*;
 
     #[test]
-    fn public_balance_verifier_accepts_both_versions_without_changing_v1() {
+    fn public_balance_verifier_accepts_all_versions_without_changing_v1() {
         let checkpoint = Checkpoint {
             book_id: [1; 16],
             branch_id: [0; 16],
@@ -613,6 +618,7 @@ mod balance_dispatch_tests {
         for format in [
             balance::BALANCE_FORMAT,
             migration_balance::BALANCE_FORMAT_V2,
+            migration_balance::BALANCE_FORMAT_V3,
         ] {
             let mut w = codec::Writer::default();
             w.bytes(format)
@@ -624,7 +630,7 @@ mod balance_dispatch_tests {
                 .i128(0)
                 .count(0)
                 .count(0);
-            if format == migration_balance::BALANCE_FORMAT_V2 {
+            if format != balance::BALANCE_FORMAT {
                 w.count(0);
             }
             let report = verify_balance(&w.buf, &checkpoint).unwrap();

@@ -1,6 +1,9 @@
 //! Process-level request binding: a valid proof is not necessarily the
 //! answer the recipient asked for. Inputs and failures are retained.
 
+#[path = "fixtures/complete_balance.rs"]
+mod complete_balance;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -97,20 +100,24 @@ fn result(output: Output, exit: i32) -> String {
 }
 
 #[test]
-fn frozen_producer_balance_requires_the_requested_scope_and_gross_amounts() {
+fn complete_balance_requires_the_requested_scope_and_gross_amounts() {
     let dir = directory();
-    let checkpoint = verify_state(&vector("state")).unwrap().checkpoint;
-    let (proof, anchor) = inputs(&dir, &vector("balance"), &checkpoint);
+    let (bytes, checkpoint) = complete_balance::fixture();
+    let (proof, anchor) = inputs(&dir, &bytes, &checkpoint);
     let mut flags = SCOPE.to_vec();
     flags.extend(AMOUNTS);
     let stdout = result(run("balance", &proof, &anchor, &flags, true), 0);
     assert!(stdout.contains("\"name\":\"requested_balance_scope\""));
     assert!(stdout.contains("\"name\":\"requested_balance_amounts\""));
+    assert!(stdout.contains("\"scope\":\"recomputation\""));
+    assert!(stdout.contains("\"balance_complete\":true"));
+    assert!(stdout.contains("\"scope_derivation\":\"all_prefix_payloads_checked\""));
+    assert!(stdout.contains("\"name\":\"posted_balance_recomputation\""));
     let scope_only = result(run("balance", &proof, &anchor, &SCOPE, true), 0);
     assert!(scope_only.contains("requested_balance_scope"));
     assert!(!scope_only.contains("requested_balance_amounts"));
-    let legacy = result(run("balance", &proof, &anchor, &[], true), 0);
-    assert!(!legacy.contains("requested_balance_"));
+    let inspection = result(run("balance", &proof, &anchor, &[], true), 0);
+    assert!(!inspection.contains("requested_balance_"));
 
     for (position, other) in [
         (1, "00000000000000000000000000000031"),
@@ -136,7 +143,33 @@ fn frozen_producer_balance_requires_the_requested_scope_and_gross_amounts() {
 }
 
 #[test]
-fn v2_dispatch_and_explicit_cutoffs_are_bound_in_the_standalone_process() {
+fn frozen_legacy_membership_never_satisfies_a_complete_balance_request() {
+    // Preserve the v1 golden bytes. They carry four envelopes but only the
+    // two selected entry payloads; the omitted controls' indexing is unproven.
+    let bytes = vector("balance");
+    let checkpoint = verify_state(&vector("state")).unwrap().checkpoint;
+    let (proof, anchor) = inputs(&directory(), &bytes, &checkpoint);
+    let inspected = result(run("balance", &proof, &anchor, &[], true), 0);
+    assert!(inspected.contains("\"scope\":\"membership_only\""));
+    assert!(inspected.contains("\"balance_complete\":false"));
+    assert!(inspected.contains("\"scope_derivation\":\"not_verified\""));
+    assert!(inspected.contains("selected_amount_recomputation"));
+    assert!(!inspected.contains("posted_balance_recomputation"));
+    assert!(!inspected.contains("exact_contributing_record_set"));
+    let mut exact = SCOPE.to_vec();
+    exact.extend(AMOUNTS);
+    for flags in [&SCOPE[..], exact.as_slice()] {
+        let rejected = result(run("balance", &proof, &anchor, flags, true), 8);
+        assert!(rejected.contains("balance completeness is not independently verified"));
+    }
+    let human = run("balance", &proof, &anchor, &[], false);
+    assert!(human.status.success());
+    assert!(String::from_utf8(human.stdout).unwrap().contains("completeness NOT proven"));
+    assert_eq!(fs::read(&proof).unwrap(), bytes);
+}
+
+#[test]
+fn migration_and_complete_dispatch_bind_explicit_cutoffs_in_the_standalone_process() {
     let checkpoint = Checkpoint {
         book_id: [1; 16],
         branch_id: [0; 16],
@@ -144,34 +177,28 @@ fn v2_dispatch_and_explicit_cutoffs_are_bound_in_the_standalone_process() {
         leaf_count: 0,
         root: fa_verify::tree::empty_root(),
     };
-    for through in [None, Some(i32::MIN), Some(0), Some(i32::MAX)] {
-        let mut writer = Writer::default();
-        writer
-            .bytes(fa_verify::migration_balance::BALANCE_FORMAT_V2)
-            .fixed(&checkpoint.encode())
-            .u128(0x30)
-            .u32(1);
-        match through {
-            Some(day) => {
-                writer.u8(1).i32(day);
+    for format in [
+        fa_verify::migration_balance::BALANCE_FORMAT_V2,
+        fa_verify::migration_balance::BALANCE_FORMAT_V3,
+    ] {
+        for through in [None, Some(i32::MIN), Some(0), Some(i32::MAX)] {
+            let mut writer = Writer::default();
+            writer.bytes(format).fixed(&checkpoint.encode()).u128(0x30).u32(1);
+            match through {
+                Some(day) => { writer.u8(1).i32(day); }
+                None => { writer.u8(0); }
             }
-            None => {
-                writer.u8(0);
-            }
+            writer.i128(0).i128(0).count(0).count(0).count(0);
+            let dir = directory();
+            let (proof, anchor) = inputs(&dir, &writer.buf, &checkpoint);
+            let cutoff = through.map_or_else(|| "none".to_string(), |day| day.to_string());
+            let mut flags = SCOPE.to_vec();
+            flags[5] = &cutoff;
+            flags.extend(["--expect-debits", "0", "--expect-credits", "0"]);
+            result(run("balance", &proof, &anchor, &flags, true), 0);
+            flags[5] = if through.is_some() { "none" } else { "0" };
+            assert!(result(run("balance", &proof, &anchor, &flags, true), 8).contains("balance scope mismatch"));
         }
-        writer.i128(0).i128(0).count(0).count(0).count(0);
-        let dir = directory();
-        let (proof, anchor) = inputs(&dir, &writer.buf, &checkpoint);
-        let cutoff = through.map_or_else(|| "none".to_string(), |day| day.to_string());
-        let mut flags = SCOPE.to_vec();
-        flags[5] = &cutoff;
-        flags.extend(["--expect-debits", "0", "--expect-credits", "0"]);
-        result(run("balance", &proof, &anchor, &flags, true), 0);
-        flags[5] = if through.is_some() { "none" } else { "0" };
-        assert!(
-            result(run("balance", &proof, &anchor, &flags, true), 8)
-                .contains("balance scope mismatch")
-        );
     }
 }
 
@@ -225,8 +252,8 @@ fn all_request_options_are_validated_before_any_input_is_opened() {
 
 #[test]
 fn human_mode_distinguishes_requested_verification_from_claim_inspection() {
-    let checkpoint = verify_state(&vector("state")).unwrap().checkpoint;
-    let (proof, anchor) = inputs(&directory(), &vector("balance"), &checkpoint);
+    let (bytes, checkpoint) = complete_balance::fixture();
+    let (proof, anchor) = inputs(&directory(), &bytes, &checkpoint);
     let output = run("balance", &proof, &anchor, &SCOPE, false);
     assert!(output.status.success());
     assert!(
@@ -261,8 +288,8 @@ fn request_flags_preserve_non_utf8_input_paths() {
     let dir = directory();
     let proof = dir.join(OsString::from_vec(b"proof-\xff".to_vec()));
     let anchor = dir.join(OsString::from_vec(b"anchor-\xfe".to_vec()));
-    let checkpoint = verify_state(&vector("state")).unwrap().checkpoint;
-    match fs::write(&proof, vector("balance")) {
+    let (bytes, checkpoint) = complete_balance::fixture();
+    match fs::write(&proof, bytes) {
         Ok(()) => {
             fs::write(&anchor, checkpoint.encode()).unwrap();
             result(run("balance", &proof, &anchor, &SCOPE, true), 0);

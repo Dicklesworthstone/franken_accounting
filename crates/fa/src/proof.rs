@@ -6,9 +6,15 @@
 //! key ([`ProofKind::SignedCheckpoint`], checked with `--key`), or the raw
 //! 80-byte statement ([`ProofKind::Checkpoint`]) whose trust the outsider
 //! establishes separately. A proof never authenticates its own anchor, and
-//! no artifact here carries document receipts.
-//! Balance exports automatically use migration-aware v2 when necessary;
-//! scopes without migration candidates retain their exact v1 wire bytes.
+//! no artifact here carries document receipts. The exported checkpoint is a
+//! candidate trust anchor, never its own proof of authenticity.
+//! Balance exports automatically use migration-aware v2 when necessary, and
+//! payload-complete v3 when every prefix entry is disclosed and every scope
+//! selector can be independently derived. Scopes without migration candidates
+//! retain their exact v1 wire bytes. Legacy notary v1/v2 APIs remain
+//! available, but are not used to claim recomputation of a complete proof.
+//! PrefixWithRecords exports the native v2 journal witness without requiring
+//! any account, unit, or migration-balance policy. Prefix retains v1 bytes.
 
 use asupersync::fs::Vfs;
 use fa_journal::genesis::BookContext;
@@ -25,7 +31,7 @@ use fgdb_types::VId;
 use crate::{BookError, Outcome};
 
 /// Shared producer limit; the standalone verifier also bounds its input.
-pub const MAX_PROOF_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_PROOF_BYTES: usize = fa_notary::migration_balance::MAX_BALANCE_PROOF_BYTES;
 
 pub mod code {
     /// The requested checkpoint is not on this book's recorded state chain.
@@ -52,7 +58,11 @@ pub enum ProofKind {
     },
     /// Every leaf envelope in the checkpoint's prefix, in journal order.
     Prefix,
-    /// Exact posted debits and credits, with a complete-prefix predicate.
+    /// Every envelope AND entry payload, including controls and staged entries.
+    /// Explicit whole-book disclosure for independent scope derivation.
+    PrefixWithRecords,
+    /// Exact posted amounts with every prefix entry payload for scope derivation.
+    /// This is whole-book disclosure, not an account-filtered entry export.
     Balance {
         account: VId,
         unit: UnitId,
@@ -68,7 +78,7 @@ impl ProofKind {
             Self::SignedCheckpoint => "signed-checkpoint",
             Self::Inclusion { .. } => "inclusion",
             Self::Consistency { .. } => "consistency",
-            Self::Prefix => "prefix",
+            Self::Prefix | Self::PrefixWithRecords => "prefix",
             Self::Balance { .. } => "balance",
         }
     }
@@ -79,7 +89,7 @@ impl ProofKind {
             Self::Checkpoint | Self::SignedCheckpoint => "entry_prefix",
             Self::Inclusion { .. } => "inclusion",
             Self::Consistency { .. } => "consistency",
-            Self::Prefix => "seq_range_complete",
+            Self::Prefix | Self::PrefixWithRecords => "seq_range_complete",
             Self::Balance { .. } => "recomputation",
         }
     }
@@ -143,10 +153,10 @@ pub(crate) fn export<V: Vfs + Clone>(
     capability: &Capability,
     request: ProofRequest,
 ) -> Outcome<ProofArtifact> {
-    // Admission precedes even the current authority frontier. Complete-prefix
-    // and balance formats reveal every envelope; they require whole-book read
-    // authority plus the explicit production operation. Current capabilities
-    // support book caveats, not silently filtered account/period views.
+    // Admission precedes even the current authority frontier. Prefix proofs
+    // reveal every envelope; PrefixWithRecords and v3 balances disclose every
+    // entry payload. All require whole-book read plus the production operation.
+    // Current capabilities support book caveats, not silently filtered views.
     if let Err(denial) = fa_policy::admit_read(capability, principal, book.book_id)
         .and_then(|()| fa_policy::require(capability, Op::Produce, "exporting accounting proofs"))
     {
@@ -196,6 +206,9 @@ pub(crate) fn export<V: Vfs + Clone>(
             proof
         }
         ProofKind::Prefix => fa_notary::prove_prefix(db, book, &checkpoint.state)?,
+        ProofKind::PrefixWithRecords => {
+            fa_notary::prefix::prove_prefix_with_records(db, book, &checkpoint.state)?
+        }
         ProofKind::Balance {
             account,
             unit,
@@ -225,9 +238,9 @@ pub(crate) fn export<V: Vfs + Clone>(
                     "select a unit from this book's canonical registry",
                 )));
             }
-            // All admission, current-authority and accumulator checks above
-            // remain mandatory before the versioned producer reads witnesses.
-            fa_notary::migration_balance::prove_balance(
+            // Whole-book disclosure admission and accumulator checks above
+            // remain mandatory before the complete producer reads witnesses.
+            fa_notary::migration_balance::prove_balance_complete(
                 db,
                 book,
                 &checkpoint.state,

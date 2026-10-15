@@ -134,6 +134,42 @@ pub fn verify_document_production_for(
     checkpoint: &Checkpoint,
     expected: &ProductionScope,
 ) -> Result<VerifiedDocumentProduction, DocumentProductionError> {
+    validate_inputs(prefix, records, documents, checkpoint, expected)?;
+    let inventory = verify_evidence_production_for(prefix, records, checkpoint, expected)?;
+    verify_documents(inventory, documents)
+}
+
+/// Derive every selected entry and original citation directly from one native
+/// v2 prefix, then recompute the full bytes of exactly its distinct documents.
+/// No redundant per-entry inclusion proofs are required. The independent
+/// checkpoint and recipient scope remain mandatory, including for empty scopes.
+///
+/// The one 64 MiB budget covers the complete prefix plus ALL document bytes,
+/// before authentication or document hashing. Whole-prefix payload disclosure
+/// is required; this API does not grant it. Legacy prefixes and balance proofs
+/// are not silently reinterpreted. Existing multi-proof behavior is unchanged.
+/// This checks original-cited bytes only, never supplemental evidence, custody,
+/// provenance, accounting laws, signatures or permission to produce documents.
+pub fn verify_document_prefix_for(
+    prefix: &[u8],
+    documents: &[DocumentContent<'_>],
+    checkpoint: &Checkpoint,
+    expected: &ProductionScope,
+) -> Result<VerifiedDocumentProduction, DocumentProductionError> {
+    validate_inputs(prefix, &[], documents, checkpoint, expected)?;
+    let inventory = super::prefix::verify_evidence_prefix_for(prefix, checkpoint, expected)?;
+    verify_documents(inventory, documents)
+}
+
+// Keep admission and the total resource policy identical across both input
+// routes. A valid prefix never excuses excessive or noncanonical documents.
+fn validate_inputs(
+    prefix: &[u8],
+    records: &[&[u8]],
+    documents: &[DocumentContent<'_>],
+    checkpoint: &Checkpoint,
+    expected: &ProductionScope,
+) -> Result<(), DocumentProductionError> {
     expected.validate().map_err(EvidenceProductionError::from)?;
     if expected.known_at > checkpoint.through_seq {
         return Err(EvidenceProductionError::from(ProductionError::Request(
@@ -167,7 +203,15 @@ pub fn verify_document_production_for(
             });
         }
     }
-    let inventory = verify_evidence_production_for(prefix, records, checkpoint, expected)?;
+    Ok(())
+}
+
+// Private deliberately: a caller-constructed inventory is not authenticated.
+// Both public routes must obtain it from their full verification above.
+fn verify_documents(
+    inventory: VerifiedEvidenceProduction,
+    documents: &[DocumentContent<'_>],
+) -> Result<VerifiedDocumentProduction, DocumentProductionError> {
     // Sort only authenticated metadata. Neither entries nor supplied documents
     // are reordered or silently deduplicated to repair a malformed production.
     let mut required = Vec::new();

@@ -5,6 +5,7 @@ mod documents;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+use fa_verify::evidence::inventory::production::prefix::verify_evidence_prefix_for;
 use fa_verify::evidence::inventory::production::{
     VerifiedEvidenceProduction, verify_evidence_production_for,
 };
@@ -15,12 +16,19 @@ use crate::{Failure, array, hex, object, quote, read_bounded, read_checkpoint};
 const HELP: &str = "Usage:
   fa-verify evidence production --prefix PREFIX --checkpoint TRUSTED_FILE \\
     --expect-first-seq U64 --expect-known-at U64 --expect-account HEX32|all \\
-    --expect-days FIRST:LAST|all [--record INCLUSION ...] [--json]
+    --expect-days FIRST:LAST|all [--from-prefix | --record INCLUSION ...] [--json]
 
 For full cited document bytes as well, run:
   fa-verify evidence production documents --help
 
-PREFIX is the existing raw complete-prefix proof. Supply precisely the
+With --from-prefix, PREFIX must be the native v2 file exported by:
+  fa proof prefix --with-record --out journal.prefix
+Every prefix entry payload is authenticated before the recipient's selectors
+are applied. Selected original citations are read directly from that witness;
+no separate record set is supplied or checked, and --record is forbidden.
+Legacy v1 and balance v3 files are not accepted by this explicit input mode.
+
+Without --from-prefix, behavior is unchanged. Supply precisely the
 matching record-bearing inclusion proofs with repeated --record options,
 in ascending leaf order. An empty list is accepted only when the verified
 prefix establishes that the recipient's scope has no matching entries.
@@ -39,10 +47,11 @@ The command authenticates the complete entry set and every original citation
 list, including empty lists and repeated document/role associations. It does
 not verify document contents, supplemental evidence, signatures, custody,
 provenance, permissions, evidence sufficiency, accounting laws or migration
-visibility. The full prefix exposes envelope metadata outside the scope;
-this is not a private scope index or an authorization to export those bytes.
+visibility. A payload-complete prefix discloses EVERY prefix entry payload,
+including outside the requested scope. This is not a private scope index
+or an authorization to export those bytes.
 
-Limits: 64 MiB TOTAL prefix plus inclusion bytes, 4096 supplied records,
+Limits: 64 MiB TOTAL prefix plus inclusion bytes, 4096 selected records,
 65536 prefix leaves and 65536 accumulated citations. Output contains only
 metadata and is buffered until every verification succeeds. No entry or
 document payload is printed. No book, keys or network are required.
@@ -52,6 +61,7 @@ struct Request {
     prefix: PathBuf,
     checkpoint: PathBuf,
     records: Vec<PathBuf>,
+    from_prefix: bool,
     scope: ProductionScope,
 }
 
@@ -111,14 +121,16 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
     let (mut prefix, mut checkpoint, mut first, mut known, mut accounts, mut effective) =
         (None, None, None, None, None, None);
     let mut records = Vec::new();
-    let mut json = false;
+    let (mut json, mut from_prefix) = (false, false);
     let mut index = 1;
     while let Some(argument) = args.get(index) {
-        if argument == "--json" {
-            if json {
-                return Err(Failure::usage("--json may be supplied only once"));
+        if argument == "--json" || argument == "--from-prefix" {
+            let seen = if argument == "--json" { &mut json } else { &mut from_prefix };
+            if *seen {
+                let name = if argument == "--json" { "--json" } else { "--from-prefix" };
+                return Err(Failure::usage(format!("{name} may be supplied only once")));
             }
-            json = true;
+            *seen = true;
             index += 1;
             continue;
         }
@@ -169,6 +181,9 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
         }
         index += 2;
     }
+    if from_prefix && !records.is_empty() {
+        return Err(Failure::usage("--from-prefix cannot be combined with --record; choose one record source"));
+    }
     let scope = ProductionScope {
         first_seq: sequence(required_text(first, "--expect-first-seq")?)?,
         known_at: sequence(required_text(known, "--expect-known-at")?)?,
@@ -184,6 +199,7 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
             checkpoint.ok_or_else(|| Failure::usage("--checkpoint is required"))?,
         ),
         records,
+        from_prefix,
         scope,
     })
 }
@@ -217,12 +233,19 @@ pub(super) fn run(args: &[OsString], json: bool) -> Result<String, Failure> {
         records.push(bytes);
     }
     let slices: Vec<_> = records.iter().map(Vec::as_slice).collect();
-    let report = verify_evidence_production_for(&prefix, &slices, &checkpoint, &request.scope)
-        .map_err(|error| Failure::verification(error.to_string()))?;
-    Ok(render(&report, json))
+    let report = if request.from_prefix {
+        verify_evidence_prefix_for(&prefix, &checkpoint, &request.scope)
+    } else {
+        verify_evidence_production_for(&prefix, &slices, &checkpoint, &request.scope)
+    }.map_err(|error| Failure::verification(error.to_string()))?;
+    Ok(render(&report, request.from_prefix, json))
 }
 
-fn render(report: &VerifiedEvidenceProduction, json: bool) -> String {
+fn record_source(from_prefix: bool) -> &'static str {
+    if from_prefix { "complete_native_prefix" } else { "individual_inclusions" }
+}
+
+fn render(report: &VerifiedEvidenceProduction, from_prefix: bool, json: bool) -> String {
     let scope = &report.requested;
     if !json {
         let mut text = format!(
@@ -236,6 +259,9 @@ fn render(report: &VerifiedEvidenceProduction, json: bool) -> String {
             scope.effective_days,
             report.checkpoint,
         );
+        if from_prefix {
+            text.push_str("Records selected directly from the authenticated native prefix; no separate record set was supplied or checked.\n");
+        }
         for inventory in &report.entries {
             let entry = &inventory.entry;
             text.push_str(&format!(
@@ -259,127 +285,65 @@ fn render(report: &VerifiedEvidenceProduction, json: bool) -> String {
     }
     let checkpoint = &report.checkpoint;
     object([
-        (
-            "anchor",
-            object([
-                ("format", quote("unsigned_raw_checkpoint")),
-                ("source", quote("operator_trusted_checkpoint")),
-                ("signature_verification", quote("not_performed")),
-            ]),
-        ),
-        (
-            "checkpoint",
-            object([
-                ("book_id", quote(&hex(&checkpoint.book_id))),
-                ("branch_id", quote(&hex(&checkpoint.branch_id))),
-                ("leaf_count", quote(&checkpoint.leaf_count.to_string())),
-                ("root", quote(&hex(&checkpoint.root))),
-                ("through_seq", quote(&checkpoint.through_seq.to_string())),
-            ]),
-        ),
-        (
-            "checks",
-            array(
-                [
-                    "trusted_checkpoint_matches",
-                    "complete_prefix",
-                    "recipient_scope",
-                    "exact_record_set",
-                    "record_recomputation",
-                    "complete_citation_lists",
-                    "book_scoped_document_identities",
-                    "entry_frames",
-                ]
-                .map(|name| object([("name", quote(name)), ("status", quote("pass"))])),
-            ),
-        ),
-        (
-            "coverage",
-            object([
-                ("entries", quote("complete_for_requested_scope")),
-                ("citations", quote("complete_for_selected_entries")),
-                ("document_bytes", quote("not_verified")),
-                ("supplemental_evidence", quote("not_verified")),
-                ("outside_scope", quote("not_claimed")),
-            ]),
-        ),
-        (
-            "requested_scope",
-            object([
-                ("first_seq", quote(&scope.first_seq.to_string())),
-                ("known_at", quote(&scope.known_at.to_string())),
-                (
-                    "account",
-                    scope.account.map_or_else(
-                        || "null".into(),
-                        |account| quote(&format!("{account:032x}")),
-                    ),
-                ),
-                (
-                    "effective_days",
-                    scope.effective_days.map_or_else(
-                        || "null".into(),
-                        |(first, last)| {
-                            object([
-                                ("first", quote(&first.to_string())),
-                                ("last", quote(&last.to_string())),
-                            ])
-                        },
-                    ),
-                ),
-            ]),
-        ),
-        (
-            "data",
-            object([
-                ("entry_count", report.entries.len().to_string()),
-                ("citation_count", report.citation_count.to_string()),
-                (
-                    "entries",
-                    array(report.entries.iter().map(|inventory| {
-                        let entry = &inventory.entry;
-                        object([
-                            ("leaf_index", quote(&entry.leaf_index.to_string())),
-                            ("entry_digest", quote(&hex(&entry.envelope.record_digest))),
-                            ("recorded_at", quote(&entry.envelope.commit_seq.to_string())),
-                            (
-                                "within_commit_ordinal",
-                                entry.envelope.within_commit_ordinal.to_string(),
-                            ),
-                            ("citation_count", inventory.citations.len().to_string()),
-                            (
-                                "citations",
-                                array(inventory.citations.iter().map(|citation| {
-                                    object([
-                                        ("document_oid", quote(&hex(&citation.document_oid))),
-                                        ("doc_commit", quote(&hex(&citation.doc_commit))),
-                                        ("role", citation.role.to_string()),
-                                    ])
-                                })),
-                            ),
-                        ])
-                    })),
-                ),
-            ]),
-        ),
-        (
-            "not_checked",
-            array(
-                [
-                    "document_bytes",
-                    "supplemental_evidence",
-                    "signatures",
-                    "provenance",
-                    "authorization",
-                    "evidence_sufficiency",
-                    "citation_role_truth",
-                    "accounting_laws",
-                    "migration_visibility",
-                    "complete_document_production",
-                ]
-                .map(quote),
-            ),
-        ),
+        ("anchor", object([
+            ("format", quote("unsigned_raw_checkpoint")),
+            ("source", quote("operator_trusted_checkpoint")),
+            ("signature_verification", quote("not_performed")),
+        ])),
+        ("checkpoint", object([
+            ("book_id", quote(&hex(&checkpoint.book_id))),
+            ("branch_id", quote(&hex(&checkpoint.branch_id))),
+            ("leaf_count", quote(&checkpoint.leaf_count.to_string())),
+            ("root", quote(&hex(&checkpoint.root))),
+            ("through_seq", quote(&checkpoint.through_seq.to_string())),
+        ])),
+        ("checks", array([
+            "trusted_checkpoint_matches", "complete_prefix", "recipient_scope",
+            if from_prefix { "complete_prefix_record_selection" } else { "exact_record_set" },
+            "record_recomputation", "complete_citation_lists",
+            "book_scoped_document_identities", "entry_frames",
+        ].map(|name| object([("name", quote(name)), ("status", quote("pass"))])))),
+        ("coverage", object([
+            ("entries", quote("complete_for_requested_scope")),
+            ("citations", quote("complete_for_selected_entries")),
+            ("document_bytes", quote("not_verified")),
+            ("supplemental_evidence", quote("not_verified")),
+            ("outside_scope", quote("not_claimed")),
+        ])),
+        ("requested_scope", object([
+            ("first_seq", quote(&scope.first_seq.to_string())),
+            ("known_at", quote(&scope.known_at.to_string())),
+            ("account", scope.account.map_or_else(|| "null".into(), |account| quote(&format!("{account:032x}")))),
+            ("effective_days", scope.effective_days.map_or_else(|| "null".into(), |(first, last)| object([
+                ("first", quote(&first.to_string())), ("last", quote(&last.to_string())),
+            ]))),
+        ])),
+        ("data", object([
+            ("entry_count", report.entries.len().to_string()),
+            ("citation_count", report.citation_count.to_string()),
+            ("entries", array(report.entries.iter().map(|inventory| {
+                let entry = &inventory.entry;
+                object([
+                    ("leaf_index", quote(&entry.leaf_index.to_string())),
+                    ("entry_digest", quote(&hex(&entry.envelope.record_digest))),
+                    ("recorded_at", quote(&entry.envelope.commit_seq.to_string())),
+                    ("within_commit_ordinal", entry.envelope.within_commit_ordinal.to_string()),
+                    ("citation_count", inventory.citations.len().to_string()),
+                    ("citations", array(inventory.citations.iter().map(|citation| object([
+                        ("document_oid", quote(&hex(&citation.document_oid))),
+                        ("doc_commit", quote(&hex(&citation.doc_commit))),
+                        ("role", citation.role.to_string()),
+                    ])))),
+                ])
+            }))),
+        ])),
+        ("not_checked", array([
+            "document_bytes", "supplemental_evidence", "signatures", "provenance",
+            "authorization", "evidence_sufficiency", "citation_role_truth", "accounting_laws",
+            "migration_visibility", "complete_document_production",
+        ].map(quote))),
+        ("record_source", quote(record_source(from_prefix))),
+        ("separate_record_set_checked", (!from_prefix).to_string()),
         ("request_check", quote("recipient_scope")),
         ("event", quote("proof_verified")),
         ("proof_kind", quote("evidence_production")),

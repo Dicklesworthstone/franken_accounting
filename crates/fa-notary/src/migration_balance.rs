@@ -1,14 +1,18 @@
-//! Migration-aware balance proofs (plan §8.6/§13.3, fa-e00).
+//! Migration-aware balance proofs (plan §8.6/§13.3, fa-e00, fa-n6fh).
 //!
-//! V2 carries the complete envelope prefix, exactly the selected candidate
-//! records plus EVERY MigrationControl record, and the canonical bodies of
-//! only the runs named by selected migration candidates. Each body is bound
-//! to its Open record; run-state projections never decide visibility.
-//! The independent `fa-verify` implementation consumes the same wire format.
+//! V2 carries the complete envelope prefix, selected candidate records plus
+//! EVERY MigrationControl record, and the bodies of only selected runs.
+//! V3 additionally carries EVERY prefix record, allowing the independent
+//! verifier to derive all scope selectors rather than trusting an index.
+//! Each selected run body is bound to Open; projections never decide visibility.
 //!
-//! This is posted-balance recomputation, not a proof of migration approval,
-//! trial-balance tie-out, or economic truth. Automatic exports retain v1 for
-//! scopes with no migration candidates; explicit v2 generation is available.
+//! V3 is posted-balance recomputation, not proof of migration approval,
+//! trial-balance tie-out, or economic truth. Its whole-prefix entry disclosure
+//! requires whole-book read and production authority at the facade. Explicit
+//! legacy producers retain v1/v2 bytes, but partial-payload proofs now have
+//! only membership scope in the independent verifier.
+
+mod transport;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -18,17 +22,26 @@ use fa_journal::migration::{RunBody, RunMode, kind};
 use fa_journal::refusal::{Outcome, Refusal, exit};
 use fa_journal::rows::bytes;
 use fa_model::symbols::{label, property};
-use fa_model::{ControlKind, ControlPayload, Entry, EntryClass, EntryOrigin, Writer};
+use fa_model::{ControlKind, ControlPayload, Entry, EntryClass, EntryOrigin};
 use fa_money::Side;
 use fgdb::Database;
 use fgdb_types::VId;
 
 use crate::{AccumulatorState, Journal, Leaf, LeafEnvelope, code};
 
+pub use transport::MAX_BALANCE_PROOF_BYTES;
 pub const BALANCE_FORMAT_V2: &[u8] = b"fa:acc-balance-proof:v2";
+pub const BALANCE_FORMAT_V3: &[u8] = b"fa:acc-balance-proof:v3";
 const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 type Selected<'a> = Vec<(usize, &'a Leaf, Entry)>;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProofMode {
+    Automatic,
+    Migration,
+    Complete,
+}
 
 struct Run<'a> {
     open_index: usize,
@@ -61,13 +74,19 @@ fn select(
     account: VId,
     unit: u32,
     through: Option<i32>,
+    complete: bool,
 ) -> Outcome<(Selected<'_>, BTreeSet<VId>)> {
+    if complete {
+        if let Err(r) = transport::preflight(journal, through) {
+            return Ok(Err(r));
+        }
+    }
     let mut records = Vec::new();
     let mut needed = BTreeSet::new();
     for (index, leaf) in journal.leaves.iter().enumerate() {
-        if leaf.envelope.class != EntryClass::MIGRATION_CONTROL
-            && !candidate(leaf, account, unit, through)
-        {
+        let selected = leaf.envelope.class == EntryClass::MIGRATION_CONTROL
+            || candidate(leaf, account, unit, through);
+        if !complete && !selected {
             continue;
         }
         let entry = Entry::decode(&leaf.payload)?;
@@ -87,6 +106,12 @@ fn select(
             return Ok(Err(refusal(format!(
                 "leaf {index} disagrees with its authoritative entry payload"
             ))));
+        }
+        // A complete proof authenticates exclusion too. The record stays in
+        // v3's wire prefix but unrelated controls/holds do not enter the fold
+        // and unrelated migration bodies are neither fetched nor disclosed.
+        if !selected {
+            continue;
         }
         match (&p.origin, p.class) {
             (EntryOrigin::Migration { run_ref, .. }, EntryClass::MIGRATION)
@@ -125,6 +150,7 @@ fn encode(
     unit: u32,
     through: Option<i32>,
     bodies: &[RunBody],
+    complete: bool,
 ) -> Outcome<Vec<u8>> {
     let mut runs: BTreeMap<VId, Run<'_>> = BTreeMap::new();
     let mut open_order = Vec::new();
@@ -246,7 +272,7 @@ fn encode(
         let bytes = body.canonical_bytes()?;
         if bytes.len() > MAX_BODY_BYTES {
             return Ok(Err(refusal(
-                "migration body exceeds the v2 proof's 8 MiB limit",
+                "migration body exceeds the balance proof's 8 MiB limit",
             )));
         }
         // Public RunBody values must be representable by the bounded wire
@@ -309,42 +335,9 @@ fn encode(
                 .ok_or_else(|| KernelError::Corrupt("a posted balance overflowed i128".into()))?;
         }
     }
-    let mut w = Writer::new();
-    w.bytes(BALANCE_FORMAT_V2);
-    journal.statement().encode(&mut w);
-    w.u128(account.0)
-        .u32(unit)
-        .opt(through.as_ref(), |w, day| {
-            w.i32(*day);
-        })
-        .i128(debits)
-        .i128(credits)
-        .list(&journal.leaves, |w, leaf| {
-            w.bytes(&leaf.envelope_bytes);
-        });
-    let mut wire_records = Vec::with_capacity(records.len());
-    for (index, leaf, _) in records {
-        let index = u64::try_from(*index)
-            .map_err(|_| KernelError::Corrupt("leaf index exceeds u64".into()))?;
-        let len = u32::try_from(leaf.proposal_len)
-            .map_err(|_| KernelError::Corrupt("proposal length exceeds u32".into()))?;
-        wire_records.push((index, len, leaf.payload.as_slice()));
-    }
-    w.list(&wire_records, |w, (index, len, payload)| {
-        w.u64(*index).u32(*len).bytes(payload);
-    });
-    let witnesses = witnesses
-        .into_iter()
-        .map(|(index, body)| {
-            u64::try_from(index)
-                .map(|index| (index, body))
-                .map_err(|_| KernelError::Corrupt("Open index exceeds u64".into()))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    w.list(&witnesses, |w, (index, body)| {
-        w.u64(*index).bytes(body);
-    });
-    Ok(Ok(w.finish().map_err(fa_model::EntryError::Encode)?))
+    transport::encode(journal, records, witnesses, complete, transport::Claim {
+        account, unit, through, debits, credits,
+    })
 }
 
 impl Journal {
@@ -352,6 +345,7 @@ impl Journal {
     /// Body order is irrelevant; output follows Open-leaf order. Bodies are
     /// authenticated by Open records, never accepted as claims of run state.
     /// The journal's checkpoint must be trusted independently by the receiver.
+    /// Use `balance_proof_complete` to independently prove scope derivation.
     pub fn balance_proof_with_migrations(
         &self,
         account: VId,
@@ -359,19 +353,38 @@ impl Journal {
         through: Option<i32>,
         bodies: &[RunBody],
     ) -> Outcome<Vec<u8>> {
-        let (records, needed) = match select(self, account, unit, through)? {
+        let (records, needed) = match select(self, account, unit, through, false)? {
             Ok(selection) => selection,
             Err(r) => return Ok(Err(r)),
         };
-        encode(self, &records, &needed, account, unit, through, bodies)
+        encode(self, &records, &needed, account, unit, through, bodies, false)
+    }
+
+    /// Produce v3, including and checking every prefix entry payload.
+    /// This deliberately discloses unrelated, pending and future-effective
+    /// entries in the checkpoint; callers must authorize whole-book export.
+    /// Run bodies remain restricted to selected migration candidates. This
+    /// pure producer grants no authority and never weakens an oversized proof.
+    pub fn balance_proof_complete(
+        &self,
+        account: VId,
+        unit: u32,
+        through: Option<i32>,
+        bodies: &[RunBody],
+    ) -> Outcome<Vec<u8>> {
+        let (records, needed) = match select(self, account, unit, through, true)? {
+            Ok(selection) => selection,
+            Err(r) => return Ok(Err(r)),
+        };
+        encode(self, &records, &needed, account, unit, through, bodies, true)
     }
 }
 
-/// Export an automatically versioned balance proof. V1 bytes are preserved
-/// exactly when the selected cell and cutoff have no migration candidates.
-/// Otherwise v2 authenticates visibility, including candidates that do not
-/// count yet or will never count. This choice is made from the journal, not
-/// from a refusal code or a producer-supplied visibility flag.
+/// Export a legacy automatically versioned balance proof. V1 bytes are
+/// preserved when the selected cell and cutoff have no migration candidates;
+/// otherwise v2 authenticates the supplied migration lifecycle. Partial
+/// payloads do not independently prove scope derivation: for that guarantee
+/// call `prove_balance_complete` with whole-book disclosure authorization.
 pub fn prove_balance<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
@@ -380,7 +393,7 @@ pub fn prove_balance<V: asupersync::fs::Vfs + Clone>(
     unit: u32,
     through: Option<i32>,
 ) -> Outcome<Vec<u8>> {
-    prove(db, book, state, account, unit, through, false)
+    prove(db, book, state, account, unit, through, ProofMode::Automatic)
 }
 
 /// Explicitly produce v2 at a fixed accumulator state, even for a scope
@@ -394,7 +407,22 @@ pub fn prove_balance_with_migrations<V: asupersync::fs::Vfs + Clone>(
     unit: u32,
     through: Option<i32>,
 ) -> Outcome<Vec<u8>> {
-    prove(db, book, state, account, unit, through, true)
+    prove(db, book, state, account, unit, through, ProofMode::Migration)
+}
+
+/// Produce a payload-complete v3 balance proof at the selected checkpoint.
+/// The caller must already hold whole-book read and production authority.
+/// Historical migration bodies are still selected from authenticated entries,
+/// never current projections, and the proof is refused rather than truncated.
+pub fn prove_balance_complete<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    state: &AccumulatorState,
+    account: VId,
+    unit: u32,
+    through: Option<i32>,
+) -> Outcome<Vec<u8>> {
+    prove(db, book, state, account, unit, through, ProofMode::Complete)
 }
 
 fn prove<V: asupersync::fs::Vfs + Clone>(
@@ -404,7 +432,7 @@ fn prove<V: asupersync::fs::Vfs + Clone>(
     account: VId,
     unit: u32,
     through: Option<i32>,
-    force_v2: bool,
+    mode: ProofMode,
 ) -> Outcome<Vec<u8>> {
     let observed_at = db.frontier()?;
     let journal = match Journal::read(db, book, Some(state.through_seq))? {
@@ -423,18 +451,18 @@ fn prove<V: asupersync::fs::Vfs + Clone>(
     if let Err(r) = journal.verify_unchanged_at(db, observed_at)? {
         return Ok(Err(r));
     }
-    let (records, needed) = match select(&journal, account, unit, through)? {
+    let (records, needed) = match select(&journal, account, unit, through, mode == ProofMode::Complete)? {
         Ok(selection) => selection,
         Err(r) => return Ok(Err(r)),
     };
-    if !force_v2 && needed.is_empty() {
+    if mode == ProofMode::Automatic && needed.is_empty() {
         return journal.balance_proof(account, unit, through);
     }
     let bodies = match run_bodies(db, &journal, &needed)? {
         Ok(bodies) => bodies,
         Err(r) => return Ok(Err(r)),
     };
-    encode(&journal, &records, &needed, account, unit, through, &bodies)
+    encode(&journal, &records, &needed, account, unit, through, &bodies, mode == ProofMode::Complete)
 }
 
 /// The migration runs whose candidates a balance cell and cutoff select:
@@ -445,7 +473,7 @@ pub fn runs_needed(
     unit: u32,
     through: Option<i32>,
 ) -> Outcome<BTreeSet<VId>> {
-    Ok(select(journal, account, unit, through)?.map(|(_, needed)| needed))
+    Ok(select(journal, account, unit, through, false)?.map(|(_, needed)| needed))
 }
 
 /// The immutable bodies of `runs` as retained at the journal's prefix, in
@@ -475,7 +503,7 @@ pub fn run_bodies<V: asupersync::fs::Vfs + Clone>(
         let raw = bytes(&row, property::FA_PAYLOAD, "migration run body")?;
         if raw.len() > MAX_BODY_BYTES {
             return Ok(Err(refusal(
-                "migration body exceeds the v2 proof's 8 MiB limit",
+                "migration body exceeds the balance proof's 8 MiB limit",
             )));
         }
         let body = RunBody::decode(&raw)?;
@@ -523,7 +551,7 @@ impl Journal {
         through: Option<i32>,
         bodies: &BTreeMap<VId, RunBody>,
     ) -> Outcome<Vec<u8>> {
-        let (records, needed) = match select(self, account, unit, through)? {
+        let (records, needed) = match select(self, account, unit, through, false)? {
             Ok(selection) => selection,
             Err(r) => return Ok(Err(r)),
         };
@@ -540,6 +568,6 @@ impl Journal {
             };
             chosen.push(body.clone());
         }
-        encode(self, &records, &needed, account, unit, through, &chosen)
+        encode(self, &records, &needed, account, unit, through, &chosen, false)
     }
 }

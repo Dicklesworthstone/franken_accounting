@@ -65,10 +65,10 @@ tick_ns = 1000000000
 sweep_batch = 64
 clock_drift_ns = 250000000
 verbs = ["serve", "status", "stop"]
-flags = ["--book", "--keys"]
+flags = ["--book", "--keys", "--register-period"]
 switches = ["--json", "--help", "--bootstrap-system"]
 events = ["fad_request", "fad_response", "fad_serving", "fad_status", "fad_stopped"]
-usage = ["fad serve --book <dir> [--keys <file>] [--bootstrap-system] [--json]   (holds the writer lease and serves until `fad stop`)", "--bootstrap-system opts the local book-key holder into daemon TimeEvidence and one bounded expiry batch plus one reversal batch per cycle. This is trusted local bootstrap authority, not journaled capability issuance. First/restart and uncorroborated clock observations never sweep. Batch sizes bound effects; candidate discovery still scans the book.", "fad status --book <dir> [--json]", "fad stop --book <dir> [--json]"]
+usage = ["fad serve --book <dir> [--keys <file>] [--bootstrap-system] [--register-period <code> ...] [--json]   (holds the writer lease and serves until `fad stop`)", "--bootstrap-system opts the local book-key holder into daemon TimeEvidence and one bounded expiry batch plus one reversal batch per cycle. This is trusted local bootstrap authority, not journaled capability issuance. First/restart and uncorroborated clock observations never sweep. Batch sizes bound effects; candidate discovery still scans the book.", "--register-period requires --bootstrap-system and selects 1..=64 distinct exact period codes at local launch. Maintenance attempts one period per cycle in round-robin order through the native maintainer. It does not silently repair drift, change report semantics or certify a checkpoint. Unknown periods remain visible as per-period errors.", "fad status --book <dir> [--json]", "fad stop --book <dir> [--json]"]
 
 # ---------------------------------------------------------------------------
 # Verbs
@@ -651,12 +651,12 @@ fields = ["v:int", "op:string", "exit:int", "stdout:text", "stderr:text"]
 name = "fad_serving"
 book = true
 doc = "`fad serve`: the writer lease is held and the socket is listening. Timed work requires explicit trusted-local book-key bootstrap. Tick and drift intervals are nanoseconds; sweep_batch bounds each expiry/reversal batch's effects, not candidate scan work. Disabled timing fields are null and cycles is zero."
-fields = ["book_id:hex", "dir:string", "socket:string", "pid:int", "protocol:int", "max_frame_bytes:int", "timed_work_enabled:bool", "timed_authority:string?", "tick_ns:int?", "sweep_batch:int?", "clock_drift_ns:int?", "timed_cycles:int", "last_tick_utc_ns:int?", "last_tick_monotonic_ok:bool?", "timed_work_error:string?"]
+fields = ["book_id:hex", "dir:string", "socket:string", "pid:int", "protocol:int", "max_frame_bytes:int", "timed_work_enabled:bool", "timed_authority:string?", "tick_ns:int?", "sweep_batch:int?", "clock_drift_ns:int?", "timed_cycles:int", "last_tick_utc_ns:int?", "last_tick_monotonic_ok:bool?", "timed_work_error:string?", "register_maintenance:object?"]
 
 [[event]]
 name = "fad_status"
 doc = "`fad status`: whether a fad serves the book; when one does, its pid, book, requests and timed-work progress. holder is the lease note when its holder is not answering. timed_work_error names a refused or failed cycle; uncorroborated ticks never authorize automatic accounting effects. Timing fields are null/false/zero when disabled or not serving."
-fields = ["serving:bool", "dir:string", "socket:string", "pid:int?", "book_id:hex?", "requests:int?", "holder:string?", "timed_work_enabled:bool", "timed_authority:string?", "tick_ns:int?", "sweep_batch:int?", "clock_drift_ns:int?", "timed_cycles:int", "last_tick_utc_ns:int?", "last_tick_monotonic_ok:bool?", "timed_work_error:string?"]
+fields = ["serving:bool", "dir:string", "socket:string", "pid:int?", "book_id:hex?", "requests:int?", "holder:string?", "timed_work_enabled:bool", "timed_authority:string?", "tick_ns:int?", "sweep_batch:int?", "clock_drift_ns:int?", "timed_cycles:int", "last_tick_utc_ns:int?", "last_tick_monotonic_ok:bool?", "timed_work_error:string?", "register_maintenance:object?"]
 
 [[event]]
 name = "fad_stopped"

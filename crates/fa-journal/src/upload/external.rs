@@ -7,6 +7,7 @@
 
 use asupersync::fs::Vfs;
 use fa_model::symbols::{label, property, relation};
+use fa_model::Oid;
 use fa_policy::Capability;
 use fa_registry::evidence_policy::EvidencePolicy;
 use fgdb::{Database, WriteBatch, WriteTxnError};
@@ -14,12 +15,38 @@ use fgdb_types::CanonicalScalar;
 use fgdb_types::context::PurposeContexts;
 
 use crate::blob::{BlobStore, locator_of};
-use crate::evidence::{DocumentAdded, document_vid};
+use crate::evidence::{Document, DocumentAdded, document_vid};
 use crate::genesis::BookContext;
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{scalar_bytes, scalar_text};
 
 use super::{UploadAdmission, UploadPreparation, UploadRequest, admit_upload};
+
+/// Shared physical representation for individually uploaded and batch-imported
+/// documents. Callers supply identities cached by their admission step. This
+/// stages no receipt and grants no authority; the enclosing transaction owns
+/// those checks and must make external bytes durable before publication.
+pub(crate) fn stage_external_document(
+    batch: &mut WriteBatch,
+    document: &Document,
+    kind: &str,
+    store: u16,
+    locator: &str,
+    oid: Oid,
+    digest: &[u8; 32],
+) -> Result<(), KernelError> {
+    let payload = document.canonical_bytes_external(store, locator)?;
+    let mut props = vec![
+        (property::FA_PAYLOAD, scalar_bytes("_fa_payload", payload)?),
+        (property::FA_DIGEST, scalar_bytes("_fa_digest", digest.to_vec())?),
+        (property::BOOK_ID, scalar_bytes("book_id", document.book_id.0.to_vec())?),
+        (property::CODE, scalar_text("code", kind)?),
+        (property::CUSTODY_LEN, CanonicalScalar::Int(1)),
+    ];
+    props.sort_by_key(|(key, _)| key.0);
+    batch.create_vertex(document_vid(&oid), vec![label::DOCUMENT], props);
+    Ok(())
+}
 
 /// Admit and durably store external bytes, retaining an unpublished graph
 /// transaction. Dropping/aborting the returned preparation keeps the journal
@@ -47,32 +74,16 @@ pub async fn prepare_external_upload<V: Vfs + Clone, B: Vfs + Clone>(
         Ok(UploadAdmission::New(admitted)) => admitted,
     };
     let locator = locator_of(&admitted.summary.doc_commit);
-    // Encode only the external record, never an inline copy of a large blob.
-    // The existing evidence verifier checks these mirrors against the same
-    // canonical DocumentRecord representation as the owner-only intake path.
-    let payload = admitted
-        .document
-        .canonical_bytes_external(store.id(), &locator)?;
-    let mut props = vec![
-        (property::FA_PAYLOAD, scalar_bytes("_fa_payload", payload)?),
-        (
-            property::FA_DIGEST,
-            scalar_bytes("_fa_digest", admitted.summary.doc_commit.to_vec())?,
-        ),
-        (
-            property::BOOK_ID,
-            scalar_bytes("book_id", book.book_id.0.to_vec())?,
-        ),
-        (property::CODE, scalar_text("code", &admitted.kind)?),
-        (property::CUSTODY_LEN, CanonicalScalar::Int(1)),
-    ];
-    props.sort_by_key(|(key, _)| key.0);
     let mut batch = WriteBatch::new(relation::CUSTODY_OF);
-    batch.create_vertex(
-        document_vid(&admitted.summary.oid),
-        vec![label::DOCUMENT],
-        props,
-    );
+    stage_external_document(
+        &mut batch,
+        &admitted.document,
+        &admitted.kind,
+        store.id(),
+        &locator,
+        admitted.summary.oid,
+        &admitted.summary.doc_commit,
+    )?;
     crate::custody::stage_receipt(
         &mut batch,
         book,

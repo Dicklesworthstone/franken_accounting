@@ -1,10 +1,11 @@
-//! Multi-leaf fixtures in the existing raw formats; no producer dependency.
+//! Multi-leaf inclusion and complete-prefix fixtures; no producer dependency.
 
 use fa_verify::blake3::hash_parts;
 use fa_verify::envelope::{ENTRY_DIGEST_DOMAIN, PROPOSAL_DIGEST_DOMAIN, envelope_of_entry};
 use fa_verify::evidence::EvidenceCitation;
+use fa_verify::proof::{Checkpoint, INCLUSION_FORMAT};
 use fa_verify::proof::production::ProductionScope;
-use fa_verify::proof::{Checkpoint, INCLUSION_FORMAT, PREFIX_FORMAT};
+use fa_verify::proof::production::derivation::PREFIX_FORMAT_V2;
 use fa_verify::tree::{Digest, leaf_hash, root_of};
 
 use super::fixture::{self, Wire};
@@ -51,8 +52,7 @@ impl Journal {
     }
 }
 
-// Construction follows the recursive tree definition, independently of the
-// verifier's iterative inclusion-path checking algorithm.
+// Independent recursive construction, not the verifier's iterative path check.
 fn path(leaves: &[Digest], index: usize) -> Vec<Digest> {
     if leaves.len() == 1 {
         return Vec::new();
@@ -106,12 +106,14 @@ pub fn journal(entries: &[Entry]) -> Journal {
         root: root_of(&leaves),
     };
     let mut prefix = Wire::default();
-    prefix
-        .bytes(PREFIX_FORMAT)
-        .fixed(&checkpoint.encode())
-        .u32(entries.len() as u32);
-    for envelope in &envelopes {
-        prefix.bytes(envelope);
+    prefix.bytes(PREFIX_FORMAT_V2).fixed(&checkpoint.encode()).u32(entries.len() as u32);
+    for envelope in &envelopes { prefix.bytes(envelope); }
+    // The witness includes excluded records even when a selected inclusion
+    // is deliberately envelope-only in a negative test. These are separate
+    // obligations: complete derivation and the exact requested production.
+    prefix.u32(entries.len() as u32);
+    for (index, entry) in entries.iter().enumerate() {
+        prefix.u64(index as u64).u32(entry.proposal.len() as u32).bytes(&payloads[index]);
     }
     let mut records = Vec::new();
     for (index, entry) in entries.iter().enumerate() {

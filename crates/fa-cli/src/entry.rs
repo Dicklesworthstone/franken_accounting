@@ -1,8 +1,10 @@
 //! The `fa` front door: run a command directly under the book's writer
 //! lease, or through the `fad` daemon that holds it (plan §5.10, §15.3).
 //!
-//! - No book directory (`--book`/`FA_BOOK`) named, or the directory does not
-//!   exist yet (`fa book create`): run directly; there is no lease to take.
+//! - A new book directory is created before taking its writer lease. Genesis,
+//!   key creation and ordinary commands all run under that same lease.
+//! - Lease I/O failures refuse execution; they never authorize an unlocked
+//!   book open. Only book-independent discovery may run without a lease.
 //! - The lease is free: take it, run directly, release it. Every direct
 //!   command is the book's one writer for its duration.
 //! - The lease is held: send the command line to the book's daemon and
@@ -16,15 +18,16 @@
 //! [`fa_with_authority`], which keeps its launch capability and never routes
 //! through the unauthenticated daemon protocol.
 
-use std::io::{IsTerminal, Read, Write};
+use std::io::Write;
 
 use crate::args;
 use crate::authority::LaunchAuthority;
-use crate::cli::{self, Books, Captured, Files, Stdin};
+use crate::cli::{self, Books, Captured, Files};
 use crate::client::{self, ClientError};
 use crate::lease::{Lease, LeaseError};
 use crate::verbs;
-use crate::wire::{Op, Request};
+
+mod routing;
 
 /// Run one `fa` command line. With `capture`, the output is returned instead
 /// of written to stdio.
@@ -59,7 +62,24 @@ pub fn fa_with(argv: &[String], files: Files, capture: bool) -> (u8, Captured) {
         return cli::run(argv, Books::Dir, files, capture);
     };
     if via == Some("fad") {
-        return through_daemon(argv, &dir, None, &files, capture);
+        return through_daemon(argv, &parsed, &dir, None, &files, capture);
+    }
+    // Genesis is a write too. Create only the directory here, then compete
+    // for the same lease as every later writer BEFORE the dispatcher creates
+    // keys or opens the substrate. A failed command may leave an empty
+    // directory and lease note; neither is a committed book.
+    if !discovery(&parsed, reg)
+        && command_words(&parsed, reg) == ["book", "create"]
+        && let Err(error) = std::fs::create_dir_all(&dir)
+    {
+        return cli::environment_error(
+            argv,
+            format!(
+                "cannot prepare book directory {} for its writer lease: {error}",
+                dir.display()
+            ),
+            capture,
+        );
     }
     let note = format!("fa pid={}", std::process::id());
     match Lease::acquire(&dir, &reg.daemon.lease, &note) {
@@ -68,13 +88,21 @@ pub fn fa_with(argv: &[String], files: Files, capture: bool) -> (u8, Captured) {
             drop(lease);
             result
         }
-        // The directory does not exist (yet): nothing to lease or serve.
-        Err(LeaseError::Io { .. }) => cli::run(argv, Books::Dir, files, capture),
+        // Help/discovery does not open a book. Every other operation must
+        // fail closed, including NotFound, permission, lock and note errors.
+        Err(LeaseError::Io { .. }) if discovery(&parsed, reg) => {
+            cli::run(argv, Books::Dir, files, capture)
+        }
+        Err(error @ LeaseError::Io { .. }) => cli::environment_error(
+            argv,
+            format!("cannot acquire the book's writer lease: {error}"),
+            capture,
+        ),
         Err(held @ LeaseError::Held { .. }) => {
             if via == Some("direct") {
                 cli::refuse(argv, held.refusal(&dir), capture)
             } else {
-                through_daemon(argv, &dir, Some(held), &files, capture)
+                through_daemon(argv, &parsed, &dir, Some(held), &files, capture)
             }
         }
     }
@@ -122,16 +150,7 @@ pub fn fa_with_authority(
             );
         }
     }
-    let command = parsed.positional.first().map(|word| {
-        reg.alias(word)
-            .and_then(|alias| alias.expands.first())
-            .unwrap_or(word)
-            .as_str()
-    });
-    if parsed.switch("--help")
-        || parsed.switch("--version")
-        || matches!(command, None | Some("help" | "capabilities" | "robot-docs"))
-    {
+    if discovery(&parsed, reg) {
         return cli::run_with_authority(argv, Books::Dir, files, authority, capture);
     }
     let note = format!(
@@ -149,34 +168,32 @@ pub fn fa_with_authority(
     cli::run_with_authority(argv, books, files, authority, capture)
 }
 
-/// The command line as the daemon should run it: without `--via`, and with
-/// the book named by its absolute path (the daemon's working directory is
-/// not the client's).
-fn for_daemon(argv: &[String], dir: &std::path::Path) -> Vec<String> {
-    let mut out = Vec::with_capacity(argv.len() + 2);
-    let mut skip = false;
-    for a in argv {
-        if skip {
-            skip = false;
-            continue;
-        }
-        if a == "--via" || a == "--book" {
-            skip = true;
-            continue;
-        }
-        if a.starts_with("--via=") || a.starts_with("--book=") {
-            continue;
-        }
-        out.push(a.clone());
+/// Interpret registered aliases as the dispatcher does. Flag-looking values
+/// and words after `--` remain data; never infer discovery from raw argv.
+fn command_words<'a>(parsed: &'a args::Args, reg: &'a verbs::Registry) -> Vec<&'a str> {
+    match parsed.positional.first().and_then(|word| reg.alias(word)) {
+        Some(alias) => alias
+            .expands
+            .iter()
+            .chain(parsed.positional.iter().skip(1))
+            .map(String::as_str)
+            .collect(),
+        None => parsed.positional.iter().map(String::as_str).collect(),
     }
-    let absolute = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-    out.push("--book".into());
-    out.push(absolute.display().to_string());
-    out
+}
+
+fn discovery(parsed: &args::Args, reg: &verbs::Registry) -> bool {
+    parsed.switch("--help")
+        || parsed.switch("--version")
+        || matches!(
+            command_words(parsed, reg).first().copied(),
+            None | Some("help" | "capabilities" | "robot-docs")
+        )
 }
 
 fn through_daemon(
     argv: &[String],
+    parsed: &args::Args,
     dir: &std::path::Path,
     held: Option<LeaseError>,
     files: &Files,
@@ -185,36 +202,19 @@ fn through_daemon(
     let Ok(reg) = verbs::registry() else {
         return cli::run(argv, Books::Dir, files.clone(), capture);
     };
-    let forwarded = for_daemon(argv, dir);
-    // stdin travels only when an argument asks for it: the host's forwarded
-    // bytes, or this process's stdin when something is piped to it. A host
-    // that forwarded none (Missing) sends none, and the daemon refuses `-`.
-    let wants_stdin = forwarded.iter().any(|a| a == "-");
-    let stdin = match &files.stdin {
-        Stdin::Forwarded(bytes) if wants_stdin => Some(bytes.clone()),
-        Stdin::Process if wants_stdin && !std::io::stdin().is_terminal() => {
-            let mut bytes = Vec::new();
-            if let Err(e) = std::io::stdin().read_to_end(&mut bytes) {
-                return cli::usage_error(
-                    argv,
-                    format!("stdin: {e}"),
-                    "pipe the document to stdin",
-                    capture,
-                );
-            }
-            Some(bytes)
+    let request = match routing::request(parsed, dir, files, &reg.daemon) {
+        Ok(request) => request,
+        Err(routing::Error::Usage(message)) => {
+            return cli::usage_error(
+                argv,
+                message,
+                "pass the unchanged plan or intent through a readable input file, or reduce the complete request size",
+                capture,
+            );
         }
-        _ => None,
-    };
-    let request = Request {
-        op: Op::Run,
-        argv: forwarded,
-        cwd: files
-            .cwd
-            .clone()
-            .or_else(|| std::env::current_dir().ok())
-            .map(|d| d.display().to_string()),
-        stdin,
+        Err(routing::Error::Environment(message)) => {
+            return cli::environment_error(argv, message, capture);
+        }
     };
     let socket = dir.join(&reg.daemon.socket);
     match client::call(&socket, &request, &reg.daemon) {
@@ -256,24 +256,24 @@ mod tests {
 
     #[test]
     fn the_forwarded_command_line_drops_via_and_names_the_book_absolutely() {
+        let reg = verbs::registry().unwrap();
         let argv: Vec<String> = [
-            "tb",
-            "--via",
-            "fad",
-            "--book",
-            "rel",
-            "--period",
-            "P",
-            "--via=fad",
-            "--json",
-        ]
-        .iter()
-        .map(|s| (*s).to_string())
-        .collect();
-        let out = for_daemon(&argv, std::path::Path::new("/abs/book"));
-        assert_eq!(
-            out,
-            vec!["tb", "--period", "P", "--json", "--book", "/abs/book"]
-        );
+            "tb", "--via", "fad", "--book", "rel", "--period", "P", "--via=fad", "--json",
+        ].iter().map(|s| (*s).to_string()).collect();
+        let parsed = args::parse(&argv, &reg.value_flags(), &reg.switches()).unwrap();
+        let request = routing::request(
+            &parsed,
+            std::path::Path::new("/abs/book"),
+            &Files { cwd: Some("/client".into()), stdin: crate::cli::Stdin::Missing },
+            &reg.daemon,
+        ).unwrap();
+        let out = args::parse(&request.argv, &reg.value_flags(), &reg.switches()).unwrap();
+        assert_eq!(out.positional, vec!["tb"]);
+        assert_eq!(out.flag_all("--via"), Vec::<&str>::new());
+        assert_eq!(out.flag_all("--book"), vec!["/abs/book"]);
+        assert_eq!(out.flag_all("--period"), vec!["P"]);
+        assert_eq!(out.switches, vec!["--json"]);
+        assert_eq!(out.flags.len(), 2);
+        assert_eq!(request.cwd.as_deref(), Some("/client"));
     }
 }

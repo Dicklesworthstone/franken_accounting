@@ -11,6 +11,12 @@
 //! `IMPORTED_BY` edge to it; a document the book already held is counted in
 //! the run and keeps its earlier receipt.
 //!
+//! [`import_run`] is inline-only. [`import_run_in_store`] routes larger
+//! documents to the configured blob store. Both use the same admission,
+//! receipt and publication implementation. External bytes are durable before
+//! one transaction publishes the entire run; cancellation or failure may
+//! leave unreferenced blobs, never a partially recorded import.
+//!
 //! No-claim boundary: `receipt_hash` binds which documents (by oid) the run
 //! counted, how many and how many bytes it stated, and the registered source
 //! the run asserted — not that the source was truthful, and not when. The
@@ -20,26 +26,28 @@
 //! binds the whole receipt, `recorded_at` included, to the run's
 //! `ImportControl` row in the journal.
 
-use fa_model::symbols::{label, relation};
 use fa_model::{
     ControlPayload, Entry, EntryClass, EntryOrigin, EntryPayload, Erasable, Id128, IntakeSource,
-    Oid, Writer, domain_digest, entry_mirrors, entry_vid,
+    Oid, Writer, domain_digest, entry_vid,
 };
-use fa_policy::{Capability, Intent, Party};
+use fa_policy::Capability;
 use fa_registry::evidence_policy::EvidencePolicy;
 use fa_time::DateDay;
-use fgdb::{Database, VertexRow, WriteBatch, WriteTxnError};
+use fgdb::{Database, VertexRow};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
-use crate::custody::{admit_source, custody_vid, stage_receipt};
-use crate::evidence::{
-    Document, document_vid, drift, hex, intake_check, stage_document, verify_row,
-};
+use crate::custody::admit_source;
+use crate::evidence::{Document, document_oid, hex, intake_check};
 use crate::genesis::BookContext;
-use crate::policy::{authorize_approvals, capability_witness, epoch_witness, refusal, steward};
+use crate::policy::refusal;
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
-use crate::rows::{edge_id, prop};
+use crate::rows::prop;
+
+mod external;
+mod prepared;
+pub use external::{import_run_in_store, prepare_import_in_store};
+pub use prepared::{ImportPreparation, PreparedImport, prepare_import};
 
 /// Domain of `receipt_hash`.
 pub const IMPORT_RECEIPT_DOMAIN: &[u8] = b"fa:import-receipt:v1";
@@ -135,6 +143,16 @@ pub struct ImportRecorded {
     pub already_recorded: bool,
 }
 
+/// Owned bytes and cached public identities. Sorting a large import never
+/// rehashes every document at each comparison or clones its byte payload.
+struct ImportDocument {
+    document: Document,
+    kind: String,
+    oid: Oid,
+    doc_commit: [u8; 32],
+    size: u64,
+}
+
 fn structure(message: impl Into<String>, fix: &str) -> Refusal {
     Refusal::new(
         code::STRUCTURE,
@@ -145,16 +163,17 @@ fn structure(message: impl Into<String>, fix: &str) -> Refusal {
     )
 }
 
-/// The run's control proposal and its documents in canonical order, after
-/// every structural and intake law; refused before any read.
+/// The same shape/provenance law for both storage paths. This is pure:
+/// admission supplies the permitted per-document bound before any blob I/O.
 fn prepare(
     book: &BookContext,
     policy: &EvidencePolicy,
     capability: &Capability,
     derived_grade: u8,
     machine_grade: u8,
-    req: &ImportRequest,
-) -> Result<(EntryPayload, Vec<(Document, String)>), Refusal> {
+    req: ImportRequest,
+    max_document_bytes: u64,
+) -> Result<(EntryPayload, Vec<ImportDocument>), Refusal> {
     if req.documents.is_empty() || req.documents.len() > fa_model::limits::MAX_IMPORT_DOCUMENTS {
         return Err(structure(
             format!(
@@ -176,63 +195,61 @@ fn prepare(
         denied.message = format!("import source uploader: {}", denied.message);
         return Err(denied);
     }
-    let mut docs: Vec<(Document, String)> = Vec::with_capacity(req.documents.len());
-    for (i, doc) in req.documents.iter().enumerate() {
-        match intake_check(
-            policy,
-            book,
-            doc,
-            crate::evidence::inline_document_bound(policy),
-        ) {
-            Ok(kind) => {
-                if doc.retrieved_by != capability.holder() {
-                    let mut denied = refusal(&fa_policy::Denial::NotHolder {
-                        holder: capability.holder(),
-                        principal: doc.retrieved_by,
-                    });
-                    denied.message = format!("documents[{i}].retrieved_by: {}", denied.message);
-                    return Err(denied);
-                }
-                // Preserve conservative declarations by Human/owner importers,
-                // but never allow a machine to manufacture HumanUpload evidence.
-                // Registered source names alone confer no connector/signature grade.
-                if doc.grade != derived_grade && doc.grade != machine_grade {
-                    return Err(Refusal::new(
-                        code::GRADE_UNVERIFIED,
-                        exit::REFUSAL,
-                        format!(
-                            "documents[{i}]: provenance grade exceeds the {} importer's upload posture",
-                            capability.profile().name(),
-                        ),
-                        "plan §9.3; FA-INV-05; fa-vwf",
-                        "use the session's upload grade or conservative AgentUpload; human review is an attestation, never an intake relabel",
-                    ));
-                }
-                docs.push((doc.clone(), kind));
+    let mut docs = Vec::with_capacity(req.documents.len());
+    let mut byte_count = 0_u64;
+    for (i, doc) in req.documents.into_iter().enumerate() {
+        let kind = match intake_check(policy, book, &doc, max_document_bytes) {
+            Ok(kind) => kind,
+            Err(mut refused) => {
+                refused.message = format!("documents[{i}]: {}", refused.message);
+                return Err(refused);
             }
-            Err(mut r) => {
-                r.message = format!("documents[{i}]: {}", r.message);
-                return Err(r);
-            }
+        };
+        if doc.retrieved_by != capability.holder() {
+            let mut denied = refusal(&fa_policy::Denial::NotHolder {
+                holder: capability.holder(),
+                principal: doc.retrieved_by,
+            });
+            denied.message = format!("documents[{i}].retrieved_by: {}", denied.message);
+            return Err(denied);
         }
+        // A registered source name is not a verified provenance grade.
+        if doc.grade != derived_grade && doc.grade != machine_grade {
+            return Err(Refusal::new(
+                code::GRADE_UNVERIFIED,
+                exit::REFUSAL,
+                format!(
+                    "documents[{i}]: provenance grade exceeds the {} importer's upload posture",
+                    capability.profile().name(),
+                ),
+                "plan §9.3; FA-INV-05; fa-vwf",
+                "use the session's upload grade or conservative AgentUpload; human review is an attestation, never an intake relabel",
+            ));
+        }
+        let size = u64::try_from(doc.bytes.len())
+            .map_err(|_| structure("the document's byte count overflows", "split the document"))?;
+        byte_count = byte_count
+            .checked_add(size)
+            .ok_or_else(|| structure("the run's byte count overflows", "split the batch"))?;
+        let doc_commit = doc.doc_commit();
+        docs.push(ImportDocument {
+            oid: document_oid(book.book_id, &doc_commit),
+            document: doc,
+            kind,
+            doc_commit,
+            size,
+        });
     }
-    docs.sort_by_key(|(d, _)| d.oid());
-    if docs.windows(2).any(|w| w[0].0.oid() == w[1].0.oid()) {
+    docs.sort_by_key(|doc| doc.oid);
+    if docs.windows(2).any(|pair| pair[0].oid == pair[1].oid) {
         return Err(structure(
             "an import run lists each document once",
             "remove the repeated document",
         ));
     }
-    let oids: Vec<Oid> = docs.iter().map(|(d, _)| d.oid()).collect();
+    let oids: Vec<Oid> = docs.iter().map(|doc| doc.oid).collect();
     let document_count = u32::try_from(oids.len())
         .map_err(|_| structure("too many documents", "split the batch"))?;
-    let mut byte_count: u64 = 0;
-    for (d, _) in &docs {
-        let size = u64::try_from(d.bytes.len()).unwrap_or(u64::MAX);
-        byte_count = byte_count
-            .checked_add(size)
-            .ok_or_else(|| structure("the run's byte count overflows", "split the batch"))?;
-    }
     let root = oids_root(&oids);
     let run = entry_vid(
         book.book_id,
@@ -240,12 +257,7 @@ fn prepare(
         &req.idempotency_key,
     );
     let hash = receipt_hash(
-        book.book_id,
-        run,
-        &req.source,
-        document_count,
-        byte_count,
-        &root,
+        book.book_id, run, &req.source, document_count, byte_count, &root,
     )
     .map_err(|e| structure(e.to_string(), "report this"))?;
     let proposal = EntryPayload {
@@ -255,11 +267,11 @@ fn prepare(
         class: EntryClass::IMPORT_CONTROL,
         effective_date: req.effective_date,
         document_date: None,
-        description: req.description.clone(),
+        description: req.description,
         effective_period: None,
         legs: Vec::new(),
         control: Some(ControlPayload::ImportRun {
-            source: req.source.clone(),
+            source: req.source,
             document_count,
             byte_count,
             oids_root: root,
@@ -267,7 +279,7 @@ fn prepare(
         }),
         unit_totals: Vec::new(),
         base_totals: None,
-        idempotency_key: req.idempotency_key.clone(),
+        idempotency_key: req.idempotency_key,
         origin: EntryOrigin::Control {
             control_kind: fa_model::ControlKind::IMPORT_RUN,
             spec_body_digest: hash,
@@ -462,14 +474,9 @@ fn recorded_or_conflict(
     }
 }
 
-/// Record an import run (plan §9.3): authority is checked before preparing
-/// bytes; structure, source registration, bound uploader and provenance
-/// assertions are checked before any storage read. Authority requires the
-/// `import-run` SoD row's preparer op, a current capability that is the
-/// principal's own. Then, in one transaction: the run's identity (the same
-/// run again is its recorded receipt), the SoD rule over the witnessed
-/// policy epoch, each document either held already (verified, counted) or
-/// recorded with its receipt naming the run, and the `ImportControl` entry.
+/// Record an inline-only import run. Admission and commit are shared with
+/// the external path; oversized documents are refused before publication.
+/// Use [`import_run_in_store`] for a mixed inline/external batch.
 pub async fn import_run<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
@@ -477,147 +484,10 @@ pub async fn import_run<V: asupersync::fs::Vfs + Clone>(
     capability: &Capability,
     req: ImportRequest,
 ) -> Outcome<ImportRecorded> {
-    ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
-    // Authority precedes even document hashing/cloning, not just storage.
-    let steward = steward()?;
-    let key = fa_policy::sod::control_key("ImportControl", None, "Import");
-    let Some(op) = steward.preparer_op(&key) else {
-        return Err(KernelError::Corrupt(
-            "sod_policy.toml has no import-run rule".into(),
-        ));
-    };
-    if let Err(d) = fa_policy::admit(
-        capability,
-        &Intent {
-            principal: req.principal,
-            trunk: true,
-            op,
-            book: book.book_id,
-            legs: &[],
-        },
-    ) {
-        return Ok(Err(refusal(&d)));
-    }
-    let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
-    let derived_grade = crate::upload::upload_grade(&policy, capability.profile())?;
-    let machine_grade = crate::upload::upload_grade(&policy, fa_policy::Profile::Agent)?;
-    let (proposal, docs) = match prepare(
-        book,
-        &policy,
-        capability,
-        derived_grade,
-        machine_grade,
-        &req,
-    ) {
-        Ok(prepared) => prepared,
-        Err(refused) => return Ok(Err(refused)),
-    };
-    if let Err(d) = fa_policy::current(capability, db.frontier()?) {
-        return Ok(Err(refusal(&d)));
-    }
-    let digest = proposal.proposal_digest()?;
-    let run = entry_vid(
-        book.book_id,
-        &req.principal.0.to_le_bytes(),
-        &req.idempotency_key,
-    );
-    let txn_cx = ctx.txn();
-    let mut txn = db.begin(&txn_cx)?;
-    if let Err(r) = capability_witness(&txn, db, book, capability)? {
-        txn.abort();
-        return Ok(Err(r));
-    }
-    if let Some(row) = txn.vertex(db, run)? {
-        txn.abort();
-        return recorded_or_conflict(book, &row, &proposal, &digest);
-    }
-    let epoch = epoch_witness(&txn, db)?;
-    let preparer = Party {
-        principal: req.principal,
-        profile: capability.profile(),
-    };
-    if let Err(r) = authorize_approvals(&txn, db, book, &[], &digest, epoch, &key, 0, preparer)? {
-        txn.abort();
-        return Ok(Err(r));
-    }
-    let entry = proposal.clone().seal(Vec::new(), None)?;
-    let mut custody = WriteBatch::new(relation::CUSTODY_OF);
-    custody.create_vertex(run, vec![label::ENTRY], entry_mirrors(&entry)?);
-    let mut imported = WriteBatch::new(relation::IMPORTED_BY);
-    let mut recorded = Vec::new();
-    let mut already_held = Vec::new();
-    for (doc, kind) in &docs {
-        let oid = doc.oid();
-        match txn.vertex(db, document_vid(&oid))? {
-            Some(row) => {
-                if let Err(why) = verify_row(&row, &policy) {
-                    txn.abort();
-                    return Ok(Err(drift(&oid, &why)));
-                }
-                already_held.push(oid);
-            }
-            None => {
-                stage_document(&mut custody, book, doc, kind)?;
-                let receipt = stage_receipt(
-                    &mut custody,
-                    book,
-                    doc,
-                    req.source.clone(),
-                    req.principal,
-                    Some(run),
-                )?;
-                debug_assert_eq!(receipt, custody_vid(book.book_id, &oid, 0));
-                imported.add_edge(
-                    edge_id(relation::IMPORTED_BY, receipt, run),
-                    receipt,
-                    run,
-                    vec![],
-                );
-                recorded.push(oid);
-            }
-        }
-    }
-    let mut batches = vec![custody, imported];
-    batches.retain(|b| !b.is_empty());
-    if let Err(e) = txn.write_ordered(db, batches) {
-        txn.abort();
-        return Err(e.into());
-    }
-    match txn.commit(db, &ctx.commit()).await {
-        Ok(seq) => {
-            let receipt = receipt_of(&entry, run, seq)
-                .ok_or_else(|| KernelError::Corrupt("an import run without its receipt".into()))?;
-            Ok(Ok(ImportRecorded {
-                receipt,
-                recorded,
-                already_held,
-                already_recorded: false,
-            }))
-        }
-        Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
-            Ok(Err(Refusal::new(
-                code::CONFLICT,
-                exit::CONFLICT,
-                format!("a concurrent commit invalidated a witness this import read: {detail}"),
-                "FG-LAW-FCW-01 (first committer wins)",
-                "retry the import run; documents another run recorded meanwhile are counted, not re-recorded",
-            )))
-        }
-        Err(WriteTxnError::Write(
-            fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
-        )) => match db.vertex(run)? {
-            Some(row) => recorded_or_conflict(book, &row, &proposal, &digest),
-            // A document identity raced (another intake of the same bytes
-            // committed first): retry counts it as held.
-            None => Ok(Err(Refusal::new(
-                code::CONFLICT,
-                exit::CONFLICT,
-                "a document in this run was recorded concurrently",
-                "FG-LAW-FCW-01 (first committer wins)",
-                "retry the import run; the document is then counted as already held",
-            ))),
-        },
-        Err(e) => Err(e.into()),
+    match prepare_import(db, ctx, book, capability, req)? {
+        Err(refused) => Ok(Err(refused)),
+        Ok(ImportPreparation::AlreadyRecorded(recorded)) => Ok(Ok(recorded)),
+        Ok(ImportPreparation::Ready(prepared)) => prepared.commit(db, ctx).await,
     }
 }
 

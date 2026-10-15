@@ -11,8 +11,12 @@
 //!
 //! A stock balance is a fold over every contributing entry from inception
 //! through the cutoff, so the proof carries the trusted checkpoint's
-//! complete prefix — which makes the in-scope set authenticated — and the
-//! payload of exactly the in-scope leaves, ascending. Candidate leaves name
+//! complete envelope prefix and the payload of exactly the in-scope leaves,
+//! ascending. The root authenticates the envelope bytes, NOT their correct
+//! derivation from records the producer withheld (fa-n6fh). A v1 result is
+//! therefore `membership_only` unless every prefix payload was checked.
+//! Use the payload-complete v3 format for unconditional recomputation.
+//! Candidate leaves name
 //! the account and unit, are not `Pending`, and meet the effective cutoff.
 //! **Migration visibility cannot be established by v1.** If a candidate is
 //! a `Migration`, verification refuses with its `MigrationVisibility` index,
@@ -38,6 +42,7 @@ use crate::proof::{Checkpoint, VerifyError, complete_prefix, open, read_envelope
 
 pub const BALANCE_FORMAT: &[u8] = b"fa:acc-balance-proof:v1";
 pub const SCOPE_RECOMPUTATION: &str = "recomputation";
+pub const SCOPE_MEMBERSHIP_ONLY: &str = "membership_only";
 
 /// The `Pending` entry class tag (`registries/entry_classes.toml`): a hold
 /// reserves and never posts.
@@ -60,6 +65,9 @@ pub struct BalanceClaim {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Balance {
+    /// `recomputation` only when every prefix envelope was rebuilt from its
+    /// payload. `membership_only` verifies the supplied subset's arithmetic,
+    /// but does not independently establish that the account balance is complete.
     pub scope: &'static str,
     pub checkpoint: Checkpoint,
     pub claim: BalanceClaim,
@@ -68,7 +76,9 @@ pub struct Balance {
 }
 
 /// Whether a leaf is a candidate for (account, unit) by the cutoff.
-/// This structural predicate does not establish migration visibility.
+/// This structural predicate establishes neither envelope derivation nor
+/// migration visibility. Rebuild the envelope from its payload before using
+/// the predicate to make an independent completeness claim.
 #[must_use]
 pub fn in_scope(e: &LeafEnvelope, account: u128, unit: u32, through: Option<i32>) -> bool {
     e.class != CLASS_PENDING
@@ -97,6 +107,8 @@ fn read_claim(r: &mut Reader<'_>) -> Result<BalanceClaim, DecodeError> {
 /// Verify a balance proof against the checkpoint the caller trusts.
 /// A v1 proof cannot prove the contribution of a Migration candidate;
 /// `MigrationVisibility` names the first such leaf in the authenticated prefix.
+/// Inspect `Balance::scope`: missing out-of-scope payloads leave the producer's
+/// indexing premise unverified and return only `membership_only`.
 pub fn verify_balance(
     proof: &[u8],
     trusted_checkpoint: &Checkpoint,
@@ -174,7 +186,11 @@ pub fn verify_balance(
         return Err(VerifyError::Claim { debits, credits });
     }
     Ok(Balance {
-        scope: SCOPE_RECOMPUTATION,
+        scope: if records.len() == envelopes.len() {
+            SCOPE_RECOMPUTATION
+        } else {
+            SCOPE_MEMBERSHIP_ONLY
+        },
         checkpoint,
         claim,
         contributing: expected,
@@ -345,6 +361,7 @@ mod tests {
         let original = record(1);
         let (proof, checkpoint) = proof_for(&original, cash_claim(550), true);
         let balance = verify_balance(&proof, &checkpoint).unwrap();
+        assert_eq!(balance.scope, SCOPE_RECOMPUTATION);
         assert_eq!(balance.contributing, vec![0]);
         assert_eq!((balance.claim.debits, balance.claim.credits), (0, 550));
         let (wrong, checkpoint) = proof_for(&original, cash_claim(0), true);
@@ -369,6 +386,7 @@ mod tests {
         for claim in [other_account, other_unit, earlier] {
             let (proof, checkpoint) = proof_for(&migration, claim, false);
             let report = verify_balance(&proof, &checkpoint).unwrap();
+            assert_eq!(report.scope, SCOPE_MEMBERSHIP_ONLY);
             assert!(report.contributing.is_empty());
             assert_eq!(report.claim, claim);
         }
@@ -391,5 +409,25 @@ mod tests {
         let start = 4 + BALANCE_FORMAT.len();
         proof[start..start + Checkpoint::ENCODED_LEN].copy_from_slice(&checkpoint.encode());
         assert_eq!(verify_balance(&proof, &checkpoint), Err(VerifyError::Root));
+    }
+
+    #[test]
+    fn a_committed_false_v1_index_never_claims_independent_recomputation() {
+        // The attacker commits a false selector, then obtains a checkpoint
+        // over that exact envelope. This is NOT a stale-root corruption test.
+        for field in 0..4 {
+            let mut posting = record(1);
+            let mut claim = cash_claim(0);
+            claim.effective_through = Some(20_527);
+            match field {
+                0 => posting.2.class = CLASS_PENDING,
+                1 => posting.2.account_vids.retain(|account| *account != 0x30),
+                2 => posting.2.unit_ids.clear(),
+                _ => posting.2.effective_day = Some(20_528),
+            }
+            let (proof, anchor) = proof_for(&posting, claim, false);
+            let result = verify_balance(&proof, &anchor).unwrap();
+            assert_eq!(result.scope, SCOPE_MEMBERSHIP_ONLY, "field {field}");
+        }
     }
 }

@@ -1,0 +1,210 @@
+//! Fair, launch-selected maintenance of native posted/pending period cells.
+//!
+//! One cycle advances at most one configured period through the existing
+//! facade. No second writer, journal interpretation, repair path or certified
+//! checkpoint is introduced. An error remains attached to its period until
+//! that period succeeds; it neither blocks other periods nor gets cleared by
+//! an unrelated success. A cursor here is operational status, not evidence.
+
+use core::fmt;
+use std::collections::BTreeSet;
+
+use asupersync::Cx;
+use asupersync::fs::Vfs;
+use fa::{AsyncBook, Book};
+use fa_cli::json::{Json, obj, s};
+use fgdb_types::context::PurposeContexts;
+
+/// Scheduling/input bounds, not new accounting or durable-format limits.
+pub const MAX_PERIODS: usize = 64;
+pub const MAX_PERIOD_CODE_BYTES: usize = 128;
+const MAX_ERROR_BYTES: usize = 1024;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfigurationError(pub &'static str);
+
+impl fmt::Display for ConfigurationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl core::error::Error for ConfigurationError {}
+
+/// Validate without opening a book. Codes are exact: never trim, sort,
+/// deduplicate, interpret as dates, or silently broaden them to a fiscal year.
+pub fn validate_periods(periods: &[String]) -> Result<(), ConfigurationError> {
+    if periods.is_empty() || periods.len() > MAX_PERIODS {
+        return Err(ConfigurationError("require 1..=64 register periods"));
+    }
+    let mut seen = BTreeSet::new();
+    for period in periods {
+        if period.is_empty()
+            || period.len() > MAX_PERIOD_CODE_BYTES
+            || period.starts_with("--")
+            || period.chars().any(|c| c.is_control() || c.is_whitespace())
+        {
+            return Err(ConfigurationError(
+                "a register period must be an exact nonempty code of at most 128 bytes, without whitespace or a leading --",
+            ));
+        }
+        if !seen.insert(period.as_str()) {
+            return Err(ConfigurationError("register periods must be distinct"));
+        }
+    }
+    Ok(())
+}
+
+/// Only the operational metadata from a successful facade publication.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Publication {
+    pub through: u64,
+    pub published_at: u64,
+    pub entries_decoded: usize,
+    pub rebuilt: bool,
+    pub wrote: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeriodStatus {
+    pub period: String,
+    pub attempts: u64,
+    pub last_success: Option<Publication>,
+    pub error: Option<String>,
+}
+
+/// Narrow adapter: both production and virtual-time tests call the native
+/// maintainer, including its atomic cursor, migration and retired-delta rules.
+pub(crate) trait RegisterBook {
+    async fn advance(&mut self, cx: &Cx, period: &str) -> Result<Publication, String>;
+}
+
+impl RegisterBook for Book {
+    async fn advance(&mut self, _cx: &Cx, period: &str) -> Result<Publication, String> {
+        let result = Book::advance_registers(self, period).map_err(|e| e.to_string())?;
+        Ok(Publication {
+            through: result.through.0,
+            published_at: result.published_at.0,
+            entries_decoded: result.entries_decoded,
+            rebuilt: result.rebuilt,
+            wrote: result.wrote,
+        })
+    }
+}
+
+impl<V: Vfs + Clone, B: Vfs + Clone> RegisterBook for AsyncBook<V, B> {
+    async fn advance(&mut self, cx: &Cx, period: &str) -> Result<Publication, String> {
+        let result = AsyncBook::advance_registers(
+            self, &PurposeContexts::narrow_runtime_root(cx), period,
+        ).await.map_err(|e| e.to_string())?;
+        Ok(Publication {
+            through: result.through.0,
+            published_at: result.published_at.0,
+            entries_decoded: result.entries_decoded,
+            rebuilt: result.rebuilt,
+            wrote: result.wrote,
+        })
+    }
+}
+
+/// Owned by TimedWork, hence by the same serving region as the book writer.
+/// Recreating this scheduler after restart never invents a consumed frontier:
+/// the native maintainer reloads its atomically persisted state on each call.
+#[derive(Debug)]
+pub struct RegisterWork {
+    periods: Vec<PeriodStatus>,
+    next: usize,
+    attempts: u64,
+}
+
+impl RegisterWork {
+    pub fn new(periods: Vec<String>) -> Result<Self, ConfigurationError> {
+        validate_periods(&periods)?;
+        Ok(Self {
+            periods: periods.into_iter().map(|period| PeriodStatus {
+                period, attempts: 0, last_success: None, error: None,
+            }).collect(),
+            next: 0,
+            attempts: 0,
+        })
+    }
+
+    #[must_use]
+    pub fn periods(&self) -> &[PeriodStatus] {
+        &self.periods
+    }
+
+    #[must_use]
+    pub fn attempts(&self) -> u64 {
+        self.attempts
+    }
+
+    /// Cancellation before admission performs no call and does not advance
+    /// the rotation. Failures are recorded, not retried in a tight drain loop.
+    /// This bounds publication attempts, not the native fold's CPU/I/O cost.
+    pub(crate) async fn run_cycle<B: RegisterBook>(&mut self, cx: &Cx, book: &mut B) {
+        if cx.checkpoint().is_err() {
+            return;
+        }
+        let index = self.next;
+        self.next = (index + 1) % self.periods.len();
+        self.attempts = self.attempts.saturating_add(1);
+        let status = &mut self.periods[index];
+        status.attempts = status.attempts.saturating_add(1);
+        match book.advance(cx, &status.period).await {
+            Ok(publication) => {
+                status.last_success = Some(publication);
+                status.error = None;
+            }
+            Err(error) => {
+                // Bound status independently of any upstream diagnostic.
+                // Truncate only at a UTF-8 boundary; preserve earlier success
+                // as historical status, never relabel it as current success.
+                let mut end = error.len().min(MAX_ERROR_BYTES);
+                while !error.is_char_boundary(end) { end -= 1; }
+                let truncated = end < error.len();
+                let mut error = error[..end].to_owned();
+                if truncated { error.push_str(" [truncated]"); }
+                status.error = Some(error);
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn status(&self) -> Json {
+        let seq = |value: Option<u64>| value.map_or(Json::Null, |n| Json::Int(i128::from(n)));
+        obj(vec![
+            ("enabled", Json::Bool(true)),
+            ("scope", s("native_posted_pending_period_cells")),
+            ("periods_per_cycle", Json::Int(1)),
+            ("attempts", Json::Int(i128::from(self.attempts))),
+            ("next_period", s(&self.periods[self.next].period)),
+            ("certified", Json::Bool(false)),
+            ("periods", Json::Arr(self.periods.iter().map(|status| {
+                let last = status.last_success.as_ref();
+                obj(vec![
+                    ("period", s(&status.period)),
+                    ("attempts", Json::Int(i128::from(status.attempts))),
+                    ("through", seq(last.map(|p| p.through))),
+                    ("published_at", seq(last.filter(|p| p.wrote).map(|p| p.published_at))),
+                    ("entries_decoded", last.map_or(Json::Null, |p| Json::Int(p.entries_decoded as i128))),
+                    ("rebuilt", last.map_or(Json::Null, |p| Json::Bool(p.rebuilt))),
+                    ("wrote", last.map_or(Json::Null, |p| Json::Bool(p.wrote))),
+                    ("error", status.error.as_ref().map_or(Json::Null, s)),
+                ])
+            }).collect())),
+        ])
+    }
+
+    #[must_use]
+    pub fn status_text(&self) -> String {
+        let failures = self.periods.iter().filter(|period| period.error.is_some()).count();
+        format!(
+            "register maintenance: {} configured periods, one attempt per cycle, {} attempts, {} period errors; next {}; derived caches only, not certified checkpoints",
+            self.periods.len(), self.attempts, failures, self.periods[self.next].period,
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests;

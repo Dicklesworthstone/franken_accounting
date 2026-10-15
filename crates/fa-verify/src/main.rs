@@ -11,6 +11,7 @@ mod balance_args;
 mod document_args;
 mod evidence_args;
 mod library_cli;
+mod prefix_report;
 
 use std::ffi::OsString;
 use std::fs::File;
@@ -21,13 +22,13 @@ use std::process::ExitCode;
 use fa_verify::blake3::hex;
 use fa_verify::{
     BalanceExpectation, Checkpoint, RecordCheck, VerifyError, verify_balance, verify_balance_for,
-    verify_consistency, verify_inclusion, verify_prefix,
+    verify_consistency, verify_inclusion,
 };
 
 /// A process-level allocation/input bound, independent of each format's
 /// narrower field bounds. Larger exports must be checked by an embedding
 /// with its own explicit resource policy; this executable refuses them.
-const MAX_PROOF_BYTES: usize = 64 * 1024 * 1024;
+const MAX_PROOF_BYTES: usize = fa_verify::migration_balance::MAX_BALANCE_PROOF_BYTES;
 
 const HELP: &str = "fa-verify — independent verification of raw accounting proofs
 
@@ -48,9 +49,15 @@ is exactly 80 bytes. Obtain and trust --checkpoint independently of the
 proof. It is unsigned here: signatures and origin authenticity are not
 checked. --next-checkpoint is the claimed extension, not a trusted anchor.
 Inclusion proofs may already contain their record; output says whether
-its payload was recomputed. Prefix proofs check envelopes, not payloads.
-Balance proofs check posted amounts in one account/unit from inception,
-with an optional inclusive civil-day cutoff carried in the proof.
+its payload was recomputed. Prefix v1 checks envelope membership only.
+Prefix v2 (fa proof prefix --with-record) checks every entry payload and
+rebuilds its selectors. Output distinguishes record_check and scope_derivation.
+Prefixes do not assert posted balances, accounting validity or document bytes.
+Balance v3 checks every prefix entry payload before selecting posted amounts
+in one account/unit, with an optional inclusive civil-day cutoff. It discloses
+all prefix entry payloads, not just entries for the requested account.
+Partial legacy v1/v2 balances report membership_only: selected sums are checked,
+but account balance completeness is not established. Check balance_complete.
 
 To require a balance proof to answer YOUR independently chosen question:
   --expect-account HEX32 --expect-unit U32 --expect-through DAY|none
@@ -58,9 +65,11 @@ All three are required together. DAY is the signed i32 civil-day number
 reported as effective_through_day; none explicitly means no cutoff, never
 any cutoff. Optional --expect-debits I128 --expect-credits I128 must appear
 together and are exact nonnegative gross mantissas, not decimal amounts.
-A valid proof for a different scope or amount fails with exit 8. Without
-these options only the proof's own claim is verified. Never copy expected
-values from the untrusted proof or its packaging.
+These options require complete recomputation: partial legacy proofs fail
+with exit 8 even when their scope and amounts match. A complete proof for a
+different scope or amount also fails. Without these options inspect scope
+and balance_complete; membership_only is not a verified account balance.
+Never copy expected values from the untrusted proof or its packaging.
 
 Compact document disclosures use the portable fa:document-disclosure:v1
 format with the document command. Its --document-commit is a FILE containing
@@ -341,21 +350,7 @@ fn verify(request: &Request) -> Result<Report, Failure> {
                 verified.extended.leaf_count, checkpoint.leaf_count
             );
         }
-        Kind::Prefix => {
-            let verified = verify_prefix(&proof, &checkpoint)?;
-            report.scope = verified.scope;
-            report
-                .checks
-                .extend(["complete_prefix", "journal_order", "recorded_coordinates"]);
-            report.data = object([
-                ("envelopes", verified.envelopes.len().to_string()),
-                ("record_check", quote("not_supplied")),
-            ]);
-            report.detail = format!(
-                "all {} leaf envelopes in journal order; payloads were not recomputed",
-                verified.envelopes.len()
-            );
-        }
+        Kind::Prefix => prefix_report::verify(&proof, &checkpoint, &mut report)?,
         Kind::Balance => {
             let verified = match &request.expectation {
                 Some(expected) => verify_balance_for(&proof, &checkpoint, expected)
@@ -369,15 +364,25 @@ fn verify(request: &Request) -> Result<Report, Failure> {
                 }
             }
             let claim = verified.claim;
+            let complete = verified.scope == fa_verify::balance::SCOPE_RECOMPUTATION;
             report.scope = verified.scope;
-            report.checks.extend([
-                "complete_prefix",
-                "exact_contributing_record_set",
-                "record_recomputation",
-                "posted_balance_recomputation",
-            ]);
+            report.checks.push("complete_prefix");
+            if complete {
+                report.checks.extend([
+                    "exact_contributing_record_set",
+                    "record_recomputation",
+                    "scope_derivation",
+                    "posted_balance_recomputation",
+                ]);
+            } else {
+                report.checks.extend([
+                    "selected_record_recomputation",
+                    "selected_amount_recomputation",
+                ]);
+            }
             report.data = object([
                 ("account", quote(&format!("{:032x}", claim.account))),
+                ("balance_complete", complete.to_string()),
                 (
                     "contributing_leaves",
                     verified.contributing.len().to_string(),
@@ -390,10 +395,15 @@ fn verify(request: &Request) -> Result<Report, Failure> {
                         .effective_through
                         .map_or_else(|| "null".into(), |day| day.to_string()),
                 ),
+                (
+                    "scope_derivation",
+                    quote(if complete { "all_prefix_payloads_checked" } else { "not_verified" }),
+                ),
                 ("unit", claim.unit.to_string()),
             ]);
+            let amount_kind = if complete { "posted" } else { "selected-payload" };
             report.detail = format!(
-                "account {:032x}, unit {}: posted debits {}, credits {} (exact mantissas); {} contributing leaves; inclusive cutoff day {:?}",
+                "account {:032x}, unit {}: {amount_kind} debits {}, credits {} (exact mantissas); {} contributing leaves; inclusive cutoff day {:?}",
                 claim.account,
                 claim.unit,
                 claim.debits,
@@ -401,6 +411,11 @@ fn verify(request: &Request) -> Result<Report, Failure> {
                 verified.contributing.len(),
                 claim.effective_through
             );
+            if !complete {
+                report.detail.push_str(
+                    "; account balance completeness NOT proven; omitted payloads leave scope selectors unverified",
+                );
+            }
             report.detail.push_str(match request.expectation {
                 Some(BalanceExpectation {
                     amounts: Some(_), ..

@@ -1,22 +1,24 @@
 //! Immutable, lazily retained report certificates in the book's sole store.
 //!
-//! A certificate's public content digest is a locator and commitment to its
-//! canonical bytes. It is not the substrate's keyed native `ObjectId`. The
-//! derived vertex keeps the complete digest and book identity, so truncating
-//! the locator to 128 bits never makes a collision an accepted certificate.
-//! Retention has its own substrate sequence and creates no journal `Entry`.
+//! Small artifacts retain their original inline representation. Larger ones
+//! use a bounded manifest and ordered fragments, all published in the SAME
+//! native transaction. This is an artifact encoding over FrankenGraphDB, not
+//! another storage engine or a mutable cache. Exported certificate bytes and
+//! public read APIs are unchanged. See `report_certificate_storage.toml`.
 //!
-//! A certificate carries its report output, so its canonical bytes can
-//! outgrow one substrate vertex row (the pinned substrate refuses a row above
-//! 16 KiB). Up to [`MAX_INLINE_CERTIFICATE_BYTES`] the bytes ride inline in
-//! the vertex's payload; above it they live in the book's content-addressed
-//! blob store under the certificate's digest, and the vertex payload is the
-//! small `fa:certificate-external:v1` record naming the store and size: the
-//! registered `storage: External` posture documents already use (plan §9.1;
-//! Appendix H: the substrate has no object store). Either way the vertex's
-//! digest mirror is the commitment, every read recomputes the digest from
-//! the bytes it fetched, and a missing or changed blob is a refusal, never a
-//! substitute.
+//! The root's public digest commits to the reassembled canonical certificate.
+//! Fragment identities bind book, full certificate digest and ordinal. Every
+//! read pins one native snapshot and requires every fragment's original birth
+//! to coincide with the root, before validating the full content digest. A
+//! missing, rewritten, reordered or substituted fragment never yields a
+//! partial certificate. Retention creates no journal Entry.
+//!
+//! Certificates already published as `fa:certificate-external:v1` records
+//! still verify: the read fetches the named blob and checks it against the
+//! public digest. New retention does not write that external form. Above the
+//! inline row, a new certificate is the manifest plus ordered fragments in
+//! one native transaction. [`MAX_INLINE_CERTIFICATE_BYTES`] is that inline
+//! threshold, equal to one fragment.
 
 use asupersync::fs::Vfs;
 use fa_journal::BlobStore;
@@ -32,20 +34,16 @@ use fgdb_types::{CanonicalScalar, CommitSeq, QueryCx, VId};
 use crate::certificate::{MAX_CERTIFICATE_BYTES, ReportCertificate};
 use crate::{BookError, Outcome};
 
-/// The encoded length of the certificate payload scalar a vertex row
-/// carries inline, measured with the substrate's own
-/// `CanonicalScalar::canonical_encoded_len` (byte scalars are stored as
-/// 8-byte memcomparable groups, about 9/8 of the raw bytes), never the raw
-/// length. The pinned substrate refuses a row above 16384 bytes
-/// (`RowExceedsStorageLimit`), and the row also holds the 32-byte digest,
-/// the 16-byte book mirror, the label and the property keys; 12 KiB leaves
-/// that headroom. Larger certificates are retained externally.
-pub const MAX_INLINE_CERTIFICATE_BYTES: usize = 12 * 1024;
+mod chunks;
 
-/// The vertex payload of an externally retained certificate: this tag, the
-/// store id (u16) and the byte size (u64). The locator is the certificate
-/// digest's lowercase hex, so the record never repeats what the vertex's
-/// digest mirror already commits to.
+/// Inline vertex-row threshold. One fragment is the same size, so a
+/// historical test can still recognize a certificate that no longer fits
+/// inline. New writes above this size use native fragments, not a blob.
+pub const MAX_INLINE_CERTIFICATE_BYTES: usize = chunks::CHUNK_BYTES;
+
+/// Vertex payload of a certificate retained in the book's blob store before
+/// fragment manifests existed: this tag, the store id (u16) and the byte
+/// size (u64). The locator is the certificate digest's lowercase hex.
 const EXTERNAL_FORMAT: &[u8; 26] = b"fa:certificate-external:v1";
 
 /// A successful storage acknowledgment. An exact retry returns the original
@@ -71,14 +69,13 @@ fn invalid(message: impl Into<String>) -> Refusal {
         exit::VERIFICATION,
         message,
         "plan §13.6 / FA-INV-02 / FA-INV-11 (retained certificate bytes, identity and book binding are immutable)",
-        "use the complete public certificate digest in its original book; preserve any corrupt or retired record and its exported bytes for the examiner",
+        "use the complete public certificate digest in its original book; preserve any corrupt or retired record and its exported bytes instead of replacing it",
     )
 }
 
 /// The certificate's record is intact but its external bytes cannot be
-/// produced from the named store: the same posture as a document whose
-/// blob is absent (FA-REF-116), a foundation failure rather than a
-/// verification verdict, because no bytes were examined.
+/// produced from the named store. That is a foundation failure rather than
+/// a verification verdict, because no certificate bytes were examined.
 fn unavailable(message: impl Into<String>) -> Refusal {
     Refusal::new(
         fa_journal::refusal::code::BLOB_MISSING,
@@ -91,13 +88,14 @@ fn unavailable(message: impl Into<String>) -> Refusal {
 
 fn canonical(certificate: &ReportCertificate) -> Result<Vec<u8>, Refusal> {
     if certificate.output.len() > MAX_CERTIFICATE_BYTES {
-        return Err(invalid(
-            "report certificate exceeds the 64 MiB format limit",
-        ));
+        return Err(invalid("report certificate exceeds the 64 MiB format limit"));
     }
     let bytes = certificate
         .canonical_bytes()
         .map_err(|error| invalid(format!("cannot encode report certificate: {error}")))?;
+    if bytes.len() > MAX_CERTIFICATE_BYTES {
+        return Err(invalid("report certificate exceeds the 64 MiB format limit"));
+    }
     // Public fields can be hand-constructed. Decode independently verifies the
     // format, complete native closure and full content digest before storage.
     ReportCertificate::decode(&bytes)?;
@@ -113,11 +111,7 @@ fn locator(digest: &[u8; 32]) -> String {
 pub(crate) fn external_record(store: u16, size: u64) -> Result<Vec<u8>, Refusal> {
     let mut w = Writer::new();
     w.fixed(EXTERNAL_FORMAT).u16(store).u64(size);
-    w.finish().map_err(|error| {
-        invalid(format!(
-            "cannot encode the external certificate record: {error}"
-        ))
-    })
+    w.finish().map_err(|error| invalid(format!("cannot encode the external certificate record: {error}")))
 }
 
 /// Decode an external record, or `None` when the payload is not one.
@@ -132,86 +126,9 @@ pub(crate) fn decode_external(payload: &[u8]) -> Result<Option<(u16, u64)>, Refu
     let size = r.u64("certificate.external.size").map_err(bad)?;
     r.finish().map_err(bad)?;
     if size == 0 || size > MAX_CERTIFICATE_BYTES as u64 {
-        return Err(invalid(format!(
-            "external certificate record names an impossible size {size}"
-        )));
+        return Err(invalid(format!("external certificate record names an impossible size {size}")));
     }
     Ok(Some((store, size)))
-}
-
-/// Where a retained certificate's canonical bytes are.
-enum Stored {
-    Inline(Box<ReportCertificate>),
-    External { store: u16, size: u64 },
-}
-
-/// The checks every retained certificate's bytes must pass against the row
-/// that names them, inline or fetched.
-fn verified(
-    bytes: &[u8],
-    book: &BookContext,
-    digest: &[u8; 32],
-    created_at: CommitSeq,
-) -> Result<ReportCertificate, Refusal> {
-    let certificate = ReportCertificate::decode(bytes)?;
-    if certificate.digest != *digest || certificate.book_id != book.book_id {
-        return Err(invalid(
-            "the retained certificate payload does not match its full digest and book",
-        ));
-    }
-    if created_at <= certificate.known_at {
-        return Err(invalid(
-            "a retained certificate must be recorded after the report's fixed known-at sequence",
-        ));
-    }
-    let encoded = certificate
-        .canonical_bytes()
-        .map_err(|error| invalid(format!("cannot encode retained certificate: {error}")))?;
-    if encoded != bytes {
-        return Err(invalid(
-            "the retained certificate payload is not its canonical encoding",
-        ));
-    }
-    Ok(certificate)
-}
-
-fn decoded_row(row: &VertexRow, book: &BookContext, digest: &[u8; 32]) -> Result<Stored, Refusal> {
-    if row.vid != certificate_vid(book.book_id, digest)
-        || row.labels.as_slice() != [label::CERTIFICATE]
-        || row.retired_at.is_some()
-        || row.props.len() != 3
-    {
-        return Err(invalid(format!(
-            "vertex {:032x} is not an intact retained report certificate",
-            row.vid.0
-        )));
-    }
-    if !matches!(prop(row, property::FA_DIGEST), Some(CanonicalScalar::Bytes(value)) if value.as_slice() == digest)
-    {
-        return Err(invalid(
-            "the retained certificate's full digest differs from its locator",
-        ));
-    }
-    if !matches!(prop(row, property::BOOK_ID), Some(CanonicalScalar::Bytes(value)) if value.as_slice() == book.book_id.0)
-    {
-        return Err(invalid(
-            "the retained certificate's book mirror names a different book",
-        ));
-    }
-    let Some(CanonicalScalar::Bytes(payload)) = prop(row, property::FA_PAYLOAD) else {
-        return Err(invalid(
-            "the retained certificate has no canonical byte payload",
-        ));
-    };
-    if let Some((store, size)) = decode_external(payload.as_slice())? {
-        return Ok(Stored::External { store, size });
-    }
-    Ok(Stored::Inline(Box::new(verified(
-        payload.as_slice(),
-        book,
-        digest,
-        row.created_at,
-    )?)))
 }
 
 /// Fetch and verify an externally retained certificate's bytes.
@@ -250,52 +167,82 @@ async fn fetched<W: Vfs + Clone>(
             bytes.len()
         ))));
     }
-    Ok(verified(&bytes, book, digest, created_at))
+    Ok(verified_bytes(&bytes, book, digest, created_at))
 }
 
-/// Prove that the current version is the identity's actual creation, then
-/// compare its creating snapshot as well as validating the current bytes.
-/// The substrate's `created_at` is a version start: a property update gives
-/// the successor a new timestamp. Checking only `vertex_at(created_at)`
-/// would accept that same successor after a rewrite or an exact restoration.
-/// Identities are never reused and native history preserves the prior
-/// version, so an immutable certificate must be absent immediately before
-/// the current version's start. This also permits delayed first retention.
-async fn unchanged_row<V: Vfs + Clone, W: Vfs + Clone>(
+/// Common shape/identity checks for the root and its physical fragments.
+/// Fragment vertices use a separate identity domain and tagged payload; they
+/// are Certificate storage records, never independently addressable reports.
+fn record_payload<'a>(
+    row: &'a VertexRow,
+    book: &BookContext,
+    digest: &[u8; 32],
+    expected_vid: VId,
+) -> Result<&'a [u8], Refusal> {
+    if row.vid != expected_vid
+        || row.labels.as_slice() != [label::CERTIFICATE]
+        || row.retired_at.is_some()
+        || row.props.len() != 3
+    {
+        return Err(invalid(format!(
+            "vertex {:032x} is not an intact retained certificate storage record",
+            row.vid.0
+        )));
+    }
+    if !matches!(prop(row, property::FA_DIGEST), Some(CanonicalScalar::Bytes(value)) if value.as_slice() == digest)
+    {
+        return Err(invalid("the retained certificate's full digest differs from its locator"));
+    }
+    if !matches!(prop(row, property::BOOK_ID), Some(CanonicalScalar::Bytes(value)) if value.as_slice() == book.book_id.0)
+    {
+        return Err(invalid("the retained certificate's book mirror names a different book"));
+    }
+    let Some(CanonicalScalar::Bytes(payload)) = prop(row, property::FA_PAYLOAD) else {
+        return Err(invalid("the retained certificate has no canonical byte payload"));
+    };
+    Ok(payload.as_slice())
+}
+
+fn verified_bytes(
+    bytes: &[u8],
+    book: &BookContext,
+    digest: &[u8; 32],
+    recorded_at: CommitSeq,
+) -> Result<ReportCertificate, Refusal> {
+    let certificate = ReportCertificate::decode(bytes)?;
+    if certificate.digest != *digest || certificate.book_id != book.book_id {
+        return Err(invalid("the retained certificate payload does not match its full digest and book"));
+    }
+    if recorded_at <= certificate.known_at {
+        return Err(invalid("a retained certificate must be recorded after the report's fixed known-at sequence"));
+    }
+    let encoded = certificate.canonical_bytes()
+        .map_err(|error| invalid(format!("cannot encode retained certificate: {error}")))?;
+    if encoded != bytes {
+        return Err(invalid("the retained certificate payload is not its canonical encoding"));
+    }
+    Ok(certificate)
+}
+
+/// Native created_at is a version start, not a birth timestamp. Checking the
+/// preceding snapshot detects even an exact restoration following a rewrite.
+fn original_record<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &QueryCx,
-    book: &BookContext,
-    blobs: &BlobStore<W>,
-    digest: &[u8; 32],
     row: &VertexRow,
-) -> Outcome<ReportCertificate> {
-    let stored = match decoded_row(row, book, digest) {
-        Ok(stored) => stored,
-        Err(refusal) => return Ok(Err(refusal)),
-    };
+) -> Outcome<()> {
     cx.checkpoint().map_err(BookError::Context)?;
     let Some(before_creation) = row.created_at.0.checked_sub(1) else {
-        return Ok(Err(invalid(
-            "a retained certificate cannot have creating sequence zero",
-        )));
+        return Ok(Err(invalid("a retained certificate cannot have creating sequence zero")));
     };
-    if db
-        .vertex_at(row.vid, CommitSeq(before_creation))
-        .map_err(KernelError::from)?
-        .is_some()
-    {
+    if db.vertex_at(row.vid, CommitSeq(before_creation)).map_err(KernelError::from)?.is_some() {
         return Ok(Err(invalid(format!(
-            "retained certificate {:032x} existed before its current version at sequence {}; its immutable record was rewritten or restored",
+            "retained certificate {:032x} existed before its current version at sequence {}; its immutable record was rewritten or rebound",
             row.vid.0, row.created_at.0
         ))));
     }
-    let Some(original) = db
-        .vertex_at(row.vid, row.created_at)
-        .map_err(KernelError::from)?
-    else {
-        return Ok(Err(invalid(
-            "the retained certificate's creating record is unavailable",
-        )));
+    let Some(original) = db.vertex_at(row.vid, row.created_at).map_err(KernelError::from)? else {
+        return Ok(Err(invalid("the retained certificate's creating record is unavailable")));
     };
     if original.vid != row.vid
         || original.created_at != row.created_at
@@ -308,17 +255,44 @@ async fn unchanged_row<V: Vfs + Clone, W: Vfs + Clone>(
             row.vid.0, row.created_at.0
         ))));
     }
-    match stored {
-        Stored::Inline(certificate) => Ok(Ok(*certificate)),
-        Stored::External { store, size } => {
-            fetched(cx, blobs, book, digest, row.created_at, store, size).await
+    Ok(Ok(()))
+}
+
+async fn unchanged_row<V: Vfs + Clone, W: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    blobs: &BlobStore<W>,
+    digest: &[u8; 32],
+    row: &VertexRow,
+    at: CommitSeq,
+) -> Outcome<ReportCertificate> {
+    let payload = match record_payload(row, book, digest, certificate_vid(book.book_id, digest)) {
+        Ok(payload) => payload,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    if let Err(refusal) = original_record(db, cx, row)? {
+        return Ok(Err(refusal));
+    }
+    match chunks::Manifest::decode(payload) {
+        Ok(Some(manifest)) => {
+            let bytes = match chunks::read(db, cx, book, digest, row, at, manifest)? {
+                Ok(bytes) => bytes,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            Ok(verified_bytes(&bytes, book, digest, row.created_at))
         }
+        Ok(None) => match decode_external(payload) {
+            Ok(Some((store, size))) => fetched(cx, blobs, book, digest, row.created_at, store, size).await,
+            Ok(None) => Ok(verified_bytes(payload, book, digest, row.created_at)),
+            Err(refusal) => Ok(Err(refusal)),
+        },
+        Err(refusal) => Ok(Err(refusal)),
     }
 }
 
-/// Read the exact retained artifact, independently of whether its historical
-/// report currently replays. The caller can inspect or export the artifact and
-/// invoke report replay separately; corrupted storage never returns an artifact.
+/// Read the exact retained artifact at one snapshot, independently of whether
+/// its historical report currently replays. Storage never returns partial data.
 pub(crate) async fn read<V: Vfs + Clone, W: Vfs + Clone>(
     db: &Database<V>,
     cx: &QueryCx,
@@ -335,7 +309,7 @@ pub(crate) async fn read<V: Vfs + Clone, W: Vfs + Clone>(
             vid.0
         ))));
     };
-    unchanged_row(db, cx, book, blobs, digest, &row).await
+    unchanged_row(db, cx, book, blobs, digest, &row, at).await
 }
 
 fn refused_write(error: WriteTxnError) -> Outcome<RetainedCertificate> {
@@ -358,14 +332,27 @@ fn refused_write(error: WriteTxnError) -> Outcome<RetainedCertificate> {
     }
 }
 
-/// Persist a replayed certificate once. Existing exact bytes acknowledge the
-/// original retention without replaying or issuing another commit. A first
-/// retention verifies the report, witnesses the absent locator in the native
-/// transaction and creates one immutable Certificate vertex, never an Entry.
-/// Bytes past [`MAX_INLINE_CERTIFICATE_BYTES`] are published durably to the
-/// book's blob store before the vertex that names them commits, so a crash
-/// never leaves a record pointing at lost bytes; an orphaned blob after a
-/// refusal is content-addressed and harmless.
+fn stage_record(
+    batch: &mut WriteBatch,
+    book: &BookContext,
+    digest: &[u8; 32],
+    vid: VId,
+    payload: Vec<u8>,
+) -> Result<(), KernelError> {
+    let mut properties = vec![
+        (property::FA_PAYLOAD, scalar_bytes("certificate payload", payload)?),
+        (property::FA_DIGEST, scalar_bytes("certificate digest", digest.to_vec())?),
+        (property::BOOK_ID, scalar_bytes("certificate book", book.book_id.0.to_vec())?),
+    ];
+    properties.sort_by_key(|(key, _)| key.0);
+    batch.create_vertex(vid, vec![label::CERTIFICATE], properties);
+    Ok(())
+}
+
+/// First retention replays the report, then publishes one root plus any
+/// required fragments in one native transaction. No partial/chunk commits or
+/// second storage backend. Exact retries inspect the original complete artifact
+/// and acknowledge its original sequence without writes or a fresh replay.
 pub(crate) async fn retain<V: Vfs + Clone, W: Vfs + Clone>(
     db: &mut Database<V>,
     cx: &PurposeContexts,
@@ -382,99 +369,52 @@ pub(crate) async fn retain<V: Vfs + Clone, W: Vfs + Clone>(
         Ok(payload) => payload,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    let payload = scalar_bytes("certificate payload", payload)?;
-    let encoded_len = payload
-        .canonical_encoded_len()
-        .map_err(|_| KernelError::Scalar("certificate payload"))?;
-    let CanonicalScalar::Bytes(bytes) = &payload else {
-        return Err(KernelError::Scalar("certificate payload").into());
-    };
     let vid = certificate_vid(book.book_id, &certificate.digest);
     let txn_cx = cx.txn();
     let mut txn = db.begin(&txn_cx).map_err(KernelError::from)?;
     if let Some(row) = txn.vertex(db, vid).map_err(KernelError::from)? {
-        let stored = unchanged_row(db, &query_cx, book, blobs, &certificate.digest, &row).await;
+        let stored = unchanged_row(db, &query_cx, book, blobs, &certificate.digest, &row, txn.basis()).await;
         txn.abort();
         let stored = match stored? {
             Ok(stored) => stored,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        // An exact retry compares canonical bytes, never a freshly chosen
-        // placement: an inline row must hold these bytes and an external row
-        // a descriptor of their size, whatever the inline bound was when the
-        // certificate was retained. The row's immutability was proved above.
-        let same_bytes = match prop(&row, property::FA_PAYLOAD) {
-            Some(CanonicalScalar::Bytes(value)) => match decode_external(value.as_slice()) {
-                Ok(Some((_, size))) => size == bytes.len() as u64,
-                Ok(None) => value.as_slice() == bytes.as_slice(),
-                Err(_) => false,
-            },
-            _ => false,
+        // Both representations were decoded and re-encoded canonically.
+        // Compare reconstructed bytes, not the manifest to the exported body.
+        let stored_bytes = match canonical(&stored) {
+            Ok(bytes) => bytes,
+            Err(refusal) => return Ok(Err(refusal)),
         };
-        if stored != *certificate || !same_bytes {
-            return Ok(Err(invalid(
-                "the retained certificate locator contains different canonical bytes",
-            )));
+        if stored != *certificate || stored_bytes != payload {
+            return Ok(Err(invalid("the retained certificate locator contains different canonical bytes")));
         }
-        return Ok(Ok(RetainedCertificate {
-            digest: certificate.digest,
-            recorded_at: row.created_at,
-        }));
+        return Ok(Ok(RetainedCertificate { digest: certificate.digest, recorded_at: row.created_at }));
     }
     if let Err(refusal) = crate::certificate::replay_report(db, &query_cx, book, certificate)? {
         txn.abort();
         return Ok(Err(refusal));
     }
     query_cx.checkpoint().map_err(BookError::Context)?;
-    let row_payload = if encoded_len > MAX_INLINE_CERTIFICATE_BYTES {
-        let record = match external_record(blobs.id(), bytes.len() as u64) {
-            Ok(record) => record,
-            Err(refusal) => {
-                txn.abort();
-                return Ok(Err(refusal));
-            }
-        };
-        let locator = locator(&certificate.digest);
-        if let Err(error) = blobs.put(&cx.commit(), &locator, bytes.as_slice()).await {
+    let batch = match chunks::stage(&query_cx, book, &certificate.digest, vid, payload)? {
+        Ok(batch) => batch,
+        Err(refusal) => {
             txn.abort();
-            return Ok(Err(unavailable(format!(
-                "store {} could not be written for the certificate's blob {locator}: {error}; nothing was retained",
-                blobs.id()
-            ))));
+            return Ok(Err(refusal));
         }
-        scalar_bytes("certificate payload", record)?
-    } else {
-        payload
     };
-    let mut properties = vec![
-        (property::FA_PAYLOAD, row_payload),
-        (
-            property::FA_DIGEST,
-            scalar_bytes("certificate digest", certificate.digest.to_vec())?,
-        ),
-        (
-            property::BOOK_ID,
-            scalar_bytes("certificate book", book.book_id.0.to_vec())?,
-        ),
-    ];
-    properties.sort_by_key(|(key, _)| key.0);
-    let mut batch = WriteBatch::new(relation::DERIVED_FROM);
-    batch.create_vertex(vid, vec![label::CERTIFICATE], properties);
     if let Err(error) = txn.write(db, batch) {
         txn.abort();
         return refused_write(error);
     }
+    cx.commit().checkpoint().map_err(BookError::Context)?;
     match txn.commit(db, &cx.commit()).await {
-        Ok(recorded_at) => Ok(Ok(RetainedCertificate {
-            digest: certificate.digest,
-            recorded_at,
-        })),
+        Ok(recorded_at) => Ok(Ok(RetainedCertificate { digest: certificate.digest, recorded_at })),
         Err(error) => refused_write(error),
     }
 }
 
 #[cfg(test)]
-mod tests {
+mod external_record_codec {
     use super::*;
 
     #[test]
@@ -482,22 +422,18 @@ mod tests {
         let record = external_record(1, 17_205).expect("encode");
         assert!(record.len() < 64, "the record is small: {}", record.len());
         assert_eq!(decode_external(&record).expect("decode"), Some((1, 17_205)));
-        // A canonical certificate payload never starts with the external tag.
         assert_eq!(
-            decode_external(crate::certificate::STATEMENT_CERTIFICATE_FORMAT)
-                .expect("not external"),
+            decode_external(crate::certificate::STATEMENT_CERTIFICATE_FORMAT).expect("not external"),
             None
         );
-        // Planted negatives: a truncated record, a trailing byte, a zero size
-        // and a size past the format limit are refused.
         assert!(decode_external(&record[..record.len() - 1]).is_err());
         let mut long = record.clone();
         long.push(0);
         assert!(decode_external(&long).is_err());
         assert!(decode_external(&external_record(1, 0).expect("encode")).is_err());
-        assert!(
-            decode_external(&external_record(1, MAX_CERTIFICATE_BYTES as u64 + 1).expect("encode"))
-                .is_err()
-        );
+        assert!(decode_external(&external_record(1, MAX_CERTIFICATE_BYTES as u64 + 1).expect("encode")).is_err());
     }
 }
+
+#[cfg(test)]
+mod tests;
