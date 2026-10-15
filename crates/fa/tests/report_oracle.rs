@@ -842,6 +842,38 @@ fn report_families_match_reference_oracle_across_multiseed_campaign_and_kill_pla
                     leg_index: 1,
                     activity: CashFlowActivity::Investing,
                 });
+
+                // Mixed cash + operating revenue entry (fa-gb47):
+                // Dr 1010 100 / Cr 1000 80 / Cr 4000 20 must net intra-entry cash
+                // movement so gross operating inflows = +20, outflows = 0, net = +20.
+                let mixed_dims = pick_entity(&mut rng);
+                let e_mixed = post_original(
+                    &mut book,
+                    &mut oracle,
+                    p2_day3,
+                    vec![
+                        ("1010", Side::Debit, *u, 100, Vec::new(), Vec::new()),
+                        ("1000", Side::Credit, *u, 80, Vec::new(), Vec::new()),
+                        ("4000", Side::Credit, *u, 20, Vec::new(), Vec::new()),
+                    ],
+                    mixed_dims,
+                );
+                cash_classifications.insert((e_mixed.oracle_index, 0), CashActivity::Operating);
+                cash_classifications.insert((e_mixed.oracle_index, 1), CashActivity::Operating);
+                cash_assignments.push(CashFlowAssignment {
+                    entry_digest: e_mixed.digest,
+                    leg_index: 0,
+                    activity: CashFlowActivity::Operating,
+                });
+                cash_assignments.push(CashFlowAssignment {
+                    entry_digest: e_mixed.digest,
+                    leg_index: 1,
+                    activity: CashFlowActivity::Operating,
+                });
+                eprintln!(
+                    "oracle mixed-cash entry: seed={seed} unit={} oracle_idx={} legs=[(1010,D,100),(1000,C,80),(4000,C,20)] class=Operating",
+                    u.0, e_mixed.oracle_index
+                );
             }
 
             // (f) Also test a posted entry followed by its exact Reversal in P2!

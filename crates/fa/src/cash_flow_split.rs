@@ -147,6 +147,16 @@ impl Wide {
         self.negative = self.negative.checked_add(n).ok_or_else(|| invalid("cash split wide overflow"))?;
         Ok(())
     }
+    fn net_into(self, section: &mut Self) -> Result<(), Refusal> {
+        if self.positive >= self.negative {
+            let net_inflow = self.positive.checked_sub(self.negative).ok_or_else(|| invalid("cash split wide underflow"))?;
+            section.positive = section.positive.checked_add(net_inflow).ok_or_else(|| invalid("cash split wide overflow"))?;
+        } else {
+            let net_outflow = self.negative.checked_sub(self.positive).ok_or_else(|| invalid("cash split wide underflow"))?;
+            section.negative = section.negative.checked_add(net_outflow).ok_or_else(|| invalid("cash split wide overflow"))?;
+        }
+        Ok(())
+    }
     fn is_zero(self) -> bool { self.positive == self.negative }
     fn value(self) -> Result<i128, Refusal> {
         let n = if self.positive >= self.negative {
@@ -199,6 +209,7 @@ fn build(
         total.closing.add(cell.closing, false)?;
     }
     let mut transfers: BTreeMap<([u8; 32], u32), (Wide, BTreeSet<u128>)> = BTreeMap::new();
+    let mut entry_sections: BTreeMap<([u8; 32], u32, usize), Wide> = BTreeMap::new();
     for (i, line) in source.lines().iter().enumerate() {
         if i % 256 == 0 { checkpoint()?; }
         let cell = source.cells().get(line.cell_index as usize).ok_or_else(|| invalid("cash leg has no source cell"))?;
@@ -221,10 +232,20 @@ fn build(
                 amount.add(part.amount, credit)?;
                 accounts.insert(cell.account_id);
             } else {
-                let total = totals.get_mut(&cell.unit_id).ok_or_else(|| invalid("cash leg has an undeclared unit"))?;
-                total.sections[part.activity as usize].add(part.amount, credit)?;
+                if !totals.contains_key(&cell.unit_id) {
+                    return Err(invalid("cash leg has an undeclared unit").into());
+                }
+                entry_sections
+                    .entry((line.entry_digest, cell.unit_id, part.activity as usize))
+                    .or_insert(Wide::ZERO)
+                    .add(part.amount, credit)?;
             }
         }
+    }
+    for (i, ((_, unit_id, section_idx), entry_net)) in entry_sections.into_iter().enumerate() {
+        if i % 256 == 0 { checkpoint()?; }
+        let total = totals.get_mut(&unit_id).ok_or_else(|| invalid("cash leg has an undeclared unit"))?;
+        entry_net.net_into(&mut total.sections[section_idx])?;
     }
     if !splits.is_empty() { return Err(invalid("cash splits cite legs outside the native selection").into()); }
     for (amount, accounts) in transfers.values() {

@@ -164,7 +164,7 @@ fn same_cash_account_roundtrip_is_not_inferred_to_be_an_internal_transfer() {
         entry_digest: l.entry_digest, leg_index: l.leg_index, activity: CashFlowActivity::Operating }).collect();
     let report = h.book.cash_flow_with_policy(&h.cx(), PRINCIPAL, &cap(&["read"]), &request, &policy).unwrap().unwrap();
     let usd = report.report().units().iter().find(|u| u.unit_id == h.usd.0).unwrap();
-    assert_eq!((usd.operating.inflows, usd.operating.outflows, usd.operating.net), (7, 7, 0));
+    assert_eq!((usd.operating.inflows, usd.operating.outflows, usd.operating.net), (0, 0, 0));
     assert_eq!(report.decisions().len(), 2);
 }
 
@@ -213,6 +213,7 @@ fn unused_unknown_rules_foreign_overrides_and_mismatched_cash_scope_are_refused(
 
 #[test]
 fn current_read_authority_is_required_and_mixed_cash_movements_are_not_netted_to_transfers() {
+    use fa::indirect_cash_flow::{IndirectCashFlowDefinition, IndirectCashFlowRequest};
     use Side::{Credit as C, Debit as D};
     let mut h = Harness::new(); h.post(3, b"cash-and-revenue", h.usd, &[("1010", D, 100), ("1000", C, 80), ("4000", C, 20)]);
     let request = h.request(); let policy = h.policy(); let before = h.head();
@@ -220,9 +221,41 @@ fn current_read_authority_is_required_and_mixed_cash_movements_are_not_netted_to
         assert!(h.book.cash_flow_with_policy(&h.cx(), principal, &capability, &request, &policy).unwrap().is_err());
     }
     let report = h.read();
+    for (line, decision) in report.report().source().lines().iter().zip(report.decisions()) {
+        eprintln!(
+            "mixed-cash-entry line: entry={:02x?} leg={} debits={} credits={} activity={:?} basis={:?}",
+            &line.entry_digest[..4],
+            line.leg_index,
+            line.debits,
+            line.credits,
+            decision.activity,
+            decision.basis
+        );
+    }
     assert!(report.decisions().iter().all(|d| d.basis == CashFlowDecisionBasis::AccountRules));
     let usd = report.report().units().iter().find(|u| u.unit_id == h.usd.0).unwrap();
-    assert_eq!((usd.operating.inflows, usd.operating.outflows, usd.operating.net), (100, 80, 20));
+    // Intra-entry cash movement (Dr 1010 100 / Cr 1000 80) nets within the entry/unit/activity
+    // so gross operating receipts reflect the true external cash inflow of 20 (fa-gb47).
+    assert_eq!((usd.operating.inflows, usd.operating.outflows, usd.operating.net), (20, 0, 20));
+    let indirect = h.book.indirect_cash_flow(
+        &h.cx(),
+        PRINCIPAL,
+        &cap(&["read"]),
+        &IndirectCashFlowRequest {
+            cash: request,
+            cash_definition: report.report().definition().clone(),
+            income_periods: vec!["FY2026-P01".into()],
+            definition: IndirectCashFlowDefinition {
+                name: "mixed-cash-indirect".into(),
+                adjustments: Vec::new(),
+            },
+        },
+    ).unwrap().unwrap();
+    let indirect_usd = indirect.units().iter().find(|u| u.unit_id == h.usd.0).unwrap();
+    assert_eq!(indirect_usd.net_income, 20);
+    assert_eq!(indirect_usd.operating, 20);
+    assert_eq!(indirect_usd.direct_operating, 20);
+    assert_eq!(indirect_usd.operating_residual, 0);
     assert_eq!(h.head(), before);
 }
 

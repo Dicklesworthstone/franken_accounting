@@ -54,7 +54,10 @@ pub struct CashFlowDefinition {
 }
 
 /// Inflows/outflows are nonnegative gross magnitudes; net may be negative.
-/// Refunds and reversals retain their actual cash direction and original leg.
+/// Within a single journal entry, native unit, and activity section, opposing
+/// cash legs are netted before accumulating gross `inflows` and `outflows` so
+/// intra-entry cash movement does not inflate direct-method gross turnover.
+/// Refunds and reversals in separate entries retain their actual cash direction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CashFlowSection {
     pub inflows: i128,
@@ -205,6 +208,29 @@ impl Exact {
         Ok(())
     }
 
+    fn net_into(self, section: &mut Self) -> Result<(), Refusal> {
+        if self.positive >= self.negative {
+            let net_inflow = self
+                .positive
+                .checked_sub(self.negative)
+                .ok_or_else(|| invalid("cash-flow accumulation underflow"))?;
+            section.positive = section
+                .positive
+                .checked_add(net_inflow)
+                .ok_or_else(|| invalid("cash-flow accumulation exceeds its wide bound"))?;
+        } else {
+            let net_outflow = self
+                .negative
+                .checked_sub(self.positive)
+                .ok_or_else(|| invalid("cash-flow accumulation underflow"))?;
+            section.negative = section
+                .negative
+                .checked_add(net_outflow)
+                .ok_or_else(|| invalid("cash-flow accumulation exceeds its wide bound"))?;
+        }
+        Ok(())
+    }
+
     fn value(self) -> Result<i128, Refusal> {
         let value = if self.positive >= self.negative {
             self.positive
@@ -339,6 +365,7 @@ fn build(
         total.closing.signed(cell.closing)?;
     }
     let mut transfers: BTreeMap<([u8; 32], u32), (Exact, BTreeSet<u128>)> = BTreeMap::new();
+    let mut entry_sections: BTreeMap<([u8; 32], u32, usize), Exact> = BTreeMap::new();
     for (index, line) in source.lines().iter().enumerate() {
         if index % 256 == 0 {
             checkpoint()?;
@@ -357,11 +384,23 @@ fn build(
             sum.sides(line.debits, line.credits)?;
             accounts.insert(cell.account_id);
         } else {
-            let total = totals
-                .get_mut(&cell.unit_id)
-                .ok_or_else(|| invalid("cash-flow leg names an undeclared native unit"))?;
-            total.sections[activity as usize].sides(line.debits, line.credits)?;
+            if !totals.contains_key(&cell.unit_id) {
+                return Err(invalid("cash-flow leg names an undeclared native unit").into());
+            }
+            entry_sections
+                .entry((line.entry_digest, cell.unit_id, activity as usize))
+                .or_insert(Exact::ZERO)
+                .sides(line.debits, line.credits)?;
         }
+    }
+    for (index, ((_, unit_id, section_idx), entry_net)) in entry_sections.into_iter().enumerate() {
+        if index % 256 == 0 {
+            checkpoint()?;
+        }
+        let total = totals
+            .get_mut(&unit_id)
+            .ok_or_else(|| invalid("cash-flow leg names an undeclared native unit"))?;
+        entry_net.net_into(&mut total.sections[section_idx])?;
     }
     if !assignments.is_empty() {
         return Err(

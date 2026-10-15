@@ -619,11 +619,14 @@ impl OracleCashSection {
         }
     }
 
-    fn record_leg(&mut self, side: Side, mantissa: i128) {
-        let m = Int::from_i128(mantissa);
-        match side {
-            Side::Debit => self.inflows = self.inflows.add(&m),
-            Side::Credit => self.outflows = self.outflows.add(&m),
+    fn record_net(&mut self, net: &Int) {
+        if net.is_zero() {
+            return;
+        }
+        if net.is_negative() {
+            self.outflows = self.outflows.add(&net.neg());
+        } else {
+            self.inflows = self.inflows.add(net);
         }
         self.net = self.inflows.sub(&self.outflows);
     }
@@ -642,6 +645,8 @@ pub struct OracleDirectCashFlowUnit {
 }
 
 /// Literal direct cash-flow schedule over `gl_detail` for `cash_accounts`.
+/// Intra-entry opposing cash legs in the same `(entry_index, unit, activity)`
+/// are netted before accumulating gross `inflows` and `outflows`.
 pub fn direct_cash_flow(
     oracle: &Oracle,
     known: Known,
@@ -668,6 +673,7 @@ pub fn direct_cash_flow(
         let mut financing = OracleCashSection::zero();
         let mut exchange_effects = OracleCashSection::zero();
         let mut transfers: BTreeMap<usize, (Int, BTreeSet<String>)> = BTreeMap::new();
+        let mut entry_activity_net: BTreeMap<(usize, CashActivity), Int> = BTreeMap::new();
 
         for account in cash_accounts {
             let cell = &gl[&(account.clone(), unit)];
@@ -683,10 +689,15 @@ pub fn direct_cash_flow(
                     (Side::Credit, line.credits)
                 };
                 match activity {
-                    CashActivity::Operating => operating.record_leg(side, mantissa),
-                    CashActivity::Investing => investing.record_leg(side, mantissa),
-                    CashActivity::Financing => financing.record_leg(side, mantissa),
-                    CashActivity::ExchangeEffect => exchange_effects.record_leg(side, mantissa),
+                    CashActivity::Operating
+                    | CashActivity::Investing
+                    | CashActivity::Financing
+                    | CashActivity::ExchangeEffect => {
+                        let slot = entry_activity_net
+                            .entry((line.entry_index, *activity))
+                            .or_insert_with(Int::zero);
+                        *slot = slot.add(&net_leg(side, mantissa));
+                    }
                     CashActivity::InternalTransfer => {
                         let slot = transfers
                             .entry(line.entry_index)
@@ -695,6 +706,15 @@ pub fn direct_cash_flow(
                         slot.1.insert(account.clone());
                     }
                 }
+            }
+        }
+        for ((_entry_idx, activity), net) in &entry_activity_net {
+            match activity {
+                CashActivity::Operating => operating.record_net(net),
+                CashActivity::Investing => investing.record_net(net),
+                CashActivity::Financing => financing.record_net(net),
+                CashActivity::ExchangeEffect => exchange_effects.record_net(net),
+                CashActivity::InternalTransfer => {}
             }
         }
         for (_, (net, touched_accounts)) in transfers {
