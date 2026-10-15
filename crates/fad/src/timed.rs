@@ -9,6 +9,8 @@
 //! corroborated tick. `sweep_batch` bounds committed effects, not input
 //! discovery: the current kernel still scans candidate rows eagerly.
 
+pub mod registers;
+
 use core::fmt;
 
 use asupersync::Cx;
@@ -212,6 +214,7 @@ pub struct TimedWork {
     last_tick_utc_ns: Option<u64>,
     last_tick_monotonic_ok: Option<bool>,
     error: Option<String>,
+    registers: Option<registers::RegisterWork>,
 }
 
 impl TimedWork {
@@ -245,7 +248,29 @@ impl TimedWork {
             last_tick_utc_ns: None,
             last_tick_monotonic_ok: None,
             error: None,
+            registers: None,
         })
+    }
+
+    /// Explicit local-launch selection of derived period maintenance. No
+    /// wire request can reach this builder or broaden these exact codes.
+    /// Existing launchers remain timing-only until they call this method.
+    pub fn with_register_maintenance(
+        mut self,
+        periods: Vec<String>,
+    ) -> Result<Self, registers::ConfigurationError> {
+        if self.registers.is_some() {
+            return Err(registers::ConfigurationError(
+                "register maintenance is already configured",
+            ));
+        }
+        self.registers = Some(registers::RegisterWork::new(periods)?);
+        Ok(self)
+    }
+
+    #[must_use]
+    pub fn register_maintenance(&self) -> Option<&registers::RegisterWork> {
+        self.registers.as_ref()
     }
 
     pub(crate) fn deadline(&self) -> Option<Time> {
@@ -254,7 +279,43 @@ impl TimedWork {
 
     pub(crate) async fn run_due(&mut self, cx: &Cx, book: &mut Book) {
         let sample = SystemClock.observe(cx);
-        let _ = self.run_observation(cx, book, sample).await;
+        let _ = self.run_maintained_observation(cx, book, sample).await;
+    }
+
+    /// One shared production/lab path. Cache maintenance is independent of
+    /// UTC corroboration: it consumes committed facts, never authorizes an
+    /// expiry or reversal. Preserve timing errors and per-period errors
+    /// separately, and never attempt maintenance after cancellation.
+    pub(crate) async fn run_maintained_observation<B: TimedBook + registers::RegisterBook>(
+        &mut self,
+        cx: &Cx,
+        book: &mut B,
+        sample: Result<Observation, ClockError>,
+    ) -> Result<Cycle, TimedError> {
+        let result = self.run_observation(cx, book, sample).await;
+        if self.next.is_some()
+            && let Some(registers) = self.registers.as_mut()
+        {
+            registers.run_cycle(cx, book).await;
+            // A fold may exceed the tick interval. Rearm AFTER it,
+            // otherwise continuously-due maintenance can starve I/O.
+            self.schedule_next(cx)?;
+        }
+        result
+    }
+
+    fn schedule_next(&mut self, cx: &Cx) -> Result<(), TimedError> {
+        match clock::timer(cx)
+            .and_then(|driver| clock::deadline_after(driver.now(), self.policy.tick_ns))
+        {
+            Ok(next) => self.next = Some(next),
+            Err(error) => {
+                self.next = None;
+                self.error = Some(error.to_string());
+                return Err(error.into());
+            }
+        }
+        Ok(())
     }
 
     /// The production sampler and the actual virtual-time lab feed the
@@ -273,16 +334,7 @@ impl TimedWork {
         self.error = result.as_ref().err().map(ToString::to_string);
         // Delay from completion. Missed intervals never become an
         // unbounded burst; the next read/accept always has a chance to run.
-        match clock::timer(cx)
-            .and_then(|driver| clock::deadline_after(driver.now(), self.policy.tick_ns))
-        {
-            Ok(next) => self.next = Some(next),
-            Err(error) => {
-                self.next = None;
-                self.error = Some(error.to_string());
-                return Err(error.into());
-            }
-        }
+        self.schedule_next(cx)?;
         result
     }
 

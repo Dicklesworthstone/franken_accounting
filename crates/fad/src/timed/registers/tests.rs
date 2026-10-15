@@ -1,0 +1,179 @@
+use super::*;
+use std::collections::VecDeque;
+use std::future::Future;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use asupersync::Budget;
+use asupersync::lab::{AutoAdvanceTermination, LabConfig, LabRuntime};
+use asupersync::types::CancelKind;
+
+fn lab<T, F>(
+    seed: u64,
+    test: impl FnOnce(Cx) -> F + Send + 'static,
+) -> Result<Option<T>, asupersync::runtime::JoinError>
+where
+    F: Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    let mut lab = LabRuntime::new(LabConfig::new(seed).with_auto_advance());
+    let root = lab.state.create_root_region(Budget::INFINITE);
+    let (task, mut handle) = lab
+        .state
+        .create_task(root, Budget::INFINITE, async move {
+            test(Cx::current().expect("lab task context")).await
+        })
+        .unwrap();
+    lab.scheduler.lock().schedule(task, Budget::INFINITE.priority);
+    let advanced = lab.run_with_auto_advance();
+    assert!(matches!(advanced.termination, AutoAdvanceTermination::Quiescent), "{advanced:?}");
+    assert!(lab.report().lab_test_passed(), "{:?}", lab.report());
+    handle.try_join()
+}
+
+struct Scripted {
+    calls: Vec<String>,
+    results: VecDeque<Result<Publication, String>>,
+}
+
+impl RegisterBook for Scripted {
+    async fn advance(&mut self, _cx: &Cx, period: &str) -> Result<Publication, String> {
+        self.calls.push(period.to_owned());
+        self.results.pop_front().expect("one result per scripted call")
+    }
+}
+
+fn publication(through: u64) -> Publication {
+    Publication {
+        through,
+        published_at: through + 1,
+        entries_decoded: 1,
+        rebuilt: false,
+        wrote: true,
+    }
+}
+
+#[test]
+fn configuration_is_bounded_exact_and_never_silently_repaired() {
+    for periods in [
+        vec![],
+        vec![String::new()],
+        vec!["--json".into()],
+        vec!["FY2026-P03 ".into()],
+        vec!["FY2026-\nP03".into()],
+        vec!["x".repeat(MAX_PERIOD_CODE_BYTES + 1)],
+        vec!["FY2026-P03".into(), "FY2026-P03".into()],
+        (0..=MAX_PERIODS).map(|i| format!("period-{i}")).collect(),
+    ] {
+        assert!(RegisterWork::new(periods).is_err());
+    }
+    let periods = vec!["FY2026-P04".into(), "FY2026-P03".into()];
+    let work = RegisterWork::new(periods.clone()).unwrap();
+    assert_eq!(work.periods().iter().map(|p| p.period.clone()).collect::<Vec<_>>(), periods);
+    assert_eq!(work.attempts(), 0);
+    assert!(RegisterWork::new((0..MAX_PERIODS).map(|i| format!("period-{i}")).collect()).is_ok());
+    assert!(RegisterWork::new(vec!["x".repeat(MAX_PERIOD_CODE_BYTES)]).is_ok());
+}
+
+#[test]
+fn unattempted_periods_never_claim_a_consumed_or_certified_prefix() {
+    let work = RegisterWork::new(vec!["FY2026-P03".into()]).unwrap();
+    let status = work.status();
+    assert_eq!(status.get("certified"), Some(&Json::Bool(false)));
+    assert_eq!(status.get("periods_per_cycle"), Some(&Json::Int(1)));
+    let period = &status.get("periods").unwrap().as_arr().unwrap()[0];
+    for name in ["through", "published_at", "wrote", "rebuilt", "entries_decoded", "error"] {
+        assert_eq!(period.get(name), Some(&Json::Null), "{name}");
+    }
+}
+
+#[test]
+fn one_attempt_per_cycle_errors_are_per_period_and_rotation_is_fair() {
+    lab(107, |root| async move {
+        let mut work = RegisterWork::new(vec!["A".into(), "B".into()]).unwrap();
+        let mut book = Scripted {
+            calls: vec![],
+            results: VecDeque::from([
+                Ok(publication(1)),
+                Ok(publication(2)),
+                Err("projection drift".into()),
+                Ok(publication(4)),
+                Ok(publication(5)),
+            ]),
+        };
+        for count in 1..=4 {
+            work.run_cycle(&root, &mut book).await;
+            assert_eq!(book.calls.len(), count);
+        }
+        assert_eq!(book.calls, ["A", "B", "A", "B"]);
+        assert_eq!(work.periods()[0].last_success, Some(publication(1)));
+        assert_eq!(work.periods()[0].error.as_deref(), Some("projection drift"));
+        assert!(work.periods()[1].error.is_none());
+        // Another period's success cannot erase this period's failure.
+        let status = work.status();
+        let a = &status.get("periods").unwrap().as_arr().unwrap()[0];
+        assert_eq!(a.get("through"), Some(&Json::Int(1)));
+        assert_eq!(a.get("error").unwrap().as_str(), Some("projection drift"));
+        work.run_cycle(&root, &mut book).await;
+        assert_eq!(work.periods()[0].last_success, Some(publication(5)));
+        assert!(work.periods()[0].error.is_none());
+        assert_eq!(work.attempts(), 5);
+        assert!(book.results.is_empty());
+    }).unwrap().expect("lab completed");
+}
+
+#[test]
+fn a_native_noop_is_success_without_a_claimed_publication_sequence() {
+    lab(108, |root| async move {
+        let mut work = RegisterWork::new(vec!["A".into()]).unwrap();
+        let mut book = Scripted {
+            calls: vec![],
+            results: VecDeque::from([
+                Err("retryable failure".into()),
+                Ok(Publication { through: 9, published_at: 9, entries_decoded: 0,
+                    rebuilt: false, wrote: false }),
+            ]),
+        };
+        work.run_cycle(&root, &mut book).await;
+        work.run_cycle(&root, &mut book).await;
+        let status = work.status();
+        let a = &status.get("periods").unwrap().as_arr().unwrap()[0];
+        assert_eq!(a.get("through"), Some(&Json::Int(9)));
+        assert_eq!(a.get("published_at"), Some(&Json::Null));
+        assert_eq!(a.get("wrote"), Some(&Json::Bool(false)));
+        assert_eq!(a.get("error"), Some(&Json::Null));
+    }).unwrap().expect("lab completed");
+}
+
+#[test]
+fn cancellation_before_admission_does_not_touch_a_period_or_rotate() {
+    let completed = Arc::new(AtomicBool::new(false));
+    let done = completed.clone();
+    let result = lab(131, move |root| async move {
+        let mut work = RegisterWork::new(vec!["A".into(), "B".into()]).unwrap();
+        let mut book = Scripted { calls: vec![], results: VecDeque::new() };
+        root.cancel_with(CancelKind::User, Some("stop maintenance"));
+        work.run_cycle(&root, &mut book).await;
+        assert!(book.calls.is_empty());
+        assert_eq!(work.attempts(), 0);
+        assert_eq!(work.status().get("next_period").unwrap().as_str(), Some("A"));
+        done.store(true, Ordering::Release);
+    });
+    assert!(completed.load(Ordering::Acquire));
+    assert!(matches!(result, Err(asupersync::runtime::JoinError::Cancelled(_))));
+}
+
+#[test]
+fn long_unicode_diagnostics_are_bounded_without_corrupting_status_json() {
+    lab(137, |root| async move {
+        let mut work = RegisterWork::new(vec!["A".into()]).unwrap();
+        let mut book = Scripted {
+            calls: vec![], results: VecDeque::from([Err("€".repeat(1000))]),
+        };
+        work.run_cycle(&root, &mut book).await;
+        let error = work.periods()[0].error.as_ref().unwrap();
+        assert!(error.len() <= 1040);
+        assert!(error.ends_with(" [truncated]"));
+        assert!(work.status().render().contains("[truncated]"));
+    }).unwrap().expect("lab completed");
+}
