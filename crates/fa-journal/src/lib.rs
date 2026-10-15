@@ -50,8 +50,10 @@ pub use attestation::{
 pub use blob::BlobStore;
 pub use custody::{CustodyBody, CustodyEvent, CustodyMoved, custody_chain, transfer_custody};
 pub use evidence::{
-    Document, DocumentAdded, DocumentRecord, Storage, add_document, add_document_external,
-    document_record, fetch_document, fetch_document_with, read_document,
+    Document, DocumentAdded, DocumentEvidenceSummary, DocumentRecord, EvidenceExplanation,
+    ManualAssertionSummary, ReviewedSummary, Storage, SupplementSummary, add_document,
+    add_document_external, document_record, explain_entry_evidence, fetch_document,
+    fetch_document_with, read_document,
 };
 pub use genesis::{
     AccountSpec, BookContext, BookSpec, ChartInstalled, LegalEntitySpec, TimeZonePolicy,
@@ -74,8 +76,8 @@ pub use migration::{
     transition_run, visible_at,
 };
 pub use period::{
-    PreparedTransition, TransitionPlan, Transitioned, plan_transition, prepare_transition,
-    transition_name, transition_period, transition_proposal,
+    PeriodTransitionRecord, PreparedTransition, TransitionPlan, Transitioned, period_transitions,
+    plan_transition, prepare_transition, transition_name, transition_period, transition_proposal,
 };
 pub use plan::{commit_plan, plan_certificate_vid, plan_post};
 pub use policy::{

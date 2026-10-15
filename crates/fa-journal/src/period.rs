@@ -663,3 +663,69 @@ pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
         blocked,
     }))
 }
+
+/// One committed `PeriodControl` transition entry on a fiscal period (`fa explain period`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeriodTransitionRecord {
+    pub entry_vid: VId,
+    pub entry_digest: [u8; 32],
+    pub recorded_at: CommitSeq,
+    pub effective_date: DateDay,
+    pub from: PeriodState,
+    pub to: PeriodState,
+    pub reason_code: u16,
+    pub principal_ref: VId,
+    pub approvals: Vec<ApprovalRef>,
+}
+
+/// Read the ordered `PeriodControl` transition entries for `period_code`,
+/// sorted by `(recorded_at, entry_vid)`.
+pub fn period_transitions<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    period_code: &str,
+) -> Result<Vec<PeriodTransitionRecord>, KernelError> {
+    let pvid = period_vid(&book.calendar.id, period_code);
+    let mut out = Vec::new();
+    for evid in db.in_neighbours(pvid, relation::IN_PERIOD)? {
+        let Some((entry, recorded_at)) = crate::post::read_entry(db, evid)? else {
+            continue;
+        };
+        if entry.proposal.book_id != book.book_id {
+            continue;
+        }
+        let Some(ControlPayload::PeriodTransition {
+            period_ref,
+            from,
+            to,
+            reason_code,
+            ..
+        }) = &entry.proposal.control
+        else {
+            continue;
+        };
+        if period_ref.code != period_code {
+            continue;
+        }
+        let from_state = PeriodState::from_tag(*from).ok_or_else(|| {
+            KernelError::Corrupt(format!("period transition entry {:032x} bad from tag", evid.0))
+        })?;
+        let to_state = PeriodState::from_tag(*to).ok_or_else(|| {
+            KernelError::Corrupt(format!("period transition entry {:032x} bad to tag", evid.0))
+        })?;
+        out.push(PeriodTransitionRecord {
+            entry_vid: evid,
+            entry_digest: entry.entry_digest,
+            recorded_at,
+            effective_date: entry.proposal.effective_date,
+            from: from_state,
+            to: to_state,
+            reason_code: *reason_code,
+            principal_ref: entry.proposal.principal_ref,
+            approvals: entry.approvals,
+        });
+    }
+    out.sort_by_key(|r| (r.recorded_at, r.entry_vid));
+    Ok(out)
+}
+

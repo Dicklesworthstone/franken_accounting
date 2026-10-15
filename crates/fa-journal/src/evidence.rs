@@ -1705,6 +1705,230 @@ pub fn erasure_cut<V: asupersync::fs::Vfs + Clone>(
     ))
 }
 
+/// Metadata summary of a `Reviewed` attestation on a cited document (`fa explain evidence`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReviewedSummary {
+    pub attestation_vid: VId,
+    pub reviewer: VId,
+    pub recorded_at: CommitSeq,
+    pub against: Vec<Oid>,
+}
+
+/// Metadata summary of one cited document on an entry (`fa explain evidence`).
+/// Never carries raw document bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DocumentEvidenceSummary {
+    pub document_oid: Oid,
+    pub doc_commit: [u8; 32],
+    pub role: u8,
+    pub kind: u8,
+    pub mime: String,
+    pub grade: u8,
+    pub size: u64,
+    pub retrieved_by: VId,
+    pub recorded_at: CommitSeq,
+    pub custody_events: usize,
+    pub review: Option<ReviewedSummary>,
+}
+
+/// Metadata summary of one `SupplementalEvidence` attached to an entry (`fa explain evidence`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SupplementSummary {
+    pub vid: VId,
+    pub body_digest: [u8; 32],
+    pub attached_by: VId,
+    pub recorded_at: CommitSeq,
+    pub documents: Vec<EvidenceRef>,
+}
+
+/// Metadata summary of a `ManualAssertion` over an entry's proposal (`fa explain evidence`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManualAssertionSummary {
+    pub attestation_vid: VId,
+    pub principal: VId,
+    pub reason_code: u16,
+    pub recorded_at: CommitSeq,
+}
+
+/// Metadata-only explanation of a committed entry's evidence closure (`fa explain evidence`,
+/// bead `fa-rbo0`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvidenceExplanation {
+    pub entry_vid: VId,
+    pub entry_digest: [u8; 32],
+    pub proposal_digest: [u8; 32],
+    pub class: String,
+    pub recorded_at: CommitSeq,
+    pub requirement: String,
+    pub min_documents: u8,
+    pub manual_assertion_allowed: bool,
+    pub minimum_satisfied: bool,
+    pub documents: Vec<DocumentEvidenceSummary>,
+    pub supplements: Vec<SupplementSummary>,
+    pub manual_assertion: Option<ManualAssertionSummary>,
+}
+
+/// Explain the evidence closure of `entry_vid` from verified metadata without
+/// returning raw document bytes.
+pub fn explain_entry_evidence<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    entry_vid: VId,
+) -> Result<Option<EvidenceExplanation>, KernelError> {
+    let Some((entry, recorded_at)) = crate::post::read_entry(db, entry_vid)? else {
+        return Ok(None);
+    };
+    if entry.proposal.book_id != book.book_id {
+        return Ok(None);
+    }
+    let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    let reasons = ReasonCodes::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    let class_name = entry.proposal.class.name().unwrap_or("?").to_string();
+    let min_row = policy.minimum(&class_name);
+    let (requirement, min_documents, manual_assertion_allowed) = match min_row {
+        Some(m) => (
+            match m.requirement {
+                Requirement::Documents => "documents".to_string(),
+                Requirement::Control => "control".to_string(),
+                Requirement::Target => "target".to_string(),
+            },
+            m.min_documents,
+            m.manual_assertion,
+        ),
+        None => ("unregistered".to_string(), 0, false),
+    };
+
+    let mut documents = Vec::with_capacity(entry.proposal.evidence.len());
+    let mut cited = Vec::new();
+    let mut seen_oids = std::collections::BTreeSet::new();
+
+    for ev in &entry.proposal.evidence {
+        let dvid = document_vid(&ev.document_oid);
+        let doc_row = db.vertex(dvid)?.ok_or_else(|| {
+            KernelError::Corrupt(format!(
+                "entry {:032x} cites missing document {}",
+                entry_vid.0,
+                hex(&ev.document_oid.0)
+            ))
+        })?;
+        let rec = match verify_row(&doc_row, &policy) {
+            Ok(rec) => rec,
+            Err(why) => {
+                return Err(KernelError::Corrupt(format!(
+                    "document {}: {why}",
+                    hex(&ev.document_oid.0)
+                )));
+            }
+        };
+        let rvid = crate::attestation::review_vid(book.book_id, &ev.document_oid);
+        let review = match crate::attestation::read_attestation(db, rvid)? {
+            Some((stored, rev_seq)) => match stored.attestation.claim {
+                crate::attestation::AttestationClaim::Reviewed { against } => {
+                    Some(ReviewedSummary {
+                        attestation_vid: rvid,
+                        reviewer: stored.attestation.principal,
+                        recorded_at: rev_seq,
+                        against,
+                    })
+                }
+                _ => None,
+            },
+            None => None,
+        };
+        let custody_events = match crate::custody::custody_chain(db, book.book_id, &ev.document_oid)?
+        {
+            Ok(Some(chain)) => chain.len(),
+            Ok(None) => 0,
+            Err(r) => {
+                return Err(KernelError::Corrupt(format!(
+                    "document {} custody drift: {}",
+                    hex(&ev.document_oid.0),
+                    r.message
+                )));
+            }
+        };
+        if seen_oids.insert(ev.document_oid) {
+            cited.push(CitedDocument {
+                vid: dvid,
+                oid: ev.document_oid,
+                kind: rec.kind,
+                grade: rec.grade,
+                uploader: rec.retrieved_by,
+                review: review.as_ref().map(|r| Review {
+                    attestation: r.attestation_vid,
+                    reviewer: r.reviewer,
+                }),
+            });
+        }
+        documents.push(DocumentEvidenceSummary {
+            document_oid: ev.document_oid,
+            doc_commit: ev.doc_commit,
+            role: ev.role,
+            kind: rec.kind,
+            mime: rec.mime,
+            grade: rec.grade,
+            size: rec.size,
+            retrieved_by: rec.retrieved_by,
+            recorded_at: doc_row.created_at,
+            custody_events,
+            review,
+        });
+    }
+
+    let mut supplements = Vec::new();
+    for (sup, sup_seq) in supplements_of(db, book, entry_vid)? {
+        let body_digest = sup.body_digest()?;
+        let svid = supplemental_vid(book.book_id, &body_digest);
+        supplements.push(SupplementSummary {
+            vid: svid,
+            body_digest,
+            attached_by: sup.attached_by,
+            recorded_at: sup_seq,
+            documents: sup.documents,
+        });
+    }
+
+    let mvid = crate::attestation::manual_assertion_vid(book.book_id, &entry.proposal_digest);
+    let manual_assertion = match crate::attestation::read_attestation(db, mvid)? {
+        Some((stored, ma_seq)) => match stored.attestation.claim {
+            crate::attestation::AttestationClaim::ManualAssertion { reason_code, .. } => {
+                Some(ManualAssertionSummary {
+                    attestation_vid: mvid,
+                    principal: stored.attestation.principal,
+                    reason_code,
+                    recorded_at: ma_seq,
+                })
+            }
+            _ => None,
+        },
+        None => None,
+    };
+
+    let minimum_satisfied = check_minimum(
+        &policy,
+        &reasons,
+        &class_name,
+        &cited,
+        manual_assertion.as_ref().map(|m| m.reason_code),
+    )
+    .is_ok();
+
+    Ok(Some(EvidenceExplanation {
+        entry_vid,
+        entry_digest: entry.entry_digest,
+        proposal_digest: entry.proposal_digest,
+        class: class_name,
+        recorded_at,
+        requirement,
+        min_documents,
+        manual_assertion_allowed,
+        minimum_satisfied,
+        documents,
+        supplements,
+        manual_assertion,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
