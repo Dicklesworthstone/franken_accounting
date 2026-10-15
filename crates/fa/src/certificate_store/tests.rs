@@ -263,3 +263,5 @@ fn invalid_full_certificate_is_refused_before_any_storage_publication() {
     assert_eq!(h.head(), before);
     assert!(h.book.db.vertex(certificate_vid(BOOK, &certificate.digest)).unwrap().is_none());
 }
+
+mod adversarial;
