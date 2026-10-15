@@ -7,12 +7,33 @@
 //! oracle == kernel`) and by differential walks.
 
 use fa_registry::{Decision, DispositionFamily};
-use fa_time::{DateDay, PeriodKind, PeriodState};
+use fa_time::{DateDay, PeriodKind, PeriodState, PeriodTransition};
 
 fn with(op: &str, approvals: u8) -> Decision {
     Decision::With {
         op: op.to_string(),
         approvals,
+    }
+}
+
+/// Hand-transcribed plan §7.3 / Appendix C `PeriodControl` state machine (`fa-vfu`).
+///
+/// Does NOT call `fa_time::period::transition`.
+pub fn oracle_transition(from: PeriodState, t: PeriodTransition) -> Result<PeriodState, ()> {
+    use PeriodState::{Closed, Future, Locked, Open, SoftClosed};
+    match (from, t) {
+        (Future, PeriodTransition::Open) => Ok(Open),
+        (Open, PeriodTransition::SoftClose) => Ok(SoftClosed),
+        (Open | SoftClosed, PeriodTransition::Close) => Ok(Closed),
+        (Closed, PeriodTransition::Lock) => Ok(Locked),
+        (SoftClosed, PeriodTransition::Reopen { to: Open }) => Ok(Open),
+        (
+            Closed | Locked,
+            PeriodTransition::Reopen {
+                to: to @ (Open | SoftClosed),
+            },
+        ) => Ok(to),
+        _ => Err(()),
     }
 }
 

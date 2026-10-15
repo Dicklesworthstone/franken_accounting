@@ -650,4 +650,3 @@ fn certification_does_not_invalidate_plans_while_accounting_writes_do_and_read_o
     assert_eq!(code, 6, "{}", refused.render());
     assert_eq!(text(&refused, "refusal_id"), "FA-REF-034");
 }
-

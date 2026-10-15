@@ -1331,7 +1331,10 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         "fa_post_commit_plan",
         json!({"plan": stale_planned["bytes"]}),
     );
-    assert!(is_error, "accounting write must invalidate plan: {stale_commit_text}");
+    assert!(
+        is_error,
+        "accounting write must invalidate plan: {stale_commit_text}"
+    );
     let stale_refused = structured_error(&stale_commit_text);
     assert_eq!(stale_refused["refusal_id"], "FA-REF-034", "{stale_refused}");
     assert_eq!(stale_refused["exit"], 6, "{stale_refused}");

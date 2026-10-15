@@ -8414,4 +8414,3 @@ fn planted_u64_max_and_far_future_skew_ticks_do_not_brick_time_axis() {
     assert_eq!(sel.lower_entry, t0.entry_ref.vid);
     assert_eq!(sel.upper_entry, Some(t_honest.entry_ref.vid));
 }
-

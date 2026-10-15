@@ -57,7 +57,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fa_registry::sod_policy::{SodPolicy, SodRequirement};
 use fa_registry::{Admissibility, Decision, EntryClasses};
-use fa_time::period::transition;
 use fa_time::{DateDay, FiscalCalendar, PeriodDef, PeriodKind, PeriodState, PeriodTransition};
 
 // ---------------------------------------------------------------------------
@@ -944,7 +943,7 @@ impl Oracle {
         };
         let mut approvals = Vec::new();
         if let Some((_, from)) = self.periods.get(code)
-            && transition(*from, t).is_ok()
+            && admissibility::oracle_transition(*from, t).is_ok()
         {
             let req = self.period_rule(*from, t);
             for i in 0..req.approvers {
@@ -1033,7 +1032,7 @@ impl Oracle {
             return Err(code::TRANSITION);
         }
         let from = *state;
-        let to = transition(from, t).map_err(|_| code::TRANSITION)?;
+        let to = admissibility::oracle_transition(from, t).map_err(|()| code::TRANSITION)?;
         if approvals.iter().any(|a| a.epoch != self.epoch) {
             return Err(code::STALE_APPROVAL);
         }
@@ -1601,23 +1600,16 @@ impl Oracle {
                 }
             }
             let mut named = BTreeSet::new();
-            let mut sum: i128 = 0;
+            let mut sum = Int::zero();
             for s in mine {
                 if s.mantissa <= 0 || !named.insert((s.target, s.ordinal)) {
                     return Verdict::Refused {
                         code: code::SETTLE_SHAPE,
                     };
                 }
-                sum = match sum.checked_add(s.mantissa) {
-                    Some(v) => v,
-                    None => {
-                        return Verdict::Refused {
-                            code: code::SETTLE_SHAPE,
-                        };
-                    }
-                };
+                sum = sum.add(&Int::from_i128(s.mantissa));
             }
-            if sum > leg.mantissa {
+            if Int::from_i128(leg.mantissa).sub(&sum).is_negative() {
                 return Verdict::Refused {
                     code: code::SETTLE_SHAPE,
                 };
@@ -1890,7 +1882,7 @@ impl Oracle {
         // 7a. Application law (plan §5.7): a witnessed, live, posted target
         //     leg on the same account and unit with the opposite side, within
         //     its open amount (counting earlier settlements of this intent).
-        let mut used: BTreeMap<(usize, usize), i128> = BTreeMap::new();
+        let mut used: BTreeMap<(usize, usize), Int> = BTreeMap::new();
         for s in &intent.settles {
             let leg = &intent.legs[s.leg];
             let Some(target) = self.journal.get(s.target) else {
@@ -1913,20 +1905,25 @@ impl Oracle {
                     code: code::SETTLE_SHAPE,
                 };
             }
-            let before = used.get(&(s.target, s.ordinal)).copied().unwrap_or(0);
-            let consumed: i128 = target
-                .settles
-                .iter()
-                .filter(|t| t.leg == s.ordinal)
-                .map(|t| t.mantissa)
-                .sum();
-            let open = tl.mantissa - consumed - self.applied_to(s.target, s.ordinal) - before;
-            if s.mantissa > open {
+            let before = used
+                .get(&(s.target, s.ordinal))
+                .cloned()
+                .unwrap_or_else(Int::zero);
+            let mut consumed = Int::zero();
+            for t in target.settles.iter().filter(|t| t.leg == s.ordinal) {
+                consumed = consumed.add(&Int::from_i128(t.mantissa));
+            }
+            let open = Int::from_i128(tl.mantissa)
+                .sub(&consumed)
+                .sub(&self.applied_to_int(s.target, s.ordinal))
+                .sub(&before);
+            let settle_amt = Int::from_i128(s.mantissa);
+            if open.sub(&settle_amt).is_negative() {
                 return Verdict::Refused {
                     code: code::OVER_APPLICATION,
                 };
             }
-            used.insert((s.target, s.ordinal), before + s.mantissa);
+            used.insert((s.target, s.ordinal), before.add(&settle_amt));
         }
         // 7. Reversal law: the target exists and the legs are its exact side-swap.
         if let Some(target) = intent.reverses {
@@ -2803,16 +2800,31 @@ impl Oracle {
         }
     }
 
-    /// The sum of live applications against `target`'s leg `ordinal`.
-    fn applied_to(&self, target: usize, ordinal: usize) -> i128 {
-        self.journal
+    /// The sum of live applications against `target`'s leg `ordinal`, using the oracle's own limb arithmetic.
+    fn applied_to_int(&self, target: usize, ordinal: usize) -> Int {
+        let mut sum = Int::zero();
+        for (_, e) in self
+            .journal
             .iter()
             .enumerate()
             .filter(|(i, e)| self.carries_open_items(e) && self.is_live(*i))
-            .flat_map(|(_, e)| e.settles.iter())
-            .filter(|s| s.target == target && s.ordinal == ordinal)
-            .map(|s| s.mantissa)
-            .sum()
+        {
+            for s in e
+                .settles
+                .iter()
+                .filter(|s| s.target == target && s.ordinal == ordinal)
+            {
+                sum = sum.add(&Int::from_i128(s.mantissa));
+            }
+        }
+        sum
+    }
+
+    /// The sum of live applications against `target`'s leg `ordinal`.
+    fn applied_to(&self, target: usize, ordinal: usize) -> i128 {
+        self.applied_to_int(target, ordinal)
+            .to_i128()
+            .unwrap_or(i128::MAX)
     }
 
     /// The literal open-item fold: every leg of every live posted entry →
@@ -2825,13 +2837,18 @@ impl Oracle {
                 continue;
             }
             for (o, leg) in e.legs.iter().enumerate() {
-                let out_of: i128 = e
-                    .settles
-                    .iter()
-                    .filter(|s| s.leg == o)
-                    .map(|s| s.mantissa)
-                    .sum();
-                out.insert((i, o), (leg.mantissa, self.applied_to(i, o), out_of));
+                let mut out_of = Int::zero();
+                for s in e.settles.iter().filter(|s| s.leg == o) {
+                    out_of = out_of.add(&Int::from_i128(s.mantissa));
+                }
+                out.insert(
+                    (i, o),
+                    (
+                        leg.mantissa,
+                        self.applied_to(i, o),
+                        out_of.to_i128().unwrap_or(i128::MAX),
+                    ),
+                );
             }
         }
         out
@@ -3605,5 +3622,34 @@ mod tests {
         let swept = o.sweep_batch(2).unwrap().unwrap();
         assert_eq!(swept.tick, 1_020);
         assert_eq!(swept.expired, vec![(1, 3)]);
+    }
+
+    #[test]
+    fn oracle_transition_table_matches_fa_time_exhaustively() {
+        let states = [
+            PeriodState::Future,
+            PeriodState::Open,
+            PeriodState::SoftClosed,
+            PeriodState::Closed,
+            PeriodState::Locked,
+        ];
+        let mut transitions = vec![
+            PeriodTransition::Open,
+            PeriodTransition::SoftClose,
+            PeriodTransition::Close,
+            PeriodTransition::Lock,
+        ];
+        for &to in &states {
+            transitions.push(PeriodTransition::Reopen { to });
+        }
+        for &from in &states {
+            for &t in &transitions {
+                assert_eq!(
+                    admissibility::oracle_transition(from, t),
+                    fa_time::period::transition(from, t).map_err(|_| ()),
+                    "mismatch on ({from:?}, {t:?})"
+                );
+            }
+        }
     }
 }
