@@ -1313,10 +1313,7 @@ impl ToolSpec {
                             if let Ok(dry_args) =
                                 args::parse(&dry, &reg.value_flags(), &reg.switches())
                                 && fa_cli::cli::bound_command_admissible(
-                                    reg,
-                                    &self.verb,
-                                    &dry_args,
-                                    authority,
+                                    reg, &self.verb, &dry_args, authority,
                                 )
                                 .is_ok()
                             {
@@ -1525,9 +1522,7 @@ impl ToolSpec {
                     .into(),
             });
         }
-        if !allow_files
-            && let Some((argument, fix)) = self.forbidden_path_argument(arguments)
-        {
+        if !allow_files && let Some((argument, fix)) = self.forbidden_path_argument(arguments) {
             return Err(ArgError {
                 message: format!("{wire}: host filesystem argument `{argument}` is forbidden"),
                 fix,

@@ -428,7 +428,11 @@ mod tests {
         std::fs::write(&outside, b"outside").expect("write outside");
 
         let no_files = launch(LaunchProfile::Agent, &[]).unwrap();
-        assert!(no_files.resolve_in_files_root("invoice.txt", false).is_err());
+        assert!(
+            no_files
+                .resolve_in_files_root("invoice.txt", false)
+                .is_err()
+        );
 
         let authority = launch(LaunchProfile::Agent, &[])
             .unwrap()
@@ -456,7 +460,11 @@ mod tests {
                 .expect("in-root output leaf"),
             canon_root.join("close.plan")
         );
-        assert!(authority.resolve_in_files_root("missing.txt", false).is_err());
+        assert!(
+            authority
+                .resolve_in_files_root("missing.txt", false)
+                .is_err()
+        );
 
         // Planted negatives: absolute path, .. escape, option-shaped, directory.
         assert!(

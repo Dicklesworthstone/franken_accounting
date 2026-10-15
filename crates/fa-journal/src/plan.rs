@@ -343,7 +343,9 @@ async fn recorded_plan<V: Vfs + Clone>(
         || entry.retired_at.is_some()
         || entry.props != entry_mirrors(plan.prepared_entry())?
         || entry.created_at.0 < min_sequence
-        || db.vertex_at(evid, fgdb_types::CommitSeq(before_entry))?.is_some()
+        || db
+            .vertex_at(evid, fgdb_types::CommitSeq(before_entry))?
+            .is_some()
         || db.vertex_at(evid, entry.created_at)?.as_ref() != Some(&entry)
         || !accounting_unchanged_between(
             db,
@@ -367,7 +369,9 @@ async fn recorded_plan<V: Vfs + Clone>(
         || certificate.retired_at.is_some()
         || certificate.props != retention_props(book, plan)?
         || certificate.created_at != entry.created_at
-        || db.vertex_at(cvid, fgdb_types::CommitSeq(before_entry))?.is_some()
+        || db
+            .vertex_at(cvid, fgdb_types::CommitSeq(before_entry))?
+            .is_some()
         || db.vertex_at(cvid, certificate.created_at)?.as_ref() != Some(&certificate)
     {
         return Ok(Err(invalidated(
@@ -533,13 +537,15 @@ pub async fn commit_plan<V: Vfs + Clone>(
     // publication; &mut Database holds the single-writer handle throughout.
     match prepared.commit(db, ctx).await? {
         Err(refusal) if refusal.exit == exit::CONFLICT => Ok(Err(invalidated(refusal.message))),
-        Ok(Posted::AlreadyRecorded { .. }) => match recorded_plan(db, ctx, book, &plan, cvid).await? {
-            Err(refusal) => Ok(Err(refusal)),
-            Ok(Some(posted)) => Ok(Ok(posted)),
-            Ok(None) => Ok(Err(invalidated(
-                "a publication race did not retain this exact plan outcome",
-            ))),
-        },
+        Ok(Posted::AlreadyRecorded { .. }) => {
+            match recorded_plan(db, ctx, book, &plan, cvid).await? {
+                Err(refusal) => Ok(Err(refusal)),
+                Ok(Some(posted)) => Ok(Ok(posted)),
+                Ok(None) => Ok(Err(invalidated(
+                    "a publication race did not retain this exact plan outcome",
+                ))),
+            }
+        }
         other => Ok(other),
     }
 }

@@ -154,9 +154,9 @@ pub fn resolve_instant_at<V: asupersync::fs::Vfs + Clone>(
     let mut active_ticks: Vec<(TimeObservation, VId)> = Vec::with_capacity(ticks.len());
     for (i, &(tick, vid)) in ticks.iter().enumerate() {
         if !tick.monotonic_ok
-            && ticks[i + 1..]
-                .iter()
-                .any(|(later, _)| later.monotonic_ok && later.observed_utc_ns <= tick.observed_utc_ns)
+            && ticks[i + 1..].iter().any(|(later, _)| {
+                later.monotonic_ok && later.observed_utc_ns <= tick.observed_utc_ns
+            })
         {
             continue;
         }

@@ -215,10 +215,8 @@ impl Adapter {
         match reply.error() {
             Some(line) => {
                 let mut err = StructuredError::from_error_event(&self.mcp, self.reg, &line.data);
-                err.suggested_tool_calls.retain(|call| {
-                    self.mcp
-                        .is_call_admissible(self.reg, call, &self.authority)
-                });
+                err.suggested_tool_calls
+                    .retain(|call| self.mcp.is_call_admissible(self.reg, call, &self.authority));
                 err
             }
             None => StructuredError::foundation(format!(
@@ -331,12 +329,9 @@ impl Adapter {
                     .map(|n| {
                         let command = n.get("command").and_then(Json::as_str).unwrap_or("");
                         let mut v = to_wire(n);
-                        if let Some(call) = self
-                            .mcp
-                            .command_to_call(self.reg, command)
-                            .filter(|call| {
-                                self.mcp
-                                    .is_call_admissible(self.reg, call, &self.authority)
+                        if let Some(call) =
+                            self.mcp.command_to_call(self.reg, command).filter(|call| {
+                                self.mcp.is_call_admissible(self.reg, call, &self.authority)
                             })
                         {
                             v["call"] = json!({ "tool": call.tool, "arguments": call.arguments });
@@ -1862,7 +1857,9 @@ mod tests {
             .call(&steward, &json!({"action": "read", "target": oid}))
             .expect("document read");
         assert_eq!(doc_out.untrusted_blocks.len(), 1);
-        assert!(doc_out.untrusted_blocks[0].contains("\"boundary\":\"untrusted_third_party_text\""));
+        assert!(
+            doc_out.untrusted_blocks[0].contains("\"boundary\":\"untrusted_third_party_text\"")
+        );
         assert!(doc_out.untrusted_blocks[0].contains(&format!("\"source\":\"D:{oid}\"")));
         assert!(
             !doc_out.envelope["next_actions"]
@@ -1924,8 +1921,11 @@ mod tests {
         let book_dir = base.join("book");
         let files_dir = base.join("files");
         std::fs::create_dir_all(files_dir.join("nested")).expect("files dir");
-        std::fs::write(files_dir.join("invoice.txt"), b"Invoice #9001 for 50.00 USD")
-            .expect("write invoice");
+        std::fs::write(
+            files_dir.join("invoice.txt"),
+            b"Invoice #9001 for 50.00 USD",
+        )
+        .expect("write invoice");
         std::fs::write(base.join("outside.txt"), b"outside secret").expect("write outside");
         #[cfg(unix)]
         std::os::unix::fs::symlink(base.join("outside.txt"), files_dir.join("escape_link.txt"))
@@ -2055,11 +2055,11 @@ mod tests {
             .mcp
             .command_to_call(read_only.reg, "fa verify registers")
             .expect("verify call");
-        assert!(
-            !read_only
-                .mcp
-                .is_call_admissible(read_only.reg, &verify_call, &read_only.authority)
-        );
+        assert!(!read_only.mcp.is_call_admissible(
+            read_only.reg,
+            &verify_call,
+            &read_only.authority
+        ));
         let post_call = read_only
             .mcp
             .command_to_call(read_only.reg, "fa post")

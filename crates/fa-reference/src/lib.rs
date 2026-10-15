@@ -1288,8 +1288,7 @@ impl Oracle {
         let prev_anchor = prev_corroborated.or_else(|| self.latest_tick());
         let effective_ok = monotonic_ok
             && prev_anchor.is_none_or(|prev| {
-                observed_utc_ns >= prev
-                    && observed_utc_ns.saturating_sub(prev) <= MAX_CLOCK_SKEW_NS
+                observed_utc_ns >= prev && observed_utc_ns.saturating_sub(prev) <= MAX_CLOCK_SKEW_NS
             });
         let order_anchor = prev_corroborated.or_else(|| {
             if effective_ok {
@@ -3562,7 +3561,10 @@ mod tests {
         assert!(matches!(
             o.post(&intent(
                 "Original",
-                vec![leg(Side::Debit, "1000", 100), leg(Side::Credit, "3000", 100)],
+                vec![
+                    leg(Side::Debit, "1000", 100),
+                    leg(Side::Credit, "3000", 100)
+                ],
                 b"fund",
                 None,
             )),

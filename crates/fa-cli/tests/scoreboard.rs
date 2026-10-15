@@ -31,10 +31,8 @@ fn tmp_dir(tag: &str) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     loop {
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "fa-scoreboard-{}-{tag}-{n}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("fa-scoreboard-{}-{tag}-{n}", std::process::id()));
         if std::fs::create_dir(&dir).is_ok() {
             return dir;
         }
@@ -127,8 +125,8 @@ fn run_registry_probe(probe_name: &str) -> ProbeOutcome {
             },
         },
         "admissibility_four_way" => {
-            use fa_registry::admissibility_plan::{ALL_KINDS, DispositionFamily};
             use fa_registry::ALL_STATES;
+            use fa_registry::admissibility_plan::{ALL_KINDS, DispositionFamily};
             let classes = EntryClasses::embedded().expect("entry_classes.toml");
             let reg = Admissibility::embedded(&classes).expect("admissibility.toml");
             let plan = PlanAdmissibility::parse(include_str!(
@@ -144,8 +142,7 @@ fn run_registry_probe(probe_name: &str) -> ProbeOutcome {
                             for pre_opening in [false, true] {
                                 let p_dec =
                                     plan.decide_cell(name, state, family, kind, pre_opening);
-                                let t_dec =
-                                    reg.decide_cell(name, state, family, kind, pre_opening);
+                                let t_dec = reg.decide_cell(name, state, family, kind, pre_opening);
                                 if p_dec != t_dec {
                                     matches = false;
                                 }
@@ -301,7 +298,14 @@ fn setup_fixture_book(dir: &Path) -> BTreeMap<String, String> {
         json::parse(last).expect("valid robot json")
     };
 
-    run_ok(&["book", "create", "--name", "Acme Scoreboard Co", "--base-unit", "USD"]);
+    run_ok(&[
+        "book",
+        "create",
+        "--name",
+        "Acme Scoreboard Co",
+        "--base-unit",
+        "USD",
+    ]);
     run_ok(&["chart", "import", "--template", "us-gaap-smb"]);
     run_ok(&["period", "create", "--fiscal-year", "2025"]);
     run_ok(&["period", "create", "--fiscal-year", "2026"]);
