@@ -1,8 +1,9 @@
-//! Independent encoder of the existing raw formats; no producer dependency.
+//! Independent encoder of raw inclusion and payload-complete prefix formats.
 
 use fa_verify::blake3::hash_parts;
 use fa_verify::envelope::{ENTRY_DIGEST_DOMAIN, PROPOSAL_DIGEST_DOMAIN, envelope_of_entry};
-use fa_verify::proof::{Checkpoint, INCLUSION_FORMAT, PREFIX_FORMAT};
+use fa_verify::proof::{Checkpoint, INCLUSION_FORMAT};
+use fa_verify::proof::production::derivation::PREFIX_FORMAT_V2;
 use fa_verify::tree::{Digest, leaf_hash, root_of};
 
 pub const BOOK: [u8; 16] = [0x51; 16];
@@ -99,9 +100,13 @@ impl Fixture {
 
     pub fn prefix(&self) -> Vec<u8> {
         let mut w = Wire::default();
-        w.bytes(PREFIX_FORMAT).fixed(&self.checkpoint.encode())
+        w.bytes(PREFIX_FORMAT_V2).fixed(&self.checkpoint.encode())
             .u32(u32::try_from(self.records.len()).unwrap());
         for record in &self.records { w.bytes(&record.envelope.encode()); }
+        w.u32(u32::try_from(self.records.len()).unwrap());
+        for (index, record) in self.records.iter().enumerate() {
+            w.u64(index as u64).u32(u32::try_from(record.split).unwrap()).bytes(&record.payload);
+        }
         w.0
     }
 
