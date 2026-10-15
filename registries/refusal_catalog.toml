@@ -291,7 +291,7 @@ exit = "refusal"
 cite = "plan §12.1 / FA-INV-04 mapping-partition (exact statement over the journal)"
 fix = "select balance-sheet or income-statement with an existing period; correct the named mapping or input and recompute from the journal without adding a balancing entry"
 
-# ---- Front door (153) -----------------------------------------------------
+# ---- Front door and key-file environment checks (153, 155) ----------------
 # The `fa` binary reports an unwinding panic as one error event instead of
 # exit 101 (bead fa-y9z; plan §15.3, never silent).
 [[refusal]]
@@ -301,6 +301,14 @@ owners = ["fa-cli"]
 exit = "foundation"
 cite = "plan §15.3 (never silent: every non-zero exit emits exactly one error event)"
 fix = "report the command line and this message; a write either committed before the panic or did not (run `fa verify registers` and `fa verify projections`)"
+
+[[refusal]]
+code = "FA-REF-155"
+name = "KEY_FILE_PERMISSIONS"
+owners = ["fa"]
+exit = "environment"
+cite = "plan §15.3 (key-file permissions), Appendix H R-KEY (0600 key file)"
+fix = "chmod 600 {path}"
 
 # ---- Supersession (050–054) ----------------------------------------------
 [[refusal]]

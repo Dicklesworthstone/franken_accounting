@@ -170,6 +170,42 @@ impl BookKeys {
         .await
     }
 
+    /// Validate that `(mode, file_uid)` satisfies the 0600 / same-UID key-file
+    /// invariant (plan §15.3, Appendix H R-KEY; bead fa-1jcl).
+    pub fn verify_mode_and_owner(
+        path: &Path,
+        mode: u32,
+        file_uid: u32,
+        process_uid: u32,
+    ) -> Result<(), BookError> {
+        let mode_bits = mode & 0o7777;
+        if mode_bits & !0o600 != 0 || file_uid != process_uid {
+            return Err(BookError::KeyFilePermissions {
+                path: path.to_path_buf(),
+                mode: mode_bits,
+                file_uid,
+                process_uid,
+            });
+        }
+        Ok(())
+    }
+
+    /// Check that the key file at `path` has mode at most `0600` and is owned
+    /// by the current process UID before any key bytes are read.
+    pub fn check_permissions(path: &Path) -> Result<(), BookError> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            let meta = std::fs::metadata(path).map_err(|e| BookError::Io(path.to_path_buf(), e))?;
+            let mode = meta.permissions().mode() & 0o7777;
+            let file_uid = meta.uid();
+            let process_uid =
+                current_process_uid().map_err(|e| BookError::Io(path.to_path_buf(), e))?;
+            Self::verify_mode_and_owner(path, mode, file_uid, process_uid)?;
+        }
+        Ok(())
+    }
+
     /// Read a key file written by [`BookKeys::save`].
     pub fn load(path: &Path) -> Result<Self, BookError> {
         let (runtime, root) = Book::runtime_and_root()?;
@@ -184,11 +220,27 @@ impl BookKeys {
         path: &Path,
     ) -> Result<Self, BookError> {
         cx.checkpoint().map_err(BookError::Context)?;
+        let raw_path = path;
         let path = rooted_path(path);
+        let meta = cx
+            .with_restriction_async(vfs.metadata(&path))
+            .await
+            .map_err(|e| BookError::Io(raw_path.to_path_buf(), e))?;
+        #[cfg(unix)]
+        {
+            let mode = meta.permissions().mode() & 0o7777;
+            let process_uid =
+                current_process_uid().map_err(|e| BookError::Io(raw_path.to_path_buf(), e))?;
+            let file_uid = std::fs::metadata(&path).map_or(process_uid, |os_meta| {
+                use std::os::unix::fs::MetadataExt;
+                os_meta.uid()
+            });
+            Self::verify_mode_and_owner(raw_path, mode, file_uid, process_uid)?;
+        }
         let text = cx
             .with_restriction_async(vfs.read_to_string(&path))
             .await
-            .map_err(|e| BookError::Io(path.to_path_buf(), e))?;
+            .map_err(|e| BookError::Io(raw_path.to_path_buf(), e))?;
         let lines: Vec<&str> = text
             .lines()
             .map(str::trim)
@@ -197,7 +249,7 @@ impl BookKeys {
         if lines.len() != 3 {
             return Err(BookError::KeyFile(format!(
                 "{}: expected three 64-hex lines, found {}",
-                path.display(),
+                raw_path.display(),
                 lines.len()
             )));
         }
@@ -205,7 +257,7 @@ impl BookKeys {
             unhex(l).ok_or_else(|| {
                 BookError::KeyFile(format!(
                     "{}: {what} is not 64 hex characters",
-                    path.display()
+                    raw_path.display()
                 ))
             })
         };
@@ -318,11 +370,28 @@ impl fmt::Debug for Entropy {
     }
 }
 
+/// The refusal catalog code for an insecure key file (mode wider than 0600 or
+/// owner UID mismatch; plan §15.3, Appendix H R-KEY; bead fa-1jcl).
+pub const KEY_FILE_PERMISSIONS: &str = "FA-REF-155";
+
+#[cfg(unix)]
+fn current_process_uid() -> std::io::Result<u32> {
+    use std::sync::OnceLock;
+    static UID: OnceLock<u32> = OnceLock::new();
+    if let Some(&uid) = UID.get() {
+        return Ok(uid);
+    }
+    let (a, _b) = asupersync::net::unix::UnixStream::pair()?;
+    let uid = a.peer_cred()?.uid;
+    let _ = UID.set(uid);
+    Ok(uid)
+}
+
 /// Errors a `Book` can return. Each maps to one exit-code class in the CLI
-/// contract (plan Appendix D): `Runtime`, `Open`, `Io`, `KeyFile`, and
-/// `NoBook` are environment errors (4); the rest are foundation failures
-/// (5). Lawful refusals are not errors: they are the `Err` of the inner
-/// result each method returns.
+/// contract (plan Appendix D): `Runtime`, `Open`, `Io`, `KeyFile`,
+/// `KeyFilePermissions`, and `NoBook` are environment errors (4); the rest are
+/// foundation failures (5). Lawful refusals are not errors: they are the `Err`
+/// of the inner result each method returns.
 #[derive(Debug)]
 pub enum BookError {
     Runtime(String),
@@ -330,6 +399,14 @@ pub enum BookError {
     Open(fgdb::OpenError),
     Io(PathBuf, std::io::Error),
     KeyFile(String),
+    /// The key file has mode wider than 0600 or its owner UID differs from the
+    /// process UID (plan §15.3, Appendix H R-KEY; bead fa-1jcl).
+    KeyFilePermissions {
+        path: PathBuf,
+        mode: u32,
+        file_uid: u32,
+        process_uid: u32,
+    },
     /// The store opened but holds no book (genesis never ran).
     NoBook,
     Kernel(KernelError),
@@ -353,9 +430,12 @@ impl BookError {
                 fa_lantern::LanternError::Unregistered { .. }
                 | fa_lantern::LanternError::Parameter { .. },
             ) => fa_journal::exit::USAGE,
-            Self::Runtime(_) | Self::Open(_) | Self::Io(..) | Self::KeyFile(_) | Self::NoBook => {
-                fa_journal::exit::ENVIRONMENT
-            }
+            Self::Runtime(_)
+            | Self::Open(_)
+            | Self::Io(..)
+            | Self::KeyFile(_)
+            | Self::KeyFilePermissions { .. }
+            | Self::NoBook => fa_journal::exit::ENVIRONMENT,
             Self::Context(_)
             | Self::Kernel(_)
             | Self::Registers(_)
@@ -363,6 +443,49 @@ impl BookError {
             | Self::Entropy(_)
             | Self::CertifiedRead(_)
             | Self::Lantern(_) => fa_journal::exit::FOUNDATION,
+        }
+    }
+
+    /// When the error corresponds to a typed catalog refusal (e.g.
+    /// `FA-REF-155` key-file permissions, exit 4), return the structured
+    /// [`Refusal`].
+    #[must_use]
+    pub fn refusal(&self) -> Option<Refusal> {
+        match self {
+            Self::KeyFilePermissions {
+                path,
+                mode,
+                file_uid,
+                process_uid,
+            } => {
+                let why = if mode & !0o600 != 0 && file_uid != process_uid {
+                    format!(
+                        "{}: mode 0{:03o} is wider than 0600 and owner uid {file_uid} differs from process uid {process_uid}",
+                        path.display(),
+                        mode & 0o7777
+                    )
+                } else if mode & !0o600 != 0 {
+                    format!(
+                        "{}: mode 0{:03o} is wider than 0600",
+                        path.display(),
+                        mode & 0o7777
+                    )
+                } else {
+                    format!(
+                        "{}: owner uid {file_uid} differs from process uid {process_uid} (mode 0{:03o})",
+                        path.display(),
+                        mode & 0o7777
+                    )
+                };
+                Some(Refusal::new(
+                    KEY_FILE_PERMISSIONS,
+                    fa_journal::exit::ENVIRONMENT,
+                    why,
+                    "plan §15.3 (key-file permissions), Appendix H R-KEY (0600 key file)",
+                    format!("chmod 600 {}", path.display()),
+                ))
+            }
+            _ => None,
         }
     }
 }
@@ -375,6 +498,13 @@ impl fmt::Display for BookError {
             Self::Open(e) => write!(f, "open: {e:?}"),
             Self::Io(p, e) => write!(f, "{}: {e}", p.display()),
             Self::KeyFile(e) => write!(f, "key file: {e}"),
+            Self::KeyFilePermissions { .. } => {
+                if let Some(r) = self.refusal() {
+                    write!(f, "{}: {} (fix: {})", r.code, r.message, r.fix)
+                } else {
+                    write!(f, "key file permissions")
+                }
+            }
             Self::NoBook => write!(f, "the store holds no book; run `fa book create` first"),
             Self::Kernel(e) => write!(f, "{e}"),
             Self::Registers(e) => write!(f, "{e}"),

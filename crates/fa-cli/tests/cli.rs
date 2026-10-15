@@ -6775,18 +6775,19 @@ fn doctor_reports_every_check_and_its_fix_and_exits_with_the_first_failure() -> 
     assert_eq!(code, 0);
     assert!(human.trim_end().ends_with("healthy"), "{human}");
 
-    // A key file others can read: a warning with the exact fix; still healthy.
+    // A key file others can read: refused with FA-REF-155, exit 4, and the exact fix.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let keys = book.join("book.keys");
         std::fs::set_permissions(&keys, std::fs::Permissions::from_mode(0o644))?;
         let (code, out, _) = fa(Some(&book), &["doctor", "--json"]);
-        assert_eq!(code, 0, "{out}");
+        assert_eq!(code, 4, "{out}");
         assert!(
-            doctor_checks(&out).contains(&("keys".into(), "warn".into())),
+            doctor_checks(&out).contains(&("keys".into(), "fail".into())),
             "{out}"
         );
+        assert!(out.contains("FA-REF-155"), "{out}");
         assert!(
             out.contains(&format!("chmod 600 {}", keys.display())),
             "{out}"

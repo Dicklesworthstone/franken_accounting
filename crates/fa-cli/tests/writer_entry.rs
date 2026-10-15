@@ -155,3 +155,234 @@ fn directory_preparation_errors_do_not_overwrite_a_file_or_open_the_book() {
     assert_eq!(status, exit::ENVIRONMENT, "{}{}", output.stdout, output.stderr);
     assert_eq!(std::fs::read(&dir).unwrap(), b"preserve this file");
 }
+
+#[cfg(unix)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct EntrySnapshot {
+    rel: String,
+    is_dir: bool,
+    is_symlink: bool,
+    mode: u32,
+    mtime: std::time::SystemTime,
+    digest: [u8; 32],
+}
+
+#[cfg(unix)]
+fn snapshot_dir(root: &Path) -> Vec<EntrySnapshot> {
+    use std::os::unix::fs::PermissionsExt;
+    fn walk(root: &Path, cur: &Path, out: &mut Vec<EntrySnapshot>) {
+        let meta = std::fs::symlink_metadata(cur).unwrap();
+        let ft = meta.file_type();
+        let rel = cur
+            .strip_prefix(root)
+            .unwrap_or(cur)
+            .to_string_lossy()
+            .into_owned();
+        let digest = if ft.is_file() {
+            let bytes = std::fs::read(cur).unwrap();
+            fa_model::Oid::hash_bytes("test-snapshot", &bytes).0
+        } else if ft.is_symlink() {
+            let target = std::fs::read_link(cur).unwrap();
+            fa_model::Oid::hash_bytes("test-symlink", target.to_string_lossy().as_bytes()).0
+        } else {
+            [0u8; 32]
+        };
+        out.push(EntrySnapshot {
+            rel,
+            is_dir: ft.is_dir(),
+            is_symlink: ft.is_symlink(),
+            mode: meta.permissions().mode() & 0o777,
+            mtime: meta.modified().unwrap(),
+            digest,
+        });
+        if ft.is_dir() {
+            let mut entries: Vec<_> = std::fs::read_dir(cur)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .collect();
+            entries.sort();
+            for entry in entries {
+                walk(root, &entry, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if root.exists() {
+        walk(root, root, &mut out);
+    }
+    out
+}
+
+#[cfg(unix)]
+#[test]
+fn key_file_at_0644_refuses_with_fa_ref_155_and_leaves_filesystem_unchanged() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = created("keys-0644");
+    let keys_path = dir.join("book.keys");
+    std::fs::set_permissions(&keys_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let observed_mode = std::fs::symlink_metadata(&keys_path)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(observed_mode, 0o644);
+
+    // Embedded BookKeys::load refuses 0644 with FA-REF-155.
+    let err = BookKeys::load(&keys_path).unwrap_err();
+    let refusal = err.refusal().expect("KeyFilePermissions maps to FA-REF-155");
+    eprintln!(
+        "path={} observed_mode={:04o} decision=refuse refusal_id={}",
+        keys_path.display(),
+        observed_mode,
+        refusal.code
+    );
+    assert_eq!(refusal.code, "FA-REF-155");
+    assert_eq!(err.exit(), exit::ENVIRONMENT);
+
+    // Wait briefly so any unintended write to fad.lease would advance mtime,
+    // then verify CLI commands leave all directory hashes and mtimes unchanged.
+    let before = snapshot_dir(&dir);
+    for command in [
+        vec!["book", "info"],
+        vec!["doctor"],
+        vec!["period", "create", "--fiscal-year", "2026"],
+    ] {
+        let (status, output) = call(&dir, &command, true);
+        eprintln!(
+            "cmd={:?} path={} observed_mode={:04o} decision=exit({}) refusal_id=FA-REF-155",
+            command,
+            keys_path.display(),
+            observed_mode,
+            status
+        );
+        assert_eq!(status, exit::ENVIRONMENT, "{}{}", output.stdout, output.stderr);
+        assert!(output.stdout.contains("FA-REF-155"), "{}", output.stdout);
+        assert!(
+            output.stdout.contains(&format!("chmod 600 {}", keys_path.display())),
+            "{}",
+            output.stdout
+        );
+        let after = snapshot_dir(&dir);
+        assert_eq!(
+            before, after,
+            "failed invocation with 0644 key file must not modify hashes or mtimes in {}",
+            dir.display()
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn non_book_directory_and_discovery_never_create_lease_files() {
+    let dir = fresh("non-book-dir");
+    std::fs::create_dir_all(&dir).unwrap();
+    let unrelated = dir.join("notes.txt");
+    std::fs::write(&unrelated, b"unrelated directory contents").unwrap();
+    let reg = verbs::registry().unwrap();
+    let lease_path = dir.join(&reg.daemon.lease);
+    let before = snapshot_dir(&dir);
+
+    for command in [
+        vec!["book", "info"],
+        vec!["doctor"],
+        vec!["tb", "--period", "FY2026-P01"],
+        vec!["book", "create", "--name", "refused-in-populated-dir"],
+        vec!["--help"],
+        vec!["help"],
+        vec!["capabilities"],
+    ] {
+        let (status, output) = call(&dir, &command, true);
+        eprintln!(
+            "cmd={:?} path={} observed_mode=0755 decision=exit({}) refusal_id=none",
+            command,
+            dir.display(),
+            status
+        );
+        if matches!(command.first().copied(), Some("--help" | "help" | "capabilities")) {
+            assert_eq!(status, exit::SUCCESS, "{}{}", output.stdout, output.stderr);
+        } else {
+            assert_eq!(status, exit::ENVIRONMENT, "{}{}", output.stdout, output.stderr);
+        }
+        assert!(
+            !lease_path.exists(),
+            "must never create {} in non-book directory for {:?}",
+            lease_path.display(),
+            command
+        );
+        let after = snapshot_dir(&dir);
+        assert_eq!(
+            before, after,
+            "non-book directory hashes and mtimes must be unchanged after {:?}",
+            command
+        );
+    }
+
+    // Also test an empty existing directory with non-create commands.
+    let empty_dir = fresh("empty-non-book-dir");
+    std::fs::create_dir_all(&empty_dir).unwrap();
+    let empty_before = snapshot_dir(&empty_dir);
+    let (status, output) = call(&empty_dir, &["book", "info"], true);
+    assert_eq!(status, exit::ENVIRONMENT, "{}{}", output.stdout, output.stderr);
+    assert!(!empty_dir.join(&reg.daemon.lease).exists());
+    assert_eq!(empty_before, snapshot_dir(&empty_dir));
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_and_non_lease_files_are_refused_without_truncation() {
+    use std::os::unix::fs::PermissionsExt;
+    let reg = verbs::registry().unwrap();
+
+    // 1. Existing non-lease file at fad.lease is refused without truncation.
+    let dir = created("non-lease-file");
+    let lease_path = dir.join(&reg.daemon.lease);
+    std::fs::write(&lease_path, b"precious user file - not a lease\n").unwrap();
+    let before = snapshot_dir(&dir);
+    let observed_mode = std::fs::symlink_metadata(&lease_path)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    let (status, output) = call(&dir, &["book", "info"], true);
+    eprintln!(
+        "path={} observed_mode={:04o} decision=refuse_non_lease exit={} refusal_id=none",
+        lease_path.display(),
+        observed_mode,
+        status
+    );
+    assert_eq!(status, exit::ENVIRONMENT, "{}{}", output.stdout, output.stderr);
+    assert_eq!(
+        std::fs::read(&lease_path).unwrap(),
+        b"precious user file - not a lease\n"
+    );
+    assert_eq!(before, snapshot_dir(&dir));
+
+    // 2. Symlink at fad.lease is refused without modifying or truncating target.
+    let sym_dir = created("symlink-lease");
+    let sym_lease = sym_dir.join(&reg.daemon.lease);
+    let target = fresh("symlink-target");
+    std::fs::write(&target, b"target file must not be truncated").unwrap();
+    let target_before_meta = std::fs::symlink_metadata(&target).unwrap();
+    let target_before_mtime = target_before_meta.modified().unwrap();
+    // Move original fad.lease aside without deleting (Rule 1 compliance).
+    std::fs::rename(&sym_lease, sym_dir.join("original-lease-backup")).unwrap();
+    std::os::unix::fs::symlink(&target, &sym_lease).unwrap();
+    let sym_before = snapshot_dir(&sym_dir);
+    let (status, output) = call(&sym_dir, &["book", "info"], true);
+    eprintln!(
+        "path={} observed_mode=symlink decision=refuse_symlink exit={} refusal_id=none",
+        sym_lease.display(),
+        status
+    );
+    assert_eq!(status, exit::ENVIRONMENT, "{}{}", output.stdout, output.stderr);
+    assert_eq!(
+        std::fs::read(&target).unwrap(),
+        b"target file must not be truncated"
+    );
+    assert_eq!(
+        std::fs::symlink_metadata(&target).unwrap().modified().unwrap(),
+        target_before_mtime
+    );
+    assert_eq!(sym_before, snapshot_dir(&sym_dir));
+}
+

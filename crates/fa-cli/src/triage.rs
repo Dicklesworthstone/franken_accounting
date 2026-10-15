@@ -185,7 +185,7 @@ fn registries() -> Check {
 
 /// The key file exists and is private to its owner.
 fn key_file(path: &Path) -> Check {
-    let Ok(meta) = std::fs::metadata(path) else {
+    if std::fs::symlink_metadata(path).is_err() {
         return Check::not_ok(
             "keys",
             Class::Environment,
@@ -193,23 +193,19 @@ fn key_file(path: &Path) -> Check {
             format!("no key file at {}", path.display()),
             "pass --keys <file> naming the book's key file (fa book create writes <dir>/book.keys)",
         );
-    };
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = meta.permissions().mode() & 0o777;
-        if mode & 0o077 != 0 {
-            return Check::not_ok(
-                "keys",
-                Class::Environment,
-                Status::Warn,
-                format!(
-                    "{} is readable by group or others (mode {mode:o})",
-                    path.display()
-                ),
-                format!("chmod 600 {}", path.display()),
-            );
-        }
+    }
+    if let Err(error) = fa::book::BookKeys::check_permissions(path) {
+        let fix = error.refusal().map_or_else(
+            || format!("chmod 600 {}", path.display()),
+            |r| r.fix,
+        );
+        return Check::not_ok(
+            "keys",
+            Class::Environment,
+            Status::Fail,
+            error.to_string(),
+            fix,
+        );
     }
     Check::ok(
         "keys",
@@ -515,6 +511,13 @@ pub(crate) fn doctor_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     match checks.iter().find(|c| c.status == Status::Fail) {
         None => Ok(()),
         Some(first) => {
+            if first.name == "keys"
+                && let Ok((_, keys)) = ctx.books.locate(args)
+                && let Err(error) = fa::book::BookKeys::check_permissions(&keys)
+                && let Some(refusal) = error.refusal()
+            {
+                return Err(Fail::Refusal(refusal));
+            }
             let message = format!("doctor: {} failed: {}", first.name, first.detail);
             let fix = first.command.clone().map_or_else(
                 || {

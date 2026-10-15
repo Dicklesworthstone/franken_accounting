@@ -78,18 +78,245 @@ fn io_error(path: &Path) -> impl FnOnce(std::io::Error) -> LeaseError + '_ {
     }
 }
 
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+const O_NOFOLLOW_FLAG: i32 = 0x0100;
+
+#[cfg(target_os = "linux")]
+const O_NOFOLLOW_FLAG: i32 = 0x20000;
+
+fn apply_no_follow(opts: &mut OpenOptions) -> &mut OpenOptions {
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly",
+        target_os = "linux"
+    ))]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(O_NOFOLLOW_FLAG);
+    }
+    opts
+}
+
+/// Query `symlink_metadata` through `asupersync`'s filesystem (`UnixVfs`).
+fn vfs_symlink_metadata(path: &Path) -> std::io::Result<asupersync::fs::Metadata> {
+    use asupersync::fs::{UnixVfs, Vfs};
+    use core::future::Future;
+    use core::pin::pin;
+    use core::task::{Context, Poll, Waker};
+
+    let fut = UnixVfs.symlink_metadata(path);
+    let mut fut = pin!(fut);
+    let mut cx = Context::from_waker(Waker::noop());
+    match fut.as_mut().poll(&mut cx) {
+        Poll::Ready(res) => res,
+        Poll::Pending => std::fs::symlink_metadata(path).and_then(|_| {
+            Err(std::io::Error::other(
+                "unexpected pending UnixVfs::symlink_metadata",
+            ))
+        }),
+    }
+}
+
+fn validate_lease_file_name(path: &Path, lease_file: &str) -> Result<(), LeaseError> {
+    use std::path::Component;
+    let mut components = Path::new(lease_file).components();
+    let valid = matches!(components.next(), Some(Component::Normal(_)))
+        && components.next().is_none()
+        && Path::new(lease_file)
+            .extension()
+            .is_some_and(|ext| ext == "lease");
+    if !valid {
+        return Err(LeaseError::Io {
+            path: path.to_path_buf(),
+            error: std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("`{lease_file}` is not a valid writer lease file name"),
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn is_existing_lease_note(text: &[u8]) -> bool {
+    if text.is_empty() {
+        return true;
+    }
+    if text.len() > 256 {
+        return false;
+    }
+    let Ok(s) = core::str::from_utf8(text) else {
+        return false;
+    };
+    let Some(line) = s.strip_suffix('\n') else {
+        return false;
+    };
+    if line.is_empty() || line.contains('\n') || line.contains('\r') || line.contains('\0') {
+        return false;
+    }
+    line.starts_with("fa pid=")
+        || line.starts_with("fad pid=")
+        || line.starts_with("fa-mcp pid=")
+        || line.ends_with(" writer")
+        || line.ends_with(" creator")
+}
+
 impl Lease {
+    /// True when `dir` is a real (non-symlink) directory containing a real
+    /// (non-symlink) `store` directory created at book genesis.
+    #[must_use]
+    pub fn is_book_dir(dir: &Path) -> bool {
+        let Ok(dir_meta) = vfs_symlink_metadata(dir) else {
+            return false;
+        };
+        if dir_meta.is_symlink() || !dir_meta.is_dir() {
+            return false;
+        }
+        let Ok(store_meta) = vfs_symlink_metadata(&dir.join("store")) else {
+            return false;
+        };
+        !store_meta.is_symlink() && store_meta.is_dir()
+    }
+
+    /// True when `dir` is a real (non-symlink) directory that is either empty
+    /// or contains only `lease_file` (an uninitialized genesis directory).
+    #[must_use]
+    pub fn is_empty_or_lease_only(dir: &Path, lease_file: &str) -> bool {
+        let Ok(dir_meta) = vfs_symlink_metadata(dir) else {
+            return false;
+        };
+        if dir_meta.is_symlink() || !dir_meta.is_dir() {
+            return false;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        for entry in entries {
+            let Ok(entry) = entry else {
+                return false;
+            };
+            if entry.file_name() != std::ffi::OsStr::new(lease_file) {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Take the lease of the book directory `dir` (which must exist) without
     /// waiting, recording `note` as the holder's description.
     pub fn acquire(dir: &Path, lease_file: &str, note: &str) -> Result<Self, LeaseError> {
         let path = dir.join(lease_file);
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)
-            .map_err(io_error(&path))?;
+        validate_lease_file_name(&path, lease_file)?;
+
+        let dir_meta = vfs_symlink_metadata(dir).map_err(io_error(&path))?;
+        if dir_meta.is_symlink() || !dir_meta.is_dir() {
+            return Err(LeaseError::Io {
+                path,
+                error: std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "{} is not a real directory (symlinks are refused)",
+                        dir.display()
+                    ),
+                ),
+            });
+        }
+        if !Self::is_book_dir(dir) && !Self::is_empty_or_lease_only(dir, lease_file) {
+            return Err(LeaseError::Io {
+                path,
+                error: std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "{} is not a FrankenAccounting book directory",
+                        dir.display()
+                    ),
+                ),
+            });
+        }
+
+        let mut file = match vfs_symlink_metadata(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let mut opts = OpenOptions::new();
+                opts.read(true).write(true).create_new(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    opts.mode(0o600);
+                }
+                apply_no_follow(&mut opts);
+                opts.open(&path).map_err(io_error(&path))?
+            }
+            Err(e) => return Err(LeaseError::Io { path, error: e }),
+            Ok(meta) => {
+                if meta.is_symlink() {
+                    return Err(LeaseError::Io {
+                        path,
+                        error: std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "refusing to follow symlink for writer lease",
+                        ),
+                    });
+                }
+                if !meta.is_file() {
+                    return Err(LeaseError::Io {
+                        path,
+                        error: std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "writer lease path is not a regular file",
+                        ),
+                    });
+                }
+                #[cfg(unix)]
+                if (meta.permissions().mode() & 0o7777) != 0o600 {
+                    return Err(LeaseError::Io {
+                        path,
+                        error: std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!(
+                                "existing file at lease path has mode 0{:03o} (expected 0600 lease file)",
+                                meta.permissions().mode() & 0o7777
+                            ),
+                        ),
+                    });
+                }
+                // Inspect read-only before opening for write so a non-lease file
+                // is never truncated and its mtime is untouched.
+                let mut ro_opts = OpenOptions::new();
+                ro_opts.read(true);
+                apply_no_follow(&mut ro_opts);
+                let ro_file = ro_opts.open(&path).map_err(io_error(&path))?;
+                let mut preview = Vec::new();
+                ro_file
+                    .take(257)
+                    .read_to_end(&mut preview)
+                    .map_err(io_error(&path))?;
+                if !is_existing_lease_note(&preview) {
+                    return Err(LeaseError::Io {
+                        path,
+                        error: std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "existing file at lease path is not a writer lease; refusing to truncate",
+                        ),
+                    });
+                }
+
+                let mut rw_opts = OpenOptions::new();
+                rw_opts.read(true).write(true).create(false).truncate(false);
+                apply_no_follow(&mut rw_opts);
+                rw_opts.open(&path).map_err(io_error(&path))?
+            }
+        };
+
         match file.try_lock() {
             Ok(()) => {}
             Err(TryLockError::WouldBlock) => {
@@ -117,7 +344,15 @@ impl Lease {
     #[must_use]
     pub fn holder(dir: &Path, lease_file: &str) -> Option<String> {
         let path = dir.join(lease_file);
-        let mut file = OpenOptions::new().read(true).open(&path).ok()?;
+        validate_lease_file_name(&path, lease_file).ok()?;
+        let meta = vfs_symlink_metadata(&path).ok()?;
+        if meta.is_symlink() || !meta.is_file() {
+            return None;
+        }
+        let mut opts = OpenOptions::new();
+        opts.read(true);
+        apply_no_follow(&mut opts);
+        let mut file = opts.open(&path).ok()?;
         match file.try_lock_shared() {
             Ok(()) => {
                 // Free: nobody holds it exclusively. Our shared lock ends here.

@@ -138,19 +138,24 @@ fn run(argv: &[String]) -> u8 {
 fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
     let json = parsed.switch("--json");
     let socket = dir.join(&d.socket);
+    let keys_file = parsed
+        .flag("--keys")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| dir.join("book.keys"));
+    let keys = match BookKeys::load(&keys_file) {
+        Ok(k) => k,
+        Err(e) => return cli::book_error(argv, e, false).0,
+    };
+    if !Lease::is_book_dir(dir) {
+        return cli::book_error(argv, fa::book::BookError::NoBook, false).0;
+    }
     let note = format!("fad pid={} socket={}", std::process::id(), socket.display());
     let lease = match Lease::acquire(dir, &d.lease, &note) {
         Ok(l) => l,
         Err(e @ LeaseError::Held { .. }) => return cli::refuse(argv, e.refusal(dir), false).0,
         Err(e) => return cli::environment_error(argv, e.to_string(), false).0,
     };
-    let keys_file = parsed
-        .flag("--keys")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| dir.join("book.keys"));
-    let mut book = match BookKeys::load(&keys_file)
-        .and_then(|keys| Book::open_dir(dir, keys, Entropy::production()))
-    {
+    let mut book = match Book::open_dir(dir, keys, Entropy::production()) {
         Ok(b) => b,
         Err(e) => return cli::book_error(argv, e, false).0,
     };

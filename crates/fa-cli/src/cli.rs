@@ -599,6 +599,14 @@ impl Books<'_> {
                 )?)))
             }
             Self::LeasedOnOpen { lease, note, held } => {
+                let keys = BookKeys::load(&keys_path(args, &dir, cwd))?;
+                if !crate::lease::Lease::is_book_dir(&dir) {
+                    return Ok(BookRef::Owned(Box::new(Book::open_dir(
+                        &dir,
+                        keys,
+                        Entropy::production(),
+                    )?)));
+                }
                 if held.is_none() {
                     match crate::lease::Lease::acquire(&dir, lease, note) {
                         Ok(acquired) => *held = Some(acquired),
@@ -617,7 +625,6 @@ impl Books<'_> {
                         }
                     }
                 }
-                let keys = BookKeys::load(&keys_path(args, &dir, cwd))?;
                 Ok(BookRef::Owned(Box::new(Book::open_dir(
                     &dir,
                     keys,
@@ -1042,15 +1049,27 @@ fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
             }
         }
         Err(Fail::Book(e)) => {
-            let code = e.exit();
-            Failure {
-                exit: code,
-                refusal_id: None,
-                diag: format!("error (exit {code}): {e}"),
-                message: e.to_string(),
-                cite: None,
-                fix: None,
-                detail: Json::Null,
+            if let Some(r) = e.refusal() {
+                Failure {
+                    exit: r.exit,
+                    refusal_id: Some(r.code),
+                    diag: format!("refused {r}"),
+                    message: r.message,
+                    cite: Some(r.cite),
+                    fix: Some(r.fix),
+                    detail: Json::Null,
+                }
+            } else {
+                let code = e.exit();
+                Failure {
+                    exit: code,
+                    refusal_id: None,
+                    diag: format!("error (exit {code}): {e}"),
+                    message: e.to_string(),
+                    cite: None,
+                    fix: None,
+                    detail: Json::Null,
+                }
             }
         }
         Err(Fail::Verification {
@@ -2247,7 +2266,7 @@ fn book_dir(args: &Args, cwd: Option<&Path>) -> Result<PathBuf, Fail> {
 }
 
 /// `--keys`, resolved against `cwd` like the book; else `<dir>/book.keys`.
-fn keys_path(args: &Args, dir: &Path, cwd: Option<&Path>) -> PathBuf {
+pub(crate) fn keys_path(args: &Args, dir: &Path, cwd: Option<&Path>) -> PathBuf {
     args.flag("--keys")
         .map_or_else(|| dir.join("book.keys"), |k| resolve_in(cwd, k))
 }

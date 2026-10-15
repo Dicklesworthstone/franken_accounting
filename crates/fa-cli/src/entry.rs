@@ -56,6 +56,9 @@ pub fn fa_with(argv: &[String], files: Files, capture: bool) -> (u8, Captured) {
             capture,
         );
     }
+    if discovery(&parsed, reg) {
+        return cli::run(argv, Books::Dir, files, capture);
+    }
     // The lease, the socket and the forwarded command all name the book the
     // command will open: its path in the caller's working directory.
     let Some(dir) = cli::named_book(&parsed, files.cwd.as_deref()) else {
@@ -64,35 +67,62 @@ pub fn fa_with(argv: &[String], files: Files, capture: bool) -> (u8, Captured) {
     if via == Some("fad") {
         return through_daemon(argv, &parsed, &dir, None, &files, capture);
     }
-    // Genesis is a write too. Create only the directory here, then compete
-    // for the same lease as every later writer BEFORE the dispatcher creates
-    // keys or opens the substrate. A failed command may leave an empty
-    // directory and lease note; neither is a committed book.
-    if !discovery(&parsed, reg)
-        && command_words(&parsed, reg) == ["book", "create"]
-        && let Err(error) = std::fs::create_dir_all(&dir)
-    {
-        return cli::environment_error(
-            argv,
-            format!(
-                "cannot prepare book directory {} for its writer lease: {error}",
-                dir.display()
-            ),
-            capture,
-        );
-    }
+    let words = command_words(&parsed, reg);
     let note = format!("fa pid={}", std::process::id());
+    if words == ["book", "create"] {
+        if dir.exists()
+            && !Lease::is_book_dir(&dir)
+            && !Lease::is_empty_or_lease_only(&dir, &reg.daemon.lease)
+        {
+            return cli::environment_error(
+                argv,
+                format!(
+                    "cannot prepare book directory {} for its writer lease: directory is not a book and is not empty",
+                    dir.display()
+                ),
+                capture,
+            );
+        }
+        if let Err(error) = std::fs::create_dir_all(&dir) {
+            return cli::environment_error(
+                argv,
+                format!(
+                    "cannot prepare book directory {} for its writer lease: {error}",
+                    dir.display()
+                ),
+                capture,
+            );
+        }
+    } else if !Lease::is_book_dir(&dir) {
+        let books = Books::LeasedOnOpen {
+            lease: reg.daemon.lease.clone(),
+            note,
+            held: None,
+        };
+        return cli::run(argv, books, files, capture);
+    } else if Lease::holder(&dir, &reg.daemon.lease).is_none()
+        && let Err(error @ fa::book::BookError::KeyFilePermissions { .. }) =
+            fa::book::BookKeys::check_permissions(&cli::keys_path(
+                &parsed,
+                &dir,
+                files.cwd.as_deref(),
+            ))
+    {
+        if words == ["doctor"] {
+            let books = Books::LeasedOnOpen {
+                lease: reg.daemon.lease.clone(),
+                note,
+                held: None,
+            };
+            return cli::run(argv, books, files, capture);
+        }
+        return cli::book_error(argv, error, capture);
+    }
     match Lease::acquire(&dir, &reg.daemon.lease, &note) {
         Ok(lease) => {
             let result = cli::run(argv, Books::Dir, files, capture);
             drop(lease);
             result
-        }
-        // Help/discovery does not open a book. When the book directory does
-        // not exist yet, defer lease acquisition to Books::LeasedOnOpen so
-        // pure flag/usage checks and `fa doctor` run before open fails closed.
-        Err(LeaseError::Io { .. }) if discovery(&parsed, reg) => {
-            cli::run(argv, Books::Dir, files, capture)
         }
         Err(LeaseError::Io { ref error, .. })
             if error.kind() == std::io::ErrorKind::NotFound && !dir.exists() =>
@@ -194,11 +224,12 @@ fn command_words<'a>(parsed: &'a args::Args, reg: &'a verbs::Registry) -> Vec<&'
 }
 
 fn discovery(parsed: &args::Args, reg: &verbs::Registry) -> bool {
+    let words = command_words(parsed, reg);
     parsed.switch("--help")
         || parsed.switch("--version")
         || matches!(
-            command_words(parsed, reg).first().copied(),
-            None | Some("help" | "capabilities" | "robot-docs")
+            words.as_slice(),
+            [] | ["help" | "capabilities" | "robot-docs", ..] | ["chart", "templates", ..]
         )
 }
 
