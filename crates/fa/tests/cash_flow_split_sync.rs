@@ -50,7 +50,7 @@ fn sync_fixture() -> (Book, Runtime, Cx, RollForwardRequest, CashFlowSplitDefini
         (1, b"opening".as_slice(), vec![("1000", Side::Debit, 500), ("3000", Side::Credit, 500)]),
         (10, b"payment".as_slice(), vec![("1000", Side::Credit, 100), ("2300", Side::Debit, 93), ("6100", Side::Debit, 7)]),
     ] {
-        let legs = rows.into_iter().map(|(code, side, amount)|
+        let legs: Vec<_> = rows.into_iter().map(|(code, side, amount)|
             LegPayload::simple(side, id(code), Amount::new(usd, amount))).collect();
         let proposal = EntryPayload {
             schema_minor: 0, book_id, branch_id: Id128::TRUNK, class: EntryClass::ORIGINAL,

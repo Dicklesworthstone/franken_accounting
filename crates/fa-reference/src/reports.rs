@@ -624,7 +624,7 @@ impl OracleCashSection {
             return;
         }
         if net.is_negative() {
-            self.outflows = self.outflows.add(&net.neg());
+            self.outflows = self.outflows.add(&net.negated());
         } else {
             self.inflows = self.inflows.add(net);
         }

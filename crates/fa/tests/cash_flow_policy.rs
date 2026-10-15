@@ -244,7 +244,7 @@ fn current_read_authority_is_required_and_mixed_cash_movements_are_not_netted_to
         &IndirectCashFlowRequest {
             cash: request,
             cash_definition: report.report().definition().clone(),
-            income_periods: vec!["FY2026-P01".into()],
+            income_periods: vec!["FY2026-OPEN".into(), "FY2026-P01".into()],
             definition: IndirectCashFlowDefinition {
                 name: "mixed-cash-indirect".into(),
                 adjustments: Vec::new(),
