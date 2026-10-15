@@ -1,0 +1,9 @@
+schema_version = 1
+
+[[unit]]
+id = 1
+code = "USD"
+kind = "currency"
+scale = 2
+symbol = "$"
+name = "United States Dollar"

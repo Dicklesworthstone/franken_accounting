@@ -202,6 +202,10 @@ if [ "$QUICK" -eq 0 ]; then
   # for byte. Its own target, so a missing pin is a failure, never zero
   # matched tests.
   cargo_build "robot-schema" test -p fa-cli --test robot_schema
+  # Fuzz corpora and targets smoke campaign (plan §16.8, bead fa-tre):
+  # replays every checked-in seed and synthesized golden vector with
+  # deterministic PRNG mutations across all 7 live decoder/parser targets.
+  cargo_build "fuzz-smoke" run -p fa-fuzz --bin fa-fuzz-smoke
   if cargo deny --version >/dev/null 2>&1; then
     run_step "deny" cargo deny check
   else

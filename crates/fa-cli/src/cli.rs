@@ -2576,6 +2576,249 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 // chart
 // ---------------------------------------------------------------------------
 
+/// Parse a CLI invocation (`argv`) against the embedded verb registry,
+/// expanding aliases, checking verb/subcommand/flag membership, and validating
+/// pure flag syntax (`--calendar`, `--date`, `--opening-date`, `--fiscal-year`,
+/// `--reason`, `--to`) without touching the filesystem or opening a book.
+pub fn parse_cli_invocation(argv: &[String]) -> Result<Args, UsageError> {
+    let reg = verbs::registry().map_err(|e| UsageError {
+        message: format!("the embedded verb registry: {e}"),
+        fix: "run `fa --help`".to_string(),
+    })?;
+    let mut args = args::parse(argv, &reg.value_flags(), &reg.switches())?;
+    if args.switch("--version") {
+        return Ok(args);
+    }
+    if let Some(alias) = args.positional.first().and_then(|w| reg.alias(w)) {
+        args.positional = alias
+            .expands
+            .iter()
+            .chain(args.positional.iter().skip(1))
+            .cloned()
+            .collect();
+    }
+    let to_usage = |f: Fail| match f {
+        Fail::Usage(u) => u,
+        other => UsageError {
+            message: match other {
+                Fail::Internal(m) | Fail::Io(m) | Fail::Environment(m) => m,
+                Fail::Refusal(r) => r.message,
+                Fail::Book(b) => b.to_string(),
+                Fail::Verification { message, .. } => message,
+                Fail::Usage(u) => u.message,
+            },
+            fix: "run `fa --help`".to_string(),
+        },
+    };
+    let Some(word) = args.positional.first().cloned() else {
+        check_flags(reg, None, &args).map_err(to_usage)?;
+        return Ok(args);
+    };
+    let Some(verb) = reg.verb(&word) else {
+        let mut known: Vec<&str> = reg.verbs.iter().map(|v| v.name.as_str()).collect();
+        known.extend(reg.aliases.iter().map(|a| a.name.as_str()));
+        return Err(UsageError {
+            message: format!("unknown command `{word}`"),
+            fix: match nearest(&word, &known) {
+                Some(n) => format!("did you mean `fa {n}`?"),
+                None => "run `fa --help`".to_string(),
+            },
+        });
+    };
+    check_flags(reg, Some(verb), &args).map_err(to_usage)?;
+    if args.switch("--help") {
+        return Ok(args);
+    }
+    if !verb.subcommands.is_empty() {
+        let joined = verb.subcommands.join("|");
+        match args.positional.get(1) {
+            Some(sub) if verb.subcommands.contains(sub) => {}
+            Some(sub) => {
+                return Err(UsageError {
+                    message: format!("`fa {}` has no subcommand `{sub}`", verb.name),
+                    fix: match nearest(
+                        sub,
+                        &verb
+                            .subcommands
+                            .iter()
+                            .map(String::as_str)
+                            .collect::<Vec<_>>(),
+                    ) {
+                        Some(n) => format!("did you mean `fa {} {n}`?", verb.name),
+                        None => format!("fa {} {joined}", verb.name),
+                    },
+                });
+            }
+            None => {
+                return Err(UsageError {
+                    message: format!("`fa {}` needs a subcommand: {joined}", verb.name),
+                    fix: format!("fa {} {joined} (see `fa {} --help`)", verb.name, verb.name),
+                });
+            }
+        }
+    }
+    let _ = date_flag(&args, DateDay(0)).map_err(&to_usage)?;
+    if let Some(d) = args.flag("--opening-date") {
+        DateDay::parse(d).map_err(|e| UsageError {
+            message: format!("--opening-date `{d}`: {e:?}"),
+            fix: "--opening-date YYYY-MM-DD".to_string(),
+        })?;
+    }
+    if args.flag("--calendar").is_some()
+        || args.flag("--year-start-month").is_some()
+        || args.flag("--adjustment-periods").is_some()
+    {
+        let kind = args.flag("--calendar").unwrap_or("monthly");
+        let adj: u8 = args
+            .flag("--adjustment-periods")
+            .unwrap_or("1")
+            .parse()
+            .map_err(|_| UsageError {
+                message: "--adjustment-periods must be 0..=4".to_string(),
+                fix: "--adjustment-periods 1".to_string(),
+            })?;
+        parse_cli_calendar(kind, args.flag("--year-start-month"), adj).map_err(&to_usage)?;
+    }
+    if let Some(fy) = args.flag("--fiscal-year") {
+        fy.parse::<i32>().map_err(|_| UsageError {
+            message: "--fiscal-year must be a year".to_string(),
+            fix: "--fiscal-year 2026".to_string(),
+        })?;
+    }
+    Ok(args)
+}
+
+/// Parse a chart JSON document into [`AccountSpec`] rows against `base_unit`
+/// and `units` without opening a book or touching disk.
+pub fn parse_chart_specs(
+    path: &str,
+    text: &str,
+    base_unit: fa_money::UnitId,
+    units: &fa_money::UnitRegistry,
+) -> Result<Vec<AccountSpec>, UsageError> {
+    parse_chart_specs_fail(path, text, base_unit, units).map_err(|f| match f {
+        Fail::Usage(u) => u,
+        _ => UsageError {
+            message: "chart parse failure".to_string(),
+            fix: "fa robot-docs examples".to_string(),
+        },
+    })
+}
+
+fn parse_chart_specs_fail(
+    path: &str,
+    text: &str,
+    base_unit: fa_money::UnitId,
+    units: &fa_money::UnitRegistry,
+) -> Result<Vec<AccountSpec>, Fail> {
+    let doc = parse_json(path, text)?;
+    let rows = doc.get("accounts").and_then(Json::as_arr).ok_or_else(|| {
+        usage(
+            "chart: `accounts` must be an array",
+            "fa robot-docs examples",
+        )
+    })?;
+    let mut accounts = Vec::with_capacity(rows.len());
+    for (i, row) in rows.iter().enumerate() {
+        let what = format!("accounts[{i}]");
+        let code = req_str(row, "code", &what)?;
+        let name = row.get("name").and_then(Json::as_str).unwrap_or(code);
+        let type_name = req_str(row, "type", &what)?;
+        let account_type = AccountType::ALL
+            .iter()
+            .find(|(_, n, ..)| n.eq_ignore_ascii_case(type_name))
+            .map(|(t, ..)| *t)
+            .ok_or_else(|| {
+                usage(
+                    format!("{what}: unknown type `{type_name}`"),
+                    "type: Asset|Liability|Equity|Revenue|Expense|Memo|Statistical",
+                )
+            })?;
+        let normal_balance = AccountType(account_type).normal_balance().unwrap_or(0);
+        let is_leaf = row.get("leaf").and_then(Json::as_bool).unwrap_or(true);
+        let unit_policy = match row.get("unit").and_then(Json::as_str) {
+            None | Some("any") => UnitPolicy::AnyUnit,
+            Some("any-currency") => UnitPolicy::AnyCurrency,
+            Some("base") => UnitPolicy::Single(base_unit),
+            Some(u) => UnitPolicy::Single(units.lookup(u).ok_or_else(|| {
+                usage(
+                    format!("{what}: unknown unit `{u}`"),
+                    "unit: USD|EUR|…|base|any|any-currency",
+                )
+            })?),
+        };
+        let parent_code = row.get("parent").and_then(Json::as_str).map(str::to_string);
+        // Balance bounds (plan §5.4–5.5): exact decimals in the
+        // account's single unit and its normal-balance sign.
+        let bound = |key: &str| -> Result<Option<i128>, Fail> {
+            let text = match row.get(key) {
+                None | Some(Json::Null) => return Ok(None),
+                Some(Json::Str(text)) => text,
+                Some(_) => {
+                    return Err(usage(
+                        format!("{what}: `{key}` must be a decimal string"),
+                        format!("{key}: \"0.00\" (exact, in the account's unit)"),
+                    ));
+                }
+            };
+            let UnitPolicy::Single(unit) = unit_policy else {
+                return Err(usage(
+                    format!("{what}: `{key}` needs the account's single unit"),
+                    "unit: \"USD\" (a balance bound is stated in one registered unit)",
+                ));
+            };
+            let code = units.get(unit).map(|u| u.code.clone()).unwrap_or_default();
+            Amount::parse(&format!("{text} {code}"), units)
+                .map(|a| Some(a.mantissa))
+                .map_err(|e| {
+                    usage(
+                        format!("{what}: {key} `{text}`: {e:?}"),
+                        format!("{key}: \"0.00\" (exact, at the unit's scale)"),
+                    )
+                })
+        };
+        let (lower, upper) = (bound("lower_bound")?, bound("upper_bound")?);
+        // A lifetime limit bounds the account's whole history; a
+        // period limit (a budget cap) bounds each fiscal period.
+        let scope = match row.get("limit_scope") {
+            None | Some(Json::Null) => fa_journal::LimitScope::Lifetime,
+            Some(Json::Str(s)) if s == "lifetime" => fa_journal::LimitScope::Lifetime,
+            Some(Json::Str(s)) if s == "period" => fa_journal::LimitScope::Period,
+            Some(other) => {
+                return Err(usage(
+                    format!("{what}: limit_scope {} is not a scope", other.render()),
+                    "limit_scope: \"lifetime\" (default) or \"period\" (a budget cap per fiscal period)",
+                ));
+            }
+        };
+        if row.get("limit_scope").is_some_and(|v| *v != Json::Null)
+            && lower.is_none()
+            && upper.is_none()
+        {
+            return Err(usage(
+                format!("{what}: limit_scope names no bound to scope"),
+                "add lower_bound and/or upper_bound, or drop limit_scope",
+            ));
+        }
+        let limit = (lower.is_some() || upper.is_some()).then_some(BalanceLimit {
+            lower,
+            upper,
+            scope,
+        });
+        accounts.push(AccountSpec {
+            code: code.to_string(),
+            name: name.to_string(),
+            account_type,
+            normal_balance,
+            is_leaf,
+            unit_policy,
+            parent_code,
+            limit,
+        });
+    }
+    Ok(accounts)
+}
+
 fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let who = ctx.principal(args);
     let out = &ctx.out;
@@ -2610,116 +2853,13 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 }
             };
             let path = &path;
-            let doc = parse_json(path, &text)?;
+            let _ = parse_json(path, &text)?;
             let mut book = ctx.books.open(args)?;
             // `"unit": "base"` is the book's own base unit, journaled at
             // genesis, so one chart document serves a book in any currency.
             let base_unit = book.spec()?.base_unit;
             let units = &book.context().units;
-            let rows = doc.get("accounts").and_then(Json::as_arr).ok_or_else(|| {
-                usage(
-                    "chart: `accounts` must be an array",
-                    "fa robot-docs examples",
-                )
-            })?;
-            let mut accounts = Vec::with_capacity(rows.len());
-            for (i, row) in rows.iter().enumerate() {
-                let what = format!("accounts[{i}]");
-                let code = req_str(row, "code", &what)?;
-                let name = row.get("name").and_then(Json::as_str).unwrap_or(code);
-                let type_name = req_str(row, "type", &what)?;
-                let account_type = AccountType::ALL
-                    .iter()
-                    .find(|(_, n, ..)| n.eq_ignore_ascii_case(type_name))
-                    .map(|(t, ..)| *t)
-                    .ok_or_else(|| {
-                        usage(
-                            format!("{what}: unknown type `{type_name}`"),
-                            "type: Asset|Liability|Equity|Revenue|Expense|Memo|Statistical",
-                        )
-                    })?;
-                let normal_balance = AccountType(account_type).normal_balance().unwrap_or(0);
-                let is_leaf = row.get("leaf").and_then(Json::as_bool).unwrap_or(true);
-                let unit_policy = match row.get("unit").and_then(Json::as_str) {
-                    None | Some("any") => UnitPolicy::AnyUnit,
-                    Some("any-currency") => UnitPolicy::AnyCurrency,
-                    Some("base") => UnitPolicy::Single(base_unit),
-                    Some(u) => UnitPolicy::Single(units.lookup(u).ok_or_else(|| {
-                        usage(
-                            format!("{what}: unknown unit `{u}`"),
-                            "unit: USD|EUR|…|base|any|any-currency",
-                        )
-                    })?),
-                };
-                let parent_code = row.get("parent").and_then(Json::as_str).map(str::to_string);
-                // Balance bounds (plan §5.4–5.5): exact decimals in the
-                // account's single unit and its normal-balance sign.
-                let bound = |key: &str| -> Result<Option<i128>, Fail> {
-                    let text = match row.get(key) {
-                        None | Some(Json::Null) => return Ok(None),
-                        Some(Json::Str(text)) => text,
-                        Some(_) => {
-                            return Err(usage(
-                                format!("{what}: `{key}` must be a decimal string"),
-                                format!("{key}: \"0.00\" (exact, in the account's unit)"),
-                            ));
-                        }
-                    };
-                    let UnitPolicy::Single(unit) = unit_policy else {
-                        return Err(usage(
-                            format!("{what}: `{key}` needs the account's single unit"),
-                            "unit: \"USD\" (a balance bound is stated in one registered unit)",
-                        ));
-                    };
-                    let code = units.get(unit).map(|u| u.code.clone()).unwrap_or_default();
-                    Amount::parse(&format!("{text} {code}"), units)
-                        .map(|a| Some(a.mantissa))
-                        .map_err(|e| {
-                            usage(
-                                format!("{what}: {key} `{text}`: {e:?}"),
-                                format!("{key}: \"0.00\" (exact, at the unit's scale)"),
-                            )
-                        })
-                };
-                let (lower, upper) = (bound("lower_bound")?, bound("upper_bound")?);
-                // A lifetime limit bounds the account's whole history; a
-                // period limit (a budget cap) bounds each fiscal period.
-                let scope = match row.get("limit_scope") {
-                    None | Some(Json::Null) => fa_journal::LimitScope::Lifetime,
-                    Some(Json::Str(s)) if s == "lifetime" => fa_journal::LimitScope::Lifetime,
-                    Some(Json::Str(s)) if s == "period" => fa_journal::LimitScope::Period,
-                    Some(other) => {
-                        return Err(usage(
-                            format!("{what}: limit_scope {} is not a scope", other.render()),
-                            "limit_scope: \"lifetime\" (default) or \"period\" (a budget cap per fiscal period)",
-                        ));
-                    }
-                };
-                if row.get("limit_scope").is_some_and(|v| *v != Json::Null)
-                    && lower.is_none()
-                    && upper.is_none()
-                {
-                    return Err(usage(
-                        format!("{what}: limit_scope names no bound to scope"),
-                        "add lower_bound and/or upper_bound, or drop limit_scope",
-                    ));
-                }
-                let limit = (lower.is_some() || upper.is_some()).then_some(BalanceLimit {
-                    lower,
-                    upper,
-                    scope,
-                });
-                accounts.push(AccountSpec {
-                    code: code.to_string(),
-                    name: name.to_string(),
-                    account_type,
-                    normal_balance,
-                    is_leaf,
-                    unit_policy,
-                    parent_code,
-                    limit,
-                });
-            }
+            let accounts = parse_chart_specs_fail(path, &text, base_unit, units)?;
             let date = date_flag(args, DateDay(0))?;
             let key = match args.flag("--key") {
                 Some(k) => k.as_bytes().to_vec(),

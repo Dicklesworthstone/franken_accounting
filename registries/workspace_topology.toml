@@ -226,7 +226,7 @@ planned = false
 name = "fa-fuzz"
 layer = "verification"
 path = "crates/fa-fuzz"
-planned = true
+planned = false
 
 [[crate]]
 name = "fa-verify"

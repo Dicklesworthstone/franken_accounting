@@ -1,0 +1,29 @@
+[package]
+name = "fa-fuzz"
+version = "0.0.1"
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "Fuzz targets, deterministic PRNG mutators, checked-in seed corpora, and smoke runner for every byte decoder and syntax parser in FrankenAccounting (plan §16.8, bead fa-tre)."
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "fa-fuzz-smoke"
+path = "src/main.rs"
+
+[dependencies]
+fa = { path = "../fa" }
+fa-cli = { path = "../fa-cli" }
+fa-intents = { path = "../fa-intents" }
+fa-journal = { path = "../fa-journal" }
+fa-model = { path = "../fa-model" }
+fa-money = { path = "../fa-money" }
+fa-notary = { path = "../fa-notary" }
+fa-registry = { path = "../fa-registry" }
+fa-time = { path = "../fa-time" }
+fa-verbs = { path = "../fa-verbs" }
+fa-verify = { path = "../fa-verify" }
+fgdb-types = { workspace = true }

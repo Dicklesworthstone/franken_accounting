@@ -868,6 +868,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "fa-fuzz"
+version = "0.0.1"
+dependencies = [
+ "fa",
+ "fa-cli",
+ "fa-intents",
+ "fa-journal",
+ "fa-model",
+ "fa-money",
+ "fa-notary",
+ "fa-registry",
+ "fa-time",
+ "fa-verbs",
+ "fa-verify",
+ "fgdb-types",
+]
+
+[[package]]
 name = "fa-intents"
 version = "0.0.1"
 dependencies = [

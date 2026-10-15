@@ -1,0 +1,1 @@
+book create --book /tmp/demo --name Demo --base-unit USD --calendar monthly --year-start-month 1 --adjustment-periods 1 --opening-date 2026-01-01 --time-zone UTC --json

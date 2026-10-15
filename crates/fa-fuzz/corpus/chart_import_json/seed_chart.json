@@ -1,0 +1,1 @@
+{"accounts":[{"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD","lower_bound":"0.00","limit_scope":"lifetime"},{"code":"2000","name":"Accounts Payable","type":"Liability","leaf":true,"unit":"USD"},{"code":"6000","name":"Operating Expense","type":"Expense","leaf":true,"unit":"USD","upper_bound":"50000.00","limit_scope":"period"}]}
