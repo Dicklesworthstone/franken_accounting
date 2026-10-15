@@ -8414,3 +8414,156 @@ fn planted_u64_max_and_far_future_skew_ticks_do_not_brick_time_axis() {
     assert_eq!(sel.lower_entry, t0.entry_ref.vid);
     assert_eq!(sel.upper_entry, Some(t_honest.entry_ref.vid));
 }
+
+#[test]
+fn settlement_requires_matching_legal_entity_dimension() {
+    let (mut k, mut oracle, periods, _) = setup_entities(ENTITY_CHART, ENTITIES);
+    let usd = k.book.units.lookup("USD").unwrap();
+    let march = periods[2].clone();
+    open_period(&mut k, &mut oracle, &march, 1);
+    let date = DateDay::from_ymd(2026, 3, 10).unwrap();
+    let dr = fa_reference::Side::Debit;
+    let cr = fa_reference::Side::Credit;
+    let leg = |side: fa_reference::Side, account: &str, entity: Option<&str>, m: i128| Leg {
+        side,
+        account: account.into(),
+        unit: usd.0,
+        entity: entity.map(str::to_string),
+        mantissa: m,
+    };
+    let plain = |legs: Vec<Leg>, key: &str, settles: Vec<Settle>| Intent {
+        class: "Original".into(),
+        date,
+        discriminator: None,
+        legs,
+        key: key.as_bytes().to_vec(),
+        ops: vec!["post".into()],
+        approvals: 0,
+        reverses: None,
+        supersession_reason: 1,
+        resolves: None,
+        settles,
+    };
+
+    let mut refs = Vec::new();
+    // 1. Invoice for US on receivable 1500: Dr 1500 (US) 1_000 / Cr 4000 (US) 1_000.
+    let inv_us = plain(
+        vec![
+            leg(dr, "1500", Some("US"), 1_000),
+            leg(cr, "4000", Some("US"), 1_000),
+        ],
+        "inv-us",
+        Vec::new(),
+    );
+    refs.push(
+        kernel_post(&mut k, &inv_us, usd, &refs)
+            .expect("invoice US")
+            .entry_ref(),
+    );
+    assert!(matches!(oracle.post(&inv_us), Verdict::Posted { .. }));
+
+    // 2. Invoice for UK on receivable 1500: Dr 1500 (UK) 800 / Cr 4000 (UK) 800.
+    let inv_uk = plain(
+        vec![
+            leg(dr, "1500", Some("UK"), 800),
+            leg(cr, "4000", Some("UK"), 800),
+        ],
+        "inv-uk",
+        Vec::new(),
+    );
+    refs.push(
+        kernel_post(&mut k, &inv_uk, usd, &refs)
+            .expect("invoice UK")
+            .entry_ref(),
+    );
+    assert!(matches!(oracle.post(&inv_uk), Verdict::Posted { .. }));
+
+    // 3. Cross-entity settlement: UK receipt attempting to settle US's open item on 1500.
+    //    Balanced within UK, opposite side on 1500, same unit, but entity UK != US.
+    let cross_settle = plain(
+        vec![
+            leg(dr, "1000", Some("UK"), 400),
+            leg(cr, "1500", Some("UK"), 400),
+        ],
+        "cross-settle-uk-on-us",
+        vec![Settle {
+            leg: 1,
+            target: 0,
+            ordinal: 0,
+            mantissa: 400,
+        }],
+    );
+    let r = kernel_post(&mut k, &cross_settle, usd, &refs)
+        .expect_err("cross-entity settlement must be refused");
+    assert_eq!(
+        oracle.post(&cross_settle),
+        Verdict::Refused {
+            code: "FA-REF-071"
+        }
+    );
+    assert_eq!((r.code, r.exit), ("FA-REF-071", exit::REFUSAL), "{r}");
+    assert!(
+        r.message.contains("`UK`") && r.message.contains("`US`"),
+        "refusal must name both legal entities: {r}"
+    );
+
+    // 4. Same-entity settlement: US receipt settling 400 of US's invoice, and UK receipt settling 300 of UK's.
+    let same_us = plain(
+        vec![
+            leg(dr, "1000", Some("US"), 400),
+            leg(cr, "1500", Some("US"), 400),
+        ],
+        "settle-us",
+        vec![Settle {
+            leg: 1,
+            target: 0,
+            ordinal: 0,
+            mantissa: 400,
+        }],
+    );
+    refs.push(
+        kernel_post(&mut k, &same_us, usd, &refs)
+            .expect("same-entity US settlement")
+            .entry_ref(),
+    );
+    assert!(matches!(oracle.post(&same_us), Verdict::Posted { .. }));
+
+    let same_uk = plain(
+        vec![
+            leg(dr, "1000", Some("UK"), 300),
+            leg(cr, "1500", Some("UK"), 300),
+        ],
+        "settle-uk",
+        vec![Settle {
+            leg: 1,
+            target: 1,
+            ordinal: 0,
+            mantissa: 300,
+        }],
+    );
+    refs.push(
+        kernel_post(&mut k, &same_uk, usd, &refs)
+            .expect("same-entity UK settlement")
+            .entry_ref(),
+    );
+    assert!(matches!(oracle.post(&same_uk), Verdict::Posted { .. }));
+
+    // 5. Open items and per-entity fold agree between kernel and oracle.
+    let kernel_items = open_items(&k.db, &k.book, None, None).unwrap();
+    let model_items = oracle.open_items();
+    assert_eq!(kernel_items.len(), model_items.len());
+    for item in &kernel_items {
+        let index = refs.iter().position(|r| r.vid == item.entry).unwrap();
+        let (orig, app, app_out) = model_items[&(index, usize::from(item.ordinal))];
+        assert_eq!(
+            (item.original, item.applied, item.applied_out, item.open),
+            (orig, app, app_out, orig - app_out - app)
+        );
+    }
+    assert!(verify_open_items(&k.db, &k.book, None).unwrap().is_green());
+    assert_eq!(
+        kernel_entity_fold(&k, &march, None).0,
+        oracle_entity_fold(&oracle, &march)
+    );
+}
+

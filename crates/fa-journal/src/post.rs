@@ -1773,6 +1773,38 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
                     "apply the leg on the open item's account with the opposite side",
                 )));
             }
+            let target_entity = entity::leg_entity(&spec, target_leg).or_else(|| {
+                match spec.entities.as_slice() {
+                    [only] => Some(only.code.clone()),
+                    _ => None,
+                }
+            });
+            let leg_entity = leg_entities.get(i).and_then(Option::as_deref);
+            let other_dims_match = target_leg
+                .dimension_set
+                .iter()
+                .filter(|(d, _)| *d != fa_model::LEGAL_ENTITY_DIMENSION)
+                .eq(leg
+                    .dimension_set
+                    .iter()
+                    .filter(|(d, _)| *d != fa_model::LEGAL_ENTITY_DIMENSION));
+            if target_entity.as_deref() != leg_entity || !other_dims_match {
+                txn.abort();
+                let applying_who = leg_entity.unwrap_or("(the book)");
+                let target_who = target_entity.as_deref().unwrap_or("(the book)");
+                return Ok(Err(Refusal::new(
+                    code::SETTLE_SHAPE,
+                    exit::REFUSAL,
+                    format!(
+                        "leg {i} (entity `{applying_who}`) does not settle entry {:032x} leg {} (entity `{target_who}`): an application must match the open item's legal entity and balancing dimensions",
+                        s.target.vid.0, s.ordinal
+                    ),
+                    "plan §4.1, §5.2, §5.7 (per-entity open-item settlement)",
+                    format!(
+                        "apply an entry for entity `{target_who}` with matching balancing dimensions; cross-entity settlement requires an intercompany transfer first"
+                    ),
+                )));
+            }
             let target_leg_vid = leg_vid(s.target.vid, s.ordinal);
             if let MapEntry::Vacant(slot) = applied_delta.entry(target_leg_vid) {
                 let leg_row = txn.vertex(db, target_leg_vid)?.ok_or_else(|| {

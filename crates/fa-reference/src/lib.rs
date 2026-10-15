@@ -2036,7 +2036,11 @@ impl Oracle {
                     code: code::SETTLE_SHAPE,
                 };
             };
-            if tl.account != leg.account || tl.unit != leg.unit || tl.side == leg.side {
+            if tl.account != leg.account
+                || tl.unit != leg.unit
+                || tl.side == leg.side
+                || self.entity_of(tl) != self.entity_of(leg)
+            {
                 return Verdict::Refused {
                     code: code::SETTLE_SHAPE,
                 };
