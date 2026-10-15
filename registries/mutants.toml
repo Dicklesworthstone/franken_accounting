@@ -1,0 +1,344 @@
+# =============================================================================
+# registries/mutants.toml — Named Source Mutations of Kernel Laws (bead fa-9km9)
+# =============================================================================
+#
+# Each [[mutant]] row names:
+# - id:         dense identifier MUT-001 .. MUT-NNN
+# - file:       workspace-relative source file path
+# - find:       exact substring in `file` (must occur exactly once)
+# - replace:    mutated replacement text (applied in a scratch copy, never in tree)
+# - law:        invariant clause (FA-INV-*) or refusal code (FA-REF-*) broken
+# - killed_by:  one or more `crate::target::path` test entrypoints that must fail
+# - description: why this mutation breaks the accounting/verification law
+#
+# Validated statically by `fa-registry::mutants` and `tools/registry-check`,
+# and executed against scratch copies by `xtask mutants`.
+# =============================================================================
+
+schema_version = 1
+
+# ---- 1. Exact money arithmetic & leg sign invariants (fa-money::amount) -----
+
+[[mutant]]
+id = "MUT-001"
+file = "crates/fa-money/src/amount.rs"
+find = "if self.unit == o.unit {"
+replace = "if true || self.unit == o.unit {"
+law = "FA-INV-06.core"
+killed_by = ["fa-money::lib::amount::tests::checked_arithmetic_refuses_overflow_and_unit_mixing"]
+description = "Disable unit-equality guard in Amount::same_unit so cross-unit addition silently succeeds."
+
+[[mutant]]
+id = "MUT-002"
+file = "crates/fa-money/src/amount.rs"
+find = "    pub fn as_leg(self, side: Side) -> Result<Self, AmountError> {\n        if self.mantissa < 0 {"
+replace = "    pub fn as_leg(self, side: Side) -> Result<Self, AmountError> {\n        if self.mantissa > 0 {"
+law = "FA-INV-01.per-unit"
+killed_by = ["fa-money::lib::amount::tests::negative_legs_are_refused_with_the_other_side"]
+description = "Invert negative-leg sign predicate in Amount::as_leg."
+
+[[mutant]]
+id = "MUT-003"
+file = "crates/fa-money/src/amount.rs"
+find = "let (numer_scale, denom_scale) = if to_scale >= from_scale {"
+replace = "let (numer_scale, denom_scale) = if to_scale < from_scale {"
+law = "FA-INV-06.core"
+killed_by = ["fa-money::lib::amount::tests::mul_rate_and_convert_are_exact_then_rounded"]
+description = "Flip cross-scale conversion direction in Amount::convert."
+
+# ---- 2. Registered rounding laws (fa-money::rounding) -----------------------
+
+[[mutant]]
+id = "MUT-004"
+file = "crates/fa-money/src/rounding.rs"
+find = "Equal => q % 2 == 1,"
+replace = "Equal => q % 2 == 0,"
+law = "FA-INV-06.core"
+killed_by = ["fa-money::lib::rounding::tests::tie_behaviour_matches_the_registered_meanings"]
+description = "Round HalfEven ties to odd instead of even."
+
+[[mutant]]
+id = "MUT-005"
+file = "crates/fa-money/src/rounding.rs"
+find = "Self::Ceiling => !negative,"
+replace = "Self::Ceiling => negative,"
+law = "FA-INV-06.core"
+killed_by = ["fa-money::lib::rounding::tests::tie_behaviour_matches_the_registered_meanings"]
+description = "Invert signed direction of RoundingLaw::Ceiling."
+
+[[mutant]]
+id = "MUT-006"
+file = "crates/fa-money/src/rounding.rs"
+find = "if d == 0 || r >= d {"
+replace = "if d == 0 {"
+law = "FA-INV-06.core"
+killed_by = ["fa-money::lib::rounding::tests::exact_values_never_move_and_ids_round_trip"]
+description = "Drop remainder < denominator precondition in RoundingLaw::apply_magnitude."
+
+[[mutant]]
+id = "MUT-007"
+file = "crates/fa-money/src/rounding.rs"
+find = "Self::HalfAwayFromZero => cmp_half != Less,"
+replace = "Self::HalfAwayFromZero => cmp_half == Greater,"
+law = "FA-INV-06.core"
+killed_by = ["fa-money::lib::rounding::tests::tie_behaviour_matches_the_registered_meanings"]
+description = "Make HalfAwayFromZero round ties toward zero instead of away from zero."
+
+# ---- 3. Allocation conservation & tie-breaking (fa-money::allocation) -------
+
+[[mutant]]
+id = "MUT-008"
+file = "crates/fa-money/src/allocation.rs"
+find = "remainders.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));"
+replace = "remainders.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));"
+law = "FA-INV-06.core"
+killed_by = ["fa-money::lib::allocation::tests::deterministic_ties_go_to_the_lowest_index"]
+description = "Break largest-remainder fractional ties toward highest index instead of lowest."
+
+[[mutant]]
+id = "MUT-009"
+file = "crates/fa-money/src/allocation.rs"
+find = "shares[i] += 1;"
+replace = "shares[i] += 0;"
+law = "FA-INV-06.core"
+killed_by = ["fa-money::lib::allocation::tests::conserves_total_on_a_grid"]
+description = "Drop residual unit distribution in largest_remainder, violating total conservation."
+
+# ---- 4. Functional-currency valuation & FX residual bounds (fa-money) -------
+
+[[mutant]]
+id = "MUT-010"
+file = "crates/fa-money/src/valuation.rs"
+find = ".filter(|(_, l)| l.side == deficient && l.amount.unit != base)"
+replace = ".filter(|(_, l)| l.side == deficient)"
+law = "FA-INV-01.base-residual"
+killed_by = ["fa-money::lib::valuation::tests::mixed_base_rounding_residual_preserves_at_par_valuations"]
+description = "Allow base-currency legs to absorb FX rounding residuals (fa-xo0 regression)."
+
+[[mutant]]
+id = "MUT-011"
+file = "crates/fa-money/src/valuation.rs"
+find = "Some(first) if first != leg.amount.unit => {"
+replace = "Some(first) if false && first != leg.amount.unit => {"
+law = "FA-INV-06.core"
+killed_by = ["fa-money::lib::valuation::tests::multiple_foreign_units_are_refused_in_single_rate_valuation"]
+description = "Allow multiple distinct foreign units in single-rate valuation (fa-ggi regression)."
+
+[[mutant]]
+id = "MUT-012"
+file = "crates/fa-money/src/valuation.rs"
+find = "if debits != credits {"
+replace = "if false && debits != credits {"
+law = "FA-INV-01.per-unit"
+killed_by = ["fa-money::lib::valuation::tests::native_imbalance_is_never_absorbed_as_rounding"]
+description = "Skip native per-unit balance check before FX valuation."
+
+[[mutant]]
+id = "MUT-013"
+file = "crates/fa-money/src/valuation.rs"
+find = "let deficient = if diff > 0 { Side::Credit } else { Side::Debit };"
+replace = "let deficient = if diff > 0 { Side::Debit } else { Side::Credit };"
+law = "FA-INV-01.base"
+killed_by = ["fa-money::lib::valuation::tests::fa_p7r_counterexample_balances_without_a_new_leg"]
+description = "Add FX rounding residual to the surplus side instead of the deficient side."
+
+# ---- 5. Fiscal period resolution & state machine (fa-time::period) ----------
+
+[[mutant]]
+id = "MUT-014"
+file = "crates/fa-time/src/period.rs"
+find = "day >= self.start && day < self.end"
+replace = "day >= self.start && day <= self.end"
+law = "FA-INV-03.core"
+killed_by = ["fa-time::lib::period::tests::december_31_resolves_by_discriminator"]
+description = "Make period interval closed on the right [start, end] instead of half-open [start, end)."
+
+[[mutant]]
+id = "MUT-015"
+file = "crates/fa-time/src/period.rs"
+find = "(Closed, PeriodTransition::Lock) => Locked,"
+replace = "(Closed, PeriodTransition::Lock) => Open,"
+law = "FA-INV-03.core"
+killed_by = ["fa-time::lib::period::tests::state_machine_matches_the_matrix"]
+description = "Corrupt Closed -> Lock transition to reopen the period instead of locking."
+
+[[mutant]]
+id = "MUT-016"
+file = "crates/fa-time/src/period.rs"
+find = ".find(|p| p.kind == PeriodKind::Normal || p.kind == PeriodKind::Historical)"
+replace = ".find(|p| p.kind == PeriodKind::Adjustment)"
+law = "FA-INV-03.core"
+killed_by = ["fa-time::lib::period::tests::december_31_resolves_by_discriminator"]
+description = "Resolve undiscriminated effective dates to Adjustment periods instead of Normal."
+
+# ---- 6. Register fold, net balance, and open-item lineage (fa-registers) ----
+
+[[mutant]]
+id = "MUT-017"
+file = "crates/fa-registers/src/lib.rs"
+find = "self.debits.checked_sub(self.credits)"
+replace = "self.credits.checked_sub(self.debits)"
+law = "FA-INV-04.core"
+killed_by = ["fa-registers::lib::tests::cell_net_uses_checked_subtraction_and_detects_overflow"]
+description = "Invert Cell::net() sign from debits - credits to credits - debits."
+
+[[mutant]]
+id = "MUT-018"
+file = "crates/fa-registers/src/lib.rs"
+find = ".filter(|p| p.start <= day)"
+replace = ".filter(|p| p.start < day && p.end <= day)"
+law = "FA-INV-04.core"
+killed_by = ["fa-registers::lib::tests::stock_candidates_include_prior_years_and_special_periods"]
+description = "Exclude the active in-progress period from stock balance period candidates."
+
+[[mutant]]
+id = "MUT-019"
+file = "crates/fa-registers/src/lib.rs"
+find = "    w.opt(watermark.as_ref(), |w, s| {\n        w.u64(s.0);\n    });"
+replace = "    w.opt(watermark.as_ref(), |w, _s| {\n        w.u64(0);\n    });"
+law = "FA-INV-04.core"
+killed_by = ["fa-registers::lib::tests::fold_digest_is_a_function_of_cells_and_watermark"]
+description = "Omit watermark CommitSeq from register fold_digest calculation."
+
+[[mutant]]
+id = "MUT-020"
+file = "crates/fa-registers/src/open_items.rs"
+find = "live = !live;"
+replace = "live = false;"
+law = "FA-INV-08.reversed-once"
+killed_by = ["fa-registers::lib::open_items::tests::liveness_is_parity_over_arbitrarily_long_chains_and_cycles_are_corruption"]
+description = "Break reversal-of-reversal parity in open_items::is_live so revived entries stay dead."
+
+[[mutant]]
+id = "MUT-021"
+file = "crates/fa-registers/src/open_items.rs"
+find = ".and_then(|o| o.checked_sub(applied_sum))"
+replace = ".and_then(|o| o.checked_add(applied_sum))"
+law = "FA-INV-04.open-amount"
+killed_by = ["fa-journal::tests/genesis.rs::applications_settle_open_items_within_the_open_amount_and_reversal_undoes_them"]
+description = "Add live applications instead of subtracting them when computing an open item's open amount."
+
+# ---- 7. Notary Merkle trees & document chunk proofs (fa-notary) -------------
+
+[[mutant]]
+id = "MUT-022"
+file = "crates/fa-notary/src/lib.rs"
+find = "if let Some(sibling) = level.get(position ^ 1) {"
+replace = "if let Some(sibling) = level.get(position) {"
+law = "FA-INV-14.public-commitment"
+killed_by = ["fa-notary::lib::document::tests::producer_paths_match_kernel_commitments_and_the_independent_verifier"]
+description = "Emit self-node instead of sibling node in DocumentProofTree::prove."
+
+[[mutant]]
+id = "MUT-023"
+file = "crates/fa-notary/src/lib.rs"
+find = "[left, right] => node(left, right),"
+replace = "[left, right] => node(right, left),"
+law = "FA-INV-14.public-commitment"
+killed_by = ["fa-notary::lib::document::tests::producer_paths_match_kernel_commitments_and_the_independent_verifier"]
+description = "Swap left and right children in DocumentProofTree interior hash."
+
+[[mutant]]
+id = "MUT-024"
+file = "crates/fa-notary/src/tree.rs"
+find = "let node = self.node(&self.levels[h][n - 2], &self.levels[h][n - 1]);"
+replace = "let node = self.node(&self.levels[h][n - 1], &self.levels[h][n - 2]);"
+law = "FA-INV-14.leaf-envelope"
+killed_by = ["fa-notary::lib::tree::tests::incremental_roots_and_peaks_equal_the_definition_at_every_size"]
+description = "Swap left and right child order in MMR accumulator Tree::push."
+
+# ---- 8. Standalone verifier & migration balance predicates (fa-verify) ------
+
+[[mutant]]
+id = "MUT-025"
+file = "crates/fa-verify/src/migration_balance.rs"
+find = "state.terminal.is_some_and(|(_, kind)| kind == 1)"
+replace = "state.terminal.is_some_and(|(_, kind)| kind != 0)"
+law = "FA-INV-07.migration-disjoint"
+killed_by = ["fa-verify::lib::migration_balance::tests::open_abandoned_and_finalized_runs_have_different_proven_balances"]
+description = "Treat Abandoned (kind == 2) migration runs as Finalized (kind == 1) in fa-verify (fa-e00)."
+
+[[mutant]]
+id = "MUT-026"
+file = "crates/fa-verify/src/migration_balance.rs"
+find = ".is_some_and(|effective| effective >= day)"
+replace = ".is_some_and(|effective| effective > day)"
+law = "FA-INV-07.migration-disjoint"
+killed_by = ["fa-verify::lib::migration_balance::tests::every_migration_mode_obeys_its_historical_visibility_and_inclusive_cutoff"]
+description = "Exclude opening-day migration chunks in FullDetail non-sole-source runs (fa-e00)."
+
+[[mutant]]
+id = "MUT-027"
+file = "crates/fa-verify/src/migration_balance.rs"
+find = "counts_from: (mode == 2 && !sole).then_some(opening_day),"
+replace = "counts_from: None,"
+law = "FA-INV-07.migration-disjoint"
+killed_by = ["fa-verify::lib::migration_balance::tests::every_migration_mode_obeys_its_historical_visibility_and_inclusive_cutoff"]
+description = "Double-count pre-opening history in FullDetail migration runs with a separate opening TB (fa-e00)."
+
+[[mutant]]
+id = "MUT-028"
+file = "crates/fa-verify/src/migration_balance.rs"
+find = "if body_digest(bytes) != state.digest {"
+replace = "if false && body_digest(bytes) != state.digest {"
+law = "FA-INV-04.outsider-recomputation"
+killed_by = ["fa-verify::lib::migration_balance::tests::controls_and_bodies_cannot_be_omitted_duplicated_or_substituted"]
+description = "Skip RunBody tie-out digest authentication in fa-verify migration balance verifier."
+
+# ---- 9. Capability admission & Segregation of Duties (fa-policy::admit) -----
+
+[[mutant]]
+id = "MUT-029"
+file = "crates/fa-policy/src/admit.rs"
+find = "if cap.holder() != intent.principal {"
+replace = "if false && cap.holder() != intent.principal {"
+law = "FA-INV-10.core"
+killed_by = ["fa-policy::lib::admit::tests::admission_order_is_holder_then_agent_then_op_then_ceilings"]
+description = "Disable holder == principal check in fa_policy::admit_base."
+
+[[mutant]]
+id = "MUT-030"
+file = "crates/fa-policy/src/admit.rs"
+find = "if cap.profile() == Profile::Agent && intent.trunk {"
+replace = "if false && cap.profile() == Profile::Agent && intent.trunk {"
+law = "FA-INV-10.core"
+killed_by = ["fa-policy::lib::admit::tests::admission_order_is_holder_then_agent_then_op_then_ceilings"]
+description = "Allow Agent-profile capabilities to write directly to trunk."
+
+[[mutant]]
+id = "MUT-031"
+file = "crates/fa-policy/src/admit.rs"
+find = "Some(ceiling) if mantissa > ceiling => {"
+replace = "Some(ceiling) if false && mantissa > ceiling => {"
+law = "FA-INV-10.core"
+killed_by = ["fa-policy::lib::admit::tests::admission_order_is_holder_then_agent_then_op_then_ceilings"]
+description = "Bypass per-unit amount ceiling enforcement in fa_policy::admit_base."
+
+# ---- 10. Escrow availability & TimeTick bounds (fa-escrow, fa-model) --------
+
+[[mutant]]
+id = "MUT-032"
+file = "crates/fa-escrow/src/lib.rs"
+find = "let slack = net.checked_sub(pending_out)?.checked_sub(bound)?;"
+replace = "let slack = net.checked_add(pending_out)?.checked_sub(bound)?;"
+law = "FA-INV-15.availability"
+killed_by = ["fa-escrow::lib::tests::escrow_availability_and_balancing_headroom_follow_normal_sign"]
+description = "Add pending outflows instead of subtracting them when computing lower-bound availability slack."
+
+[[mutant]]
+id = "MUT-033"
+file = "crates/fa-escrow/src/lib.rs"
+find = "let slack = bound.checked_sub(net.checked_add(pending_in)?)?;"
+replace = "let slack = bound.checked_sub(net.checked_sub(pending_in)?)?;"
+law = "FA-INV-15.availability"
+killed_by = ["fa-escrow::lib::tests::escrow_availability_and_balancing_headroom_follow_normal_sign"]
+description = "Subtract pending inflows instead of adding them when computing upper-bound cap slack."
+
+[[mutant]]
+id = "MUT-034"
+file = "crates/fa-model/src/entry.rs"
+find = "} if *source > 2 || *observed_utc_ns > MAX_TICK_UTC_NS => Err(invalid("
+replace = "} if *source > 2 => Err(invalid("
+law = "FA-INV-07.core"
+killed_by = ["fa-model::lib::entry::tests::structural_rules_are_enforced"]
+description = "Remove MAX_TICK_UTC_NS upper bound check on TimeTick control payloads (fa-psz)."

@@ -15,6 +15,7 @@ pub mod foundations;
 pub mod g0;
 pub mod intake_sources;
 pub mod invariants;
+pub mod mutants;
 pub mod procedures;
 pub mod reason_codes;
 pub mod redaction_contracts;

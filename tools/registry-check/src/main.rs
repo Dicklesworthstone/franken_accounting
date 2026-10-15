@@ -20,6 +20,7 @@ use fa_registry::g0::{
 };
 use fa_registry::intake_sources::IntakeSources;
 use fa_registry::invariants::Invariants;
+use fa_registry::mutants::MutantLedger;
 use fa_registry::procedures::Procedures;
 use fa_registry::reason_codes::ReasonCodes;
 use fa_registry::redaction_contracts::RedactionContracts;
@@ -101,6 +102,7 @@ const EXPECTED_REGISTRIES: &[&str] = &[
     "intake_sources.toml",
     "invariants.toml",
     "limits.toml",
+    "mutants.toml",
     "period_states.toml",
     "procedures.toml",
     "proof_lanes.toml",
@@ -670,6 +672,11 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
     }
     let _scoreboard = Scoreboard::parse(&read("scoreboard.toml")?, &exits, &refusals)
         .map_err(|e| e.to_string())?;
+    let mutants =
+        MutantLedger::parse(&read("mutants.toml")?, &invariants, &refusals).map_err(|e| e.to_string())?;
+    if root.join("crates").is_dir() {
+        mutants.verify_against_workspace(|rel| fs::read_to_string(root.join(rel)).ok())?;
+    }
     let (verbs_checked, mcp_tools_checked) = check_verbs(&read("verbs.toml")?, &exits)?;
 
     // 3. Cross-document claims_lint check.
