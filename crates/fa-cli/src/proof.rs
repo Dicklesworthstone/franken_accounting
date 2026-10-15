@@ -84,10 +84,10 @@ pub(crate) fn proof_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ));
         }
     }
-    if args.switch("--with-record") && kind != "inclusion" {
+    if args.switch("--with-record") && !matches!(kind, "inclusion" | "prefix") {
         return Err(usage(
-            "--with-record applies only to inclusion proofs",
-            EXAMPLE,
+            "--with-record applies only to inclusion or prefix proofs",
+            "fa proof prefix --with-record --out <new-file> --json",
         ));
     }
     let state = match args.flag("--state") {
@@ -148,6 +148,7 @@ pub(crate) fn proof_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let book = ctx.books.open(args)?;
     let proof_kind = match kind {
         "checkpoint" => ProofKind::Checkpoint,
+        "prefix" if args.switch("--with-record") => ProofKind::PrefixWithRecords,
         "prefix" => ProofKind::Prefix,
         "inclusion" => ProofKind::Inclusion {
             entry: entry.ok_or_else(|| usage("--entry is required", EXAMPLE))?,
@@ -225,6 +226,10 @@ pub(crate) fn proof_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("entry", s(format!("{:032x}", entry.0))),
             ("with_record", Json::Bool(with_record)),
         ]),
+        ProofKind::PrefixWithRecords => obj(vec![
+            ("with_record", Json::Bool(true)),
+            ("payload_coverage", s("all_checkpoint_entries")),
+        ]),
         ProofKind::Balance {
             account,
             unit,
@@ -245,7 +250,7 @@ pub(crate) fn proof_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ctx.out.effective(format!("as-of:{day}"));
     }
     let encoded = output.is_none().then(|| hex(&artifact.bytes));
-    let human = format!(
+    let mut human = format!(
         "Exported {} (scope: {}) from unsigned checkpoint {} through sequence {}: {} bytes{}.\nEstablish trust in the checkpoint separately before using fa-verify.{}",
         proof_kind.name(),
         proof_kind.scope(),
@@ -257,6 +262,9 @@ pub(crate) fn proof_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             .as_ref()
             .map_or_else(String::new, |bytes| format!("\nProof bytes (hex): {bytes}")),
     );
+    if proof_kind == ProofKind::PrefixWithRecords {
+        human.push_str("\nIncludes EVERY checkpoint entry payload, not an account-filtered extract. No posted-balance or migration-visibility claim is made.");
+    }
     ctx.out.event(
         "proof_exported",
         vec![

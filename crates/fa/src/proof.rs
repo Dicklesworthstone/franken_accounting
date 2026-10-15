@@ -7,6 +7,8 @@
 //! Balance exports use payload-complete v3: every prefix entry is disclosed
 //! and every scope selector can be independently derived. Legacy notary
 //! v1/v2 APIs remain available, but are not used to claim recomputation here.
+//! PrefixWithRecords exports the native v2 journal witness without requiring
+//! any account, unit, or migration-balance policy. Prefix retains v1 bytes.
 
 use asupersync::fs::Vfs;
 use fa_journal::genesis::BookContext;
@@ -46,6 +48,9 @@ pub enum ProofKind {
     },
     /// Every leaf envelope in the checkpoint's prefix, in journal order.
     Prefix,
+    /// Every envelope AND entry payload, including controls and staged entries.
+    /// Explicit whole-book disclosure for independent scope derivation.
+    PrefixWithRecords,
     /// Exact posted amounts with every prefix entry payload for scope derivation.
     /// This is whole-book disclosure, not an account-filtered entry export.
     Balance {
@@ -62,7 +67,7 @@ impl ProofKind {
             Self::Checkpoint => "checkpoint",
             Self::Inclusion { .. } => "inclusion",
             Self::Consistency { .. } => "consistency",
-            Self::Prefix => "prefix",
+            Self::Prefix | Self::PrefixWithRecords => "prefix",
             Self::Balance { .. } => "balance",
         }
     }
@@ -73,7 +78,7 @@ impl ProofKind {
             Self::Checkpoint => "entry_prefix",
             Self::Inclusion { .. } => "inclusion",
             Self::Consistency { .. } => "consistency",
-            Self::Prefix => "seq_range_complete",
+            Self::Prefix | Self::PrefixWithRecords => "seq_range_complete",
             Self::Balance { .. } => "recomputation",
         }
     }
@@ -136,8 +141,8 @@ pub(crate) fn export<V: Vfs + Clone>(
     request: ProofRequest,
 ) -> Outcome<ProofArtifact> {
     // Admission precedes even the current authority frontier. Prefix proofs
-    // reveal every envelope, and v3 balances disclose every entry payload.
-    // Both require whole-book read plus the explicit production operation.
+    // reveal every envelope; PrefixWithRecords and v3 balances disclose every
+    // entry payload. All require whole-book read plus the production operation.
     // Current capabilities support book caveats, not silently filtered views.
     if let Err(denial) = fa_policy::admit_read(capability, principal, book.book_id)
         .and_then(|()| fa_policy::require(capability, Op::Produce, "exporting accounting proofs"))
@@ -182,6 +187,9 @@ pub(crate) fn export<V: Vfs + Clone>(
             proof
         }
         ProofKind::Prefix => fa_notary::prove_prefix(db, book, &checkpoint.state)?,
+        ProofKind::PrefixWithRecords => {
+            fa_notary::prefix::prove_prefix_with_records(db, book, &checkpoint.state)?
+        }
         ProofKind::Balance {
             account,
             unit,
