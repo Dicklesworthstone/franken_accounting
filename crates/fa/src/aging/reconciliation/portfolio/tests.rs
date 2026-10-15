@@ -322,3 +322,70 @@ fn per_cell_difference_overflow_is_refused_not_wrapped() {
         Err(BookError::Registers(RegisterError::Overflow))
     ));
 }
+
+#[test]
+fn allocation_entries_into_ar_and_ap_reconcile_in_single_account_and_portfolio_aging() {
+    let mut h = Harness::new();
+    let alloc_ar = h.post_allocation("alloc-ar", "2026-03-05", h.usd, "ar", "sales", 250);
+    let alloc_ap = h.post_allocation("alloc-ap", "2026-03-06", h.usd, "expense", "ap", 120);
+    // Partially settle the allocated AR open item to verify settlement against
+    // an Allocation leg also reconciles cleanly.
+    h.post(
+        "settle-alloc-ar",
+        "2026-03-18",
+        h.usd,
+        ("cash", "ar"),
+        100,
+        Some(alloc_ar),
+    );
+    let _ = alloc_ap;
+
+    let at = h.head();
+    let portfolio = h.report(&h.request());
+    assert!(portfolio.is_complete_and_reconciled());
+
+    for code in ["ar", "ap", "expense", "sales", "cash"] {
+        let single = h
+            .book
+            .reconcile_effective_date_aging(
+                &h.cx(),
+                PRINCIPAL,
+                &cap(&["read"]),
+                &AgingReconciliationRequest {
+                    account: h.id(code),
+                    effective_through: day("2026-03-31"),
+                    known_at: Some(at),
+                    buckets: AgingBuckets::thirty_day(),
+                },
+            )
+            .unwrap()
+            .unwrap();
+        assert!(single.is_reconciled(), "{code} did not reconcile: {single:?}");
+        assert!(
+            single.rows().iter().all(|r| r.difference == 0),
+            "{code} had nonzero difference: {:?}",
+            single.rows()
+        );
+    }
+
+    let ar_recon = portfolio
+        .accounts()
+        .iter()
+        .find(|a| a.account().code == "ar")
+        .unwrap();
+    assert_eq!(ar_recon.rows().len(), 1);
+    assert_eq!(ar_recon.rows()[0].posted_net, 150);
+    assert_eq!(ar_recon.rows()[0].open_net, 150);
+    assert_eq!(ar_recon.rows()[0].difference, 0);
+
+    let ap_recon = portfolio
+        .accounts()
+        .iter()
+        .find(|a| a.account().code == "ap")
+        .unwrap();
+    assert_eq!(ap_recon.rows().len(), 1);
+    assert_eq!(ap_recon.rows()[0].posted_net, -120);
+    assert_eq!(ap_recon.rows()[0].open_net, -120);
+    assert_eq!(ap_recon.rows()[0].difference, 0);
+}
+

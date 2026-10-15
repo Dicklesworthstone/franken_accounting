@@ -218,6 +218,85 @@ impl Harness {
             .unwrap()
             .entry_ref()
     }
+    pub(super) fn post_allocation(
+        &mut self,
+        key: &str,
+        date: &str,
+        unit: UnitId,
+        debit_account: &str,
+        credit_account: &str,
+        amount: i128,
+    ) -> EntryRef {
+        use fa_journal::allocation::{ALLOCATION_DOCUMENT_KIND, AllocationPosting};
+        use fa_money::allocation::{AllocationMethod, AllocationRequest, AllocationTarget};
+        let cx = self.cx();
+        let allocation = AllocationPosting {
+            source: self.id(debit_account),
+            source_side: Side::Debit,
+            dimensions: Vec::new(),
+            request: AllocationRequest {
+                total: Amount::new(unit, amount),
+                method: AllocationMethod::LargestRemainder,
+                targets: vec![AllocationTarget {
+                    id: self.id(credit_account).0,
+                    basis: 1,
+                }],
+            },
+        };
+        let driver_doc = Document {
+            book_id: BOOK,
+            kind: ALLOCATION_DOCUMENT_KIND,
+            mime: "application/octet-stream".into(),
+            grade: 3,
+            retrieved_by: PRINCIPAL,
+            bytes: allocation.basis_bytes().unwrap(),
+        };
+        self.runtime
+            .block_on(self.book.add_document(&cx, &driver_doc))
+            .unwrap()
+            .unwrap();
+        let template = EntryPayload {
+            schema_minor: 0,
+            book_id: BOOK,
+            branch_id: Id128::TRUNK,
+            class: EntryClass::ALLOCATION,
+            effective_date: day(date),
+            document_date: None,
+            description: self.book.seal_text(&cx, key).unwrap(),
+            effective_period: None,
+            unit_totals: Vec::new(),
+            legs: Vec::new(),
+            control: None,
+            base_totals: None,
+            idempotency_key: key.as_bytes().to_vec(),
+            origin: EntryOrigin::Intent {
+                intent_oid: Oid([8; 32]),
+                intent_kind: 1,
+            },
+            principal_ref: PRINCIPAL,
+            session_ref: None,
+            evidence: vec![self.evidence, allocation.driver_evidence(BOOK).unwrap()],
+            supersession: Vec::new(),
+            pending: None,
+            external_ids: Vec::new(),
+            extensions: Vec::new(),
+            tags: Vec::new(),
+        };
+        let proposal = allocation.proposal(template).unwrap();
+        self.runtime
+            .block_on(self.book.post(
+                &cx,
+                PostRequest {
+                    proposal,
+                    approvals: Vec::new(),
+                    plan_certificate: None,
+                    capability: cap(&["post"]),
+                },
+            ))
+            .unwrap()
+            .unwrap()
+            .entry_ref()
+    }
     pub(super) fn add_leaf(&mut self, code: &str) {
         let cx = self.cx();
         self.runtime
