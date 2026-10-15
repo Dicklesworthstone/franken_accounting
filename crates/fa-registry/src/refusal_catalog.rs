@@ -573,4 +573,110 @@ mod tests {
             format!("{good}\n[[reserved]]\ncode = \"FA-REF-029\"\nholder = \"planted\"\n");
         assert!(RefusalCatalog::from_text(&reserved_free, &exits).is_ok());
     }
+
+    #[test]
+    fn plan_appendix_d_and_errata_match_refusal_catalog_and_topology() {
+        let plan = include_str!("../../../COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md");
+        let catalog = RefusalCatalog::embedded().unwrap();
+
+        // 1. Appendix D refusal table matches refusal_catalog.toml.
+        let mut appendix_d_rows = 0usize;
+        for line in plan.lines() {
+            let trimmed = line.trim();
+            if !trimmed.starts_with("| FA-REF-") {
+                continue;
+            }
+            let cells: Vec<&str> = trimmed.split('|').map(str::trim).collect();
+            assert!(cells.len() >= 4, "malformed Appendix D row: {trimmed}");
+            let code = cells[1];
+            let name_cell = cells[2];
+            if name_cell.starts_with("*(reserved") {
+                assert!(
+                    catalog.reserved.iter().any(|r| r.code == code),
+                    "Appendix D marks {code} reserved, but refusal_catalog.toml does not"
+                );
+            } else {
+                let name = name_cell.trim_matches('`');
+                let row = catalog
+                    .rows
+                    .iter()
+                    .find(|r| r.code == code)
+                    .unwrap_or_else(|| panic!("Appendix D lists {code} (`{name}`), missing from refusal_catalog.toml"));
+                assert_eq!(
+                    row.name, name,
+                    "Appendix D name `{name}` for {code} disagrees with refusal_catalog.toml `{}`",
+                    row.name
+                );
+            }
+            appendix_d_rows += 1;
+        }
+        assert!(appendix_d_rows >= 20, "expected Appendix D refusal rows, found {appendix_d_rows}");
+
+        // 2. §16.2 fa-reference dependency allowlist never includes fa-money.
+        let sec_16_2 = plan
+            .split("### 16.2 The reference oracle (`fa-reference`)")
+            .nth(1)
+            .and_then(|rest| rest.split("### 16.3").next())
+            .expect("§16.2 section present");
+        let allowlist_sentence = sec_16_2
+            .split("Its dependency allowlist is")
+            .nth(1)
+            .and_then(|rest| rest.split('—').next())
+            .expect("§16.2 allowlist clause present");
+        assert!(
+            !allowlist_sentence.contains("fa-money"),
+            "§16.2 allowlist must not permit fa-money: {allowlist_sentence}"
+        );
+
+        // 3. §15.3 verb table includes prose-referenced verbs.
+        for needle in [
+            "fa book create|open|info|fork|checkpoint|verify",
+            "fa rule propose|backtest",
+            "fa statement lint <definition>",
+            "fa exhibit mark",
+            "fa workpaper export",
+            "fa verify bundle|registers|book|certificate|close|fx-conversion|projections|periods",
+            "fa certificate status <certificate>",
+            "fa recon book-to-book",
+        ] {
+            assert!(
+                plan.contains(needle),
+                "COMPREHENSIVE_PLAN §15.3 verb table missing `{needle}`"
+            );
+        }
+
+        // 4. §15.4 default exposed MCP clusters sum to <= 40 tools.
+        let sec_15_4 = plan
+            .split("### 15.4 The MCP server")
+            .nth(1)
+            .and_then(|rest| rest.split("### 15.5").next())
+            .expect("§15.4 section present");
+        let on_demand = [
+            "fa.evidence",
+            "fa.draft",
+            "fa.forensics",
+            "fa.case",
+            "fa.notary",
+            "fa.govern",
+            "fa.io",
+        ];
+        let mut default_tools = 0usize;
+        for line in sec_15_4.lines() {
+            let trimmed = line.trim();
+            if !trimmed.starts_with("| `fa.") {
+                continue;
+            }
+            let cells: Vec<&str> = trimmed.split('|').map(str::trim).collect();
+            let cluster = cells[1].trim_matches('`');
+            let count = cells[2].split(',').count();
+            assert!(count <= 7, "MCP cluster {cluster} exceeds 7 tools ({count})");
+            if !on_demand.contains(&cluster) {
+                default_tools += count;
+            }
+        }
+        assert!(
+            (1..=40).contains(&default_tools),
+            "default exposed MCP tools must be in 1..=40, got {default_tools}"
+        );
+    }
 }
