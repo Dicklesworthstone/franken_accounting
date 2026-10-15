@@ -359,8 +359,12 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
     let _sod = SodPolicy::parse(&read("sod_policy.toml")?, &classes, &matrix)
         .map_err(|e| e.to_string())?;
     let _units = parse_units(&read("units.toml")?).map_err(|e| e.to_string())?;
-    let _foundations =
+    let foundations =
         Ledger::parse(&read("foundation_dependencies.toml")?).map_err(|e| e.to_string())?;
+    if root.join("crates").is_dir() {
+        fa_registry::foundations::check_api_consumption(&foundations, root)
+            .map_err(|e| e.to_string())?;
+    }
     let invariants = Invariants::parse(&read("invariants.toml")?).map_err(|e| e.to_string())?;
     let _topology =
         Topology::parse(&read("workspace_topology.toml")?).map_err(|e| e.to_string())?;

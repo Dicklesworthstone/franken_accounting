@@ -11,6 +11,7 @@
 //! is reported).
 
 use std::collections::BTreeSet;
+use std::path::Path;
 
 use crate::RegistryError;
 use crate::toml::{self, Document, Value};
@@ -34,6 +35,9 @@ pub enum FaStatus {
     Live,
     /// The registered interim posture holds until the switch-over rule fires.
     Interim,
+    /// Upstream capability is usable (`Live` or `Partial`), but FrankenAccounting
+    /// has no caller yet; `tracking` is required (`fa-r3d`).
+    Unconsumed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,6 +52,8 @@ pub struct Capability {
     pub upstream: Upstream,
     pub fa_status: FaStatus,
     pub tracking: Option<String>,
+    pub consumed_apis: Vec<String>,
+    pub unconsumed_apis: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,6 +66,28 @@ fn bad(message: impl Into<String>) -> RegistryError {
         registry: REGISTRY,
         message: message.into(),
     }
+}
+
+fn str_list(row: &str, t: &toml::Table, key: &str) -> Result<Vec<String>, RegistryError> {
+    let Some(val) = t.get(key) else {
+        return Ok(Vec::new());
+    };
+    let arr = val
+        .as_array()
+        .ok_or_else(|| bad(format!("{row}: `{key}` must be a string array")))?;
+    let mut out = Vec::with_capacity(arr.len());
+    let mut seen = BTreeSet::new();
+    for item in arr {
+        let s = item
+            .as_str()
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| bad(format!("{row}: `{key}` must contain non-empty strings")))?;
+        if !seen.insert(s.to_string()) {
+            return Err(bad(format!("{row}: duplicate `{s}` in `{key}`")));
+        }
+        out.push(s.to_string());
+    }
+    Ok(out)
 }
 
 impl Ledger {
@@ -96,12 +124,22 @@ impl Ledger {
             let fa_status = match get("fa_status")?.as_str() {
                 "live" => FaStatus::Live,
                 "interim" => FaStatus::Interim,
+                "unconsumed" => FaStatus::Unconsumed,
                 other => {
                     return Err(bad(format!(
-                        "{row}: fa_status `{other}` is not live|interim"
+                        "{row}: fa_status `{other}` is not live|interim|unconsumed"
                     )));
                 }
             };
+            let consumed_apis = str_list(&row, t, "consumed_apis")?;
+            let unconsumed_apis = str_list(&row, t, "unconsumed_apis")?;
+            for api in &consumed_apis {
+                if unconsumed_apis.contains(api) {
+                    return Err(bad(format!(
+                        "{row}: `{api}` cannot appear in both consumed_apis and unconsumed_apis"
+                    )));
+                }
+            }
             let c = Capability {
                 capability: get("capability")?,
                 status: get("status")?,
@@ -115,13 +153,15 @@ impl Ledger {
                 upstream,
                 fa_status,
                 row,
+                consumed_apis,
+                unconsumed_apis,
             };
             if matches!(c.upstream, Upstream::Planned | Upstream::Absent)
                 && c.fa_status != FaStatus::Interim
             {
                 return Err(bad(format!(
-                    "{}: a capability that is not live upstream cannot be live here",
-                    c.row
+                    "{}: a capability that is not live upstream cannot be {:?} here",
+                    c.row, c.fa_status
                 )));
             }
             if c.fa_status == FaStatus::Interim
@@ -131,6 +171,25 @@ impl Ledger {
                     "{}: an interim row names its switch-over rule",
                     c.row
                 )));
+            }
+            if c.fa_status == FaStatus::Unconsumed {
+                if c.tracking.as_deref().map_or(true, |s| s.trim().is_empty()) {
+                    return Err(bad(format!(
+                        "{}: an unconsumed row must name a `tracking` bead",
+                        c.row
+                    )));
+                }
+                if !c.consumed_apis.is_empty() {
+                    return Err(bad(format!(
+                        "{}: an unconsumed row cannot declare `consumed_apis`",
+                        c.row
+                    )));
+                }
+            }
+            if c.row == "R-API" && (c.consumed_apis.is_empty() || c.unconsumed_apis.is_empty()) {
+                return Err(bad(
+                    "R-API must declare both `consumed_apis` and `unconsumed_apis`",
+                ));
             }
             if !rows.insert(c.row.clone()) {
                 return Err(bad(format!("duplicate row `{}`", c.row)));
@@ -147,6 +206,71 @@ impl Ledger {
     pub fn row(&self, id: &str) -> Option<&Capability> {
         self.capabilities.iter().find(|c| c.row == id)
     }
+}
+
+fn collect_rust_sources(dir: &Path, out: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut paths: Vec<_> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
+    paths.sort();
+    for path in paths {
+        if path.is_dir() {
+            collect_rust_sources(&path, out);
+        } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                for line in content.lines() {
+                    let trimmed = line.trim();
+                    if !trimmed.starts_with("//") {
+                        out.push(trimmed.to_string());
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Verify that every symbol in `consumed_apis` has at least one non-comment call/reference
+/// in first-party `crates/` Rust sources, and every symbol in `unconsumed_apis` has zero (`fa-r3d`).
+pub fn check_api_consumption(ledger: &Ledger, workspace_root: &Path) -> Result<(), RegistryError> {
+    let crates_dir = workspace_root.join("crates");
+    let mut code_lines = Vec::new();
+    let Ok(crate_entries) = std::fs::read_dir(&crates_dir) else {
+        return Err(bad(format!("cannot read {}", crates_dir.display())));
+    };
+    let mut crate_dirs: Vec<_> = crate_entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .collect();
+    crate_dirs.sort();
+    for crate_dir in crate_dirs {
+        if crate_dir.file_name().and_then(|s| s.to_str()) == Some("fa-registry") {
+            continue;
+        }
+        collect_rust_sources(&crate_dir.join("src"), &mut code_lines);
+        collect_rust_sources(&crate_dir.join("tests"), &mut code_lines);
+    }
+
+    for cap in &ledger.capabilities {
+        for api in &cap.consumed_apis {
+            let found = code_lines.iter().any(|l| l.contains(api.as_str()));
+            if !found {
+                return Err(bad(format!(
+                    "{}: claims consumed API `{api}`, but no call site exists in crates/",
+                    cap.row
+                )));
+            }
+        }
+        for api in &cap.unconsumed_apis {
+            let found = code_lines.iter().any(|l| l.contains(api.as_str()));
+            if found {
+                return Err(bad(format!(
+                    "{}: lists `{api}` in unconsumed_apis, but a call site exists in crates/",
+                    cap.row
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Every `(crate, lock rev, Cargo.toml rev)` where a `franken-stack.lock`
@@ -271,6 +395,45 @@ mod tests {
     }
 
     #[test]
+    fn consumed_and_unconsumed_apis_match_actual_workspace_call_sites() {
+        let ledger = Ledger::embedded().unwrap();
+        assert_eq!(ledger.row("R-PRISM").unwrap().fa_status, FaStatus::Unconsumed);
+        assert_eq!(ledger.row("R-SUB").unwrap().fa_status, FaStatus::Unconsumed);
+        assert_eq!(ledger.row("R-SRV").unwrap().fa_status, FaStatus::Unconsumed);
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("workspace root");
+        check_api_consumption(&ledger, root).expect("all consumed/unconsumed API claims match crates/");
+
+        // Planted negative 1: claiming `bulk_load` is consumed when no crate calls it must fail.
+        let mut fake_consumed = ledger.clone();
+        let r_api = fake_consumed
+            .capabilities
+            .iter_mut()
+            .find(|c| c.row == "R-API")
+            .unwrap();
+        r_api.unconsumed_apis.retain(|a| a != "bulk_load");
+        r_api.consumed_apis.push("bulk_load".to_string());
+        let err1 = check_api_consumption(&fake_consumed, root)
+            .expect_err("claiming unconsumed API as consumed must fail");
+        assert!(err1.to_string().contains("bulk_load"), "{err1}");
+
+        // Planted negative 2: claiming `delta_since` is unconsumed when crates call it must fail.
+        let mut fake_unconsumed = ledger.clone();
+        let r_api2 = fake_unconsumed
+            .capabilities
+            .iter_mut()
+            .find(|c| c.row == "R-API")
+            .unwrap();
+        r_api2.consumed_apis.retain(|a| a != "delta_since");
+        r_api2.unconsumed_apis.push("delta_since".to_string());
+        let err2 = check_api_consumption(&fake_unconsumed, root)
+            .expect_err("claiming consumed API as unconsumed must fail");
+        assert!(err2.to_string().contains("delta_since"), "{err2}");
+    }
+
+    #[test]
     fn broken_ledgers_are_refused() {
         let good = LEDGER;
         let planned_live = good.replacen(
@@ -278,8 +441,17 @@ mod tests {
             "upstream = \"planned\"\nfa_status = \"live\"",
             1,
         );
+        let unconsumed_without_tracking = good.replacen(
+            "fa_status = \"unconsumed\"\ntracking = \"fa-z5u\"",
+            "fa_status = \"unconsumed\"",
+            1,
+        );
         let cases = [
             ("planned capability marked live", planned_live),
+            (
+                "unconsumed capability without tracking bead",
+                unconsumed_without_tracking,
+            ),
             (
                 "bad upstream",
                 good.replacen("upstream = \"live\"", "upstream = \"soon\"", 1),

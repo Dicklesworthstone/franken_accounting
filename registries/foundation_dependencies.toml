@@ -8,11 +8,15 @@
 #   foundation  the franken-stack.lock foundation that ships the capability
 #   upstream    live | partial | planned | absent (the Status cell, classified)
 #   fa_status   live (consumed as-is) | interim (the registered interim posture
-#               holds until the switch-over rule fires)
+#               holds until the switch-over rule fires) | unconsumed (upstream
+#               usable, no FA caller yet; tracking required)
 #   tracking    the bead that owns the switch-over or first use, when one exists
+#   consumed_apis / unconsumed_apis
+#               per-API symbol lists checked against first-party call sites
 #
 # Laws enforced by fa-registry: a capability that is planned or absent
-# upstream is interim here; an interim row names a switch-over rule; every
+# upstream is interim here; an interim row names a switch-over rule; an
+# unconsumed row is live or partial upstream and names a tracking bead; every
 # foundation is a franken-stack.lock entry, and every lock revision equals the
 # workspace Cargo.toml pin of each crate it ships (the drift check).
 #
@@ -40,6 +44,8 @@ switch_over = "—"
 foundation = "frankengraphdb"
 upstream = "live"
 fa_status = "live"
+consumed_apis = ["WriteBatch", "WriteTxn", "execute_certified", "replay", "delta_since", "ensure_delta_window", "open_memory"]
+unconsumed_apis = ["Database::query", "read_session", "subscribe_native", "bulk_load"]
 
 [[capability]]
 row = "R-ST"
@@ -113,7 +119,9 @@ posture = "used for incremental findings and live triage post-1.0 once scoped ca
 switch_over = "—"
 foundation = "frankengraphdb"
 upstream = "live"
-fa_status = "live"
+fa_status = "unconsumed"
+tracking = "fa-nlu"
+unconsumed_apis = ["subscribe_native"]
 
 [[capability]]
 row = "R-BR"
@@ -144,8 +152,9 @@ posture = "direct `fnx` over Lantern projections where the subset lacks an algor
 switch_over = "—"
 foundation = "franken_networkx"
 upstream = "partial"
-fa_status = "live"
+fa_status = "unconsumed"
 tracking = "fa-nlu"
+unconsumed_apis = ["fnx_classes", "fnx_algorithms"]
 
 [[capability]]
 row = "R-WARDEN"
@@ -254,7 +263,8 @@ posture = "not used in 1.0; `fad` is embedded + local RPC + MCP"
 switch_over = "post-1.0 networked posture"
 foundation = "frankengraphdb"
 upstream = "live"
-fa_status = "live"
+fa_status = "unconsumed"
+tracking = "fa-z5u"
 
 [[capability]]
 row = "R-LAB"
