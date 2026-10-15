@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use fa_verify::evidence::inventory::production::documents::{
     DocumentContent, MAX_PRODUCTION_DOCUMENTS, VerifiedDocumentProduction,
-    verify_document_production_for,
+    verify_document_prefix_for, verify_document_production_for,
 };
 use fa_verify::proof::production::MAX_PRODUCTION_BYTES;
 
@@ -14,14 +14,23 @@ use crate::{Failure, array, hex, object, quote, read_bounded, read_checkpoint};
 const HELP: &str = "Usage:
   fa-verify evidence production documents --prefix PREFIX --checkpoint TRUSTED_FILE \\
     --expect-first-seq U64 --expect-known-at U64 --expect-account HEX32|all \\
-    --expect-days FIRST:LAST|all [--record INCLUSION ...] \\
+    --expect-days FIRST:LAST|all [--from-prefix | --record INCLUSION ...] \\
     [--document OID64 KIND FILE ...] [--json]
 
 The recipient independently chooses all four --expect-* selectors and trusts
 exactly 80 raw checkpoint bytes. Their meanings are unchanged from evidence
 production: inclusive sequence/day bounds, an exact account or all, and a
 known-at horizon no later than the checkpoint. Records are supplied in leaf
-order. The full authenticated prefix exposes out-of-scope envelope metadata.
+order. A payload-complete prefix discloses EVERY prefix entry payload,
+including those outside the requested scope; this mode requires whole-prefix
+disclosure authority, not just authority to disclose the selected entries.
+
+Use --from-prefix to derive entries and their citations directly from a native
+v2 file made by fa proof prefix --with-record, instead of supplying redundant
+inclusion files. --record and --from-prefix are mutually exclusive. Legacy v1
+and balance v3 files are refused in this mode. No separate record set is
+supplied or checked; the exact document set and full bytes are still checked.
+Without --from-prefix the existing multi-proof behavior is unchanged.
 
 --document consumes THREE arguments: 64 ASCII hex digits for the document
 locator, a decimal u8 kind tag, and a path to its complete canonical bytes.
@@ -37,8 +46,8 @@ are recomputed. Kind/role tags are bound, not interpreted as economic facts.
 No new bundle format, book, keys, network or signature trust is introduced.
 
 Limits: 64 MiB TOTAL prefix + ALL record proofs + ALL document bytes; 4096
-records, 65536 prefix leaves, citations and distinct documents. Each file is
-read against the remaining total budget. Use ./ for paths beginning with --.
+selected records, 65536 prefix leaves, citations and distinct documents.
+Each file is read against the remaining total budget. Use ./ for paths beginning with --.
 All argument syntax is checked before any file is opened. Non-UTF-8 paths
 are supported. Success/error output never contains entry or document payloads.
 
@@ -111,7 +120,7 @@ fn parse(args: &[OsString]) -> Result<(super::Request, Vec<DocumentFile>), Failu
             index += 1;
             // Consume a base option's value as a unit; never mistake a path
             // or missing-value token for a new document declaration.
-            if argument != "--json" {
+            if argument != "--json" && argument != "--from-prefix" {
                 if let Some(value) = args.get(index) {
                     base.push(value.clone());
                     index += 1;
@@ -156,10 +165,14 @@ pub(super) fn run(args: &[OsString], json: bool) -> Result<String, Failure> {
     documents.extend(files.iter().zip(&content).map(|(file, bytes)| DocumentContent {
         document_oid: file.oid, kind: file.kind, bytes,
     }));
-    let report = verify_document_production_for(
-        &prefix, &record_slices, &documents, &checkpoint, &request.scope,
-    ).map_err(|error| Failure::verification(error.to_string()))?;
-    let rendered = render(&report, json);
+    let report = if request.from_prefix {
+        verify_document_prefix_for(&prefix, &documents, &checkpoint, &request.scope)
+    } else {
+        verify_document_production_for(
+            &prefix, &record_slices, &documents, &checkpoint, &request.scope,
+        )
+    }.map_err(|error| Failure::verification(error.to_string()))?;
+    let rendered = render(&report, request.from_prefix, json);
     // Fixed-size hex/numeric metadata plus bounded counts; no caller strings
     // or payloads are rendered. Keep an explicit publication bound as well.
     if rendered.len() > MAX_PRODUCTION_BYTES {
@@ -168,7 +181,7 @@ pub(super) fn run(args: &[OsString], json: bool) -> Result<String, Failure> {
     Ok(rendered)
 }
 
-fn render(report: &VerifiedDocumentProduction, json: bool) -> String {
+fn render(report: &VerifiedDocumentProduction, from_prefix: bool, json: bool) -> String {
     let inventory = &report.inventory;
     let checkpoint = &inventory.checkpoint;
     let scope = &inventory.requested;
@@ -180,6 +193,9 @@ fn render(report: &VerifiedDocumentProduction, json: bool) -> String {
             scope.first_seq, scope.known_at,
             scope.account.map(|account| format!("{account:032x}")), scope.effective_days,
         );
+        if from_prefix {
+            text.push_str("Records selected directly from the authenticated native prefix; no separate record set was supplied or checked.\n");
+        }
         for entry in &inventory.entries {
             text.push_str(&format!("leaf {} entry {} sequence {}: {} citations\n",
                 entry.entry.leaf_index, hex(&entry.entry.envelope.record_digest),
@@ -256,6 +272,8 @@ fn render(report: &VerifiedDocumentProduction, json: bool) -> String {
         ].map(quote))),
         ("document_scope", quote(report.document_scope)),
         ("scope", quote(inventory.scope)),
+        ("record_source", quote(super::record_source(from_prefix))),
+        ("separate_record_set_checked", (!from_prefix).to_string()),
         ("request_check", quote("recipient_scope")),
         ("event", quote("proof_verified")),
         ("proof_kind", quote("evidence_document_production")),

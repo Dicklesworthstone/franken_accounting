@@ -5,6 +5,7 @@ mod documents;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+use fa_verify::evidence::inventory::production::prefix::verify_evidence_prefix_for;
 use fa_verify::evidence::inventory::production::{
     VerifiedEvidenceProduction, verify_evidence_production_for,
 };
@@ -15,12 +16,19 @@ use crate::{Failure, array, hex, object, quote, read_bounded, read_checkpoint};
 const HELP: &str = "Usage:
   fa-verify evidence production --prefix PREFIX --checkpoint TRUSTED_FILE \\
     --expect-first-seq U64 --expect-known-at U64 --expect-account HEX32|all \\
-    --expect-days FIRST:LAST|all [--record INCLUSION ...] [--json]
+    --expect-days FIRST:LAST|all [--from-prefix | --record INCLUSION ...] [--json]
 
 For full cited document bytes as well, run:
   fa-verify evidence production documents --help
 
-PREFIX is the existing raw complete-prefix proof. Supply precisely the
+With --from-prefix, PREFIX must be the native v2 file exported by:
+  fa proof prefix --with-record --out journal.prefix
+Every prefix entry payload is authenticated before the recipient's selectors
+are applied. Selected original citations are read directly from that witness;
+no separate record set is supplied or checked, and --record is forbidden.
+Legacy v1 and balance v3 files are not accepted by this explicit input mode.
+
+Without --from-prefix, behavior is unchanged. Supply precisely the
 matching record-bearing inclusion proofs with repeated --record options,
 in ascending leaf order. An empty list is accepted only when the verified
 prefix establishes that the recipient's scope has no matching entries.
@@ -39,10 +47,11 @@ The command authenticates the complete entry set and every original citation
 list, including empty lists and repeated document/role associations. It does
 not verify document contents, supplemental evidence, signatures, custody,
 provenance, permissions, evidence sufficiency, accounting laws or migration
-visibility. The full prefix exposes envelope metadata outside the scope;
-this is not a private scope index or an authorization to export those bytes.
+visibility. A payload-complete prefix discloses EVERY prefix entry payload,
+including outside the requested scope. This is not a private scope index
+or an authorization to export those bytes.
 
-Limits: 64 MiB TOTAL prefix plus inclusion bytes, 4096 supplied records,
+Limits: 64 MiB TOTAL prefix plus inclusion bytes, 4096 selected records,
 65536 prefix leaves and 65536 accumulated citations. Output contains only
 metadata and is buffered until every verification succeeds. No entry or
 document payload is printed. No book, keys or network are required.
@@ -52,6 +61,7 @@ struct Request {
     prefix: PathBuf,
     checkpoint: PathBuf,
     records: Vec<PathBuf>,
+    from_prefix: bool,
     scope: ProductionScope,
 }
 
@@ -95,12 +105,16 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
     let (mut prefix, mut checkpoint, mut first, mut known, mut accounts, mut effective) =
         (None, None, None, None, None, None);
     let mut records = Vec::new();
-    let mut json = false;
+    let (mut json, mut from_prefix) = (false, false);
     let mut index = 1;
     while let Some(argument) = args.get(index) {
-        if argument == "--json" {
-            if json { return Err(Failure::usage("--json may be supplied only once")); }
-            json = true;
+        if argument == "--json" || argument == "--from-prefix" {
+            let seen = if argument == "--json" { &mut json } else { &mut from_prefix };
+            if *seen {
+                let name = if argument == "--json" { "--json" } else { "--from-prefix" };
+                return Err(Failure::usage(format!("{name} may be supplied only once")));
+            }
+            *seen = true;
             index += 1;
             continue;
         }
@@ -135,6 +149,9 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
         }
         index += 2;
     }
+    if from_prefix && !records.is_empty() {
+        return Err(Failure::usage("--from-prefix cannot be combined with --record; choose one record source"));
+    }
     let scope = ProductionScope {
         first_seq: sequence(required_text(first, "--expect-first-seq")?)?,
         known_at: sequence(required_text(known, "--expect-known-at")?)?,
@@ -146,6 +163,7 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
         prefix: PathBuf::from(prefix.ok_or_else(|| Failure::usage("--prefix is required"))?),
         checkpoint: PathBuf::from(checkpoint.ok_or_else(|| Failure::usage("--checkpoint is required"))?),
         records,
+        from_prefix,
         scope,
     })
 }
@@ -176,12 +194,19 @@ pub(super) fn run(args: &[OsString], json: bool) -> Result<String, Failure> {
         records.push(bytes);
     }
     let slices: Vec<_> = records.iter().map(Vec::as_slice).collect();
-    let report = verify_evidence_production_for(&prefix, &slices, &checkpoint, &request.scope)
-        .map_err(|error| Failure::verification(error.to_string()))?;
-    Ok(render(&report, json))
+    let report = if request.from_prefix {
+        verify_evidence_prefix_for(&prefix, &checkpoint, &request.scope)
+    } else {
+        verify_evidence_production_for(&prefix, &slices, &checkpoint, &request.scope)
+    }.map_err(|error| Failure::verification(error.to_string()))?;
+    Ok(render(&report, request.from_prefix, json))
 }
 
-fn render(report: &VerifiedEvidenceProduction, json: bool) -> String {
+fn record_source(from_prefix: bool) -> &'static str {
+    if from_prefix { "complete_native_prefix" } else { "individual_inclusions" }
+}
+
+fn render(report: &VerifiedEvidenceProduction, from_prefix: bool, json: bool) -> String {
     let scope = &report.requested;
     if !json {
         let mut text = format!(
@@ -190,6 +215,9 @@ fn render(report: &VerifiedEvidenceProduction, json: bool) -> String {
             scope.first_seq, scope.known_at, scope.account.map(|account| format!("{account:032x}")),
             scope.effective_days, report.checkpoint,
         );
+        if from_prefix {
+            text.push_str("Records selected directly from the authenticated native prefix; no separate record set was supplied or checked.\n");
+        }
         for inventory in &report.entries {
             let entry = &inventory.entry;
             text.push_str(&format!(
@@ -221,7 +249,8 @@ fn render(report: &VerifiedEvidenceProduction, json: bool) -> String {
         ])),
         ("checks", array([
             "trusted_checkpoint_matches", "complete_prefix", "recipient_scope",
-            "exact_record_set", "record_recomputation", "complete_citation_lists",
+            if from_prefix { "complete_prefix_record_selection" } else { "exact_record_set" },
+            "record_recomputation", "complete_citation_lists",
             "book_scoped_document_identities", "entry_frames",
         ].map(|name| object([("name", quote(name)), ("status", quote("pass"))])))),
         ("coverage", object([
@@ -263,6 +292,8 @@ fn render(report: &VerifiedEvidenceProduction, json: bool) -> String {
             "authorization", "evidence_sufficiency", "citation_role_truth", "accounting_laws",
             "migration_visibility", "complete_document_production",
         ].map(quote))),
+        ("record_source", quote(record_source(from_prefix))),
+        ("separate_record_set_checked", (!from_prefix).to_string()),
         ("request_check", quote("recipient_scope")),
         ("event", quote("proof_verified")),
         ("proof_kind", quote("evidence_production")),
