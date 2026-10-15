@@ -24,6 +24,7 @@
 pub mod admissibility;
 pub mod evidence;
 pub mod lantern;
+pub mod reports;
 pub mod sod;
 pub mod statements;
 mod temporal;
@@ -81,6 +82,28 @@ impl Int {
     }
 
     #[must_use]
+    pub fn from_u128(mut m: u128) -> Self {
+        let mut mag = Vec::new();
+        while m != 0 {
+            mag.push((m & 0xFFFF_FFFF) as u32);
+            m >>= 32;
+        }
+        Self { neg: false, mag }
+    }
+
+    #[must_use]
+    pub fn to_u128(&self) -> Option<u128> {
+        if self.neg || self.mag.len() > 4 {
+            return None;
+        }
+        let mut m: u128 = 0;
+        for (i, limb) in self.mag.iter().enumerate() {
+            m |= u128::from(*limb) << (32 * i);
+        }
+        Some(m)
+    }
+
+    #[must_use]
     pub fn from_i128(v: i128) -> Self {
         let neg = v < 0;
         let mut m = v.unsigned_abs();
@@ -110,6 +133,23 @@ impl Int {
         } else {
             i128::try_from(m).ok()
         }
+    }
+
+    #[must_use]
+    pub fn abs(&self) -> Self {
+        Self {
+            neg: false,
+            mag: self.mag.clone(),
+        }
+    }
+
+    #[must_use]
+    pub fn negated(&self) -> Self {
+        Self {
+            neg: !self.neg,
+            mag: self.mag.clone(),
+        }
+        .trim()
     }
 
     fn trim(mut self) -> Self {
@@ -165,6 +205,59 @@ impl Int {
         out
     }
 
+    /// Schoolbook base-2^32 limb multiplication.
+    fn mul_mag(a: &[u32], b: &[u32]) -> Vec<u32> {
+        if a.is_empty() || b.is_empty() {
+            return Vec::new();
+        }
+        let mut out = vec![0u32; a.len() + b.len()];
+        for (i, &ai) in a.iter().enumerate() {
+            let mut carry = 0u64;
+            for (j, &bj) in b.iter().enumerate() {
+                let prod = u64::from(ai) * u64::from(bj) + u64::from(out[i + j]) + carry;
+                out[i + j] = (prod & 0xFFFF_FFFF) as u32;
+                carry = prod >> 32;
+            }
+            out[i + b.len()] = carry as u32;
+        }
+        out
+    }
+
+    /// Bit-by-bit long division of unsigned magnitudes (`b` non-empty).
+    fn div_rem_mag(a: &[u32], b: &[u32]) -> (Vec<u32>, Vec<u32>) {
+        if Self::cmp_mag(a, b) == core::cmp::Ordering::Less {
+            return (Vec::new(), a.to_vec());
+        }
+        let total_bits = a.len() * 32;
+        let mut q = vec![0u32; a.len()];
+        let mut r: Vec<u32> = Vec::new();
+        for bit_idx in (0..total_bits).rev() {
+            let limb = bit_idx / 32;
+            let shift = bit_idx % 32;
+            let bit = (a[limb] >> shift) & 1;
+            let mut carry = bit;
+            for rl in &mut r {
+                let next_carry = *rl >> 31;
+                *rl = (*rl << 1) | carry;
+                carry = next_carry;
+            }
+            if carry != 0 {
+                r.push(carry);
+            }
+            while r.last() == Some(&0) {
+                r.pop();
+            }
+            if Self::cmp_mag(&r, b) != core::cmp::Ordering::Less {
+                r = Self::sub_mag(&r, b);
+                while r.last() == Some(&0) {
+                    r.pop();
+                }
+                q[limb] |= 1u32 << shift;
+            }
+        }
+        (q, r)
+    }
+
     #[must_use]
     pub fn add(&self, rhs: &Self) -> Self {
         if self.neg == rhs.neg {
@@ -190,12 +283,38 @@ impl Int {
 
     #[must_use]
     pub fn sub(&self, rhs: &Self) -> Self {
-        let negated = Self {
-            neg: !rhs.neg,
-            mag: rhs.mag.clone(),
+        self.add(&rhs.negated())
+    }
+
+    /// Independent schoolbook multiplication (`std` only).
+    #[must_use]
+    pub fn mul(&self, rhs: &Self) -> Self {
+        Self {
+            neg: self.neg ^ rhs.neg,
+            mag: Self::mul_mag(&self.mag, &rhs.mag),
+        }
+        .trim()
+    }
+
+    /// Independent truncating integer division and remainder (`None` on zero divisor).
+    /// Satisfies `self == q * rhs + r`, `|r| < |rhs|`, and `r` has the sign of `self` when nonzero.
+    #[must_use]
+    pub fn div_rem(&self, rhs: &Self) -> Option<(Self, Self)> {
+        if rhs.is_zero() {
+            return None;
+        }
+        let (q_mag, r_mag) = Self::div_rem_mag(&self.mag, &rhs.mag);
+        let q = Self {
+            neg: self.neg ^ rhs.neg,
+            mag: q_mag,
         }
         .trim();
-        self.add(&negated)
+        let r = Self {
+            neg: self.neg,
+            mag: r_mag,
+        }
+        .trim();
+        Some((q, r))
     }
 
     #[must_use]
@@ -207,6 +326,23 @@ impl Int {
     #[must_use]
     pub fn is_negative(&self) -> bool {
         self.neg && !self.mag.is_empty()
+    }
+}
+
+impl PartialOrd for Int {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Int {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        match (self.is_negative(), other.is_negative()) {
+            (true, false) => core::cmp::Ordering::Less,
+            (false, true) => core::cmp::Ordering::Greater,
+            (false, false) => Self::cmp_mag(&self.mag, &other.mag),
+            (true, true) => Self::cmp_mag(&other.mag, &self.mag),
+        }
     }
 }
 
@@ -2685,9 +2821,16 @@ impl Oracle {
         }
     }
 
+    /// Accepted journal entries in commit order.
+    #[must_use]
+    pub fn entries(&self) -> &[Entry] {
+        &self.journal
+    }
+
     /// The coordinate just before entry `accepted_prefix` was accepted: every
     /// run control accepted while the journal held at most that many entries.
-    fn known_after(&self, accepted_prefix: usize) -> Known {
+    #[must_use]
+    pub fn known_after(&self, accepted_prefix: usize) -> Known {
         Known {
             entries: accepted_prefix,
             controls: self
@@ -2700,7 +2843,8 @@ impl Oracle {
 
     /// The FA-INV-07 migration predicate: a chunk is selected iff its run's
     /// Finalize is among the controls accepted by `known`.
-    fn visible(&self, e: &Entry, known: Known) -> bool {
+    #[must_use]
+    pub fn visible(&self, e: &Entry, known: Known) -> bool {
         match e.run {
             None => true,
             Some(r) => {
@@ -2787,9 +2931,15 @@ impl Oracle {
     /// A migrated chunk carries open items once its run is Finalized and
     /// the chunk counts (ruling 3733 C1): the migration predicate at head.
     fn carries_open_items(&self, e: &Entry) -> bool {
+        self.carries_open_items_at(e, self.known())
+    }
+
+    /// Whether `e` carries open items at `known`.
+    #[must_use]
+    pub fn carries_open_items_at(&self, e: &Entry, known: Known) -> bool {
         matches!(e.class.as_str(), "Original" | "Adjusting")
             || (e.class == "Resolution" && !e.legs.is_empty())
-            || (e.class == "Migration" && self.visible(e, self.known()))
+            || (e.class == "Migration" && self.visible(e, known))
     }
 
     /// Live unless a live reversal targets it (a reversed reversal revives).
@@ -2797,6 +2947,29 @@ impl Oracle {
         match self.reversed.get(&index) {
             None => true,
             Some((reversal, _)) => !self.is_live(*reversal),
+        }
+    }
+
+    /// Bitemporal liveness of `index` at `(accepted_prefix, effective_through)`:
+    /// a reversal only cancels `index` if the reversal itself is within
+    /// `..accepted_prefix`, has `date <= effective_through`, and is bitemporally live.
+    #[must_use]
+    pub fn is_live_at(
+        &self,
+        index: usize,
+        accepted_prefix: usize,
+        effective_through: DateDay,
+    ) -> bool {
+        match self.reversed.get(&index) {
+            None => true,
+            Some((reversal, _)) => {
+                if *reversal >= accepted_prefix || self.journal[*reversal].date > effective_through
+                {
+                    true
+                } else {
+                    !self.is_live_at(*reversal, accepted_prefix, effective_through)
+                }
+            }
         }
     }
 
@@ -2966,8 +3139,36 @@ mod tests {
                         "{a} - {b}"
                     );
                 }
+                if let Some(p) = a.checked_mul(b) {
+                    assert_eq!(
+                        Int::from_i128(a).mul(&Int::from_i128(b)).to_i128(),
+                        Some(p),
+                        "{a} * {b}"
+                    );
+                }
+                if b != 0 && !(a == i128::MIN && b == -1) {
+                    let (q, r) = Int::from_i128(a).div_rem(&Int::from_i128(b)).unwrap();
+                    assert_eq!(q.to_i128(), Some(a / b), "{a} / {b}");
+                    assert_eq!(r.to_i128(), Some(a % b), "{a} % {b}");
+                }
             }
         }
+        assert_eq!(Int::from_i128(7).div_rem(&Int::zero()), None);
+        // i128::MIN / -1 overflows i128, but succeeds in Int and round-trips to u128.
+        let (q_min, r_min) = Int::from_i128(i128::MIN)
+            .div_rem(&Int::from_i128(-1))
+            .unwrap();
+        assert_eq!(q_min.to_i128(), None);
+        assert_eq!(q_min.to_u128(), Some(1u128 << 127));
+        assert!(r_min.is_zero());
+
+        // Multi-limb exact product & division beyond 128 bits.
+        let max_u128 = Int::from_u128(u128::MAX);
+        let prod = max_u128.mul(&max_u128);
+        let (q_back, r_back) = prod.div_rem(&max_u128).unwrap();
+        assert_eq!(q_back, max_u128);
+        assert!(r_back.is_zero());
+
         let big = Int::from_i128(i128::MAX).add(&Int::from_i128(i128::MAX));
         assert_eq!(big.to_i128(), None);
         assert_eq!(

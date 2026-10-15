@@ -34,6 +34,8 @@ fgdb-types = { workspace = true }
 
 [dev-dependencies]
 fgdb-sim = { workspace = true }
+fgdb-bigint = { workspace = true }
+fa-reference = { path = "../fa-reference", version = "=0.0.1" }
 # The independent verifier judges what the facade produces (plan §13.3):
 # bundles and their receipts are checked as an outsider would check them.
 fa-verify = { path = "../fa-verify", version = "=0.0.1" }
