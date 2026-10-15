@@ -38,7 +38,7 @@ post = ["FA-INV-01.per-unit", "FA-INV-01.leaf-only", "FA-INV-01.unit-policy", "F
 reserve = ["FA-INV-15.core", "FA-INV-15.availability"]
 resolve = ["FA-INV-15.core", "FA-INV-15.availability"]
 reverse = ["FA-INV-08.reversal", "FA-INV-08.reversed-once", "FA-INV-08.unsettle"]
-period = ["FA-INV-02.control-record", "FA-INV-03.transition-journaled", "FA-INV-03.transition-approvals"]
+period = ["FA-INV-02.control-record", "FA-INV-02.lifecycle-by-transition", "FA-INV-03.transition-journaled", "FA-INV-03.transition-approvals"]
 approve = ["FA-INV-10.approval-binds-proposal", "FA-INV-10.sod"]
 registers = ["FA-INV-04.core"]
 tb = ["FA-INV-04.core", "FA-INV-07.core"]
@@ -288,11 +288,14 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-02"
 id = "lifecycle-by-transition"
-status = "dormant"
+status = "live"
 statement = "Every lifecycle object's authoritative history is its sequence of LifecycleTransition control entries and its status is a rebuildable projection."
 evidence_class = "invariant"
+checker_strength = "negative_fixture"
 first_gate = "G2"
-activating = ["fa-bvx"]
+owner = "fa-bvx"
+checkers = ["fa-journal::tests/genesis.rs::period_state_mirror_refolds_from_journaled_period_control_transitions", "fa-cli::tests/cli.rs::verify_periods_reports_refolded_lifecycle_and_rejects_period_filters"]
+negatives = ["fa-journal::tests/genesis.rs::period_verification_detects_planted_state_and_topology_drift_without_mutation", "fa-cli::tests/cli.rs::verify_periods_exits_eight_on_planted_period_state_mirror_drift"]
 waiver = "forbidden"
 
 [[clause]]

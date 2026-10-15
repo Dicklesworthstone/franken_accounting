@@ -6494,3 +6494,183 @@ fn portable_post_plan_retry_rejects_later_versions_even_when_exact_bytes_are_res
     assert_eq!((refusal.code, refusal.exit), ("FA-REF-034", exit::CONFLICT));
     assert_eq!(h.db.frontier().unwrap(), before);
 }
+
+#[test]
+fn period_state_mirror_refolds_from_journaled_period_control_transitions() {
+    let mut h = harness();
+    // In `harness()`, March (`h.march`) was already opened at setup (1 transition).
+    let at_open = h.db.frontier().unwrap();
+    let v_open = verify_periods(&h.db, &h.book, None).unwrap();
+    assert!(v_open.is_green(), "{:?}", v_open.drift);
+    assert_eq!(v_open.known_at, at_open);
+    assert_eq!(v_open.transitions_checked, 1);
+    let march_open = v_open
+        .periods
+        .iter()
+        .find(|p| p.code == h.march)
+        .expect("march row");
+    assert_eq!(march_open.born_state, PeriodState::Future);
+    assert_eq!(march_open.stored_state, Some(PeriodState::Open));
+    assert_eq!(march_open.refolded_state, PeriodState::Open);
+    assert_eq!(march_open.transitions, 1);
+    assert!(march_open.green);
+
+    // Move April through Open -> SoftClose -> Reopen(Open) -> Close -> Lock.
+    let april = h.april.clone();
+    let t1 = h
+        .transition(&april, PeriodTransition::Open, b"p-apr-open")
+        .unwrap();
+    let t2 = h
+        .transition(&april, PeriodTransition::SoftClose, b"p-apr-soft")
+        .unwrap();
+    let t3 = h
+        .transition(
+            &april,
+            PeriodTransition::Reopen {
+                to: PeriodState::Open,
+            },
+            b"p-apr-reopen",
+        )
+        .unwrap();
+    let t4 = h
+        .transition(&april, PeriodTransition::Close, b"p-apr-close")
+        .unwrap();
+    let t5 = h
+        .transition(&april, PeriodTransition::Lock, b"p-apr-lock")
+        .unwrap();
+
+    let v_head = verify_periods(&h.db, &h.book, None).unwrap();
+    assert!(v_head.is_green(), "{:?}", v_head.drift);
+    assert_eq!(v_head.transitions_checked, 6);
+    let apr_head = v_head
+        .periods
+        .iter()
+        .find(|p| p.code == april)
+        .expect("april row");
+    assert_eq!(apr_head.born_state, PeriodState::Future);
+    assert_eq!(apr_head.stored_state, Some(PeriodState::Locked));
+    assert_eq!(apr_head.refolded_state, PeriodState::Locked);
+    assert_eq!(apr_head.transitions, 5);
+    assert!(apr_head.green);
+
+    // Historical known_at prefixes refold the exact intermediate states.
+    for (seq, expected_state, expected_count) in [
+        (at_open, PeriodState::Future, 0usize),
+        (t1.recorded_at, PeriodState::Open, 1),
+        (t2.recorded_at, PeriodState::SoftClosed, 2),
+        (t3.recorded_at, PeriodState::Open, 3),
+        (t4.recorded_at, PeriodState::Closed, 4),
+        (t5.recorded_at, PeriodState::Locked, 5),
+    ] {
+        let v_at = verify_periods(&h.db, &h.book, Some(seq)).unwrap();
+        assert!(v_at.is_green(), "at {}: {:?}", seq.0, v_at.drift);
+        let row = v_at
+            .periods
+            .iter()
+            .find(|p| p.code == april)
+            .expect("april row at seq");
+        assert_eq!(row.stored_state, Some(expected_state));
+        assert_eq!(row.refolded_state, expected_state);
+        assert_eq!(row.transitions, expected_count);
+    }
+}
+
+#[test]
+fn period_verification_detects_planted_state_and_topology_drift_without_mutation() {
+    for plant in ["wrong-state", "missing-state", "missing-in-period", "missing-in-book"] {
+        let mut h = harness();
+        let clean_seq = h.db.frontier().unwrap();
+        let pvid = period_vid(&h.book.calendar.id, &h.march);
+        let transitions = period_transitions(&h.db, &h.book, &h.march).unwrap();
+        assert_eq!(transitions.len(), 1);
+        let evid = transitions[0].entry_vid;
+
+        match plant {
+            "wrong-state" => {
+                let mut batch = fgdb::WriteBatch::new(relation::IN_BOOK);
+                batch.set_vertex_property(
+                    pvid,
+                    property::STATE,
+                    Some(CanonicalScalar::Int(i64::from(PeriodState::Locked.tag()))),
+                );
+                h.write_raw(batch);
+            }
+            "missing-state" => {
+                let mut batch = fgdb::WriteBatch::new(relation::IN_BOOK);
+                batch.set_vertex_property(pvid, property::STATE, None);
+                h.write_raw(batch);
+            }
+            "missing-in-period" => {
+                let mut batch = fgdb::WriteBatch::new(relation::IN_PERIOD);
+                batch.delete_edge(edge_id(relation::IN_PERIOD, evid, pvid));
+                h.write_raw(batch);
+            }
+            "missing-in-book" => {
+                let mut batch = fgdb::WriteBatch::new(relation::IN_BOOK);
+                batch.delete_edge(edge_id(relation::IN_BOOK, pvid, book_root()));
+                h.write_raw(batch);
+            }
+            _ => unreachable!(),
+        }
+
+        let damaged_seq = h.db.frontier().unwrap();
+        let v = verify_periods(&h.db, &h.book, None).unwrap();
+        assert!(!v.is_green(), "{plant}: expected drift");
+        assert_eq!(
+            h.db.frontier().unwrap(),
+            damaged_seq,
+            "{plant}: verify_periods must not mutate the book"
+        );
+        match plant {
+            "wrong-state" => {
+                let row = v.periods.iter().find(|p| p.code == h.march).unwrap();
+                assert_eq!(row.stored_state, Some(PeriodState::Locked));
+                assert_eq!(row.refolded_state, PeriodState::Open);
+                assert!(!row.green);
+                assert!(
+                    v.drift
+                        .iter()
+                        .any(|d| d.contains(&h.march) && d.contains("Locked") && d.contains("Open")),
+                    "{:?}",
+                    v.drift
+                );
+            }
+            "missing-state" => {
+                let row = v.periods.iter().find(|p| p.code == h.march).unwrap();
+                assert_eq!(row.stored_state, None);
+                assert_eq!(row.refolded_state, PeriodState::Open);
+                assert!(!row.green);
+                assert!(
+                    v.drift
+                        .iter()
+                        .any(|d| d.contains(&h.march) && d.contains("missing/corrupt")),
+                    "{:?}",
+                    v.drift
+                );
+            }
+            "missing-in-period" => {
+                assert!(
+                    v.drift
+                        .iter()
+                        .any(|d| d.contains("IN_PERIOD") && d.contains(&h.march)),
+                    "{:?}",
+                    v.drift
+                );
+            }
+            "missing-in-book" => {
+                assert!(
+                    v.drift
+                        .iter()
+                        .any(|d| d.contains("IN_BOOK") && d.contains(&h.march)),
+                    "{:?}",
+                    v.drift
+                );
+            }
+            _ => unreachable!(),
+        }
+
+        // The earlier committed prefix before the planted drift remains green.
+        let v_clean = verify_periods(&h.db, &h.book, Some(clean_seq)).unwrap();
+        assert!(v_clean.is_green(), "{plant}: {:?}", v_clean.drift);
+    }
+}

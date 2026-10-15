@@ -9009,3 +9009,136 @@ fn teller_truthfulness_gate_next_actions_and_refusal_fixes() -> std::io::Result<
     Ok(())
 }
 
+#[test]
+fn verify_periods_reports_refolded_lifecycle_and_rejects_period_filters() -> std::io::Result<()> {
+    let dir = tmp("verify-periods-ok")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+    };
+    ok(&["book", "create", "--name", "Verify Periods Co", "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--reason", "1", "--json"]);
+    ok(&[
+        "period",
+        "soft-close",
+        "FY2026-P03",
+        "--reason",
+        "1",
+        "--json",
+    ]);
+
+    let (code, out, err) = fa(Some(&book), &["verify", "periods", "--json"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert_eq!(field(&out, "event"), Some("periods_verified"));
+    let d = doc(&out);
+    assert_eq!(int(&d, "periods_checked"), Some(15));
+    assert_eq!(int(&d, "transitions_checked"), Some(2));
+    assert!(arr(&d, "drift").is_empty());
+    let p03 = arr(&d, "periods")
+        .iter()
+        .find(|p| p.get("code").and_then(Json::as_str) == Some("FY2026-P03"))
+        .expect("FY2026-P03 check row");
+    assert_eq!(text(p03, "born_state"), "Future");
+    assert_eq!(text(p03, "stored_state"), "SoftClosed");
+    assert_eq!(text(p03, "refolded_state"), "SoftClosed");
+    assert_eq!(int(p03, "transitions"), Some(2));
+    assert_eq!(p03.get("green"), Some(&Json::Bool(true)));
+
+    // Period filters and extra arguments are rejected with exit 2 (usage).
+    for bad in [
+        &["verify", "periods", "--period", "FY2026-P03", "--json"][..],
+        &["verify", "periods", "--fiscal-year", "2026", "--json"][..],
+        &["verify", "periods", "extra", "--json"][..],
+    ] {
+        let (c, o, e) = fa(None, bad);
+        assert_eq!(c, 2, "args={bad:?}: {o}\n{e}");
+        assert_eq!(text(&doc(&o), "class"), "usage");
+    }
+    Ok(())
+}
+
+#[test]
+fn verify_periods_exits_eight_on_planted_period_state_mirror_drift() -> std::io::Result<()> {
+    use asupersync::runtime::RuntimeBuilder;
+    use asupersync::types::Budget;
+    use fa::{Book, BookKeys, Entropy};
+    use fa_journal::BookSpec;
+    use fa_model::Id128;
+    use fa_model::symbols::{property, relation};
+    use fa_money::UnitRegistry;
+    use fa_time::PeriodState;
+    use fgdb::{Database, DatabaseKeys, WriteBatch};
+    use fgdb_types::CanonicalScalar;
+    use fgdb_types::context::PurposeContexts;
+    use fgdb_types::ids::DatabaseSecurityNamespaceId;
+
+    let dir = tmp("verify-periods-drift")?;
+    let book = dir.join("book");
+    let book_id = Id128([63; 16]);
+    let keys = BookKeys::for_development(63);
+    let usd = UnitRegistry::embedded().unwrap().lookup("USD").unwrap();
+    let mut handle = Book::create_dir(
+        &book,
+        keys.clone(),
+        BookSpec {
+            book_id,
+            name: "Verify periods drift".into(),
+            base_unit: usd,
+            calendar: fa_time::FiscalCalendar::monthly("fiscal", 1, 1).unwrap(),
+            time_zone_policy: None,
+            entities: Vec::new(),
+            opening_date: None,
+        },
+        Entropy::deterministic(63),
+    )
+    .unwrap();
+    keys.save(&book.join("book.keys")).unwrap();
+    handle.create_periods(2026).unwrap();
+    drop(handle);
+
+    let (code, out, err) = fa(
+        Some(&book),
+        &["period", "open", "FY2026-P03", "--reason", "1", "--json"],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+
+    let runtime = RuntimeBuilder::new().build().unwrap();
+    let root = runtime.request_cx_with_budget(Budget::INFINITE);
+    let ctx = PurposeContexts::narrow_runtime_root(&root);
+    let mut db = runtime
+        .block_on(Database::open(
+            &ctx.commit(),
+            &book.join("store"),
+            DatabaseKeys::new([63; 32], DatabaseSecurityNamespaceId([64; 32]), [65; 32]),
+        ))
+        .unwrap();
+    let pvid = fa_model::period_vid("fiscal", "FY2026-P03");
+    let mut batch = WriteBatch::new(relation::IN_BOOK);
+    batch.set_vertex_property(
+        pvid,
+        property::STATE,
+        Some(CanonicalScalar::Int(i64::from(PeriodState::Closed.tag()))),
+    );
+    let damaged_at = runtime.block_on(db.write(&ctx.commit(), batch)).unwrap();
+    drop(db);
+
+    let (code, red, err) = fa(Some(&book), &["verify", "periods", "--json"]);
+    assert_eq!(code, 8, "{red}\n{err}");
+    assert_eq!(field(&red, "event"), Some("error"));
+    let error = doc(&red);
+    assert_eq!(text(&error, "class"), "verification");
+    assert!(text(&error, "cite").contains("FA-INV-02"));
+    let detail = error.get("detail").expect("periods verification detail");
+    assert_eq!(int(detail, "known_at"), Some(i128::from(damaged_at.0)));
+    assert!(
+        arr(detail, "drift")
+            .iter()
+            .filter_map(Json::as_str)
+            .any(|d| d.contains("FY2026-P03") && d.contains("Closed") && d.contains("Open")),
+        "{red}"
+    );
+    Ok(())
+}
+

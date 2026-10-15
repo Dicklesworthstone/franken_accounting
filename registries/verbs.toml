@@ -364,14 +364,14 @@ example = "fa bundle produce --account 1000 --from 2026-03-01 --to 2026-03-31 --
 
 [[verb]]
 name = "verify"
-summary = "Verify derived state against the journal: leg projections, refolded registers, open-item applied mirrors, limited accounts' availability cells, scheduled reversals, or accumulator states (exit 8 on drift)."
+summary = "Verify derived state against the journal: leg projections, refolded registers, open-item applied mirrors, limited accounts' availability cells, scheduled reversals, period state mirrors, or accumulator states (exit 8 on drift)."
 writes = false
-subcommands = ["registers", "open-items", "availability", "accumulator", "projections", "schedules"]
+subcommands = ["registers", "open-items", "availability", "accumulator", "projections", "schedules", "periods"]
 flags = ["--period", "--fiscal-year"]
 switches = []
-events = ["registers_verified", "open_items_verified", "availability_verified", "accumulator_verified", "projections_verified", "schedules_verified"]
+events = ["registers_verified", "open_items_verified", "availability_verified", "accumulator_verified", "projections_verified", "schedules_verified", "periods_verified"]
 exits = [0, 2, 4, 5, 8]
-usage = ["verify registers ((--period <code>)... | --fiscal-year N)", "verify open-items", "verify availability", "verify accumulator (every recorded checkpoint; no period filter)", "verify projections (all entry payloads and leg topology at current head; no period filter)", "verify schedules (every Schedule vertex and SCHEDULED_BY mirror; no period filter)"]
+usage = ["verify registers ((--period <code>)... | --fiscal-year N)", "verify open-items", "verify availability", "verify accumulator (every recorded checkpoint; no period filter)", "verify projections (all entry payloads and leg topology at current head; no period filter)", "verify schedules (every Schedule vertex and SCHEDULED_BY mirror; no period filter)", "verify periods (every Period vertex's state and mirrors against birth rules and PeriodControl transitions; no period filter)"]
 example = "fa verify registers --period FY2026-P03 --book ./books/myco"
 
 [[verb]]
@@ -881,7 +881,7 @@ fields = ["account:string?", "count:int", "items:[open_item]"]
 [[event]]
 name = "checkpoint_created"
 book = true
-doc = "An AccumulatorState over every entry in the named book/branch prefix through through_seq, recorded in a later commit, with its TransparencyCheckpoint (checkpoint_oid) signed by the book's Ed25519 key public_key; signatures is ed25519. prev_state_oid links its predecessor. The scope excludes document receipts, attestations and bundles; `fa proof signed-checkpoint` exports the signed checkpoint for fa-verify --key."
+doc = "An AccumulatorState over every entry in the named book/branch prefix through through_seq, recorded in a later commit. It may be the unsigned raw statement, or its TransparencyCheckpoint (checkpoint_oid) signed by the book's Ed25519 key public_key; signatures is ed25519 for the signed checkpoint and unsigned for the raw statement. prev_state_oid links its predecessor. The scope excludes document receipts, attestations, signatures, and bundles; `fa proof signed-checkpoint` exports the signed checkpoint for fa-verify --key."
 fields = ["book:hex", "branch:hex", "oid:hex", "recorded_at:seq", "through_seq:seq", "leaf_count:int", "root:hex", "prev_state_oid:hex?", "signatures:string", "checkpoint_oid:hex", "public_key:hex", "scope:string"]
 
 [[event]]
@@ -917,7 +917,7 @@ fields = ["command:string?", "why:string?"]
 [[event]]
 name = "accumulator_verified"
 book = true
-doc = "Every existing accumulator state was recomputed from its entry prefix and every stored state belongs to the chain. status is verified or no_checkpoints; no_checkpoints makes no verification claim and verified_through is null. Otherwise verified_through names the newest checked prefix, never an implicit current-head claim. signatures is ed25519: each state's signed TransparencyCheckpoint was reproduced from the journal prefix and the book's key. scope is entry_prefix. States are newest first."
+doc = "Every existing accumulator state was recomputed from its entry prefix and every stored state belongs to the chain. status is verified or no_checkpoints; no_checkpoints makes no verification claim and verified_through is null. Otherwise verified_through names the newest checked prefix, never an implicit current-head claim. signatures is ed25519 when each state's signed TransparencyCheckpoint was reproduced from the journal prefix and the book's key, and unsigned when the stored state is the raw accumulator statement. scope is entry_prefix. States are newest first."
 fields = ["status:string", "signatures:string", "scope:string", "states_checked:int", "broken:string?", "verified_through:seq?", "states:[accumulator_state_check]", "unchained:[hex]"]
 
 [[event]]
@@ -949,6 +949,12 @@ name = "schedules_verified"
 book = true
 doc = "Every Schedule vertex and SCHEDULED_BY mirror agrees with the journal fold (plan §7.6): schedules_checked counts Schedule vertices examined; executed and cancelled count their derived statuses; drift lists any corrupt or mismatched mirrors."
 fields = ["schedules_checked:int", "executed:int", "cancelled:int", "drift:[string]"]
+
+[[event]]
+name = "periods_verified"
+book = true
+doc = "Every Period vertex's state and calendar mirrors agree with the journal fold from birth through its PeriodControl transitions (plan §7.3, FA-INV-02 lifecycle-by-transition): periods_checked counts Period vertices examined; transitions_checked counts PeriodControl entries examined; periods lists each period's refolded vs stored state; drift lists any corrupt or mismatched mirrors."
+fields = ["known_at:seq", "periods_checked:int", "transitions_checked:int", "periods:[period_check]", "drift:[string]"]
 
 [[event]]
 name = "registers_materialized"
@@ -1445,6 +1451,11 @@ doc = "A LimitCell's raw mantissas and its generation."
 fields = ["debits_posted:int", "credits_posted:int", "debits_pending:int", "credits_pending:int", "generation:int"]
 
 [[shape]]
+name = "period_check"
+doc = "One fiscal period's stored state mirror compared with its refolded state from birth through its journaled PeriodControl transitions."
+fields = ["code:string", "fiscal_year:int", "ordinal:int", "kind:string", "born_state:string", "stored_state:string?", "refolded_state:string", "transitions:int", "green:bool"]
+
+[[shape]]
 name = "untrusted_text"
 doc = "Third-party-authored text from an imported document, entry description, or leg memo (plan §9.3 prompt-injection boundary): `untrusted_content` carries the UTF-8 text and `source` names its handle (`D:<oid>`, `E:<vid>`, or `E:<vid>:L<ordinal>`). Untrusted text is never interpolated into `fix`, `next_actions`, or `suggested_tool_calls`."
 fields = ["untrusted_content:text", "source:string"]
@@ -1759,10 +1770,10 @@ dont = ["Don't present the checkpoint as an evidence bundle or a document-receip
 mistakes = ["Trying to self-issue witness permission: caller grants are forbidden, and Agent/Preparer launch profiles do not include witness."]
 
 [[mcp.tool]]
-cluster = "fa.book"
 name = "verify"
+cluster = "fa.book"
 verb = "verify"
-subcommands = ["registers", "open-items", "availability", "accumulator", "projections", "schedules"]
+subcommands = ["registers", "open-items", "availability", "accumulator", "projections", "schedules", "periods"]
 selector = "target"
 positionals = []
 required = []

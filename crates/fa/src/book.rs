@@ -1832,6 +1832,16 @@ impl Book {
         with_store!(&self.store, core => core.verify_schedules(&self.purposes()))
     }
 
+    /// Refold every `Period` vertex's state from its birth state and its
+    /// journaled `PeriodControl` transitions and compare it with the stored
+    /// `Period.state` mirror (`fa verify periods`, plan §7.3, FA-INV-02).
+    pub fn verify_periods(
+        &self,
+        known_at: Option<CommitSeq>,
+    ) -> Result<fa_journal::PeriodVerification, BookError> {
+        with_store!(&self.store, core => core.verify_periods(&self.purposes(), known_at))
+    }
+
     /// Explain an account's register cells in one period (`fa explain
     /// balance`): the cells, the fold they belong to, every contributing leg
     /// with its recorded sequence, and the cells' known-at history. `None`

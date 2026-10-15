@@ -78,8 +78,9 @@ pub use migration::{
     transition_run, visible_at,
 };
 pub use period::{
-    PeriodTransitionRecord, PreparedTransition, TransitionPlan, Transitioned, period_transitions,
-    plan_transition, prepare_transition, transition_name, transition_period, transition_proposal,
+    PeriodCheck, PeriodTransitionRecord, PeriodVerification, PreparedTransition, TransitionPlan,
+    Transitioned, period_transitions, plan_transition, prepare_transition, transition_name,
+    transition_period, transition_proposal, verify_periods,
 };
 pub use plan::{commit_plan, plan_certificate_vid, plan_post};
 pub use policy::{

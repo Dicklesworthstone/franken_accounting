@@ -26,7 +26,7 @@ use fa_model::{
 };
 use fa_policy::{Capability, Intent, Party};
 use fa_time::period::transition;
-use fa_time::{DateDay, PeriodState, PeriodTransition};
+use fa_time::{DateDay, PeriodKind, PeriodState, PeriodTransition};
 use fgdb::{Database, WriteBatch, WriteMismatchPolicy, WriteTxn, WriteTxnError};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
@@ -739,4 +739,460 @@ pub fn period_transitions<V: asupersync::fs::Vfs + Clone>(
     }
     out.sort_by_key(|r| (r.recorded_at, r.entry_vid));
     Ok(out)
+}
+
+/// One fiscal period's refolded state vs its stored `Period.state` mirror (`fa verify periods`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeriodCheck {
+    pub code: String,
+    pub fiscal_year: i32,
+    pub ordinal: u16,
+    pub kind: PeriodKind,
+    pub born_state: PeriodState,
+    pub stored_state: Option<PeriodState>,
+    pub refolded_state: PeriodState,
+    pub transitions: usize,
+    pub green: bool,
+}
+
+/// Complete comparison of every `Period` vertex's state and mirrors against its
+/// genesis birth rule and its journaled `PeriodControl` transition stream
+/// (`fa verify periods`, plan §7.3, FA-INV-02 `lifecycle-by-transition`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeriodVerification {
+    pub known_at: CommitSeq,
+    pub periods_checked: usize,
+    pub transitions_checked: usize,
+    pub periods: Vec<PeriodCheck>,
+    pub drift: Vec<String>,
+}
+
+impl PeriodVerification {
+    #[must_use]
+    pub fn is_green(&self) -> bool {
+        self.drift.is_empty()
+    }
+}
+
+fn is_legal_step(from: PeriodState, to: PeriodState) -> bool {
+    [
+        PeriodTransition::Open,
+        PeriodTransition::SoftClose,
+        PeriodTransition::Close,
+        PeriodTransition::Lock,
+        PeriodTransition::Reopen {
+            to: PeriodState::Open,
+        },
+        PeriodTransition::Reopen {
+            to: PeriodState::SoftClosed,
+        },
+    ]
+    .into_iter()
+    .any(|t| transition(from, t) == Ok(to))
+}
+
+/// Refold every `Period` vertex's state from its birth state (`BookSpec::birth`)
+/// and its journaled `PeriodControl` transition stream at `known_at` (or HEAD
+/// when `None`), comparing it against the stored `Period` mirrors and `IN_BOOK` /
+/// `IN_PERIOD` topology (plan §7.3, FA-INV-02 `lifecycle-by-transition`).
+pub fn verify_periods<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    known_at: Option<CommitSeq>,
+) -> Result<PeriodVerification, KernelError> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let known_at = known_at.unwrap_or(db.frontier()?);
+    let rows = db.vertices_at(known_at)?;
+    let edges = db.edges_at(known_at)?;
+    let bvid = crate::rows::book_root();
+    let root_row = rows
+        .iter()
+        .find(|r| r.vid == bvid && r.labels.contains(&label::BOOK))
+        .ok_or_else(|| {
+            KernelError::Corrupt(format!(
+                "periods need a book: no genesis row at sequence {}",
+                known_at.0
+            ))
+        })?;
+    let spec_bytes = crate::rows::bytes(root_row, property::FA_PAYLOAD, "book._fa_payload")?;
+    let spec = crate::genesis::BookSpec::decode(&spec_bytes)?;
+    let classes =
+        fa_registry::EntryClasses::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    let matrix = fa_registry::Admissibility::embedded(&classes)
+        .map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    let pre_opening = matrix
+        .pre_opening()
+        .ok_or_else(|| KernelError::Corrupt("admissibility.toml has no pre_opening rule".into()))?;
+
+    let mut in_book_periods: BTreeSet<VId> = BTreeSet::new();
+    let mut in_period_by_entry: BTreeMap<VId, BTreeSet<VId>> = BTreeMap::new();
+    for edge in &edges {
+        let e = &edge.entry;
+        if e.relation == relation::IN_BOOK
+            && e.dst == bvid
+            && e.eid == edge_id(relation::IN_BOOK, e.src, bvid)
+            && edge.props.is_empty()
+        {
+            in_book_periods.insert(e.src);
+        } else if e.relation == relation::IN_PERIOD
+            && e.eid == edge_id(relation::IN_PERIOD, e.src, e.dst)
+            && edge.props.is_empty()
+        {
+            in_period_by_entry.entry(e.src).or_default().insert(e.dst);
+        }
+    }
+
+    let mut drift: Vec<String> = Vec::new();
+    let mut transitions_checked: usize = 0;
+    let mut transitions_by_period: BTreeMap<
+        String,
+        Vec<(CommitSeq, VId, PeriodState, PeriodState)>,
+    > = BTreeMap::new();
+
+    for row in &rows {
+        if !row.labels.contains(&label::ENTRY) {
+            continue;
+        }
+        let payload = match crate::rows::bytes(row, property::FA_PAYLOAD, "entry._fa_payload") {
+            Ok(b) => b,
+            Err(e) => {
+                drift.push(format!("entry {:032x}: {e}", row.vid.0));
+                continue;
+            }
+        };
+        let entry = match fa_model::Entry::decode(&payload) {
+            Ok(e) => e,
+            Err(e) => {
+                drift.push(format!("entry {:032x} payload: {e}", row.vid.0));
+                continue;
+            }
+        };
+        let is_period_control_class = entry.proposal.class == EntryClass::PERIOD_CONTROL;
+        match &entry.proposal.control {
+            Some(ControlPayload::PeriodTransition {
+                period_ref,
+                from,
+                to,
+                ..
+            }) => {
+                transitions_checked += 1;
+                if !is_period_control_class {
+                    drift.push(format!(
+                        "entry {:032x} carries PeriodTransition payload under class {:?}",
+                        row.vid.0, entry.proposal.class
+                    ));
+                }
+                if entry.proposal.book_id != book.book_id
+                    || entry.proposal.branch_id != Id128::TRUNK
+                {
+                    drift.push(format!(
+                        "period transition entry {:032x} coordinate disagrees with trunk book",
+                        row.vid.0
+                    ));
+                }
+                if period_ref.calendar != book.calendar.id {
+                    drift.push(format!(
+                        "period transition entry {:032x} names calendar `{}`, expected `{}`",
+                        row.vid.0, period_ref.calendar, book.calendar.id
+                    ));
+                }
+                if entry.proposal.effective_period.as_ref() != Some(period_ref) {
+                    drift.push(format!(
+                        "period transition entry {:032x} effective_period disagrees with control payload `{}`",
+                        row.vid.0, period_ref.code
+                    ));
+                }
+                let expected_evid = entry_vid(
+                    book.book_id,
+                    &entry.proposal.principal_ref.0.to_le_bytes(),
+                    &entry.proposal.idempotency_key,
+                );
+                if row.vid != expected_evid {
+                    drift.push(format!(
+                        "period transition entry {:032x} identity disagrees with derived {:032x}",
+                        row.vid.0, expected_evid.0
+                    ));
+                }
+                for (key, value) in entry_mirrors(&entry)? {
+                    if crate::rows::prop(row, key) != Some(&value) {
+                        drift.push(format!(
+                            "period transition entry {:032x} mirror {} disagrees with payload",
+                            row.vid.0, key.0
+                        ));
+                    }
+                }
+                let expected_pvid = period_vid(&book.calendar.id, &period_ref.code);
+                let linked = in_period_by_entry.get(&row.vid);
+                if !linked.is_some_and(|set| set.len() == 1 && set.contains(&expected_pvid)) {
+                    drift.push(format!(
+                        "period transition entry {:032x} is missing its IN_PERIOD edge to period `{}` ({:032x})",
+                        row.vid.0, period_ref.code, expected_pvid.0
+                    ));
+                }
+                let from_state = PeriodState::from_tag(*from);
+                let to_state = PeriodState::from_tag(*to);
+                match (from_state, to_state) {
+                    (Some(f), Some(t)) => {
+                        transitions_by_period
+                            .entry(period_ref.code.clone())
+                            .or_default()
+                            .push((row.created_at, row.vid, f, t));
+                    }
+                    _ => {
+                        drift.push(format!(
+                            "period transition entry {:032x} for `{}` has invalid state tags ({from} -> {to})",
+                            row.vid.0, period_ref.code
+                        ));
+                    }
+                }
+            }
+            _ if is_period_control_class => {
+                drift.push(format!(
+                    "entry {:032x} has class PeriodControl without a PeriodTransition payload",
+                    row.vid.0
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    let mut period_rows: BTreeMap<String, &fgdb::VertexRow> = BTreeMap::new();
+    let mut fiscal_years: BTreeSet<i32> = BTreeSet::new();
+    for row in &rows {
+        if !row.labels.contains(&label::PERIOD) {
+            continue;
+        }
+        let code = match crate::rows::text(row, property::CODE, "period.code") {
+            Ok(c) => c,
+            Err(e) => {
+                drift.push(format!("period vertex {:032x}: {e}", row.vid.0));
+                continue;
+            }
+        };
+        if period_rows.insert(code.clone(), row).is_some() {
+            drift.push(format!("period `{code}` has multiple Period vertices"));
+        }
+        if let Ok(fy) = crate::rows::int(row, property::FISCAL_YEAR, "period.fiscal_year")
+            && let Ok(fy32) = i32::try_from(fy)
+        {
+            fiscal_years.insert(fy32);
+        }
+    }
+
+    let mut expected_defs: BTreeMap<String, fa_time::PeriodDef> = BTreeMap::new();
+    for fy in &fiscal_years {
+        match book.calendar.periods_for_year(*fy) {
+            Ok(defs) => {
+                for def in defs {
+                    if !period_rows.contains_key(&def.code) {
+                        drift.push(format!(
+                            "period `{}` of fiscal year {fy} is missing from stored Period vertices",
+                            def.code
+                        ));
+                    }
+                    expected_defs.insert(def.code.clone(), def);
+                }
+            }
+            Err(e) => {
+                drift.push(format!(
+                    "fiscal year {fy} is invalid for calendar `{}`: {e}",
+                    book.calendar.id
+                ));
+            }
+        }
+    }
+
+    let mut checks: Vec<PeriodCheck> = Vec::with_capacity(period_rows.len());
+    for (code, row) in &period_rows {
+        let mut period_green = true;
+        let mut note_drift = |msg: String| {
+            period_green = false;
+            drift.push(msg);
+        };
+
+        if row.labels.as_slice() != [label::PERIOD] {
+            note_drift(format!(
+                "period `{code}` ({:032x}) has unexpected labels",
+                row.vid.0
+            ));
+        }
+        let expected_pvid = period_vid(&book.calendar.id, code);
+        if row.vid != expected_pvid {
+            note_drift(format!(
+                "period `{code}` is stored at {:032x}, expected {:032x}",
+                row.vid.0, expected_pvid.0
+            ));
+        }
+        if !in_book_periods.contains(&row.vid) {
+            note_drift(format!(
+                "period `{code}` ({:032x}) is missing its IN_BOOK edge to book root",
+                row.vid.0
+            ));
+        }
+        match crate::rows::bytes(row, property::BOOK_ID, "period.book_id") {
+            Ok(b) if b.as_slice() == book.book_id.0 => {}
+            _ => note_drift(format!(
+                "period `{code}` book_id mirror disagrees with book"
+            )),
+        }
+        match crate::rows::text(row, property::CALENDAR_ID, "period.calendar_id") {
+            Ok(cid) if cid == book.calendar.id => {}
+            _ => note_drift(format!(
+                "period `{code}` calendar_id mirror disagrees with `{}`",
+                book.calendar.id
+            )),
+        }
+
+        let stored_fy = crate::rows::int(row, property::FISCAL_YEAR, "period.fiscal_year")
+            .ok()
+            .and_then(|v| i32::try_from(v).ok());
+        let stored_ordinal = crate::rows::int(row, property::ORDINAL, "period.ordinal")
+            .ok()
+            .and_then(|v| u16::try_from(v).ok());
+        let stored_kind = crate::rows::kind_from_scalar(crate::rows::prop(row, property::PERIOD_KIND));
+        let stored_start = crate::rows::int(row, property::PERIOD_START, "period.period_start")
+            .ok()
+            .and_then(|v| i32::try_from(v).ok())
+            .map(DateDay);
+        let stored_end = crate::rows::int(row, property::PERIOD_END, "period.period_end")
+            .ok()
+            .and_then(|v| i32::try_from(v).ok())
+            .map(DateDay);
+        let stored_state = match crate::rows::prop(row, property::STATE) {
+            Some(CanonicalScalar::Int(i)) => u8::try_from(*i).ok().and_then(PeriodState::from_tag),
+            _ => None,
+        };
+
+        let (expected_fy, expected_ordinal, expected_kind, born_state, expected_start, expected_end) =
+            if let Some(def) = expected_defs.get(code) {
+                let (kind, born) = spec.birth(def, pre_opening);
+                (def.fiscal_year, def.ordinal, kind, born, def.start, def.end)
+            } else {
+                note_drift(format!(
+                    "period `{code}` does not belong to any created fiscal year of calendar `{}`",
+                    book.calendar.id
+                ));
+                (
+                    stored_fy.unwrap_or(0),
+                    stored_ordinal.unwrap_or(0),
+                    stored_kind.unwrap_or(PeriodKind::Normal),
+                    PeriodState::Future,
+                    stored_start.unwrap_or(DateDay(0)),
+                    stored_end.unwrap_or(DateDay(0)),
+                )
+            };
+
+        if stored_fy != Some(expected_fy) {
+            note_drift(format!(
+                "period `{code}` fiscal_year mirror is {stored_fy:?}, expected {expected_fy}"
+            ));
+        }
+        if stored_ordinal != Some(expected_ordinal) {
+            note_drift(format!(
+                "period `{code}` ordinal mirror is {stored_ordinal:?}, expected {expected_ordinal}"
+            ));
+        }
+        if stored_kind != Some(expected_kind) {
+            note_drift(format!(
+                "period `{code}` period_kind mirror is {stored_kind:?}, expected {expected_kind:?}"
+            ));
+        }
+        if stored_start != Some(expected_start) {
+            note_drift(format!(
+                "period `{code}` period_start mirror disagrees with calendar definition"
+            ));
+        }
+        if stored_end != Some(expected_end) {
+            note_drift(format!(
+                "period `{code}` period_end mirror disagrees with calendar definition"
+            ));
+        }
+
+        let mut transitions = transitions_by_period
+            .get(code)
+            .cloned()
+            .unwrap_or_default();
+        transitions.sort_by_key(|(seq, evid, _, _)| (*seq, *evid));
+
+        let immobile = matrix.kind_rule(expected_kind).is_some()
+            || pre_opening.governs(expected_kind, expected_end, spec.opening_date);
+        if immobile && !transitions.is_empty() {
+            note_drift(format!(
+                "period `{code}` ({expected_kind:?}) is born {} and cannot transition, but has {} PeriodControl entry(s)",
+                born_state.name(),
+                transitions.len()
+            ));
+        }
+
+        let mut refolded_state = born_state;
+        for (seq, evid, from_state, to_state) in &transitions {
+            if *from_state != refolded_state {
+                note_drift(format!(
+                    "period `{code}` transition {:032x} at sequence {} claims from={}, but refolded state was {}",
+                    evid.0,
+                    seq.0,
+                    from_state.name(),
+                    refolded_state.name()
+                ));
+            }
+            if !is_legal_step(*from_state, *to_state) {
+                note_drift(format!(
+                    "period `{code}` transition {:032x} at sequence {} takes illegal step {} -> {}",
+                    evid.0,
+                    seq.0,
+                    from_state.name(),
+                    to_state.name()
+                ));
+            }
+            refolded_state = *to_state;
+        }
+
+        if stored_state != Some(refolded_state) {
+            note_drift(format!(
+                "period `{code}` state mirror is {}, but journaled transitions from {} refold to {}",
+                stored_state.map_or("missing/corrupt", PeriodState::name),
+                born_state.name(),
+                refolded_state.name()
+            ));
+        }
+
+        checks.push(PeriodCheck {
+            code: code.clone(),
+            fiscal_year: expected_fy,
+            ordinal: expected_ordinal,
+            kind: expected_kind,
+            born_state,
+            stored_state,
+            refolded_state,
+            transitions: transitions.len(),
+            green: period_green,
+        });
+    }
+
+    for (code, ts) in &transitions_by_period {
+        if !period_rows.contains_key(code) {
+            for (seq, evid, from, to) in ts {
+                drift.push(format!(
+                    "period transition entry {:032x} at sequence {} ({} -> {}) names non-existent period `{code}`",
+                    evid.0,
+                    seq.0,
+                    from.name(),
+                    to.name()
+                ));
+            }
+        }
+    }
+
+    checks.sort_by(|a, b| {
+        (a.fiscal_year, a.ordinal, a.code.as_str()).cmp(&(b.fiscal_year, b.ordinal, b.code.as_str()))
+    });
+
+    Ok(PeriodVerification {
+        known_at,
+        periods_checked: checks.len(),
+        transitions_checked,
+        periods: checks,
+        drift,
+    })
 }

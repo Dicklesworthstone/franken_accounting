@@ -7610,6 +7610,77 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 })
             }
         }
+        Some("periods") => {
+            if args.positional.len() > 2 {
+                return Err(usage(
+                    "verify periods takes no extra positional arguments",
+                    "fa verify periods --book <dir> [--json]",
+                ));
+            }
+            if args.flag("--period").is_some() || args.flag("--fiscal-year").is_some() {
+                return Err(usage(
+                    "verify periods checks every Period vertex at the current head and takes no period filter",
+                    "fa verify periods --book <dir> [--json]",
+                ));
+            }
+            let book = ctx.books.open(args)?;
+            let v = book.verify_periods(None)?;
+            out.known_at(v.known_at);
+            let periods: Vec<Json> = v
+                .periods
+                .iter()
+                .map(|p| {
+                    obj(vec![
+                        ("code", s(&p.code)),
+                        ("fiscal_year", Json::Int(i128::from(p.fiscal_year))),
+                        ("ordinal", Json::Int(i128::from(p.ordinal))),
+                        ("kind", s(kind_name(p.kind))),
+                        ("born_state", s(p.born_state.name())),
+                        (
+                            "stored_state",
+                            p.stored_state.map_or(Json::Null, |st| s(st.name())),
+                        ),
+                        ("refolded_state", s(p.refolded_state.name())),
+                        ("transitions", Json::Int(p.transitions as i128)),
+                        ("green", Json::Bool(p.green)),
+                    ])
+                })
+                .collect();
+            let fields = vec![
+                ("known_at", Json::Int(i128::from(v.known_at.0))),
+                ("periods_checked", Json::Int(v.periods_checked as i128)),
+                (
+                    "transitions_checked",
+                    Json::Int(v.transitions_checked as i128),
+                ),
+                ("periods", Json::Arr(periods)),
+                ("drift", Json::Arr(v.drift.iter().map(s).collect())),
+            ];
+            if v.is_green() {
+                out.event(
+                    "periods_verified",
+                    fields,
+                    &format!(
+                        "periods verified by refold: {} periods, {} transition(s), state mirrors agree at {}",
+                        v.periods_checked, v.transitions_checked, v.known_at.0
+                    ),
+                );
+                Ok(())
+            } else {
+                Err(Fail::Verification {
+                    message: format!(
+                        "{} period state or mirror discrepancy(s) found: {}",
+                        v.drift.len(),
+                        v.drift.join("; ")
+                    ),
+                    detail: obj(fields),
+                    cite: Some("FA-INV-02 (period state is a rebuildable projection of PeriodControl transitions)".into()),
+                    fix: Some(
+                        "retain this finding with fa verify periods --json and the same --book".into(),
+                    ),
+                })
+            }
+        }
         other => Err(unhandled("verify", other)),
     }
 }

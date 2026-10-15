@@ -1424,6 +1424,16 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.query(cx, |db, book| Ok(fa_journal::verify_schedules(db, book)?))
     }
 
+    pub fn verify_periods(
+        &self,
+        cx: &PurposeContexts,
+        known_at: Option<CommitSeq>,
+    ) -> Result<fa_journal::PeriodVerification, BookError> {
+        self.query(cx, |db, book| {
+            Ok(fa_journal::verify_periods(db, book, known_at)?)
+        })
+    }
+
     pub fn explain_balance(
         &self,
         cx: &PurposeContexts,
