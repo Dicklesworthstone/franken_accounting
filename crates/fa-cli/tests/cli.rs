@@ -10109,7 +10109,7 @@ fn rea_event_cli_record_show_list_and_post_provenance() -> std::io::Result<()> {
     let ev_vid = text(&recorded, "event_vid").to_string();
 
     let shown = doc(&ok(&["event", "show", "EV-SALE-42", "--json"]));
-    let ev_obj = shown.get("event").expect("event detail");
+    let ev_obj = shown.get("detail").expect("event detail");
     assert_eq!(text(ev_obj, "vid"), ev_vid);
     assert_eq!(text(ev_obj, "code"), "EV-SALE-42");
     assert_eq!(text(ev_obj, "description"), "Customer sale #42");
@@ -10136,7 +10136,9 @@ fn rea_event_cli_record_show_list_and_post_provenance() -> std::io::Result<()> {
     let entry_vid = text(&posted, "vid").to_string();
 
     let explained = doc(&ok(&["explain", "entry", &entry_vid, "--json"]));
-    let cited_ev = explained.get("event").expect("event field on entry_explained");
+    let cited_ev = explained
+        .get("cited_event")
+        .expect("cited_event field on entry_explained");
     assert_eq!(text(cited_ev, "vid"), ev_vid);
     assert_eq!(text(cited_ev, "code"), "EV-SALE-42");
 

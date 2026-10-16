@@ -1058,7 +1058,7 @@ fields = ["account:string", "account_vid:hex", "name:string", "type:string", "pe
 name = "entry_explained"
 book = true
 doc = "An explained committed entry (`fa explain entry <vid>`): its payload, posting period, resolved legs with account codes and names, supersession lineage (both what it supersedes and any later entries that supersede it), cited evidence, cited REA event (`DERIVED_FROM`), and approval count."
-fields = ["vid:hex", "entry_digest:hex", "proposal_digest:hex", "class:string", "effective_date:date", "period:string?", "recorded_at:seq", "principal:hex", "description:untrusted_text?", "approvals:int", "resolves:hex?", "disposition:string?", "legs:[explained_entry_leg]", "supersedes:[lineage]", "superseded_by:[lineage]", "evidence:[evidence_head]", "event:event_summary?"]
+fields = ["vid:hex", "entry_digest:hex", "proposal_digest:hex", "class:string", "effective_date:date", "period:string?", "recorded_at:seq", "principal:hex", "description:untrusted_text?", "approvals:int", "resolves:hex?", "disposition:string?", "legs:[explained_entry_leg]", "supersedes:[lineage]", "superseded_by:[lineage]", "evidence:[evidence_head]", "cited_event:event_summary?"]
 
 [[event]]
 name = "evidence_explained"
@@ -1208,7 +1208,7 @@ fields = ["event_vid:hex", "code:string", "kind:string", "occurred_on:date", "ev
 name = "event_shown"
 book = true
 doc = "One recorded REA `Event` vertex (`fa event show <code|vid>`), with its participants, resources, evidence citations, and external IDs."
-fields = ["event:event_detail"]
+fields = ["detail:event_detail"]
 
 [[event]]
 name = "events_listed"
@@ -1233,7 +1233,7 @@ fields = ["vid:hex", "code:string", "kind:string", "occurred_on:date", "descript
 [[shape]]
 name = "event_resource"
 doc = "One economic resource delta on an REA `Event`."
-fields = ["label:string", "instrument:hex?", "quantity:amount"]
+fields = ["label:string", "instrument:hex?", "amount:amount"]
 
 [[shape]]
 name = "external_id"

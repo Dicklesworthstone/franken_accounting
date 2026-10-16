@@ -10212,7 +10212,7 @@ fn explain_entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("supersedes", Json::Arr(supersedes)),
             ("superseded_by", Json::Arr(superseded_by)),
             ("evidence", Json::Arr(evidence)),
-            ("event", cited_event),
+            ("cited_event", cited_event),
         ],
         &human,
     );
@@ -13063,7 +13063,7 @@ fn event_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let detail = event_detail_json(ev_row, &book)?;
             ctx.out.event(
                 "event_shown",
-                vec![("event", detail)],
+                vec![("detail", detail)],
                 &format!(
                     "event `{}` ({:032x}) · kind {} · occurred on {} · recorded at {}",
                     ev_row.spec.code,
