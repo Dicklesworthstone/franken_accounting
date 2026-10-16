@@ -227,20 +227,20 @@ default = 90
 meaning = "Upper edge in days of the third bucket; anything older is the fourth bucket."
 
 # ---- Graph procedures over the money flow (plan §11.9; bet A4) -----------
-# Both walk the entry-level flow legs (every credit leg's allocated share to
-# each debit account of its entry under the largest-remainder law), so each
-# amount is exact and each citation resolves. A motif is a score, never a
-# finding of fact.
+# Both walk entry-level, capacity-conserving largest-remainder allocations
+# within each (unit, legal_entity). Every debit and credit margin reconciles.
+# Account identities shared by multiple entities never join their paths.
+# A motif is a score, never a finding of fact.
 
 [[procedure]]
 id = "graph.round_trips"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L13"
 tie_break = "entry_vid"
-complexity = "O(flow legs log flow legs)"
+complexity = "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs + max_search_steps * max_hops)"
 calibration = "planted"
-summary = "Value that leaves one asset account for another and returns in the same exact amount within window_days (the kiting motif): one-to-one earliest chronological matching over the live entry-level money flow between asset accounts, reversals and superseded entries excluded; a trip whose outbound or return falls within period_end_days of its period's end scores High, otherwise Medium."
+summary = "Same-amount asset-account round trips within window_days, one native unit and one legal entity. max_hops=2 retains earliest chronological pair matching; 3..8 enables canonical depth-first, edge-disjoint simple temporal cycles, not an exhaustive list or maximum-value packing. Distinct entries are required for each hop; reversals and superseded entries are excluded. An outbound or return near its period end scores High, otherwise Medium. Search exhaustion refuses the whole run without partial findings."
 
 [[parameter]]
 procedure = "graph.round_trips"
@@ -254,15 +254,27 @@ name = "period_end_days"
 default = 7
 meaning = "A trip whose outbound or return is effective within this many days of its period's end scores High."
 
+[[parameter]]
+procedure = "graph.round_trips"
+name = "max_hops"
+default = 2
+meaning = "2 keeps chronological two-account pairing; 3..8 enables bounded simple cycles with that many transfers at most. Every edge keeps the same native amount, unit and legal entity. This is a circular-flow motif, not tracing-law attribution."
+
+[[parameter]]
+procedure = "graph.round_trips"
+name = "max_search_steps"
+default = 250000
+meaning = "For max_hops > 2, the maximum root/adjacency search steps (1..10000000). Exhaustion refuses the entire run, never returns partial findings as success. Two-hop mode uses its existing linear pairing path and does not use this search bound."
+
 [[procedure]]
 id = "graph.structuring"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L14"
 tie_break = "entry_vid"
-complexity = "O(flow legs log flow legs)"
+complexity = "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs)"
 calibration = "planted"
-summary = "Sub-threshold clustering between one payer account and one receiving account in one registered currency: a chain of allocated transfers each at least floor and below threshold, consecutive ones at most window_days apart, numbering at least min_count and summing to at least threshold; reversals excluded."
+summary = "Sub-threshold clustering between one payer account and one receiving account in one registered currency and legal entity: a chain of allocated transfers each at least floor and below threshold, consecutive ones at most window_days apart, numbering at least min_count and summing to at least threshold; reversals excluded."
 
 [[parameter]]
 procedure = "graph.structuring"

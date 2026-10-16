@@ -1,0 +1,33 @@
+name: Lantern temporal-cycle kernel
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/fa-lantern/src/graph/cycles.rs'
+      - '.github/workflows/lantern-graph-kernel.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exact-temporal-cycles:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fetch the exact public commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 origin "$GITHUB_SHA"
+          git checkout --detach FETCH_HEAD
+      - name: Test the production std-only cycle kernel and exhaustive oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup run stable rustc --version
+          rustup run stable rustc --edition=2024 --test crates/fa-lantern/src/graph/cycles.rs -o "$RUNNER_TEMP/lantern-cycles"
+          "$RUNNER_TEMP/lantern-cycles" --nocapture
