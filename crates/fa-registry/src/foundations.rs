@@ -458,7 +458,7 @@ mod tests {
         let ledger = Ledger::embedded().unwrap();
         assert_eq!(
             ledger.row("R-PRISM").unwrap().fa_status,
-            FaStatus::Unconsumed
+            FaStatus::Live
         );
         assert_eq!(ledger.row("R-SUB").unwrap().fa_status, FaStatus::Unconsumed);
         assert_eq!(ledger.row("R-SRV").unwrap().fa_status, FaStatus::Unconsumed);

@@ -918,11 +918,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "fa-formats"
+version = "0.0.1"
+dependencies = [
+ "asupersync",
+ "fa-journal",
+ "fa-model",
+ "fa-money",
+ "fa-reference",
+ "fa-registers",
+ "fa-registry",
+ "fa-time",
+ "fgdb",
+ "fgdb-crypto",
+ "fgdb-types",
+]
+
+[[package]]
 name = "fa-fuzz"
 version = "0.0.1"
 dependencies = [
  "fa",
  "fa-cli",
+ "fa-formats",
  "fa-intents",
  "fa-journal",
  "fa-model",
@@ -971,6 +989,7 @@ dependencies = [
  "fa-money",
  "fa-palimpsest",
  "fa-policy",
+ "fa-reference",
  "fa-registry",
  "fa-time",
  "fgdb",
@@ -998,6 +1017,9 @@ dependencies = [
  "fgdb-crypto",
  "fgdb-delta-types",
  "fgdb-types",
+ "fnx-algorithms",
+ "fnx-cgse",
+ "fnx-classes",
 ]
 
 [[package]]
@@ -1058,6 +1080,7 @@ version = "0.0.1"
 dependencies = [
  "fa-model",
  "fa-money",
+ "fa-registry",
  "fa-time",
  "fgdb-types",
 ]

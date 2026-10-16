@@ -159,9 +159,9 @@ posture = "direct `fnx` over Lantern projections where the subset lacks an algor
 switch_over = "—"
 foundation = "franken_networkx"
 upstream = "partial"
-fa_status = "unconsumed"
+fa_status = "live"
 tracking = "fa-nlu"
-unconsumed_apis = ["fnx_classes", "fnx_algorithms"]
+consumed_apis = ["fnx_classes", "fnx_algorithms"]
 
 [[capability]]
 row = "R-WARDEN"
