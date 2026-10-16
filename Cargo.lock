@@ -815,6 +815,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "fa-bench"
+version = "0.0.1"
+dependencies = [
+ "asupersync",
+ "fa",
+ "fa-demo",
+ "fa-docket",
+ "fa-gen",
+ "fa-journal",
+ "fa-lantern",
+ "fa-model",
+ "fa-money",
+ "fa-notary",
+ "fa-policy",
+ "fa-registers",
+ "fa-registry",
+ "fa-statements",
+ "fa-time",
+ "fa-verify",
+ "fgdb",
+ "fgdb-crypto",
+ "fgdb-types",
+]
+
+[[package]]
 name = "fa-cli"
 version = "0.0.1"
 dependencies = [
