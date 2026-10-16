@@ -554,6 +554,20 @@ waiver = "forbidden"
 
 [[clause]]
 invariant = "FA-INV-07"
+id = "instant"
+status = "live"
+statement = "AS KNOWN AT <instant> resolves at the observed frontier through retained TimeEvidence ticks to the greatest sequence whose latest tick has observed_utc_ns <= instant, retains frontier and bracketing ticks in certificates, and refuses instants before the first tick or before book migration genesis."
+evidence_class = "invariant"
+checker_strength = "differential"
+first_gate = "G2"
+owner = "fa-rhn"
+checkers = ["fa-time::lib::instant::tests::plan_golden_vectors_resolve_the_whole_tick_bucket", "fa-reference::lib::temporal::instant_tests::instant_resolution_matches_a_literal_commit_walk", "fa::lib::book::tests::instant_certificates_keep_their_original_frontier_and_tick_brackets"]
+negatives = ["fa-time::lib::instant::tests::no_tick_and_before_first_tick_have_distinct_refusals", "fa-journal::tests/genesis.rs::instant_before_book_genesis_and_non_increasing_ticks_are_refused"]
+depends = ["FA-INV-07.core"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-07"
 id = "book-scoped"
 status = "dormant"
 statement = "Book-scoped controls follow the known-at control-history and class-applicability rules without a posting date."
