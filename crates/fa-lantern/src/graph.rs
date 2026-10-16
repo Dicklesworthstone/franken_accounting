@@ -13,11 +13,29 @@ use fa_model::{AccountType, EntryClass};
 use fa_money::{UnitId, UnitKind};
 use fgdb_types::VId;
 
-use crate::jet::finding;
 use crate::projection::{FlowLeg, scoped_flow_legs};
 use crate::{
     Cite, Finding, LanternError, MAX_CITES, Params, Procedure, Severity, Snapshot, Statistic, Work,
 };
+
+/// Use the implementation's version, not the legacy JET constructor's v1.
+/// The run still independently checks code, registry and finding versions.
+fn finding(
+    identity: (&str, u16),
+    severity: Severity,
+    statistic: Statistic,
+    cites: Vec<Cite>,
+    narrative: String,
+) -> Finding {
+    Finding {
+        procedure: identity.0.to_string(),
+        version: identity.1,
+        severity,
+        statistic,
+        cites,
+        narrative,
+    }
+}
 
 fn days(params: &Params, name: &'static str) -> Result<i32, LanternError> {
     i32::try_from(params.get_u32(name)?).map_err(|_| LanternError::Overflow(name))
@@ -54,6 +72,7 @@ pub struct RoundTrips {
 
 impl RoundTrips {
     pub const ID: &'static str = "graph.round_trips";
+    pub const VERSION: u16 = 2;
 
     pub fn new() -> Result<Self, LanternError> {
         Ok(Self {
@@ -72,7 +91,7 @@ impl Procedure for RoundTrips {
         Self::ID
     }
     fn version(&self) -> u16 {
-        2
+        Self::VERSION
     }
     fn params(&self) -> &Params {
         &self.params
@@ -169,7 +188,7 @@ impl Procedure for RoundTrips {
                 let severity = if near_end { Severity::High } else { Severity::Medium };
                 let day_text = |d: Option<i64>| d.map_or("?".to_string(), |d| d.to_string());
                 out.push(finding(
-                    Self::ID,
+                    (Self::ID, Self::VERSION),
                     severity,
                     Statistic {
                         name: "round_trip_mantissa".into(),
@@ -253,7 +272,7 @@ fn multi_round_trips(
         }
         let gap = i64::from(last.effective_date.0) - i64::from(first.effective_date.0);
         out.push(finding(
-            RoundTrips::ID,
+            (RoundTrips::ID, RoundTrips::VERSION),
             if near_end { Severity::High } else { Severity::Medium },
             Statistic {
                 name: "round_trip_mantissa".into(),
@@ -282,6 +301,7 @@ pub struct Structuring {
 
 impl Structuring {
     pub const ID: &'static str = "graph.structuring";
+    pub const VERSION: u16 = 2;
 
     pub fn new() -> Result<Self, LanternError> {
         Ok(Self { params: Params::defaults(Self::ID)? })
@@ -362,7 +382,7 @@ impl Rule {
         let mut cites = vec![Cite::Account(to), Cite::Account(from)];
         cites.extend(entries.into_iter().map(Cite::Entry));
         out.push(finding(
-            Structuring::ID,
+            (Structuring::ID, Structuring::VERSION),
             severity,
             Statistic { name: "chain_mantissa".into(), value: sum, scale, population },
             cites,
@@ -377,7 +397,7 @@ impl Rule {
 
 impl Procedure for Structuring {
     fn id(&self) -> &'static str { Self::ID }
-    fn version(&self) -> u16 { 2 }
+    fn version(&self) -> u16 { Self::VERSION }
     fn params(&self) -> &Params { &self.params }
     fn run(
         &self,

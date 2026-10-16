@@ -476,7 +476,7 @@ impl Procedure for Trace {
             .ok_or(LanternError::Overflow("carried"))?;
         let source_date = stream.moves[stream.source_at].date;
         let entity_text = stream.entity.map_or_else(|| "implicit book entity".into(), |entity| format!("entity {}", hex(entity)));
-        Ok(vec![finding(
+        let mut result = finding(
             self.law.id(),
             Severity::Info,
             Statistic {
@@ -502,6 +502,10 @@ impl Procedure for Trace {
                 carried,
                 t.traced
             ),
-        )])
+        );
+        // The shared JET constructor is v1. Trace's code and registry are v2;
+        // use the actual implementation version without relaxing run checks.
+        result.version = self.version();
+        Ok(vec![result])
     }
 }
