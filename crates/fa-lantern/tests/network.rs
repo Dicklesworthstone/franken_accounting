@@ -13,7 +13,7 @@ use fgdb_types::ids::DatabaseSecurityNamespaceId;
 use fgdb_types::{CommitSeq, VId};
 
 const PRINCIPAL: VId = VId(7);
-const IDS: [&str; 2] = ["trace.network_fifo", "trace.network_lifo"];
+const IDS: [&str; 4] = ["trace.network_fifo", "trace.network_lifo", "trace.network_libr", "trace.network_pro_rata"];
 
 fn day(n: u8) -> DateDay { DateDay::from_ymd(2026, 1, n).unwrap() }
 

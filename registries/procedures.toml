@@ -547,3 +547,115 @@ procedure = "trace.network_lifo"
 name = "max_steps"
 default = 5000000
 meaning = "Projection and tracing work budget (1..100000000), including allocation, lot visitation and path copies; exhaustion refuses with no partial output."
+
+# Pooled network laws first choose aggregate tainted/clean amounts, then
+# allocate each color among its evidence paths. Branch targets and overdraft
+# repayment likewise split colors before paths. This prevents path-fragment
+# counts from changing aggregate taint through rounding ties. Ties between
+# colors favor tainted. Path ties use deterministic chronological arrival.
+# LIBR spends clean value first; no later clean deposit restores dissipated
+# source value. An actual return transfer retains its existing source path.
+
+[[procedure]]
+id = "trace.network_libr"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L21"
+tie_break = "entry_vid"
+complexity = "O(input_legs log input_legs + max_steps log max_transfers + max_fragments * max_hops)"
+calibration = "uncalibrated"
+summary = "Follow a source deposit through a network of commingled asset accounts under LIBR. Clean-first preservation at every tracked account: only the part of a withdrawal exceeding its clean balance carries source value; later clean deposits never replenish it. Final path positions partition the source into held, spent and overdraft-repaid amounts; no duplicated path totals. Exact integer, source-unit and source-entity isolated. Every work/path bound refuses the entire run on exhaustion, never returns partial findings."
+
+[[input]]
+procedure = "trace.network_libr"
+name = "account"
+kind = "account"
+meaning = "Debit-normal Asset account receiving the source deposit; this determines the unambiguous unit and legal entity."
+
+[[input]]
+procedure = "trace.network_libr"
+name = "source"
+kind = "entry"
+meaning = "Live source entry as known at the snapshot and effective through its explicit cutoff. Its net deposit in account is the source amount."
+
+[[parameter]]
+procedure = "trace.network_libr"
+name = "max_input_legs"
+default = 100000
+meaning = "Maximum legs admitted from the snapshot, before projection (1..1000000); does not bound the separately executed snapshot read."
+
+[[parameter]]
+procedure = "trace.network_libr"
+name = "max_transfers"
+default = 25000
+meaning = "Maximum nonzero net-account transfer cells (1..250000); allocation work is also bounded before emitting cells."
+
+[[parameter]]
+procedure = "trace.network_libr"
+name = "max_fragments"
+default = 10000
+meaning = "Maximum cumulative lot fragments created, including clean funding and split paths (1..100000)."
+
+[[parameter]]
+procedure = "trace.network_libr"
+name = "max_hops"
+default = 16
+meaning = "Maximum path length including the source deposit (1..64). Exceeding it refuses, rather than stopping and pretending the money remains there."
+
+[[parameter]]
+procedure = "trace.network_libr"
+name = "max_steps"
+default = 5000000
+meaning = "Projection and tracing work budget (1..100000000), including allocation, lot visitation and path copies; exhaustion refuses with no partial output."
+
+[[procedure]]
+id = "trace.network_pro_rata"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L22"
+tie_break = "entry_vid"
+complexity = "O(input_legs log input_legs + max_steps log max_transfers + max_fragments * max_hops)"
+calibration = "uncalibrated"
+summary = "Follow a source deposit through a network of commingled asset accounts under pro-rata. Every withdrawal carries a proportionate share of source value, rounded exactly by LargestRemainder with color totals before path fractions. Final path positions partition the source into held, spent and overdraft-repaid amounts; no duplicated path totals. Exact integer, source-unit and source-entity isolated. Every work/path bound refuses the entire run on exhaustion, never returns partial findings."
+
+[[input]]
+procedure = "trace.network_pro_rata"
+name = "account"
+kind = "account"
+meaning = "Debit-normal Asset account receiving the source deposit; this determines the unambiguous unit and legal entity."
+
+[[input]]
+procedure = "trace.network_pro_rata"
+name = "source"
+kind = "entry"
+meaning = "Live source entry as known at the snapshot and effective through its explicit cutoff. Its net deposit in account is the source amount."
+
+[[parameter]]
+procedure = "trace.network_pro_rata"
+name = "max_input_legs"
+default = 100000
+meaning = "Maximum legs admitted from the snapshot, before projection (1..1000000); does not bound the separately executed snapshot read."
+
+[[parameter]]
+procedure = "trace.network_pro_rata"
+name = "max_transfers"
+default = 25000
+meaning = "Maximum nonzero net-account transfer cells (1..250000); allocation work is also bounded before emitting cells."
+
+[[parameter]]
+procedure = "trace.network_pro_rata"
+name = "max_fragments"
+default = 10000
+meaning = "Maximum cumulative lot fragments created, including clean funding and split paths (1..100000)."
+
+[[parameter]]
+procedure = "trace.network_pro_rata"
+name = "max_hops"
+default = 16
+meaning = "Maximum path length including the source deposit (1..64). Exceeding it refuses, rather than stopping and pretending the money remains there."
+
+[[parameter]]
+procedure = "trace.network_pro_rata"
+name = "max_steps"
+default = 5000000
+meaning = "Projection and tracing work budget (1..100000000), including allocation, lot visitation and path copies; exhaustion refuses with no partial output."

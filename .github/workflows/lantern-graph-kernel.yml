@@ -9,6 +9,7 @@ on:
       - 'crates/fa-lantern/src/catalog.rs'
       - 'crates/fa-lantern/src/catalog/**'
       - 'crates/fa-lantern/tests/network.rs'
+      - 'crates/fa-cli/tests/network.rs'
       - 'registries/procedures.toml'
       - '.github/workflows/lantern-graph-kernel.yml'
   workflow_dispatch:
@@ -42,7 +43,7 @@ jobs:
           set -euo pipefail
           rustup run stable rustc --edition=2024 --test crates/fa-lantern/src/projection/entity.rs -o "$RUNNER_TEMP/lantern-entities"
           "$RUNNER_TEMP/lantern-entities" --nocapture
-      - name: Test source-conserving network attribution and token oracle
+      - name: Test source-conserving network attribution and independent oracles
         shell: bash
         run: |
           set -euo pipefail
@@ -50,6 +51,9 @@ jobs:
           "$RUNNER_TEMP/lantern-network" --nocapture
   journal-integration:
     # Focused hosted feedback only; not the repository's RCH/full-workspace gate.
+    concurrency:
+      group: lantern-journal-feedback
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -71,3 +75,9 @@ jobs:
         run: |
           set -euo pipefail
           cargo +nightly-2026-08-31 test --locked -Z bindeps -p fa-lantern --lib --test network --test lantern --no-fail-fast --jobs 2
+      - name: Test network tracing through the real CLI binary
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -p fa-cli --test network --jobs 2

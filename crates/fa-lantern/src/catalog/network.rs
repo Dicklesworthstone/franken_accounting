@@ -1,7 +1,7 @@
 //! Source-conserving network tracing (plan §11.5). The catalog exposes these
 //! as separate procedures so the existing one-account laws retain their
 //! versioned outputs. This is journal-account attribution, not bank-instrument
-//! matching or a legal conclusion. Positive-normal Asset accounts are tracked;
+//! matching or a legal conclusion. Debit-normal Asset accounts are tracked;
 //! exits to other account types and repayment of overdrafts are terminal.
 
 mod engine;
@@ -30,6 +30,8 @@ impl NetworkTrace {
         let law = match id {
             "trace.network_fifo" => engine::Law::Fifo,
             "trace.network_lifo" => engine::Law::Lifo,
+            "trace.network_libr" => engine::Law::Libr,
+            "trace.network_pro_rata" => engine::Law::ProRata,
             _ => return Err(LanternError::Unregistered { procedure: id.into() }),
         };
         Ok(Self { law, params, account, source })
@@ -152,7 +154,12 @@ fn transfers(
 
 impl Procedure for NetworkTrace {
     fn id(&self) -> &'static str {
-        match self.law { engine::Law::Fifo => "trace.network_fifo", engine::Law::Lifo => "trace.network_lifo" }
+        match self.law {
+            engine::Law::Fifo => "trace.network_fifo",
+            engine::Law::Lifo => "trace.network_lifo",
+            engine::Law::Libr => "trace.network_libr",
+            engine::Law::ProRata => "trace.network_pro_rata",
+        }
     }
     fn version(&self) -> u16 { 1 }
     fn params(&self) -> &Params { &self.params }

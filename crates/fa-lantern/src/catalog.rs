@@ -61,7 +61,7 @@ pub fn build(id: &str, params: Params, inputs: Inputs) -> Result<Box<dyn Procedu
         OpenItemsAging::ID => Box::new(OpenItemsAging::with(params)),
         RoundTrips::ID => Box::new(RoundTrips::with(params)),
         Structuring::ID => Box::new(Structuring::with(params)),
-        "trace.network_fifo" | "trace.network_lifo" => Box::new(NetworkTrace::with(
+        "trace.network_fifo" | "trace.network_lifo" | "trace.network_libr" | "trace.network_pro_rata" => Box::new(NetworkTrace::with(
             id, params, need("account", inputs.account)?, need("source", inputs.source)?,
         )?),
         "trace.libr" | "trace.fifo" | "trace.lifo" | "trace.pro_rata" => {
@@ -92,7 +92,7 @@ mod network_tests {
 
     #[test]
     fn network_catalog_requires_both_handles_and_matches_the_registry() {
-        for id in ["trace.network_fifo", "trace.network_lifo"] {
+        for id in ["trace.network_fifo", "trace.network_lifo", "trace.network_libr", "trace.network_pro_rata"] {
             let p = build(id, Params::defaults(id).unwrap(), Inputs { account: Some(VId(1)), source: Some(VId(2)) }).unwrap();
             assert_eq!(p.id(), id);
             assert_eq!(p.version(), crate::bind(id).unwrap().version);
