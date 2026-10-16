@@ -745,8 +745,8 @@ evidence_class = "invariant"
 checker_strength = "negative_fixture"
 first_gate = "G2"
 owner = "fa-llx"
-checkers = ["fa-journal::tests/policy.rs::a_post_reads_the_current_epoch_so_an_earlier_approval_is_stale", "fa-journal::tests/policy.rs::capability_revocation_is_a_journaled_policy_control_entry_and_idempotent", "fa-cli::tests/cli.rs::capability_revocation_journals_policy_control_and_refuses_revoked_tokens_idempotently"]
-negatives = ["fa-journal::tests/policy.rs::a_transaction_that_witnessed_the_epoch_loses_to_a_concurrent_activation", "fa-journal::tests/policy.rs::an_approval_recorded_before_an_activation_is_stale_after_it", "fa-journal::tests/policy.rs::revoked_capability_cannot_post_read_or_approve_even_on_historical_selectors"]
+checkers = ["fa-journal::tests/policy.rs::a_post_reads_the_current_epoch_so_an_earlier_approval_is_stale", "fa-journal::tests/policy.rs::the_revocation_identity_is_a_fixed_vector", "fa-cli::tests/cli.rs::capability_revocation_journals_policy_control_and_refuses_revoked_tokens_idempotently"]
+negatives = ["fa-journal::tests/policy.rs::a_transaction_that_witnessed_the_epoch_loses_to_a_concurrent_activation", "fa-journal::tests/policy.rs::an_approval_recorded_before_an_activation_is_stale_after_it", "fa-journal::tests/policy.rs::expired_out_of_scope_and_revoked_capabilities_cannot_transition_post_or_approve"]
 depends = ["FA-INV-10.core"]
 waiver = "forbidden"
 
