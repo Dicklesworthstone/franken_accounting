@@ -685,25 +685,35 @@ fn empty_period_verifies_and_rebuild_does_not_invent_cells_or_postings() {
 
 #[test]
 fn prefix_verification_refuses_rewritten_or_retired_journal_entries() {
-    for retire in [false, true] {
+    for mode in ["payload", "digest", "retire"] {
         let mut h = harness();
         let posted = h.post_rent(13, b"immutable-prefix");
         h.materialize_march();
         let before = verify_period(&h.db, &h.book, &h.march).unwrap();
         assert!(before.is_green() && !before.stale);
         let mut write = WriteBatch::new(relation::IN_PERIOD);
-        if retire {
-            write.set_vertex_label(posted.entry_ref().vid, label::ENTRY, false);
-        } else {
-            write.set_vertex_property(
-                posted.entry_ref().vid,
-                property::FA_PAYLOAD,
-                Some(CanonicalScalar::bytes(vec![0xff]).unwrap()),
-            );
+        match mode {
+            "retire" => {
+                write.set_vertex_label(posted.entry_ref().vid, label::ENTRY, false);
+            }
+            "digest" => {
+                write.set_vertex_property(
+                    posted.entry_ref().vid,
+                    property::FA_DIGEST,
+                    Some(CanonicalScalar::bytes(vec![0xaa; 32]).unwrap()),
+                );
+            }
+            _ => {
+                write.set_vertex_property(
+                    posted.entry_ref().vid,
+                    property::FA_PAYLOAD,
+                    Some(CanonicalScalar::bytes(vec![0xff]).unwrap()),
+                );
+            }
         }
         h.write_derived(write);
         let v = verify_period(&h.db, &h.book, &h.march).unwrap();
-        assert!(!v.is_green(), "retire={retire}: {v:?}");
+        assert!(!v.is_green(), "mode={mode}: {v:?}");
         assert_eq!(v.cache_status, CacheStatus::Corrupt);
         assert_eq!(v.verified_through, None);
         assert!(

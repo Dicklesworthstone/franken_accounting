@@ -865,6 +865,7 @@ pub fn verify_period<V: asupersync::fs::Vfs + Clone>(
             if current.get(vid).is_none_or(|now| {
                 now.created_at != row.created_at
                     || prop(now, property::FA_PAYLOAD) != prop(row, property::FA_PAYLOAD)
+                    || prop(now, property::FA_DIGEST) != prop(row, property::FA_DIGEST)
             }) {
                 result.projection_errors.push(format!(
                     "journal entry {:032x} changed or disappeared after the checked prefix",
