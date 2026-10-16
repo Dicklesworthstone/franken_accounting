@@ -1949,23 +1949,14 @@ dont = ["Don't treat a register, an aging or a statement as truth: truth is the 
 mistakes = ["Passing `period` or `fiscal_year` with a target other than `registers` (the other targets take no period filter).", "Reading `status: \"no_checkpoints\"` as verified: it makes no verification claim."]
 
 [[mcp.tool]]
-cluster = "fa.book"
-name = "materialize_registers"
-verb = "registers"
-subcommands = ["materialize"]
-positionals = []
-required = []
-dont = ["Don't rematerialize a period that already has cells to \"fix\" a drift; verify first (`fa_book_verify`, target `registers`) and keep the finding."]
-mistakes = ["Expecting the fold to change: registers are derived state; the journal is unchanged by this."]
-
-[[mcp.tool]]
-cluster = "fa.book"
 name = "advance_registers"
+cluster = "fa.book"
 verb = "registers"
-subcommands = ["advance"]
+subcommands = ["advance", "materialize"]
+selector = "action"
 positionals = []
 required = []
-dont = ["Don't treat the cursor or digest as a certified checkpoint; reports still fold the journal.", "Don't silently rebuild a damaged cache: verify and retain the finding, then explicitly materialize with yes if repair is intended."]
+dont = ["Don't treat the cursor or digest as a certified checkpoint; reports still fold the journal.", "Don't silently rebuild or rematerialize a damaged cache to make verification pass: verify (`fa_book_verify`, target `registers`) and retain the finding, then explicitly materialize with yes if repair is intended."]
 mistakes = ["Expecting a second advance to write when no journal input changed: wrote=false is success.", "Assuming a fiscal-year advance is one transaction: each period publishes atomically on its own."]
 
 [[mcp.tool]]

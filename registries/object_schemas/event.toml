@@ -14,23 +14,8 @@ schema_change_kind = 11
 entry_extension_tag = 6
 externally_verifiable = true
 
-fields = [
-    "code:string",
-    "kind:u8",
-    "occurred_on:i32",
-    "description:erasable<string>",
-    "participants:list<u128>",
-    "resources:list<event_resource>",
-    "evidence:list<evidence_ref>",
-    "external_ids:list<external_id>",
-]
-
-resource_fields = [
-    "label:string",
-    "unit_id:u32",
-    "mantissa:i128",
-    "instrument:option<u128>",
-]
+fields = ["code:string", "kind:u8", "occurred_on:i32", "description:erasable<string>", "participants:list<u128>", "resources:list<event_resource>", "evidence:list<evidence_ref>", "external_ids:list<external_id>"]
+resource_fields = ["label:string", "unit_id:u32", "mantissa:i128", "instrument:option<u128>"]
 
 [[event_kind]]
 id = 1

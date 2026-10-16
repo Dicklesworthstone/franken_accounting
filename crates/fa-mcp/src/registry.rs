@@ -1142,7 +1142,9 @@ impl ToolSpec {
                     "description": format!("which `fa {}` subcommand to run", self.verb),
                 }),
             );
-            required.push(sel.clone());
+            if self.name != "advance_registers" {
+                required.push(sel.clone());
+            }
         }
         for p in &self.positionals {
             if self.is_host_path_property(&p.name) {
@@ -1575,11 +1577,15 @@ impl ToolSpec {
         let mut stdin: Option<Vec<u8>> = None;
         if let Some(sel) = &self.selector {
             let subs = &self.subcommands;
-            let Some(choice) = str_of(sel)? else {
-                return Err(ArgError {
-                    message: format!("{wire}: `{sel}` is required"),
-                    fix: format!("`{sel}`: one of {}", subs.join("|")),
-                });
+            let choice = match str_of(sel)? {
+                Some(choice) => choice,
+                None if self.name == "advance_registers" => subs[0].clone(),
+                None => {
+                    return Err(ArgError {
+                        message: format!("{wire}: `{sel}` is required"),
+                        fix: format!("`{sel}`: one of {}", subs.join("|")),
+                    });
+                }
             };
             if !subs.contains(&choice) {
                 let candidates: Vec<&str> = subs.iter().map(String::as_str).collect();
