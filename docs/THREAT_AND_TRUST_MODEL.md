@@ -65,3 +65,30 @@ When an `Erasable<T>` field or document is sealed or (eventually) crypto-erased,
 | `TV-08` | `bundle_swapped_payload` | Swap entry payloads under `LeafEnvelope`s or drop cited document stub | `fa_verify::verify_bundle` | `Grade::Fail(record)` / `Grade::Fail(closure)` | `fa-notary::tests/notary.rs::planted_bundle_defects_fail_the_predicate_they_break` |
 | `TV-09` | `bundle_production_receipt` | Attach `ProductionReceipt` over wrong bundle, untrusted key, or flipped bit | `fa_verify::verify_bundle` | `Grade::Fail(production_receipt)` | `fa-notary::tests/notary.rs::planted_bundle_defects_fail_the_predicate_they_break` |
 | `TV-10` | `plan_certificate` | Tamper with `PlanCertificate`, change caller principal, or commit stale basis | `fa_cli::dispatch` / `fa_journal::post` | `FA-REF-034` (`PLAN_INVALIDATED`) | `fa-cli::tests/plans.rs::tampered_wrong_caller_and_stale_plans_cannot_publish_or_consume_the_key` |
+
+---
+
+## 5. Storage-Level Tamper-Evidence Red-Team Matrix (`fa-70o`)
+
+Executed end-to-end against real persisted directory books in [`crates/fa-cli/tests/tamper.rs`](../crates/fa-cli/tests/tamper.rs) (`tamper_evidence_red_team_matrix`). An adversary holding the book's substrate keys (`book.keys`) mutates the store (`fgdb::Database` + `WriteBatch`) or filesystem blobs directly, bypassing Folio:
+
+| ID | Storage-Level Attack | Detector / Claim Boundary | Invariant / Gate | Observed Exit | Finding / Status |
+|---|---|---|---|---|---|
+| `T01` | Rewrite `Entry._fa_payload` without recomputing `_fa_digest` | `fa verify accumulator --json` | `FA-INV-14 / FA-INV-04` | `8` | `entry accumulator differs from the journal: 2 state findings, 0 unchained states` |
+| `T02` | Rewrite `Entry._fa_payload` and recompute `_fa_digest` in place | `fa verify accumulator --json` | `FA-INV-14 / FA-INV-04` | `8` | `entry accumulator differs from the journal: 2 state findings, 0 unchained states` (`checkpointed journal entry <vid>` head vs prefix mismatch) |
+| `T03` | Retire (delete) a committed `Entry` vertex from the store | `fa verify accumulator --json` | `FA-INV-14 / FA-INV-04` | `8` | `entry accumulator differs from the journal: 2 state findings, 0 unchained states` (`checkpointed journal entry <vid> was retired or is absent`) |
+| `T04` | Insert a back-dated `Entry` vertex with forged watermark (`IdentitySpent` blocks `VId` reuse) | `fa verify registers --period FY2026-P03 --json` | `FA-INV-04 / FA-INV-06` | `8` | `stored registers differ from the refold in FY2026-P03; ... 2 posted cells differ` |
+| `T05` | Edit a `Leg` vertex scalar mirror (`side` / `amount`) in place | `fa verify projections --json` | `FA-INV-16` | `8` | `leg projections differ from canonical entry payloads: entry <vid> leg 0: side mirror differs from the payload` |
+| `T06` | Edit a materialized `Register` cell (`debits_posted` + `watermark`) | `fa verify registers --period FY2026-P03 --json` | `FA-INV-04` | `8` | `stored registers differ from the refold in FY2026-P03; ... 1 posted cells differ` |
+| `T07` | Delete or corrupt a committed `AccumulatorState` vertex | `fa verify accumulator --json` | `FA-INV-14` | `8` | `entry accumulator differs from the journal: 0 state findings, 3 unchained states; broken chain: accumulator state <oid> is named but absent` |
+| `T08` | Truncate `ACCUMULATOR_HEAD` to an earlier checkpoint OID | `fa verify accumulator --json` | `FA-INV-14` | `8` | `entry accumulator differs from the journal: 0 state findings, 2 unchained states` |
+| `T09` | Swap inline `Document` payload bytes in the substrate | `fa document read <oid> --json` | `FA-INV-05 (FA-REF-085)` | `8` | `document <oid>: the payload is not the document this vertex's identity names` |
+| `T10` | Swap external blob bytes in `<book>/blobs/<shard>/<locator>` | `fa document read <oid> --json` | `FA-INV-05 (FA-REF-085)` | `8` | `document <oid>: the stored bytes do not reproduce the recorded size and commitment` |
+| `T11` | Edit a `LimitCell` availability witness (`debits_posted`) | `fa verify availability --json` | `FA-INV-04` | `8` | `1 limited accounts' stored cells differ from the refold` |
+| `T12` | Edit an open-item `Leg.applied` settlement mirror in place | `fa verify open-items --json` | `FA-INV-04` | `8` | `1 applied mirrors differ from the open-item fold` |
+| `T13` | Edit `Period.state` mirror (`Open` -> `SoftClosed`) without a `PeriodControl` entry | `fa verify periods --json` | `FA-INV-02` | `8` | `1 period state or mirror discrepancy(s) found: period FY2026-P03 state mirror is SoftClosed, but journaled transitions from Future refold to Open` |
+| `T14` | Roll the book directory back to an older checkpointed snapshot | `fa verify accumulator --json` (`undetectable_until = "witnessed checkpoints (fa-l3c)"` locally; out-of-band: `fa-verify consistency / checkpoint against retained external witness receipt`) | `FA-INV-14` | `0` | Local verify exits `0` (`undetectable_until = "witnessed checkpoints (fa-l3c)"`) |
+| `T15` | Wholesale rewrite of the book directory with a fresh self-consistent chain | `fa verify accumulator --json` (`undetectable_until = "witnessed checkpoints (fa-l3c)"` locally; out-of-band: `fa-verify checkpoint / bundle against out-of-band witnessed root`) | `FA-INV-14` | `0` | Local verify exits `0` (`undetectable_until = "witnessed checkpoints (fa-l3c)"`) |
+
+### Explicit No-Claim Boundary
+An adversary who holds both the book directory and the book's signing keys (`book.keys`) — and faces no external witness holding a previously exported or co-signed `TransparencyCheckpoint` (`fa-l3c`) — can always roll the entire directory back to an older checkpointed snapshot (`T14`) or replace the directory with a freshly generated, self-consistent journal and checkpoint chain (`T15`). Local `fa verify` proves internal consistency of the local store against its own journal and checkpoints; detecting whole-directory rollback or wholesale history replacement requires an out-of-band witnessed checkpoint verified via `fa-verify`.
