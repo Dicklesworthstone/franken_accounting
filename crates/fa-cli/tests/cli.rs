@@ -4056,6 +4056,8 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(true, &["verify", "projections"]).0, 0);
     assert_eq!(run(true, &["verify", "availability"]).0, 0);
     assert_eq!(run(true, &["verify", "schedules"]).0, 0);
+    // FY2026 exists and FY2026-P03 was opened by a journaled transition.
+    assert_eq!(run(true, &["verify", "periods"]).0, 0);
     let more = write(
         &dir,
         "more.json",
