@@ -291,10 +291,10 @@ fn external_document_storage_and_empty_documents_use_the_same_public_export() {
     // policy bound. The public API accepts no caller-selected storage path.
     let large = document(1, 16 * 1024 * 1024 + 17);
     book.add_document(&large).unwrap().unwrap();
-    // Zero bytes are not evidence (FA-REF-083, fa-lp6): intake refuses an
-    // empty document before any write, so it never reaches the export.
-    // Whether an empty document should be recordable for disclosure is an
-    // open owner decision; the established intake law stands meanwhile.
+    // Zero bytes are not evidence (FA-REF-083, fa-lp6, fa-vuhv): intake refuses
+    // an empty document before any write, so it never reaches the export.
+    // Ruling (fa-vuhv): empty documents are non-evidence and remain refused at
+    // intake rather than admitted for 0-piece disclosure.
     let empty = document(1, 0);
     let before = book.head().unwrap();
     let refused = book.add_document(&empty).unwrap().unwrap_err();
