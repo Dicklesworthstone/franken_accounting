@@ -2470,6 +2470,7 @@ const VALID_FORMAT_KINDS: &[&str] = &[
     "tabular_extract",
     "bank_statement",
     "legacy_gl_export",
+    "litigation_load_file",
 ];
 
 const VALID_FORMAT_DIRECTIONS: &[&str] = &["import", "export", "both"];
@@ -2709,7 +2710,7 @@ mod tests {
         assert_eq!(fx_laws.application_difference_kinds.len(), 5);
 
         let formats = Formats::embedded().expect("formats.toml");
-        assert_eq!(formats.rows.len(), 16);
+        assert_eq!(formats.rows.len(), 19);
     }
 
     #[test]

@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 fa-money = { path = "../fa-money", version = "=0.0.1" }
 fa-model = { path = "../fa-model", version = "=0.0.1" }
+fa-time = { path = "../fa-time", version = "=0.0.1" }
 fa-journal = { path = "../fa-journal", version = "=0.0.1" }
 asupersync = { workspace = true }
 fgdb = { workspace = true }
@@ -26,4 +27,3 @@ fgdb-gql = { workspace = true }
 fa-verify = { path = "../fa-verify", version = "=0.0.1" }
 # The register folds are the in-book oracle for the balance proof.
 fa-registers = { path = "../fa-registers", version = "=0.0.1" }
-fa-time = { path = "../fa-time", version = "=0.0.1" }

@@ -216,3 +216,43 @@ certified_coordinate = false
 plan_ref = "§8.6"
 summary = "NetSuite General Ledger Detail CSV legacy export reader feeding MigrationRun chunks with migrated_from provenance and opening-balance attestation."
 
+[[format]]
+id = 17
+name = "concordance_dat_v1"
+kind = "litigation_load_file"
+direction = "export"
+mime = "text/x-concordance-dat"
+extension = "dat"
+oracle_tool = "none"
+round_trip_identity = false
+certified_coordinate = true
+plan_ref = "§11.8, §13.2"
+summary = "Concordance DAT discovery load-file writer with Bates range, confidentiality designation, BLAKE3 document commitment, and redaction status columns."
+
+[[format]]
+id = 18
+name = "opticon_opt_v1"
+kind = "litigation_load_file"
+direction = "export"
+mime = "text/x-opticon-opt"
+extension = "opt"
+oracle_tool = "none"
+round_trip_identity = false
+certified_coordinate = true
+plan_ref = "§11.8, §13.2"
+summary = "Opticon OPT page-level image cross-reference load-file writer paired with Concordance DAT productions."
+
+[[format]]
+id = 19
+name = "edrm_xml_v1"
+kind = "litigation_load_file"
+direction = "export"
+mime = "application/xml"
+extension = "xml"
+oracle_tool = "none"
+round_trip_identity = false
+certified_coordinate = true
+plan_ref = "§11.8, §13.2"
+summary = "EDRM XML v1.2 discovery load-file writer with Bates metadata, confidentiality designations, privilege/redaction tags, and BLAKE3 file hashes."
+
+

@@ -3670,3 +3670,209 @@ fn bundle_limits_refuse_too_many_balances_and_oversized_inline_documents_while_a
     assert_eq!(report.summary.documents, 1);
     assert_eq!(report.summary.inline, 0);
 }
+
+#[test]
+fn litigation_production_multi_matter_bates_privilege_and_fre902_end_to_end() {
+    use fa_notary::{
+        ConfidentialityDesignation, ExhibitMark, LoadFileFormat, MatterProductionRegistry,
+        PrivilegeMetadata, PrivilegeTreatment, ProductionProfile, assemble_matter_package,
+    };
+
+    let mut h = harness();
+    h.post(h.rent, 25_000, b"lit-e1");
+    let cp = h.checkpointed();
+    let (journal, stored_cp) = bundle_basis(&h.db, &h.ctx(), &h.book, &cp.stored, &h.signer)
+        .unwrap()
+        .unwrap();
+
+    let request = BundleRequest {
+        scope: BundleScope::Prefix,
+        balances: vec![BalanceRequest {
+            account: h.rent,
+            unit: h.usd.0,
+            effective_through: None,
+        }],
+        inline_documents: false,
+    };
+
+    let doc_oid = h.evidence[0].document_oid;
+    let original_commit = h.evidence[0].doc_commit;
+    let source_doc = Document {
+        book_id: h.book.book_id,
+        kind: 1,
+        mime: "text/plain".into(),
+        grade: 3,
+        retrieved_by: PRINCIPAL,
+        bytes: b"INVOICE (notary fixture source document)".to_vec(),
+    };
+    let full_doc = Document {
+        book_id: h.book.book_id,
+        kind: 1,
+        mime: "application/pdf".into(),
+        grade: 3,
+        retrieved_by: PRINCIPAL,
+        bytes: vec![b'x'; 8192],
+    };
+    let view = RedactedView::derive(&source_doc, 1, &[(0, 10)]);
+    let mut reads = std::collections::BTreeMap::new();
+    reads.insert(doc_oid, DocumentRead::Redacted(view));
+
+    // Producing the same scope twice against the same checkpoint yields byte-identical .fab bundles.
+    let bundle_1 = fa_notary::bundle::assemble(&journal, &stored_cp, &request, &reads)
+        .unwrap()
+        .unwrap();
+    let bundle_2 = fa_notary::bundle::assemble(&journal, &stored_cp, &request, &reads)
+        .unwrap()
+        .unwrap();
+    assert_eq!(bundle_1.bytes, bundle_2.bytes);
+    assert_eq!(bundle_1.digest, bundle_2.digest);
+
+    let receipt = ProductionReceipt::sign(
+        ReceiptBody {
+            bundle_digest: bundle_1.digest,
+            producer_principal: PRINCIPAL,
+            produced_at_seq: CommitSeq(20),
+            capability_commitment: [0x44; 32],
+            time_evidence_oid: None,
+        },
+        &h.signer,
+    )
+    .unwrap();
+    let receipt_bytes = receipt.canonical_bytes().unwrap();
+    let verify_report = fa_verify::verify_bundle(
+        &bundle_1.bytes,
+        &[h.signer.public_key()],
+        Some(&receipt_bytes),
+    )
+    .unwrap();
+    assert!(
+        verify_report.verified(),
+        "{:#?}",
+        not_passed(&verify_report)
+    );
+
+    let withheld_oid = full_doc.oid();
+    let mut privilege_meta = std::collections::BTreeMap::new();
+    privilege_meta.insert(
+        doc_oid,
+        PrivilegeMetadata {
+            document_oid: doc_oid,
+            doc_commit: original_commit,
+            date: DateDay::from_ymd(2026, 3, 15).unwrap(),
+            author: "Accounts Payable".into(),
+            recipients: vec!["Tax Counsel".into()],
+            description: "Vendor invoice with privileged tax advice annotation".into(),
+            basis: "Attorney-Client Privilege".into(),
+        },
+    );
+    privilege_meta.insert(
+        withheld_oid,
+        PrivilegeMetadata {
+            document_oid: withheld_oid,
+            doc_commit: full_doc.doc_commit(),
+            date: DateDay::from_ymd(2026, 3, 18).unwrap(),
+            author: "Outside Counsel".into(),
+            recipients: vec!["Audit Committee".into()],
+            description: "Litigation exposure memorandum".into(),
+            basis: "Work-Product Doctrine".into(),
+        },
+    );
+
+    let mut registry = MatterProductionRegistry::new();
+    let mut profile_sec =
+        ProductionProfile::new("MATTER-SEC", "ACME-SEC", 1, LoadFileFormat::Both).unwrap();
+    profile_sec
+        .designations
+        .insert(doc_oid, ConfidentialityDesignation::Confidential);
+    registry.register_profile(profile_sec).unwrap();
+    registry
+        .register_profile(
+            ProductionProfile::new("MATTER-CIVIL", "ACME-CIV", 100, LoadFileFormat::EdrmXml)
+                .unwrap(),
+        )
+        .unwrap();
+
+    let mut page_counts = std::collections::BTreeMap::new();
+    page_counts.insert(doc_oid, 4);
+
+    let pkg_sec = assemble_matter_package(
+        "MATTER-SEC",
+        bundle_1.clone(),
+        &stored_cp,
+        receipt.clone(),
+        &h.signer.public_key(),
+        &reads,
+        &page_counts,
+        &[withheld_oid],
+        &privilege_meta,
+        &mut registry,
+    )
+    .unwrap();
+
+    let pkg_civ = assemble_matter_package(
+        "MATTER-CIVIL",
+        bundle_2,
+        &stored_cp,
+        receipt,
+        &h.signer.public_key(),
+        &reads,
+        &page_counts,
+        &[withheld_oid],
+        &privilege_meta,
+        &mut registry,
+    )
+    .unwrap();
+
+    // Document produced in two matters carries both Bates ranges without mutating doc_commit.
+    let doc_bates = registry.bates_for_document(&doc_oid);
+    assert_eq!(doc_bates.len(), 2);
+    assert_eq!(
+        doc_bates[0].range_label(),
+        "ACME-CIV-00000100..=ACME-CIV-00000103"
+    );
+    assert_eq!(
+        doc_bates[1].range_label(),
+        "ACME-SEC-00000001..=ACME-SEC-00000004"
+    );
+    assert_eq!(doc_bates[0].doc_commit, original_commit);
+    assert_eq!(doc_bates[1].doc_commit, original_commit);
+
+    // Exhibit mark binds subject_oid and signed_digest per matter.
+    let mark =
+        ExhibitMark::new(doc_oid, "PX-001", "MATTER-SEC", PRINCIPAL, bundle_1.digest).unwrap();
+    registry.mark_exhibit(mark.clone()).unwrap();
+    assert_eq!(
+        registry.exhibits_for_subject("MATTER-SEC", &doc_oid),
+        vec![mark]
+    );
+
+    // Privilege log contains both the redacted-in-part document and the withheld-in-full document.
+    assert_eq!(pkg_sec.privilege_log.rows.len(), 2);
+    assert!(
+        pkg_sec
+            .privilege_log
+            .rows
+            .iter()
+            .any(|r| r.document_oid == doc_oid
+                && matches!(r.treatment, PrivilegeTreatment::RedactedInPart { .. }))
+    );
+    assert!(pkg_sec.privilege_log.rows.iter().any(
+        |r| r.document_oid == withheld_oid && r.treatment == PrivilegeTreatment::WithheldInFull
+    ));
+
+    // FRE 902(13)/(14) package states technical predicates and matches bundle_digest.
+    assert_eq!(pkg_sec.fre902.matter_id, "MATTER-SEC");
+    assert_eq!(pkg_civ.fre902.matter_id, "MATTER-CIVIL");
+    assert!(
+        pkg_sec
+            .fre902
+            .declaration_template_md
+            .contains(&pkg_sec.fre902.bundle_digest_hex)
+    );
+    assert!(
+        pkg_sec
+            .fre902
+            .declaration_template_md
+            .contains("ACME-SEC-00000001..=ACME-SEC-00000004")
+    );
+}

@@ -41,6 +41,7 @@ pub mod disclosure;
 pub mod journal;
 pub mod migration_balance;
 pub mod prefix;
+pub mod production;
 pub mod scope;
 pub mod sign;
 pub mod state;
@@ -56,6 +57,12 @@ pub use bundle::{
 pub use checkpoint::TransparencyCheckpoint;
 pub use journal::{Journal, Leaf, LeafEnvelope};
 pub use migration_balance::prove_balance_with_migrations;
+pub use production::{
+    BatesAssignment, ConfidentialityDesignation, ExhibitMark, Fre902Package, LoadFileFormat,
+    MatterProductionPackage, MatterProductionRegistry, PrivilegeLog, PrivilegeLogRow,
+    PrivilegeMetadata, PrivilegeTreatment, ProductionError, ProductionProfile,
+    assemble_matter_package,
+};
 pub use scope::{ScopeIndex, ScopeRequest};
 pub use sign::{CheckpointSigner, SigningKey};
 pub use state::{
