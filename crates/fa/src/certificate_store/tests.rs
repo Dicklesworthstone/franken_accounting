@@ -460,4 +460,92 @@ fn invalid_full_certificate_is_refused_before_any_storage_publication() {
     );
 }
 
+/// Stage a pre-fragment `fa:certificate-external:v1` root, which reads still
+/// accept, after optionally placing `blob` under the certificate's locator.
+fn publish_legacy_external(h: &mut Harness, certificate: &ReportCertificate, blob: Option<&[u8]>) {
+    let size = certificate.canonical_bytes().unwrap().len() as u64;
+    let cx = h.cx();
+    if let Some(bytes) = blob {
+        h.runtime
+            .block_on(
+                h.book
+                    .blobs
+                    .put(&cx.commit(), &locator(&certificate.digest), bytes),
+            )
+            .unwrap();
+    }
+    let mut batch = WriteBatch::new(relation::DERIVED_FROM);
+    stage_record(
+        &mut batch,
+        h.book.context(),
+        &certificate.digest,
+        certificate_vid(BOOK, &certificate.digest),
+        external_record(h.book.blobs.id(), size).unwrap(),
+    )
+    .unwrap();
+    h.write(batch);
+}
+
+#[test]
+fn legacy_external_records_still_verify_and_never_repair_missing_or_changed_blobs() {
+    let (mut h, certificate) = Harness::populated();
+    let canonical = certificate.canonical_bytes().unwrap();
+    publish_legacy_external(&mut h, &certificate, Some(&canonical));
+    let head = h.head();
+    assert_eq!(h.read(&certificate.digest).unwrap(), certificate);
+    assert_eq!(h.retain(&certificate).unwrap().recorded_at, head);
+    assert_eq!(h.head(), head, "an exact retry publishes nothing");
+
+    for damage in ["missing", "changed-digest", "overlong", "truncated"] {
+        let (mut h, certificate) = Harness::populated();
+        let canonical = certificate.canonical_bytes().unwrap();
+        let blob = match damage {
+            "missing" => None,
+            "changed-digest" => {
+                let mut bytes = canonical.clone();
+                *bytes.last_mut().unwrap() ^= 1;
+                Some(bytes)
+            }
+            "overlong" => {
+                let mut bytes = canonical.clone();
+                bytes.push(0);
+                Some(bytes)
+            }
+            _ => Some(canonical[..canonical.len() - 1].to_vec()),
+        };
+        let (code, exit_class) = if blob.is_none() {
+            (fa_journal::refusal::code::BLOB_MISSING, exit::FOUNDATION)
+        } else {
+            (
+                crate::certificate::code::CERTIFICATE_INVALID,
+                exit::VERIFICATION,
+            )
+        };
+        publish_legacy_external(&mut h, &certificate, blob.as_deref());
+        let head = h.head();
+        for refusal in [
+            h.read(&certificate.digest).unwrap_err(),
+            h.retain(&certificate).unwrap_err(),
+        ] {
+            assert_eq!(refusal.code, code, "{damage}");
+            assert_eq!(refusal.exit, exit_class, "{damage}");
+        }
+        assert_eq!(
+            h.head(),
+            head,
+            "{damage}: a refused retry publishes nothing"
+        );
+        let cx = h.cx();
+        let stored = h
+            .runtime
+            .block_on(h.book.blobs.get(
+                &cx.query(),
+                &locator(&certificate.digest),
+                canonical.len() as u64 + 1,
+            ))
+            .unwrap();
+        assert_eq!(stored, blob, "{damage}: no silent repair of the blob store");
+    }
+}
+
 mod adversarial;
