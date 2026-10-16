@@ -23,6 +23,8 @@ from urllib.parse import parse_qs, urlsplit
 import webbrowser
 
 import reports
+import certificates
+import proof_lab
 
 ROOT = Path(__file__).resolve().parent
 MAX_OUTPUT = 16 * 1024 * 1024
@@ -40,6 +42,12 @@ STATIC = {
     "/reporting.mjs": ("reporting.mjs", "text/javascript; charset=utf-8"),
     "/report-model.mjs": ("report-model.mjs", "text/javascript; charset=utf-8"),
     "/reports.css": ("reports.css", "text/css; charset=utf-8"),
+    "/proofs.html": ("proofs.html", "text/html; charset=utf-8"),
+    "/proofs.mjs": ("proofs.mjs", "text/javascript; charset=utf-8"),
+    "/proofs.css": ("proofs.css", "text/css; charset=utf-8"),
+    "/proof-lab.html": ("proof-lab.html", "text/html; charset=utf-8"),
+    "/proof-lab.mjs": ("proof-lab.mjs", "text/javascript; charset=utf-8"),
+    "/proof-lab.css": ("proof-lab.css", "text/css; charset=utf-8"),
 }
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; "
        "connect-src 'self'; img-src 'self' data:; font-src 'self'; "
@@ -190,6 +198,38 @@ class NativeSource:
         self.book_id = book_id
         return answer
 
+    def call_one_of(self, argv: list[str], expected: tuple[str, ...]) -> dict[str, Any]:
+        """Return exactly one allowed success event from one native invocation."""
+        code, stdout, _stderr = run_bounded(self.base + argv, self.timeout)
+        try:
+            events = [json.loads(line, parse_float=reject_float, parse_constant=reject_float,
+                                 object_pairs_hook=unique_object)
+                      for line in stdout.decode("utf-8").splitlines() if line.strip()]
+        except (UnicodeError, ValueError) as error:
+            raise DashboardError("fa did not return valid UTF-8 robot-mode JSON.") from error
+        if not events or any(not isinstance(e, dict) or type(e.get("v")) is not int or e.get("v") != 1 or
+                             not isinstance(e.get("data"), dict) for e in events):
+            raise DashboardError("Unsupported or missing fa robot envelope; this dashboard needs v1.")
+        failures = [e for e in events if e.get("event") == "error"]
+        matches = [e for e in events if e.get("event") in expected]
+        if code != 0 or failures:
+            detail = failures[0]["data"] if failures else {"exit": code}
+            raise DashboardError("The native replay was refused or failed.", 502, detail)
+        if len(matches) != 1:
+            raise DashboardError("Native replay did not return exactly one supported certified report.")
+        answer = matches[0]
+        coordinate = answer.get("coordinate")
+        book_id = answer.get("book")
+        if not isinstance(coordinate, dict) or coordinate.get("branch") != "trunk" or \
+                isinstance(coordinate.get("known_at"), bool) or not isinstance(coordinate.get("known_at"), int):
+            raise DashboardError("Native replay did not identify an exact trunk coordinate.")
+        if not isinstance(book_id, str) or not re.fullmatch(r"[0-9a-f]{32}", book_id):
+            raise DashboardError("Native replay did not identify its book.")
+        if self.book_id is not None and book_id != self.book_id:
+            raise DashboardError("The book changed during this session. Restart the dashboard.", 409)
+        self.book_id = book_id
+        return answer
+
     @staticmethod
     def pin(event: dict[str, Any], known_at: str) -> str:
         coordinate = event["coordinate"]["known_at"]
@@ -334,7 +374,7 @@ class Handler(BaseHTTPRequestHandler):
             params = {key: val[0] for key, val in values.items()}
             allowed = {"/api/bootstrap": set(), "/api/overview": {"period", "known_at"},
                        "/api/account": {"account", "period", "known_at"}, "/api/entry": {"vid"},
-                       "/api/health": set(), "/api/projections": set(), **reports.ROUTES}
+                       "/api/health": set(), "/api/projections": set(), **reports.ROUTES, **certificates.ROUTES, **proof_lab.ROUTES}
             if target.path not in allowed:
                 raise DashboardError("Not found.", 404)
             if set(params) - allowed[target.path]:
@@ -343,7 +383,11 @@ class Handler(BaseHTTPRequestHandler):
                 raise DashboardError("Another native read is running. Try again after it completes.", 429)
             try:
                 source = self.server.source
-                if target.path in reports.ROUTES:
+                if target.path in proof_lab.ROUTES:
+                    result = proof_lab.dispatch(source, target.path, params, DashboardError)
+                elif target.path in certificates.ROUTES:
+                    result = certificates.dispatch(source, target.path, params, DashboardError)
+                elif target.path in reports.ROUTES:
                     result = reports.dispatch(source, target.path, params, DashboardError)
                 elif target.path == "/api/bootstrap":
                     result = source.bootstrap()

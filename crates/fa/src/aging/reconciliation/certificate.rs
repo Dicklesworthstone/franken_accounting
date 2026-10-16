@@ -11,7 +11,7 @@ use crate::{ReportCertificate, ReportOutput, ReportSelection, TrialBalanceSelect
 mod workpaper;
 
 pub const MAX_AGING_RECONCILIATION_BYTES: usize = 64 * 1024 * 1024;
-const FORMAT: &[u8] = b"fa:aging-reconciliation-certificate:v1";
+pub const AGING_RECONCILIATION_CERTIFICATE_FORMAT: &[u8] = b"fa:aging-reconciliation-certificate:v1";
 const OUTPUT: &[u8] = b"fa:aging-control-reconciliation:v1";
 const DIGEST: &[u8] = b"fa:aging-reconciliation-digest:v1";
 
@@ -217,7 +217,7 @@ impl AgingReconciliationCertificate {
         ReportCertificate::decode(&control)?;
         let size = bounded([
             4,
-            FORMAT.len(),
+            AGING_RECONCILIATION_CERTIFICATE_FORMAT.len(),
             16,
             32,
             4,
@@ -229,7 +229,7 @@ impl AgingReconciliationCertificate {
             32,
         ])?;
         let mut w = Writer::with_capacity(size);
-        w.bytes(FORMAT)
+        w.bytes(AGING_RECONCILIATION_CERTIFICATE_FORMAT)
             .u128(self.producer.0)
             .fixed(&self.capability_commitment)
             .bytes(&aging)
@@ -272,7 +272,7 @@ impl AgingReconciliationCertificate {
         let malformed =
             |e: DecodeError| invalid(format!("malformed reconciliation certificate: {e}"));
         let mut r = Reader::new(bytes);
-        if r.bytes(64, "reconciliation format").map_err(malformed)? != FORMAT {
+        if r.bytes(64, "reconciliation format").map_err(malformed)? != AGING_RECONCILIATION_CERTIFICATE_FORMAT {
             return Err(invalid("unsupported reconciliation certificate format"));
         }
         let producer = VId(r.u128("reconciliation producer").map_err(malformed)?);

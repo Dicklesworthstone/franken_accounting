@@ -207,7 +207,8 @@ pub(crate) struct Cycle {
 /// drops this state; no worker, thread, or background task outlives it.
 pub struct TimedWork {
     policy: Policy,
-    capability: Capability,
+    // System authority exists only after explicit --bootstrap-system.
+    capability: Option<Capability>,
     judge: Judge,
     next: Option<Time>,
     cycles: u64,
@@ -241,7 +242,7 @@ impl TimedWork {
             .map_err(|e| TimedError::Authority(e.to_string()))?;
         Ok(Self {
             policy,
-            capability,
+            capability: Some(capability),
             judge: Judge::new(policy.clock_drift_ns),
             next: Some(now),
             cycles: 0,
@@ -250,6 +251,37 @@ impl TimedWork {
             error: None,
             registers: None,
         })
+    }
+
+    /// Run derived-cache maintenance without granting System authority or
+    /// enabling TimeEvidence, expiries, or reversals.
+    pub fn maintenance_only(
+        cx: &Cx,
+        policy: Policy,
+        periods: Vec<String>,
+    ) -> Result<Self, registers::ConfigurationError> {
+        policy.validate().map_err(|_| registers::ConfigurationError("invalid daemon maintenance policy"))?;
+        let now = clock::timer(cx)
+            .map_err(|_| registers::ConfigurationError("register maintenance requires a timer capability"))?
+            .now();
+        let next = clock::deadline_after(now, policy.tick_ns)
+            .map_err(|_| registers::ConfigurationError("register maintenance deadline overflow"))?;
+        Ok(Self {
+            policy,
+            capability: None,
+            judge: Judge::new(policy.clock_drift_ns),
+            next: Some(next),
+            cycles: 0,
+            last_tick_utc_ns: None,
+            last_tick_monotonic_ok: None,
+            error: None,
+            registers: Some(registers::RegisterWork::new(periods)?),
+        })
+    }
+
+    #[must_use]
+    pub fn timing_enabled(&self) -> bool {
+        self.capability.is_some()
     }
 
     /// Explicit local-launch selection of derived period maintenance. No
@@ -278,8 +310,19 @@ impl TimedWork {
     }
 
     pub(crate) async fn run_due(&mut self, cx: &Cx, book: &mut Book) {
-        let sample = SystemClock.observe(cx);
-        let _ = self.run_maintained_observation(cx, book, sample).await;
+        if self.capability.is_some() {
+            let sample = SystemClock.observe(cx);
+            let _ = self.run_maintained_observation(cx, book, sample).await;
+            return;
+        }
+        if cx.checkpoint().is_err() {
+            self.next = None;
+            return;
+        }
+        if let Some(registers) = self.registers.as_mut() {
+            registers.run_cycle(cx, book).await;
+        }
+        let _ = self.schedule_next(cx);
     }
 
     /// One shared production/lab path. Cache maintenance is independent of
@@ -345,9 +388,12 @@ impl TimedWork {
         sample: Observation,
     ) -> Result<Cycle, TimedError> {
         clock::timer(cx)?;
+        let capability = self.capability.as_ref().ok_or_else(|| {
+            TimedError::Authority("timed accounting effects are disabled".into())
+        })?;
         let corroborated = self.judge.observe(sample)?;
         let ticked = admitted(
-            book.record_tick(cx, sample.utc_ns, corroborated, &self.capability)
+            book.record_tick(cx, sample.utc_ns, corroborated, capability)
                 .await,
         )?;
         // An idempotent retry may return an old tick. It is not current
@@ -368,14 +414,14 @@ impl TimedWork {
         // current capability policy inside their own transactions.
         cx.checkpoint().map_err(|_| ClockError::Cancelled)?;
         if let Some(batch) = admitted(
-            book.sweep_expiry(cx, &self.capability, self.policy.sweep_batch)
+            book.sweep_expiry(cx, capability, self.policy.sweep_batch)
                 .await,
         )? {
             cycle.expired = batch.expired.len();
         }
         cx.checkpoint().map_err(|_| ClockError::Cancelled)?;
         if let Some(batch) = admitted(
-            book.sweep_reversals(cx, &self.capability, self.policy.sweep_batch)
+            book.sweep_reversals(cx, capability, self.policy.sweep_batch)
                 .await,
         )? {
             cycle.reversed = batch.minted.len();
@@ -390,23 +436,31 @@ impl TimedWork {
 pub fn status_fields(work: Option<&TimedWork>) -> Vec<(&'static str, Json)> {
     let number = |n: Option<u64>| n.map_or(Json::Null, |n| Json::Int(i128::from(n)));
     vec![
-        ("timed_work_enabled", Json::Bool(work.is_some())),
+        (
+            "timed_work_enabled",
+            Json::Bool(work.is_some_and(TimedWork::timing_enabled)),
+        ),
         (
             "timed_authority",
-            work.map_or(Json::Null, |_| s("trusted-local-book-keys")),
+            work.filter(|w| w.timing_enabled())
+                .map_or(Json::Null, |_| s("trusted-local-book-keys")),
         ),
-        ("tick_ns", number(work.map(|w| w.policy.tick_ns))),
+        (
+            "tick_ns",
+            number(work.filter(|w| w.timing_enabled()).map(|w| w.policy.tick_ns)),
+        ),
         (
             "sweep_batch",
-            work.map_or(Json::Null, |w| Json::Int(w.policy.sweep_batch as i128)),
+            work.filter(|w| w.timing_enabled())
+                .map_or(Json::Null, |w| Json::Int(w.policy.sweep_batch as i128)),
         ),
         (
             "clock_drift_ns",
-            number(work.map(|w| w.policy.clock_drift_ns)),
+            number(work.filter(|w| w.timing_enabled()).map(|w| w.policy.clock_drift_ns)),
         ),
         (
             "timed_cycles",
-            Json::Int(i128::from(work.map_or(0, |w| w.cycles))),
+            Json::Int(i128::from(work.filter(|w| w.timing_enabled()).map_or(0, |w| w.cycles))),
         ),
         (
             "last_tick_utc_ns",
@@ -435,15 +489,19 @@ pub fn status_text(work: Option<&TimedWork>) -> String {
     let Some(work) = work else {
         return "timed work disabled".into();
     };
-    let grade = match work.last_tick_monotonic_ok {
-        None => "awaiting first observation",
-        Some(false) => "last tick uncorroborated; no automatic expiry or reversal effects",
-        Some(true) => "last tick corroborated by the local monotonic clock",
+    let mut text = if work.timing_enabled() {
+        let grade = match work.last_tick_monotonic_ok {
+            None => "awaiting first observation",
+            Some(false) => "last tick uncorroborated; no automatic expiry or reversal effects",
+            Some(true) => "last tick corroborated by the local monotonic clock",
+        };
+        format!(
+            "timed work uses trusted-local book-key System bootstrap; interval {} ns, at most {} expiry and {} reversal effects per cycle; {grade}",
+            work.policy.tick_ns, work.policy.sweep_batch, work.policy.sweep_batch,
+        )
+    } else {
+        "timed accounting effects disabled; no System authority was bootstrapped".into()
     };
-    let mut text = format!(
-        "timed work uses trusted-local book-key System bootstrap; interval {} ns, at most {} expiry and {} reversal effects per cycle; {grade}",
-        work.policy.tick_ns, work.policy.sweep_batch, work.policy.sweep_batch,
-    );
     if let Some(error) = &work.error {
         text.push_str(&format!("; last cycle refused: {error}"));
     }

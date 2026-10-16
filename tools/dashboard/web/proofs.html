@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer"><title>FrankenAccounting · Certificate desk</title>
+<link rel="icon" href="data:,"><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/proofs.css">
+<script type="module" src="/proofs.mjs"></script></head>
+<body class="proof-page">
+<aside class="proof-rail">
+  <a class="proof-brand" href="/"><span class="proof-mark">f∴</span><span>franken<strong>ACCOUNTING</strong></span></a>
+  <a class="proof-back" href="/">← Ledger workbench</a>
+  <div class="proof-kicker">OUTSIDER-VERIFIABLE HISTORY</div>
+  <h1>Certificate<br>desk.</h1>
+  <p>Inspect what a retained report said, when it said it, and whether later entries now affect the same selector.</p>
+  <div class="proof-rail-note"><span class="status-dot"></span><span><strong>Read-only replay</strong><small>No report is regenerated from today's frontier.</small></span></div>
+</aside>
+<main class="proof-main">
+  <header class="proof-topbar"><div><span class="eyebrow">RETAINED REPORT CERTIFICATES</span><strong id="book-title">Local workspace</strong></div><div class="proof-top-actions"><a class="proof-link" href="/proof-lab.html">Proof lab</a><span id="mode-chip" class="proof-chip">LOCAL</span><button id="theme" class="proof-icon" aria-label="Switch theme">◐</button></div></header>
+  <section id="demo-warning" class="proof-warning" hidden><strong>SYNTHETIC PREVIEW</strong><span>No native certificate is being verified. The sample exists to demonstrate the interaction.</span></section>
+  <section class="proof-hero">
+    <div><span class="eyebrow">ONE ARTIFACT · TWO QUESTIONS</span><h2>What did the report say then?<br><em>Does it still describe the same selector now?</em></h2><p>Replay preserves the original recorded snapshot. Status checks today's book for later entries that affect that selector. They are deliberately separate claims.</p></div>
+    <form id="certificate-form" class="proof-search"><label for="oid">Certificate OID</label><div><input id="oid" spellcheck="false" autocomplete="off" placeholder="C:64-hex retained certificate"><button>Inspect</button></div><small>Paste the retained certificate digest from a <code>report_certificate</code> event.</small></form>
+  </section>
+  <div id="message" role="alert" hidden></div>
+  <section id="result" class="proof-empty"><div class="proof-orbit">◎</div><h2>A report that remembers its own past.</h2><p>Enter a retained certificate to compare its original known-at coordinate with the current book, then replay the original result byte-for-byte through the native engine.</p></section>
+  <footer class="proof-footer"><span>LOCAL OWNER WORKSPACE · PRESENTATION ONLY</span><span>No certificate creation · no posting · no implied third-party trust anchor</span></footer>
+</main>
+<dialog id="entry-dialog" class="proof-dialog"><button id="entry-close" class="proof-close" aria-label="Close">×</button><div id="entry-content"></div></dialog>
+</body></html>

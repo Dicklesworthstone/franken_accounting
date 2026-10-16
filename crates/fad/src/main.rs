@@ -119,11 +119,11 @@ fn run(argv: &[String]) -> u8 {
         .map(str::to_owned)
         .collect();
     if !register_periods.is_empty() {
-        if verb != Some("serve") || !parsed.switch("--bootstrap-system") {
+        if verb != Some("serve") {
             return cli::usage_error(
                 argv,
-                "--register-period requires an explicit local System bootstrap for serve",
-                "fad serve --book <dir> --bootstrap-system --register-period <code>",
+                "--register-period is a local daemon launch choice for serve",
+                "fad serve --book <dir> --register-period <code>",
                 false,
             )
             .0;
@@ -241,32 +241,31 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
         Err(e) => return cli::foundation_error(argv, format!("runtime: {e:?}"), false).0,
     };
     let cx = runtime.request_cx_with_budget(Budget::INFINITE);
-    let timed = if parsed.switch("--bootstrap-system") {
+    let periods: Vec<String> = parsed
+        .flag_all("--register-period")
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let timed = if parsed.switch("--bootstrap-system") || !periods.is_empty() {
         let policy = match fad::timed::Policy::from_registry(d) {
             Ok(policy) => policy,
             Err(error) => return cli::foundation_error(argv, error.to_string(), false).0,
         };
-        match fad::timed::TimedWork::bootstrap(&cx, &book, policy) {
-            Ok(work) => {
-                let periods: Vec<String> = parsed
-                    .flag_all("--register-period")
-                    .into_iter()
-                    .map(str::to_owned)
-                    .collect();
-                if periods.is_empty() {
-                    Some(work)
-                } else {
-                    match work.with_register_maintenance(periods) {
-                        Ok(work) => Some(work),
-                        Err(error) => {
-                            return cli::foundation_error(argv, error.to_string(), false).0;
-                        }
-                    }
-                }
+        if parsed.switch("--bootstrap-system") {
+            match fad::timed::TimedWork::bootstrap(&cx, &book, policy) {
+                Ok(work) if periods.is_empty() => Some(work),
+                Ok(work) => match work.with_register_maintenance(periods) {
+                    Ok(work) => Some(work),
+                    Err(error) => return cli::foundation_error(argv, error.to_string(), false).0,
+                },
+                // Explicit timed accounting effects never silently fall back.
+                Err(error) => return cli::foundation_error(argv, error.to_string(), false).0,
             }
-            // An explicit request for timed work never silently falls back
-            // to an unconfigured server if authority or time is absent.
-            Err(error) => return cli::foundation_error(argv, error.to_string(), false).0,
+        } else {
+            match fad::timed::TimedWork::maintenance_only(&cx, policy, periods) {
+                Ok(work) => Some(work),
+                Err(error) => return cli::foundation_error(argv, error.to_string(), false).0,
+            }
         }
     } else {
         None
