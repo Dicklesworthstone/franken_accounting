@@ -15,8 +15,8 @@
 //!
 //! This slice journals nothing: projections and findings are derived values,
 //! rebuildable from the journal and never more authoritative than it
-//! (FA-INV-04). Journaled `Finding` vertices with `CITES` edges, the
-//! `fa lantern run` verb and the graph procedures over `fnx` are the next
+//! (FA-INV-04). The CLI surface is `fa procedure` (`list` and `run`), and
+//! journaled `Finding` vertices with `CITES` edges are tracked in follow-on
 //! slices of fa-nlu.
 
 #![forbid(unsafe_code)]
@@ -89,6 +89,34 @@ pub enum LanternError {
     },
     /// A sum or statistic exceeded its declared bound.
     Overflow(&'static str),
+    /// A procedure exceeded its declared work budget.
+    BudgetExhausted {
+        procedure: String,
+        used: u64,
+        budget: u64,
+        fix: String,
+    },
+}
+
+impl LanternError {
+    /// Actionable fix hint for CLI and MCP surfaces (plan §15.3).
+    #[must_use]
+    pub fn fix_hint(&self) -> Option<String> {
+        match self {
+            Self::Unregistered { .. } => {
+                Some("fa procedure list --json names every registered procedure id".into())
+            }
+            Self::Parameter { .. } => Some(
+                "fa procedure list --json shows each procedure's registered parameters and inputs"
+                    .into(),
+            ),
+            Self::Overflow(_) => {
+                Some("narrow the coordinate with --effective-through YYYY-MM-DD".into())
+            }
+            Self::BudgetExhausted { fix, .. } => Some(fix.clone()),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for LanternError {
@@ -121,6 +149,15 @@ impl fmt::Display for LanternError {
                 message,
             } => write!(f, "procedure `{procedure}` parameter `{name}`: {message}"),
             Self::Overflow(what) => write!(f, "lantern bound exceeded: {what}"),
+            Self::BudgetExhausted {
+                procedure,
+                used,
+                budget,
+                fix,
+            } => write!(
+                f,
+                "procedure `{procedure}` exhausted its work budget ({used} > {budget} work units); fix: {fix}"
+            ),
         }
     }
 }
@@ -497,6 +534,14 @@ impl Work {
         self.comparisons = self.comparisons.saturating_add(n);
     }
 
+    /// Total work units counted (`entries + legs + comparisons`).
+    #[must_use]
+    pub fn total(&self) -> u64 {
+        self.entries
+            .saturating_add(self.legs)
+            .saturating_add(self.comparisons)
+    }
+
     /// Whether the recorded operation counts satisfy the procedure's
     /// registered complexity class from `registries/procedures.toml` over
     /// `snapshot` (never a quadratic `n²` fallback).
@@ -655,6 +700,16 @@ pub fn run_over(
     book: &BookContext,
     procedure: &dyn Procedure,
 ) -> Result<ProcedureRun, LanternError> {
+    run_over_with_budget(snapshot, book, procedure, None)
+}
+
+/// Run `procedure` over an already-read snapshot with an explicit work budget.
+pub fn run_over_with_budget(
+    snapshot: &Snapshot,
+    book: &BookContext,
+    procedure: &dyn Procedure,
+    budget: Option<u64>,
+) -> Result<ProcedureRun, LanternError> {
     let row = bind(procedure.id())?;
     if row.version != procedure.version() {
         return Err(LanternError::Version {
@@ -695,6 +750,16 @@ pub fn run_over(
     };
     let mut work = Work::default();
     let mut findings = procedure.run(snapshot, book, &mut work)?;
+    if let Some(limit) = budget
+        && work.total() > limit
+    {
+        return Err(LanternError::BudgetExhausted {
+            procedure: row.id,
+            used: work.total(),
+            budget: limit,
+            fix: "narrow the coordinate with --effective-through YYYY-MM-DD or increase the work budget".into(),
+        });
+    }
     for f in &findings {
         f.check(&row.id, row.version)?;
     }
@@ -830,6 +895,7 @@ mod tests {
             include_str!("lib.rs"),
             include_str!("snapshot.rs"),
             include_str!("projection.rs"),
+            include_str!("projection/transport.rs"),
             include_str!("jet.rs"),
             include_str!("duplicates.rs"),
             include_str!("numbers.rs"),

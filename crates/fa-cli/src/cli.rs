@@ -1273,13 +1273,17 @@ fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
                 }
             } else {
                 let code = e.exit();
+                let fix = match &e {
+                    BookError::Lantern(le) => le.fix_hint(),
+                    _ => None,
+                };
                 Failure {
                     exit: code,
                     refusal_id: None,
                     diag: format!("error (exit {code}): {e}"),
                     message: e.to_string(),
                     cite: None,
-                    fix: None,
+                    fix,
                     detail: Json::Null,
                 }
             }

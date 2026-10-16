@@ -1024,8 +1024,10 @@ fn projections_conserve_credits_under_the_allocation_law() {
     ];
     h.post(&a);
     // 0.50 from Cash and 0.50 from Payables to Rent 0.33, Utilities 0.33,
-    // Receivables 0.34: each credit allocates 16.5/16.5/17 cents, and the
-    // largest-remainder law hands the residual cent to the lowest index.
+    // Receivables 0.34: capacity-conserving largest-remainder allocation sorts
+    // both sides by VId and allocates each credit against remaining debit
+    // capacity so both credit margins (50, 50) and debit margins (33, 33, 34)
+    // reconcile exactly.
     let mut b = Spec::simple(day(2026, 1, 13), "6000", "1000", 100);
     b.legs = vec![
         ("6000", Side::Debit, 33),
@@ -1045,8 +1047,8 @@ fn projections_conserve_credits_under_the_allocation_law() {
             .find(|e| e.from == h.account(from) && e.to == h.account(to))
             .map(|e| (e.mantissa, e.contributions, e.period.clone()))
     };
-    assert_eq!(edge("1000", "6000"), Some((3000 + 17, 2, jan.clone())));
-    assert_eq!(edge("1000", "7000"), Some((7000 + 16, 2, jan.clone())));
+    assert_eq!(edge("1000", "6000"), Some((3000 + 16, 2, jan.clone())));
+    assert_eq!(edge("1000", "7000"), Some((7000 + 17, 2, jan.clone())));
     assert_eq!(edge("1000", "1200"), Some((17, 1, jan.clone())));
     assert_eq!(edge("2000", "6000"), Some((17, 1, jan.clone())));
     assert_eq!(edge("2000", "7000"), Some((16, 1, jan.clone())));
@@ -1057,6 +1059,16 @@ fn projections_conserve_credits_under_the_allocation_law() {
         10_000 + 100,
         "every credit cent lands on one debit account"
     );
+    let debit_total = |to: &str| -> i128 {
+        flow.edges
+            .iter()
+            .filter(|e| e.to == h.account(to))
+            .map(|e| e.mantissa)
+            .sum()
+    };
+    assert_eq!(debit_total("6000"), 3000 + 33);
+    assert_eq!(debit_total("7000"), 7000 + 33);
+    assert_eq!(debit_total("1200"), 34);
     assert_eq!(
         money_flow(&snapshot.with_entries_reversed())
             .unwrap()
@@ -2469,7 +2481,14 @@ fn fa_gen_labeled_scenario_corpora_calibrate_lantern_procedures() {
         runtime
             .block_on(async {
                 install_chart(
-                    &mut db, &ctx, &book, &chart, PREPARER, jan1, b"gen-chart", chart_desc,
+                    &mut db,
+                    &ctx,
+                    &book,
+                    &chart,
+                    PREPARER,
+                    jan1,
+                    b"gen-chart",
+                    chart_desc,
                 )
                 .await
             })
@@ -2636,8 +2655,8 @@ fn fa_gen_labeled_scenario_corpora_calibrate_lantern_procedures() {
             }
         };
 
-        for idx in 0..corpus.entries.len() {
-            if !corpus.entries[idx].post_after_soft_close {
+        for (idx, ge) in corpus.entries.iter().enumerate() {
+            if !ge.post_after_soft_close {
                 post_idx(idx, &mut db);
             }
         }
@@ -2670,14 +2689,13 @@ fn fa_gen_labeled_scenario_corpora_calibrate_lantern_procedures() {
                 .unwrap()
                 .unwrap();
         }
-        for idx in 0..corpus.entries.len() {
-            if corpus.entries[idx].post_after_soft_close {
+        for (idx, ge) in corpus.entries.iter().enumerate() {
+            if ge.post_after_soft_close {
                 post_idx(idx, &mut db);
             }
         }
 
-        let mut snapshot =
-            Snapshot::read(&db, &book, None, Some(corpus.snapshot_cutoff)).unwrap();
+        let mut snapshot = Snapshot::read(&db, &book, None, Some(corpus.snapshot_cutoff)).unwrap();
         for (idx, ge) in corpus.entries.iter().enumerate() {
             if ge.self_approve {
                 let target_vid = posted_vids[idx];
@@ -2696,13 +2714,7 @@ fn fa_gen_labeled_scenario_corpora_calibrate_lantern_procedures() {
                         [78; 32],
                         [78; 24],
                     );
-                    let mig_id = Erasable::seal(
-                        &ge.key,
-                        None,
-                        &book.seal_key,
-                        [79; 32],
-                        [79; 24],
-                    );
+                    let mig_id = Erasable::seal(&ge.key, None, &book.seal_key, [79; 32], [79; 24]);
                     se.entry.proposal.origin = EntryOrigin::Migration {
                         run_ref: VId(900),
                         source_system: "legacy_erp".into(),
@@ -2758,4 +2770,276 @@ fn fa_gen_labeled_scenario_corpora_calibrate_lantern_procedures() {
             }
         }
     }
+}
+
+/// fa-jt7p defects 4 & 7:
+/// - A `duplicates.same_same_same` group larger than `MAX_CITES` (4,096)
+///   truncates its citation list to `MAX_CITES` while preserving the full
+///   group count in `statistic.value` and passing `Finding::check`.
+/// - `jet.thin_descriptions` counts and reports descriptions that cannot be
+///   opened under the book's seal key as `unreadable_descriptions` (`Info`),
+///   never silently skipping them or misreporting them as thin.
+#[test]
+fn large_duplicate_group_truncates_cites_to_max_cites_and_unreadable_descriptions_are_counted() {
+    let mut h = harness();
+    let base = h.snapshot();
+    let jan = h.period_code(day(2026, 1, 15));
+    let usd = h.usd;
+
+    let template = make_snapshot_entry(
+        &mut h,
+        VId(50_000),
+        CommitSeq(100),
+        day(2026, 1, 15),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("6000", Side::Debit, usd, 10_000),
+            ("1000", Side::Credit, usd, 10_000),
+        ],
+        Vec::new(),
+        None,
+        None,
+        None,
+        Vec::new(),
+    );
+
+    let group_size = fa_lantern::MAX_CITES + 10;
+    let mut snapshot = base.clone();
+    snapshot.entries = (0..group_size)
+        .map(|i| {
+            let mut e = template.clone();
+            e.vid = VId(50_000 + i as u128);
+            e.recorded_at = CommitSeq(100 + i as u64);
+            e
+        })
+        .collect();
+
+    let sss = run_over(&snapshot, &h.book, &SameSameSame::new().unwrap()).expect(
+        "a duplicate group larger than MAX_CITES must succeed without overflowing Finding::check",
+    );
+    assert_eq!(sss.findings.len(), 1);
+    assert_eq!(sss.findings[0].statistic.value, group_size as i128);
+    assert_eq!(sss.findings[0].cites.len(), fa_lantern::MAX_CITES);
+    assert!(
+        sss.findings[0]
+            .narrative
+            .contains("(the first 4096 by entry id cited)")
+    );
+
+    // Unreadable description: sealed under a foreign key.
+    let mut foreign = template.clone();
+    foreign.vid = VId(99_001);
+    foreign.recorded_at = CommitSeq(9_001);
+    foreign.entry.proposal.description = Erasable::seal(
+        &"foreign-sealed description".to_string(),
+        None,
+        &SealKey([0xEE; 32]),
+        [1; 32],
+        [2; 24],
+    );
+    let mut thin_snap = base;
+    thin_snap.entries = vec![template, foreign];
+    let td = run_over(&thin_snap, &h.book, &ThinDescriptions::new().unwrap()).unwrap();
+    assert_eq!(td.findings.len(), 1);
+    assert_eq!(td.findings[0].severity, Severity::Info);
+    assert_eq!(td.findings[0].statistic.name, "unreadable_descriptions");
+    assert_eq!(td.findings[0].statistic.value, 1);
+    assert_eq!(td.findings[0].statistic.population, 2);
+    assert_eq!(td.findings[0].cites, vec![Cite::Entry(VId(99_001))]);
+    assert!(
+        td.findings[0]
+            .narrative
+            .contains("counted as unreadable, not thin")
+    );
+}
+
+/// fa-jt7p defect 5 & budget exhaustion:
+/// - `benford.first_digit` falls back to MAD-only when the eligible leg
+///   population exceeds `MAX_POPULATION` (1,000,000), succeeding instead of
+///   failing with an overflow error.
+/// - `run_over_with_budget` refuses with `LanternError::BudgetExhausted` and an
+///   actionable `fix_hint` when the work counter exceeds the caller's budget.
+#[test]
+fn benford_mad_fallback_above_one_million_legs_and_budget_exhaustion_refusal() {
+    let mut h = harness();
+    let mut snapshot = h.snapshot();
+    let jan = h.period_code(day(2026, 1, 15));
+    let usd = h.usd;
+
+    // Build 1,001 entries each with 1,000 USD debit legs (+ 1 balancing credit leg)
+    // = 1,001,000 eligible debit legs (> MAX_POPULATION = 1,000,000).
+    let mut legs = Vec::with_capacity(1_001);
+    for d in 0..1_000usize {
+        let lead = (d % 9 + 1) as i128;
+        legs.push(LegPayload::simple(
+            Side::Debit,
+            h.account("6000"),
+            Amount::new(usd, lead * 100),
+        ));
+    }
+    let total_debit: i128 = legs.iter().map(|l| l.amount.mantissa).sum();
+    legs.push(LegPayload::simple(
+        Side::Credit,
+        h.account("1000"),
+        Amount::new(usd, total_debit),
+    ));
+
+    let mut proposal = h.proposal(&Spec::simple(day(2026, 1, 15), "6000", "1000", 100));
+    proposal.legs = legs;
+    proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
+    let sealed = proposal.seal(Vec::new(), None).unwrap();
+
+    snapshot.entries = (0..1_001usize)
+        .map(|i| fa_lantern::snapshot::SnapshotEntry {
+            vid: VId(70_000 + i as u128),
+            entry: sealed.clone(),
+            recorded_at: CommitSeq(200 + i as u64),
+            period: jan.clone(),
+            approvals: Vec::new(),
+        })
+        .collect();
+
+    let benford = run_over(&snapshot, &h.book, &FirstDigit::new().unwrap())
+        .expect("Benford above 10^6 legs must succeed using MAD-only fallback");
+    assert_eq!(benford.findings.len(), 1);
+    assert_eq!(benford.findings[0].statistic.name, "mad");
+    assert_eq!(benford.findings[0].statistic.population, 1_001_000);
+    assert!(
+        benford.findings[0]
+            .narrative
+            .contains("chi-square not computed above 1000000 legs")
+    );
+
+    // Budget exhaustion returns LanternError::BudgetExhausted with a fix hint.
+    let err =
+        fa_lantern::run_over_with_budget(&snapshot, &h.book, &FirstDigit::new().unwrap(), Some(10))
+            .expect_err("work > budget must be refused");
+    assert!(matches!(
+        err,
+        LanternError::BudgetExhausted {
+            ref procedure,
+            used,
+            budget: 10,
+            ..
+        } if procedure == "benford.first_digit" && used > 10
+    ));
+    assert!(
+        err.fix_hint()
+            .as_deref()
+            .is_some_and(|f| f.contains("--effective-through"))
+    );
+}
+
+/// fa-jt7p defects 6, 8 & 9:
+/// `graph.structuring` filters transfers by `currency_iso4217` (default 840 =
+/// USD), reports the currency's registered `scale` on `Statistic`, and agrees
+/// with `fa_reference::lantern::structuring_for_unit`.
+#[test]
+fn structuring_respects_currency_iso4217_across_multi_unit_transfers_and_agrees_with_oracle() {
+    let mut h = harness();
+    let mut snapshot = h.snapshot();
+    let jan = h.period_code(day(2026, 1, 15));
+    let usd = h.usd;
+    let jpy = h.book.units.lookup("JPY").unwrap();
+    let share = h.book.units.lookup("SHARE").unwrap();
+
+    // 3 USD transfers (scale 2), 3 JPY transfers (scale 0), and 3 SHARE transfers
+    // all with mantissa 900_000..920_000 in 800_000..1_000_000.
+    let mut entries = Vec::new();
+    let mut rows = Vec::new();
+    for (u_idx, (unit, scale)) in [(usd, 2u32), (jpy, 0), (share, 0)].into_iter().enumerate() {
+        for step in 0..3usize {
+            let idx = u_idx * 3 + step;
+            let d = day(2026, 1, 10 + step as u8);
+            let m = 900_000 + (step as i128) * 10_000;
+            entries.push(make_snapshot_entry(
+                &mut h,
+                VId(80_000 + idx as u128),
+                CommitSeq(300 + idx as u64),
+                d,
+                &jan,
+                EntryClass::ORIGINAL,
+                vec![
+                    ("1000", Side::Debit, unit, m),
+                    ("4000", Side::Credit, unit, m),
+                ],
+                Vec::new(),
+                None,
+                None,
+                None,
+                Vec::new(),
+            ));
+            rows.push(naive::Row {
+                index: idx,
+                date: d,
+                document_date: None,
+                period: jan.clone(),
+                period_start: None,
+                period_end: day(2026, 2, 1),
+                legs: vec![
+                    naive::Leg {
+                        account: "1000".into(),
+                        debit: true,
+                        unit: unit.0,
+                        scale,
+                        mantissa: m,
+                    },
+                    naive::Leg {
+                        account: "4000".into(),
+                        debit: false,
+                        unit: unit.0,
+                        scale,
+                        mantissa: m,
+                    },
+                ],
+                preparer: "P7".into(),
+                approvers: Vec::new(),
+                description_chars: Some(10),
+                external_ids: Vec::new(),
+                recorded_after_close: false,
+                reverses: None,
+                replaces: None,
+            });
+        }
+    }
+    snapshot.entries = entries;
+
+    // Default (USD = 840): only the 3 USD entries (80_000..=80_002) are cited, with scale = 2.
+    let r_usd = run_over(&snapshot, &h.book, &Structuring::new().unwrap()).unwrap();
+    assert_eq!(r_usd.findings.len(), 1);
+    assert_eq!(r_usd.findings[0].statistic.scale, 2);
+    assert_eq!(
+        r_usd.findings[0].cites[2..],
+        [
+            Cite::Entry(VId(80_000)),
+            Cite::Entry(VId(80_001)),
+            Cite::Entry(VId(80_002))
+        ]
+    );
+    assert_eq!(
+        naive::structuring_for_unit(&rows, Some(usd.0), 1_000_000, 800_000, 7, 3),
+        vec![("4000".into(), "1000".into(), vec![0, 1, 2])]
+    );
+
+    // JPY (ISO 4217 = 392): only the 3 JPY entries (80_003..=80_005) are cited, with scale = 0.
+    let jpy_params = Params::defaults(Structuring::ID)
+        .unwrap()
+        .set("currency_iso4217", 392)
+        .unwrap();
+    let r_jpy = run_over(&snapshot, &h.book, &Structuring::with(jpy_params)).unwrap();
+    assert_eq!(r_jpy.findings.len(), 1);
+    assert_eq!(r_jpy.findings[0].statistic.scale, 0);
+    assert_eq!(
+        r_jpy.findings[0].cites[2..],
+        [
+            Cite::Entry(VId(80_003)),
+            Cite::Entry(VId(80_004)),
+            Cite::Entry(VId(80_005))
+        ]
+    );
+    assert_eq!(
+        naive::structuring_for_unit(&rows, Some(jpy.0), 1_000_000, 800_000, 7, 3),
+        vec![("4000".into(), "1000".into(), vec![3, 4, 5])]
+    );
 }

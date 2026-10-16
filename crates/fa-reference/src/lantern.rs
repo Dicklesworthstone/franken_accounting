@@ -3,7 +3,7 @@
 //! differential test builds from the same intents it posts to the kernel.
 //! Deliberately simple, single pass where possible, own arithmetic.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use fa_time::{DateDay, Weekday};
 
@@ -167,26 +167,35 @@ fn leg_key(r: &Row) -> LegKey {
 }
 
 /// Groups (ascending row indexes) of two or more live rows with the same legs
-/// and date, excluding supersession pairs.
+/// and date, excluding supersession pairs. Found by brute-force pairwise
+/// equivalence over live rows (no hash/tree grouping map).
 pub fn same_same_same(rows: &[Row]) -> Vec<Vec<usize>> {
-    let mut groups: BTreeMap<(LegKey, i32), Vec<usize>> = BTreeMap::new();
-    for r in live_rows(rows) {
-        let list = groups.entry((leg_key(r), r.date.0)).or_default();
-        if list
-            .iter()
-            .all(|&other| !linked_supersession(rows, other, r.index))
-        {
-            list.push(r.index);
+    let live = live_rows(rows);
+    let mut visited = BTreeSet::new();
+    let mut out = Vec::new();
+    for (pos, a) in live.iter().enumerate() {
+        if visited.contains(&a.index) {
+            continue;
+        }
+        let key_a = leg_key(a);
+        let mut group = vec![a.index];
+        visited.insert(a.index);
+        for b in &live[pos + 1..] {
+            if b.date == a.date
+                && leg_key(b) == key_a
+                && group
+                    .iter()
+                    .all(|&other| !linked_supersession(rows, other, b.index))
+            {
+                visited.insert(b.index);
+                group.push(b.index);
+            }
+        }
+        if group.len() >= 2 {
+            group.sort_unstable();
+            out.push(group);
         }
     }
-    let mut out: Vec<Vec<usize>> = groups
-        .into_values()
-        .filter(|g| g.len() >= 2)
-        .map(|mut g| {
-            g.sort_unstable();
-            g
-        })
-        .collect();
     out.sort();
     out
 }
@@ -226,35 +235,47 @@ pub fn same_same_different(rows: &[Row], window: i32) -> Vec<(usize, usize)> {
     out
 }
 
-/// `(system, missing numbers)` per gap, in `(system, prefix, number)` order.
+/// `(system, missing numbers)` per gap, in `(system, prefix, number)` order,
+/// computed by brute-force successor lookup over the flat list of parsed
+/// `(system, prefix, number)` triples.
 pub fn sequence_gaps(rows: &[Row]) -> Vec<(String, u64)> {
-    let mut sequences: BTreeMap<(String, String), Vec<u64>> = BTreeMap::new();
+    let mut parsed: Vec<(String, String, u64)> = Vec::new();
     for r in live_rows(rows) {
         for (system, id) in &r.external_ids {
-            let digits: String = id
-                .chars()
+            let Some(non_digit_end) = id
+                .char_indices()
                 .rev()
-                .take_while(char::is_ascii_digit)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
+                .find(|(_, c)| !c.is_ascii_digit())
+                .map(|(idx, c)| idx + c.len_utf8())
+                .or(Some(0))
+            else {
+                continue;
+            };
+            let digits = &id[non_digit_end..];
             if digits.is_empty() || digits.len() > 18 {
                 continue;
             }
-            let prefix = id[..id.len() - digits.len()].to_string();
-            sequences
-                .entry((system.clone(), prefix))
-                .or_default()
-                .push(digits.parse().expect("digits"));
+            let prefix = id[..non_digit_end].to_string();
+            let num: u64 = digits.parse().expect("digits");
+            parsed.push((system.clone(), prefix, num));
         }
     }
+    let keys: BTreeSet<(String, String)> = parsed
+        .iter()
+        .map(|(s, p, _)| (s.clone(), p.clone()))
+        .collect();
     let mut out = Vec::new();
-    for ((system, _), mut numbers) in sequences {
-        numbers.sort_unstable();
-        for w in numbers.windows(2) {
-            if w[1] > w[0] + 1 {
-                out.push((system.clone(), w[1] - w[0] - 1));
+    for (system, prefix) in keys {
+        let nums: BTreeSet<u64> = parsed
+            .iter()
+            .filter(|(s, p, _)| s == &system && p == &prefix)
+            .map(|(_, _, n)| *n)
+            .collect();
+        for &n in &nums {
+            if let Some(&next) = nums.range((n + 1)..).next()
+                && next > n + 1
+            {
+                out.push((system.clone(), next - n - 1));
             }
         }
     }
@@ -395,14 +416,65 @@ pub fn round_trips(
     out
 }
 
-/// Transfers between one ordered account pair in one unit:
-/// `(date, row index, magnitude)` keyed by `(from, to, unit)`.
-type TransferGroups = BTreeMap<(String, String, u32), Vec<(i32, usize, i128)>>;
+/// `(from account, to account, row indexes)` of every maximal date-window run
+/// of live two-leg transfers between one pair of accounts in `unit_filter`
+/// (or any unit when `None`) whose magnitudes lie in `floor..threshold`, with
+/// consecutive dates at most `window` days apart, at least `min_count` long
+/// and summing to at least `threshold`.
+pub fn structuring_for_unit(
+    rows: &[Row],
+    unit_filter: Option<u32>,
+    threshold: i128,
+    floor: i128,
+    window: i32,
+    min_count: usize,
+) -> Vec<(String, String, Vec<usize>)> {
+    let candidates: Vec<(String, String, u32, i32, usize, i128)> = live_rows(rows)
+        .into_iter()
+        .filter_map(|r| {
+            let (from, to, unit, m) = transfer(r)?;
+            if from == to || unit_filter.is_some_and(|u| u != unit) || m < floor || m >= threshold {
+                return None;
+            }
+            Some((from.to_string(), to.to_string(), unit, r.date.0, r.index, m))
+        })
+        .collect();
+    let triples: BTreeSet<(String, String, u32)> = candidates
+        .iter()
+        .map(|(f, t, u, _, _, _)| (f.clone(), t.clone(), *u))
+        .collect();
+    let mut out = Vec::new();
+    for (from, to, unit) in triples {
+        let mut seq: Vec<(i32, usize, i128)> = candidates
+            .iter()
+            .filter(|(f, t, u, _, _, _)| f == &from && t == &to && *u == unit)
+            .map(|(_, _, _, d, idx, m)| (*d, *idx, *m))
+            .collect();
+        seq.sort_unstable();
+        // Partition `seq` into maximal contiguous slices where adjacent dates
+        // are within `window` days.
+        let mut start = 0usize;
+        while start < seq.len() {
+            let mut end = start + 1;
+            while end < seq.len() && seq[end].0 - seq[end - 1].0 <= window {
+                end += 1;
+            }
+            let slice = &seq[start..end];
+            let sum: i128 = slice.iter().map(|x| x.2).sum();
+            if slice.len() >= min_count && sum >= threshold {
+                let mut idx: Vec<usize> = slice.iter().map(|x| x.1).collect();
+                idx.sort_unstable();
+                idx.dedup();
+                out.push((from.clone(), to.clone(), idx));
+            }
+            start = end;
+        }
+    }
+    out.sort();
+    out
+}
 
-/// `(from account, to account, row indexes)` of every chain of live two-leg
-/// transfers between one pair of accounts in one unit whose magnitudes lie in
-/// `floor..threshold`, with consecutive dates at most `window` days apart,
-/// at least `min_count` long and summing to at least `threshold`.
+/// Structuring across all units (or the single unit of a single-currency book).
 pub fn structuring(
     rows: &[Row],
     threshold: i128,
@@ -410,44 +482,7 @@ pub fn structuring(
     window: i32,
     min_count: usize,
 ) -> Vec<(String, String, Vec<usize>)> {
-    let mut groups: TransferGroups = BTreeMap::new();
-    for r in live_rows(rows) {
-        if let Some((from, to, unit, m)) = transfer(r)
-            && m >= floor
-            && m < threshold
-        {
-            groups
-                .entry((from.to_string(), to.to_string(), unit))
-                .or_default()
-                .push((r.date.0, r.index, m));
-        }
-    }
-    let mut out = Vec::new();
-    for ((from, to, _), mut legs) in groups {
-        legs.sort_unstable();
-        let mut chain: Vec<(i32, usize, i128)> = Vec::new();
-        let flush = |chain: &mut Vec<(i32, usize, i128)>,
-                     out: &mut Vec<(String, String, Vec<usize>)>| {
-            let sum: i128 = chain.iter().map(|l| l.2).sum();
-            if chain.len() >= min_count && sum >= threshold {
-                let mut idx: Vec<usize> = chain.iter().map(|l| l.1).collect();
-                idx.sort_unstable();
-                out.push((from.clone(), to.clone(), idx));
-            }
-            chain.clear();
-        };
-        for l in legs {
-            if let Some(last) = chain.last()
-                && l.0 - last.0 > window
-            {
-                flush(&mut chain, &mut out);
-            }
-            chain.push(l);
-        }
-        flush(&mut chain, &mut out);
-    }
-    out.sort();
-    out
+    structuring_for_unit(rows, None, threshold, floor, window, min_count)
 }
 
 /// A naive tracing law over a debit-normal account.
@@ -459,23 +494,32 @@ pub enum TraceLaw {
     ProRata,
 }
 
-/// The traceable share of row `source`'s deposit into `account` at `claim`
-/// under `law`, and the rows whose withdrawals carried tainted value (for
-/// LIBR, the row at which the lowest balance was reached). Movements are
-/// each live row's debits minus credits on the account, in date then row
-/// (recorded) order; money before the deposit is clean; an overdraft is
-/// repaid by the next money in, so a deposit into an overdrawn account is
-/// traceable only above the overdraft, and a withdrawal beyond the money
-/// held overdraws; pro rata splits a withdrawal by exact integer proportion,
-/// which the planted corpus keeps exact.
-pub fn trace(
+/// Same-day ordering mode for naive tracing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntradayOrder {
+    StatementOrdinal,
+    WithdrawalsFirst,
+    DepositsFirst,
+}
+
+/// Naive tracing with explicit same-day ordering.
+///
+/// Uses independent definitions per law:
+/// - `LIBR`: direct minimum over all post-deposit balance prefix sums
+///   `min_{k >= at} max(0, balance_k)` clamped by initial traceable deposit.
+/// - `FIFO`: cumulative held-inflow interval `[clean_before, clean_before + traceable)`
+///   compared against cumulative post-deposit withdrawals drawn from held money.
+/// - `LIFO`: stack of held inflows `(is_source, remaining)`.
+/// - `ProRata`: exact integer proportional reduction at each withdrawal.
+pub fn trace_with_order(
     rows: &[Row],
     account: &str,
     source: usize,
     claim: DateDay,
     law: TraceLaw,
+    order: IntradayOrder,
 ) -> (i128, Vec<usize>) {
-    let mut moves: Vec<(i32, usize, i128)> = Vec::new();
+    let mut moves: Vec<(i32, u8, usize, i128)> = Vec::new();
     for r in live_rows_through(rows, Some(claim)) {
         let net: i128 = r
             .legs
@@ -490,99 +534,261 @@ pub fn trace(
             })
             .sum();
         if net != 0 {
-            moves.push((r.date.0, r.index, net));
+            let rank = match order {
+                IntradayOrder::StatementOrdinal => 0,
+                IntradayOrder::WithdrawalsFirst => u8::from(net > 0),
+                IntradayOrder::DepositsFirst => u8::from(net < 0),
+            };
+            moves.push((r.date.0, rank, r.index, net));
         }
     }
     moves.sort_unstable();
     let at = moves
         .iter()
-        .position(|m| m.1 == source)
+        .position(|m| m.2 == source)
         .expect("the source row moves the account");
-    let opening: i128 = moves[..at].iter().map(|m| m.2).sum();
-    let deposit = moves[at].2;
-    let mut balance = opening + deposit;
-    let mut lowest = (balance, None);
-    let mut overdraft = (-opening).max(0);
-    let traceable = (deposit - overdraft).max(0);
-    overdraft = (overdraft - deposit).max(0);
-    let mut tainted = traceable;
-    let mut clean = opening.max(0);
-    let mut layers: Vec<(bool, i128)> = Vec::new();
-    if opening > 0 {
-        layers.push((false, opening));
-    }
-    if traceable > 0 {
-        layers.push((true, traceable));
-    }
-    let mut carriers: Vec<usize> = Vec::new();
-    for m in &moves[at + 1..] {
-        if m.2 > 0 {
-            balance += m.2;
-            let held = (m.2 - overdraft).max(0);
-            overdraft = (overdraft - m.2).max(0);
-            if held > 0 {
-                clean += held;
-                layers.push((false, held));
-            }
-            continue;
-        }
-        let w = -m.2;
-        balance -= w;
-        if balance < lowest.0 {
-            lowest = (balance, Some(m.1));
-        }
-        match law {
-            TraceLaw::Libr => {
-                if balance.max(0) < tainted {
-                    tainted = balance.max(0);
-                }
-            }
-            TraceLaw::Fifo | TraceLaw::Lifo => {
-                let mut remaining = w;
-                while remaining > 0 && !layers.is_empty() {
-                    let i = if law == TraceLaw::Fifo {
-                        0
-                    } else {
-                        layers.len() - 1
-                    };
-                    let take = remaining.min(layers[i].1);
-                    if layers[i].0 && take > 0 && !carriers.contains(&m.1) {
-                        carriers.push(m.1);
+    let opening: i128 = moves[..at].iter().map(|m| m.3).sum();
+    let deposit = moves[at].3;
+    let initial_overdraft = (-opening).max(0);
+    let traceable = (deposit - initial_overdraft).max(0);
+    let initial_clean = opening.max(0);
+
+    match law {
+        TraceLaw::Libr => {
+            // Direct prefix-sum evaluation: after each movement k > at, compute
+            // the exact balance prefix sum from `moves[..=k]`.
+            let mut running = opening + deposit;
+            let mut min_bal = running;
+            let mut min_row = None;
+            let mut cap = traceable.min(running.max(0));
+            for m in &moves[at + 1..] {
+                running += m.3;
+                if m.3 < 0 {
+                    if running < min_bal {
+                        min_bal = running;
+                        min_row = Some(m.2);
                     }
-                    layers[i].1 -= take;
-                    remaining -= take;
-                    if layers[i].1 == 0 {
-                        layers.remove(i);
+                    cap = cap.min(running.max(0));
+                }
+            }
+            let carriers = min_row.into_iter().collect();
+            (cap, carriers)
+        }
+        TraceLaw::Fifo => {
+            // Clayton's rule via cumulative held-inflow intervals:
+            // Initial held money occupies `[0, initial_clean)` (clean) and
+            // `[initial_clean, initial_clean + traceable)` (tainted).
+            let taint_lo = initial_clean;
+            let taint_hi = initial_clean + traceable;
+            let mut total_inflows_held = taint_hi;
+            let mut total_drawn_from_held = 0i128;
+            let mut overdraft = (initial_overdraft - deposit).max(0);
+            let mut carriers = Vec::new();
+            for m in &moves[at + 1..] {
+                if m.3 > 0 {
+                    let held = (m.3 - overdraft).max(0);
+                    overdraft = (overdraft - m.3).max(0);
+                    total_inflows_held += held;
+                } else {
+                    let w = -m.3;
+                    let available = (total_inflows_held - total_drawn_from_held).max(0);
+                    let drawn = w.min(available);
+                    overdraft += w - drawn;
+                    let prev_drawn = total_drawn_from_held;
+                    let next_drawn = prev_drawn + drawn;
+                    total_drawn_from_held = next_drawn;
+                    // Overlap between `[prev_drawn, next_drawn)` and `[taint_lo, taint_hi)`.
+                    let overlap = next_drawn.min(taint_hi) - prev_drawn.max(taint_lo);
+                    if overlap > 0 {
+                        carriers.push(m.2);
                     }
                 }
-                overdraft += remaining;
             }
-            TraceLaw::ProRata => {
-                let pool = tainted + clean;
-                let drawn = w.min(pool.max(0));
-                overdraft += w - drawn;
-                if drawn == 0 {
-                    continue;
-                }
-                let t_out = drawn * tainted / pool;
-                if t_out > 0 {
-                    carriers.push(m.1);
-                }
-                tainted -= t_out;
-                clean -= drawn - t_out;
+            let consumed_taint =
+                (total_drawn_from_held.min(taint_hi) - total_drawn_from_held.min(taint_lo)).max(0);
+            let remaining_taint = (traceable - consumed_taint).max(0);
+            carriers.sort_unstable();
+            carriers.dedup();
+            (remaining_taint, carriers)
+        }
+        TraceLaw::Lifo => {
+            let mut overdraft = (initial_overdraft - deposit).max(0);
+            let mut stack: Vec<(bool, i128)> = Vec::new();
+            if initial_clean > 0 {
+                stack.push((false, initial_clean));
             }
+            if traceable > 0 {
+                stack.push((true, traceable));
+            }
+            let mut carriers = Vec::new();
+            for m in &moves[at + 1..] {
+                if m.3 > 0 {
+                    let held = (m.3 - overdraft).max(0);
+                    overdraft = (overdraft - m.3).max(0);
+                    if held > 0 {
+                        stack.push((false, held));
+                    }
+                } else {
+                    let mut rem = -m.3;
+                    while rem > 0 && !stack.is_empty() {
+                        let last = stack.last_mut().expect("non-empty");
+                        let take = rem.min(last.1);
+                        if last.0 && take > 0 {
+                            carriers.push(m.2);
+                        }
+                        last.1 -= take;
+                        rem -= take;
+                        if last.1 == 0 {
+                            stack.pop();
+                        }
+                    }
+                    overdraft += rem;
+                }
+            }
+            let traced = stack.into_iter().filter(|(t, _)| *t).map(|(_, a)| a).sum();
+            carriers.sort_unstable();
+            carriers.dedup();
+            (traced, carriers)
+        }
+        TraceLaw::ProRata => {
+            let mut overdraft = (initial_overdraft - deposit).max(0);
+            let mut tainted = traceable;
+            let mut clean = initial_clean;
+            let mut carriers = Vec::new();
+            for m in &moves[at + 1..] {
+                if m.3 > 0 {
+                    let held = (m.3 - overdraft).max(0);
+                    overdraft = (overdraft - m.3).max(0);
+                    clean += held;
+                } else {
+                    let w = -m.3;
+                    let pool = tainted + clean;
+                    let drawn = w.min(pool.max(0));
+                    overdraft += w - drawn;
+                    if drawn == 0 {
+                        continue;
+                    }
+                    let t_out = drawn * tainted / pool;
+                    if t_out > 0 {
+                        carriers.push(m.2);
+                    }
+                    tainted -= t_out;
+                    clean -= drawn - t_out;
+                }
+            }
+            carriers.sort_unstable();
+            carriers.dedup();
+            (tainted, carriers)
         }
     }
-    let traced = match law {
-        TraceLaw::Libr | TraceLaw::ProRata => tainted,
-        TraceLaw::Fifo | TraceLaw::Lifo => layers.iter().filter(|l| l.0).map(|l| l.1).sum(),
-    };
-    if law == TraceLaw::Libr
-        && let Some(i) = lowest.1
-    {
-        carriers.push(i);
+}
+
+/// Naive tracing under `StatementOrdinal` (recorded order).
+pub fn trace(
+    rows: &[Row],
+    account: &str,
+    source: usize,
+    claim: DateDay,
+    law: TraceLaw,
+) -> (i128, Vec<usize>) {
+    trace_with_order(
+        rows,
+        account,
+        source,
+        claim,
+        law,
+        IntradayOrder::StatementOrdinal,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(index: usize, day: u8, debit: &str, credit: &str, unit: u32, mantissa: i128) -> Row {
+        Row {
+            index,
+            date: DateDay::from_ymd(2026, 1, day).unwrap(),
+            document_date: None,
+            period: "FY2026-P01".into(),
+            period_start: Some(DateDay::from_ymd(2026, 1, 1).unwrap()),
+            period_end: DateDay::from_ymd(2026, 2, 1).unwrap(),
+            legs: vec![
+                Leg {
+                    account: debit.into(),
+                    debit: true,
+                    unit,
+                    scale: 2,
+                    mantissa,
+                },
+                Leg {
+                    account: credit.into(),
+                    debit: false,
+                    unit,
+                    scale: 2,
+                    mantissa,
+                },
+            ],
+            preparer: "P1".into(),
+            approvers: Vec::new(),
+            description_chars: Some(12),
+            external_ids: Vec::new(),
+            recorded_after_close: false,
+            reverses: None,
+            replaces: None,
+        }
     }
-    carriers.sort_unstable();
-    carriers.dedup();
-    (traced, carriers)
+
+    #[test]
+    fn naive_oracle_handles_intraday_order_overdraft_and_unit_scoped_structuring() {
+        // Same-day deposit (row 1) then withdrawal (row 2) on account 1020.
+        let rows = vec![
+            row(0, 2, "1020", "4000", 840, 100_000),
+            row(1, 9, "1020", "4000", 840, 50_000),
+            row(2, 9, "6000", "1020", 840, 60_000),
+        ];
+        let claim = DateDay::from_ymd(2026, 1, 31).unwrap();
+        assert_eq!(
+            trace_with_order(
+                &rows,
+                "1020",
+                1,
+                claim,
+                TraceLaw::Lifo,
+                IntradayOrder::StatementOrdinal
+            )
+            .0,
+            0
+        );
+        assert_eq!(
+            trace_with_order(
+                &rows,
+                "1020",
+                1,
+                claim,
+                TraceLaw::Lifo,
+                IntradayOrder::WithdrawalsFirst
+            )
+            .0,
+            50_000
+        );
+
+        // Multi-unit structuring: 3 USD (840) transfers and 3 JPY (392) transfers.
+        let s_rows = vec![
+            row(0, 10, "1000", "4000", 840, 900_000),
+            row(1, 11, "1000", "4000", 840, 910_000),
+            row(2, 12, "1000", "4000", 840, 920_000),
+            row(3, 10, "1000", "4000", 392, 900_000),
+            row(4, 11, "1000", "4000", 392, 910_000),
+            row(5, 12, "1000", "4000", 392, 920_000),
+        ];
+        assert_eq!(
+            structuring_for_unit(&s_rows, Some(840), 1_000_000, 800_000, 7, 3),
+            vec![("4000".into(), "1000".into(), vec![0, 1, 2])]
+        );
+        assert_eq!(
+            structuring_for_unit(&s_rows, Some(392), 1_000_000, 800_000, 7, 3),
+            vec![("4000".into(), "1000".into(), vec![3, 4, 5])]
+        );
+    }
 }

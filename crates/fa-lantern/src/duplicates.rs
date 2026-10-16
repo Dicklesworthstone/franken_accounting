@@ -65,15 +65,20 @@ impl Procedure for SameSameSame {
     ) -> Result<Vec<Finding>, LanternError> {
         let mut groups: BTreeMap<(Signature, i32), Vec<VId>> = BTreeMap::new();
         let mut population = 0u64;
+        let has_supersession = snapshot
+            .entries
+            .iter()
+            .any(|e| !e.entry.proposal.supersession.is_empty());
         for e in snapshot.live_postings()? {
             work.entry();
             population += 1;
             let list = groups
                 .entry((signature(e, work), e.entry.proposal.effective_date.0))
                 .or_default();
-            if list
-                .iter()
-                .all(|&other| !snapshot.shares_supersession_lineage(other, e.vid))
+            if !has_supersession
+                || list
+                    .iter()
+                    .all(|&other| !snapshot.shares_supersession_lineage(other, e.vid))
             {
                 list.push(e.vid);
             }

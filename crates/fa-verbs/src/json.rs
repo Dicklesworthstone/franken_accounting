@@ -635,9 +635,7 @@ pub mod toon {
                 return None;
             }
             for key in &header {
-                let Some((_, val)) = fields.iter().find(|(k, _)| k == key) else {
-                    return None;
-                };
+                let (_, val) = fields.iter().find(|(k, _)| k == key)?;
                 if !val.is_primitive() {
                     return None;
                 }

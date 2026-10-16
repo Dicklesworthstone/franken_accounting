@@ -430,6 +430,11 @@ impl BookError {
                 fa_lantern::LanternError::Unregistered { .. }
                 | fa_lantern::LanternError::Parameter { .. },
             ) => fa_journal::exit::USAGE,
+            Self::Lantern(
+                fa_lantern::LanternError::Overflow(_)
+                | fa_lantern::LanternError::Money(_)
+                | fa_lantern::LanternError::BudgetExhausted { .. },
+            ) => fa_journal::exit::REFUSAL,
             Self::Runtime(_)
             | Self::Open(_)
             | Self::Io(..)

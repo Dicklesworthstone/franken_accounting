@@ -1107,7 +1107,7 @@ fn two_principal_approvals(
 ) -> Result<Vec<fa_model::ApprovalRef>, DemoError> {
     let digest = proposal
         .proposal_digest()
-        .map_err(|e| fa_journal::KernelError::Model(e.into()))?;
+        .map_err(fa_journal::KernelError::Model)?;
     let mut out = Vec::with_capacity(2);
     for p in [approver_1, approver_2] {
         let cap =

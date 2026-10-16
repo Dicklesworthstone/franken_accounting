@@ -317,11 +317,22 @@ impl Snapshot {
         if a == b {
             return true;
         }
-        let by_vid: BTreeMap<VId, &SnapshotEntry> =
-            self.entries.iter().map(|e| (e.vid, e)).collect();
+        let by_vid: BTreeMap<VId, &[fa_model::Supersession]> = self
+            .entries
+            .iter()
+            .filter(|e| !e.entry.proposal.supersession.is_empty())
+            .map(|e| (e.vid, e.entry.proposal.supersession.as_slice()))
+            .collect();
+        if !by_vid.contains_key(&a) && !by_vid.contains_key(&b) {
+            return false;
+        }
         let reaches = |start: VId, goal: VId| -> bool {
-            let mut stack = vec![start];
+            let Some(initial) = by_vid.get(&start) else {
+                return false;
+            };
+            let mut stack: Vec<VId> = initial.iter().map(|s| s.target.vid).collect();
             let mut seen = std::collections::BTreeSet::new();
+            seen.insert(start);
             while let Some(cur) = stack.pop() {
                 if cur == goal {
                     return true;
@@ -329,8 +340,8 @@ impl Snapshot {
                 if !seen.insert(cur) {
                     continue;
                 }
-                if let Some(e) = by_vid.get(&cur) {
-                    for s in &e.entry.proposal.supersession {
+                if let Some(edges) = by_vid.get(&cur) {
+                    for s in *edges {
                         stack.push(s.target.vid);
                     }
                 }

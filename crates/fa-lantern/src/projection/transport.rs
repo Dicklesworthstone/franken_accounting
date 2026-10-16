@@ -78,7 +78,9 @@ mod tests {
         let mut totals = BTreeMap::new();
         for (from, to, amount) in edges {
             assert!(*amount > 0);
-            let slot = totals.entry(if credit { *from } else { *to }).or_insert(U256::ZERO);
+            let slot = totals
+                .entry(if credit { *from } else { *to })
+                .or_insert(U256::ZERO);
             *slot = slot.checked_add(U256::from_u128(*amount as u128)).unwrap();
         }
         totals
@@ -109,13 +111,24 @@ mod tests {
                     let credits = vec![(VId(2), b), (VId(1), a)];
                     let debits = vec![(VId(4), a + b - left), (VId(3), left)];
                     let edges = allocate(UnitId(7), credits.clone(), debits.clone()).unwrap();
-                    assert_eq!(margins(&edges, true), expected(&credits), "{credits:?} {debits:?}");
-                    assert_eq!(margins(&edges, false), expected(&debits), "{credits:?} {debits:?}");
+                    assert_eq!(
+                        margins(&edges, true),
+                        expected(&credits),
+                        "{credits:?} {debits:?}"
+                    );
+                    assert_eq!(
+                        margins(&edges, false),
+                        expected(&debits),
+                        "{credits:?} {debits:?}"
+                    );
                     let mut reversed_credits = credits;
                     let mut reversed_debits = debits;
                     reversed_credits.reverse();
                     reversed_debits.reverse();
-                    assert_eq!(edges, allocate(UnitId(7), reversed_credits, reversed_debits).unwrap());
+                    assert_eq!(
+                        edges,
+                        allocate(UnitId(7), reversed_credits, reversed_debits).unwrap()
+                    );
                 }
             }
         }
@@ -129,7 +142,11 @@ mod tests {
         assert_eq!(margins(&edges, true), expected(&credits));
         assert_eq!(margins(&edges, false), expected(&debits));
         assert!(allocate(UnitId(0), vec![], vec![]).unwrap().is_empty());
-        assert!(allocate(UnitId(0), vec![(VId(1), 0)], vec![]).unwrap().is_empty());
+        assert!(
+            allocate(UnitId(0), vec![(VId(1), 0)], vec![])
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
