@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'crates/fa-lantern/src/graph/cycles.rs'
+      - 'crates/fa-lantern/src/projection/entity.rs'
       - '.github/workflows/lantern-graph-kernel.yml'
   workflow_dispatch:
 
@@ -31,3 +32,9 @@ jobs:
           rustup run stable rustc --version
           rustup run stable rustc --edition=2024 --test crates/fa-lantern/src/graph/cycles.rs -o "$RUNNER_TEMP/lantern-cycles"
           "$RUNNER_TEMP/lantern-cycles" --nocapture
+      - name: Test shared legal-entity scope normalization
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup run stable rustc --edition=2024 --test crates/fa-lantern/src/projection/entity.rs -o "$RUNNER_TEMP/lantern-entities"
+          "$RUNNER_TEMP/lantern-entities" --nocapture

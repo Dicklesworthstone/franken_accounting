@@ -311,15 +311,17 @@ meaning = "The ISO 4217 numeric code of the one currency whose transfers are exa
 # commingled `account` up to the coordinate's effective date. Each law is an
 # exact computation whose evidentiary weight is the law's; the registry has
 # two claim classes and a tracing result is not a reconciliation, so it is
-# recorded as statistical. One account, one hop.
+# recorded as statistical. One account, one hop, one source legal entity.
+# Unit/entity-ambiguous sources are refused. Other entities sharing the chart
+# account never supply clean balances, withdrawals, or citations to a trace.
 
 [[procedure]]
 id = "trace.libr"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L15"
 tie_break = "entry_vid"
-complexity = "O(movements log movements)"
+complexity = "O(posting_legs log entities + movements log movements)"
 calibration = "planted"
 summary = "Lowest intermediate balance rule (Restatement (Third) of Restitution §59): the traceable amount never exceeds the lowest balance of the account between the deposit and the claim date, and later deposits never replenish it."
 
@@ -349,11 +351,11 @@ meaning = "0 Never; OnEvidence(docs) is reserved for a later slice."
 
 [[procedure]]
 id = "trace.fifo"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L16"
 tie_break = "entry_vid"
-complexity = "O(movements log movements)"
+complexity = "O(posting_legs log entities + movements log movements)"
 calibration = "planted"
 summary = "Clayton's rule (Devaynes v Noble, Clayton's Case (1816)): withdrawals draw the oldest money in the account first, so the deposit is consumed only after every earlier balance."
 
@@ -377,11 +379,11 @@ meaning = "How same-day movements are sequenced: 0 StatementOrdinal (recorded or
 
 [[procedure]]
 id = "trace.lifo"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L17"
 tie_break = "entry_vid"
-complexity = "O(movements log movements)"
+complexity = "O(posting_legs log entities + movements log movements)"
 calibration = "planted"
 summary = "Withdrawals draw the newest money in the account first, so the deposit is consumed before every earlier balance and after every later one."
 
@@ -405,11 +407,11 @@ meaning = "How same-day movements are sequenced: 0 StatementOrdinal (recorded or
 
 [[procedure]]
 id = "trace.pro_rata"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L18"
 tie_break = "entry_vid"
-complexity = "O(movements log movements)"
+complexity = "O(posting_legs log entities + movements log movements)"
 calibration = "planted"
 summary = "Pro-rata sharing (Cunningham v. Brown): every withdrawal carries tainted and clean value in proportion to their shares of the balance at that moment, split exactly under the registered largest-remainder law."
 

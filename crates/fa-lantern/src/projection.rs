@@ -7,9 +7,10 @@
 //! law (plan §6.3), using the debit legs' remaining capacities as weights.
 //! Both the credit and debit margins reconcile, including rounding ties.
 
+pub(crate) mod entity;
 mod transport;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use fa_model::{EntryClass, LEGAL_ENTITY_DIMENSION, LegPayload, Writer};
 use fa_money::Side;
@@ -95,17 +96,34 @@ fn named_entity(leg: &LegPayload) -> Result<Option<VId>, LanternError> {
     Ok(entity)
 }
 
+/// Normalize entity mentions once for the selected, admitted population.
+pub(crate) fn entity_scope<'a>(
+    legs: impl IntoIterator<Item = &'a LegPayload>,
+) -> Result<entity::Scope, LanternError> {
+    let mut scope = entity::Scope::default();
+    for leg in legs {
+        scope.observe(named_entity(leg)?.map(|value| value.0));
+    }
+    Ok(scope)
+}
+
+pub(crate) fn scoped_entity(
+    scope: &entity::Scope,
+    leg: &LegPayload,
+) -> Result<Option<VId>, LanternError> {
+    scope
+        .resolve(named_entity(leg)?.map(|value| value.0))
+        .map(|value| value.map(VId))
+        .map_err(|_| LanternError::Overflow("missing money-flow legal entity"))
+}
+
 fn partition(
     legs: &[LegPayload],
-    implicit: Option<VId>,
-    require_entity: bool,
+    scope: &entity::Scope,
 ) -> Result<Partitions, LanternError> {
     let mut partitions: Partitions = BTreeMap::new();
     for leg in legs {
-        let entity = named_entity(leg)?.or(implicit);
-        if require_entity && entity.is_none() {
-            return Err(LanternError::Overflow("missing money-flow legal entity"));
-        }
+        let entity = scoped_entity(scope, leg)?;
         let slot = partitions.entry((leg.amount.unit.0, entity)).or_default();
         let value = (leg.account_ref, leg.amount.mantissa);
         match leg.side {
@@ -123,22 +141,10 @@ fn partition(
 /// This normalization uses authenticated dimensions, never account names.
 pub fn scoped_flow_legs(snapshot: &Snapshot) -> Result<Vec<ScopedFlowLeg>, LanternError> {
     let live = snapshot.live_postings()?;
-    let mut entities = BTreeSet::new();
-    for entry in &live {
-        for leg in &entry.entry.proposal.legs {
-            if let Some(entity) = named_entity(leg)? {
-                entities.insert(entity);
-            }
-        }
-    }
-    let implicit = if entities.len() == 1 {
-        entities.first().copied()
-    } else {
-        None
-    };
+    let scope = entity_scope(live.iter().flat_map(|entry| &entry.entry.proposal.legs))?;
     let mut legs = Vec::new();
     for e in live {
-        let by_partition = partition(&e.entry.proposal.legs, implicit, entities.len() > 1)?;
+        let by_partition = partition(&e.entry.proposal.legs, &scope)?;
         for ((unit_id, legal_entity), (credits, debits)) in by_partition {
             for (from, to, mantissa) in
                 transport::allocate(fa_money::UnitId(unit_id), credits, debits)?
@@ -394,7 +400,7 @@ mod scope_tests {
             leg(Side::Credit, 50, Some(1), 1), leg(Side::Debit, 60, Some(1), 1),
         ];
         let mut edges = Vec::new();
-        for ((unit, entity), (credits, debits)) in partition(&legs, None, true).unwrap() {
+        for ((unit, entity), (credits, debits)) in partition(&legs, &entity_scope(&legs).unwrap()).unwrap() {
             for (from, to, value) in transport::allocate(UnitId(unit), credits, debits).unwrap() {
                 edges.push((entity, unit, from, to, value));
             }
@@ -409,17 +415,19 @@ mod scope_tests {
     #[test]
     fn a_single_implicit_entity_matches_its_explicit_dimension() {
         let legs = [leg(Side::Credit, 10, None, 0), leg(Side::Debit, 20, Some(1), 0)];
-        let parts = partition(&legs, Some(VId(1)), false).unwrap();
+        let parts = partition(&legs, &entity_scope(&legs).unwrap()).unwrap();
         assert_eq!(parts.len(), 1);
         let (credits, debits) = parts[&(0, Some(VId(1)))].clone();
         assert_eq!(transport::allocate(UnitId(0), credits, debits).unwrap(), vec![(VId(10), VId(20), 1)]);
-        assert!(partition(&legs, None, true).is_err());
+        let mut multiple = entity_scope(&legs).unwrap();
+        multiple.observe(Some(2));
+        assert!(partition(&legs, &multiple).is_err());
     }
 
     #[test]
     fn globally_balanced_but_entity_unbalanced_input_is_refused() {
         let legs = [leg(Side::Credit, 10, Some(1), 0), leg(Side::Debit, 20, Some(2), 0)];
-        for ((unit, _), (credits, debits)) in partition(&legs, None, true).unwrap() {
+        for ((unit, _), (credits, debits)) in partition(&legs, &entity_scope(&legs).unwrap()).unwrap() {
             assert!(transport::allocate(UnitId(unit), credits, debits).is_err());
         }
         let mut duplicate = leg(Side::Debit, 10, Some(1), 0);
