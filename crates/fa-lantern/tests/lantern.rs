@@ -26,18 +26,19 @@ use fa_lantern::jet::{
 use fa_lantern::numbers::SequenceGaps;
 use fa_lantern::projection::{documents, money_flow, preparers};
 use fa_lantern::trace::{Law, Trace};
+use fa_lantern::witness;
 use fa_lantern::witness::determinism;
 use fa_lantern::{
     Cite, Finding, LanternError, Params, Procedure, ProcedureRun, Severity, Snapshot, Statistic,
     Work, run, run_over,
 };
 use fa_model::{
-    ApprovalRef, EntryClass, EntryOrigin, EntryPayload, Erasable, EvidenceRef, ExternalId, Id128,
-    LegPayload, Oid, SealKey, SupersessionKind, SymbolTable, account_vid,
+    AccountType, ApprovalRef, EntryClass, EntryOrigin, EntryPayload, Erasable, EvidenceRef,
+    ExternalId, Id128, LegPayload, Oid, SealKey, SupersessionKind, SymbolTable, account_vid,
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_reference::lantern as naive;
-use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodTransition};
+use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodState, PeriodTransition};
 use fgdb::{Database, DatabaseKeys, MemVfs};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::ids::DatabaseSecurityNamespaceId;
@@ -3120,10 +3121,9 @@ fn phase_19_5b_remaining_jet_digit_and_number_procedures_and_oracles() {
     );
 
     let rule_origin = Some(EntryOrigin::Rule {
-        rule_id: "rev.recognition".into(),
-        rule_version: 1,
-        rule_oid: Oid([5; 32]),
-        inputs_digest: Oid([6; 32]),
+        rule_version_oid: Oid([5; 32]),
+        event_ref: VId(1),
+        inputs_digest: [6; 32],
     });
 
     // 4 common entries on (6000, 1000) prepared by PREPARER with Rule origin
@@ -3458,6 +3458,16 @@ fn phase_19_5b_fnx_graph_procedures_with_cgse_witnesses() {
     snapshot.coordinate.effective_through = Some(day(2026, 1, 31));
     let jan = h.period_code(day(2026, 1, 15));
     let usd = h.usd;
+    let seal_key = h.book.seal_key.clone();
+    let seal = |s: &str, tag: u8| {
+        Erasable::seal(
+            &s.to_string(),
+            None,
+            &seal_key,
+            [tag; 32],
+            [tag.wrapping_add(1); 24],
+        )
+    };
 
     // Populate REA parties and relationships for graph.related_party_exposure,
     // graph.shell_signature, and graph.identity_resolution
@@ -3474,8 +3484,8 @@ fn phase_19_5b_fnx_graph_procedures_with_cgse_witnesses() {
             vid: p_root,
             dimension_value_vid: p_root_val,
             code: "HOLDCO".into(),
-            kind: fa_model::PartyKind::RelatedParty,
-            name: Erasable::Present("Parent HoldCo".into()),
+            kind: fa_model::PartyKind::RelatedEntity,
+            name: seal("Parent HoldCo", 1),
             identifiers: Vec::new(),
             external_ids: Vec::new(),
             created_at: CommitSeq(1),
@@ -3488,11 +3498,8 @@ fn phase_19_5b_fnx_graph_procedures_with_cgse_witnesses() {
             dimension_value_vid: p_aff1_val,
             code: "AFFIL-1".into(),
             kind: fa_model::PartyKind::Vendor,
-            name: Erasable::Present("Affiliate One LLC".into()),
-            identifiers: vec![(
-                "bank_account".into(),
-                Erasable::Present("IBAN-SHARED-777".into()),
-            )],
+            name: seal("Affiliate One LLC", 2),
+            identifiers: vec![("bank_account".into(), seal("IBAN-SHARED-777", 3))],
             external_ids: Vec::new(),
             created_at: CommitSeq(2),
         },
@@ -3504,11 +3511,8 @@ fn phase_19_5b_fnx_graph_procedures_with_cgse_witnesses() {
             dimension_value_vid: p_aff2_val,
             code: "AFFIL-2".into(),
             kind: fa_model::PartyKind::Vendor,
-            name: Erasable::Present("Affiliate Two LLC".into()),
-            identifiers: vec![(
-                "bank_account".into(),
-                Erasable::Present("IBAN-SHARED-777".into()),
-            )],
+            name: seal("Affiliate Two LLC", 4),
+            identifiers: vec![("bank_account".into(), seal("IBAN-SHARED-777", 5))],
             external_ids: Vec::new(),
             created_at: CommitSeq(3),
         },
@@ -3519,13 +3523,12 @@ fn phase_19_5b_fnx_graph_procedures_with_cgse_witnesses() {
         .push(fa_journal::rea::RelationshipRow {
             eid: fgdb_types::EId(1),
             spec: fa_model::RelationshipSpec {
+                from: p_root,
+                to: p_aff1,
                 kind: fa_model::RelationshipKind::Controls,
-                from_vid: p_root,
-                to_vid: p_aff1,
+                basis: "majority_voting_control".into(),
                 valid_from: day(2026, 1, 1),
                 valid_to: None,
-                pct_bp: Some(fa_model::OwnershipPct::new(10_000).unwrap()),
-                basis: "voting_control".into(),
             },
             recorded_at: CommitSeq(4),
             control_entry: VId(500),
@@ -3670,6 +3673,16 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
     let jan = h.period_code(day(2026, 1, 15));
     let feb = h.period_code(day(2026, 2, 10));
     let usd = h.usd;
+    let seal_key = h.book.seal_key.clone();
+    let seal = |s: &str, tag: u8| {
+        Erasable::seal(
+            &s.to_string(),
+            None,
+            &seal_key,
+            [tag; 32],
+            [tag.wrapping_add(1); 24],
+        )
+    };
 
     // Add an intercompany account IC20 and an inventory account 1300
     let ic_vid = account_vid(h.book.book_id, "IC20");
@@ -3745,8 +3758,8 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
             dimension_value_vid: pa_val,
             code: "CUST-A".into(),
             kind: fa_model::PartyKind::Customer,
-            name: Erasable::Present("Customer A".into()),
-            identifiers: vec![("bank".into(), Erasable::Present("SHARED-BANK-1".into()))],
+            name: seal("Customer A", 10),
+            identifiers: vec![("bank".into(), seal("SHARED-BANK-1", 11))],
             external_ids: Vec::new(),
             created_at: CommitSeq(1),
         },
@@ -3758,8 +3771,8 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
             dimension_value_vid: pb_val,
             code: "CUST-B".into(),
             kind: fa_model::PartyKind::Customer,
-            name: Erasable::Present("Customer B".into()),
-            identifiers: vec![("bank".into(), Erasable::Present("SHARED-BANK-1".into()))],
+            name: seal("Customer B", 12),
+            identifiers: vec![("bank".into(), seal("SHARED-BANK-1", 13))],
             external_ids: Vec::new(),
             created_at: CommitSeq(2),
         },
@@ -3908,8 +3921,8 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
 
     // 5. Party master change control entry at CommitSeq(600) for CUST-A
     let upd_bytes = fa_model::PartyIdentifierUpdate {
-        code: "CUST-A".into(),
-        identifiers: vec![("bank".into(), Erasable::Present("NEW-IBAN".into()))],
+        party_vid: pa,
+        identifiers: vec![("bank".into(), seal("NEW-IBAN", 14))],
     }
     .encode()
     .unwrap();
@@ -4023,7 +4036,7 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
             },
             signed_digest: [0xCD; 32],
             binding: CapabilityBinding {
-                profile: fa_policy::Profile::Approver,
+                profile: Profile::Human,
                 capability_commitment: [0xEF; 32],
             },
         },
