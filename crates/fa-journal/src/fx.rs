@@ -58,14 +58,18 @@ pub enum FxLawId {
     PeriodEndRevaluation = 2,
     PeriodAverage = 3,
     SettlementCarryingBasis = 4,
+    TranslationCurrentRate = 5,
+    RemeasurementTemporal = 6,
 }
 
 impl FxLawId {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 6] = [
         Self::SpotClose,
         Self::PeriodEndRevaluation,
         Self::PeriodAverage,
         Self::SettlementCarryingBasis,
+        Self::TranslationCurrentRate,
+        Self::RemeasurementTemporal,
     ];
 
     #[must_use]
@@ -85,6 +89,8 @@ impl FxLawId {
             Self::PeriodEndRevaluation => "PeriodEndRevaluation",
             Self::PeriodAverage => "PeriodAverage",
             Self::SettlementCarryingBasis => "SettlementCarryingBasis",
+            Self::TranslationCurrentRate => "TranslationCurrentRate",
+            Self::RemeasurementTemporal => "RemeasurementTemporal",
         }
     }
 
@@ -92,7 +98,9 @@ impl FxLawId {
     pub const fn required_purpose(self) -> FxRatePurpose {
         match self {
             Self::SpotClose => FxRatePurpose::SpotClose,
-            Self::PeriodEndRevaluation => FxRatePurpose::PeriodClose,
+            Self::PeriodEndRevaluation
+            | Self::TranslationCurrentRate
+            | Self::RemeasurementTemporal => FxRatePurpose::PeriodClose,
             Self::PeriodAverage => FxRatePurpose::PeriodAverage,
             Self::SettlementCarryingBasis => FxRatePurpose::Settlement,
         }
@@ -715,9 +723,16 @@ pub(crate) fn admit_structure(
         return Err(not_implemented("base_totals"));
     }
 
-    if proposal.class == EntryClass::REVALUATION && law != FxLawId::PeriodEndRevaluation {
+    if proposal.class == EntryClass::REVALUATION
+        && !matches!(
+            law,
+            FxLawId::PeriodEndRevaluation
+                | FxLawId::TranslationCurrentRate
+                | FxLawId::RemeasurementTemporal
+        )
+    {
         return Err(fx_structure(
-            "a Revaluation entry must use FxLawId::PeriodEndRevaluation",
+            "a Revaluation entry must use PeriodEndRevaluation, TranslationCurrentRate, or RemeasurementTemporal",
         ));
     }
     if law == FxLawId::PeriodEndRevaluation && proposal.class != EntryClass::REVALUATION {
@@ -948,13 +963,21 @@ pub(crate) fn verify_in_txn<V: asupersync::fs::Vfs + Clone>(
                 spec.base_unit.0
             ))));
         }
-        if decoded.purpose != claim.law.required_purpose() {
+        let purpose_ok = match claim.law {
+            FxLawId::TranslationCurrentRate | FxLawId::RemeasurementTemporal => matches!(
+                decoded.purpose,
+                FxRatePurpose::PeriodClose
+                    | FxRatePurpose::PeriodAverage
+                    | FxRatePurpose::SpotClose
+            ),
+            other => decoded.purpose == other.required_purpose(),
+        };
+        if !purpose_ok {
             return Ok(Err(fx_structure(format!(
-                "rate document {} has purpose `{}`, but FX law {} requires `{}`",
+                "rate document {} has purpose `{}`, which is not admissible under FX law {}",
                 crate::evidence::hex(&oid.0),
                 decoded.purpose.as_str(),
                 claim.law.name(),
-                claim.law.required_purpose().as_str()
             ))));
         }
         rate_docs.push(decoded);
@@ -1038,6 +1061,33 @@ pub(crate) fn verify_in_txn<V: asupersync::fs::Vfs + Clone>(
                 return Ok(Err(fx_structure(
                     "PeriodEndRevaluation legs must state the functional-currency carrying adjustment in base_unit",
                 )));
+            }
+        }
+        FxLawId::TranslationCurrentRate | FxLawId::RemeasurementTemporal => {
+            let bt = proposal.base_totals.as_ref().expect("checked in admit");
+            if bt.residual.is_some() {
+                return Ok(Err(fx_structure(format!(
+                    "{} entries carry no base_totals.residual",
+                    claim.law.name()
+                ))));
+            }
+            if !rate_docs.iter().any(|d| {
+                d.purpose == FxRatePurpose::PeriodClose && d.as_of == proposal.effective_date
+            }) {
+                return Ok(Err(fx_structure(format!(
+                    "{} requires a PeriodClose rate document with as_of == entry effective_date",
+                    claim.law.name()
+                ))));
+            }
+            if proposal
+                .legs
+                .iter()
+                .any(|l| l.amount.unit != spec.base_unit || l.base_amount != Some(l.amount))
+            {
+                return Ok(Err(fx_structure(format!(
+                    "{} legs must state the translated/remeasured adjustment in base_unit",
+                    claim.law.name()
+                ))));
             }
         }
         FxLawId::SettlementCarryingBasis => {

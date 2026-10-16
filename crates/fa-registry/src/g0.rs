@@ -2287,10 +2287,17 @@ impl FxLaws {
                     format!("law `{code}`: invalid residual_mode `{residual_mode}`"),
                 ));
             }
-            if name == "PeriodEndRevaluation" && residual_mode != "none" {
+            if matches!(
+                name.as_str(),
+                "PeriodEndRevaluation"
+                    | "TranslationCurrentRate"
+                    | "RemeasurementTemporal"
+                    | "RemeasurementIas29Hyperinflation"
+            ) && residual_mode != "none"
+            {
                 return Err(invalid(
                     R,
-                    "PeriodEndRevaluation must have residual_mode = `none`",
+                    format!("{name} must have residual_mode = `none`"),
                 ));
             }
             if admitted_classes.is_empty() {
@@ -2340,11 +2347,27 @@ impl FxLaws {
                 meaning,
             });
         }
-        if laws.len() != 4 {
+        if laws.len() != 7 {
             return Err(invalid(
                 R,
-                format!("expected 4 [[law]] rows, found {}", laws.len()),
+                format!("expected 7 [[law]] rows, found {}", laws.len()),
             ));
+        }
+        for required_code in [
+            "spot_close",
+            "period_end_revaluation",
+            "period_average",
+            "settlement_carrying_basis",
+            "translation_current_rate",
+            "remeasurement_temporal",
+            "remeasurement_ias29_hyperinflation",
+        ] {
+            if !seen_codes.contains(required_code) {
+                return Err(invalid(
+                    R,
+                    format!("missing required FX law `{required_code}`"),
+                ));
+            }
         }
 
         let mut application_difference_kinds = Vec::new();
@@ -2682,7 +2705,7 @@ mod tests {
         assert_eq!(tracing_laws.replenishment_modes.len(), 2);
 
         let fx_laws = FxLaws::embedded(&classes).expect("fx_laws.toml");
-        assert_eq!(fx_laws.laws.len(), 4);
+        assert_eq!(fx_laws.laws.len(), 7);
         assert_eq!(fx_laws.application_difference_kinds.len(), 5);
 
         let formats = Formats::embedded().expect("formats.toml");

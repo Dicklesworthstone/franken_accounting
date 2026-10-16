@@ -68,6 +68,48 @@ status = "live"
 standard_ref = "ASC 830-20-35-2 / IAS 21.28"
 meaning = "Settlement of a foreign-currency open item: native legs balance in each currency through a paired conversion account while functional-currency base amounts clear the settled item's historical carrying basis and recognize realized FX gain or loss."
 
+[[law]]
+id = 5
+version = 1
+code = "translation_current_rate"
+name = "TranslationCurrentRate"
+rate_purpose = "PeriodClose"
+date_selector = "period_end_date"
+rounding_law = "HalfEven"
+residual_mode = "none"
+admitted_classes = ["Revaluation", "Adjusting", "Elimination", "Reversal"]
+status = "live"
+standard_ref = "ASC 830-30-45 / IAS 21.39"
+meaning = "Current-rate translation from functional currency into reporting currency: assets and liabilities at closing rate, equity at historical spot rate, income statement at period average rate, retained earnings rolled forward cumulatively, and delta-cumulative balancing adjustment in AOCI Cumulative Translation Adjustment (CTA) with recycling to P&L on deconsolidation."
+
+[[law]]
+id = 6
+version = 1
+code = "remeasurement_temporal"
+name = "RemeasurementTemporal"
+rate_purpose = "PeriodClose"
+date_selector = "period_end_date"
+rounding_law = "HalfEven"
+residual_mode = "none"
+admitted_classes = ["Revaluation", "Adjusting", "Reversal"]
+status = "live"
+standard_ref = "ASC 830-10-45-17 / IAS 21.23(b)-(c)"
+meaning = "Temporal-method remeasurement from currency of record into functional currency: monetary items at closing rate, non-monetary balance-sheet items and related expenses (COGS, depreciation, amortization) at historical spot rates, other income-statement flows at period average rate, and delta-cumulative remeasurement gain or loss in P&L."
+
+[[law]]
+id = 7
+version = 1
+code = "remeasurement_ias29_hyperinflation"
+name = "RemeasurementIas29Hyperinflation"
+rate_purpose = "PeriodClose"
+date_selector = "period_end_date"
+rounding_law = "HalfEven"
+residual_mode = "none"
+admitted_classes = ["Revaluation", "Restatement", "Reversal"]
+status = "reserved"
+standard_ref = "ASC 830-10-45-11 / IAS 29"
+meaning = "Hyperinflationary-economy restatement and remeasurement rule (IAS 29 general price-index restatement followed by closing-rate translation, or ASC 830-10-45-11 reporting-currency functional remeasurement)."
+
 [[application_difference_kind]]
 tag = 1
 name = "Discount"

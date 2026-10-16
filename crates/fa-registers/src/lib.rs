@@ -49,8 +49,13 @@ pub use entity::{
 };
 pub use explain::{BalanceExplanation, explain_balance};
 pub use fx::{
-    FUNCTIONAL_FOLD_DIGEST_DOMAIN, FunctionalCell, FunctionalCellKey, FunctionalFold,
-    fold_period_functional, verify_functional_fold,
+    CtaRollForwardSchedule, FUNCTIONAL_FOLD_DIGEST_DOMAIN, FunctionalCell, FunctionalCellKey,
+    FunctionalFold, REMEASUREMENT_CERTIFICATE_DOMAIN, RemeasurementBasis, RemeasurementInputLine,
+    RemeasurementLineResult, RemeasurementRunResult, TRANSLATION_CERTIFICATE_DOMAIN,
+    TranslatedStatement, TranslationInputLine, TranslationItemKind, TranslationLineResult,
+    fold_period_functional, plan_cta_deconsolidation_recycling, plan_remeasurement_entry,
+    remeasure_temporal, translate_current_rate, verify_functional_fold,
+    verify_remeasurement_certificate, verify_translation_certificate,
 };
 pub use lots::{
     LotDisposalPlan, LotDisposalRequest, LotDisposalSlice, LotItem, LotReliefEdge, LotsReport,

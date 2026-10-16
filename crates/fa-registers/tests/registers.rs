@@ -3971,3 +3971,827 @@ fn fx_tampered_functional_fold_is_detected_by_verify_functional_fold() {
     f_fold.cells[0].debits += 1;
     assert!(verify_functional_fold(&h.db, &h.book, &h.march, &f_fold).is_err());
 }
+
+#[test]
+fn fx_current_rate_translation_two_period_cta_roll_forward_and_recycling_match_oracle() {
+    use fa_journal::refusal::code;
+    use fa_journal::{FxRateDocument, FxRatePurpose, add_document};
+    use fa_money::RoundingLaw;
+    use fa_money::rate::{ArithmeticBudget, BudgetLimits};
+    use fa_reference::Side as RefSide;
+    use fa_reference::fx::{
+        OracleRateQuote, OracleTranslationKind, OracleTranslationLine,
+        translate_current_rate_oracle,
+    };
+    use fa_registers::{
+        TranslationInputLine, TranslationItemKind, plan_cta_deconsolidation_recycling,
+        translate_current_rate, verify_translation_certificate,
+    };
+
+    let mut h = harness();
+    let usd = h.book.units.lookup("USD").unwrap();
+    let eur = h.book.units.lookup("EUR").unwrap();
+    let acct_cash = h.cash;
+    let acct_ap = VId(990_002);
+    let acct_equity = h.cash;
+    let acct_rev = h.rent;
+    let acct_exp = VId(990_003);
+    let acct_div = VId(990_001);
+
+    let jan_01 = DateDay::from_ymd(2026, 1, 1).unwrap();
+    let jan_20 = DateDay::from_ymd(2026, 1, 20).unwrap();
+    let jan_31 = DateDay::from_ymd(2026, 1, 31).unwrap();
+    let feb_28 = DateDay::from_ymd(2026, 2, 28).unwrap();
+    let mar_31 = DateDay::from_ymd(2026, 3, 31).unwrap();
+
+    // Rate documents (reporting USD per 1 EUR):
+    // - SpotClose 2026-01-01: 1.08 (108 / 100)
+    // - SpotClose 2026-01-20: 1.11 (111 / 100)
+    // - PeriodAverage 2026-01-31: 1.10 (110 / 100)
+    // - PeriodClose 2026-01-31: 1.12 (112 / 100)
+    // - PeriodAverage 2026-02-28: 1.13 (113 / 100)
+    // - PeriodClose 2026-02-28: 1.15 (115 / 100)
+    // - PeriodClose 2026-03-31: 1.15 (115 / 100) for posting recycling in h.march
+    let doc_spot_jan01 = FxRateDocument::new(
+        usd,
+        eur,
+        108,
+        100,
+        RoundingLaw::HalfEven,
+        jan_01,
+        1_700_000_000_000_000_000,
+        FxRatePurpose::SpotClose,
+        "ECB",
+    )
+    .unwrap();
+    let doc_spot_jan20 = FxRateDocument::new(
+        usd,
+        eur,
+        111,
+        100,
+        RoundingLaw::HalfEven,
+        jan_20,
+        1_700_000_000_000_000_000,
+        FxRatePurpose::SpotClose,
+        "ECB",
+    )
+    .unwrap();
+    let doc_avg_jan = FxRateDocument::new(
+        usd,
+        eur,
+        110,
+        100,
+        RoundingLaw::HalfEven,
+        jan_31,
+        1_700_000_000_000_000_000,
+        FxRatePurpose::PeriodAverage,
+        "ECB",
+    )
+    .unwrap();
+    let doc_close_jan = FxRateDocument::new(
+        usd,
+        eur,
+        112,
+        100,
+        RoundingLaw::HalfEven,
+        jan_31,
+        1_700_000_000_000_000_000,
+        FxRatePurpose::PeriodClose,
+        "ECB",
+    )
+    .unwrap();
+    let doc_avg_feb = FxRateDocument::new(
+        usd,
+        eur,
+        113,
+        100,
+        RoundingLaw::HalfEven,
+        feb_28,
+        1_700_000_000_000_000_000,
+        FxRatePurpose::PeriodAverage,
+        "ECB",
+    )
+    .unwrap();
+    let doc_close_feb = FxRateDocument::new(
+        usd,
+        eur,
+        115,
+        100,
+        RoundingLaw::HalfEven,
+        feb_28,
+        1_700_000_000_000_000_000,
+        FxRatePurpose::PeriodClose,
+        "ECB",
+    )
+    .unwrap();
+    let doc_close_mar = FxRateDocument::new(
+        usd,
+        eur,
+        115,
+        100,
+        RoundingLaw::HalfEven,
+        mar_31,
+        1_700_000_000_000_000_000,
+        FxRatePurpose::PeriodClose,
+        "ECB",
+    )
+    .unwrap();
+
+    let stripped = asupersync::Cx::detached_cancel_context();
+    let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
+
+    // Period 1 (2026-01):
+    // Cash: Dr EUR 1,500.00 (150_000)
+    // AP: Cr EUR 300.00 (30_000)
+    // Share Capital (issued 2026-01-01): Cr EUR 1,000.00 (100_000)
+    // Revenue: Cr EUR 500.00 (50_000)
+    // Expense: Dr EUR 200.00 (20_000)
+    // Dividend (declared 2026-01-20): Dr EUR 100.00 (10_000)
+    // Total Dr = 180_000, Total Cr = 180_000 (prior RE = 0)
+    let p1_lines = vec![
+        TranslationInputLine {
+            account: acct_cash,
+            kind: TranslationItemKind::Asset,
+            side: Side::Debit,
+            functional_amount: Amount::new(eur, 150_000),
+            is_current_period_activity: true,
+        },
+        TranslationInputLine {
+            account: acct_ap,
+            kind: TranslationItemKind::Liability,
+            side: Side::Credit,
+            functional_amount: Amount::new(eur, 30_000),
+            is_current_period_activity: true,
+        },
+        TranslationInputLine {
+            account: acct_equity,
+            kind: TranslationItemKind::ContributedEquity {
+                originating_date: jan_01,
+            },
+            side: Side::Credit,
+            functional_amount: Amount::new(eur, 100_000),
+            is_current_period_activity: true,
+        },
+        TranslationInputLine {
+            account: acct_rev,
+            kind: TranslationItemKind::Revenue,
+            side: Side::Credit,
+            functional_amount: Amount::new(eur, 50_000),
+            is_current_period_activity: true,
+        },
+        TranslationInputLine {
+            account: acct_exp,
+            kind: TranslationItemKind::Expense,
+            side: Side::Debit,
+            functional_amount: Amount::new(eur, 20_000),
+            is_current_period_activity: true,
+        },
+        TranslationInputLine {
+            account: acct_div,
+            kind: TranslationItemKind::Dividend {
+                declaration_date: jan_20,
+            },
+            side: Side::Debit,
+            functional_amount: Amount::new(eur, 10_000),
+            is_current_period_activity: true,
+        },
+    ];
+    let hist_docs = vec![doc_spot_jan01.clone(), doc_spot_jan20.clone()];
+
+    let stmt_p1 = translate_current_rate(
+        &mut budget,
+        "2026-01",
+        jan_31,
+        eur,
+        usd,
+        &p1_lines,
+        &doc_close_jan,
+        &doc_avg_jan,
+        &hist_docs,
+        0,
+        0,
+        0,
+        &h.book.units,
+    )
+    .unwrap();
+
+    // Check translated USD amounts:
+    // Assets: 150_000 * 1.12 = 168_000
+    // Liabilities: 30_000 * 1.12 = 33_600
+    // Net Assets: 134_400
+    // Equity: 100_000 * 1.08 = 108_000
+    // Revenue: 50_000 * 1.10 = 55_000
+    // Expense: 20_000 * 1.10 = 22_000
+    // Translated NI: 33_000
+    // Dividends: 10_000 * 1.11 = 11_100
+    // Ending RE: 0 + 33_000 - 11_100 = 21_900
+    // Ending CTA: 134_400 - (108_000 + 21_900) = 4_500
+    assert_eq!(stmt_p1.total_assets_reporting, 168_000);
+    assert_eq!(stmt_p1.total_liabilities_reporting, 33_600);
+    assert_eq!(stmt_p1.total_contributed_equity_reporting, 108_000);
+    assert_eq!(stmt_p1.translated_net_income_reporting, 33_000);
+    assert_eq!(stmt_p1.total_dividends_reporting, 11_100);
+    assert_eq!(stmt_p1.ending_retained_earnings_reporting, 21_900);
+    assert_eq!(stmt_p1.cta_schedule.ending_cumulative_cta_credit, 4_500);
+    assert_eq!(stmt_p1.cta_schedule.delta_cta_credit, 4_500);
+    // CTA roll-forward decomposition tie-out:
+    assert_eq!(
+        stmt_p1.cta_schedule.opening_net_assets_retranslation
+            + stmt_p1.cta_schedule.period_net_income_spread
+            + stmt_p1.cta_schedule.equity_and_dividend_spread,
+        stmt_p1.cta_schedule.delta_cta_credit
+    );
+    verify_translation_certificate(
+        &mut budget,
+        &stmt_p1,
+        &p1_lines,
+        &doc_close_jan,
+        &doc_avg_jan,
+        &hist_docs,
+        0,
+        &h.book.units,
+    )
+    .unwrap();
+
+    // Compare against independent limb-arithmetic oracle:
+    let mut oracle_hist = std::collections::BTreeMap::new();
+    oracle_hist.insert(
+        jan_01.0,
+        OracleRateQuote {
+            quote_unit: eur.0,
+            quote_scale: 2,
+            rate_num: 108,
+            rate_den: 100,
+            rounding_law: "HalfEven".into(),
+        },
+    );
+    oracle_hist.insert(
+        jan_20.0,
+        OracleRateQuote {
+            quote_unit: eur.0,
+            quote_scale: 2,
+            rate_num: 111,
+            rate_den: 100,
+            rounding_law: "HalfEven".into(),
+        },
+    );
+    let oracle_p1 = translate_current_rate_oracle(
+        &[
+            OracleTranslationLine {
+                account: acct_cash.0,
+                kind: OracleTranslationKind::Asset,
+                side: RefSide::Debit,
+                functional_mantissa: 150_000,
+            },
+            OracleTranslationLine {
+                account: acct_ap.0,
+                kind: OracleTranslationKind::Liability,
+                side: RefSide::Credit,
+                functional_mantissa: 30_000,
+            },
+            OracleTranslationLine {
+                account: acct_equity.0,
+                kind: OracleTranslationKind::ContributedEquity {
+                    originating_date: jan_01.0,
+                },
+                side: RefSide::Credit,
+                functional_mantissa: 100_000,
+            },
+            OracleTranslationLine {
+                account: acct_rev.0,
+                kind: OracleTranslationKind::Revenue,
+                side: RefSide::Credit,
+                functional_mantissa: 50_000,
+            },
+            OracleTranslationLine {
+                account: acct_exp.0,
+                kind: OracleTranslationKind::Expense,
+                side: RefSide::Debit,
+                functional_mantissa: 20_000,
+            },
+            OracleTranslationLine {
+                account: acct_div.0,
+                kind: OracleTranslationKind::Dividend {
+                    declaration_date: jan_20.0,
+                },
+                side: RefSide::Debit,
+                functional_mantissa: 10_000,
+            },
+        ],
+        2,
+        2,
+        &OracleRateQuote {
+            quote_unit: eur.0,
+            quote_scale: 2,
+            rate_num: 112,
+            rate_den: 100,
+            rounding_law: "HalfEven".into(),
+        },
+        &OracleRateQuote {
+            quote_unit: eur.0,
+            quote_scale: 2,
+            rate_num: 110,
+            rate_den: 100,
+            rounding_law: "HalfEven".into(),
+        },
+        &oracle_hist,
+        0,
+        0,
+        0,
+    )
+    .unwrap();
+    assert_eq!(
+        stmt_p1.ending_retained_earnings_reporting,
+        oracle_p1.ending_retained_earnings_reporting
+    );
+    assert_eq!(
+        stmt_p1.cta_schedule.ending_cumulative_cta_credit,
+        oracle_p1.ending_cumulative_cta_credit
+    );
+    assert_eq!(
+        stmt_p1.cta_schedule.delta_cta_credit,
+        oracle_p1.delta_cta_credit
+    );
+
+    // Period 2 (2026-02):
+    // Opening functional RE = 50_000 - 20_000 - 10_000 = 20_000
+    // Cash grows to EUR 1,900.00 (190_000), AP stays EUR 300.00 (30_000),
+    // Share Capital stays EUR 1,000.00 (100_000, prior-period layer),
+    // P2 Revenue: Cr EUR 600.00 (60_000), P2 Expense: Dr EUR 200.00 (20_000).
+    // Total Dr = 210_000, Total Cr = 190_000 + prior_re_func (20_000) = 210_000.
+    let p2_lines = vec![
+        TranslationInputLine {
+            account: acct_cash,
+            kind: TranslationItemKind::Asset,
+            side: Side::Debit,
+            functional_amount: Amount::new(eur, 190_000),
+            is_current_period_activity: false,
+        },
+        TranslationInputLine {
+            account: acct_ap,
+            kind: TranslationItemKind::Liability,
+            side: Side::Credit,
+            functional_amount: Amount::new(eur, 30_000),
+            is_current_period_activity: false,
+        },
+        TranslationInputLine {
+            account: acct_equity,
+            kind: TranslationItemKind::ContributedEquity {
+                originating_date: jan_01,
+            },
+            side: Side::Credit,
+            functional_amount: Amount::new(eur, 100_000),
+            is_current_period_activity: false,
+        },
+        TranslationInputLine {
+            account: acct_rev,
+            kind: TranslationItemKind::Revenue,
+            side: Side::Credit,
+            functional_amount: Amount::new(eur, 60_000),
+            is_current_period_activity: true,
+        },
+        TranslationInputLine {
+            account: acct_exp,
+            kind: TranslationItemKind::Expense,
+            side: Side::Debit,
+            functional_amount: Amount::new(eur, 20_000),
+            is_current_period_activity: true,
+        },
+    ];
+
+    let stmt_p2 = translate_current_rate(
+        &mut budget,
+        "2026-02",
+        feb_28,
+        eur,
+        usd,
+        &p2_lines,
+        &doc_close_feb,
+        &doc_avg_feb,
+        &hist_docs,
+        20_000,
+        stmt_p1.ending_retained_earnings_reporting,
+        stmt_p1.cta_schedule.ending_cumulative_cta_credit,
+        &h.book.units,
+    )
+    .unwrap();
+
+    // Check P2 math:
+    // Assets: 190_000 * 1.15 = 218_500
+    // Liabilities: 30_000 * 1.15 = 34_500
+    // Net Assets: 184_000
+    // Equity: 108_000
+    // P2 NI at avg (1.13): (60_000 - 20_000) * 1.13 = 45_200
+    // Ending RE: 21_900 + 45_200 = 67_100
+    // Ending cumulative CTA: 184_000 - (108_000 + 67_100) = 8_900
+    // Delta CTA: 8_900 - 4_500 = 4_400
+    // Decomposition:
+    // - Opening net assets (EUR 1,200.00 = 120_000) retranslated from 1.12 to 1.15: 120_000 * 0.03 = 3_600
+    // - P2 NI (EUR 400.00 = 40_000) spread between close (1.15) and avg (1.13): 40_000 * 0.02 = 800
+    // - Total delta CTA = 3_600 + 800 = 4_400!
+    assert_eq!(stmt_p2.ending_retained_earnings_reporting, 67_100);
+    assert_eq!(stmt_p2.cta_schedule.ending_cumulative_cta_credit, 8_900);
+    assert_eq!(stmt_p2.cta_schedule.delta_cta_credit, 4_400);
+    assert_eq!(stmt_p2.cta_schedule.opening_net_assets_retranslation, 3_600);
+    assert_eq!(stmt_p2.cta_schedule.period_net_income_spread, 800);
+    assert_eq!(stmt_p2.cta_schedule.equity_and_dividend_spread, 0);
+
+    verify_translation_certificate(
+        &mut budget,
+        &stmt_p2,
+        &p2_lines,
+        &doc_close_feb,
+        &doc_avg_feb,
+        &hist_docs,
+        20_000,
+        &h.book.units,
+    )
+    .unwrap();
+
+    // Missing historical rate document refuses with EVIDENCE_UNKNOWN:
+    let err = translate_current_rate(
+        &mut budget,
+        "2026-02",
+        feb_28,
+        eur,
+        usd,
+        &p2_lines,
+        &doc_close_feb,
+        &doc_avg_feb,
+        &[],
+        20_000,
+        stmt_p1.ending_retained_earnings_reporting,
+        stmt_p1.cta_schedule.ending_cumulative_cta_credit,
+        &h.book.units,
+    )
+    .expect_err("missing historical SpotClose rate must refuse");
+    assert_eq!(err.code, code::EVIDENCE_UNKNOWN);
+
+    // Post CTA recycling on deconsolidation in h.march:
+    {
+        let doc = doc_close_mar
+            .document(h.book.book_id, PRINCIPAL, 3)
+            .unwrap();
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        h.runtime
+            .block_on(async move { add_document(db, &ctx, book, &doc).await })
+            .unwrap()
+            .unwrap();
+    }
+    let mut recycle_tpl = h.proposal(Vec::new(), b"fx-cta-recycle", EntryClass::REVALUATION);
+    recycle_tpl.effective_date = mar_31;
+    let recycle_entry = plan_cta_deconsolidation_recycling(
+        recycle_tpl,
+        &stmt_p2,
+        acct_equity,
+        acct_rev,
+        &doc_close_mar,
+        Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(recycle_entry.legs.len(), 2);
+    assert_eq!(recycle_entry.legs[0].side, Side::Debit);
+    assert_eq!(recycle_entry.legs[0].amount, Amount::new(usd, 8_900));
+    assert_eq!(recycle_entry.legs[1].side, Side::Credit);
+    assert_eq!(recycle_entry.legs[1].amount, Amount::new(usd, 8_900));
+    {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        let req = PostRequest {
+            proposal: recycle_entry,
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+        };
+        h.runtime
+            .block_on(async move { post(db, &ctx, book, req).await })
+            .unwrap()
+            .unwrap();
+    }
+}
+
+#[test]
+fn fx_temporal_remeasurement_two_period_monetary_vs_non_monetary_matches_oracle() {
+    use fa_journal::{FxRateDocument, FxRatePurpose, add_document};
+    use fa_model::AccountType;
+    use fa_money::RoundingLaw;
+    use fa_money::rate::{ArithmeticBudget, BudgetLimits};
+    use fa_reference::Side as RefSide;
+    use fa_reference::fx::{
+        OracleRateQuote, OracleRemeasurementBasis, OracleRemeasurementLine,
+        remeasure_temporal_oracle,
+    };
+    use fa_registers::{
+        RemeasurementBasis, RemeasurementInputLine, plan_remeasurement_entry, remeasure_temporal,
+        verify_remeasurement_certificate,
+    };
+
+    let mut h = harness();
+    let usd = h.book.units.lookup("USD").unwrap();
+    let eur = h.book.units.lookup("EUR").unwrap();
+
+    let jan_01 = DateDay::from_ymd(2026, 1, 1).unwrap();
+    let mar_31 = DateDay::from_ymd(2026, 3, 31).unwrap();
+
+    let doc_spot_jan01 = FxRateDocument::new(
+        usd,
+        eur,
+        105,
+        100,
+        RoundingLaw::HalfEven,
+        jan_01,
+        1_700_000_000_000_000_000,
+        FxRatePurpose::SpotClose,
+        "ECB",
+    )
+    .unwrap();
+    let doc_avg_mar = FxRateDocument::new(
+        usd,
+        eur,
+        110,
+        100,
+        RoundingLaw::HalfEven,
+        mar_31,
+        1_700_000_000_000_000_000,
+        FxRatePurpose::PeriodAverage,
+        "ECB",
+    )
+    .unwrap();
+    let doc_close_mar = FxRateDocument::new(
+        usd,
+        eur,
+        115,
+        100,
+        RoundingLaw::HalfEven,
+        mar_31,
+        1_700_000_000_000_000_000,
+        FxRatePurpose::PeriodClose,
+        "ECB",
+    )
+    .unwrap();
+
+    for d in [&doc_spot_jan01, &doc_avg_mar, &doc_close_mar] {
+        let doc = d.document(h.book.book_id, PRINCIPAL, 3).unwrap();
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        h.runtime
+            .block_on(async move { add_document(db, &ctx, book, &doc).await })
+            .unwrap()
+            .unwrap();
+    }
+
+    let stripped = asupersync::Cx::detached_cancel_context();
+    let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
+
+    // EUR currency-of-record subsidiary with USD functional currency:
+    // - Cash (Monetary Asset): Dr EUR 900.00 (90_000) -> Closing 1.15 = 103_500
+    // - Inventory (Non-Monetary Asset, acquired 2026-01-01): Dr EUR 400.00 (40_000) -> Historical 1.05 = 42_000
+    // - AP (Monetary Liability): Cr EUR 200.00 (20_000) -> Closing 1.15 = 23_000
+    // - Share Capital (Equity, issued 2026-01-01): Cr EUR 1,000.00 (100_000) -> Historical 1.05 = 105_000
+    // - Revenue (Flow): Cr EUR 500.00 (50_000) -> Average 1.10 = 55_000
+    // - COGS (Historical Cost Allocation from 2026-01-01 inventory): Dr EUR 300.00 (30_000) -> Historical 1.05 = 31_500
+    // - Operating Expense (Flow): Dr EUR 100.00 (10_000) -> Average 1.10 = 11_000
+    // Record Dr = 170_000, Record Cr = 170_000.
+    // BS Dr - Cr in USD = (103_500 + 42_000) - (23_000 + 105_000) = 17_500.
+    // Pre-FX P&L in USD = 55_000 - 31_500 - 11_000 = 12_500.
+    // Remeasurement gain in P&L = 17_500 - 12_500 = +5_000 ($50.00)!
+    // Remeasured Net Income = 12_500 + 5_000 = 17_500!
+    let acct_inv = VId(991_000);
+    let acct_ap = VId(991_003);
+    let acct_eq = VId(991_001);
+    let acct_rev = h.rent;
+    let acct_cogs = VId(991_004);
+    let acct_opex = VId(991_002);
+    let lines = vec![
+        RemeasurementInputLine {
+            account: h.cash,
+            account_type: AccountType::ASSET,
+            basis: RemeasurementBasis::MonetaryClosing,
+            side: Side::Debit,
+            record_amount: Amount::new(eur, 90_000),
+        },
+        RemeasurementInputLine {
+            account: acct_inv,
+            account_type: AccountType::ASSET,
+            basis: RemeasurementBasis::NonMonetaryHistorical {
+                acquisition_date: jan_01,
+            },
+            side: Side::Debit,
+            record_amount: Amount::new(eur, 40_000),
+        },
+        RemeasurementInputLine {
+            account: acct_ap,
+            account_type: AccountType::LIABILITY,
+            basis: RemeasurementBasis::MonetaryClosing,
+            side: Side::Credit,
+            record_amount: Amount::new(eur, 20_000),
+        },
+        RemeasurementInputLine {
+            account: acct_eq,
+            account_type: AccountType::EQUITY,
+            basis: RemeasurementBasis::NonMonetaryHistorical {
+                acquisition_date: jan_01,
+            },
+            side: Side::Credit,
+            record_amount: Amount::new(eur, 100_000),
+        },
+        RemeasurementInputLine {
+            account: acct_rev,
+            account_type: AccountType::REVENUE,
+            basis: RemeasurementBasis::FlowAverage,
+            side: Side::Credit,
+            record_amount: Amount::new(eur, 50_000),
+        },
+        RemeasurementInputLine {
+            account: acct_cogs,
+            account_type: AccountType::EXPENSE,
+            basis: RemeasurementBasis::HistoricalCostAllocation {
+                acquisition_date: jan_01,
+            },
+            side: Side::Debit,
+            record_amount: Amount::new(eur, 30_000),
+        },
+        RemeasurementInputLine {
+            account: acct_opex,
+            account_type: AccountType::EXPENSE,
+            basis: RemeasurementBasis::FlowAverage,
+            side: Side::Debit,
+            record_amount: Amount::new(eur, 10_000),
+        },
+    ];
+    let hist_docs = vec![doc_spot_jan01.clone()];
+
+    let run = remeasure_temporal(
+        &mut budget,
+        &h.march,
+        mar_31,
+        eur,
+        usd,
+        &lines,
+        &doc_close_mar,
+        &doc_avg_mar,
+        &hist_docs,
+        0,
+        0,
+        0,
+        &h.book.units,
+    )
+    .unwrap();
+
+    assert_eq!(run.pre_fx_net_income_functional, 12_500);
+    assert_eq!(run.delta_remeasurement_gain_credit, 5_000);
+    assert_eq!(run.cumulative_remeasurement_gain_credit, 5_000);
+    assert_eq!(run.remeasured_net_income_functional, 17_500);
+    assert_eq!(run.ending_retained_earnings_functional, 17_500);
+
+    verify_remeasurement_certificate(
+        &mut budget,
+        &run,
+        &lines,
+        &doc_close_mar,
+        &doc_avg_mar,
+        &hist_docs,
+        0,
+        &h.book.units,
+    )
+    .unwrap();
+
+    // Compare against independent limb-arithmetic oracle:
+    let mut oracle_hist = std::collections::BTreeMap::new();
+    oracle_hist.insert(
+        jan_01.0,
+        OracleRateQuote {
+            quote_unit: eur.0,
+            quote_scale: 2,
+            rate_num: 105,
+            rate_den: 100,
+            rounding_law: "HalfEven".into(),
+        },
+    );
+    let oracle_out = remeasure_temporal_oracle(
+        &[
+            OracleRemeasurementLine {
+                account: h.cash.0,
+                is_income_statement: false,
+                basis: OracleRemeasurementBasis::MonetaryClosing,
+                side: RefSide::Debit,
+                record_mantissa: 90_000,
+            },
+            OracleRemeasurementLine {
+                account: acct_inv.0,
+                is_income_statement: false,
+                basis: OracleRemeasurementBasis::NonMonetaryHistorical {
+                    acquisition_date: jan_01.0,
+                },
+                side: RefSide::Debit,
+                record_mantissa: 40_000,
+            },
+            OracleRemeasurementLine {
+                account: acct_ap.0,
+                is_income_statement: false,
+                basis: OracleRemeasurementBasis::MonetaryClosing,
+                side: RefSide::Credit,
+                record_mantissa: 20_000,
+            },
+            OracleRemeasurementLine {
+                account: acct_eq.0,
+                is_income_statement: false,
+                basis: OracleRemeasurementBasis::NonMonetaryHistorical {
+                    acquisition_date: jan_01.0,
+                },
+                side: RefSide::Credit,
+                record_mantissa: 100_000,
+            },
+            OracleRemeasurementLine {
+                account: acct_rev.0,
+                is_income_statement: true,
+                basis: OracleRemeasurementBasis::FlowAverage,
+                side: RefSide::Credit,
+                record_mantissa: 50_000,
+            },
+            OracleRemeasurementLine {
+                account: acct_cogs.0,
+                is_income_statement: true,
+                basis: OracleRemeasurementBasis::HistoricalCostAllocation {
+                    acquisition_date: jan_01.0,
+                },
+                side: RefSide::Debit,
+                record_mantissa: 30_000,
+            },
+            OracleRemeasurementLine {
+                account: acct_opex.0,
+                is_income_statement: true,
+                basis: OracleRemeasurementBasis::FlowAverage,
+                side: RefSide::Debit,
+                record_mantissa: 10_000,
+            },
+        ],
+        2,
+        2,
+        &OracleRateQuote {
+            quote_unit: eur.0,
+            quote_scale: 2,
+            rate_num: 115,
+            rate_den: 100,
+            rounding_law: "HalfEven".into(),
+        },
+        &OracleRateQuote {
+            quote_unit: eur.0,
+            quote_scale: 2,
+            rate_num: 110,
+            rate_den: 100,
+            rounding_law: "HalfEven".into(),
+        },
+        &oracle_hist,
+        0,
+        0,
+        0,
+    )
+    .unwrap();
+    assert_eq!(
+        run.delta_remeasurement_gain_credit,
+        oracle_out.delta_remeasurement_gain_credit
+    );
+    assert_eq!(
+        run.remeasured_net_income_functional,
+        oracle_out.remeasured_net_income_functional
+    );
+    assert_eq!(
+        run.ending_retained_earnings_functional,
+        oracle_out.ending_retained_earnings_functional
+    );
+
+    // Plan and post the delta-cumulative remeasurement entry into the book:
+    let mut remeas_tpl = h.proposal(Vec::new(), b"fx-remeas-p1", EntryClass::REVALUATION);
+    remeas_tpl.effective_date = mar_31;
+    let remeas_entry = plan_remeasurement_entry(
+        remeas_tpl,
+        &run,
+        h.cash,
+        h.rent,
+        &doc_close_mar,
+        &doc_avg_mar,
+        &hist_docs,
+        Vec::new(),
+    )
+    .unwrap();
+    {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        let req = PostRequest {
+            proposal: remeas_entry,
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+        };
+        h.runtime
+            .block_on(async move { post(db, &ctx, book, req).await })
+            .unwrap()
+            .unwrap();
+    }
+}

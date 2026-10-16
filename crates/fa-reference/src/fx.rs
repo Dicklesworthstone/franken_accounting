@@ -473,3 +473,286 @@ pub fn fold_functional_period(
     }
     Ok(cells)
 }
+
+/// Account item kind for the reference current-rate translation oracle (plan §12.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OracleTranslationKind {
+    Asset,
+    Liability,
+    ContributedEquity { originating_date: i32 },
+    Revenue,
+    Expense,
+    Dividend { declaration_date: i32 },
+}
+
+/// Input line for the reference current-rate translation oracle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OracleTranslationLine {
+    pub account: u128,
+    pub kind: OracleTranslationKind,
+    pub side: Side,
+    pub functional_mantissa: i128,
+}
+
+/// Output of the reference current-rate translation oracle (`ASC 830-30 / IAS 21.39`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OracleTranslationOutput {
+    pub reporting_mantissas: Vec<i128>,
+    pub total_assets_reporting: i128,
+    pub total_liabilities_reporting: i128,
+    pub total_contributed_equity_reporting: i128,
+    pub total_revenue_reporting: i128,
+    pub total_expense_reporting: i128,
+    pub translated_net_income_reporting: i128,
+    pub total_dividends_reporting: i128,
+    pub ending_retained_earnings_reporting: i128,
+    pub ending_cumulative_cta_credit: i128,
+    pub delta_cta_credit: i128,
+}
+
+/// Independently compute current-rate translation (`ASC 830-30 / IAS 21.39`)
+/// using [`Int`] limb arithmetic (`round_convert`).
+#[allow(clippy::too_many_arguments)]
+pub fn translate_current_rate_oracle(
+    lines: &[OracleTranslationLine],
+    functional_scale: u8,
+    reporting_scale: u8,
+    closing_quote: &OracleRateQuote,
+    average_quote: &OracleRateQuote,
+    historical_quotes: &BTreeMap<i32, OracleRateQuote>,
+    prior_retained_earnings_functional: i128,
+    prior_retained_earnings_reporting: i128,
+    prior_cumulative_cta_credit: i128,
+) -> Result<OracleTranslationOutput, String> {
+    let mut func_dr = 0i128;
+    let mut func_cr = prior_retained_earnings_functional;
+
+    let mut reporting_mantissas = Vec::with_capacity(lines.len());
+    let mut total_assets = 0i128;
+    let mut total_liabilities = 0i128;
+    let mut total_equity = 0i128;
+    let mut total_revenue = 0i128;
+    let mut total_expense = 0i128;
+    let mut total_dividends = 0i128;
+
+    for (idx, line) in lines.iter().enumerate() {
+        if line.functional_mantissa <= 0 {
+            return Err(format!("line {idx} has non-positive functional_mantissa"));
+        }
+        match line.side {
+            Side::Debit => {
+                func_dr = func_dr
+                    .checked_add(line.functional_mantissa)
+                    .ok_or_else(|| "functional debit overflow".to_string())?;
+            }
+            Side::Credit => {
+                func_cr = func_cr
+                    .checked_add(line.functional_mantissa)
+                    .ok_or_else(|| "functional credit overflow".to_string())?;
+            }
+        }
+        let quote = match line.kind {
+            OracleTranslationKind::Asset | OracleTranslationKind::Liability => closing_quote,
+            OracleTranslationKind::Revenue | OracleTranslationKind::Expense => average_quote,
+            OracleTranslationKind::ContributedEquity { originating_date } => {
+                historical_quotes.get(&originating_date).ok_or_else(|| {
+                    format!("missing historical SpotClose rate for date {originating_date}")
+                })?
+            }
+            OracleTranslationKind::Dividend { declaration_date } => {
+                historical_quotes.get(&declaration_date).ok_or_else(|| {
+                    format!("missing historical SpotClose rate for date {declaration_date}")
+                })?
+            }
+        };
+        let rep = round_convert(
+            line.functional_mantissa,
+            functional_scale,
+            reporting_scale,
+            quote.rate_num,
+            quote.rate_den,
+            &quote.rounding_law,
+        )?;
+        reporting_mantissas.push(rep);
+
+        match (line.kind, line.side) {
+            (OracleTranslationKind::Asset, Side::Debit) => total_assets += rep,
+            (OracleTranslationKind::Asset, Side::Credit) => total_assets -= rep,
+            (OracleTranslationKind::Liability, Side::Credit) => total_liabilities += rep,
+            (OracleTranslationKind::Liability, Side::Debit) => total_liabilities -= rep,
+            (OracleTranslationKind::ContributedEquity { .. }, Side::Credit) => total_equity += rep,
+            (OracleTranslationKind::ContributedEquity { .. }, Side::Debit) => total_equity -= rep,
+            (OracleTranslationKind::Revenue, Side::Credit) => total_revenue += rep,
+            (OracleTranslationKind::Revenue, Side::Debit) => total_revenue -= rep,
+            (OracleTranslationKind::Expense, Side::Debit) => total_expense += rep,
+            (OracleTranslationKind::Expense, Side::Credit) => total_expense -= rep,
+            (OracleTranslationKind::Dividend { .. }, Side::Debit) => total_dividends += rep,
+            (OracleTranslationKind::Dividend { .. }, Side::Credit) => total_dividends -= rep,
+        }
+    }
+
+    if func_dr != func_cr {
+        return Err(format!(
+            "functional trial balance unbalanced: debits {func_dr} != credits {func_cr}"
+        ));
+    }
+
+    let translated_net_income = total_revenue
+        .checked_sub(total_expense)
+        .ok_or_else(|| "translated net income overflow".to_string())?;
+    let ending_re = prior_retained_earnings_reporting
+        .checked_add(translated_net_income)
+        .and_then(|v| v.checked_sub(total_dividends))
+        .ok_or_else(|| "ending retained earnings overflow".to_string())?;
+    let net_assets = total_assets
+        .checked_sub(total_liabilities)
+        .ok_or_else(|| "net assets overflow".to_string())?;
+    let non_cta_equity = total_equity
+        .checked_add(ending_re)
+        .ok_or_else(|| "non-cta equity overflow".to_string())?;
+    let ending_cta = net_assets
+        .checked_sub(non_cta_equity)
+        .ok_or_else(|| "ending CTA overflow".to_string())?;
+    let delta_cta = ending_cta
+        .checked_sub(prior_cumulative_cta_credit)
+        .ok_or_else(|| "delta CTA overflow".to_string())?;
+
+    Ok(OracleTranslationOutput {
+        reporting_mantissas,
+        total_assets_reporting: total_assets,
+        total_liabilities_reporting: total_liabilities,
+        total_contributed_equity_reporting: total_equity,
+        total_revenue_reporting: total_revenue,
+        total_expense_reporting: total_expense,
+        translated_net_income_reporting: translated_net_income,
+        total_dividends_reporting: total_dividends,
+        ending_retained_earnings_reporting: ending_re,
+        ending_cumulative_cta_credit: ending_cta,
+        delta_cta_credit: delta_cta,
+    })
+}
+
+/// Remeasurement basis for the reference temporal-method oracle (plan §12.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OracleRemeasurementBasis {
+    MonetaryClosing,
+    NonMonetaryHistorical { acquisition_date: i32 },
+    HistoricalCostAllocation { acquisition_date: i32 },
+    FlowAverage,
+}
+
+/// Input line for the reference temporal-method remeasurement oracle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OracleRemeasurementLine {
+    pub account: u128,
+    pub is_income_statement: bool,
+    pub basis: OracleRemeasurementBasis,
+    pub side: Side,
+    pub record_mantissa: i128,
+}
+
+/// Output of the reference temporal-method remeasurement oracle (`ASC 830-10-45-17 / IAS 21.23`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OracleRemeasurementOutput {
+    pub functional_mantissas: Vec<i128>,
+    pub pre_fx_net_income_functional: i128,
+    pub cumulative_remeasurement_gain_credit: i128,
+    pub delta_remeasurement_gain_credit: i128,
+    pub remeasured_net_income_functional: i128,
+    pub ending_retained_earnings_functional: i128,
+}
+
+/// Independently compute temporal-method remeasurement (`ASC 830-10-45-17 / IAS 21.23`)
+/// using [`Int`] limb arithmetic (`round_convert`).
+#[allow(clippy::too_many_arguments)]
+pub fn remeasure_temporal_oracle(
+    lines: &[OracleRemeasurementLine],
+    record_scale: u8,
+    functional_scale: u8,
+    closing_quote: &OracleRateQuote,
+    average_quote: &OracleRateQuote,
+    historical_quotes: &BTreeMap<i32, OracleRateQuote>,
+    prior_retained_earnings_record: i128,
+    prior_retained_earnings_functional: i128,
+    prior_cumulative_remeasurement_gain_credit: i128,
+) -> Result<OracleRemeasurementOutput, String> {
+    let mut rec_dr = 0i128;
+    let mut rec_cr = prior_retained_earnings_record;
+
+    let mut functional_mantissas = Vec::with_capacity(lines.len());
+    let mut bs_dr_minus_cr = 0i128;
+    let mut pre_fx_pnl_cr_minus_dr = 0i128;
+
+    for (idx, line) in lines.iter().enumerate() {
+        if line.record_mantissa <= 0 {
+            return Err(format!("line {idx} has non-positive record_mantissa"));
+        }
+        match line.side {
+            Side::Debit => rec_dr += line.record_mantissa,
+            Side::Credit => rec_cr += line.record_mantissa,
+        }
+        let quote = match line.basis {
+            OracleRemeasurementBasis::MonetaryClosing => closing_quote,
+            OracleRemeasurementBasis::FlowAverage => average_quote,
+            OracleRemeasurementBasis::NonMonetaryHistorical { acquisition_date }
+            | OracleRemeasurementBasis::HistoricalCostAllocation { acquisition_date } => {
+                historical_quotes.get(&acquisition_date).ok_or_else(|| {
+                    format!("missing historical SpotClose rate for date {acquisition_date}")
+                })?
+            }
+        };
+        let func = round_convert(
+            line.record_mantissa,
+            record_scale,
+            functional_scale,
+            quote.rate_num,
+            quote.rate_den,
+            &quote.rounding_law,
+        )?;
+        functional_mantissas.push(func);
+
+        if line.is_income_statement {
+            match line.side {
+                Side::Credit => pre_fx_pnl_cr_minus_dr += func,
+                Side::Debit => pre_fx_pnl_cr_minus_dr -= func,
+            }
+        } else {
+            match line.side {
+                Side::Debit => bs_dr_minus_cr += func,
+                Side::Credit => bs_dr_minus_cr -= func,
+            }
+        }
+    }
+
+    if rec_dr != rec_cr {
+        return Err(format!(
+            "record-currency trial balance unbalanced: debits {rec_dr} != credits {rec_cr}"
+        ));
+    }
+
+    // Since prior_retained_earnings_functional = prior_pre_fx_re + prior_cumulative_remeasurement_gain_credit,
+    // the delta-cumulative remeasurement gain/loss for this period is:
+    //   delta_gain = bs_dr_minus_cr - (prior_retained_earnings_functional + pre_fx_pnl_cr_minus_dr)
+    // and cumulative_gain = prior_cumulative_remeasurement_gain_credit + delta_gain.
+    let delta_gain = bs_dr_minus_cr
+        .checked_sub(prior_retained_earnings_functional + pre_fx_pnl_cr_minus_dr)
+        .ok_or_else(|| "delta remeasurement gain overflow".to_string())?;
+    let cumulative_gain = prior_cumulative_remeasurement_gain_credit
+        .checked_add(delta_gain)
+        .ok_or_else(|| "cumulative remeasurement gain overflow".to_string())?;
+    let remeasured_ni = pre_fx_pnl_cr_minus_dr
+        .checked_add(delta_gain)
+        .ok_or_else(|| "remeasured net income overflow".to_string())?;
+    let ending_re = prior_retained_earnings_functional
+        .checked_add(remeasured_ni)
+        .ok_or_else(|| "ending retained earnings overflow".to_string())?;
+
+    Ok(OracleRemeasurementOutput {
+        functional_mantissas,
+        pre_fx_net_income_functional: pre_fx_pnl_cr_minus_dr,
+        cumulative_remeasurement_gain_credit: cumulative_gain,
+        delta_remeasurement_gain_credit: delta_gain,
+        remeasured_net_income_functional: remeasured_ni,
+        ending_retained_earnings_functional: ending_re,
+    })
+}
