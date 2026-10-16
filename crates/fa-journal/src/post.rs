@@ -1621,7 +1621,7 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
                 "cite an existing Event vertex (`fa event list --json`)",
             )));
         }
-        let ev_payload = bytes(&ev_row, property::FA_PAYLOAD, "event._fa_payload")?;
+        let ev_payload = crate::rows::bytes(&ev_row, property::FA_PAYLOAD, "event._fa_payload")?;
         let ev_spec = fa_model::EventSpec::decode(&ev_payload)
             .map_err(|e| KernelError::Corrupt(format!("event._fa_payload: {e}")))?;
         if ev_spec.evidence.is_empty() {
@@ -1635,7 +1635,7 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
             )));
         }
         if let Some(expected_digest) = maybe_digest {
-            let stored_digest = bytes(&ev_row, property::FA_DIGEST, "event._fa_digest")?;
+            let stored_digest = crate::rows::bytes(&ev_row, property::FA_DIGEST, "event._fa_digest")?;
             if stored_digest.as_slice() != expected_digest.as_slice() {
                 txn.abort();
                 return Ok(Err(Refusal::new(

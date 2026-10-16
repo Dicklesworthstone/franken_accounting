@@ -18,8 +18,8 @@ use fa_model::rea::{
 };
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    ControlKind, ControlPayload, Entry, EntryClass, EntryOrigin, EntryPayload, Erasable, EventKind,
-    EventResource, EventSpec, ExternalId, ExternalIdBinding, Id128, InstrumentKind, InstrumentSpec,
+    ControlKind, ControlPayload, Entry, EntryClass, EntryOrigin, EntryPayload, Erasable,
+    EventSpec, ExternalId, ExternalIdBinding, Id128, InstrumentKind, InstrumentSpec,
     LEGAL_ENTITY_DIMENSION, LEGAL_ENTITY_DIMENSION_CODE, LegalEntityFullSpec, OwnershipPct,
     PARTY_DIMENSION, PARTY_DIMENSION_CODE, PartyIdentifierUpdate, PartyKind, PartySpec,
     ReaControlOp, RelationshipKind, RelationshipSpec, dimension_vid, entity_value_vid,
