@@ -114,7 +114,7 @@ fn encode(through: CommitSeq, fold: &Fold) -> Result<Vec<u8>, RegisterError> {
         .fixed(&fold.posted_legs_digest);
     let holds: Vec<_> = fold.pending_holds.iter().collect();
     w.list(&holds, |w, ((seq, vid), digest)| {
-        w.u64(seq.0).u128(vid.0).fixed(digest);
+        w.u64(seq.0).u128(vid.0).fixed(*digest);
     });
     w.finish().map_err(RegisterError::Encoding)
 }
@@ -135,8 +135,8 @@ fn decode(payload: &[u8], period: &str) -> Result<(CommitSeq, Fold), RegisterErr
         let fold_digest = r.fixed::<32>("register-state.digest")?;
         let posted_legs_digest = r.fixed::<32>("register-state.posted_legs_digest")?;
         let holds = r.list(
+            fa_model::limits::MAX_BATCH_ENTRIES,
             "register-state.pending_holds",
-            fa_model::limits::MAX_LIST_LEN,
             |r| {
                 let seq = CommitSeq(r.u64("register-state.hold_seq")?);
                 let vid = VId(r.u128("register-state.hold_vid")?);
@@ -144,7 +144,6 @@ fn decode(payload: &[u8], period: &str) -> Result<(CommitSeq, Fold), RegisterErr
                 Ok(((seq, vid), digest))
             },
         )?;
-        r.finish()?;
         let mut pending_holds = BTreeMap::new();
         for (key, digest) in holds {
             if key.0 > through
@@ -156,6 +155,7 @@ fn decode(payload: &[u8], period: &str) -> Result<(CommitSeq, Fold), RegisterErr
             }
             pending_holds.insert(key, digest);
         }
+        r.finish()?;
         Ok((
             through,
             watermark,

@@ -120,14 +120,81 @@ fn add_entry(
     Ok(())
 }
 
+fn fold_entity_leg_contribution(
+    prev: [u8; 32],
+    commit_seq: CommitSeq,
+    entry: VId,
+    ordinal: u16,
+    account: VId,
+    unit_id: u32,
+    entity: Option<&String>,
+    side: Side,
+    mantissa: i128,
+) -> Result<[u8; 32], RegisterError> {
+    let mut w = Writer::new();
+    w.fixed(&prev)
+        .u64(commit_seq.0)
+        .u128(entry.0)
+        .u16(ordinal)
+        .u128(account.0)
+        .u32(unit_id)
+        .opt(entity, |w, e| {
+            w.str(e);
+        })
+        .u8(match side {
+            Side::Debit => 0,
+            Side::Credit => 1,
+        })
+        .i128(mantissa);
+    let mut h = Hasher::new();
+    h.update(b"fa:register-entity-leg-contribution:v1");
+    h.update(&w.finish().map_err(RegisterError::Encoding)?);
+    Ok(h.finalize().0)
+}
+
+fn fold_entity_entry_contributions(
+    mut acc: [u8; 32],
+    spec: &BookSpec,
+    commit_seq: CommitSeq,
+    entry_vid: VId,
+    entry: &Entry,
+) -> Result<[u8; 32], RegisterError> {
+    for (ordinal, leg) in entry.proposal.legs.iter().enumerate() {
+        let ordinal = u16::try_from(ordinal)
+            .map_err(|_| KernelError::Corrupt("leg ordinal exceeds u16".into()))?;
+        let entity = entity_of(spec, leg);
+        acc = fold_entity_leg_contribution(
+            acc,
+            commit_seq,
+            entry_vid,
+            ordinal,
+            leg.account_ref,
+            leg.amount.unit.0,
+            entity.as_ref(),
+            leg.side,
+            leg.amount.mantissa,
+        )?;
+    }
+    Ok(acc)
+}
+
 fn digest_of(
+    period: &str,
     cells: &[EntityCell],
     pending: &[EntityCell],
     watermark: Option<CommitSeq>,
+    posted_legs_digest: [u8; 32],
+    pending_holds: &BTreeMap<(CommitSeq, VId), [u8; 32]>,
 ) -> Result<[u8; 32], RegisterError> {
     let mut w = Writer::new();
-    w.opt(watermark.as_ref(), |w, s| {
-        w.u64(s.0);
+    w.str(period)
+        .opt(watermark.as_ref(), |w, s| {
+            w.u64(s.0);
+        })
+        .fixed(&posted_legs_digest);
+    let holds: Vec<_> = pending_holds.iter().collect();
+    w.list(&holds, |w, ((seq, vid), digest)| {
+        w.u64(seq.0).u128(vid.0).fixed(*digest);
     });
     for column in [cells, pending] {
         w.list(column, |w, c| {
@@ -168,6 +235,8 @@ pub fn fold_period_by_entity<V: asupersync::fs::Vfs + Clone>(
     let mut cells: BTreeMap<EntityCellKey, EntityCell> = BTreeMap::new();
     let mut pending: BTreeMap<EntityCellKey, EntityCell> = BTreeMap::new();
     let mut watermark: Option<CommitSeq> = None;
+    let mut posted_legs_digest = [0u8; 32];
+    let mut pending_holds = BTreeMap::new();
     let entries = entries_at(db, book, seq)?;
     let resolved = resolutions(&entries)?;
     let activated = migration_activations(&entries)?;
@@ -182,14 +251,31 @@ pub fn fold_period_by_entity<V: asupersync::fs::Vfs + Clone>(
                 watermark = Some(watermark.map_or(*release, |w| w.max(*release)));
             } else {
                 add_entry(&mut pending, &spec, entry, period_code)?;
+                let hold_digest =
+                    fold_entity_entry_contributions([0u8; 32], &spec, *created_at, *vid, entry)?;
+                pending_holds.insert((*created_at, *vid), hold_digest);
             }
         } else {
             add_entry(&mut cells, &spec, entry, period_code)?;
+            posted_legs_digest = fold_entity_entry_contributions(
+                posted_legs_digest,
+                &spec,
+                *created_at,
+                *vid,
+                entry,
+            )?;
         }
     }
     let cells: Vec<EntityCell> = cells.into_values().collect();
     let pending: Vec<EntityCell> = pending.into_values().collect();
-    let fold_digest = digest_of(&cells, &pending, watermark)?;
+    let fold_digest = digest_of(
+        period_code,
+        &cells,
+        &pending,
+        watermark,
+        posted_legs_digest,
+        &pending_holds,
+    )?;
     Ok(EntityFold {
         period: period_code.to_string(),
         known_at: seq,

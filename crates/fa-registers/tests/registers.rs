@@ -1646,3 +1646,83 @@ fn a_limit_cell_rebound_to_another_account_fails_closed_and_verify_names_both() 
         Err(KernelError::Corrupt(_))
     ));
 }
+
+#[test]
+fn equal_sum_histories_with_different_leg_orders_have_distinct_fold_digests() {
+    let mut a = harness();
+    let mut b = harness();
+
+    // Book A posts 100 then 50; Book B posts 50 then 100 under identical keys.
+    let ctx_a = a.ctx();
+    let ctx_b = b.ctx();
+    a.post_rent(100, b"entry-1");
+    a.runtime
+        .block_on(fa_registers::advance(&mut a.db, &ctx_a, &a.book, &a.march))
+        .expect("advance a step 1");
+    a.post_rent(50, b"entry-2");
+    let adv_a = a
+        .runtime
+        .block_on(fa_registers::advance(&mut a.db, &ctx_a, &a.book, &a.march))
+        .expect("advance a step 2");
+
+    b.post_rent(50, b"entry-1");
+    b.runtime
+        .block_on(fa_registers::advance(&mut b.db, &ctx_b, &b.book, &b.march))
+        .expect("advance b step 1");
+    b.post_rent(100, b"entry-2");
+    let adv_b = b
+        .runtime
+        .block_on(fa_registers::advance(&mut b.db, &ctx_b, &b.book, &b.march))
+        .expect("advance b step 2");
+
+    let fold_a = fold_period(&a.db, &a.book, &a.march).unwrap();
+    let fold_b = fold_period(&b.db, &b.book, &b.march).unwrap();
+    assert_eq!(adv_a.fold, fold_a);
+    assert_eq!(adv_b.fold, fold_b);
+    assert_eq!(fold_a.cells, fold_b.cells, "both books sum to 150");
+    assert_eq!(fold_a.watermark, fold_b.watermark, "same commit sequence watermark");
+    assert_eq!(fold_a.entries, fold_b.entries);
+    assert_ne!(
+        fold_a.fold_digest, fold_b.fold_digest,
+        "100@seq1 + 50@seq2 vs 50@seq1 + 100@seq2 must have distinct fold digests"
+    );
+
+    let ent_a = fa_registers::fold_period_by_entity(&a.db, &a.book, &a.march, None).unwrap();
+    let ent_b = fa_registers::fold_period_by_entity(&b.db, &b.book, &b.march, None).unwrap();
+    assert_eq!(ent_a.cells, ent_b.cells);
+    assert_eq!(ent_a.watermark, ent_b.watermark);
+    assert_ne!(ent_a.fold_digest, ent_b.fold_digest);
+
+    // Within a single entry, reordering leg ordinals also changes fold_digest
+    // even though the summed cells and watermark are identical.
+    let mut c = harness();
+    let mut d = harness();
+    let utilities = account_vid(c.book.book_id, "7000");
+    c.commit(c.proposal(
+        vec![
+            LegPayload::simple(Side::Debit, c.rent, Amount::new(c.usd, 60)),
+            LegPayload::simple(Side::Debit, utilities, Amount::new(c.usd, 40)),
+            LegPayload::simple(Side::Credit, c.cash, Amount::new(c.usd, 100)),
+        ],
+        b"split-entry",
+        EntryClass::ORIGINAL,
+    ));
+    d.commit(d.proposal(
+        vec![
+            LegPayload::simple(Side::Debit, utilities, Amount::new(d.usd, 40)),
+            LegPayload::simple(Side::Debit, d.rent, Amount::new(d.usd, 60)),
+            LegPayload::simple(Side::Credit, d.cash, Amount::new(d.usd, 100)),
+        ],
+        b"split-entry",
+        EntryClass::ORIGINAL,
+    ));
+    let fold_c = fold_period(&c.db, &c.book, &c.march).unwrap();
+    let fold_d = fold_period(&d.db, &d.book, &d.march).unwrap();
+    assert_eq!(fold_c.cells, fold_d.cells);
+    assert_eq!(fold_c.watermark, fold_d.watermark);
+    assert_ne!(
+        fold_c.fold_digest, fold_d.fold_digest,
+        "leg ordinal order within an entry must be bound by fold_digest"
+    );
+}
+

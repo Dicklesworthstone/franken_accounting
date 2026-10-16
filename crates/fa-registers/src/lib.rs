@@ -236,7 +236,7 @@ pub(crate) fn digest_of(
         .fixed(&posted_legs_digest);
     let holds: Vec<_> = pending_holds.iter().collect();
     w.list(&holds, |w, ((seq, vid), digest)| {
-        w.u64(seq.0).u128(vid.0).fixed(digest);
+        w.u64(seq.0).u128(vid.0).fixed(*digest);
     });
     for column in [cells, pending] {
         w.list(column, |w, c| {
