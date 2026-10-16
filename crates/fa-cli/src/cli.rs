@@ -3551,6 +3551,36 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             };
             out.at_book(&book)?;
             out.effective(format!("period:{}", tr.period));
+            if tr.already_recorded {
+                // An identical retry (fa-l93 D13): the request's recorded
+                // control entry, nothing new written.
+                let Some((entry, recorded_at)) = book.read_entry(tr.control_entry)? else {
+                    return Err(Fail::Book(BookError::Kernel(
+                        fa_journal::KernelError::Corrupt(
+                            "a recorded period control entry is absent".into(),
+                        ),
+                    )));
+                };
+                out.event(
+                    "recorded",
+                    vec![
+                        ("vid", s(format!("{:032x}", tr.control_entry.0))),
+                        ("entry_digest", s(hex(&entry.entry_digest))),
+                        ("recorded_at", Json::Int(i128::from(recorded_at.0))),
+                        ("requested", Json::Null),
+                        ("moved", Json::Null),
+                    ],
+                    &format!(
+                        "{}: {} → {} already recorded as {:032x} at {} (same idempotency key); nothing new was written",
+                        tr.period,
+                        tr.from.name(),
+                        tr.to.name(),
+                        tr.control_entry.0,
+                        recorded_at.0
+                    ),
+                );
+                return Ok(());
+            }
             out.event(
                 "period_transitioned",
                 vec![
@@ -6567,6 +6597,17 @@ fn selected_periods(args: &Args, book: &Book) -> Result<Vec<String>, Fail> {
     Ok(periods)
 }
 
+/// An account's net movement, debits minus credits, in checked arithmetic.
+/// Both are journal folds, so a result outside the exact amount range is a
+/// foundation defect in the fold (exit 5), never a value to wrap or saturate.
+fn tb_net(code: &str, debits: i128, credits: i128) -> Result<i128, Fail> {
+    debits.checked_sub(credits).ok_or_else(|| {
+        Fail::Internal(format!(
+            "account {code}: debits {debits} minus credits {credits} is outside the exact amount range; nothing was written, and `fa doctor --json` checks the book and its derived state"
+        ))
+    })
+}
+
 fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let who = ctx.principal(args);
     let summary_cap = if args.switch("--summary") {
@@ -6728,7 +6769,10 @@ fn render_summary_trial_balance(
                         ("type", s(r.account_type.name().unwrap_or("?"))),
                         ("debits", s(render(r.unit_id, r.debits)?)),
                         ("credits", s(render(r.unit_id, r.credits)?)),
-                        ("net", s(render(r.unit_id, r.debits - r.credits)?)),
+                        (
+                            "net",
+                            s(render(r.unit_id, tb_net(&r.code, r.debits, r.credits)?)?),
+                        ),
                         ("debits_pending", s(render(r.unit_id, r.debits_pending)?)),
                         ("credits_pending", s(render(r.unit_id, r.credits_pending)?)),
                     ]))
@@ -7424,7 +7468,10 @@ fn render_trial_balance_with_units(
                 ("type", s(r.account_type.name().unwrap_or("?"))),
                 ("debits", s(render(r.unit_id, r.debits)?)),
                 ("credits", s(render(r.unit_id, r.credits)?)),
-                ("net", s(render(r.unit_id, r.debits - r.credits)?)),
+                (
+                    "net",
+                    s(render(r.unit_id, tb_net(&r.code, r.debits, r.credits)?)?),
+                ),
                 ("debits_pending", s(render(r.unit_id, r.debits_pending)?)),
                 ("credits_pending", s(render(r.unit_id, r.credits_pending)?)),
             ]))
@@ -11890,6 +11937,23 @@ fn migrate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The trial balance's net is checked arithmetic: an in-range difference
+    /// is exact, including a full-range negative, and one outside `i128` is
+    /// a foundation failure naming the account, never a wrapped value.
+    #[test]
+    fn the_trial_balance_net_is_checked_arithmetic() {
+        assert_eq!(tb_net("1000", 500, 200).ok(), Some(300));
+        assert_eq!(tb_net("1000", 0, i128::MAX).ok(), Some(-i128::MAX));
+        let named = match tb_net("6000", i128::MIN, 1) {
+            Err(Fail::Internal(message)) => message.contains("6000"),
+            _ => false,
+        };
+        assert!(
+            named,
+            "an out-of-range net is a foundation failure naming the account"
+        );
+    }
 
     /// The other half of the parity gate (the binary tests prove every
     /// registered verb and subcommand reaches a handler): a handler whose

@@ -1126,6 +1126,45 @@ fn summary_account_unknown_account_and_unit_policy_are_refused() {
     assert!(r.message.contains("EUR"), "{}", r.message);
 }
 
+/// fa-l93 D13 (FA-INV-09): an identical period-transition retry returns
+/// the recorded outcome and writes nothing; a new key, or the same key
+/// naming another transition, is still the state machine's refusal.
+#[test]
+fn an_identical_period_transition_retry_returns_the_recorded_outcome() {
+    let mut h = harness();
+    let march = h.march.clone();
+    // The harness's last commit opened March under the key `open-march`.
+    let head = h.db.frontier().unwrap();
+    let again = h
+        .transition(&march, PeriodTransition::Open, b"open-march")
+        .expect("an identical retry is the recorded outcome");
+    assert!(again.already_recorded);
+    assert_eq!(
+        (again.from, again.to),
+        (PeriodState::Future, PeriodState::Open)
+    );
+    assert_eq!(again.recorded_at, head);
+    assert_eq!(
+        again.control_entry,
+        entry_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), b"open-march")
+    );
+    assert!(again.minted.is_empty() && again.blocked.is_empty());
+    assert_eq!(h.db.frontier().unwrap(), head, "nothing new was written");
+
+    let r = h
+        .transition(&march, PeriodTransition::Open, b"open-march-again")
+        .unwrap_err();
+    assert_eq!(r.code, "FA-REF-040", "a new key is a new request: {r}");
+    let r = h
+        .transition(&march, PeriodTransition::Lock, b"open-march")
+        .unwrap_err();
+    assert_eq!(
+        r.code, "FA-REF-040",
+        "the key names another transition: {r}"
+    );
+    assert_eq!(h.db.frontier().unwrap(), head);
+}
+
 /// fa-ih4: lawful requests ahead of the book's setup are typed refusals,
 /// never `KernelError::Corrupt` (exit 5): a date in a fiscal year nobody
 /// created, and a raw unit id no registered unit version carries on an
@@ -6921,4 +6960,3 @@ fn memo_off_balance_and_statistical_legs_obey_fa_inv_01_memo() {
         .expect("single-sided statistical reversal");
     assert!(matches!(reversed, Posted::Committed { .. }));
 }
-

@@ -250,7 +250,10 @@ fn every_raw_proof_verifies_against_an_operator_trusted_checkpoint() {
         ("inclusion", "inclusion"),
         ("consistency", "consistency"),
         ("prefix", "seq_range_complete"),
-        ("balance", "recomputation"),
+        // The frozen v1 balance omits the two control payloads. Its selected
+        // arithmetic still verifies, but not the omitted records' selectors
+        // (23f9118b/09d5a6e4, fa-n6fh; as in tests/cli.rs and golden.rs).
+        ("balance", "membership_only"),
     ] {
         let proof = write(&dir, &format!("{kind}.proof"), &vector(kind));
         let (anchor, next) = if kind == "consistency" {
@@ -600,7 +603,8 @@ fn help_and_human_output_explain_the_trust_boundary_and_json_is_deterministic() 
         "{plain}"
     );
     assert!(plain.contains("signature_verification: not_performed"));
-    assert!(plain.contains("PASS balance (recomputation)"), "{plain}");
+    // The pinned v1 vector is a partial-payload proof (fa-n6fh).
+    assert!(plain.contains("PASS balance (membership_only)"), "{plain}");
     assert!(plain.contains("credits: 120550"), "{plain}");
 
     let mut outputs = Vec::new();

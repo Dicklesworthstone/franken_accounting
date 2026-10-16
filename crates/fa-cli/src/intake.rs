@@ -39,11 +39,15 @@ fn io_failed(what: &str, error: io::Error) -> Fail {
 /// allowed budget. Grow only for observed bytes, geometrically, capped at the
 /// admitted limit. Allocation failures are ordinary I/O failures, not panics.
 fn append(out: &mut Vec<u8>, bytes: &[u8], limit: usize) -> io::Result<()> {
-    let needed = out.len().checked_add(bytes.len()).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidData, "document length overflow")
-    })?;
+    let needed = out
+        .len()
+        .checked_add(bytes.len())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "document length overflow"))?;
     if needed > limit {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "document exceeds budget"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "document exceeds budget",
+        ));
     }
     if needed > out.capacity() {
         let capacity = out.capacity().saturating_mul(2).max(needed).min(limit);
@@ -72,24 +76,25 @@ fn read_bounded(reader: &mut impl Read, limit: u64, what: &str) -> Result<Vec<u8
     let mut buffer = [0_u8; BUFFER_BYTES];
     while bytes.len() < limit {
         let available = (limit - bytes.len()).min(buffer.len());
-        let count = read_retry(reader, &mut buffer[..available])
-            .map_err(|error| io_failed(what, error))?;
+        let count =
+            read_retry(reader, &mut buffer[..available]).map_err(|error| io_failed(what, error))?;
         if count > available {
-            return Err(io_failed(what, io::Error::new(
-                io::ErrorKind::InvalidData,
-                "input reader reported more bytes than its buffer holds",
-            )));
+            return Err(io_failed(
+                what,
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "input reader reported more bytes than its buffer holds",
+                ),
+            ));
         }
         if count == 0 {
             return Ok(bytes);
         }
-        append(&mut bytes, &buffer[..count], limit)
-            .map_err(|error| io_failed(what, error))?;
+        append(&mut bytes, &buffer[..count], limit).map_err(|error| io_failed(what, error))?;
     }
     // At the exact limit, distinguish EOF from truncation without appending
     // or allocating a sentinel. This also handles a zero remaining budget.
-    let count = read_retry(reader, &mut buffer[..1])
-        .map_err(|error| io_failed(what, error))?;
+    let count = read_retry(reader, &mut buffer[..1]).map_err(|error| io_failed(what, error))?;
     if count == 0 {
         Ok(bytes)
     } else {
@@ -108,9 +113,8 @@ fn read_one(files: &Files, path: &str, limit: u64) -> Result<Vec<u8>, Fail> {
                 // the outer transport, but intake must not allocate it again
                 // before checking this smaller operation-specific budget.
                 let mut out = Vec::new();
-                out.try_reserve_exact(bytes.len()).map_err(|error| {
-                    io_failed("forwarded document", io::Error::other(error))
-                })?;
+                out.try_reserve_exact(bytes.len())
+                    .map_err(|error| io_failed("forwarded document", io::Error::other(error)))?;
                 out.extend_from_slice(bytes);
                 Ok(out)
             }
@@ -121,17 +125,17 @@ fn read_one(files: &Files, path: &str, limit: u64) -> Result<Vec<u8>, Fail> {
             Stdin::Process => read_bounded(&mut io::stdin().lock(), limit, "stdin document"),
         };
     }
-    let mut file = std::fs::File::open(files.resolve(path))
-        .map_err(|error| io_failed(path, error))?;
+    let mut file =
+        std::fs::File::open(files.resolve(path)).map_err(|error| io_failed(path, error))?;
     read_bounded(&mut file, limit, path)
 }
 
 fn document_limit() -> Result<u64, Fail> {
     let stores = DocumentStores::embedded()
         .map_err(|error| Fail::Internal(format!("the embedded document stores: {error}")))?;
-    let store = stores.get(1).ok_or_else(|| {
-        Fail::Internal("the book's document store (1) is not registered".into())
-    })?;
+    let store = stores
+        .get(1)
+        .ok_or_else(|| Fail::Internal("the book's document store (1) is not registered".into()))?;
     Ok(store.max_document_bytes.min(MAX_INTAKE_BATCH_BYTES))
 }
 
@@ -140,7 +144,10 @@ fn check_paths(paths: &[&str], max_documents: usize) -> Result<(), Fail> {
         return Err(Fail::Refusal(Refusal::new(
             code::DOCUMENT_INTAKE,
             exit::USAGE,
-            format!("document input needs 1..={max_documents} files; received {}", paths.len()),
+            format!(
+                "document input needs 1..={max_documents} files; received {}",
+                paths.len()
+            ),
             "plan §9.3; max_import_documents",
             "split the input into explicit bounded import runs",
         )));
@@ -171,7 +178,8 @@ fn read_documents_with(
         let bytes = read_one(files, path, per_document.min(remaining))?;
         let consumed = u64::try_from(bytes.len())
             .map_err(|_| Fail::Internal("document size exceeds u64".into()))?;
-        remaining = remaining.checked_sub(consumed)
+        remaining = remaining
+            .checked_sub(consumed)
             .ok_or_else(|| Fail::Internal("document input budget underflow".into()))?;
         documents.push(bytes);
     }
@@ -212,16 +220,28 @@ mod tests {
     }
 
     fn is_limit(result: Result<Vec<u8>, Fail>) {
-        assert!(matches!(result, Err(Fail::Refusal(Refusal {
-            code: code::DOCUMENT_INTAKE, exit: exit::USAGE, ..
-        }))));
+        assert!(matches!(
+            result,
+            Err(Fail::Refusal(Refusal {
+                code: code::DOCUMENT_INTAKE,
+                exit: exit::USAGE,
+                ..
+            }))
+        ));
     }
 
     #[test]
     fn exact_limit_is_not_truncated_and_one_more_byte_is_refused() {
         for size in [0_usize, 1, BUFFER_BYTES - 1, BUFFER_BYTES, BUFFER_BYTES + 1] {
             let expected = vec![0x73; size];
-            assert_eq!(ok(read_bounded(&mut Cursor::new(&expected), size as u64, "test")), expected);
+            assert_eq!(
+                ok(read_bounded(
+                    &mut Cursor::new(&expected),
+                    size as u64,
+                    "test"
+                )),
+                expected
+            );
             let excess = vec![0x73; size + 1];
             let mut reader = Cursor::new(excess);
             is_limit(read_bounded(&mut reader, size as u64, "test"));
@@ -268,8 +288,14 @@ mod tests {
     #[test]
     fn interrupted_and_short_reads_preserve_every_binary_byte() {
         let expected = vec![0, 255, 128, 13, 10, 7, 0];
-        let mut source = Interrupted { source: Cursor::new(expected.clone()), interrupt: false };
-        assert_eq!(ok(read_bounded(&mut source, expected.len() as u64, "binary")), expected);
+        let mut source = Interrupted {
+            source: Cursor::new(expected.clone()),
+            interrupt: false,
+        };
+        assert_eq!(
+            ok(read_bounded(&mut source, expected.len() as u64, "binary")),
+            expected
+        );
     }
 
     struct Failing {
@@ -298,18 +324,40 @@ mod tests {
 
     #[test]
     fn forwarded_bytes_obey_the_same_limit_without_utf8_conversion() {
-        let files = Files { cwd: None, stdin: Stdin::Forwarded(vec![0, 255, 1]) };
+        let files = Files {
+            cwd: None,
+            stdin: Stdin::Forwarded(vec![0, 255, 1]),
+        };
         assert_eq!(ok(read_one(&files, "-", 3)), [0, 255, 1]);
         is_limit(read_one(&files, "-", 2));
-        assert!(matches!(read_one(&Files { cwd: None, stdin: Stdin::Missing }, "-", 3), Err(Fail::Usage(_))));
+        assert!(matches!(
+            read_one(
+                &Files {
+                    cwd: None,
+                    stdin: Stdin::Missing
+                },
+                "-",
+                3
+            ),
+            Err(Fail::Usage(_))
+        ));
     }
 
     #[test]
     fn selection_errors_precede_any_attempt_to_open_input() {
         let files = Files::default();
-        assert!(matches!(read_documents_with(&files, &["must-not-open", "-", "-"], 4, 8, 3), Err(Fail::Usage(_))));
-        assert!(matches!(read_documents_with(&files, &["must-not-open", "also-must-not-open"], 4, 8, 1), Err(Fail::Refusal(_))));
-        assert!(matches!(read_documents_with(&files, &[], 4, 8, 1), Err(Fail::Refusal(_))));
+        assert!(matches!(
+            read_documents_with(&files, &["must-not-open", "-", "-"], 4, 8, 3),
+            Err(Fail::Usage(_))
+        ));
+        assert!(matches!(
+            read_documents_with(&files, &["must-not-open", "also-must-not-open"], 4, 8, 1),
+            Err(Fail::Refusal(_))
+        ));
+        assert!(matches!(
+            read_documents_with(&files, &[], 4, 8, 1),
+            Err(Fail::Refusal(_))
+        ));
     }
 
     #[test]
@@ -320,7 +368,10 @@ mod tests {
                 Ok(usize::MAX)
             }
         }
-        assert!(matches!(read_bounded(&mut Liar, 4, "bad reader"), Err(Fail::Usage(_))));
+        assert!(matches!(
+            read_bounded(&mut Liar, 4, "bad reader"),
+            Err(Fail::Usage(_))
+        ));
     }
 
     #[test]
@@ -328,7 +379,9 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let directory = std::env::temp_dir().join(format!(
-            "fa-intake-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed),
+            "fa-intake-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
         ));
         // create_dir refuses an existing location; the test never reuses it.
         std::fs::create_dir(&directory).unwrap();
@@ -341,20 +394,32 @@ mod tests {
         let _cleanup = Cleanup(directory.clone());
         std::fs::write(directory.join("one"), [0, 255, 1, 2]).unwrap();
         std::fs::write(directory.join("two"), [3, 4, 5, 6]).unwrap();
-        let files = Files { cwd: Some(directory), stdin: Stdin::Missing };
+        let files = Files {
+            cwd: Some(directory),
+            stdin: Stdin::Missing,
+        };
         let paths = ["one", "two"];
         let exact = match read_documents_with(&files, &paths, 4, 8, 2) {
             Ok(documents) => documents,
             Err(_) => panic!("exact aggregate limit must be admitted"),
         };
         assert_eq!(exact, vec![vec![0, 255, 1, 2], vec![3, 4, 5, 6]]);
-        assert!(matches!(read_documents_with(&files, &paths, 4, 7, 2), Err(Fail::Refusal(_))));
-        assert!(matches!(read_documents_with(&files, &paths, 3, 8, 2), Err(Fail::Refusal(_))));
+        assert!(matches!(
+            read_documents_with(&files, &paths, 4, 7, 2),
+            Err(Fail::Refusal(_))
+        ));
+        assert!(matches!(
+            read_documents_with(&files, &paths, 3, 8, 2),
+            Err(Fail::Refusal(_))
+        ));
     }
 
     #[test]
     fn registered_document_limit_never_exceeds_transport_budget() {
-        let limit = match document_limit() { Ok(n) => n, Err(_) => panic!("registered store") };
+        let limit = match document_limit() {
+            Ok(n) => n,
+            Err(_) => panic!("registered store"),
+        };
         assert!(limit > 0 && limit <= MAX_INTAKE_BATCH_BYTES);
     }
 }

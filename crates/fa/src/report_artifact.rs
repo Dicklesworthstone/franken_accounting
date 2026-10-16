@@ -18,9 +18,9 @@ use fgdb_types::{CommitSeq, VId};
 
 use crate::{
     AgingCertificate, AgingReconciliationCertificate, AgingReconciliationRequest, AsyncBook,
-    BookError, CashFlowCertificate, CashFlowDefinition,
-    IndirectCashFlowCertificate, IndirectCashFlowRequest, Outcome, ReportCertificate,
-    RollForwardCertificate, RollForwardRequest, SummaryCertificate,
+    BookError, CashFlowCertificate, CashFlowDefinition, IndirectCashFlowCertificate,
+    IndirectCashFlowRequest, Outcome, ReportCertificate, RollForwardCertificate,
+    RollForwardRequest, SummaryCertificate,
 };
 
 /// Total encoded input bound, including the complete nested native closure.
@@ -165,9 +165,10 @@ impl ReportArtifact {
             Artifact::Aging(c) => c.source(),
             Artifact::RollForward(c) => c.source_certificate(),
             Artifact::CashFlow(c) => c.source_certificate().source_certificate(),
-            Artifact::IndirectCashFlow(c) => {
-                c.source_certificate().source_certificate().source_certificate()
-            }
+            Artifact::IndirectCashFlow(c) => c
+                .source_certificate()
+                .source_certificate()
+                .source_certificate(),
             Artifact::AgingReconciliation(c) => c.aging_source().source(),
         }
     }
@@ -261,7 +262,9 @@ fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
         if let Err(denial) = fa_policy::current(capability, head) {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
-        Ok(fa_journal::policy::capability_admitted(db, context, capability)?)
+        Ok(fa_journal::policy::capability_admitted(
+            db, context, capability,
+        )?)
     })
 }
 
@@ -335,7 +338,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 .map(|_| ()),
             (
                 Artifact::CashFlow(c),
-                ReportArtifactExpectation::CashFlow { request, definition },
+                ReportArtifactExpectation::CashFlow {
+                    request,
+                    definition,
+                },
             ) => self
                 .replay_cash_flow(cx, principal, capability, c, request, definition)?
                 .map(|_| ()),
@@ -349,13 +355,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Artifact::AgingReconciliation(c),
                 ReportArtifactExpectation::AgingReconciliation(request),
             ) => self
-                .replay_effective_date_aging_reconciliation(
-                    cx, principal, capability, c, request,
-                )?
+                .replay_effective_date_aging_reconciliation(cx, principal, capability, c, request)?
                 .map(|_| ()),
-            _ => return Ok(Err(invalid(
-                "report artifact requires matching independently supplied replay expectations",
-            ))),
+            _ => {
+                return Ok(Err(invalid(
+                    "report artifact requires matching independently supplied replay expectations",
+                )));
+            }
         };
         if let Err(refusal) = replayed {
             return Ok(Err(refusal));

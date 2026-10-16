@@ -982,10 +982,7 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
     //    types are loaded.
     let allows_single_sided_class = matches!(
         proposal.class,
-        EntryClass::ORIGINAL
-            | EntryClass::ADJUSTING
-            | EntryClass::REVERSAL
-            | EntryClass::MIGRATION
+        EntryClass::ORIGINAL | EntryClass::ADJUSTING | EntryClass::REVERSAL | EntryClass::MIGRATION
     );
     let is_deferred_single_sided_unit = |unit: fa_money::UnitId| {
         allows_single_sided_class

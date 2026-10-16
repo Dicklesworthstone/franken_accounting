@@ -1257,9 +1257,9 @@ fn import_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 // not acquire that posture from command-line metadata.
                 let grade = match explicit_grade {
                     Some(grade) => grade,
-                    None => policy.grade_by_name("AgentUpload").ok_or_else(|| {
-                        Fail::Internal("missing AgentUpload grade".into())
-                    })?,
+                    None => policy
+                        .grade_by_name("AgentUpload")
+                        .ok_or_else(|| Fail::Internal("missing AgentUpload grade".into()))?,
                 };
                 (parse_intake_source(args.flag("--source"), who), grade.tag)
             };

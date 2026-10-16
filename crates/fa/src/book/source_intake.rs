@@ -14,11 +14,7 @@ impl Book {
     /// Check current authority before a host consumes evidence input.
     /// Success is not a reservation: publication repeats the kernel's checks.
     /// This does not require or grant permission to read existing documents.
-    pub fn preflight_intake(
-        &self,
-        capability: &Capability,
-        action: IntakeAction,
-    ) -> Outcome<()> {
+    pub fn preflight_intake(&self, capability: &Capability, action: IntakeAction) -> Outcome<()> {
         with_store!(&self.store, core => core.preflight_intake(
             &self.purposes(), capability, action,
         ))

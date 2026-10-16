@@ -178,6 +178,52 @@ fn assert_cash_credits(out: &str, expected: &str) {
     assert_eq!(field(out, "balanced"), Some("true"), "{out}");
 }
 
+/// fa-l93 D13: an identical `fa period <t> --key K` retry is the recorded
+/// outcome (exit 0, one `recorded` event naming the same control entry);
+/// without the key, the second open is the state machine's refusal.
+#[test]
+fn an_identical_period_transition_retry_is_the_recorded_outcome() -> std::io::Result<()> {
+    let dir = tmp("transition-retry")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Retry Co", "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    let open = [
+        "period",
+        "open",
+        "FY2026-P03",
+        "--key",
+        "open-p03",
+        "--json",
+    ];
+    let first = ok(&open);
+    assert_eq!(
+        field(&first, "event"),
+        Some("period_transitioned"),
+        "{first}"
+    );
+    let entry = field(&first, "control_entry")
+        .unwrap_or_default()
+        .to_string();
+    assert_eq!(entry.len(), 32, "{first}");
+    let again = ok(&open);
+    assert_eq!(field(&again, "event"), Some("recorded"), "{again}");
+    assert_eq!(field(&again, "vid"), Some(entry.as_str()), "{again}");
+    assert_eq!(
+        field(&again, "recorded_at"),
+        field(&first, "recorded_at"),
+        "{again}"
+    );
+    let (code, out, _) = fa(Some(&book), &["period", "open", "FY2026-P03", "--json"]);
+    assert_eq!(code, 7, "a keyless second open is a new request: {out}");
+    assert!(out.contains("\"refusal_id\":\"FA-REF-040\""), "{out}");
+    Ok(())
+}
+
 /// fa-ih4: posting ahead of the book's fiscal years is a safety refusal
 /// (FA-REF-021, exit 7) naming the command that creates the year, never a
 /// "corrupt row" foundation failure; following the fix admits the post.
@@ -895,8 +941,11 @@ fn a_lock_commits_from_its_plan_with_a_second_principals_approval() -> std::io::
         out.contains("\"event\":\"period_transitioned\"") && out.contains("\"to\":\"Locked\""),
         "{out}"
     );
-    // The plan is spent: the period is Locked now, so replaying it is an
-    // illegal transition.
+    let locked = field(&out, "control_entry").unwrap_or_default().to_string();
+    // Replaying the exact plan with the same approval is the identical
+    // request (FA-INV-09, fa-l93 D13): it returns the recorded lock and
+    // writes nothing, although the period is Locked now.
+    let (_, before, _) = fa(Some(&book), &["book", "info", "--json"]);
     let (code, out, _) = fa(
         Some(&book),
         &[
@@ -910,6 +959,13 @@ fn a_lock_commits_from_its_plan_with_a_second_principals_approval() -> std::io::
             "--json",
         ],
     );
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "event"), Some("recorded"), "{out}");
+    assert_eq!(field(&out, "vid"), Some(locked.as_str()), "{out}");
+    let (_, after, _) = fa(Some(&book), &["book", "info", "--json"]);
+    assert_eq!(after, before, "the replay wrote nothing");
+    // A different request after the lock is still the illegal transition.
+    let (code, out, _) = fa(Some(&book), &["period", "close", march, "--yes", "--json"]);
     assert_eq!(code, 7, "{out}");
     assert!(out.contains("\"refusal_id\":\"FA-REF-040\""), "{out}");
     Ok(())
@@ -4000,6 +4056,8 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(true, &["verify", "projections"]).0, 0);
     assert_eq!(run(true, &["verify", "availability"]).0, 0);
     assert_eq!(run(true, &["verify", "schedules"]).0, 0);
+    // FY2026 exists and FY2026-P03 was opened by a journaled transition.
+    assert_eq!(run(true, &["verify", "periods"]).0, 0);
     let more = write(
         &dir,
         "more.json",
@@ -9185,7 +9243,14 @@ fn off_balance_commitment_and_statistical_headcount_cli_scenario() -> std::io::R
     );
     let (c, o, e) = fa(
         Some(&book),
-        &["post", "--intent", &bad_cross, "--evidence", &ev_oid, "--json"],
+        &[
+            "post",
+            "--intent",
+            &bad_cross,
+            "--evidence",
+            &ev_oid,
+            "--json",
+        ],
     );
     assert_eq!(c, 3, "{o}\n{e}");
     assert!(o.contains("FA-REF-001"), "{o}");
@@ -9249,7 +9314,13 @@ fn off_balance_commitment_and_statistical_headcount_cli_scenario() -> std::io::R
     // 4. Financial statements exclude OffBalance and Statistical accounts from footing
     let (c, bs_out, e) = fa(
         Some(&book),
-        &["statement", "balance-sheet", "--for", "FY2026-P03", "--json"],
+        &[
+            "statement",
+            "balance-sheet",
+            "--for",
+            "FY2026-P03",
+            "--json",
+        ],
     );
     assert_eq!(c, 0, "{bs_out}\n{e}");
     let bs_doc = doc(&bs_out);
@@ -9427,7 +9498,9 @@ fn toon_robot_output_format_and_differential_oracle() -> std::io::Result<()> {
     }
 
     if !tru_available {
-        eprintln!("NOTE: external `tru` binary not in PATH; differential decode check UNRUN (in-house TOON v3.0 golden spec fixtures verified in fa-verbs).");
+        eprintln!(
+            "NOTE: external `tru` binary not in PATH; differential decode check UNRUN (in-house TOON v3.0 golden spec fixtures verified in fa-verbs)."
+        );
     }
 
     // Verify tabular array formatting in `tb --format toon` and that numeric account codes remain quoted strings
@@ -9436,7 +9509,8 @@ fn toon_robot_output_format_and_differential_oracle() -> std::io::Result<()> {
         &["tb", "--period", "FY2026-P03", "--format", "toon"],
     );
     assert!(
-        tb_toon.contains("rows[2]{code,credits,credits_pending,debits,debits_pending,name,net,type}:"),
+        tb_toon
+            .contains("rows[2]{code,credits,credits_pending,debits,debits_pending,name,net,type}:"),
         "tb rows should use TOON tabular header: {tb_toon}"
     );
     assert!(
@@ -9444,7 +9518,9 @@ fn toon_robot_output_format_and_differential_oracle() -> std::io::Result<()> {
         "account code '1000' must be quoted so it stays a string, while '1500.00 USD' is an unquoted string token: {tb_toon}"
     );
     assert!(
-        tb_toon.contains("\"4000\",1500.00 USD,0.00 USD,0.00 USD,0.00 USD,Sales Revenue,\"-1500.00 USD\",Revenue"),
+        tb_toon.contains(
+            "\"4000\",1500.00 USD,0.00 USD,0.00 USD,0.00 USD,Sales Revenue,\"-1500.00 USD\",Revenue"
+        ),
         "negative amount '-1500.00 USD' must be quoted in TOON v3.0: {tb_toon}"
     );
 
@@ -9453,10 +9529,8 @@ fn toon_robot_output_format_and_differential_oracle() -> std::io::Result<()> {
         Some(&book),
         &["tb", "--period", "FY2026-P03", "--format", "json"],
     );
-    let (c_flag_json, out_flag_json, _) = fa(
-        Some(&book),
-        &["tb", "--period", "FY2026-P03", "--json"],
-    );
+    let (c_flag_json, out_flag_json, _) =
+        fa(Some(&book), &["tb", "--period", "FY2026-P03", "--json"]);
     assert_eq!(c_fmt_json, 0);
     assert_eq!(c_flag_json, 0);
     assert_eq!(out_fmt_json, out_flag_json);
@@ -9505,4 +9579,3 @@ fn toon_robot_output_format_and_differential_oracle() -> std::io::Result<()> {
 
     Ok(())
 }
-

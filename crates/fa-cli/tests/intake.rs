@@ -21,7 +21,9 @@ impl Fixture {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let dir = loop {
             let path = std::env::temp_dir().join(format!(
-                "fa-intake-cli-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed),
+                "fa-intake-cli-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed),
             ));
             match std::fs::create_dir(&path) {
                 Ok(()) => break path,
@@ -29,7 +31,10 @@ impl Fixture {
                 Err(error) => panic!("create test directory: {error}"),
             }
         };
-        let fixture = Self { book: dir.join("book"), dir };
+        let fixture = Self {
+            book: dir.join("book"),
+            dir,
+        };
         fixture.ok(&["book", "create", "--name", "Bounded intake", "--json"]);
         fixture
     }
@@ -46,7 +51,10 @@ impl Fixture {
         let stderr = String::from_utf8_lossy(&output.stderr);
         for line in stdout.lines() {
             let verdict = registry().unwrap().check_line(line);
-            assert!(verdict.is_ok(), "args={args:?}; {verdict:?}\n{line}\n{stderr}");
+            assert!(
+                verdict.is_ok(),
+                "args={args:?}; {verdict:?}\n{line}\n{stderr}"
+            );
         }
         (output.status.code().unwrap_or(-1), stdout)
     }
@@ -65,7 +73,11 @@ impl Fixture {
 
     fn sparse(&self, name: &str, size: u64) -> String {
         let path = self.dir.join(name);
-        let file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).unwrap();
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
         file.set_len(size).unwrap();
         path.to_str().unwrap().to_string()
     }
@@ -92,7 +104,8 @@ fn oversized_single_document_has_no_receipt_or_journal_publication() {
     let fixture = Fixture::new();
     let path = fixture.sparse("too-large", LIMIT + 1);
     let before = fixture.head();
-    let (status, output) = fixture.command(&["document", "add", &path, "--kind", "Invoice", "--json"]);
+    let (status, output) =
+        fixture.command(&["document", "add", &path, "--kind", "Invoice", "--json"]);
     assert_eq!(status, 2, "{output}");
     assert_eq!(field(&output, "refusal_id"), Some("FA-REF-083"));
     assert!(output.contains("budget"), "{output}");
@@ -107,8 +120,18 @@ fn individually_admissible_files_cannot_exhaust_memory_as_an_unbounded_batch() {
     let second = fixture.sparse("second", LIMIT / 2 + 2);
     let before = fixture.head();
     let (status, output) = fixture.command(&[
-        "document", "import", "run", "--file", &first, "--file", &second,
-        "--kind", "Invoice", "--key", "over-budget", "--json",
+        "document",
+        "import",
+        "run",
+        "--file",
+        &first,
+        "--file",
+        &second,
+        "--kind",
+        "Invoice",
+        "--key",
+        "over-budget",
+        "--json",
     ]);
     assert_eq!(status, 2, "{output}");
     assert_eq!(field(&output, "refusal_id"), Some("FA-REF-083"));
@@ -123,8 +146,16 @@ fn duplicate_stdin_is_rejected_before_trying_to_open_any_input() {
     let missing = fixture.dir.join("never-created");
     let before = fixture.head();
     let (status, output) = fixture.command(&[
-        "document", "import", "run", "--file", missing.to_str().unwrap(),
-        "--file", "-", "--file", "-", "--json",
+        "document",
+        "import",
+        "run",
+        "--file",
+        missing.to_str().unwrap(),
+        "--file",
+        "-",
+        "--file",
+        "-",
+        "--json",
     ]);
     assert_eq!(status, 2, "{output}");
     assert!(output.contains("stdin only once"), "{output}");
@@ -136,13 +167,27 @@ fn duplicate_stdin_is_rejected_before_trying_to_open_any_input() {
 fn bound_agent_import_refuses_before_consuming_missing_stdin() {
     let fixture = Fixture::new();
     let authority = LaunchAuthority::new(
-        fixture.book.clone(), None, "bounded-agent", LaunchProfile::Agent, &["post"],
-    ).unwrap();
+        fixture.book.clone(),
+        None,
+        "bounded-agent",
+        LaunchProfile::Agent,
+        &["post"],
+    )
+    .unwrap();
     let before = fixture.head();
     let args: Vec<String> = ["document", "import", "run", "--file", "-", "--json"]
-        .into_iter().map(String::from).collect();
+        .into_iter()
+        .map(String::from)
+        .collect();
     let (status, captured) = run_with_authority(
-        &args, Books::Dir, Files { cwd: None, stdin: Stdin::Missing }, &authority, true,
+        &args,
+        Books::Dir,
+        Files {
+            cwd: None,
+            stdin: Stdin::Missing,
+        },
+        &authority,
+        true,
     );
     assert_eq!(status, 7, "{}\n{}", captured.stdout, captured.stderr);
     assert_eq!(field(&captured.stdout, "refusal_id"), Some("FA-REF-013"));
@@ -156,23 +201,46 @@ fn bounded_mixed_storage_import_preserves_receipt_retry_and_existing_provenance(
     std::fs::write(&small, b"existing human invoice").unwrap();
     let small = small.to_str().unwrap();
     let original = fixture.ok(&[
-        "document", "add", small, "--kind", "Invoice", "--grade", "HumanUpload", "--json",
+        "document",
+        "add",
+        small,
+        "--kind",
+        "Invoice",
+        "--grade",
+        "HumanUpload",
+        "--json",
     ]);
     let policy = fa_registry::evidence_policy::EvidencePolicy::embedded().unwrap();
     let inline = fa_journal::evidence::inline_document_bound(&policy);
     assert!(inline + 1 < LIMIT);
     let large = fixture.sparse("external", inline + 1);
     let args = [
-        "document", "import", "run", "--source", "Upload", "--file", small,
-        "--file", &large, "--kind", "Invoice", "--grade", "AgentUpload",
-        "--key", "bounded-mixed-storage", "--json",
+        "document",
+        "import",
+        "run",
+        "--source",
+        "Upload",
+        "--file",
+        small,
+        "--file",
+        &large,
+        "--kind",
+        "Invoice",
+        "--grade",
+        "AgentUpload",
+        "--key",
+        "bounded-mixed-storage",
+        "--json",
     ];
     let imported = fixture.ok(&args);
     assert_eq!(field(&imported, "document_count"), Some("2"));
     let head = fixture.head();
     let retried = fixture.ok(&args);
     assert_eq!(field(&retried, "already_recorded"), Some("true"));
-    assert_eq!(field(&retried, "receipt_hash"), field(&imported, "receipt_hash"));
+    assert_eq!(
+        field(&retried, "receipt_hash"),
+        field(&imported, "receipt_hash")
+    );
     assert_eq!(field(&retried, "run_vid"), field(&imported, "run_vid"));
     assert_eq!(fixture.head(), head);
     let duplicate = fixture.ok(&["document", "add", small, "--kind", "Invoice", "--json"]);

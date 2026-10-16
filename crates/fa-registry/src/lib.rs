@@ -1048,7 +1048,9 @@ pub fn parse_units(text: &str) -> Result<Vec<UnitRow>, RegistryError> {
                 _ => {
                     return Err(invalid(
                         R,
-                        format!("`{code}` has invalid balance_policy (expected `balanced` or `single_sided`)"),
+                        format!(
+                            "`{code}` has invalid balance_policy (expected `balanced` or `single_sided`)"
+                        ),
                     ));
                 }
             },
