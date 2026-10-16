@@ -1251,7 +1251,7 @@ fn statement_chart_additions<V: Vfs + Clone>(
                 kind: 1,
                 canonical_bytes,
             }) => canonical_bytes,
-            Some(ControlPayload::SchemaChange { kind: 2..=10, .. }) => continue,
+            Some(ControlPayload::SchemaChange { kind: 2..=11, .. }) => continue,
             _ => {
                 return Ok(Err(invalid("chart install lacks its recorded chart body")));
             }

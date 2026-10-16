@@ -349,6 +349,127 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await?)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_party(
+        &mut self,
+        cx: &PurposeContexts,
+        spec: &fa_model::PartySpec,
+        principal: VId,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::ReaControlRecorded> {
+        let description = self.seal_text(cx, &format!("create party `{}`", spec.code))?;
+        Ok(fa_journal::create_party(
+            &mut self.db,
+            cx,
+            &self.context,
+            spec,
+            principal,
+            effective_date,
+            idempotency_key,
+            description,
+            capability,
+        )
+        .await?)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_instrument(
+        &mut self,
+        cx: &PurposeContexts,
+        spec: &fa_model::InstrumentSpec,
+        principal: VId,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::ReaControlRecorded> {
+        let description = self.seal_text(cx, &format!("create instrument `{}`", spec.code))?;
+        Ok(fa_journal::create_instrument(
+            &mut self.db,
+            cx,
+            &self.context,
+            spec,
+            principal,
+            effective_date,
+            idempotency_key,
+            description,
+            capability,
+        )
+        .await?)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_event(
+        &mut self,
+        cx: &PurposeContexts,
+        spec: &fa_model::EventSpec,
+        principal: VId,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::ReaControlRecorded> {
+        let description = self.seal_text(
+            cx,
+            &format!(
+                "record event `{}` ({}) on {}",
+                spec.code,
+                spec.kind.name(),
+                spec.occurred_on
+            ),
+        )?;
+        Ok(fa_journal::record_event(
+            &mut self.db,
+            cx,
+            &self.context,
+            spec,
+            principal,
+            effective_date,
+            idempotency_key,
+            description,
+            capability,
+        )
+        .await?)
+    }
+
+    pub fn rea_snapshot(
+        &self,
+        cx: &PurposeContexts,
+        known_at: Option<CommitSeq>,
+    ) -> Result<fa_journal::ReaSnapshot, BookError> {
+        let seq = match known_at {
+            Some(s) => s,
+            None => self.head(cx)?,
+        };
+        self.query(cx, |db, book| Ok(fa_journal::read_rea_at(db, book, seq)?))
+    }
+
+    pub fn events(
+        &self,
+        cx: &PurposeContexts,
+        known_at: Option<CommitSeq>,
+    ) -> Result<Vec<fa_journal::EventRow>, BookError> {
+        let snap = self.rea_snapshot(cx, known_at)?;
+        let mut rows: Vec<fa_journal::EventRow> = snap.events.into_values().collect();
+        rows.sort_by(|a, b| {
+            a.spec
+                .occurred_on
+                .cmp(&b.spec.occurred_on)
+                .then_with(|| a.spec.code.cmp(&b.spec.code))
+        });
+        Ok(rows)
+    }
+
+    pub fn read_event(
+        &self,
+        cx: &PurposeContexts,
+        vid: VId,
+        known_at: Option<CommitSeq>,
+    ) -> Result<Option<fa_journal::EventRow>, BookError> {
+        let mut snap = self.rea_snapshot(cx, known_at)?;
+        Ok(snap.events.remove(&vid))
+    }
+
     pub async fn create_periods(
         &mut self,
         cx: &PurposeContexts,

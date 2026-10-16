@@ -110,11 +110,17 @@ pub use evidence_disclosure::{EvidenceDisclosureArtifact, EvidenceDisclosureRequ
 pub use fa_intents::{IntentError, MAX_PLAN_BYTES, PlanCertificate, PostIntent, PostPlan};
 pub use fa_journal::{
     AccountEffectivity, AccountLifecycleRecorded, AllocationPosting, DocumentEvidenceSummary,
-    EvidenceExplanation, InstantSelection, LineageEdgeSummary, LineageEntrySummary, LineageReport,
-    ManualAssertionSummary, NetPosition, NettingLaw, PeriodBalance, PeriodCheck,
-    PeriodTransitionRecord, PeriodVerification, ReviewedSummary, RevocationRequest, Revoked, Run,
-    RunBody, RunChunk, RunControlRequest, RunControlled, RunMode, RunState, ScheduleVerification,
-    SupplementSummary, TieOut, TieOutLine, TrialBalanceLine, UploadRequest,
+    EventRow, EvidenceExplanation, ExternalIdRow, InstantSelection, InstrumentRow, LegalEntityRow,
+    LineageEdgeSummary, LineageEntrySummary, LineageReport, ManualAssertionSummary, NetPosition,
+    NettingLaw, PartyRow, PeriodBalance, PeriodCheck, PeriodTransitionRecord, PeriodVerification,
+    ReaControlRecorded, ReaSnapshot, RelatedPartyHit, RelationshipRow, ReviewedSummary,
+    RevocationRequest, Revoked, Run, RunBody, RunChunk, RunControlRequest, RunControlled, RunMode,
+    RunState, ScheduleVerification, SupplementSummary, TieOut, TieOutLine, TrialBalanceLine,
+    UploadRequest,
+};
+pub use fa_model::{
+    EventKind, EventResource, EventSpec, InstrumentKind, InstrumentSpec, PartyKind, PartySpec,
+    event_vid, instrument_vid, party_vid,
 };
 pub use fa_money::allocation::{
     AllocationMethod, AllocationOutcome, AllocationRequest, AllocationTarget,

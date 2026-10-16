@@ -784,6 +784,80 @@ impl Book {
         )))
     }
 
+    /// Journal and materialize a `Party` vertex (`SchemaChange` `kind = 5`, plan §4.5, bead `fa-l2h`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_party(
+        &mut self,
+        spec: &fa_model::PartySpec,
+        principal: VId,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::ReaControlRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.create_party(
+            &purposes, spec, principal, effective_date, idempotency_key, capability,
+        )))
+    }
+
+    /// Journal and materialize an `Instrument` vertex (`SchemaChange` `kind = 6`, plan §4.5, bead `fa-l2h`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_instrument(
+        &mut self,
+        spec: &fa_model::InstrumentSpec,
+        principal: VId,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::ReaControlRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.create_instrument(
+            &purposes, spec, principal, effective_date, idempotency_key, capability,
+        )))
+    }
+
+    /// Journal and materialize an REA economic `Event` vertex (`SchemaChange` `kind = 11`,
+    /// plan §4.1 `Event`, §4.5, FA-INV-05, bead `fa-f3bo`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_event(
+        &mut self,
+        spec: &fa_model::EventSpec,
+        principal: VId,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::ReaControlRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.record_event(
+            &purposes, spec, principal, effective_date, idempotency_key, capability,
+        )))
+    }
+
+    /// Rebuild and verify the book's REA graph snapshot at `known_at` (`None` = head).
+    pub fn rea_snapshot(
+        &self,
+        known_at: Option<CommitSeq>,
+    ) -> Result<fa_journal::ReaSnapshot, BookError> {
+        with_store!(&self.store, core => core.rea_snapshot(&self.purposes(), known_at))
+    }
+
+    /// List committed REA economic events at `known_at` (`None` = head), ordered by `(occurred_on, code)`.
+    pub fn events(
+        &self,
+        known_at: Option<CommitSeq>,
+    ) -> Result<Vec<fa_journal::EventRow>, BookError> {
+        with_store!(&self.store, core => core.events(&self.purposes(), known_at))
+    }
+
+    /// Read a committed REA economic event by `vid` at `known_at` (`None` = head).
+    pub fn read_event(
+        &self,
+        vid: VId,
+        known_at: Option<CommitSeq>,
+    ) -> Result<Option<fa_journal::EventRow>, BookError> {
+        with_store!(&self.store, core => core.read_event(&self.purposes(), vid, known_at))
+    }
+
     /// Create one fiscal year's periods in state `Future`.
     pub fn create_periods(
         &mut self,

@@ -4515,6 +4515,20 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     ]);
     let imp_vid = field(&imp_ev, "run_vid").unwrap_or_default().to_string();
     run2(&["document", "import", "receipt", &imp_vid]);
+    run2(&[
+        "event",
+        "record",
+        "--code",
+        "EV-1001",
+        "--kind",
+        "sale",
+        "--occurred-on",
+        "2026-03-15",
+        "--evidence",
+        &bank_oid,
+    ]);
+    run2(&["event", "show", "EV-1001"]);
+    run2(&["event", "list"]);
     run2(&["verify", "periods"]);
     run2(&[
         "capability",
@@ -10053,6 +10067,101 @@ fn explain_lineage_cli_reports_supersession_component_and_net_effect() -> std::i
     for cell in arr(&after, "net_effect") {
         assert_eq!(text(&cell, "net"), "0.00 USD");
     }
+
+    Ok(())
+}
+
+/// fa-f3bo: `fa event record|show|list` journals and queries REA `Event`
+/// vertices, `fa post --event` links entries via `DERIVED_FROM` and inherits
+/// the event's evidence closure, `fa explain entry` reports the cited event,
+/// and citing a missing event refuses with `FA-REF-030` (exit 3).
+#[test]
+fn rea_event_cli_record_show_list_and_post_provenance() -> std::io::Result<()> {
+    let (book, ev, dir) = envelope_book("rea-event-cli")?;
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+
+    let recorded = doc(&ok(&[
+        "event",
+        "record",
+        "--code",
+        "EV-SALE-42",
+        "--kind",
+        "sale",
+        "--occurred-on",
+        "2026-03-12",
+        "--evidence",
+        &ev,
+        "--resource",
+        "cash_inflow:250.00 USD",
+        "--external-id",
+        "stripe:ch_42",
+        "--description",
+        "Customer sale #42",
+        "--json",
+    ]));
+    assert_eq!(text(&recorded, "code"), "EV-SALE-42");
+    assert_eq!(text(&recorded, "kind"), "sale");
+    assert_eq!(recorded.get("already_recorded"), Some(&Json::Bool(false)));
+    let ev_vid = text(&recorded, "event_vid").to_string();
+
+    let shown = doc(&ok(&["event", "show", "EV-SALE-42", "--json"]));
+    let ev_obj = shown.get("event").expect("event detail");
+    assert_eq!(text(ev_obj, "vid"), ev_vid);
+    assert_eq!(text(ev_obj, "code"), "EV-SALE-42");
+    assert_eq!(text(ev_obj, "description"), "Customer sale #42");
+    assert_eq!(arr(ev_obj, "resources").len(), 1);
+    assert_eq!(arr(ev_obj, "external_ids").len(), 1);
+
+    let listed = doc(&ok(&["event", "list", "--json"]));
+    assert_eq!(listed.get("count"), Some(&Json::Int(1)));
+
+    // Post an entry citing EV-SALE-42 without explicit `--evidence`: it inherits EV-SALE-42's evidence!
+    let intent_path = write(
+        &dir,
+        "sale42.json",
+        r#"{"effective_date":"2026-03-12","description":"Sale #42","idempotency_key":"sale-42","legs":[{"side":"debit","account":"1000","amount":"250.00 USD"},{"side":"credit","account":"6000","amount":"250.00 USD"}]}"#,
+    );
+    let posted = doc(&ok(&[
+        "post",
+        "--intent",
+        &intent_path,
+        "--event",
+        "EV-SALE-42",
+        "--json",
+    ]));
+    let entry_vid = text(&posted, "vid").to_string();
+
+    let explained = doc(&ok(&["explain", "entry", &entry_vid, "--json"]));
+    let cited_ev = explained.get("event").expect("event field on entry_explained");
+    assert_eq!(text(cited_ev, "vid"), ev_vid);
+    assert_eq!(text(cited_ev, "code"), "EV-SALE-42");
+
+    // Citing a nonexistent event is refused with FA-REF-030 (exit 3).
+    let bad_intent = write(
+        &dir,
+        "bad_sale.json",
+        r#"{"effective_date":"2026-03-12","description":"Missing event","idempotency_key":"bad-sale","legs":[{"side":"debit","account":"1000","amount":"50.00 USD"},{"side":"credit","account":"6000","amount":"50.00 USD"}]}"#,
+    );
+    let (bad_code, bad_out, _) = fa(
+        Some(&book),
+        &[
+            "post",
+            "--intent",
+            &bad_intent,
+            "--event",
+            "EV-NO-SUCH-EVENT",
+            "--evidence",
+            &ev,
+            "--json",
+        ],
+    );
+    assert_eq!(bad_code, 3, "{bad_out}");
+    let bad_err = doc(&bad_out);
+    assert_eq!(text(&bad_err, "refusal_id"), "FA-REF-030", "{bad_out}");
 
     Ok(())
 }

@@ -309,8 +309,13 @@ pub(crate) fn parse_evidence(
             }
         }
     }
-    for oid in args.flag_all("--evidence") {
-        cited.push((oid.to_string(), None, Role::Name(DEFAULT_ROLE.into())));
+    for raw in args.flag_all("--evidence") {
+        let stripped = raw.strip_prefix("D:").unwrap_or(raw);
+        let (oid, role) = match stripped.split_once(':') {
+            Some((oid, r)) => (oid, Role::Name(r.to_string())),
+            None => (stripped, Role::Name(DEFAULT_ROLE.into())),
+        };
+        cited.push((oid.to_string(), None, role));
     }
     let mut refs = Vec::with_capacity(cited.len());
     for (oid_hex, commit_hex, role) in cited {

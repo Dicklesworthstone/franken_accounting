@@ -83,6 +83,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("allocate", allocate_cmd),
     ("settle", settle_cmd),
     ("document", document::document_cmd),
+    ("event", event_cmd),
     ("migrate", migrate_cmd),
     ("tb", tb_cmd),
     ("statement", statement_cmd),
@@ -1614,6 +1615,8 @@ pub fn bound_command_ops(verb: &str, args: &Args) -> Option<&'static [fa_policy:
             Some("run") => &[Op::Post],
             _ => &[Op::Read],
         },
+        ("event", Some("record")) => &[Op::Post],
+        ("event", Some("show" | "list")) => &[Op::Read],
         ("migrate", Some("show")) => &[Op::Read],
         ("migrate", Some("open" | "stage" | "finalize" | "abandon")) => &[Op::Post, Op::Migrate],
         ("capability", Some("revoke")) => &[Op::IssueCapability],
@@ -4356,6 +4359,7 @@ fn post_timing(
         "description",
         "legs",
         "evidence",
+        "event",
         "reverses",
         "reason",
         "resolves",
@@ -4729,7 +4733,33 @@ fn build_post_request(
                 None
             }
         });
-    let proposal = EntryPayload {
+    if args.flag_all("--event").len() > 1 {
+        return Err(usage(
+            "--event may be supplied at most once",
+            "--event <code|vid>",
+        ));
+    }
+    let doc_event = match doc.get("event") {
+        None | Some(Json::Null) => None,
+        Some(Json::Str(s)) => Some(s.as_str()),
+        Some(_) => {
+            return Err(usage(
+                "intent: `event` must be a string (event code or 32-hex vid)",
+                "\"event\": \"EV-1001\"",
+            ));
+        }
+    };
+    let flag_event = args.flag("--event");
+    if let (Some(a), Some(b)) = (doc_event, flag_event)
+        && a != b
+    {
+        return Err(usage(
+            "intent `event` and `--event` disagree",
+            "supply the event once via `--event <code|vid>` or `\"event\": \"<code|vid>\"`",
+        ));
+    }
+    let event_arg = flag_event.or(doc_event);
+    let mut proposal = EntryPayload {
         schema_minor: 0,
         book_id: ctx.book_id,
         branch_id: Id128::TRUNK,
@@ -4759,6 +4789,45 @@ fn build_post_request(
         extensions: Vec::new(),
         tags: Vec::new(),
     };
+    if let Some(ev_arg) = event_arg {
+        let rea = book.rea_snapshot(None)?;
+        let stripped = ev_arg.strip_prefix("EV:").unwrap_or(ev_arg);
+        let matched = if stripped.len() == 32
+            && stripped.bytes().all(|b| b.is_ascii_hexdigit())
+            && let Ok(raw) = u128::from_str_radix(stripped, 16)
+        {
+            rea.events
+                .get(&VId(raw))
+                .or_else(|| rea.events.values().find(|e| e.spec.code == ev_arg))
+        } else {
+            let derived = fa_model::event_vid(ctx.book_id, stripped);
+            rea.events
+                .get(&derived)
+                .or_else(|| rea.events.values().find(|e| e.spec.code == stripped))
+        };
+        match matched {
+            Some(ev_row) => {
+                proposal.with_event_ref(ev_row.vid, ev_row.event_digest);
+                for ev_ref in &ev_row.spec.evidence {
+                    if !proposal.evidence.contains(ev_ref) {
+                        proposal.evidence.push(*ev_ref);
+                    }
+                }
+                proposal.evidence.sort_unstable();
+            }
+            None => {
+                let missing_vid = if stripped.len() == 32
+                    && stripped.bytes().all(|b| b.is_ascii_hexdigit())
+                    && let Ok(raw) = u128::from_str_radix(stripped, 16)
+                {
+                    VId(raw)
+                } else {
+                    fa_model::event_vid(ctx.book_id, stripped)
+                };
+                proposal.with_event_ref(missing_vid, [0u8; 32]);
+            }
+        }
+    }
     let proposal = match reverse_on {
         Some(day) => fa_journal::with_auto_reverse(proposal, day),
         None => proposal,
@@ -10102,6 +10171,15 @@ fn explain_entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ])
         })
         .collect();
+    let cited_event = match entry.proposal.cited_event() {
+        Some(ev_vid) => book
+            .rea_snapshot(None)?
+            .events
+            .get(&ev_vid)
+            .map(event_summary_json)
+            .unwrap_or(Json::Null),
+        None => Json::Null,
+    };
     let class_name = entry.proposal.class.name().unwrap_or("?");
     let human = format!(
         "entry {:032x} · {class_name} effective {} ({}) · recorded at {} · {} leg(s) · {} approval(s)",
@@ -10134,6 +10212,7 @@ fn explain_entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("supersedes", Json::Arr(supersedes)),
             ("superseded_by", Json::Arr(superseded_by)),
             ("evidence", Json::Arr(evidence)),
+            ("event", cited_event),
         ],
         &human,
     );
@@ -12649,6 +12728,394 @@ fn migrate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             Ok(())
         }
         other => Err(unhandled("migrate", other)),
+    }
+}
+
+fn event_summary_json(ev: &fa_journal::EventRow) -> Json {
+    obj(vec![
+        ("vid", s(format!("{:032x}", ev.vid.0))),
+        ("code", s(&ev.spec.code)),
+        ("kind", s(ev.spec.kind.name())),
+        ("occurred_on", s(ev.spec.occurred_on.render())),
+        ("event_digest", s(hex(&ev.event_digest))),
+        ("recorded_at", Json::Int(i128::from(ev.recorded_at.0))),
+    ])
+}
+
+fn event_detail_json(ev: &fa_journal::EventRow, book: &Book) -> Result<Json, Fail> {
+    let seal_key = &book.context().seal_key;
+    let units = &book.context().units;
+    let description = ev
+        .spec
+        .description
+        .open(seal_key, fa_model::limits::MAX_DESCRIPTION_BYTES)
+        .unwrap_or_default();
+    let participants: Vec<Json> = ev
+        .spec
+        .participants
+        .iter()
+        .map(|p| s(format!("{:032x}", p.0)))
+        .collect();
+    let mut resources = Vec::with_capacity(ev.spec.resources.len());
+    for r in &ev.spec.resources {
+        resources.push(obj(vec![
+            ("label", s(&r.label)),
+            (
+                "instrument",
+                r.instrument_ref
+                    .map_or(Json::Null, |inst| s(format!("{:032x}", inst.0))),
+            ),
+            ("quantity", s(render_amount(r.quantity, units)?)),
+        ]));
+    }
+    let evidence: Vec<Json> = ev
+        .spec
+        .evidence
+        .iter()
+        .map(|e| {
+            obj(vec![
+                ("document_oid", s(hex(&e.document_oid.0))),
+                ("doc_commit", s(hex(&e.doc_commit))),
+                ("role", Json::Int(i128::from(e.role))),
+            ])
+        })
+        .collect();
+    let external_ids: Vec<Json> = ev
+        .spec
+        .external_ids
+        .iter()
+        .map(|ext| {
+            let id_str = ext
+                .id
+                .open(seal_key, fa_model::limits::MAX_EXTERNAL_ID_BYTES)
+                .unwrap_or_default();
+            obj(vec![("system", s(&ext.system)), ("id", s(id_str))])
+        })
+        .collect();
+    Ok(obj(vec![
+        ("vid", s(format!("{:032x}", ev.vid.0))),
+        ("code", s(&ev.spec.code)),
+        ("kind", s(ev.spec.kind.name())),
+        ("occurred_on", s(ev.spec.occurred_on.render())),
+        ("description", s(description)),
+        ("participants", Json::Arr(participants)),
+        ("resources", Json::Arr(resources)),
+        ("evidence", Json::Arr(evidence)),
+        ("external_ids", Json::Arr(external_ids)),
+        ("event_digest", s(hex(&ev.event_digest))),
+        ("recorded_at", Json::Int(i128::from(ev.recorded_at.0))),
+    ]))
+}
+
+fn event_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let who = ctx.principal(args);
+    match args.positional.get(1).map(String::as_str) {
+        Some("record") => {
+            if let Some(extra) = args.positional.get(2) {
+                return Err(usage(
+                    format!("unexpected positional `{extra}` for `fa event record`"),
+                    "fa event record --code EV-1001 --kind sale --occurred-on 2026-03-15 --evidence <oid>... --book <dir> --json",
+                ));
+            }
+            for flag in [
+                "--code",
+                "--kind",
+                "--occurred-on",
+                "--description",
+                "--effective",
+                "--key",
+            ] {
+                if args.flag_all(flag).len() > 1 {
+                    return Err(usage(
+                        format!("{flag} may be supplied at most once"),
+                        "fa event record --code EV-1001 --kind sale --occurred-on 2026-03-15 --evidence <oid>...",
+                    ));
+                }
+            }
+            let code = args
+                .require("--code", "<CODE>, for example EV-1001")?
+                .to_string();
+            let kind_str = args.require(
+                "--kind",
+                "sale|purchase|receipt|payment|shipment|return|accrual|depreciation",
+            )?;
+            let kind = fa_model::EventKind::from_name(kind_str).ok_or_else(|| {
+                usage(
+                    format!("unknown event kind `{kind_str}`"),
+                    "--kind sale|purchase|receipt|payment|shipment|return|accrual|depreciation",
+                )
+            })?;
+            let occurred_raw = args.require("--occurred-on", "YYYY-MM-DD")?;
+            let occurred_on = DateDay::parse(occurred_raw).map_err(|e| {
+                usage(
+                    format!("--occurred-on `{occurred_raw}`: {e:?}"),
+                    "--occurred-on YYYY-MM-DD",
+                )
+            })?;
+            let effective_date = match args.flag("--effective") {
+                Some(raw) => DateDay::parse(raw).map_err(|e| {
+                    usage(
+                        format!("--effective `{raw}`: {e:?}"),
+                        "--effective YYYY-MM-DD",
+                    )
+                })?,
+                None => occurred_on,
+            };
+            let capability = ctx.capability(args, &["post"])?;
+            let mut book = ctx.books.open(args)?;
+            let book_id = book.context().book_id;
+            let rea = book.rea_snapshot(None)?;
+            let mut participants = Vec::new();
+            for raw_p in args.flag_all("--participant") {
+                let stripped = raw_p.strip_prefix("P:").unwrap_or(raw_p);
+                let p_vid = if stripped.len() == 32
+                    && stripped.bytes().all(|b| b.is_ascii_hexdigit())
+                    && let Ok(val) = u128::from_str_radix(stripped, 16)
+                {
+                    VId(val)
+                } else {
+                    rea.parties
+                        .values()
+                        .find(|p| p.spec.code == stripped)
+                        .map_or_else(|| fa_model::party_vid(book_id, stripped), |p| p.vid)
+                };
+                if !participants.contains(&p_vid) {
+                    participants.push(p_vid);
+                }
+            }
+            participants.sort_unstable_by_key(|v| v.0);
+            let mut resources = Vec::new();
+            for raw_r in args.flag_all("--resource") {
+                let parts: Vec<&str> = raw_r.split(':').collect();
+                let (label_str, amount_str, inst_opt) = match parts.as_slice() {
+                    [lbl, amt] => (*lbl, *amt, None),
+                    [lbl, amt, inst] => (*lbl, *amt, Some(*inst)),
+                    _ => {
+                        return Err(usage(
+                            format!("--resource `{raw_r}` must be `<label>:<amount>[:<instrument>]`"),
+                            "--resource cash:100.00\\ USD or --resource inventory:10.00\\ USD:INST-1",
+                        ));
+                    }
+                };
+                if label_str.is_empty() || label_str.len() > 64 {
+                    return Err(usage(
+                        format!("--resource label `{label_str}` must be 1..=64 bytes"),
+                        "--resource revenue:100.00\\ USD",
+                    ));
+                }
+                let quantity = Amount::parse(amount_str, &book.context().units).map_err(|e| {
+                    usage(
+                        format!("--resource `{raw_r}` amount `{amount_str}`: {e}"),
+                        "--resource cash:100.00\\ USD",
+                    )
+                })?;
+                let instrument_ref = inst_opt.map(|inst_s| {
+                    let stripped = inst_s.strip_prefix("I:").unwrap_or(inst_s);
+                    if stripped.len() == 32
+                        && stripped.bytes().all(|b| b.is_ascii_hexdigit())
+                        && let Ok(val) = u128::from_str_radix(stripped, 16)
+                    {
+                        VId(val)
+                    } else {
+                        rea.instruments
+                            .values()
+                            .find(|i| i.spec.code == stripped)
+                            .map_or_else(
+                                || fa_model::instrument_vid(book_id, stripped),
+                                |i| i.vid,
+                            )
+                    }
+                });
+                resources.push(fa_model::EventResource {
+                    label: label_str.to_string(),
+                    instrument_ref,
+                    quantity,
+                });
+            }
+            resources.sort_by(|a, b| {
+                a.label
+                    .cmp(&b.label)
+                    .then_with(|| a.instrument_ref.map_or(0, |v| v.0).cmp(&b.instrument_ref.map_or(0, |v| v.0)))
+            });
+            let mut external_ids = Vec::new();
+            for raw_ext in args.flag_all("--external-id") {
+                let (sys, ext_id) = raw_ext.split_once(':').ok_or_else(|| {
+                    usage(
+                        format!("--external-id `{raw_ext}` must be `<system>:<id>`"),
+                        "--external-id stripe:ch_12345",
+                    )
+                })?;
+                if sys.is_empty() || ext_id.is_empty() {
+                    return Err(usage(
+                        format!("--external-id `{raw_ext}` system and id must be non-empty"),
+                        "--external-id stripe:ch_12345",
+                    ));
+                }
+                external_ids.push(fa_model::ExternalId {
+                    system: sys.to_string(),
+                    id: book.seal_text(ext_id)?,
+                });
+            }
+            external_ids.sort_by(|a, b| a.system.cmp(&b.system));
+            let evidence = document::parse_evidence(&Json::Null, args, &book)?;
+            let description_str = args.flag("--description").unwrap_or("");
+            let description = book.seal_text(description_str)?;
+            let key_str = args
+                .flag("--key")
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("event:{code}"));
+            let spec = fa_model::EventSpec {
+                code: code.clone(),
+                kind,
+                occurred_on,
+                description,
+                participants,
+                resources,
+                evidence,
+                external_ids,
+            };
+            let event_digest = spec
+                .event_digest(book_id, &book.context().seal_key)
+                .map_err(fa_journal::KernelError::Model)
+                .map_err(BookError::Kernel)?;
+            let recorded =
+                book.record_event(spec, who, &capability, effective_date, key_str.as_bytes())??;
+            ctx.out.at_book(&book)?;
+            let vid_hex = format!("{:032x}", recorded.vid.0);
+            let ctrl_hex = format!("{:032x}", recorded.control_entry.0);
+            let dig_hex = hex(&event_digest);
+            ctx.out.event(
+                "event_recorded",
+                vec![
+                    ("event_vid", s(&vid_hex)),
+                    ("code", s(&code)),
+                    ("kind", s(kind.name())),
+                    ("occurred_on", s(occurred_on.render())),
+                    ("event_digest", s(&dig_hex)),
+                    ("control_entry", s(&ctrl_hex)),
+                    ("recorded_at", Json::Int(i128::from(recorded.recorded_at.0))),
+                    ("already_recorded", Json::Bool(recorded.already_recorded)),
+                ],
+                &format!(
+                    "{} event `{code}` ({vid_hex}, kind {}) occurred on {}, recorded at {}",
+                    if recorded.already_recorded {
+                        "already recorded"
+                    } else {
+                        "recorded"
+                    },
+                    kind.name(),
+                    occurred_on.render(),
+                    recorded.recorded_at.0
+                ),
+            );
+            Ok(())
+        }
+        Some("show") => {
+            let target = args
+                .positional
+                .get(2)
+                .map(String::as_str)
+                .or_else(|| args.flag("--code"))
+                .ok_or_else(|| {
+                    usage(
+                        "`fa event show` needs an event code or 32-hex vid",
+                        "fa event show EV-1001 --book <dir> --json",
+                    )
+                })?;
+            if let Some(extra) = args.positional.get(3) {
+                return Err(usage(
+                    format!("unexpected positional `{extra}`"),
+                    "fa event show <code|vid> [--as-known-at HEAD|<seq>] --book <dir>",
+                ));
+            }
+            let book = ctx.books.open(args)?;
+            let (known_at, _) = known_at_flag(args, &book, &ctx.out)?;
+            let rea = book.rea_snapshot(known_at)?;
+            ctx.out.known_at(rea.known_at);
+            let stripped = target.strip_prefix("EV:").unwrap_or(target);
+            let ev_row = if stripped.len() == 32
+                && stripped.bytes().all(|b| b.is_ascii_hexdigit())
+                && let Ok(raw) = u128::from_str_radix(stripped, 16)
+            {
+                rea.events
+                    .get(&VId(raw))
+                    .or_else(|| rea.events.values().find(|e| e.spec.code == target))
+            } else {
+                let derived = fa_model::event_vid(book.context().book_id, stripped);
+                rea.events
+                    .get(&derived)
+                    .or_else(|| rea.events.values().find(|e| e.spec.code == stripped))
+            }
+            .ok_or_else(|| {
+                usage(
+                    format!("no event `{target}` in this book at {}", rea.known_at.0),
+                    "fa event list --book <dir> --json",
+                )
+            })?;
+            let detail = event_detail_json(ev_row, &book)?;
+            ctx.out.event(
+                "event_shown",
+                vec![("event", detail)],
+                &format!(
+                    "event `{}` ({:032x}) · kind {} · occurred on {} · recorded at {}",
+                    ev_row.spec.code,
+                    ev_row.vid.0,
+                    ev_row.spec.kind.name(),
+                    ev_row.spec.occurred_on.render(),
+                    ev_row.recorded_at.0
+                ),
+            );
+            Ok(())
+        }
+        Some("list") => {
+            if let Some(extra) = args.positional.get(2) {
+                return Err(usage(
+                    format!("unexpected positional `{extra}`"),
+                    "fa event list [--as-known-at HEAD|<seq>] --book <dir>",
+                ));
+            }
+            let book = ctx.books.open(args)?;
+            let (known_at, _) = known_at_flag(args, &book, &ctx.out)?;
+            let rea = book.rea_snapshot(known_at)?;
+            ctx.out.known_at(rea.known_at);
+            let mut rows: Vec<&fa_journal::EventRow> = rea.events.values().collect();
+            rows.sort_by(|a, b| {
+                a.spec
+                    .occurred_on
+                    .cmp(&b.spec.occurred_on)
+                    .then_with(|| a.spec.code.cmp(&b.spec.code))
+                    .then_with(|| a.vid.cmp(&b.vid))
+            });
+            let items: Vec<Json> = rows.iter().map(|r| event_summary_json(r)).collect();
+            let human = if rows.is_empty() {
+                format!("0 events at {}", rea.known_at.0)
+            } else {
+                rows.iter()
+                    .map(|r| {
+                        format!(
+                            "{:<16} {:<14} {}  {:032x}  @{}",
+                            r.spec.code,
+                            r.spec.kind.name(),
+                            r.spec.occurred_on.render(),
+                            r.vid.0,
+                            r.recorded_at.0
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            ctx.out.event(
+                "events_listed",
+                vec![
+                    ("known_at", Json::Int(i128::from(rea.known_at.0))),
+                    ("count", Json::Int(items.len() as i128)),
+                    ("events", Json::Arr(items)),
+                ],
+                &human,
+            );
+            Ok(())
+        }
+        other => Err(unhandled("event", other)),
     }
 }
 
