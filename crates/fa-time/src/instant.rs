@@ -254,6 +254,10 @@ pub enum InstantResolutionError {
         requested_utc_ns: u64,
         first: TimeObservation,
     },
+    BeforeBookGenesis {
+        requested_utc_ns: u64,
+        genesis_utc_ns: u64,
+    },
     SequenceOrder {
         previous: u64,
         next: u64,
@@ -282,6 +286,13 @@ impl fmt::Display for InstantResolutionError {
                 f,
                 "instant {requested_utc_ns} ns precedes the first TimeEvidence tick ({} ns at seq {})",
                 first.observed_utc_ns, first.recorded_at,
+            ),
+            Self::BeforeBookGenesis {
+                requested_utc_ns,
+                genesis_utc_ns,
+            } => write!(
+                f,
+                "BeforeBookGenesis: instant {requested_utc_ns} ns precedes book migration genesis ({genesis_utc_ns} ns); legacy known-at is never reconstructed",
             ),
             Self::SequenceOrder { previous, next } => write!(
                 f,
@@ -324,6 +335,19 @@ pub fn resolve_instant(
     requested_utc_ns: u64,
     frontier: u64,
 ) -> Result<InstantResolution, InstantResolutionError> {
+    resolve_instant_with_genesis(observations, requested_utc_ns, frontier, None)
+}
+
+/// Resolve an instant over retained tick facts with an optional migration
+/// genesis floor (plan §7.1a, §8.6). Any instant preceding `genesis_utc_ns`
+/// returns [`InstantResolutionError::BeforeBookGenesis`] after validating the
+/// visible tick history, never reconstructing legacy known-at.
+pub fn resolve_instant_with_genesis(
+    observations: &[TimeObservation],
+    requested_utc_ns: u64,
+    frontier: u64,
+    genesis_utc_ns: Option<u64>,
+) -> Result<InstantResolution, InstantResolutionError> {
     let mut first = None;
     let mut previous: Option<TimeObservation> = None;
     let mut lower = None;
@@ -363,6 +387,14 @@ pub fn resolve_instant(
         } else if upper.is_none() {
             upper = Some(tick);
         }
+    }
+    if let Some(genesis_utc_ns) = genesis_utc_ns
+        && requested_utc_ns < genesis_utc_ns
+    {
+        return Err(InstantResolutionError::BeforeBookGenesis {
+            requested_utc_ns,
+            genesis_utc_ns,
+        });
     }
     let first = first.ok_or(InstantResolutionError::NoTicks { frontier })?;
     let lower = lower.ok_or(InstantResolutionError::BeforeFirstTick {
@@ -609,6 +641,26 @@ mod tests {
                 requested_utc_ns: 99,
                 first: ticks[0],
             }),
+        );
+        assert_eq!(
+            resolve_instant_with_genesis(&[], 99, 20, Some(100)),
+            Err(InstantResolutionError::BeforeBookGenesis {
+                requested_utc_ns: 99,
+                genesis_utc_ns: 100,
+            }),
+        );
+        assert_eq!(
+            resolve_instant_with_genesis(&ticks, 99, 20, Some(100)),
+            Err(InstantResolutionError::BeforeBookGenesis {
+                requested_utc_ns: 99,
+                genesis_utc_ns: 100,
+            }),
+        );
+        assert_eq!(
+            resolve_instant_with_genesis(&ticks, 100, 20, Some(100))
+                .unwrap()
+                .resolved_seq,
+            20,
         );
     }
 

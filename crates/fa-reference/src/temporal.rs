@@ -165,7 +165,10 @@ mod tests {
 mod instant_tests {
     use std::collections::BTreeMap;
 
-    use fa_time::{InstantResolution, InstantResolutionError, TimeObservation, resolve_instant};
+    use fa_time::{
+        InstantResolution, InstantResolutionError, TimeObservation, resolve_instant,
+        resolve_instant_with_genesis,
+    };
 
     /// Deliberately literal oracle: at every commit position, look up its
     /// latest retained observation and apply the request's time predicate.
@@ -176,6 +179,15 @@ mod instant_tests {
         ticks: &[TimeObservation],
         requested_utc_ns: u64,
         frontier: u64,
+    ) -> Result<InstantResolution, InstantResolutionError> {
+        literal_resolution_with_genesis(ticks, requested_utc_ns, frontier, None)
+    }
+
+    fn literal_resolution_with_genesis(
+        ticks: &[TimeObservation],
+        requested_utc_ns: u64,
+        frontier: u64,
+        genesis_utc_ns: Option<u64>,
     ) -> Result<InstantResolution, InstantResolutionError> {
         let visible: Vec<_> = ticks
             .iter()
@@ -201,6 +213,14 @@ mod instant_tests {
             return Err(InstantResolutionError::UnsupportedSource {
                 recorded_at: tick.recorded_at,
                 source: tick.source,
+            });
+        }
+        if let Some(genesis_utc_ns) = genesis_utc_ns
+            && requested_utc_ns < genesis_utc_ns
+        {
+            return Err(InstantResolutionError::BeforeBookGenesis {
+                requested_utc_ns,
+                genesis_utc_ns,
             });
         }
         let by_sequence: BTreeMap<_, _> = visible
@@ -269,6 +289,23 @@ mod instant_tests {
                         literal_resolution(&ticks, requested_utc_ns, frontier),
                         "mask {mask}, instant {requested_utc_ns}, frontier {frontier}",
                     );
+                    for genesis in [None, Some(4), Some(10)] {
+                        assert_eq!(
+                            resolve_instant_with_genesis(
+                                &ticks,
+                                requested_utc_ns,
+                                frontier,
+                                genesis
+                            ),
+                            literal_resolution_with_genesis(
+                                &ticks,
+                                requested_utc_ns,
+                                frontier,
+                                genesis
+                            ),
+                            "mask {mask}, instant {requested_utc_ns}, frontier {frontier}, genesis {genesis:?}",
+                        );
+                    }
                 }
             }
         }
@@ -298,5 +335,9 @@ mod instant_tests {
             assert!(reference.is_err(), "negative fixture unexpectedly resolved");
             assert_eq!(resolve_instant(&ticks, 105, 20), reference, "{ticks:?}");
         }
+        assert_eq!(
+            resolve_instant_with_genesis(&ticks, 99, 20, Some(100)),
+            literal_resolution_with_genesis(&ticks, 99, 20, Some(100)),
+        );
     }
 }

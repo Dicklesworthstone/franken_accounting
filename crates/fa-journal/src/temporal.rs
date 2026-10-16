@@ -46,13 +46,24 @@ impl InstantSelection {
     }
 }
 
+fn day_start_utc_ns(day: fa_time::DateDay) -> u64 {
+    const NS_PER_DAY: i128 = 86_400_000_000_000;
+    u64::try_from(i128::from(day.0).saturating_mul(NS_PER_DAY)).unwrap_or(0)
+}
+
 fn unavailable(error: InstantResolutionError) -> Refusal {
+    let cite = match error {
+        InstantResolutionError::BeforeBookGenesis { .. } => {
+            "plan §7.1a, §8.6 / FA-INV-07 (instant selection before migration genesis returns BeforeBookGenesis; legacy known-at is never reconstructed)"
+        }
+        _ => "plan §7.1a / FA-INV-07 (instant selection requires retained TimeEvidence)",
+    };
     Refusal::new(
         INSTANT_UNAVAILABLE,
         exit::REFUSAL,
         format!("known-at instant cannot be resolved: {error}"),
-        "plan §7.1a / FA-INV-07 (instant selection requires retained TimeEvidence)",
-        "select --as-known-at HEAD or an existing commit sequence; an instant before the first retained tick cannot be reconstructed",
+        cite,
+        "select --as-known-at HEAD or an existing commit sequence; an instant before the first retained tick or before migration genesis cannot be reconstructed",
     )
 }
 
@@ -85,14 +96,34 @@ pub fn resolve_instant_at<V: asupersync::fs::Vfs + Clone>(
             "resolve against the current book or retain the original certified history",
         )));
     }
+    let mut genesis_utc_ns = crate::genesis::read_book_spec(db)?
+        .and_then(|spec| spec.opening_date)
+        .map(day_start_utc_ns);
+    let mut migration_seq: Option<u64> = None;
     let mut ticks = Vec::new();
     for row in db.vertices_at(at)? {
         cx.checkpoint().map_err(fgdb::WriteTxnError::Interrupted)?;
+        if row.labels.contains(&label::MIGRATION_RUN) {
+            let payload = bytes(&row, property::FA_PAYLOAD, "MigrationRun payload")?;
+            let run = crate::migration::RunBody::decode(&payload)?;
+            let run_genesis = day_start_utc_ns(run.opening_date);
+            genesis_utc_ns = Some(genesis_utc_ns.map_or(run_genesis, |g| g.max(run_genesis)));
+            migration_seq =
+                Some(migration_seq.map_or(row.created_at.0, |prev| prev.max(row.created_at.0)));
+            continue;
+        }
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
         let payload = bytes(&row, property::FA_PAYLOAD, "TimeEvidence entry payload")?;
         let entry = Entry::decode(&payload)?;
+        if entry.proposal.class == EntryClass::MIGRATION
+            || entry.proposal.class == EntryClass::MIGRATION_CONTROL
+        {
+            migration_seq =
+                Some(migration_seq.map_or(row.created_at.0, |prev| prev.max(row.created_at.0)));
+            continue;
+        }
         let is_tick = matches!(
             &entry.proposal.control,
             Some(ControlPayload::TimeTick { .. })
@@ -163,12 +194,26 @@ pub fn resolve_instant_at<V: asupersync::fs::Vfs + Clone>(
         active_ticks.push((tick, vid));
     }
     let ticks = active_ticks;
+    if let Some(mig_seq) = migration_seq
+        && let Some((first_post_mig, _)) =
+            ticks.iter().find(|(tick, _)| tick.recorded_at >= mig_seq)
+    {
+        genesis_utc_ns = Some(genesis_utc_ns.map_or(first_post_mig.observed_utc_ns, |g| {
+            g.max(first_post_mig.observed_utc_ns)
+        }));
+    }
     let observations: Vec<TimeObservation> = ticks.iter().map(|(tick, _)| *tick).collect();
-    let resolution = match fa_time::resolve_instant(&observations, requested_utc_ns, at.0) {
+    let resolution = match fa_time::resolve_instant_with_genesis(
+        &observations,
+        requested_utc_ns,
+        at.0,
+        genesis_utc_ns,
+    ) {
         Ok(resolution) => resolution,
         Err(
             error @ (InstantResolutionError::NoTicks { .. }
-            | InstantResolutionError::BeforeFirstTick { .. }),
+            | InstantResolutionError::BeforeFirstTick { .. }
+            | InstantResolutionError::BeforeBookGenesis { .. }),
         ) => {
             return Ok(Err(unavailable(error)));
         }

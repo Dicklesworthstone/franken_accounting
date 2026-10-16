@@ -37,7 +37,7 @@ pub use calendar::{CalendarKind, FiscalCalendar, WeekPattern, YearEndRule};
 pub use date::{DateDay, DateError, MonthEndPolicy, Weekday};
 pub use instant::{
     InstantParseError, InstantResolution, InstantResolutionError, TimeObservation, UtcInstant,
-    resolve_instant,
+    resolve_instant, resolve_instant_with_genesis,
 };
 pub use period::{
     PeriodDef, PeriodKind, PeriodState, PeriodTransition, ResolveError, TransitionError,
