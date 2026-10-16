@@ -20,6 +20,7 @@ pub mod cli;
 pub mod client;
 mod document;
 pub mod entry;
+mod intake;
 pub mod json;
 pub mod lease;
 pub(crate) mod notary;
