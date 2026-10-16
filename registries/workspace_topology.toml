@@ -214,7 +214,7 @@ planned = false
 name = "fa-bench"
 layer = "verification"
 path = "crates/fa-bench"
-planned = true
+planned = false
 
 [[crate]]
 name = "fa-conformance"

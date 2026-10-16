@@ -28,6 +28,7 @@
 #
 # Usage: bash scripts/check.sh            # everything
 #        bash scripts/check.sh --quick    # fmt, check, clippy, ubs (no tests, no deny)
+#        bash scripts/check.sh --bench    # smoke benchmarks + manifest/witness checks (fa-tu58)
 #        CHECK_LOG_DIR=<dir> keeps the per-step logs somewhere other than a temp dir.
 # =============================================================================
 set -u
@@ -38,9 +39,11 @@ cd "$ROOT" || exit 1
 . "$ROOT/scripts/lib/gate_verdict.sh"
 
 QUICK=0
+BENCH_ONLY=0
 for arg in "$@"; do
   case "$arg" in
     --quick) QUICK=1 ;;
+    --bench) BENCH_ONLY=1 ;;
     -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) printf 'FAIL check.sh: unknown argument %s\n' "$arg"; exit 2 ;;
   esac
@@ -179,6 +182,11 @@ run_gate() {
 }
 
 # ---- Rust -------------------------------------------------------------------
+if [ "$BENCH_ONLY" -eq 1 ]; then
+  cargo_build "bench-smoke" run -p fa-bench --bin fa-bench -- --smoke --json
+  gate_verdict
+fi
+
 run_step "fmt" cargo fmt --all --check
 cargo_build "check" check --workspace --all-targets
 cargo_build "clippy" clippy --workspace --all-targets -- -D warnings
@@ -207,6 +215,11 @@ if [ "$QUICK" -eq 0 ]; then
   # replays every checked-in seed and synthesized golden vector with
   # deterministic PRNG mutations across all 7 live decoder/parser targets.
   cargo_build "fuzz-smoke" run -p fa-fuzz --bin fa-fuzz-smoke
+  # §17 benchmark smoke + operation-cost witness gate (plan §17, Appendix G,
+  # beads fa-tu58 / fa-i5s): verifies all 19 baseline manifests, all 9 counted
+  # kernel operation witnesses, and runs smoke benchmark distributions with
+  # live incumbent comparison in the same invocation.
+  cargo_build "bench-smoke" run -p fa-bench --bin fa-bench -- --smoke --json
   # Substrate conformance mutation gate (plan §16.3, bead fa-zy1):
   # inverts each #[test] in crates/fa-conformance/tests/substrate.rs via
   # FA_CONFORMANCE_INVERT and proves that exactly that test fails.

@@ -1,0 +1,23 @@
+# bench/manifests/close_dry_run.toml — §17 baseline manifest (beads fa-tu58, fa-i5s)
+schema_version = 1
+slo_id = "FA-BENCH-09"
+bench_name = "close_dry_run"
+operation_class = "close_run_execute"
+worker_class = "apple-silicon-nvme-m4"
+cpu_model = "Apple M-series arm64"
+os_filesystem = "macOS apfs"
+pinned_fsync_p50_us = 1000
+toolchain = "nightly-2026-08-31"
+substrate_rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+fixture_seed = 42
+incumbent_sha = "6deef75"
+incumbent_in_same_invocation = true
+variance_budget_pct = 25
+
+[baseline]
+samples = 8
+p50_us = 4200
+p95_us = 7100
+p99_us = 8500
+min_us = 3600
+max_us = 8800
