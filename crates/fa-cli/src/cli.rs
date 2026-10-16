@@ -3551,6 +3551,36 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             };
             out.at_book(&book)?;
             out.effective(format!("period:{}", tr.period));
+            if tr.already_recorded {
+                // An identical retry (fa-l93 D13): the request's recorded
+                // control entry, nothing new written.
+                let Some((entry, recorded_at)) = book.read_entry(tr.control_entry)? else {
+                    return Err(Fail::Book(BookError::Kernel(
+                        fa_journal::KernelError::Corrupt(
+                            "a recorded period control entry is absent".into(),
+                        ),
+                    )));
+                };
+                out.event(
+                    "recorded",
+                    vec![
+                        ("vid", s(format!("{:032x}", tr.control_entry.0))),
+                        ("entry_digest", s(hex(&entry.entry_digest))),
+                        ("recorded_at", Json::Int(i128::from(recorded_at.0))),
+                        ("requested", Json::Null),
+                        ("moved", Json::Null),
+                    ],
+                    &format!(
+                        "{}: {} → {} already recorded as {:032x} at {} (same idempotency key); nothing new was written",
+                        tr.period,
+                        tr.from.name(),
+                        tr.to.name(),
+                        tr.control_entry.0,
+                        recorded_at.0
+                    ),
+                );
+                return Ok(());
+            }
             out.event(
                 "period_transitioned",
                 vec![
