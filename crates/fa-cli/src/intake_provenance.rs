@@ -75,7 +75,12 @@ pub(crate) fn session_import(
             "omit --grade; independent review is an attestation, not an intake relabel",
         )));
     }
-    Ok((IntakeSource::Upload { principal: capability.holder() }, grade))
+    Ok((
+        IntakeSource::Upload {
+            principal: capability.holder(),
+        },
+        grade,
+    ))
 }
 
 #[cfg(test)]
@@ -96,7 +101,12 @@ mod tests {
                     Ok((IntakeSource::Upload { principal: VId(501) }, grade)) if grade == expected
                 ));
             }
-            for source in ["Connector", "Connector:fa-import:1", "Email:message", "Scan:scanner"] {
+            for source in [
+                "Connector",
+                "Connector:fa-import:1",
+                "Email:message",
+                "Scan:scanner",
+            ] {
                 assert!(matches!(
                     session_import(&policy, &capability, Some(source), None),
                     Err(Fail::Usage(_))

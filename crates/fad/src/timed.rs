@@ -260,9 +260,13 @@ impl TimedWork {
         policy: Policy,
         periods: Vec<String>,
     ) -> Result<Self, registers::ConfigurationError> {
-        policy.validate().map_err(|_| registers::ConfigurationError("invalid daemon maintenance policy"))?;
+        policy
+            .validate()
+            .map_err(|_| registers::ConfigurationError("invalid daemon maintenance policy"))?;
         let now = clock::timer(cx)
-            .map_err(|_| registers::ConfigurationError("register maintenance requires a timer capability"))?
+            .map_err(|_| {
+                registers::ConfigurationError("register maintenance requires a timer capability")
+            })?
             .now();
         let next = clock::deadline_after(now, policy.tick_ns)
             .map_err(|_| registers::ConfigurationError("register maintenance deadline overflow"))?;
@@ -388,9 +392,10 @@ impl TimedWork {
         sample: Observation,
     ) -> Result<Cycle, TimedError> {
         clock::timer(cx)?;
-        let capability = self.capability.as_ref().ok_or_else(|| {
-            TimedError::Authority("timed accounting effects are disabled".into())
-        })?;
+        let capability = self
+            .capability
+            .as_ref()
+            .ok_or_else(|| TimedError::Authority("timed accounting effects are disabled".into()))?;
         let corroborated = self.judge.observe(sample)?;
         let ticked = admitted(
             book.record_tick(cx, sample.utc_ns, corroborated, capability)
@@ -447,7 +452,10 @@ pub fn status_fields(work: Option<&TimedWork>) -> Vec<(&'static str, Json)> {
         ),
         (
             "tick_ns",
-            number(work.filter(|w| w.timing_enabled()).map(|w| w.policy.tick_ns)),
+            number(
+                work.filter(|w| w.timing_enabled())
+                    .map(|w| w.policy.tick_ns),
+            ),
         ),
         (
             "sweep_batch",
@@ -456,11 +464,16 @@ pub fn status_fields(work: Option<&TimedWork>) -> Vec<(&'static str, Json)> {
         ),
         (
             "clock_drift_ns",
-            number(work.filter(|w| w.timing_enabled()).map(|w| w.policy.clock_drift_ns)),
+            number(
+                work.filter(|w| w.timing_enabled())
+                    .map(|w| w.policy.clock_drift_ns),
+            ),
         ),
         (
             "timed_cycles",
-            Json::Int(i128::from(work.filter(|w| w.timing_enabled()).map_or(0, |w| w.cycles))),
+            Json::Int(i128::from(
+                work.filter(|w| w.timing_enabled()).map_or(0, |w| w.cycles),
+            )),
         ),
         (
             "last_tick_utc_ns",

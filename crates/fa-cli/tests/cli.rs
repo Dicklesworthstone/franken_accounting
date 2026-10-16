@@ -9243,7 +9243,14 @@ fn off_balance_commitment_and_statistical_headcount_cli_scenario() -> std::io::R
     );
     let (c, o, e) = fa(
         Some(&book),
-        &["post", "--intent", &bad_cross, "--evidence", &ev_oid, "--json"],
+        &[
+            "post",
+            "--intent",
+            &bad_cross,
+            "--evidence",
+            &ev_oid,
+            "--json",
+        ],
     );
     assert_eq!(c, 3, "{o}\n{e}");
     assert!(o.contains("FA-REF-001"), "{o}");
@@ -9307,7 +9314,13 @@ fn off_balance_commitment_and_statistical_headcount_cli_scenario() -> std::io::R
     // 4. Financial statements exclude OffBalance and Statistical accounts from footing
     let (c, bs_out, e) = fa(
         Some(&book),
-        &["statement", "balance-sheet", "--for", "FY2026-P03", "--json"],
+        &[
+            "statement",
+            "balance-sheet",
+            "--for",
+            "FY2026-P03",
+            "--json",
+        ],
     );
     assert_eq!(c, 0, "{bs_out}\n{e}");
     let bs_doc = doc(&bs_out);
@@ -9485,7 +9498,9 @@ fn toon_robot_output_format_and_differential_oracle() -> std::io::Result<()> {
     }
 
     if !tru_available {
-        eprintln!("NOTE: external `tru` binary not in PATH; differential decode check UNRUN (in-house TOON v3.0 golden spec fixtures verified in fa-verbs).");
+        eprintln!(
+            "NOTE: external `tru` binary not in PATH; differential decode check UNRUN (in-house TOON v3.0 golden spec fixtures verified in fa-verbs)."
+        );
     }
 
     // Verify tabular array formatting in `tb --format toon` and that numeric account codes remain quoted strings
@@ -9494,7 +9509,8 @@ fn toon_robot_output_format_and_differential_oracle() -> std::io::Result<()> {
         &["tb", "--period", "FY2026-P03", "--format", "toon"],
     );
     assert!(
-        tb_toon.contains("rows[2]{code,credits,credits_pending,debits,debits_pending,name,net,type}:"),
+        tb_toon
+            .contains("rows[2]{code,credits,credits_pending,debits,debits_pending,name,net,type}:"),
         "tb rows should use TOON tabular header: {tb_toon}"
     );
     assert!(
@@ -9502,7 +9518,9 @@ fn toon_robot_output_format_and_differential_oracle() -> std::io::Result<()> {
         "account code '1000' must be quoted so it stays a string, while '1500.00 USD' is an unquoted string token: {tb_toon}"
     );
     assert!(
-        tb_toon.contains("\"4000\",1500.00 USD,0.00 USD,0.00 USD,0.00 USD,Sales Revenue,\"-1500.00 USD\",Revenue"),
+        tb_toon.contains(
+            "\"4000\",1500.00 USD,0.00 USD,0.00 USD,0.00 USD,Sales Revenue,\"-1500.00 USD\",Revenue"
+        ),
         "negative amount '-1500.00 USD' must be quoted in TOON v3.0: {tb_toon}"
     );
 
@@ -9511,10 +9529,8 @@ fn toon_robot_output_format_and_differential_oracle() -> std::io::Result<()> {
         Some(&book),
         &["tb", "--period", "FY2026-P03", "--format", "json"],
     );
-    let (c_flag_json, out_flag_json, _) = fa(
-        Some(&book),
-        &["tb", "--period", "FY2026-P03", "--json"],
-    );
+    let (c_flag_json, out_flag_json, _) =
+        fa(Some(&book), &["tb", "--period", "FY2026-P03", "--json"]);
     assert_eq!(c_fmt_json, 0);
     assert_eq!(c_flag_json, 0);
     assert_eq!(out_fmt_json, out_flag_json);
@@ -9563,4 +9579,3 @@ fn toon_robot_output_format_and_differential_oracle() -> std::io::Result<()> {
 
     Ok(())
 }
-

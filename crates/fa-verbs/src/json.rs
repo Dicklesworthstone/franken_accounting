@@ -427,7 +427,8 @@ pub mod toon {
 
     impl LineWriter {
         fn push(&mut self, depth: usize, content: &str) {
-            self.lines.push(format!("{}{content}", INDENT.repeat(depth)));
+            self.lines
+                .push(format!("{}{content}", INDENT.repeat(depth)));
         }
 
         fn push_list_item(&mut self, depth: usize, content: &str) {
@@ -645,12 +646,7 @@ pub mod toon {
         Some(header)
     }
 
-    fn write_tabular_rows(
-        rows: &[Json],
-        header: &[String],
-        writer: &mut LineWriter,
-        depth: usize,
-    ) {
+    fn write_tabular_rows(rows: &[Json], header: &[String], writer: &mut LineWriter, depth: usize) {
         for row in rows {
             if let Json::Obj(fields) = row {
                 let values: Vec<String> = header
@@ -998,74 +994,26 @@ mod tests {
             ),
             (r#"{"id":123,"value":null}"#, "id: 123\nvalue: null"),
             (r#"{}"#, ""),
-            (
-                r#"{"note":"a:b"}"#,
-                r#"note: "a:b""#,
-            ),
-            (
-                r#"{"note":"a,b"}"#,
-                r#"note: "a,b""#,
-            ),
-            (
-                r#"{"text":"line1\nline2"}"#,
-                r#"text: "line1\nline2""#,
-            ),
-            (
-                r#"{"text":"say \"hello\""}"#,
-                r#"text: "say \"hello\"""#,
-            ),
-            (
-                r#"{"text":" padded "}"#,
-                r#"text: " padded ""#,
-            ),
-            (
-                r#"{"text":"  "}"#,
-                r#"text: "  ""#,
-            ),
-            (
-                r#"{"v":"true"}"#,
-                r#"v: "true""#,
-            ),
-            (
-                r#"{"v":"42"}"#,
-                r#"v: "42""#,
-            ),
-            (
-                r#"{"v":"-7.5"}"#,
-                r#"v: "-7.5""#,
-            ),
-            (
-                r#"{"order:id":7}"#,
-                r#""order:id": 7"#,
-            ),
-            (
-                r#"{"[index]":5}"#,
-                r#""[index]": 5"#,
-            ),
-            (
-                r#"{"-lead":1}"#,
-                r#""-lead": 1"#,
-            ),
-            (
-                r#"{"123":1}"#,
-                r#""123": 1"#,
-            ),
-            (
-                r#"{"":1}"#,
-                r#""": 1"#,
-            ),
+            (r#"{"note":"a:b"}"#, r#"note: "a:b""#),
+            (r#"{"note":"a,b"}"#, r#"note: "a,b""#),
+            (r#"{"text":"line1\nline2"}"#, r#"text: "line1\nline2""#),
+            (r#"{"text":"say \"hello\""}"#, r#"text: "say \"hello\"""#),
+            (r#"{"text":" padded "}"#, r#"text: " padded ""#),
+            (r#"{"text":"  "}"#, r#"text: "  ""#),
+            (r#"{"v":"true"}"#, r#"v: "true""#),
+            (r#"{"v":"42"}"#, r#"v: "42""#),
+            (r#"{"v":"-7.5"}"#, r#"v: "-7.5""#),
+            (r#"{"order:id":7}"#, r#""order:id": 7"#),
+            (r#"{"[index]":5}"#, r#""[index]": 5"#),
+            (r#"{"-lead":1}"#, r#""-lead": 1"#),
+            (r#"{"123":1}"#, r#""123": 1"#),
+            (r#"{"":1}"#, r#""": 1"#),
             (
                 r#"{"user_name":1,"_id":2,"a.b":3}"#,
                 "user_name: 1\n_id: 2\na.b: 3",
             ),
-            (
-                r#"{"a":{"b":{"c":"deep"}}}"#,
-                "a:\n  b:\n    c: deep",
-            ),
-            (
-                r#"{"user":{}}"#,
-                "user:",
-            ),
+            (r#"{"a":{"b":{"c":"deep"}}}"#, "a:\n  b:\n    c: deep"),
+            (r#"{"user":{}}"#, "user:"),
         ] {
             let val = parse(input).expect(input);
             assert_eq!(val.render_toon(), expected, "input: {input}");
@@ -1080,30 +1028,12 @@ mod tests {
                 r#"{"tags":["reading","gaming"]}"#,
                 "tags[2]: reading,gaming",
             ),
-            (
-                r#"{"nums":[1,2,3]}"#,
-                "nums[3]: 1,2,3",
-            ),
-            (
-                r#"{"data":["x","y",true,10]}"#,
-                "data[4]: x,y,true,10",
-            ),
-            (
-                r#"{"items":[]}"#,
-                "items[0]:",
-            ),
-            (
-                r#"{"items":[""]}"#,
-                r#"items[1]: """#,
-            ),
-            (
-                r#"{"items":["a","","b"]}"#,
-                r#"items[3]: a,"",b"#,
-            ),
-            (
-                r#"{"items":[" ","  "]}"#,
-                r#"items[2]: " ","  ""#,
-            ),
+            (r#"{"nums":[1,2,3]}"#, "nums[3]: 1,2,3"),
+            (r#"{"data":["x","y",true,10]}"#, "data[4]: x,y,true,10"),
+            (r#"{"items":[]}"#, "items[0]:"),
+            (r#"{"items":[""]}"#, r#"items[1]: """#),
+            (r#"{"items":["a","","b"]}"#, r#"items[3]: a,"",b"#),
+            (r#"{"items":[" ","  "]}"#, r#"items[2]: " ","  ""#),
             (
                 r#"{"items":["a","b,c","d:e"]}"#,
                 r#"items[3]: a,"b,c","d:e""#,
@@ -1150,22 +1080,13 @@ mod tests {
                 r#"{"pairs":[["a","b"],["c,d","e:f","true"]]}"#,
                 "pairs[2]:\n  - [2]: a,b\n  - [3]: \"c,d\",\"e:f\",\"true\"",
             ),
-            (
-                r#"{"pairs":[[],[]]}"#,
-                "pairs[2]:\n  - [0]:\n  - [0]:",
-            ),
+            (r#"{"pairs":[[],[]]}"#, "pairs[2]:\n  - [0]:\n  - [0]:"),
             (
                 r#"{"pairs":[[1],[2,3]]}"#,
                 "pairs[2]:\n  - [1]: 1\n  - [2]: 2,3",
             ),
-            (
-                r#"["x","y","true",true,10]"#,
-                r#"[5]: x,y,"true",true,10"#,
-            ),
-            (
-                r#"[{"id":1},{"id":2}]"#,
-                "[2]{id}:\n  1\n  2",
-            ),
+            (r#"["x","y","true",true,10]"#, r#"[5]: x,y,"true",true,10"#),
+            (r#"[{"id":1},{"id":2}]"#, "[2]{id}:\n  1\n  2"),
             (
                 r#"[{"id":1},{"id":2,"name":"Ada"}]"#,
                 "[2]:\n  - id: 1\n  - id: 2\n    name: Ada",
@@ -1174,14 +1095,8 @@ mod tests {
                 r#"["summary",{"id":1,"name":"Ada"},[{"id":2},{"status":"draft"}]]"#,
                 "[3]:\n  - summary\n  - id: 1\n    name: Ada\n  - [2]:\n    - id: 2\n    - status: draft",
             ),
-            (
-                r#"[[1,2],[]]"#,
-                "[2]:\n  - [2]: 1,2\n  - [0]:",
-            ),
-            (
-                r#"[]"#,
-                "[0]:",
-            ),
+            (r#"[[1,2],[]]"#, "[2]:\n  - [2]: 1,2\n  - [0]:"),
+            (r#"[]"#, "[0]:"),
             (
                 r#"{"user":{"id":123,"name":"Ada","tags":["reading","gaming"],"active":true,"prefs":[]}}"#,
                 "user:\n  id: 123\n  name: Ada\n  tags[2]: reading,gaming\n  active: true\n  prefs[0]:",
