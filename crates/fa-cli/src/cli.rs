@@ -10172,7 +10172,7 @@ fn explain_entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         })
         .collect();
     let cited_event = match entry.proposal.cited_event() {
-        Some(ev_vid) => book
+        Some((ev_vid, _)) => book
             .rea_snapshot(None)?
             .events
             .get(&ev_vid)
@@ -12738,7 +12738,7 @@ fn event_summary_json(ev: &fa_journal::EventRow) -> Json {
         ("kind", s(ev.spec.kind.name())),
         ("occurred_on", s(ev.spec.occurred_on.render())),
         ("event_digest", s(hex(&ev.event_digest))),
-        ("recorded_at", Json::Int(i128::from(ev.recorded_at.0))),
+        ("recorded_at", Json::Int(i128::from(ev.created_at.0))),
     ])
 }
 
@@ -12762,10 +12762,10 @@ fn event_detail_json(ev: &fa_journal::EventRow, book: &Book) -> Result<Json, Fai
             ("label", s(&r.label)),
             (
                 "instrument",
-                r.instrument_ref
+                r.instrument
                     .map_or(Json::Null, |inst| s(format!("{:032x}", inst.0))),
             ),
-            ("quantity", s(render_amount(r.quantity, units)?)),
+            ("amount", s(render_amount(r.amount, units)?)),
         ]));
     }
     let evidence: Vec<Json> = ev
@@ -12803,7 +12803,7 @@ fn event_detail_json(ev: &fa_journal::EventRow, book: &Book) -> Result<Json, Fai
         ("evidence", Json::Arr(evidence)),
         ("external_ids", Json::Arr(external_ids)),
         ("event_digest", s(hex(&ev.event_digest))),
-        ("recorded_at", Json::Int(i128::from(ev.recorded_at.0))),
+        ("recorded_at", Json::Int(i128::from(ev.created_at.0))),
     ]))
 }
 
@@ -12876,7 +12876,7 @@ fn event_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 } else {
                     rea.parties
                         .values()
-                        .find(|p| p.spec.code == stripped)
+                        .find(|p| p.code == stripped)
                         .map_or_else(|| fa_model::party_vid(book_id, stripped), |p| p.vid)
                 };
                 if !participants.contains(&p_vid) {
@@ -12903,13 +12903,13 @@ fn event_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         "--resource revenue:100.00\\ USD",
                     ));
                 }
-                let quantity = Amount::parse(amount_str, &book.context().units).map_err(|e| {
+                let amount = Amount::parse(amount_str, &book.context().units).map_err(|e| {
                     usage(
                         format!("--resource `{raw_r}` amount `{amount_str}`: {e}"),
                         "--resource cash:100.00\\ USD",
                     )
                 })?;
-                let instrument_ref = inst_opt.map(|inst_s| {
+                let instrument = inst_opt.map(|inst_s| {
                     let stripped = inst_s.strip_prefix("I:").unwrap_or(inst_s);
                     if stripped.len() == 32
                         && stripped.bytes().all(|b| b.is_ascii_hexdigit())
@@ -12919,7 +12919,7 @@ fn event_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     } else {
                         rea.instruments
                             .values()
-                            .find(|i| i.spec.code == stripped)
+                            .find(|i| i.code == stripped)
                             .map_or_else(
                                 || fa_model::instrument_vid(book_id, stripped),
                                 |i| i.vid,
@@ -12928,14 +12928,14 @@ fn event_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 });
                 resources.push(fa_model::EventResource {
                     label: label_str.to_string(),
-                    instrument_ref,
-                    quantity,
+                    amount,
+                    instrument,
                 });
             }
             resources.sort_by(|a, b| {
                 a.label
                     .cmp(&b.label)
-                    .then_with(|| a.instrument_ref.map_or(0, |v| v.0).cmp(&b.instrument_ref.map_or(0, |v| v.0)))
+                    .then_with(|| a.instrument.map_or(0, |v| v.0).cmp(&b.instrument.map_or(0, |v| v.0)))
             });
             let mut external_ids = Vec::new();
             for raw_ext in args.flag_all("--external-id") {
@@ -12956,8 +12956,12 @@ fn event_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     id: book.seal_text(ext_id)?,
                 });
             }
-            external_ids.sort_by(|a, b| a.system.cmp(&b.system));
-            let evidence = document::parse_evidence(&Json::Null, args, &book)?;
+            external_ids.sort_by(|a, b| {
+                a.system
+                    .cmp(&b.system)
+                    .then_with(|| a.id.field_digest().cmp(&b.id.field_digest()))
+            });
+            let evidence = document::parse_evidence(&Json::Null, args, &mut book)?;
             let description_str = args.flag("--description").unwrap_or("");
             let description = book.seal_text(description_str)?;
             let key_str = args
@@ -12975,13 +12979,17 @@ fn event_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 external_ids,
             };
             let event_digest = spec
-                .event_digest(book_id, &book.context().seal_key)
-                .map_err(fa_journal::KernelError::Model)
-                .map_err(BookError::Kernel)?;
-            let recorded =
-                book.record_event(spec, who, &capability, effective_date, key_str.as_bytes())??;
+                .event_digest()
+                .map_err(|e| usage(format!("invalid event spec: {e}"), "fa event record --help"))?;
+            let recorded = book.record_event(
+                &spec,
+                who,
+                effective_date,
+                key_str.as_bytes(),
+                &capability,
+            )??;
             ctx.out.at_book(&book)?;
-            let vid_hex = format!("{:032x}", recorded.vid.0);
+            let vid_hex = format!("{:032x}", recorded.target_vid.0);
             let ctrl_hex = format!("{:032x}", recorded.control_entry.0);
             let dig_hex = hex(&event_digest);
             ctx.out.event(
@@ -13062,7 +13070,7 @@ fn event_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     ev_row.vid.0,
                     ev_row.spec.kind.name(),
                     ev_row.spec.occurred_on.render(),
-                    ev_row.recorded_at.0
+                    ev_row.created_at.0
                 ),
             );
             Ok(())
@@ -13098,7 +13106,7 @@ fn event_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                             r.spec.kind.name(),
                             r.spec.occurred_on.render(),
                             r.vid.0,
-                            r.recorded_at.0
+                            r.created_at.0
                         )
                     })
                     .collect::<Vec<_>>()
