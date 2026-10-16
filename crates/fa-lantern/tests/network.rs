@@ -106,7 +106,7 @@ impl Fixture {
 fn actual_postings_follow_full_paths_and_historical_cutoffs() {
     let mut f = Fixture::new(0x71);
     let source = f.transfer("A", f.usd, 1, "3000", "1000", 10000);
-    let prefix = f.db.frontier();
+    let prefix = f.db.frontier().expect("read journal frontier");
     let hop2 = f.transfer("A", f.usd, 2, "1000", "1010", 8000);
     let hop3 = f.transfer("A", f.usd, 3, "1010", "1020", 6000);
     let spend = f.transfer("A", f.usd, 4, "1020", "6000", 1000);
@@ -159,7 +159,7 @@ fn mixed_cash_entries_are_netted_and_bounds_never_publish_partial_schedules() {
     let mut f = Fixture::new(0x73);
     let source = f.post(1, vec![f.leg("A", f.usd, "1000", Side::Debit, 10000), f.leg("A", f.usd, "1000", Side::Credit, 8000), f.leg("A", f.usd, "4000", Side::Credit, 2000)]);
     f.transfer("A", f.usd, 2, "1000", "1010", 1000);
-    let head = f.db.frontier();
+    let head = f.db.frontier().expect("read journal frontier");
     for id in IDS {
         let r = f.run(id, source, 31, None, &[]).unwrap();
         assert_eq!(f.amount(&r, "1000", "held_mantissa"), 1000);
@@ -167,6 +167,28 @@ fn mixed_cash_entries_are_netted_and_bounds_never_publish_partial_schedules() {
         for name in ["max_hops", "max_steps", "max_input_legs", "max_transfers", "max_fragments"] {
             assert!(matches!(f.run(id, source, 31, None, &[(name, 1)]), Err(LanternError::Parameter { name: failed, .. }) if failed == name), "{id}: {name}");
         }
-        assert_eq!(f.db.frontier(), head);
+        assert_eq!(f.db.frontier().expect("read journal frontier"), head);
+    }
+}
+
+#[test]
+fn commingled_journal_network_distinguishes_all_four_laws_exactly() {
+    let mut f = Fixture::new(0x74);
+    f.transfer("A", f.usd, 1, "3000", "1010", 100);
+    f.transfer("A", f.usd, 1, "3000", "1000", 100);
+    let source = f.transfer("A", f.usd, 2, "3000", "1000", 100);
+    f.transfer("A", f.usd, 3, "1000", "1010", 150);
+    f.transfer("A", f.usd, 4, "1010", "6000", 225);
+    for (id, at_source, at_destination, spent) in [
+        ("trace.network_fifo", 50, 25, 25),
+        ("trace.network_lifo", 0, 0, 100),
+        ("trace.network_libr", 50, 25, 25),
+        ("trace.network_pro_rata", 25, 7, 68),
+    ] {
+        let r = f.run(id, source, 31, None, &[]).unwrap();
+        assert_eq!(f.amount(&r, "1000", "held_mantissa"), at_source, "{id}");
+        assert_eq!(f.amount(&r, "1010", "held_mantissa"), at_destination, "{id}");
+        assert_eq!(f.amount(&r, "6000", "spent_mantissa"), spent, "{id}");
+        assert_eq!(r.findings.iter().map(|finding| finding.statistic.value).sum::<i128>(), 100, "{id}");
     }
 }

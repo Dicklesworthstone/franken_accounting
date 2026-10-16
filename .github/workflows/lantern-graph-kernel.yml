@@ -51,9 +51,10 @@ jobs:
           "$RUNNER_TEMP/lantern-network" --nocapture
   journal-integration:
     # Focused hosted feedback only; not the repository's RCH/full-workspace gate.
+    # New source supersedes only this feedback lane, never the official gates.
     concurrency:
       group: lantern-journal-feedback
-      cancel-in-progress: false
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -74,10 +75,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo +nightly-2026-08-31 test --locked -Z bindeps -p fa-lantern --lib --test network --test lantern --no-fail-fast --jobs 2
+          # Cargo's documented shallow-deps mode keeps exact locked revisions
+          # without fetching the foundations' complete repository histories.
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-lantern --lib --test network --test lantern --no-fail-fast --jobs 2
       - name: Test network tracing through the real CLI binary
         if: ${{ !cancelled() }}
         shell: bash
         run: |
           set -euo pipefail
-          cargo +nightly-2026-08-31 test --locked -Z bindeps -p fa-cli --test network --jobs 2
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test network --jobs 2
