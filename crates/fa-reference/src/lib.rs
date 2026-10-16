@@ -24,6 +24,7 @@
 pub mod admissibility;
 pub mod evidence;
 pub mod lantern;
+pub mod lots;
 pub mod reports;
 pub mod sod;
 pub mod statements;

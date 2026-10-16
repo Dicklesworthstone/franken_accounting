@@ -15,8 +15,8 @@ use fa_registry::document_stores::DocumentStores;
 use fa_registry::evidence_policy::EvidencePolicy;
 use fa_registry::foundations::Ledger;
 use fa_registry::g0::{
-    CheckerIndex, ClaimsLintConfig, Constitution, EvidenceRegistry, OperationCosts,
-    PeriodStatesRegistry, ProofLanes, RelationshipBases, SloRegistry,
+    CheckerIndex, ClaimsLintConfig, Constitution, ConversionLaws, EvidenceRegistry, LotLaws,
+    OperationCosts, PeriodStatesRegistry, ProofLanes, RelationshipBases, SloRegistry,
 };
 use fa_registry::intake_sources::IntakeSources;
 use fa_registry::invariants::Invariants;
@@ -93,6 +93,7 @@ const EXPECTED_REGISTRIES: &[&str] = &[
     "checker_index.toml",
     "claims_lint.toml",
     "constitution.toml",
+    "conversion_laws.toml",
     "document_stores.toml",
     "entry_classes.toml",
     "evidence.toml",
@@ -102,6 +103,7 @@ const EXPECTED_REGISTRIES: &[&str] = &[
     "intake_sources.toml",
     "invariants.toml",
     "limits.toml",
+    "lot_laws.toml",
     "mutants.toml",
     "operation_costs.toml",
     "period_states.toml",
@@ -660,6 +662,9 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
     let op_costs =
         OperationCosts::parse(&read("operation_costs.toml")?).map_err(|e| e.to_string())?;
     let slo_reg = SloRegistry::parse(&read("slo.toml")?, &op_costs).map_err(|e| e.to_string())?;
+    let _lot_laws = LotLaws::parse(&read("lot_laws.toml")?).map_err(|e| e.to_string())?;
+    let _conversion_laws =
+        ConversionLaws::parse(&read("conversion_laws.toml")?).map_err(|e| e.to_string())?;
     let claims_config =
         ClaimsLintConfig::parse(&read("claims_lint.toml")?).map_err(|e| e.to_string())?;
 

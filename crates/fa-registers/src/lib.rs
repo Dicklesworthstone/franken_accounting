@@ -16,6 +16,7 @@ pub mod assertion;
 pub mod availability;
 pub mod entity;
 pub mod explain;
+pub mod lots;
 pub mod maintainer;
 pub mod open_items;
 pub mod replay;
@@ -46,6 +47,10 @@ pub use entity::{
     check_register_equals, fold_period_by_entity, register_equals, verify_entities,
 };
 pub use explain::{BalanceExplanation, explain_balance};
+pub use lots::{
+    LotDisposalPlan, LotDisposalRequest, LotDisposalSlice, LotItem, LotReliefEdge, LotsReport,
+    fold_lots_from_open_items, lots,
+};
 pub use maintainer::{
     Advance, PreparedAdvance, advance, prepare_advance, publish_advance, rebuild,
 };

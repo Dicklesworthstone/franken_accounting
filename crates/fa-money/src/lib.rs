@@ -25,6 +25,7 @@
 
 pub mod allocation;
 pub mod amount;
+pub mod lot;
 pub mod rate;
 pub mod rounding;
 pub mod unit;
@@ -33,6 +34,10 @@ pub mod wide;
 
 pub use allocation::largest_remainder;
 pub use amount::{Amount, AmountError, Side};
+pub use lot::{
+    AccountingRegime, ConversionError, LotCandidate, LotError, LotLaw, LotReliefOutcome,
+    LotReliefSlice, convert_with_law, relieve_lots,
+};
 pub use rate::{ArithmeticBudget, BudgetLimits, Rate, RateError};
 pub use rounding::RoundingLaw;
 pub use unit::{BalancePolicy, Unit, UnitError, UnitId, UnitKind, UnitRegistry};

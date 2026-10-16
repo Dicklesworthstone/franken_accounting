@@ -4199,6 +4199,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         r#"{"accounts":[
             {"code":"100","name":"Assets","type":"Asset","leaf":false,"unit":"USD"},
             {"code":"1000","name":"Cash","type":"Asset","parent":"100","leaf":true,"unit":"USD"},
+            {"code":"1400","name":"Inventory","type":"Asset","parent":"100","leaf":true,"unit":"any"},
             {"code":"3000","name":"Equity","type":"Equity","leaf":true,"unit":"USD"},
             {"code":"6000","name":"Rent","type":"Expense","leaf":true,"unit":"USD"}
         ]}"#,
@@ -4274,6 +4275,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         "1000",
         "--reconcile",
     ]);
+    run2(&["lots", "--account", "1400"]);
     let cf_direct = write(
         &dir,
         "cf_direct.json",
@@ -9808,6 +9810,184 @@ fn capability_revocation_journals_policy_control_and_refuses_revoked_tokens_idem
     ]);
     assert_eq!(code, 0, "{posted_out}");
     assert_eq!(field(&posted_out, "event"), Some("posted"));
+
+    Ok(())
+}
+
+/// fa-2ly: `fa lots` (`fa gl lots`) lists cost-basis lots on an `AnyUnit`
+/// account, plans disposals under `FIFO`, `LIFO`, `WeightedAverage`, and
+/// `SpecificId`, refuses `LIFO` under `IFRS` citing `IAS 2.25`, and refuses
+/// over-relief with `FA-REF-072` naming `open_quantity`.
+#[test]
+fn lots_cli_fifo_lifo_wac_specific_id_ifrs_refusal_and_over_relief() -> std::io::Result<()> {
+    let dir = tmp("lots-cli")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Lots Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[
+            {"code":"1000","name":"Cash","type":"Asset","unit":"USD"},
+            {"code":"1400","name":"Crypto Inventory","type":"Asset","unit":"any"},
+            {"code":"3999","name":"Position Clearing","type":"Equity","unit":"any"}
+        ]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let ev = source_doc(&dir, &book);
+
+    // Acquire Lot 1: 2.00000000 BTC @ $100.00 USD
+    let buy1 = write(
+        &dir,
+        "buy1.json",
+        r#"{
+            "effective_date":"2026-03-05",
+            "idempotency_key":"buy-lot-1",
+            "legs":[
+                {"side":"debit","account":"1400","amount":"2.00000000 BTC"},
+                {"side":"credit","account":"3999","amount":"2.00000000 BTC"},
+                {"side":"debit","account":"1400","amount":"100.00 USD"},
+                {"side":"credit","account":"1000","amount":"100.00 USD"}
+            ]
+        }"#,
+    );
+    let p1 = doc(&ok(&[
+        "post",
+        "--intent",
+        &buy1,
+        "--evidence",
+        &ev,
+        "--json",
+    ]));
+    let lot1_vid = text(&p1, "vid").to_string();
+
+    // Acquire Lot 2: 3.00000000 BTC @ $240.00 USD
+    let buy2 = write(
+        &dir,
+        "buy2.json",
+        r#"{
+            "effective_date":"2026-03-10",
+            "idempotency_key":"buy-lot-2",
+            "legs":[
+                {"side":"debit","account":"1400","amount":"3.00000000 BTC"},
+                {"side":"credit","account":"3999","amount":"3.00000000 BTC"},
+                {"side":"debit","account":"1400","amount":"240.00 USD"},
+                {"side":"credit","account":"1000","amount":"240.00 USD"}
+            ]
+        }"#,
+    );
+    let p2 = doc(&ok(&[
+        "post",
+        "--intent",
+        &buy2,
+        "--evidence",
+        &ev,
+        "--json",
+    ]));
+    let lot2_vid = text(&p2, "vid").to_string();
+
+    // Plan FIFO disposal of 3.00000000 BTC -> takes all 2 BTC of Lot 1 ($100) + 1 BTC of Lot 2 ($80) = $180.00 USD
+    let fifo = doc(&ok(&[
+        "lots",
+        "--account",
+        "1400",
+        "--relieve",
+        "3.00000000 BTC",
+        "--law",
+        "FIFO",
+        "--json",
+    ]));
+    assert_eq!(int(&fifo, "count"), Some(2));
+    let fifo_plan = fifo.get("disposal_plan").expect("disposal_plan");
+    assert_eq!(text(fifo_plan, "law"), "FIFO");
+    assert_eq!(text(fifo_plan, "total_cost"), "180.00 USD");
+
+    // Plan LIFO disposal of 3.00000000 BTC under US-GAAP -> takes all 3 BTC of Lot 2 ($240.00 USD)
+    let lifo = doc(&ok(&[
+        "gl",
+        "lots",
+        "--account",
+        "1400",
+        "--relieve",
+        "3.00000000 BTC",
+        "--law",
+        "LIFO",
+        "--regime",
+        "US-GAAP",
+        "--json",
+    ]));
+    let lifo_plan = lifo.get("disposal_plan").expect("disposal_plan");
+    assert_eq!(text(lifo_plan, "total_cost"), "240.00 USD");
+
+    // Plan SpecificId disposal of 1.50000000 BTC from Lot 2 ($120.00 USD) + 0.50000000 BTC from Lot 1 ($25.00 USD) = $145.00 USD
+    let spec = doc(&ok(&[
+        "lots",
+        "--account",
+        "1400",
+        "--relieve",
+        "2.00000000 BTC",
+        "--law",
+        "SpecificId",
+        "--target",
+        &format!("{lot2_vid}:0"),
+        "--target",
+        &format!("{lot1_vid}:0"),
+        "--json",
+    ]));
+    let spec_plan = spec.get("disposal_plan").expect("disposal_plan");
+    assert_eq!(text(spec_plan, "law"), "SpecificId");
+
+    // LIFO under IFRS is refused citing IAS 2.25
+    let (ifrs_code, ifrs_out, _) = fa(
+        Some(&book),
+        &[
+            "lots",
+            "--account",
+            "1400",
+            "--relieve",
+            "1.00000000 BTC",
+            "--law",
+            "LIFO",
+            "--regime",
+            "IFRS",
+            "--json",
+        ],
+    );
+    assert_eq!(ifrs_code, 3, "{ifrs_out}");
+    let ifrs_err = doc(&ifrs_out);
+    assert!(
+        text(&ifrs_err, "cite").contains("IAS 2.25")
+            || text(&ifrs_err, "message").contains("IAS 2.25"),
+        "{ifrs_out}"
+    );
+
+    // Over-relief (requesting 6.00000000 BTC when 5.00000000 BTC is open) refuses with FA-REF-072
+    let (over_code, over_out, _) = fa(
+        Some(&book),
+        &[
+            "lots",
+            "--account",
+            "1400",
+            "--relieve",
+            "6.00000000 BTC",
+            "--law",
+            "FIFO",
+            "--json",
+        ],
+    );
+    assert_eq!(over_code, 3, "{over_out}");
+    let over_err = doc(&over_out);
+    assert_eq!(text(&over_err, "refusal_id"), "FA-REF-072", "{over_out}");
+    assert!(
+        text(&over_err, "message").contains("5.00000000 BTC"),
+        "{over_out}"
+    );
 
     Ok(())
 }

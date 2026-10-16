@@ -1,0 +1,82 @@
+# lot_laws.toml — Lot cost-flow laws and IFRS regime admissibility (plan §6.5, §0.4 decision 5; bead fa-2ly).
+#
+# A Lot is a derived open item `(acquiring leg, open quantity, open cost)` on
+# an AnyUnit or non-base-unit account. Relief creates `RELIEVES {quantity, cost}`
+# edges and updates the acquiring legs' `applied` mirrors via compare-and-set;
+# over-relief is refused with the open quantity.
+#
+# Consumer: fa-registry (LotLaws), fa-money (LotLaw), fa-registers (lots fold
+# and relief planner), fa-reference (naive lot oracle), fa-cli `fa lots`.
+
+schema_version = 1
+
+[[law]]
+id = 1
+version = 1
+name = "FIFO"
+ordering = "effective_date-asc; recorded_at-asc; entry-asc; ordinal-asc"
+cost_method = "lot_proportional"
+rounding_law = "HalfEven"
+admitted_regimes = ["US-GAAP", "US-TAX", "IFRS"]
+refused_regimes = []
+citation = "ASC 330-10-30 / IAS 2.25"
+
+[[law]]
+id = 2
+version = 1
+name = "LIFO"
+ordering = "effective_date-desc; recorded_at-desc; entry-desc; ordinal-desc"
+cost_method = "lot_proportional"
+rounding_law = "HalfEven"
+admitted_regimes = ["US-GAAP", "US-TAX"]
+refused_regimes = ["IFRS"]
+refusal_citation = "IAS 2.25 (IFRS prohibits the LIFO cost formula for inventories and fungible lots; use FIFO, WeightedAverage, or SpecificId)"
+citation = "ASC 330-10-30 / IRC §472"
+
+[[law]]
+id = 3
+version = 1
+name = "SpecificId"
+ordering = "explicit-target-order"
+cost_method = "lot_proportional"
+rounding_law = "HalfEven"
+admitted_regimes = ["US-GAAP", "US-TAX", "IFRS"]
+refused_regimes = []
+citation = "ASC 330-10-30 / IAS 2.23"
+
+[[law]]
+id = 4
+version = 1
+name = "WeightedAverage"
+ordering = "effective_date-asc; recorded_at-asc; entry-asc; ordinal-asc"
+cost_method = "pooled_weighted_average"
+rounding_law = "HalfEven"
+admitted_regimes = ["US-GAAP", "US-TAX", "IFRS"]
+refused_regimes = []
+citation = "ASC 330-10-30 / IAS 2.27"
+
+# ---- IFRS regime rules cited by plan §0.4 decision 5 ---------------------
+
+[[ifrs_rule]]
+id = "IAS-2.25"
+domain = "lot_cost_formula"
+rule = "LIFO is prohibited under IFRS; only FIFO, WeightedAverage, and SpecificId are admitted."
+status = "enforced"
+
+[[ifrs_rule]]
+id = "IAS-29"
+domain = "hyperinflationary_remeasurement"
+rule = "Non-monetary historical-cost and lot items in a hyperinflationary functional currency are remeasured by the general price index from acquisition date before translation."
+status = "registered"
+
+[[ifrs_rule]]
+id = "IAS-1.40A"
+domain = "restatement_third_balance_sheet"
+rule = "A retrospective application, restatement, or reclassification requires a third statement of financial position as at the beginning of the preceding comparative period."
+status = "registered"
+
+[[ifrs_rule]]
+id = "IAS-21"
+domain = "fx_translation"
+rule = "Foreign-operation assets and liabilities are translated at the closing rate, income and expenses at transaction or average rates, and resulting exchange differences are recognized in OCI."
+status = "registered"

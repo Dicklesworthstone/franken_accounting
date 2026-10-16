@@ -2468,3 +2468,445 @@ fn memo_off_balance_and_single_sided_statistical_legs_obey_partition_and_footing
     let entity_v = verify_entities(&h.db, &h.book, &h.march, None).expect("verify_entities");
     assert!(entity_v.is_green(), "findings: {:?}", entity_v.findings);
 }
+
+#[test]
+fn lots_fifo_lifo_wac_specific_id_reversal_and_reference_differential() {
+    use fa_model::{AccountType, EntryRef};
+    use fa_money::{
+        AccountingRegime, ConversionError, LotError, LotLaw, RoundingLaw, convert_with_law,
+    };
+    use fa_reference::lots::{RefLot, RefRounding, convert_oracle, relieve_lots_oracle};
+    use fa_registers::{LotDisposalRequest, lots, verify_open_items};
+
+    let mut h = harness();
+    let usd = h.book.units.lookup("USD").unwrap();
+    let share = h.book.units.lookup("SHARE").unwrap();
+    let mar_10 = DateDay::from_ymd(2026, 3, 10).unwrap();
+    let mar_12 = DateDay::from_ymd(2026, 3, 12).unwrap();
+    let mar_15 = DateDay::from_ymd(2026, 3, 15).unwrap();
+    let mar_20 = DateDay::from_ymd(2026, 3, 20).unwrap();
+
+    // Install AnyUnit inventory account 1400, share clearing 1499, and COGS 5000.
+    let lot_accounts = [
+        AccountSpec {
+            code: "1400".into(),
+            name: "InventoryLots".into(),
+            account_type: AccountType::ASSET.0,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::AnyUnit,
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "1499".into(),
+            name: "InventoryQuantityClearing".into(),
+            account_type: AccountType::ASSET.0,
+            normal_balance: 1,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(share),
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "5000".into(),
+            name: "CostOfGoodsSold".into(),
+            account_type: AccountType::EXPENSE.0,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(usd),
+            parent_code: None,
+            limit: None,
+        },
+    ];
+    {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        let desc = Erasable::seal(
+            &"install-lot-accounts".to_string(),
+            None,
+            &book.seal_key,
+            [31; 32],
+            [32; 24],
+        );
+        h.runtime
+            .block_on(async move {
+                install_chart(
+                    db,
+                    &ctx,
+                    book,
+                    &lot_accounts,
+                    PRINCIPAL,
+                    mar_10,
+                    b"install-lot-accounts",
+                    desc,
+                )
+                .await
+            })
+            .expect("kernel")
+            .expect("installed");
+    }
+
+    let inv = account_vid(h.book.book_id, "1400");
+    let qty_clear = account_vid(h.book.book_id, "1499");
+    let cogs = account_vid(h.book.book_id, "5000");
+    let cash = h.cash;
+
+    // Acquire Lot 1 on 2026-03-10: buy 10 SHARE (scale 4 -> 100_000) @ 100 USD (scale 2 -> 100_000 cents = $1,000.00).
+    let lot1_legs = vec![
+        LegPayload::simple(Side::Debit, inv, Amount::new(share, 100_000)),
+        LegPayload::simple(Side::Credit, qty_clear, Amount::new(share, 100_000)),
+        LegPayload::simple(Side::Debit, inv, Amount::new(usd, 100_000)),
+        LegPayload::simple(Side::Credit, cash, Amount::new(usd, 100_000)),
+    ];
+    let mut prop1 = h.proposal(lot1_legs, b"buy-lot-1", EntryClass::ORIGINAL);
+    prop1.effective_date = mar_10;
+    let lot1_vid = {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        let req = PostRequest {
+            proposal: prop1,
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+        };
+        match h
+            .runtime
+            .block_on(async move { post(db, &ctx, book, req).await })
+            .unwrap()
+            .unwrap()
+        {
+            Posted::Committed { entry_ref, .. } => entry_ref.vid,
+            other => panic!("unexpected: {other:?}"),
+        }
+    };
+
+    // Acquire Lot 2 on 2026-03-12: buy 10 SHARE (100_000) @ 120 USD (120_000 cents = $1,200.00).
+    let lot2_legs = vec![
+        LegPayload::simple(Side::Debit, inv, Amount::new(share, 100_000)),
+        LegPayload::simple(Side::Credit, qty_clear, Amount::new(share, 100_000)),
+        LegPayload::simple(Side::Debit, inv, Amount::new(usd, 120_000)),
+        LegPayload::simple(Side::Credit, cash, Amount::new(usd, 120_000)),
+    ];
+    let mut prop2 = h.proposal(lot2_legs, b"buy-lot-2", EntryClass::ORIGINAL);
+    prop2.effective_date = mar_12;
+    let lot2_vid = {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        let req = PostRequest {
+            proposal: prop2,
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+        };
+        match h
+            .runtime
+            .block_on(async move { post(db, &ctx, book, req).await })
+            .unwrap()
+            .unwrap()
+        {
+            Posted::Committed { entry_ref, .. } => entry_ref.vid,
+            other => panic!("unexpected: {other:?}"),
+        }
+    };
+
+    let report = lots(&h.db, &h.book, inv, None, None).expect("lots report");
+    assert_eq!(report.lots.len(), 2);
+    assert_eq!(report.lots[0].entry, lot1_vid);
+    assert_eq!(report.lots[0].open_quantity.mantissa, 100_000);
+    assert_eq!(report.lots[0].open_cost.mantissa, 100_000);
+    assert_eq!(report.lots[1].entry, lot2_vid);
+    assert_eq!(report.lots[1].open_quantity.mantissa, 100_000);
+    assert_eq!(report.lots[1].open_cost.mantissa, 120_000);
+
+    let ref_lots: Vec<RefLot> = report
+        .lots
+        .iter()
+        .map(|l| RefLot {
+            entry_id: l.entry.0,
+            ordinal: l.qty_ordinal,
+            effective_day: l.effective_date.0,
+            recorded_seq: l.recorded_at.0,
+            quantity_unit: l.open_quantity.unit.0,
+            open_quantity: l.open_quantity.mantissa,
+            cost_unit: l.open_cost.unit.0,
+            open_cost: l.open_cost.mantissa,
+        })
+        .collect();
+
+    // Plan sell 15 SHARE (150_000) under FIFO, LIFO, WeightedAverage, SpecificId and verify against fa-reference!
+    for (law, law_str, targets, expected_cost) in [
+        (LotLaw::Fifo, "FIFO", vec![], 160_000i128),
+        (LotLaw::Lifo, "LIFO", vec![], 170_000i128),
+        (
+            LotLaw::WeightedAverage,
+            "WeightedAverage",
+            vec![],
+            165_000i128,
+        ),
+        (
+            LotLaw::SpecificId,
+            "SpecificId",
+            vec![(lot2_vid, 0), (lot1_vid, 0)],
+            170_000i128,
+        ),
+    ] {
+        let plan = report
+            .plan_disposal(&LotDisposalRequest {
+                quantity: Amount::new(share, 150_000),
+                law,
+                regime: AccountingRegime::UsGaap,
+                rounding_law: RoundingLaw::HalfEven,
+                targets: targets.clone(),
+            })
+            .expect("plan disposal");
+        assert_eq!(plan.total_cost.mantissa, expected_cost, "law {law:?}");
+
+        let ref_targets: Vec<(u128, u16)> = targets.iter().map(|(v, o)| (v.0, *o)).collect();
+        let oracle_out = relieve_lots_oracle(
+            &ref_lots,
+            share.0,
+            150_000,
+            law_str,
+            Some("US-GAAP"),
+            RefRounding::HalfEven,
+            &ref_targets,
+        )
+        .expect("oracle disposal");
+        assert_eq!(oracle_out.total_cost, plan.total_cost.mantissa);
+        assert_eq!(oracle_out.slices.len(), plan.slices.len());
+        for (s_engine, s_oracle) in plan.slices.iter().zip(oracle_out.slices.iter()) {
+            assert_eq!(s_engine.entry.0, s_oracle.entry_id);
+            assert_eq!(s_engine.qty_ordinal, s_oracle.ordinal);
+            assert_eq!(
+                s_engine.quantity_relieved.mantissa,
+                s_oracle.quantity_relieved
+            );
+            assert_eq!(s_engine.cost_relieved.mantissa, s_oracle.cost_relieved);
+            assert_eq!(
+                s_engine.open_quantity_after.mantissa,
+                s_oracle.open_quantity_after
+            );
+            assert_eq!(s_engine.open_cost_after.mantissa, s_oracle.open_cost_after);
+        }
+    }
+
+    // Planted negatives:
+    // 1. LIFO under IFRS refused citing IAS 2.25 (both engine and oracle).
+    let ifrs_err = report
+        .plan_disposal(&LotDisposalRequest {
+            quantity: Amount::new(share, 50_000),
+            law: LotLaw::Lifo,
+            regime: AccountingRegime::Ifrs,
+            rounding_law: RoundingLaw::HalfEven,
+            targets: vec![],
+        })
+        .expect_err("LIFO refused under IFRS");
+    assert!(matches!(
+        ifrs_err,
+        LotError::RegimeRefused {
+            law: LotLaw::Lifo,
+            regime: AccountingRegime::Ifrs,
+            ref citation,
+        } if citation.contains("IAS 2.25")
+    ));
+    assert!(
+        relieve_lots_oracle(
+            &ref_lots,
+            share.0,
+            50_000,
+            "LIFO",
+            Some("IFRS"),
+            RefRounding::HalfEven,
+            &[]
+        )
+        .unwrap_err()
+        .contains("IAS 2.25")
+    );
+
+    // 2. Over-relief refused (both engine and oracle).
+    let over_err = report
+        .plan_disposal(&LotDisposalRequest {
+            quantity: Amount::new(share, 250_000),
+            law: LotLaw::Fifo,
+            regime: AccountingRegime::UsGaap,
+            rounding_law: RoundingLaw::HalfEven,
+            targets: vec![],
+        })
+        .expect_err("over-relief refused");
+    assert!(matches!(over_err, LotError::OverRelief { .. }));
+    assert!(
+        relieve_lots_oracle(
+            &ref_lots,
+            share.0,
+            250_000,
+            "FIFO",
+            None,
+            RefRounding::HalfEven,
+            &[]
+        )
+        .is_err()
+    );
+
+    // 3. Implicit unit conversion refused, explicit conversion matches oracle.
+    let mut conv_reg = h.book.units.clone();
+    let hour = conv_reg.lookup("HOUR").unwrap();
+    let day = conv_reg
+        .register(fa_money::Unit {
+            code: "DAY".into(),
+            scale: 4,
+            version: 0,
+            kind: fa_money::UnitKind::Time,
+            rounding_default: RoundingLaw::HalfEven,
+        })
+        .unwrap();
+    let conv_laws = fa_registry::ConversionLaws::embedded().unwrap();
+    let cx = asupersync::Cx::detached_cancel_context();
+    let mut budget = fa_money::ArithmeticBudget::new(
+        &cx,
+        fa_money::BudgetLimits::uniform(1_000_000_000, 0),
+        8192,
+    );
+    let imp_err = convert_with_law(
+        Amount::new(hour, 2000),
+        day,
+        None,
+        &conv_laws,
+        &conv_reg,
+        &mut budget,
+    )
+    .expect_err("implicit conversion refused");
+    assert!(matches!(
+        imp_err,
+        ConversionError::ImplicitConversionRefused {
+            ref matching_laws,
+            ..
+        } if matching_laws.iter().any(|s| s == "HoursToDays8h")
+    ));
+    let conv = convert_with_law(
+        Amount::new(hour, 2000),
+        day,
+        Some("HoursToDays8h"),
+        &conv_laws,
+        &conv_reg,
+        &mut budget,
+    )
+    .expect("explicit conversion");
+    let oracle_conv = convert_oracle(
+        2000,
+        "HOUR",
+        2,
+        "DAY",
+        4,
+        Some("HoursToDays8h"),
+        RefRounding::HalfEven,
+    )
+    .expect("oracle conversion");
+    assert_eq!(conv.mantissa, oracle_conv);
+    assert_eq!(conv.mantissa, 25_000);
+
+    // Commit the FIFO disposal of 15 SHARE on 2026-03-15 using the plan's quantity and cost settlements!
+    let fifo_plan = report
+        .plan_disposal(&LotDisposalRequest {
+            quantity: Amount::new(share, 150_000),
+            law: LotLaw::Fifo,
+            regime: AccountingRegime::UsGaap,
+            rounding_law: RoundingLaw::HalfEven,
+            targets: vec![],
+        })
+        .unwrap();
+    let mut disp_qty_leg = LegPayload::simple(Side::Credit, inv, fifo_plan.total_quantity);
+    disp_qty_leg.settles = fifo_plan.quantity_settlements();
+    let mut disp_cost_leg = LegPayload::simple(Side::Credit, inv, fifo_plan.total_cost);
+    disp_cost_leg.settles = fifo_plan.cost_settlements();
+    let disp_legs = vec![
+        LegPayload::simple(Side::Debit, qty_clear, fifo_plan.total_quantity),
+        disp_qty_leg,
+        LegPayload::simple(Side::Debit, cogs, fifo_plan.total_cost),
+        disp_cost_leg,
+    ];
+    let mut disp_prop = h.proposal(disp_legs, b"sell-15-fifo", EntryClass::ORIGINAL);
+    disp_prop.effective_date = mar_15;
+    let (disp_vid, disp_digest) = {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        let req = PostRequest {
+            proposal: disp_prop,
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+        };
+        match h
+            .runtime
+            .block_on(async move { post(db, &ctx, book, req).await })
+            .unwrap()
+            .unwrap()
+        {
+            Posted::Committed { entry_ref, .. } => (entry_ref.vid, entry_ref.entry_digest),
+            other => panic!("unexpected: {other:?}"),
+        }
+    };
+
+    // Verify open-item mirrors and check post-disposal lot report:
+    // Lot 1 is fully relieved (open 0 SHARE, 0 USD), Lot 2 has 5 SHARE (50_000) and $600 (60_000) open!
+    assert!(verify_open_items(&h.db, &h.book, None).unwrap().is_green());
+    let after_disp = lots(&h.db, &h.book, inv, None, None).unwrap();
+    assert_eq!(after_disp.lots[0].open_quantity.mantissa, 0);
+    assert_eq!(after_disp.lots[0].open_cost.mantissa, 0);
+    assert_eq!(after_disp.lots[0].relieves.len(), 1);
+    assert!(after_disp.lots[0].relieves[0].live);
+    assert_eq!(after_disp.lots[0].relieves[0].quantity.mantissa, 100_000);
+    assert_eq!(after_disp.lots[0].relieves[0].cost.mantissa, 100_000);
+    assert_eq!(after_disp.lots[1].open_quantity.mantissa, 50_000);
+    assert_eq!(after_disp.lots[1].open_cost.mantissa, 60_000);
+    assert_eq!(after_disp.lots[1].relieves.len(), 1);
+    assert!(after_disp.lots[1].relieves[0].live);
+    assert_eq!(after_disp.lots[1].relieves[0].quantity.mantissa, 50_000);
+    assert_eq!(after_disp.lots[1].relieves[0].cost.mantissa, 60_000);
+
+    // Reverse the disposal entry on 2026-03-20: UNSETTLES restores both Lot 1 and Lot 2!
+    let rev_legs = vec![
+        LegPayload::simple(Side::Credit, qty_clear, fifo_plan.total_quantity),
+        LegPayload::simple(Side::Debit, inv, fifo_plan.total_quantity),
+        LegPayload::simple(Side::Credit, cogs, fifo_plan.total_cost),
+        LegPayload::simple(Side::Debit, inv, fifo_plan.total_cost),
+    ];
+    let mut rev_prop = h.proposal(rev_legs, b"rev-sell-15-fifo", EntryClass::REVERSAL);
+    rev_prop.effective_date = mar_20;
+    rev_prop.supersession = vec![Supersession {
+        kind: SupersessionKind::Reverses,
+        target: EntryRef {
+            vid: disp_vid,
+            entry_digest: disp_digest,
+        },
+        reason_code: 1,
+    }];
+    {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        let req = PostRequest {
+            proposal: rev_prop,
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+        };
+        h.runtime
+            .block_on(async move { post(db, &ctx, book, req).await })
+            .unwrap()
+            .unwrap();
+    }
+
+    assert!(verify_open_items(&h.db, &h.book, None).unwrap().is_green());
+    let after_rev = lots(&h.db, &h.book, inv, None, None).unwrap();
+    assert_eq!(after_rev.lots[0].open_quantity.mantissa, 100_000);
+    assert_eq!(after_rev.lots[0].open_cost.mantissa, 100_000);
+    assert!(!after_rev.lots[0].relieves[0].live);
+    assert_eq!(after_rev.lots[1].open_quantity.mantissa, 100_000);
+    assert_eq!(after_rev.lots[1].open_cost.mantissa, 120_000);
+    assert!(!after_rev.lots[1].relieves[0].live);
+}

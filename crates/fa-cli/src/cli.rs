@@ -9643,6 +9643,288 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 Ok(())
             }
         }
+        Some("lots") => {
+            if args.positional.len() != 2 {
+                return Err(usage(
+                    "unexpected gl lots argument",
+                    "fa gl lots --account <code> [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>] [--relieve <amount> --law FIFO|LIFO|SpecificId|WeightedAverage] --book <dir>",
+                ));
+            }
+            let account_code = args.require(
+                "--account",
+                "<code> (an AnyUnit lot-tracked account such as 1400)",
+            )?;
+            let book = ctx.books.open(args)?;
+            let account = account_vid(book.context().book_id, account_code);
+            let effective_through = match args.flag("--as-of") {
+                Some(as_of) => {
+                    let day = DateDay::parse(as_of).map_err(|e| {
+                        usage(
+                            format!("{e}; --as-of requires a civil date"),
+                            "--as-of YYYY-MM-DD",
+                        )
+                    })?;
+                    out.effective(format!("as-of:{day}"));
+                    Some(day)
+                }
+                None => None,
+            };
+            let (known_at, _) = known_at_flag(args, &book, out)?;
+            let report = book.lots(account, effective_through, known_at)?;
+            out.known_at(report.known_at);
+            let units = &book.context().units;
+            let base_unit_code = registered_unit_code(report.base_unit, units)?;
+
+            let disposal_plan = if let Some(relieve_str) = args.flag("--relieve") {
+                let quantity = Amount::parse(relieve_str, units).map_err(|e| {
+                    usage(
+                        format!("invalid --relieve amount `{relieve_str}`: {e}"),
+                        "--relieve \"10.00000000 BTC\"",
+                    )
+                })?;
+                let law_str = args.require("--law", "FIFO|LIFO|SpecificId|WeightedAverage")?;
+                let law = fa_money::LotLaw::from_name(law_str).ok_or_else(|| {
+                    usage(
+                        format!("unknown lot law `{law_str}`"),
+                        "--law FIFO|LIFO|SpecificId|WeightedAverage",
+                    )
+                })?;
+                let regime = match args.flag("--regime") {
+                    Some(r) => fa_money::AccountingRegime::parse(r).ok_or_else(|| {
+                        usage(
+                            format!("unknown accounting regime `{r}`"),
+                            "--regime US-GAAP|US-TAX|IFRS",
+                        )
+                    })?,
+                    None => fa_money::AccountingRegime::UsGaap,
+                };
+                let rounding_law = match args.flag("--rounding-law") {
+                    Some(rl) => fa_money::RoundingLaw::from_name(rl).ok_or_else(|| {
+                        usage(
+                            format!("unknown rounding law `{rl}`"),
+                            "--rounding-law HalfEven|HalfUp|Down|Up|Ceiling|Floor",
+                        )
+                    })?,
+                    None => fa_money::RoundingLaw::HalfEven,
+                };
+                let mut targets = Vec::new();
+                for raw in args.flag_all("--target") {
+                    let (vid_str, ord) =
+                        if let Some((v, o)) = raw.split_once(':').or_else(|| raw.split_once('/')) {
+                            let ord = o.parse::<u16>().map_err(|_| {
+                                usage(
+                                    format!("invalid target ordinal in `{raw}`"),
+                                    "--target <32-hex-vid>[:<ordinal>]",
+                                )
+                            })?;
+                            (v, ord)
+                        } else {
+                            (raw, 0u16)
+                        };
+                    let vid = parse_vid(vid_str, "--target")?;
+                    targets.push((vid, ord));
+                }
+                let plan = report
+                    .plan_disposal(&fa::LotDisposalRequest {
+                        quantity,
+                        law,
+                        regime,
+                        rounding_law,
+                        targets,
+                    })
+                    .map_err(|e| match e {
+                        fa_money::LotError::OverRelief {
+                            requested,
+                            open_quantity,
+                        } => {
+                            let req_fmt =
+                                render_amount(Amount::new(quantity.unit, requested), units)
+                                    .unwrap_or_else(|_| requested.to_string());
+                            let open_fmt =
+                                render_amount(Amount::new(quantity.unit, open_quantity), units)
+                                    .unwrap_or_else(|_| open_quantity.to_string());
+                            Refusal::new(
+                                fa_journal::refusal::code::OVER_APPLICATION,
+                                exit::REFUSAL,
+                                format!(
+                                    "lot over-relief refused: requested {req_fmt}, but only {open_fmt} is open on `{account_code}`"
+                                ),
+                                "plan §6.5 (lot over-relief is refused naming open_quantity)",
+                                format!("relieve at most {open_fmt}"),
+                            )
+                            .into()
+                        }
+                        fa_money::LotError::RegimeRefused {
+                            law,
+                            regime,
+                            citation,
+                        } => Refusal::new(
+                            fa_journal::refusal::code::SETTLE_SHAPE,
+                            exit::REFUSAL,
+                            format!(
+                                "lot law `{law}` is refused in `{regime}` books ({citation})"
+                            ),
+                            citation,
+                            "choose FIFO, SpecificId, or WeightedAverage under IFRS",
+                        )
+                        .into(),
+                        fa_money::LotError::UnknownTarget {
+                            entry_id,
+                            qty_ordinal,
+                        } => Refusal::new(
+                            fa_journal::refusal::code::SETTLE_TARGET,
+                            exit::REFUSAL,
+                            format!(
+                                "unknown lot target {:032x}:{qty_ordinal} on `{account_code}`",
+                                entry_id
+                            ),
+                            "plan §6.5 (SpecificId targets must name open lots on the account)",
+                            format!("run `fa gl lots --account {account_code}` to list open lots"),
+                        )
+                        .into(),
+                        other => usage(other.to_string(), "fa gl lots --help"),
+                    })?;
+                let slices: Vec<Json> = plan
+                    .slices
+                    .iter()
+                    .map(|sl| {
+                        Ok(obj(vec![
+                            ("entry", s(format!("{:032x}", sl.entry.0))),
+                            ("entry_digest", s(hex(&sl.entry_digest))),
+                            ("qty_ordinal", Json::Int(i128::from(sl.qty_ordinal))),
+                            ("cost_ordinal", Json::Int(i128::from(sl.cost_ordinal))),
+                            ("effective_date", s(sl.effective_date.render())),
+                            ("recorded_at", Json::Int(i128::from(sl.recorded_at.0))),
+                            (
+                                "quantity_relieved",
+                                s(render_amount(sl.quantity_relieved, units)?),
+                            ),
+                            ("cost_relieved", s(render_amount(sl.cost_relieved, units)?)),
+                            (
+                                "open_quantity_before",
+                                s(render_amount(sl.open_quantity_before, units)?),
+                            ),
+                            (
+                                "open_quantity_after",
+                                s(render_amount(sl.open_quantity_after, units)?),
+                            ),
+                            (
+                                "open_cost_before",
+                                s(render_amount(sl.open_cost_before, units)?),
+                            ),
+                            (
+                                "open_cost_after",
+                                s(render_amount(sl.open_cost_after, units)?),
+                            ),
+                        ]))
+                    })
+                    .collect::<Result<_, Fail>>()?;
+                Some(obj(vec![
+                    ("law", s(plan.law.name())),
+                    ("regime", s(plan.regime.as_str())),
+                    ("rounding_law", s(plan.rounding_law.name())),
+                    (
+                        "total_quantity",
+                        s(render_amount(plan.total_quantity, units)?),
+                    ),
+                    ("total_cost", s(render_amount(plan.total_cost, units)?)),
+                    (
+                        "wac_residual_numerator",
+                        Json::Int(plan.wac_residual_numerator),
+                    ),
+                    ("slices", Json::Arr(slices)),
+                ]))
+            } else {
+                if args.flag("--law").is_some()
+                    || args.flag("--regime").is_some()
+                    || args.flag("--rounding-law").is_some()
+                    || !args.flag_all("--target").is_empty()
+                {
+                    return Err(usage(
+                        "--law, --regime, --rounding-law, and --target require --relieve <amount>",
+                        "fa gl lots --account 1400 --relieve \"10.00000000 BTC\" --law FIFO --book <dir>",
+                    ));
+                }
+                None
+            };
+
+            let lots: Vec<Json> = report
+                .lots
+                .iter()
+                .map(|lot| {
+                    let relieves: Vec<Json> = lot
+                        .relieves
+                        .iter()
+                        .map(|r| {
+                            Ok(obj(vec![
+                                ("disposal_entry", s(format!("{:032x}", r.disposal_entry.0))),
+                                ("qty_ordinal", Json::Int(i128::from(r.qty_ordinal))),
+                                (
+                                    "cost_ordinal",
+                                    r.cost_ordinal
+                                        .map_or(Json::Null, |c| Json::Int(i128::from(c))),
+                                ),
+                                ("quantity", s(render_amount(r.quantity, units)?)),
+                                ("cost", s(render_amount(r.cost, units)?)),
+                                ("recorded_at", Json::Int(i128::from(r.recorded_at.0))),
+                                ("live", Json::Bool(r.live)),
+                            ]))
+                        })
+                        .collect::<Result<_, Fail>>()?;
+                    Ok(obj(vec![
+                        ("entry", s(format!("{:032x}", lot.entry.0))),
+                        ("entry_digest", s(hex(&lot.entry_digest))),
+                        ("qty_ordinal", Json::Int(i128::from(lot.qty_ordinal))),
+                        ("cost_ordinal", Json::Int(i128::from(lot.cost_ordinal))),
+                        ("side", s(side_name(lot.side))),
+                        ("effective_date", s(lot.effective_date.render())),
+                        ("recorded_at", Json::Int(i128::from(lot.recorded_at.0))),
+                        (
+                            "original_quantity",
+                            s(render_amount(lot.original_quantity, units)?),
+                        ),
+                        (
+                            "relieved_quantity",
+                            s(render_amount(lot.relieved_quantity, units)?),
+                        ),
+                        ("open_quantity", s(render_amount(lot.open_quantity, units)?)),
+                        ("original_cost", s(render_amount(lot.original_cost, units)?)),
+                        ("relieved_cost", s(render_amount(lot.relieved_cost, units)?)),
+                        ("open_cost", s(render_amount(lot.open_cost, units)?)),
+                        ("relieves", Json::Arr(relieves)),
+                    ]))
+                })
+                .collect::<Result<_, Fail>>()?;
+
+            let human = format!(
+                "lots for {} ({}) at {}: {} lot(s)",
+                report.account_code,
+                report.account_name,
+                report.known_at.0,
+                report.lots.len()
+            );
+            out.event(
+                "lots",
+                vec![
+                    ("account", s(&report.account_code)),
+                    ("account_vid", s(format!("{:032x}", report.account.0))),
+                    ("name", s(&report.account_name)),
+                    ("base_unit", s(&base_unit_code)),
+                    ("known_at", Json::Int(i128::from(report.known_at.0))),
+                    (
+                        "effective_through",
+                        report
+                            .effective_through
+                            .map_or(Json::Null, |d| s(d.render())),
+                    ),
+                    ("count", Json::Int(report.lots.len() as i128)),
+                    ("lots", Json::Arr(lots)),
+                    ("disposal_plan", disposal_plan.unwrap_or(Json::Null)),
+                ],
+                &human,
+            );
+            Ok(())
+        }
         other => Err(unhandled("gl", other)),
     }
 }

@@ -304,14 +304,14 @@ example = "fa open-items --account 1200 --book ./books/myco --json"
 
 [[verb]]
 name = "gl"
-summary = "General-ledger detail, account roll-forward lead schedules, effective-date open-item aging and control reconciliation, and direct/indirect cash-flow workpapers over one recorded snapshot."
+summary = "General-ledger detail, account roll-forward lead schedules, effective-date open-item aging and control reconciliation, cost-basis lot schedules and relief planning, and direct/indirect cash-flow workpapers over one recorded snapshot."
 writes = false
-subcommands = ["detail", "roll-forward", "aging", "cash-flow"]
-flags = ["--account", "--unit", "--from", "--to", "--label", "--as-of", "--bucket", "--policy", "--income-period", "--as-known-at", "--grant"]
+subcommands = ["detail", "roll-forward", "aging", "cash-flow", "lots"]
+flags = ["--account", "--unit", "--from", "--to", "--label", "--as-of", "--bucket", "--policy", "--income-period", "--relieve", "--law", "--regime", "--rounding-law", "--target", "--as-known-at", "--grant"]
 switches = ["--reconcile", "--indirect"]
-events = ["general_ledger", "roll_forward", "aging", "aging_reconciled", "cash_flow", "indirect_cash_flow"]
+events = ["general_ledger", "roll_forward", "aging", "aging_reconciled", "cash_flow", "indirect_cash_flow", "lots"]
 exits = [0, 2, 3, 4, 5, 7, 8]
-usage = ["gl detail --account <code[,code...]> [--unit <CODE[,CODE...]>] --from YYYY-MM-DD --to YYYY-MM-DD [--label <text>] [--as-known-at HEAD|<seq>]", "gl roll-forward --account <code[,code...]> [--unit <CODE[,CODE...]>] --from YYYY-MM-DD --to YYYY-MM-DD [--label <text>] [--as-known-at HEAD|<seq>]", "gl aging [--account <code>] --as-of YYYY-MM-DD [--bucket <days>]... [--reconcile] [--as-known-at HEAD|<seq>]", "gl cash-flow --account <code[,code...]> [--unit <CODE[,CODE...]>] --from YYYY-MM-DD --to YYYY-MM-DD --policy <file.json|-> [--indirect --income-period <code>...] [--label <text>] [--as-known-at HEAD|<seq>]", "Pure historical folds: opening stock, posted movements and closing stock share one known-at frontier. --reconcile ties an account's open-item fold to its control balance. Cash-flow policies classify each cash leg (or indirect non-cash adjustment) explicitly without inventing a balancing plug."]
+usage = ["gl detail --account <code[,code...]> [--unit <CODE[,CODE...]>] --from YYYY-MM-DD --to YYYY-MM-DD [--label <text>] [--as-known-at HEAD|<seq>]", "gl roll-forward --account <code[,code...]> [--unit <CODE[,CODE...]>] --from YYYY-MM-DD --to YYYY-MM-DD [--label <text>] [--as-known-at HEAD|<seq>]", "gl aging [--account <code>] --as-of YYYY-MM-DD [--bucket <days>]... [--reconcile] [--as-known-at HEAD|<seq>]", "gl cash-flow --account <code[,code...]> [--unit <CODE[,CODE...]>] --from YYYY-MM-DD --to YYYY-MM-DD --policy <file.json|-> [--indirect --income-period <code>...] [--label <text>] [--as-known-at HEAD|<seq>]", "gl lots --account <code> [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>] [--relieve <amount> --law FIFO|LIFO|SpecificId|WeightedAverage [--regime US-GAAP|US-TAX|IFRS] [--rounding-law HalfEven|HalfUp|Down|Up|Ceiling|Floor] [--target <vid[:ordinal]>]...]", "Pure historical folds: opening stock, posted movements and closing stock share one known-at frontier. --reconcile ties an account's open-item fold to its control balance. Cash-flow policies classify each cash leg (or indirect non-cash adjustment) explicitly without inventing a balancing plug."]
 example = "fa gl detail --account 1000 --from 2026-03-01 --to 2026-03-31 --book ./books/myco --json"
 
 [[verb]]
@@ -541,6 +541,10 @@ expands = ["document", "attest"]
 [[alias]]
 name = "import"
 expands = ["document", "import"]
+
+[[alias]]
+name = "lots"
+expands = ["gl", "lots"]
 
 # Operations that cannot be undone in practice (plan §15.3, Appendix D
 # FA-REF-007). Without --yes, or a --plan file naming the exact proposal,
@@ -911,6 +915,12 @@ name = "indirect_cash_flow"
 book = true
 doc = "Indirect operating-cash reconciliation at `known_at` for `[effective_from, effective_through]`: net income from the registered income statement over `income_periods` plus explicit non-cash, working-capital, and non-operating leg adjustments reconciled to direct operating cash in each native unit."
 fields = ["policy:string", "cash_policy:string", "label:string", "known_at:seq", "effective_from:date", "effective_through:date", "income_periods:[string]", "cash_accounts:[string]", "units:[indirect_cash_flow_unit]", "contributions:[indirect_cash_flow_contribution]"]
+
+[[event]]
+name = "lots"
+book = true
+doc = "Cost-basis lot schedule (plan §6.5) for one `AnyUnit` account at `known_at` (and optionally through `effective_through`): each lot pairs an acquiring non-base quantity leg with its base-unit cost leg, tracks `RELIEVES` disposal applications (and `UNSETTLES` reversals where `live` is false), and optionally plans a deterministic disposal under `FIFO`, `LIFO`, `SpecificId`, or `WeightedAverage`."
+fields = ["account:string", "account_vid:hex", "name:string", "base_unit:string", "known_at:seq", "effective_through:date?", "count:int", "lots:[lot_item]", "disposal_plan:lot_disposal_plan?"]
 
 [[event]]
 name = "report_certificate"
@@ -1622,6 +1632,26 @@ name = "planted_fact"
 doc = "A planted accounting or forensic ground-truth fact in an initialized demo book (`fa demo init`)."
 fields = ["id:string", "kind:string", "period:string", "entry_vids:[hex]", "summary:string"]
 
+[[shape]]
+name = "lot_item"
+doc = "One cost-basis lot on an `AnyUnit` account: its acquiring entry and leg ordinals (`qty_ordinal` in the non-base quantity unit, `cost_ordinal` in the book's base unit), original/relieved/open quantities and costs, and ordered `RELIEVES` applications."
+fields = ["entry:hex", "entry_digest:hex", "qty_ordinal:int", "cost_ordinal:int", "side:string", "effective_date:date", "recorded_at:seq", "original_quantity:amount", "relieved_quantity:amount", "open_quantity:amount", "original_cost:amount", "relieved_cost:amount", "open_cost:amount", "relieves:[lot_relief]"]
+
+[[shape]]
+name = "lot_relief"
+doc = "One disposal application (`RELIEVES {quantity, cost}`) against a lot; `live` is false when a reversal (`UNSETTLES`) undid the relief."
+fields = ["disposal_entry:hex", "qty_ordinal:int", "cost_ordinal:int?", "quantity:amount", "cost:amount", "recorded_at:seq", "live:bool"]
+
+[[shape]]
+name = "lot_disposal_plan"
+doc = "A deterministic lot disposal relief plan under `FIFO`, `LIFO`, `SpecificId`, or `WeightedAverage` (`lot_laws.toml`, plan §6.5), with exact per-lot slices and `wac_residual_numerator`."
+fields = ["law:string", "regime:string", "rounding_law:string", "total_quantity:amount", "total_cost:amount", "wac_residual_numerator:int", "slices:[lot_disposal_slice]"]
+
+[[shape]]
+name = "lot_disposal_slice"
+doc = "One lot slice relieved by a planned disposal, with before/after open quantities and costs."
+fields = ["entry:hex", "entry_digest:hex", "qty_ordinal:int", "cost_ordinal:int", "effective_date:date", "recorded_at:seq", "quantity_relieved:amount", "cost_relieved:amount", "open_quantity_before:amount", "open_quantity_after:amount", "open_cost_before:amount", "open_cost_after:amount"]
+
 # ---------------------------------------------------------------------------
 # MCP (plan §15.4, bead fa-xex): this registry as tool clusters.
 # ---------------------------------------------------------------------------
@@ -1662,7 +1692,7 @@ max_tools_per_cluster = 7
 # The server fixes authority and book selection once; it never forwards caller grants.
 hidden_flags = ["--json", "--format", "--via", "--no-color", "--help", "--version", "--as", "--grant", "--yes", "--keys", "--book"]
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
-repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against"]
+repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
 integer_flags = ["--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed"]
 
@@ -2039,10 +2069,10 @@ mistakes = ["Combining account with entry: a bundle has one scope.", "Passing fr
 cluster = "fa.proof"
 name = "gl"
 verb = "gl"
-subcommands = ["detail", "roll-forward", "aging", "cash-flow"]
+subcommands = ["detail", "roll-forward", "aging", "cash-flow", "lots"]
 selector = "view"
 positionals = []
-flags = ["--account", "--unit", "--from", "--to", "--label", "--as-of", "--bucket", "--policy", "--income-period", "--as-known-at"]
+flags = ["--account", "--unit", "--from", "--to", "--label", "--as-of", "--bucket", "--policy", "--income-period", "--relieve", "--law", "--regime", "--rounding-law", "--target", "--as-known-at"]
 switches = ["--reconcile", "--indirect"]
 stdin_property = "policy"
 stdin_kind = "object"

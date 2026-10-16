@@ -129,7 +129,8 @@ pub use fa_policy::{
 };
 pub use fa_registers::open_items::OpenItemsReport;
 pub use fa_registers::{
-    Advance, EntityCell, EntityCellKey, EntityFold, EntityVerification, RegisterEquals,
+    Advance, EntityCell, EntityCellKey, EntityFold, EntityVerification, LotDisposalPlan,
+    LotDisposalRequest, LotDisposalSlice, LotItem, LotReliefEdge, LotsReport, RegisterEquals,
 };
 pub use fa_statements::{
     AccountMapping, Column as StatementColumn, Statement, StatementDefinition, StatementKind,

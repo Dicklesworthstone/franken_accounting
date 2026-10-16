@@ -27,6 +27,8 @@ const RELATIONSHIP_BASES_TOML: &str = include_str!("../../../registries/relation
 const CLAIMS_LINT_TOML: &str = include_str!("../../../registries/claims_lint.toml");
 const OPERATION_COSTS_TOML: &str = include_str!("../../../registries/operation_costs.toml");
 const SLO_TOML: &str = include_str!("../../../registries/slo.toml");
+const LOT_LAWS_TOML: &str = include_str!("../../../registries/lot_laws.toml");
+const CONVERSION_LAWS_TOML: &str = include_str!("../../../registries/conversion_laws.toml");
 
 fn req_bool(registry: &'static str, t: &Table, key: &str) -> Result<bool, RegistryError> {
     t.get(key)
@@ -1273,6 +1275,348 @@ impl SloRegistry {
     }
 }
 
+// ---------------------------------------------------------------------------
+// lot_laws.toml (plan §6.5, §0.4 decision 5; bead fa-2ly)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LotLawRow {
+    pub id: u16,
+    pub version: u16,
+    pub name: String,
+    pub ordering: String,
+    pub cost_method: String,
+    pub rounding_law: String,
+    pub admitted_regimes: Vec<String>,
+    pub refused_regimes: Vec<String>,
+    pub refusal_citation: Option<String>,
+    pub citation: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IfrsRuleRow {
+    pub id: String,
+    pub domain: String,
+    pub rule: String,
+    pub status: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LotLaws {
+    pub laws: Vec<LotLawRow>,
+    pub ifrs_rules: Vec<IfrsRuleRow>,
+}
+
+impl LotLaws {
+    pub fn embedded() -> Result<Self, RegistryError> {
+        Self::parse(LOT_LAWS_TOML)
+    }
+
+    pub fn parse(text: &str) -> Result<Self, RegistryError> {
+        const R: &str = "lot_laws.toml";
+        let doc = load(R, text)?;
+        if req_int(R, &doc.root, "schema_version")? != 1 {
+            return Err(invalid(R, "schema_version must be 1"));
+        }
+        let rounding_laws: BTreeSet<String> = crate::rounding_laws_embedded()?
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        let allowed_regimes: BTreeSet<&str> = BTreeSet::from(["US-GAAP", "US-TAX", "IFRS"]);
+
+        let mut laws = Vec::new();
+        let mut seen_ids = BTreeSet::new();
+        let mut seen_names = BTreeSet::new();
+        for t in doc.arrays.get("law").into_iter().flatten() {
+            let id = u16::try_from(req_int(R, t, "id")?)
+                .map_err(|_| invalid(R, "law id out of u16 range"))?;
+            let version = u16::try_from(req_int(R, t, "version")?)
+                .map_err(|_| invalid(R, "law version out of u16 range"))?;
+            let name = req_str(R, t, "name")?.to_string();
+            if id == 0 || !seen_ids.insert(id) {
+                return Err(invalid(R, format!("duplicate or zero lot law id {id}")));
+            }
+            if !seen_names.insert(name.clone()) {
+                return Err(invalid(R, format!("duplicate lot law `{name}`")));
+            }
+            let ordering = req_str(R, t, "ordering")?.to_string();
+            let cost_method = req_str(R, t, "cost_method")?.to_string();
+            if !matches!(
+                cost_method.as_str(),
+                "lot_proportional" | "pooled_weighted_average"
+            ) {
+                return Err(invalid(
+                    R,
+                    format!("{name}: unknown cost_method `{cost_method}`"),
+                ));
+            }
+            let rounding_law = req_str(R, t, "rounding_law")?.to_string();
+            if !rounding_laws.contains(&rounding_law) {
+                return Err(invalid(
+                    R,
+                    format!("{name}: unregistered rounding_law `{rounding_law}`"),
+                ));
+            }
+            let admitted_regimes = req_str_vec(R, t, "admitted_regimes")?;
+            let refused_regimes = req_str_vec(R, t, "refused_regimes")?;
+            if admitted_regimes.is_empty() {
+                return Err(invalid(
+                    R,
+                    format!("{name}: admitted_regimes must not be empty"),
+                ));
+            }
+            for r in admitted_regimes.iter().chain(&refused_regimes) {
+                if !allowed_regimes.contains(r.as_str()) {
+                    return Err(invalid(R, format!("{name}: unknown regime `{r}`")));
+                }
+            }
+            for r in &admitted_regimes {
+                if refused_regimes.contains(r) {
+                    return Err(invalid(
+                        R,
+                        format!("{name}: regime `{r}` is both admitted and refused"),
+                    ));
+                }
+            }
+            let refusal_citation = t
+                .get("refusal_citation")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            if !refused_regimes.is_empty() && refusal_citation.is_none() {
+                return Err(invalid(
+                    R,
+                    format!("{name}: refused_regimes requires `refusal_citation`"),
+                ));
+            }
+            if name == "LIFO" {
+                if !refused_regimes.iter().any(|r| r == "IFRS") {
+                    return Err(invalid(R, "LIFO must refuse regime `IFRS` per IAS 2.25"));
+                }
+                if !refusal_citation
+                    .as_deref()
+                    .is_some_and(|c| c.contains("IAS 2.25"))
+                {
+                    return Err(invalid(R, "LIFO refusal_citation must cite IAS 2.25"));
+                }
+            }
+            laws.push(LotLawRow {
+                id,
+                version,
+                name,
+                ordering,
+                cost_method,
+                rounding_law,
+                admitted_regimes,
+                refused_regimes,
+                refusal_citation,
+                citation: req_str(R, t, "citation")?.to_string(),
+            });
+        }
+        for required in ["FIFO", "LIFO", "SpecificId", "WeightedAverage"] {
+            if !seen_names.contains(required) {
+                return Err(invalid(R, format!("missing required lot law `{required}`")));
+            }
+        }
+
+        let mut ifrs_rules = Vec::new();
+        let mut seen_ifrs = BTreeSet::new();
+        for t in doc.arrays.get("ifrs_rule").into_iter().flatten() {
+            let id = req_str(R, t, "id")?.to_string();
+            if !seen_ifrs.insert(id.clone()) {
+                return Err(invalid(R, format!("duplicate ifrs_rule `{id}`")));
+            }
+            let status = req_str(R, t, "status")?.to_string();
+            if !matches!(status.as_str(), "enforced" | "registered") {
+                return Err(invalid(
+                    R,
+                    format!("{id}: status `{status}` must be `enforced` or `registered`"),
+                ));
+            }
+            ifrs_rules.push(IfrsRuleRow {
+                id,
+                domain: req_str(R, t, "domain")?.to_string(),
+                rule: req_str(R, t, "rule")?.to_string(),
+                status,
+            });
+        }
+        for required_ifrs in ["IAS-2.25", "IAS-29", "IAS-1.40A", "IAS-21"] {
+            if !seen_ifrs.contains(required_ifrs) {
+                return Err(invalid(
+                    R,
+                    format!("missing required §0.4 decision 5 IFRS rule `{required_ifrs}`"),
+                ));
+            }
+        }
+
+        Ok(Self { laws, ifrs_rules })
+    }
+
+    pub fn by_name(&self, name: &str) -> Option<&LotLawRow> {
+        self.laws.iter().find(|l| l.name == name)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// conversion_laws.toml (plan §6.5; bead fa-2ly)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConversionLawRow {
+    pub id: u16,
+    pub version: u16,
+    pub name: String,
+    pub kind: String,
+    pub from_code: String,
+    pub from_scale: u8,
+    pub to_code: String,
+    pub to_scale: u8,
+    pub numerator: String,
+    pub denominator: String,
+    pub rounding_law: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConversionLaws {
+    pub implicit_conversion: String,
+    pub rows: Vec<ConversionLawRow>,
+}
+
+fn gcd_u128(mut a: u128, mut b: u128) -> u128 {
+    while b != 0 {
+        let r = a % b;
+        a = b;
+        b = r;
+    }
+    a
+}
+
+impl ConversionLaws {
+    pub fn embedded() -> Result<Self, RegistryError> {
+        Self::parse(CONVERSION_LAWS_TOML)
+    }
+
+    pub fn parse(text: &str) -> Result<Self, RegistryError> {
+        const R: &str = "conversion_laws.toml";
+        let doc = load(R, text)?;
+        if req_int(R, &doc.root, "schema_version")? != 1 {
+            return Err(invalid(R, "schema_version must be 1"));
+        }
+        let implicit_conversion = req_str(R, &doc.root, "implicit_conversion")?.to_string();
+        if implicit_conversion != "forbidden" {
+            return Err(invalid(
+                R,
+                format!(
+                    "implicit_conversion must be `forbidden` (plan §6.5), found `{implicit_conversion}`"
+                ),
+            ));
+        }
+        let rounding_laws: BTreeSet<String> = crate::rounding_laws_embedded()?
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+
+        let mut rows = Vec::new();
+        let mut seen_ids = BTreeSet::new();
+        let mut seen_names = BTreeSet::new();
+        for t in doc.arrays.get("conversion_law").into_iter().flatten() {
+            let id = u16::try_from(req_int(R, t, "id")?)
+                .map_err(|_| invalid(R, "conversion_law id out of u16 range"))?;
+            let version = u16::try_from(req_int(R, t, "version")?)
+                .map_err(|_| invalid(R, "conversion_law version out of u16 range"))?;
+            let name = req_str(R, t, "name")?.to_string();
+            if id == 0 || !seen_ids.insert(id) {
+                return Err(invalid(
+                    R,
+                    format!("duplicate or zero conversion_law id {id}"),
+                ));
+            }
+            if !seen_names.insert(name.clone()) {
+                return Err(invalid(R, format!("duplicate conversion_law `{name}`")));
+            }
+            let kind = req_str(R, t, "kind")?.to_string();
+            if !matches!(
+                kind.as_str(),
+                "unit_conversion" | "scale_migration" | "split_adjustment"
+            ) {
+                return Err(invalid(R, format!("{name}: unknown kind `{kind}`")));
+            }
+            let from_code = req_str(R, t, "from_code")?.to_string();
+            let from_scale = u8::try_from(req_int(R, t, "from_scale")?)
+                .map_err(|_| invalid(R, "from_scale out of u8 range"))?;
+            let to_code = req_str(R, t, "to_code")?.to_string();
+            let to_scale = u8::try_from(req_int(R, t, "to_scale")?)
+                .map_err(|_| invalid(R, "to_scale out of u8 range"))?;
+            if from_scale > 38 || to_scale > 38 {
+                return Err(invalid(R, format!("{name}: scale exceeds 38")));
+            }
+            let numerator = req_str(R, t, "numerator")?.to_string();
+            let denominator = req_str(R, t, "denominator")?.to_string();
+            let num: u128 = numerator.parse().map_err(|_| {
+                invalid(
+                    R,
+                    format!("{name}: numerator `{numerator}` is not a positive u128"),
+                )
+            })?;
+            let den: u128 = denominator.parse().map_err(|_| {
+                invalid(
+                    R,
+                    format!("{name}: denominator `{denominator}` is not a positive u128"),
+                )
+            })?;
+            if num == 0 || den == 0 {
+                return Err(invalid(
+                    R,
+                    format!("{name}: numerator and denominator must be positive"),
+                ));
+            }
+            if gcd_u128(num, den) != 1 {
+                return Err(invalid(
+                    R,
+                    format!("{name}: rational factor {num}/{den} is not reduced to coprime terms"),
+                ));
+            }
+            let rounding_law = req_str(R, t, "rounding_law")?.to_string();
+            if !rounding_laws.contains(&rounding_law) {
+                return Err(invalid(
+                    R,
+                    format!("{name}: unregistered rounding_law `{rounding_law}`"),
+                ));
+            }
+            rows.push(ConversionLawRow {
+                id,
+                version,
+                name,
+                kind,
+                from_code,
+                from_scale,
+                to_code,
+                to_scale,
+                numerator,
+                denominator,
+                rounding_law,
+            });
+        }
+        if rows.is_empty() {
+            return Err(invalid(R, "expected at least one [[conversion_law]] row"));
+        }
+        Ok(Self {
+            implicit_conversion,
+            rows,
+        })
+    }
+
+    pub fn by_name(&self, name: &str) -> Option<&ConversionLawRow> {
+        self.rows.iter().find(|r| r.name == name)
+    }
+
+    pub fn for_pair(&self, from_code: &str, to_code: &str) -> Vec<&ConversionLawRow> {
+        self.rows
+            .iter()
+            .filter(|r| r.from_code == from_code && r.to_code == to_code)
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1313,6 +1657,14 @@ mod tests {
         let slo = SloRegistry::embedded(&op_costs).expect("slo.toml");
         assert_eq!(slo.rows.len(), 20);
         assert_eq!(slo.activated_manifest_ids().len(), 20);
+
+        let lot_laws = LotLaws::embedded().expect("lot_laws.toml");
+        assert_eq!(lot_laws.laws.len(), 4);
+        assert_eq!(lot_laws.ifrs_rules.len(), 4);
+
+        let conversion_laws = ConversionLaws::embedded().expect("conversion_laws.toml");
+        assert_eq!(conversion_laws.implicit_conversion, "forbidden");
+        assert_eq!(conversion_laws.rows.len(), 8);
     }
 
     #[test]
@@ -1361,5 +1713,21 @@ mod tests {
         );
         let err = OperationCosts::parse(&bad_hot_obj).expect_err("unscoped hot object");
         assert!(err.to_string().contains("Appendix G Law 3"), "{err}");
+
+        // Planted negative 5 (fa-2ly): LIFO admitted under IFRS or unreduced conversion factor fails.
+        let bad_lifo =
+            LOT_LAWS_TOML.replacen("refused_regimes = [\"IFRS\"]", "refused_regimes = []", 1);
+        let err = LotLaws::parse(&bad_lifo).expect_err("LIFO admitted under IFRS");
+        assert!(err.to_string().contains("IAS 2.25"), "{err}");
+
+        let bad_conv = CONVERSION_LAWS_TOML
+            .replacen(
+                "numerator = \"8\"",
+                "numerator = \"16\"\ndenominator = \"2\"",
+                1,
+            )
+            .replacen("denominator = \"1\"", "", 1);
+        let err = ConversionLaws::parse(&bad_conv).expect_err("unreduced conversion factor");
+        assert!(err.to_string().contains("coprime"), "{err}");
     }
 }

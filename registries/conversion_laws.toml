@@ -1,0 +1,116 @@
+# conversion_laws.toml — Exact unit and scale conversion laws (plan §6.5; bead fa-2ly).
+#
+# Unit conversion (ounces to grams, hours to days, share splits, or precision-epoch
+# scale migrations) is never implicit: a ConversionLaw row with exact rational
+# factors and an explicit RoundingLaw exists and is named by the caller, or the
+# conversion is refused naming ConversionLaw.
+#
+# Consumer: fa-registry (ConversionLaws), fa-money (convert_with_law),
+# fa-reference (ref_convert_with_law).
+
+schema_version = 1
+implicit_conversion = "forbidden"
+
+[[conversion_law]]
+id = 1
+version = 1
+name = "HoursToDays8h"
+kind = "unit_conversion"
+from_code = "HOUR"
+from_scale = 2
+to_code = "DAY"
+to_scale = 4
+numerator = "1"
+denominator = "8"
+rounding_law = "HalfEven"
+
+[[conversion_law]]
+id = 2
+version = 1
+name = "Days8hToHours"
+kind = "unit_conversion"
+from_code = "DAY"
+from_scale = 4
+to_code = "HOUR"
+to_scale = 2
+numerator = "8"
+denominator = "1"
+rounding_law = "HalfEven"
+
+[[conversion_law]]
+id = 3
+version = 1
+name = "TroyOuncesToGrams"
+kind = "unit_conversion"
+from_code = "XAU_OZ"
+from_scale = 4
+to_code = "GRAM"
+to_scale = 4
+numerator = "19439673"
+denominator = "625000"
+rounding_law = "HalfEven"
+
+[[conversion_law]]
+id = 4
+version = 1
+name = "AvoirdupoisOuncesToGrams"
+kind = "unit_conversion"
+from_code = "OZ"
+from_scale = 4
+to_code = "GRAM"
+to_scale = 4
+numerator = "45359237"
+denominator = "1600000"
+rounding_law = "HalfEven"
+
+[[conversion_law]]
+id = 5
+version = 1
+name = "GramsToKilograms"
+kind = "unit_conversion"
+from_code = "GRAM"
+from_scale = 4
+to_code = "KG"
+to_scale = 6
+numerator = "1"
+denominator = "1000"
+rounding_law = "HalfEven"
+
+[[conversion_law]]
+id = 6
+version = 1
+name = "ShareSplit2For1"
+kind = "split_adjustment"
+from_code = "SHARE"
+from_scale = 6
+to_code = "SHARE"
+to_scale = 6
+numerator = "2"
+denominator = "1"
+rounding_law = "HalfEven"
+
+[[conversion_law]]
+id = 7
+version = 1
+name = "EachToDozen"
+kind = "unit_conversion"
+from_code = "EACH"
+from_scale = 0
+to_code = "DOZEN"
+to_scale = 4
+numerator = "1"
+denominator = "12"
+rounding_law = "HalfEven"
+
+[[conversion_law]]
+id = 8
+version = 1
+name = "DozenToEach"
+kind = "unit_conversion"
+from_code = "DOZEN"
+from_scale = 4
+to_code = "EACH"
+to_scale = 0
+numerator = "12"
+denominator = "1"
+rounding_law = "HalfEven"

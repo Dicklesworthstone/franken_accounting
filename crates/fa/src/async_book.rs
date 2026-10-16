@@ -1419,6 +1419,25 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    /// Fold cost-basis lots and `RELIEVES {quantity, cost}` edges for an `AnyUnit` account (plan §6.5, `fa-2ly`).
+    pub fn lots(
+        &self,
+        cx: &PurposeContexts,
+        account: VId,
+        effective_through: Option<DateDay>,
+        known_at: Option<CommitSeq>,
+    ) -> Result<fa_registers::LotsReport, BookError> {
+        self.query(cx, |db, book| {
+            Ok(fa_registers::lots(
+                db,
+                book,
+                account,
+                effective_through,
+                known_at,
+            )?)
+        })
+    }
+
     /// Verify the immutable leg projection at one committed prefix without writes.
     pub fn verify_projections(
         &self,

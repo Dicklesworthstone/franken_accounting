@@ -1659,6 +1659,16 @@ impl Book {
         with_store!(&self.store, core => core.open_items_report(&self.purposes(), account, known_at))
     }
 
+    /// Fold cost-basis lots and `RELIEVES {quantity, cost}` edges for an `AnyUnit` account (plan §6.5, `fa-2ly`).
+    pub fn lots(
+        &self,
+        account: VId,
+        effective_through: Option<DateDay>,
+        known_at: Option<CommitSeq>,
+    ) -> Result<fa_registers::LotsReport, BookError> {
+        with_store!(&self.store, core => core.lots(&self.purposes(), account, effective_through, known_at))
+    }
+
     /// Read complete selected general-ledger detail at one retained prefix.
     /// This synchronous adapter delegates to the same AsyncBook implementation
     /// used by lab and embedded callers; no alternate report semantics exist.

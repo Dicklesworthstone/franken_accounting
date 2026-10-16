@@ -48,6 +48,11 @@ impl RoundingLaw {
         Self::ALL.iter().copied().find(|l| l.id() == id)
     }
 
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|l| l.name() == name)
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Self::HalfUp => "HalfUp",
