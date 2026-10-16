@@ -757,7 +757,7 @@ impl Procedure for LargeRoundReversals {
             .ok_or(LanternError::Overflow("round factor"))?;
         let window = i32::try_from(self.params.get_u32("window_days")?)
             .map_err(|_| LanternError::Overflow("window_days"))?;
-        let mut by_vid: BTreeMap<VId, & crate::snapshot::SnapshotEntry> = BTreeMap::new();
+        let mut by_vid: BTreeMap<VId, &crate::snapshot::SnapshotEntry> = BTreeMap::new();
         for e in &snapshot.entries {
             work.entry();
             by_vid.insert(e.vid, e);
@@ -779,7 +779,8 @@ impl Procedure for LargeRoundReversals {
                 if orig.period.is_empty() || rev.period.is_empty() || orig.period == rev.period {
                     continue;
                 }
-                let days = rev.entry.proposal.effective_date.0 - orig.entry.proposal.effective_date.0;
+                let days =
+                    rev.entry.proposal.effective_date.0 - orig.entry.proposal.effective_date.0;
                 if !(0..=window).contains(&days) {
                     continue;
                 }
@@ -787,9 +788,10 @@ impl Procedure for LargeRoundReversals {
                 for leg in &orig.entry.proposal.legs {
                     work.leg();
                     let Some(unit) = book.units.get(leg.amount.unit) else {
-                        return Err(
-                            KernelError::Corrupt("a leg names an unregistered unit".into()).into(),
-                        );
+                        return Err(KernelError::Corrupt(
+                            "a leg names an unregistered unit".into(),
+                        )
+                        .into());
                     };
                     let base = unit
                         .one()
@@ -874,11 +876,10 @@ impl Procedure for SuspenseAging {
         let mut live = snapshot.live_postings_through(snapshot.coordinate.effective_through)?;
         live.sort_by_key(|e| e.vid);
         let population = live.len() as u64;
-        let as_of = snapshot.coordinate.effective_through.or_else(|| {
-            live.iter()
-                .map(|e| e.entry.proposal.effective_date)
-                .max()
-        });
+        let as_of = snapshot
+            .coordinate
+            .effective_through
+            .or_else(|| live.iter().map(|e| e.entry.proposal.effective_date).max());
         let Some(as_of) = as_of else {
             return Ok(Vec::new());
         };
@@ -922,12 +923,7 @@ impl Procedure for SuspenseAging {
                 entry_vids.sort_unstable();
                 entry_vids.dedup();
                 let mut cites = vec![Cite::Account(acct_vid)];
-                cites.extend(
-                    entry_vids
-                        .into_iter()
-                        .take(MAX_CITES - 1)
-                        .map(Cite::Entry),
-                );
+                cites.extend(entry_vids.into_iter().take(MAX_CITES - 1).map(Cite::Entry));
                 let severity = if age > max_age.saturating_mul(2) {
                     Severity::High
                 } else {

@@ -143,10 +143,9 @@ impl Procedure for ReconIntercompany {
                 let b = buckets
                     .entry((e.period.clone(), leg.amount.unit.0))
                     .or_default();
-                b.0 = b
-                    .0
-                    .checked_add(signed)
-                    .ok_or(LanternError::Overflow("intercompany balance sum"))?;
+                b.0 =
+                    b.0.checked_add(signed)
+                        .ok_or(LanternError::Overflow("intercompany balance sum"))?;
                 b.1.insert(leg.account_ref);
                 b.2.insert(e.vid);
             }
@@ -663,12 +662,13 @@ impl Procedure for SubsequentEvents {
         }
         closed_periods.sort_by(|a, b| a.0.cmp(&b.0));
 
-        let mut live = snapshot.live_postings()?;
-        live.sort_by_key(|e| e.vid);
-        let population = live.len() as u64;
+        let mut postings: Vec<&crate::SnapshotEntry> =
+            snapshot.entries.iter().filter(|e| e.posts()).collect();
+        postings.sort_by_key(|e| e.vid);
+        let population = postings.len() as u64;
         let mut out = Vec::new();
 
-        for e in &live {
+        for e in &postings {
             work.entry();
             let eff = e.entry.proposal.effective_date;
             let mut max_leg: Option<(u32, i128)> = None;
@@ -1414,4 +1414,3 @@ impl Procedure for ConfirmCoverage {
         Ok(out)
     }
 }
-

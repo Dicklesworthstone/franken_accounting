@@ -613,9 +613,8 @@ impl Procedure for CircularFlows {
             for (u, v) in &edge_pairs {
                 let _ = dg.add_edge(u.clone(), v.clone());
             }
-            let (sccs, _) = fnx_cgse::collect_witnesses(|| {
-                fnx_algorithms::strongly_connected_components(&dg)
-            });
+            let (sccs, _) =
+                fnx_cgse::collect_witnesses(|| fnx_algorithms::strongly_connected_components(&dg));
             for mut scc in sccs {
                 if scc.len() < 2 {
                     continue;
@@ -670,20 +669,22 @@ impl Procedure for CircularFlows {
                         if path_indices.len() + 1 >= max_hops {
                             break;
                         }
-                        let next_opt = scc_legs
-                            .iter()
-                            .enumerate()
-                            .skip(start_idx + 1)
-                            .find(|(idx, l)| {
-                                !used[*idx]
-                                    && !path_indices.contains(idx)
-                                    && l.from == cur_acct
-                                    && !visited_accts.contains(&l.to)
-                                    && l.effective_date.0 >= cur_day
-                                    && (l.effective_date.0 - first.effective_date.0) <= window_days
-                                    && (l.mantissa.min(min_flow) * 10_000) / first.mantissa
-                                        >= min_retention_bps
-                            });
+                        let next_opt =
+                            scc_legs
+                                .iter()
+                                .enumerate()
+                                .skip(start_idx + 1)
+                                .find(|(idx, l)| {
+                                    !used[*idx]
+                                        && !path_indices.contains(idx)
+                                        && l.from == cur_acct
+                                        && !visited_accts.contains(&l.to)
+                                        && l.effective_date.0 >= cur_day
+                                        && (l.effective_date.0 - first.effective_date.0)
+                                            <= window_days
+                                        && (l.mantissa.min(min_flow) * 10_000) / first.mantissa
+                                            >= min_retention_bps
+                                });
                         if let Some((next_idx, next_leg)) = next_opt {
                             path_indices.push(next_idx);
                             visited_accts.insert(next_leg.to);
@@ -709,9 +710,12 @@ impl Procedure for CircularFlows {
                             }
                             decisions.push((vid_node(l.from), vid_node(l.to)));
                         }
-                        let dec_refs: Vec<(&str, &str)> =
-                            decisions.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
-                        let cgse = cgse_digest_hex(&dec_refs, nodes.len(), edge_pairs.len(), "scc_cycles");
+                        let dec_refs: Vec<(&str, &str)> = decisions
+                            .iter()
+                            .map(|(a, b)| (a.as_str(), b.as_str()))
+                            .collect();
+                        let cgse =
+                            cgse_digest_hex(&dec_refs, nodes.len(), edge_pairs.len(), "scc_cycles");
                         cites.truncate(MAX_CITES);
                         out.push(finding(
                             (Self::ID, self.version()),
@@ -864,9 +868,16 @@ impl Procedure for Layering {
                     {
                         cites.push(Cite::Account(legs[last_idx].to));
                     }
-                    let dec_refs: Vec<(&str, &str)> =
-                        decisions.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
-                    let cgse = cgse_digest_hex(&dec_refs, dg.node_count(), dg.edge_count(), "layering_bfs");
+                    let dec_refs: Vec<(&str, &str)> = decisions
+                        .iter()
+                        .map(|(a, b)| (a.as_str(), b.as_str()))
+                        .collect();
+                    let cgse = cgse_digest_hex(
+                        &dec_refs,
+                        dg.node_count(),
+                        dg.edge_count(),
+                        "layering_bfs",
+                    );
                     cites.truncate(MAX_CITES);
                     out.push(finding(
                         (Self::ID, self.version()),
@@ -947,17 +958,16 @@ impl Procedure for Communities {
             let _ = g.add_edge(vid_node(u), vid_node(v));
         }
         let (mut comms, _) = fnx_cgse::collect_witnesses(|| {
-            let louvain = fnx_algorithms::louvain_communities(&g, 1.0, "weight", 1e-7, None, Some(0));
-            if louvain.is_empty() {
-                fnx_algorithms::connected_components(&g).components
-            } else {
-                louvain
-            }
+            let mut out_comms =
+                fnx_algorithms::louvain_communities(&g, 1.0, "weight", 1e-7, None, Some(0));
+            out_comms.extend(fnx_algorithms::connected_components(&g).components);
+            out_comms
         });
         for c in &mut comms {
             c.sort();
         }
         comms.sort();
+        comms.dedup();
         let mut out = Vec::new();
         for comm in comms {
             work.compare(comm.len() as u64);
@@ -990,8 +1000,10 @@ impl Procedure for Communities {
                     .iter()
                     .map(|v| (vid_node(*v), "community".to_string()))
                     .collect();
-                let dec_refs: Vec<(&str, &str)> =
-                    decisions.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+                let dec_refs: Vec<(&str, &str)> = decisions
+                    .iter()
+                    .map(|(a, b)| (a.as_str(), b.as_str()))
+                    .collect();
                 let cgse = cgse_digest_hex(&dec_refs, g.node_count(), g.edge_count(), "louvain");
                 let cites: Vec<Cite> = member_vids
                     .iter()
@@ -1309,11 +1321,14 @@ impl Procedure for Concentration {
             if total_vol <= 0 {
                 continue;
             }
-            let share_bps = (acct_vol * 10_000) / (total_vol * 2);
+            let share_bps = (acct_vol * 10_000) / total_vol;
             if share_bps >= min_share_bps {
                 let node_str = vid_node(acct_vid);
                 let cgse = cgse_digest_hex(
-                    &[(&node_str, &bet.witness.algorithm), (&node_str, &deg.witness.algorithm)],
+                    &[
+                        (&node_str, &bet.witness.algorithm),
+                        (&node_str, &deg.witness.algorithm),
+                    ],
                     dg.node_count(),
                     dg.edge_count(),
                     "centrality",
@@ -1431,8 +1446,10 @@ impl Procedure for IdentityResolution {
                     }
                 }
             }
-            let dec_refs: Vec<(&str, &str)> =
-                decisions.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+            let dec_refs: Vec<(&str, &str)> = decisions
+                .iter()
+                .map(|(a, b)| (a.as_str(), b.as_str()))
+                .collect();
             let cgse = cgse_digest_hex(
                 &dec_refs,
                 g.node_count(),
@@ -1461,4 +1478,3 @@ impl Procedure for IdentityResolution {
         Ok(out)
     }
 }
-

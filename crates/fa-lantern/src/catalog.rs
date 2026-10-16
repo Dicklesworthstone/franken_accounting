@@ -24,8 +24,8 @@ use crate::graph::{
 };
 use crate::jet::{
     IntercompanyUnmatched, LargeRoundReversals, ManualVsRule, PeriodEndTiming, PostClosing,
-    RoundAmounts, SelfApproved, SuspenseAging, ThinDescriptions, UnusualAccounts,
-    UnusualPreparers, Weekend,
+    RoundAmounts, SelfApproved, SuspenseAging, ThinDescriptions, UnusualAccounts, UnusualPreparers,
+    Weekend,
 };
 use crate::numbers::{RelativeSizeFactor, SequenceGaps, ThresholdSplitting};
 use crate::trace::{Law, Trace};

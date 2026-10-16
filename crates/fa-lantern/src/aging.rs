@@ -229,11 +229,10 @@ impl Procedure for InventoryAging {
         let mut live = snapshot.live_postings()?;
         live.sort_by_key(|e| (e.entry.proposal.effective_date, e.vid));
 
-        let as_of = snapshot.coordinate.effective_through.or_else(|| {
-            live.iter()
-                .map(|e| e.entry.proposal.effective_date)
-                .max()
-        });
+        let as_of = snapshot
+            .coordinate
+            .effective_through
+            .or_else(|| live.iter().map(|e| e.entry.proposal.effective_date).max());
         let Some(as_of) = as_of else {
             return Ok(Vec::new());
         };
@@ -333,4 +332,3 @@ impl Procedure for InventoryAging {
         Ok(out)
     }
 }
-

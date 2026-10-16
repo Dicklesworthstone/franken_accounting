@@ -3556,7 +3556,8 @@ fn phase_19_5b_fnx_graph_procedures_with_cgse_witnesses() {
     e1.entry.proposal.legs[0]
         .dimension_set
         .push((fa_model::PARTY_DIMENSION, p_aff1_val));
-    let e2 = make_snapshot_entry(
+    e1.entry.proposal.evidence.clear();
+    let mut e2 = make_snapshot_entry(
         &mut h,
         VId(91_002),
         CommitSeq(502),
@@ -3573,7 +3574,8 @@ fn phase_19_5b_fnx_graph_procedures_with_cgse_witnesses() {
         None,
         Vec::new(),
     );
-    let e3 = make_snapshot_entry(
+    e2.entry.proposal.evidence.clear();
+    let mut e3 = make_snapshot_entry(
         &mut h,
         VId(91_003),
         CommitSeq(503),
@@ -3590,7 +3592,8 @@ fn phase_19_5b_fnx_graph_procedures_with_cgse_witnesses() {
         None,
         Vec::new(),
     );
-    let e4 = make_snapshot_entry(
+    e3.entry.proposal.evidence.clear();
+    let mut e4 = make_snapshot_entry(
         &mut h,
         VId(91_004),
         CommitSeq(504),
@@ -3607,43 +3610,44 @@ fn phase_19_5b_fnx_graph_procedures_with_cgse_witnesses() {
         None,
         Vec::new(),
     );
+    e4.entry.proposal.evidence.clear();
     snapshot.entries = vec![e1, e2, e3, e4];
 
     // 1. graph.circular_flows
     let cf = run_over(&snapshot, &h.book, &CircularFlows::new().unwrap()).unwrap();
     assert!(!cf.findings.is_empty());
-    assert!(cf.findings[0].narrative.contains("cgse="));
+    assert!(cf.findings[0].narrative.contains("cgse_witness="));
     witness::determinism(&snapshot, &h.book, &CircularFlows::new().unwrap()).unwrap();
 
     // 2. graph.layering
     let lay = run_over(&snapshot, &h.book, &Layering::new().unwrap()).unwrap();
     assert!(!lay.findings.is_empty());
-    assert!(lay.findings[0].narrative.contains("cgse="));
+    assert!(lay.findings[0].narrative.contains("cgse_witness="));
     witness::determinism(&snapshot, &h.book, &Layering::new().unwrap()).unwrap();
 
     // 3. graph.communities
     let comm = run_over(&snapshot, &h.book, &Communities::new().unwrap()).unwrap();
     assert!(!comm.findings.is_empty());
-    assert!(comm.findings[0].narrative.contains("cgse="));
+    assert!(comm.findings[0].narrative.contains("cgse_witness="));
     witness::determinism(&snapshot, &h.book, &Communities::new().unwrap()).unwrap();
 
     // 4. graph.related_party_exposure
     let rpe = run_over(&snapshot, &h.book, &RelatedPartyExposure::new().unwrap()).unwrap();
     assert_eq!(rpe.findings.len(), 1);
     assert!(rpe.findings[0].cites.contains(&Cite::Entry(VId(91_001))));
-    assert!(rpe.findings[0].narrative.contains("cgse="));
+    assert!(rpe.findings[0].narrative.contains("cgse_witness="));
     witness::determinism(&snapshot, &h.book, &RelatedPartyExposure::new().unwrap()).unwrap();
 
     // 5. graph.shell_signature
     let ss = run_over(&snapshot, &h.book, &ShellSignature::new().unwrap()).unwrap();
     assert!(!ss.findings.is_empty());
-    assert!(ss.findings[0].narrative.contains("cgse="));
+    assert!(ss.findings[0].narrative.contains("cgse_witness="));
     witness::determinism(&snapshot, &h.book, &ShellSignature::new().unwrap()).unwrap();
 
     // 6. graph.concentration
     let conc = run_over(&snapshot, &h.book, &Concentration::new().unwrap()).unwrap();
     assert!(!conc.findings.is_empty());
-    assert!(conc.findings[0].narrative.contains("cgse="));
+    assert!(conc.findings[0].narrative.contains("cgse_witness="));
     witness::determinism(&snapshot, &h.book, &Concentration::new().unwrap()).unwrap();
 
     // 7. graph.identity_resolution
@@ -3651,7 +3655,7 @@ fn phase_19_5b_fnx_graph_procedures_with_cgse_witnesses() {
     assert_eq!(ir.findings.len(), 1);
     assert!(ir.findings[0].cites.contains(&Cite::Principal(p_aff1)));
     assert!(ir.findings[0].cites.contains(&Cite::Principal(p_aff2)));
-    assert!(ir.findings[0].narrative.contains("cgse="));
+    assert!(ir.findings[0].narrative.contains("cgse_witness="));
     witness::determinism(&snapshot, &h.book, &IdentityResolution::new().unwrap()).unwrap();
 }
 
@@ -3820,7 +3824,7 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
         &jan,
         EntryClass::ORIGINAL,
         vec![
-            ("1100", Side::Debit, usd, 50_000),
+            ("1200", Side::Debit, usd, 50_000),
             ("4000", Side::Credit, usd, 50_000),
         ],
         Vec::new(),
@@ -3841,7 +3845,7 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
         EntryClass::ORIGINAL,
         vec![
             ("1000", Side::Debit, usd, 50_000),
-            ("1100", Side::Credit, usd, 50_000),
+            ("1200", Side::Credit, usd, 50_000),
         ],
         Vec::new(),
         None,
@@ -3861,7 +3865,7 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
         EntryClass::ORIGINAL,
         vec![
             ("1000", Side::Debit, usd, 50_000),
-            ("1100", Side::Credit, usd, 50_000),
+            ("1200", Side::Credit, usd, 50_000),
         ],
         Vec::new(),
         None,
@@ -3893,9 +3897,26 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
     );
 
     // 4. Subsequent event + cross-period reversal pattern: Adjusting/Reversal in Feb reversing Jan entry
+    let e_jan_orig = make_snapshot_entry(
+        &mut h,
+        VId(92_011),
+        CommitSeq(601),
+        day(2026, 1, 28),
+        &jan,
+        EntryClass::ORIGINAL,
+        vec![
+            ("1200", Side::Debit, usd, 200_000),
+            ("4000", Side::Credit, usd, 200_000),
+        ],
+        Vec::new(),
+        None,
+        Some(day(2026, 1, 28)),
+        None,
+        Vec::new(),
+    );
     let e_orig_ref = fa_model::EntryRef {
-        vid: e_lap1.vid,
-        entry_digest: e_lap1.entry.entry_digest,
+        vid: e_jan_orig.vid,
+        entry_digest: e_jan_orig.entry.entry_digest,
     };
     let e_subseq = make_snapshot_entry(
         &mut h,
@@ -3906,7 +3927,7 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
         EntryClass::REVERSAL,
         vec![
             ("4000", Side::Debit, usd, 200_000),
-            ("1100", Side::Credit, usd, 200_000),
+            ("1200", Side::Credit, usd, 200_000),
         ],
         vec![fa_model::Supersession {
             target: e_orig_ref,
@@ -3932,14 +3953,20 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
         CommitSeq(600),
         day(2026, 1, 9),
         "",
-        EntryClass::SCHEMA_CONTROL,
-        Vec::new(),
+        EntryClass::ORIGINAL,
+        vec![
+            ("1000", Side::Debit, usd, 100),
+            ("4000", Side::Credit, usd, 100),
+        ],
         Vec::new(),
         None,
         None,
         None,
         Vec::new(),
     );
+    e_ctrl.entry.proposal.class = EntryClass::SCHEMA_CONTROL;
+    e_ctrl.entry.proposal.legs.clear();
+    e_ctrl.entry.proposal.unit_totals.clear();
     e_ctrl.entry.proposal.control = Some(fa_model::ControlPayload::SchemaChange {
         kind: fa_model::rea::SCHEMA_CHANGE_UPDATE_PARTY_IDENTIFIERS,
         canonical_bytes: upd_bytes,
@@ -4009,7 +4036,7 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
     e_inv.entry.proposal.legs[0].account_ref = inv_vid;
 
     snapshot.entries = vec![
-        e_ic, e_lap1, e_lap2, e_lap3, e_unrec, e_subseq, e_ctrl, e_pay, e_capex, e_inv,
+        e_ic, e_lap1, e_lap2, e_lap3, e_unrec, e_jan_orig, e_subseq, e_ctrl, e_pay, e_capex, e_inv,
     ];
 
     // Add a RegisterEquals attestation on Cash (1000) in FY2026-P01 claiming 999_999 (diverging from fold)
@@ -4114,4 +4141,3 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
     assert!(!r_cc.findings.is_empty());
     witness::determinism(&snapshot, &h.book, &ConfirmCoverage::new().unwrap()).unwrap();
 }
-

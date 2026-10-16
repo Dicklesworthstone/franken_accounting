@@ -315,10 +315,11 @@ impl Procedure for ThresholdSplitting {
                         (0u8, a0, a1, scale)
                     }
                 };
-                by_key
-                    .entry(key)
-                    .or_default()
-                    .push((e.entry.proposal.effective_date, total_debit, e.vid));
+                by_key.entry(key).or_default().push((
+                    e.entry.proposal.effective_date,
+                    total_debit,
+                    e.vid,
+                ));
             }
         }
         let mut out = Vec::new();
